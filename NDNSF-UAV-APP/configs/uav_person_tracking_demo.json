@@ -1,0 +1,58 @@
+{
+  "schema": "uav-person-tracking-profile-v1",
+  "trackingMode": "indoor-person-reid",
+  "cameras": [
+    "UAV1",
+    "UAV2",
+    "UAV3"
+  ],
+  "cameraRelations": [
+    {
+      "cameraA": "UAV1",
+      "cameraB": "UAV2",
+      "relation": "overlap"
+    },
+    {
+      "cameraA": "UAV1",
+      "cameraB": "UAV3",
+      "relation": "non-overlap"
+    },
+    {
+      "cameraA": "UAV2",
+      "cameraB": "UAV3",
+      "relation": "non-overlap"
+    }
+  ],
+  "detectorDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "reidDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "architecture": "osnet_x1_0",
+  "featureDimension": 512,
+  "preprocessId": "osnet-rgb-256x128-imagenet-l2-v1",
+  "requestedDevice": "cpu",
+  "limits": {
+    "sampleHz": 2,
+    "maxPersonsPerFrame": 64,
+    "maxLocalKeys": 1024,
+    "maxBackendTracksPerCamera": 512,
+    "maxGlobalIdentities": 256,
+    "samplesPerIdentity": 8,
+    "galleryTtlUs": 30000000,
+    "minTransitionUs": 0,
+    "maxTransitionUs": 30000000,
+    "maxClockSkewUs": 100000,
+    "maxCosineDistancePpm": 300000,
+    "ambiguityMarginPpm": 50000,
+    "reidBatchSize": 32,
+    "maxFrameBytes": 4194304,
+    "maxFrameWidth": 1920,
+    "maxFrameHeight": 1080,
+    "maxSnapshotBytes": 8388608,
+    "maxResultBytes": 4194304,
+    "maxQueuedWindows": 2,
+    "maxInFlightWindows": 1,
+    "workerTimeoutMs": 30000,
+    "runDeadlineMs": 900000,
+    "maxChildLogBytes": 16777216,
+    "maxRetainedTransactionWindows": 120
+  }
+}

@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON:-python3}"
-JOBS="${NDNSF_BUILD_JOBS:-2}"
+JOBS="${NDNSF_BUILD_JOBS:-6}"
+PERSON_RUNTIME=""
 WAF_CONFIGURE_ARGS=()
 QWEN_MININDN=0
 RUN_WAF_CONFIGURE=auto
@@ -122,13 +123,16 @@ Options:
   --with-minindn-deps      Install Mini-NDN experiment OS packages.
   --with-yolo-minindn      Install the pinned two-node Mini-NDN + YOLO CPU profile.
   --with-qwen-minindn      Check Qwen Mini-NDN prerequisites; do not download a model.
+  --person-runtime PATH   Install only the locked CPython 3.10 person CPU environment.
+                          NDNSF_PERSON_PYTHON selects the base interpreter (python3.10).
+                          NDNSF_PERSON_WHEELS must contain the hash-verified Torchreid wheel.
   --with-nfd-nlsr-deps     Install NFD/NLSR build OS packages.
   --check-dependencies     Verify the installed global dependency closure.
   --uninstall              Remove only installer-recorded files/packages/sources.
   --legacy-build-dir PATH  Validate/remove a pre-manifest build dir with --uninstall.
   --configure              Always run ./waf configure.
   --no-configure           Unsupported; configure is required for every install.
-  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 2).
+  --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 6).
   NDNSF_TMPDIR=PATH        Temporary files (default: BUILD_DIR/tmp).
   --with-examples          Pass --with-examples to Waf configure.
   --with-tests             Pass --with-tests to Waf configure.
@@ -216,6 +220,11 @@ while [[ $# -gt 0 ]]; do
       INSTALL_TEST_PACKAGES=1
       INSTALL_DOC_PACKAGES=1
       shift
+      ;;
+    --person-runtime)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--person-runtime requires a path' >&2; exit 2; }
+      PERSON_RUNTIME="$(realpath -m -- "$2")"
+      shift 2
       ;;
     --with-qwen-minindn)
       QWEN_MININDN=1
@@ -349,8 +358,8 @@ if (( FORCE_DEPENDENCIES && NO_DEPENDENCIES_REQUESTED )); then
   echo '--force-dependencies cannot be combined with --no-dependencies' >&2
   exit 2
 fi
-[[ "$JOBS" == 1 || "$JOBS" == 2 || "$JOBS" == 4 ]] || {
-  echo '--jobs must be 1, 2 or explicit 4 for a bounded host build' >&2
+[[ "$JOBS" == 1 || "$JOBS" == 2 || "$JOBS" == 4 || "$JOBS" == 6 ]] || {
+  echo '--jobs must be 1, 2, 4 or 6 for the host build' >&2
   exit 2
 }
 [[ "$REUSE_BUILD_DIR" == 0 || "$REUSE_BUILD_DIR" == 1 ]] || {
@@ -3350,6 +3359,20 @@ check_qwen_installed_programs() {
 }
 
 cd "$ROOT"
+
+if [[ -n "$PERSON_RUNTIME" ]]; then
+  if (( UNINSTALL_STACK || CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES ||
+        QWEN_MININDN || INSTALL_YOLO_MININDN || SOURCE_MODE )); then
+    echo '--person-runtime is a separate runtime-only action' >&2
+    exit 2
+  fi
+  if (( PLAN_ONLY )); then
+    echo "Person CPU runtime: $PERSON_RUNTIME; CPython 3.10; requirements-person.lock; verified Torchreid wheel required."
+    echo 'No native build, model download or installation in plan mode.'
+    exit 0
+  fi
+  exec bash "$ROOT/scripts/install-person-runtime.sh" "$PERSON_RUNTIME"
+fi
 
 # One public entry point; configure.sh only translates legacy arguments.
 if (( UNINSTALL_STACK )); then

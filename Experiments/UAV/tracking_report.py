@@ -171,3 +171,12 @@ def summarize_motion_result(result: Mapping[str, object]) -> dict[str, object]:
         "estimates": normalized,
         "oracle": oracle if isinstance(oracle, Mapping) else {"provenance": "simulated-input"},
     }
+
+
+def evaluate_tracking_run(received: Path, evaluation_manifest: Path, *, schema: str,
+                          run_receipt: Path | None = None) -> dict:
+    """Dispatch explicit indoor evaluation without changing legacy collection."""
+    if schema != "uav-person-tracking-result-v1":
+        raise ResultError("unsupported offline tracking evaluation schema")
+    from .person_tracking_metrics import evaluate_person_tracking
+    return evaluate_person_tracking(received, evaluation_manifest, run_receipt=run_receipt)

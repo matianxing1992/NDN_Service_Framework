@@ -15,9 +15,10 @@ import csv
 import hashlib
 import json
 import math
+import os
+import re
 import sys
 import tempfile
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -26,6 +27,7 @@ import numpy as np
 
 from motion_estimator import (GroundEstimate, MotionEstimator, estimate_vehicle_speed,
                               project_ground_point, project_world_point_to_pixel)
+from byte_track_state import ByteTrackStateCodec
 from motion_schema import TelemetrySample, load_motion_window
 from observation_schema import FrameObservation, load_verified_observation_bundle
 
@@ -247,7 +249,7 @@ class CrossCameraAssociator:
         return associator
 
 
-class TrackingEngine:
+class TrackingEngine(ByteTrackStateCodec):
     def __init__(self, model_path: Path | None = None, *, functional: bool = False,
                  confidence: float = 0.25) -> None:
         self.functional = functional
@@ -377,135 +379,6 @@ class TrackingEngine:
         self._observation_mode = False
         self._last_observation_sequence = None
         self._session_binding = None
-
-    @staticmethod
-    def _json_scalar(value: Any) -> Any:
-        """Convert NumPy scalars to JSON values without accepting non-finite data."""
-        if hasattr(value, "item"):
-            value = value.item()
-        if isinstance(value, float) and not math.isfinite(value):
-            raise ValueError("ByteTrack state contains a non-finite scalar")
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-        raise ValueError("ByteTrack state contains an unsupported scalar")
-
-    @classmethod
-    def _json_array(cls, value: Any, *, shape: tuple[int, ...] | None = None) -> list[Any] | None:
-        if value is None:
-            return None
-        array = np.asarray(value)
-        if shape is not None and tuple(array.shape) != shape:
-            raise ValueError(f"ByteTrack state array shape {array.shape} != {shape}")
-        if not np.isfinite(array).all():
-            raise ValueError("ByteTrack state contains a non-finite array value")
-        return array.astype(float).tolist()
-
-    @classmethod
-    def _serialize_byte_track(cls, track: Any, current_frame_id: int) -> dict[str, Any]:
-        """Serialize the state consumed by Ultralytics BYTETracker.update()."""
-        tlwh = cls._json_array(getattr(track, "_tlwh", None), shape=(4,))
-        mean = cls._json_array(getattr(track, "mean", None), shape=(8,))
-        covariance = cls._json_array(getattr(track, "covariance", None), shape=(8, 8))
-        if tlwh is None or mean is None or covariance is None:
-            raise ValueError("ByteTrack state is missing an initialized Kalman track")
-        frame_id = int(track.frame_id)
-        if current_frame_id < frame_id:
-            raise ValueError("ByteTrack track frame is ahead of its tracker")
-        time_since_update = getattr(track, "time_since_update", None)
-        if time_since_update is None:
-            # Ultralytics 8.4 removed this cached field; frame IDs retain the
-            # same age information and are already part of the persisted state.
-            time_since_update = current_frame_id - frame_id
-        return {
-            "trackId": int(track.track_id),
-            "isActivated": bool(track.is_activated),
-            "state": int(track.state),
-            "tlwh": tlwh,
-            "mean": mean,
-            "covariance": covariance,
-            "score": float(cls._json_scalar(track.score)),
-            "class": cls._json_scalar(track.cls),
-            "index": cls._json_scalar(track.idx),
-            "angle": cls._json_scalar(track.angle),
-            "startFrame": int(track.start_frame),
-            "frameId": frame_id,
-            "timeSinceUpdate": int(time_since_update),
-            "trackletLength": int(track.tracklet_len),
-        }
-
-    @classmethod
-    def _restore_byte_track(cls, tracker: Any, item: dict[str, Any]) -> Any:
-        """Reconstruct one validated Ultralytics STrack for a new process."""
-        from ultralytics.trackers.byte_tracker import STrack
-
-        tlwh = np.asarray(item["tlwh"], dtype=np.float32)
-        mean = np.asarray(item["mean"], dtype=np.float32)
-        covariance = np.asarray(item["covariance"], dtype=np.float32)
-        if tlwh.shape != (4,) or mean.shape != (8,) or covariance.shape != (8, 8):
-            raise ValueError("invalid ByteTrack state array shape")
-        if not np.isfinite(tlwh).all() or not np.isfinite(mean).all() or not np.isfinite(covariance).all():
-            raise ValueError("invalid non-finite ByteTrack state")
-        if any(int(item[key]) < 0 for key in ("trackId", "startFrame", "frameId",
-                                               "timeSinceUpdate", "trackletLength")):
-            raise ValueError("invalid negative ByteTrack state counter")
-        if int(item["trackId"]) == 0:
-            raise ValueError("ByteTrack track IDs must be positive")
-        x, y, width, height = (float(value) for value in tlwh)
-        track = STrack(np.asarray([x + width / 2.0, y + height / 2.0, width, height,
-                                   float(item["index"])], dtype=np.float32),
-                       float(item["score"]), item["class"])
-        track._tlwh = tlwh
-        track.kalman_filter = tracker.kalman_filter
-        track.mean = mean
-        track.covariance = covariance
-        track.track_id = int(item["trackId"])
-        track.is_activated = bool(item["isActivated"])
-        track.state = int(item["state"])
-        track.score = float(item["score"])
-        track.cls = item["class"]
-        track.idx = item["index"]
-        track.angle = item["angle"]
-        track.start_frame = int(item["startFrame"])
-        track.frame_id = int(item["frameId"])
-        track.time_since_update = int(item["timeSinceUpdate"])
-        track.tracklet_len = int(item["trackletLength"])
-        track.history = OrderedDict()
-        track.features = []
-        track.curr_feature = None
-        return track
-
-    @classmethod
-    def _serialize_byte_tracker(cls, tracker: Any) -> dict[str, Any]:
-        current_frame_id = int(tracker.frame_id)
-        return {
-            "frameId": current_frame_id,
-            "tracked": [cls._serialize_byte_track(item, current_frame_id)
-                        for item in tracker.tracked_stracks],
-            "lost": [cls._serialize_byte_track(item, current_frame_id)
-                     for item in tracker.lost_stracks],
-            "removed": [cls._serialize_byte_track(item, current_frame_id)
-                        for item in tracker.removed_stracks],
-        }
-
-    @classmethod
-    def _restore_byte_tracker_state(cls, tracker: Any, state: dict[str, Any]) -> None:
-        from ultralytics.trackers.basetrack import BaseTrack
-
-        frame_id = int(state["frameId"])
-        if frame_id < 0:
-            raise ValueError("ByteTrack frame ID must be non-negative")
-        restored = {
-            key: [cls._restore_byte_track(tracker, item) for item in state.get(key, [])]
-            for key in ("tracked", "lost", "removed")
-        }
-        if any(len(items) > 5000 for items in restored.values()):
-            raise ValueError("ByteTrack state exceeds bounded track count")
-        tracker.frame_id = frame_id
-        tracker.tracked_stracks = restored["tracked"]
-        tracker.lost_stracks = restored["lost"]
-        tracker.removed_stracks = restored["removed"]
-        maximum_id = max((item.track_id for items in restored.values() for item in items), default=0)
-        BaseTrack._count = max(int(BaseTrack._count), int(maximum_id))
 
     def _restore_tracker_callback(self, camera: str, predictor: Any) -> None:
         if camera in self._byte_track_restored:
@@ -1062,7 +935,7 @@ class TrackingEngine:
         # A separate model instance per camera prevents tracker state from
         # leaking between independent source streams.
         results = model.track(image, persist=True, tracker="bytetrack.yaml",
-                              conf=self.confidence, device="cpu", verbose=False)
+                              conf=self.confidence, device="cpu", max_det=300, verbose=False)
         names = getattr(model, "names", {})
         for result in results:
             boxes = getattr(result, "boxes", None)
@@ -1170,7 +1043,279 @@ def _write_motion_csv(result: Mapping[str, Any], output_dir: Path) -> str | None
     return filename
 
 
+def _unique_person_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate backend context field")
+        result[key] = value
+    return result
+
+
+def _person_model_resource_sample():
+    """Observe this worker after model admission, without changing aggregate samples."""
+    import psutil
+    import time
+
+    try:
+        process = psutil.Process(os.getpid())
+        with process.oneshot():
+            created = process.create_time()
+            rss = process.memory_info().rss
+            threads = process.num_threads()
+        return {"monotonicNs": time.monotonic_ns(), "pid": process.pid,
+                "creationTimeUnixSeconds": created, "rssBytes": rss, "threads": threads}
+    except (OSError, psutil.Error) as error:
+        return {"error": type(error).__name__[:128]}
+
+
+def _run_person_backend(arguments: argparse.Namespace, backend_factory=None) -> int:
+    """Run model computation only; the native caller makes all identity decisions."""
+    from io import BytesIO
+    from PIL import Image
+    from person_profile import load_person_profile
+    from person_reid import BackendFrame, PersonModelBackend
+
+    if (not arguments.reid_model or not arguments.person_window or arguments.state_file
+            or arguments.motion_json or arguments.observation_dir or arguments.observation_manifest):
+        raise ValueError("person backend requires reid-model/person-window and no legacy state/input")
+    profile = load_person_profile(Path(arguments.tracking_profile))
+    with Path(arguments.person_window).open("rb") as stream:
+        payload = stream.read(profile.limits["maxSnapshotBytes"] + 1)
+    if len(payload) > profile.limits["maxSnapshotBytes"]:
+        raise ValueError("person backend context exceeds byte limit")
+    window = json.loads(payload, object_pairs_hook=_unique_person_pairs)
+    expected = {"schema", "runId", "missionId", "windowId", "sequence",
+                "computationDigest", "frames", "previousBackendState"}
+    if (not isinstance(window, dict) or set(window) != expected
+            or window["schema"] != "uav-person-backend-input-v1"):
+        raise ValueError("invalid native person backend window schema")
+    if (window["runId"] != arguments.run_id or window["missionId"] != arguments.mission_id
+            or window["windowId"] != arguments.window_id or window["sequence"] != arguments.sequence
+            or type(window["sequence"]) is not int):
+        raise ValueError("person backend context does not match native invocation")
+    expected_computation = getattr(arguments, "expected_computation_digest", None)
+    if expected_computation is not None and window["computationDigest"] != expected_computation:
+        raise ValueError("person session computation binding mismatch")
+    metadata = window["frames"]
+    if (not isinstance(metadata, list) or len(metadata) != 3
+            or any(not isinstance(item, dict) for item in metadata)
+            or [item.get("cameraId") for item in metadata] != list(CAMERAS)):
+        raise ValueError("person backend requires three canonical camera frames")
+    frames = []
+    for item in metadata:
+        if set(item) != {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration",
+                         "sequence", "commonPtsUs", "inputDigest", "width", "height"}:
+            raise ValueError("invalid native person input frame fields")
+        item = dict(item)
+        expected_width, expected_height = item.pop("width"), item.pop("height")
+        if (type(expected_width) is not int or type(expected_height) is not int
+                or expected_width < 1 or expected_height < 1):
+            raise ValueError("invalid native person input dimensions")
+        path = Path(arguments.input_dir) / (item["cameraId"] + ".jpg")
+        with path.open("rb") as stream:
+            encoded = stream.read(profile.limits["maxFrameBytes"] + 1)
+        if not encoded or len(encoded) > profile.limits["maxFrameBytes"]:
+            raise ValueError("person backend input frame exceeds byte limit")
+        if "sha256:" + hashlib.sha256(encoded).hexdigest() != item["inputDigest"]:
+            raise ValueError("person backend input frame digest mismatch")
+        # Check dimensions from the encoded header before allocating a decoded raster.
+        with Image.open(BytesIO(encoded)) as header:
+            width, height = header.size
+            if (header.format != "JPEG" or (width, height) != (expected_width, expected_height)
+                    or width > profile.limits["maxFrameWidth"]
+                    or height > profile.limits["maxFrameHeight"]):
+                raise ValueError("person backend decoded raster exceeds dimension limit")
+        image = cv2.imdecode(np.frombuffer(encoded, np.uint8), cv2.IMREAD_COLOR)
+        frames.append(BackendFrame(item, image))
+    import time
+    model_init_start_ns = time.monotonic_ns()
+    engine = (PersonModelBackend(profile, Path(arguments.model), Path(arguments.reid_model))
+              if backend_factory is None else
+              backend_factory(profile, Path(arguments.model), Path(arguments.reid_model)))
+    model_init_end_ns = time.monotonic_ns()
+    try:
+        model_resource_sample = _person_model_resource_sample()
+        inference_start_ns = time.monotonic_ns()
+        result = engine.process_window(frames, window["previousBackendState"])
+        inference_end_ns = time.monotonic_ns()
+    finally:
+        if backend_factory is None:
+            engine.close()
+    for field in ("runId", "missionId", "windowId", "sequence", "computationDigest"):
+        result[field] = window[field]
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    if len(encoded) > profile.limits["maxResultBytes"]:
+        raise ValueError("person backend result exceeds byte limit")
+    Path(arguments.output_json).write_bytes(encoded)
+    print(json.dumps({"event": "PERSON_BACKEND_COMPLETED", "windowId": arguments.window_id,
+                      "runId": window["runId"], "missionId": window["missionId"], "pid": os.getpid(),
+                      "sequence": window["sequence"], "sourceEpoch": metadata[0]["sourceEpoch"],
+                      "clockDomain": "CLOCK_MONOTONIC_NS", "modelInitStartNs": model_init_start_ns,
+                      "modelInitEndNs": model_init_end_ns, "inferenceStartNs": inference_start_ns,
+                      "inferenceEndNs": inference_end_ns,
+                      "modelResourceSample": model_resource_sample,
+                      "actualDevice": profile.requested_device}), flush=True)
+    return 0
+
+
+def _run_person_session(arguments: argparse.Namespace) -> int:
+    """Serve bounded local jobs; the native owner alone authorizes and commits each window."""
+    from person_reid import PersonModelBackend
+
+    engine = None
+    identity = None
+
+    def backend(profile, detector, reid):
+        nonlocal engine, identity
+        current = (profile.digest, str(detector), str(reid))
+        if engine is None:
+            engine = PersonModelBackend(profile, detector, reid)
+            identity = current
+        elif current != identity:
+            raise ValueError("person session model/profile identity changed")
+        return engine
+
+    try:
+        while True:
+            raw = sys.stdin.buffer.readline(4097)
+            if not raw:
+                return 0
+            if len(raw) > 4096 or not raw.endswith(b"\n") or b"\0" in raw:
+                raise ValueError("invalid person session control line")
+            message = json.loads(raw, object_pairs_hook=_unique_person_pairs)
+            fields = {"schema", "jobId", "runId", "missionId", "windowId", "sequence",
+                      "computationDigest"}
+            if (not isinstance(message, dict) or set(message) != fields or
+                    message["schema"] != "uav-person-worker-request-v1" or
+                    any(not isinstance(message[k], str) or not message[k]
+                        for k in fields - {"sequence"}) or
+                    type(message["sequence"]) is not int or
+                    not 1 <= message["sequence"] <= 2**64 - 1 or
+                    message["runId"] != arguments.run_id or
+                    message["windowId"] != "window-" + str(message["sequence"] - 1) or
+                    any(re.fullmatch(r"sha256:[0-9a-f]{64}", message[k]) is None
+                        for k in ("jobId", "computationDigest"))):
+                raise ValueError("invalid person session request binding")
+            job = argparse.Namespace(**vars(arguments))
+            job.mission_id = message["missionId"]
+            job.window_id = message["windowId"]
+            job.sequence = message["sequence"]
+            job.expected_computation_digest = message["computationDigest"]
+            if _run_person_backend(job, backend) != 0:
+                raise RuntimeError("person session backend did not complete")
+            print("SPEC219_PERSON_SESSION_DONE jobId=" + message["jobId"], flush=True)
+    finally:
+        if engine is not None:
+            engine.close()
+
+
+def _run_vehicle_backend(arguments: argparse.Namespace, backend_factory=None) -> int:
+    """Return model/stock-tracker evidence; native code owns application decisions."""
+    from io import BytesIO
+    from PIL import Image
+
+    maximum_bytes = 8 * 1024 * 1024
+    if (arguments.tracking_profile or arguments.state_file or arguments.candidate_state_file
+            or arguments.motion_json or arguments.observation_dir or arguments.observation_manifest):
+        raise ValueError("native vehicle backend cannot consume Python application state/input")
+    with Path(arguments.vehicle_window).open("rb") as stream:
+        payload = stream.read(maximum_bytes + 1)
+    if len(payload) > maximum_bytes:
+        raise ValueError("vehicle backend input exceeds byte limit")
+    window = json.loads(payload, object_pairs_hook=_unique_person_pairs)
+    fields = {"schema", "runId", "missionId", "windowId", "sequence", "nativeDecisionDigest",
+              "frames", "previousBackendState"}
+    if (not isinstance(window, dict) or set(window) != fields
+            or window["schema"] != "uav-vehicle-backend-input-v1"
+            or window["runId"] != arguments.run_id or window["missionId"] != arguments.mission_id
+            or window["windowId"] != arguments.window_id or window["sequence"] != arguments.sequence
+            or type(window["sequence"]) is not int
+            or not isinstance(window["nativeDecisionDigest"], str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", window["nativeDecisionDigest"]) is None):
+        raise ValueError("vehicle backend context does not match native invocation")
+    frames = window["frames"]
+    if (not isinstance(frames, list) or len(frames) != len(CAMERAS)
+            or any(not isinstance(frame, dict) for frame in frames)
+            or [frame.get("cameraId") for frame in frames] != list(CAMERAS)):
+        raise ValueError("vehicle backend requires three canonical camera frames")
+    previous = window["previousBackendState"]
+    if (not isinstance(previous, dict) or set(previous) != {"schema", "cameras"}
+            or previous["schema"] != "uav-vehicle-backend-state-v1"
+            or not isinstance(previous["cameras"], dict) or set(previous["cameras"]) != set(CAMERAS)):
+        raise ValueError("invalid native vehicle backend state")
+    decoded = []
+    input_dir = Path(arguments.input_dir).resolve()
+    for frame in frames:
+        if (set(frame) != {"cameraId", "inputDigest", "width", "height"}
+                or any(type(frame[key]) is not int or frame[key] < 0 for key in ("width", "height"))
+                or not isinstance(frame["inputDigest"], str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", frame["inputDigest"]) is None):
+            raise ValueError("invalid native vehicle frame metadata")
+        with (input_dir / (frame["cameraId"] + ".jpg")).open("rb") as stream:
+            image_bytes = stream.read(maximum_bytes + 1)
+        if (not image_bytes or len(image_bytes) > maximum_bytes
+                or "sha256:" + hashlib.sha256(image_bytes).hexdigest() != frame["inputDigest"]):
+            raise ValueError("vehicle image byte limit/digest mismatch")
+        with Image.open(BytesIO(image_bytes)) as header:
+            width, height = header.size
+            if (header.format != "JPEG" or not 0 < width <= 8192 or not 0 < height <= 8192
+                    or width * height > 8192 * 8192
+                    or (frame["width"] and frame["width"] != width)
+                    or (frame["height"] and frame["height"] != height)):
+                raise ValueError("vehicle JPEG dimensions/format mismatch")
+        image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None or image.shape[:2] != (height, width):
+            raise ValueError("vehicle JPEG decode failed")
+        decoded.append((frame["cameraId"], image))
+    model = Path(arguments.model).resolve()
+    engine = (backend_factory or TrackingEngine)(model, confidence=arguments.confidence)
+    try:
+        engine.start({"device": "cpu", "modelPath": str(model)},
+                     [{"cameraId": camera} for camera in CAMERAS])
+        engine._byte_track_state = {camera: state for camera, state in previous["cameras"].items()
+                                    if state is not None}
+        outputs = []
+        cameras = {}
+        for camera, image in decoded:
+            detections = engine._detect(camera, image)
+            if len(detections) > 300:
+                raise ValueError("vehicle candidate detection limit")
+            outputs.append({"cameraId": camera, "width": image.shape[1], "height": image.shape[0],
+                            "detections": [{"box": list(box), "confidence": confidence,
+                                            "class": label, "byteTrackId": tracker_id}
+                                           for box, confidence, label, tracker_id in detections]})
+            model_instance = engine._models.get(camera)
+            trackers = getattr(getattr(model_instance, "predictor", None), "trackers", None)
+            if trackers is not None:
+                if len(trackers) != 1:
+                    raise ValueError("vehicle backend requires one stock tracker per camera")
+                cameras[camera] = engine._serialize_byte_tracker(trackers[0])
+            else:
+                cameras[camera] = None
+        result = {"schema": "uav-vehicle-backend-window-v1", "runId": arguments.run_id,
+                  "missionId": arguments.mission_id, "windowId": arguments.window_id,
+                  "sequence": arguments.sequence, "actualDevice": "cpu", "frames": outputs,
+                  "backendState": {"schema": "uav-vehicle-backend-state-v1", "cameras": cameras}}
+        wire = json.dumps(result, sort_keys=True, allow_nan=False).encode("utf-8")
+        if len(wire) > maximum_bytes:
+            raise ValueError("vehicle backend result exceeds byte limit")
+        output = Path(arguments.output_json)
+        temporary = output.with_name(output.name + ".tmp")
+        temporary.write_bytes(wire)
+        temporary.replace(output)
+        return 0
+    finally:
+        engine.close()
+
+
 def _run_cli(arguments: argparse.Namespace) -> int:
+    if getattr(arguments, "vehicle_window", None):
+        return _run_vehicle_backend(arguments)
+    if getattr(arguments, "person_session", False):
+        return _run_person_session(arguments)
+    if arguments.tracking_profile:
+        return _run_person_backend(arguments)
     input_dir = Path(arguments.input_dir).resolve()
     model = Path(arguments.model).resolve()
     engine = TrackingEngine(model, confidence=arguments.confidence)
@@ -1254,7 +1399,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--observation-dir")
     parser.add_argument("--observation-manifest")
     parser.add_argument("--confidence", type=float, default=0.25)
+    parser.add_argument("--tracking-profile")
+    parser.add_argument("--reid-model")
+    parser.add_argument("--person-window")
+    parser.add_argument("--vehicle-window")
+    parser.add_argument("--person-session", action="store_true")
     args = parser.parse_args(argv)
+    if args.vehicle_window and (args.tracking_profile or args.person_session or args.person_window
+                               or args.reid_model or args.state_file or args.candidate_state_file
+                               or args.motion_json or args.observation_dir or args.observation_manifest
+                               or args.fail_on_motion_unknown):
+        parser.error("vehicle-window requires native-only backend input")
+    if (args.reid_model or args.person_window or args.person_session) and not args.tracking_profile:
+        parser.error("person backend arguments require --tracking-profile")
+    if args.person_session and (not args.reid_model or not args.person_window or args.state_file
+                                or args.motion_json or args.observation_dir
+                                or args.observation_manifest):
+        parser.error("person session requires pinned person inputs and no legacy state/input")
     if args.sequence < 1 or args.pts_us < 0:
         parser.error("sequence must be positive and pts-us non-negative")
     try:

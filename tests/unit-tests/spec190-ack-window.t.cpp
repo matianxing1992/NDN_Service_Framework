@@ -1,3 +1,4 @@
+#include "tests/integration-tests/isolated-test-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -91,6 +92,21 @@ public:
     const auto pending = m_pendingCalls.find(requestId);
     return pending == m_pendingCalls.end() ? 0 : pending->second.ackDecryptsInFlight;
   }
+
+  bool
+  planCommitted(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    return pending != m_pendingCalls.end() && pending->second.collaborationPlanCommitted;
+  }
+
+  std::string
+  committedDigest(const ndn::Name& requestId) const
+  {
+    const auto pending = m_pendingCalls.find(requestId);
+    return pending == m_pendingCalls.end() ? std::string{} :
+      pending->second.collaborationCommittedPlanDigest;
+  }
 };
 
 struct AckWindowFixture
@@ -105,8 +121,10 @@ struct AckWindowFixture
     , service("/spec190/service")
     , userCert(makeRsaIdentity(keyChain, requester))
     , authorityCert(makeRsaIdentity(keyChain, "/spec190/authority"))
-    , user(face, "/spec190/group", userCert, authorityCert,
-           "examples/trust-any.conf")
+    , providerACert(makeRsaIdentity(keyChain, providerA))
+    , providerBCert(makeRsaIdentity(keyChain, providerB))
+    , trust{userCert, authorityCert, providerACert, providerBCert}
+    , user(face, "/spec190/group", userCert, authorityCert, trust.schemaPath())
   {
     installUserPermissions(user, requester, service, {providerA, providerB});
   }
@@ -119,6 +137,9 @@ struct AckWindowFixture
   ndn::Name service;
   ndn::security::Certificate userCert;
   ndn::security::Certificate authorityCert;
+  ndn::security::Certificate providerACert;
+  ndn::security::Certificate providerBCert;
+  IsolatedTestTrust trust;
   AckWindowUser user;
 };
 
@@ -149,7 +170,227 @@ struct ControlledClock
   uint64_t nowUs;
 };
 
+/** A deliberately mechanical policy; admission remains in the production Core. */
+class Spec231PlanSelection final : public ParticipantSelectionPolicy
+{
+public:
+  explicit Spec231PlanSelection(ndn::Name overrideProvider = {})
+    : m_overrideProvider(std::move(overrideProvider))
+  {
+  }
+
+  std::vector<SelectedParticipant>
+  select(const std::vector<AckCandidate>& candidates,
+         const std::vector<CollaborationRoleSpec>& roles) const override
+  {
+    if (candidates.empty() || roles.empty()) return {};
+    const auto& candidate = candidates.front();
+    SelectedParticipant selected;
+    selected.role = roles.front().role;
+    selected.service = roles.front().service;
+    selected.provider = m_overrideProvider.empty() ? candidate.providerName : m_overrideProvider;
+    selected.assignmentPayload = roles.front().assignmentPayload;
+    selected.ack = candidate;
+    return {selected};
+  }
+
+private:
+  ndn::Name m_overrideProvider;
+};
+
+CollaborationPlan
+spec231Plan(const ndn::Name& service, ndn::Name overrideProvider = {})
+{
+  CollaborationPlan plan;
+  plan.ackCollectionTimeMs = 1000;
+  plan.timeoutMs = 5000;
+  CollaborationRoleSpec role;
+  role.role = "worker";
+  role.service = service;
+  role.assignmentPayload = ndn::Buffer{'o', 'p', 'a', 'q', 'u', 'e'};
+  plan.roles.push_back(std::move(role));
+  plan.participantSelector = std::make_shared<Spec231PlanSelection>(std::move(overrideProvider));
+  return plan;
+}
+
+/** Deliver authenticated bytes through OnRequestAck, not an invented ACK evidence record. */
+void
+spec231DeliverAck(AckWindowFixture& fixture, const RequestMessage& request,
+                  const ndn::Name& requestId, const ndn::Name& provider,
+                  bool corruptAuthenticationTag = false)
+{
+  const auto certificate = makeRsaIdentity(fixture.keyChain, provider);
+  const ndn::Buffer key(32, 0x37);
+  fixture.user.cacheHybridReceiveKeyForTest("spec231-ack-key", "spec231-epoch", key);
+  const auto name = makeRequestAckNameV2(provider, fixture.requester, fixture.service, requestId);
+  const auto ack = makeSuccessAckForRequest(request, "spec231-token-" + provider.toUri());
+  const auto plaintext = ack.WireEncode();
+  const auto ad = hybridAssociatedData(name, "ACK", requestId, fixture.service, provider,
+                                       "spec231-ack-key", "spec231-epoch");
+  const auto encrypted = hybridAesGcmEncrypt(key,
+    ndn::span<const uint8_t>(plaintext.data(), plaintext.size()), ad);
+  HybridMessageEnvelope envelope;
+  envelope.setVersion(1);
+  envelope.setAlgorithm("AES-256-GCM");
+  envelope.setMessageType("ACK");
+  envelope.setKeyId("spec231-ack-key");
+  envelope.setEpochId("spec231-epoch");
+  envelope.setNonce(encrypted.nonce);
+  envelope.setCipherText(encrypted.ciphertext);
+  auto tag = encrypted.tag;
+  if (corruptAuthenticationTag) tag.front() ^= 1;
+  envelope.setAuthTag(tag);
+  const auto wire = envelope.WireEncode();
+  ndn::Data packet(name);
+  packet.setContent(ndn::span<const uint8_t>(wire.data(), wire.size()));
+  fixture.keyChain.sign(packet, ndn::security::signingByIdentity(provider));
+  BOOST_REQUIRE(ndn::security::verifySignature(packet, certificate));
+  const std::optional<ndn::Data> signedPacket{packet};
+  const auto prefix = ndn::Name(provider).append("provider").append("0");
+  const ndn::svs::SVSPubSub::SubscriptionData publication{
+    name, ndn::span<const uint8_t>(wire.data(), wire.size()), prefix, 1, signedPacket};
+  fixture.user.ingestAckPublication(publication);
+}
+
 } // namespace
+
+BOOST_FIXTURE_TEST_CASE(Spec231PlanRejectsInvalidCommitWithoutSelection, AckWindowFixture)
+{
+  RequestMessage published;
+  ndn::Name selectionRequest;
+  std::vector<ServiceSelectionMessage> selections;
+  user.setLocalPublicationHandler([&] (const ndn::Name& name, const ndn::Buffer& wire) {
+    BOOST_REQUIRE(name == makeServiceSelectionNameV2(requester, providerA, service,
+                                                     selectionRequest));
+    ServiceSelectionMessage selection;
+    BOOST_REQUIRE(selection.WireDecode(ndn::Block(wire)));
+    BOOST_REQUIRE_EQUAL(selection.getProviderEntries().size(), 1U);
+    const auto& entry = selection.getProviderEntries().front();
+    BOOST_CHECK_EQUAL(entry.providerName, providerA);
+    CollaborationAssignmentEnvelope assignment;
+    BOOST_REQUIRE(decodeCollaborationAssignmentEnvelope(entry.assignmentPayload, assignment));
+    BOOST_CHECK_EQUAL(assignment.role, "worker");
+    BOOST_CHECK(assignment.opaquePayload == spec231Plan(service).roles.front().assignmentPayload);
+    selections.push_back(std::move(selection));
+  });
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) { published = request; });
+  std::optional<CollaborationAckClosure> closure;
+  const auto id = user.BeginCollaborationWithProviders(service, ndn::Buffer{1}, 1000, 5000,
+    [&] (const CollaborationAckClosure& value) { closure = value; },
+    [] (const ResponseMessage&) {}, [] (const ndn::Name&) {}, {},
+    [] (const std::vector<AckCandidate>& candidates) { return !candidates.empty(); },
+    {}, std::nullopt, {}, {}, {}, {providerA});
+  selectionRequest = id;
+  const auto uncommitted = [&] {
+    BOOST_CHECK(!user.planCommitted(id));
+    BOOST_CHECK(user.getSelectedProvider(id).empty());
+    BOOST_CHECK(user.getSelectionPublishedProviders(id).empty());
+    BOOST_CHECK(selections.empty());
+  };
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, "not-closed", spec231Plan(service)),
+                    std::logic_error);
+  uncommitted();
+  spec231DeliverAck(*this, published, id, providerA);
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_REQUIRE(closure.has_value());
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK(closure->candidates.front().authenticationEvidence.trustSchemaValidated);
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, "wrong", spec231Plan(service)),
+                    std::invalid_argument);
+  uncommitted();
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, closure->digest,
+                    spec231Plan(service, providerB)), std::invalid_argument);
+  uncommitted();
+  auto missingRole = spec231Plan(service);
+  auto secondRole = missingRole.roles.front();
+  secondRole.role = "missing";
+  missingRole.roles.push_back(secondRole);
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, closure->digest, missingRole),
+                    std::invalid_argument);
+  uncommitted();
+  auto missingDependency = spec231Plan(service);
+  missingDependency.dependencies.push_back({{"missing"}, {"worker"}, "input", ndn::Name("/input"), true});
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, closure->digest, missingDependency),
+                    std::invalid_argument);
+  uncommitted();
+  auto changedDeadline = spec231Plan(service);
+  ++changedDeadline.timeoutMs;
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, closure->digest, changedDeadline),
+                    std::invalid_argument);
+  uncommitted();
+  BOOST_REQUIRE(user.CommitCollaborationPlan(id, closure->digest, spec231Plan(service)));
+  BOOST_REQUIRE_EQUAL(selections.size(), 1U);
+  BOOST_REQUIRE(user.planCommitted(id));
+  const auto digest = user.committedDigest(id);
+  const auto selected = user.getSelectionPublishedProviders(id);
+  BOOST_REQUIRE_EQUAL(selected.size(), 1U);
+  BOOST_REQUIRE(!digest.empty());
+  BOOST_CHECK_EQUAL(user.getSelectedProvider(id), providerA);
+  BOOST_REQUIRE(user.CommitCollaborationPlan(id, closure->digest, spec231Plan(service)));
+  BOOST_CHECK_EQUAL(selections.size(), 1U);
+  BOOST_CHECK_EQUAL(user.committedDigest(id), digest);
+  BOOST_CHECK(user.getSelectionPublishedProviders(id) == selected);
+  auto conflict = spec231Plan(service);
+  conflict.roles.front().assignmentPayload.push_back('x');
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, closure->digest, conflict), std::logic_error);
+  BOOST_CHECK_EQUAL(selections.size(), 1U);
+  BOOST_CHECK_EQUAL(user.committedDigest(id), digest);
+  BOOST_CHECK(user.CancelCollaboration(id));
+}
+
+BOOST_FIXTURE_TEST_CASE(Spec231ExpiredPlanCannotPublishSelection, AckWindowFixture)
+{
+  ControlledClock clock(1000000);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) { published = request; });
+  std::optional<CollaborationAckClosure> closure;
+  const auto id = user.BeginCollaborationWithProviders(service, ndn::Buffer{1}, 1000, 5000,
+    [&] (const CollaborationAckClosure& value) { closure = value; },
+    [] (const ResponseMessage&) {}, [] (const ndn::Name&) {}, {},
+    [] (const std::vector<AckCandidate>& candidates) { return !candidates.empty(); },
+    {}, std::nullopt, {}, {}, {}, {providerA});
+  spec231DeliverAck(*this, published, id, providerA);
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_REQUIRE(closure.has_value());
+  clock.nowUs = user.requestDeadline(id);
+  BOOST_CHECK_THROW(user.CommitCollaborationPlan(id, closure->digest, spec231Plan(service)),
+                    std::runtime_error);
+  BOOST_CHECK(!user.planCommitted(id));
+  BOOST_CHECK(user.getSelectionPublishedProviders(id).empty());
+  BOOST_CHECK(user.CancelCollaboration(id));
+}
+
+BOOST_FIXTURE_TEST_CASE(Spec231ValidSignatureDoesNotReplaceServicePermission, AckWindowFixture)
+{
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) { published = request; });
+  std::optional<CollaborationAckClosure> closure;
+  const auto id = user.BeginCollaborationWithProviders(service, ndn::Buffer{1}, 1000, 5000,
+    [&] (const CollaborationAckClosure& value) { closure = value; },
+    [] (const ResponseMessage&) {}, [] (const ndn::Name&) {}, {},
+    [] (const std::vector<AckCandidate>& candidates) { return !candidates.empty(); },
+    {}, std::nullopt, {}, {}, {}, {providerA, providerB});
+  // Replace the permission table after solicitation, before admitting either ACK.
+  installUserPermissions(user, requester, service, {providerB}, 2);
+  spec231DeliverAck(*this, published, id, providerA);
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_CHECK(!closure.has_value());
+  BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(id), 0U);
+  BOOST_CHECK(!user.planCommitted(id));
+  BOOST_CHECK(user.getSelectionPublishedProviders(id).empty());
+  spec231DeliverAck(*this, published, id, providerB);
+  pumpFace(face, ndn::time::milliseconds(30));
+  BOOST_REQUIRE(closure.has_value());
+  BOOST_REQUIRE_EQUAL(closure->candidates.size(), 1U);
+  BOOST_CHECK_EQUAL(closure->candidates.front().providerName, providerB);
+  BOOST_CHECK(user.CancelCollaboration(id));
+}
 
 BOOST_FIXTURE_TEST_CASE(UnrequestedEncryptedAckDoesNotConsumeCollectionBudget,
                         AckWindowFixture)
@@ -220,10 +461,13 @@ BOOST_FIXTURE_TEST_CASE(UnrequestedEncryptedAckDoesNotConsumeCollectionBudget,
   deliver(providerB, providerB, certificateB, requestId);
   BOOST_CHECK_EQUAL(user.ackDecryptsInFlight(requestId), 0U);
   pumpFace(face, ndn::time::milliseconds(10));
-  BOOST_CHECK_EQUAL(user.getHybridCryptoCounters().symmetric_decrypt_count.load(), decrypts);
+  // Authorized reader observation has its own bounded lease. It may decrypt
+  // this ACK, but cannot consume the candidate collection lease or close it.
+  BOOST_CHECK_EQUAL(user.getHybridCryptoCounters().symmetric_decrypt_count.load(), decrypts + 1);
   BOOST_CHECK(user.ackWindowBounds(requestId) == bounds);
   BOOST_CHECK(!closure);
   BOOST_CHECK_EQUAL(user.getPendingRequestAckCount(requestId), 0U);
+  BOOST_CHECK(user.getSelectionPublishedProviders(requestId).empty());
   deliver(providerA, providerA, certificateA, requestId);
   pumpFace(face, ndn::time::milliseconds(10));
   BOOST_REQUIRE(closure);
@@ -633,6 +877,10 @@ BOOST_FIXTURE_TEST_CASE(DecryptionFailureCannotBecomeAckCandidate,
                         AckWindowFixture)
 {
   const ndn::Buffer payload(reinterpret_cast<const uint8_t*>("payload"), 7);
+  RequestMessage published;
+  user.setRequestPublisher(
+    [&] (const ndn::Name&, const ndn::Name&, const std::vector<ndn::Name>&,
+         const ndn::Name&, const RequestMessage& request, size_t) { published = request; });
   std::optional<CollaborationAckClosure> closure;
   const auto requestId = user.BeginCollaboration(
     service, payload, 20, 1000,
@@ -641,17 +889,22 @@ BOOST_FIXTURE_TEST_CASE(DecryptionFailureCannotBecomeAckCandidate,
     [] (const ndn::Name&) {});
   BOOST_REQUIRE(!requestId.empty());
 
-  // The publication reaches the production ACK decrypt boundary, but its
-  // plaintext RequestAckMessage wire is intentionally not a hybrid envelope.
-  // Decrypt failure must not create an authenticated candidate.
-  auto malformedEnvelope = makeSuccessAck();
-  user.deliverPlaintextAckPublicationForTest(
-    providerA, service, requestId, malformedEnvelope);
-  pumpFace(face, ndn::time::milliseconds(60));
+  // The signature and canonical actor are valid. Only GCM authentication is
+  // invalid, so the failure counter proves arrival beyond the ingress filter.
+  const auto failures = user.getHybridCryptoCounters().auth_decrypt_failure_count.load();
+  const auto successes = user.getHybridCryptoCounters().symmetric_decrypt_count.load();
+  spec231DeliverAck(*this, published, requestId, providerA, true);
+  for (size_t attempt = 0; attempt < 200 && !closure; ++attempt) {
+    pumpFace(face, ndn::time::milliseconds(5));
+  }
+  BOOST_CHECK_EQUAL(user.getHybridCryptoCounters().auth_decrypt_failure_count.load(), failures + 1);
+  BOOST_CHECK_EQUAL(user.getHybridCryptoCounters().symmetric_decrypt_count.load(), successes);
+  BOOST_CHECK_EQUAL(user.ackDecryptsInFlight(requestId), 0U);
 
   BOOST_REQUIRE(closure.has_value());
   BOOST_CHECK(closure->candidates.empty());
   BOOST_CHECK(user.getSelectedProvider(requestId).empty());
+  BOOST_CHECK(user.getSelectionPublishedProviders(requestId).empty());
   BOOST_CHECK(user.CancelCollaboration(requestId));
 }
 

@@ -1,6 +1,6 @@
 # -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
 
-from waflib import Context, Logs, Utils, Task, TaskGen
+from waflib import Context, Logs, Utils, TaskGen
 import hashlib
 import json
 import os
@@ -10,41 +10,6 @@ import subprocess
 VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
 GIT_TAG_PREFIX = 'ndn-service-framework-'
-
-# Large translation units consumed several GiB each in sanitizer builds.
-# Give them an exclusive compilation slot while allowing the requested
-# parallelism for smaller units, bounded to six compiler processes.
-# A waiting large unit drains existing work
-# before it starts; this also avoids starving it behind smaller tasks.
-class _CompileMemorySlots(Task.TaskSemaphore):
-    def is_locked(self):
-        large = lambda task: getattr(task, '_ndnsf_large_compile', False)
-        return (super().is_locked() or any(map(large, self.locking)) or
-                (bool(self.locking) and any(map(large, self.waiting))))
-
-    def acquire(self, task):
-        if getattr(task, '_ndnsf_large_compile', False) and self.locking:
-            raise IndexError('large compilation requires an exclusive slot')
-        super().acquire(task)
-
-
-@TaskGen.feature('cxx')
-@TaskGen.after_method('process_source')
-def limit_compile_memory_concurrency(generator):
-    compile_slots = getattr(generator.bld, '_ndnsf_compile_memory_slots', None)
-    if compile_slots is None:
-        compile_slots = _CompileMemorySlots(min(generator.bld.jobs, 6))
-        generator.bld._ndnsf_compile_memory_slots = compile_slots
-    for task in getattr(generator, 'compiled_tasks', []):
-        if task.inputs:
-            # Source size is a conservative scheduling hint, not a memory
-            # guarantee; the launcher supplies the kernel-enforced limit.
-            try:
-                task._ndnsf_large_compile = os.path.getsize(task.inputs[0].abspath()) >= 128 * 1024
-            except OSError:
-                # Generated sources may not exist until their producer runs.
-                task._ndnsf_large_compile = True
-            task.semaphore = compile_slots
 
 # Host builds consume one installed dependency closure. The versioned ONNX
 # Runtime and full-protobuf ONNX SDKs use declared roots under /opt; other host

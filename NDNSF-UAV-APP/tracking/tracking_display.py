@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import io
 from dataclasses import asdict, dataclass, field
 import json
 import math
 import os
 from pathlib import Path
 import queue
+import re
+import stat
 import socket
 import threading
 import time
@@ -60,6 +64,11 @@ def _display_value(value: Any, precision: int) -> str:
 
 def _track_metric_label(track: dict[str, Any]) -> str:
     """Return compact per-track values for the dedicated display table."""
+    if track.get("class") == "person":
+        local_id = track.get("localId")
+        global_id = track.get("globalId")
+        distance = _display_value(track.get("appearanceDistance"), 3)
+        return f"G{global_id if global_id is not None else '?'} / L{local_id if local_id is not None else '?'}  cosine={distance}"
     local_id = track.get("localId", "?")
     global_id = track.get("globalId", "?")
     measurement = track.get("measurement")
@@ -79,6 +88,9 @@ def _track_metric_label(track: dict[str, Any]) -> str:
 
 def _track_status_label(track: dict[str, Any]) -> str:
     """Keep quality and the primary cause ahead of the numeric metric line."""
+    if track.get("class") == "person":
+        status = str(track.get("associationStatus", "UNTRACKED"))
+        return "UNASSOCIATED" if track.get("globalId") is None else status
     measurement = track.get("measurement")
     if not isinstance(measurement, dict) or measurement.get("schema") != "uav-motion-result-v2":
         return "legacy estimate / unqualified"
@@ -126,6 +138,11 @@ def _fit_text(label: str, max_width: int, measure_width: Callable[[str], int]) -
 
 
 def _track_color(track: dict[str, Any]) -> tuple[int, int, int]:
+    if track.get("class") == "person":
+        global_id = track.get("globalId")
+        if type(global_id) is not int or global_id < 1:
+            return (150, 150, 150)
+        return TRACK_COLORS[(global_id - 1) % len(TRACK_COLORS)]
     try:
         local_id = int(track.get("localId", 1))
     except (TypeError, ValueError):
@@ -174,6 +191,7 @@ class DisplayFrame:
     time_uncertainty_us: int | None = None
     anchor_approximation: bool | None = None
     age_clock: dict[str, Any] | None = None
+    person_display: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "DisplayFrame":
@@ -224,6 +242,215 @@ class DisplayFrame:
                 "anchorApproximation": self.anchor_approximation, "ageClock": self.age_clock}
 
 
+class PersonPresentationReader:
+    """Read only GS-owned projections of already validated native results.
+
+    This adapter never associates people or reads a worker/source directory. All
+    three frames are checked before the caller can submit any of them.
+    """
+
+    def __init__(self, context_path: Path) -> None:
+        self.root = context_path.parent.resolve(strict=True)
+        self.context = self._json(self._read(context_path, 65536))
+        c = self.context
+        if c.get("schema") != "uav-person-display-context-v1":
+            raise ValueError("invalid person display context")
+        for key in ("runId", "missionId", "windowPrefix"):
+            if not isinstance(c.get(key), str) or not 1 <= len(c[key]) <= 256:
+                raise ValueError("invalid person display identity")
+        for key in ("profileDigest", "computationDigest"):
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(c.get(key))):
+                raise ValueError("invalid person display digest")
+        if c.get("requestedDevice") not in {"cpu", "cuda:0"}:
+            raise ValueError("invalid person display device")
+        for key, limit in (("windowCount", 600), ("maxFrameBytes", 4 * 1024 * 1024),
+                           ("maxFrameWidth", 4096), ("maxFrameHeight", 4096),
+                           ("maxPersonsPerFrame", 256)):
+            self._uint(c.get(key), limit, minimum=1)
+        generations = c.get("generations")
+        if not isinstance(generations, list) or not 1 <= len(generations) <= c["windowCount"]:
+            raise ValueError("invalid display source generations")
+        previous = -1
+        for generation in generations:
+            first = self._uint(generation["firstWindowIndex"], c["windowCount"] - 1)
+            self._uint(generation["sourceEpoch"], 2**64 - 1, minimum=1)
+            sources = generation["sourceIds"]
+            if (first <= previous or (previous == -1 and first != 0) or
+                    not isinstance(sources, list) or len(sources) != 3 or
+                    any(not isinstance(x, str) or not 1 <= len(x) <= 256 for x in sources)):
+                raise ValueError("invalid display source generation")
+            previous = first
+
+    @staticmethod
+    def _uint(value: Any, maximum: int, minimum: int = 0) -> int:
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError("display integer outside bound")
+        return value
+
+    @staticmethod
+    def _json(payload: bytes) -> dict[str, Any]:
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate display JSON key")
+                value[key] = item
+            return value
+        def nonfinite(value):
+            raise ValueError("nonfinite display JSON number")
+        value = json.loads(payload, object_pairs_hook=unique, parse_constant=nonfinite)
+        if not isinstance(value, dict):
+            raise ValueError("display JSON must be an object")
+        return value
+
+    def _read(self, path: Path, bound: int) -> bytes:
+        path = Path(os.path.abspath(path))
+        relative = path.relative_to(self.root)
+        current = self.root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError("display artifacts cannot be symlinks")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= bound:
+                raise ValueError("display artifact size/type outside bound")
+            payload = stream.read(bound + 1)
+        if len(payload) != info.st_size or len(payload) > bound:
+            raise ValueError("display artifact changed while reading")
+        return payload
+
+    def _scope(self, value: dict[str, Any]) -> None:
+        for key in ("runId", "missionId", "profileDigest", "computationDigest"):
+            if value.get(key) != self.context[key]:
+                raise ValueError("person display scope mismatch: " + key)
+
+    def _window(self, name: Any) -> int:
+        prefix = self.context["windowPrefix"] + "-"
+        suffix = name[len(prefix):] if isinstance(name, str) and name.startswith(prefix) else ""
+        if not re.fullmatch(r"0|[1-9][0-9]{0,3}", suffix):
+            raise ValueError("invalid person display window")
+        return self._uint(int(suffix), self.context["windowCount"] - 1)
+
+    def load(self, path: Path) -> tuple[tuple[DisplayFrame, ...], dict[str, Any] | None]:
+        payload = self._read(path, MAX_MESSAGE_BYTES)
+        value = self._json(payload)
+        self._scope(value)
+        if value.get("schema") != "uav-person-display-v1":
+            raise ValueError("invalid person projection schema")
+        failure = None
+        last_good_window = None
+        if value.get("state") == "failure":
+            window = self._window(value.get("windowId"))
+            reason = value.get("reason")
+            if not isinstance(reason, str) or len(reason.encode()) > 4096:
+                raise ValueError("invalid display failure reason")
+            failure = {"window": window, "reason": reason,
+                       "runId": self.context["runId"], "missionId": self.context["missionId"],
+                       "projectionDigest": "sha256:" + hashlib.sha256(payload).hexdigest()}
+            last_good = value.get("lastGoodPresentation")
+            if last_good in (None, ""):
+                return (), failure
+            match = re.fullmatch(r"window-(0|[1-9][0-9]{0,3})/presentation.json", str(last_good))
+            if not match or int(match[1]) > window:
+                raise ValueError("invalid last-good person presentation")
+            last_good_window = int(match[1])
+            value = self._json(self._read(self.root / last_good, MAX_MESSAGE_BYTES))
+            self._scope(value)
+        if value.get("schema") != "uav-person-display-v1" or value.get("state") != "ready":
+            raise ValueError("person projection is not ready")
+        encoded = value.get("resultJson")
+        if not isinstance(encoded, str):
+            raise ValueError("person projection missing native result")
+        if "sha256:" + hashlib.sha256(encoded.encode()).hexdigest() != value.get("resultDigest"):
+            raise ValueError("person result digest mismatch")
+        result = self._json(encoded.encode())
+        self._scope(result)
+        if (result.get("schema") != "uav-person-tracking-result-v1" or
+                result.get("trackingMode") != "indoor-person-reid" or result.get("terminal") is not True):
+            raise ValueError("projection does not contain a terminal person result")
+        window = self._window(result.get("windowId"))
+        if failure is not None and window != last_good_window:
+            raise ValueError("last-good result window mismatch")
+        sequence = self._uint(result.get("sequence"), 2**64 - 1, minimum=1)
+        if sequence != window + 1:
+            raise ValueError("person display window/sequence mismatch")
+        generation = next(g for g in reversed(self.context["generations"])
+                          if g["firstWindowIndex"] <= window)
+        device_keys = ("requestedDevice", "actualDetectorDevice", "detectorModelDevice",
+                       "detectorInputDevice", "reidModelDevice")
+        if any(result.get(key) != self.context["requestedDevice"] for key in device_keys):
+            raise ValueError("person display device mismatch")
+        batches = self._uint(result.get("reidInferenceBatches"),
+                             3 * self.context["maxPersonsPerFrame"])
+        reid_device = self.context["requestedDevice"] if batches else "not-run"
+        if any(result.get(key) != reid_device for key in ("actualReidDevice", "reidInputDevice")):
+            raise ValueError("person display ReID execution device mismatch")
+        elapsed = self._uint(value.get("gsElapsedUs"), 2**63 - 1)
+        origin = self._uint(value.get("mediaOriginUs"), 2**63 - 1)
+        if value.get("timeBasis") != "gs-bootstrap-elapsed-vs-first-common-media-pts":
+            raise ValueError("unknown person replay time basis")
+        frames, images = result.get("frames"), value.get("images")
+        if (not isinstance(frames, list) or len(frames) != 3 or
+                not isinstance(images, list) or len(images) != 3):
+            raise ValueError("person display requires three frames and images")
+        pending = []
+        for index, camera in enumerate(CAMERAS):
+            item, image = frames[index], images[index]
+            if (item.get("cameraId") != camera or image.get("cameraId") != camera or
+                    item.get("sourceId") != generation["sourceIds"][index] or
+                    item.get("sourceEpoch") != generation["sourceEpoch"] or
+                    item.get("sequence") != sequence):
+                raise ValueError("person display source identity mismatch")
+            expected_path = f"window-{window}/{camera}.jpg"
+            if image.get("path") != expected_path:
+                raise ValueError("person image path outside expected window")
+            payload = self._read(self.root / expected_path, self.context["maxFrameBytes"])
+            digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+            if digest != image.get("inputDigest") or digest != item.get("inputDigest"):
+                raise ValueError("person image digest mismatch")
+            reference = item["observation"]["imageRef"]
+            if reference.get("digest") != digest:
+                raise ValueError("person original image reference mismatch")
+            from PIL import Image
+            with Image.open(io.BytesIO(payload)) as jpeg:
+                width, height = jpeg.size
+                if (jpeg.format != "JPEG" or width != item.get("width") or height != item.get("height") or
+                        not 1 <= width <= self.context["maxFrameWidth"] or
+                        not 1 <= height <= self.context["maxFrameHeight"]):
+                    raise ValueError("person JPEG dimensions/encoding mismatch")
+                jpeg.verify()
+            tracks = item.get("tracks")
+            if not isinstance(tracks, list) or len(tracks) > self.context["maxPersonsPerFrame"]:
+                raise ValueError("person display track bound exceeded")
+            for track in tracks:
+                if track.get("class") != "person":
+                    raise ValueError("non-person track in person display")
+                for key in ("localId", "globalId"):
+                    if track.get(key) is not None:
+                        self._uint(track[key], 2**64 - 1, minimum=1)
+                box = track.get("box")
+                if (not isinstance(box, list) or len(box) != 4 or
+                        any(type(x) not in (int, float) or not math.isfinite(x) for x in box) or
+                        not 0 <= box[0] < box[2] <= width or not 0 <= box[1] < box[3] <= height):
+                    raise ValueError("person display box outside image")
+            pts = self._uint(item.get("commonPtsUs"), 2**63 - 1)
+            if pts < origin:
+                raise ValueError("person media position precedes origin")
+            frame = DisplayFrame(self.context["runId"], self.context["missionId"],
+                                 generation["sourceEpoch"], window, camera, sequence, pts, payload,
+                                 tuple(tracks), provenance="native person result",
+                                 geometry_validity="unknown", person_display={
+                                     "device": result["actualDetectorDevice"],
+                                     "reidDevice": result["actualReidDevice"],
+                                     "replayLagUs": max(0, elapsed - (pts - origin)),
+                                     "imageRef": reference, "resultDigest": value["resultDigest"]})
+            frame.validate()
+            pending.append(frame)
+        return tuple(pending), failure
+
+
 class DisplayMailbox:
     """One bounded latest-frame slot per camera; presentation drops are counted."""
 
@@ -270,10 +497,45 @@ class ComputeRenderer:
         self._ages: dict[str, AgeEstimate] = {}
         self._bases: dict[str, tuple[Any, ...]] = {}
         self._view_stamps: dict[str, tuple[Any, ...]] = {}
+        self._person_failure: dict[str, Any] | None = None
+        self._person_failure_presented: set[str] = set()
+        self._person_received_us: dict[str, int] = {}
+
+    def person_state(self, frame: DisplayFrame, now: int) -> dict[str, Any] | None:
+        if frame.person_display is None:
+            return None
+        since = max(0, now - self._person_received_us.get(frame.camera_id, now))
+        return {"replayLagUs": frame.person_display["replayLagUs"] + since,
+                "freshness": "stale" if since >= self.hold_seconds * 1e6 else "current",
+                "failure": self._person_failure}
+
+    def set_person_failure(self, failure: dict[str, Any] | None) -> None:
+        self._person_failure = failure
+        self._person_failure_presented.clear()
+        self.status["personFailure"] = failure
+        self._view_stamps.clear()
+        if failure is not None:
+            print(json.dumps({"event": "DISPLAY_PERSON_FAILURE", **failure}), flush=True)
+
+    def _emit_person_failure_presented(self, cameras: Iterable[str]) -> None:
+        if self._person_failure is None:
+            return
+        for camera in cameras:
+            if camera in self._person_failure_presented:
+                continue
+            print(json.dumps({**self._person_failure,
+                              "event": ("DISPLAY_PERSON_FAILURE_SHOWN" if self.mode == "windows"
+                                        else "DISPLAY_PERSON_FAILURE_OBSERVED"),
+                              "mode": self.mode, "cameraId": camera,
+                              "clockDomain": "CLOCK_MONOTONIC_NS",
+                              "monotonicNs": time.monotonic_ns()}), flush=True)
+            self._person_failure_presented.add(camera)
 
     def _emit_frame_shown(self, frame: DisplayFrame) -> None:
         print(json.dumps({
             "event": "DISPLAY_FRAME_SHOWN",
+            **({"clockDomain": "CLOCK_MONOTONIC_NS", "monotonicNs": time.monotonic_ns()}
+               if frame.person_display is not None else {}),
             "cameraId": frame.camera_id,
             "runId": frame.run_id,
             "sessionId": frame.session_id,
@@ -291,7 +553,11 @@ class ComputeRenderer:
             "sourceIdentity": frame.source_identity,
             "observationRef": frame.observation_ref,
             "anchorApproximation": frame.anchor_approximation,
-            "speedDisplayUnit": "km/h",
+            "speedDisplayUnit": None if frame.person_display is not None else "km/h",
+            "personDisplay": frame.person_display,
+            "personState": self.person_state(frame, self._steady_now_us()),
+            "globalIds": [track.get("globalId") for track in frame.tracks]
+                         if frame.person_display is not None else None,
             "captureAge": asdict(self._ages.get(frame.camera_id, AgeEstimate())),
         }, sort_keys=True), flush=True)
 
@@ -347,20 +613,35 @@ class ComputeRenderer:
                 frame = self.mailbox.get_latest(camera)
                 if frame is not None:
                     self._last[camera] = frame
+                    self._person_received_us[camera] = now
                     self._update_age(frame, samples, now)
                     self.status["shownFrames"] += 1
                     self._emit_frame_shown(frame)
                 elif camera in self._last:
                     self._update_age(self._last[camera], samples, now)
+            self._emit_person_failure_presented(CAMERAS)
             return True
         import cv2
         np = __import__("numpy")
         presented = []
+        failure_presented = []
         for camera in CAMERAS:
             new_frame = self.mailbox.get_latest(camera)
             frame = new_frame or self._last.get(camera)
+            if frame is None and self._person_failure is not None:
+                canvas = np.zeros((DISPLAY_WINDOW_SIZE[1], DISPLAY_WINDOW_SIZE[0], 3), dtype="uint8")
+                for row, label in enumerate((camera, "FAILED: no valid frame received",
+                                             f"window {self._person_failure['window']}",
+                                             self._person_failure["reason"][:75])):
+                    cv2.putText(canvas, label, (8, 30 + row * 25), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.45, (60, 80, 255), 1, cv2.LINE_AA)
+                cv2.imshow(f"{camera} — Tracking", canvas)
+                failure_presented.append(camera)
+                continue
             if frame is not None:
                 self._last[camera] = frame
+                if new_frame is not None:
+                    self._person_received_us[camera] = now
                 self._update_age(frame, samples, now)
                 window_width, window_height = DISPLAY_WINDOW_SIZE
                 banner_height = 94
@@ -371,7 +652,8 @@ class ComputeRenderer:
                 page_capacity = rows_per_column * 2
                 page_count = max(1, (len(frame.tracks) + page_capacity - 1) // page_capacity)
                 page_index = int(time.monotonic() / METRICS_PAGE_SECONDS) % page_count
-                view_stamp = (self._ages[camera].label(), page_index)
+                view_stamp = (self._ages[camera].label(), page_index, str(self._person_failure),
+                              now // 1_000_000 if frame.person_display is not None else 0)
                 if new_frame is None and self._view_stamps.get(camera) == view_stamp:
                     continue
                 if new_frame is not None or camera not in self._bases:
@@ -411,6 +693,21 @@ class ComputeRenderer:
                                 if frame.anchor_approximation is True else "ground anchor: unqualified")
                 cv2.putText(canvas, anchor_label, (8, 79), cv2.FONT_HERSHEY_SIMPLEX,
                             0.36, (180, 190, 190), 1, cv2.LINE_AA)
+                if frame.person_display is not None:
+                    cv2.rectangle(canvas, (0, 0), (window_width - 1, banner_height - 1),
+                                  (24, 24, 24), cv2.FILLED)
+                    failure = self._person_failure
+                    person_state = self.person_state(frame, now)
+                    labels = (
+                        f"{camera}  window={frame.window}  commonPTS={frame.pts_us / 1e6:.3f}s",
+                        f"YOLO: {frame.person_display['device']} | OSNet: {frame.person_display['reidDevice']}",
+                        (f"FAILED window {failure['window']}; LAST GOOD window {frame.window}"
+                         if failure else f"{person_state['freshness'].upper()} replay lag: {person_state['replayLagUs'] / 1e6:.3f}s (GS elapsed vs media)"),
+                        (failure['reason'][:85] if failure else "Geometry UNKNOWN: motion metrics unavailable"))
+                    for row, label in enumerate(labels):
+                        cv2.putText(canvas, label, (8, 20 + row * 20), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.36, (60, 80, 255) if failure or person_state["freshness"] == "stale"
+                                    else (210, 230, 230), 1, cv2.LINE_AA)
                 for track in frame.tracks:
                     box = track.get("box")
                     if isinstance(box, (list, tuple)) and len(box) == 4:
@@ -421,7 +718,8 @@ class ComputeRenderer:
                         y2 = int(round(y2 * scale)) + offset_y
                         color = _track_color(track)
                         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-                        badge = f"L{track.get('localId', '?')}"
+                        badge = (f"G{track.get('globalId') or '?'} / L{track.get('localId') or '?'}"
+                                 if frame.person_display is not None else f"L{track.get('localId', '?')}")
                         badge_width, badge_height = cv2.getTextSize(
                             badge, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)[0]
                         badge_x = min(max(0, x1), window_width - badge_width - 6)
@@ -457,10 +755,12 @@ class ComputeRenderer:
                               (18, 18, 18), cv2.FILLED)
                 page_tracks = ordered_tracks[page_index * page_capacity:(page_index + 1) * page_capacity]
                 cv2.putText(canvas,
-                            f"PER-TRACK METRICS  page {page_index + 1}/{page_count}  (auto every 2s)",
+                            f"{'PERSON ASSOCIATIONS' if frame.person_display is not None else 'PER-TRACK METRICS'}  page {page_index + 1}/{page_count}  (auto every 2s)",
                             (8, panel_top + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                             (255, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(canvas, "Quality / reason; then ID, km/h, degT, camera-center range H/S m",
+                cv2.putText(canvas, ("Association status; global/local ID and cosine distance"
+                                     if frame.person_display is not None else
+                                     "Quality / reason; then ID, km/h, degT, camera-center range H/S m"),
                             (8, panel_top + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.30,
                             (170, 190, 190), 1, cv2.LINE_AA)
                 column_width = window_width // 2
@@ -481,11 +781,14 @@ class ComputeRenderer:
                         cv2.putText(canvas, label, (base_x + 13, baseline + line * 17),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.33, (235, 235, 235), 1, cv2.LINE_AA)
                 cv2.imshow(f"{camera} — Tracking", canvas)
+                if self._person_failure is not None:
+                    failure_presented.append(camera)
                 self._view_stamps[camera] = view_stamp
                 if new_frame is not None:
                     presented.append(frame)
         key = cv2.waitKey(wait_ms) & 0xff
         # GUI work is flushed by waitKey; observers may now capture the frame.
+        self._emit_person_failure_presented(failure_presented)
         for frame in presented:
             self.status["shownFrames"] += 1
             self._emit_frame_shown(frame)
@@ -507,7 +810,16 @@ def serve(socket_path: Path, mode: str, hold_seconds: float,
           replay_json: Path | None = None, replay_dir: Path | None = None,
           fault: str = "none", playback_clock_manifest: Path | None = None,
           playback_clock_input_dir: Path | None = None,
-          observation_profile: Path | None = None, source_generations: Path | None = None) -> int:
+          observation_profile: Path | None = None, source_generations: Path | None = None,
+          person_display_context: Path | None = None) -> int:
+    person_reader = None
+    if person_display_context is not None:
+        if replay_json is None or any(value is not None for value in (
+                observation_profile, source_generations, playback_clock_manifest, playback_clock_input_dir)):
+            raise ValueError("person display requires replay JSON and its own explicit GS context")
+        person_reader = PersonPresentationReader(person_display_context)
+        if replay_json.absolute() != person_reader.root / "latest.json":
+            raise ValueError("person display must read the GS latest.json")
     if (playback_clock_manifest is None) != (playback_clock_input_dir is None):
         raise ValueError("playback clock requires both manifest and input directory")
     if (observation_profile is None) != (source_generations is None):
@@ -569,6 +881,15 @@ def serve(socket_path: Path, mode: str, hold_seconds: float,
         stat = replay_json.stat()
         stamp = (stat.st_mtime_ns, stat.st_size)
         if replay_stamp == stamp:
+            return
+        if person_reader is not None:
+            pending, failure = person_reader.load(replay_json)
+            renderer.set_person_failure(failure)
+            for frame in pending:
+                renderer.submit(frame)
+            replay_stamp = stamp
+            print(json.dumps({"event": "DISPLAY_FRAMES_READY", "frames": len(pending),
+                              "schema": "uav-person-display-v1"}), flush=True)
             return
         value = json.loads(replay_json.read_text(encoding="utf-8"))
         frames = value.get("frames")
@@ -699,6 +1020,11 @@ def serve(socket_path: Path, mode: str, hold_seconds: float,
                         if message.get("event") == "STOP":
                             stop = True
                             break
+                        if person_reader is not None:
+                            print(json.dumps({"event": "DISPLAY_FRAME_IGNORED",
+                                              "reason": "person mode accepts only GS projections"}),
+                                  flush=True)
+                            continue
                         frame = DisplayFrame.from_dict(message)
                         if not _matches_observation_scope(frame.camera_id, frame.window, frame.sequence,
                                                           frame.source_identity, profile, generations):
@@ -737,6 +1063,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--playback-clock-input-dir", type=Path)
     parser.add_argument("--observation-profile", type=Path)
     parser.add_argument("--source-generations", type=Path)
+    parser.add_argument("--person-display-context", type=Path)
     parser.add_argument("--fault", default="none")
     args = parser.parse_args(argv)
     if args.socket is None:
@@ -749,7 +1076,7 @@ def main(argv: list[str] | None = None) -> int:
         return serve(args.socket, args.mode, args.display_hold_seconds,
                      args.replay_json, args.replay_dir, args.fault,
                      args.playback_clock_manifest, args.playback_clock_input_dir,
-                     args.observation_profile, args.source_generations)
+                     args.observation_profile, args.source_generations, args.person_display_context)
     except KeyboardInterrupt:
         # The launcher deliberately stops the compute-local renderer after a
         # terminal result.  Treat that bounded shutdown as a clean exit after

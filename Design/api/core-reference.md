@@ -49281,3 +49281,26 @@ public-by-name / declared-interface；[源码](../../pythonWrapper/ndnsf/tracing
 ```python
 def write_jaeger(self, path: str | Path) -> None:
 ```
+
+## Spec226 Core-owned dependency transport (current binding)
+
+`DependencyRedundancy` and `DependencyTransportOptions` are native exports from
+`ndnsf`. `DependencyTransportOptions()` defaults to `DependencyRedundancy.NONE`.
+The optional `dependency_transport` argument is accepted by
+`ServiceUser.request_collaboration`, `ServiceUser.request_collaboration_async`,
+and `CollaborationInvocation.commit_plan`; omitting it preserves legacy calls.
+Explicit `XOR` is negotiated as a plan option. It does not move fetching,
+bounded retransmission, authorized locator switching, or recovery into Python.
+After recovery, Core revalidates the original Data name, Producer signature,
+current permission, and scope before admission. A compatible old extension keeps
+legacy calls; if it lacks this option, an explicit request fails closed.
+
+```python
+from ndnsf import DependencyRedundancy, DependencyTransportOptions
+
+transport = DependencyTransportOptions()
+transport.redundancy = DependencyRedundancy.XOR
+response = user.request_collaboration(
+    service, payload, roles=roles, key_scopes=key_scopes,
+    dependencies=dependencies, dependency_transport=transport)
+```

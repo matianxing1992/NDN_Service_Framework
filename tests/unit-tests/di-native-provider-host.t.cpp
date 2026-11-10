@@ -25,6 +25,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
+
+#include <ndn-cxx/util/signal/scoped-connection.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -143,17 +146,24 @@ public:
                   std::future_status::ready);
   }
 
+  bool postHandlerForTest(std::function<void()> task)
+  {
+    return m_handlerPool.post(std::move(task));
+  }
+
   void dispatchCollabForTest(const ndn::Name& requesterName,
                              const ndn::Name& requestId,
                              const ndn::Name& serviceName,
                              const ndn::Name& requestPayload,
                              const std::string& role,
-                             const std::string& selectionDigest)
+                             const std::string& selectionDigest,
+                             const ndn::Buffer& assignmentPayload = {})
   {
     auto request = makeRequestMessageWithUserToken(requestPayload.toUri());
     ServiceProvider::CollaborationAssignment assignment;
     assignment.role = role;
     assignment.service = serviceName;
+    assignment.assignmentPayload = assignmentPayload;
     BOOST_REQUIRE(dispatchCollaborationExecutionAsync(
       requesterName, identity, serviceName, requestId,
       request, std::move(assignment), selectionDigest));
@@ -1746,5 +1756,346 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostFixedLeaseEntryRoutesRealDispatch)
 }
 
 BOOST_AUTO_TEST_SUITE_END() // Spec182ProviderHost
+
+namespace {
+
+struct Spec231ScopedFixture
+{
+  explicit Spec231ScopedFixture(const std::string& suffix)
+    : keyChain("pib-memory:spec231-scoped-" + suffix,
+               "tpm-memory:spec231-scoped-" + suffix)
+    , face(keyChain)
+    , providerName(HOST_PROVIDER_NAME)
+    , requesterName("/spec231/scoped/user")
+    , peerName("/spec231/scoped/peer")
+    , serviceName("/Inference/Spec231Scoped/" + suffix)
+    , providerCert(makeRsaIdentity(keyChain, providerName))
+    , authorityCert(makeRsaIdentity(keyChain, ndn::Name("/spec231/scoped/authority")))
+    , peerCert(makeRsaIdentity(keyChain, peerName))
+    , requesterCert(makeRsaIdentity(keyChain, requesterName))
+    , trust{providerCert, authorityCert, peerCert, requesterCert}
+    , provider(std::make_shared<RegistrationCollabProvider>(
+        face, ndn::Name("/spec231/scoped/group"), providerCert, authorityCert,
+        trust.schemaPath()))
+    , releaseFuture(releasePromise.get_future().share())
+  {
+    auto permissions = makePermissionResponse(
+      providerName, tlv::ProviderPermission, providerName, serviceName);
+    PermissionEntry role;
+    role.setProviderName(providerName.toUri());
+    role.setServiceName(ndn::Name(serviceName).append("ROLE").append("Backbone").toUri());
+    role.setVersion(1);
+    role.setTtl(0);
+    role.setToken("");
+    permissions.addEntry(role);
+    provider->applyPermissionResponse(permissions);
+    provider->setHandlerThreads(1);
+  }
+
+  ~Spec231ScopedFixture()
+  {
+    cleanup();
+  }
+
+  void cleanup()
+  {
+    if (cleaned) {
+      return;
+    }
+    cleaned = true;
+    if (closeRegistration) {
+      closeRegistration();
+    }
+    release();
+    // A failed assertion must still keep Face/keys alive until the original
+    // bounded read exits. This cleanup allowance is not the test's oracle.
+    const bool drained = pumpUntil([&] {
+      return !waitForHandlers || waitForHandlers(std::chrono::milliseconds::zero());
+    }, std::chrono::seconds(35));
+    BOOST_CHECK_MESSAGE(drained, "scoped fixture could not drain owned handler work");
+    provider->setHandlerThreads(0);
+    pumpFace(face, ndn::time::milliseconds(1));
+  }
+
+  void release()
+  {
+    if (!released) {
+      released = true;
+      releasePromise.set_value();
+    }
+  }
+
+  template<typename Predicate>
+  bool pumpUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chrono::seconds(2))
+  {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+      pumpFace(face, ndn::time::milliseconds(10));
+    }
+    return predicate();
+  }
+
+  void install(ServiceProvider::CollaborationHandler handler)
+  {
+    registration = provider->addScopedCollaborationHandler(
+      serviceName, {}, makeAcceptingAckHandler(),
+      ServiceProvider::AsyncAckStrategyHandler{}, std::move(handler));
+    waitForHandlers = registration.makeCollaborationHandlerDrainWaiter();
+    closeRegistration = [this] { registration.close(); };
+  }
+
+  void dispatch(const ndn::Buffer& assignment = {}, const std::string& role = "reader")
+  {
+    const ndn::Name requestId("/spec231/scoped/request");
+    const auto digest = selectionDigestFor(makeSelectionBuffer(requestId, "spec231-token"));
+    BOOST_REQUIRE(!digest.empty());
+    provider->dispatchCollabForTest(requesterName, requestId, serviceName,
+      ndn::Name("/spec231/scoped/payload"), role, digest, assignment);
+  }
+
+  ndn::security::KeyChain keyChain;
+  ndn::DummyClientFace face;
+  ndn::Name providerName;
+  ndn::Name requesterName;
+  ndn::Name peerName;
+  ndn::Name serviceName;
+  ndn::security::Certificate providerCert;
+  ndn::security::Certificate authorityCert;
+  ndn::security::Certificate peerCert;
+  ndn::security::Certificate requesterCert;
+  IsolatedTestTrust trust;
+  std::shared_ptr<RegistrationCollabProvider> provider;
+  ServiceProvider::ServiceRegistration registration;
+  ServiceProvider::ServiceRegistration::CollaborationHandlerDrainWaiter waitForHandlers;
+  std::function<void()> closeRegistration;
+  std::promise<void> releasePromise;
+  std::shared_future<void> releaseFuture;
+  bool released = false;
+  bool cleaned = false;
+};
+
+/** Declared after callback inputs so cleanup precedes their destruction. */
+struct Spec231ScopedCleanup
+{
+  explicit Spec231ScopedCleanup(Spec231ScopedFixture& value)
+    : fixture(value)
+  {
+  }
+  ~Spec231ScopedCleanup() { fixture.cleanup(); }
+  Spec231ScopedFixture& fixture;
+};
+
+void
+runSpec231HostScopedDrainCase(bool reServe)
+{
+  Spec231ScopedFixture fixture(reServe ? "host-replace" : "host-stop");
+  auto host = std::make_shared<NativeInferenceProvider>(
+    fixture.provider, std::make_shared<NativeAdapterRegistry>());
+  auto definition = makeHostService(fixture.serviceName.toUri(), makeAcceptingAckHandler());
+  auto config = makeHostConfig(fixture.serviceName.toUri());
+  std::atomic<bool> observerEntered{false};
+  std::string observedFailure;
+  config.nativeFailureObserver =
+    std::make_shared<NativeProviderHandlerConfig::NativeFailureObserver>(
+    [&] (const std::string&, const std::string& failure) {
+      observedFailure = failure;
+      observerEntered.store(true, std::memory_order_release);
+      fixture.releaseFuture.wait();
+    });
+  // An intentionally invalid Native assignment reaches the production failure
+  // observer. Holding this application callback keeps the real scoped handler
+  // alive; no runner or protocol decision is replaced by the fixture.
+  auto registration = std::make_shared<NativeServiceRegistration>(host->serve(definition, config));
+  fixture.closeRegistration = [registration] { registration->close(); };
+  fixture.waitForHandlers = [registration](std::chrono::milliseconds timeout) {
+    return registration->drain(timeout);
+  };
+  Spec231ScopedCleanup cleanup(fixture);
+  fixture.dispatch(ndn::Buffer{'{', '}'}, "/Backbone");
+  BOOST_REQUIRE(fixture.pumpUntil([&] { return observerEntered.load(std::memory_order_acquire); }));
+  BOOST_CHECK(!observedFailure.empty());
+  registration->close();
+  BOOST_CHECK(!registration->drain(std::chrono::milliseconds::zero()));
+  if (reServe) {
+    BOOST_CHECK_THROW(host->serve(definition, config), std::logic_error);
+  }
+  else {
+    BOOST_CHECK(!host->drain(std::chrono::milliseconds::zero()));
+  }
+  fixture.release();
+  BOOST_REQUIRE(fixture.pumpUntil([&] {
+    return registration->drain(std::chrono::milliseconds::zero());
+  }));
+  if (reServe) {
+    auto successor = host->serve(definition, config);
+    BOOST_REQUIRE(successor.valid());
+    BOOST_CHECK(successor.drain(std::chrono::milliseconds::zero()));
+  }
+  BOOST_CHECK(host->drain(std::chrono::milliseconds::zero()));
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(Spec231ScopedDrain)
+
+BOOST_AUTO_TEST_CASE(WaitsForRunningHandlerAndKeepsTargetedWaiterSeparate)
+{
+  Spec231ScopedFixture fixture("running");
+  std::atomic<bool> entered{false};
+  Spec231ScopedCleanup cleanup(fixture);
+  fixture.install([&] (ServiceProvider::CollaborationContext&, const RequestMessage&) {
+    entered.store(true);
+    fixture.releaseFuture.wait();
+  });
+  auto targeted = fixture.registration.makeTargetedHandlerDrainWaiter();
+  fixture.dispatch();
+  BOOST_REQUIRE(fixture.pumpUntil([&] { return entered.load(); }));
+  BOOST_CHECK(targeted(std::chrono::milliseconds::zero()));
+  BOOST_CHECK(!fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+  fixture.registration.close();
+  BOOST_CHECK(!fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+  fixture.release();
+  BOOST_REQUIRE(fixture.pumpUntil([&] {
+    return fixture.waitForHandlers(std::chrono::milliseconds::zero());
+  }));
+  BOOST_CHECK_THROW(fixture.waitForHandlers(std::chrono::milliseconds(-1)), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(RegistrationCloseCancelsPendingExactRead)
+{
+  Spec231ScopedFixture fixture("read");
+  std::atomic<bool> readStarted{false};
+  std::atomic<bool> accepted{false};
+  std::atomic<bool> exited{false};
+  const auto missing = ndn::Name(fixture.peerName).append("missing-tensor");
+  Spec231ScopedCleanup cleanup(fixture);
+  fixture.install([&] (ServiceProvider::CollaborationContext& context, const RequestMessage&) {
+    const auto result = context.fetchSignedExactData("held-tensor", missing,
+      fixture.peerName, 5000, [] { return false; }, nullptr,
+      [&] (std::exception_ptr error) {
+        if (!error) { readStarted.store(true); }
+      });
+    accepted.store(result.has_value());
+    exited.store(true);
+  });
+  fixture.dispatch();
+  BOOST_REQUIRE(fixture.pumpUntil([&] { return readStarted.load(); }));
+  BOOST_CHECK(!fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+  fixture.registration.close();
+  BOOST_REQUIRE(fixture.pumpUntil([&] {
+    return fixture.waitForHandlers(std::chrono::milliseconds::zero());
+  }));
+  BOOST_CHECK(exited.load());
+  BOOST_CHECK(!accepted.load());
+}
+
+BOOST_AUTO_TEST_CASE(CloseDuringExternalAssignmentPreparationDrainsWithoutHandler)
+{
+  Spec231ScopedFixture fixture("preparation");
+  std::atomic<size_t> handlers{0};
+  fixture.install([&] (ServiceProvider::CollaborationContext&, const RequestMessage&) {
+    ++handlers;
+  });
+  LargeDataReference reference;
+  reference.dataName = makeProducerDataPrefix(fixture.requesterName, "NDNSF", "blob");
+  reference.dataName.append(makeNamingLabelComponent("spec231-assignment"))
+    .append(makeNamingDigestComponent(std::string(64, 'a')))
+    .append(makeNamingDigestComponent(std::string(64, 'b'))).append("PROTECTED")
+    .append(makeNamingDigestComponent(std::string(64, 'c'))).append("DATA");
+  reference.digest = "sha256:" + std::string(64, 'b');
+  reference.objectType = "application/vnd.ndnsf.collaboration-assignment-v1";
+  reference.plaintextSize = 16;
+  bool fetchIssued = false;
+  ndn::signal::ScopedConnection observe = fixture.face.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (reference.dataName.isPrefixOf(interest.getName())) fetchIssued = true;
+    });
+  Spec231ScopedCleanup cleanup(fixture);
+  fixture.dispatch(encodeLargeDataReferencePayload(reference));
+  BOOST_REQUIRE(fixture.pumpUntil([&] { return fetchIssued; }));
+  BOOST_CHECK(!fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+  fixture.registration.close();
+  BOOST_REQUIRE(fixture.pumpUntil([&] {
+    return fixture.waitForHandlers(std::chrono::milliseconds::zero());
+  }));
+  BOOST_CHECK_EQUAL(handlers.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ClosedQueuedHandlerReleasesItsLeaseWithoutExecution)
+{
+  Spec231ScopedFixture fixture("queued");
+  std::atomic<bool> blocked{false};
+  std::atomic<size_t> handlers{0};
+  Spec231ScopedCleanup cleanup(fixture);
+  BOOST_REQUIRE(fixture.provider->postHandlerForTest([&] {
+    blocked.store(true);
+    fixture.releaseFuture.wait();
+  }));
+  BOOST_REQUIRE(fixture.pumpUntil([&] { return blocked.load(); }));
+  fixture.install([&] (ServiceProvider::CollaborationContext&, const RequestMessage&) {
+    ++handlers;
+  });
+  fixture.dispatch();
+  BOOST_CHECK(!fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+  fixture.registration.close();
+  BOOST_CHECK(!fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+  fixture.release();
+  BOOST_REQUIRE(fixture.pumpUntil([&] {
+    return fixture.waitForHandlers(std::chrono::milliseconds::zero());
+  }));
+  BOOST_CHECK_EQUAL(handlers.load(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(RejectedQueueAndThrowingHandlerReleaseTheirLeases)
+{
+  {
+    Spec231ScopedFixture fixture("queue-full");
+    std::atomic<bool> blocked{false};
+    std::atomic<size_t> handlers{0};
+    Spec231ScopedCleanup cleanup(fixture);
+    BOOST_REQUIRE(fixture.provider->postHandlerForTest([&] {
+      blocked.store(true);
+      fixture.releaseFuture.wait();
+    }));
+    BOOST_REQUIRE(fixture.pumpUntil([&] { return blocked.load(); }));
+    size_t queued = 0;
+    while (queued < 2048 && fixture.provider->postHandlerForTest([] {})) {
+      ++queued;
+    }
+    BOOST_REQUIRE_LT(queued, 2048U);
+    fixture.install([&] (ServiceProvider::CollaborationContext&, const RequestMessage&) {
+      ++handlers;
+    });
+    fixture.dispatch();
+    BOOST_CHECK(fixture.waitForHandlers(std::chrono::milliseconds::zero()));
+    BOOST_CHECK_EQUAL(handlers.load(), 0U);
+  }
+  {
+    Spec231ScopedFixture fixture("throw");
+    std::atomic<bool> entered{false};
+    Spec231ScopedCleanup cleanup(fixture);
+    fixture.install([&] (ServiceProvider::CollaborationContext&, const RequestMessage&) {
+      entered.store(true);
+      throw std::runtime_error("expected scoped handler failure");
+    });
+    fixture.dispatch();
+    BOOST_REQUIRE(fixture.pumpUntil([&] { return entered.load(); }));
+    BOOST_REQUIRE(fixture.pumpUntil([&] {
+      return fixture.waitForHandlers(std::chrono::milliseconds::zero());
+    }));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(NativeServiceAndHostDrainWaitForOrdinaryHandler)
+{
+  runSpec231HostScopedDrainCase(false);
+}
+
+BOOST_AUTO_TEST_CASE(NativeHostRejectsReplacementUntilOldOrdinaryHandlerDrains)
+{
+  runSpec231HostScopedDrainCase(true);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

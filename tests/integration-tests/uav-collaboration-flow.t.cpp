@@ -461,6 +461,14 @@ BOOST_AUTO_TEST_CASE(MultiSegmentNamedEvidenceUsesExactValidatedFetchForTwoConsu
   const auto expectedSegments = publishedSegmentCount();
   BOOST_REQUIRE_GE(expectedSegments, 2U);
 
+  auto changedFrame = frame;
+  changedFrame.front() ^= 1;
+  BOOST_CHECK_THROW(producerContext.publishLargeNamed(
+    keyScope, evidence->exactDataName, changedFrame, 256, 60000), std::invalid_argument);
+  BOOST_CHECK_THROW(producerContext.publishLargeNamed(
+    keyScope, evidence->exactDataName, frame, 128, 60000), std::invalid_argument);
+  BOOST_REQUIRE_EQUAL(producer.evictImsPrefixForTest(publishedName), expectedSegments);
+
   std::set<std::string> exactInterests;
   bool everyInterestWasExact = true;
   std::mutex exactInterestsMutex;
@@ -540,6 +548,307 @@ BOOST_AUTO_TEST_CASE(MultiSegmentNamedEvidenceUsesExactValidatedFetchForTwoConsu
                           producerNameWire.begin(), producerNameWire.end()) !=
               manifest.end());
   BOOST_CHECK_EQUAL(expectedSegments, publishedSegmentCount());
+}
+
+BOOST_AUTO_TEST_CASE(NamedLargeReplayPreservesOriginalWireAndRejectsChangedPayload)
+{
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/UAV/IncidentEvidence");
+  profile.providerCount = 1;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() ==
+                ndn_service_framework::test::EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+
+  auto& producer = environment.provider(0);
+  const ndn::Name requestId("/request/uav-named-replay");
+  const std::string keyScope = "incident-evidence";
+  ndn_service_framework::ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "EvidenceSource";
+  assignment.service = profile.serviceName;
+  assignment.scopeKeys.emplace(keyScope, ndn::Buffer(32, 0x41));
+  ndn_service_framework::ServiceProvider::CollaborationContext context(
+    producer, profile.userIdentity, requestId,
+    ndn_service_framework::RequestMessage(), assignment);
+  ndn::Name name(producer.getName());
+  name.append("UAV").append("named-replay").appendVersion(1);
+  ndn::Buffer payload(12000, 0x35);
+
+  std::mutex wireMutex;
+  std::map<ndn::Name, std::vector<ndn::Buffer>> wires;
+  size_t sentPackets = 0;
+  size_t expectedSegments = 0;
+  ndn::signal::ScopedConnection observer = environment.providerFace(0).onSendData.connect(
+    [&] (const ndn::Data& data) {
+      if (!name.isPrefixOf(data.getName()) || data.getName().size() != name.size() + 1 ||
+          !data.getName().at(-1).isSegment()) {
+        return;
+      }
+      const auto& wire = data.wireEncode();
+      std::lock_guard<std::mutex> lock(wireMutex);
+      wires[data.getName()].emplace_back(wire.begin(), wire.end());
+      ++sentPackets;
+      if (data.getFinalBlock() && data.getFinalBlock()->isSegment()) {
+        expectedSegments = data.getFinalBlock()->toSegment() + 1;
+      }
+    });
+  BOOST_REQUIRE_EQUAL(context.publishLargeNamed(keyScope, name, payload, 256, 60000), name);
+  environment.pumpUntil([&] {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    return expectedSegments > 0 && wires.size() == expectedSegments;
+  });
+  size_t firstPacketCount;
+  {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    firstPacketCount = sentPackets;
+    BOOST_REQUIRE_GT(expectedSegments, 0U);
+    BOOST_REQUIRE_EQUAL(wires.size(), expectedSegments);
+    BOOST_REQUIRE_GE(firstPacketCount, 2U);
+    BOOST_REQUIRE_EQUAL(wires.size(), firstPacketCount);
+  }
+
+  BOOST_REQUIRE_EQUAL(context.publishLargeNamed(keyScope, name, payload, 256, 60000), name);
+  environment.pumpUntil([&] {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    return wires.size() == firstPacketCount &&
+      std::all_of(wires.begin(), wires.end(), [] (const auto& entry) {
+        return entry.second.size() >= 2;
+      });
+  });
+  {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    BOOST_REQUIRE_EQUAL(wires.size(), firstPacketCount);
+    BOOST_REQUIRE_MESSAGE(std::all_of(wires.begin(), wires.end(), [] (const auto& entry) {
+      return entry.second.size() >= 2;
+    }), "bounded replay wait must observe every original segment again");
+    BOOST_CHECK_MESSAGE(std::all_of(wires.begin(), wires.end(), [] (const auto& entry) {
+      return std::all_of(entry.second.begin(), entry.second.end(), [&] (const auto& wire) {
+        return wire == entry.second.front();
+      });
+    }), "exact named replay must retain the original signed wire for every segment");
+  }
+  payload[0] ^= 1;
+  BOOST_CHECK_THROW(context.publishLargeNamed(keyScope, name, payload, 256, 60000),
+                    std::invalid_argument);
+  payload[0] ^= 1;
+  BOOST_CHECK_THROW(context.publishLargeNamed(keyScope, name, payload, 128, 60000),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(context.publishLargeNamed(keyScope, name, payload, 256, 60001),
+                    std::invalid_argument);
+  BOOST_CHECK(context.publishLargeNamed("missing-scope", name, payload, 256, 60000).empty());
+
+  // Two concurrent exact retries must retain every original signed packet.
+  auto retryOne = std::async(std::launch::async, [&] {
+    return context.publishLargeNamed(keyScope, name, payload, 256, 60000);
+  });
+  auto retryTwo = std::async(std::launch::async, [&] {
+    return context.publishLargeNamed(keyScope, name, payload, 256, 60000);
+  });
+  environment.pumpUntil([&] {
+    return retryOne.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready &&
+      retryTwo.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+  });
+  BOOST_REQUIRE(retryOne.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+  BOOST_REQUIRE(retryTwo.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+  BOOST_REQUIRE_EQUAL(retryOne.get(), name);
+  BOOST_REQUIRE_EQUAL(retryTwo.get(), name);
+  const auto completeRetries = [&] {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    return wires.size() == firstPacketCount &&
+      std::all_of(wires.begin(), wires.end(), [] (const auto& entry) {
+        return entry.second.size() >= 4;
+      });
+  };
+  environment.pumpUntil(completeRetries);
+  BOOST_REQUIRE(completeRetries());
+  {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    BOOST_CHECK(std::all_of(wires.begin(), wires.end(), [] (const auto& entry) {
+      return std::all_of(entry.second.begin(), entry.second.end(), [&] (const auto& wire) {
+        return wire == entry.second.front();
+      });
+    }));
+  }
+
+  using Context = ndn_service_framework::ServiceProvider::CollaborationContext;
+  Context otherRequest(producer, profile.userIdentity, ndn::Name("/request/uav-other"),
+                       ndn_service_framework::RequestMessage(), assignment);
+  BOOST_CHECK_THROW(otherRequest.publishLargeNamed(keyScope, name, payload, 256, 60000),
+                    std::invalid_argument);
+  auto rotatedAssignment = assignment;
+  rotatedAssignment.scopeKeys[keyScope] = ndn::Buffer(32, 0x42);
+  Context rotated(producer, profile.userIdentity, requestId,
+                  ndn_service_framework::RequestMessage(), rotatedAssignment);
+  BOOST_CHECK_THROW(rotated.publishLargeNamed(keyScope, name, payload, 256, 60000),
+                    std::invalid_argument);
+  Context restored(producer, profile.userIdentity, requestId,
+                   ndn_service_framework::RequestMessage(), assignment);
+  const auto freshName = ndn::Name(producer.getName()).append("UAV").append("fresh").appendVersion(1);
+  BOOST_REQUIRE_EQUAL(restored.publishLargeNamed(keyScope, freshName, payload, 256, 60000),
+                      freshName);
+  BOOST_CHECK(restored.publishLargeNamed(keyScope,
+    ndn::Name(producer.getName()).append("UAV").append("budget").appendVersion(1),
+    payload, 1, 60000).empty());
+  BOOST_REQUIRE(context.revokeCurrentWorkAuthority());
+  BOOST_CHECK(context.publishLargeNamed(keyScope, name, payload, 256, 60000).empty());
+  BOOST_CHECK(context.publishLargeNamed(keyScope,
+    ndn::Name(producer.getName()).append("UAV").append("revoked").appendVersion(1),
+    payload, 256, 60000).empty());
+}
+
+BOOST_AUTO_TEST_CASE(ReusableObjectGrantsPreserveScopeAndOriginalWireAcrossInvocations)
+{
+  using Context = ndn_service_framework::ServiceProvider::CollaborationContext;
+  using Assignment = ndn_service_framework::ServiceProvider::CollaborationAssignment;
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.serviceName = ndn::Name("/UAV/IncidentEvidence");
+  profile.providerCount = 3;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == ndn_service_framework::test::EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto& unselected = environment.provider(2);
+  const std::string scope = "incident-evidence";
+  Assignment assignment;
+  assignment.role = "EvidenceSource";
+  assignment.service = profile.serviceName;
+  assignment.workCurrent = [] { return true; };
+  assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  assignment.scopeKeys.emplace(scope, ndn::Buffer(32, 0x41));
+  const ndn::Name firstRequest("/request/reusable-a");
+  const ndn::Name nextRequest("/request/reusable-b");
+  Context firstSource(producer, profile.userIdentity, firstRequest,
+                      ndn_service_framework::RequestMessage(), assignment);
+  Context firstConsumer(consumer, profile.userIdentity, firstRequest,
+                        ndn_service_framework::RequestMessage(), assignment);
+  const auto name = ndn::Name(producer.getName()).append("UAV").append("reusable").appendVersion(1);
+  const ndn::Buffer payload(200000, 0x35);
+  BOOST_CHECK(firstSource.publishReusableLargeNamed(scope, name, {}).empty());
+  std::mutex wireMutex;
+  std::map<ndn::Name, std::vector<ndn::Buffer>> wires;
+  ndn::signal::ScopedConnection observer = environment.providerFace(0).onSendData.connect(
+    [&] (const ndn::Data& data) {
+      if (!name.isPrefixOf(data.getName())) return;
+      const auto& wire = data.wireEncode();
+      std::lock_guard<std::mutex> lock(wireMutex);
+      wires[data.getName()].emplace_back(wire.begin(), wire.end());
+    });
+  auto execute = [&] (auto operation) {
+    auto result = std::async(std::launch::async, std::move(operation));
+    environment.pumpUntil([&] {
+      return result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+    });
+    BOOST_REQUIRE(result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+    return result.get();
+  };
+  BOOST_REQUIRE_EQUAL(execute([&] {
+    return firstSource.publishReusableLargeNamed(scope, name, payload, 1400, 60000);
+  }), name);
+  const auto first = execute([&] {
+    return firstConsumer.fetchReusableLargeFromProducerCurrent(name, scope, producer.getName(), 3000);
+  });
+  BOOST_REQUIRE(first);
+  BOOST_CHECK(*first == payload);
+  BOOST_CHECK(!execute([&] {
+    return firstConsumer.fetchReusableLargeFromProducerCurrent(
+      name, scope, producer.getName(), 3000, 1024, 256);
+  }));
+  BOOST_CHECK(!execute([&] {
+    return firstConsumer.fetchReusableLargeFromProducerCurrent(
+      name, scope, producer.getName(), 3000, payload.size(), 4);
+  }));
+  size_t originalSegments = 0;
+  {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    originalSegments = wires.size();
+    BOOST_REQUIRE_GT(originalSegments, 1U);
+    ndn::Buffer encoded;
+    for (const auto& entry : wires) {
+      const ndn::Data packet{ndn::Block(entry.second.front())};
+      const auto& content = packet.getContent();
+      encoded.insert(encoded.end(), content.value(), content.value() + content.value_size());
+    }
+    ndn_service_framework::HybridMessageEnvelope envelope;
+    BOOST_REQUIRE(envelope.WireDecode(ndn::Block(encoded)));
+    BOOST_CHECK_EQUAL(envelope.getMessageType(), "COLLAB-OBJECT");
+    BOOST_CHECK_EQUAL(envelope.getVersion(), 2U);
+    BOOST_CHECK_EQUAL(envelope.getKeyId().size(), 16U);
+    BOOST_CHECK(!envelope.hasWrappedMessageKey());
+  }
+  auto nextAssignment = assignment;
+  nextAssignment.scopeKeys[scope] = ndn::Buffer(32, 0x42);
+  Context nextSource(producer, profile.userIdentity, nextRequest,
+                     ndn_service_framework::RequestMessage(), nextAssignment);
+  Context nextConsumer(consumer, profile.userIdentity, nextRequest,
+                       ndn_service_framework::RequestMessage(), nextAssignment);
+  // An old grant is insufficient: this invocation needs its own scoped grant.
+  BOOST_CHECK(!execute([&] {
+    return nextConsumer.fetchReusableLargeFromProducerCurrent(name, scope, producer.getName(), 150);
+  }));
+  BOOST_REQUIRE_EQUAL(execute([&] {
+    return nextSource.publishReusableLargeNamed(scope, name, payload, 1400, 60000);
+  }), name);
+  BOOST_REQUIRE_EQUAL(producer.evictImsPrefixForTest(name), originalSegments);
+  const auto next = execute([&] {
+    return nextConsumer.fetchReusableLargeFromProducerCurrent(name, scope, producer.getName(), 3000);
+  });
+  BOOST_REQUIRE(next);
+  BOOST_CHECK(*next == payload);
+  {
+    std::lock_guard<std::mutex> lock(wireMutex);
+    BOOST_REQUIRE_EQUAL(wires.size(), originalSegments);
+    for (const auto& entry : wires) {
+      BOOST_CHECK_GE(entry.second.size(), 2U);
+      BOOST_CHECK(std::all_of(entry.second.begin(), entry.second.end(), [&] (const auto& wire) {
+        return wire == entry.second.front();
+      }));
+    }
+  }
+  auto noScope = nextAssignment;
+  noScope.scopeKeys.clear();
+  Context unauthorized(unselected, profile.userIdentity, nextRequest,
+                       ndn_service_framework::RequestMessage(), noScope);
+  BOOST_CHECK(!unauthorized.fetchReusableLargeFromProducerCurrent(name, scope, producer.getName(), 3000));
+  BOOST_CHECK(unauthorized.publishReusableLargeNamed(scope,
+    ndn::Name(unselected.getName()).append("object").appendVersion(1), payload).empty());
+  auto wrongKeyAssignment = nextAssignment;
+  wrongKeyAssignment.scopeKeys[scope] = ndn::Buffer(32, 0x43);
+  Context wrongKey(unselected, profile.userIdentity, nextRequest,
+                   ndn_service_framework::RequestMessage(), wrongKeyAssignment);
+  BOOST_CHECK(!execute([&] {
+    return wrongKey.fetchReusableLargeFromProducerCurrent(name, scope, producer.getName(), 3000);
+  }));
+  BOOST_CHECK(!nextConsumer.fetchReusableLargeFromProducerCurrent(
+    name, "wrong-scope", producer.getName(), 3000));
+  BOOST_CHECK(!nextConsumer.fetchReusableLargeFromProducerCurrent(
+    name, scope, unselected.getName(), 3000));
+  auto changed = payload;
+  changed.front() ^= 1;
+  BOOST_CHECK_THROW(nextSource.publishReusableLargeNamed(scope, name, changed, 1400, 60000),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(nextSource.publishReusableLargeNamed(scope, name, payload, 1401, 60000),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(nextSource.publishLargeNamed(scope, name, payload, 1400, 60000),
+                    std::invalid_argument);
+  BOOST_REQUIRE(nextConsumer.revokeCurrentWorkAuthority());
+  BOOST_CHECK(!nextConsumer.fetchReusableLargeFromProducerCurrent(name, scope, producer.getName(), 3000));
+  BOOST_REQUIRE(nextSource.revokeCurrentWorkAuthority());
+  BOOST_CHECK(nextSource.publishReusableLargeNamed(scope, name, payload, 1400, 60000).empty());
+  auto otherServiceAssignment = assignment;
+  otherServiceAssignment.service = ndn::Name("/UAV/OtherService");
+  Context otherService(producer, profile.userIdentity, ndn::Name("/request/other-service"),
+                       ndn_service_framework::RequestMessage(), otherServiceAssignment);
+  BOOST_CHECK_THROW(otherService.publishReusableLargeNamed(scope, name, payload, 1400, 60000),
+                    std::invalid_argument);
+  auto otherScopeAssignment = assignment;
+  otherScopeAssignment.scopeKeys.emplace("other-scope", ndn::Buffer(32, 0x45));
+  Context otherScope(producer, profile.userIdentity, ndn::Name("/request/other-scope"),
+                     ndn_service_framework::RequestMessage(), otherScopeAssignment);
+  BOOST_CHECK_THROW(otherScope.publishReusableLargeNamed("other-scope", name, payload, 1400, 60000),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ImmutableStaticPublicationReusesOriginalPacketsAcrossRequests)

@@ -115,6 +115,18 @@ throwIfStopped(const NativeEpochCoordinatorConfig& config)
 }
 
 void
+commitEpochDecodeState(const NativeEpochCoordinatorConfig& config, const RoleSpec& role)
+{
+  if (!role.deferStateCommit) return;
+  std::unique_lock<std::mutex> commitLock;
+  if (config.executionCommitMutex)
+    commitLock = std::unique_lock<std::mutex>(*config.executionCommitMutex);
+  throwIfStopped(config);
+  if (!config.runtime.commitDecodeStateTransition(config.sessionId, role))
+    throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");
+}
+
+void
 traceEpoch(const std::string& phase, const std::string& role, std::size_t epoch)
 {
   const auto* enabled = std::getenv("NDNSF_DI_RUNTIME_TIMING");
@@ -1440,11 +1452,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       // do, before exposing the finalized identity to the requester.
       if (terminalRole && checkpointFinalization) {
         throwIfStopped(config);
-        if (executable.deferStateCommit &&
-            !config.runtime.commitDecodeStateTransition(
-              config.sessionId, executable)) {
-          throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");
-        }
+        commitEpochDecodeState(config, executable);
         if (executable.candidateDecodeStateIdentity) {
           committedStateIdentity = executable.candidateDecodeStateIdentity;
           result.finalizedRole = executable;
@@ -1494,11 +1502,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           beginInputPrefetch(config, *nextInputPrefetch);
           startRemainingInputPrefetch(config, *nextInputPrefetch, false);
         }
-        if (executable.deferStateCommit &&
-            !config.runtime.commitDecodeStateTransition(
-              config.sessionId, executable)) {
-          throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");
-        }
+        commitEpochDecodeState(config, executable);
         if (executable.candidateDecodeStateIdentity) {
           committedStateIdentity = executable.candidateDecodeStateIdentity;
           result.finalizedRole = executable;
@@ -1712,11 +1716,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       const auto stateCommitTiming = detail::nativePhaseStarted();
       NativeWorkScope commitWork(config.workStatistics, "epoch-state-commit",
                                  NativeWorkKind::UNCLASSIFIED);
-      if (executable.deferStateCommit &&
-          !config.runtime.commitDecodeStateTransition(
-            config.sessionId, executable)) {
-        throw std::runtime_error("PROVIDER_DECODE_STATE_COMMIT_FAILED");
-      }
+      commitEpochDecodeState(config, executable);
       detail::logNativeWorkPhase(config.requestId, "epoch_commit_state",
                                 stateCommitTiming, config.role, config.attemptEpoch);
       commitWork.finish();

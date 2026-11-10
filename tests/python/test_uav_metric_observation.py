@@ -667,11 +667,12 @@ def test_worker_rejects_image_digest_mismatch_before_tracker_mutation() -> None:
 
 
 def _write_verified_observation_bundle(tmp_path: Path, payload: bytes, *, sequence: int = 1,
-                                       capture_time_us: int = 0) -> tuple[list[dict], Path]:
+                                       capture_time_us: int = 0,
+                                       producers: dict[str, str] | None = None) -> tuple[list[dict], Path]:
     image_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     entries = []
     for camera in ("UAV1", "UAV2", "UAV3"):
-        producer = f"/example/uav/drone/{camera}"
+        producer = producers[camera] if producers else f"/example/uav/drone/{camera}"
         observation = _observation(camera, sequence, capture_time_us, 0.0, image_digest)
         local = observation.raw
         prefix = f"{producer}/UAV/OBS/{camera}/7/{sequence}"
@@ -741,6 +742,18 @@ def _write_verified_observation_bundle(tmp_path: Path, payload: bytes, *, sequen
     return entries, manifest_path
 
 
+def test_verified_bundle_preserves_native_actual_producers(tmp_path: Path) -> None:
+    producers = {"UAV1": "/lab/scout-a", "UAV2": "/lab/scout-b", "UAV3": "/lab/scout-c"}
+    entries, path = _write_verified_observation_bundle(tmp_path, b"image-bytes", producers=producers)
+    assert set(load_verified_observation_bundle(tmp_path, path)) == set(producers)
+    entries[0]["producerIdentity"] = "/another/producer"
+    path.write_text(json.dumps({
+        "schema": "uav-verified-inputs-v2", "sourceEpoch": "7", "entries": entries,
+    }), encoding="utf-8")
+    with pytest.raises(ValueError, match="source producer namespace"):
+        load_verified_observation_bundle(tmp_path, path)
+
+
 def test_verified_observation_bundle_binds_sidecar_and_image_bytes(tmp_path: Path) -> None:
     ok, encoded = cv2.imencode(".jpg", np.zeros((100, 100, 3), dtype=np.uint8))
     assert ok
@@ -767,8 +780,9 @@ def test_verified_observation_bundle_checks_complete_source_reference_closure(tm
         load_verified_observation_bundle(tmp_path, manifest_path)
 
 
+@pytest.mark.parametrize("bound", [False, True])
 def test_verified_observation_bundle_allows_external_calibration_provider(
-        tmp_path: Path) -> None:
+        tmp_path: Path, bound: bool) -> None:
     ok, encoded = cv2.imencode(".jpg", np.zeros((100, 100, 3), dtype=np.uint8))
     assert ok
     entries, manifest_path = _write_verified_observation_bundle(tmp_path, bytes(encoded))
@@ -778,6 +792,9 @@ def test_verified_observation_bundle_allows_external_calibration_provider(
     exact_name = f"{producer}/UAV/CALIBRATION/UAV2/1/v=99"
     sidecar_path = tmp_path / "UAV2.observation.json"
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    if bound:
+        exact_name = (f"{producer}/UAV/CALIBRATION/UAV2/1/" +
+                      sidecar["calibrationRef"]["contentSha256"][7:] + "/v=99")
     sidecar["calibrationRef"].update({
         "exactName": exact_name,
         "producerIdentity": producer,
@@ -1721,3 +1738,41 @@ def test_po04_projection_intersects_a_tilted_ground_plane() -> None:
     assert estimate.position_w == pytest.approx(target, abs=0.02)
     assert estimate.horizontal_range_m == pytest.approx(math.hypot(30.0, 15.0), abs=0.02)
     assert estimate.slant_range_m == pytest.approx(math.dist(target, camera), abs=0.02)
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_verified_static_names_bind_digest_and_preserve_legacy(tmp_path: Path, bound: bool) -> None:
+    entries, manifest_path = _write_verified_observation_bundle(tmp_path, b"image-bytes")
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest["entries"]:
+        sidecar_path = tmp_path / (entry["cameraId"] + ".observation.json")
+        sidecar = json.loads(sidecar_path.read_text())
+        for ref in entry["references"]:
+            category = ref["category"]
+            if category not in {"CLOCK", "CALIBRATION", "GROUND"}:
+                continue
+            key = {"CLOCK": "clockRef", "CALIBRATION": "calibrationRef", "GROUND": "groundRef"}[category]
+            if bound:
+                prefix, version = ref["exactName"].rsplit("/", 1)
+                ref["exactName"] = prefix + "/" + ref["contentSha256"][7:] + "/" + version
+            sidecar[key]["exactName"] = ref["exactName"]
+        encoded = json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode()
+        sidecar_path.write_bytes(encoded)
+        entry["observationDigest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    assert set(load_verified_observation_bundle(tmp_path, manifest_path)) == {"UAV1", "UAV2", "UAV3"}
+    if bound:
+        entry = manifest["entries"][0]
+        ref = next(ref for ref in entry["references"] if ref["category"] == "CLOCK")
+        prefix, digest, version = ref["exactName"].rsplit("/", 2)
+        wrong = "b" * 64 if digest != "b" * 64 else "a" * 64
+        ref["exactName"] = prefix + "/" + wrong + "/" + version
+        sidecar_path = tmp_path / (entry["cameraId"] + ".observation.json")
+        sidecar = json.loads(sidecar_path.read_text())
+        sidecar["clockRef"]["exactName"] = ref["exactName"]
+        encoded = json.dumps(sidecar, sort_keys=True, separators=(",", ":")).encode()
+        sidecar_path.write_bytes(encoded)
+        entry["observationDigest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(ValueError, match="invalid typed structure"):
+            load_verified_observation_bundle(tmp_path, manifest_path)

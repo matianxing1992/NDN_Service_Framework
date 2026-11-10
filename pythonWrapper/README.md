@@ -102,6 +102,64 @@ def hello(request: bytes) -> bytes:
 provider.run()
 ```
 
+### Admit declared collaboration inputs
+
+Inside a collaboration handler, declare each exact object and its Producer.
+Core retrieves and admits the complete set before the handler computes from
+stable slot names:
+
+```python
+from ndnsf import CollaborationInputSpec
+
+inputs = [
+    CollaborationInputSpec(
+        slot_id="left",
+        reference=left_reference,  # DataProductReference with exact name and Producer
+        producer_role="/source",
+        key_scope="pipeline-input",
+        max_bytes=4096,
+        max_packets=1,
+        encoding="collaboration_large",
+    ),
+    CollaborationInputSpec(
+        slot_id="right",
+        reference=right_reference,
+        producer_role="/source",
+        key_scope="pipeline-input",
+        max_bytes=4096,
+        max_packets=1,
+        encoding="collaboration_large",
+    ),
+]
+
+def validate_pair(by_slot):
+    return (bool(by_slot["left"].content) and
+            bool(by_slot["right"].content))
+
+admitted = context.require_inputs(inputs, validate_pair)
+left = admitted.at("left")
+right = admitted.at("right")
+result = bytes(left.content) + bytes(right.content)
+context.publish_final_response(result)
+```
+
+Return `False` or raise from the validator to reject the set. The returned
+content and packet views are read-only; keep the admitted set current before
+publishing any result. The generic `content` view applies to decoded object
+encodings such as `collaboration_large`; `signed_exact_packets` exposes the
+original Data wire through `packets` for the application's NDN decoder.
+When a required input cannot be admitted, send the existing terminal failure
+to the requester for a unary collaboration. A streamed terminal owner uses its
+stream failure API:
+
+```python
+try:
+    admitted = context.require_inputs(inputs, validate_pair)
+except RuntimeError as error:
+    context.publish_final_failure_response(b"", str(error))
+    return
+```
+
 ```python
 from ndnsf import ServiceController
 
@@ -267,6 +325,53 @@ response = user.request_collaboration(
     key_scopes={"activation": ["/Stage/0", "/Stage/1"]},
     dependencies=[])
 ```
+
+Strict Core input admission is opt-in per collaboration. Set
+`input_admission_profile="data-admission-v1"` on every role in the request;
+the default empty value preserves the legacy path. The User negotiates this
+profile against authenticated Provider capabilities before committing the
+Selection, and the Core gates execution on the complete, verified input set:
+
+```python
+roles = [
+    CollaborationRole(
+        role="/Stage/0", input_admission_profile="data-admission-v1"),
+    CollaborationRole(
+        role="/Stage/1", input_admission_profile="data-admission-v1"),
+]
+```
+
+Dictionary role values use the same snake-case `input_admission_profile` key.
+Unknown profiles are rejected rather than downgraded.
+
+Dependency recovery is owned by the Core collaboration operation: it fetches
+the exact required Data, performs bounded ARQ, rotates only through authorized
+locations, and revalidates the original Data signature and current permission
+after recovery. XOR repair is optional and disabled by default; `None` still
+uses bounded Core retries. Applications do not implement packet retries,
+location switching, or repair.
+
+```python
+from ndnsf import DependencyRedundancy, DependencyTransportOptions
+
+transport = DependencyTransportOptions()  # redundancy defaults to NONE
+# Opt in only when every participant in the negotiated profile supports XOR.
+transport.redundancy = DependencyRedundancy.XOR
+response = user.request_collaboration(
+    "/AI/DistributedInference",
+    b"input",
+    roles=[CollaborationRole(role="/Stage/0")],
+    key_scopes={},
+    dependencies=[],
+    dependency_transport=transport,
+)
+```
+
+The same optional `dependency_transport` argument is available on
+`request_collaboration_async(...)` and deferred `commit_plan(...)`. Existing
+calls omit it and retain the default `None` behavior. A native extension that
+predates this option continues to support legacy calls; explicitly requesting
+the option with that extension fails instead of silently disabling it.
 
 For objects that exceed the inline/single-segment threshold, Python
 applications should use the same NDNSF large-data rule as C++ applications:

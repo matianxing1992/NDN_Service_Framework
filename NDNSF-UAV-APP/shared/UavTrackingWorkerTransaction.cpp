@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 
 namespace ndnsf::examples::uav {
 namespace {
@@ -132,9 +133,68 @@ readManifest(const std::filesystem::path& root, const std::string& windowId)
 
 } // namespace
 
-UavTrackingWorkerTransaction::UavTrackingWorkerTransaction(std::filesystem::path root)
+UavTrackingWorkerTransaction::UavTrackingWorkerTransaction(std::filesystem::path root,
+                                                         size_t maxRetainedWindows)
   : m_root(std::move(root))
+  , m_maxRetainedWindows(maxRetainedWindows)
 {
+  if (m_maxRetainedWindows != 0) {
+    m_root = m_root.lexically_normal();
+    if (m_root.parent_path().empty() || m_root.filename().empty() ||
+        m_root.filename() == "." || m_root.filename() == "..") {
+      throw std::invalid_argument("bounded transaction store requires a run-root/mission path");
+    }
+  }
+}
+
+void
+UavTrackingWorkerTransaction::requireCapacity(const std::string& windowId) const
+{
+  requireWindowId(windowId);
+  if (m_maxRetainedWindows == 0) return;
+  const auto runRoot = m_root.parent_path();
+  std::error_code error;
+  const auto rootStatus = std::filesystem::symlink_status(runRoot, error);
+  if (rootStatus.type() == std::filesystem::file_type::not_found &&
+      (!error || error == std::errc::no_such_file_or_directory)) return;
+  if (error) throw std::filesystem::filesystem_error("cannot inspect transaction run root",
+                                                   runRoot, error);
+  if (!std::filesystem::is_directory(rootStatus)) {
+    throw std::runtime_error("transaction run root is not an owned directory");
+  }
+  const auto target = m_root / windowId;
+  size_t retained = 0;
+  size_t missions = 0;
+  bool reuse = false;
+  const auto countSlot = [&] {
+    if (++retained > m_maxRetainedWindows) {
+      throw std::runtime_error("tracking transaction retained window limit exceeded");
+    }
+  };
+  for (const auto& mission : std::filesystem::directory_iterator(runRoot)) {
+    if (++missions > m_maxRetainedWindows) {
+      throw std::runtime_error("tracking transaction retained window limit exceeded");
+    }
+    if (!std::filesystem::is_directory(mission.symlink_status())) {
+      throw std::runtime_error("transaction mission is not an owned directory");
+    }
+    bool empty = true;
+    for (const auto& window : std::filesystem::directory_iterator(mission.path())) {
+      if (!std::filesystem::is_directory(window.symlink_status())) {
+        throw std::runtime_error("transaction window is not an owned directory");
+      }
+      empty = false;
+      countSlot();
+      if (window.path() == target) reuse = true;
+    }
+    if (empty) {
+      countSlot();
+      if (mission.path() == m_root) reuse = true;
+    }
+  }
+  if (!reuse && retained >= m_maxRetainedWindows) {
+    throw std::runtime_error("tracking transaction retained window limit exceeded");
+  }
 }
 
 std::optional<ndn::Buffer>
@@ -180,6 +240,7 @@ UavTrackingWorkerTransaction::commit(const std::string& windowId,
     throw std::runtime_error("tracking window transaction is already committed");
   }
 
+  requireCapacity(windowId);
   std::filesystem::create_directories(m_root);
   if (std::filesystem::exists(committed)) {
     // A directory without a manifest is an interrupted candidate, never a
@@ -206,6 +267,10 @@ UavTrackingWorkerTransaction::commit(const std::string& windowId,
     }
     if (!stillAuthorized || !stillAuthorized()) {
       std::filesystem::remove_all(committed);
+      if (m_maxRetainedWindows != 0) {
+        std::error_code ignored;
+        std::filesystem::remove(m_root, ignored);
+      }
       return false;
     }
     // This same-filesystem rename is the commit point for the immutable pair.
@@ -216,6 +281,7 @@ UavTrackingWorkerTransaction::commit(const std::string& windowId,
     if (!std::filesystem::is_regular_file(committed / "manifest.json")) {
       std::error_code ignored;
       std::filesystem::remove_all(committed, ignored);
+      if (m_maxRetainedWindows != 0) std::filesystem::remove(m_root, ignored);
     }
     throw;
   }

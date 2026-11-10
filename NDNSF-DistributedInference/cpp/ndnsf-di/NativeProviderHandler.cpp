@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
@@ -67,6 +68,115 @@ waitForRecoveryActivationUntil(std::uint64_t expiresAtMs,
 } // namespace detail
 
 namespace {
+/** Joins before its borrowed Context; control receipt and execution drain are separate. */
+class NativeCancellationMonitor
+{
+public:
+  NativeCancellationMonitor(
+    ndn_service_framework::ServiceProvider::CollaborationContext& context,
+    detail::NativeCancellationBinding binding, std::shared_ptr<std::mutex> commitMutex,
+    std::shared_ptr<ProviderGroupCoordinator> groupCoordinator)
+    : m_context(context)
+    , m_binding(std::move(binding))
+    , m_commitMutex(std::move(commitMutex))
+    , m_groupCoordinator(std::move(groupCoordinator))
+  {
+    m_context.allowData(detail::NATIVE_CANCELLATION_SCOPE,
+                        ndn::Name(detail::NATIVE_CANCELLATION_TOPIC));
+    m_thread = std::thread([this] { watch(); });
+  }
+
+  ~NativeCancellationMonitor()
+  {
+    finish();
+  }
+
+  NativeCancellationMonitor(const NativeCancellationMonitor&) = delete;
+  NativeCancellationMonitor& operator=(const NativeCancellationMonitor&) = delete;
+
+  bool
+  cancelled() const noexcept
+  {
+    return m_cancelled.load();
+  }
+
+  void
+  finish() noexcept
+  {
+    if (m_finished) return;
+    m_finished = true;
+    m_stopping.store(true);
+    if (m_thread.joinable()) m_thread.join();
+    try { publish("drained"); }
+    catch (...) { /* Missing proof remains unconfirmed at the requester. */ }
+  }
+
+private:
+  void
+  publish(const std::string& phase)
+  {
+    const auto wire = detail::nativeCancellationWire(m_binding, phase);
+    m_context.publish(detail::NATIVE_CANCELLATION_SCOPE,
+      ndn::Name(detail::NATIVE_CANCELLATION_PROOF_TOPIC), ndn::Buffer(wire.begin(), wire.end()));
+  }
+
+  void
+  watch() noexcept
+  {
+    try {
+      std::size_t inspected = 0;
+      while (!m_stopping.load() &&
+             std::chrono::steady_clock::now() < m_context.assignment().workDeadline) {
+        const auto records = m_context.waitFor(detail::NATIVE_CANCELLATION_SCOPE,
+          ndn::Name(detail::NATIVE_CANCELLATION_TOPIC), inspected + 1, 50);
+        if (records.size() < inspected || records.size() - inspected > 64)
+          throw std::runtime_error("DI_CANCELLATION_CONTROL_BACKLOG");
+        while (inspected < records.size()) {
+          const auto& record = records[inspected++];
+          if (record.producer != m_context.requesterName() ||
+              record.producerRole != "user-control-v1" ||
+              record.sessionId != m_context.sessionId() ||
+              record.keyScope != detail::NATIVE_CANCELLATION_SCOPE ||
+              record.topic != ndn::Name(detail::NATIVE_CANCELLATION_TOPIC) ||
+              detail::nativeCancellationPhase(
+                std::string(record.payload.begin(), record.payload.end()), m_binding) != "cancel")
+            continue;
+          {
+            std::lock_guard<std::mutex> lock(*m_commitMutex);
+            m_cancelled.store(true);
+            m_context.revokeCurrentWorkAuthority();
+            // Dependency I/O already polls this invocation-owned terminal flag.
+            // Interrupt its outstanding reads before acknowledging the fence.
+            if (m_groupCoordinator) m_groupCoordinator->cancel("DI_EXECUTION_CANCELLED");
+            // Core owns publisher fencing. Never access its private publisher
+            // or write Context terminal state from this monitor thread.
+            if (m_context.isStreamed() && !m_context.streamCancelled())
+              throw std::runtime_error("DI_CANCELLATION_STREAM_NOT_FENCED");
+          }
+          publish("fenced");
+          return;
+        }
+      }
+    }
+    catch (...) {
+      std::lock_guard<std::mutex> lock(*m_commitMutex);
+      m_context.revokeCurrentWorkAuthority();
+      if (m_groupCoordinator) m_groupCoordinator->cancel("DI_CANCELLATION_MONITOR_FAILED");
+      // No ACK is emitted on failure; the requester retains UNCONFIRMED.
+    }
+  }
+
+private:
+  ndn_service_framework::ServiceProvider::CollaborationContext& m_context;
+  detail::NativeCancellationBinding m_binding;
+  std::shared_ptr<std::mutex> m_commitMutex;
+  std::shared_ptr<ProviderGroupCoordinator> m_groupCoordinator;
+  std::atomic<bool> m_stopping{false};
+  std::atomic<bool> m_cancelled{false};
+  std::thread m_thread;
+  bool m_finished = false;
+};
+
 struct RecoveryCancelPollState
 {
   std::mutex mutex;
@@ -2289,6 +2399,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
     std::optional<ConversationStateStore::ExecutionAdmission> conversationAdmission;
     std::unique_ptr<NativeKvRestoreAdmission> kvRestore;
     std::uint64_t recoveryActivationExpiresAtMs = 0;
+    std::unique_ptr<NativeCancellationMonitor> cancellationMonitor;
+    std::shared_ptr<std::mutex> executionCommitMutex;
     auto completeExecutionLease = [&] {
       state->completeExecutionLease(config.executionLeaseTable,
                                     activatedLeaseId,
@@ -2307,8 +2419,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       // A local selection status does not terminate the requester's stream
       // or unary invocation. Reuse Core's selected-request terminal owner.
       reportedFailure = reason;
+      if (cancellationMonitor) cancellationMonitor->finish();
       try {
         ctx.fail(reason);
+        if (cancellationMonitor && cancellationMonitor->cancelled()) {
+          // The publisher was fenced without sending an early failure Response.
+          // Release this role's execution slot after its drain proof; the user
+          // owns the already-cancelled terminal and clears its request afterward.
+          ctx.completeRole();
+          return;
+        }
         if (request.hasStreamRequestOptions() && ctx.assignment().ownsStreamTerminal) {
           ctx.failStream(ndn_service_framework::StreamedInvocationErrorCode::ProviderFailure,
                          reason);
@@ -3095,6 +3215,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           protectedRuntime->withContentKey(epochMs(), [] (const auto&) {});
         };
       }
+      if (selectionProjection && authenticatedGeneration.enabled &&
+          !selectionProjection->conversationTurnBinding &&
+          ctx.assignment().scopeKeys.count(detail::NATIVE_CANCELLATION_SCOPE)) {
+        executionCommitMutex = std::make_shared<std::mutex>();
+        cancellationMonitor = std::make_unique<NativeCancellationMonitor>(ctx,
+          detail::NativeCancellationBinding{ctx.sessionId(), selectionProjection->attempt,
+            role, selectionProjection->planDigest}, executionCommitMutex, groupCoordinator);
+        executionGuard = [&ctx, prior = std::move(executionGuard)] {
+          if (!ctx.hasCurrentWorkAuthority())
+            throw std::runtime_error("DI_EXECUTION_CANCELLED_OR_EXPIRED");
+          if (prior) prior();
+        };
+      }
       ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
       if (config.executionPolicy == "DATA_DRIVEN_V2") {
         const auto expectedBackend = nativeProviderFieldValue(
@@ -3784,8 +3917,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       const bool terminalRole = roleSpec.outputs.empty() ||
         nativeRoleHasOnlyInternalFeedbackOutputs(roleSpec);
       if (ctx.isStreamed() && terminalRole) {
-        eventSink = [&ctx, &streamedEventsPublished] (
+        eventSink = [&ctx, &streamedEventsPublished, executionCommitMutex, executionGuard] (
                       const std::vector<std::uint8_t>& payload) {
+          std::unique_lock<std::mutex> commitLock;
+          if (executionCommitMutex) commitLock = std::unique_lock<std::mutex>(*executionCommitMutex);
+          if (executionGuard) executionGuard();
           const auto cursor = ctx.publishStreamEvent(
             ndn::Buffer(payload.data(), payload.size()));
           if (cursor != 0) {
@@ -3900,6 +4036,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             };
         }
         coordinatorConfig.executionGuard = executionGuard;
+        coordinatorConfig.executionCommitMutex = executionCommitMutex;
         coordinatorConfig.finalResponseScope = config.finalResponseScope;
         coordinatorConfig.maxEpochs = authenticatedGeneration.maxEpochs;
         coordinatorConfig.tokenInputName = authenticatedGeneration.tokenInputName;
@@ -4576,6 +4713,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         ctx.fail("DI_ATTEMPT_DUPLICATE_TERMINAL");
         return;
       }
+      if (cancellationMonitor) cancellationMonitor->finish();
       completeExecutionLease();
       reportStatus(executionOperationId, "distributed-inference", "DONE", 2,
                    1.0, "EXECUTED");
@@ -4623,6 +4761,13 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           logRuntimePhase("di-provider", "conversationPromotionWaitEnd", stageRequestId,
             stageAttemptEpoch, completionTimingFields);
         }
+        std::unique_lock<std::mutex> terminalCommitLock;
+        if (executionCommitMutex)
+          terminalCommitLock = std::unique_lock<std::mutex>(*executionCommitMutex);
+        // The model content-key lease has already been retired. Terminal transport uses
+        // Core's request authority and stream key, not the completed model lease.
+        if (executionCommitMutex && !ctx.hasCurrentWorkAuthority())
+          throw std::runtime_error("DI_EXECUTION_CANCELLED_OR_EXPIRED");
         if (ctx.isStreamed() &&
             streamedEventsPublished.load(std::memory_order_relaxed) == 0) {
           const ndn::Buffer eventPayload(finalPayload->data(), finalPayload->size());
