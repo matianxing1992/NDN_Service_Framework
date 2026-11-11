@@ -1,0 +1,127 @@
+{
+  "bootId": "d44418fe5f9c43e386d377ca06da62dc",
+  "verifiedObjects": [
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=5/50=%00",
+      "sha256": "a906f033042f310b468a879b144e0acb9494736ed1baba57effbf20eea993813",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=12/50=%00",
+      "sha256": "5c860f7ef67518c9a7942a2c6b3f66edfad790b049733e33134d4b14c59fb708",
+      "wireBytes": 29150976,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=1/50=%00",
+      "sha256": "25eced7c53b96cacd39dfb36f25a58aa1fdc7b347178a3c3f87b7e01f31da0c3",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=16/50=%00",
+      "sha256": "b0a6a3ca0d34e0f436e27d67fddaeb45a8ae57312be855982b0e534a3b03aa42",
+      "wireBytes": 29150976,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=6/50=%00",
+      "sha256": "1485d927235f157f995a7df60f6b9669f3ff278ee18422a15297939ef8036cbc",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=2/50=%00",
+      "sha256": "45137f85a7068078cd3674604a1a45214bac538b29d58220f57db43797208335",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=3/50=%00",
+      "sha256": "2858d509b75eb696384a1c30324159d784445b6a6904f48166b068e5e168ab8d",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=9/50=%00",
+      "sha256": "108dff6199444ca71cea8d173bb89b0bc998dfbb06b9f8cc8d9cac9e0d922342",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=11/50=%00",
+      "sha256": "2f7c456e10ad31eac6efc57c7580ccdadc1b504d7e017b9a0a4cdbea973132d7",
+      "wireBytes": 29150976,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=17/50=%00",
+      "sha256": "67bb1ed65386fb12a4fd023924610d2c81996866bfa183d8b47064871dd0caeb",
+      "wireBytes": 12785993,
+      "packets": 1797
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=15/50=%00",
+      "sha256": "0f7298aa5dbdf560a69e3059ed4467bc2cff2d5bca0c8b0c611b3b78e20d7620",
+      "wireBytes": 29150976,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=10/50=%00",
+      "sha256": "970a360e868c4d15b028e47133bc57a7a050767fdb2b93a3370675135caaa490",
+      "wireBytes": 29150976,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=8/50=%00",
+      "sha256": "bed07112e1895310fc2fe9921d7e846ef060d71dd69912b1394e197f3e6b0415",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=7/50=%00",
+      "sha256": "276d081e15384d364b3cab82056ea5e6989ae61b4c4a21c2b47c56176dd971ab",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=0/50=%00",
+      "sha256": "bcab07fce67ca23b7aff1ad5737d4bc1e3b30acdba35a8342b90cacb0593e645",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=14/50=%00",
+      "sha256": "8028471dc56b0d5bd1777e1631c8eaa4f73bdcc4806628f6dee51c38dd0001f9",
+      "wireBytes": 29150976,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=4/50=%00",
+      "sha256": "39703867e1eb66d65774836cf805990c9082e5c5707397d0d2490a8d2806b926",
+      "wireBytes": 29146880,
+      "packets": 4096
+    },
+    {
+      "objectName": "/8=example/8=repo/8=user/8=repo-file-benchmark/54=%00%00%01%A1%CA%FB%CA%B6/8=13/50=%00",
+      "sha256": "f9de1a36d0d549541464ff104416fc1e99e5b3aee57b0d0b5c1df8dfd85cb64c",
+      "wireBytes": 29150976,
+      "packets": 4096
+    }
+  ],
+  "retired": [
+    "/tmp/ndnsf-spec229-repo/repo",
+    "/var/tmp/ndnsf-spec229-repo-control/benchmark/input-500MB.bin"
+  ],
+  "ambiguousPhysicalObjects": [],
+  "ambiguityScope": "Physical hashes/geometry only; operation stays FAILED; no admitted commit confirmation is inferred",
+  "scope": "Complete file",
+  "allowlist": [
+    "/tmp/ndnsf-spec229-repo/repo",
+    "/var/tmp/ndnsf-spec229-repo-control/benchmark/input-500MB.bin"
+  ],
+  "retirementStatus": "COMPLETE",
+  "retained": "Original Qwen source; native checks/timing/source/config/archive",
+  "rawData": "Original native timing/resource JSONL retained; no per-packet dump"
+}

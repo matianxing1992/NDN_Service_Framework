@@ -14,9 +14,9 @@ namespace ndnsf_distributed_repo {
 /** Storage selectors only; the writer identity comes from authenticated Core context. */
 struct RepoUserStorageInsertRequest
 {
-  /** 1: identity/trust validation (unchanged default).
-   * 2: DigestSha256 packets bound to this authenticated writer's exact storage transaction.
-   * Digest mode does not establish consumer trust; consumers need a pretrusted commitment.
+  /** Wire versions 1 and 2 bind original packets to the authenticated writer's
+   * exact hash manifest and storage grant. Repo treats their signatures as opaque;
+   * consumers independently validate original signatures, trust and context.
    */
   uint32_t schemaVersion = 1;
   std::string operationId;

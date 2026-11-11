@@ -2699,9 +2699,16 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(lossCatalog.lookupAggregateReceipt(lossStatus.receiptId) == lossAggregate);
 }
 
-BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices)
+struct OwnerClientRestartExpectation
 {
-  TempRoot temporary;
+  repo::StorageCapability capability;
+  std::string name;
+  std::vector<uint8_t> wire;
+};
+
+OwnerClientRestartExpectation
+runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
+{
   std::vector<std::pair<const char*, std::optional<std::string>>> previousEnvironment;
   auto restoreEnvironment = ndn::make_scope_exit([&] {
     for (const auto& [name, value] : previousEnvironment) {
@@ -2789,8 +2796,13 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     target.repoNode, target.providerIdentity, (temporary.path() / "metadata.sqlite3").string());
   node->registerServices(environment.provider(1));
   node->registerOriginalDataServing(environment.providerFace(1));
-  node->setDataReferenceSpoolFetcher(repo::detail::FaceDataReferenceFetcher(
-    environment.providerFace(1), 1s, 10s));
+  const auto originalInsertFetches = std::make_shared<std::atomic<unsigned>>(0);
+  node->setDataReferenceSpoolFetcher(
+    [originalInsertFetches, fetch = repo::detail::FaceDataReferenceFetcher(
+       environment.providerFace(1), 1s, 10s)](const repo::RepoDataReference& value) {
+      ++*originalInsertFetches;
+      return fetch(value);
+    });
   environment.enableProductionIngressForTest();
   environment.pumpUntilWithAttributeAuthority([&] {
     return node->isOriginalDataServingReady();
@@ -3137,7 +3149,10 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   })), std::runtime_error);
   BOOST_CHECK(node->core().list().empty());
   BOOST_CHECK_THROW(storeModel(publication, std::function<void()>([&] {
-    if (node->core().has(metadataObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)))
+    // Sibling commits may complete in either order. Cancel at the same
+    // dependency barrier as the original serial fixture, before the root.
+    if (node->core().has(sourceObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)) &&
+        node->core().has(metadataObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)))
       throw std::runtime_error("cancelled before model root");
   })), std::runtime_error);
   BOOST_CHECK(node->core().has(sourceObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)));
@@ -3169,6 +3184,64 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   // Exercise the actual DI packet port, not an in-memory substitute for Repo.
   ndn::KeyChain digestKeys("pib-memory:stored-model", "tpm-memory:stored-model");
   const auto storedDeadline = std::chrono::steady_clock::now() + 90s;
+  const auto rejectNativePackets = [&](const std::string& label, bool invalidSignature,
+                                        const std::string& suppliedDigest) {
+    const auto name = ndn::Name(sourceIdentity).append("native-rejected").append(label)
+      .appendSegment(0);
+    ndn::Data packet(name);
+    const std::vector<uint8_t> content{1, 2, 3};
+    packet.setContent(ndn::span<const uint8_t>(content));
+    digestKeys.sign(packet, ndn::security::signingWithSha256());
+    const auto& encoded = packet.wireEncode();
+    std::vector<uint8_t> wire(encoded.begin(), encoded.end());
+    if (invalidSignature) wire.back() ^= 1;
+    const auto expected = suppliedDigest.empty() ? "sha256:" + sha256(wire) : suppliedDigest;
+    const auto fetches = originalInsertFetches->load();
+    const auto objects = node->core().list().size();
+    const auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    const std::string error = label == "syntax" ? "MODEL_REPO_STORE_DIGEST_INVALID" :
+      label == "cancel" ? "native-factory-cancelled" : invalidSignature ?
+      "repo-original-publication-packet-invalid" :
+      "repo-original-publication-digest-or-size-mismatch";
+    BOOST_CHECK_EXCEPTION(runWithFacePump(environment, [&] {
+      const auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
+        storedDeadline, [active, cancelled] {
+          active();
+          if (cancelled->load()) throw std::runtime_error("native-factory-cancelled");
+        }, true);
+      if (label == "cancel") cancelled->store(true);
+      transport.commit({wire}, expected);
+      return true;
+    }), std::exception, [&](const std::exception& failure) { return failure.what() == error; });
+    BOOST_CHECK_EQUAL(originalInsertFetches->load(), fetches);
+    BOOST_CHECK_EQUAL(node->core().list().size(), objects);
+    BOOST_CHECK(!node->core().has(name.toUri(ndn::name::UriFormat::ALTERNATE)));
+    // Read-only SQLite is independent of the writer's in-memory admission state.
+    sqlite3* raw = nullptr;
+    BOOST_REQUIRE_EQUAL(sqlite3_open_v2((temporary.path() / "metadata.sqlite3").c_str(),
+      &raw, SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+    sqlite3_stmt* statementRaw = nullptr;
+    BOOST_REQUIRE_EQUAL(sqlite3_prepare_v2(database.get(),
+      "SELECT (SELECT COUNT(*) FROM repo_user_storage_grants WHERE object_name=?1),"
+      "(SELECT COUNT(*) FROM repo_user_storage_writes WHERE object_name=?1),"
+      "(SELECT COUNT(*) FROM repo_user_storage_claims WHERE object_name=?1)",
+      -1, &statementRaw, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(
+      statementRaw, sqlite3_finalize);
+    const auto text = name.toUri(ndn::name::UriFormat::ALTERNATE);
+    BOOST_REQUIRE_EQUAL(sqlite3_bind_text(statement.get(), 1, text.c_str(), -1,
+      SQLITE_TRANSIENT), SQLITE_OK);
+    BOOST_REQUIRE_EQUAL(sqlite3_step(statement.get()), SQLITE_ROW);
+    BOOST_CHECK_EQUAL(sqlite3_column_int64(statement.get(), 1), 0);
+    BOOST_CHECK_EQUAL(sqlite3_column_int64(statement.get(), 2), 0);
+    if (label == "syntax" || label == "cancel")
+      BOOST_CHECK_EQUAL(sqlite3_column_int64(statement.get(), 0), 0);
+  };
+  rejectNativePackets("syntax", false, "sha256:invalid");
+  rejectNativePackets("digest", false, "sha256:" + std::string(64, '0'));
+  rejectNativePackets("signature", true, {});
+  rejectNativePackets("cancel", false, {});
   const auto modelPrefix = ndn::Name(sourceIdentity).append("stored-model").appendVersion(1);
   const std::vector<uint8_t> expectedLayer(9000, 0x5a);
   std::vector<di::NativeStoredModelInput> modelInputs{
@@ -3230,6 +3303,20 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   BOOST_CHECK_EQUAL(sourceModelReplies, 0U);
   BOOST_CHECK_EQUAL(node->core().list().size(), objectCount);
   node->stopOriginalPacketOperations();
+  return {capability,
+    storedPublication.handle.rootName.toUri(ndn::name::UriFormat::CANONICAL), storedRootWire};
+}
+
+BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices)
+{
+  TempRoot temporary;
+  const auto expected = runOwnerClientOriginalPacketRoundTrip(temporary);
+  // All writer/Provider instances and the filesystem owner are gone before reopen.
+  auto store = std::make_shared<repo::FilesystemRepoStoreBackend>(
+    (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
+    repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED);
+  repo::RepoCore restarted(expected.capability, std::move(store));
+  BOOST_CHECK(restarted.getDataPacket(expected.name) == expected.wire);
 }
 
 BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)

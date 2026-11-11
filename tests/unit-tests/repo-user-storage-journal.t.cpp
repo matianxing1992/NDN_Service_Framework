@@ -116,6 +116,50 @@ void fillCommittedBudget(SqliteArtifactMetadataStore& store, uint64_t bytes)
 
 BOOST_AUTO_TEST_SUITE(Spec221RepoUserStorageJournal)
 
+BOOST_AUTO_TEST_CASE(LiveClaimLookupObservesPeerCommitsAndRebindsEveryCall)
+{
+  Fixture fixture;
+  SqliteArtifactMetadataStore writer(fixture.database);
+  (void)writer.reconcileUserStorageInventory("/repo/a", {}, 1000);
+  SqliteArtifactMetadataStore reader(fixture.database);
+  const auto item = object("/producer/live-claim", 30);
+  BOOST_CHECK(reader.liveUserStorageClaimsForObject("/repo/a", item.objectName).empty());
+  grant(writer, item);
+  reserve(writer, item);
+  BOOST_CHECK(reader.liveUserStorageClaimsForObject("/repo/a", item.objectName).empty());
+  (void)writer.commitUserStorage("/repo/a", "/user/u", "write", 1002);
+  auto claims = reader.liveUserStorageClaimsForObject("/repo/a", item.objectName);
+  BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  BOOST_CHECK(claims.front().state == RepoUserStorageClaimState::COMMITTED);
+  BOOST_CHECK_EQUAL(claims.front().object.wireSha256, item.wireSha256);
+
+  grant(writer, item, "peer", "/user/v");
+  reserve(writer, item, "peer-write", "peer", "/user/v");
+  (void)writer.commitUserStorage("/repo/a", "/user/v", "peer-write", 1002);
+  BOOST_CHECK(reader.liveUserStorageClaimsForObject("/repo/b", item.objectName).empty());
+  BOOST_CHECK(reader.liveUserStorageClaimsForObject("/repo/a", "/producer/other").empty());
+  claims = reader.liveUserStorageClaimsForObject("/repo/a", item.objectName);
+  BOOST_REQUIRE_EQUAL(claims.size(), 2U);
+  BOOST_CHECK_EQUAL(claims[0].ownerIdentity, "/user/u");
+  BOOST_CHECK_EQUAL(claims[1].ownerIdentity, "/user/v");
+  (void)writer.prepareUserStorageCleanup("/user/u", "/repo/a", "clear-u",
+    item.objectName, 1, 1003);
+  claims = reader.liveUserStorageClaimsForObject("/repo/a", item.objectName);
+  BOOST_REQUIRE_EQUAL(claims.size(), 2U);
+  BOOST_CHECK(claims[0].state == RepoUserStorageClaimState::CLEANUP_PREPARED);
+  BOOST_CHECK(claims[1].state == RepoUserStorageClaimState::COMMITTED);
+  (void)writer.confirmUserStorageCleanup("/repo/a", "/user/u", "clear-u", 1004);
+  claims = reader.liveUserStorageClaimsForObject("/repo/a", item.objectName);
+  BOOST_REQUIRE_EQUAL(claims.size(), 1U);
+  BOOST_CHECK_EQUAL(claims.front().ownerIdentity, "/user/v");
+  (void)writer.prepareUserStorageCleanup("/user/v", "/repo/a", "clear-v",
+    item.objectName, 1, 1003);
+  (void)writer.confirmUserStorageCleanup("/repo/a", "/user/v", "clear-v", 1004);
+  BOOST_CHECK(reader.liveUserStorageClaimsForObject("/repo/a", item.objectName).empty());
+  SqliteArtifactMetadataStore reopened(fixture.database);
+  BOOST_CHECK(reopened.liveUserStorageClaimsForObject("/repo/a", item.objectName).empty());
+}
+
 BOOST_AUTO_TEST_CASE(PersistentNodeFactoryCreatesMigratesAndReopensCurrentCatalog)
 {
   Fixture fixture;

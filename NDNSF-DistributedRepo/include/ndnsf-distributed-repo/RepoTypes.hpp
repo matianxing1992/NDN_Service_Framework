@@ -250,6 +250,18 @@ struct RepoObjectMetadataProbe
   uint64_t manifestWireBytes = 0;
 };
 
+/** Current physical measurements with pinned immutable metadata; no admission decision. */
+struct RepoObjectMetadataSnapshot
+{
+  std::shared_ptr<const RepoObjectManifest> manifest;
+  bool payloadMetadataAvailable = false;
+  bool payloadPresent = false;
+  bool payloadRepresentationValid = false;
+  uint64_t payloadSize = 0;
+  bool manifestMeasurementAvailable = false;
+  uint64_t manifestWireBytes = 0;
+};
+
 struct RepoWriteIntent
 {
   std::string operationId;
@@ -624,6 +636,9 @@ public:
   virtual bool hasCommittedPayload(const RepoObjectManifest& manifest) const;
 
   virtual RepoCacheStatus cacheStatus() const;
+
+  /** Committed reads and metadata probes do not require Core's write fence. */
+  virtual bool supportsConcurrentCommittedReads() const noexcept { return false; }
 
   // Large-object path.  Legacy vector backends keep the compatibility
   // defaults below; concrete file-backed authorities override these methods

@@ -595,6 +595,13 @@ def _translate_native(config, by_kind, resolve):
         if actor["external"]:
             continue
         parameters = actor["parameters"]
+        periodic = "core-svs-periodic-sync-ms"
+        if periodic in parameters:
+            field = "actor.parameters." + periodic
+            if actor["kind"] not in ("requester", "repo", "provider", "artifact-authority"):
+                _fail(field, "requires a native User or Provider actor")
+            if _integer(parameters[periodic], field) > 3600000:
+                _fail(field, "exceeds native periodic-sync limit 3600000 ms")
         if actor["kind"] == "provider":
             _object(parameters, "provider.parameters", {
                 "roles", "selection-offer-key-file", "offer-backend", "offer-can-provision",
@@ -604,7 +611,7 @@ def _translate_native(config, by_kind, resolve):
                 "allow-selection-generation-options", "sample-kv-state-values",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
-                "assembly-timeout-ms", "core-work-timeout-ms",
+                "assembly-timeout-ms", "core-work-timeout-ms", "core-svs-periodic-sync-ms",
                 "conversation-retention-ms", "kv-handoff-config"})
             if "core-work-timeout-ms" in parameters:
                 field = "provider.parameters.core-work-timeout-ms"
@@ -660,7 +667,14 @@ def _translate_native(config, by_kind, resolve):
                   optional=True, directory=True)
             paths(parameters, ("statistics-file",), "provider.parameters", exists=False)
         elif actor['kind'] == 'repo':
-            _object(parameters, 'repo.parameters', {'request-timeout-ms', 'repo-node'})
+            _object(parameters, 'repo.parameters', {'request-timeout-ms', 'repo-node',
+                                                 'cache-bytes', 'large-object-threshold-bytes',
+                                                 'core-svs-periodic-sync-ms'})
+            for option in ('cache-bytes', 'large-object-threshold-bytes'):
+                if option in parameters:
+                    value = _integer(parameters[option], 'repo.parameters.' + option, 1)
+                    if value > 18446744073709551615:
+                        _fail('repo.parameters.' + option, 'exceeds native unsigned 64-bit range')
             if 'repo-node' in parameters:
                 _name(parameters['repo-node'], 'repo.parameters.repo-node')
             if 'request-timeout-ms' in parameters:
@@ -668,7 +682,7 @@ def _translate_native(config, by_kind, resolve):
                                    'repo.parameters.request-timeout-ms', 251)
                 if timeout > 2147483647:
                     _fail('repo.parameters.request-timeout-ms', 'exceeds native signed int')
-        elif parameters:
+        elif parameters.keys() - {periodic}:
             _fail("actor.parameters", "role parameters belong in common/native configuration")
     barrier_outputs = {requester[key][field]
                        for key in ('test_stream_barrier', 'test_handoff_barrier') if key in requester

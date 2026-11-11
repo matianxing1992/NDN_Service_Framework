@@ -349,6 +349,14 @@ def build(bld):
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
+        bld.program(name='ndnsf-repo-file-benchmark',
+                    target='ndnsf-repo-file-benchmark',
+                    source=['repo-file-benchmark.cpp'],
+                    rpath=[runtime_libdir],
+                    includes=['..', '../NDNSF-DistributedRepo/include'],
+                    use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
+                    install_path='${BINDIR}')
+
         bld.program(name='DI_NativeArtifactAuthority',
                     target='DI_NativeArtifactAuthority',
                     source=['DI_NativeArtifactAuthority.cpp'],

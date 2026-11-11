@@ -113,6 +113,9 @@ public:
   std::vector<uint8_t> readRange(const ArtifactReference& artifact,
                                  uint64_t generation,
                                  ArtifactByteRange range) const override;
+  /** Read only the immutable committed file; never fall back to staging. */
+  std::vector<uint8_t> readCommittedRange(const ArtifactReference& artifact,
+                                         uint64_t generation, ArtifactByteRange range) const;
   void markVerified(const ArtifactReference& artifact, uint64_t generation,
                     ArtifactByteRange range) override;
   std::vector<ArtifactByteRange>
@@ -131,6 +134,8 @@ public:
                           uint64_t generation) const;
 
 private:
+  std::vector<uint8_t> readRangeImpl(const ArtifactReference& artifact, uint64_t generation,
+                                    ArtifactByteRange range, bool committedOnly) const;
   std::string m_rootPath;
   uint64_t m_maxRangeBytes;
   bool m_createDirectories;

@@ -740,6 +740,7 @@ def build(bld):
                 name='spec192-repo-persistent-service',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-persistent-service.t.cpp'),
+                        bld.path.find_node('unit-tests/spec229-repo-ack-window.t.cpp'),
                         bld.path.find_node('unit-tests/face-data-reference-fetcher.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-artifact-receipt.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-filesystem-artifact-store.t.cpp')],

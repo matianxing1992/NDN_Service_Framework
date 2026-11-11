@@ -24,13 +24,17 @@ public:
   static constexpr std::size_t INITIAL_WINDOW = 16;
 
   explicit
-  ExactDataCongestionWindow(std::size_t limit, ndn::time::milliseconds initialRto)
+  ExactDataCongestionWindow(std::size_t limit, ndn::time::milliseconds initialRto,
+    double initialSlowStartThreshold = ndn::SegmentFetcherOptions{}.initSsthresh)
     : m_limit(limit)
     , m_cwnd(std::min(INITIAL_WINDOW, limit))
+    , m_ssthresh(initialSlowStartThreshold)
     , m_rtt(makeRttOptions(initialRto))
     , m_peakWindow(size())
   {
     if (limit == 0) throw std::invalid_argument("exact Data window requires a resource bound");
+    if (!std::isfinite(initialSlowStartThreshold) || initialSlowStartThreshold < 1)
+      throw std::invalid_argument("exact Data slow-start threshold must be finite and at least one");
   }
 
   std::size_t
@@ -70,8 +74,10 @@ public:
   loss()
   {
     ++m_losses;
-    // Back off once for the recovery flight, not once for every lost packet.
-    if (decrease()) m_rtt.backoffRto();
+    // Like SegmentFetcher, every retryable loss backs off the RTO. Recovery
+    // suppression applies only to the congestion-window decrease.
+    m_rtt.backoffRto();
+    decrease();
   }
 
   std::chrono::nanoseconds
@@ -137,7 +143,7 @@ private:
   const std::size_t m_limit;
   ndn::SegmentFetcherOptions m_options;
   double m_cwnd;
-  double m_ssthresh = m_options.initSsthresh;
+  double m_ssthresh;
   ndn::util::RttEstimator m_rtt;
   std::size_t m_highInterest = 0;
   std::optional<std::size_t> m_highData;

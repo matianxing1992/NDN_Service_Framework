@@ -1,4 +1,6 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
+#include "packet-store-lookup.hpp"
+#include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
@@ -766,6 +768,11 @@ private:
 class TieredRepoStore : public RepoStoreBackend
 {
 public:
+  bool supportsConcurrentCommittedReads() const noexcept override
+  {
+    return m_authoritativeStore->supportsConcurrentCommittedReads();
+  }
+
   TieredRepoStore(std::shared_ptr<RepoStoreBackend> authoritativeStore,
                   uint64_t memoryCacheBytes,
                   std::string authoritativeBackend,
@@ -987,21 +994,120 @@ public:
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override
   {
-    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
+    const auto snapshot = detail::readManifestSnapshot(*m_authoritativeStore, objectName);
+    const auto& manifest = *snapshot;
+    if (range.offsetBytes > manifest.size || range.lengthBytes > manifest.size - range.offsetBytes)
+      throw std::out_of_range("repo-range-read-out-of-bounds");
+    // Admission is still checked by Core on every Interest. This cache only
+    // accelerates immutable committed bytes, never staging or missing payloads.
+    const bool cacheable = range.lengthBytes != 0 && m_status.budgetBytes != 0 && manifest.size != 0 &&
+      manifest.size <= m_largeObjectThreshold && manifest.size <= m_status.budgetBytes &&
+      m_authoritativeStore->hasCommittedPayload(manifest);
+    std::optional<std::vector<uint8_t>> cachedBytes;
+    uint64_t observedEpoch = 0;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto epoch = m_epochs.find(objectName);
+      observedEpoch = epoch == m_epochs.end() ? 0 : epoch->second;
+      const auto found = m_cache.find(objectName);
+      if (found != m_cache.end()) {
+        if (cacheable && (found->second.validatedManifest.lock() == snapshot ||
+                         found->second.object.manifest.hasSameMetadata(manifest))) {
+          found->second.validatedManifest = snapshot;
+          ++m_status.hits;
+          m_lru.splice(m_lru.end(), m_lru, found->second.recency);
+          const auto& bytes = found->second.object.payload;
+          cachedBytes.emplace(bytes.begin() + range.offsetBytes,
+                              bytes.begin() + range.offsetBytes + range.lengthBytes);
+        }
+        else {
+          invalidate(objectName);
+        }
+      }
+      if (!cachedBytes) {
+        ++m_status.misses;
+        ++m_status.backingReads;
+      }
+    }
+    if (cachedBytes) {
+      if (supportsConcurrentCommittedReads()) {
+        const auto current = detail::readManifestSnapshot(*m_authoritativeStore, objectName);
+        if (current != snapshot && !current->hasSameMetadata(manifest))
+          throw std::runtime_error("repo-range-cache-identity-changed");
+      }
+      return std::move(*cachedBytes);
+    }
+    if (cacheable) {
+      try {
+        // One packet request brings its related packet set into the existing
+        // bounded LRU. Chunked reads retain the backend's range contract.
+        std::vector<uint8_t> bytes;
+        bytes.reserve(manifest.size);
+        constexpr uint64_t PREFETCH_CHUNK_BYTES = 1ULL << 20;
+        while (bytes.size() < manifest.size) {
+          const auto length = std::min<uint64_t>(PREFETCH_CHUNK_BYTES,
+                                                 manifest.size - bytes.size());
+          auto part = m_authoritativeStore->getRange(objectName, {bytes.size(), length});
+          if (part.size() != length)
+            throw std::runtime_error("repo-range-prefetch-truncated");
+          bytes.insert(bytes.end(), part.begin(), part.end());
+        }
+        if (sha256Hex(bytes) != manifest.sha256 ||
+            !m_authoritativeStore->getManifest(objectName).hasSameMetadata(manifest) ||
+            !m_authoritativeStore->hasCommittedPayload(manifest))
+          throw std::runtime_error("repo-range-prefetch-identity-mismatch");
+        std::vector<uint8_t> result(bytes.begin() + range.offsetBytes,
+                                    bytes.begin() + range.offsetBytes + range.lengthBytes);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto epoch = m_epochs.find(objectName);
+        if ((epoch == m_epochs.end() ? 0 : epoch->second) == observedEpoch)
+          admitNoThrow({manifest, std::move(bytes)});
+        return result;
+      }
+      catch (const std::exception&) {
+        // Optional prefetch cannot turn a supported ordinary range read into
+        // failure (for example, a backend may have a smaller maximum range).
+      }
+    }
     return m_authoritativeStore->getRange(objectName, range);
   }
 
   RepoObjectManifest getManifest(const std::string& objectName) const override
   {
-    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
     return m_authoritativeStore->getManifest(objectName);
+  }
+
+  std::shared_ptr<const RepoObjectManifest>
+  getManifestSnapshot(const std::string& objectName) const
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
+    return detail::readManifestSnapshot(*m_authoritativeStore, objectName);
   }
 
   RepoObjectMetadataProbe
   probeObjectMetadata(const std::string& objectName) const override
   {
-    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
     return m_authoritativeStore->probeObjectMetadata(objectName);
+  }
+
+  RepoObjectMetadataSnapshot
+  probeObjectMetadataSnapshot(const std::string& objectName) const
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
+    return detail::probeObjectMetadataSnapshot(*m_authoritativeStore, objectName);
   }
 
   std::optional<RepoObjectManifest>
@@ -1066,7 +1172,9 @@ public:
 
   bool has(const std::string& objectName) const override
   {
-    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
     return m_authoritativeStore->has(objectName);
   }
 
@@ -1128,6 +1236,16 @@ public:
     return m_authoritativeStore->listManifests();
   }
 
+  std::vector<RepoObjectManifest>
+  findPacketManifests(const std::string& canonical, const std::string& alternate,
+                      bool prefixMatch) const
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
+    return detail::findPacketManifests(*m_authoritativeStore, canonical, alternate, prefixMatch);
+  }
+
   uint64_t usedBytes() const override
   {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
@@ -1136,7 +1254,9 @@ public:
 
   bool hasCommittedPayload(const RepoObjectManifest& manifest) const override
   {
-    std::unique_lock<std::mutex> authorityLock(m_authorityMutex);
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
     return m_authoritativeStore->hasCommittedPayload(manifest);
   }
 
@@ -1170,6 +1290,7 @@ private:
   struct CacheEntry
   {
     StoredObject object;
+    std::weak_ptr<const RepoObjectManifest> validatedManifest;
     uint64_t chargeBytes = 0;
     std::list<std::string>::iterator recency;
   };
@@ -1257,7 +1378,7 @@ private:
     const auto recency = std::prev(m_lru.end());
     try {
       m_cache.emplace(objectName,
-                      CacheEntry{std::move(object), chargeBytes, recency});
+                      CacheEntry{std::move(object), {}, chargeBytes, recency});
     }
     catch (...) {
       m_lru.pop_back();
@@ -1279,6 +1400,70 @@ private:
   mutable uint64_t m_usedBytes = 0;
   mutable RepoCacheStatus m_status;
 };
+
+bool
+detail::matchesPacketLookup(const RepoObjectManifest& manifest, const std::string& canonical,
+                            const std::string& alternate, bool prefixMatch)
+{
+  // Legacy single-packet prefix matching still uses Interest::matchesData in Core.
+  if (prefixMatch && manifest.objectType == "ndn-data-wire")
+    return true;
+  if (manifest.objectType != "original-packet-set")
+    return false;
+  return std::any_of(manifest.packetNames.begin(), manifest.packetNames.end(),
+    [&](const std::string& name) {
+      if (!prefixMatch)
+        return name == canonical || name == alternate;
+      return canonical == "/" ||
+        (name.compare(0, canonical.size(), canonical) == 0 &&
+         (name.size() == canonical.size() || name[canonical.size()] == '/'));
+    });
+}
+
+std::shared_ptr<const RepoObjectManifest>
+detail::readManifestSnapshot(const RepoStoreBackend& store, const std::string& objectName)
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    return tiered->getManifestSnapshot(objectName);
+  if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
+    return filesystem->getManifestSnapshot(objectName);
+  return std::make_shared<const RepoObjectManifest>(store.getManifest(objectName));
+}
+
+RepoObjectMetadataSnapshot
+detail::probeObjectMetadataSnapshot(const RepoStoreBackend& store, const std::string& objectName)
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    return tiered->probeObjectMetadataSnapshot(objectName);
+  if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
+    return filesystem->probeObjectMetadataSnapshot(objectName);
+  auto probe = store.probeObjectMetadata(objectName);
+  RepoObjectMetadataSnapshot result;
+  if (probe.manifestPresent)
+    result.manifest = std::make_shared<const RepoObjectManifest>(std::move(probe.manifest));
+  result.payloadMetadataAvailable = probe.payloadMetadataAvailable;
+  result.payloadPresent = probe.payloadPresent;
+  result.payloadRepresentationValid = probe.payloadRepresentationValid;
+  result.payloadSize = probe.payloadSize;
+  result.manifestMeasurementAvailable = probe.manifestMeasurementAvailable;
+  result.manifestWireBytes = probe.manifestWireBytes;
+  return result;
+}
+
+std::vector<RepoObjectManifest>
+detail::findPacketManifests(const RepoStoreBackend& store, const std::string& canonical,
+                            const std::string& alternate, bool prefixMatch)
+{
+  if (const auto tiered = dynamic_cast<const TieredRepoStore*>(&store))
+    return tiered->findPacketManifests(canonical, alternate, prefixMatch);
+  if (const auto filesystem = dynamic_cast<const FilesystemRepoStoreBackend*>(&store))
+    return filesystem->findPacketManifests(canonical, alternate, prefixMatch);
+  auto manifests = store.listManifests();
+  manifests.erase(std::remove_if(manifests.begin(), manifests.end(), [&](const auto& manifest) {
+    return !matchesPacketLookup(manifest, canonical, alternate, prefixMatch);
+  }), manifests.end());
+  return manifests;
+}
 
 RepoDeploymentMode
 parseRepoDeploymentMode(const std::string& value)

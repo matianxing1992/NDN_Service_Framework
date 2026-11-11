@@ -1,9 +1,11 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "face-data-reference-fetcher.hpp"
+#include "owned-manifest-query.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/TimelineTrace.hpp"
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 
@@ -605,7 +607,7 @@ RepoClient::fetchOriginalDataPacketSet(
     deadline - std::chrono::steady_clock::now());
   if (remaining <= std::chrono::milliseconds::zero())
     throw std::runtime_error("repo-original-packet-set-deadline");
-  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 16,
+  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 0,
                                            std::move(binding.lease));
   const auto spool = fetcher(reference);
   current();
@@ -649,8 +651,8 @@ RepoClient::fetchOriginalDataPackets(
   const std::function<void()>& requireCurrent, std::shared_ptr<void> operationLifetime)
 {
   validateUserStorageClientTarget(target, timeoutMs);
-  if (!user || !verifyPacket || names.empty() || names.size() > 1024 ||
-      maxWireBytes < names.size() || maxWireBytes > (8U << 20))
+  if (!user || !verifyPacket || names.empty() || names.size() > detail::MAX_NAMED_PACKET_COUNT ||
+      maxWireBytes < names.size() || maxWireBytes > detail::MAX_NAMED_PACKET_WIRE_BYTES)
     throw std::invalid_argument("repo-original-named-packet-request-invalid");
   if (user->isOnIoThread())
     throw std::logic_error("repo-original-packet-fetch-on-face-thread");
@@ -674,7 +676,7 @@ RepoClient::fetchOriginalDataPackets(
   const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
     deadline - std::chrono::steady_clock::now());
   current();
-  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 16, lifetime);
+  detail::FaceDataReferenceFetcher fetcher(*binding.face, remaining, remaining, 0, lifetime);
   const auto spool = fetcher.fetchNamed(names, maxWireBytes, ndn::Name(target.providerIdentity),
     [requireCurrent, deadline] {
       if (requireCurrent)
@@ -904,6 +906,23 @@ RepoClient::commitUserStorageOriginalPackets(
     return static_cast<int>(milliseconds);
   };
   current();
+  auto stageStarted = std::chrono::steady_clock::now();
+  const auto noteStage = [&](const char* stage) noexcept {
+    try {
+      if (!ndn_service_framework::controlTimingEnvEnabled()) return;
+      const auto finished = std::chrono::steady_clock::now();
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        finished - stageStarted).count();
+      stageStarted = finished;
+      ndn_service_framework::logControlTiming("repo-client", "original-publication",
+        ndn::Name(request.reference.objectName), {
+          {"operation_id", request.operationId}, {"stage", stage},
+          {"elapsed_ns", std::to_string(elapsed)}});
+    }
+    catch (...) {
+      // Optional timing cannot change commit or cancellation behavior.
+    }
+  };
   const auto& names = request.reference.packetSetMetadata->packetNames;
   constexpr size_t MAX_PACKET_COUNT = 65536;
   constexpr size_t MAX_PACKET_INDEX_BYTES = 1U << 20;
@@ -923,9 +942,26 @@ RepoClient::commitUserStorageOriginalPackets(
 
   struct Publication
   {
+    ~Publication()
+    {
+      try {
+        ndn_service_framework::logControlTiming("repo-producer", "reply-admission",
+          prefix, {{"limit_bytes", std::to_string(replyBudgetBytes)},
+                   {"peak_pending_bytes", std::to_string(peakPendingBytes.load())},
+                   {"drops", std::to_string(admissionDrops.load())}});
+      }
+      catch (...) {
+        // The final reply lease must release even when observation fails.
+      }
+    }
+
     std::atomic<bool> stopped{false};
-    std::atomic<size_t> pending{0};
-    std::map<ndn::Name, size_t> index;
+    std::atomic<size_t> pendingBytes{0};
+    std::atomic<size_t> peakPendingBytes{0};
+    std::atomic<size_t> admissionDrops{0};
+    size_t replyBudgetBytes = 0;
+    ndn::Name prefix;
+    std::map<ndn::Name, std::pair<size_t, size_t>> index;
     std::shared_ptr<detail::FaceDataReferencePacketSpool> spool;
     ndn::ScopedInterestFilterHandle filter;
     std::shared_ptr<void> faceLease;
@@ -934,9 +970,12 @@ RepoClient::commitUserStorageOriginalPackets(
   struct PacketReplyLease
   {
     std::shared_ptr<Publication> owner;
-    ~PacketReplyLease() { --owner->pending; }
+    size_t bytes = 0;
+    ~PacketReplyLease() { owner->pendingBytes.fetch_sub(bytes); }
   };
   auto publication = std::make_shared<Publication>();
+  publication->prefix = prefix;
+  publication->replyBudgetBytes = request.reference.expectedSize;
   auto stop = ndn::make_scope_exit([&] {
     publication->stopped.store(true);
     if (!publication->faceLease) return;
@@ -976,7 +1015,7 @@ RepoClient::commitUserStorageOriginalPackets(
     const ndn::Data data{ndn::Block(ndn::span<const uint8_t>(wire->data(), wire->size()))};
     if (data.wireEncode().size() != wire->size() || data.getName() != ndn::Name(names[i]) ||
         !prefix.isPrefixOf(data.getName()) || !verifyProducerSignature(data) ||
-        !publication->index.emplace(data.getName(), i).second)
+        !publication->index.emplace(data.getName(), std::make_pair(i, wire->size())).second)
       throw std::invalid_argument("repo-original-publication-packet-invalid");
     current();
     publication->spool->append(i, *wire);
@@ -1004,27 +1043,37 @@ RepoClient::commitUserStorageOriginalPackets(
         publication->filter = face.setInterestFilter(ndn::InterestFilter(prefix),
           [weak, &face, deadline](const ndn::InterestFilter&, const ndn::Interest& interest) {
             const auto state = weak.lock();
-            if (!state || state->stopped.load() || interest.getCanBePrefix() ||
+            if (!state || state->stopped.load() ||
                 std::chrono::steady_clock::now() >= deadline) return;
+            // SDK bootstrap may set CanBePrefix; only an exact indexed Name is served.
             const auto found = state->index.find(interest.getName());
             if (found == state->index.end()) return;
-            constexpr size_t MAX_PENDING_REPLIES = 64;
-            auto count = state->pending.load();
+            const auto [packetIndex, packetBytes] = found->second;
+            auto bytes = state->pendingBytes.load();
             do {
-              if (count >= MAX_PENDING_REPLIES) return;
-            } while (!state->pending.compare_exchange_weak(count, count + 1));
+              if (packetBytes > state->replyBudgetBytes ||
+                  bytes > state->replyBudgetBytes - packetBytes) {
+                ++state->admissionDrops;
+                return;
+              }
+            } while (!state->pendingBytes.compare_exchange_weak(bytes, bytes + packetBytes));
+            auto peak = state->peakPendingBytes.load();
+            while (peak < bytes + packetBytes &&
+                   !state->peakPendingBytes.compare_exchange_weak(peak, bytes + packetBytes)) {
+            }
             std::shared_ptr<PacketReplyLease> reply;
             try {
               reply = std::make_shared<PacketReplyLease>();
               reply->owner = state;
-              const auto wire = state->spool->readPacket(found->second);
+              reply->bytes = packetBytes;
+              const auto wire = state->spool->readPacket(packetIndex);
               if (state->stopped.load() || std::chrono::steady_clock::now() >= deadline) return;
               face.put(ndn::Data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))));
               // Retain the admission/spool through the queued put callback.
               boost::asio::post(face.getIoContext(), [reply] {});
             }
             catch (...) {
-              if (!reply) --state->pending;
+              if (!reply) state->pendingBytes.fetch_sub(packetBytes);
               // Timeout/retry exposes a failed read; never substitute another packet.
             }
           });
@@ -1038,17 +1087,22 @@ RepoClient::commitUserStorageOriginalPackets(
   current();
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
+  noteStage("prepare-producer");
   const auto status = parseOperationStatusJson(toString(requestSelectedService(writer, provider,
     makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining(),
     {}, current)));
+  noteStage("insert");
   if (status.operationId != request.operationId || status.operation != "INSERT" ||
       status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
     throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + status.message);
 
+  detail::OwnedManifestQuery manifestQuery(request);
+  const auto encodedManifestQuery = detail::encodeOwnedManifestQuery(manifestQuery);
   const auto readManifest = [&] {
     current();
     const auto wire = requestSelectedService(writer, provider,
-      makeRepoServiceName(servicePrefix, "MANIFEST"), encoded, ackCollectionTimeMs, remaining(),
+      makeRepoServiceName(servicePrefix, "MANIFEST"), encodedManifestQuery,
+      ackCollectionTimeMs, remaining(),
       {}, current);
     if (wire.empty() || wire.size() > MAX_PACKET_INDEX_BYTES)
       throw std::runtime_error("repo-original-publication-manifest-budget");
@@ -1067,23 +1121,28 @@ RepoClient::commitUserStorageOriginalPackets(
     current();
     return manifest;
   };
-  const auto manifest = readManifest();
-  auto readback = request.reference;
-  readback.packetSetMetadata = manifest;
-  readback.forwardingHint = provider.toUri();
-  RepoUserStoragePacketSetFetchLimits fetchLimits;
-  fetchLimits.maxPacketCount = 65536;
-  fetchLimits.maxPacketWireBytes = request.reference.expectedSize;
-  const auto packets = fetchOriginalDataPacketSet(writer, readback, verifyProducerSignature,
-                                                 remaining(), fetchLimits, current);
-  for (size_t i = 0; i < names.size(); ++i) {
-    current();
-    if (packets[i] != publication->spool->readPacket(i))
-      throw std::runtime_error("repo-original-publication-readback-mismatch");
-  }
-  if (readManifest().toJson() != manifest.toJson())
-    throw std::runtime_error("repo-original-publication-claim-changed");
+  // INSERT is durable before DONE. Withdraw the temporary Producer before the
+  // final current grant/claim and physical-manifest confirmation.
+  publication->stopped.store(true);
+  auto withdrawn = std::make_shared<std::promise<void>>();
+  auto withdrawalReady = withdrawn->get_future();
+  writer.postToIo([publication, withdrawn] {
+    try {
+      publication->filter.cancel();
+      withdrawn->set_value();
+    }
+    catch (...) {
+      withdrawn->set_exception(std::current_exception());
+    }
+  });
+  if (withdrawalReady.wait_until(deadline) != std::future_status::ready)
+    throw std::runtime_error("repo-original-publication-withdrawal-deadline");
+  withdrawalReady.get();
   current();
+  noteStage("withdraw-producer");
+  const auto manifest = readManifest();
+  current();
+  noteStage("manifest-confirmation");
   return manifest;
 }
 

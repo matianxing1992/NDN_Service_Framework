@@ -9,10 +9,14 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <thread>
 #include <sys/stat.h>
 #include <type_traits>
 #include <unistd.h>
@@ -230,6 +234,218 @@ struct PacketRepository
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(StoredModelCapability)
+
+BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
+{
+  constexpr auto capacity = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
+  std::atomic<unsigned> started{0};
+  std::atomic<bool> release{false}, extraAttempt{false};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  auto owner = std::async(std::launch::async, [&] {
+    NativeModelCommitPipeline pipeline([] {});
+    for (unsigned i = 0; i <= capacity; ++i) {
+      if (i == capacity) extraAttempt = true;
+      pipeline.submit(1, [&](const auto& current) {
+        ++started;
+        while (!release) {
+          current();
+          if (std::chrono::steady_clock::now() >= deadline)
+            throw std::runtime_error("test gate timeout");
+          std::this_thread::yield();
+        }
+      });
+    }
+    pipeline.finish();
+  });
+  while ((started < capacity || !extraAttempt) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  BOOST_CHECK(extraAttempt.load());
+  BOOST_CHECK_EQUAL(started.load(), capacity);
+  release = true;
+  BOOST_CHECK_NO_THROW(owner.get());
+  BOOST_CHECK_EQUAL(started.load(), capacity + 1);
+}
+
+BOOST_AUTO_TEST_CASE(CommitPipelineBoundsWorkersAndObservesInSubmissionOrder)
+{
+  std::atomic<unsigned> active{0}, peak{0}, started{0};
+  std::atomic<bool> releaseFirst{false}, secondDone{false};
+  std::vector<unsigned> observed;
+  const auto owner = std::this_thread::get_id();
+  bool wrongObserverThread = false;
+  const auto wait = [](const auto& ready, const auto& current) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!ready()) {
+      current();
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("test gate timeout");
+      std::this_thread::yield();
+    }
+  };
+  NativeModelCommitPipeline pipeline([] {});
+  for (unsigned i = 0; i != 2; ++i) {
+    pipeline.submit(1, [&, i](const auto& current) {
+      const auto count = ++active;
+      auto previous = peak.load();
+      while (previous < count && !peak.compare_exchange_weak(previous, count)) {}
+      ++started;
+      try {
+        if (i == 0) wait([&] { return releaseFirst.load(); }, current);
+        else secondDone = true;
+      }
+      catch (...) { --active; throw; }
+      --active;
+    }, [&, i] {
+      wrongObserverThread |= std::this_thread::get_id() != owner;
+      observed.push_back(i);
+    });
+  }
+  wait([&] { return started == 2 && secondDone; }, [] {});
+  BOOST_CHECK(observed.empty());
+  releaseFirst = true;
+  pipeline.submit(1, [](const auto& current) { current(); }, [&] { observed.push_back(2); });
+  pipeline.finish();
+  BOOST_CHECK_EQUAL(active.load(), 0);
+  BOOST_CHECK_LE(peak.load(), 2);
+  BOOST_CHECK(!wrongObserverThread);
+  const std::vector<unsigned> expected{0, 1, 2};
+  BOOST_CHECK_EQUAL_COLLECTIONS(observed.begin(), observed.end(), expected.begin(), expected.end());
+}
+
+BOOST_AUTO_TEST_CASE(CommitPipelineFailureCancelsAndDrainsAllPeers)
+{
+  constexpr auto peers = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS - 1;
+  std::atomic<unsigned> started{0}, stopped{0};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  NativeModelCommitPipeline pipeline([] {});
+  pipeline.submit(1, [&](const auto& current) {
+    while (started < peers) {
+      current();
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("test gate timeout");
+      std::this_thread::yield();
+    }
+    throw std::runtime_error("FIRST_COMMIT_FAILED");
+  });
+  for (unsigned i = 0; i < peers; ++i) {
+    pipeline.submit(1, [&](const auto& current) {
+      ++started;
+      try {
+        for (;;) {
+          current();
+          if (std::chrono::steady_clock::now() >= deadline)
+            throw std::runtime_error("test gate timeout");
+          std::this_thread::yield();
+        }
+      }
+      catch (...) { ++stopped; throw; }
+    });
+  }
+  BOOST_CHECK_EXCEPTION(pipeline.finish(), std::runtime_error,
+    [](const auto& error) { return std::string(error.what()) == "FIRST_COMMIT_FAILED"; });
+  BOOST_CHECK_EQUAL(stopped.load(), peers);
+}
+
+BOOST_AUTO_TEST_CASE(CommitPipelineRetainsLaterDurableReceiptAfterEarlierFailure)
+{
+  std::atomic<bool> laterDurable{false};
+  bool receipt = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  NativeModelCommitPipeline pipeline([] {});
+  pipeline.submit(1, [&](const auto& current) {
+    while (!laterDurable) {
+      current();
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("test gate timeout");
+      std::this_thread::yield();
+    }
+    throw std::runtime_error("FIRST_COMMIT_FAILED");
+  });
+  pipeline.submit(1, [&](const auto&) { laterDurable = true; }, [&] { receipt = true; });
+  BOOST_CHECK_THROW(pipeline.finish(), std::runtime_error);
+  BOOST_CHECK(receipt);
+}
+
+BOOST_AUTO_TEST_CASE(CommitPipelineObserverFailureDrainsAndDestructorCancels)
+{
+  std::atomic<bool> stopped{false};
+  const auto blocked = [&](const auto& current) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    try {
+      for (;;) {
+        current();
+        if (std::chrono::steady_clock::now() >= deadline)
+          throw std::runtime_error("test gate timeout");
+        std::this_thread::yield();
+      }
+    }
+    catch (...) { stopped = true; throw; }
+  };
+  {
+    NativeModelCommitPipeline pipeline([] {});
+    pipeline.submit(1, [](const auto&) {}, [] { throw std::runtime_error("OBSERVER_FAILED"); });
+    pipeline.submit(1, blocked);
+    BOOST_CHECK_EXCEPTION(pipeline.finish(), std::runtime_error,
+      [](const auto& error) { return std::string(error.what()) == "OBSERVER_FAILED"; });
+  }
+  // A worker can be cancelled before entering its callback; finish still drains it.
+  stopped = false;
+  BOOST_CHECK_EXCEPTION(([&] {
+    NativeModelCommitPipeline pipeline([] {});
+    pipeline.submit(1, blocked);
+    throw std::runtime_error("PREPARATION_FAILED");
+  }()), std::runtime_error,
+    [](const auto& error) { return std::string(error.what()) == "PREPARATION_FAILED"; });
+}
+
+BOOST_AUTO_TEST_CASE(GenericPacketIoKeepsCommitOnCallingThread)
+{
+  PacketRepository repository;
+  auto port = repository.io();
+  const auto original = port.commit;
+  const auto owner = std::this_thread::get_id();
+  bool wrongThread = false;
+  port.commit = [&](auto wires, const auto& digest) {
+    wrongThread |= std::this_thread::get_id() != owner;
+    original(std::move(wires), digest);
+  };
+  BOOST_CHECK(!port.commitConcurrent);
+  const auto publication = repository.publish(&port);
+  BOOST_CHECK(!wrongThread);
+  BOOST_CHECK_EQUAL(publication.packetGroups, 5);
+}
+
+BOOST_AUTO_TEST_CASE(ConcurrentJournalPublicationRecoversAfterPartialObjectCommit)
+{
+  PrivateFile file;
+  PacketRepository repository;
+  repository.source.back().plaintext = Bytes(34U << 20, 0x73);
+  auto port = repository.io();
+  const auto original = port.commit;
+  std::mutex storeMutex;
+  std::atomic<unsigned> layerCommits{0}, workerCalls{0};
+  std::atomic<bool> failOnce{true};
+  const ndn::Name layer("/preparer/models/v=1/objects/layer0");
+  port.commitConcurrent = [&](auto wires, const auto& digest, const auto& current) {
+    current();
+    ++workerCalls;
+    const ndn::Data first{ndn::Block(ndn::span<const std::uint8_t>(wires.front()))};
+    if (layer.isPrefixOf(first.getName()) && ++layerCommits == 2 && failOnce.exchange(false))
+      throw std::runtime_error("SECOND_LAYER_GROUP_FAILED");
+    std::lock_guard<std::mutex> lock(storeMutex);
+    original(std::move(wires), digest);
+  };
+  BOOST_CHECK_EXCEPTION(repository.publish(&port, file.path), std::runtime_error,
+    [](const auto& error) { return std::string(error.what()) == "SECOND_LAYER_GROUP_FAILED"; });
+  BOOST_CHECK(!repository.groups.count(ndn::Name("/preparer/models/v=1/root")));
+  const auto confirmationsBefore = repository.confirmations;
+  const auto publication = repository.publish(&port, file.path);
+  BOOST_CHECK_GT(workerCalls.load(), 0);
+  BOOST_CHECK_GT(repository.confirmations, confirmationsBefore);
+  BOOST_CHECK_EQUAL(repository.writes.back(), publication.handle.rootName);
+  BOOST_CHECK(repository.groups.count(publication.handle.rootName));
+}
 
 BOOST_AUTO_TEST_CASE(LegacyPendingUploadKeepsItsCommittedGroupBoundaries)
 {

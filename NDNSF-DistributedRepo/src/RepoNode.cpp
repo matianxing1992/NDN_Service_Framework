@@ -5,11 +5,13 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 #include "face-data-reference-fetcher.hpp"
+#include "owned-manifest-query.hpp"
 
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/TimelineTrace.hpp"
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block.hpp>
@@ -302,10 +304,10 @@ RepoUserStorageObject
 RepoNode::measurePersistentUserStorageObject(const RepoObjectManifest& manifest,
                                            bool verifyPayload) const
 {
-  const auto probe = m_core.probeObjectMetadata(manifest.objectName);
-  if (!probe.manifestPresent || !probe.manifestMeasurementAvailable ||
+  const auto probe = m_core.probeObjectMetadataSnapshot(manifest.objectName);
+  if (!probe.manifest || !probe.manifestMeasurementAvailable ||
       !probe.payloadMetadataAvailable || !probe.payloadRepresentationValid ||
-      !probe.manifest.hasSameMetadata(manifest)) {
+      (probe.manifest.get() != &manifest && !probe.manifest->hasSameMetadata(manifest))) {
     throw std::runtime_error("repo-user-storage-inventory-conflict: physical measurement unavailable");
   }
   std::string digest;
@@ -448,6 +450,7 @@ RepoNode::~RepoNode()
   m_originalDataRoute.cancel();
   m_originalDataFilter.cancel();
   stopOriginalDataWorker();
+  stopStorageWriteWorker();
   stopPublishOperationWorker();
   stopRangeReservationReaper();
 }
@@ -472,7 +475,7 @@ RepoNode::registerOriginalDataServing(ndn::Face& face)
     // with NFD would hijack unrelated traffic; only the distinct Repo identity
     // is advertised as a forwarding-hint route.
     m_originalDataFilter = face.setInterestFilter(
-      ndn::InterestFilter(ndn::Name("/")),
+      ndn::InterestFilter(ndn::Name("/")).allowLoopback(false),
       [weakSelf, &face] (const ndn::InterestFilter&, const ndn::Interest& interest) {
         const auto self = weakSelf.lock();
         if (!self) return;
@@ -531,87 +534,173 @@ RepoNode::isOriginalDataServingReady() const noexcept
   return m_originalDataRouteReady.load() && !m_ownedInsertStopping.load();
 }
 
-void
+bool
 RepoNode::enqueueOriginalDataInterest(const ndn::Interest& interest)
 {
+  const auto interestBytes = interest.wireEncode().size();
+  if (interestBytes > ndn::MAX_NDN_PACKET_SIZE)
+    return false;
+  // Reserve the queued Interest, its record and a maximum-sized original reply.
+  const auto byteCharge = interestBytes + sizeof(OriginalDataJob) + ndn::MAX_NDN_PACKET_SIZE;
   std::chrono::milliseconds budget;
   {
     std::lock_guard<std::mutex> configGuard(m_publishWorkerMutex);
     budget = std::chrono::milliseconds(m_publishRequestTimeoutMs);
   }
   std::lock_guard<std::mutex> lock(m_originalDataMutex);
-  constexpr std::size_t MAX_PENDING_ORIGINAL_DATA = 64;
-  if (m_stopOriginalDataWorker || !isOriginalDataServingReady() ||
-      m_originalDataPending->load() >= MAX_PENDING_ORIGINAL_DATA) {
-    return;
+  if (m_stopOriginalDataWorker || !isOriginalDataServingReady()) {
+    return false;
+  }
+  if (byteCharge > ORIGINAL_DATA_PENDING_BYTE_LIMIT ||
+      m_originalDataPendingBytes->load() > ORIGINAL_DATA_PENDING_BYTE_LIMIT - byteCharge) {
+    ++m_originalDataAdmissionDrops;
+    return false;
   }
   const auto lifetime = std::min(budget,
     std::chrono::milliseconds(interest.getInterestLifetime().count()));
   if (lifetime <= std::chrono::milliseconds::zero()) {
-    return;
+    return false;
   }
-  m_originalDataQueue.push_back({interest, std::chrono::steady_clock::now() + lifetime});
-  m_originalDataPending->fetch_add(1);
+  m_originalDataQueue.push_back({interest, std::chrono::steady_clock::now() + lifetime, byteCharge});
+  m_originalDataPeakPending = std::max(m_originalDataPeakPending,
+    m_originalDataPending->fetch_add(1) + 1);
+  m_originalDataPeakPendingBytes = std::max(m_originalDataPeakPendingBytes,
+    m_originalDataPendingBytes->fetch_add(byteCharge) + byteCharge);
   m_originalDataWake.notify_one();
+  return true;
 }
 
 void
 RepoNode::runOriginalDataWorker(ndn::Face& face)
 {
-  for (;;) {
-    OriginalDataJob job;
+  struct PendingRelease
+  {
+    std::shared_ptr<std::atomic<std::size_t>> count;
+    std::shared_ptr<std::atomic<std::size_t>> bytes;
+    std::size_t byteCharge = 0;
+    ~PendingRelease()
     {
-      std::unique_lock<std::mutex> lock(m_originalDataMutex);
-      m_originalDataWake.wait(lock, [this] {
-        return m_stopOriginalDataWorker || !m_originalDataQueue.empty();
-      });
-      if (m_stopOriginalDataWorker) {
-        return;
+      if (count) {
+        bytes->fetch_sub(byteCharge);
+        count->fetch_sub(1);
       }
-      job = std::move(m_originalDataQueue.front());
-      m_originalDataQueue.pop_front();
     }
-    struct PendingRelease
-    {
-      std::shared_ptr<std::atomic<std::size_t>> count;
-      ~PendingRelease()
+  };
+  struct Reply
+  {
+    ndn::Data data;
+    std::chrono::steady_clock::time_point deadline;
+    std::shared_ptr<PendingRelease> completion;
+  };
+  struct Read
+  {
+    OriginalDataJob job;
+    std::shared_ptr<PendingRelease> completion;
+  };
+  for (;;) {
+    std::vector<Read> reads;
+    std::vector<Reply> replies;
+    for (std::size_t processed = 0;
+         processed < RepoCore::MAX_ORIGINAL_PACKET_READ_BATCH; ++processed) {
+      OriginalDataJob job;
       {
-        if (count) {
-          count->fetch_sub(1);
+        std::unique_lock<std::mutex> lock(m_originalDataMutex);
+        if (processed == 0) {
+          m_originalDataWake.wait(lock, [this] {
+            return m_stopOriginalDataWorker || !m_originalDataQueue.empty();
+          });
         }
-      }
-    } release{m_originalDataPending};
-    try {
-      if (std::chrono::steady_clock::now() >= job.deadline) {
-        NDN_LOG_DEBUG("original packet expired before lookup name=" << job.interest.getName());
-        continue;
-      }
-      NDN_LOG_DEBUG("original packet lookup begin name=" << job.interest.getName());
-      const auto wire = getDataPacket(job.interest);
-      NDN_LOG_DEBUG("original packet lookup ready name=" << job.interest.getName()
-                    << " bytes=" << wire.size());
-      ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-      auto completion = std::make_shared<PendingRelease>();
-      completion->count = std::move(release.count);
-      const std::weak_ptr<RepoNode> owner = weak_from_this();
-      boost::asio::post(face.getIoContext(), [owner, &face, data = std::move(data),
-        deadline = job.deadline, completion] {
-        const auto self = owner.lock();
-        if (!self || !self->isOriginalDataServingReady() ||
-            std::chrono::steady_clock::now() >= deadline) {
-          NDN_LOG_DEBUG("original packet unavailable before put name=" << data.getName());
+        if (m_stopOriginalDataWorker) {
           return;
         }
-        face.put(data);
-        NDN_LOG_DEBUG("original packet put name=" << data.getName());
-        // Keep admission charged through Face's queued put, not only this callback.
-        boost::asio::post(face.getIoContext(), [completion] {});
+        // Never wait to fill a batch. Misses also consume this batch's budget.
+        if (m_originalDataQueue.empty()) {
+          break;
+        }
+        job = std::move(m_originalDataQueue.front());
+        m_originalDataQueue.pop_front();
+      }
+      PendingRelease release{m_originalDataPending, m_originalDataPendingBytes, job.byteCharge};
+      try {
+        if (std::chrono::steady_clock::now() >= job.deadline) {
+          NDN_LOG_DEBUG("original packet expired before lookup name=" << job.interest.getName());
+          continue;
+        }
+        auto completion = std::make_shared<PendingRelease>();
+        completion->count = std::move(release.count);
+        completion->bytes = std::move(release.bytes);
+        completion->byteCharge = release.byteCharge;
+        reads.push_back({std::move(job), std::move(completion)});
+      }
+      catch (const std::exception& error) {
+        NDN_LOG_DEBUG("original packet read admission failed name=" << job.interest.getName()
+                      << " reason=" << error.what());
+      }
+    }
+    std::optional<std::vector<ndn::Data>> batch;
+    try {
+      if (reads.size() > 1) {
+        std::vector<ndn::Interest> interests;
+        for (const auto& read : reads) interests.push_back(read.job.interest);
+        batch = m_core.tryGetDataPacketBatch(interests,
+          [this](const RepoObjectManifest& object) {
+            return object.objectType == "original-packet-set" &&
+              isPersistentArtifactVisible(object);
+          }, [this] {
+            if (!isOriginalDataServingReady())
+              throw std::runtime_error("repo-original-packet-read-stopped");
+          });
+      }
+    }
+    catch (const std::exception& error) {
+      // A failed batch admission or integrity check is authoritative. Do not
+      // turn a rejected prepared batch into individually admitted replies.
+      NDN_LOG_DEBUG("original packet batch rejected reason=" << error.what());
+      continue;
+    }
+    for (std::size_t i = 0; i < reads.size(); ++i) {
+      const auto& read = reads[i];
+      if (!isOriginalDataServingReady()) return;
+      if (std::chrono::steady_clock::now() >= read.job.deadline) continue;
+      try {
+        if (batch) {
+          replies.push_back({std::move(batch->at(i)), read.job.deadline, read.completion});
+        }
+        else {
+          const auto wire = getDataPacket(read.job.interest);
+          ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+          replies.push_back({std::move(data), read.job.deadline, read.completion});
+        }
+      }
+      catch (const std::exception& error) {
+        // Unsupported batch shapes keep the established per-packet miss path.
+        NDN_LOG_DEBUG("original packet lookup miss name=" << read.job.interest.getName()
+                      << " reason=" << error.what());
+      }
+    }
+    if (replies.empty()) {
+      continue;
+    }
+    try {
+      const std::weak_ptr<RepoNode> owner = weak_from_this();
+      boost::asio::post(face.getIoContext(), [owner, &face, replies = std::move(replies)] {
+        const auto self = owner.lock();
+        for (const auto& reply : replies) {
+          if (!self || !self->isOriginalDataServingReady() ||
+              std::chrono::steady_clock::now() >= reply.deadline) {
+            NDN_LOG_DEBUG("original packet unavailable before put name=" << reply.data.getName());
+            continue;
+          }
+          face.put(reply.data);
+          NDN_LOG_DEBUG("original packet put name=" << reply.data.getName());
+          // Keep each lease through its own queued put, including when a later
+          // reply fails. Only the foreign-thread dispatch is shared by a batch.
+          boost::asio::post(face.getIoContext(), [completion = reply.completion] {});
+        }
       });
     }
     catch (const std::exception& error) {
-      // A missing/unadmitted packet is an ordinary retrieval miss.
-      NDN_LOG_DEBUG("original packet lookup miss name=" << job.interest.getName()
-                    << " reason=" << error.what());
+      NDN_LOG_DEBUG("original packet dispatch failed reason=" << error.what());
     }
   }
 }
@@ -623,6 +712,10 @@ RepoNode::requestOriginalDataWorkerStop() noexcept
     std::lock_guard<std::mutex> lock(m_originalDataMutex);
     m_stopOriginalDataWorker = true;
     m_originalDataRouteReady.store(false);
+    std::size_t queuedBytes = 0;
+    for (const auto& job : m_originalDataQueue)
+      queuedBytes += job.byteCharge;
+    m_originalDataPendingBytes->fetch_sub(queuedBytes);
     m_originalDataPending->fetch_sub(m_originalDataQueue.size());
     m_originalDataQueue.clear();
   }
@@ -636,6 +729,17 @@ RepoNode::stopOriginalDataWorker() noexcept
   requestOriginalDataWorkerStop();
   if (m_originalDataWorker.joinable()) {
     m_originalDataWorker.join();
+    try {
+      ndn_service_framework::logControlTiming("repo-server", "reply-admission",
+        ndn::Name(m_providerIdentity), {
+          {"limit_bytes", std::to_string(ORIGINAL_DATA_PENDING_BYTE_LIMIT)},
+          {"peak_pending", std::to_string(m_originalDataPeakPending)},
+          {"peak_pending_bytes", std::to_string(m_originalDataPeakPendingBytes)},
+          {"drops", std::to_string(m_originalDataAdmissionDrops)}});
+    }
+    catch (...) {
+      // Shutdown and ownership release must not depend on diagnostic output.
+    }
   }
 }
 
@@ -1351,7 +1455,9 @@ RepoNode::getDataPacket(const std::string& dataName) const
 std::vector<uint8_t>
 RepoNode::getDataPacket(const ndn::Interest& interest) const
 {
-  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+  std::unique_lock<std::mutex> writeGuard(m_storeWriteMutex, std::defer_lock);
+  if (!m_core.supportsConcurrentCommittedReads())
+    writeGuard.lock();
   if (m_ownedInsertStopping.load()) {
     throw std::runtime_error("repo-original-packet-insert-shutting-down");
   }
@@ -1377,11 +1483,6 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
     throw std::logic_error(
       "RepoNode network service registration requires shared ownership");
   }
-  // Invoked only from retained Provider handlers, whose worker pool drains before destruction.
-  m_ownedPacketValidator = [&provider](const std::vector<uint8_t>& wire,
-    const ndn::Name& producer, std::chrono::steady_clock::time_point deadline) {
-    return provider.validateProducerPacketWireUntil(wire, producer, deadline);
-  };
   auto ack = [] (const ndn_service_framework::RequestMessage&) {
     ndn_service_framework::ServiceProvider::AckDecision decision;
     decision.status = true;
@@ -1832,7 +1933,107 @@ void
 RepoNode::stopOriginalPacketOperations() noexcept
 {
   m_ownedInsertStopping.store(true, std::memory_order_release);
+  requestStorageWriteWorkerStop();
   requestOriginalDataWorkerStop();
+}
+
+void
+RepoNode::executeStorageWrite(uint64_t bytes, std::function<void()> write,
+                              const std::function<void()>& requireActive)
+{
+  // Charge queued and active writes together; tiny requests also consume a slot budget.
+  bytes = std::max<uint64_t>(bytes, 1024);
+  if (bytes > STORAGE_WRITE_BYTE_LIMIT)
+    throw std::length_error("repo-storage-write-exceeds-byte-budget");
+  auto completion = std::make_shared<std::promise<void>>();
+  auto result = completion->get_future();
+  {
+    std::unique_lock<std::mutex> lock(m_storageWriteQueueMutex);
+    for (;;) {
+      if (m_storageWriteStopping)
+        throw std::runtime_error("repo-storage-write-shutting-down");
+      lock.unlock();
+      if (requireActive)
+        requireActive();
+      lock.lock();
+      if (m_storageWriteStopping)
+        throw std::runtime_error("repo-storage-write-shutting-down");
+      if (bytes <= STORAGE_WRITE_BYTE_LIMIT - m_storageWriteBytes)
+        break;
+      m_storageWriteCondition.wait_for(lock, std::chrono::milliseconds(25));
+    }
+    if (!m_storageWriteWorker.joinable())
+      m_storageWriteWorker = std::thread([this] { runStorageWriteWorker(); });
+    m_storageWrites.push_back({bytes, std::move(write), completion});
+    m_storageWriteBytes += bytes;
+  }
+  m_storageWriteCondition.notify_all();
+  // The synchronous API retains its source until persistence or cancellation finishes.
+  result.get();
+}
+
+void
+RepoNode::runStorageWriteWorker() noexcept
+{
+  for (;;) {
+    StorageWriteJob job;
+    bool stopping;
+    {
+      std::unique_lock<std::mutex> lock(m_storageWriteQueueMutex);
+      m_storageWriteCondition.wait(lock, [this] {
+        return m_storageWriteStopping || !m_storageWrites.empty();
+      });
+      if (m_storageWrites.empty())
+        return;
+      job = std::move(m_storageWrites.front());
+      m_storageWrites.pop_front();
+      stopping = m_storageWriteStopping;
+    }
+    std::exception_ptr error;
+    try {
+      if (stopping)
+        throw std::runtime_error("repo-storage-write-shutting-down");
+      job.write();
+    }
+    catch (...) {
+      error = std::current_exception();
+    }
+    // Release the borrowed callback and its byte charge before waking its caller.
+    job.write = {};
+    {
+      std::lock_guard<std::mutex> lock(m_storageWriteQueueMutex);
+      m_storageWriteBytes -= job.bytes;
+    }
+    m_storageWriteCondition.notify_all();
+    if (error)
+      job.completion->set_exception(error);
+    else
+      job.completion->set_value();
+  }
+}
+
+void
+RepoNode::requestStorageWriteWorkerStop() noexcept
+{
+  {
+    std::lock_guard<std::mutex> lock(m_storageWriteQueueMutex);
+    m_storageWriteStopping = true;
+  }
+  m_storageWriteCondition.notify_all();
+}
+
+void
+RepoNode::stopStorageWriteWorker() noexcept
+{
+  requestStorageWriteWorkerStop();
+  if (m_storageWriteWorker.joinable())
+    m_storageWriteWorker.join();
+}
+
+bool
+RepoNode::isStoppingOriginalPacketOperations() const noexcept
+{
+  return m_ownedInsertStopping.load(std::memory_order_acquire);
 }
 
 RepoOperationStatus
@@ -1866,10 +2067,8 @@ RepoNode::insertWirePacketsImpl(
   const std::string& operationId, uint64_t generation,
   const std::string& authenticatedWriter,
   const std::optional<RepoUserStorageBinding>& storageBinding,
-  const std::optional<std::string>& validatedWireSha256,
   const std::function<void()>& requireActive)
 {
-  std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
   if (reference.objectName.empty()) {
     throw std::invalid_argument("repo data reference objectName must not be empty");
   }
@@ -1906,7 +2105,7 @@ RepoNode::insertWirePacketsImpl(
     std::optional<ndn_service_framework::ProtectedBlobManifest> transportRoot;
     std::vector<uint64_t> packetOffsets{0};
     std::vector<std::string> packetNames;
-    std::map<std::string, std::size_t> packetIndices;
+    std::set<std::string> uniquePacketNames;
     packetNames.reserve(packetCount);
     const ndn::Name expectedPrefix(reference.dataPrefix);
     if (reference.hasFinalSegment) {
@@ -1930,6 +2129,8 @@ RepoNode::insertWirePacketsImpl(
       }
     }
     for (size_t i = 0; i < packetCount; ++i) {
+      if (requireActive)
+        requireActive();
       const auto packetWire = readPacket(i);
       if (packetWire.empty() || packetWire.size() > ndn::MAX_NDN_PACKET_SIZE ||
           totalSize > std::numeric_limits<uint64_t>::max() - packetWire.size()) {
@@ -1986,7 +2187,7 @@ RepoNode::insertWirePacketsImpl(
         throw std::runtime_error("repo-exact-packet-order-mismatch");
       }
       const auto dataName = data.getName().toUri(ndn::name::UriFormat::CANONICAL);
-      if (!packetIndices.emplace(dataName, i).second) {
+      if (!uniquePacketNames.insert(dataName).second) {
         throw std::runtime_error(
           "repo-packet-set-invalid: duplicate NDN Data name: " + dataName);
       }
@@ -2016,11 +2217,9 @@ RepoNode::insertWirePacketsImpl(
       hashText << std::hex << std::setw(2) << std::setfill('0') << unsigned(hash[i]);
     }
 
-    if (validatedWireSha256 && hashText.str() != *validatedWireSha256) {
-      status.state = "FAILED";
-      status.message = "repo-original-packet-validation-source-changed";
-      rememberStatus(status);
-      return status;
+    if (reference.packetSetMetadata && !reference.packetSetMetadata->packetOffsets.empty() &&
+        reference.packetSetMetadata->packetOffsets != packetOffsets) {
+      throw std::invalid_argument("repo-exact-packet-offsets-mismatch");
     }
 
     if (reference.expectedSize != 0 && totalSize != reference.expectedSize) {
@@ -2037,150 +2236,141 @@ RepoNode::insertWirePacketsImpl(
       return status;
     }
 
-    // Enumerate once per admitted group. Core repeats the immutable admission under its
-    // commit lock; do not retain a negative lookup beyond this transaction.
-    const auto checkStoredPacket = [&](const std::string& name) {
-      const auto found = packetIndices.find(name);
-      if (found != packetIndices.end() &&
-          m_core.getDataPacket(name) != readPacket(found->second)) {
-        throw std::runtime_error(
-          "repo-data-wire-conflict: immutable NDN Data name conflict: " + name);
-      }
-    };
-    for (const auto& stored : m_core.list()) {
-      if (requireActive) requireActive();
-      if (stored.objectType == "ndn-data-wire") {
-        checkStoredPacket(ndn::Name(stored.objectName).toUri(ndn::name::UriFormat::CANONICAL));
-      }
-      else if (stored.objectType == "original-packet-set") {
-        for (const auto& name : stored.packetNames) checkStoredPacket(name);
-      }
-    }
-
-    RepoObjectManifest manifest;
-    manifest.objectName = ndn::Name(reference.objectName).toUri(ndn::name::UriFormat::CANONICAL);
-    manifest.objectType = "original-packet-set";
-    manifest.sha256 = hashText.str();
-    manifest.size = totalSize;
-    if (packetNames.size() > std::numeric_limits<uint32_t>::max()) {
-      throw std::invalid_argument("repo-packet-count-overflow");
-    }
-    manifest.segmentCount = static_cast<uint32_t>(packetNames.size());
-    manifest.packetNames = packetNames;
-    manifest.packetOffsets = std::move(packetOffsets);
-    manifest.envelopeBytes = contentBytes;
-    manifest.dataPrefix = expectedPrefix.toUri(ndn::name::UriFormat::CANONICAL);
-    manifest.operationId = status.operationId;
-    if (reference.packetSetMetadata) {
-      // Publication metadata is opaque. Physical index, digest, generation,
-      // operation and quota measurements above remain owned by Repo.
-      const auto& metadata = *reference.packetSetMetadata;
-      manifest.publicationIdentity = metadata.publicationIdentity;
-      manifest.protectionEpoch = metadata.protectionEpoch;
-      manifest.keyReferenceId = metadata.keyReferenceId;
-      manifest.keyReferenceVersion = metadata.keyReferenceVersion;
-      manifest.ciphertextManifestDigest = metadata.ciphertextManifestDigest;
-      manifest.servingLocator = metadata.servingLocator;
-      manifest.contentDigest = metadata.contentDigest;
-      manifest.plaintextSize = metadata.plaintextSize;
-      if (transportRoot) {
-        manifest.envelopeBytes = measuredEnvelopeBytes;
-        manifest.dataPrefix = transportRoot->dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
-      }
-    }
-    if (storageBinding) {
-      manifest.generation = generation;
-      (void)reservePersistentOriginalPacketStorage(
-        manifest, status.operationId, authenticatedWriter, *storageBinding);
-    }
-    auto commitReadRange = sourceReadRange;
-    if (!commitReadRange) {
-      const auto& commitOffsets = manifest.packetOffsets;
-      commitReadRange = [&readPacket, &commitOffsets] (uint64_t offset, std::size_t length) {
-        if (offset > commitOffsets.back() || length > commitOffsets.back() - offset) {
-          throw std::out_of_range("repo-packet-source-range-invalid");
-        }
-        std::vector<uint8_t> bytes(length);
-        uint64_t cursor = offset;
-        std::size_t copied = 0;
-        while (copied < length) {
-          auto packet = std::upper_bound(commitOffsets.begin(), commitOffsets.end(), cursor);
-          if (packet == commitOffsets.begin() || packet == commitOffsets.end()) {
-            throw std::runtime_error("repo-packet-source-index-invalid");
-          }
-          const auto index = static_cast<std::size_t>(
-            std::distance(commitOffsets.begin(), packet) - 1);
-          const auto packetBegin = commitOffsets[index];
-          const auto packetLength = commitOffsets[index + 1] - packetBegin;
-          const auto withinPacket = cursor - packetBegin;
-          if (withinPacket >= packetLength) {
-            throw std::runtime_error("repo-packet-source-index-invalid");
-          }
-          const auto chunk = static_cast<std::size_t>(std::min<uint64_t>(
-            packetLength - withinPacket, length - copied));
-          const auto packetWire = readPacket(index);
-          if (packetWire.size() != packetLength) {
-            throw std::runtime_error("repo-packet-source-size-changed");
-          }
-          std::copy_n(packetWire.begin() + static_cast<std::ptrdiff_t>(withinPacket),
-                      chunk, bytes.begin() + static_cast<std::ptrdiff_t>(copied));
-          copied += chunk;
-          cursor += chunk;
-        }
-        return bytes;
-      };
-    }
-    const auto requireCurrent = [&] {
-      if (requireActive) {
+    executeStorageWrite(totalSize, [&] {
+      // Legacy mutations share the transaction fence with the single INSERT writer.
+      std::lock_guard<std::mutex> writeGuard(m_storeWriteMutex);
+      if (requireActive)
         requireActive();
+      // Core admits immutable packet clashes and rechecks the current catalog
+      // under its transaction lock; no separate Node catalog snapshot is needed.
+
+      RepoObjectManifest manifest;
+      manifest.objectName = ndn::Name(reference.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+      manifest.objectType = "original-packet-set";
+      manifest.sha256 = hashText.str();
+      manifest.size = totalSize;
+      if (packetNames.size() > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument("repo-packet-count-overflow");
+      }
+      manifest.segmentCount = static_cast<uint32_t>(packetNames.size());
+      manifest.packetNames = packetNames;
+      manifest.packetOffsets = std::move(packetOffsets);
+      manifest.envelopeBytes = contentBytes;
+      manifest.dataPrefix = expectedPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+      manifest.operationId = status.operationId;
+      if (reference.packetSetMetadata) {
+        // Publication metadata is opaque. Physical index, digest, generation,
+        // operation and quota measurements above remain owned by Repo.
+        const auto& metadata = *reference.packetSetMetadata;
+        manifest.publicationIdentity = metadata.publicationIdentity;
+        manifest.protectionEpoch = metadata.protectionEpoch;
+        manifest.keyReferenceId = metadata.keyReferenceId;
+        manifest.keyReferenceVersion = metadata.keyReferenceVersion;
+        manifest.ciphertextManifestDigest = metadata.ciphertextManifestDigest;
+        manifest.servingLocator = metadata.servingLocator;
+        manifest.contentDigest = metadata.contentDigest;
+        manifest.plaintextSize = metadata.plaintextSize;
+        if (transportRoot) {
+          manifest.envelopeBytes = measuredEnvelopeBytes;
+          manifest.dataPrefix = transportRoot->dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
+        }
       }
       if (storageBinding) {
-        if (m_ownedInsertStopping.load(std::memory_order_acquire)) {
-          throw std::runtime_error("repo-original-packet-insert-shutting-down");
+        manifest.generation = generation;
+        (void)reservePersistentOriginalPacketStorage(
+          manifest, status.operationId, authenticatedWriter, *storageBinding);
+      }
+      auto commitReadRange = sourceReadRange;
+      if (!commitReadRange) {
+        const auto& commitOffsets = manifest.packetOffsets;
+        commitReadRange = [&readPacket, &commitOffsets] (uint64_t offset, std::size_t length) {
+          if (offset > commitOffsets.back() || length > commitOffsets.back() - offset) {
+            throw std::out_of_range("repo-packet-source-range-invalid");
+          }
+          std::vector<uint8_t> bytes(length);
+          uint64_t cursor = offset;
+          std::size_t copied = 0;
+          while (copied < length) {
+            auto packet = std::upper_bound(commitOffsets.begin(), commitOffsets.end(), cursor);
+            if (packet == commitOffsets.begin() || packet == commitOffsets.end()) {
+              throw std::runtime_error("repo-packet-source-index-invalid");
+            }
+            const auto index = static_cast<std::size_t>(
+              std::distance(commitOffsets.begin(), packet) - 1);
+            const auto packetBegin = commitOffsets[index];
+            const auto packetLength = commitOffsets[index + 1] - packetBegin;
+            const auto withinPacket = cursor - packetBegin;
+            if (withinPacket >= packetLength) {
+              throw std::runtime_error("repo-packet-source-index-invalid");
+            }
+            const auto chunk = static_cast<std::size_t>(std::min<uint64_t>(
+              packetLength - withinPacket, length - copied));
+            const auto packetWire = readPacket(index);
+            if (packetWire.size() != packetLength) {
+              throw std::runtime_error("repo-packet-source-size-changed");
+            }
+            std::copy_n(packetWire.begin() + static_cast<std::ptrdiff_t>(withinPacket),
+                        chunk, bytes.begin() + static_cast<std::ptrdiff_t>(copied));
+            copied += chunk;
+            cursor += chunk;
+          }
+          return bytes;
+        };
+      }
+      const auto grantObjectName = storageBinding
+        ? ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::ALTERNATE) : std::string{};
+      const auto requireCurrent = [&] {
+        if (requireActive) {
+          requireActive();
         }
-        (void)m_artifactMetadataStore->validateUserStorageGrant(
-          authenticatedWriter, m_repoNode, storageBinding->ownerIdentity,
-          storageBinding->grantId,
-          ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::ALTERNATE),
-          storageBinding->ownerEpoch, nowMilliseconds());
-      }
-    };
-    auto storedManifest =
-      m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
+        if (storageBinding) {
+          if (m_ownedInsertStopping.load(std::memory_order_acquire)) {
+            throw std::runtime_error("repo-original-packet-insert-shutting-down");
+          }
+          (void)m_artifactMetadataStore->validateUserStorageGrant(
+            authenticatedWriter, m_repoNode, storageBinding->ownerIdentity,
+            storageBinding->grantId,
+            grantObjectName,
+            storageBinding->ownerEpoch, nowMilliseconds());
+        }
+      };
+      auto storedManifest =
+        m_core.commitOriginalPacketReader(manifest, commitReadRange, requireCurrent);
 
-    if (storageBinding) {
-      requireCurrent();
-      storedManifest = m_core.confirmDurablePublicationIfCurrent(storedManifest);
-      const auto measured = measurePersistentUserStorageObject(storedManifest);
-      auto admitted = m_artifactMetadataStore->lookupUserStorageWrite(
-        m_repoNode, storageBinding->ownerIdentity, status.operationId);
-      if (!admitted) {
-        throw std::runtime_error("repo-user-storage-operation-missing");
+      if (storageBinding) {
+        requireCurrent();
+        storedManifest = m_core.confirmDurablePublicationIfCurrent(storedManifest);
+        const auto measured = measurePersistentUserStorageObject(storedManifest);
+        auto admitted = m_artifactMetadataStore->lookupUserStorageWrite(
+          m_repoNode, storageBinding->ownerIdentity, status.operationId);
+        if (!admitted) {
+          throw std::runtime_error("repo-user-storage-operation-missing");
+        }
+        if (admitted->state == RepoUserStorageWriteState::RESERVED) {
+          (void)m_artifactMetadataStore->settleUserStorageReservation(
+            m_repoNode, storageBinding->ownerIdentity, status.operationId,
+            measured.manifestBytes, nowMilliseconds());
+        }
+        else if (admitted->object.objectName != measured.objectName ||
+                 admitted->object.wireSha256 != measured.wireSha256 ||
+                 admitted->object.generation != measured.generation ||
+                 admitted->object.payloadWireBytes != measured.payloadWireBytes ||
+                 admitted->object.manifestBytes != measured.manifestBytes) {
+          throw std::runtime_error(
+            "repo-user-storage-inventory-conflict: committed original packet set changed");
+        }
+        requireCurrent();
+        (void)m_artifactMetadataStore->commitUserStorage(
+          m_repoNode, storageBinding->ownerIdentity, status.operationId, nowMilliseconds());
+        requireCurrent();
       }
-      if (admitted->state == RepoUserStorageWriteState::RESERVED) {
-        (void)m_artifactMetadataStore->settleUserStorageReservation(
-          m_repoNode, storageBinding->ownerIdentity, status.operationId,
-          measured.manifestBytes, nowMilliseconds());
-      }
-      else if (admitted->object.objectName != measured.objectName ||
-               admitted->object.wireSha256 != measured.wireSha256 ||
-               admitted->object.generation != measured.generation ||
-               admitted->object.payloadWireBytes != measured.payloadWireBytes ||
-               admitted->object.manifestBytes != measured.manifestBytes) {
-        throw std::runtime_error(
-          "repo-user-storage-inventory-conflict: committed original packet set changed");
-      }
-      requireCurrent();
-      (void)m_artifactMetadataStore->commitUserStorage(
-        m_repoNode, storageBinding->ownerIdentity, status.operationId, nowMilliseconds());
-      requireCurrent();
-    }
 
-    status.state = "DONE";
-    status.message = "stored app-owned segmented Data wire packets";
-    status.completedSegments = packetCount;
-    status.totalSegments = packetCount;
-    rememberStatus(status);
+      status.state = "DONE";
+      status.message = "stored app-owned segmented Data wire packets";
+      status.completedSegments = packetCount;
+      status.totalSegments = packetCount;
+      rememberStatus(status);
+    }, requireActive);
     return status;
   }
   catch (const std::exception& e) {
@@ -2724,12 +2914,7 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       std::lock_guard<std::mutex> timeoutGuard(m_publishWorkerMutex);
       validationTimeoutMs = m_publishRequestTimeoutMs;
     }
-    std::lock_guard<std::mutex> fetchGuard(m_dataReferenceFetchMutex);
-    if (m_ownedInsertStopping.load(std::memory_order_acquire)) {
-      throw std::runtime_error("repo-original-packet-insert-shutting-down");
-    }
-    // The live grant is checked after any wait for the serialized fetch path,
-    // and before looking up a resumable operation or fetching Producer data.
+    // Check the live grant before fetching; commit rechecks current ownership.
     (void)m_artifactMetadataStore->validateUserStorageGrant(
       requesterIdentity, m_repoNode, owned.storageBinding.ownerIdentity,
       owned.storageBinding.grantId, ledgerObjectName,
@@ -2749,62 +2934,11 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
     }
     const auto validationDeadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::max(1, validationTimeoutMs));
-    if (owned.schemaVersion == 1 && !m_ownedPacketValidator) {
-      throw std::runtime_error("repo-original-packet-validator-unavailable");
-    }
     const auto requireActive = [this, validationDeadline] {
       if (m_ownedInsertStopping.load(std::memory_order_acquire) ||
           std::chrono::steady_clock::now() >= validationDeadline) {
         throw std::runtime_error("repo-original-packet-validation-deadline-or-shutdown");
       }
-    };
-    const auto producerPrefix = ndn::Name(requesterIdentity);
-    const auto validateSource = [this, &producerPrefix, validationDeadline,
-                                 digestPackets = owned.schemaVersion == 2](
-        std::size_t packetCount,
-        const std::function<std::vector<uint8_t>(std::size_t)>& readPacket) {
-      auto digest = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>(
-        EVP_MD_CTX_new(), EVP_MD_CTX_free);
-      if (!digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1) {
-        throw std::runtime_error("repo-packet-validation-digest-initialization-failed");
-      }
-      for (std::size_t i = 0; i < packetCount; ++i) {
-        if (m_ownedInsertStopping.load(std::memory_order_acquire) ||
-            std::chrono::steady_clock::now() >= validationDeadline) {
-          throw std::runtime_error("repo-original-packet-validation-deadline-or-shutdown");
-        }
-        const auto packetWire = readPacket(i);
-        if (packetWire.empty() || packetWire.size() > ndn::MAX_NDN_PACKET_SIZE) {
-          throw std::runtime_error("repo-original-packet-validation-wire-size-invalid");
-        }
-        bool valid = false;
-        if (digestPackets) {
-          const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(packetWire))};
-          valid = packet.wireEncode().size() == packetWire.size() &&
-            producerPrefix.isPrefixOf(packet.getName()) && packet.getName() != producerPrefix &&
-            packet.getSignatureType() == ndn::tlv::DigestSha256 &&
-            ndn::security::verifySignature(packet, std::optional<ndn::security::Certificate>{});
-        }
-        else {
-          valid = m_ownedPacketValidator(packetWire, producerPrefix, validationDeadline);
-        }
-        if (!valid) {
-          throw std::runtime_error("repo-original-packet-signature-unauthorized-or-invalid");
-        }
-        if (EVP_DigestUpdate(digest.get(), packetWire.data(), packetWire.size()) != 1) {
-          throw std::runtime_error("repo-packet-validation-digest-update-failed");
-        }
-      }
-      unsigned char hash[EVP_MAX_MD_SIZE];
-      unsigned hashSize = 0;
-      if (EVP_DigestFinal_ex(digest.get(), hash, &hashSize) != 1) {
-        throw std::runtime_error("repo-packet-validation-digest-finalization-failed");
-      }
-      std::ostringstream text;
-      for (unsigned i = 0; i < hashSize; ++i) {
-        text << std::hex << std::setw(2) << std::setfill('0') << unsigned(hash[i]);
-      }
-      return text.str();
     };
     if (m_dataReferenceSpoolFetcher) {
       const auto packetSpool = m_dataReferenceSpoolFetcher(owned.reference);
@@ -2814,7 +2948,6 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
       const auto readPacket = [packetSpool] (std::size_t index) {
         return packetSpool->readPacket(index);
       };
-      const auto validatedSha256 = validateSource(packetSpool->packetCount(), readPacket);
       return toBytes(insertWirePacketsImpl(
         owned.reference, packetSpool->packetCount(),
         readPacket,
@@ -2822,17 +2955,16 @@ RepoNode::handleInsert(const std::vector<uint8_t>& request,
           return packetSpool->readRange(offset, length);
         },
         owned.operationId, owned.generation, requesterIdentity,
-        owned.storageBinding, validatedSha256, requireActive).toJson());
+        owned.storageBinding, requireActive).toJson());
     }
     const auto wirePackets = m_dataReferenceFetcher(owned.reference);
     const auto readPacket = [&wirePackets] (std::size_t index) {
       return wirePackets.at(index);
     };
-    const auto validatedSha256 = validateSource(wirePackets.size(), readPacket);
     return toBytes(insertWirePacketsImpl(
       owned.reference, wirePackets.size(), readPacket, {}, owned.operationId,
       owned.generation, requesterIdentity, owned.storageBinding,
-      validatedSha256, requireActive).toJson());
+      requireActive).toJson());
   }
   catch (const std::exception& e) {
     RepoOperationStatus status;
@@ -2882,12 +3014,18 @@ std::vector<uint8_t>
 RepoNode::handleManifest(const std::vector<uint8_t>& request,
                          const std::string& authenticatedWriter) const
 {
-  if (isOwnedInsertRequest(request)) {
+  static constexpr uint8_t COMPACT_PREFIX[] = {'R', 'P', 'O', 'M'};
+  const bool compact = request.size() >= sizeof(COMPACT_PREFIX) &&
+    std::equal(std::begin(COMPACT_PREFIX), std::end(COMPACT_PREFIX), request.begin());
+  if (compact || isOwnedInsertRequest(request)) {
     if (authenticatedWriter.empty() || !m_artifactMetadataStore)
       throw std::runtime_error("repo-owned-manifest-authentication-required");
-    const auto query = decodeUserStorageInsertRequest(request);
-    const ndn::Name writer(authenticatedWriter), prefix(query.reference.dataPrefix);
-    const ndn::Name objectName(query.reference.objectName);
+    const auto legacy = compact ? RepoUserStorageInsertRequest{} :
+      decodeUserStorageInsertRequest(request);
+    const auto query = compact ? detail::decodeOwnedManifestQuery(request) :
+      detail::OwnedManifestQuery(legacy);
+    const ndn::Name writer(authenticatedWriter), prefix(query.dataPrefix);
+    const ndn::Name objectName(query.objectName);
     if (writer.empty() || !writer.isPrefixOf(prefix) || !prefix.isPrefixOf(objectName))
       throw std::runtime_error("repo-owned-manifest-producer-prefix-unauthorized");
     std::lock_guard<std::mutex> guard(m_storeWriteMutex);
@@ -2901,7 +3039,7 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
       binding.ownerIdentity, m_repoNode, ledgerName, binding.ownerEpoch);
     const auto write = m_artifactMetadataStore->lookupUserStorageWrite(
       m_repoNode, binding.ownerIdentity, query.operationId);
-    const auto manifest = m_core.getManifest(query.reference.objectName);
+    const auto manifest = m_core.getManifest(query.objectName);
     const auto physical = measurePersistentUserStorageObject(manifest, true);
     if (!claim || !write || write->state != RepoUserStorageWriteState::COMMITTED ||
         write->grant.grantId != binding.grantId ||
@@ -2915,22 +3053,32 @@ RepoNode::handleManifest(const std::vector<uint8_t>& request,
         claim->state != RepoUserStorageClaimState::COMMITTED ||
         manifest.objectType != "original-packet-set" ||
         manifest.lifecycleState != "COMMITTED" || manifest.operationId.empty() ||
-        manifest.generation != query.generation || manifest.size != query.reference.expectedSize ||
-        manifest.sha256 != query.reference.expectedSha256 ||
+        manifest.generation != query.generation || manifest.size != query.expectedSize ||
+        manifest.sha256 != query.expectedSha256 ||
         claim->object.objectName != physical.objectName ||
         claim->object.generation != physical.generation ||
         claim->object.wireSha256 != physical.wireSha256 ||
         claim->object.payloadWireBytes != physical.payloadWireBytes ||
-        claim->object.manifestBytes != physical.manifestBytes ||
-        manifest.packetNames.size() != query.reference.packetSetMetadata->packetNames.size())
+        claim->object.manifestBytes != physical.manifestBytes)
       throw std::runtime_error("repo-owned-manifest-claim-mismatch");
-    for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
-      if (ndn::Name(manifest.packetNames[i]) !=
-          ndn::Name(query.reference.packetSetMetadata->packetNames[i]))
-        throw std::runtime_error("repo-owned-manifest-packet-order-mismatch");
+    if (!compact) {
+      const auto& names = legacy.reference.packetSetMetadata->packetNames;
+      if (manifest.packetNames.size() != names.size())
+        throw std::runtime_error("repo-owned-manifest-claim-mismatch");
+      for (size_t i = 0; i < manifest.packetNames.size(); ++i) {
+        if (ndn::Name(manifest.packetNames[i]) != ndn::Name(names[i]))
+          throw std::runtime_error("repo-owned-manifest-packet-order-mismatch");
+      }
     }
     requirePersistentArtifactVisible(manifest);
-    return toBytes(manifest.toJson());
+    const auto wire = toBytes(manifest.toJson());
+    if (!query.manifestSha256.empty()) {
+      const auto digest = sha256Hex(wire);
+      if (digest != query.manifestSha256)
+        throw std::runtime_error("repo-owned-manifest-changed");
+      return toBytes(digest);
+    }
+    return wire;
   }
   requirePersistentArtifactVisible(m_core.getManifest(toString(request)));
   return m_core.handleManifest(request);

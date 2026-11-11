@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "owned-manifest-query.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -602,6 +603,75 @@ decodeUserStorageInsertRequest(const std::vector<uint8_t>& request)
   }
   return decoded;
 }
+
+namespace detail {
+
+std::vector<uint8_t>
+encodeOwnedManifestQuery(const OwnedManifestQuery& request)
+{
+  if (request.operationId.empty() || request.operationId.size() > 256 ||
+      request.operationId.find('\0') != std::string::npos || request.generation == 0 ||
+      request.objectName.empty() || request.objectName.size() > MAX_RANGE_OBJECT_NAME_BYTES ||
+      request.dataPrefix.empty() || request.dataPrefix.size() > MAX_RANGE_OBJECT_NAME_BYTES ||
+      request.expectedSize == 0 || request.expectedSize > REPO_USER_STORAGE_OBJECT_MAX_BYTES) {
+    throw std::invalid_argument("repo-owned-manifest-query-invalid");
+  }
+  const ndn::Name objectName(request.objectName), prefix(request.dataPrefix);
+  if (prefix.empty() || !prefix.isPrefixOf(objectName))
+    throw std::invalid_argument("repo-owned-manifest-query-prefix-invalid");
+  validateDigest("sha256", request.expectedSha256, "manifest query payload digest");
+  if (!request.manifestSha256.empty())
+    validateDigest("sha256", request.manifestSha256, "manifest query metadata digest");
+  const auto binding = request.storageBinding.toJson();
+  if (binding.size() > 16U * 1024U)
+    throw std::invalid_argument("repo-owned-manifest-query-binding-too-large");
+  auto encoded = toBytes("RPOM1\n");
+  const auto appendString = [&encoded] (const std::string& value) {
+    appendFramedLine(encoded, value.size());
+    encoded.insert(encoded.end(), value.begin(), value.end());
+  };
+  appendString(request.operationId);
+  appendFramedLine(encoded, request.generation);
+  appendString(request.objectName);
+  appendString(request.dataPrefix);
+  appendFramedLine(encoded, request.expectedSize);
+  appendString(request.expectedSha256);
+  appendString(binding);
+  appendString(request.manifestSha256);
+  return encoded;
+}
+
+OwnedManifestQuery
+decodeOwnedManifestQuery(const std::vector<uint8_t>& request)
+{
+  static constexpr uint8_t MAGIC[] = {'R', 'P', 'O', 'M', '1', '\n'};
+  if (request.size() < sizeof(MAGIC) || request.size() > 32U * 1024U ||
+      !std::equal(std::begin(MAGIC), std::end(MAGIC), request.begin()))
+    throw std::invalid_argument("repo-owned-manifest-query-frame-invalid");
+  size_t cursor = sizeof(MAGIC);
+  const auto takeString = [&request, &cursor] (size_t maximum, const char* field) {
+    const auto length = readFramedLine(request, cursor, field);
+    if (length > maximum || length > request.size() - cursor)
+      throw std::invalid_argument("repo-owned-manifest-query-field-invalid");
+    std::string value(reinterpret_cast<const char*>(request.data() + cursor), length);
+    cursor += length;
+    return value;
+  };
+  OwnedManifestQuery decoded;
+  decoded.operationId = takeString(256, "operation-id");
+  decoded.generation = readFramedLine(request, cursor, "generation");
+  decoded.objectName = takeString(MAX_RANGE_OBJECT_NAME_BYTES, "object-name");
+  decoded.dataPrefix = takeString(MAX_RANGE_OBJECT_NAME_BYTES, "data-prefix");
+  decoded.expectedSize = readFramedLine(request, cursor, "payload-size");
+  decoded.expectedSha256 = takeString(64, "payload-digest");
+  decoded.storageBinding = RepoUserStorageBinding::fromJson(takeString(16U * 1024U, "binding"));
+  decoded.manifestSha256 = takeString(64, "manifest-digest");
+  if (cursor != request.size() || encodeOwnedManifestQuery(decoded) != request)
+    throw std::invalid_argument("repo-owned-manifest-query-noncanonical");
+  return decoded;
+}
+
+} // namespace detail
 
 RepoOperationStatus
 parseOperationStatusJson(const std::string& statusJson)

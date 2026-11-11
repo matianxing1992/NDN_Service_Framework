@@ -4,6 +4,7 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoPacketServer.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
+#include "NDNSF-DistributedRepo/src/packet-store-lookup.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
 #include "ndn-service-framework/ImmutableFilePublication.hpp"
@@ -13,14 +14,19 @@
 #include <ndn-cxx/security/key-params.hpp>
 #include <ndn-cxx/util/dummy-client-face.hpp>
 #include <boost/test/unit_test.hpp>
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <ctime>
+#include <thread>
 
 namespace {
 using namespace ndnsf_distributed_repo;
@@ -35,6 +41,40 @@ struct CatalogParseScope
   { catalogParses = 0; }
   ~CatalogParseScope() { detail::installFilesystemRepoStoreIoHooks(previous); }
 };
+
+struct HeldMetadataFsync
+{
+  static HeldMetadataFsync* current;
+  std::atomic<bool> hold{true};
+  std::promise<void> entered;
+  std::promise<void> release;
+  std::shared_future<void> released = release.get_future().share();
+  detail::FilesystemRepoStoreIoHooks previous;
+
+  static int
+  fsync(int fd)
+  {
+    if (current->hold.exchange(false)) {
+      current->entered.set_value();
+      current->released.wait();
+    }
+    return ::fsync(fd);
+  }
+
+  HeldMetadataFsync()
+  {
+    current = this;
+    previous = detail::installFilesystemRepoStoreIoHooks({fsync, nullptr, nullptr});
+  }
+
+  ~HeldMetadataFsync()
+  {
+    detail::installFilesystemRepoStoreIoHooks(previous);
+    current = nullptr;
+  }
+};
+
+HeldMetadataFsync* HeldMetadataFsync::current = nullptr;
 
 struct Fixture
 {
@@ -67,11 +107,16 @@ struct CountingStore : RepoStoreBackend
   std::shared_ptr<RepoStoreBackend> delegate;
   mutable size_t enumerations = 0;
   mutable size_t usageScans = 0;
+  mutable size_t rangeReads = 0;
+  mutable size_t existenceProbes = 0;
+  std::function<void(std::vector<uint8_t>&)> afterRangeRead;
+  bool concurrentReads = true;
   std::optional<RepoObjectManifest> extraCatalogEntry;
   void put(const RepoObjectManifest& m, std::vector<uint8_t> p) override { delegate->put(m, std::move(p)); }
   void putManifest(const RepoObjectManifest& m) override { delegate->putManifest(m); }
   StoredObject get(const std::string& n) const override { return delegate->get(n); }
-  bool has(const std::string& n) const override { return delegate->has(n); }
+  bool has(const std::string& n) const override
+  { ++existenceProbes; return delegate->has(n); }
   bool erase(const std::string& n) override { return delegate->erase(n); }
   size_t size() const override { return delegate->size(); }
   uint64_t usedBytes() const override
@@ -92,12 +137,19 @@ struct CountingStore : RepoStoreBackend
   { delegate->putRange(m, r, p); }
   void commitRanges(const RepoObjectManifest& m) override { delegate->commitRanges(m); }
   std::vector<uint8_t> getRange(const std::string& n, RepoByteRange r) const override
-  { return delegate->getRange(n, r); }
+  {
+    ++rangeReads;
+    auto bytes = delegate->getRange(n, r);
+    if (afterRangeRead) afterRangeRead(bytes);
+    return bytes;
+  }
   RepoObjectManifest getManifest(const std::string& n) const override { return delegate->getManifest(n); }
   RepoObjectMetadataProbe probeObjectMetadata(const std::string& n) const override
   { return delegate->probeObjectMetadata(n); }
   bool supportsRange() const noexcept override { return delegate->supportsRange(); }
   bool supportsManifestLookup() const noexcept override { return delegate->supportsManifestLookup(); }
+  bool supportsConcurrentCommittedReads() const noexcept override
+  { return concurrentReads && delegate->supportsConcurrentCommittedReads(); }
   void abortRanges(const std::string& n) override { delegate->abortRanges(n); }
 };
 
@@ -187,6 +239,126 @@ struct PacketSet
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec201TransparentRepo)
+
+BOOST_AUTO_TEST_CASE(CommittedCacheHitAndMissReadWhileAnotherObjectWaitsForDurability)
+{
+  Fixture fixture;
+  auto tiered = makeTieredRepoStore(fixture.store("parallel-read"), 8192, "filesystem", 8192);
+  RepoNode node(ndn::Name("/SERVICE/repo"), fixture.capability(), tiered);
+  const auto store = [&](const char* prefix) {
+    const auto name = ndn::Name(prefix).appendSegment(0);
+    const auto wire = packet(name, 42, 128);
+    RepoDataReference reference;
+    reference.objectName = name.toUri();
+    reference.dataPrefix = prefix;
+    reference.hasFinalSegment = true;
+    reference.firstSegment = reference.finalSegment = 0;
+    reference.expectedSize = wire.size();
+    reference.expectedSha256 = sha256Hex(wire);
+    return std::make_pair(reference, wire);
+  };
+  const auto cached = store("/producer/cached");
+  const auto cold = store("/producer/cold");
+  const auto incoming = store("/producer/incoming");
+  BOOST_REQUIRE_EQUAL(node.insertWirePackets(cached.first, {cached.second}).state, "DONE");
+  BOOST_REQUIRE_EQUAL(node.insertWirePackets(cold.first, {cold.second}).state, "DONE");
+  BOOST_REQUIRE(node.getDataPacket(ndn::Interest(ndn::Name(cached.first.objectName))) ==
+                cached.second);
+  HeldMetadataFsync fsync;
+  auto entered = fsync.entered.get_future();
+  auto writing = std::async(std::launch::async, [&] {
+    return node.insertWirePackets(incoming.first, {incoming.second});
+  });
+  const auto held = entered.wait_for(std::chrono::seconds(2));
+  auto hit = std::async(std::launch::async, [&] {
+    return node.getDataPacket(ndn::Interest(ndn::Name(cached.first.objectName)));
+  });
+  auto miss = std::async(std::launch::async, [&] {
+    return node.getDataPacket(ndn::Interest(ndn::Name(cold.first.objectName)));
+  });
+  const auto hitStatus = hit.wait_for(std::chrono::milliseconds(250));
+  const auto missStatus = miss.wait_for(std::chrono::milliseconds(250));
+  const auto writeStatus = writing.wait_for(std::chrono::milliseconds(0));
+  fsync.release.set_value();
+  const auto written = writing.get();
+  const auto hitWire = hit.get();
+  const auto missWire = miss.get();
+  BOOST_CHECK(held == std::future_status::ready);
+  BOOST_CHECK(hitStatus == std::future_status::ready);
+  BOOST_CHECK(missStatus == std::future_status::ready);
+  BOOST_CHECK(writeStatus == std::future_status::timeout);
+  BOOST_CHECK_EQUAL(written.state, "DONE");
+  BOOST_CHECK(hitWire == cached.second);
+  BOOST_CHECK(missWire == cold.second);
+}
+
+BOOST_AUTO_TEST_CASE(RelatedRangesUseOneBoundedCacheAndObserveCurrentAuthority)
+{
+  Fixture fixture;
+  auto authority = std::make_shared<CountingStore>(fixture.store("range-cache"));
+  auto tiered = makeTieredRepoStore(authority, 8192, "filesystem", 8192);
+  const std::vector<uint8_t> bytes(4096, 42);
+  RepoObjectManifest manifest;
+  manifest.objectName = "/producer/range-cache";
+  manifest.sha256 = sha256Hex(bytes);
+  manifest.size = bytes.size();
+  manifest.generation = 1;
+  authority->put(manifest, bytes);
+  const std::vector<uint8_t> expected(16, 42);
+  BOOST_CHECK(tiered->getRange(manifest.objectName, {128, 16}) == expected);
+  BOOST_REQUIRE_EQUAL(authority->rangeReads, 1U);
+  BOOST_CHECK(tiered->getRange(manifest.objectName, {512, 16}) == expected);
+  BOOST_CHECK_EQUAL(authority->rangeReads, 1U);
+  BOOST_CHECK_EQUAL(tiered->cacheStatus().hits, 1U);
+  BOOST_CHECK_LE(tiered->cacheStatus().usedBytes, 8192U);
+  BOOST_CHECK_THROW(tiered->getRange(manifest.objectName, {4096, 1}), std::out_of_range);
+
+  auto second = manifest;
+  second.objectName = "/producer/second-range-cache";
+  authority->put(second, bytes);
+  BOOST_CHECK(tiered->getRange(second.objectName, {0, 16}) == expected);
+  BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 1U);
+  BOOST_CHECK_LE(tiered->cacheStatus().usedBytes, 8192U);
+  const auto afterEviction = authority->rangeReads;
+  BOOST_CHECK(tiered->getRange(manifest.objectName, {0, 16}) == expected);
+  BOOST_CHECK_GT(authority->rangeReads, afterEviction);
+
+  // A changed authority generation cannot be hidden by an existing cache hit.
+  const std::vector<uint8_t> replacement(4096, 7);
+  manifest.sha256 = sha256Hex(replacement);
+  manifest.generation = 2;
+  authority->put(manifest, replacement);
+  BOOST_CHECK(tiered->getRange(manifest.objectName, {0, 16}) ==
+              std::vector<uint8_t>(16, 7));
+  BOOST_REQUIRE(authority->erase(manifest.objectName));
+  BOOST_CHECK_THROW(tiered->getRange(manifest.objectName, {0, 16}), std::out_of_range);
+  tiered.reset();
+  tiered = makeTieredRepoStore(authority, 8192, "filesystem", 8192);
+  BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 0U);
+  BOOST_CHECK(tiered->getRange(second.objectName, {0, 16}) == expected);
+}
+
+BOOST_AUTO_TEST_CASE(RangePrefetchRespectsBudgetAndWholeObjectThreshold)
+{
+  Fixture fixture;
+  auto authority = std::make_shared<CountingStore>(fixture.store("range-no-cache"));
+  const std::vector<uint8_t> bytes(4096, 42);
+  RepoObjectManifest manifest;
+  manifest.objectName = "/producer/uncached-range";
+  manifest.sha256 = sha256Hex(bytes);
+  manifest.size = bytes.size();
+  authority->put(manifest, bytes);
+  for (const auto budget : {0U, 2048U, 8192U}) {
+    auto tiered = makeTieredRepoStore(authority, budget, "filesystem", 2048);
+    const auto before = authority->rangeReads;
+    BOOST_CHECK(tiered->getRange(manifest.objectName, {0, 16}) ==
+                std::vector<uint8_t>(16, 42));
+    BOOST_CHECK(tiered->getRange(manifest.objectName, {16, 16}) ==
+                std::vector<uint8_t>(16, 42));
+    BOOST_CHECK_EQUAL(authority->rangeReads - before, 2U);
+    BOOST_CHECK_EQUAL(tiered->cacheStatus().entryCount, 0U);
+  }
+}
 
 BOOST_AUTO_TEST_CASE(ManifestMetadataComparisonMatchesSerializedIdentity)
 {
@@ -536,6 +708,202 @@ struct AdmissionFile
   }
 };
 
+BOOST_AUTO_TEST_CASE(PacketBatchPreservesOriginalWiresAndReopensWithSmallRangeLimit)
+{
+  Fixture fixture;
+  AdmissionFile incoming(fixture, "batch-read", 32, 128);
+  {
+    auto store = std::make_shared<CountingStore>(fixture.store("batch-read"));
+    RepoCore repo(fixture.capability(), store);
+    repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+    std::vector<ndn::Interest> interests;
+    for (std::size_t i = 0; i < RepoCore::MAX_ORIGINAL_PACKET_READ_BATCH; ++i)
+      interests.emplace_back(incoming.packets[i].first);
+    const ndn::Data first(ndn::Block(ndn::span<const uint8_t>(
+      incoming.packets[0].second.data(), incoming.packets[0].second.size())));
+    interests[0].setName(first.getFullName());
+    unsigned admissions = 0;
+    store->rangeReads = 0;
+    const auto result = repo.tryGetDataPacketBatch(interests,
+      [&](const RepoObjectManifest&) { ++admissions; return true; }, [] {});
+    BOOST_REQUIRE(result);
+    BOOST_REQUIRE_EQUAL(result->size(), interests.size());
+    BOOST_CHECK_EQUAL(admissions, 2U);
+    BOOST_CHECK_EQUAL(store->rangeReads, interests.size());
+    for (std::size_t i = 0; i < result->size(); ++i) {
+      const auto& wire = result->at(i).wireEncode();
+      BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == incoming.packets[i].second);
+    }
+    const std::vector<uint8_t> badDigest(32, 0);
+    auto wrong = first.getName();
+    wrong.appendImplicitSha256Digest(ndn::span<const uint8_t>(badDigest));
+    interests[0].setName(wrong);
+    BOOST_CHECK_THROW(repo.tryGetDataPacketBatch(interests,
+      [](const RepoObjectManifest&) { return true; }, [] {}), std::runtime_error);
+    interests[0].setName(first.getFullName());
+    interests.push_back(interests.back());
+    BOOST_CHECK_THROW(repo.tryGetDataPacketBatch(interests,
+      [](const RepoObjectManifest&) { return true; }, [] {}), std::invalid_argument);
+  }
+  // Each individual packet fits; combining even two would exceed this backend
+  // limit. Reopen with no writer-side index or memory cache available.
+  const auto limit = incoming.packets.back().second.size();
+  auto store = makeFilesystemRepoStore((fixture.root / "batch-read").string(), limit, 1U << 20);
+  RepoCore reopened(fixture.capability(), store);
+  std::vector<ndn::Interest> interests;
+  for (std::size_t i = 0; i < RepoCore::MAX_ORIGINAL_PACKET_READ_BATCH; ++i)
+    interests.emplace_back(incoming.packets[30 - 2 * i].first);
+  const auto result = reopened.tryGetDataPacketBatch(interests,
+    [](const RepoObjectManifest&) { return true; }, [] {});
+  BOOST_REQUIRE(result);
+  BOOST_REQUIRE_EQUAL(result->size(), interests.size());
+  for (std::size_t i = 0; i < result->size(); ++i) {
+    const auto& wire = result->at(i).wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) ==
+                incoming.packets[30 - 2 * i].second);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PacketBatchUnsupportedShapesRetainExactReadCompatibility)
+{
+  Fixture fixture;
+  auto store = std::make_shared<CountingStore>(fixture.store("batch-shapes"));
+  RepoCore repo(fixture.capability(), store);
+  AdmissionFile first(fixture, "batch-first", 4);
+  AdmissionFile second(fixture, "batch-second", 4);
+  repo.commitOriginalPacketFile(first.manifest, first.path);
+  repo.commitOriginalPacketFile(second.manifest, second.path);
+  std::vector<ndn::Interest> interests{ndn::Interest(first.packets[1].first),
+                                       ndn::Interest(second.packets[1].first)};
+  const auto accept = [](const RepoObjectManifest&) { return true; };
+  store->rangeReads = 0;
+  BOOST_CHECK(!repo.tryGetDataPacketBatch(interests, accept, [] {}));
+  BOOST_CHECK_EQUAL(store->rangeReads, 0U);
+  BOOST_CHECK(repo.getDataPacket(interests[0], accept) == first.packets[1].second);
+  BOOST_CHECK(repo.getDataPacket(interests[1], accept) == second.packets[1].second);
+  interests[0].setCanBePrefix(true);
+  BOOST_CHECK(!repo.tryGetDataPacketBatch(interests, accept, [] {}));
+  BOOST_CHECK(repo.getDataPacket(interests[0], accept) == first.packets[1].second);
+  interests = {ndn::Interest(first.packets[1].first), ndn::Interest(first.packets[2].first)};
+  store->concurrentReads = false;
+  BOOST_CHECK(!repo.tryGetDataPacketBatch(interests, accept, [] {}));
+  BOOST_CHECK(repo.getDataPacket(interests[1], accept) == first.packets[2].second);
+  store->concurrentReads = true;
+  const ndn::Name standalone("/actual/producer/standalone-batch");
+  const auto wire = packet(standalone);
+  repo.putDataPacket(standalone.toUri(), wire);
+  interests[0].setName(standalone);
+  BOOST_CHECK(!repo.tryGetDataPacketBatch(interests, accept, [] {}));
+  BOOST_CHECK(repo.getDataPacket(interests[0], accept) == wire);
+}
+
+BOOST_AUTO_TEST_CASE(PacketBatchDiscardsResultsOnRevocationMutationDeletionOrStop)
+{
+  for (const std::string scenario : {"revoke", "metadata", "delete", "stop"}) {
+    BOOST_TEST_CONTEXT(scenario) {
+      Fixture fixture;
+      auto store = std::make_shared<CountingStore>(fixture.store("batch-current"));
+      RepoCore repo(fixture.capability(), store);
+      AdmissionFile incoming(fixture, "batch-" + scenario, 4);
+      repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+      std::ifstream input(incoming.path, std::ios::binary);
+      const std::vector<uint8_t> payload((std::istreambuf_iterator<char>(input)), {});
+      bool admitted = true;
+      bool active = true;
+      unsigned admissions = 0;
+      store->rangeReads = 0;
+      store->afterRangeRead = [&](std::vector<uint8_t>&) {
+        if (store->rangeReads == 1 && scenario == "revoke") admitted = false;
+        if (store->rangeReads == 1 && scenario == "stop") active = false;
+        if (store->rangeReads == incoming.packets.size()) {
+          if (scenario == "metadata") {
+            auto changed = store->getManifest(incoming.manifest.objectName);
+            ++changed.generation;
+            changed.policyEpoch = "changed-during-batch";
+            store->put(changed, payload);
+          }
+          if (scenario == "delete") (void)store->erase(incoming.manifest.objectName);
+        }
+      };
+      std::vector<ndn::Interest> interests;
+      for (const auto& item : incoming.packets) interests.emplace_back(item.first);
+      std::optional<std::vector<ndn::Data>> result;
+      const auto read = [&] {
+        return repo.tryGetDataPacketBatch(interests,
+          [&](const RepoObjectManifest&) { ++admissions; return admitted; }, [&] {
+            if (!active) throw std::runtime_error("test-batch-cancelled");
+          });
+      };
+      BOOST_CHECK_THROW(result = read(), std::exception);
+      BOOST_CHECK(!result);
+      BOOST_CHECK_EQUAL(store->rangeReads, scenario == "stop" ? 1U : incoming.packets.size());
+      BOOST_CHECK_EQUAL(admissions, scenario == "revoke" ? 2U : 1U);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PacketBatchRejectsTruncatedOrWrongOriginalWire)
+{
+  for (const bool truncate : {false, true}) {
+    Fixture fixture;
+    auto store = std::make_shared<CountingStore>(fixture.store("batch-wire"));
+    RepoCore repo(fixture.capability(), store);
+    AdmissionFile incoming(fixture, "batch-wire", 4);
+    repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+    store->rangeReads = 0;
+    store->afterRangeRead = [&](std::vector<uint8_t>& wire) {
+      if (store->rangeReads != 1) return;
+      if (truncate) wire.pop_back();
+      else wire = incoming.packets[1].second;
+    };
+    std::vector<ndn::Interest> interests;
+    for (const auto& item : incoming.packets) interests.emplace_back(item.first);
+    BOOST_CHECK_THROW(repo.tryGetDataPacketBatch(interests,
+      [](const RepoObjectManifest&) { return true; }, [] {}), std::runtime_error);
+    BOOST_CHECK_EQUAL(store->rangeReads, 1U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileRejectsAliasesOfTheSameTypedName)
+{
+  Fixture fixture;
+  RepoCore repo(fixture.capability(), fixture.store("typed-alias"));
+  AdmissionFile incoming(fixture, "typed-alias", 2);
+  incoming.manifest.packetNames[1] =
+    incoming.packets.front().first.toUri(ndn::name::UriFormat::ALTERNATE);
+  BOOST_REQUIRE_NE(incoming.manifest.packetNames.front(), incoming.manifest.packetNames[1]);
+  BOOST_CHECK_THROW(repo.commitOriginalPacketFile(incoming.manifest, incoming.path),
+                    std::invalid_argument);
+  BOOST_CHECK(repo.list().empty());
+}
+
+BOOST_AUTO_TEST_CASE(CachedRelatedPacketSetPreservesWireAndChecksAdmissionEveryRead)
+{
+  Fixture fixture;
+  auto authority = std::make_shared<CountingStore>(fixture.store("cached-packets"));
+  auto tiered = makeTieredRepoStore(authority, 1U << 20, "filesystem", 1U << 20);
+  RepoCore repo(fixture.capability(), tiered);
+  AdmissionFile incoming(fixture, "cached-originals", 32, 128);
+  repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+  size_t admissionChecks = 0;
+  const auto admit = [&] (const RepoObjectManifest&) { ++admissionChecks; return true; };
+  const auto& first = incoming.packets.at(1);
+  BOOST_CHECK(repo.getDataPacket(first.first.toUri(), admit) == first.second);
+  const auto reads = authority->rangeReads;
+  BOOST_REQUIRE_GT(reads, 0U);
+  for (size_t i = 2; i < incoming.packets.size(); ++i) {
+    const auto& item = incoming.packets[i];
+    BOOST_CHECK(repo.getDataPacket(item.first.toUri(), admit) == item.second);
+  }
+  BOOST_CHECK_EQUAL(authority->rangeReads, reads);
+  BOOST_CHECK_GE(admissionChecks, 31U);
+  BOOST_CHECK_THROW(repo.getDataPacket(first.first.toUri(),
+    [] (const RepoObjectManifest&) { return false; }), std::runtime_error);
+  BOOST_CHECK_EQUAL(authority->rangeReads, reads);
+  BOOST_REQUIRE(tiered->erase(incoming.manifest.objectName));
+  BOOST_CHECK_THROW(repo.getDataPacket(first.first.toUri(), admit), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(PacketFileAdmissionBoundsCatalogScans)
 {
   Fixture fixture;
@@ -547,10 +915,12 @@ BOOST_AUTO_TEST_CASE(PacketFileAdmissionBoundsCatalogScans)
   AdmissionFile incoming(fixture, "batch", 32);
   store->enumerations = 0;
   store->usageScans = 0;
+  store->existenceProbes = 0;
   repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
   BOOST_CHECK_GT(store->enumerations, 0U);
   BOOST_CHECK_LE(store->enumerations, 8U);
   BOOST_CHECK_EQUAL(store->usageScans, 0U);
+  BOOST_CHECK_LE(store->existenceProbes, 16U);
   auto expected = fixture.capability();
   expected.usedBytes = standaloneWire.size() + incoming.manifest.size;
   expected.freeBytes -= expected.usedBytes;
@@ -559,6 +929,42 @@ BOOST_AUTO_TEST_CASE(PacketFileAdmissionBoundsCatalogScans)
                     expected.toJson());
   for (const auto& item : incoming.packets)
     BOOST_CHECK(repo.getDataPacket(item.first.toUri()) == item.second);
+}
+
+BOOST_AUTO_TEST_CASE(PacketFileAdmissionDistinguishesMetadataFromPhysicalPayload)
+{
+  Fixture fixture;
+  auto store = fixture.store("physical-admission");
+  AdmissionFile incoming(fixture, "physical", 4);
+  const std::vector<uint8_t> bytes(32, 7);
+  RepoObjectManifest opaque;
+  opaque.objectName = incoming.manifest.packetNames.at(1);
+  opaque.objectType = "opaque-payload";
+  opaque.size = bytes.size();
+  opaque.sha256 = sha256Hex(bytes);
+  store->put(opaque, bytes);
+  {
+    RepoCore repo(fixture.capability(), store);
+    BOOST_CHECK_EXCEPTION(repo.commitOriginalPacketFile(incoming.manifest, incoming.path),
+      std::runtime_error, [](const std::runtime_error& error) {
+        return std::string(error.what()) == "repo-original-packet-format-conflict";
+      });
+    const auto payload = fixture.root / "physical-admission/payloads/sha256" /
+      opaque.sha256.substr(0, 2) / opaque.sha256;
+    BOOST_REQUIRE(std::filesystem::remove(payload));
+    const auto catalog = store->listManifests();
+    BOOST_CHECK(std::any_of(catalog.begin(), catalog.end(), [&](const auto& row) {
+      return row.objectName == opaque.objectName;
+    }));
+    BOOST_CHECK(!store->has(opaque.objectName));
+    repo.commitOriginalPacketFile(incoming.manifest, incoming.path);
+    for (const auto& item : incoming.packets)
+      BOOST_CHECK(repo.getDataPacket(item.first.toUri()) == item.second);
+  }
+  store.reset();
+  RepoCore reopened(fixture.capability(), fixture.store("physical-admission"));
+  for (const auto& item : incoming.packets)
+    BOOST_CHECK(reopened.getDataPacket(item.first.toUri()) == item.second);
 }
 
 BOOST_AUTO_TEST_CASE(PacketFileAdmissionPreservesDeduplicatedCapacity)
@@ -741,6 +1147,473 @@ BOOST_AUTO_TEST_CASE(PacketFileCannotShadowLegacyAlternateStandalonePacket)
   BOOST_CHECK(repo.getDataPacket(canonical) == original);
 }
 
+BOOST_AUTO_TEST_CASE(ManifestSnapshotSurvivesReplacementWithoutCachingCurrentAdmission)
+{
+  Fixture fixture;
+  auto store = fixture.store("manifest-snapshot");
+  const std::vector<uint8_t> payload{1, 2, 3};
+  RepoObjectManifest original;
+  original.objectName = "/actual/producer/snapshot";
+  original.size = payload.size();
+  original.sha256 = sha256Hex(payload);
+  original.generation = 1;
+  original.policyEpoch = "epoch-a";
+  store->put(original, payload);
+  auto pinned = detail::readManifestSnapshot(*store, original.objectName);
+  std::weak_ptr<const RepoObjectManifest> released = pinned;
+  auto updated = original;
+  ++updated.generation;
+  updated.policyEpoch = "epoch-b";
+  store->put(updated, payload);
+  const auto current = detail::readManifestSnapshot(*store, original.objectName);
+  BOOST_CHECK_EQUAL(pinned->policyEpoch, "epoch-a");
+  BOOST_CHECK_EQUAL(current->policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(current->generation, updated.generation);
+  auto owned = store->getManifest(original.objectName);
+  owned.policyEpoch = "caller-mutation";
+  BOOST_CHECK_EQUAL(detail::readManifestSnapshot(*store, original.objectName)->policyEpoch,
+                    "epoch-b");
+  pinned.reset();
+  BOOST_CHECK(released.expired());
+  const auto sidecar = std::filesystem::directory_iterator(
+    fixture.root / "manifest-snapshot/manifests")->path();
+  const auto stamp = std::filesystem::last_write_time(sidecar);
+  {
+    std::ofstream output(sidecar, std::ios::trunc);
+    output << "{invalid json";
+  }
+  std::filesystem::last_write_time(sidecar, stamp);
+  BOOST_CHECK_THROW(detail::readManifestSnapshot(*store, original.objectName), std::exception);
+  BOOST_CHECK_EQUAL(current->policyEpoch, "epoch-b");
+}
+
+BOOST_AUTO_TEST_CASE(YoungManifestSnapshotsReuseParseButStillReadCurrentBytes)
+{
+  Fixture fixture;
+  auto store = fixture.store("young-snapshot");
+  const std::vector<uint8_t> payload{1, 2, 3};
+  RepoObjectManifest original;
+  original.objectName = "/actual/producer/young-snapshot";
+  original.size = payload.size();
+  original.sha256 = sha256Hex(payload);
+  original.generation = 1;
+  original.policyEpoch = "epoch-a";
+  store->put(original, payload);
+  const auto first = detail::readManifestSnapshot(*store, original.objectName);
+  BOOST_CHECK(first == detail::readManifestSnapshot(*store, original.objectName));
+  const auto sidecar = std::filesystem::directory_iterator(
+    fixture.root / "young-snapshot/manifests")->path();
+  const auto stamp = std::filesystem::last_write_time(sidecar);
+  auto changed = original;
+  changed.policyEpoch = "epoch-b";
+  BOOST_REQUIRE_EQUAL(changed.toJson().size(), original.toJson().size());
+  {
+    std::ofstream output(sidecar, std::ios::trunc);
+    output << changed.toJson();
+  }
+  std::filesystem::last_write_time(sidecar, stamp);
+  const auto current = detail::readManifestSnapshot(*store, original.objectName);
+  BOOST_CHECK_EQUAL(current->policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(first->policyEpoch, "epoch-a");
+}
+
+BOOST_AUTO_TEST_CASE(PhysicalMetadataSnapshotsPinIndexesButRecheckBackingFiles)
+{
+  Fixture fixture;
+  auto backing = fixture.store("physical-snapshot");
+  auto tiered = makeTieredRepoStore(backing, 1U << 20, "filesystem", 1U << 20);
+  RepoCore core(fixture.capability(), tiered);
+  PacketSet packets("/actual/physical-snapshot", 64);
+  RepoObjectManifest original;
+  original.objectName = packets.packets.front().first.toUri();
+  original.objectType = "original-packet-set";
+  original.generation = 1;
+  original.policyEpoch = "epoch-a";
+  original.packetOffsets = {0};
+  std::vector<uint8_t> payload;
+  for (const auto& packet : packets.packets) {
+    original.packetNames.push_back(packet.first.toUri());
+    payload.insert(payload.end(), packet.second.begin(), packet.second.end());
+    original.packetOffsets.push_back(payload.size());
+  }
+  original.segmentCount = original.packetNames.size();
+  original.size = payload.size();
+  original.sha256 = sha256Hex(payload);
+  backing->put(original, payload);
+  // Recent filesystem identities intentionally require a byte read. Warm the
+  // stat-valid parse only after the existing conservative timestamp boundary.
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  core.probeObjectMetadataSnapshot(original.objectName);
+  auto pinned = core.probeObjectMetadataSnapshot(original.objectName);
+  BOOST_REQUIRE(pinned.manifest);
+  BOOST_CHECK(pinned.manifest == core.probeObjectMetadataSnapshot(original.objectName).manifest);
+  BOOST_CHECK(pinned.payloadPresent && pinned.payloadRepresentationValid);
+  BOOST_CHECK_EQUAL(pinned.payloadSize, payload.size());
+  BOOST_CHECK(pinned.manifestMeasurementAvailable && pinned.manifestWireBytes > 0);
+  auto owned = core.probeObjectMetadata(original.objectName);
+  owned.manifest.packetNames.clear();
+  BOOST_CHECK_EQUAL(pinned.manifest->packetNames.size(), packets.packets.size());
+  auto updated = original;
+  ++updated.generation;
+  updated.policyEpoch = "epoch-b";
+  backing->put(updated, payload);
+  const auto current = core.probeObjectMetadataSnapshot(original.objectName);
+  BOOST_REQUIRE(current.manifest);
+  BOOST_CHECK_EQUAL(current.manifest->policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(pinned.manifest->policyEpoch, "epoch-a");
+  const auto storedPayload = fixture.root / "physical-snapshot/payloads/sha256" /
+    original.sha256.substr(0, 2) / original.sha256;
+  std::filesystem::resize_file(storedPayload, 1);
+  BOOST_CHECK_EQUAL(core.probeObjectMetadataSnapshot(original.objectName).payloadSize, 1);
+  std::filesystem::remove(storedPayload);
+  BOOST_CHECK(!core.probeObjectMetadataSnapshot(original.objectName).payloadPresent);
+  std::filesystem::create_directory(storedPayload);
+  const auto nonregular = core.probeObjectMetadataSnapshot(original.objectName);
+  BOOST_CHECK(nonregular.payloadPresent && !nonregular.payloadRepresentationValid);
+  const auto sidecar = std::filesystem::directory_iterator(
+    fixture.root / "physical-snapshot/manifests")->path();
+  {
+    std::ofstream output(sidecar, std::ios::trunc);
+    output << "{invalid json";
+  }
+  BOOST_CHECK_THROW(core.probeObjectMetadataSnapshot(original.objectName), std::exception);
+  BOOST_CHECK_EQUAL(pinned.manifest->policyEpoch, "epoch-a");
+  std::filesystem::remove(sidecar);
+  BOOST_CHECK(!core.probeObjectMetadataSnapshot(original.objectName).manifest);
+}
+
+BOOST_AUTO_TEST_CASE(GenericPhysicalMetadataSnapshotPreservesOwnedProbeAuthority)
+{
+  Fixture fixture;
+  const auto backing = fixture.store("generic-physical-snapshot");
+  const auto generic = std::make_shared<CountingStore>(backing);
+  RepoObjectManifest manifest;
+  manifest.objectName = "/actual/generic-physical-snapshot";
+  const std::vector<uint8_t> payload{1, 2, 3};
+  manifest.sha256 = sha256Hex(payload);
+  manifest.size = payload.size();
+  manifest.generation = 1;
+  generic->put(manifest, payload);
+  const auto owned = generic->probeObjectMetadata(manifest.objectName);
+  const auto snapshot = detail::probeObjectMetadataSnapshot(*generic, manifest.objectName);
+  BOOST_REQUIRE(snapshot.manifest);
+  BOOST_CHECK(snapshot.manifest->hasSameMetadata(owned.manifest));
+  BOOST_CHECK_EQUAL(snapshot.payloadMetadataAvailable, owned.payloadMetadataAvailable);
+  BOOST_CHECK_EQUAL(snapshot.payloadPresent, owned.payloadPresent);
+  BOOST_CHECK_EQUAL(snapshot.payloadRepresentationValid, owned.payloadRepresentationValid);
+  BOOST_CHECK_EQUAL(snapshot.payloadSize, owned.payloadSize);
+  BOOST_CHECK_EQUAL(snapshot.manifestMeasurementAvailable, owned.manifestMeasurementAvailable);
+  BOOST_CHECK_EQUAL(snapshot.manifestWireBytes, owned.manifestWireBytes);
+  const auto unknown = detail::probeObjectMetadataSnapshot(*makeSqliteRepoStore(":memory:"),
+                                                          "/missing");
+  BOOST_CHECK(!unknown.manifest && !unknown.payloadMetadataAvailable);
+}
+
+BOOST_AUTO_TEST_CASE(RestartPacketIndexSkipsRejectedHolder)
+{
+  Fixture fixture;
+  const ndn::Name base("/actual/restart-index");
+  const auto shared = ndn::Name(base).appendSegment(2);
+  const auto sharedWire = packet(shared);
+  std::string acceptedObject;
+  {
+    auto store = fixture.store("restart-holders");
+    for (uint64_t segment = 0; segment < 2; ++segment) {
+      const auto root = ndn::Name(base).appendSegment(segment);
+      auto bytes = packet(root);
+      const auto rootBytes = bytes.size();
+      bytes.insert(bytes.end(), sharedWire.begin(), sharedWire.end());
+      RepoObjectManifest manifest;
+      manifest.objectName = root.toUri(ndn::name::UriFormat::CANONICAL);
+      manifest.objectType = "original-packet-set";
+      manifest.packetNames = {manifest.objectName,
+        shared.toUri(ndn::name::UriFormat::CANONICAL)};
+      manifest.packetOffsets = {0, rootBytes, bytes.size()};
+      manifest.segmentCount = 2;
+      manifest.size = bytes.size();
+      manifest.sha256 = sha256Hex(bytes);
+      manifest.generation = 1;
+      store->put(manifest, bytes);
+      if (segment == 1) acceptedObject = manifest.objectName;
+    }
+  }
+  // Reopen valid durable metadata: no malformed row may force the scan fallback.
+  auto store = fixture.store("restart-holders");
+  BOOST_REQUIRE_EQUAL(store->listManifests().size(), 2U);
+  RepoCore repo(fixture.capability(), store);
+  unsigned rejectedChecks = 0;
+  unsigned batchChecks = 0;
+  const auto batch = repo.tryGetDataPacketBatch({ndn::Interest(shared), ndn::Interest(shared)},
+    [&](const RepoObjectManifest& manifest) {
+      if (manifest.objectName != acceptedObject) { ++rejectedChecks; return false; }
+      ++batchChecks;
+      return true;
+    }, [] {});
+  BOOST_REQUIRE(batch);
+  BOOST_REQUIRE_EQUAL(batch->size(), 2U);
+  BOOST_CHECK_GT(rejectedChecks, 0U);
+  BOOST_CHECK_EQUAL(batchChecks, 2U);
+  for (const auto& item : *batch) {
+    const auto& wire = item.wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == sharedWire);
+  }
+  BOOST_CHECK_THROW(repo.tryGetDataPacketBatch({ndn::Interest(shared), ndn::Interest(shared)},
+    [](const RepoObjectManifest&) { return false; }, [] {}), std::runtime_error);
+  unsigned selectedBatchChecks = 0;
+  BOOST_CHECK_THROW(repo.tryGetDataPacketBatch({ndn::Interest(shared), ndn::Interest(shared)},
+    [&](const RepoObjectManifest& manifest) {
+      return manifest.objectName == acceptedObject && ++selectedBatchChecks == 1;
+    }, [] {}), std::runtime_error);
+  BOOST_CHECK_EQUAL(selectedBatchChecks, 2U);
+  std::vector<uint8_t> received;
+  BOOST_REQUIRE_NO_THROW(received = repo.getDataPacket(shared.toUri(),
+    [&](const RepoObjectManifest& manifest) { return manifest.objectName == acceptedObject; }));
+  BOOST_CHECK(received == sharedWire);
+  BOOST_CHECK_THROW(repo.getDataPacket(shared.toUri(),
+    [](const RepoObjectManifest&) { return false; }), std::runtime_error);
+  unsigned selectedChecks = 0;
+  BOOST_CHECK_THROW(repo.getDataPacket(shared.toUri(), [&](const RepoObjectManifest& manifest) {
+    return manifest.objectName == acceptedObject && ++selectedChecks == 1;
+  }), std::runtime_error);
+  BOOST_CHECK_EQUAL(selectedChecks, 2U);
+}
+
+BOOST_AUTO_TEST_CASE(PacketBatchColdLookupRetainsHeterogeneousAdmittedHolder)
+{
+  Fixture fixture;
+  const ndn::Name base("/actual/batch-asymmetric");
+  const auto shared = ndn::Name(base).appendSegment(2);
+  const auto sharedWire = packet(shared);
+  const std::array<ndn::Name, 2> roots{
+    ndn::Name(base).appendSegment(0), ndn::Name("/actual/batch-heterogeneous/manifest")};
+  std::string acceptedObject;
+  {
+    auto store = fixture.store("batch-asymmetric");
+    for (const auto& root : roots) {
+      auto bytes = packet(root);
+      const auto rootBytes = bytes.size();
+      bytes.insert(bytes.end(), sharedWire.begin(), sharedWire.end());
+      RepoObjectManifest manifest;
+      manifest.objectName = root.toUri(ndn::name::UriFormat::CANONICAL);
+      manifest.objectType = "original-packet-set";
+      manifest.packetNames = {manifest.objectName,
+        shared.toUri(ndn::name::UriFormat::CANONICAL)};
+      manifest.packetOffsets = {0, rootBytes, bytes.size()};
+      manifest.segmentCount = 2;
+      manifest.size = bytes.size();
+      manifest.sha256 = sha256Hex(bytes);
+      manifest.generation = 1;
+      store->put(manifest, bytes);
+      acceptedObject = manifest.objectName;
+    }
+  }
+  RepoCore reopened(fixture.capability(), fixture.store("batch-asymmetric"));
+  unsigned rejected = 0;
+  unsigned accepted = 0;
+  const auto result = reopened.tryGetDataPacketBatch({ndn::Interest(shared), ndn::Interest(shared)},
+    [&](const RepoObjectManifest& manifest) {
+      if (manifest.objectName != acceptedObject) { ++rejected; return false; }
+      ++accepted;
+      return true;
+    }, [] {});
+  BOOST_REQUIRE(result);
+  BOOST_REQUIRE_EQUAL(result->size(), 2U);
+  BOOST_CHECK_GT(rejected, 0U);
+  BOOST_CHECK_EQUAL(accepted, 2U);
+  for (const auto& data : *result) {
+    const auto& wire = data.wireEncode();
+    BOOST_CHECK(std::vector<uint8_t>(wire.begin(), wire.end()) == sharedWire);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PacketLocatorFiltersCatalogButRetainsEveryCurrentHolder)
+{
+  Fixture fixture;
+  auto store = fixture.store("packet-locator");
+  const ndn::Name shared("/actual/lookup/shared/seg=42");
+  const auto sharedWire = packet(shared);
+  const auto insert = [&](const std::string& suffix, ndn::name::UriFormat format) {
+    const ndn::Name root("/actual/lookup/" + suffix);
+    auto bytes = packet(root);
+    const auto rootBytes = bytes.size();
+    bytes.insert(bytes.end(), sharedWire.begin(), sharedWire.end());
+    RepoObjectManifest manifest;
+    manifest.objectName = root.toUri(format);
+    manifest.objectType = "original-packet-set";
+    manifest.packetNames = {root.toUri(format), shared.toUri(format)};
+    manifest.packetOffsets = {0, rootBytes, bytes.size()};
+    manifest.segmentCount = 2;
+    manifest.size = bytes.size();
+    manifest.sha256 = sha256Hex(bytes);
+    manifest.generation = 1;
+    store->put(manifest, bytes);
+    return manifest;
+  };
+  const auto first = insert("holder-a", ndn::name::UriFormat::CANONICAL);
+  auto second = insert("holder-b", ndn::name::UriFormat::ALTERNATE);
+  const auto canonical = shared.toUri(ndn::name::UriFormat::CANONICAL);
+  const auto alternate = shared.toUri(ndn::name::UriFormat::ALTERNATE);
+  auto tiered = makeTieredRepoStore(store, 1U << 20, "filesystem", 1U << 20);
+  const auto matches = [&] {
+    return detail::findPacketManifests(*store, canonical, alternate, false);
+  };
+  BOOST_REQUIRE_EQUAL(matches().size(), 2U);
+  BOOST_REQUIRE_EQUAL(detail::findPacketManifests(*tiered, canonical, alternate, false).size(), 2U);
+  BOOST_CHECK(detail::findPacketManifests(*store, "/missing", "/missing", false).empty());
+  BOOST_CHECK(detail::findPacketManifests(*store, "/8=controller/8=DKEY",
+    "/controller/DKEY", true).empty());
+
+  RepoObjectManifest unrelated;
+  unrelated.objectName = ndn::Name("/unrelated/index").toUri(ndn::name::UriFormat::CANONICAL);
+  unrelated.objectType = "original-packet-set";
+  unrelated.packetNames = {unrelated.objectName};
+  const auto unrelatedWire = packet(ndn::Name(unrelated.objectName));
+  unrelated.size = unrelatedWire.size();
+  unrelated.packetOffsets = {0, unrelated.size};
+  unrelated.sha256 = sha256Hex(unrelatedWire);
+  unrelated.generation = 1;
+  store->put(unrelated, unrelatedWire);
+  for (const auto& entry : std::filesystem::directory_iterator(
+         fixture.root / "packet-locator" / "manifests")) {
+    std::ifstream input(entry.path());
+    const std::string encoded{std::istreambuf_iterator<char>(input), {}};
+    if (parseManifestJson(encoded).objectName != unrelated.objectName)
+      continue;
+    unrelated.objectName = "/unrelated/changed-index";
+    unrelated.packetOffsets = {0};
+    std::ofstream output(entry.path(), std::ios::trunc);
+    output << unrelated.toJson();
+    break;
+  }
+  BOOST_REQUIRE_EQUAL(matches().size(), 2U);
+
+  RepoCore repo(fixture.capability(), store);
+  unsigned admitted = 0;
+  BOOST_CHECK(repo.getDataPacket(canonical, [&](const RepoObjectManifest& manifest) {
+    ++admitted;
+    return manifest.objectName == second.objectName;
+  }) == sharedWire);
+  // Two candidate admissions, then a fresh check after copying original wire.
+  BOOST_CHECK_EQUAL(admitted, 3U);
+  unsigned selectedChecks = 0;
+  BOOST_CHECK_THROW(repo.getDataPacket(canonical, [&](const RepoObjectManifest& manifest) {
+    return manifest.objectName == second.objectName && ++selectedChecks == 1;
+  }), std::runtime_error);
+  BOOST_CHECK_EQUAL(selectedChecks, 2U);
+
+  ++second.generation;
+  second.policyEpoch = "current-policy";
+  std::filesystem::path changedSidecar;
+  for (const auto& entry : std::filesystem::directory_iterator(
+         fixture.root / "packet-locator" / "manifests")) {
+    std::ifstream input(entry.path());
+    const std::string encoded{std::istreambuf_iterator<char>(input), {}};
+    if (parseManifestJson(encoded).objectName == second.objectName) {
+      changedSidecar = entry.path();
+      break;
+    }
+  }
+  BOOST_REQUIRE(!changedSidecar.empty());
+  {
+    std::ofstream output(changedSidecar, std::ios::trunc);
+    output << second.toJson();
+    output.close();
+    BOOST_REQUIRE(output.good());
+  }
+  const auto current = matches();
+  BOOST_REQUIRE_EQUAL(current.size(), 2U);
+  const auto changed = std::find_if(current.begin(), current.end(), [&](const auto& manifest) {
+    return manifest.objectName == second.objectName;
+  });
+  BOOST_REQUIRE(changed != current.end());
+  BOOST_CHECK_EQUAL(changed->generation, second.generation);
+  BOOST_CHECK_EQUAL(changed->policyEpoch, second.policyEpoch);
+  BOOST_CHECK(repo.getDataPacket(canonical, [&](const RepoObjectManifest& manifest) {
+    return manifest.objectName == second.objectName && manifest.generation == second.generation;
+  }) == sharedWire);
+  BOOST_REQUIRE(store->erase(second.objectName));
+  BOOST_REQUIRE_EQUAL(matches().size(), 1U);
+  BOOST_REQUIRE_EQUAL(detail::findPacketManifests(*tiered, canonical, alternate, false).size(), 1U);
+  BOOST_CHECK_THROW(repo.getDataPacket(canonical, [&](const RepoObjectManifest& manifest) {
+    return manifest.objectName == second.objectName;
+  }), std::runtime_error);
+
+  std::filesystem::path sidecar;
+  for (const auto& entry : std::filesystem::directory_iterator(
+         fixture.root / "packet-locator" / "manifests")) {
+    std::ifstream input(entry.path());
+    const std::string encoded{std::istreambuf_iterator<char>(input), {}};
+    if (parseManifestJson(encoded).objectName == first.objectName) {
+      sidecar = entry.path();
+      break;
+    }
+  }
+  BOOST_REQUIRE(!sidecar.empty());
+  const auto timestamp = std::filesystem::last_write_time(sidecar);
+  {
+    std::ofstream output(sidecar, std::ios::trunc);
+    output << "{\"parentGeneration\":invalid}";
+  }
+  std::filesystem::last_write_time(sidecar, timestamp);
+  BOOST_CHECK_THROW(matches(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(YoungCatalogParseNeedsAReadAfterItsTimestampTickStabilizes)
+{
+  Fixture fixture;
+  const auto directory = fixture.root / "young-catalog";
+  auto store = makeFilesystemRepoStore(directory.string());
+  const auto wire = packet(packetName());
+  RepoObjectManifest metadata;
+  metadata.objectName = packetName().toUri(ndn::name::UriFormat::CANONICAL);
+  metadata.objectType = "ndn-data-wire";
+  metadata.packetNames = {metadata.objectName};
+  metadata.sha256 = sha256Hex(wire);
+  metadata.size = wire.size();
+  metadata.generation = 1;
+  metadata.policyEpoch = "epoch-a";
+  store->put(metadata, wire);
+  const auto sidecar = std::filesystem::directory_iterator(directory / "manifests")->path();
+  const auto timestamp = std::filesystem::last_write_time(sidecar);
+  const auto stamp = [&] {
+    struct stat value{};
+    if (::stat(sidecar.c_str(), &value) != 0)
+      throw std::runtime_error("test manifest stat failed");
+    return std::array<uint64_t, 7>{static_cast<uint64_t>(value.st_dev),
+      static_cast<uint64_t>(value.st_ino), static_cast<uint64_t>(value.st_size),
+      static_cast<uint64_t>(value.st_mtim.tv_sec), static_cast<uint64_t>(value.st_mtim.tv_nsec),
+      static_cast<uint64_t>(value.st_ctim.tv_sec), static_cast<uint64_t>(value.st_ctim.tv_nsec)};
+  };
+  const auto replace = [&](const RepoObjectManifest& value) {
+    std::ofstream output(sidecar, std::ios::trunc);
+    output << value.toJson();
+    output.close();
+    BOOST_REQUIRE(output.good());
+    std::filesystem::last_write_time(sidecar, timestamp);
+  };
+  auto changed = metadata;
+  changed.policyEpoch = "epoch-b";
+  bool collision = false;
+  for (unsigned attempt = 0; attempt < 100 && !collision; ++attempt) {
+    replace(metadata);
+    BOOST_REQUIRE_EQUAL(store->getManifest(metadata.objectName).policyEpoch, "epoch-a");
+    const auto before = stamp();
+    replace(changed);
+    collision = before == stamp();
+  }
+  if (!collision) {
+    BOOST_TEST_MESSAGE("filesystem did not expose an equal-stamp write; collision case skipped");
+    return;
+  }
+  BOOST_TEST_MESSAGE("confirmed equal metadata stamps; checking delayed cache admission");
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const auto found = detail::findPacketManifests(*store, metadata.objectName,
+    packetName().toUri(ndn::name::UriFormat::ALTERNATE), true);
+  BOOST_REQUIRE_EQUAL(found.size(), 1U);
+  BOOST_CHECK_EQUAL(found.front().policyEpoch, "epoch-b");
+  BOOST_CHECK_EQUAL(store->getManifest(metadata.objectName).policyEpoch, "epoch-b");
+}
+
 BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
 {
   Fixture fixture;
@@ -775,6 +1648,7 @@ BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
   writeSidecar(current);
   BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
   BOOST_CHECK_EQUAL(catalogParses.load(), 2U);
+  BOOST_CHECK_EQUAL(store->getManifest(metadata.objectName).policyEpoch, "epoch-b");
   BOOST_CHECK(std::filesystem::last_write_time(sidecar) == originalTime);
 
   auto malformed = current;
@@ -784,6 +1658,7 @@ BOOST_AUTO_TEST_CASE(CatalogParseReuseRequiresExactCurrentBytes)
   malformed.replace(consistencyAt + consistency.size(), 3, "BAD");
   writeSidecar(malformed);
   BOOST_CHECK_THROW(store->listManifests(), std::invalid_argument);
+  BOOST_CHECK_THROW(store->getManifest(metadata.objectName), std::invalid_argument);
   writeSidecar(current);
   BOOST_CHECK_EQUAL(store->listManifests().front().policyEpoch, "epoch-b");
   const auto backup = directory / "sidecar-backup";
@@ -1186,6 +2061,13 @@ BOOST_AUTO_TEST_CASE(NodeInsertEnumeratesCatalogPerGroupAndPreservesImmutablePac
     store->enumerations = 0;
     BOOST_REQUIRE_EQUAL(insert(incoming, wires).state, "DONE");
     scans.push_back(store->enumerations);
+    BOOST_CHECK_LE(store->enumerations, 2U);
+
+    auto duplicated = wires;
+    duplicated.push_back(wires.back());
+    const auto duplicate = insert(incoming, duplicated);
+    BOOST_CHECK_EQUAL(duplicate.state, "FAILED");
+    BOOST_CHECK_NE(duplicate.message.find("duplicate NDN Data name"), std::string::npos);
 
     auto changed = wires;
     ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wires.back().data(), wires.back().size())));
@@ -1210,9 +2092,42 @@ BOOST_AUTO_TEST_CASE(NodeInsertEnumeratesCatalogPerGroupAndPreservesImmutablePac
     BOOST_CHECK_EQUAL(legacyConflict.state, "FAILED");
     BOOST_CHECK_NE(legacyConflict.message.find("repo-data-wire-conflict"), std::string::npos);
     BOOST_CHECK(legacy.getDataPacket(incoming.packets.back().first.toUri()) == changed.back());
+
+    const auto& legacyName = incoming.packets.back().first;
+    const auto canonical = legacyName.toUri(ndn::name::UriFormat::CANONICAL);
+    const auto alternate = legacyName.toUri(ndn::name::UriFormat::ALTERNATE);
+    BOOST_REQUIRE_NE(canonical, alternate);
+    auto alias = legacyStore->getManifest(canonical);
+    alias.objectName = alternate;
+    alias.packetNames = {alternate};
+    legacyStore->put(alias, changed.back());
+    BOOST_REQUIRE(legacyStore->erase(canonical));
+    const auto aliasConflict = legacy.insertWirePackets(reference, wires);
+    BOOST_CHECK_EQUAL(aliasConflict.state, "FAILED");
+    BOOST_CHECK_NE(aliasConflict.message.find("repo-data-wire-conflict"), std::string::npos);
+    BOOST_CHECK(legacy.getDataPacket(alternate) == changed.back());
   }
   BOOST_REQUIRE_EQUAL(scans.size(), 2U);
   BOOST_CHECK_LE(scans.back(), scans.front() + 2);
+}
+
+BOOST_AUTO_TEST_CASE(NodeOriginalPacketInsertSurvivesFreshStoreRestart)
+{
+  Fixture fixture;
+  PacketSet incoming("/actual/restart-node-insert", 16);
+  {
+    RepoNode node(ndn::Name("/repo/batch"), fixture.capability(), fixture.store("node-restart"));
+    RepoDataReference reference;
+    reference.objectName = incoming.options.manifestName;
+    reference.dataPrefix = incoming.manifest.producer.toUri();
+    reference.expectedSize = incoming.options.packetWireBytes;
+    std::vector<std::vector<uint8_t>> wires;
+    for (const auto& packet : incoming.packets) wires.push_back(packet.second);
+    BOOST_REQUIRE_EQUAL(node.insertWirePackets(reference, wires).state, "DONE");
+  }
+  RepoNode reopened(ndn::Name("/repo/batch"), fixture.capability(), fixture.store("node-restart"));
+  for (const auto& packet : incoming.packets)
+    BOOST_CHECK(reopened.getDataPacket(packet.first.toUri()) == packet.second);
 }
 
 BOOST_AUTO_TEST_CASE(ExactOriginalRootLookupAvoidsCatalogEnumeration)

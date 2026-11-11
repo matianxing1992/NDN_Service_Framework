@@ -142,6 +142,127 @@ readPrivateFile(const std::filesystem::path& source, std::uint64_t maximum,
 
 } // namespace
 
+NativeModelCommitPipeline::NativeModelCommitPipeline(CurrentCheck requireCurrent)
+  : m_requireCurrent(std::move(requireCurrent))
+  , m_owner(std::this_thread::get_id())
+  , m_cancelled(std::make_shared<std::atomic<bool>>(false))
+{
+  if (!m_requireCurrent) throw std::invalid_argument("MODEL_REPO_PIPELINE_CURRENT_MISSING");
+  m_requireCurrent();
+}
+
+NativeModelCommitPipeline::~NativeModelCommitPipeline() noexcept
+{
+  cancelAndDrain();
+}
+
+void
+NativeModelCommitPipeline::requireOwner() const
+{
+  if (std::this_thread::get_id() != m_owner)
+    throw std::logic_error("MODEL_REPO_PIPELINE_WRONG_OWNER_THREAD");
+}
+
+void
+NativeModelCommitPipeline::cancelAndDrain() noexcept
+{
+  m_cancelled->store(true, std::memory_order_release);
+  m_closed = true;
+  while (!m_pending.empty()) {
+    auto pending = std::move(m_pending.front());
+    m_pending.pop_front();
+    try {
+      pending.completion.get();
+      if (pending.observe) pending.observe();
+    }
+    catch (...) {
+      // A failed scope cannot roll back a later independently durable commit.
+      // Observation is best-effort here; the original failure stays primary.
+    }
+  }
+}
+
+void
+NativeModelCommitPipeline::fail(std::exception_ptr error)
+{
+  cancelAndDrain();
+  std::rethrow_exception(error);
+}
+
+void
+NativeModelCommitPipeline::completeFirst()
+{
+  auto pending = std::move(m_pending.front());
+  m_pending.pop_front();
+  try {
+    pending.completion.get();
+    if (pending.observe) pending.observe();
+  }
+  catch (...) {
+    fail(std::current_exception());
+  }
+}
+
+void
+NativeModelCommitPipeline::submit(std::uint64_t wireBytes, Commit commit,
+                                  std::function<void()> observe)
+{
+  requireOwner();
+  try {
+    if (m_closed || !commit || wireBytes == 0 || wireBytes > NATIVE_STORED_MODEL_UPLOAD_WIRE)
+      throw std::invalid_argument("MODEL_REPO_PIPELINE_SUBMISSION_INVALID");
+    m_requireCurrent();
+    while (m_pending.size() >= MAX_ACTIVE_COMMITS) completeFirst();
+    m_requireCurrent();
+    const auto cancelled = m_cancelled;
+    // Reserve the owner record before starting a task: allocation failure must
+    // not leave an unowned asynchronous commit whose cancellation cannot drain.
+    m_pending.emplace_back();
+    auto& pending = m_pending.back();
+    try {
+      pending.observe = std::move(observe);
+      pending.completion = std::async(std::launch::async,
+        [commit = std::move(commit), cancelled] {
+          const CurrentCheck current = [cancelled] {
+            if (cancelled->load(std::memory_order_acquire))
+              throw std::runtime_error("MODEL_REPO_PIPELINE_CANCELLED");
+          };
+          current();
+          commit(current);
+        });
+    }
+    catch (...) {
+      m_pending.pop_back();
+      throw;
+    }
+  }
+  catch (...) {
+    fail(std::current_exception());
+  }
+}
+
+void
+NativeModelCommitPipeline::drain()
+{
+  requireOwner();
+  if (m_closed) throw std::logic_error("MODEL_REPO_PIPELINE_CLOSED");
+  try {
+    m_requireCurrent();
+    while (!m_pending.empty()) completeFirst();
+    m_requireCurrent();
+  }
+  catch (...) {
+    fail(std::current_exception());
+  }
+}
+
+void
+NativeModelCommitPipeline::finish()
+{
+  drain();
+  m_closed = true;
+}
+
 NativeStoredModelHandle::~NativeStoredModelHandle()
 {
   OPENSSL_cleanse(masterKey.data(), masterKey.size());
@@ -801,7 +922,9 @@ readSegments(const ndn::Name& prefix, std::uint64_t size, std::uint32_t segmentB
 void
 commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
                const NativeStoredModelPacketIo& io, NativeStoredModelPublication& publication,
-               unsigned version = 2)
+               unsigned version = 2,
+               std::function<void(const ndn::Name&, const std::string&, std::uint64_t)>
+                 observe = {})
 {
   require(version == 1 || version == 2);
   const auto maxPackets = version == 1 ? MAX_GROUP_PACKETS : NATIVE_STORED_MODEL_UPLOAD_PACKETS;
@@ -810,15 +933,30 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
   NativeStoredModelPacketIo::PacketWires group;
   std::size_t nameBytes = 0;
   Bytes digestInput;
+  NativeModelCommitPipeline pipeline(io.requireCurrent);
   const auto flush = [&] {
     if (group.empty())
       return;
     io.requireCurrent();
     const auto expected = digest(digestInput.data(), digestInput.size());
-    publication.wireBytes += digestInput.size();
-    io.commit(std::move(group), expected);
-    io.requireCurrent();
-    ++publication.packetGroups;
+    const auto bytes = static_cast<std::uint64_t>(digestInput.size());
+    const auto name = decodeOriginal(group.front()).getName();
+    const auto committed = [&, observe, bytes, name, expected] {
+      publication.wireBytes += bytes;
+      ++publication.packetGroups;
+      if (observe) observe(name, expected, bytes);
+    };
+    if (io.commitConcurrent) {
+      pipeline.submit(bytes, [commit = io.commitConcurrent, wires = std::move(group), expected]
+        (const NativeModelCommitPipeline::CurrentCheck& current) mutable {
+          commit(std::move(wires), expected, current);
+        }, committed);
+    }
+    else {
+      io.commit(std::move(group), expected);
+      io.requireCurrent();
+      committed();
+    }
     group.clear();
     digestInput.clear();
     nameBytes = 0;
@@ -837,6 +975,7 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
     group.emplace_back(wire.begin(), wire.end());
   }
   flush();
+  pipeline.finish();
 }
 
 } // namespace
@@ -961,18 +1100,10 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   if (bindPrefix) bindPrefix(prefix);
   io.requireCurrent();
   const auto recording = [&](NativeJson& groups) {
-    auto port = io;
-    port.commit = [&groups, original = io.commit](NativeStoredModelPacketIo::PacketWires wires,
-                                            const std::string& expected) {
-      require(!wires.empty());
-      const auto name = decodeOriginal(wires.front()).getName();
-      std::uint64_t bytes = 0;
-      for (const auto& wire : wires) bytes += wire.size();
-      original(std::move(wires), expected);
+    return [&groups](const ndn::Name& name, const std::string& expected, std::uint64_t bytes) {
       groups.push_back(NativeJson{{"name", name.toUri(ndn::name::UriFormat::CANONICAL)},
                                  {"digest", expected}, {"bytes", bytes}});
     };
-    return port;
   };
   NativeStoredModelCatalog catalog;
   catalog.m_modelDigest = modelDigest;
@@ -1022,7 +1153,7 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
                                            ndn::time::milliseconds::zero());
     if (journal) {
       auto groups = NativeJson::array();
-      commitPackets(packets, recording(groups), publication, journal->currentGroupingVersion());
+      commitPackets(packets, io, publication, journal->currentGroupingVersion(), recording(groups));
       journal->complete(input->id, entry, groups);
     }
     else {
@@ -1040,10 +1171,12 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const auto indexSegmentBytes = segmentPayload(indexName);
   const Bytes indexBytes(index.begin(), index.end());
   auto tailGroups = NativeJson::array();
-  const auto tailIo = journal ? recording(tailGroups) : io;
+  std::function<void(const ndn::Name&, const std::string&, std::uint64_t)> tailObserver;
+  if (journal) tailObserver = recording(tailGroups);
   const auto tailVersion = journal ? journal->tailGroupingVersion() : 2;
   commitPackets(segmenter.segment(indexBytes, indexName, indexSegmentBytes,
-                                   ndn::time::milliseconds::zero()), tailIo, publication, tailVersion);
+                                   ndn::time::milliseconds::zero()), io, publication, tailVersion,
+                tailObserver);
   auto root = std::make_shared<ndn::Data>(handle.rootName);
   const auto rootJson = storedRootJson(modelDigest, indexName,
     digest(indexBytes.data(), indexBytes.size()), index.size(), indexSegmentBytes);
@@ -1053,7 +1186,7 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   handle.rootWireDigest = digest(rootWire.data(), rootWire.size());
   handle.validate();
   (void)nativeAdmitStoredModelRoot(handle, *root);
-  commitPackets({root}, tailIo, publication, tailVersion);
+  commitPackets({root}, io, publication, tailVersion, tailObserver);
   io.requireCurrent();
   if (journal) journal->finish(handle.rootWireDigest, tailGroups);
   return publication;

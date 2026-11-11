@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
+#include "ndn-service-framework/TimelineTrace.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 
 #include <ndn-cxx/security/certificate.hpp>
@@ -27,11 +28,24 @@ constexpr std::size_t MAX_GROUP_NAMES = 128U << 10;
 constexpr std::uint64_t MAX_GROUP_WIRE = 8U << 20;
 constexpr std::size_t MAX_MODEL_OBJECTS = 4096;
 constexpr std::uint64_t MAX_PACKET_GROUPS = 65536;
+// Exact authenticated ACKs close early; allow bounded SVS recovery before silence.
+constexpr int MAX_ACK_COLLECTION_MS = 3000;
 
 void
 require(bool condition, const char* message)
 {
   if (!condition) throw std::runtime_error(message);
+}
+
+int
+remainingRepoBudget(std::chrono::steady_clock::time_point deadline,
+                    const std::function<void()>& current)
+{
+  current();
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now()).count();
+  require(remaining > 1, "MODEL_REPO_STORE_DEADLINE");
+  return static_cast<int>(std::min<std::int64_t>(300000, remaining));
 }
 
 struct PacketGroup
@@ -69,10 +83,9 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   const repo::RepoArtifactTarget& target, PacketGroup& group,
   const std::function<bool(const ndn::Data&)>& verifyPacket,
   const std::function<int()>& budget, const std::function<void()>& current,
-  std::uint32_t schemaVersion)
+  std::uint32_t schemaVersion, const std::string& digest)
 {
   auto& reference = group.reference;
-  const auto digest = packetDigest(group.wires);
   reference.expectedSha256 = reference.packetSetMetadata->sha256 = digest;
   reference.packetSetMetadata->size = reference.expectedSize;
   reference.validateExactPacketSet();
@@ -85,15 +98,29 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   request.expiresAtMs = static_cast<std::uint64_t>(std::chrono::duration_cast<
     std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) +
     static_cast<std::uint64_t>(timeout);
+  const auto grantStarted = std::chrono::steady_clock::now();
   const auto encoded = request.toJson();
   const auto replyWire = repo::RepoClient::requestSelectedService(writer,
     ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
       ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
     std::vector<std::uint8_t>(encoded.begin(), encoded.end()),
-    std::min(1000, std::max(1, timeout / 2)), timeout, {}, current);
+    std::min(MAX_ACK_COLLECTION_MS, std::max(1, timeout / 2)), timeout, {}, current);
   const auto reply = repo::RepoUserStorageGrantReply::fromJson(
     std::string(replyWire.begin(), replyWire.end()));
   reply.validateExpected(target, request.writerIdentity, request);
+  try {
+    if (ndn_service_framework::controlTimingEnvEnabled()) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - grantStarted).count();
+      ndn_service_framework::logControlTiming("repo-client", "original-publication",
+        ndn::Name(reference.objectName), {
+          {"operation_id", request.grantId}, {"stage", "grant"},
+          {"elapsed_ns", std::to_string(elapsed)}});
+    }
+  }
+  catch (...) {
+    // A diagnostic observation cannot grant or reject storage authority.
+  }
   repo::RepoUserStorageInsertRequest insert;
   insert.schemaVersion = schemaVersion;
   insert.operationId = request.grantId;
@@ -107,7 +134,8 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
       current();
       if (next == group.wires.size()) return std::nullopt;
       return std::move(group.wires[next++]);
-    }, verifyPacket, std::min(1000, std::max(1, budget() / 2)), budget(), current);
+    }, verifyPacket, std::min(MAX_ACK_COLLECTION_MS, std::max(1, budget() / 2)),
+    budget(), current);
   require(committed.sha256 == digest && committed.size == reference.expectedSize,
           "MODEL_REPO_STORE_COMMIT_MISMATCH");
 }
@@ -148,11 +176,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
     require(std::chrono::steady_clock::now() < deadline, "MODEL_REPO_STORE_DEADLINE");
   };
   const auto budget = [deadline, current] {
-    current();
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-      deadline - std::chrono::steady_clock::now()).count();
-    require(remaining > 1, "MODEL_REPO_STORE_DEADLINE");
-    return static_cast<int>(std::min<std::int64_t>(300000, remaining));
+    return remainingRepoBudget(deadline, current);
   };
   const auto verify = [](const ndn::Data& packet) {
     return packet.getSignatureType() == ndn::tlv::DigestSha256 &&
@@ -161,11 +185,19 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
   current();
   NativeStoredModelPacketIo io;
   io.requireCurrent = current;
-  io.fetch = [user, target, budget, current, verify,
-              acquireOperationLifetime = std::move(acquireOperationLifetime)] (
+  if (allowPublication) {
+    io.requireCurrent = [user, current] {
+      current();
+      // Reject the owner before it can wait for asynchronous commits that need
+      // this same Face to run. Worker-side checks alone would miss that deadlock.
+      require(!user->isOnIoThread(), "MODEL_REPO_STORE_ON_FACE_THREAD");
+    };
+  }
+  io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
     const std::vector<ndn::Name>& names) {
     auto operationLifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;
-    return repo::RepoClient::fetchOriginalDataPackets(user, target, names, MAX_GROUP_WIRE,
+    return repo::RepoClient::fetchOriginalDataPackets(user, target, names,
+      NATIVE_STORED_MODEL_UPLOAD_WIRE,
       verify, budget(), current, std::move(operationLifetime));
   };
   if (allowPublication) {
@@ -184,7 +216,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       const auto wire = repo::RepoClient::requestSelectedService(*user,
         ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
           ndn::Name(target.servicePrefix), "MANIFEST"), repo::toBytes(objectName),
-        std::min(1000, std::max(1, timeout / 2)), timeout, {}, current);
+        std::min(MAX_ACK_COLLECTION_MS, std::max(1, timeout / 2)), timeout, {}, current);
       require(!wire.empty() && wire.size() <= (1U << 20), "MODEL_REPO_RECOVERY_MANIFEST_BUDGET");
       const auto text = repo::toString(wire);
       const auto manifest = repo::parseManifestJson(text);
@@ -196,12 +228,25 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         "MODEL_REPO_RECOVERY_COMMIT_MISMATCH");
       current();
     };
-    io.commit = [user, target, budget, current, verify](
-      NativeStoredModelPacketIo::PacketWires wires, const std::string& expectedDigest) {
-      current();
+    const auto commit = [user, target, deadline, current, verify, acquireOperationLifetime](
+      NativeStoredModelPacketIo::PacketWires wires, const std::string& expectedDigest,
+      const std::function<void()>& additionalCurrent) {
+      const auto callCurrent = [current, additionalCurrent] {
+        current();
+        if (additionalCurrent) additionalCurrent();
+      };
+      const auto callBudget = [deadline, callCurrent] {
+        return remainingRepoBudget(deadline, callCurrent);
+      };
+      callCurrent();
+      const auto lifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;
       require(!user->isOnIoThread(), "MODEL_REPO_STORE_ON_FACE_THREAD");
       require(!wires.empty() && wires.size() <= NATIVE_STORED_MODEL_UPLOAD_PACKETS,
               "MODEL_REPO_STORE_GROUP_BUDGET");
+      require(expectedDigest.size() == 71 && expectedDigest.compare(0, 7, "sha256:") == 0 &&
+        std::all_of(expectedDigest.begin() + 7, expectedDigest.end(), [](unsigned char ch) {
+          return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+        }), "MODEL_REPO_STORE_DIGEST_INVALID");
       const auto producer = user->getName();
       PacketGroup group;
       group.reference.dataPrefix = producer.toUri(ndn::name::UriFormat::ALTERNATE);
@@ -211,7 +256,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       metadata.packetOffsets = {0};
       std::set<ndn::Name> names;
       for (const auto& wire : wires) {
-        current();
+        callCurrent();
         require(!wire.empty() && wire.size() <= ndn::MAX_NDN_PACKET_SIZE &&
           wire.size() <= NATIVE_STORED_MODEL_UPLOAD_WIRE - group.reference.expectedSize,
           "MODEL_REPO_STORE_BYTE_BUDGET");
@@ -220,7 +265,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         require(packet.wireEncode().size() == wire.size() && producer.isPrefixOf(packet.getName()) &&
           packet.getName() != producer && names.insert(packet.getName()).second &&
           name.size() <= 4096 &&
-          name.size() <= NATIVE_STORED_MODEL_UPLOAD_NAMES - group.nameBytes && verify(packet),
+          name.size() <= NATIVE_STORED_MODEL_UPLOAD_NAMES - group.nameBytes,
           "MODEL_REPO_STORE_PACKET_INVALID");
         if (metadata.packetNames.empty())
           group.reference.objectName = metadata.objectName = name;
@@ -229,11 +274,18 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         metadata.packetNames.push_back(name);
         metadata.packetOffsets.push_back(group.reference.expectedSize);
       }
-      require("sha256:" + packetDigest(wires) == expectedDigest,
-              "MODEL_REPO_STORE_DIGEST_MISMATCH");
       group.wires = std::move(wires);
-      commitPacketGroup(*user, target, group, verify, budget, current, 2);
-      current();
+      // RepoClient validates every signature and the supplied aggregate digest
+      // before installing the Producer filter or emitting INSERT. An authorized
+      // GRANT may precede rejection; unchecked packets never become available.
+      commitPacketGroup(*user, target, group, verify, callBudget, callCurrent, 2,
+                        expectedDigest.substr(7));
+      callCurrent();
+    };
+    io.commitConcurrent = commit;
+    io.commit = [commit](NativeStoredModelPacketIo::PacketWires wires,
+                        const std::string& expectedDigest) {
+      commit(std::move(wires), expectedDigest, {});
     };
   }
   return io;
@@ -294,12 +346,6 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
     requireReference(name);
   for (const auto& name : publication.layerDataNames) requireReference(name);
   for (const auto& name : publication.materialDataNames) requireReference(name);
-  const auto budget = [&] {
-    current();
-    return static_cast<int>(std::min<std::int64_t>(300000,
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - std::chrono::steady_clock::now()).count()));
-  };
   NativeModelRepositoryReceipt receipt;
   receipt.producer = producer;
   receipt.certificateName = certificate.getName();
@@ -307,20 +353,38 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
   receipt.metadataName = ndn::Name(publication.preparedMetadataDataName);
   receipt.rootDigest = publication.manifestDigest;
   receipt.metadataDigest = publication.preparedMetadataDigest;
+  NativeModelCommitPipeline pipeline(current);
+  std::uint64_t submittedGroups = 0;
+  std::uint64_t submittedBytes = 0;
   PacketGroup group;
   const auto flush = [&] {
     if (group.wires.empty()) return;
     current();
-    require(receipt.packetGroups < MAX_PACKET_GROUPS, "MODEL_REPO_STORE_GROUP_BUDGET");
-    commitPacketGroup(writer, target, group, [&](const ndn::Data& packet) {
-      const auto& wire = packet.wireEncode();
-      return writer.validateProducerPacketWireUntil(
-        {wire.begin(), wire.end()}, producer,
-        std::min(deadline, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
-    }, budget, current, 1);
-    receipt.wireBytes += group.reference.expectedSize;
-    ++receipt.packetGroups;
+    require(submittedGroups < MAX_PACKET_GROUPS, "MODEL_REPO_STORE_GROUP_BUDGET");
+    const auto bytes = group.reference.expectedSize;
+    auto pending = std::make_shared<PacketGroup>(std::move(group));
     group = {};
+    pipeline.submit(bytes, [&, pending, target, producer, current, deadline]
+      (const NativeModelCommitPipeline::CurrentCheck& additionalCurrent) {
+        const auto callCurrent = [current, additionalCurrent] {
+          current();
+          additionalCurrent();
+        };
+        const auto budget = [deadline, callCurrent] {
+          return remainingRepoBudget(deadline, callCurrent);
+        };
+        commitPacketGroup(writer, target, *pending, [&](const ndn::Data& packet) {
+          const auto& wire = packet.wireEncode();
+          return writer.validateProducerPacketWireUntil(
+            {wire.begin(), wire.end()}, producer,
+            std::min(deadline, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+        }, budget, callCurrent, 1, packetDigest(pending->wires));
+      }, [&receipt, bytes] {
+        receipt.wireBytes += bytes;
+        ++receipt.packetGroups;
+      });
+    submittedBytes += bytes;
+    ++submittedGroups;
   };
   const auto append = [&](const ndn::Name& name, std::vector<std::uint8_t> wire) {
     current();
@@ -335,9 +399,9 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
         wire.size() > MAX_GROUP_WIRE - group.reference.expectedSize ||
         text.size() > MAX_GROUP_NAMES - group.nameBytes)
       flush();
-    require(receipt.wireBytes <= repo::REPO_USER_STORAGE_LIMIT_BYTES &&
-      group.reference.expectedSize <= repo::REPO_USER_STORAGE_LIMIT_BYTES - receipt.wireBytes &&
-      wire.size() <= repo::REPO_USER_STORAGE_LIMIT_BYTES - receipt.wireBytes -
+    require(submittedBytes <= repo::REPO_USER_STORAGE_LIMIT_BYTES &&
+      group.reference.expectedSize <= repo::REPO_USER_STORAGE_LIMIT_BYTES - submittedBytes &&
+      wire.size() <= repo::REPO_USER_STORAGE_LIMIT_BYTES - submittedBytes -
         group.reference.expectedSize, "MODEL_REPO_STORE_BYTE_BUDGET");
     if (group.wires.empty()) {
       group.reference.objectName = text;
@@ -393,7 +457,9 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
   for (const auto& object : *publication.ownerRecoverableObjects) {
     if (&object != root) storeObject(object);
   }
+  pipeline.drain();
   storeObject(*root);
+  pipeline.finish();
   current();
   return receipt;
 }

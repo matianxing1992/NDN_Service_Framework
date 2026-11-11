@@ -4,11 +4,13 @@
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <ndn-cxx/data.hpp>
 #include <ndn-cxx/interest.hpp>
 
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <filesystem>
 #include <functional>
 #include <unordered_map>
@@ -46,6 +48,9 @@ public:
 
   RepoObjectMetadataProbe probeObjectMetadata(
     const std::string& objectName) const;
+  /** Physical measurements retain immutable metadata ownership until the caller releases it. */
+  RepoObjectMetadataSnapshot
+  probeObjectMetadataSnapshot(const std::string& objectName) const;
 
   std::vector<RepoObjectManifest> list() const;
 
@@ -104,11 +109,31 @@ public:
   std::vector<uint8_t> getDataPacket(const ndn::Interest& interest,
     const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
 
+  static constexpr std::size_t MAX_ORIGINAL_PACKET_READ_BATCH = 16;
+
+  /** Read one bounded batch from a single immutable original-packet set.
+   * Fresh object admission brackets all individual bounded range reads. Each
+   * original wire must match its Interest; nothing is returned before the final
+   * current-metadata/physical/admission check. requireActive runs between reads.
+   * Nullopt means unsupported shape/capability before payload reads; authoritative
+   * admission, mutation and wire failures throw and must not trigger fallback.
+   * No admission decision is retained across batches.
+   */
+  std::optional<std::vector<ndn::Data>>
+  tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject,
+    const std::function<void()>& requireActive) const;
+
   /** Return only a receipt embedded at the original Data commit boundary. */
   RepoWriteReceipt getDataPacketReceipt(const std::string& dataName,
                                         const std::string& wireSha256) const;
 
   bool hasDataPacket(const std::string& dataName) const;
+
+  bool supportsConcurrentCommittedReads() const noexcept
+  {
+    return m_store->supportsConcurrentCommittedReads();
+  }
 
   bool supportsOriginalPacketTransactions() const noexcept
   {
@@ -187,8 +212,12 @@ public:
 
 private:
   friend struct RepoCorePacketIndexTestAccess;
+  struct PacketIndexProof;
   RepoObjectManifest describeDataPacket(const std::string& name) const;
   void validateReadPacketIndex(const RepoObjectManifest& manifest) const;
+  std::shared_ptr<const PacketIndexProof> getPacketIndexProof(
+    const RepoObjectManifest& manifest,
+    const std::shared_ptr<const RepoObjectManifest>& owner = {}) const;
   RepoObjectManifest commitOriginalPacketReaderImpl(
     const RepoObjectManifest& manifest, const OriginalPacketRangeReader& readRange,
     const std::function<void()>& requireActive, const std::filesystem::path& sourceFile);
@@ -246,28 +275,39 @@ private:
   std::unordered_map<std::string, RangeReservation> m_rangeReservations;
   uint64_t m_reservedRangeBytes = 0;
 
-  // Maps a packet-name base (the packet name without its trailing segment)
-  // to the manifests that can contain it. A fresh Repo builds this from the
-  // durable manifests so exact packet reads never scan the whole store.
+  // Bounded locator hints, restored at startup and refreshed after publication.
+  // Every candidate still requires current metadata and caller admission.
   void buildPacketBaseIndex() const;
-  std::optional<std::pair<RepoObjectManifest, size_t>> findIndexedOriginalPacket(
-    const std::string& packetName) const;
+  std::optional<std::pair<std::shared_ptr<const RepoObjectManifest>, size_t>>
+  findIndexedOriginalPacket(const ndn::Name& name, const std::string& canonical,
+    const std::string& alternate,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject) const;
   mutable std::mutex m_packetBaseIndexMutex;
   mutable std::unordered_map<std::string, std::vector<std::string>> m_packetBaseIndex;
   mutable bool m_packetBaseIndexBuilt = false;
 
   struct PacketIndexProof
   {
+    struct SegmentPosition
+    {
+      uint64_t segment = 0;
+      size_t packetIndex = 0;
+    };
     uint64_t size = 0;
     std::vector<std::string> names;
     std::vector<uint64_t> offsets;
+    std::unordered_map<std::string, std::vector<SegmentPosition>> segments;
+    std::weak_ptr<const RepoObjectManifest> validatedManifest;
     size_t chargedBytes = 0;
   };
   // Structural proofs only. Every read still fetches current metadata and
   // checks its current visibility/claims; this cache never admits an object.
   mutable std::mutex m_packetIndexProofMutex;
-  mutable std::unordered_map<std::string, PacketIndexProof> m_packetIndexProofs;
+  mutable std::unordered_map<std::string, std::shared_ptr<PacketIndexProof>> m_packetIndexProofs;
+  // Combined logical charge of prefix hints and immutable proof geometry/tables.
   mutable size_t m_packetIndexProofBytes = 0;
+  static constexpr size_t MAX_PACKET_INDEX_PROOFS = 16;
+  static constexpr size_t MAX_PACKET_INDEX_BYTES = 8U * 1024U * 1024U;
 };
 
 } // namespace ndnsf_distributed_repo

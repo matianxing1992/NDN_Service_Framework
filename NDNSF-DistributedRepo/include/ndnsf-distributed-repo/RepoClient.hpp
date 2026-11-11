@@ -198,7 +198,8 @@ public:
 
   /** Commit an exact signed packet set using a current Owner grant.
    * Serves a bounded private spool only through the writer's existing route.
-   * Confirms INSERT by writer-bound manifest and complete original-wire readback.
+   * Confirms durable INSERT by a current writer-bound manifest after withdrawing
+   * the temporary Producer. Retrieval is a separate operation.
    * The caller keeps writer and its running Face alive; never call on that Face.
    * On ambiguous failure the Owner retains cleanup/reconciliation responsibility.
    */

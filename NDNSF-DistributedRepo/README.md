@@ -11,13 +11,37 @@ then restart the same Repo for its existing reconciliation. This does not bypass
 or automatically delete quarantine. An interrupt drains an issued ordinary request within its
 remaining deadline and exits130; it does not claim remote cancellation.
 
-Native Owner-bound original-packet INSERT defaults to schema 1 (`RPOI1`), retaining identity/trust
-signature checks. Explicit schema 2 (`RPOI2`) accepts only valid DigestSha256 packets beneath the
-authenticated writer's prefix. It retains the live storage grant, exact ordered packet commitment,
-quota, immutable transaction and original-wire readback checks. MANIFEST accepts the same explicit
-frame. Digest signatures provide integrity within this authenticated transaction; consumers must
-obtain a trusted root/object commitment separately. This mode does not change Core control-message
-validation or existing callers' default behavior. Repo stores and serves the original Data unchanged.
+Native Owner-bound original-packet INSERT defaults to schema 1 (`RPOI1`); schema 2 (`RPOI2`)
+remains wire-compatible. Both bind the exact ordered names, total original-wire size and SHA-256
+through the authenticated NDNSF request and live storage grant. Repo checks those commitments,
+writer namespace, supplied packet offsets, quota and immutable storage admission. Original packet
+signatures are opaque storage bytes: consumers validate their original signatures, trust and
+application context independently. NDNSF control-message authentication and authorization remain
+required. Repo stores and serves the original Data unchanged. Independent requests fetch and hash
+concurrently; shared storage admission and commit retain transaction synchronization.
+The native persistent Repo server uses the Provider's default two bounded handler
+threads; `NDNSF_HANDLER_THREADS` remains authoritative. Shutdown drains the same
+owned Provider pool.
+Validated original-packet INSERT commits use one Node-owned storage worker. Queued and active
+writes share a 64 MiB wire-byte budget (minimum 1 KiB charge per job), with bounded-caller
+backpressure and cancellation checks. The synchronous result waits for durable storage; stopping
+rejects new admissions and cancels queued writes before Node teardown joins the worker. Legacy
+mutation paths retain their transaction fence. The filesystem backend permits committed cache
+hits and disk reads during unrelated writes: metadata-cache synchronization is separate from
+the write fence, and committed files use independent read-only descriptors with no staging
+fallback. Original-packet admission is checked again after copying the wire. Other backends
+retain their existing read synchronization until they implement this explicit capability.
+
+Native complete publication uses compact `RPOM1` selectors on the same authenticated MANIFEST
+service. They carry the operation, object/prefix, generation, payload size/digest and Owner grant
+binding, without resending the packet index. After durable INSERT completes, the Client withdraws
+its temporary Producer and checks one complete canonical manifest against the exact packet names,
+offsets, digest, size and generation. This query retains current grant, committed write/claim,
+physical payload verification and visibility checks. Full original-wire retrieval is a separate
+operation, used by the file benchmark as its independent byte oracle. The optional compact
+manifest-digest query and legacy `RPOI1/2` MANIFEST queries remain supported. Install the
+updated Server and all embedded RepoClient consumers together; an older Server cannot interpret
+`RPOM1`, and the Client does not downgrade to a less-checked query after rejection.
 
 NDNSF-DistributedRepo is an experimental C++ subproject for a distributed,
 NDN-native, policy-controlled artifact and intermediate-data storage layer for
@@ -106,6 +130,49 @@ to obtain and validate its complete Data name, such as
 the complete signed wire is stored byte-for-byte. The logical object manifest
 contains the ordered `packetNames` index. The packet path never creates
 `<objectName>/ndn-data/<N>` or `<objectName>/seg/N` aliases.
+
+The native adapter uses ndn-cxx `SegmentFetcher` for complete, canonical
+zero-based segmented objects with a matching Producer-signed FinalBlock.
+It preserves original packet wires and the caller's hash and signature
+admission checks. Partial ranges and opaque packet-name lists retain exact-name
+retrieval. Named batches are bounded to 4,096 packets and 32 MiB; cancellation
+stops the library fetcher and drains Face callbacks before releasing admission.
+Congestion control and retransmission timing on complete streams belong to
+ndn-cxx, while the adapter retains its overall deadline and resource bounds.
+The library's maximum RTO is bounded by the wire InterestLifetime so retries do
+not wait beyond an expired Interest; its progress timeout remains independent.
+
+The B47 local MiniNDN checkpoint uses 7,000-byte payloads, three bounded client
+commits, two Repo handlers, a single storage writer, a 3-second maximum ACK
+collection window and explicitly configured 1-second SVS periodic sync. With
+empty stores, fresh native processes and NFD content stores disabled, a
+500,000,000-byte file published in 57.386606140 seconds (8.712834 MB/s) and
+was independently retrieved in 45.429498532 seconds (11.006065 MB/s).
+Original packet wires, the full file digest, physical storage and nonforced
+process cleanup passed. Native negative/restart checks and the bounded pipeline
+ASAN checks passed separately. Publication remains below the 10 MB/s goal.
+Earlier missed or late control advertisements remain recorded failures;
+this successful run does not establish their underlying cause or sustained
+reliability. These are local Repo measurements, not inference or cluster results.
+
+Checkpoint revalidation reproduced the measured Server, inference-library and
+benchmark binary hashes. The persistent service suite passed 145 cases/41,226
+assertions, and 46 focused host-control tests passed. The authenticated
+publication/restart fixture passed 166 assertions under three debugger runs and
+one ordinary run with Boost system-error interception disabled. Other attempts
+failed at its 250 ms ACK window and once reported a memory-access violation
+after cancellation, before repeating model publication. The latter has no
+captured stack or established cause. Those failures remain qualification limits;
+the checkpoint must not be treated as a release with proven sustained stability.
+
+Persistent serving can read up to 16 exact segmented Interests from the same
+immutable packet set under one bounded batch admission. Fresh current metadata,
+physical availability and the applicable live claim bracket the reads; each
+original packet still has to match its Interest. No result is returned before
+the final admission succeeds, and no admission result is cached across batches.
+Unsupported shapes use the existing individual read path. Mutation, corruption
+or failed admission discards the prepared batch. Individual reply deadlines,
+stop checks and byte/count leases remain in force.
 
 The repo does not decrypt, reinterpret, or re-authorize the application data.
 It only stores opaque Data wire packets and reports operation status:
@@ -571,7 +638,7 @@ The C++ repo library exposes this policy through `RepoStoreBackend` and
 ```cpp
 RepoCore core(capability, makeTieredRepoStore(
   "/var/lib/ndnsf/repo/repo.sqlite3",
-  64 * 1024 * 1024));
+  1ULL << 30));
 ```
 
 There is no memory-authoritative backend or default memory-only constructor.
@@ -588,13 +655,44 @@ database:
 
 ```bash
 --database /var/lib/ndnsf-repo/repo-node-A \
---cache-bytes 67108864
+--cache-bytes 1073741824
 ```
 
 The server derives `/var/lib/ndnsf-repo/repo-node-A.store` for filesystem Repo
 objects and `/var/lib/ndnsf-repo/repo-node-A.artifact-v2.sqlite` for artifact
 receipts, locations, and operation records. `--cache-bytes` must be positive;
 the server rejects a zero cache budget during configuration validation.
+
+The server defaults to a 1 GiB logical cache budget and a 32 MiB per-object
+threshold. Memory grows on demand. A range read of a qualifying committed object
+prefetches its related packet set into the same LRU, in bounded read chunks;
+subsequent segments reuse those bytes. Larger objects remain range-readable
+without whole-object cache admission. Manifest freshness and live storage
+admission are checked on reads, including cache hits. The budget counts payload
+and serialized metadata; process RSS also includes other runtime allocations.
+NDNSF-DI deployments can override these native options with the Repo actor's
+`parameters.cache-bytes` and `parameters.large-object-threshold-bytes`.
+
+Original-packet retrieval uses Core's bounded AIMD controller on both the Client
+and Server fetch paths. The default flight starts at 16 Interests and grows
+without a fixed packet-count ceiling, up to the finite admitted packet set.
+An explicit nonzero private fetcher capacity remains an optional caller limit.
+Data acknowledgments expand the flight; congestion marks, Nacks and timeouts
+reduce it once per recovery flight. RTT samples from first attempts update the
+retry lifetime within the original lifetime, one-second and total-deadline bounds.
+Each packet still has at most three expressions, with unchanged original-wire
+verification, private spooling and cancellation ownership.
+Reply admission uses byte budgets independently of cwnd: a Producer retains at
+most its admitted object's original wire size in pending replies; the Repo
+reserves queued Interests/records and maximum-sized replies within 64 MiB.
+Leases retain charges through queued Face puts and release on errors/stop/drain.
+This replaces the former 64-reply limits; genuine budget saturation can still
+cause loss and window reduction. These are accounting bounds, not process RSS
+caps or a fixed congestion-window ceiling. Explicit `NDNSF_CONTROL_TIMING=1`
+enables sampled `role=repo-fetch event=window` aggregates; also set
+`NDNSF_TIMELINE_TRACE_SAMPLE_RATE=1` to record every drained fetch, with window
+milestones, in-flight occupancy, RTT and loss counters. No per-packet trace is
+retained. RTT includes Face scheduling; it is not pure network propagation time.
 
 `CACHE_STATUS` is available through the trusted C++ local-service path and the
 standalone C++ Persistent network service. It returns
@@ -800,6 +898,12 @@ Repo reads. Writes return native durable receipts, and `ONE`, `QUORUM`, and
 the selected Repo performs definitive capacity checks before committing.
 Persistent handlers are registered by `DistributedRepoServer` using the
 configured Provider identity.
+
+Live Owner-grant validation reuses two prepared SQLite SELECT handles on each metadata
+connection. It executes every current grant/fence lookup and expiry check; authorization
+results are not cached. The existing connection mutex serializes their use. Each query
+resets its read snapshot and bound parameters on exit, and the connection finalizes both
+handles before closing.
 
 The native Repo preserves exact app-signed Data wire bytes. Artifact-v2 values,
 receipts, status, location, and availability are validated by the C++ API and

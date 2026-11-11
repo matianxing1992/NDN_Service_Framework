@@ -6,6 +6,7 @@
 
 #include <ndn-cxx/face.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -18,11 +19,15 @@
 
 namespace ndnsf_distributed_repo::detail {
 
+inline constexpr std::size_t MAX_NAMED_PACKET_COUNT = 4096;
+inline constexpr uint64_t MAX_NAMED_PACKET_WIRE_BYTES = 32U << 20;
+inline constexpr std::size_t MAX_NAMED_PACKET_NAME_BYTES = 512U << 10;
+
 /** Private, unlinked disk spool for an exact ordered set of original Data wires.
  *
  * The fetch window bounds transient packet buffers. This object keeps only
- * per-packet offsets/lengths in memory and stores the original wire bytes in
- * tmpfile-backed storage until RepoNode validates and commits the set.
+ * per-packet offsets/lengths and one 64 KiB stdio buffer in memory, storing
+ * original wires in tmpfile-backed storage until Node validates and commits.
  */
 class FaceDataReferencePacketSpool final : public DataReferencePacketSource
 {
@@ -54,7 +59,10 @@ public:
   readRange(uint64_t offset, std::size_t length) const override;
 
 private:
+  static constexpr std::size_t STDIO_BUFFER_BYTES = 64U << 10;
   mutable std::mutex m_mutex;
+  // FILE must close before its borrowed stdio buffer is destroyed.
+  std::array<char, STDIO_BUFFER_BYTES> m_ioBuffer;
   std::unique_ptr<std::FILE, int(*)(std::FILE*)> m_file;
   std::vector<long> m_packetOffsets;
   std::vector<uint64_t> m_logicalOffsets;
@@ -63,6 +71,7 @@ private:
   uint64_t m_maxWireBytes = 0;
   uint64_t m_totalWireBytes = 0;
   bool m_finalized = false;
+  mutable bool m_readSinceAppend = false;
 };
 
 /** Fetch the exact original Data packet set through a shared Face.
@@ -77,18 +86,30 @@ private:
 class FaceDataReferenceFetcher
 {
 public:
-  /** Fetch exact original packets with at most three expressions per packet.
-   * Timeout/Nack retries use a fresh Nonce, a lifetime of at most one second,
-   * and the original total deadline. Window and admission bounds include retries.
+  /** Fetch exact original wires with caller-owned final object admission.
+   * Complete canonical zero-based sets whose original FinalBlock agrees use
+   * ndn-cxx SegmentFetcher. Its progress timeout and the external total deadline
+   * bound retries; its InterestLifetime and RTO are independent. SDK window
+   * statistics and a per-packet three-attempt limit are not exposed.
+   * Compatibility/bootstrap retries retain at most three expressions per packet,
+   * fresh Nonces, a lifetime of at most one second and the original deadline.
+   * Zero windowSize lets the compatibility AIMD grow across the
+   * admitted packet set without a fixed packet ceiling. A nonzero value is an
+   * explicit caller capacity: start with at most 16 and reduce on marks/loss.
+   * Retries have priority over new names and share the current congestion
+   * window. Each immutable slot owns at most one active or queued attempt.
+   * Retry lifetimes back off per packet so other packets' fast ACK samples
+   * cannot shorten its recovery; all configured lifetime/deadline caps remain.
    */
   FaceDataReferenceFetcher(ndn::Face& face,
                            std::chrono::milliseconds interestLifetime,
                            std::chrono::milliseconds totalTimeout,
-                           std::size_t windowSize = 16,
+                           std::size_t windowSize = 0,
                            std::shared_ptr<void> lifetime = {});
 
   std::shared_ptr<FaceDataReferencePacketSpool>
-  operator()(const RepoDataReference& reference) const;
+  operator()(const RepoDataReference& reference,
+             std::function<void()> requireCurrent = {}) const;
 
   /** Fetch explicitly named original packets under a wire-byte upper bound.
    * No manifest, digest or exact size is invented. Application admission remains caller-owned.

@@ -1,0 +1,11 @@
+Running 1 test case...
+NDNSF_INTEGRATION_BOOTSTRAP_READY sha256:9F6204F407CD524EBA46A127E8BDC0385BAD8C329FA8C8C941C52C734E688199
+unknown location(0): [4;31;49mfatal error: in "DistributedRepoPersistentArtifactApi/OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices": memory access violation at address: 0x7f1cf4000020: invalid permissions[0;39;49m
+../tests/integration-tests/spec192-persistent-artifact-api.t.cpp(3159): [1;36;49mlast checkpoint[0;39;49m
+
+Test module "ndn_rpc_framework" has failed with:
+  1 test case out of 1 failed
+  1 test case out of 1 aborted
+  96 assertions out of 97 passed
+  1 assertion out of 97 failed
+

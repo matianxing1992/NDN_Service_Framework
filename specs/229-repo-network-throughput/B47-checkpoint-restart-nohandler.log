@@ -1,0 +1,7 @@
+Running 1 test case...
+NDNSF_INTEGRATION_BOOTSTRAP_READY sha256:E6B36B52310811AD0624BAA188DB2C8A6AE77B5DD1D4A8B75FA7BA5C2A316EE1
+
+Test module "ndn_rpc_framework" has passed with:
+  1 test case out of 1 passed
+  166 assertions out of 166 passed
+
