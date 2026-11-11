@@ -1241,7 +1241,7 @@ pip_install() (
     NDNSF_RUNTIME_PREFIX="$RUNTIME_PREFIX" \
     NDNSF_NAC_ABE_PREFIX="$NAC_SDK_PREFIX" \
     NDNSF_GLOBAL_NATIVE_DIGESTS="$NDNSF_GLOBAL_NATIVE_DIGESTS" \
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ PYTHONNOUSERSITE=1 \
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 PYTHONNOUSERSITE=1 \
     "$PYTHON_BIN" -m pip --isolated wheel --wheel-dir "$wheel_dir" \
     "${PYTHON_WHEEL_INPUTS[@]}"
   manifest_tool --privileged snapshot-python \
@@ -1325,7 +1325,7 @@ run_waf_clean() {
     -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
     PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
@@ -1780,7 +1780,7 @@ void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
 }
 """
 result = subprocess.run(
-    ["/usr/bin/g++", "-std=c++17", "-x", "c++", "-fsyntax-only", "-",
+    ["/usr/bin/g++-10", "-std=c++17", "-x", "c++", "-fsyntax-only", "-",
      *shlex.split(sys.argv[1])], input=source, text=True, env=env)
 raise SystemExit(result.returncode)
 PY
@@ -2005,7 +2005,7 @@ def output(args):
     except (OSError, subprocess.CalledProcessError) as error:
         raise SystemExit(f"system OpenSSL preflight command failed: {error}")
 
-multiarch = output(["/usr/bin/gcc", "-print-multiarch"])
+multiarch = output(["/usr/bin/gcc-10", "-print-multiarch"])
 system_pc_dirs = []
 if multiarch:
     native_pc_dir = pathlib.Path("/usr/lib") / multiarch / "pkgconfig"
@@ -2032,7 +2032,7 @@ int main() { return EVP_PKEY_get_raw_public_key(nullptr, nullptr, nullptr); }
 with tempfile.TemporaryDirectory(prefix="ndnsf-openssl-probe-") as temp:
     executable = pathlib.Path(temp) / "openssl-api-probe"
     result = subprocess.run(
-        ["/usr/bin/g++", "-I/usr/local/include", *cflags, "-L/usr/local/lib",
+        ["/usr/bin/g++-10", "-I/usr/local/include", *cflags, "-L/usr/local/lib",
          "-H", "-x", "c++", "-o", str(executable), "-", *libs],
         input=source, text=True, env=env, capture_output=True)
     if result.returncode != 0:
@@ -2384,7 +2384,7 @@ build_openabe_dependency() {
     unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
       LD_LIBRARY_PATH LIBRARY_PATH CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
       BOOST_ROOT BOOST_INCLUDEDIR BOOST_LIBRARYDIR
-    export PATH="$2" CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+    export PATH="$2" CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
       AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
       BOOST_ROOT= BOOST_INCLUDEDIR= BOOST_LIBRARYDIR= USE_DEPS="relic gtest"
     make clean
@@ -2407,14 +2407,14 @@ OPENABE_BUILD
     -u PKG_CONFIG_PATH -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
     -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
-    PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+    PATH="$SYSTEM_PATH" CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
     AR=/usr/bin/ar RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip \
     bash -e -c \
     "cd \"\$1\" && . ./env && unset PKG_CONFIG_PATH PKG_CONFIG_LIBDIR CFLAGS \
       CXXFLAGS CPPFLAGS LDFLAGS LD_LIBRARY_PATH LIBRARY_PATH CPATH \
       C_INCLUDE_PATH CPLUS_INCLUDE_PATH BOOST_ROOT BOOST_INCLUDEDIR \
-      BOOST_LIBRARYDIR && export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc \
-      CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
+      BOOST_LIBRARYDIR && export PATH='$SYSTEM_PATH' CC=/usr/bin/gcc-10 \
+      CXX=/usr/bin/g++-10 LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
       NM=/usr/bin/nm STRIP=/usr/bin/strip && \
       USE_DEPS='relic gtest' make INSTALL_PREFIX=\"\$2\" install" _ "$dir" "$install_stage"
   install_manifest_tree "$install_stage" "$OPENABE_PREFIX" openabe
@@ -2462,7 +2462,7 @@ build_waf_dependency() {
     -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR
     PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN"
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH"
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld AR=/usr/bin/ar
     AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip
   )
   (
@@ -2550,7 +2550,7 @@ build_fixed_minindn_waf_dependency() {
     -u CPLUS_INCLUDE_PATH -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR
     PATH="$SYSTEM_PATH:/usr/local/bin" PKGCONFIG="$PKG_CONFIG_BIN"
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH"
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld AR=/usr/bin/ar
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld AR=/usr/bin/ar
     AS=/usr/bin/as RANLIB=/usr/bin/ranlib NM=/usr/bin/nm STRIP=/usr/bin/strip
   )
   echo "==> Building pinned Mini-NDN prerequisite $name in $build_out"
@@ -2586,10 +2586,10 @@ build_fixed_minindn_infoedit() {
   mkdir -p -- "$BUILD_DIR/install-staging"
   stage_root="$(mktemp -d "$BUILD_DIR/install-staging/minindn-infoedit.XXXXXXXX")"
   run_bounded env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ PATH="$SYSTEM_PATH" \
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 PATH="$SYSTEM_PATH" \
     make -C "$dir" -j"$JOBS"
   run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ PATH="$SYSTEM_PATH" \
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 PATH="$SYSTEM_PATH" \
     make -C "$dir" DESTDIR="$stage_root" \
       PREFIX="$GLOBAL_DEPENDENCY_PREFIX" install
   run make -C "$dir" clean
@@ -2656,7 +2656,7 @@ ensure_minindn_boost_iostreams() {
   run tar -xjf "$archive" --strip-components=1 --no-same-owner --no-same-permissions -C "$build/source"
   (
     cd "$build/source"
-    run env CC=/usr/bin/gcc CXX=/usr/bin/g++ ./bootstrap.sh --with-libraries=iostreams
+    run env CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 ./bootstrap.sh --with-libraries=iostreams
     run_bounded ./b2 --build-dir="$build/build" --stagedir="$build/stage" --with-iostreams \
       toolset=gcc link=shared runtime-link=shared threading=multi --layout=system "-j$JOBS" stage
   )
@@ -3002,7 +3002,7 @@ build_cmake_dependency() {
     run_bounded bash -e -c "cd \"\$1\" && env \
       -u PKG_CONFIG_LIBDIR -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
       PKG_CONFIG_PATH='$GLOBAL_PKG_CONFIG_PATH' \
-      PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+      PATH='$SYSTEM_PATH' CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
       AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
       CMAKE_PREFIX_PATH='$OPENABE_PREFIX' \
       CMAKE_INCLUDE_PATH='$OPENABE_PREFIX/include' \
@@ -3012,7 +3012,7 @@ build_cmake_dependency() {
       LDFLAGS='-L$OPENABE_PREFIX/lib -Wl,-rpath,$OPENABE_PREFIX/lib' \
       LD_LIBRARY_PATH='$OPENABE_PREFIX/lib' \
       cmake -S . -B \"\$2\" \
-        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc-10 -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
         -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
         -DCMAKE_INSTALL_PREFIX='$dependency_prefix' \
         -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=ON \
@@ -3024,7 +3024,7 @@ build_cmake_dependency() {
         -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
         -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
         -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
-        PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+        PATH='$SYSTEM_PATH' CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
         AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
         cmake --build \"\$2\" --parallel '$JOBS'" _ "$dir" "$build_dir"
   else
@@ -3034,10 +3034,10 @@ build_cmake_dependency() {
       -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
       -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
       -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
-      PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+      PATH='$SYSTEM_PATH' CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
       AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
       cmake -S . -B \"\$2\" \
-      -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+      -DCMAKE_C_COMPILER=/usr/bin/gcc-10 -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
       -DCMAKE_LINKER=/usr/bin/ld -DCMAKE_AR=/usr/bin/ar -DCMAKE_RANLIB=/usr/bin/ranlib \
         -DCMAKE_INSTALL_PREFIX='$dependency_prefix' \
       -DBoost_NO_BOOST_CMAKE=ON -DBoost_NO_SYSTEM_PATHS=ON \
@@ -3047,7 +3047,7 @@ build_cmake_dependency() {
         -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS -u LD_LIBRARY_PATH \
         -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH \
         -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
-        PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+        PATH='$SYSTEM_PATH' CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
         AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
         cmake --build \"\$2\" --parallel '$JOBS'" _ "$dir" "$build_dir"
   fi
@@ -3063,7 +3063,7 @@ build_cmake_dependency() {
     return
   fi
   run bash -e -c "cd \"\$1\" && env -u BOOST_ROOT -u BOOST_INCLUDEDIR \
-    -u BOOST_LIBRARYDIR PATH='$SYSTEM_PATH' CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+    -u BOOST_LIBRARYDIR PATH='$SYSTEM_PATH' CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 \
     LD=/usr/bin/ld AR=/usr/bin/ar RANLIB=/usr/bin/ranlib \
     cmake --install \"\$2\" --prefix \"\$3\"" _ "$dir" "$build_dir" "$install_stage"
   install_manifest_tree "$install_stage" "$GLOBAL_DEPENDENCY_PREFIX" "$name"
@@ -3203,9 +3203,9 @@ install_host_sdk_prerequisites() {
     mkdir -p -- "$install_stage"
     run env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
       -u CMAKE_PREFIX_PATH -u CMAKE_INCLUDE_PATH -u CMAKE_LIBRARY_PATH \
-      PATH="$SYSTEM_PATH" CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+      PATH="$SYSTEM_PATH" CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 \
       cmake -S "$source_dir" -B "$build_dir" \
-        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc-10 -DCMAKE_CXX_COMPILER=/usr/bin/g++-10 \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$install_stage" \
         -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_ONNX_PYTHON=OFF \
         -DONNX_BUILD_TESTS=OFF -DONNX_GEN_PB_TYPE_STUBS=OFF \
@@ -3575,7 +3575,7 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     -u OBJCOPY -u OBJDUMP -u READELF \
     -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
     PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
-    CC=/usr/bin/gcc CXX=/usr/bin/g++ LD=/usr/bin/ld \
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_SKIP_DEV_PIP_INSTALL=1 \

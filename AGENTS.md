@@ -10,6 +10,26 @@
   task plans, progress, experiment results and debugging history in their
   existing task/evidence locations. Amend an existing rule instead of adding
   another rule for the same responsibility.
+- **Minimum necessary documentation.** Reuse existing task and result records;
+  do not create a report, checklist, gate card, review matrix or retrospective
+  for each implementation step or retry. Perform the necessary reviews and
+  checks directly and record their conclusions once. Keep one concise experiment
+  result record with the necessary structured statistics, source/configuration
+  identity, measurement boundaries, outcomes and first failure boundary; append
+  retries to the same result table. Update interface, behavior and security
+  contracts only where they change, defining each fact once and linking to it.
+  Before creating a document, identify the actual implementation, user or audit
+  decision it supports and why an existing record cannot hold it. Optional skill
+  templates do not require additional documents or duplicated tracking fields.
+  Documentation must not replace implementation or verification, or delay them
+  through administrative prerequisites. Preserve the experiment measurements
+  and cleanup receipts required below in the same result record.
+- **Default to Chinese with the user.** Reasoning, progress narration and replies
+  use Chinese unless the user asks for English or the artifact itself is English
+  (source identifiers, code comments, commit messages, papers, slides, English
+  documentation sections). Keep paths, commands, identifiers and quoted output
+  verbatim. This rule governs communication only; the engineering and
+  verification rules below are unchanged.
 - Resolve relative paths from this checkout. Higher-priority instructions and
   current user decisions take precedence. No README, design document, Spec,
   personal configuration or skill is required to interpret this handbook.
@@ -470,6 +490,23 @@ approval again or hide an exception in a special-case branch.
 
 ## Host build stability
 
+- The host C++ toolchain is GCC 10: `/usr/bin/gcc-10` and `/usr/bin/g++-10`,
+  pinned explicitly by `install_ndnsf_stack.sh` (and by any `CC`/`CXX` override
+  that bypasses it). Do not build this tree with the GCC 9.4 default: on this
+  host it raises non-deterministic internal compiler errors (`ggc_set_mark, at
+  ggc-page.c:1547` and `instantiate_decl, at cp/pt.c:24765`) on large
+  translation units and even on small ndn-cxx/Boost probes, at one job as well
+  as at six. Switching compilers changes artifact identity, so re-baseline any
+  measurement that is compared across the switch.
+- With GCC 10 the six-job default above applies again: the earlier one-job
+  retries were only a workaround attempt for the GCC 9 ICEs, which are not a
+  concurrency limit (they occurred at one job too). Do not cite serial
+  compilation as a fix, and do not lower the job count without an observed OOM.
+  On the 9.7 GB development VM the current Core/DI translation units do not fit
+  six at once: measured six `cc1plus` processes held about 7.0 GB, free memory
+  fell to 199 MB and swap rose to 4.3 GB with no OOM kill. Four jobs is the
+  measured fit for this tree on that host; record the measurement when changing
+  it.
 - For host compilation on the six-core development host, default to six jobs
   without an artificial compiler memory cap or a desktop-headroom admission gate.
   Do not serialize large source units: Waf's requested job count controls all
@@ -655,5 +692,5 @@ created. For those host-side failures, the Codex IDE/CLI itself must provide
 retry or model fallback; never claim that an agent instruction can catch them.
 
 <!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/231-collaboration-semantics/plan.md.
+Active implementation plan is at specs/229-repo-network-throughput/plan.md.
 <!-- SPEC_KIT_PLAN_END -->

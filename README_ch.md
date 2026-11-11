@@ -147,7 +147,17 @@ sudo ./install_ndnsf_stack.sh --force-dependencies
 sudo ./waf install
 ```
 
-当前开发机为 6 个逻辑 CPU、12 GB RAM，日常原生构建使用 `./waf build -j4`。
+当前开发机的 C++ 工具链是 GCC 10：`/usr/bin/gcc-10` 和 `/usr/bin/g++-10`，
+由 `install_ndnsf_stack.sh` 对 Waf 构建图和 CMake 构建的 NAC-ABE 依赖统一固定。
+不要用 Ubuntu 20.04 默认的 GCC 9.4 构建本树：它会在大型 TU 上产生非确定性的
+内部编译器错误（`ggc_set_mark, at ggc-page.c:1547` 和
+`instantiate_decl, at cp/pt.c:24765`），几行的 ndn-cxx/Boost 探针同样会触发，
+1 路和 6 路并发都一样。更换编译器会改变产物身份，跨编译器的测量结果必须重新基线。
+
+当前开发机为 6 vCPU / 9.7 GB RAM，日常原生构建使用 `./waf build -j4`：
+六路会把本树压进 swap（实测 6 个 `cc1plus` 合计约 7.0 GB、可用内存 199 MB、
+swap 4.3 GB），四路约 4.4 GB、swap 1.7 GB。六路默认只适用于单个 TU 装得下的构建树，
+详见 `docs/native-build-parallelism.md`。
 同一 Waf 树只运行一个构建进程，也不要叠加独立的原生依赖构建。观察可用内存和
 `vmstat 1`；只有出现持续换页或桌面卡顿时，当前调用安全收尾或停止，下一次才降为
 `-j2`。这是本机执行策略，不是已经测得的加速保证；其他主机和容器 builder 需单独
@@ -883,7 +893,8 @@ V3 会签名共享的状态向量 Data 名称 `/<group>/v=3`。参与者身份�
 非层级名称例外绑定到配置的组，并继续验证 Data 签名；其它名称的验证不会放宽。
 示例信任模式已包含对应的 `/example/.../group/...` 规则。
 
-100 RPS latency-floor run 已验证的软件栈：
+100 RPS latency-floor run 历史已验证的软件栈（记录于主机切换到 GCC 10 之前；
+工具链说明见第 2 节）：
 
 ```text
 OS: Ubuntu 20.04.3 LTS
