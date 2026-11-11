@@ -942,7 +942,10 @@ NativeArtifactBinding NativeCanonicalArtifactPublisher::bindPreparedImpl(
     const auto degree = candidate.tensorDegreesByRole.find(role.role);
     if (degree != candidate.tensorDegreesByRole.end() && degree->second > 1)
       stable.append("rank").appendNumber(role.rank);
-    binding.artifactNameByRole.emplace(role.selectedRole, stable.toUri());
+    // Without Core prefetch there is no alias-cache entry for the stable name.
+    // Bind the authenticated assignment to the original root instead.
+    binding.artifactNameByRole.emplace(role.selectedRole,
+      publication.artifactPrefetchRequired ? stable.toUri() : rootDataName);
     binding.sourceByRole.emplace(role.selectedRole, rootDataName);
     binding.artifactDigestByRole.emplace(role.selectedRole, role.artifactDigest);
   }

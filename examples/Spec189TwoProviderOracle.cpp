@@ -1362,6 +1362,15 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       nonnegativeInteger(requesterConfig.at("kv_handoff").at("after_turn")) >= turns.size() - 1))
     chainFailure("deployment-handoff-configuration");
   auto boundRequester = requesterConfig;
+  auto expectedRequester = config.at("requester");
+  if (expectedRequester.contains("model_input") &&
+      expectedRequester.at("model_input").value("mode", "") == "source-cache") {
+    const auto& input = expectedRequester.at("model_input");
+    expectedRequester["cache_compatibility"] = NativeJson{
+      {"enabled", true}, {"source_directory", input.at("source_directory")},
+      {"source_namespace", input.at("source_namespace")}};
+    expectedRequester.erase("model_input");
+  }
   const auto requesterStatisticsPath = requesterConfig.at("statistics_file").get<std::string>();
   if (!config.at("requester").contains("statistics_file")) {
     if (std::filesystem::path(requesterStatisticsPath) !=
@@ -1372,7 +1381,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   if (!turns.is_array() || turns.empty() ||
       conversation.at("turn").at("mode") != "FULL_CONTEXT" ||
       request.at("generation_mode") != "TOKEN_STREAMING" ||
-      config.at("requester") != boundRequester)
+      expectedRequester != boundRequester)
     chainFailure("deployment-turn-configuration");
   const bool groupedTurns = turns.at(0).contains("conversation_id");
   std::set<std::string> conversationIds;

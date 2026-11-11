@@ -493,6 +493,8 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         add(params.get('artifact-cache-dir', provider_cache_path(
                 config['storage']['cache_root'], actor['identity'])),
             writable=True, directory=True)
+        if 'cache-compatibility-source-dir' in params:
+            add(params['cache-compatibility-source-dir'], directory=True)
         if 'statistics-file' in params:
             output(params['statistics-file'])
         if 'selection-offer-key-file' in params:
@@ -515,6 +517,12 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         for path in requester.get('offer_admission', {}).get('public_key_files', {}).values():
             add(path)
         model_input = requester.get('model_input', {})
+        if model_input.get('mode') == 'source-cache':
+            # Keep source payloads immutable. Only the small native object
+            # store needs writes; Providers receive the whole cache read-only.
+            cache = Path(model_input['source_directory'])
+            add(cache, directory=True)
+            add(cache / 'objects', writable=True, directory=True)
         if model_input.get('mode') == 'stored':
             add(model_input['private_handle_file'])
         elif model_input.get('mode') in ('source', 'publish-stored'):

@@ -234,6 +234,12 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
                 '--trust-schema', security['trust_schema']]
     elif kind in ('requester', 'artifact-authority'):
         native = dict(config['requester' if kind == 'requester' else 'artifact_authority'])
+        source_cache = kind == 'requester' and native.get('model_input', {}).get('mode') == 'source-cache'
+        if source_cache:
+            model_input = native.pop('model_input')
+            native['cache_compatibility'] = {
+                'enabled': True, 'source_namespace': model_input['source_namespace'],
+                'source_directory': model_input['source_directory']}
         if kind == 'requester' and native.get('model_input', {}).get('mode') in ('source', 'publish-stored'):
             for key in ('preparation_state_file', 'private_handle_file'):
                 _private_directory(Path(native['model_input'][key]).parent)
@@ -250,6 +256,11 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
         write_json(path, native)
         program = 'DI_NativeRequester' if kind == 'requester' else 'DI_NativeArtifactAuthority'
         argv = [str(prefix / program), '--config', str(path)]
+        if source_cache:
+            # Existing native compatibility form keeps planning, grants and
+            # execution in C++; only model transport changes to local files.
+            argv += ['--input', native['turns'][0]['input_file'],
+                     '--output', native['turns'][0]['output_file']]
         if kind == 'requester' and config.get('operation') == 'prepare':
             argv.append('--prepare-only')
     elif kind == 'repo':

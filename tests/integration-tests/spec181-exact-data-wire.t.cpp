@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -649,6 +650,136 @@ BOOST_AUTO_TEST_CASE(Spec231ExactReadChecksCancellationAtValidatedAdmission)
       BOOST_CHECK(!result);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(ExactReadWorkerDestructionDrainsSuccessAndCancellation)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  ndn::signal::ScopedConnection interests = consumerFace.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) { producerFace.receive(interest); });
+  ndn::signal::ScopedConnection data = producerFace.onSendData.connect(
+    [&] (const ndn::Data& packet) { consumerFace.receive(packet); });
+  const auto faceThread = std::this_thread::get_id();
+  const ndn::Buffer payload(128, 0x57);
+  for (unsigned iteration = 0; iteration < 32; ++iteration) {
+    const bool cancel = iteration % 2 != 0;
+    auto current = std::make_shared<std::atomic<bool>>(true);
+    ServiceProvider::CollaborationAssignment assignment;
+    assignment.role = "worker-read";
+    assignment.service = profile.serviceName;
+    assignment.workDeadline = std::chrono::steady_clock::now() + 90s;
+    assignment.workCurrent = [current] { return current->load(); };
+    const ndn::Name requestId("/spec223/worker-read/" + std::to_string(iteration));
+    ServiceProvider::CollaborationContext publisher(
+      producer, profile.userIdentity, requestId, RequestMessage(), assignment);
+    ServiceProvider::CollaborationContext receiver(
+      consumer, profile.userIdentity, requestId, RequestMessage(), assignment);
+    const auto name = ndn::Name(producer.getName()).append("worker-read")
+      .append(std::to_string(iteration));
+    if (!cancel) {
+      BOOST_REQUIRE(publisher.publishSignedExactData("worker-read", {{name, payload}}, 60000));
+    }
+    auto destroyedOnWorker = std::make_shared<std::atomic<bool>>(false);
+    Spec231ExactReadTask task(environment, current, [&] {
+      Spec231ReadResult result;
+      {
+        auto firstRead = std::make_shared<std::promise<void>>();
+        auto started = firstRead->get_future();
+        auto operation = receiver.startSignedExactDataBatch("worker-read", {name},
+          producer.getName(), 1500, [] { return false; },
+          [firstRead] (std::exception_ptr error) {
+            if (error) firstRead->set_exception(error);
+            else firstRead->set_value();
+          },
+          ServiceProvider::ExactDataFetchPhase::AwaitPublication, {}, 1);
+        if (cancel) {
+          if (started.wait_for(2s) != std::future_status::ready) {
+            operation.cancel();
+            throw std::runtime_error("worker exact-read dispatch did not start");
+          }
+          started.get();
+          operation.cancel();
+        }
+        const auto fetched = operation.get();
+        if (fetched) result = fetched->contents;
+      }
+      destroyedOnWorker->store(std::this_thread::get_id() != faceThread);
+      return result;
+    });
+    environment.pumpUntil([&] { return task.ready(); });
+    BOOST_REQUIRE(task.ready());
+    const auto result = task.get();
+    BOOST_CHECK(destroyedOnWorker->load());
+    if (cancel) {
+      BOOST_CHECK(!result);
+    }
+    else {
+      BOOST_REQUIRE(result);
+      BOOST_REQUIRE_EQUAL(result->size(), 1U);
+      BOOST_CHECK(result->front() == payload);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(AwaitPublicationSurvivesMoreThanSixReadinessNacks)
+{
+  BootstrapProfile profile;
+  profile.providerCount = 2;
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  const auto name = ndn::Name(producer.getName()).append("DELAYED-READINESS");
+  std::atomic<size_t> attempts{0};
+  ndn::signal::ScopedConnection interests = consumerFace.onSendInterest.connect(
+    [&] (const ndn::Interest& interest) {
+      if (interest.getName() == name && ++attempts <= 7) {
+        consumerFace.receive(ndn::lp::Nack(interest).setReason(ndn::lp::NackReason::NO_ROUTE));
+      }
+      else {
+        producerFace.receive(interest);
+      }
+    });
+  ndn::signal::ScopedConnection data = producerFace.onSendData.connect(
+    [&] (const ndn::Data& packet) { consumerFace.receive(packet); });
+  ServiceProvider::CollaborationAssignment assignment;
+  assignment.role = "readiness";
+  assignment.service = profile.serviceName;
+  assignment.workDeadline = std::chrono::steady_clock::now() + 90s;
+  assignment.workCurrent = [] { return true; };
+  const ndn::Name requestId("/filesystem/readiness");
+  ServiceProvider::CollaborationContext publisher(
+    producer, profile.userIdentity, requestId, RequestMessage(), assignment);
+  const ndn::Buffer payload{'r', 'e', 'a', 'd', 'y'};
+  BOOST_REQUIRE(publisher.publishSignedExactData("readiness", {{name, payload}}, 60000));
+  ServiceProvider::CollaborationContext receiver(
+    consumer, profile.userIdentity, requestId, RequestMessage(), assignment);
+  auto current = std::make_shared<std::atomic<bool>>(true);
+  Spec231ExactReadTask task(environment, current, [&] {
+    return receiver.fetchSignedExactDataBatch("readiness", {name}, producer.getName(),
+      15000, [current] { return !current->load(); }, nullptr, {},
+      ServiceProvider::ExactDataFetchPhase::AwaitPublication, {});
+  });
+  environment.pumpUntil([&] { return task.ready(); });
+  BOOST_REQUIRE(task.ready());
+  const auto result = task.get();
+  BOOST_REQUIRE(result);
+  BOOST_REQUIRE_EQUAL(result->size(), 1U);
+  BOOST_CHECK(result->front() == payload);
+  BOOST_CHECK_GE(attempts.load(), 8U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

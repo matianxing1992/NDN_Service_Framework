@@ -153,6 +153,8 @@ struct SecurityProfileStore::State : std::enable_shared_from_this<State>
     ndn::Name producer;
     ndn::PendingInterestHandle handle;
     std::vector<Handler> handlers;
+    ndn::time::steady_clock::time_point deadline;
+    unsigned attempts = 0;
   };
   ndn::Face& face;
   std::shared_ptr<MessageValidator> validator;
@@ -280,6 +282,60 @@ struct SecurityProfileStore::State : std::enable_shared_from_this<State>
         });
       });
   }
+
+  void fetch(const ndn::Name& name, uint64_t ticket)
+  {
+    ndn::time::milliseconds lifetime;
+    unsigned attempt;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto it = pending.find(name);
+      if (closed || it == pending.end() || it->second.ticket != ticket) return;
+      const auto remaining = ndn::time::duration_cast<ndn::time::milliseconds>(
+        it->second.deadline - ndn::time::steady_clock::now());
+      lifetime = std::min(remaining, ndn::time::milliseconds(1000));
+      attempt = ++it->second.attempts;
+    }
+    if (lifetime <= ndn::time::milliseconds::zero() || attempt > 3) {
+      finish(name, ticket, nullptr, "security profile timeout");
+      return;
+    }
+    ndn::Interest interest(name);
+    interest.setCanBePrefix(false);
+    interest.setMustBeFresh(false);
+    interest.setInterestLifetime(lifetime);
+    const auto weak = weak_from_this();
+    const auto retry = [weak, name, ticket, attempt](const std::string& reason) {
+      const auto live = weak.lock();
+      if (!live) return;
+      bool exhausted;
+      {
+        std::lock_guard<std::mutex> lock(live->mutex);
+        const auto it = live->pending.find(name);
+        if (live->closed || it == live->pending.end() || it->second.ticket != ticket ||
+            it->second.attempts != attempt) return;
+        exhausted = attempt >= 3 || ndn::time::steady_clock::now() >= it->second.deadline;
+      }
+      if (exhausted) live->finish(name, ticket, nullptr, reason);
+      else live->fetch(name, ticket);
+    };
+    try {
+      const auto handle = face.expressInterest(interest,
+        [weak, name, ticket](const ndn::Interest&, const ndn::Data& packet) {
+          if (const auto live = weak.lock()) live->receive(name, ticket, packet);
+        },
+        [retry](const ndn::Interest&, const ndn::lp::Nack&) {
+          retry("security profile Nack");
+        },
+        [retry](const ndn::Interest&) { retry("security profile timeout"); });
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto it = pending.find(name);
+      if (!closed && it != pending.end() && it->second.ticket == ticket &&
+          it->second.attempts == attempt) it->second.handle = handle;
+      else handle.cancel();
+    }
+    catch (const std::exception& error) { finish(name, ticket, nullptr, error.what()); }
+  }
 };
 
 thread_local std::vector<const SecurityProfileStore::State*>
@@ -336,35 +392,14 @@ void SecurityProfileStore::resolve(const ndn::Name& name, const ndn::Name& produ
       else if (state->pending.size() >= 64) error = "security profile fetches exceed bounds";
       else {
         ticket = ++state->nextTicket;
-        state->pending.emplace(name, State::Pending{ticket, producer, {}, {std::move(handler)}});
+        state->pending.emplace(name, State::Pending{ticket, producer, {}, {std::move(handler)},
+          ndn::time::steady_clock::now() + timeout});
         ++state->fetches;
       }
     }
   }
   if (hit || !error.empty()) { state->deliver({std::move(handler)}, std::move(hit), error); return; }
-  ndn::Interest interest(name);
-  interest.setCanBePrefix(false);
-  interest.setMustBeFresh(false);
-  interest.setInterestLifetime(timeout);
-  const std::weak_ptr<State> weak(state);
-  try {
-    const auto handle = state->face.expressInterest(interest,
-      [weak, name, ticket](const ndn::Interest&, const ndn::Data& packet) {
-        if (const auto live = weak.lock()) live->receive(name, ticket, packet);
-      },
-      [weak, name, ticket](const ndn::Interest&, const ndn::lp::Nack&) {
-        if (const auto live = weak.lock()) live->finish(name, ticket, nullptr, "security profile Nack");
-      },
-      [weak, name, ticket](const ndn::Interest&) {
-        if (const auto live = weak.lock()) live->finish(name, ticket, nullptr, "security profile timeout");
-      });
-    std::lock_guard<std::mutex> lock(state->mutex);
-    const auto pending = state->pending.find(name);
-    if (!state->closed && pending != state->pending.end() && pending->second.ticket == ticket)
-      pending->second.handle = handle;
-    else handle.cancel();
-  }
-  catch (const std::exception& error) { state->finish(name, ticket, nullptr, error.what()); }
+  state->fetch(name, ticket);
 }
 
 void SecurityProfileStore::invalidate()

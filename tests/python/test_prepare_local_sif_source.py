@@ -275,6 +275,11 @@ def test_source_seal_validator_accepts_exact_archives(tmp_path):
         capture_output=True,
         text=True,
     )
+    # The source seal is a delivery input: validation must survive transfer to
+    # a different host/path without editing its identity or archive reference.
+    moved = tmp_path / "received"
+    output.rename(moved)
+    output = moved
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--source-seal",
          str(output / "source-seal.json")],

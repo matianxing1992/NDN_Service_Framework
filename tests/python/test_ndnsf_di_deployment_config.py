@@ -645,6 +645,86 @@ def write_config(root, config):
     return path
 
 
+def test_filesystem_source_cache_uses_existing_native_requester_form(ops, deployment):
+    parser, _ = ops
+    root, config = deployment
+    cache = root / 'shared-source'
+    cache.mkdir()
+    (cache / 'cache-identity.json').write_text('{}')
+    config['requester']['model_input'] = {
+        'mode': 'source-cache', 'source_directory': str(cache),
+        'source_namespace': 'sha256:' + 'a' * 64}
+    frozen = parser.load_deployment(write_config(root, config))
+    assert all(a['parameters']['cache-compatibility-source-dir'] == str(cache)
+               for a in frozen['actors'] if a['kind'] == 'provider')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    actor = next(a for a in frozen['actors'] if a['kind'] == 'requester')
+    argv, _ = cluster._native_launch(frozen, actor, root,
+        {'boot_id': 'cache-test', 'configuration_sha256': 'b' * 64})
+    assert argv[-4:] == ['--input', str(root / 'input.bin'),
+                         '--output', str(root / 'evidence_root/output.json')]
+    native = json.loads((root / 'requester.json').read_text())
+    assert 'model_input' not in native
+    assert native['cache_compatibility'] == {
+        'enabled': True, 'source_namespace': 'sha256:' + 'a' * 64,
+        'source_directory': str(cache)}
+    assert native['grant'] == frozen['requester']['grant']
+    assert native['turns'] == frozen['requester']['turns']
+    assert frozen['requester']['model_input']['mode'] == 'source-cache'
+
+
+@pytest.mark.parametrize('bad', ['prepare', 'missing-marker', 'namespace', 'publication'])
+def test_filesystem_source_cache_rejects_inconsistent_inputs(ops, deployment, bad):
+    parser, _ = ops
+    root, config = deployment
+    cache = root / 'shared-source'
+    cache.mkdir()
+    if bad != 'missing-marker':
+        (cache / 'cache-identity.json').write_text('{}')
+    config['requester']['model_input'] = {
+        'mode': 'source-cache', 'source_directory': str(cache),
+        'source_namespace': 'invalid' if bad == 'namespace' else 'sha256:' + 'a' * 64}
+    if bad == 'prepare':
+        config['operation'] = 'prepare'
+    if bad == 'publication':
+        config['requester']['encrypted_repository'] = {'path': 'unused', 'max_bytes': 1024}
+    with pytest.raises(parser.DeploymentConfigError):
+        parser.load_deployment(write_config(root, config))
+
+
+def test_filesystem_source_cache_only_objects_are_writable_in_requester_container(node_container):
+    config, _, _, capture, run = node_container
+    cache = Path(config['model']['plan']).parent / 'shared-source'
+    (cache / 'payloads').mkdir(parents=True)
+    cache.chmod(0o700)
+    (cache / 'cache-identity.json').write_text('{}')
+    graph = cache / 'payloads/graph.onnx'
+    graph.write_bytes(b'graph')
+    config['requester']['model_input'] = {
+        'mode': 'source-cache', 'source_directory': str(cache),
+        'source_namespace': 'sha256:' + 'a' * 64}
+    config['requester']['catalog']['source'] = {'file': str(graph)}
+    result = run('--actor', 'requester')
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(capture.read_text())['argv']
+    assert str(cache) + ':' + str(cache) + ':ro' in argv
+    assert str(cache / 'objects') + ':' + str(cache / 'objects') + ':rw' in argv
+    assert str(graph) + ':' + str(graph) + ':ro' in argv
+    assert str(cache) + ':' + str(cache) + ':rw' not in argv
+
+
+def test_filesystem_source_cache_is_read_only_in_provider_container(node_container):
+    config, _, _, capture, run = node_container
+    cache = Path(config['model']['plan']).parent / 'shared-source'
+    cache.mkdir()
+    provider = next(a for a in config['actors'] if a['id'] == 'p0')
+    provider['parameters']['cache-compatibility-source-dir'] = str(cache)
+    result = run('--actor', 'p0')
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(capture.read_text())['argv']
+    assert str(cache) + ':' + str(cache) + ':ro' in argv
+
+
 @pytest.mark.parametrize('canonical', [False, True])
 @pytest.mark.parametrize('external', [False, True])
 def test_model_repository_binds_declared_independent_repo(ops, deployment, canonical, external):
@@ -2037,14 +2117,10 @@ def test_provider_core_work_timeout_requires_explicit_integer_request_budget(
 def test_provider_core_work_timeout_rejects_other_actor_kinds(ops, deployment, kind):
     parser, _ = ops
     root, config = deployment
-    if kind == 'repo':
-        (root / 'credentials/repo').mkdir()
-        config['network']['repo_service'] = '/test/repo-service'
-        config['actors'].append(dict(id='repo', kind='repo', identity='/test/repo', node='local',
-            credential_home='credentials/repo', resources={'cpus': 1}))
     actor = next(row for row in config['actors'] if row['kind'] == kind)
     actor['parameters'] = {'core-work-timeout-ms': 100}
-    with pytest.raises(parser.DeploymentConfigError, match='role parameters belong'):
+    expected = 'repo.parameters:unknown fields' if kind == 'repo' else 'role parameters belong'
+    with pytest.raises(parser.DeploymentConfigError, match=expected):
         parser.load_deployment(write_config(root, config))
     assert not (root / 'state_root').exists()
 
@@ -3606,6 +3682,36 @@ def test_image_inspection_keeps_empty_pipe_and_cleans_on_failure(ops, tmp_path, 
         assert state['image_inspection']['status'] == 'FAILED'
     assert calls[-2:] == ['native-cleanup', 'launcher-cleanup']
     assert child.stdout.closed
+
+
+def test_image_inspection_retains_early_launcher_error_without_waiting_for_eof(
+        ops, tmp_path, monkeypatch):
+    owner = importlib.import_module('_spec217_ops.node')
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b'container mount failed')
+    stream = os.fdopen(read_fd, 'rb')
+    child = SimpleNamespace(stdin=io.BytesIO(), stdout=stream, returncode=1,
+                            poll=lambda: 1)
+    monkeypatch.setattr(owner.subprocess, 'Popen', lambda *a, **kw: child)
+    monkeypatch.setattr(owner, '_native_container_process', lambda *a: None)
+    monkeypatch.setattr(owner, '_stop_container_launcher',
+                        lambda _: dict(forced=False, exitCode=1))
+    args = SimpleNamespace(deployment=tmp_path/'configuration.json', boot_id='b'*32,
+        configuration_sha256='a'*64, release_sha256='c'*64, timeout=30,
+        actor='requester', management=None, node=None, debug=False)
+    state = {}
+    env = dict(NDNSF_DEPLOYMENT_ACTOR_ID='requester', NDNSF_DEPLOYMENT_BOOT_ID='b'*32,
+               NDNSF_DEPLOYMENT_CONFIG_SHA256='a'*64)
+    try:
+        with pytest.raises(owner.cluster.ClusterError, match='IMAGE_INSPECTION_HOLDER_EXIT:1'):
+            owner._inspect_container_install(args,
+                dict(release=dict(prefix='/opt/di', manifest='/owned/manifest.json')),
+                {}, state, tmp_path, env, lambda: None)
+        assert bytes.fromhex(state['image_inspection']['outputHex']) == b'container mount failed'
+        assert state['image_inspection']['outputTruncated'] is False
+        assert stream.closed
+    finally:
+        os.close(write_fd)
 
 
 @pytest.mark.parametrize('interrupted_capture', [False, True])

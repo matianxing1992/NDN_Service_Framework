@@ -160,6 +160,17 @@ def _inspect_container_install(args, config, by_kind, state, root, env, guard):
                 inspection.update(native_proof=proof, pid_namespace=namespace)
                 break
             if child.poll() is not None:
+                # A failed launcher may exit before its native child exists.
+                # Preserve bounded diagnostics without waiting for pipe EOF
+                # from a descendant that may still hold the write descriptor.
+                os.set_blocking(child.stdout.fileno(), False)
+                try:
+                    data = os.read(child.stdout.fileno(), 4097)
+                except BlockingIOError:
+                    data = b''
+                inspection.update(exitCode=child.returncode, outputBytes=len(data),
+                                  outputHex=data[:4096].hex(),
+                                  outputTruncated=len(data) > 4096)
                 raise cluster.ClusterError('IMAGE_INSPECTION_HOLDER_EXIT:' + str(child.returncode))
             time.sleep(0.02)
         write_json(root / 'state.json', state)

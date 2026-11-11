@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/statistics-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-preparation-index.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
@@ -918,8 +919,18 @@ run(int argc, char** argv)
         throw std::invalid_argument(
           "cache compatibility must not configure an encrypted repository");
       const auto sourceNamespace = compatibility->get<std::string>("source_namespace", {});
-      runtimeConfig.repositoryArtifactPublisher =
-        std::make_shared<CacheCompatibilityArtifactPublisher>(sourceNamespace);
+      const auto sourceDirectory = compatibility->get<std::string>("source_directory", {});
+      if (!sourceDirectory.empty()) {
+        runtimeConfig.repositorySourceProvider =
+          std::make_shared<NativeFilesystemSourceProvider>(sourceDirectory);
+        runtimeConfig.repositoryArtifactPublisher =
+          std::make_shared<NativeFilesystemArtifactPublisher>(sourceDirectory,
+            ndn::Name(config.get<std::string>("core.requester_identity")), sourceNamespace);
+      }
+      else {
+        runtimeConfig.repositoryArtifactPublisher =
+          std::make_shared<CacheCompatibilityArtifactPublisher>(sourceNamespace);
+      }
       if (diagnosticOutputEnabled())
         std::cout << "NDNSF_DI_CACHE_COMPATIBILITY_REQUESTER enabled=true "
                    "protectedPublication=skipped" << std::endl;

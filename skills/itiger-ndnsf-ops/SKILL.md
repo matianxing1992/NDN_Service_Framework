@@ -103,6 +103,9 @@ NDNSF 层统一拥有本仓库的 Core、DI、Repo、UAV、绑定和实验入口
 
 ## Tiger Storage, Cache And Local-Gate Boundaries
 
+- 多模型 CPU 冷暖测试及一次 allocation 内的批量实验，先读
+  [portable-deployment.md 的模型复用与批次测量](references/portable-deployment.md#模型复用与批次测量)。
+  明确源文件、已组装模型、ORT Session 和会话 KV 四层复用；不能把文件命中当作 Warm。
 - `/project` 的 `df` 不是用户 quota。每种数据只保留最新 SIF/cache/preflight；新候选
   可用后旧候选 SIF（约 4.3GB/个）和旧 cache 按显式 allowlist 回收；峰值按
   cache+spool+assembled 估算，回收后用有界写入探针确认。

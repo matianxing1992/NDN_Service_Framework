@@ -371,7 +371,7 @@ def main() -> int:
         "sourceMode": "sealed-current-worktree-files",
         "workspace": str(workspace),
         "archive": {
-            "path": str(archive_path),
+            "path": archive_path.name,
             "bytes": archive_path.stat().st_size,
             "sha256": digest(archive_path),
         },

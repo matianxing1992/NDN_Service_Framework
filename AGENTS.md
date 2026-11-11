@@ -22,7 +22,8 @@
   construction or cluster jobs merely to revise documentation or inspect source.
   Authorized manuscript revisions include the LaTeX builds specified below.
 - Preserve unrelated worktree and index changes. Stage explicit authorized paths;
-  never use `git add -A` or destructive resets. Do not commit or push unless asked.
+  never use `git add -A` or destructive resets. Commit when requested or required
+  by the per-task completion rule below. Push only when explicitly requested.
 - For Spec-based work, `.specify/feature.json`, when present, selects the active
   feature. Read that feature's plan and tasks; follow specification -> plan ->
   tasks -> implementation -> verification.
@@ -348,7 +349,16 @@ approval again or hide an exception in a special-case branch.
 - Before completion, inspect the final diff for unrelated changes and report
   what changed, actual verification performed and material remaining limits.
   Do not claim build, runtime, experiment or publication readiness from static
-  inspection alone. Commit and push only when requested.
+  inspection alone.
+- For work tracked in `tasks.md`, finish verification, mark each task complete,
+  and immediately create a separate commit for that task before starting the
+  next task. This is standing authorization to commit without asking again;
+  do not accumulate several completed tasks into one commit. Include only that
+  task's changes and any tracked status/evidence updates, respecting local-only
+  exclusions. Stage specific hunks when files contain unrelated pending work;
+  preserve that work and the index. Failed or partial tasks are not complete.
+  For other work, commit only when requested. Push still requires an explicit
+  user instruction.
 - Keep an active goal running while builds or jobs run, resources are queued,
   or a failed check can still be diagnosed or repaired. Intermediate success
   does not complete the goal. Use blocked only for a repeated actual impasse
@@ -475,13 +485,15 @@ approval again or hide an exception in a special-case branch.
   configuration; do not set MemorySwap/MemorySwapMax or change system settings.
 - The helper may be local-only. If absent, use Waf with `--jobs=6` and equivalent
   process ownership/cleanup. Reading or editing source needs no build launcher.
-- The global stack installer must build outside the source checkout: pass
-  `NDNSF_BUILD_DIR` as a verified disk-backed path under `/var/tmp` (for example
-  `/var/tmp/ndnsf-di-install-build`) and add `NDNSF_REUSE_BUILD_DIR=1` for later runs so
-  only changed units recompile. The installer records `.ndnsf-stack-build.json` in that
-  directory and refuses a build directory inside the checkout. Its default
-  `/var/tmp/ndnsf-build.*` out-directory starts from scratch every time and leaves tens of
-  gigabytes behind.
+- Use this checkout's `build/` as the single reusable host NDNSF build output for
+  global installation. Preserve its configured Waf state and incrementally build
+  only the required targets. Do not create per-Spec build/install trees under
+  `build/` or repeated `/var/tmp/ndnsf-build.*` trees. Legacy installer code may
+  still default to temporary output or reject in-checkout output; do not invoke
+  that legacy path blindly. Use the maintained configured Waf/target-install
+  path with explicit `build/`, or repair the installer within the authorized
+  task before using it. External dependencies retain their own maintained build
+  systems; model, Repo and experiment evidence are separate from compiler output.
 - Cluster SIF application-layer builds have their own budget. The container build
   (`adapters/slurm-apptainer/templates/development-runtime.def.in`) must compile with the
   cores the allocation actually gives (`./waf install -j"$(nproc)"`), never a hard-coded

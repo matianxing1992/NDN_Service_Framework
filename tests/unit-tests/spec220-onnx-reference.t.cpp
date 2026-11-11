@@ -167,6 +167,37 @@ reason(const std::exception& error, const std::string& value)
   return std::string(error.what()).find("reason=" + value) != std::string::npos;
 }
 
+void
+makeIndependentReplayGroups(ReferenceFixture& fixture)
+{
+  const auto original = fixture.requester.at("turns");
+  fixture.requester["conversation"]["turn"] = {{"mode", "FULL_CONTEXT"}};
+  fixture.requester["turns"] = NativeJson::array();
+  const std::vector<std::int64_t> replay{0, 2, 1, 1, 3};
+  std::vector<std::uint8_t> payload(replay.size() * sizeof(std::int64_t));
+  std::memcpy(payload.data(), replay.data(), payload.size());
+  const auto wire = encodeTensorBundle({{"input_ids", TensorElementType::Int64,
+    {1, static_cast<std::int64_t>(replay.size())}, payload}});
+  const auto input = fixture.directory / "replay-input.bin";
+  std::ofstream(input, std::ios::binary).write(
+    reinterpret_cast<const char*>(wire.data()), wire.size());
+  for (unsigned round = 0; round < 4; ++round) {
+    auto turn = original.at(round % 2);
+    const std::string id = round < 2 ? "reference-append-0001" : "reference-replay-0001";
+    turn["conversation_id"] = id;
+    if (round == 2) turn["input_file"] = input.string();
+    const auto prefix = round == 0 ? 4U : round == 3 ? 10U : 7U;
+    auto checkpoint = fixture.checkpoint(round % 2, prefix);
+    checkpoint["conversationId"] = id;
+    turn["checkpoint_output_file"] = fixture.write(
+      "group-checkpoint-" + std::to_string(round) + ".json",
+      ReferenceFixture::signCheckpoint(std::move(checkpoint)));
+    turn["output_file"] = fixture.write("group-output-" + std::to_string(round) + ".json",
+      {{"tokenIds", {1, 1}}});
+    fixture.requester["turns"].push_back(std::move(turn));
+  }
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec220OnnxReference)
@@ -192,6 +223,66 @@ BOOST_AUTO_TEST_CASE(IndependentTokensAndColdWarmStateProgression)
                                             warm.size() * sizeof(std::int64_t)));
   BOOST_CHECK(!result.at("providerStateValuesCompared").get<bool>());
   BOOST_CHECK_EQUAL(result.at("checkpointAuthentication").get<std::string>(), "VERIFIED");
+  const auto& warmRound = result.at("rounds").at(1);
+  BOOST_CHECK_EQUAL(warmRound.at("initialStateTokens").get<unsigned>(), 4U);
+  BOOST_CHECK_EQUAL(warmRound.at("inputTokens").get<unsigned>(), 1U);
+  for (const auto* phase : {"prefill", "decode", "finalize"}) {
+    BOOST_CHECK_EQUAL(warmRound.at("onnxPhaseCalls").at(phase).get<unsigned>(), 1U);
+    BOOST_CHECK_GE(warmRound.at("onnxPhasesSeconds").at(phase).get<double>(), 0.0);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(IndependentConversationReplayStartsWithEmptyState)
+{
+  ReferenceFixture fixture;
+  makeIndependentReplayGroups(fixture);
+  const auto result = spec220::oracle::validateOnnxReference(
+    fixture.requester, Ort::GetVersionString());
+  const auto& rounds = result.at("rounds");
+  BOOST_REQUIRE_EQUAL(rounds.size(), 4U);
+  BOOST_CHECK_EQUAL(rounds.at(1).at("initialStateTokens").get<unsigned>(), 4U);
+  BOOST_CHECK_EQUAL(rounds.at(2).at("initialStateTokens").get<unsigned>(), 0U);
+  BOOST_CHECK_EQUAL(rounds.at(1).at("startingContextTokens").get<unsigned>(), 5U);
+  BOOST_CHECK_EQUAL(rounds.at(2).at("startingContextTokens").get<unsigned>(), 5U);
+  BOOST_CHECK(rounds.at(1).at("tokenIds") == rounds.at(2).at("tokenIds"));
+  BOOST_CHECK(rounds.at(1).at("referenceStateDigests") ==
+              rounds.at(2).at("referenceStateDigests"));
+  BOOST_CHECK_EQUAL(rounds.at(3).at("prefixTokens").get<unsigned>(), 10U);
+  BOOST_CHECK_EQUAL(rounds.at(2).at("conversationTurn").get<unsigned>(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(IndependentGroupsRejectMixedRepeatedAndIncompleteDeclarations)
+{
+  for (unsigned scenario = 0; scenario < 3; ++scenario) {
+    ReferenceFixture fixture;
+    makeIndependentReplayGroups(fixture);
+    auto& turns = fixture.requester["turns"];
+    if (scenario == 0) turns.at(1).erase("conversation_id");
+    else if (scenario == 1) {
+      turns.at(2)["conversation_id"] = turns.at(0).at("conversation_id");
+      turns.at(3)["conversation_id"] = turns.at(0).at("conversation_id");
+    }
+    else turns.erase(turns.end() - 1);
+    BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(
+      fixture.requester, Ort::GetVersionString()), std::exception,
+      [] (const auto& error) { return reason(error, "conversation-groups"); });
+  }
+}
+
+BOOST_AUTO_TEST_CASE(IndependentGroupsRejectAuthenticatedWrongIdentityAndEpoch)
+{
+  for (unsigned scenario = 0; scenario < 2; ++scenario) {
+    ReferenceFixture fixture;
+    makeIndependentReplayGroups(fixture);
+    auto checkpoint = fixture.checkpoint(scenario == 0 ? 0 : 2, 7);
+    checkpoint["conversationId"] = scenario == 0 ?
+      "reference-wrong-group-0001" : "reference-replay-0001";
+    fixture.requester["turns"].at(2)["checkpoint_output_file"] = fixture.write(
+      "wrong-group-checkpoint.json", ReferenceFixture::signCheckpoint(std::move(checkpoint)));
+    BOOST_CHECK_EXCEPTION(spec220::oracle::validateOnnxReference(
+      fixture.requester, Ort::GetVersionString()), std::exception,
+      [] (const auto& error) { return reason(error, "checkpoint-state-progression"); });
+  }
 }
 
 BOOST_AUTO_TEST_CASE(IndependentReferenceAcceptsOneColdRequest)

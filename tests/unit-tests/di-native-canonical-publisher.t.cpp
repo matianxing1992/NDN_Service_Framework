@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-material-fragment-cache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/fixtures/spec182/native-catalog-test-access.hpp"
@@ -23,6 +24,8 @@
 #include <onnx/defs/schema.h>
 #include <onnxruntime_cxx_api.h>
 #include <ndn-cxx/util/sha256.hpp>
+
+#include <boost/scope_exit.hpp>
 
 #include <fstream>
 #include <fcntl.h>
@@ -1356,6 +1359,91 @@ BOOST_AUTO_TEST_CASE(PublishesOwnedInlineAndExternalSourcesThroughPreparation)
     BOOST_CHECK(result.artifactNameByRole.at("/role").find("/rank/") == std::string::npos);
     }
   }
+}
+
+BOOST_AUTO_TEST_CASE(FilesystemMaterialCacheUsesCheckedExternalRanges)
+{
+  Input input(true);
+  input.options.artifactProfileDigest = input.roles.front().artifactProfileDigest;
+  const auto root = std::filesystem::temp_directory_path() /
+    ("ndnsf-filesystem-cache-" + std::to_string(::getpid()));
+  BOOST_REQUIRE(!std::filesystem::exists(root));
+  std::filesystem::create_directories(root);
+  BOOST_SCOPE_EXIT_ALL(&root) {
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+  };
+  const auto initializerDigest = input.model.canonicalInitializerObjectDigest;
+  const auto initializerBytes = std::vector<std::uint8_t>(input.source->initializerBytes->data(),
+    input.source->initializerBytes->data() + input.source->initializerBytes->size());
+  NativeMaterialFragmentCache sourceCache(root / "payloads");
+  BOOST_REQUIRE(sourceCache.write(input.model.canonicalSourceDigest, input.source->modelBytes));
+  BOOST_REQUIRE(sourceCache.write(initializerDigest, initializerBytes));
+  const auto initializer = root / "payloads" / "sha256" / initializerDigest.substr(7, 2) /
+    initializerDigest.substr(7);
+  std::ofstream(root / "cache-identity.json") << nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-model-source-cache-v1"}, {"initializerDigest", initializerDigest}});
+  NativeAssemblyControl assemblyControl{
+    input.control.deadline, [&] { input.control.requireActive(); }, 1U << 20, 1U << 20};
+  RepositorySourceRequest request;
+  request.catalogConfigurationJson = nativeCanonicalJson(NativeJson{{"source", {
+    {"digest", input.model.canonicalSourceDigest}, {"bytes", input.source->modelBytes.size()},
+    {"initializer_digest", initializerDigest}, {"initializer_bytes", initializerBytes.size()}}}});
+  request.maxSourceBytes = 1U << 20;
+  request.deadline = input.control.deadline;
+  const auto loaded = NativeFilesystemSourceProvider(root).load(request, {});
+  BOOST_CHECK(loaded.modelBytes == input.source->modelBytes);
+  BOOST_CHECK(!loaded.initializerBytes);
+  BOOST_REQUIRE(loaded.initializerRangeSource);
+  BOOST_CHECK_EQUAL(loaded.initializerRangeSource->size(), initializerBytes.size());
+  input.source->initializerRangeSource = openNativeCanonicalInitializerFile(
+    initializer.string(), initializerBytes.size(), initializerDigest, assemblyControl);
+  input.source->initializerBytes.reset();
+  const auto identity = canonicalOnnxSourceIdentity(*input.source, assemblyControl);
+  input.model.canonicalGraphDigest = identity.graphDigest;
+  input.model.canonicalInitializerDigest = identity.initializerDigest;
+  input.source->materialManifest = deriveNativeCanonicalMaterialManifest(*input.source, assemblyControl);
+  NativeFilesystemArtifactPublisher publisher(root, ndn::Name("/fixture/user"),
+                                               nativePlanningDigest("filesystem-namespace"));
+  const auto publication = publisher.publish("default", "/fixture/service", input.model,
+    *input.source, input.options, input.control);
+  BOOST_CHECK(!publication.artifactPrefetchRequired);
+  const ndn::Name rootName(publication.rootDataName);
+  BOOST_TEST_MESSAGE("Filesystem cache Name text: " + rootName.toUri());
+  BOOST_CHECK(ndn::Name("/fixture/user").isPrefixOf(rootName));
+  const auto prefix = rootName.getPrefix(-2);
+  const auto rootBytes = readNativeFilesystemArtifact(root, prefix, rootName, 4096);
+  BOOST_REQUIRE(rootBytes);
+  BOOST_CHECK_EQUAL(std::string(rootBytes->begin(), rootBytes->end()), publication.canonicalManifestJson);
+  TransportFixture bindingIo;
+  auto bindingPublisher = NativeCanonicalPublisherTestAccess::create(
+    bindingIo.transport(), input.options, input.resolver());
+  const auto binding = bindingPublisher.bindPrepared(
+    input.model, input.candidate, input.roles, publication, input.control);
+  BOOST_CHECK_EQUAL(binding.artifactNameByRole.at(input.roles.front().selectedRole),
+                    publication.rootDataName);
+  BOOST_CHECK(bindingIo.payloads.empty());
+  std::optional<ndn::Name> range;
+  for (std::size_t i = 0; i < publication.materialDataNames.size(); ++i) {
+    const ndn::Name name(publication.materialDataNames[i]);
+    const auto payload = readNativeFilesystemArtifact(root, prefix, name, 1U << 20);
+    BOOST_REQUIRE(payload);
+    BOOST_CHECK_EQUAL(nativePlanningDigest(payload->data(), payload->size()),
+                      publication.materialDigests[i]);
+    if (name.size() == prefix.size() + 4 && name[-4] == ndn::name::Component("RANGE"))
+      range = name;
+  }
+  BOOST_REQUIRE(range);
+  BOOST_CHECK(!readNativeFilesystemArtifact(root, ndn::Name("/foreign"), *range, 1U << 20));
+  BOOST_CHECK(!readNativeFilesystemArtifact(root, prefix, *range, 1));
+  {
+    std::fstream damage(initializer, std::ios::binary | std::ios::in | std::ios::out);
+    damage.put(static_cast<char>(initializerBytes.front() ^ 0xff));
+  }
+  BOOST_CHECK(!readNativeFilesystemArtifact(root, prefix, *range, 1U << 20));
+  std::filesystem::remove(initializer);
+  std::filesystem::create_symlink("/dev/zero", initializer);
+  BOOST_CHECK(!readNativeFilesystemArtifact(root, prefix, *range, 1U << 20));
 }
 
 BOOST_AUTO_TEST_CASE(MaterialBackedPublicationOmitsWholeModelAndPreflightsUnionBudget)

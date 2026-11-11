@@ -67,6 +67,9 @@ public:
   SecurityProfileStore(const SecurityProfileStore&) = delete;
   SecurityProfileStore& operator=(const SecurityProfileStore&) = delete;
   /** Hit delivers without network I/O. Miss coalesces same-name requests.
+   * Retrieval makes at most three transport attempts in total, with a
+   * one-second Interest lifetime capped by the original timeout. Validation
+   * failures are terminal; retries do not bypass object admission.
    * Failure delivers nullptr and a reason; metadata is not authorization.
    */
   void resolve(const ndn::Name& exactName, const ndn::Name& expectedProducer,

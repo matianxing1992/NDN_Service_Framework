@@ -544,6 +544,13 @@ def _translate_native(config, by_kind, resolve):
                              authority_identity, paths, bind,
                              operation=config.get('operation', 'run'),
                              allow_test_barriers=config['platform']['kind'] == 'minindn')
+        if requester.get('model_input', {}).get('mode') == 'source-cache':
+            for provider in by_kind['provider']:
+                if provider['external']:
+                    _fail('requester.model_input', 'source-cache requires managed Providers')
+                _bind(provider['parameters'], 'cache-compatibility-source-dir',
+                      requester['model_input']['source_directory'],
+                      'provider.parameters.cache-compatibility-source-dir')
         if "model_repository" in requester:
             target = requester["model_repository"]
             matches = [a for a in by_kind["repo"] if _name(a["identity"], "actor.identity") ==
@@ -593,6 +600,7 @@ def _translate_native(config, by_kind, resolve):
                 "roles", "selection-offer-key-file", "offer-backend", "offer-can-provision",
                 "offer-has-model", "permission-wait-ms", "workers", "handler-threads", "ack-threads",
                 "artifact-cache-dir", "artifact-cache-max-mib", "statistics-file",
+                "cache-compatibility-source-dir",
                 "allow-selection-generation-options", "sample-kv-state-values",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
@@ -648,6 +656,8 @@ def _translate_native(config, by_kind, resolve):
                 _fail("provider.parameters.execution-policy", "legacy policy requires execution lease")
             paths(parameters, ("selection-offer-key-file", "kv-handoff-config"), "provider.parameters")
             paths(parameters, ("artifact-cache-dir",), "provider.parameters", exists=False, directory=True)
+            paths(parameters, ('cache-compatibility-source-dir',), 'provider.parameters',
+                  optional=True, directory=True)
             paths(parameters, ("statistics-file",), "provider.parameters", exists=False)
         elif actor['kind'] == 'repo':
             _object(parameters, 'repo.parameters', {'request-timeout-ms', 'repo-node'})
@@ -677,8 +687,8 @@ def _translate_requester(requester, network, security, controller, requester_ide
                          allow_test_barriers=False):
     model_input = _object(requester.get('model_input', {'mode': 'source'}), 'requester.model_input')
     mode = model_input.get('mode')
-    if mode not in ('source', 'publish-stored', 'stored'):
-        _fail('requester.model_input.mode', 'expected source, publish-stored or stored')
+    if mode not in ('source', 'publish-stored', 'stored', 'source-cache'):
+        _fail('requester.model_input.mode', 'expected source, publish-stored, stored or source-cache')
     barrier_paths = set()
     for key in ('test_stream_barrier', 'test_handoff_barrier'):
         if key not in requester:
@@ -702,6 +712,12 @@ def _translate_requester(requester, network, security, controller, requester_ide
             barrier_paths.add(path)
     _bind(requester, "schema", "ndnsf-di-native-requester-v1", "requester.schema")
     fields = {'mode', 'repo_target', 'private_handle_file'}
+    if mode == 'source-cache':
+        fields = {'mode', 'source_directory', 'source_namespace'}
+        if operation != 'run':
+            _fail('requester.model_input', 'source-cache is inference only')
+        if requester.keys() & {'model_repository', 'encrypted_repository', 'cache_compatibility'}:
+            _fail('requester.model_input', 'source-cache cannot combine publication modes')
     if mode in ('source', 'publish-stored'):
         fields.add('preparation_state_file')
         if mode == 'publish-stored' and operation != 'prepare':
@@ -709,6 +725,13 @@ def _translate_requester(requester, network, security, controller, requester_ide
     if mode == 'stored' and operation == 'prepare':
         _fail('requester.model_input.mode', 'stored mode cannot prepare or republish')
     _object(model_input, 'requester.model_input', fields, fields)
+    if mode == 'source-cache':
+        paths(model_input, ('source_directory',), 'requester.model_input', directory=True)
+        if not DIGEST.fullmatch(_string(model_input['source_namespace'],
+                                       'requester.model_input.source_namespace')):
+            _fail('requester.model_input.source_namespace', 'expected sha256 digest')
+        if not (Path(model_input['source_directory']) / 'cache-identity.json').is_file():
+            _fail('requester.model_input.source_directory', 'source cache marker is missing')
     if mode in ('source', 'publish-stored', 'stored'):
         if requester.keys() & {'model_repository', 'encrypted_repository', 'cache_compatibility'}:
             _fail('requester.model_input', 'cannot combine model publication modes')

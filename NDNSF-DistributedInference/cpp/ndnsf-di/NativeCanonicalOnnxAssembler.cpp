@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/material-receipt.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-material-fragment-cache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
@@ -2462,7 +2463,16 @@ prepareNativeCanonicalOnnxRole(
   reportProgress("ASSEMBLY_STARTED", 0.0);
   std::optional<ndn::Buffer> rootPayload;
   std::uint64_t rootPayloadBytes = 0;
-  if (cacheCompatibilityMode) {
+  const bool filesystemMaterials = cacheCompatibilityMode &&
+    rootName.size() >= 2 && rootName[-2] == ndn::name::Component("OBJECT");
+  if (filesystemMaterials) {
+    rootPayload = readNativeFilesystemArtifact(options.cacheCompatibilitySourceDir,
+      rootName.getPrefix(-2), rootName, 4096);
+    validateCanonicalRootPayload(rootPayload, projection);
+    rootPayloadBytes = rootPayload->size();
+    logRuntimeEvidence("NDNSF_DI_FILESYSTEM_MATERIAL_CACHE rootFetch=local repoFetch=skipped");
+  }
+  else if (cacheCompatibilityMode) {
     const auto cacheRootDir = options.cacheCompatibilitySourceDir;
     std::error_code cacheError;
     if (!cacheRootDir.is_absolute() ||
@@ -2610,7 +2620,7 @@ prepareNativeCanonicalOnnxRole(
       }
     } sourceScrubber{canonicalSource};
     boost::property_tree::ptree root;
-    if (cacheCompatibilityMode) {
+    if (cacheCompatibilityMode && !filesystemMaterials) {
       root = cacheRoot;
     }
     else {
@@ -2621,7 +2631,7 @@ prepareNativeCanonicalOnnxRole(
       root = readJson(rootFile, projection.assemblyContract().maxSourceBytes);
       rootPayload.reset();
     }
-    validateCanonicalRootHeader(root, projection, cacheCompatibilityMode);
+    validateCanonicalRootHeader(root, projection, cacheCompatibilityMode && !filesystemMaterials);
     const auto rootProfile = root.get<std::string>("artifactProfileDigest", "");
     const auto metadata = root.get_child_optional("metadata");
     const auto sourceName = metadata
@@ -2707,7 +2717,15 @@ prepareNativeCanonicalOnnxRole(
       throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 
     NativeCanonicalOnnxFetchers effectiveFetchers = fetchers;
-    if (cacheCompatibilityMode) {
+    if (filesystemMaterials) {
+      effectiveFetchers.fetchEncryptedLargeData =
+        [cacheDirectory = options.cacheCompatibilitySourceDir,
+         prefix = rootName.getPrefix(-2)] (const ndn::Name& name, const ndn::Name&)
+          -> std::optional<ndn::Buffer> {
+          return readNativeFilesystemArtifact(cacheDirectory, prefix, name, 64ULL * 1024 * 1024);
+        };
+    }
+    else if (cacheCompatibilityMode) {
       const auto localSourceName = sourceName;
       const auto localInitializerName = firstString(
         metadata ? *metadata : boost::property_tree::ptree{},

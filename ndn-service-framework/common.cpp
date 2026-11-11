@@ -626,14 +626,12 @@ configureSvsPubSubOptionsFromEnvironment(ndn::svs::SVSPubSubOptions& options)
     "NDNSF_SVS_MAX_APP_PARAMS_BYTES", applicationBudget);
   options.maxPiggyDataSize = readSizeEnvironment(
     "NDNSF_SVS_MAX_PIGGYDATA_BYTES", piggyBudget);
-  if (std::getenv("NDNSF_SVS_PERIODIC_SYNC_MS") != nullptr) {
-    // Configure this before SVSPubSub construction. Calling
-    // setPeriodicSyncTime() afterward changes the stored interval but does not
-    // necessarily reschedule the already-armed first periodic timer.
-    options.syncProtocol.periodicTimeout =
-      readPositiveMillisecondsEnvironment(
-        "NDNSF_SVS_PERIODIC_SYNC_MS", ndn::time::seconds(30));
-  }
+  // Interactive ACK collection cannot recover a lost final announcement by
+  // waiting for the library's 30-second refresh. Configure the first timer at
+  // construction; preserve explicit options and the existing environment knob.
+  options.syncProtocol.periodicTimeout = readPositiveMillisecondsEnvironment(
+    "NDNSF_SVS_PERIODIC_SYNC_MS",
+    options.syncProtocol.periodicTimeout.value_or(ndn::time::seconds(1)));
 }
 
 const char*

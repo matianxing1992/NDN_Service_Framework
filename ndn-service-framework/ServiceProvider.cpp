@@ -13041,8 +13041,10 @@ namespace ndn_service_framework
         CollaborationTransferMetrics metrics;
         std::vector<std::shared_ptr<std::function<void()>>> expressions;
         std::vector<std::shared_ptr<Retry>> retries;
-        ndn::scheduler::ScopedEventId deadlineEvent;
-        ndn::scheduler::ScopedEventId cancelEvent;
+        // The last operation owner may be a dependency worker. Scheduler
+        // cancellation belongs to Face's executor, never this destructor.
+        ndn::scheduler::EventId deadlineEvent;
+        ndn::scheduler::EventId cancelEvent;
         std::shared_ptr<std::function<void()>> cancelPoll;
         std::shared_ptr<std::function<void()>> recovery;
         std::function<void(const char*)> abort;
@@ -13767,6 +13769,12 @@ namespace ndn_service_framework
                     if (const auto owner = weakOperation.lock()) {
                         owner->metrics = state->metrics;
                         owner->recovery.reset();
+                        boost::asio::dispatch(m_face.getIoContext(), [owner] {
+                            owner->deadlineEvent.cancel();
+                            owner->deadlineEvent.reset();
+                            owner->cancelEvent.cancel();
+                            owner->cancelEvent.reset();
+                        });
                     }
                 }
                 else if (retryRecovery) {
@@ -14233,7 +14241,7 @@ namespace ndn_service_framework
             std::weak_ptr<std::function<void(const char*, std::size_t)>> weakRetry = retry;
             const bool recoveryEnabled = static_cast<bool>(recoverMissing) && !slot->optional;
             *retry = [this, state, slot, finish, weakExpress, dataName, requestId, keyScope,
-                      shouldCancel, recoveryEnabled, inBandRecovery, index, refill](const char* reason,
+                      shouldCancel, recoveryEnabled, inBandRecovery, index, refill, phase](const char* reason,
                                                      std::size_t expectedAttempt) {
                 if (state->completed.load() || slot->completed.load() ||
                     slot->networkExhausted.load(std::memory_order_acquire) ||
@@ -14268,7 +14276,10 @@ namespace ndn_service_framework
                     !slot->recoveryAttempted.load(std::memory_order_acquire)) {
                     slot->recoveryTrigger = reason;
                 }
-                if (state->strict && expectedAttempt >= 6) {
+                // Readiness renewals precede publication and use the operation's
+                // original deadline. The six-attempt repair budget is for Data
+                // that has already been published.
+                if (state->strict && phase == ExactDataFetchPhase::Published && expectedAttempt >= 6) {
                     if (std::string_view(reason) != "publication-refresh")
                         finish({}, "strict exact Data attempt budget exhausted for " + dataName.toUri());
                     return;
@@ -14343,7 +14354,8 @@ namespace ndn_service_framework
                     finish({}, "hard deadline for " + dataName.toUri());
                     return;
                 }
-                if (state->strict && slot->attempts.load(std::memory_order_relaxed) >= 6) return;
+                if (state->strict && phase == ExactDataFetchPhase::Published &&
+                    slot->attempts.load(std::memory_order_relaxed) >= 6) return;
                 const auto attempt = slot->attempts.load(std::memory_order_relaxed) + 1;
                 if (attempt > 1 && state->strict && slot->recoveryAttempted.load() &&
                     !slot->recovered.load() && !slot->arqFallbackRecorded.exchange(true)) {
@@ -14816,6 +14828,7 @@ namespace ndn_service_framework
                             (*operation->expressions[index])();
                         }
                         (*operation->cancelPoll)();
+                        if (state->completed.load()) return;
                         const auto remaining = std::max<std::int64_t>(0,
                             std::chrono::duration_cast<std::chrono::milliseconds>(
                                 state->deadline - std::chrono::steady_clock::now()).count());

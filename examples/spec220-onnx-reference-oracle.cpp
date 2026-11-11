@@ -149,6 +149,21 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     reject("runtime-version");
   const auto& turns = requester.at("turns");
   if (turns.empty() || turns.size() > 8) reject("turn-bound");
+  const bool grouped = turns.at(0).contains("conversation_id");
+  std::set<std::string> declaredConversations;
+  for (std::size_t i = 0; i < turns.size(); ++i) {
+    const auto& turn = turns.at(i);
+    if (turn.contains("conversation_id") != grouped)
+      reject("conversation-groups");
+    if (!grouped) continue;
+    if (turns.size() % 2 != 0 || !turn.at("conversation_id").is_string())
+      reject("conversation-groups");
+    const auto id = turn.at("conversation_id").get<std::string>();
+    if (id.size() < 16 || id.find_first_of("/\\") != std::string::npos ||
+        (i % 2 == 0 && !declaredConversations.insert(id).second) ||
+        (i % 2 != 0 && turn.at("conversation_id") != turns.at(i - 1).at("conversation_id")))
+      reject("conversation-groups");
+  }
   std::vector<NativeConversationJournalKey> journalKeys;
   std::vector<std::vector<std::uint8_t>> authenticationKeys;
   const auto wipeKeys = ndn::make_scope_exit([&] {
@@ -156,6 +171,14 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     for (auto& key : authenticationKeys) OPENSSL_cleanse(key.data(), key.size());
   });
   const auto& conversation = requester.at("conversation");
+  if (grouped) {
+    if (!conversation.contains("turn")) reject("conversation-group-configuration");
+    const auto& turn = conversation.at("turn");
+    if (turn.value("mode", std::string{}) != "FULL_CONTEXT" ||
+        turn.contains("conversation_id") || turn.contains("parent_state_file") ||
+        turn.contains("parent_checkpoint_digest") || conversation.contains("checkpoint_output_file"))
+      reject("conversation-group-configuration");
+  }
   const auto& journal = conversation.at("journal");
   const auto& keyFiles = journal.at("keys");
   if (!keyFiles.is_array() || keyFiles.empty() || keyFiles.size() > 16)
@@ -261,7 +284,17 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     const auto start = std::chrono::steady_clock::now();
     const auto cpu = std::clock();
     const auto& turn = turns.at(round);
-    if (turn.contains("conversation_id")) reject("independent-conversations-unsupported");
+    const auto groupRound = grouped ? round % 2 : round;
+    if (groupRound == 0) {
+      // Release tensor views before their initial backing buffers. Model/session
+      // reuse must never carry one conversation's KV into the next group.
+      states.clear();
+      initialStorage.clear();
+      prefix = 0;
+      previousConversation.clear();
+    }
+    std::array<double, 3> backendSeconds{};
+    std::array<std::size_t, 3> backendCalls{};
     const auto options = nativeParseJson(readSmall(turn.at("options_file").get<std::string>()));
     const auto& sampling = options.at("sampling");
     if (sampling.at("mode") != "Greedy" || sampling.value("repetitionPenalty", 1.0) != 1.0 ||
@@ -293,7 +326,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
         continue;
       }
       if (!outputIndices.count(successors.at(name))) reject("missing-state-output");
-      if (round) continue;
+      if (groupRound) continue;
       const auto typeInfo = session.GetInputTypeInfo(i);
       const auto info = typeInfo.GetTensorTypeAndShapeInfo();
       const auto shape = stateShape(info, 0);
@@ -317,6 +350,8 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     std::memcpy(tokens.data(), tensors.front().payload.data(), tokens.size() * 8);
     if (std::any_of(tokens.begin(), tokens.end(), [] (auto value) { return value < 0; }))
       reject("token-input");
+    const auto initialStateTokens = prefix;
+    const auto inputTokens = tokens.size();
     const auto observed = nativeParseJson(readSmall(turn.at("output_file").get<std::string>()));
     const auto expected = observed.at("tokenIds").get<std::vector<std::int64_t>>();
     if (expected.empty() || expected.size() > maximum) reject("output-count");
@@ -357,8 +392,13 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
       std::vector<Ort::Value> values;
       values.reserve(outputs.size());
       for (std::size_t i = 0; i < outputs.size(); ++i) values.emplace_back(nullptr);
+      const auto runStarted = std::chrono::steady_clock::now();
       auto* status = Ort::GetApi().Run(session, Ort::RunOptions{nullptr}, inputNames.data(),
         feeds.data(), feeds.size(), outputNames.data(), outputNames.size(), rawOutputs.data());
+      const auto phase = step == 0 ? 0 : step == expected.size() ? 2 : 1;
+      backendSeconds[phase] += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - runStarted).count();
+      ++backendCalls[phase];
       for (std::size_t i = 0; i < values.size(); ++i) values[i] = Ort::Value(rawOutputs[i]);
       Ort::ThrowOnError(status);
       prefix = nextPrefix;
@@ -420,12 +460,22 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     }
     const auto& checkpoint = admittedCheckpoints.at(round);
     const auto conversation = checkpoint.at("conversationId").get<std::string>();
-    if ((round && conversation != previousConversation) ||
-        checkpoint.at("contextEpoch").get<std::uint64_t>() != round + 1 ||
+    if ((groupRound && conversation != previousConversation) ||
+        (grouped && (turn.at("conversation_id") != conversation ||
+          checkpoint.at("parentContextEpoch").get<std::uint64_t>() != groupRound)) ||
+        checkpoint.at("contextEpoch").get<std::uint64_t>() != groupRound + 1 ||
         checkpoint.at("prefixTokenCount").get<std::uint64_t>() != prefix)
       reject("checkpoint-state-progression");
     previousConversation = conversation;
     rounds.push_back({{"turn", round}, {"tokenIds", generated}, {"prefixTokens", prefix},
+      {"conversationId", conversation}, {"conversationTurn", groupRound},
+      {"initialStateTokens", initialStateTokens}, {"inputTokens", inputTokens},
+      {"startingContextTokens", initialStateTokens + inputTokens},
+      {"onnxSeconds", backendSeconds[0] + backendSeconds[1] + backendSeconds[2]},
+      {"onnxPhasesSeconds", {{"prefill", backendSeconds[0]},
+        {"decode", backendSeconds[1]}, {"finalize", backendSeconds[2]}}},
+      {"onnxPhaseCalls", {{"prefill", backendCalls[0]},
+        {"decode", backendCalls[1]}, {"finalize", backendCalls[2]}}},
       {"referenceStateBytes", stateBytes}, {"modelCalls", expected.size() + 1},
       {"referenceStateDigests", stateDigests},
       {"wallSeconds",

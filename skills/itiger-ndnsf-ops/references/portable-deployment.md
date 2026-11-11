@@ -1,7 +1,7 @@
 # Portable NDNSF-DI deployment on Tiger
 
 适用：installed host管理、Slurm/Apptainer、镜像复用、GPU准入、存储和失联恢复。
-依据2026-10-27源码与Spec217证据；这是操作经验，不是全部验收通过的声明。
+结合 installed 部署及近期多模型 CPU 实验的源码与证据；这是操作经验，不是全部验收通过的声明。
 新任务先核对当前源码和选定要求，不复用旧job、主机或镜像号作为当前事实。
 
 ## 选入口并定位变更边界
@@ -87,6 +87,49 @@ host上的srun负责进入各节点的精确SIF；容器内运行NFD/nfdc和nati
   换节点更新host/IP、GPU映射和配置/运行身份，核对实际挂载与节点本地缓存；复用SIF、
   持久Controller材料和已提交Repo模型，不因换服务器重建镜像或重新导出、发布模型。
 
+## 模型复用与批次测量
+
+- 分清四层状态：原始 graph/weights、Provider 已组装模型、ORT Session、会话 KV。
+  文件缓存命中只免去相应传输/准备，不保证免去散列校验、分片装配、Session 创建、
+  runtime warmup 或当前请求授权。记录每层实际命中；不要把首次进程启动和后续无 KV
+  的新会话合并为同一种 Cold，也不要把重启后的文件命中叫 Warm。
+- 优先复用已合格 SIF、host control 环境、Controller 材料及完整源缓存。
+  仅模型/输入/生成长度变化不重建 SIF。显式 source-cache 实验保留原生规划、
+  授权与 activation 的 NDN 路径，但不能据此声称 Repo 网络模型分发通过。
+  原文件用已核验的只读共享路径；需要写入的对象记录仅挂载 objects 子目录为 RW，
+  不把含只读模型子路径的整个父目录同时挂 RW，避免 CONTAINER_WRITABLE_INPUT_OVERLAP。
+- 更换模型或量化版本时，核对 catalog、manifest、source/initializer digest、profile
+  与 Authority 的 publication_sources/allowed_model_manifests 一致。旧模型授权不能
+  自动覆盖新模型；DI_PROTECTED_GRANT_REJECTED 先检查此接线，不能扩大授权绕过。
+- 准备检查器报未知算子时先区分通用 ONNX checker 与实际 ORT schema/kernel 支持。
+  保留原失败；小的实际原生加载/执行及独立参考可验证兼容，不能只凭包名判定不支持。
+  模型分块权重大小不是进程内存上界。近期 27B INT4 单机双 CPU Provider 在总计
+  10 CPU/40 GiB 下完成四组Cold/Warm；两 Provider step 的独立峰值约22.24/17.51 GiB，包含装配与
+  执行，不能当作同时峰值或私有稳态堆，更不能据此承诺每 Provider 15 GB 足够。
+  此数据只是该32输出、Warm起始context81配置的资源依据，长输出/新线程配置须另核实。
+- 用户要求一批实验时，优先一次 Slurm allocation 内顺序消费冻结配置、复用维护的
+  allocation/角色 owner，不在循环中反复 sbatch，不复制推理/授权状态机。
+  原生 Requester 已有 turns 和独立两轮 conversation groups；先核对当前源码及交付
+  是否支持目标配置：Requester 当前最多五组，但独立 ONNX 参考最多八轮/四组，
+  整条链采用更严格的上限，不能把五组直接交给八轮参考。
+  不要假定提交器已支持多模型批次。当前 deployment oracle 还要求原 Slurm 主作业
+  已真实 COMPLETED；不能在活跃 allocation 中伪造 operation/scheduler 终态。
+  无需扩展框架时，优先一次部署四组/八请求，再集中独立验证。
+  冻结配置/只读输入与输出目录分开；output 的父目录会整体挂 RW，不能包含冻结配置。
+  应用 generationId 是32个小写十六进制字符（16字节），不是64字符的完整 SHA256。
+  各组结果立即持久化；清理成功才切换模型。普通样本失败可保留后继续，进程残留、
+  OOM 或共享服务异常先收尾，不能污染下一组。每批预留 oracle、归档与退出时间。
+- 对比生成长度时使用独立会话，从相同 Cold 输入/输出建立相同 Warm 起始 context。
+  例如 Cold 输入25/输出32，再追加24，Warm 起始81；从实际 token/checkpoint 核对，
+  不能只检查配置。32/128/256 不能在同一会话依次追加后直接比较。
+- 分开报告 allocation、启动/源准备、Cold、Warm、独立参考与清理时间。
+  ORT Session 创建、图优化、runtime warmup 和业务 prefill/decode/finalize 分别列出。
+  “首个业务 ORT Run 前”可能包含 warmup ONNX，不能一律称非 ONNX；业务 ORT 总和
+  不是全生命周期 ONNX 总和。使用互斥 wall 分区，嵌套 CPU/机制计时另列。
+  每个模型固定实际量化、算子、切点、线程与 SIF 身份；不同量化的速度差不能单独
+  归因于模型参数量。以独立会话为重复单位，保留失败样本及可重算统计。
+  Slurm/actor CPU数量是调度预算，不能直接写成ORT线程数；核对实际runner的intra-op设置。
+
 ## GPU资源可见、可准入、实际执行分别取证
 - Slurm物理GPU标识、`SLURM_STEP_GPUS`、step的`CUDA_VISIBLE_DEVICES`、
   容器内CUDA逻辑ordinal、UUID和配置设备号是不同层。
@@ -162,6 +205,8 @@ generation 与签名凭据已有持久路径；最近一次源码审查发现 AB
 旧镜像不因“旧”自动可删。记录实际释放字节。
 生成精确inode/mtime/ns等删除身份时，不经JavaScript Number往返超过安全整数的值；
 使用Python整数或字符串保留精度。
+共享NFS跨主机的st_dev设备号不稳定；不能当作全局文件身份。保留inode/大小/mtime与
+内容SHA校验，删除前再在同一主机检查身份稳定，不忽略实际文件变更。
 
 ## 执行、调度终态和host清理不是同一状态
 

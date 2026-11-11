@@ -935,6 +935,64 @@ BOOST_FIXTURE_TEST_CASE(SingleFlightAndWarmHitUseSameValidatedObjectWithoutInter
   BOOST_CHECK_EQUAL(store.size(), 0);
 }
 
+BOOST_FIXTURE_TEST_CASE(LostProfileInterestRecoversWithinInvocationDeadline, ProfileFixture)
+{
+  SecurityProfileStore store(face, validator);
+  const auto data = packet();
+  size_t callbacks = 0;
+  store.resolve(data->getName(), producer, ndn::time::seconds(900),
+    [&](auto record, const std::string& error) {
+      ++callbacks;
+      BOOST_REQUIRE_MESSAGE(record != nullptr, error);
+      BOOST_CHECK(record->packet->wireEncode() == data->wireEncode());
+    });
+  pump();
+  BOOST_REQUIRE_EQUAL(face.sentInterests.size(), 1);
+  const auto firstNonce = face.sentInterests.front().getNonce();
+  BOOST_CHECK(face.sentInterests.front().getInterestLifetime() <= ndn::time::seconds(1));
+  // Drop the first Interest rather than supplying a synthetic success callback.
+  face.processEvents(ndn::time::milliseconds(1100), true);
+  BOOST_REQUIRE_EQUAL(face.sentInterests.size(), 2);
+  BOOST_CHECK(firstNonce != face.sentInterests.back().getNonce());
+  BOOST_CHECK_EQUAL(callbacks, 0);
+  face.receive(*data);
+  pump();
+  BOOST_CHECK_EQUAL(callbacks, 1);
+  BOOST_CHECK_EQUAL(store.fetchCount(), 1);
+  BOOST_CHECK_EQUAL(store.size(), 1);
+}
+
+BOOST_FIXTURE_TEST_CASE(ProfileTransportRetriesAreBoundedAndCloseCancelsRetry, ProfileFixture)
+{
+  SecurityProfileStore store(face, validator);
+  const auto data = packet();
+  size_t callbacks = 0;
+  store.resolve(data->getName(), producer, ndn::time::seconds(900),
+    [&](auto record, const std::string& error) {
+      ++callbacks;
+      BOOST_CHECK(record == nullptr);
+      BOOST_CHECK(!error.empty());
+    });
+  pump();
+  for (size_t attempt = 1; attempt <= 3; ++attempt) {
+    BOOST_REQUIRE_EQUAL(face.sentInterests.size(), attempt);
+    ndn::lp::Nack nack(face.sentInterests.back());
+    nack.setReason(ndn::lp::NackReason::NO_ROUTE);
+    face.receive(nack);
+    pump();
+  }
+  BOOST_CHECK_EQUAL(callbacks, 1);
+  BOOST_CHECK_EQUAL(face.sentInterests.size(), 3);
+  store.resolve(data->getName(), producer, ndn::time::seconds(900),
+    [&](auto, const std::string&) { ++callbacks; });
+  pump();
+  BOOST_REQUIRE_EQUAL(face.sentInterests.size(), 4);
+  store.close();
+  face.processEvents(ndn::time::milliseconds(1100), true);
+  BOOST_CHECK_EQUAL(callbacks, 1);
+  BOOST_CHECK_EQUAL(face.sentInterests.size(), 4);
+}
+
 BOOST_FIXTURE_TEST_CASE(RejectSameNameChangedContentAndUnauthorizedSigner, ProfileFixture)
 {
   for (int variant = 0; variant < 2; ++variant) {
@@ -1248,7 +1306,7 @@ BOOST_FIXTURE_TEST_CASE(ActorAllowsUnboundedInvocationAndCleansExpiredAckLease, 
   const auto matching = [&](const ndn::Interest& interest) { return interest.getName() == profileName; };
   BOOST_REQUIRE_EQUAL(std::count_if(face.sentInterests.begin(), face.sentInterests.end(), matching), 1);
   const auto profileInterest = std::find_if(face.sentInterests.begin(), face.sentInterests.end(), matching);
-  BOOST_CHECK(profileInterest->getInterestLifetime() == ndn::time::seconds(5));
+  BOOST_CHECK(profileInterest->getInterestLifetime() == ndn::time::seconds(1));
   face.receive(*packet());
   pump();
   BOOST_CHECK_EQUAL(InvocationNamesOracle::cacheSize(user), 1);
@@ -1318,7 +1376,8 @@ BOOST_AUTO_TEST_CASE(FrameworkSvsPackingDefaultsRespectExplicitBounds)
   {
     std::map<std::string, std::optional<std::string>> values;
     Restore() {
-      for (const auto* name : {"NDNSF_SVS_MAX_APP_PARAMS_BYTES", "NDNSF_SVS_MAX_PIGGYDATA_BYTES"}) {
+      for (const auto* name : {"NDNSF_SVS_MAX_APP_PARAMS_BYTES", "NDNSF_SVS_MAX_PIGGYDATA_BYTES",
+                               "NDNSF_SVS_PERIODIC_SYNC_MS"}) {
         const auto* value = std::getenv(name);
         values[name] = value ? std::optional<std::string>(value) : std::nullopt;
         ::unsetenv(name);
@@ -1335,17 +1394,23 @@ BOOST_AUTO_TEST_CASE(FrameworkSvsPackingDefaultsRespectExplicitBounds)
   configureSvsPubSubOptionsFromEnvironment(options);
   BOOST_CHECK_EQUAL(options.maxApplicationParametersSize, 6144);
   BOOST_CHECK_EQUAL(options.maxPiggyDataSize, 4096);
+  BOOST_REQUIRE(options.syncProtocol.periodicTimeout.has_value());
+  BOOST_CHECK(*options.syncProtocol.periodicTimeout == ndn::time::seconds(1));
   BOOST_CHECK_LT(options.maxApplicationParametersSize, ndn::MAX_NDN_PACKET_SIZE);
   options.maxApplicationParametersSize = 2048;
   options.maxPiggyDataSize = 512;
+  options.syncProtocol.periodicTimeout = ndn::time::seconds(7);
   configureSvsPubSubOptionsFromEnvironment(options);
   BOOST_CHECK_EQUAL(options.maxApplicationParametersSize, 2048);
   BOOST_CHECK_EQUAL(options.maxPiggyDataSize, 512);
+  BOOST_CHECK(*options.syncProtocol.periodicTimeout == ndn::time::seconds(7));
   ::setenv("NDNSF_SVS_MAX_APP_PARAMS_BYTES", "3072", 1);
   ::setenv("NDNSF_SVS_MAX_PIGGYDATA_BYTES", "1024", 1);
+  ::setenv("NDNSF_SVS_PERIODIC_SYNC_MS", "250", 1);
   configureSvsPubSubOptionsFromEnvironment(options);
   BOOST_CHECK_EQUAL(options.maxApplicationParametersSize, 3072);
   BOOST_CHECK_EQUAL(options.maxPiggyDataSize, 1024);
+  BOOST_CHECK(*options.syncProtocol.periodicTimeout == ndn::time::milliseconds(250));
 }
 
 BOOST_FIXTURE_TEST_CASE(CompactResponseRecipientMetadataRetainsOriginalWire, ProfileFixture)
@@ -1502,7 +1567,7 @@ BOOST_FIXTURE_TEST_CASE(ResponseProfileActorUnboundedCallsRetainBoundedMetadataI
   for (const auto& interest : face.sentInterests) {
     if (interest.getName() == profile.getName()) {
       ++matching;
-      BOOST_CHECK(interest.getInterestLifetime() == ndn::time::milliseconds(5000));
+      BOOST_CHECK(interest.getInterestLifetime() == ndn::time::milliseconds(1000));
     }
   }
   BOOST_CHECK_EQUAL(matching, 1);
