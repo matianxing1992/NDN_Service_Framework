@@ -951,6 +951,13 @@ roleSpecFor(const NativeExecutionPlan& plan,
         edge.topicPrefix = dep.topicPrefix;
         edge.operationKind = dep.operationKind;
         edge.round = sequence;
+        // The sealed step binding travels with the runtime edge so the worker can
+        // match a step's remote input to this exact dependency. It is already
+        // validated to name a real producer and consumer step/slot pair.
+        edge.producerStepId = dep.producerStepId;
+        edge.producerSlotId = dep.producerSlotId;
+        edge.consumerStepId = dep.consumerStepId;
+        edge.consumerSlotId = dep.consumerSlotId;
         spec.inputs.push_back(std::move(edge));
       }
     }
@@ -1017,6 +1024,10 @@ roleSpecFor(const NativeExecutionPlan& plan,
         edge.topicPrefix = dep.topicPrefix;
         edge.operationKind = dep.operationKind;
         edge.round = sequence;
+        edge.producerStepId = dep.producerStepId;
+        edge.producerSlotId = dep.producerSlotId;
+        edge.consumerStepId = dep.consumerStepId;
+        edge.consumerSlotId = dep.consumerSlotId;
         spec.outputs.push_back(std::move(edge));
       }
     }

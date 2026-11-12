@@ -117,6 +117,14 @@ struct DependencyEdge
   std::uint64_t microbatch = 0;
   std::uint64_t noProgressDeadlineMs = 0;
   std::uint64_t hardDeadlineMs = 0;
+  // Step binding for a sealed tensor-parallel edge. The worker matches a step's
+  // remote input to exactly this edge through these fields; matching on
+  // tensors[0] or a shared slot name would be the guess C4 forbids. All four
+  // stay empty for an ordinary pipeline edge, so its behaviour is unchanged.
+  std::string producerStepId;
+  std::string producerSlotId;
+  std::string consumerStepId;
+  std::string consumerSlotId;
 };
 
 /** Fail closed unless a dependency bundle is complete for its sealed edge.
@@ -186,6 +194,11 @@ struct RoleSpec
   // legacy whole-role path, which is why every existing role is unaffected.
   // A role that carries steps cannot be executed by a runner that only knows
   // how to run a whole role, so the worker must not silently fall back.
+  //
+  // Per C4 the worker matches a step's remote input to exactly one declared
+  // role input by consumer step and slot; the sealed dependency records that
+  // binding, which is what the worker reads at readiness instead of matching
+  // tensors or slot names.
   std::shared_ptr<const std::vector<NativeExecutionStepSpec>> steps;
   std::string stepPlanVersion;
   std::uint64_t tensorDegree = 1;

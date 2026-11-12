@@ -2922,6 +2922,79 @@ BOOST_AUTO_TEST_CASE(TensorRunnerRegistrationRequiresTheOnnxBackend)
   BOOST_CHECK_THROW(qwen::registerQwenTensorBackend(empty), std::invalid_argument);
   BOOST_CHECK(!empty.hasBackend(qwen::QWEN_TENSOR_RUNNER_BACKEND));
 }
+BOOST_AUTO_TEST_CASE(RoleSpecEdgesCarryTheSealedStepBinding)
+{
+  // The worker matches a step's remote input to exactly one declared role input
+  // through the sealed consumer step and slot. Without those four fields on the
+  // runtime edge it would have to match tensors[0] or a shared slot name, which
+  // is the guess C4 forbids.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  ExecutionAttemptKey session;
+  session.requestId = "/session/edge-binding";
+  session.attemptEpoch = 1;
+
+  const auto spec = roleSpecFor(plan, "S0R0", session, assignment, "/provider/0");
+  BOOST_REQUIRE(!spec.inputs.empty());
+  // Every input edge on a TP role is a step-bound partial, and each carries the
+  // binding the plan declared for it.
+  std::size_t boundInputs = 0;
+  for (const auto& edge : spec.inputs) {
+    if (edge.consumerStepId.empty()) continue;
+    ++boundInputs;
+    BOOST_CHECK_EQUAL(edge.consumerSlotId.empty(), false);
+    BOOST_CHECK_EQUAL(edge.producerStepId.empty(), false);
+    BOOST_CHECK_EQUAL(edge.producerSlotId.empty(), false);
+    // The binding must agree with the plan, not merely look plausible.
+    const auto declared = std::find_if(plan.dependencies.begin(), plan.dependencies.end(),
+      [&edge] (const auto& dependency) {
+        return dependency.consumerStepId == edge.consumerStepId &&
+               dependency.consumerSlotId == edge.consumerSlotId;
+      });
+    BOOST_REQUIRE(declared != plan.dependencies.end());
+    BOOST_CHECK_EQUAL(edge.producerStepId, declared->producerStepId);
+    BOOST_CHECK_EQUAL(edge.producerSlotId, declared->producerSlotId);
+  }
+  BOOST_CHECK(boundInputs > 0);
+
+  // Output edges carry the same binding, so a publisher knows which step and slot
+  // produced the value it is about to publish.
+  for (const auto& edge : spec.outputs) {
+    BOOST_CHECK_EQUAL(edge.producerStepId.empty(), false);
+    BOOST_CHECK_EQUAL(edge.producerSlotId.empty(), false);
+  }
+
+  // A pipeline role has no step binding at all, so its edges stay exactly as they
+  // were before this field existed.
+  NativeExecutionPlan pipeline;
+  pipeline.roles = {"/LLM/Pipeline/Stage/0"};
+  NativeDependencySpec activation;
+  activation.producers = {"/LLM/Pipeline/Stage/0"};
+  activation.consumers = {"/LLM/Pipeline/Stage/1"};
+  activation.keyScope = "legacy";
+  activation.topicPrefix = "/topic";
+  activation.objectNameTemplate = "{producerProvider}/{keyScope}/{sequence}";
+  activation.tensors = {"hidden"};
+  activation.operationKind = "ACTIVATION";
+  pipeline.dependencies = {activation};
+  pipeline.roles.push_back("/LLM/Pipeline/Stage/1");
+  NativeProviderAssignment single;
+  single.providerByRole = {{"/LLM/Pipeline/Stage/0", "/provider/0"},
+                           {"/LLM/Pipeline/Stage/1", "/provider/1"}};
+  const auto legacy = roleSpecFor(pipeline, "/LLM/Pipeline/Stage/1", session, single,
+                                  "/provider/1");
+  BOOST_REQUIRE_EQUAL(legacy.inputs.size(), 1U);
+  BOOST_CHECK(legacy.inputs.front().consumerStepId.empty());
+  BOOST_CHECK(legacy.inputs.front().producerStepId.empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
