@@ -667,9 +667,10 @@ RepoNode::runOriginalDataWorker(ndn::Face& face)
           replies.push_back({std::move(batch->at(i)), read.job.deadline, read.completion});
         }
         else {
-          const auto wire = getDataPacket(read.job.interest);
-          ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
-          replies.push_back({std::move(data), read.job.deadline, read.completion});
+          // The lookup already validated this Data; sending it avoids the
+          // second TLV parse the wire-returning overload required.
+          replies.push_back({getDataPacketObject(read.job.interest),
+                             read.job.deadline, read.completion});
         }
       }
       catch (const std::exception& error) {
@@ -1452,8 +1453,8 @@ RepoNode::getDataPacket(const std::string& dataName) const
   return m_core.getDataPacket(dataName);
 }
 
-std::vector<uint8_t>
-RepoNode::getDataPacket(const ndn::Interest& interest) const
+ndn::Data
+RepoNode::getDataPacketObject(const ndn::Interest& interest) const
 {
   std::unique_lock<std::mutex> writeGuard(m_storeWriteMutex, std::defer_lock);
   if (!m_core.supportsConcurrentCommittedReads())
@@ -1461,12 +1462,20 @@ RepoNode::getDataPacket(const ndn::Interest& interest) const
   if (m_ownedInsertStopping.load()) {
     throw std::runtime_error("repo-original-packet-insert-shutting-down");
   }
-  return m_core.getDataPacket(interest, [this](const RepoObjectManifest& object) {
+  return m_core.getDataPacketObject(interest, [this](const RepoObjectManifest& object) {
     if (!m_artifactMetadataStore) {
       return true;
     }
     return object.objectType == "original-packet-set" && isPersistentArtifactVisible(object);
   });
+}
+
+std::vector<uint8_t>
+RepoNode::getDataPacket(const ndn::Interest& interest) const
+{
+  const auto data = getDataPacketObject(interest);
+  const auto& wire = data.wireEncode();
+  return std::vector<uint8_t>(wire.begin(), wire.end());
 }
 
 bool

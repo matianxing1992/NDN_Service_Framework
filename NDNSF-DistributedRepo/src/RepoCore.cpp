@@ -1140,6 +1140,16 @@ RepoCore::getDataPacket(
   const ndn::Interest& interest,
   const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
 {
+  const auto data = getDataPacketObject(interest, acceptObject);
+  const auto& wire = data.wireEncode();
+  return std::vector<uint8_t>(wire.begin(), wire.end());
+}
+
+ndn::Data
+RepoCore::getDataPacketObject(
+  const ndn::Interest& interest,
+  const std::function<bool(const RepoObjectManifest&)>& acceptObject) const
+{
   auto indexedName = interest.getName();
   const bool implicitDigest = !indexedName.empty() && indexedName[-1].isImplicitSha256Digest();
   if (implicitDigest) {
@@ -1147,9 +1157,9 @@ RepoCore::getDataPacket(
   }
   if (!interest.getCanBePrefix() || implicitDigest) {
     auto wire = getDataPacket(indexedName.toUri(ndn::name::UriFormat::CANONICAL), acceptObject);
-    const ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
+    ndn::Data data(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));
     if (interest.matchesData(data)) {
-      return wire;
+      return data;
     }
     throw std::runtime_error("repo-original-packet-interest-mismatch");
   }
@@ -1196,7 +1206,7 @@ RepoCore::getDataPacket(
       if (acceptObject && !acceptObject(manifest))
         break;
       if (interest.matchesData(data)) {
-        return wire;
+        return data;
       }
     }
   }

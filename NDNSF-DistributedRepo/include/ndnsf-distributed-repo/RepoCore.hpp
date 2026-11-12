@@ -106,6 +106,10 @@ public:
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
   std::vector<uint8_t> getDataPacket(const std::string& dataName,
     const std::function<bool(const RepoObjectManifest&)>& acceptObject) const;
+  /** The same lookup as the wire overload, but it returns the Data it already
+   *  built and validated so a serving worker does not parse the wire again. */
+  ndn::Data getDataPacketObject(const ndn::Interest& interest,
+    const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
   std::vector<uint8_t> getDataPacket(const ndn::Interest& interest,
     const std::function<bool(const RepoObjectManifest&)>& acceptObject = {}) const;
 

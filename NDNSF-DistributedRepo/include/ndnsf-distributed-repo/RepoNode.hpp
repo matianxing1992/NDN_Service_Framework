@@ -129,6 +129,9 @@ public:
 
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
   std::vector<uint8_t> getDataPacket(const ndn::Interest& interest) const;
+  /** Validated Data from the same lookup, so the serving worker can send it
+   *  without parsing the wire a second time. */
+  ndn::Data getDataPacketObject(const ndn::Interest& interest) const;
 
   bool hasDataPacket(const std::string& dataName) const;
 
