@@ -1195,6 +1195,99 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
   return table;
 }
 
+QwenTpShape
+deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t layers)
+{
+  if (modelBytes.empty() || layers == 0) {
+    throw std::invalid_argument("tensor-parallel shape derivation needs a graph and layers");
+  }
+  onnx::ModelProto model;
+  if (!model.ParseFromString(std::string(modelBytes.begin(), modelBytes.end()))) {
+    throw std::runtime_error("tensor-parallel shape derivation could not parse the graph");
+  }
+  const auto& graph = model.graph();
+
+  const auto attribute = [] (const onnx::NodeProto& node, const char* name)
+    -> std::optional<std::int64_t> {
+    for (const auto& attr : node.attribute()) {
+      if (attr.name() == name && attr.has_i()) return attr.i();
+    }
+    return std::nullopt;
+  };
+
+  std::uint64_t queryHeads = 0;
+  std::uint64_t kvHeads = 0;
+  for (const auto& node : graph.node()) {
+    if (node.op_type() != "GroupQueryAttention") continue;
+    const auto heads = attribute(node, "num_heads");
+    const auto kv = attribute(node, "kv_num_heads");
+    if (!heads || !kv || *heads <= 0 || *kv <= 0) {
+      throw std::invalid_argument(
+        "tensor-parallel shape derivation found no head counts on the attention op");
+    }
+    queryHeads = static_cast<std::uint64_t>(*heads);
+    kvHeads = static_cast<std::uint64_t>(*kv);
+    break;
+  }
+  if (queryHeads == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel shape derivation found no GroupQueryAttention node");
+  }
+
+  // Projection widths give headDim, hidden and ffn without trusting a constant:
+  // q_proj's N is queryHeads*headDim and o_proj's N is the hidden size. The widths
+  // come from the existing INT4 inspector rather than from reading node inputs
+  // here: MatMulNBits takes its packed weight as the second input, and a second
+  // copy of that schema knowledge is exactly how the earlier parser bug happened.
+  const auto nodes = inspectQwenNBitsGraph(modelBytes, layers);
+  std::uint64_t queryWidth = 0;
+  std::uint64_t outputWidth = 0;
+  std::uint64_t gateWidth = 0;
+  for (const auto& node : nodes) {
+    const auto& name = node.nodeName;
+    if (name.find("q_proj") != std::string::npos) queryWidth = node.n;
+    else if (name.find("o_proj") != std::string::npos) outputWidth = node.n;
+    else if (name.find("gate_proj") != std::string::npos) gateWidth = node.n;
+  }
+  if (queryWidth == 0 || outputWidth == 0 || gateWidth == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel shape derivation found no sharded projection widths");
+  }
+  if (queryWidth % queryHeads != 0) {
+    throw std::invalid_argument(
+      "tensor-parallel q_proj width does not divide by its head count");
+  }
+  const auto headDim = queryWidth / queryHeads;
+
+  // The tied embedding table gives the vocabulary; the head projects to it.
+  std::uint64_t vocab = 0;
+  for (const auto& init : graph.initializer()) {
+    if (init.name().find("embed_tokens.weight") == std::string::npos) continue;
+    if (init.dims_size() < 2) continue;
+    vocab = static_cast<std::uint64_t>(init.dims(0));
+    break;
+  }
+  if (vocab == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel shape derivation found no embedding table");
+  }
+
+  QwenTpShape shape;
+  shape.hidden = outputWidth;
+  shape.layers = layers;
+  shape.queryHeads = queryHeads;
+  shape.kvHeads = kvHeads;
+  shape.headDim = headDim;
+  shape.ffn = gateWidth;
+  shape.vocab = vocab;
+  shape.validate();
+  // Cross-check the derived geometry against every sharded node, which is what
+  // refuses an export whose widths contradict the head counts.
+  (void)qwenTpShapeFromNodes(nodes, shape.hidden, shape.layers, shape.queryHeads,
+                             shape.kvHeads, shape.headDim, shape.ffn, shape.vocab);
+  return shape;
+}
+
 std::uint64_t
 applyQwenTpRankSlices(onnx::ModelProto& entry,
                       const QwenRankLayerSlices* layerSlices,
@@ -1472,7 +1565,8 @@ qwenTpStepDeclarationJson(const std::vector<NativeExecutionStepSpec>& steps)
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,
-                        std::uint64_t rankedByteBudget)
+                        std::uint64_t rankedByteBudget,
+                        std::uint64_t tensorDegree, std::uint64_t tensorRank)
 {
   if (spec.path.empty() || layers == 0 || spec.role.empty()) {
     throw std::invalid_argument(
@@ -1484,8 +1578,42 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
       "tensor-parallel rank spec names an unreadable model: " + spec.path);
   }
   const auto graphBytes = readEntryFile(modelPath);
+
+  // A tensor-parallel rank narrows every entry to its own shard. The shape comes
+  // from the graph rather than from a caller constant, so the slice cannot
+  // disagree with the export it is cutting. A pipeline role keeps full width.
+  QwenTpAssemblyShards shards;
+  if (tensorDegree > 1) {
+    if (tensorRank >= tensorDegree) {
+      throw std::invalid_argument(
+        "tensor-parallel rank is outside the sealed degree");
+    }
+    const auto shape = deriveQwenTpShape(graphBytes, layers);
+    shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank);
+    // The sidecar sits beside the rank file; only a non-contiguous slice needs it
+    // in memory, and only for that entry's own weight.
+    const auto sidecar = modelPath.parent_path() / "model.onnx.data";
+    const auto sidecarFrozen = modelPath.parent_path() / "model.onnx_data";
+    const auto reader = std::filesystem::exists(sidecar) ? sidecar : sidecarFrozen;
+    shards.readExternal = [reader] (std::uint64_t offset, std::uint64_t length) {
+      std::ifstream in(reader, std::ios::binary);
+      if (!in) {
+        throw std::runtime_error(
+          "tensor-parallel sidecar is unreadable: " + reader.string());
+      }
+      in.seekg(static_cast<std::streamoff>(offset));
+      std::vector<std::uint8_t> bytes(length);
+      in.read(reinterpret_cast<char*>(bytes.data()),
+              static_cast<std::streamsize>(length));
+      if (!in) {
+        throw std::runtime_error(
+          "tensor-parallel sidecar read was short at offset " + std::to_string(offset));
+      }
+      return bytes;
+    };
+  }
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
-                                        graphBytes, layers);
+                                        graphBytes, layers, shards);
   // Verify the finished set before the spec can leave the assembler. Checking
   // here means a rank whose entries are incomplete, mis-digested or over budget
   // never becomes a loadable spec, so the Provider cannot publish READY for it.

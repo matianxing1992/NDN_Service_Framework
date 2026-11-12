@@ -380,6 +380,23 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers);
 
+/** Derive the TP shape facts from a source graph.
+ *
+ * The assembler holds only the graph bytes and the rank identity from the sealed
+ * contract, so the geometry has to come from the export itself. Every fact needed
+ * for slicing is present in the frozen graph and cross-checked: the attention
+ * operator declares its head counts, the sharded projections declare their
+ * widths, and a normalization weight declares the hidden size. Declaring these by
+ * hand would let a Provider slice weights that no longer match the graph.
+ *
+ * @param modelBytes Serialized source graph.
+ * @param layers     Layer count the caller already established.
+ * @throws std::invalid_argument when a required node or attribute is missing, or
+ *         the widths contradict each other.
+ */
+QwenTpShape
+deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t layers);
+
 /** Assemble a rank's entry table with its own weight shards. */
 std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
@@ -465,12 +482,18 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  * @param steps  Sealed steps this unit must be able to execute.
  * @param rankedByteBudget Total bytes this rank may occupy. It is one budget for
  *        the whole rank, per D6, not a limit applied afresh to each entry.
+ * @param tensorDegree Degree from the sealed contract. Above one, entries are
+ *        narrowed to this rank's slices; one keeps every entry at full width so a
+ *        pipeline role is unaffected.
+ * @param tensorRank Rank of this unit within `tensorDegree`.
  * @throws std::runtime_error when the rank artifact cannot be read or split.
  */
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,
-                        std::uint64_t rankedByteBudget);
+                        std::uint64_t rankedByteBudget,
+                        std::uint64_t tensorDegree = 1,
+                        std::uint64_t tensorRank = 0);
 
 /** Serialize the step descriptors a spec carries for consistency checking.
  *

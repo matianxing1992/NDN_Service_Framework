@@ -4987,6 +4987,52 @@ BOOST_AUTO_TEST_CASE(ShardedAssemblyNarrowsEachEntryToItsRankSlice)
 }
 
 
+BOOST_AUTO_TEST_CASE(ShapeIsDerivedFromTheGraphNotFromCallerConstants)
+{
+  // The assembler only has graph bytes and the sealed rank identity, so the
+  // geometry has to come from the export. If it were passed in, a stale constant
+  // would slice weights that no longer match the graph while everything looked
+  // consistent.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(bytes, 28);
+  // The frozen export's own facts, read out of the graph rather than asserted
+  // from memory: 16 query heads, 8 KV heads, 128 head dimensions, 1024 hidden,
+  // 3072 FFN, 28 layers, 151936 vocabulary.
+  BOOST_CHECK_EQUAL(shape.layers, 28U);
+  BOOST_CHECK_EQUAL(shape.queryHeads, 16U);
+  BOOST_CHECK_EQUAL(shape.kvHeads, 8U);
+  BOOST_CHECK_EQUAL(shape.headDim, 128U);
+  BOOST_CHECK_EQUAL(shape.hidden, 1024U);
+  BOOST_CHECK_EQUAL(shape.ffn, 3072U);
+  BOOST_CHECK_EQUAL(shape.vocab, 151936U);
+
+  // A graph without the attention op cannot yield head counts, and guessing them
+  // would slice along the wrong axis.
+  auto stripped = makeTinyRankGraph(2);
+  std::string wire;
+  BOOST_REQUIRE(stripped.SerializeToString(&wire));
+  BOOST_CHECK_THROW(
+    qwen::deriveQwenTpShape(std::vector<std::uint8_t>(wire.begin(), wire.end()), 2),
+    std::invalid_argument);
+  // Unparsable bytes and a zero layer count are refused too.
+  BOOST_CHECK_THROW(qwen::deriveQwenTpShape(std::vector<std::uint8_t>{1, 2, 3}, 28),
+                    std::runtime_error);
+  BOOST_CHECK_THROW(qwen::deriveQwenTpShape(bytes, 0), std::invalid_argument);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

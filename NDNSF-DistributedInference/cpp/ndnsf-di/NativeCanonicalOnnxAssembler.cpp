@@ -3733,8 +3733,13 @@ prepareNativeCanonicalOnnxRole(
         throw std::runtime_error(
           "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_NO_STEPS: the role has no steps to bind");
       }
+      // The sealed contract is the only authority on this rank's TP identity, so
+      // pass it through: a degree above one narrows every entry to this rank's
+      // shard, and a pipeline role keeps full width.
       qwen::configureQwenTpRankSpec(spec, layers, ownedSteps,
-                                    contract.maxAssembledBytes);
+                                    contract.maxAssembledBytes,
+                                    contract.tensorParallelDegree,
+                                    contract.tensorParallelRank);
       logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
                               static_cast<std::uint64_t>(layers), "entries");
     }
