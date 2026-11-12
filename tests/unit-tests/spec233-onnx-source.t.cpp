@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-generation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
 
+#include <boost/process.hpp>
 #include <onnx/onnx_pb.h>
 #ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
 #include <onnxruntime_cxx_api.h>
@@ -199,6 +200,25 @@ integerLiteralModel()
   if (!model.ParseFromArray(source.modelBytes.data(), source.modelBytes.size()))
     throw std::runtime_error("fixture parse failed");
   return model;
+}
+
+onnx::NodeProto*
+addShapeFill(onnx::ModelProto& model, const std::string& name, int type,
+             std::int64_t fill, const std::string& raw = {})
+{
+  auto* shape = model.mutable_graph()->add_initializer();
+  shape->set_name(name + "-shape"); shape->set_data_type(onnx::TensorProto::INT64);
+  shape->add_dims(1); shape->add_int64_data(2);
+  auto* node = model.mutable_graph()->add_node(); node->set_op_type("ConstantOfShape");
+  node->add_input(shape->name()); node->add_output(name);
+  auto* attr = node->add_attribute(); attr->set_name("value");
+  attr->set_type(onnx::AttributeProto::TENSOR);
+  auto* tensor = attr->mutable_t(); tensor->set_data_type(type); tensor->add_dims(1);
+  if (!raw.empty()) tensor->set_raw_data(raw);
+  else if (type == onnx::TensorProto::INT64) tensor->add_int64_data(fill);
+  else if (type == onnx::TensorProto::FLOAT) tensor->add_float_data(static_cast<float>(fill));
+  else tensor->add_int32_data(static_cast<std::int32_t>(fill));
+  return node;
 }
 
 onnx::ModelProto
@@ -900,15 +920,23 @@ BOOST_AUTO_TEST_CASE(LocalFunctionShadowCannotInventABuiltinConstantLiteral)
   call->set_op_type("Constant"); call->add_input("function-argument"); call->add_output("opaque");
   auto* attr = call->add_attribute(); attr->set_name("value_int");
   attr->set_type(onnx::AttributeProto::INT); attr->set_i(777);
+  auto* floating = call->add_attribute(); floating->set_name("value_float");
+  floating->set_type(onnx::AttributeProto::FLOAT); floating->set_f(1.0F);
   const auto path = files.root / "model.onnx"; writeModel(path, source);
   const auto model = inspectAutomaticOnnxModel({path}, control());
   BOOST_CHECK(model.contract.integerLiterals.empty());
+  BOOST_CHECK(model.contract.floatingLiterals.empty());
 }
 
 BOOST_AUTO_TEST_CASE(ReferencedAttributeDoesNotSupplyItsUnresolvedFallbackValue)
 {
   FilesFixture files;
   auto source = integerLiteralModel();
+  auto* floating = source.mutable_graph()->add_node(); floating->set_op_type("Constant");
+  floating->add_output("unresolved-float");
+  auto* floatingAttribute = floating->add_attribute(); floatingAttribute->set_name("value_float");
+  floatingAttribute->set_type(onnx::AttributeProto::FLOAT);
+  floatingAttribute->set_ref_attr_name("unbound-float"); floatingAttribute->set_f(1.0F);
   auto* node = source.mutable_graph()->add_node(); node->set_op_type("Constant");
   node->add_output("unresolved");
   auto* attr = node->add_attribute(); attr->set_name("value_int");
@@ -917,6 +945,7 @@ BOOST_AUTO_TEST_CASE(ReferencedAttributeDoesNotSupplyItsUnresolvedFallbackValue)
   const auto path = files.root / "model.onnx"; writeModel(path, source);
   const auto model = inspectAutomaticOnnxModel({path}, control());
   BOOST_CHECK(model.contract.integerLiterals.empty());
+  BOOST_CHECK(model.contract.floatingLiterals.empty());
   BOOST_CHECK_EQUAL(model.contract.operators.back().attributeReferences.at("value_int"), "unbound");
 }
 
@@ -984,6 +1013,325 @@ BOOST_AUTO_TEST_CASE(OneShotOwnerExceptionsInsideGenerationCannotBecomeUnsupport
       [](const auto& error) { return std::string(error.what()) == "one-shot owner cancellation"; });
     BOOST_CHECK(fired);
     BOOST_CHECK_EQUAL(descriptors(), before);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FloatingScalarFactsPreserveIndependentIeeeBitPatterns)
+{
+  FilesFixture files;
+  auto source = integerLiteralModel();
+  struct Scalar
+  {
+    std::string name;
+    int type;
+    std::vector<std::uint8_t> bytes;
+  };
+  const std::vector<Scalar> scalars{
+    {"f32-one", 1, {0, 0, 128, 63}}, {"f32-negative-zero", 1, {0, 0, 0, 128}},
+    {"f32-negative-infinity", 1, {0, 0, 128, 255}}, {"f32-nan", 1, {69, 35, 193, 127}},
+    {"f16-one", 10, {0, 60}}, {"f16-negative-zero", 10, {0, 128}},
+    {"f16-negative-infinity", 10, {0, 252}}, {"f16-nan", 10, {85, 126}},
+    {"bf16-one", 16, {128, 63}}, {"bf16-negative-zero", 16, {0, 128}},
+    {"bf16-negative-infinity", 16, {128, 255}}, {"bf16-nan", 16, {197, 127}}};
+  for (std::size_t index = 0; index < scalars.size(); ++index) {
+    const auto& scalar = scalars[index];
+    onnx::TensorProto* tensor = nullptr;
+    if (index % 2 == 0) {
+      tensor = source.mutable_graph()->add_initializer();
+      tensor->set_name(scalar.name);
+    }
+    else {
+      auto* node = source.mutable_graph()->add_node();
+      node->set_op_type("Constant"); node->add_output(scalar.name);
+      auto* attribute = node->add_attribute();
+      attribute->set_name("value"); attribute->set_type(onnx::AttributeProto::TENSOR);
+      tensor = attribute->mutable_t();
+    }
+    tensor->set_data_type(scalar.type);
+    if (index % 3 == 0) tensor->add_dims(1);
+    if (scalar.name == "f32-one") tensor->add_float_data(1.0F);
+    else if (scalar.name == "f16-one") tensor->add_int32_data(0x3c00);
+    else if (scalar.name == "bf16-one") tensor->add_int32_data(0x3f80);
+    else tensor->set_raw_data(std::string(scalar.bytes.begin(), scalar.bytes.end()));
+  }
+  for (const bool list : {false, true}) {
+    auto* node = source.mutable_graph()->add_node(); node->set_op_type("Constant");
+    node->add_output(list ? "compact-list" : "compact-scalar");
+    auto* attribute = node->add_attribute();
+    attribute->set_name(list ? "value_floats" : "value_float");
+    attribute->set_type(list ? onnx::AttributeProto::FLOATS : onnx::AttributeProto::FLOAT);
+    if (list) attribute->add_floats(-0.0F);
+    else attribute->set_f(-std::numeric_limits<float>::infinity());
+  }
+  writeModel(files.root / "model.onnx", source);
+  const auto model = inspectAutomaticOnnxModel({files.root / "model.onnx"}, control());
+  BOOST_REQUIRE_EQUAL(model.contract.floatingLiterals.size(), scalars.size() + 2);
+  for (const auto& scalar : scalars)
+    BOOST_CHECK(model.contract.floatingLiterals.at("graph/" + scalar.name) == scalar.bytes);
+  BOOST_CHECK(model.contract.floatingLiterals.at("graph/compact-list") ==
+              std::vector<std::uint8_t>({0, 0, 0, 128}));
+  BOOST_CHECK(model.contract.floatingLiterals.at("graph/compact-scalar") ==
+              std::vector<std::uint8_t>({0, 0, 128, 255}));
+  const auto encoded = model.contract.canonicalJson(control());
+  const auto decoded = AutomaticOnnxContract::fromCanonicalJson(encoded, control());
+  BOOST_CHECK(decoded.floatingLiterals == model.contract.floatingLiterals);
+  BOOST_CHECK_EQUAL(decoded.canonicalJson(control()), encoded);
+  auto noScalars = model.contract; noScalars.floatingLiterals.clear();
+  BOOST_CHECK_EQUAL(noScalars.factsJson(), model.contract.factsJson());
+  BOOST_CHECK_NE(noScalars.digest(control()), model.contract.digest(control()));
+}
+
+BOOST_AUTO_TEST_CASE(FloatingScalarCollectorReadsExactSmallExternalRangesAndSkipsNonScalars)
+{
+  FilesFixture files;
+  auto source = integerLiteralModel();
+  const std::array<std::array<int, 3>, 3> ranges{{{1, 2, 4}, {10, 6, 2}, {16, 8, 2}}};
+  for (const auto& range : ranges) {
+    auto* scalar = source.mutable_graph()->add_initializer();
+    scalar->set_name("external-float-" + std::to_string(range[0]));
+    scalar->set_data_type(range[0]); scalar->set_data_location(onnx::TensorProto::EXTERNAL);
+    for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
+           {"location", "weights/scalar.bin"}, {"offset", std::to_string(range[1])},
+           {"length", std::to_string(range[2])}}) {
+      auto* field = scalar->add_external_data();
+      field->set_key(pair.first); field->set_value(pair.second);
+    }
+  }
+  const std::vector<std::uint8_t> bytes{42, 42, 0, 0, 128, 255, 0, 128, 128, 63, 17};
+  FilesFixture::write(files.root / "weights/scalar.bin", bytes);
+  for (const auto count : {0, 2}) {
+    auto* tensor = source.mutable_graph()->add_initializer();
+    tensor->set_name("not-scalar-" + std::to_string(count));
+    tensor->set_data_type(onnx::TensorProto::FLOAT); tensor->add_dims(count);
+    for (int index = 0; index < count; ++index) tensor->add_float_data(1.0F);
+  }
+  writeModel(files.root / "model.onnx", source);
+  const auto model = inspectAutomaticOnnxModel({files.root / "model.onnx"}, control());
+  BOOST_REQUIRE_EQUAL(model.contract.floatingLiterals.size(), 3U);
+  BOOST_CHECK(model.contract.floatingLiterals.at("graph/external-float-1") ==
+              std::vector<std::uint8_t>({0, 0, 128, 255}));
+  BOOST_CHECK(model.contract.floatingLiterals.at("graph/external-float-10") ==
+              std::vector<std::uint8_t>({0, 128}));
+  BOOST_CHECK(model.contract.floatingLiterals.at("graph/external-float-16") ==
+              std::vector<std::uint8_t>({128, 63}));
+  std::ifstream input(files.root / "weights/scalar.bin", std::ios::binary);
+  const std::vector<std::uint8_t> after{std::istreambuf_iterator<char>(input),
+                                       std::istreambuf_iterator<char>()};
+  BOOST_CHECK(after == bytes);
+}
+
+BOOST_AUTO_TEST_CASE(FloatingExternalScalarsRejectRangesBudgetAndCancellation)
+{
+  FilesFixture files;
+  auto source = integerLiteralModel();
+  auto* scalar = source.mutable_graph()->add_initializer();
+  scalar->set_name("guarded-float"); scalar->set_data_type(onnx::TensorProto::FLOAT);
+  scalar->set_data_location(onnx::TensorProto::EXTERNAL);
+  for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
+         {"location", "weights/scalar.bin"}, {"offset", "0"}, {"length", "4"}}) {
+    auto* field = scalar->add_external_data(); field->set_key(pair.first); field->set_value(pair.second);
+  }
+  FilesFixture::write(files.root / "weights/scalar.bin", {0, 0, 128, 63});
+  const auto path = files.root / "model.onnx";
+  for (const auto length : {3, 5}) {
+    scalar->mutable_external_data(2)->set_value(std::to_string(length));
+    writeModel(path, source);
+    BOOST_CHECK_THROW(inspectAutomaticOnnxModel({path}, control()), std::exception);
+  }
+  scalar->mutable_external_data(2)->set_value("4"); writeModel(path, source);
+  std::size_t calls = 0;
+  auto observed = control(); observed.requireActive = [&] { ++calls; };
+  const auto valid = inspectAutomaticOnnxModel({path}, observed);
+  BOOST_REQUIRE_EQUAL(valid.contract.floatingLiterals.size(), 1U);
+  BOOST_REQUIRE_GT(calls, 2U);
+  for (const auto stop : {std::size_t{1}, calls / 2, calls}) {
+    auto cancelled = control(); std::size_t seen = 0;
+    cancelled.requireActive = [&] {
+      if (++seen == stop) throw std::runtime_error("scalar inspection cancelled");
+    };
+    BOOST_CHECK_EXCEPTION(inspectAutomaticOnnxModel({path}, cancelled), std::runtime_error,
+      [] (const auto& error) {
+        return std::string(error.what()) == "scalar inspection cancelled";
+      });
+  }
+  auto manyScalars = integerLiteralModel();
+  for (unsigned index = 0; index < 2000; ++index) {
+    auto* value = manyScalars.mutable_graph()->add_initializer();
+    value->set_name("budget-" + std::to_string(index));
+    value->set_data_type(onnx::TensorProto::FLOAT); value->add_float_data(1.0F);
+  }
+  writeModel(path, manyScalars);
+  auto bounded = control(); bounded.maxAssembledBytes = 128U << 10;
+  BOOST_CHECK_EXCEPTION(inspectAutomaticOnnxModel({path}, bounded), std::runtime_error,
+    [] (const auto& error) {
+      return std::string(error.what()) == "DI_NATIVE_ONNX_AUTOMATIC_FACTS_LIMIT";
+    });
+}
+
+BOOST_AUTO_TEST_CASE(InstalledSourceProbeUsesTheCurrentFloatingContractAbi)
+{
+  FilesFixture files;
+  auto source = integerLiteralModel();
+  auto* scalar = source.mutable_graph()->add_initializer();
+  scalar->set_name("probe-scalar"); scalar->set_data_type(onnx::TensorProto::FLOAT);
+  scalar->add_float_data(2.0F);
+  addShapeFill(source, "probe-shape-fill", onnx::TensorProto::INT64, 1);
+  const auto path = files.root / "model.onnx"; writeModel(path, source);
+  const auto expected = inspectAutomaticOnnxModel({path}, control());
+  const auto output = files.root / "installed-source-probe.log";
+  // The maintained synchronous launcher owns/drains the child; timeout bounds
+  // this actual installed ABI consumer without a shell or another protocol.
+  const auto status = boost::process::system("/usr/bin/timeout",
+    boost::process::args(std::vector<std::string>{"--signal=TERM", "--kill-after=5", "15",
+      "/usr/local/libexec/ndnsf-tests/spec233-automatic-source-probe", "--inspect", path.string()}),
+    (boost::process::std_out & boost::process::std_err) > output.string());
+  BOOST_REQUIRE_EQUAL(status, 0);
+  BOOST_REQUIRE_LE(std::filesystem::file_size(output), 1U << 20);
+  std::ifstream input(output);
+  std::string line;
+  const std::string prefix = "ONNX_SOURCE_FACTS_PASS ";
+  bool found = false;
+  while (std::getline(input, line)) {
+    if (line.compare(0, prefix.size(), prefix) == 0) { found = true; break; }
+  }
+  BOOST_REQUIRE(found);
+  const auto facts = nativeParseJson(line.substr(prefix.size())).at("facts");
+  BOOST_CHECK_EQUAL(facts.at("contractSchema").get<std::string>(),
+                    "ndnsf-di-automatic-onnx-contract-v3");
+  BOOST_CHECK(facts.at("floatingLiterals").at("graph/probe-scalar") ==
+              NativeJson::array({0, 0, 0, 64}));
+  BOOST_CHECK_EQUAL(facts.at("contractDigest").get<std::string>(),
+                    expected.contract.digest(control()));
+}
+
+BOOST_AUTO_TEST_CASE(ConstantOfShapePreservesTypedAndRawFillFactsAndIdentity)
+{
+  FilesFixture files;
+  auto source = integerLiteralModel();
+  struct Fill
+  {
+    int type;
+    std::int64_t value;
+    std::string raw;
+    std::string key;
+  };
+  const std::vector<Fill> fills{
+    {6, std::numeric_limits<std::int32_t>::min(), std::string(3, '\0') + static_cast<char>(0x80),
+      "tensor.value.int32"},
+    {6, std::numeric_limits<std::int32_t>::max(), std::string(3, static_cast<char>(0xff)) + static_cast<char>(0x7f),
+      "tensor.value.int32"},
+    {7, std::numeric_limits<std::int64_t>::min(), std::string(7, '\0') + static_cast<char>(0x80),
+      "tensor.value.int64"},
+    {7, std::numeric_limits<std::int64_t>::max(), std::string(7, static_cast<char>(0xff)) + static_cast<char>(0x7f),
+      "tensor.value.int64"},
+    {9, 0, std::string(1, '\0'), "tensor.value.bool"},
+    {9, 1, std::string(1, '\1'), "tensor.value.bool"}};
+  for (std::size_t i = 0; i < fills.size(); ++i) {
+    const auto& fill = fills[i];
+    for (const auto raw : {false, true})
+      addShapeFill(source, "opaque,fill=" + std::to_string(i) + (raw ? "raw" : "typed"),
+                   fill.type, fill.value, raw ? fill.raw : std::string{});
+  }
+  const auto path = files.root / "model.onnx"; writeModel(path, source);
+  const auto model = inspectAutomaticOnnxModel({path}, control());
+  std::size_t count = 0;
+  for (const auto& op : model.contract.operators) {
+    if (op.opType != "ConstantOfShape") continue;
+    const auto& expected = fills.at(count++ / 2);
+    BOOST_CHECK(op.integerListAttributes.at(expected.key) ==
+                std::vector<std::int64_t>{expected.value});
+    BOOST_CHECK_EQUAL(op.integerListAttributes.size(), 1);
+  }
+  BOOST_CHECK_EQUAL(count, 12);
+  const auto encoded = model.contract.canonicalJson(control());
+  const auto restored = AutomaticOnnxContract::fromCanonicalJson(encoded, control());
+  BOOST_CHECK_EQUAL(restored.canonicalJson(control()), encoded);
+  auto changed = model.contract;
+  for (auto& op : changed.operators) {
+    if (op.integerListAttributes.count("tensor.value.bool")) {
+      op.integerListAttributes["tensor.value.bool"][0] ^= 1;
+      break;
+    }
+  }
+  BOOST_CHECK_NE(changed.factsJson(), model.contract.factsJson());
+  changed.factsDigest = nativePlanningDigest(changed.factsJson());
+  BOOST_CHECK_NE(changed.digest(control()), model.contract.digest(control()));
+}
+
+BOOST_AUTO_TEST_CASE(ConstantOfShapeDefaultFloatAndOtherRanksSupplyNoIntegerFill)
+{
+  for (int mode = 0; mode < 5; ++mode) {
+    FilesFixture files;
+    auto source = integerLiteralModel();
+    auto* node = addShapeFill(source, "omitted-" + std::to_string(mode),
+      mode == 0 ? onnx::TensorProto::FLOAT : onnx::TensorProto::INT64, 1);
+    if (mode == 1) node->clear_attribute();
+    if (mode == 2) node->mutable_attribute(0)->mutable_t()->clear_dims();
+    if (mode == 3) node->mutable_attribute(0)->mutable_t()->add_dims(1);
+    if (mode == 4) {
+      auto* tensor = node->mutable_attribute(0)->mutable_t();
+      tensor->set_dims(0, 2); tensor->add_int64_data(1);
+    }
+    const auto path = files.root / "model.onnx"; writeModel(path, source);
+    if (mode == 2 || mode == 3) {
+      // The installed ONNX schema rejects a non-vector attribute before the
+      // automatic collector. Preserve that earlier source failure boundary.
+      BOOST_CHECK_EXCEPTION(inspectAutomaticOnnxModel({path}, control()), std::exception,
+        [](const auto& error) {
+          return std::string(error.what()).find("one-dim tensor") != std::string::npos;
+        });
+    }
+    else {
+      const auto model = inspectAutomaticOnnxModel({path}, control());
+      for (const auto& op : model.contract.operators)
+        if (op.opType == "ConstantOfShape") BOOST_CHECK(op.integerListAttributes.empty());
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ConstantOfShapeCannotUseReferencedShadowedOrSpoofedAttributes)
+{
+  for (int mode = 0; mode < 6; ++mode) {
+    FilesFixture files;
+    auto source = integerLiteralModel();
+    auto* node = addShapeFill(source, "untrusted-fill", onnx::TensorProto::INT64, 1);
+    if (mode == 0) node->mutable_attribute(0)->set_ref_attr_name("unresolved-fill");
+    if (mode == 1) {
+      auto* fn = source.add_functions(); fn->set_name("ConstantOfShape");
+      fn->add_input("arg"); fn->add_output("result"); fn->add_attribute("value");
+      fn->add_opset_import()->set_version(13);
+      auto* body = fn->add_node(); body->set_op_type("Identity");
+      body->add_input("arg"); body->add_output("result");
+    }
+    if (mode == 2) node->set_overload("opaque");
+    if (mode >= 3) {
+      auto* spoof = node->add_attribute(); spoof->set_name("tensor.value.int64");
+      spoof->set_type(onnx::AttributeProto::INTS); spoof->add_ints(1);
+      if (mode == 4) { spoof->set_type(onnx::AttributeProto::INT); spoof->set_i(1); }
+      if (mode == 5) spoof->set_ref_attr_name("reserved-reference");
+    }
+    const auto path = files.root / "model.onnx"; writeModel(path, source);
+    if (mode >= 3) {
+      BOOST_CHECK_THROW(inspectAutomaticOnnxModel({path}, control()), std::exception);
+    }
+    else {
+      const auto model = inspectAutomaticOnnxModel({path}, control());
+      for (const auto& op : model.contract.operators)
+        if (op.opType == "ConstantOfShape") BOOST_CHECK(op.integerListAttributes.empty());
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ConstantOfShapeRejectsNonBooleanOrMissingFillBytes)
+{
+  for (int mode = 0; mode < 4; ++mode) {
+    FilesFixture files;
+    auto source = integerLiteralModel();
+    auto* node = addShapeFill(source, "invalid-fill", onnx::TensorProto::BOOL,
+      mode == 0 ? 2 : mode == 1 ? -1 : 1, mode == 2 ? std::string(1, '\2') : std::string{});
+    if (mode == 3) node->mutable_attribute(0)->mutable_t()->clear_int32_data();
+    const auto path = files.root / "model.onnx"; writeModel(path, source);
+    BOOST_CHECK_THROW(inspectAutomaticOnnxModel({path}, control()), std::exception);
   }
 }
 

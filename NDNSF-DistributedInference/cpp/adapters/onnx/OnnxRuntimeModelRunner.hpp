@@ -16,6 +16,7 @@
 namespace ndnsf::di {
 
 class OnnxRuntimeSessionCache;
+struct AutomaticOnnxGenerationProbe;
 
 /** Bounded scalar observations of one actual resident KV tensor, for qualification only. */
 struct OnnxKvStateSample
@@ -194,6 +195,12 @@ public:
   validateAutomaticRequestBinding(const NativeSelectionProjectionV3& projection,
                                   const NativeRequestControl& control) const final;
 
+  std::vector<NamedTensor>
+  makeStateFeedback(const std::vector<NamedTensorView>& raw,
+                    const std::vector<std::string>& inputNames,
+                    const std::vector<std::string>& outputNames,
+                    const RoleExecutionContext& ctx) const final;
+
   std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) final;
 
@@ -260,7 +267,8 @@ private:
   class SharedSession;
   class Impl;
   std::map<std::string, TensorBundle>
-  runImpl(const RoleExecutionContext& ctx, InvocationKind kind);
+  runImpl(const RoleExecutionContext& ctx, InvocationKind kind,
+          AutomaticOnnxGenerationProbe* modelProbe = nullptr);
   std::optional<std::map<std::string, TensorBundle>>
   runStreamedImpl(const RoleExecutionContext& ctx);
   void initializeEvidence();

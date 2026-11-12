@@ -211,7 +211,9 @@ floatPayload(std::initializer_list<float> values)
 {
   std::vector<float> floats(values);
   std::vector<uint8_t> payload(floats.size() * sizeof(float));
-  std::memcpy(payload.data(), floats.data(), payload.size());
+  if (!payload.empty()) {
+    std::memcpy(payload.data(), floats.data(), payload.size());
+  }
   return payload;
 }
 
@@ -7621,6 +7623,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   std::shared_ptr<FirstReadGate> firstReadGate;
   bool captureRunError = false;
   bool failNextCompatibilityPrefetch = false;
+  bool failCompatibilityFeedbackPublication = false;
 
   const auto run = [&] (std::vector<std::vector<float>> logitsByEpoch,
                        std::vector<std::string> stopStrings,
@@ -7704,19 +7707,33 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     std::vector<std::string> events;
     std::vector<std::string> ioEvents;
     std::vector<std::string> timeline;
-    io->prefetchObserver = [&ioEvents, &timeline,
+    const std::weak_ptr<BlockingDependencyIo> weakIo = io;
+    io->prefetchObserver = [&ioEvents, &timeline, weakIo, promptCancellationSupported,
                             &failNextCompatibilityPrefetch] (
                              const std::string& name) {
       ioEvents.push_back("prefetch:" + name);
       timeline.push_back("prefetch:" + name);
+      if (!promptCancellationSupported) {
+        // BlockingDependencyIo invokes this observer under its store mutex.
+        // Bound a synchronous-reader regression without waiting for feedback
+        // that the same coordinator stack has not published yet.
+        const auto owner = weakIo.lock();
+        if (!owner || owner->available.count("native-terminal-session|" + name) != 1) {
+          throw std::runtime_error("compatibility prefetch requires published feedback");
+        }
+      }
       if (failNextCompatibilityPrefetch) {
         failNextCompatibilityPrefetch = false;
         throw std::runtime_error("injected compatibility prefetch start failure");
       }
     };
-    io->publishObserver = [&ioEvents, &timeline] (const std::string& name) {
+    io->publishObserver = [&ioEvents, &timeline,
+                           failCompatibilityFeedbackPublication] (const std::string& name) {
       ioEvents.push_back("publish:" + name);
       timeline.push_back("publish:" + name);
+      if (failCompatibilityFeedbackPublication) {
+        throw std::runtime_error("injected compatibility feedback publication failure");
+      }
     };
 
     NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
@@ -7859,9 +7876,9 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   BOOST_REQUIRE_EQUAL(compatibilityFallback.timeline.size(), 5U);
   BOOST_CHECK_EQUAL(compatibilityFallback.timeline[0], "event:1");
   BOOST_CHECK(compatibilityFallback.timeline[1].find(
-    "prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
-  BOOST_CHECK(compatibilityFallback.timeline[2].find(
     "publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
+  BOOST_CHECK(compatibilityFallback.timeline[2].find(
+    "prefetch:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
   BOOST_CHECK_EQUAL(compatibilityFallback.timeline[3], "event:2");
   BOOST_CHECK(compatibilityFallback.timeline[4].find(
     "publish:/provider/A/NDNSF/DI/FEEDBACK/") == 0);
@@ -7879,9 +7896,29 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
   BOOST_REQUIRE_EQUAL(deferredCompatibilityFailure.events.size(), 1U);
   BOOST_REQUIRE_EQUAL(deferredCompatibilityFailure.timeline.size(), 3U);
   BOOST_CHECK_EQUAL(deferredCompatibilityFailure.timeline[0], "event:1");
-  BOOST_CHECK(deferredCompatibilityFailure.timeline[1].find("prefetch:") == 0);
-  BOOST_CHECK(deferredCompatibilityFailure.timeline[2].find("publish:") == 0);
+  BOOST_CHECK(deferredCompatibilityFailure.timeline[1].find("publish:") == 0);
+  BOOST_CHECK(deferredCompatibilityFailure.timeline[2].find("prefetch:") == 0);
   BOOST_CHECK_EQUAL(deferredCompatibilityFailure.decodeState.commits, 1U);
+
+  captureRunError = true;
+  failCompatibilityFeedbackPublication = true;
+  const auto failedCompatibilityPublication = run({
+    {0.0F, 5.0F, 0.0F, 0.0F},
+    {0.0F, 0.0F, 5.0F, 0.0F},
+  }, {}, "Greedy", 1'750'001, true, false);
+  captureRunError = false;
+  failCompatibilityFeedbackPublication = false;
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.error,
+                    "injected compatibility feedback publication failure");
+  BOOST_REQUIRE_EQUAL(failedCompatibilityPublication.events.size(), 1U);
+  BOOST_REQUIRE_EQUAL(failedCompatibilityPublication.timeline.size(), 2U);
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.timeline[0], "event:1");
+  BOOST_CHECK(failedCompatibilityPublication.timeline[1].find("publish:") == 0);
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.decodeState.commits, 0U);
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.decodeState.rollbacks, 1U);
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.decodeState.entries, 0U);
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.decodeState.candidates, 0U);
+  BOOST_CHECK_EQUAL(failedCompatibilityPublication.decodeState.pinnedEntries, 0U);
 
   bool terminalFeedbackSeen = false;
   for (const auto& item : maxTokens.io->available) {
@@ -7934,6 +7971,12 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     seededA.events.begin(), seededA.events.end(), [] (const auto& event) {
       return event.find("sha256:native-terminal-sampling") != std::string::npos;
     }));
+}
+
+std::shared_ptr<DependencyIo>
+makeSamplingDependencyIo()
+{
+  return std::make_shared<BlockingDependencyIo>();
 }
 
 NativeEpochCoordinatorResult runSamplingEpochs(

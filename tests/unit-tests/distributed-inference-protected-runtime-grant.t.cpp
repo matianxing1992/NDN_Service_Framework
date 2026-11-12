@@ -1294,6 +1294,17 @@ BOOST_FIXTURE_TEST_CASE(BoundRunnerPublisherChecksCurrentAuthorityBeforeCacheHit
     }
 
     mutable std::size_t admissions = 0;
+    mutable std::size_t feedbackCalls = 0;
+
+    std::vector<NamedTensor>
+    makeStateFeedback(const std::vector<NamedTensorView>& raw,
+                      const std::vector<std::string>& inputNames,
+                      const std::vector<std::string>& outputNames,
+                      const RoleExecutionContext& context) const override
+    {
+      ++feedbackCalls;
+      return NativeModelRunner::makeStateFeedback(raw, inputNames, outputNames, context);
+    }
   };
   auto runner = std::make_shared<AdmissionRunner>();
   publish(runner);
@@ -1308,6 +1319,21 @@ BOOST_FIXTURE_TEST_CASE(BoundRunnerPublisherChecksCurrentAuthorityBeforeCacheHit
   admissionControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
   leased->validateAutomaticRequestBinding(projection, admissionControl);
   BOOST_CHECK_EQUAL(runner->admissions, 1U);
+  const std::vector<NamedTensor> rawState{
+    {"present", TensorElementType::Float32, {1}, {0, 0, 128, 63}}};
+  const std::map<std::string, TensorBundle> outputs{
+    {"output", makeEncodedTensorBundle("output", rawState)}};
+  RoleExecutionContext feedbackContext;
+  const auto feedback = decodeTensorBundle(makeNativeProviderDecodeState(leased.get(), outputs,
+    {"past"}, {"present"}, feedbackContext).payload);
+  BOOST_CHECK_EQUAL(runner->feedbackCalls, 1U);
+  BOOST_REQUIRE_EQUAL(feedback.size(), 1U);
+  BOOST_CHECK_EQUAL(feedback[0].name, "past");
+  BOOST_CHECK(feedback[0].payload == rawState[0].payload);
+  feedbackContext.executionGuard = [] { throw std::runtime_error("lease feedback cancelled"); };
+  BOOST_CHECK_THROW(makeNativeProviderDecodeState(leased.get(), outputs,
+    {"past"}, {"present"}, feedbackContext), std::runtime_error);
+  BOOST_CHECK_EQUAL(runner->feedbackCalls, 1U);
   admissionControl.cancelled = [] { return true; };
   BOOST_CHECK_THROW(leased->validateAutomaticRequestBinding(projection, admissionControl),
                     std::runtime_error);

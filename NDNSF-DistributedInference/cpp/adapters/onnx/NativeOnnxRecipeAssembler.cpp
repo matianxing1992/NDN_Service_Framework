@@ -1427,8 +1427,16 @@ template<typename T>
 void appendRaw(std::vector<std::uint8_t>& out, const T& value)
 {
   static_assert(sizeof(T) == 4 || sizeof(T) == 8);
-  const auto* raw = reinterpret_cast<const std::uint8_t*>(&value);
-  for (std::size_t i = 0; i < sizeof(T); ++i) out.push_back(raw[i]);
+  if constexpr (sizeof(T) == 4) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    appendU32le(out, bits);
+  }
+  else {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    appendU64le(out, bits);
+  }
 }
 
 const char* dtypeLabel(int dataType)
@@ -4580,13 +4588,16 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
     if (!result.contract.integerLiterals.emplace("graph/" + name, std::move(values)).second)
       fail("AUTOMATIC_LITERAL_DUPLICATE");
   };
-  const auto addIntegerTensor = [&](const std::string& name, const onnx::TensorProto& tensor) {
+  const auto readIntegerTensor = [&](const onnx::TensorProto& tensor)
+      -> std::optional<std::vector<std::int64_t>> {
     checkActive(control);
     if (tensor.data_type() != onnx::TensorProto::INT32 &&
-        tensor.data_type() != onnx::TensorProto::INT64) return;
+        tensor.data_type() != onnx::TensorProto::INT64 &&
+        tensor.data_type() != onnx::TensorProto::BOOL) return std::nullopt;
     const auto count = tensorElementCount(tensor);
-    if (count > 64) return;
-    const auto width = tensor.data_type() == onnx::TensorProto::INT32 ? 4U : 8U;
+    if (count > 64) return std::nullopt;
+    const auto width = tensor.data_type() == onnx::TensorProto::BOOL ? 1U :
+      tensor.data_type() == onnx::TensorProto::INT32 ? 4U : 8U;
     std::optional<onnx::TensorProto> material;
     if (tensor.data_location() == onnx::TensorProto::EXTERNAL) {
       const auto range = validatedExternalByteRange(tensor, source);
@@ -4595,6 +4606,10 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
     }
     const auto& value = material ? *material : tensor;
     if (value.ByteSizeLong() > factLimit) fail("AUTOMATIC_LITERAL_LIMIT");
+    if (value.data_type() == onnx::TensorProto::BOOL) {
+      for (const auto bit : value.int32_data())
+        if (bit != 0 && bit != 1) fail("AUTOMATIC_LITERAL_BOOL");
+    }
     const auto encoded = deterministicMessageVector(value);
     const auto normalized = normalizedOnnxInitializerPayload(encoded);
     if (normalized.content.size() != count * width) fail("AUTOMATIC_LITERAL_BYTES");
@@ -4604,7 +4619,11 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
       std::uint64_t bits = 0;
       for (unsigned byte = 0; byte < width; ++byte)
         bits |= static_cast<std::uint64_t>(normalized.content[i * width + byte]) << (byte * 8);
-      if (width == 4) {
+      if (width == 1) {
+        if (bits > 1) fail("AUTOMATIC_LITERAL_BOOL");
+        values.push_back(static_cast<std::int64_t>(bits));
+      }
+      else if (width == 4) {
         values.push_back(bits <= std::uint64_t(std::numeric_limits<std::int32_t>::max())
           ? static_cast<std::int64_t>(bits) : static_cast<std::int64_t>(bits) - (1LL << 32));
       }
@@ -4614,22 +4633,63 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
           : -1 - static_cast<std::int64_t>(std::numeric_limits<std::uint64_t>::max() - bits));
       }
     }
-    addIntegerLiteral(name, std::move(values));
+    return values;
   };
-  for (const auto& tensor : original.graph().initializer())
+  const auto addIntegerTensor = [&](const std::string& name, const onnx::TensorProto& tensor) {
+    if (tensor.data_type() != onnx::TensorProto::INT32 &&
+        tensor.data_type() != onnx::TensorProto::INT64) return;
+    auto values = readIntegerTensor(tensor);
+    if (values) addIntegerLiteral(name, std::move(*values));
+  };
+  const auto addFloatingTensor = [&](const std::string& name, const onnx::TensorProto& tensor) {
+    checkActive(control);
+    if (tensor.data_type() != onnx::TensorProto::FLOAT &&
+        tensor.data_type() != onnx::TensorProto::FLOAT16 &&
+        tensor.data_type() != onnx::TensorProto::BFLOAT16) return;
+    if (tensorElementCount(tensor) != 1) return;
+    const auto width = tensor.data_type() == onnx::TensorProto::FLOAT ? 4U : 2U;
+    std::optional<onnx::TensorProto> material;
+    if (tensor.data_location() == onnx::TensorProto::EXTERNAL) {
+      const auto range = validatedExternalByteRange(tensor, source);
+      if (range.length != width) fail("AUTOMATIC_FLOAT_LITERAL_RANGE");
+      material = materializeExternalTensor(tensor, nullptr, &control, &source);
+    }
+    const auto& value = material ? *material : tensor;
+    if (value.ByteSizeLong() > factLimit) fail("AUTOMATIC_FLOAT_LITERAL_LIMIT");
+    const auto normalized = normalizedOnnxInitializerPayload(deterministicMessageVector(value));
+    if (normalized.content.size() != width) fail("AUTOMATIC_FLOAT_LITERAL_BYTES");
+    accountFacts(128 + name.size() + width);
+    if (!result.contract.floatingLiterals.emplace("graph/" + name, normalized.content).second)
+      fail("AUTOMATIC_FLOAT_LITERAL_DUPLICATE");
+  };
+  for (const auto& tensor : original.graph().initializer()) {
     addIntegerTensor(tensor.name(), tensor);
+    addFloatingTensor(tensor.name(), tensor);
+  }
   for (const auto& node : original.graph().node()) {
     checkActive(control);
     if (!isBuiltinConstant(node, functions.count(FunctionKey{
           node.domain(), node.op_type(), node.overload()}))) continue;
     for (const auto& attr : node.attribute()) {
       if (!attr.ref_attr_name().empty()) continue;
-      if (attr.name() == "value" && attr.has_t()) addIntegerTensor(node.output(0), attr.t());
+      if (attr.name() == "value" && attr.has_t()) {
+        addIntegerTensor(node.output(0), attr.t());
+        addFloatingTensor(node.output(0), attr.t());
+      }
       else if (attr.name() == "value_int" && attr.type() == onnx::AttributeProto::INT)
         addIntegerLiteral(node.output(0), {attr.i()});
       else if (attr.name() == "value_ints" && attr.type() == onnx::AttributeProto::INTS &&
                attr.ints_size() <= 64)
         addIntegerLiteral(node.output(0), {attr.ints().begin(), attr.ints().end()});
+      else if ((attr.name() == "value_float" && attr.type() == onnx::AttributeProto::FLOAT) ||
+               (attr.name() == "value_floats" && attr.type() == onnx::AttributeProto::FLOATS &&
+                attr.floats_size() == 1)) {
+        onnx::TensorProto scalar;
+        scalar.set_data_type(onnx::TensorProto::FLOAT);
+        if (attr.name() == "value_floats") scalar.add_dims(1);
+        scalar.add_float_data(attr.name() == "value_float" ? attr.f() : attr.floats(0));
+        addFloatingTensor(node.output(0), scalar);
+      }
     }
   }
   std::set<std::size_t> visitedFunctions;
@@ -4682,6 +4742,9 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
         accountFacts(64 + attr.name().size() + attr.ref_attr_name().size() +
                      automaticMultiply(attr.ints_size(), sizeof(std::int64_t)));
         if (!attributes.insert(attr.name()).second) fail("AUTOMATIC_ATTRIBUTE");
+        // These keys are inspection evidence, never ONNX source attributes.
+        if (attr.name().compare(0, 7, "tensor.") == 0)
+          fail("AUTOMATIC_ATTRIBUTE_RESERVED");
         if (!attr.ref_attr_name().empty()) {
           op.attributeReferences[attr.name()] = attr.ref_attr_name();
           continue;
@@ -4699,6 +4762,29 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
         op.functionScope = "function/" + std::to_string(*functionIndex);
       }
       op.atomicBody = op.atomicBody || functionIndex.has_value();
+      if (!op.atomicBody && !functionIndex && standardDomain(op.domain).empty() &&
+          op.opType == "ConstantOfShape" && op.opset >= 9 && op.opset <= 21 &&
+          op.overload.empty() && op.attributeReferences.empty() &&
+          op.inputs.size() == 1 && !op.inputs[0].empty() &&
+          op.outputs.size() == 1 && !op.outputs[0].empty()) {
+        for (const auto& attr : node.attribute()) {
+          if (attr.name() != "value" || attr.type() != onnx::AttributeProto::TENSOR ||
+              !attr.has_t()) continue;
+          const auto& tensor = attr.t();
+          if (tensor.dims_size() != 1 || tensor.dims(0) != 1 || tensor.has_segment() ||
+              tensor.data_location() != onnx::TensorProto::DEFAULT ||
+              tensor.external_data_size() != 0) continue;
+          const auto type = tensor.data_type();
+          const char* key = type == onnx::TensorProto::INT32 ? "tensor.value.int32" :
+            type == onnx::TensorProto::INT64 ? "tensor.value.int64" :
+            type == onnx::TensorProto::BOOL ? "tensor.value.bool" : nullptr;
+          if (!key) continue;
+          auto value = readIntegerTensor(tensor);
+          if (!value || value->size() != 1) fail("AUTOMATIC_SHAPE_FILL");
+          accountFacts(96 + std::char_traits<char>::length(key));
+          op.integerListAttributes.emplace(key, std::move(*value));
+        }
+      }
       const bool nbits = !functionIndex && node.domain() == "com.microsoft" &&
         node.op_type() == "MatMulNBits" && op.opset == 1;
       const bool standard = !functionIndex && standardDomain(node.domain()).empty() &&

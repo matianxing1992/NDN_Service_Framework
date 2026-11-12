@@ -224,6 +224,13 @@ public:
                                   const NativeRequestControl& control) const final
   { return m_inner->validateAutomaticRequestBinding(projection, control); }
 
+  std::vector<NamedTensor>
+  makeStateFeedback(const std::vector<NamedTensorView>& raw,
+                    const std::vector<std::string>& inputNames,
+                    const std::vector<std::string>& outputNames,
+                    const RoleExecutionContext& context) const final
+  { return m_inner->makeStateFeedback(raw, inputNames, outputNames, context); }
+
   bool supportsOpaqueStateHandles() const final
   { return m_inner->supportsOpaqueStateHandles(); }
 

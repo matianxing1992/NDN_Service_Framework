@@ -1,5 +1,8 @@
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/spec233/automatic-source-projection.hpp"
+#include "tests/fixtures/spec182/native-sampling-epoch.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-generation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
@@ -16,15 +19,22 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 #include <unistd.h>
 
@@ -1531,6 +1541,66 @@ BOOST_AUTO_TEST_CASE(FullCycleUsesTheActualInputAndOutputStateLayouts)
     generationFloat("new,key=0", {1, 4, 8, 1}), generationFloat("new,value=0", {1, 4, 8, 1})};
   BOOST_CHECK_NO_THROW(validateAutomaticOnnxTensors(contract, envelope, contract.modelOutputs,
     outputs, 1, stateControl()));
+  BOOST_CHECK_NO_THROW(validateAutomaticOnnxGenerationRole(contract, contract.modelInputs,
+                                                          contract.modelOutputs));
+}
+
+BOOST_AUTO_TEST_CASE(ModelGenerationProbeBoundsRootAllocationsBeforeBackendExecution)
+{
+  for (const bool oversized : {false, true}) {
+    auto source = generationSourceModel();
+    if (oversized) {
+      constexpr std::int64_t BATCH = 100000;
+      for (auto& input : *source.mutable_graph()->mutable_input()) {
+        input.mutable_type()->mutable_tensor_type()->mutable_shape()->mutable_dim(0)
+          ->set_dim_value(BATCH);
+      }
+    }
+    const GenerationModelFile file(source);
+    const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+    BOOST_REQUIRE(model.contract.generation);
+    if (oversized) {
+      const auto token = std::find_if(model.contract.tensors.begin(), model.contract.tensors.end(),
+        [] (const auto& tensor) { return tensor.name == "graph/ids"; });
+      BOOST_REQUIRE(token != model.contract.tensors.end());
+      BOOST_REQUIRE(token->dimensions);
+      BOOST_CHECK(token->dimensions->at(0).kind == DimensionConstraint::Kind::FIXED);
+      BOOST_CHECK_EQUAL(token->dimensions->at(0).fixed, 100000);
+      BOOST_CHECK_NO_THROW(bindAutomaticOnnxShapes(model.contract, generationInputs(100000, 1),
+        1, 16, stateControl()));
+    }
+    const auto binding = AutomaticOnnxSourceBinding::fromSourceMetadata(
+      NativeJson{{"contract", nativeParseJson(model.contract.canonicalJson(stateControl()))},
+                 {"externalFiles", NativeJson::array()}},
+      model.opened.modelDigest, 0, "", stateControl());
+    const std::vector<std::string> inputs{"ids", "mask", "positions", "old,key=0", "old,value=0"};
+    const std::vector<std::string> outputs{"scores", "new,key=0", "new,value=0"};
+    if (oversized) {
+      BOOST_CHECK_EXCEPTION(makeAutomaticOnnxGenerationProbe(binding, inputs, outputs, stateControl()),
+        std::invalid_argument, [] (const auto& error) {
+          return std::string(error.what()) == "AUTOMATIC_GENERATION_PROBE_BYTES";
+        });
+    }
+    else {
+      const auto probe = makeAutomaticOnnxGenerationProbe(binding, inputs, outputs, stateControl());
+      BOOST_REQUIRE_EQUAL(probe.inputs.size(), 5U);
+      const auto named = [&] (const std::string& name) -> const NamedTensor& {
+        const auto found = std::find_if(probe.inputs.begin(), probe.inputs.end(),
+          [&] (const auto& tensor) { return tensor.name == name; });
+        if (found == probe.inputs.end()) throw std::runtime_error("missing model probe input");
+        return *found;
+      };
+      BOOST_CHECK(named("ids").shape == std::vector<std::int64_t>({1, 1}));
+      BOOST_CHECK(named("old,key=0").payload.empty());
+      BOOST_CHECK(named("old,value=0").payload.empty());
+      BOOST_CHECK(named("positions").shape == std::vector<std::int64_t>({1, 1}));
+      BOOST_CHECK_EQUAL(probe.envelope.maxNewTokens, 1U);
+      auto missing = outputs;
+      missing.pop_back();
+      BOOST_CHECK_THROW(makeAutomaticOnnxGenerationProbe(binding, inputs, missing, stateControl()),
+                        std::invalid_argument);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(DecodeMustSatisfyIntermediateIntegerReshapeConstraints)
@@ -1570,92 +1640,2449 @@ BOOST_AUTO_TEST_CASE(DecodeMustSatisfyIntermediateIntegerReshapeConstraints)
                                               stateControl()), std::invalid_argument);
 }
 
-#ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
-BOOST_AUTO_TEST_CASE(IndependentOrtPrefillAndEightDecodeOutputsFitTheSealedFullCycle)
+BOOST_AUTO_TEST_CASE(ShapeArithmeticKeepsScalarEmptyOverflowAndNarrowingBoundaries)
 {
-  const GenerationModelFile file(generationSourceModel());
-  const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
-  BOOST_REQUIRE(model.contract.generation);
-  Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "spec233-full-cycle-reference");
-  Ort::SessionOptions options;
-  options.SetIntraOpNumThreads(1); options.SetInterOpNumThreads(1);
-  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-  Ort::Session session(environment, file.path.c_str(), options);
-  const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  const std::array<const char*, 3> outputNames{"scores", "new,key=0", "new,value=0"};
-  for (const std::int64_t batch : {1, 2}) for (const std::int64_t prompt : {1, 3}) {
-    const auto envelope = bindAutomaticOnnxShapes(model.contract, generationInputs(batch, prompt),
-                                                   9, 16, stateControl());
-    std::vector<NamedTensor> previous;
-    std::vector<std::int64_t> next(batch);
-    std::vector<std::vector<std::int64_t>> consumed(batch);
-    for (std::uint64_t round = 0; round < 9; ++round) {
-      const auto sequence = round == 0 ? prompt : 1;
-      const auto past = round == 0 ? 0 : prompt + static_cast<std::int64_t>(round) - 1;
-      auto inputs = generationInputs(batch, sequence, past);
-      std::vector<std::int64_t> tokens;
-      for (std::int64_t b = 0; b < batch; ++b) for (std::int64_t s = 0; s < sequence; ++s) {
-        const auto token = round == 0 ? (b + s + 1) % 11 : next[b];
-        tokens.push_back(token); consumed[b].push_back(token);
+  const std::vector<std::string> cases{
+    "scalar-fill", "vector-fill-to-scalar", "empty-times-one", "empty-times-two",
+    "reshape-infer", "reshape-copy-zero", "reshape-explicit-zero-mismatch",
+    "reshape-pre14-attribute", "int64-overflow", "int32-overflow", "mixed-types",
+    "narrowed-unbounded-axis", "different-axes-same-arms", "different-axes-different-arms",
+    "wrong-result-type", "negative-times-minimum", "empty-where", "empty-where-mismatch",
+    "int64-divide-zero", "int64-minimum-divide-negative-one", "int32-minimum-divide-negative-one",
+    "int64-negative-truncation", "int32-negative-truncation", "int64-maximum-divide-one",
+    "int64-minimum-divide-one", "int32-maximum-divide-one", "division-mixed-types"};
+  for (std::size_t mode = 0; mode < cases.size(); ++mode) {
+    BOOST_TEST_CONTEXT(cases[mode]) {
+      auto contract = generationFixture();
+      const auto literal = [&] (const std::string& name, std::vector<std::int64_t> values,
+                                bool scalar = false, std::int32_t type = 7) {
+        auto tensor = stateTensor(name, scalar ? std::vector<DimensionConstraint>{} :
+          std::vector<DimensionConstraint>{stateFixed(values.size())}, type);
+        tensor.provenance = {"initializer-header-v1"};
+        contract.tensors.push_back(std::move(tensor));
+        contract.integerLiterals["graph/" + name] = std::move(values);
+      };
+      const auto add = [&] (const std::string& type, std::vector<std::string> inputs,
+                            const std::string& output) -> AutomaticOnnxOperatorFact& {
+        contract.operators.push_back(stateOp(type, std::move(inputs), {output}));
+        return contract.operators.back();
+      };
+      for (auto& op : contract.operators)
+        if (op.outputs == std::vector<std::string>{"total64"}) op.outputs[0] = "base-total";
+      literal("zero-index", {0}, true);
+      literal("axis-zero", {0});
+      literal("empty-shape", {});
+      literal("one-shape", {1});
+      literal("zero-shape", {0});
+      literal("two-values", {1, 1});
+      literal("negative", {-1}, true);
+      const bool empty = mode == 2 || mode == 3 || mode == 16 || mode == 17;
+      auto& fill = add("ConstantOfShape", {empty ? "zero-shape" : mode == 0 ?
+        "empty-shape" : "one-shape"}, "fill");
+      fill.integerListAttributes[mode == 10 ? "tensor.value.int32" :
+                                            "tensor.value.int64"] = {1};
+      if (mode >= 18) {
+        const auto type = mode == 20 || mode == 22 || mode == 25 || mode == 26 ? 6 : 7;
+        const std::int64_t numerator = mode == 19 || mode == 24 ?
+          std::numeric_limits<std::int64_t>::min() : mode == 20 ?
+          std::numeric_limits<std::int32_t>::min() : mode == 21 || mode == 22 ? -3 :
+          mode == 23 ? std::numeric_limits<std::int64_t>::max() :
+          mode == 25 ? std::numeric_limits<std::int32_t>::max() : 8;
+        const std::int64_t denominator = mode == 18 ? 0 : mode == 19 || mode == 20 ? -1 :
+                                         mode == 21 || mode == 22 ? 2 : 1;
+        literal("dividend", {numerator}, true, type);
+        literal("divisor", {denominator}, true, mode == 26 ? 7 : type);
+        literal("quotient-expected", {mode == 21 || mode == 22 ? -1 : numerator}, true, type);
+        add("Div", {"dividend", "divisor"}, "quotient");
+        add("Equal", {"quotient", "quotient-expected"}, "test");
+        add("Where", {"test", "base-total", "negative"}, "total64");
       }
-      inputs[0] = generationInteger("ids", {batch, sequence}, tokens);
-      if (round != 0) {
-        inputs[3].payload = previous[1].payload;
-        inputs[4].payload = previous[2].payload;
+      else if (mode == 1) {
+        add("Reshape", {"fill", "empty-shape"}, "scalar-fill");
+        add("Mul", {"base-total", "scalar-fill"}, "total64");
       }
-      validateAutomaticOnnxTensors(model.contract, envelope, model.contract.modelInputs,
-                                    inputs, round, stateControl());
-      std::vector<const char*> inputNames;
-      std::vector<Ort::Value> values;
-      std::uint64_t emptyStorage = 0;
-      for (auto& input : inputs) {
-        inputNames.push_back(input.name.c_str());
-        const auto type = input.elementType == TensorElementType::Int64 ?
-          ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 : ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
-        values.push_back(Ort::Value::CreateTensor(memory,
-          input.payload.empty() ? static_cast<void*>(&emptyStorage) : input.payload.data(),
-          input.payload.size(), input.shape.data(), input.shape.size(), type));
+      else if (mode >= 4 && mode <= 7) {
+        literal("reshape-target", {mode == 4 ? -1 : 0});
+        auto& reshape = add("Reshape", {"fill", "reshape-target"}, "view");
+        if (mode >= 6) reshape.integerAttributes["allowzero"] = 1;
+        if (mode == 6) reshape.opset = 14;
+        add("Gather", {"view", "zero-index"}, "scalar-fill");
+        add("Mul", {"base-total", "scalar-fill"}, "total64");
       }
-      auto actual = session.Run(Ort::RunOptions{nullptr}, inputNames.data(), values.data(),
-        values.size(), outputNames.data(), outputNames.size());
-      previous.clear();
-      for (std::size_t index = 0; index < actual.size(); ++index) {
-        const auto info = actual[index].GetTensorTypeAndShapeInfo();
-        BOOST_REQUIRE(info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-        NamedTensor output{outputNames[index], TensorElementType::Float32, info.GetShape(),
-          std::vector<std::uint8_t>(info.GetElementCount() * sizeof(float))};
-        std::memcpy(output.payload.data(), actual[index].GetTensorData<float>(), output.payload.size());
-        previous.push_back(std::move(output));
+      else if (mode == 8 || mode == 9 || mode == 15) {
+        const auto type = mode == 9 ? 6 : 7;
+        literal("large", {mode == 9 ? std::numeric_limits<std::int32_t>::max() :
+          mode == 15 ? std::numeric_limits<std::int64_t>::min() :
+                       std::numeric_limits<std::int64_t>::max()}, true, type);
+        literal("factor", {mode == 15 ? -1 : 2}, true, type);
+        add("Mul", {"large", "factor"}, "product");
+        add("Equal", {"product", "factor"}, "test");
+        add("Where", {"test", "base-total", "base-total"}, "total64");
       }
-      validateAutomaticOnnxTensors(model.contract, envelope, model.contract.modelOutputs,
-                                    previous, round, stateControl());
-      BOOST_CHECK(previous[0].shape == std::vector<std::int64_t>({batch, sequence, 11}));
-      for (std::size_t role = 1; role < 3; ++role) {
-        BOOST_CHECK(previous[role].shape ==
-          std::vector<std::int64_t>({batch, 1, past + sequence, 8}));
-        const auto* cache = actual[role].GetTensorData<float>();
-        for (std::int64_t b = 0; b < batch; ++b) {
-          for (std::size_t token = 0; token < consumed[b].size(); ++token) {
-            float expected = 0;
-            for (std::uint64_t hidden = 0; hidden < 7; ++hidden)
-              expected += ((consumed[b][token] * 7 + hidden) % 11 + 1) * 0.01F *
-                (role == 1 ? 0.02F : 0.03F);
-            for (std::size_t dimension = 0; dimension < 8; ++dimension) {
-              const auto offset = (b * consumed[b].size() + token) * 8 + dimension;
-              BOOST_CHECK_SMALL(cache[offset] - expected, 1.0e-6F);
-            }
-          }
+      else if (mode >= 11 && mode <= 13) {
+        if (mode == 11) {
+          contract.tensors.push_back(stateTensor("wide-header", {stateFixed(4294967295LL)}));
+          add("Shape", {"wide-header"}, "wide-shape");
+          add("Gather", {"wide-shape", "zero-index"}, "wide");
+          add("Cast", {"wide"}, "narrow").integerAttributes["to"] = 6;
+          add("Cast", {"narrow"}, "comparison").integerAttributes["to"] = 7;
+          add("Equal", {"comparison", "negative"}, "test");
         }
+        else {
+          add("Gather", {"mask-shape", "zero-index"}, "batch-dimension");
+          add("Equal", {"batch-dimension", "base-total"}, "test");
+        }
+        add("Where", {"test", mode == 12 ? "base-total" : "negative", "base-total"},
+            "total64");
       }
-      const auto* scores = actual[0].GetTensorData<float>();
-      for (std::int64_t b = 0; b < batch; ++b) {
-        const auto* row = scores + (b * sequence + sequence - 1) * 11;
-        for (std::size_t vocabulary = 0; vocabulary < 11; ++vocabulary)
-          BOOST_CHECK(std::isfinite(row[vocabulary]));
-        next[b] = std::max_element(row, row + 11) - row;
+      else if (empty) {
+        if (mode >= 16) {
+          add("Equal", {"fill", mode == 17 ? "two-values" : "one"}, "test");
+          add("Where", {"test", "one", "fill"}, "empty-product");
+        }
+        else add("Mul", {"fill", mode == 3 ? "two-values" : "one"}, "empty-product");
+        add("Unsqueeze", {"base-total", "axis-zero"}, "total-vector");
+        add("Concat", {"empty-product", "total-vector"}, "joined")
+          .integerAttributes["axis"] = 0;
+        add("Gather", {"joined", "zero-index"}, "total64");
+      }
+      else {
+        add("Mul", {"base-total", "fill"}, "result-vector");
+        if (mode == 0) add("Identity", {"result-vector"}, "total64");
+        else add("Gather", {"result-vector", "zero-index"}, "total64");
+        if (mode == 14) stateFact(contract, "total64").onnxElementType = 6;
+      }
+      sealStateFixture(contract);
+      const bool valid = mode == 0 || mode == 1 || mode == 2 || mode == 4 || mode == 5 ||
+                         mode == 12 || mode == 16 || (mode >= 21 && mode <= 25);
+      if (valid) {
+        assignGeneration(contract);
+        BOOST_CHECK_NO_THROW(bindAutomaticOnnxShapes(contract, generationInputs(2, 3),
+                                                     9, 16, stateControl()));
+      }
+      else BOOST_CHECK(generationUnproven(contract));
+    }
+  }
+}
+
+#ifdef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+namespace {
+
+using GenerationReference = std::vector<std::vector<NamedTensor>>;
+
+/** Real shape program, without intermediate value_info or exporter metadata. */
+void
+addGenerationShapeArithmetic(onnx::ModelProto& model)
+{
+  auto* graph = model.mutable_graph();
+  const auto literal = [&] (const std::string& name, std::vector<std::int64_t> values,
+                            bool scalar = false) {
+    auto* tensor = graph->add_initializer();
+    tensor->set_name(name); tensor->set_data_type(onnx::TensorProto::INT64);
+    if (!scalar) tensor->add_dims(values.size());
+    for (const auto value : values) tensor->add_int64_data(value);
+  };
+  literal("shape-zero", {0}, true);
+  literal("shape-three", {3}, true);
+  literal("shape-four", {4}, true);
+  literal("shape-minus-one", {-1}, true);
+  literal("shape-axis", {0});
+  literal("shape-flatten", {-1});
+  std::vector<onnx::NodeProto> original(graph->node().begin(), graph->node().end());
+  graph->clear_node();
+  const auto node = [&] (const std::string& type, std::vector<std::string> inputs,
+                         const std::string& output) {
+    auto* result = graph->add_node(); result->set_op_type(type);
+    for (const auto& input : inputs) result->add_input(input);
+    result->add_output(output);
+    return result;
+  };
+  for (auto current : original) {
+    if (current.op_type() == "Gather" && current.output(0) == "total64") {
+      node("Shape", {"old,key=0"}, "shape-cache");
+      node("Gather", {"shape-cache", "shape-three"}, "shape-width");
+      node("Mul", {"shape-width", "shape-four"}, "shape-width-times-four");
+      node("Gather", {"mask-shape", "shape-zero"}, "shape-batch");
+      node("Gather", {"mask-shape", "one"}, "shape-total");
+      for (const auto& name : {"shape-batch", "shape-width-times-four", "shape-minus-one",
+                              "shape-total"})
+        node("Unsqueeze", {name, "shape-axis"}, std::string(name) + "/vector");
+      auto* concat = node("Concat", {"shape-batch/vector", "shape-width-times-four/vector",
+        "shape-minus-one/vector", "shape-total/vector"}, "shape-mixed");
+      auto* axis = concat->add_attribute();
+      axis->set_name("axis"); axis->set_type(onnx::AttributeProto::INT); axis->set_i(0);
+      node("Reshape", {"shape-mixed", "shape-flatten"}, "shape-flat");
+      node("Shape", {"shape-flat"}, "shape-vector-size");
+      auto* fill = node("ConstantOfShape", {"shape-vector-size"}, "shape-ones");
+      auto* value = fill->add_attribute();
+      value->set_name("value"); value->set_type(onnx::AttributeProto::TENSOR);
+      value->mutable_t()->set_data_type(onnx::TensorProto::INT64);
+      value->mutable_t()->add_dims(1); value->mutable_t()->add_int64_data(1);
+      node("Mul", {"shape-ones", "shape-minus-one"}, "shape-minus-ones");
+      node("Equal", {"shape-flat", "shape-minus-ones"}, "shape-negative");
+      node("Where", {"shape-negative", "shape-ones", "shape-flat"}, "shape-selected");
+      current.set_input(0, "shape-selected"); current.set_input(1, "shape-three");
+    }
+    graph->add_node()->CopyFrom(current);
+  }
+}
+
+/** Two source heads of eight elements, each repeated three times. */
+void
+addGenerationHeadViews(onnx::ModelProto& model)
+{
+  auto* graph = model.mutable_graph();
+  for (auto& tensor : *graph->mutable_initializer()) {
+    if (tensor.name() == "wq") {
+      tensor.set_dims(1, 16); tensor.clear_float_data();
+      for (unsigned i = 0; i < 7 * 16; ++i) tensor.add_float_data((i % 16 + 1) * 0.003F);
+    }
+    else if (tensor.name() == "query-gamma") {
+      tensor.set_dims(0, 48); tensor.clear_float_data();
+      for (unsigned i = 0; i < 48; ++i) tensor.add_float_data(1.0F);
+    }
+    else if (tensor.name() == "post") {
+      tensor.set_dims(0, 48); tensor.clear_float_data();
+      for (unsigned i = 0; i < 48 * 7; ++i) tensor.add_float_data((i % 13 + 1) * 0.001F);
+    }
+  }
+  const auto literal = [&] (const std::string& name, std::int64_t value) {
+    auto* tensor = graph->add_initializer();
+    tensor->set_name(name); tensor->set_data_type(onnx::TensorProto::INT64);
+    tensor->add_dims(1); tensor->add_int64_data(value);
+  };
+  for (unsigned i = 0; i < 4; ++i) literal("head-index-" + std::to_string(i), i);
+  literal("head-count", 2); literal("head-size", 8);
+  literal("head-factor", 3); literal("head-flat-width", 48);
+  std::vector<onnx::NodeProto> original(graph->node().begin(), graph->node().end());
+  graph->clear_node();
+  const auto node = [&] (const std::string& type, std::vector<std::string> inputs,
+                         const std::string& output) {
+    auto* result = graph->add_node(); result->set_op_type(type);
+    for (const auto& input : inputs) result->add_input(input);
+    result->add_output(output);
+    return result;
+  };
+  const auto concat = [&] (std::vector<std::string> inputs, const std::string& output) {
+    auto* result = node("Concat", std::move(inputs), output);
+    auto* axis = result->add_attribute();
+    axis->set_name("axis"); axis->set_type(onnx::AttributeProto::INT); axis->set_i(0);
+  };
+  const auto transpose = [&] (const std::string& input, const std::string& output) {
+    auto* result = node("Transpose", {input}, output);
+    auto* order = result->add_attribute();
+    order->set_name("perm"); order->set_type(onnx::AttributeProto::INTS);
+    for (const auto axis : {0, 2, 1, 3}) order->add_ints(axis);
+  };
+  for (auto current : original) {
+    if (current.op_type() == "GroupQueryAttention") {
+      for (auto& attribute : *current.mutable_attribute())
+        if (attribute.name() == "num_heads") attribute.set_i(6);
+    }
+    if (current.op_type() != "MatMul" || current.output(0) != "q-unnormalized") {
+      graph->add_node()->CopyFrom(current);
+      continue;
+    }
+    current.set_output(0, "head-projection"); graph->add_node()->CopyFrom(current);
+    node("Shape", {"head-projection"}, "head-projection-shape");
+    for (unsigned i = 0; i < 2; ++i)
+      node("Gather", {"head-projection-shape", "head-index-" + std::to_string(i)},
+           "head-root-" + std::to_string(i));
+    concat({"head-root-0", "head-root-1", "head-count", "head-size"}, "head-split-shape");
+    node("Reshape", {"head-projection", "head-split-shape"}, "head-split");
+    transpose("head-split", "head-canonical");
+    node("Shape", {"head-canonical"}, "head-canonical-shape");
+    for (unsigned i = 0; i < 4; ++i)
+      node("Gather", {"head-canonical-shape", "head-index-" + std::to_string(i)},
+           "head-source-" + std::to_string(i));
+    concat({"head-source-0", "head-source-1", "head-factor", "head-source-2", "head-source-3"},
+           "head-expanded-shape");
+    node("Unsqueeze", {"head-canonical", "head-index-2"}, "head-inserted");
+    node("Expand", {"head-inserted", "head-expanded-shape"}, "head-expanded");
+    node("Mul", {"head-source-1", "head-factor"}, "head-repeated-count");
+    concat({"head-source-0", "head-repeated-count", "head-source-2", "head-source-3"},
+           "head-repeat-shape");
+    node("Reshape", {"head-expanded", "head-repeat-shape"}, "head-repeated");
+    transpose("head-repeated", "head-restored");
+    node("Shape", {"head-restored"}, "head-restored-shape");
+    for (unsigned i = 0; i < 2; ++i)
+      node("Gather", {"head-restored-shape", "head-index-" + std::to_string(i)},
+           "head-output-" + std::to_string(i));
+    concat({"head-output-0", "head-output-1", "head-flat-width"}, "head-merge-shape");
+    node("Reshape", {"head-restored", "head-merge-shape"}, "q-unnormalized");
+  }
+}
+
+/** A real connected primitive block, retaining the source's fused rotary nodes. */
+void
+replaceGenerationAttention(onnx::ModelProto& model, bool flattenedMask)
+{
+  auto* graph = model.mutable_graph();
+  for (auto& tensor : *graph->mutable_initializer()) {
+    if (tensor.name() != "cosine" && tensor.name() != "sine") continue;
+    for (int i = 0; i < tensor.float_data_size(); ++i) {
+      const auto phase = 0.013F * (i / 4 + 1) * (i % 4 + 1);
+      tensor.set_float_data(i, tensor.name() == "cosine" ? std::cos(phase) : std::sin(phase));
+    }
+  }
+  const auto integer = [&] (const std::string& name, std::vector<std::int64_t> values,
+                            bool scalar = false) {
+    auto* tensor = graph->add_initializer(); tensor->set_name(name);
+    tensor->set_data_type(onnx::TensorProto::INT64);
+    if (!scalar) tensor->add_dims(values.size());
+    for (const auto value : values) tensor->add_int64_data(value);
+  };
+  for (unsigned i = 0; i < 4; ++i) {
+    integer("primitive-index-" + std::to_string(i), {i});
+    integer("primitive-scalar-" + std::to_string(i), {i}, true);
+  }
+  integer("primitive-size", {8}); integer("primitive-infer", {-1});
+  integer("primitive-negative", {-1}, true);
+  integer("primitive-query-axes", {0, 1, 3});
+  integer("primitive-key-axes", {0, 1, 2});
+  integer("primitive-batch-axes", {1, 2, 3});
+  integer("primitive-mask-axes", {1, 2});
+  integer("primitive-true-shape", {1, 1, 1, 1});
+  for (const auto& item : {std::pair<std::string, float>{"primitive-zero", 0.0F},
+      {"primitive-infinity", -std::numeric_limits<float>::infinity()},
+      {"primitive-scale", 1.0F / std::sqrt(8.0F)}}) {
+    auto* tensor = graph->add_initializer(); tensor->set_name(item.first);
+    tensor->set_data_type(onnx::TensorProto::FLOAT); tensor->add_float_data(item.second);
+  }
+  std::vector<onnx::NodeProto> original(graph->node().begin(), graph->node().end());
+  const auto maskShape = std::find_if(original.begin(), original.end(), [](const auto& node) {
+    return node.op_type() == "Shape" && node.output(0) == "mask-shape";
+  });
+  if (maskShape == original.end()) throw std::logic_error("missing fixture mask source");
+  const auto mask = maskShape->input(0);
+  graph->clear_node();
+  const auto node = [&] (const std::string& type, std::vector<std::string> inputs,
+                         const std::string& output) {
+    auto* result = graph->add_node(); result->set_op_type(type);
+    for (const auto& input : inputs) result->add_input(input);
+    result->add_output(output); return result;
+  };
+  const auto attribute = [] (onnx::NodeProto* value, const std::string& name, std::int64_t integer) {
+    auto* result = value->add_attribute(); result->set_name(name);
+    result->set_type(onnx::AttributeProto::INT); result->set_i(integer);
+  };
+  const auto concat = [&] (std::vector<std::string> inputs, const std::string& output) {
+    attribute(node("Concat", std::move(inputs), output), "axis", 0);
+  };
+  const auto transpose = [&] (const std::string& input, const std::string& output,
+                              std::initializer_list<std::int64_t> order) {
+    auto* result = node("Transpose", {input}, output);
+    auto* permutation = result->add_attribute(); permutation->set_name("perm");
+    permutation->set_type(onnx::AttributeProto::INTS);
+    for (const auto axis : order) permutation->add_ints(axis);
+  };
+  const auto fill = [&] (const std::string& shape, const std::string& output, bool boolean) {
+    auto* value = node("ConstantOfShape", {shape}, output)->add_attribute();
+    value->set_name("value"); value->set_type(onnx::AttributeProto::TENSOR);
+    auto* tensor = value->mutable_t(); tensor->add_dims(1);
+    tensor->set_data_type(boolean ? onnx::TensorProto::BOOL : onnx::TensorProto::INT64);
+    if (boolean) tensor->add_int32_data(1);
+    else tensor->add_int64_data(1);
+  };
+  for (const auto& current : original) {
+    if (current.op_type() != "GroupQueryAttention" || current.domain() != "com.microsoft") {
+      graph->add_node()->CopyFrom(current); continue;
+    }
+    std::int64_t queryHeads = 0, cacheHeads = 0;
+    for (const auto& value : current.attribute()) {
+      if (value.name() == "num_heads") queryHeads = value.i();
+      if (value.name() == "kv_num_heads") cacheHeads = value.i();
+    }
+    if (queryHeads <= 0 || cacheHeads <= 0 || queryHeads % cacheHeads != 0)
+      throw std::logic_error("fixture head geometry");
+    integer("primitive-query-heads", {queryHeads});
+    integer("primitive-cache-heads", {cacheHeads});
+    integer("primitive-repeat", {queryHeads / cacheHeads});
+    integer("primitive-width", {queryHeads * 8});
+    node("Shape", {current.input(0)}, "primitive-query-shape");
+    for (unsigned i = 0; i < 2; ++i)
+      node("Gather", {"primitive-query-shape", "primitive-index-" + std::to_string(i)},
+           "primitive-query-dim-" + std::to_string(i));
+    concat({"primitive-query-dim-0", "primitive-query-dim-1", "primitive-query-heads",
+            "primitive-size"}, "primitive-query-target");
+    concat({"primitive-query-dim-0", "primitive-query-dim-1", "primitive-cache-heads",
+            "primitive-size"}, "primitive-cache-target");
+    for (unsigned i = 0; i < 3; ++i) {
+      const auto name = "primitive-projection-" + std::to_string(i);
+      node("Reshape", {current.input(i), i == 0 ? "primitive-query-target" :
+                                                   "primitive-cache-target"}, name);
+      transpose(name, name + "/canonical", {0, 2, 1, 3});
+    }
+    for (unsigned i = 0; i < 2; ++i) {
+      attribute(node("Concat", {current.input(3 + i), "primitive-projection-" +
+        std::to_string(1 + i) + "/canonical"}, current.output(1 + i)), "axis", 2);
+      const auto prefix = "primitive-cache-" + std::to_string(i);
+      node("Shape", {current.output(1 + i)}, prefix + "/shape");
+      for (unsigned axis = 0; axis < 4; ++axis)
+        node("Gather", {prefix + "/shape", "primitive-index-" + std::to_string(axis)},
+             prefix + "/dim-" + std::to_string(axis));
+      concat({prefix + "/dim-0", prefix + "/dim-1", "primitive-repeat", prefix + "/dim-2",
+              prefix + "/dim-3"}, prefix + "/expanded-target");
+      node("Unsqueeze", {current.output(1 + i), "primitive-index-2"}, prefix + "/inserted");
+      node("Expand", {prefix + "/inserted", prefix + "/expanded-target"}, prefix + "/expanded");
+      node("Mul", {prefix + "/dim-1", "primitive-repeat"}, prefix + "/heads");
+      concat({prefix + "/dim-0", prefix + "/heads", prefix + "/dim-2", prefix + "/dim-3"},
+             prefix + "/target");
+      node("Reshape", {prefix + "/expanded", prefix + "/target"}, prefix + "/repeated");
+    }
+    transpose("primitive-cache-0/repeated", "primitive-transposed-key", {0, 1, 3, 2});
+    node("Mul", {"primitive-projection-0/canonical", "primitive-scale"}, "primitive-scaled-query");
+    node("MatMul", {"primitive-scaled-query", "primitive-transposed-key"}, "primitive-dot");
+    node("Shape", {current.input(3)}, "primitive-past-shape");
+    node("Gather", {"primitive-past-shape", "primitive-scalar-2"}, "primitive-past");
+    attribute(node("Cast", {current.input(6)}, "primitive-total"), "to", onnx::TensorProto::INT64);
+    node("Range", {"primitive-past", "primitive-total", "primitive-scalar-1"}, "primitive-query-range");
+    node("Range", {"primitive-scalar-0", "primitive-total", "primitive-scalar-1"}, "primitive-key-range");
+    node("Unsqueeze", {"primitive-query-range", "primitive-query-axes"}, "primitive-query-index");
+    node("Unsqueeze", {"primitive-key-range", "primitive-key-axes"}, "primitive-key-index");
+    node("LessOrEqual", {"primitive-key-index", "primitive-query-index"}, "primitive-causal");
+    attribute(node("Cast", {mask}, "primitive-mask-bool"), "to", onnx::TensorProto::BOOL);
+    if (!flattenedMask) {
+      node("Unsqueeze", {"primitive-mask-bool", "primitive-mask-axes"}, "primitive-external-mask");
+    }
+    else {
+      attribute(node("Flatten", {"primitive-mask-bool"}, "primitive-flat-mask"), "axis", 0);
+      node("Gather", {"primitive-query-shape", "primitive-scalar-0"}, "primitive-batch");
+      node("Range", {"primitive-scalar-0", "primitive-batch", "primitive-scalar-1"}, "primitive-batch-range");
+      node("Unsqueeze", {"primitive-batch-range", "primitive-batch-axes"}, "primitive-batch-index");
+      node("Shape", {mask}, "primitive-mask-shape");
+      node("Gather", {"primitive-mask-shape", "primitive-scalar-1"}, "primitive-stride");
+      node("Mul", {"primitive-batch-index", "primitive-stride"}, "primitive-offset");
+      node("Add", {"primitive-key-index", "primitive-offset"}, "primitive-indices");
+      attribute(node("Gather", {"primitive-flat-mask", "primitive-indices"}, "primitive-gathered-mask"), "axis", 1);
+      node("Shape", {"primitive-indices"}, "primitive-index-shape");
+      node("Reshape", {"primitive-gathered-mask", "primitive-infer"}, "primitive-mask-vector");
+      concat({"primitive-index-shape"}, "primitive-restored-shape");
+      node("Reshape", {"primitive-mask-vector", "primitive-restored-shape"}, "primitive-external-mask");
+    }
+    fill("primitive-true-shape", "primitive-true", true);
+    node("And", {"primitive-true", "primitive-causal"}, "primitive-causal-view");
+    node("And", {"primitive-causal-view", "primitive-external-mask"}, "primitive-both-masks");
+    node("Shape", {"primitive-query-range"}, "primitive-range-shape");
+    node("Gather", {"primitive-range-shape", "primitive-scalar-0"}, "primitive-sequence-length");
+    node("Add", {"primitive-past", "primitive-sequence-length"}, "primitive-context-length");
+    node("Unsqueeze", {"primitive-sequence-length", "primitive-index-0"}, "primitive-sequence-vector");
+    node("Unsqueeze", {"primitive-context-length", "primitive-index-0"}, "primitive-context-vector");
+    concat({"primitive-query-dim-0", "primitive-index-1", "primitive-sequence-vector",
+            "primitive-context-vector"}, "primitive-mask-target");
+    node("Reshape", {"primitive-mask-target", "primitive-infer"}, "primitive-mask-target-flat");
+    node("Shape", {"primitive-mask-target-flat"}, "primitive-mask-target-size");
+    fill("primitive-mask-target-size", "primitive-mask-ones", false);
+    node("Mul", {"primitive-mask-ones", "primitive-negative"}, "primitive-mask-negatives");
+    node("Equal", {"primitive-mask-target-flat", "primitive-mask-negatives"}, "primitive-mask-inferred");
+    node("Where", {"primitive-mask-inferred", "primitive-mask-ones", "primitive-mask-target-flat"}, "primitive-mask-sanitized");
+    node("Expand", {"primitive-both-masks", "primitive-mask-sanitized"}, "primitive-expanded-mask");
+    node("Shape", {"primitive-cache-0/repeated"}, "primitive-complete-shape");
+    node("Gather", {"primitive-complete-shape", "primitive-scalar-2"}, "primitive-slice-end");
+    node("Unsqueeze", {"primitive-slice-end", "primitive-index-0"}, "primitive-slice-ends");
+    node("Slice", {"primitive-expanded-mask", "primitive-index-0", "primitive-slice-ends",
+                    "primitive-index-3", "primitive-index-1"}, "primitive-final-mask");
+    node("Where", {"primitive-final-mask", "primitive-zero", "primitive-infinity"}, "primitive-mask-bias");
+    node("Add", {"primitive-dot", "primitive-mask-bias"}, "primitive-masked-scores");
+    attribute(node("Softmax", {"primitive-masked-scores"}, "primitive-probabilities"), "axis", -1);
+    node("IsNaN", {"primitive-probabilities"}, "primitive-nan");
+    node("Where", {"primitive-nan", "primitive-zero", "primitive-probabilities"}, "primitive-clean-probabilities");
+    node("MatMul", {"primitive-clean-probabilities", "primitive-cache-1/repeated"}, "primitive-weighted-value");
+    transpose("primitive-weighted-value", "primitive-restored-heads", {0, 2, 1, 3});
+    concat({"primitive-query-dim-0", "primitive-query-dim-1", "primitive-width"}, "primitive-result-shape");
+    node("Reshape", {"primitive-restored-heads", "primitive-result-shape"}, current.output(0));
+  }
+}
+
+/** Actual per-head RMS and rotate-half graph, without fused rotary or value_info. */
+void
+addPrimitiveGenerationRotary(onnx::ModelProto& model)
+{
+  bool standardImport = false;
+  for (auto& imported : *model.mutable_opset_import()) {
+    if (imported.domain().empty() || imported.domain() == "ai.onnx") {
+      imported.set_version(18);
+      standardImport = true;
+    }
+  }
+  if (!standardImport) throw std::logic_error("missing standard fixture opset");
+  auto* graph = model.mutable_graph();
+  const auto integer = [&] (const std::string& name, std::vector<std::int64_t> values) {
+    auto* tensor = graph->add_initializer(); tensor->set_name(name);
+    tensor->set_data_type(onnx::TensorProto::INT64); tensor->add_dims(values.size());
+    for (const auto value : values) tensor->add_int64_data(value);
+  };
+  integer("pure-zero", {0}); integer("pure-one", {1}); integer("pure-two", {2});
+  integer("pure-three", {3}); integer("pure-four", {4}); integer("pure-feature-axis", {-1});
+  integer("pure-end", {std::numeric_limits<std::int64_t>::max()});
+  for (const auto& item : {std::pair<std::string, float>{"pure-unit", 1.0F},
+       {"pure-power", 2.0F}, {"pure-epsilon", 0.0001F}}) {
+    auto* tensor = graph->add_initializer(); tensor->set_name(item.first);
+    tensor->set_data_type(onnx::TensorProto::FLOAT); tensor->add_float_data(item.second);
+  }
+  auto* gamma = graph->add_initializer(); gamma->set_name("pure-gamma");
+  gamma->set_data_type(onnx::TensorProto::FLOAT); gamma->add_dims(8);
+  for (unsigned i = 0; i < 8; ++i) gamma->add_float_data(1.0F + 0.05F * i);
+  auto* frequency = graph->add_initializer(); frequency->set_name("pure-frequency");
+  frequency->set_data_type(onnx::TensorProto::FLOAT);
+  for (const auto dimension : {1, 4, 1}) frequency->add_dims(dimension);
+  for (unsigned i = 0; i < 4; ++i) frequency->add_float_data(0.013F * (i + 1));
+  std::vector<onnx::NodeProto> original(graph->node().begin(), graph->node().end());
+  graph->clear_node();
+  const auto node = [&] (const std::string& type, std::vector<std::string> inputs,
+                         const std::string& output) {
+    auto* result = graph->add_node(); result->set_op_type(type);
+    for (const auto& input : inputs) result->add_input(input);
+    result->add_output(output); return result;
+  };
+  const auto attribute = [] (onnx::NodeProto* op, const char* key, std::int64_t value) {
+    auto* result = op->add_attribute(); result->set_name(key);
+    result->set_type(onnx::AttributeProto::INT); result->set_i(value);
+  };
+  const auto concat = [&] (std::vector<std::string> inputs, const std::string& output,
+                           std::int64_t axis) {
+    attribute(node("Concat", std::move(inputs), output), "axis", axis);
+  };
+  const auto cast = [&] (const std::string& input, const std::string& output) {
+    attribute(node("Cast", {input}, output), "to", onnx::TensorProto::FLOAT);
+  };
+  bool phaseCreated = false;
+  for (auto current : original) {
+    if (current.domain() == "com.microsoft" && current.op_type() == "RotaryEmbedding") {
+      if (!phaseCreated) {
+        const auto positions = current.input(1);
+        node("Shape", {positions}, "pure-position-shape");
+        node("Gather", {"pure-position-shape", "pure-zero"}, "pure-batch");
+        concat({"pure-batch", "pure-four", "pure-one"}, "pure-frequency-shape", 0);
+        node("Expand", {"pure-frequency", "pure-frequency-shape"}, "pure-expanded-frequency");
+        cast("pure-expanded-frequency", "pure-cast-frequency");
+        node("Unsqueeze", {positions, "pure-one"}, "pure-integer-plane");
+        cast("pure-integer-plane", "pure-position-plane");
+        node("MatMul", {"pure-cast-frequency", "pure-position-plane"}, "pure-phase-product");
+        auto* order = node("Transpose", {"pure-phase-product"}, "pure-phase-half")->add_attribute();
+        order->set_name("perm"); order->set_type(onnx::AttributeProto::INTS);
+        for (const auto axis : {0, 2, 1}) order->add_ints(axis);
+        concat({"pure-phase-half", "pure-phase-half"}, "pure-phase", -1);
+        node("Cos", {"pure-phase"}, "pure-cos");
+        node("Sin", {"pure-phase"}, "pure-sin");
+        node("Mul", {"pure-cos", "pure-unit"}, "pure-scaled-cos");
+        node("Mul", {"pure-sin", "pure-unit"}, "pure-scaled-sin");
+        cast("pure-scaled-cos", "pure-cast-cos"); cast("pure-scaled-sin", "pure-cast-sin");
+        node("Unsqueeze", {"pure-cast-cos", "pure-one"}, "pure-cos-plane");
+        node("Unsqueeze", {"pure-cast-sin", "pure-one"}, "pure-sin-plane");
+        phaseCreated = true;
+      }
+      node("Identity", {current.input(0)}, current.output(0));
+      continue;
+    }
+    const auto output = current.output_size() == 1 ? current.output(0) : std::string();
+    const bool projection = output == "primitive-projection-0" ||
+                            output == "primitive-projection-1";
+    const bool canonical = output == "primitive-projection-0/canonical" ||
+                           output == "primitive-projection-1/canonical";
+    if (!projection && !canonical) { graph->add_node()->CopyFrom(current); continue; }
+    const auto base = output + "/untransformed";
+    current.set_output(0, base); graph->add_node()->CopyFrom(current);
+    if (projection) {
+      cast(base, output + "/statistics-input");
+      node("Pow", {output + "/statistics-input", "pure-power"}, output + "/squared");
+      attribute(node("ReduceMean", {output + "/squared", "pure-feature-axis"},
+                     output + "/mean"), "keepdims", 1);
+      node("Add", {output + "/mean", "pure-epsilon"}, output + "/regularized");
+      node("Sqrt", {output + "/regularized"}, output + "/root");
+      node("Div", {"pure-unit", output + "/root"}, output + "/inverse");
+      node("Mul", {output + "/statistics-input", output + "/inverse"}, output + "/normalized");
+      cast(output + "/normalized", output + "/cast-normalized");
+      node("Mul", {"pure-gamma", output + "/cast-normalized"}, output);
+    }
+    else {
+      node("Shape", {base}, output + "/shape");
+      node("Gather", {output + "/shape", "pure-three"}, output + "/size");
+      node("Div", {output + "/size", "pure-two"}, output + "/half");
+      node("Slice", {base, "pure-zero", output + "/half", "pure-feature-axis", "pure-one"},
+           output + "/first-half");
+      node("Slice", {base, output + "/half", "pure-end", "pure-feature-axis", "pure-one"},
+           output + "/second-half");
+      node("Neg", {output + "/second-half"}, output + "/negative-half");
+      concat({output + "/negative-half", output + "/first-half"}, output + "/rotated", -1);
+      node("Mul", {base, "pure-cos-plane"}, output + "/cosine-product");
+      node("Mul", {output + "/rotated", "pure-sin-plane"}, output + "/sine-product");
+      node("Add", {output + "/cosine-product", output + "/sine-product"}, output);
+    }
+  }
+  if (!phaseCreated) throw std::logic_error("missing source rotary positions");
+  for (int i = graph->initializer_size() - 1; i >= 0; --i)
+    if (graph->initializer(i).name() == "cosine" || graph->initializer(i).name() == "sine")
+      graph->mutable_initializer()->DeleteSubrange(i, 1);
+  graph->clear_value_info();
+}
+
+/** Preserve every raw computation; only expose cache outputs in another physical layout. */
+void
+relayoutGenerationFeedbackOutputs(onnx::ModelProto& model, unsigned inputVariant)
+{
+  auto* graph = model.mutable_graph();
+  const std::vector<unsigned> permutation = inputVariant == 0 ?
+    std::vector<unsigned>{3, 0, 1, 2} : std::vector<unsigned>{1, 2, 3, 0};
+  unsigned states = 0;
+  for (auto& output : *graph->mutable_output()) {
+    if (output.type().tensor_type().shape().dim_size() != 4) continue;
+    const auto name = output.name(), raw = name + "/model-output";
+    for (auto& node : *graph->mutable_node()) {
+      for (auto& value : *node.mutable_input()) if (value == name) value = raw;
+      for (auto& value : *node.mutable_output()) if (value == name) value = raw;
+    }
+    auto* transpose = graph->add_node(); transpose->set_op_type("Transpose");
+    transpose->add_input(raw); transpose->add_output(name);
+    auto* order = transpose->add_attribute(); order->set_name("perm");
+    order->set_type(onnx::AttributeProto::INTS);
+    for (const auto axis : permutation) order->add_ints(axis);
+    const auto shape = output.type().tensor_type().shape();
+    for (unsigned axis = 0; axis < 4; ++axis)
+      output.mutable_type()->mutable_tensor_type()->mutable_shape()->mutable_dim(axis)
+        ->CopyFrom(shape.dim(permutation[axis]));
+    ++states;
+  }
+  if (states != 2) throw std::logic_error("fixture state output count");
+}
+
+/** Expose only the connected new branch; retain full caches inside attention. */
+void
+exposeGenerationDeltaOutputs(onnx::ModelProto& model, bool mixed)
+{
+  auto* graph = model.mutable_graph();
+  for (const auto& name : {std::string("new,key=0"), std::string("new,value=0")}) {
+    if (mixed && name == "new,value=0") continue;
+    std::vector<onnx::NodeProto> views;
+    auto current = name;
+    std::string delta;
+    for (unsigned depth = 0; depth < 8; ++depth) {
+      const auto found = std::find_if(graph->node().begin(), graph->node().end(),
+        [&] (const auto& node) {
+          return node.output_size() == 1 && node.output(0) == current;
+        });
+      if (found == graph->node().end()) throw std::logic_error("fixture cache producer");
+      if (found->op_type() == "Concat") { delta = found->input(1); break; }
+      if (found->op_type() != "Transpose" && found->op_type() != "Identity")
+        throw std::logic_error("fixture cache view");
+      views.push_back(*found); current = found->input(0);
+    }
+    if (delta.empty()) throw std::logic_error("fixture cache concat");
+    const auto internal = name + "/full-cache";
+    for (auto& node : *graph->mutable_node()) {
+      for (auto& input : *node.mutable_input()) if (input == name) input = internal;
+      for (auto& output : *node.mutable_output()) if (output == name) output = internal;
+    }
+    for (auto it = views.rbegin(); it != views.rend(); ++it) {
+      auto* node = graph->add_node(); node->CopyFrom(*it);
+      node->set_input(0, delta); node->set_output(0, name + "/delta-view-" +
+        std::to_string(it - views.rbegin()));
+      delta = node->output(0);
+    }
+    auto* output = graph->add_node(); output->set_op_type("Identity");
+    output->add_input(delta); output->add_output(name);
+    for (auto& port : *graph->mutable_output()) {
+      if (port.name() != name) continue;
+      const auto sequenceAxis = views.empty() ? 2 : 3;
+      auto* dim = port.mutable_type()->mutable_tensor_type()->mutable_shape()->mutable_dim(sequenceAxis);
+      dim->set_dim_param("S");
+    }
+  }
+}
+
+/** Independent B,H,T,D=8 coordinate oracle, not the production permutation algorithm. */
+NamedTensor
+referenceGenerationFeedback(const NamedTensor& raw, unsigned outputVariant,
+                            unsigned inputVariant)
+{
+  validateNamedTensor(raw);
+  if (outputVariant > 1 || inputVariant > 1 || raw.shape.size() != 4 ||
+      raw.shape.at(outputVariant == 0 ? 1 : 2) < 1 ||
+      raw.shape.at(outputVariant == 0 ? 3 : 0) != 8)
+    throw std::invalid_argument("fixture feedback geometry");
+  const auto width = tensorElementByteSize(raw.elementType);
+  if (outputVariant == inputVariant) return raw;
+  const auto batch = raw.shape.at(outputVariant == 0 ? 0 : 1);
+  const auto sequence = raw.shape.at(outputVariant == 0 ? 2 : 3);
+  const auto heads = raw.shape.at(outputVariant == 0 ? 1 : 2);
+  NamedTensor result{raw.name, raw.elementType, inputVariant == 0 ?
+    std::vector<std::int64_t>{batch, heads, sequence, 8} :
+    std::vector<std::int64_t>{8, batch, heads, sequence},
+    std::vector<std::uint8_t>(raw.payload.size())};
+  for (std::int64_t b = 0; b < batch; ++b) for (std::int64_t head = 0; head < heads; ++head) {
+    for (std::int64_t token = 0; token < sequence; ++token) {
+      for (std::int64_t dimension = 0; dimension < 8; ++dimension) {
+        const auto canonical = ((b * heads + head) * sequence + token) * 8 + dimension;
+        const auto permuted = ((dimension * batch + b) * heads + head) * sequence + token;
+        const auto source = outputVariant == 0 ? canonical : permuted;
+        const auto target = inputVariant == 0 ? canonical : permuted;
+        std::copy_n(raw.payload.data() + source * width, width,
+                    result.payload.data() + target * width);
       }
     }
   }
+  return result;
+}
+
+/** Independent prefix/new coordinate copy; never calls the production normalizer. */
+NamedTensor
+referenceDeltaFeedback(const NamedTensor& raw, unsigned outputVariant,
+                       unsigned inputVariant, const NamedTensor& prefix)
+{
+  auto delta = referenceGenerationFeedback(raw, outputVariant, inputVariant);
+  const auto batch = prefix.shape.at(inputVariant == 0 ? 0 : 1);
+  const auto heads = prefix.shape.at(inputVariant == 0 ? 1 : 2);
+  const auto sequenceAxis = inputVariant == 0 ? 2 : 3;
+  const auto past = prefix.shape.at(sequenceAxis), current = delta.shape.at(sequenceAxis);
+  const auto width = tensorElementByteSize(raw.elementType);
+  auto result = delta;
+  result.shape[sequenceAxis] = past + current;
+  result.payload.resize(batch * heads * (past + current) * 8 * width);
+  const auto offset = [&] (std::int64_t b, std::int64_t h, std::int64_t t,
+                           std::int64_t d, std::int64_t length) {
+    return inputVariant == 0 ? ((b * heads + h) * length + t) * 8 + d :
+                              ((d * batch + b) * heads + h) * length + t;
+  };
+  for (std::int64_t b = 0; b < batch; ++b) for (std::int64_t h = 0; h < heads; ++h)
+    for (std::int64_t t = 0; t < past + current; ++t) for (std::int64_t d = 0; d < 8; ++d) {
+      const auto& from = t < past ? prefix : delta;
+      const auto index = offset(b, h, t < past ? t : t - past, d, t < past ? past : current);
+      std::copy_n(from.payload.data() + index * width, width,
+                  result.payload.data() + offset(b, h, t, d, past + current) * width);
+    }
+  return result;
+}
+
+/** Actual graph variants; the engine receives no variant selector or overrides. */
+onnx::ModelProto
+generationExecutionModel(unsigned variant)
+{
+  auto model = generationSourceModel();
+  if (variant == 3) {
+    auto* graph = model.mutable_graph();
+    auto* scale = graph->add_initializer();
+    scale->set_name("runtime-scale"); scale->set_data_type(onnx::TensorProto::FLOAT);
+    scale->add_float_data(2.0F);
+    for (auto& node : *graph->mutable_node()) {
+      for (auto& output : *node.mutable_output())
+        if (output == "scores") output = "scores-unscaled";
+    }
+    auto* multiply = graph->add_node(); multiply->set_op_type("Mul");
+    multiply->add_input("scores-unscaled"); multiply->add_input("runtime-scale");
+    multiply->add_output("scores");
+  }
+  if (variant == 0) return model;
+  auto* graph = model.mutable_graph();
+  std::vector<onnx::NodeProto> original(graph->node().begin(), graph->node().end());
+  graph->clear_node();
+  const auto transpose = [&] (const std::string& input, const std::string& output,
+                              std::initializer_list<std::int64_t> permutation) {
+    auto* node = graph->add_node();
+    node->set_op_type("Transpose");
+    node->add_input(input); node->add_output(output);
+    auto* attribute = node->add_attribute();
+    attribute->set_name("perm"); attribute->set_type(onnx::AttributeProto::INTS);
+    for (const auto axis : permutation) attribute->add_ints(axis);
+  };
+  const auto cast = [&] (const std::string& input, const std::string& output, int type) {
+    auto* node = graph->add_node();
+    node->set_op_type("Cast"); node->add_input(input); node->add_output(output);
+    auto* attribute = node->add_attribute();
+    attribute->set_name("to"); attribute->set_type(onnx::AttributeProto::INT);
+    attribute->set_i(type);
+  };
+  const auto permutePort = [] (onnx::ValueInfoProto& port,
+                               std::initializer_list<unsigned> permutation) {
+    const auto shape = port.type().tensor_type().shape();
+    auto* result = port.mutable_type()->mutable_tensor_type()->mutable_shape();
+    result->clear_dim();
+    for (const auto axis : permutation) result->add_dim()->CopyFrom(shape.dim(axis));
+  };
+  for (auto& port : *graph->mutable_input()) {
+    const auto name = port.name();
+    if (name == "ids" || name == "mask" || name == "positions") {
+      port.mutable_type()->mutable_tensor_type()->set_elem_type(onnx::TensorProto::INT32);
+      if (name == "mask") cast(name, name + "/canonical", onnx::TensorProto::INT64);
+      else {
+        permutePort(port, {1, 0});
+        cast(name, name + "/int64", onnx::TensorProto::INT64);
+        transpose(name + "/int64", name + "/canonical", {1, 0});
+      }
+    }
+    else {
+      permutePort(port, {3, 0, 1, 2});
+      transpose(name, name + "/canonical", {1, 2, 3, 0});
+    }
+    for (auto& node : original)
+      for (auto& input : *node.mutable_input())
+        if (input == name) input += "/canonical";
+  }
+  for (auto& node : original) {
+    for (auto& output : *node.mutable_output()) {
+      if (output == "scores" || output == "new,key=0" || output == "new,value=0")
+        output += "/canonical";
+    }
+    graph->add_node()->CopyFrom(node);
+  }
+  for (auto& port : *graph->mutable_output()) {
+    const auto name = port.name();
+    if (name == "scores") {
+      const auto type = variant == 1 ? onnx::TensorProto::FLOAT16 : onnx::TensorProto::BFLOAT16;
+      port.mutable_type()->mutable_tensor_type()->set_elem_type(type);
+      permutePort(port, {2, 1, 0});
+      cast(name + "/canonical", name + "/typed", type);
+      transpose(name + "/typed", name, {2, 1, 0});
+    }
+    else {
+      permutePort(port, {3, 0, 1, 2});
+      transpose(name + "/canonical", name, {3, 0, 1, 2});
+    }
+  }
+  for (auto& tensor : *graph->mutable_initializer()) {
+    if (tensor.name() != "wo") continue;
+    for (int index = 0; index < tensor.float_data_size(); ++index) {
+      const auto vocabulary = index % 11;
+      const auto hidden = index / 11;
+      tensor.set_float_data(index, vocabulary == hidden + 1 ? 4.0F : 0.01F);
+    }
+  }
+  return model;
+}
+
+void
+applyGenerationInputVariant(std::vector<NamedTensor>& inputs, unsigned variant)
+{
+  if (variant == 0) return;
+  for (auto& tensor : inputs) {
+    if (tensor.elementType == TensorElementType::Int64) {
+      std::vector<std::uint8_t> payload(tensor.payload.size() / 2);
+      for (std::size_t index = 0; index < payload.size() / sizeof(std::int32_t); ++index) {
+        std::int64_t wide = 0;
+        std::memcpy(&wide, tensor.payload.data() + index * sizeof(wide), sizeof(wide));
+        const auto narrow = static_cast<std::int32_t>(wide);
+        std::memcpy(payload.data() + index * sizeof(narrow), &narrow, sizeof(narrow));
+      }
+      tensor.elementType = TensorElementType::Int32;
+      tensor.payload = std::move(payload);
+      if (tensor.name != "mask") {
+        const auto canonical = tensor.payload;
+        const auto batch = tensor.shape[0], sequence = tensor.shape[1];
+        for (std::int64_t b = 0; b < batch; ++b) {
+          for (std::int64_t s = 0; s < sequence; ++s) {
+            std::memcpy(tensor.payload.data() + (s * batch + b) * sizeof(std::int32_t),
+              canonical.data() + (b * sequence + s) * sizeof(std::int32_t), sizeof(std::int32_t));
+          }
+        }
+        std::swap(tensor.shape[0], tensor.shape[1]);
+      }
+    }
+    else {
+      const auto shape = tensor.shape;
+      tensor.shape = {shape[3], shape[0], shape[1], shape[2]};
+    }
+  }
+}
+
+float
+referenceGenerationValue(const NamedTensor& tensor, std::size_t index)
+{
+  if (tensor.elementType == TensorElementType::Float32) {
+    float value = 0;
+    std::memcpy(&value, tensor.payload.data() + index * sizeof(value), sizeof(value));
+    return value;
+  }
+  std::uint16_t bits = 0;
+  std::memcpy(&bits, tensor.payload.data() + index * sizeof(bits), sizeof(bits));
+  if (tensor.elementType == TensorElementType::Float16)
+    return Ort::Float16_t::FromBits(bits).ToFloat();
+  if (tensor.elementType == TensorElementType::BFLOAT16)
+    return Ort::BFloat16_t::FromBits(bits).ToFloat();
+  throw std::runtime_error("reference requires an actual floating output");
+}
+
+std::int64_t
+referenceGenerationToken(const NamedTensor& logits, unsigned variant, std::int64_t batchIndex = 0,
+                         std::int64_t sequenceIndex = -1)
+{
+  const auto sequence = logits.shape.at(1);
+  const auto batch = logits.shape.at(variant == 0 ? 0 : 2);
+  const auto position = sequenceIndex < 0 ? sequence - 1 : sequenceIndex;
+  BOOST_REQUIRE(position >= 0 && position < sequence);
+  std::int64_t selected = 0;
+  float best = -std::numeric_limits<float>::infinity();
+  const auto vocabularySize = logits.shape.at(variant == 0 ? 2 : 0);
+  for (std::int64_t vocabulary = 0; vocabulary < vocabularySize; ++vocabulary) {
+    const auto index = variant == 0 ?
+      (batchIndex * sequence + position) * vocabularySize + vocabulary :
+      (vocabulary * sequence + position) * batch + batchIndex;
+    const auto value = referenceGenerationValue(logits, index);
+    BOOST_REQUIRE(std::isfinite(value));
+    if (value > best) { best = value; selected = vocabulary; }
+  }
+  return selected;
+}
+
+/** Compare actual resident scalars without retaining the borrowed invocation. */
+class GenerationStateOracle final : public OnnxKvStateObserver
+{
+public:
+  explicit GenerationStateOracle(std::shared_ptr<const GenerationReference> reference,
+                                 std::vector<std::string> inputNames, double tolerance,
+                                 double relativeTolerance)
+    : m_reference(std::move(reference))
+    , m_inputNames(std::move(inputNames))
+    , m_tolerance(tolerance)
+    , m_relativeTolerance(relativeTolerance)
+  {
+  }
+
+  bool wants(const RoleExecutionContext& context) const final
+  {
+    return context.sessionId == "source-generation-epoch";
+  }
+
+  void record(const RoleExecutionContext& context, std::vector<OnnxKvStateSample> samples) final
+  {
+    BOOST_REQUIRE_EQUAL(samples.size(), m_inputNames.size());
+    const auto& expected = m_reference->at(context.inferenceEpoch);
+    for (const auto& sample : samples) {
+      const auto found = std::find(m_inputNames.begin(), m_inputNames.end(), sample.inputName);
+      BOOST_REQUIRE(found != m_inputNames.end());
+      const auto output = static_cast<std::size_t>(found - m_inputNames.begin()) + 1;
+      BOOST_CHECK(sample.shape == expected.at(output).shape);
+      BOOST_REQUIRE_EQUAL(sample.indices.size(), sample.values.size());
+      BOOST_REQUIRE(!sample.indices.empty());
+      for (std::size_t index = 0; index < sample.indices.size(); ++index) {
+        const auto width = tensorElementByteSize(expected[output].elementType);
+        BOOST_REQUIRE_LT(sample.indices[index], expected[output].payload.size() / width);
+        const auto value = referenceGenerationValue(expected[output], sample.indices[index]);
+        BOOST_REQUIRE(std::isfinite(sample.values[index]) && std::isfinite(value));
+        BOOST_CHECK_LE(std::abs(sample.values[index] - value),
+                       m_tolerance + m_relativeTolerance * std::abs(value));
+      }
+    }
+    ++rounds;
+  }
+
+  std::size_t rounds = 0;
+
+private:
+  std::shared_ptr<const GenerationReference> m_reference;
+  std::vector<std::string> m_inputNames;
+  double m_tolerance;
+  double m_relativeTolerance;
+};
+
+void
+checkNativeGenerationEpochs(const NativeModelRunnerSpec& spec,
+                           const NativeSelectionProjectionV3& projection,
+                           const std::vector<NamedTensor>& initialInputs,
+                           std::shared_ptr<const GenerationReference> reference,
+                           std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+                           unsigned variant, double tolerance = 1.0e-6,
+                           double relativeTolerance = 0.0,
+                           std::chrono::steady_clock::time_point deadline = stateControl().deadline)
+{
+  const auto& generation = projection.generationContract;
+  auto oracle = std::make_shared<GenerationStateOracle>(reference, generation.stateInputNames,
+                                                       tolerance, relativeTolerance);
+  auto runner = std::make_shared<OnnxRuntimeModelRunner>(spec, std::move(sessionCache), oracle);
+  NativeRequestControl request;
+  request.requestId = projection.requestId;
+  request.attempt = projection.attempt;
+  request.deadline = deadline;
+  const auto binding = runner->validateAutomaticRequestBinding(projection, request);
+  BOOST_REQUIRE(binding);
+  auto io = ndnsf::di::test::makeSamplingDependencyIo();
+  // Runtime drains before the runner, oracle, reference and transport owners.
+  NativeProviderRuntime runtime(1);
+  runtime.registerRunner(spec, runner);
+  NativeExecutionPlan plan;
+  plan.roles = {spec.role};
+  NativeDependencySpec feedback;
+  feedback.producers = feedback.consumers = {spec.role};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/ndnsf-di";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/FEEDBACK/{sessionId}/{producerRole}/bundle/{sequence}";
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  plan.dependencies = {feedback};
+  NativeProviderAssignment assignment;
+  assignment.providerByRole[spec.role] = projection.provider;
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "source-generation-epoch";
+  config.requestId = projection.requestId;
+  config.attemptEpoch = projection.attempt;
+  config.localProvider = projection.provider;
+  config.role = spec.role;
+  config.lineagePlanDigest = projection.planDigest;
+  config.maxEpochs = reference->size();
+  config.tokenInputName = generation.tokenInputName;
+  config.stateInputNames = generation.stateInputNames;
+  config.stateOutputNames = generation.stateOutputNames;
+  config.eosTokenIds = std::set<std::int64_t>(projection.generationContract.eosTokenIds.begin(),
+                                             projection.generationContract.eosTokenIds.end());
+  DecodeStateIdentityV1 identity;
+  identity.modelDigest = projection.assembly.modelManifestDigest;
+  identity.graphSemanticDigest = projection.assembly.graphDigest;
+  identity.artifactDigest = projection.assembly.artifactDigest;
+  identity.adapterDigest = projection.assembly.adapterDescriptorDigest;
+  identity.tokenizerDigest = nativePlanningDigest("fixture-tokenizer:integer-vocabulary-" +
+    std::to_string(binding->generation().vocabularySize));
+  identity.runnerDigest = nativePlanningDigest("fixture-runner:installed-onnxruntime");
+  identity.roleName = spec.role;
+  identity.roleSplitDigest = projection.assembly.recipeDigest;
+  identity.layerBegin = 0;
+  identity.layerEnd = generation.stateInputNames.size() / 2;
+  identity.prefixDigest = nativePlanningDigest("fixture-prefix:replaced-by-coordinator");
+  identity.positionDigest = nativePlanningDigest("fixture-position:absolute");
+  identity.precision = projection.assembly.precision;
+  identity.layoutDigest = nativePlanningDigest(variant == 0 ?
+    "fixture-layout:batch-head-past-width" : "fixture-layout:width-batch-head-past");
+  identity.stateSchemaDigest = binding->envelope().contractDigest;
+  for (const auto& name : generation.stateInputNames)
+    identity.stateComponentDigests.push_back(nativePlanningDigest("fixture-state:" + name));
+  identity.runtimeAbiDigest = nativePlanningDigest(projection.assembly.backendAbi);
+  identity.securityDomainDigest = nativePlanningDigest("fixture-domain:local-native-test");
+  identity.providerIdentity = projection.provider;
+  identity.providerBootId = "source-boot";
+  identity.cacheEpoch = 1;
+  identity.requestId = projection.requestId;
+  identity.attemptEpoch = projection.attempt;
+  identity.generationId = "source-generation";
+  config.stateIdentityTemplate = identity;
+  config.positionPolicyDigest = identity.positionDigest;
+  config.samplingDigest = nativePlanningDigest("fixture-sampling:greedy-first-maximum");
+  config.initialInputs = {{"input", makeEncodedTensorBundle("input", initialInputs)}};
+  config.automaticBinding = binding;
+  config.prepareRunner = [runner, binding] { return NativePreparedRunner{runner, binding}; };
+  config.executionGuard = [deadline] {
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("generation fixture deadline");
+  };
+  const auto logitsName = binding->generation().logitsOutput.substr(6);
+  config.resultObserver = [reference, logitsName, tolerance, relativeTolerance] (
+    const RoleSpec& role, const ProviderRoleResult& result) {
+    bool found = false;
+    for (const auto& [scope, bundle] : result.outputsByScope) {
+      for (const auto& tensor : decodeTensorBundle(bundle.payload)) {
+        if (tensor.name != logitsName) continue;
+        BOOST_REQUIRE(!found);
+        found = true;
+        const auto& expected = reference->at(role.inferenceEpoch).at(0);
+        BOOST_CHECK(tensor.shape == expected.shape);
+        BOOST_CHECK(tensor.elementType == expected.elementType);
+        BOOST_REQUIRE_EQUAL(tensor.payload.size(), expected.payload.size());
+        const auto count = tensor.payload.size() / tensorElementByteSize(tensor.elementType);
+        for (std::size_t index = 0; index < count; ++index) {
+          const auto actual = referenceGenerationValue(tensor, index);
+          const auto wanted = referenceGenerationValue(expected, index);
+          BOOST_REQUIRE(std::isfinite(actual) && std::isfinite(wanted));
+          BOOST_CHECK_LE(std::abs(actual - wanted),
+                         tolerance + relativeTolerance * std::abs(wanted));
+        }
+      }
+    }
+    BOOST_REQUIRE(found);
+  };
+  const auto result = runNativeEpochCoordinator(std::move(config));
+  BOOST_CHECK_EQUAL(result.epochsExecuted, reference->size());
+  BOOST_CHECK_EQUAL(oracle->rounds, reference->size());
+  BOOST_REQUIRE(result.finalPayload);
+  const auto final = nativeParseJson(std::string(result.finalPayload->begin(), result.finalPayload->end()));
+  const auto tokens = final.at("tokenIds").get<std::vector<std::int64_t>>();
+  BOOST_REQUIRE_EQUAL(tokens.size(), reference->size());
+  for (std::size_t round = 0; round < reference->size(); ++round) {
+    BOOST_CHECK_EQUAL(tokens[round], referenceGenerationToken(reference->at(round).at(0), variant));
+  }
+  const auto state = runtime.decodeStateSnapshot();
+  BOOST_CHECK_EQUAL(state.entries, 0U);
+  BOOST_CHECK_EQUAL(state.pinnedEntries, 0U);
+  BOOST_CHECK_EQUAL(state.candidates, 0U);
+  BOOST_CHECK(!runner->stateHandleSnapshot("source-generation-epoch"));
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(ConnectedHeadViewsCheckEveryRepeatAndReshapeCoordinate)
+{
+  auto source = generationSourceModel();
+  addGenerationHeadViews(source);
+  const GenerationModelFile file(source);
+  const auto original = inspectAutomaticOnnxModel({file.path}, stateControl()).contract;
+  BOOST_REQUIRE(original.generation);
+  const std::vector<std::string> cases{
+    "exact", "inferred-heads", "inferred-size", "inferred-merge", "wrong-transpose",
+    "zero-repeat", "wrong-expanded-batch", "wrong-expanded-sequence", "wrong-expanded-width",
+    "unmultiplied-merge-heads", "wrong-repeat-order", "narrowed-shape", "wrong-split-heads",
+    "zero-head-size", "wrong-merge-width", "copy-batch-sequence", "same-type-view",
+    "lossy-view", "view-cycle", "wrong-view-type", "pre14-allowzero", "wrong-axis-type",
+    "repeat-overflow", "negative-repeat-axis", "crossed-merge-axes"};
+  for (std::size_t mode = 0; mode < cases.size(); ++mode) {
+    BOOST_TEST_CONTEXT(cases[mode]) {
+      auto contract = original; contract.generation.reset();
+      if (mode == 0) {
+        for (auto& tensor : contract.tensors) {
+          if (tensor.name.compare(0, 11, "graph/head-") == 0 &&
+              tensor.name != "graph/head-projection" &&
+              tensor.provenance != std::vector<std::string>{"initializer-header-v1"})
+            tensor.dimensions.reset();
+        }
+      }
+      const auto op = [&] (const std::string& output) -> AutomaticOnnxOperatorFact& {
+        const auto found = std::find_if(contract.operators.begin(), contract.operators.end(),
+          [&](const auto& value) { return value.outputs == std::vector<std::string>{output}; });
+        if (found == contract.operators.end()) throw std::logic_error("missing head fixture node");
+        return *found;
+      };
+      const auto literal = [&] (const std::string& name, std::int64_t value) {
+        contract.integerLiterals.at("graph/" + name) = {value};
+      };
+      if (mode == 1) literal("head-count", -1);
+      if (mode == 2) literal("head-size", -1);
+      if (mode == 3) literal("head-flat-width", -1);
+      if (mode == 4) op("head-restored").integerListAttributes["perm"] = {0, 1, 2, 3};
+      if (mode == 5) literal("head-factor", 0);
+      if (mode == 6) op("head-expanded-shape").inputs[0] = "head-source-3";
+      if (mode == 7) op("head-expanded-shape").inputs[3] = "head-source-1";
+      if (mode == 8) op("head-expanded-shape").inputs[4] = "head-factor";
+      if (mode == 9) op("head-repeat-shape").inputs[1] = "head-source-1";
+      if (mode == 10) op("head-inserted").inputs[1] = "head-index-1";
+      if (mode == 11) {
+        auto narrow = stateOp("Cast", {"head-expanded-shape"}, {"head-narrow-shape"});
+        narrow.integerAttributes["to"] = 6;
+        auto wide = stateOp("Cast", {"head-narrow-shape"}, {"head-recast-shape"});
+        wide.integerAttributes["to"] = 7;
+        contract.operators.push_back(narrow); contract.operators.push_back(wide);
+        op("head-expanded").inputs[1] = "head-recast-shape";
+      }
+      if (mode == 12) literal("head-count", 3);
+      if (mode == 13) literal("head-size", 0);
+      if (mode == 14) literal("head-flat-width", 47);
+      if (mode == 15) {
+        op("head-merge-shape").inputs[0] = "head-index-0";
+        op("head-merge-shape").inputs[1] = "head-index-0";
+      }
+      if (mode == 16 || mode == 17) {
+        auto view = stateOp("Cast", {"head-canonical"}, {"head-canonical-view"});
+        view.integerAttributes["to"] = mode == 16 ? 1 : 10;
+        op("head-inserted").inputs[0] = "head-canonical-view";
+        const auto before = std::find_if(contract.operators.begin(), contract.operators.end(),
+          [](const auto& value) { return value.outputs == std::vector<std::string>{"head-inserted"}; });
+        contract.operators.insert(before, view);
+        auto tensor = stateFact(contract, "head-canonical");
+        tensor.name = "graph/head-canonical-view";
+        tensor.onnxElementType = mode == 16 ? 1 : 10;
+        tensor.wireElementType = onnxTensorWireType(tensor.onnxElementType);
+        contract.tensors.push_back(std::move(tensor));
+      }
+      if (mode == 18) op("head-canonical").inputs[0] = "head-canonical";
+      if (mode == 19) {
+        auto& tensor = stateFact(contract, "head-repeated");
+        tensor.onnxElementType = 10; tensor.wireElementType = TensorElementType::Float16;
+      }
+      if (mode == 20) op("head-repeated").integerAttributes["allowzero"] = 0;
+      if (mode == 21) {
+        auto& tensor = stateFact(contract, "head-index-2");
+        tensor.onnxElementType = 6; tensor.wireElementType = TensorElementType::Int32;
+      }
+      if (mode == 22) literal("head-factor", std::numeric_limits<std::int64_t>::max());
+      if (mode == 23) {
+        literal("head-index-2", -3);
+        // Use another initializer for the sequence Gather so only Unsqueeze changes.
+        contract.integerLiterals["graph/head-axis-negative"] = {-3};
+        auto tensor = stateFact(contract, "head-index-2");
+        tensor.name = "graph/head-axis-negative"; contract.tensors.push_back(tensor);
+        literal("head-index-2", 2);
+        op("head-inserted").inputs[1] = "head-axis-negative";
+      }
+      if (mode == 24) std::swap(op("head-merge-shape").inputs[0],
+                                op("head-merge-shape").inputs[1]);
+      const bool expected = mode <= 3 || mode == 15 || mode == 16 || mode == 23;
+      bool proved = false;
+      try {
+        sealStateFixture(contract);
+        contract.generation = deriveAutomaticOnnxGeneration(contract, stateControl());
+        proved = contract.generation.has_value();
+      }
+      catch (const std::invalid_argument&) {
+      }
+      BOOST_CHECK_EQUAL(proved, expected);
+      if (proved && expected)
+        BOOST_CHECK_NO_THROW(bindAutomaticOnnxShapes(contract, generationInputs(2, 3),
+                                                     9, 16, stateControl()));
+    }
+  }
+  for (const bool cancel : {false, true}) {
+    auto control = stateControl();
+    if (cancel) control.requireActive = [] { throw std::runtime_error("head proof stopped"); };
+    else control.maxAssembledBytes = 64;
+    BOOST_CHECK_THROW(deriveAutomaticOnnxGeneration(original, control), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PrimitiveAttentionRequiresConnectedCachesAndCausalControls)
+{
+  for (const bool flattened : {false, true}) {
+    auto source = generationExecutionModel(0);
+    addGenerationHeadViews(source);
+    replaceGenerationAttention(source, flattened);
+    const GenerationModelFile file(source);
+    const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+    BOOST_REQUIRE_MESSAGE(model.contract.generation, model.generationDiagnostic);
+    const auto& original = model.contract;
+    BOOST_CHECK_EQUAL(original.generation->ruleId, "causal-attention");
+    BOOST_CHECK_EQUAL(original.generation->ruleVersion, 2U);
+    BOOST_REQUIRE_EQUAL(original.generation->states.size(), 2U);
+    for (const auto& state : original.generation->states) {
+      BOOST_CHECK(state.sequenceLengths.empty()); BOOST_CHECK(state.totalLength.empty());
+      BOOST_CHECK_EQUAL(state.headSize, 8U);
+      BOOST_CHECK_EQUAL(original.operators.at(state.operatorIndex).opType, "MatMul");
+    }
+    const auto encoded = original.canonicalJson(stateControl());
+    BOOST_CHECK_EQUAL(AutomaticOnnxContract::fromCanonicalJson(encoded, stateControl())
+                        .canonicalJson(stateControl()), encoded);
+    for (unsigned mode = 0; mode < 25; ++mode) {
+      if (!flattened && mode >= 20) continue;
+      BOOST_TEST_CONTEXT("primitive flattened=" << flattened << ", mutation=" << mode) {
+        auto contract = original; contract.generation.reset();
+        const auto op = [&] (const std::string& output) -> AutomaticOnnxOperatorFact& {
+          const auto found = std::find_if(contract.operators.begin(), contract.operators.end(),
+            [&](const auto& value) { return value.outputs == std::vector<std::string>{output}; });
+          if (found == contract.operators.end()) throw std::logic_error("missing primitive fixture node");
+          return *found;
+        };
+        if (mode == 1) op("primitive-probabilities").integerAttributes["axis"] = 2;
+        if (mode == 2) op("primitive-transposed-key").integerListAttributes["perm"] = {0, 3, 1, 2};
+        if (mode == 3) std::swap(op("new,key=0").inputs[0], op("new,key=0").inputs[1]);
+        if (mode == 4) op("new,value=0").integerAttributes["axis"] = 3;
+        if (mode == 5) op("primitive-weighted-value").inputs[1] = "primitive-cache-0/repeated";
+        if (mode == 6) op("primitive-nan").inputs[0] = "primitive-dot";
+        if (mode == 7) op("primitive-clean-probabilities").inputs[1] = "primitive-infinity";
+        if (mode == 8) op("primitive-mask-bias").inputs[2] = "primitive-zero";
+        if (mode == 9) op("primitive-mask-bias").inputs[1] = "primitive-infinity";
+        if (mode == 10) op("primitive-query-range").inputs[0] = "primitive-scalar-0";
+        if (mode == 11) op("primitive-query-range").inputs[1] = "primitive-scalar-1";
+        if (mode == 12) op("primitive-key-range").inputs[2] = "primitive-scalar-2";
+        if (mode == 13) std::swap(op("primitive-causal").inputs[0], op("primitive-causal").inputs[1]);
+        if (mode == 14) op("primitive-final-mask").inputs[1] = "primitive-index-1";
+        if (mode == 15) op("primitive-final-mask").inputs[4] = "primitive-index-2";
+        if (mode == 16) contract.floatingLiterals.erase("graph/primitive-scale");
+        if (mode == 17) contract.integerLiterals.at("graph/primitive-repeat") = {0};
+        if (mode == 18) op("primitive-projection-0").inputs[1] = "primitive-cache-target";
+        // Shared K/V projection is a valid graph, not a name-based pairing error.
+        if (mode == 19) op("new,value=0").inputs[1] = "primitive-projection-1/canonical";
+        if (mode == 20) op("primitive-stride").inputs[1] = "primitive-scalar-0";
+        if (mode == 21) op("primitive-batch-range").inputs[0] = "primitive-past";
+        if (mode == 22) op("primitive-flat-mask").integerAttributes["axis"] = 1;
+        if (mode == 23) op("primitive-external-mask").inputs[1] = "primitive-mask-target";
+        if (mode == 24) op("primitive-batch-index").inputs[1] = "primitive-key-axes";
+        bool proved = false;
+        try {
+          sealStateFixture(contract);
+          contract.generation = deriveAutomaticOnnxGeneration(contract, stateControl());
+          proved = contract.generation.has_value();
+        }
+        catch (const std::invalid_argument&) {
+        }
+        const bool expected = mode == 0 || mode == 19;
+        BOOST_CHECK_EQUAL(proved, expected);
+        if (proved && expected)
+          BOOST_CHECK_NO_THROW(bindAutomaticOnnxShapes(contract, generationInputs(2, 3),
+                                                       9, 16, stateControl()));
+      }
+    }
+    for (unsigned mode = 0; mode < 5; ++mode) {
+      auto value = nativeParseJson(encoded);
+      auto& generation = value.at("generation");
+      if (mode == 0) generation["schema"] = "ndnsf-di-automatic-generation-v1";
+      if (mode == 1) generation["ruleVersion"] = 3;
+      if (mode == 2) generation["states"][0]["sequenceLengths"] = "graph/total";
+      if (mode == 3) generation["states"][0]["query"] = "graph/primitive-projection-2/canonical";
+      if (mode == 4) generation["maskInput"] = "graph/ids";
+      BOOST_CHECK_THROW(AutomaticOnnxContract::fromCanonicalJson(nativeCanonicalJson(value),
+                                                                 stateControl()), std::invalid_argument);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(PrimitiveRotaryAndHeadRmsRequireActualFeatureAndPositionPrograms)
+{
+  for (const unsigned variant : {0U, 1U}) {
+    auto source = generationExecutionModel(variant);
+    addGenerationHeadViews(source);
+    replaceGenerationAttention(source, variant == 1);
+    addPrimitiveGenerationRotary(source);
+    const GenerationModelFile file(source);
+    const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+    BOOST_REQUIRE_MESSAGE(model.contract.generation, model.generationDiagnostic);
+    BOOST_CHECK_EQUAL(model.contract.generation->ruleId, "causal-attention");
+    BOOST_CHECK_EQUAL(model.contract.generation->positionInput, "graph/positions");
+    BOOST_CHECK(std::none_of(model.contract.operators.begin(), model.contract.operators.end(),
+      [] (const auto& op) { return op.opType == "RotaryEmbedding"; }));
+    const auto encoded = model.contract.canonicalJson(stateControl());
+    BOOST_CHECK_EQUAL(AutomaticOnnxContract::fromCanonicalJson(encoded, stateControl())
+                        .canonicalJson(stateControl()), encoded);
+    for (unsigned mode = 0; mode < 43; ++mode) {
+      if (variant == 0 && mode >= 37) continue;
+      BOOST_TEST_CONTEXT("pure rotary variant=" << variant << ", mutation=" << mode) {
+        auto contract = model.contract; contract.generation.reset();
+        const auto op = [&] (const std::string& output) -> AutomaticOnnxOperatorFact& {
+          const auto found = std::find_if(contract.operators.begin(), contract.operators.end(),
+            [&] (const auto& value) { return value.outputs == std::vector<std::string>{output}; });
+          if (found == contract.operators.end())
+            throw std::logic_error("missing pure fixture node");
+          return *found;
+        };
+        const auto q = std::string("primitive-projection-0");
+        const auto canonical = q + "/canonical";
+        if (mode == 1) stateFact(contract, "pure-gamma").dimensions->at(0) = stateFixed(7);
+        if (mode == 2) op(q + "/mean").inputs[1] = "pure-two";
+        if (mode == 3) contract.floatingLiterals["graph/pure-power"] = {0, 0, 0, 0};
+        if (mode == 4) contract.floatingLiterals["graph/pure-epsilon"] = {0, 0, 128, 191};
+        if (mode == 5) op(q + "/mean").integerAttributes["keepdims"] = 0;
+        if (mode == 6) op(q + "/inverse").inputs[0] = "pure-power";
+        if (mode == 7) op(q + "/normalized").inputs[0] = q + "/squared";
+        if (mode == 8) op(canonical + "/first-half").inputs[3] = "pure-two";
+        if (mode == 9) op(canonical + "/second-half").inputs[1] = "pure-zero";
+        if (mode == 10) op(canonical + "/first-half").inputs[2] = "pure-end";
+        if (mode == 11) op(canonical + "/first-half").inputs[4] = "pure-two";
+        if (mode == 12) op(canonical + "/rotated").integerAttributes["axis"] = 2;
+        if (mode == 13) op(canonical + "/negative-half").inputs[0] = canonical + "/first-half";
+        if (mode == 14) op(canonical + "/cosine-product").inputs[0] =
+          "primitive-projection-1/canonical/untransformed";
+        if (mode == 15) op("pure-sin").inputs[0] = "pure-phase-half";
+        if (mode == 16) stateFact(contract, "pure-frequency").dimensions->at(1) = stateFixed(3);
+        if (mode == 17) op("pure-expanded-frequency").inputs[1] = "primitive-query-target";
+        if (mode == 18) op("pure-frequency-shape").inputs[0] = "pure-four";
+        if (mode == 19) op("pure-phase-half").integerListAttributes["perm"] = {0, 1, 2};
+        if (mode == 20) op("pure-phase").inputs[1] = "pure-phase-product";
+        if (mode == 21) op("pure-integer-plane").inputs[1] = "pure-zero";
+        if (mode == 22) op("pure-position-plane").integerAttributes["to"] = 9;
+        if (mode == 23) op(canonical + "/second-half").inputs[2] = "pure-four";
+        if (mode == 24) stateFact(contract, "pure-gamma").onnxElementType = 10;
+        if (mode == 25) std::swap(op(canonical + "/rotated").inputs[0],
+                                  op(canonical + "/rotated").inputs[1]);
+        if (mode == 26) op("pure-integer-plane").inputs[0] = "ids";
+        if (mode == 27) op(q + "/squared").inputs[1] = "pure-unit";
+        if (mode == 28) op("pure-cos-plane").inputs[1] = "pure-two";
+        if (mode == 29) op("pure-cos").opType = "Sin";
+        if (mode == 30) op(canonical + "/half").inputs[1] = "pure-one";
+        if (mode == 32 || mode == 34) {
+          op("pure-cos-plane").inputs[1] = "pure-end";
+          if (mode == 34) contract.integerLiterals["graph/pure-end"] = {
+            std::numeric_limits<std::int64_t>::min()};
+        }
+        if (mode == 33 || mode == 35) op(canonical + "/rotated").integerAttributes["axis"] =
+          mode == 33 ? std::numeric_limits<std::int64_t>::max() :
+                       std::numeric_limits<std::int64_t>::min();
+        if (mode == 36) stateFact(contract, "primitive-query-range").dimensions =
+          std::vector<DimensionConstraint>{stateFixed(1), stateFixed(1), stateFixed(1)};
+        if (mode == 37) op("primitive-index-shape").integerAttributes["start"] = 1;
+        if (mode == 38) stateFact(contract, "primitive-indices").dimensions =
+          std::vector<DimensionConstraint>{stateFixed(1), stateFixed(1), stateFixed(1)};
+        if (mode == 39) op("primitive-restored-shape").integerAttributes["axis"] = 1;
+        if (mode == 40) stateFact(contract, "primitive-restored-shape").onnxElementType = 6;
+        if (mode == 41) stateFact(contract, "primitive-restored-shape").dimensions =
+          std::vector<DimensionConstraint>{stateFixed(1), stateFixed(4)};
+        if (mode == 42) op("primitive-restored-shape").inputs.push_back("primitive-index-shape");
+        if (mode == 31) {
+          for (auto& tensor : contract.tensors) {
+            const bool boundary = std::find(contract.modelInputs.begin(), contract.modelInputs.end(),
+                                             tensor.name) != contract.modelInputs.end() ||
+              std::find(contract.modelOutputs.begin(), contract.modelOutputs.end(), tensor.name) !=
+                contract.modelOutputs.end();
+            if (boundary) {
+              BOOST_REQUIRE(tensor.dimensions);
+              if (tensor.provenance == std::vector<std::string>{"automatic-inference-v1"})
+                BOOST_TEST_MESSAGE("Rankless fixture preserves inferred boundary " << tensor.name);
+              continue;
+            }
+            if (tensor.provenance == std::vector<std::string>{"onnx-inference-v1"} ||
+                tensor.provenance == std::vector<std::string>{"automatic-inference-v1"})
+              tensor.dimensions.reset();
+          }
+        }
+        bool proved = false;
+        try {
+          sealStateFixture(contract);
+          contract.generation = deriveAutomaticOnnxGeneration(contract, stateControl());
+          proved = contract.generation.has_value();
+        }
+        catch (const std::invalid_argument&) {
+        }
+        BOOST_CHECK_EQUAL(proved, mode == 0 || mode == 31);
+      }
+    }
+    const auto canonicalOriginal = nativeParseJson(encoded);
+    for (unsigned mode = 0; mode < 3; ++mode) {
+      auto value = canonicalOriginal;
+      if (mode == 0) value["generation"]["positionInput"] = "graph/ids";
+      if (mode == 1) value["generation"]["positionSequenceAxis"] = 1U -
+        canonicalOriginal.at("generation").at("positionSequenceAxis").get<std::uint64_t>();
+      if (mode == 2) value["generation"]["states"][0]["headSize"] = 7;
+      BOOST_REQUIRE(value != canonicalOriginal);
+      BOOST_CHECK_THROW(AutomaticOnnxContract::fromCanonicalJson(nativeCanonicalJson(value),
+                                                                 stateControl()), std::invalid_argument);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FullStateFeedbackPreservesTypedBitsAndRejectsInvalidSuccessors)
+{
+  for (const auto type : {TensorElementType::Float32, TensorElementType::Float16,
+                          TensorElementType::BFLOAT16}) {
+    for (const unsigned inputVariant : {0U, 1U}) {
+      auto source = generationSourceModel(false);
+      // This test inspects real source bytes and exercises the native normalizer;
+      // it does not claim F16/BF16 backend execution from metadata alone.
+      const auto onnxType = type == TensorElementType::Float32 ? onnx::TensorProto::FLOAT :
+        type == TensorElementType::Float16 ? onnx::TensorProto::FLOAT16 :
+                                           onnx::TensorProto::BFLOAT16;
+      auto* graph = source.mutable_graph();
+      if (type != TensorElementType::Float32) {
+        for (auto& value : *graph->mutable_input())
+          if (value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT)
+            value.mutable_type()->mutable_tensor_type()->set_elem_type(onnxType);
+        for (auto& value : *graph->mutable_output())
+          if (value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT)
+            value.mutable_type()->mutable_tensor_type()->set_elem_type(onnxType);
+        for (auto& tensor : *graph->mutable_initializer()) {
+          if (tensor.data_type() != onnx::TensorProto::FLOAT) continue;
+          for (const auto number : tensor.float_data())
+            tensor.add_int32_data(type == TensorElementType::Float16 ?
+              Ort::Float16_t(number).val : Ort::BFloat16_t(number).val);
+          tensor.clear_float_data();
+          tensor.set_data_type(onnxType);
+        }
+      }
+      // Input remains BHSD; output becomes DBHS. Exercise the reverse mapping by
+      // applying another public-port permutation to the actual source graph.
+      if (inputVariant == 1) {
+        for (const auto& name : {std::string("old,key=0"), std::string("old,value=0")}) {
+          const auto internal = name + "/input-layout";
+          for (auto& node : *graph->mutable_node())
+            for (auto& input : *node.mutable_input()) if (input == name) input = internal;
+          auto* node = graph->add_node(); node->set_op_type("Transpose");
+          node->add_input(name); node->add_output(internal);
+          auto* perm = node->add_attribute(); perm->set_name("perm");
+          perm->set_type(onnx::AttributeProto::INTS);
+          for (const auto axis : {1, 2, 3, 0}) perm->add_ints(axis);
+          for (auto& input : *graph->mutable_input()) {
+            if (input.name() != name) continue;
+            const auto shape = input.type().tensor_type().shape();
+            unsigned axis = 0;
+            for (const auto from : {3, 0, 1, 2})
+              input.mutable_type()->mutable_tensor_type()->mutable_shape()->mutable_dim(axis++)
+                ->CopyFrom(shape.dim(from));
+          }
+        }
+        // Restore topological order after prepending the input transposes.
+        auto* nodes = graph->mutable_node();
+        for (int i = nodes->size() - 2; i < nodes->size(); ++i)
+          for (int j = i; j > i - (nodes->size() - 2); --j) nodes->SwapElements(j, j - 1);
+      }
+      else {
+        relayoutGenerationFeedbackOutputs(source, 0);
+      }
+      const GenerationModelFile file(source);
+      const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+      BOOST_REQUIRE(model.contract.generation);
+      auto inputs = generationInputs(1, 3);
+      for (std::size_t state = 3; state < inputs.size(); ++state) {
+        inputs[state].elementType = type;
+        if (inputVariant == 1) inputs[state].shape = {8, 1, 1, 0};
+      }
+      const auto envelope = bindAutomaticOnnxShapes(model.contract, inputs, 9, 16, stateControl());
+      auto projection = fixture::automaticSourceProjection(model, automaticOnnxShapeSeed(envelope));
+      auto& generation = projection.generationContract;
+      generation.enabled = true;
+      generation.mode = "TOKEN_STREAMING";
+      generation.maxGeneratedTokens = 9;
+      generation.streamingOperationStride = 1;
+      generation.tokenInputName = "ids";
+      generation.attentionMaskInputName = "mask";
+      generation.positionIdsInputName = "positions";
+      generation.stateInputNames = {"old,key=0", "old,value=0"};
+      generation.stateOutputNames = {"new,key=0", "new,value=0"};
+      const auto binding = AutomaticOnnxSourceBinding::fromSourceMetadata(
+        NativeJson{{"contract", nativeParseJson(model.contract.canonicalJson(stateControl()))},
+                   {"externalFiles", NativeJson::array()}},
+        model.opened.modelDigest, 0, "", stateControl());
+      NativeRequestControl request;
+      request.requestId = projection.requestId; request.attempt = projection.attempt;
+      request.deadline = stateControl().deadline;
+      const auto admitted = AutomaticOnnxRequestBinding::admit(binding, projection, request);
+      auto expiredRequest = request;
+      expiredRequest.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+      BOOST_CHECK_THROW(AutomaticOnnxRequestBinding::admit(binding, projection, expiredRequest),
+                        std::exception);
+      BOOST_CHECK(admitted->requiresStateFeedbackNormalization());
+      RoleExecutionContext context;
+      context.requestId = projection.requestId; context.attemptEpoch = projection.attempt;
+      context.role = projection.executionRole.roleId;
+      const auto outputVariant = 1 - inputVariant;
+      const auto width = tensorElementByteSize(type);
+      for (const std::uint64_t epoch : {0U, 1U, 8U}) {
+        context.inferenceEpoch = epoch;
+        const std::int64_t total = 3 + epoch;
+        std::vector<NamedTensor> raw;
+        for (std::size_t state = 0; state < 2; ++state) {
+          NamedTensor value{generation.stateOutputNames[state], type, outputVariant == 0 ?
+            std::vector<std::int64_t>{1, 1, total, 8} :
+            std::vector<std::int64_t>{8, 1, 1, total},
+            std::vector<std::uint8_t>(total * 8 * width)};
+          // Arbitrary bit patterns include nonfinite encodings; relayout must
+          // preserve bytes instead of converting floating point values.
+          for (std::size_t byte = 0; byte < value.payload.size(); ++byte)
+            value.payload[byte] = static_cast<std::uint8_t>(byte * 73 + state * 31);
+          raw.push_back(std::move(value));
+        }
+        const auto views = [&] (const std::vector<NamedTensor>& values) {
+          std::vector<NamedTensorView> result;
+          for (const auto& value : values)
+            result.push_back({value.name, value.elementType, value.shape,
+              ndn::span<const std::uint8_t>(value.payload.data(), value.payload.size())});
+          return result;
+        };
+        const auto result = admitted->normalizeStateFeedback(views(raw), context);
+        BOOST_REQUIRE_EQUAL(result.size(), 2U);
+        for (std::size_t state = 0; state < 2; ++state) {
+          const auto expected = referenceGenerationFeedback(raw[state], outputVariant, inputVariant);
+          BOOST_CHECK_EQUAL(result[state].name, generation.stateInputNames[state]);
+          BOOST_CHECK(result[state].elementType == type);
+          BOOST_CHECK(result[state].shape == expected.shape);
+          BOOST_CHECK(result[state].payload == expected.payload);
+        }
+        for (unsigned failure = 0; failure < 5; ++failure) {
+          auto invalid = raw;
+          if (failure == 0) invalid.pop_back();
+          if (failure == 1) invalid.back().name = invalid.front().name;
+          if (failure == 2) std::swap(invalid.back().shape[0], invalid.back().shape[3]);
+          if (failure == 3) {
+            invalid.back().elementType = TensorElementType::UInt8;
+            invalid.back().payload.resize(total * 8);
+          }
+          if (failure == 4) invalid.back().name = "unbound-state";
+          BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(invalid), context),
+                            std::invalid_argument);
+        }
+        auto invalidContext = context;
+        invalidContext.attemptEpoch += 1;
+        BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(raw), invalidContext),
+                          std::invalid_argument);
+        invalidContext = context;
+        invalidContext.executionGuard = [] { throw std::runtime_error("feedback cancelled"); };
+        BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(raw), invalidContext),
+                          std::runtime_error);
+        invalidContext = context;
+        invalidContext.inferenceEpoch = 9;
+        BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(raw), invalidContext),
+                          std::invalid_argument);
+        unsigned guardCalls = 0;
+        auto interrupted = context;
+        interrupted.executionGuard = [&] { ++guardCalls; };
+        admitted->normalizeStateFeedback(views(raw), interrupted);
+        BOOST_REQUIRE_GT(guardCalls, 2U);
+        const auto stopAt = guardCalls - 1;
+        guardCalls = 0;
+        interrupted.executionGuard = [&] {
+          if (++guardCalls == stopAt) throw std::runtime_error("late feedback cancellation");
+        };
+        BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(raw), interrupted),
+                          std::runtime_error);
+        BOOST_CHECK(admitted->normalizeStateFeedback(views(raw), context)[0].payload ==
+                    result[0].payload);
+      }
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(DeltaStateFeedbackPreservesTypedPrefixesAndRejectsInvalidPredecessors)
+{
+  for (const auto type : {TensorElementType::Float32, TensorElementType::Float16,
+                          TensorElementType::BFLOAT16}) for (const unsigned layout : {0U, 1U}) {
+    auto source = generationSourceModel(false);
+    auto* graph = source.mutable_graph();
+    // Two KV heads expose head/sequence stride errors hidden by H=1 fixtures.
+    for (auto& node : *graph->mutable_node()) for (auto& attr : *node.mutable_attribute())
+      if (attr.name() == "num_heads" || attr.name() == "kv_num_heads") attr.set_i(attr.i() * 2);
+    for (auto& tensor : *graph->mutable_initializer()) {
+      const auto name = tensor.name();
+      if (name != "wq" && name != "wk" && name != "wv" && name != "wo") continue;
+      const auto axis = name == "wo" ? 0 : 1;
+      tensor.set_dims(axis, tensor.dims(axis) * 2);
+      const auto count = tensor.float_data_size();
+      for (int i = 0; i < count; ++i) tensor.add_float_data(tensor.float_data(i));
+    }
+    for (auto* ports : {graph->mutable_input(), graph->mutable_output()})
+      for (auto& port : *ports) if (port.type().tensor_type().shape().dim_size() == 4)
+        port.mutable_type()->mutable_tensor_type()->mutable_shape()->mutable_dim(1)->set_dim_value(2);
+    replaceGenerationAttention(source, false);
+    exposeGenerationDeltaOutputs(source, false);
+    if (layout == 1) relayoutGenerationFeedbackOutputs(source, 0);
+    if (type != TensorElementType::Float32) {
+      const auto onnxType = type == TensorElementType::Float16 ? onnx::TensorProto::FLOAT16 :
+                                                              onnx::TensorProto::BFLOAT16;
+      for (auto* ports : {graph->mutable_input(), graph->mutable_output()})
+        for (auto& value : *ports)
+          if (value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT)
+            value.mutable_type()->mutable_tensor_type()->set_elem_type(onnxType);
+      for (auto& tensor : *graph->mutable_initializer()) {
+        if (tensor.data_type() != onnx::TensorProto::FLOAT) continue;
+        for (const auto number : tensor.float_data())
+          tensor.add_int32_data(type == TensorElementType::Float16 ?
+            Ort::Float16_t(number).val : Ort::BFloat16_t(number).val);
+        tensor.clear_float_data(); tensor.set_data_type(onnxType);
+      }
+    }
+    const GenerationModelFile file(source);
+    const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+    BOOST_REQUIRE(model.contract.generation);
+    BOOST_CHECK_EQUAL(model.contract.generation->ruleVersion, 3U);
+    const auto canonical = model.contract.canonicalJson(stateControl());
+    BOOST_CHECK(AutomaticOnnxContract::fromCanonicalJson(canonical, stateControl())
+                  .canonicalJson(stateControl()) == canonical);
+    auto poisoned = nativeParseJson(canonical);
+    poisoned["generation"]["states"][0]["update"] = "replace_full";
+    BOOST_CHECK_THROW(AutomaticOnnxContract::fromCanonicalJson(nativeCanonicalJson(poisoned),
+                                                              stateControl()), std::invalid_argument);
+    auto unknown = model.contract;
+    unknown.generation->states[0].update = static_cast<AutomaticAttentionState::Update>(99);
+    BOOST_CHECK_THROW(unknown.canonicalJson(stateControl()), std::invalid_argument);
+    auto initial = generationInputs(1, 3);
+    for (std::size_t state = 3; state < initial.size(); ++state) {
+      initial[state].elementType = type; initial[state].shape[1] = 2;
+    }
+    auto projection = fixture::automaticSourceProjection(model, automaticOnnxShapeSeed(
+      bindAutomaticOnnxShapes(model.contract, initial, 9, 16, stateControl())));
+    auto& generation = projection.generationContract;
+    generation.enabled = true; generation.mode = "TOKEN_STREAMING";
+    generation.maxGeneratedTokens = 9; generation.streamingOperationStride = 1;
+    generation.tokenInputName = "ids"; generation.attentionMaskInputName = "mask";
+    generation.positionIdsInputName = "positions";
+    generation.stateInputNames = {"old,key=0", "old,value=0"};
+    generation.stateOutputNames = {"new,key=0", "new,value=0"};
+    const auto sourceBinding = AutomaticOnnxSourceBinding::fromSourceMetadata(
+      NativeJson{{"contract", nativeParseJson(canonical)}, {"externalFiles", NativeJson::array()}},
+      model.opened.modelDigest, 0, "", stateControl());
+    NativeRequestControl request;
+    request.requestId = projection.requestId; request.attempt = projection.attempt;
+    request.deadline = stateControl().deadline;
+    const auto admitted = AutomaticOnnxRequestBinding::admit(sourceBinding, projection, request);
+    BOOST_CHECK(admitted->requiresStateFeedbackNormalization());
+    RoleExecutionContext context;
+    context.requestId = request.requestId; context.attemptEpoch = request.attempt;
+    context.role = projection.executionRole.roleId;
+    const auto views = [] (const std::vector<NamedTensor>& values) {
+      std::vector<NamedTensorView> result;
+      for (const auto& value : values) result.push_back({value.name, value.elementType, value.shape,
+        ndn::span<const std::uint8_t>(value.payload.data(), value.payload.size())});
+      return result;
+    };
+    for (const std::uint64_t epoch : {0U, 1U, 8U}) {
+      context.inferenceEpoch = epoch;
+      const std::int64_t past = epoch == 0 ? 0 : 2 + epoch;
+      const std::int64_t sequence = epoch == 0 ? 3 : 1;
+      std::vector<NamedTensor> raw, prefix;
+      for (std::size_t state = 0; state < 2; ++state) {
+        const auto width = tensorElementByteSize(type);
+        raw.push_back({generation.stateOutputNames[state], type, layout == 0 ?
+          std::vector<std::int64_t>{1, 2, sequence, 8} :
+          std::vector<std::int64_t>{8, 1, 2, sequence},
+          std::vector<std::uint8_t>(2 * sequence * 8 * width)});
+        prefix.push_back({generation.stateInputNames[state], type, {1, 2, past, 8},
+          std::vector<std::uint8_t>(2 * past * 8 * width)});
+        for (std::size_t b = 0; b < raw.back().payload.size(); ++b)
+          raw.back().payload[b] = static_cast<std::uint8_t>(b * 73 + state * 31);
+        for (std::size_t b = 0; b < prefix.back().payload.size(); ++b)
+          prefix.back().payload[b] = static_cast<std::uint8_t>(b * 19 + state * 17 + 1);
+      }
+      const auto result = admitted->normalizeStateFeedback(views(raw), context, views(prefix));
+      for (std::size_t state = 0; state < 2; ++state) {
+        const auto expected = referenceDeltaFeedback(raw[state], layout, 0, prefix[state]);
+        BOOST_CHECK(result[state].shape == expected.shape);
+        BOOST_CHECK(result[state].payload == expected.payload);
+        BOOST_CHECK_EQUAL(result[state].name, prefix[state].name);
+      }
+      if (past == 0) {
+        BOOST_CHECK(admitted->normalizeStateFeedback(views(raw), context)[0].payload == result[0].payload);
+      }
+      else {
+        BOOST_CHECK_EXCEPTION(admitted->normalizeStateFeedback(views(raw), context),
+          std::invalid_argument, [] (const auto& ex) {
+            return std::string(ex.what()) == "AUTOMATIC_STATE_PREDECESSOR_REQUIRED";
+          });
+      }
+      for (unsigned failure = 0; failure < 6; ++failure) {
+        auto invalid = prefix;
+        if (failure == 0) invalid.back().name = invalid.front().name;
+        if (failure == 1) invalid.back().elementType = TensorElementType::UInt8;
+        if (failure == 2) invalid.back().shape[1] = 1;
+        if (failure == 3) invalid.back().payload.push_back(0);
+        if (failure == 4) invalid.back().name = "unrelated";
+        if (failure == 5) invalid.push_back(invalid.front());
+        BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(raw), context, views(invalid)),
+                          std::invalid_argument);
+      }
+      auto wrong = context; ++wrong.attemptEpoch;
+      BOOST_CHECK_THROW(admitted->normalizeStateFeedback(views(raw), wrong, views(prefix)),
+                        std::invalid_argument);
+      unsigned calls = 0; auto cancelled = context;
+      cancelled.executionGuard = [&] { ++calls; };
+      admitted->normalizeStateFeedback(views(raw), cancelled, views(prefix));
+      BOOST_REQUIRE_GT(calls, 8U);
+      const auto stopAt = calls - 1;
+      calls = 0;
+      cancelled.executionGuard = [&] {
+        if (++calls == stopAt) throw std::runtime_error("delta cancelled during candidate copy");
+      };
+      BOOST_CHECK_EXCEPTION(admitted->normalizeStateFeedback(views(raw), cancelled, views(prefix)),
+        std::runtime_error, [] (const auto& ex) {
+          return std::string(ex.what()) == "delta cancelled during candidate copy";
+        });
+      BOOST_CHECK(admitted->normalizeStateFeedback(views(raw), context, views(prefix))[0].payload ==
+                  result[0].payload);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(IndependentOrtPrefillAndEightDecodeOutputsFitTheSealedFullCycle)
+{
+  for (const unsigned configuration : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U}) {
+    const unsigned variant = configuration >= 12 ? (configuration - 12) % 2 :
+                             configuration >= 10 ? configuration - 10 :
+                             configuration >= 8 ? configuration - 8 :
+                             configuration >= 6 ? configuration - 6 :
+                             configuration >= 4 ? 0 : configuration;
+    const unsigned feedbackVariant = configuration == 10 || configuration == 11 ||
+                                     configuration >= 14 ? 1 - variant : variant;
+    const auto configurationStarted = std::chrono::steady_clock::now();
+    BOOST_TEST_MESSAGE("generation configuration begin=" << configuration);
+    BOOST_TEST_CONTEXT("actual generation configuration=" << configuration) {
+      auto source = generationExecutionModel(variant);
+      if (configuration == 4) addGenerationShapeArithmetic(source);
+      if (configuration >= 5) addGenerationHeadViews(source);
+      if (configuration >= 6)
+        replaceGenerationAttention(source, variant == 1);
+      if (configuration >= 8) addPrimitiveGenerationRotary(source);
+      if (configuration >= 12) exposeGenerationDeltaOutputs(source, configuration >= 14);
+      if (configuration == 10 || configuration == 11 || configuration >= 14)
+        relayoutGenerationFeedbackOutputs(source, variant);
+      const GenerationModelFile file(source);
+      const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+      BOOST_REQUIRE(model.contract.generation);
+      BOOST_CHECK_EQUAL(nativeParseJson(model.contract.canonicalJson(stateControl()))
+                          .at("schema").get<std::string>(), variant == 3 || configuration >= 6 ?
+        "ndnsf-di-automatic-onnx-contract-v3" : "ndnsf-di-automatic-onnx-contract-v2");
+      BOOST_CHECK_EQUAL(automaticOnnxGenerationJson(model.contract.generation)
+                          .at("schema").get<std::string>(), configuration >= 12 ?
+        "ndnsf-di-automatic-generation-v3" : configuration >= 6 ?
+        "ndnsf-di-automatic-generation-v2" : "ndnsf-di-automatic-generation-v1");
+      if (variant == 3)
+        BOOST_CHECK(model.contract.floatingLiterals.at("graph/runtime-scale") ==
+                    std::vector<std::uint8_t>({0, 0, 0, 64}));
+      Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "spec233-full-cycle-reference");
+      Ort::SessionOptions options;
+      options.SetIntraOpNumThreads(1); options.SetInterOpNumThreads(1);
+      options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+      Ort::Session session(environment, file.path.c_str(), options);
+      const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+      const std::array<const char*, 3> outputNames{"scores", "new,key=0", "new,value=0"};
+      auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+      std::shared_ptr<const AutomaticOnnxRequestBinding> previousRequest;
+      for (const std::int64_t batch : {1, 2}) for (const std::int64_t prompt : {1, 3}) {
+        const auto requestStarted = std::chrono::steady_clock::now();
+        BOOST_TEST_MESSAGE("generation request begin configuration=" << configuration <<
+                           " batch=" << batch << " prompt=" << prompt);
+        auto initialInputs = generationInputs(batch, prompt);
+        applyGenerationInputVariant(initialInputs, variant);
+        const auto envelope = bindAutomaticOnnxShapes(model.contract, initialInputs,
+                                                       9, 16, stateControl());
+        // The raw session below owns the reference state and greedy choices. The
+        // production runner is checked separately, including source-derived controls.
+        std::unique_ptr<OnnxRuntimeModelRunner> runner;
+        std::optional<NativeModelRunnerSpec> runnerSpec;
+        std::optional<NativeSelectionProjectionV3> runnerProjection;
+        auto reference = std::make_shared<GenerationReference>();
+        RoleExecutionContext context;
+        if (batch == 1) {
+          auto projection = fixture::automaticSourceProjection(model, automaticOnnxShapeSeed(envelope));
+          projection.requestId += "-prompt-" + std::to_string(prompt);
+          projection.dataflow.requestId = projection.requestId;
+          auto& generation = projection.generationContract;
+          generation.enabled = true;
+          generation.mode = "TOKEN_STREAMING";
+          generation.maxGeneratedTokens = 9;
+          generation.streamingOperationStride = 1;
+          generation.tokenInputName = "ids";
+          generation.attentionMaskInputName = "mask";
+          generation.positionIdsInputName = "positions";
+          generation.stateInputNames = {"old,key=0", "old,value=0"};
+          generation.stateOutputNames = {"new,key=0", "new,value=0"};
+          generation.eosTokenIds = variant == 0 ? std::vector<std::int64_t>{10} :
+                                                 std::vector<std::int64_t>{0};
+          // Max-token-only policy makes both new models exercise all nine rounds.
+          if (configuration >= 6) generation.eosTokenIds.clear();
+          // These are explicit local fixture commitments, not a signed production
+          // manifest or placement proof. Bind them to this actual graph and recipe.
+          projection.assembly.modelManifestDigest = nativePlanningDigest(nativeCanonicalJson(
+            NativeJson{{"fixture", "generation-source"}, {"model", model.opened.modelDigest},
+                       {"contract", envelope.contractDigest}}));
+          projection.assembly.adapterDescriptorDigest = nativePlanningDigest(nativeCanonicalJson(
+            NativeJson{{"adapter", projection.assembly.adapterId},
+                       {"version", projection.assembly.adapterVersion}}));
+          projection.assembly.recipeDigest =
+            nativePlanningDigest(canonicalNativeOnnxRecipeJson(projection.assembly));
+          projection.selectedRole = projection.assembly;
+          projection.planDigest = nativePlanningDigest(nativeCanonicalJson(
+            NativeJson{{"fixture", "generation-local-feedback"},
+                       {"recipe", projection.assembly.recipeDigest},
+                       {"provider", projection.provider}}));
+          projection.dataflow.planDigest = projection.planDigest;
+          const auto source = AutomaticOnnxSourceBinding::fromSourceMetadata(
+            NativeJson{{"contract", nativeParseJson(model.contract.canonicalJson(stateControl()))},
+                       {"externalFiles", NativeJson::array()}},
+            model.opened.modelDigest, 0, "", stateControl());
+          auto spec = fixture::automaticSourceRunnerSpec(file.path.string(), file.root.string(),
+            projection, source.canonicalJson(stateControl()));
+          runnerSpec = spec;
+          runnerProjection = projection;
+          runner = std::make_unique<OnnxRuntimeModelRunner>(spec, sessionCache);
+          NativeRequestControl request;
+          request.requestId = projection.requestId;
+          request.attempt = projection.attempt;
+          request.deadline = stateControl().deadline;
+          context.role = spec.role;
+          context.requestId = context.sessionId = projection.requestId;
+          context.attemptEpoch = projection.attempt;
+          context.automaticBinding = runner->validateAutomaticRequestBinding(projection, request);
+          BOOST_REQUIRE(context.automaticBinding);
+          if (previousRequest) {
+            BOOST_CHECK(context.automaticBinding != previousRequest);
+            BOOST_CHECK(&context.automaticBinding->source() == &previousRequest->source());
+            BOOST_CHECK(context.automaticBinding->envelope().bindingDigest !=
+                        previousRequest->envelope().bindingDigest);
+          }
+        }
+        std::vector<NamedTensor> previous;
+        std::vector<std::int64_t> next(batch);
+        std::vector<std::vector<std::int64_t>> consumed(batch);
+        for (std::uint64_t round = 0; round < 9; ++round) {
+          const auto sequence = round == 0 ? prompt : 1;
+          const auto past = round == 0 ? 0 : prompt + static_cast<std::int64_t>(round) - 1;
+          auto inputs = generationInputs(batch, sequence, past);
+          std::vector<std::int64_t> tokens;
+          for (std::int64_t b = 0; b < batch; ++b) for (std::int64_t s = 0; s < sequence; ++s) {
+            const auto token = round == 0 ? (b + s + 1) % 11 : next[b];
+            tokens.push_back(token); consumed[b].push_back(token);
+          }
+          inputs[0] = generationInteger("ids", {batch, sequence}, tokens);
+          applyGenerationInputVariant(inputs, variant);
+          if (round != 0) {
+            for (std::size_t state = 0; state < 2; ++state) {
+              const auto feedback = configuration >= 12 ? reference->back()[state + 1] :
+                configuration >= 10 ?
+                referenceGenerationFeedback(previous[state + 1], feedbackVariant, variant) :
+                previous[state + 1];
+              BOOST_REQUIRE(feedback.shape == inputs[state + 3].shape);
+              inputs[state + 3].payload = feedback.payload;
+            }
+          }
+          validateAutomaticOnnxTensors(model.contract, envelope, model.contract.modelInputs,
+                                        inputs, round, stateControl());
+          std::vector<const char*> inputNames;
+          std::vector<Ort::Value> values;
+          std::uint64_t emptyStorage = 0;
+          for (auto& input : inputs) {
+            inputNames.push_back(input.name.c_str());
+            const auto type = input.elementType == TensorElementType::Int64 ?
+              ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 : input.elementType == TensorElementType::Int32 ?
+              ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 : ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+            values.push_back(Ort::Value::CreateTensor(memory,
+              input.payload.empty() ? static_cast<void*>(&emptyStorage) : input.payload.data(),
+              input.payload.size(), input.shape.data(), input.shape.size(), type));
+          }
+          auto actual = session.Run(Ort::RunOptions{nullptr}, inputNames.data(), values.data(),
+            values.size(), outputNames.data(), outputNames.size());
+          previous.clear();
+          for (std::size_t index = 0; index < actual.size(); ++index) {
+            const auto info = actual[index].GetTensorTypeAndShapeInfo();
+            const auto expectedType = index == 0 && variant != 0 ?
+              (variant == 1 ? ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 : ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16) :
+              ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+            BOOST_REQUIRE(info.GetElementType() == expectedType);
+            const auto wireType = index == 0 && variant != 0 ?
+              (variant == 1 ? TensorElementType::Float16 : TensorElementType::BFLOAT16) :
+              TensorElementType::Float32;
+            NamedTensor output{outputNames[index], wireType, info.GetShape(),
+              std::vector<std::uint8_t>(info.GetElementCount() * tensorElementByteSize(wireType))};
+            std::memcpy(output.payload.data(), actual[index].GetTensorRawData(), output.payload.size());
+            previous.push_back(std::move(output));
+          }
+          validateAutomaticOnnxTensors(model.contract, envelope, model.contract.modelOutputs,
+                                        previous, round, stateControl());
+          auto referenceEpoch = previous;
+          if (configuration >= 10) {
+            for (std::size_t state = 1; state < referenceEpoch.size(); ++state) {
+              const bool delta = configuration >= 12 && (configuration < 14 || state == 1);
+              referenceEpoch[state] = delta ? referenceDeltaFeedback(previous[state],
+                feedbackVariant, variant, inputs[state + 2]) :
+                referenceGenerationFeedback(previous[state], feedbackVariant, variant);
+            }
+          }
+          reference->push_back(std::move(referenceEpoch));
+          if (variant != 0 && round == 0 && prompt == 3) {
+            // Uniform post-projection adds the same residual to every hidden
+            // coordinate; the embedding maxima therefore pick distinct words.
+            BOOST_CHECK_EQUAL(referenceGenerationToken(previous[0], variant, 0, 0), 4);
+            BOOST_CHECK_EQUAL(referenceGenerationToken(previous[0], variant, 0), 1);
+          }
+          if (runner) {
+            context.inferenceEpoch = round;
+            auto supplied = inputs;
+            // Omit only derived controls. Explicit KV payloads are the independently
+            // computed previous reference outputs, never opaque resident handles.
+            supplied.erase(supplied.begin() + 1, supplied.begin() + 3);
+            context.inputsByScope = {{"input", makeEncodedTensorBundle("input", supplied)}};
+            if (round == 0) {
+              auto invalid = context;
+              auto wrongMask = inputs;
+              wrongMask[1].payload.front() = 0;
+              invalid.inputsByScope = {{"input", makeEncodedTensorBundle("input", wrongMask)}};
+              BOOST_CHECK_THROW(runner->run(invalid), std::invalid_argument);
+              invalid = context;
+              invalid.inferenceEpoch = 9;
+              BOOST_CHECK_THROW(runner->run(invalid), std::invalid_argument);
+              invalid = context;
+              invalid.executionGuard = [] { throw std::runtime_error("fixture request cancelled"); };
+              BOOST_CHECK_EXCEPTION(runner->run(invalid), std::runtime_error, [] (const auto& error) {
+                return std::string(error.what()) == "fixture request cancelled";
+              });
+              if (previousRequest) {
+                invalid = context;
+                invalid.automaticBinding = previousRequest;
+                BOOST_CHECK_EXCEPTION(runner->run(invalid), std::invalid_argument,
+                  [] (const auto& error) {
+                    return std::string(error.what()) == "AUTOMATIC_REQUEST_EXECUTION_BINDING";
+                  });
+              }
+            }
+            const auto result = runner->run(context);
+            std::map<std::string, NamedTensor> byName;
+            for (const auto& [scope, bundle] : result) {
+              for (auto output : decodeTensorBundle(bundle.payload)) {
+                const auto name = output.name;
+                BOOST_REQUIRE(byName.emplace(name, std::move(output)).second);
+              }
+            }
+            BOOST_REQUIRE_EQUAL(byName.size(), previous.size());
+            if (configuration >= 10) {
+              const std::vector<std::string> stateInputs{"old,key=0", "old,value=0"};
+              const std::vector<std::string> stateOutputs{"new,key=0", "new,value=0"};
+              const auto packed = makeNativeProviderDecodeState(runner.get(), result,
+                stateInputs, stateOutputs, context);
+              const auto feedback = decodeTensorBundle(packed.payload);
+              BOOST_REQUIRE_EQUAL(feedback.size(), 2U);
+              for (std::size_t state = 0; state < feedback.size(); ++state) {
+                // Relayout preserves this execution's raw bits. The independent
+                // ORT execution remains a separate numerical oracle below.
+                const bool delta = configuration >= 12 && (configuration < 14 || state == 0);
+                const auto expected = delta ? referenceDeltaFeedback(byName.at(stateOutputs[state]),
+                  feedbackVariant, variant, inputs[state + 3]) :
+                  referenceGenerationFeedback(byName.at(stateOutputs[state]), feedbackVariant, variant);
+                BOOST_CHECK_EQUAL(feedback[state].name, stateInputs[state]);
+                BOOST_CHECK(feedback[state].elementType == expected.elementType);
+                BOOST_CHECK(feedback[state].shape == expected.shape);
+                BOOST_CHECK(feedback[state].payload == expected.payload);
+              }
+              if (configuration >= 12 && round > 0) {
+                const auto originalInput = context.inputsByScope.at("input").payload;
+                const auto originalOutputs = result;
+                for (unsigned failure = 0; failure < 2; ++failure) {
+                  auto invalid = context;
+                  auto badInputs = supplied;
+                  if (failure == 0) badInputs.erase(badInputs.begin() + 1, badInputs.end());
+                  else {
+                    badInputs[1].elementType = TensorElementType::UInt8;
+                    badInputs[1].payload.resize(badInputs[1].payload.size() / 4);
+                  }
+                  invalid.inputsByScope = {{"input", makeEncodedTensorBundle("input", badInputs)}};
+                  BOOST_CHECK_EXCEPTION(makeNativeProviderDecodeState(runner.get(), result,
+                    stateInputs, stateOutputs, invalid), std::invalid_argument,
+                    [failure] (const auto& ex) {
+                      return std::string(ex.what()) == (failure == 0 ?
+                        "AUTOMATIC_STATE_PREDECESSOR_REQUIRED" :
+                        "AUTOMATIC_STATE_PREDECESSOR_BINDING");
+                    });
+                  BOOST_CHECK(context.inputsByScope.at("input").payload == originalInput);
+                  for (const auto& [scope, bundle] : result)
+                    BOOST_CHECK(bundle.payload == originalOutputs.at(scope).payload);
+                }
+              }
+              if (round == 0) {
+                auto wrongOutputs = stateOutputs;
+                std::swap(wrongOutputs[0], wrongOutputs[1]);
+                BOOST_CHECK_THROW(makeNativeProviderDecodeState(runner.get(), result,
+                  stateInputs, wrongOutputs, context), std::invalid_argument);
+                auto duplicateInputs = stateInputs;
+                duplicateInputs[1] = duplicateInputs[0];
+                BOOST_CHECK_THROW(makeNativeProviderDecodeState(runner.get(), result,
+                  duplicateInputs, stateOutputs, context), std::invalid_argument);
+                auto cancelled = context;
+                cancelled.executionGuard = [] { throw std::runtime_error("feedback cancelled"); };
+                BOOST_CHECK_THROW(makeNativeProviderDecodeState(runner.get(), result,
+                  stateInputs, stateOutputs, cancelled), std::runtime_error);
+                BOOST_CHECK_THROW(makeNativeProviderDecodeState(nullptr, result,
+                  stateInputs, stateOutputs, context), std::invalid_argument);
+              }
+            }
+            for (const auto& expected : previous) {
+              BOOST_REQUIRE(byName.count(expected.name));
+              const auto& output = byName.at(expected.name);
+              BOOST_CHECK(output.elementType == expected.elementType);
+              BOOST_CHECK(output.shape == expected.shape);
+              BOOST_REQUIRE_EQUAL(output.payload.size(), expected.payload.size());
+              const auto count = expected.payload.size() / tensorElementByteSize(expected.elementType);
+              for (std::size_t index = 0; index < count; ++index)
+                BOOST_CHECK_SMALL(referenceGenerationValue(output, index) -
+                                  referenceGenerationValue(expected, index), 1.0e-6F);
+            }
+          }
+          BOOST_CHECK(previous[0].shape == (variant == 0 ?
+            std::vector<std::int64_t>{batch, sequence, 11} :
+            std::vector<std::int64_t>{11, sequence, batch}));
+          for (std::size_t role = 1; role < 3; ++role) {
+            const bool delta = configuration >= 12 && (configuration < 14 || role == 1);
+            const auto length = delta ? sequence : past + sequence;
+            BOOST_CHECK(previous[role].shape == (feedbackVariant == 0 ?
+              std::vector<std::int64_t>{batch, 1, length, 8} :
+              std::vector<std::int64_t>{8, batch, 1, length}));
+            const auto* cache = actual[role].GetTensorData<float>();
+            for (std::int64_t b = 0; b < batch; ++b) {
+              for (std::size_t token = 0; token < static_cast<std::size_t>(length); ++token) {
+                const auto position = delta ? past + token : token;
+                float expected = 0;
+                for (std::uint64_t hidden = 0; hidden < 7; ++hidden)
+                  expected += ((consumed[b][position] * 7 + hidden) % 11 + 1) * 0.01F *
+                    (role == 1 ? 0.02F : 0.03F);
+                for (std::size_t dimension = 0; dimension < 8; ++dimension) {
+                  auto expectedDimension = expected;
+                  if (configuration >= 8 && role == 1) {
+                    // Independent RMS and split-half math, including nonuniform paired gamma.
+                    const auto normalized = expected / std::sqrt(expected * expected + 0.0001F);
+                    const auto paired = dimension < 4 ? dimension + 4 : dimension - 4;
+                    const auto current = normalized * (1.0F + 0.05F * dimension);
+                    const auto partner = normalized * (1.0F + 0.05F * paired);
+                    const auto phase = static_cast<float>(position) * (0.013F * (dimension % 4 + 1));
+                    expectedDimension = current * std::cos(phase) +
+                      (dimension < 4 ? -partner : partner) * std::sin(phase);
+                  }
+                  else if (configuration >= 6 && role == 1) {
+                    // RotaryEmbedding defaults to split-half pairing (interleaved=0).
+                    // Uniform projected K makes the paired component equal to expected.
+                    const auto phase = 0.013F * (position + 1) * (dimension % 4 + 1);
+                    expectedDimension = expected * std::cos(phase) +
+                      (dimension < 4 ? -expected : expected) * std::sin(phase);
+                  }
+                  const auto offset = feedbackVariant == 0 ?
+                    (b * length + token) * 8 + dimension :
+                    (dimension * batch + b) * length + token;
+                  BOOST_CHECK_SMALL(cache[offset] - expectedDimension, 1.0e-6F);
+                }
+              }
+            }
+          }
+          for (std::int64_t b = 0; b < batch; ++b)
+            next[b] = referenceGenerationToken(previous[0], variant, b);
+        }
+        BOOST_TEST_MESSAGE("generation raw/explicit complete configuration=" << configuration <<
+          " batch=" << batch << " prompt=" << prompt << " wallMs=" <<
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - requestStarted).count());
+        if (runner) {
+          const auto ownerStarted = std::chrono::steady_clock::now();
+          runner->releaseSessionState(context.sessionId);
+          BOOST_CHECK(!runner->stateHandleSnapshot(context.sessionId));
+          checkNativeGenerationEpochs(*runnerSpec, *runnerProjection,
+                                      initialInputs, reference, sessionCache, variant);
+          BOOST_TEST_MESSAGE("generation native owners complete configuration=" << configuration <<
+            " prompt=" << prompt << " wallMs=" <<
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - ownerStarted).count());
+          previousRequest = context.automaticBinding;
+        }
+      }
+      BOOST_CHECK_EQUAL(sessionCache->counters().loads, 1U);
+      BOOST_CHECK_EQUAL(sessionCache->counters().hits, 3U);
+      sessionCache->close();
+      BOOST_CHECK(sessionCache->drain(std::chrono::milliseconds(50)));
+    }
+    BOOST_TEST_MESSAGE("generation configuration complete=" << configuration << " wallMs=" <<
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - configurationStarted).count());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
+{
+  // Opt-in real-source oracle (CD04.4.9). The ordinary asset-free selector
+  // leaves this case inert; explicit selection must fail without its frozen row.
+  const auto* rowEnv = std::getenv("NDNSF_SPEC233_REAL_GENERATION_ROW");
+  if (rowEnv == nullptr || *rowEnv == '\0') {
+    BOOST_TEST_MESSAGE("real-source generation oracle not selected; set "
+      "NDNSF_SPEC233_REAL_GENERATION_ROW=Q06-I4 and NDNSF_SPEC233_REAL_MODEL to the frozen source");
+    return;
+  }
+  const std::string row(rowEnv);
+  BOOST_REQUIRE_MESSAGE(row == "Q06-I4", "unsupported frozen row: " + row);
+  const auto* pathEnv = std::getenv("NDNSF_SPEC233_REAL_MODEL");
+  BOOST_REQUIRE_MESSAGE(pathEnv != nullptr && *pathEnv != '\0',
+    "NDNSF_SPEC233_REAL_MODEL is required for frozen row " + row);
+  const std::string modelPath(pathEnv);
+  std::error_code missing;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::path(modelPath).is_absolute(),
+    "NDNSF_SPEC233_REAL_MODEL must be an absolute source path: " + modelPath);
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(modelPath, missing) && !missing,
+    "frozen row source is missing: " + modelPath);
+
+  // Pinned Q06-I4 signature. Independent constants, never inferred from the
+  // graph under test; the source-derived proof must agree with them.
+  constexpr std::uint64_t kLayers = 28;
+  constexpr std::uint64_t kKvHeads = 8;
+  constexpr std::uint64_t kHeadSize = 128;
+  constexpr std::uint64_t kVocabulary = 151936;
+  constexpr std::uint64_t kMaxNewTokens = 8;
+  constexpr std::int64_t kRounds = 9;
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(30);
+  const ndnsf::di::NativeAssemblyControl control{deadline, [] {}, 4ULL << 30, 4ULL << 30};
+  const auto model = inspectAutomaticOnnxModel({modelPath}, control);
+  BOOST_REQUIRE_MESSAGE(model.contract.generation.has_value(),
+    "source generation proof unavailable: " + model.generationDiagnostic);
+  const auto& generation = *model.contract.generation;
+  const auto strip = [] (const std::string& name) -> std::string {
+    return name.size() > 6 && name.compare(0, 6, "graph/") == 0 ? name.substr(6) : name;
+  };
+  BOOST_CHECK_EQUAL(generation.vocabularySize, kVocabulary);
+  BOOST_CHECK_EQUAL(generation.ruleId, "causal-gqa");
+  BOOST_CHECK_EQUAL(generation.tokenBatchAxis, 0U);
+  BOOST_CHECK_EQUAL(generation.tokenSequenceAxis, 1U);
+  BOOST_CHECK_EQUAL(generation.maskBatchAxis, 0U);
+  BOOST_CHECK_EQUAL(generation.maskContextAxis, 1U);
+  BOOST_CHECK_EQUAL(generation.positionBatchAxis, 0U);
+  BOOST_CHECK_EQUAL(generation.positionSequenceAxis, 1U);
+  BOOST_CHECK_EQUAL(generation.logitsBatchAxis, 0U);
+  BOOST_CHECK_EQUAL(generation.logitsSequenceAxis, 1U);
+  BOOST_CHECK_EQUAL(generation.logitsVocabularyAxis, 2U);
+  BOOST_CHECK_EQUAL(generation.contextLimit, 40960U);
+  BOOST_CHECK(strip(generation.tokenInput) == "input_ids");
+  BOOST_CHECK(strip(generation.maskInput) == "attention_mask");
+  BOOST_CHECK(strip(generation.positionInput) == "position_ids");
+  BOOST_CHECK(strip(generation.logitsOutput) == "logits");
+  BOOST_REQUIRE_EQUAL(generation.states.size(), kLayers * 2);
+  BOOST_CHECK(strip(generation.states.front().input) == "past_key_values.0.key");
+  BOOST_CHECK(strip(generation.states.back().output) ==
+    "present." + std::to_string(kLayers - 1) + ".value");
+  BOOST_CHECK(generation.states.front().role == AutomaticAttentionState::Role::KEY);
+  BOOST_CHECK(generation.states[1].role == AutomaticAttentionState::Role::VALUE);
+  BOOST_CHECK(generation.states.back().role == AutomaticAttentionState::Role::VALUE);
+  for (const auto& state : generation.states) {
+    BOOST_CHECK_EQUAL(state.heads, kKvHeads);
+    BOOST_CHECK_EQUAL(state.headSize, kHeadSize);
+    BOOST_CHECK(state.elementType == TensorElementType::Float32);
+    BOOST_CHECK(state.inputAxes == (std::array<std::uint64_t, 4>{0, 1, 2, 3}));
+    BOOST_CHECK(state.outputAxes == (std::array<std::uint64_t, 4>{0, 1, 2, 3}));
+  }
+
+  const auto makeInitial = [&] (std::int64_t length) {
+    std::vector<std::int64_t> tokens, mask, positions;
+    for (std::int64_t index = 0; index < length; ++index) {
+      tokens.push_back(151600 + index);
+      mask.push_back(1);
+      positions.push_back(index);
+    }
+    std::vector<NamedTensor> inputs;
+    inputs.push_back(generationInteger(strip(generation.tokenInput), {1, length}, tokens));
+    inputs.push_back(generationInteger(strip(generation.maskInput), {1, length}, mask));
+    inputs.push_back(generationInteger(strip(generation.positionInput), {1, length}, positions));
+    const std::vector<std::int64_t> emptyState{
+      1, static_cast<std::int64_t>(kKvHeads), 0, static_cast<std::int64_t>(kHeadSize)};
+    for (const auto& state : generation.states)
+      inputs.push_back(generationFloat(strip(state.input), emptyState));
+    return inputs;
+  };
+
+  struct RealRequest
+  {
+    NativeSelectionProjectionV3 projection;
+    NativeModelRunnerSpec spec;
+    std::vector<NamedTensor> initial;
+  };
+  const std::string scratchRoot = "/tmp/ndnsf-spec233-real-scratch";
+  std::filesystem::create_directories(scratchRoot);
+  // The Provider executes an assembled artifact named model.onnx, not the
+  // source filename. Hard-link the frozen bytes so the identity digest is
+  // unchanged and the reference must execute the same physical artifact.
+  const auto assembledPath = std::filesystem::path(scratchRoot) / "model.onnx";
+  if (!std::filesystem::exists(assembledPath)) {
+    std::error_code linkError;
+    std::filesystem::create_hard_link(modelPath, assembledPath, linkError);
+    if (linkError) {
+      std::filesystem::copy_file(modelPath, assembledPath,
+        std::filesystem::copy_options::overwrite_existing, linkError);
+      BOOST_REQUIRE_MESSAGE(!linkError,
+        "cannot stage the assembled source: " + linkError.message());
+    }
+  }
+  const auto assembledSource = assembledPath.string();
+  const auto sourceBinding = AutomaticOnnxSourceBinding::fromSourceMetadata(
+    NativeJson{{"contract", nativeParseJson(model.contract.canonicalJson(control))},
+               {"externalFiles", NativeJson::array()}},
+    model.opened.modelDigest, 0, "", control);
+  const auto prepare = [&] (std::int64_t length, const std::string& requestId) {
+    RealRequest request;
+    request.initial = makeInitial(length);
+    const auto envelope = bindAutomaticOnnxShapes(model.contract, request.initial,
+                                                  kMaxNewTokens + 1, 32, control);
+    request.projection = fixture::automaticSourceProjection(model,
+      automaticOnnxShapeSeed(envelope));
+    request.projection.requestId = requestId;
+    request.projection.dataflow.requestId = requestId;
+    request.projection.assembly.maxSourceBytes = request.projection.assembly.maxAssembledBytes =
+      2ULL << 30;
+    request.projection.assembly.maxNodes = 4096;
+    request.projection.assembly.recipeDigest = nativePlanningDigest(
+      canonicalNativeOnnxRecipeJson(request.projection.assembly));
+    request.projection.selectedRole = request.projection.assembly;
+    request.projection.planDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+      {"fixture", "real-generation-q06-i4"},
+      {"recipe", request.projection.assembly.recipeDigest},
+      {"provider", request.projection.provider}}));
+    request.projection.dataflow.planDigest = request.projection.planDigest;
+    auto& contract = request.projection.generationContract;
+    contract.enabled = true;
+    contract.mode = "TOKEN_STREAMING";
+    contract.maxGeneratedTokens = kMaxNewTokens + 1;
+    contract.streamingOperationStride = 1;
+    contract.tokenInputName = strip(generation.tokenInput);
+    contract.attentionMaskInputName = strip(generation.maskInput);
+    contract.positionIdsInputName = strip(generation.positionInput);
+    contract.stateInputNames.clear();
+    contract.stateOutputNames.clear();
+    for (const auto& state : generation.states) {
+      contract.stateInputNames.push_back(strip(state.input));
+      contract.stateOutputNames.push_back(strip(state.output));
+    }
+    contract.eosTokenIds.clear();
+    request.spec = fixture::automaticSourceRunnerSpec(assembledSource, scratchRoot,
+      request.projection, sourceBinding.canonicalJson(control));
+    return request;
+  };
+
+  const auto onnxType = [] (TensorElementType type) {
+    switch (type) {
+    case TensorElementType::Int64: return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+    case TensorElementType::Int32: return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+    case TensorElementType::Float32: return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    case TensorElementType::Float16: return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+    case TensorElementType::BFLOAT16: return ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16;
+    default: throw std::invalid_argument("raw reference input type is unsupported");
+    }
+  };
+  const auto wireType = [] (ONNXTensorElementDataType type) {
+    switch (type) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: return TensorElementType::Float32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: return TensorElementType::Float16;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16: return TensorElementType::BFLOAT16;
+    default: throw std::invalid_argument("raw reference output type is unsupported");
+    }
+  };
+
+  const auto rawReferences = [&] {
+    const auto started = std::chrono::steady_clock::now();
+    Ort::Env environment(ORT_LOGGING_LEVEL_WARNING, "spec233-real-q06-i4");
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    options.SetInterOpNumThreads(1);
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    Ort::Session session(environment, modelPath.c_str(), options);
+    const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    // The contract keeps canonical "graph/" names; the physical ORT model uses
+    // the bare export names. The reference executes the physical names.
+    std::vector<std::string> bareInputs, bareOutputs;
+    for (const auto& name : model.contract.modelInputs) bareInputs.push_back(strip(name));
+    for (const auto& name : model.contract.modelOutputs) bareOutputs.push_back(strip(name));
+    const auto run = [&] (std::int64_t length) {
+      auto reference = std::make_shared<GenerationReference>();
+      std::map<std::string, NamedTensor> past;
+      std::vector<std::int64_t> nextToken{151600};
+      for (std::int64_t round = 0; round < kRounds; ++round) {
+        const auto roundStarted = std::chrono::steady_clock::now();
+        const auto sequence = round == 0 ? length : 1;
+        const auto pastLength = round == 0 ? 0 : length + round - 1;
+        std::vector<std::int64_t> ids, mask, positions;
+        for (std::int64_t index = 0; index < sequence; ++index)
+          ids.push_back(round == 0 ? 151600 + index : nextToken.front());
+        for (std::int64_t index = 0; index < pastLength + sequence; ++index) mask.push_back(1);
+        for (std::int64_t index = 0; index < sequence; ++index)
+          positions.push_back(pastLength + index);
+        std::map<std::string, NamedTensor> named;
+        named.emplace(strip(generation.tokenInput),
+          generationInteger(strip(generation.tokenInput), {1, sequence}, ids));
+        named.emplace(strip(generation.maskInput),
+          generationInteger(strip(generation.maskInput), {1, pastLength + sequence}, mask));
+        named.emplace(strip(generation.positionInput),
+          generationInteger(strip(generation.positionInput), {1, sequence}, positions));
+        for (const auto& state : generation.states) {
+          const auto inputName = strip(state.input);
+          if (round == 0) {
+            named.emplace(inputName, generationFloat(inputName, {1,
+              static_cast<std::int64_t>(kKvHeads), 0,
+              static_cast<std::int64_t>(kHeadSize)}));
+            continue;
+          }
+          auto previous = past.at(strip(state.output));
+          previous.name = inputName;
+          named.emplace(inputName, std::move(previous));
+        }
+        std::vector<const char*> inputNames;
+        std::vector<Ort::Value> values;
+        std::uint64_t empty = 0;
+        for (const auto& name : bareInputs) {
+          auto& tensor = named.at(name);
+          inputNames.push_back(name.c_str());
+          values.push_back(Ort::Value::CreateTensor(memory,
+            tensor.payload.empty() ? static_cast<void*>(&empty) : tensor.payload.data(),
+            tensor.payload.size(), tensor.shape.data(), tensor.shape.size(),
+            onnxType(tensor.elementType)));
+        }
+        std::vector<const char*> outputNames;
+        for (const auto& name : bareOutputs) outputNames.push_back(name.c_str());
+        auto actual = session.Run(Ort::RunOptions{nullptr}, inputNames.data(), values.data(),
+          values.size(), outputNames.data(), outputNames.size());
+        std::map<std::string, NamedTensor> outputs;
+        for (std::size_t index = 0; index < actual.size(); ++index) {
+          const auto info = actual[index].GetTensorTypeAndShapeInfo();
+          const auto type = wireType(info.GetElementType());
+          NamedTensor output{bareOutputs[index], type, info.GetShape(),
+            std::vector<std::uint8_t>(
+              static_cast<std::size_t>(info.GetElementCount()) * tensorElementByteSize(type))};
+          std::memcpy(output.payload.data(), actual[index].GetTensorRawData(),
+                      output.payload.size());
+          outputs.emplace(output.name, std::move(output));
+        }
+        std::vector<NamedTensor> epoch;
+        epoch.push_back(outputs.at(strip(generation.logitsOutput)));
+        for (const auto& state : generation.states)
+          epoch.push_back(outputs.at(strip(state.output)));
+        for (const auto& state : generation.states) past[strip(state.output)] = outputs.at(
+          strip(state.output));
+        const auto& logits = epoch.front();
+        const auto vocabulary = static_cast<std::size_t>(logits.shape.back());
+        const auto rows = static_cast<std::size_t>(logits.shape.at(1));
+        const auto* valuesAt = reinterpret_cast<const float*>(logits.payload.data());
+        std::int64_t selected = 0;
+        float best = -std::numeric_limits<float>::infinity();
+        for (std::size_t index = 0; index < vocabulary; ++index) {
+          const auto value = valuesAt[(rows - 1) * vocabulary + index];
+          if (value > best) { best = value; selected = static_cast<std::int64_t>(index); }
+        }
+        nextToken.assign(1, selected);
+        reference->push_back(std::move(epoch));
+        BOOST_TEST_MESSAGE("real raw round complete requestLength=" << length <<
+          " round=" << round << " wallMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - roundStarted).count());
+      }
+      return reference;
+    };
+    auto references = std::make_pair(run(8), run(5));
+    BOOST_TEST_MESSAGE("real raw reference complete wallMs=" <<
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count());
+    return references;
+  };
+
+  const auto raw = rawReferences();
+  {
+    // Whole-candidate budget: one full decode round's 56 targets exceed a cap
+    // that still admits the contract and the shape envelope. The rejection must
+    // be the aggregate cap, not one member or the envelope value.
+    const auto contractBytes = model.contract.canonicalJson(control).size();
+    const auto tightBudget = static_cast<std::uint64_t>(contractBytes * 2);
+    const NativeAssemblyControl tightControl{deadline, [] {}, 4ULL << 30, tightBudget};
+    auto tightProjection = fixture::automaticSourceProjection(model,
+      automaticOnnxShapeSeed(bindAutomaticOnnxShapes(model.contract, makeInitial(8),
+                                                    kMaxNewTokens + 1, 32, tightControl)));
+    tightProjection.requestId = "/source-request-q06-i4-budget";
+    tightProjection.dataflow.requestId = tightProjection.requestId;
+    tightProjection.assembly.maxSourceBytes = 4ULL << 30;
+    tightProjection.assembly.maxAssembledBytes = tightBudget;
+    tightProjection.assembly.maxNodes = 4096;
+    tightProjection.assembly.recipeDigest = nativePlanningDigest(
+      canonicalNativeOnnxRecipeJson(tightProjection.assembly));
+    tightProjection.selectedRole = tightProjection.assembly;
+    tightProjection.planDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+      {"fixture", "real-generation-q06-i4-budget"},
+      {"recipe", tightProjection.assembly.recipeDigest},
+      {"provider", tightProjection.provider}}));
+    tightProjection.dataflow.planDigest = tightProjection.planDigest;
+    auto& tightGeneration = tightProjection.generationContract;
+    tightGeneration.enabled = true;
+    tightGeneration.mode = "TOKEN_STREAMING";
+    tightGeneration.maxGeneratedTokens = kMaxNewTokens + 1;
+    tightGeneration.streamingOperationStride = 1;
+    tightGeneration.tokenInputName = strip(generation.tokenInput);
+    tightGeneration.attentionMaskInputName = strip(generation.maskInput);
+    tightGeneration.positionIdsInputName = strip(generation.positionInput);
+    for (const auto& state : generation.states) {
+      tightGeneration.stateInputNames.push_back(strip(state.input));
+      tightGeneration.stateOutputNames.push_back(strip(state.output));
+    }
+    tightGeneration.eosTokenIds.clear();
+    NativeRequestControl tightRequest;
+    tightRequest.requestId = tightProjection.requestId;
+    tightRequest.attempt = tightProjection.attempt;
+    tightRequest.deadline = deadline;
+    BOOST_TEST_MESSAGE("aggregate budget contractBytes=" << contractBytes <<
+      " tightBytes=" << tightBudget << " firstTargetBytes=" <<
+      (static_cast<std::uint64_t>(kKvHeads) * 16 * kHeadSize * 4));
+    const auto tightBinding = AutomaticOnnxRequestBinding::admit(sourceBinding,
+      tightProjection, tightRequest);
+    RoleExecutionContext tightContext;
+    tightContext.requestId = tightProjection.requestId;
+    tightContext.attemptEpoch = tightProjection.attempt;
+    tightContext.role = tightProjection.executionRole.roleId;
+    tightContext.inferenceEpoch = kRounds - 1;
+    std::vector<NamedTensorView> tightRaw;
+    const auto& finalEpoch = raw.first->at(kRounds - 1);
+    for (std::size_t index = 1; index < finalEpoch.size(); ++index)
+      tightRaw.push_back({finalEpoch[index].name, finalEpoch[index].elementType,
+        finalEpoch[index].shape, ndn::span<const std::uint8_t>(
+          finalEpoch[index].payload.data(), finalEpoch[index].payload.size())});
+    BOOST_CHECK_EXCEPTION(tightBinding->normalizeStateFeedback(tightRaw, tightContext),
+      std::invalid_argument, [] (const auto& error) {
+        return std::string(error.what()) == "AUTOMATIC_STATE_FEEDBACK_BUDGET";
+      });
+  }
+  auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+  for (const auto& [length, requestId, reference] : {
+         std::tuple<std::int64_t, std::string, std::shared_ptr<GenerationReference>>{
+           8, "/source-request-q06-i4-a", raw.first},
+         std::tuple<std::int64_t, std::string, std::shared_ptr<GenerationReference>>{
+           5, "/source-request-q06-i4-b", raw.second}}) {
+    const auto started = std::chrono::steady_clock::now();
+    const auto request = prepare(length, requestId);
+    checkNativeGenerationEpochs(request.spec, request.projection, request.initial,
+                                reference, sessionCache, 0, 1.0e-5, 1.0e-5, deadline);
+    BOOST_TEST_MESSAGE("real native generation complete requestLength=" << length <<
+      " wallMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count());
+  }
+  BOOST_CHECK_EQUAL(sessionCache->counters().loads, 1U);
+  BOOST_CHECK_EQUAL(sessionCache->counters().hits, 1U);
+  sessionCache->close();
+  BOOST_CHECK(sessionCache->drain(std::chrono::milliseconds(50)));
 }
 #endif
 

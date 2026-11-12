@@ -3428,7 +3428,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               auto binding = runner->validateAutomaticRequestBinding(projection, control);
               if (!binding) throw std::invalid_argument("AUTOMATIC_REQUEST_BINDING_REQUIRED");
               if (binding->envelope().maxNewTokens != 0)
-                throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
+                (void)binding->generation();
               control.requireActive();
               return binding;
             };

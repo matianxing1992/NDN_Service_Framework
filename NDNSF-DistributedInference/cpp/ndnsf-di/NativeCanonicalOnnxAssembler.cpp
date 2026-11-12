@@ -1804,6 +1804,48 @@ validateNativeAutomaticCachedRunnerSource(
 
 namespace {
 
+bool
+usesFilesystemMaterials(const NativeSelectionProjectionV3& projection,
+                        const NativeCanonicalOnnxAssemblerOptions& options)
+{
+  if (options.cacheCompatibilitySourceDir.empty() || projection.canonicalArtifactName.empty())
+    return false;
+  const ndn::Name root(projection.canonicalArtifactName);
+  return root.size() >= 2 && root[-2] == ndn::name::Component("OBJECT");
+}
+
+NativeCanonicalOnnxFetchers
+effectiveFilesystemMaterialFetchers(const NativeCanonicalOnnxFetchers& base,
+                                    const NativeSelectionProjectionV3& projection,
+                                    const NativeCanonicalOnnxAssemblerOptions& options)
+{
+  if (!usesFilesystemMaterials(projection, options)) return base;
+  const ndn::Name root(projection.canonicalArtifactName);
+  const auto prefix = root.getPrefix(-2);
+  const auto read = [options, prefix, deadline = projection.deadlineMs] (
+      const ndn::Name& name, std::uint64_t maxBytes) {
+    requireActiveAssembly(options, deadline);
+    auto payload = readNativeFilesystemArtifact(options.cacheCompatibilitySourceDir,
+                                                prefix, name, maxBytes);
+    requireActiveAssembly(options, deadline);
+    return payload;
+  };
+  auto result = base;
+  result.getArtifact = [read, root] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != root) return std::nullopt;
+    return read(name, 4096);
+  };
+  const auto limit = std::min<std::uint64_t>({64ULL * 1024 * 1024,
+    projection.assemblyContract().maxSourceBytes, projection.assemblyContract().maxAssembledBytes});
+  result.fetchEncryptedLargeData = [read, limit,
+    service = ndn::Name(projection.plan.serviceName)] (
+      const ndn::Name& name, const ndn::Name& requestedService) -> std::optional<ndn::Buffer> {
+    if (!requestedService.empty() && requestedService != service) return std::nullopt;
+    return read(name, limit);
+  };
+  return result;
+}
+
 NativeCanonicalOnnxFetchers
 canonicalOnnxFetchersFor(ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                         const NativeSelectionProjectionV3& projection)
@@ -1990,7 +2032,7 @@ loadAutomaticCachedSource(const NativeCanonicalOnnxFetchers& fetchers,
 
 std::optional<NativeModelRunnerSpec>
 tryLoadNativeCanonicalOnnxRoleFromCache(
-  const NativeCanonicalOnnxFetchers& fetchers,
+  const NativeCanonicalOnnxFetchers& configuredFetchers,
   const NativeSelectionProjectionV3& projection,
   const NativeCanonicalOnnxAssemblerOptions& options,
   const std::string& canonicalSourceName,
@@ -1999,6 +2041,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   validateNativeAutomaticSelectionBinding(projection);
   if (projection.automaticShapeSeed)
     (void)automaticOnnxIoContractForProjection(projection);
+  const auto fetchers = effectiveFilesystemMaterialFetchers(configuredFetchers, projection, options);
   if (options.cacheDir.empty() || options.providerIdentity.empty())
     return std::nullopt;
   const bool protectedRole = projection.assemblyContract().protectionEpoch != "plaintext-v1";
@@ -2612,7 +2655,7 @@ makeNativeAssemblyProgressReporter(
 
 NativeModelRunnerSpec
 prepareNativeCanonicalOnnxRole(
-  const NativeCanonicalOnnxFetchers& fetchers,
+  const NativeCanonicalOnnxFetchers& configuredFetchers,
   const NativeSelectionProjectionV3& projection,
   const NativeCanonicalOnnxAssemblerOptions& options)
 {
@@ -2646,6 +2689,7 @@ prepareNativeCanonicalOnnxRole(
     options.protectedRuntime->withContentKey(nowMs(), [] (const auto&) {});
   }
   const bool cacheCompatibilityMode = !options.cacheCompatibilitySourceDir.empty();
+  const auto fetchers = effectiveFilesystemMaterialFetchers(configuredFetchers, projection, options);
   // Cache compatibility replaces only the root/source/initializer transport
   // reads with hash-verified local objects.  It does not bypass authenticated
   // Selection or the protected-role lease above: protected assembly still
@@ -2729,11 +2773,9 @@ prepareNativeCanonicalOnnxRole(
   reportProgress("ASSEMBLY_STARTED", 0.0);
   std::optional<ndn::Buffer> rootPayload;
   std::uint64_t rootPayloadBytes = 0;
-  const bool filesystemMaterials = cacheCompatibilityMode &&
-    rootName.size() >= 2 && rootName[-2] == ndn::name::Component("OBJECT");
+  const bool filesystemMaterials = usesFilesystemMaterials(projection, options);
   if (filesystemMaterials) {
-    rootPayload = readNativeFilesystemArtifact(options.cacheCompatibilitySourceDir,
-      rootName.getPrefix(-2), rootName, 4096);
+    rootPayload = fetchers.getArtifact(rootName);
     validateCanonicalRootPayload(rootPayload, projection);
     rootPayloadBytes = rootPayload->size();
     logRuntimeEvidence("NDNSF_DI_FILESYSTEM_MATERIAL_CACHE rootFetch=local repoFetch=skipped");
@@ -2986,15 +3028,7 @@ prepareNativeCanonicalOnnxRole(
       throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 
     NativeCanonicalOnnxFetchers effectiveFetchers = fetchers;
-    if (filesystemMaterials) {
-      effectiveFetchers.fetchEncryptedLargeData =
-        [cacheDirectory = options.cacheCompatibilitySourceDir,
-         prefix = rootName.getPrefix(-2)] (const ndn::Name& name, const ndn::Name&)
-          -> std::optional<ndn::Buffer> {
-          return readNativeFilesystemArtifact(cacheDirectory, prefix, name, 64ULL * 1024 * 1024);
-        };
-    }
-    else if (cacheCompatibilityMode) {
+    if (cacheCompatibilityMode && !filesystemMaterials) {
       const auto localSourceName = sourceName;
       const auto localInitializerName = firstString(
         metadata ? *metadata : boost::property_tree::ptree{},

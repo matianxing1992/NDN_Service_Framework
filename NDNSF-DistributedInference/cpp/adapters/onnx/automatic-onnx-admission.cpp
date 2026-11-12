@@ -12,6 +12,7 @@
 #include <chrono>
 #include <initializer_list>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <utility>
 #include <variant>
@@ -95,6 +96,23 @@ validatePort(const NativeAssemblyTensorContractV3& port,
 
 } // namespace
 
+void
+validateAutomaticOnnxGenerationRole(const AutomaticOnnxContract& source,
+                                    const std::vector<std::string>& scopedInputs,
+                                    const std::vector<std::string>& scopedOutputs)
+{
+  if (!source.generation)
+    reject("AUTOMATIC_GENERATION_CONTRACT_REQUIRED");
+  const auto samePorts = [] (const auto& actual, const auto& expected) {
+    return actual.size() == expected.size() &&
+      std::set<std::string>(actual.begin(), actual.end()) ==
+        std::set<std::string>(expected.begin(), expected.end());
+  };
+  if (!samePorts(scopedInputs, source.modelInputs) ||
+      !samePorts(scopedOutputs, source.modelOutputs))
+    reject("AUTOMATIC_GENERATION_STAGE_UNSUPPORTED");
+}
+
 AutomaticOnnxRequestBinding::AutomaticOnnxRequestBinding(
   std::shared_ptr<const AutomaticOnnxContract> source, ExecutionShapeEnvelope envelope,
   const NativeSelectionProjectionV3& projection, const NativeRequestControl& control)
@@ -115,6 +133,7 @@ AutomaticOnnxRequestBinding::AutomaticOnnxRequestBinding(
   for (const auto& input : role.expectedInputs) m_inputs.push_back("graph/" + input.name);
   for (const auto& output : role.expectedOutputs) m_outputs.push_back("graph/" + output.name);
   if (m_envelope.maxNewTokens != 0) {
+    validateAutomaticOnnxGenerationRole(*m_source, m_inputs, m_outputs);
     const auto& generation = *m_source->generation;
     for (const auto* name : {&generation.tokenInput, &generation.maskInput,
                              &generation.positionInput}) {
@@ -122,6 +141,14 @@ AutomaticOnnxRequestBinding::AutomaticOnnxRequestBinding(
         m_controlInputs.push_back(rawName(*name));
     }
   }
+}
+
+const AutomaticGenerationContract&
+AutomaticOnnxRequestBinding::generation() const
+{
+  if (m_envelope.maxNewTokens == 0 || !m_source->generation)
+    reject("AUTOMATIC_GENERATION_CONTRACT_REQUIRED");
+  return *m_source->generation;
 }
 
 std::shared_ptr<const AutomaticOnnxRequestBinding>

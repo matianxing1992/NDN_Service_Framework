@@ -64,6 +64,8 @@ struct ProviderRoleResult
   // Keep the successfully executed live runner available to the Provider
   // reuse cache.  It is never serialized or exposed to another Provider.
   std::shared_ptr<NativeModelRunner> runner;
+  // Effective cold/warm invocation binding; no callback or execution-state ownership.
+  std::shared_ptr<const AutomaticOnnxRequestBinding> automaticBinding;
   // The worker resolves a delayed preparation callback only after admission.
   // Preserve the resulting runner capability for state finalization in the
   // outer NativeProviderRuntime; probing before the callback would force an

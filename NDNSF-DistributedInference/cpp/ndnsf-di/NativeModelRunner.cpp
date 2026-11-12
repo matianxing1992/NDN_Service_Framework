@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
@@ -48,6 +49,96 @@ NativeModelRunner::validateAutomaticRequestBinding(
 {
   control.requireActive();
   throw std::invalid_argument("AUTOMATIC_SOURCE_RUNNER_UNSUPPORTED");
+}
+
+namespace {
+
+std::vector<NamedTensor>
+makeLegacyStateFeedback(const std::vector<NamedTensorView>& raw,
+                        const std::vector<std::string>& inputNames,
+                        const std::vector<std::string>& outputNames,
+                        const RoleExecutionContext& ctx)
+{
+  if (ctx.automaticBinding)
+    throw std::invalid_argument("AUTOMATIC_STATE_FEEDBACK_RUNNER_UNSUPPORTED");
+  if (raw.size() != inputNames.size() || inputNames.size() != outputNames.size() ||
+      inputNames.empty())
+    throw std::invalid_argument("Provider decode-state input/output metadata length mismatch");
+  std::vector<NamedTensor> result;
+  result.reserve(raw.size());
+  for (std::size_t index = 0; index < raw.size(); ++index) {
+    if (ctx.executionGuard) ctx.executionGuard();
+    validateNamedTensorView(raw[index]);
+    if (raw[index].name != outputNames[index])
+      throw std::invalid_argument("Provider decode-state output name mismatch");
+    result.push_back(NamedTensor{inputNames[index], raw[index].elementType, raw[index].shape,
+      std::vector<std::uint8_t>(raw[index].payload.begin(), raw[index].payload.end())});
+  }
+  if (ctx.executionGuard) ctx.executionGuard();
+  return result;
+}
+
+} // namespace
+
+std::vector<NamedTensor>
+NativeModelRunner::makeStateFeedback(const std::vector<NamedTensorView>& raw,
+                                    const std::vector<std::string>& inputNames,
+                                    const std::vector<std::string>& outputNames,
+                                    const RoleExecutionContext& ctx) const
+{
+  return makeLegacyStateFeedback(raw, inputNames, outputNames, ctx);
+}
+
+TensorBundle
+makeNativeProviderDecodeState(const NativeModelRunner* runner,
+                              const std::map<std::string, TensorBundle>& outputs,
+                              const std::vector<std::string>& inputNames,
+                              const std::vector<std::string>& outputNames,
+                              const RoleExecutionContext& ctx)
+{
+  if (inputNames.empty() || inputNames.size() != outputNames.size())
+    throw std::invalid_argument("Provider decode-state input/output metadata length mismatch");
+  std::vector<std::vector<NamedTensorView>> scopes;
+  scopes.reserve(outputs.size());
+  for (const auto& output : outputs) {
+    if (ctx.executionGuard) ctx.executionGuard();
+    if (isEncodedTensorBundle(output.second.payload)) {
+      scopes.push_back(decodeTensorBundleViews(output.second.payload, ctx.workStatistics));
+    }
+    else if (output.second.localTensors) {
+      // A local producer owns its bytes in this process; the same consumer reads
+      // them by name. Keep the views borrowed from the local owner, which the
+      // caller keeps alive through this transaction.
+      scopes.push_back(output.second.localTensors->tensors);
+    }
+  }
+  std::vector<NamedTensorView> selected;
+  selected.reserve(outputNames.size());
+  for (const auto& name : outputNames) {
+    if (ctx.executionGuard) ctx.executionGuard();
+    bool found = false;
+    for (const auto& scope : scopes) {
+      const auto tensor = std::find_if(scope.begin(), scope.end(),
+        [&] (const auto& value) { return value.name == name; });
+      if (tensor == scope.end()) continue;
+      selected.push_back(*tensor);
+      found = true;
+      break;
+    }
+    if (!found)
+      throw std::runtime_error("Provider role is missing decode-state output: " + name);
+  }
+  auto state = runner ? runner->makeStateFeedback(selected, inputNames, outputNames, ctx) :
+    makeLegacyStateFeedback(selected, inputNames, outputNames, ctx);
+  if (state.size() != inputNames.size())
+    throw std::invalid_argument("Provider decode-state successor set mismatch");
+  for (std::size_t index = 0; index < state.size(); ++index) {
+    if (state[index].name != inputNames[index])
+      throw std::invalid_argument("Provider decode-state successor name mismatch");
+    validateNamedTensor(state[index]);
+  }
+  if (ctx.executionGuard) ctx.executionGuard();
+  return makeEncodedTensorBundle("__ndnsf_provider_decode_state", std::move(state));
 }
 
 std::uint64_t

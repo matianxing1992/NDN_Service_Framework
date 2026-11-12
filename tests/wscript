@@ -110,6 +110,12 @@ def build(bld):
                     rpath=bld.env.LIBPATH_ONNXRUNTIME,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         # Independent uncut numerical reference; frozen names are test data only.
+        bld.program(target='../spec233-onnx-reference', name='spec233-onnx-reference',
+                    source=['installed-api/installed-onnx-reference-probe.cpp'],
+                    includes=['..'], use='ONNXRUNTIME OPENSSL',
+                    cxxflags=['-std=c++17', '-O2', '-g0'],
+                    rpath=bld.env.LIBPATH_ONNXRUNTIME,
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
         # Installed-path oracle: exercise the production codec, never a fixture reimplementation.
         bld.program(target='../spec233-tensor-types', name='spec233-tensor-types',
                     source=['main.cpp', 'unit-tests/spec233-tensor-types.t.cpp'],

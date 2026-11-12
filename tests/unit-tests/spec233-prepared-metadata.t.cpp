@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
@@ -33,6 +34,8 @@
 #include <ndn-cxx/encoding/block.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <onnx/onnx_pb.h>
+#include <boost/process.hpp>
+#include <boost/scope_exit.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -50,6 +53,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <sstream>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -258,27 +262,8 @@ NativeModelRunnerSpec
 sourceRunnerSpec(const MetadataSourceFixture& file, const AutomaticOnnxModel& model,
                  const NativeSelectionProjectionV3& projection)
 {
-  const auto& role = projection.assembly;
-  NativeModelRunnerSpec spec;
-  spec.role = role.selectedRole;
-  spec.kind = "onnx";
-  spec.backend = role.backend;
-  spec.path = file.path.string();
-  spec.metadata = {{"artifactDigest", role.artifactDigest}, {"fragmentDigest", role.artifactDigest},
-    {"recipeDigest", role.recipeDigest}, {"modelManifestDigest", role.modelManifestDigest},
-    {"artifactProfileDigest", role.artifactProfileDigest}, {"graphDigest", role.graphDigest},
-    {"canonicalInitializerDigest", role.canonicalInitializerDigest},
-    {"adapterDescriptorDigest", role.adapterDescriptorDigest},
-    {"assemblerDescriptorDigest", role.assemblerDescriptorDigest}, {"backendAbi", role.backendAbi},
-    {"precision", role.precision}, {"quantization", role.quantization}, {"layout", role.layout},
-    {"padding", role.padding}, {"maxSourceBytes", std::to_string(role.maxSourceBytes)},
-    {"maxAssembledBytes", std::to_string(role.maxAssembledBytes)},
-    {"maxNodes", std::to_string(role.maxNodes)}, {"providerIdentity", projection.provider},
-    {"providerBootId", "source-boot"}, {"residentSession", "true"},
-    {"automaticSourceBinding", sourceBinding(model).canonicalJson(metadataControl())}};
-  bindNativeRunnerPreparationContext(spec, projection,
-    {projection.provider, "source-boot", 1, file.root.string()});
-  return spec;
+  return fixture::automaticSourceRunnerSpec(file.path.string(), file.root.string(), projection,
+    sourceBinding(model).canonicalJson(metadataControl()));
 }
 
 NativeCanonicalCatalogEntry
@@ -295,6 +280,70 @@ sourceCatalogEntry(const AutomaticOnnxModel& automatic)
     role.maxSourceBytes, role.maxAssembledBytes, role.maxNodes};
   entry.maxPayloadBytes = 4U << 20;
   return entry;
+}
+
+std::string
+readCacheFixtureFile(const std::filesystem::path& path, std::uint64_t maximum = 1U << 20)
+{
+  const auto size = std::filesystem::file_size(path);
+  if (size == 0 || size > maximum) throw std::runtime_error("cache fixture file size");
+  std::ifstream input(path, std::ios::binary);
+  std::string value(static_cast<std::size_t>(size), '\0');
+  if (!input.read(value.data(), value.size()) || input.peek() != EOF)
+    throw std::runtime_error("cache fixture file read");
+  return value;
+}
+
+void
+writeCacheFixtureFile(const std::filesystem::path& path, const std::string& value)
+{
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(value.data(), value.size());
+  output.close();
+  if (!output) throw std::runtime_error("cache fixture file write");
+}
+
+NativeSelectionProjectionV3
+completeFilesystemSelection(NativeSelectionProjectionV3 projection, const std::string& request)
+{
+  // Local fixture policy commitments are not evidence of network ACKs/grants.
+  const auto& role = projection.assembly;
+  projection.requestId = request;
+  const auto identity = request + projection.automaticShapeSeed->envelopeDigest;
+  projection.planCoreDigest = nativePlanningDigest("fs-core:" + identity);
+  projection.planDigest = nativePlanningDigest("fs-plan:" + identity);
+  projection.requestContractDigest = nativePlanningDigest("fs-request:" + identity);
+  projection.ackClosedDigest = nativePlanningDigest("fs-local-ack-policy");
+  projection.offerDigest = nativePlanningDigest("fs-local-cpu-offer");
+  projection.securityPolicySnapshotDigest = nativePlanningDigest("fs-local-policy");
+  projection.deadlineMs = static_cast<std::uint64_t>(std::chrono::duration_cast<
+    std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + 120000;
+  projection.executionRole.roleId = role.selectedRole;
+  projection.executionRole.stageId = role.role;
+  projection.executionRole.rank = role.rank;
+  projection.executionRole.layerBegin = role.layerBegin;
+  projection.executionRole.layerEnd = role.layerEnd;
+  projection.executionRole.backend = role.backend;
+  projection.dataflow.requestId = request;
+  projection.dataflow.planDigest = projection.planDigest;
+  auto flow = nativeDataflowJson(projection.dataflow);
+  flow.erase("dataflow_digest");
+  projection.dataflow.dataflowDigest = nativePlanningDigest(nativeCanonicalJson(flow));
+  auto& device = projection.deviceBinding;
+  device.mode = "CPU"; device.provider = projection.provider; device.role = role.selectedRole;
+  device.offerDigest = projection.offerDigest;
+  device.topologyProfileDigest = nativePlanningDigest("fs-local-cpu-topology");
+  device.resourceSnapshotDigest = nativePlanningDigest("fs-local-cpu-resource");
+  device.resourceSequence = 1; device.sharingPolicy = "EXCLUSIVE_ROLE";
+  // This is the actual production writer/parser, not a test projection codec.
+  const auto wire = nativeSelectionProjectionV3ToJson(projection);
+  std::istringstream input(wire);
+  auto decoded = nativeSelectionProjectionV3FromJson(input, role.selectedRole);
+  decoded.canonicalArtifactName = projection.canonicalArtifactName;
+  decoded.plan.serviceName = projection.plan.serviceName;
+  decoded.plan.modelName = projection.plan.modelName;
+  (void)roleSpecFromSelectionProjectionV3(decoded, decoded.provider);
+  return decoded;
 }
 
 std::map<std::string, TensorBundle>
@@ -1498,7 +1547,7 @@ BOOST_AUTO_TEST_CASE(AutomaticBindingsCannotFallThroughLegacyGenerationCodecs)
       config.initialInputs = sourceInputs(2);
       config.eventSink = [&] (const auto&) { ++events; return true; };
     }), std::invalid_argument, [] (const auto& error) {
-      return std::string(error.what()) == "AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED";
+      return std::string(error.what()) == "AUTOMATIC_GENERATION_CONTRACT_REQUIRED";
     });
   BOOST_CHECK_EQUAL(events, 0U);
   RoleExecutionContext context;
@@ -1675,6 +1724,189 @@ BOOST_AUTO_TEST_CASE(AutomaticSourceFactsReachColdAndDiskCacheThroughAssignedEnc
   BOOST_CHECK(facility.opened.count(ndn::Name(name("owner-metadata"))) == 0);
 }
 
+BOOST_AUTO_TEST_CASE(AutomaticFilesystemCacheReopensInFreshProcess)
+{
+  const char* childPath = std::getenv("NDNSF_SPEC233_FS_REOPEN_CHILD");
+  if (childPath) {
+    // Exec starts here with no parent catalog, publisher, source FD or cache owner.
+    const std::filesystem::path sidecarPath(childPath);
+    const auto data = nativeParseJson(readCacheFixtureFile(sidecarPath));
+    BOOST_REQUIRE_EQUAL(data.at("schema").get<std::string>(), "spec233-fs-reopen-v1");
+    const auto root = sidecarPath.parent_path();
+    NativeCanonicalOnnxAssemblerOptions options;
+    options.cacheDir = (root / "assembled-cache").string();
+    options.cacheCompatibilitySourceDir = root / "local-materials";
+    options.providerIdentity = data.at("provider").get<std::string>();
+    options.verifyCachedArtifactDigest = true;
+    options.assemblyTimeoutMs = 30000;
+    const auto decode = [&](const NativeJson& row) {
+      std::istringstream input(row.at("wire").get<std::string>());
+      auto projection = nativeSelectionProjectionV3FromJson(input,
+        data.at("role").get<std::string>());
+      // These are deliberately assignment-local, not Selection wire fields.
+      projection.canonicalArtifactName = data.at("rootName").get<std::string>();
+      projection.plan.serviceName = data.at("service").get<std::string>();
+      projection.plan.modelName = data.at("model").get<std::string>();
+      (void)roleSpecFromSelectionProjectionV3(projection, projection.provider);
+      return projection;
+    };
+    std::size_t networkCalls = 0;
+    NativeCanonicalOnnxFetchers forbidden;
+    forbidden.getArtifact = [&](const ndn::Name&) -> std::optional<ndn::Buffer> {
+      ++networkCalls; throw std::runtime_error("FS recovery attempted a network root read");
+    };
+    forbidden.fetchEncryptedLargeData = [&](const ndn::Name&, const ndn::Name&)
+        -> std::optional<ndn::Buffer> {
+      ++networkCalls; throw std::runtime_error("FS recovery attempted a network material read");
+    };
+    const auto path = data.at("artifactPath").get<std::string>();
+    const auto artifactDigest = data.at("artifactDigest").get<std::string>();
+    const auto unchanged = [&] {
+      BOOST_CHECK(std::filesystem::exists(path));
+      BOOST_CHECK_EQUAL(nativePlanningDigest(readCacheFixtureFile(path)), artifactDigest);
+    };
+    BOOST_REQUIRE_EQUAL(data.at("requests").size(), 2U);
+    for (const auto& row : data.at("requests")) {
+      const auto projection = decode(row);
+      for (const auto empty : {false, true}) {
+        const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(
+          empty ? NativeCanonicalOnnxFetchers{} : forbidden, projection, options);
+        BOOST_REQUIRE(cached); // A miss must never fall back to cold preparation.
+        BOOST_CHECK_EQUAL(cached->path, path);
+        const auto binding = AutomaticOnnxSourceBinding::fromCanonicalJson(
+          cached->metadata.at("automaticSourceBinding"), metadataControl());
+        const auto envelope = admitAutomaticOnnxProjection(binding, projection, metadataControl());
+        BOOST_CHECK_EQUAL(automaticOnnxShapeSeed(envelope).envelopeDigest,
+                          row.at("envelopeDigest").get<std::string>());
+        BOOST_REQUIRE(envelope.tensors.at("graph/y").maxBytes);
+        BOOST_CHECK_EQUAL(*envelope.tensors.at("graph/y").maxBytes,
+                          row.at("batch").get<std::uint64_t>() * 4 * sizeof(float));
+        unchanged();
+      }
+    }
+    const auto projection = decode(data.at("requests").at(0));
+    auto invalid = projection;
+    invalid.automaticShapeSeed->envelopeDigest = nativePlanningDigest("invalid-FS-current-seed");
+    BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache(forbidden, invalid, options),
+                      std::exception);
+    unchanged();
+    auto expired = projection; expired.deadlineMs = 1;
+    BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache(forbidden, expired, options),
+                      std::exception);
+    auto cancelled = options; cancelled.shouldCancel = [] { return true; };
+    BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache(forbidden, projection, cancelled),
+                      std::exception);
+    unchanged();
+    const auto checkDamagedObject = [&](const std::string& digest) {
+      const auto hex = digest.substr(7);
+      const auto object = options.cacheCompatibilitySourceDir / "objects" / "sha256" /
+        hex.substr(0, 2) / hex;
+      const auto original = readCacheFixtureFile(object);
+      const auto backup = std::filesystem::path(object.string() + ".test-backup");
+      std::filesystem::rename(object, backup);
+      {
+        BOOST_SCOPE_EXIT_ALL(&) { std::filesystem::rename(backup, object); };
+        BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache(forbidden, projection, options),
+                          std::exception);
+        unchanged();
+      }
+      {
+        BOOST_SCOPE_EXIT_ALL(&) { writeCacheFixtureFile(object, original); };
+        auto corrupt = original; corrupt[0] ^= 1;
+        writeCacheFixtureFile(object, corrupt);
+        BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache(forbidden, projection, options),
+                          std::exception);
+        unchanged();
+      }
+    };
+    checkDamagedObject(projection.assemblyContract().modelManifestDigest);
+    checkDamagedObject(data.at("materialManifestDigest").get<std::string>());
+    BOOST_CHECK(tryLoadNativeCanonicalOnnxRoleFromCache(forbidden, projection, options).has_value());
+    unchanged();
+    BOOST_CHECK_EQUAL(networkCalls, 0U);
+    return;
+  }
+
+  const MetadataSourceFixture file(false);
+  NativeJson data;
+  {
+    const auto automatic = inspectAutomaticOnnxModel({file.path}, metadataControl());
+    const auto entry = sourceCatalogEntry(automatic);
+    const NativeCanonicalPreparationCatalog catalog({entry}, metadataControl());
+    const auto source = catalog.sourceRefFor(entry.model.descriptor);
+    std::filesystem::create_directory(file.root / "local-materials");
+    NativeFilesystemArtifactPublisher publisher(file.root / "local-materials",
+      ndn::Name("/fs-source"), automatic.contract.sourceDigest);
+    NativeCanonicalPublicationOptions publicationOptions;
+    publicationOptions.artifactProfileDigest = entry.recipe.artifactProfileDigest;
+    NativeRequestControl control{"/fs-cold", 1, metadataControl().deadline, {}};
+    const auto publication = publisher.publish("automatic-fixture", "/service", entry.model,
+      *source, publicationOptions, control);
+    const auto projectionFor = [&](std::uint64_t batch) {
+      auto projection = sourceProjection(automatic, batch);
+      projection.canonicalArtifactName = publication.rootDataName;
+      projection.assembly.modelManifestDigest = publication.manifestDigest;
+      projection.assembly.recipeDigest = nativePlanningDigest(
+        canonicalNativeOnnxRecipeJson(projection.assembly));
+      projection.selectedRole = projection.assembly;
+      return completeFilesystemSelection(std::move(projection), "/fs-request/" +
+        std::to_string(batch));
+    };
+    const auto first = projectionFor(2);
+    const auto other = projectionFor(1);
+    BOOST_CHECK_EQUAL(first.assembly.recipeDigest, other.assembly.recipeDigest);
+    BOOST_CHECK_NE(first.automaticShapeSeed->envelopeDigest, other.automaticShapeSeed->envelopeDigest);
+    NativeCanonicalOnnxAssemblerOptions options;
+    options.cacheDir = (file.root / "assembled-cache").string();
+    options.cacheCompatibilitySourceDir = file.root / "local-materials";
+    options.providerIdentity = first.provider;
+    options.verifyCachedArtifactDigest = true;
+    const auto* bin = std::getenv("NDNSF_SPEC182_BIN_DIR");
+    options.workerLocation = {((bin ? std::filesystem::path(bin) :
+      std::filesystem::path("/usr/local/libexec/ndnsf-di")) /
+        "DI_NativeOnnxAssemblyWorker").string(), ""};
+    options.signManifest = [] (const std::string&) { return "fs-fixture-signature"; };
+    std::size_t networkCalls = 0;
+    NativeCanonicalOnnxFetchers forbidden;
+    forbidden.getArtifact = [&](const ndn::Name&) -> std::optional<ndn::Buffer> {
+      ++networkCalls; throw std::runtime_error("FS cold attempted a network root read");
+    };
+    forbidden.fetchEncryptedLargeData = [&](const ndn::Name&, const ndn::Name&)
+        -> std::optional<ndn::Buffer> {
+      ++networkCalls; throw std::runtime_error("FS cold attempted a network material read");
+    };
+    const auto cold = prepareNativeCanonicalOnnxRole(forbidden, first, options);
+    BOOST_CHECK_EQUAL(networkCalls, 0U);
+    data = NativeJson{{"schema", "spec233-fs-reopen-v1"}, {"role", first.assembly.selectedRole},
+      {"rootName", publication.rootDataName}, {"service", first.plan.serviceName},
+      {"model", first.plan.modelName}, {"provider", first.provider}, {"artifactPath", cold.path},
+      {"artifactDigest", nativePlanningDigest(readCacheFixtureFile(cold.path))},
+      {"materialManifestDigest", publication.materialManifestDigest}, {"requests", NativeJson::array()}};
+    const std::pair<const NativeSelectionProjectionV3*, std::uint64_t> requests[] = {
+      {&first, 2}, {&other, 1}};
+    for (const auto& item : requests) {
+      data["requests"].push_back({{"wire", nativeSelectionProjectionV3ToJson(*item.first)},
+        {"envelopeDigest", item.first->automaticShapeSeed->envelopeDigest}, {"batch", item.second}});
+    }
+  } // Source/catalog/publication/cold-preparation owners end before exec.
+  const auto sidecar = file.root / "reopen.json";
+  writeCacheFixtureFile(sidecar, nativeCanonicalJson(data));
+  const auto executable = std::filesystem::read_symlink("/proc/self/exe");
+  BOOST_REQUIRE(executable.is_absolute());
+  BOOST_REQUIRE(std::filesystem::is_regular_file(executable));
+  const auto log = file.root / "reopen-child.log";
+  const auto status = boost::process::system("/usr/bin/timeout",
+    boost::process::args(std::vector<std::string>{"--signal=TERM", "--kill-after=5", "15",
+      "/usr/bin/env", "NDNSF_SPEC233_FS_REOPEN_CHILD=" + sidecar.string(), executable.string(),
+      "--run_test=Spec233PreparedMetadata/AutomaticFilesystemCacheReopensInFreshProcess",
+      "--log_level=test_suite"}),
+    (boost::process::std_out & boost::process::std_err) > log.string());
+  const auto childLog = readCacheFixtureFile(log);
+  if (status != 0) BOOST_TEST_MESSAGE(childLog);
+  BOOST_REQUIRE_EQUAL(status, 0);
+  BOOST_CHECK(childLog.find("No errors detected") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(SourceMetadataSeparatesNormalAndProtectedSessionKeys)
 {
   const MetadataSourceFixture file(false);
@@ -1693,6 +1925,16 @@ BOOST_AUTO_TEST_CASE(SourceMetadataSeparatesNormalAndProtectedSessionKeys)
       OnnxRuntimeModelRunner repeated(spec, cache);
       BOOST_CHECK_EQUAL(cache->counters().loads, 1U);
       BOOST_CHECK_EQUAL(cache->counters().hits, 1U);
+      for (const auto* key : {"outputAlias.y", "output_alias.y"}) {
+        auto aliased = spec;
+        aliased.metadata[key] = "changed-name";
+        BOOST_CHECK_EXCEPTION(OnnxRuntimeModelRunner(aliased, cache), std::invalid_argument,
+          [] (const auto& error) {
+            return std::string(error.what()) == "AUTOMATIC_OUTPUT_ALIAS_UNSUPPORTED";
+          });
+        BOOST_CHECK_EQUAL(cache->counters().loads, 1U);
+        BOOST_CHECK_EQUAL(cache->counters().hits, 1U);
+      }
       // Hold every other declared cache field fixed to isolate the source
       // metadata key. This deliberately foreign spec is not request-qualified.
       auto different = spec;

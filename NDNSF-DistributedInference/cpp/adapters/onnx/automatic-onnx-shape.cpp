@@ -149,12 +149,15 @@ tensorsJson(const std::vector<AutomaticTensorContract>& tensors)
 NativeJson
 contractJson(const AutomaticOnnxContract& contract)
 {
-  return NativeJson{{"schema", "ndnsf-di-automatic-onnx-contract-v2"},
+  NativeJson result{{"schema", contract.floatingLiterals.empty() ?
+      "ndnsf-di-automatic-onnx-contract-v2" : "ndnsf-di-automatic-onnx-contract-v3"},
     {"facts", nativeParseJson(contract.factsJson())}, {"factsDigest", contract.factsDigest},
     {"tensors", tensorsJson(contract.tensors)}, {"modelInputs", contract.modelInputs},
     {"modelOutputs", contract.modelOutputs}, {"relations", relationsJson(contract.relations)},
     {"integerLiterals", contract.integerLiterals},
     {"generation", automaticOnnxGenerationJson(contract.generation)}};
+  if (!contract.floatingLiterals.empty()) result["floatingLiterals"] = contract.floatingLiterals;
+  return result;
 }
 
 } // namespace
@@ -218,13 +221,33 @@ AutomaticOnnxContract::validateSourceFacts(const NativeAssemblyControl& control)
     charge(op.domain.size() + op.overload.size() + op.functionScope.size());
     for (const auto& [name, value] : op.integerAttributes) {
       requireName(name); charge(name.size() + sizeof(value) + 64);
+      if (name.compare(0, 7, "tensor.") == 0)
+        rejectShape("AUTOMATIC_CONTRACT_FILL_ATTRIBUTE");
     }
+    std::size_t fills = 0;
     for (const auto& [name, values] : op.integerListAttributes) {
       requireName(name); charge(name.size() + 64);
       for (const auto value : values) charge(sizeof(value));
+      if (name.compare(0, 7, "tensor.") != 0) continue;
+      const auto type = name == "tensor.value.int32" ? 6 :
+        name == "tensor.value.int64" ? 7 : name == "tensor.value.bool" ? 9 : 0;
+      if (++fills != 1 || type == 0 || values.size() != 1 ||
+          (!op.domain.empty() && op.domain != "ai.onnx") ||
+          op.opType != "ConstantOfShape" || op.opset < 9 || op.opset > 21 ||
+          op.atomicBody || !op.functionScope.empty() || !op.overload.empty() ||
+          !op.attributeReferences.empty() || op.inputs.size() != 1 || op.inputs[0].empty() ||
+          op.outputs.size() != 1 || op.outputs[0].empty() ||
+          op.integerAttributes.count("value") || op.integerListAttributes.count("value"))
+        rejectShape("AUTOMATIC_CONTRACT_FILL_ATTRIBUTE");
+      if ((type == 6 && (values[0] < std::numeric_limits<std::int32_t>::min() ||
+                         values[0] > std::numeric_limits<std::int32_t>::max())) ||
+          (type == 9 && values[0] != 0 && values[0] != 1))
+        rejectShape("AUTOMATIC_CONTRACT_FILL_VALUE");
     }
     for (const auto& [name, reference] : op.attributeReferences) {
       requireName(name); requireName(reference); charge(name.size() + reference.size() + 64);
+      if (name.compare(0, 7, "tensor.") == 0)
+        rejectShape("AUTOMATIC_CONTRACT_FILL_ATTRIBUTE");
     }
   }
   std::set<std::uint64_t> quantized;
@@ -294,6 +317,14 @@ AutomaticOnnxContract::validateSourceFacts(const NativeAssemblyControl& control)
   requirePorts(modelInputs);
   requirePorts(modelOutputs);
   for (const auto& op : operators) {
+    for (const auto& [key, value] : op.integerListAttributes) {
+      if (key.compare(0, 7, "tensor.") != 0) continue;
+      const auto type = key == "tensor.value.int32" ? 6 : key == "tensor.value.int64" ? 7 : 9;
+      const auto output = names.find(op.scope + "/" + op.outputs[0]);
+      if (output != names.end() && output->second->onnxElementType != 0 &&
+          output->second->onnxElementType != type)
+        rejectShape("AUTOMATIC_CONTRACT_FILL_TYPE_CONFLICT");
+    }
     if (op.scope != "graph" || (!op.domain.empty() && op.domain != "ai.onnx") ||
         op.opType != "Cast" || op.opset < 6 || op.atomicBody || !op.functionScope.empty() ||
         !op.overload.empty() || op.attributeReferences.count("to") || op.outputs.size() != 1)
@@ -335,6 +366,24 @@ AutomaticOnnxContract::validateSourceFacts(const NativeAssemblyControl& control)
            value > std::numeric_limits<std::int32_t>::max()))
         rejectShape("AUTOMATIC_CONTRACT_LITERAL_INT32");
     }
+  }
+  for (const auto& [name, bytes] : floatingLiterals) {
+    charge(96 + name.size() + bytes.size());
+    const auto found = names.find(name);
+    if (found == names.end() || name.compare(0, 6, "graph/") != 0)
+      rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERAL");
+    const auto& tensor = *found->second;
+    if ((tensor.onnxElementType != 1 && tensor.onnxElementType != 10 &&
+         tensor.onnxElementType != 16) || !tensor.dimensions ||
+        (tensor.provenance != std::vector<std::string>{"initializer-header-v1"} &&
+         tensor.provenance != std::vector<std::string>{"constant-header-v1"}))
+      rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERAL_SOURCE");
+    for (const auto& axis : *tensor.dimensions) {
+      if (axis.kind != DimensionConstraint::Kind::FIXED || axis.fixed != 1)
+        rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERAL_SHAPE");
+    }
+    if (bytes.size() != (tensor.onnxElementType == 1 ? 4U : 2U))
+      rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERAL_BYTES");
   }
   for (const auto& relation : relations) {
     charge(sizeof(relation) + relation.provenance.size());
@@ -430,11 +479,21 @@ AutomaticOnnxContract::fromCanonicalJson(const std::string& encoded,
 {
   if (encoded.size() > metadataLimit(control)) rejectShape("AUTOMATIC_CONTRACT_SIZE");
   const auto value = nativeParseJson(encoded);
-  if (!value.is_object() ||
-      value.at("schema") != NativeJson("ndnsf-di-automatic-onnx-contract-v2") ||
+  if (!value.is_object() || !value.contains("schema"))
+    rejectShape("AUTOMATIC_CONTRACT_SCHEMA");
+  const bool floatingVersion =
+    value.at("schema") == NativeJson("ndnsf-di-automatic-onnx-contract-v3");
+  if ((!floatingVersion &&
+       value.at("schema") != NativeJson("ndnsf-di-automatic-onnx-contract-v2")) ||
       (!value.at("generation").is_null() && !value.at("generation").is_object()) ||
       nativeCanonicalJson(value) != encoded)
     rejectShape("AUTOMATIC_CONTRACT_SCHEMA");
+  if (floatingVersion) {
+    if (!value.contains("floatingLiterals") || !value.at("floatingLiterals").is_object() ||
+        value.at("floatingLiterals").empty())
+      rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERALS");
+  }
+  else if (value.contains("floatingLiterals")) rejectShape("AUTOMATIC_CONTRACT_FIELDS");
   AutomaticOnnxContract result;
   const auto& facts = value.at("facts");
   if (facts.at("schema") != NativeJson("ndnsf-di-automatic-facts-v1"))
@@ -535,6 +594,19 @@ AutomaticOnnxContract::fromCanonicalJson(const std::string& encoded,
       rejectShape("AUTOMATIC_CONTRACT_LITERAL");
     auto& values = result.integerLiterals[item.key()];
     for (const auto& element : item.value()) values.push_back(signedInteger(element));
+  }
+  if (floatingVersion) {
+    for (const auto& item : value.at("floatingLiterals").items()) {
+      requireActive(control);
+      if (!item.value().is_array() || item.value().size() > 4)
+        rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERAL_BYTES");
+      auto& bytes = result.floatingLiterals[item.key()];
+      for (const auto& element : item.value()) {
+        const auto byte = unsignedInteger(element);
+        if (byte > 255) rejectShape("AUTOMATIC_CONTRACT_FLOAT_LITERAL_BYTES");
+        bytes.push_back(static_cast<std::uint8_t>(byte));
+      }
+    }
   }
   for (const auto& relation : value.at("relations")) {
     requireActive(control);
@@ -1232,6 +1304,49 @@ shapeDimension(std::uint64_t value)
   return static_cast<std::int64_t>(value);
 }
 
+std::vector<std::int64_t>
+generationMatrixShape(std::int64_t batch, std::uint64_t batchAxis,
+                       std::uint64_t sequenceAxis, std::uint64_t sequence)
+{
+  std::vector<std::int64_t> result(2);
+  result.at(batchAxis) = batch;
+  result.at(sequenceAxis) = shapeDimension(sequence);
+  return result;
+}
+
+std::vector<std::int64_t>
+generationCacheShape(const AutomaticAttentionState& state, bool output,
+                     std::int64_t batch, std::uint64_t extent)
+{
+  const auto& axes = output ? state.outputAxes : state.inputAxes;
+  std::vector<std::int64_t> result(4);
+  result.at(axes[0]) = batch;
+  result.at(axes[1]) = shapeDimension(state.heads);
+  result.at(axes[2]) = shapeDimension(extent);
+  result.at(axes[3]) = shapeDimension(state.headSize);
+  return result;
+}
+
+TensorShapes
+initialGenerationShapes(const AutomaticGenerationContract& generation,
+                        std::int64_t batch, std::uint64_t sequence,
+                        const NativeAssemblyControl& control)
+{
+  TensorShapes result;
+  result[generation.tokenInput] = generationMatrixShape(
+    batch, generation.tokenBatchAxis, generation.tokenSequenceAxis, sequence);
+  result[generation.maskInput] = generationMatrixShape(
+    batch, generation.maskBatchAxis, generation.maskContextAxis, sequence);
+  if (!generation.positionInput.empty())
+    result[generation.positionInput] = generationMatrixShape(
+      batch, generation.positionBatchAxis, generation.positionSequenceAxis, sequence);
+  for (const auto& state : generation.states) {
+    requireActive(control);
+    result[state.input] = generationCacheShape(state, false, batch, 0);
+  }
+  return result;
+}
+
 TensorShapes
 generationShapes(const AutomaticOnnxContract& contract, const TensorShapes& initial,
                   std::uint64_t predictions, std::uint64_t maxContext,
@@ -1255,32 +1370,12 @@ generationShapes(const AutomaticOnnxContract& contract, const TensorShapes& init
   const auto total = addExtent(past, sequence);
   const auto matrix = [&](std::uint64_t batchAxis, std::uint64_t sequenceAxis,
                            std::uint64_t extent) {
-    std::vector<std::int64_t> result(2);
-    result.at(batchAxis) = batch;
-    result.at(sequenceAxis) = shapeDimension(extent);
-    return result;
+    return generationMatrixShape(batch, batchAxis, sequenceAxis, extent);
   };
   const auto cache = [&](const AutomaticAttentionState& state, bool output, std::uint64_t extent) {
-    const auto& axes = output ? state.outputAxes : state.inputAxes;
-    std::vector<std::int64_t> result(4);
-    result.at(axes[0]) = batch;
-    result.at(axes[1]) = shapeDimension(state.heads);
-    result.at(axes[2]) = shapeDimension(extent);
-    result.at(axes[3]) = shapeDimension(state.headSize);
-    return result;
+    return generationCacheShape(state, output, batch, extent);
   };
-  TensorShapes required;
-  required[generation.tokenInput] = matrix(generation.tokenBatchAxis,
-                                           generation.tokenSequenceAxis, length);
-  required[generation.maskInput] = matrix(generation.maskBatchAxis,
-                                          generation.maskContextAxis, length);
-  if (!generation.positionInput.empty())
-    required[generation.positionInput] = matrix(generation.positionBatchAxis,
-                                                generation.positionSequenceAxis, length);
-  for (const auto& state : generation.states) {
-    requireActive(control);
-    required[state.input] = cache(state, false, 0);
-  }
+  auto required = initialGenerationShapes(generation, batch, length, control);
   if (initial != required) rejectShape("AUTOMATIC_GENERATION_INITIAL_SHAPE");
   required[generation.tokenInput] = matrix(generation.tokenBatchAxis,
                                            generation.tokenSequenceAxis, sequence);
@@ -1292,7 +1387,15 @@ generationShapes(const AutomaticOnnxContract& contract, const TensorShapes& init
   for (const auto& state : generation.states) {
     requireActive(control);
     required[state.input] = cache(state, false, past);
-    required[state.output] = cache(state, true, total);
+    switch (state.update) {
+      case AutomaticAttentionState::Update::REPLACE_FULL:
+        required[state.output] = cache(state, true, total);
+        break;
+      case AutomaticAttentionState::Update::APPEND_DELTA:
+        required[state.output] = cache(state, true, sequence);
+        break;
+      default: rejectShape("AUTOMATIC_GENERATION_STATE_UPDATE");
+    }
   }
   std::vector<std::int64_t> logits(3);
   logits.at(generation.logitsBatchAxis) = batch;
@@ -1300,6 +1403,64 @@ generationShapes(const AutomaticOnnxContract& contract, const TensorShapes& init
   logits.at(generation.logitsVocabularyAxis) = shapeDimension(generation.vocabularySize);
   required[generation.logitsOutput] = std::move(logits);
   return required;
+}
+
+const AutomaticTensorContract&
+generationTensorFact(const AutomaticOnnxContract& contract, const std::string& name)
+{
+  const auto found = std::find_if(contract.tensors.begin(), contract.tensors.end(),
+    [&] (const auto& tensor) { return tensor.name == name; });
+  if (found == contract.tensors.end() || !found->wireElementType)
+    rejectShape("AUTOMATIC_GENERATION_INPUT_FACT");
+  return *found;
+}
+
+NamedTensor
+generationInputTensor(const AutomaticOnnxContract& contract,
+                      const AutomaticGenerationContract& generation,
+                      const std::string& name, const std::vector<std::int64_t>& shape,
+                      std::uint64_t past, std::uint64_t& allocatedBytes,
+                      const NativeAssemblyControl& control)
+{
+  requireActive(control);
+  if (name.size() <= 6 || name.compare(0, 6, "graph/") != 0)
+    rejectShape("AUTOMATIC_GENERATION_INPUT_FACT");
+  const auto& fact = generationTensorFact(contract, name);
+  NamedTensor result{name.substr(6), *fact.wireElementType, shape, {}};
+  const auto bytes = tensorStorageByteSize(result.elementType, result.shape);
+  const auto limit = metadataLimit(control);
+  if (allocatedBytes > limit || bytes > limit - allocatedBytes)
+    rejectShape("AUTOMATIC_GENERATION_INPUT_LIMIT");
+  allocatedBytes += bytes;
+  const bool token = name == generation.tokenInput;
+  const bool mask = name == generation.maskInput;
+  const bool position = !generation.positionInput.empty() && name == generation.positionInput;
+  if (!token && !mask && !position) {
+    if (bytes != 0) rejectShape("AUTOMATIC_GENERATION_INITIAL_STATE");
+    return result;
+  }
+  const auto width = result.elementType == TensorElementType::Int32 ? 4U :
+                     result.elementType == TensorElementType::Int64 ? 8U : 0U;
+  if (width == 0 || result.shape.size() != 2 ||
+      result.shape[0] <= 0 || result.shape[1] <= 0)
+    rejectShape("AUTOMATIC_GENERATION_INTEGER_INPUT");
+  result.payload.resize(static_cast<std::size_t>(bytes));
+  const auto maximum = width == 4 ? std::uint64_t(std::numeric_limits<std::int32_t>::max()) :
+                                    std::uint64_t(std::numeric_limits<std::int64_t>::max());
+  for (std::size_t index = 0; index < result.payload.size() / width; ++index) {
+    if (index % 1024 == 0) requireActive(control);
+    std::uint64_t value = mask ? 1 : 0;
+    if (position) {
+      const auto columns = static_cast<std::uint64_t>(result.shape[1]);
+      const auto sequence = generation.positionSequenceAxis == 0 ? index / columns :
+                                                                    index % columns;
+      value = addExtent(past, sequence);
+    }
+    if (value > maximum) rejectShape("AUTOMATIC_GENERATION_INTEGER_RANGE");
+    for (unsigned byte = 0; byte < width; ++byte)
+      result.payload[index * width + byte] = static_cast<std::uint8_t>(value >> (8 * byte));
+  }
+  return result;
 }
 
 std::map<std::string, AutomaticTensorBounds>
@@ -1550,6 +1711,99 @@ validateEnvelopeIdentity(const AutomaticOnnxContract& contract,
 
 } // namespace
 
+AutomaticOnnxGenerationProbe
+makeAutomaticOnnxGenerationProbe(const AutomaticOnnxSourceBinding& source,
+                                const std::vector<std::string>& rawInputNames,
+                                const std::vector<std::string>& rawOutputNames,
+                                const NativeAssemblyControl& control)
+{
+  requireActive(control);
+  const auto& contract = source.sourceContract();
+  std::vector<std::string> inputs;
+  std::vector<std::string> outputs;
+  for (const auto& name : rawInputNames) inputs.push_back("graph/" + name);
+  for (const auto& name : rawOutputNames) outputs.push_back("graph/" + name);
+  validateAutomaticOnnxGenerationRole(contract, inputs, outputs);
+  const auto& generation = *contract.generation;
+  const auto& token = generationTensorFact(contract, generation.tokenInput);
+  if (!token.dimensions || token.dimensions->size() != 2)
+    rejectShape("AUTOMATIC_GENERATION_TOKEN_SHAPE");
+  const auto extent = [&] (std::uint64_t axis) {
+    const auto& dimension = token.dimensions->at(axis);
+    if (dimension.kind != DimensionConstraint::Kind::FIXED) return std::int64_t{1};
+    if (dimension.fixed <= 0) rejectShape("AUTOMATIC_GENERATION_TOKEN_SHAPE");
+    return dimension.fixed;
+  };
+  const auto shapes = initialGenerationShapes(generation, extent(generation.tokenBatchAxis),
+    static_cast<std::uint64_t>(extent(generation.tokenSequenceAxis)), control);
+  AutomaticOnnxGenerationProbe probe;
+  std::uint64_t allocatedBytes = 0;
+  for (const auto& name : contract.modelInputs) {
+    probe.inputs.push_back(generationInputTensor(contract, generation, name, shapes.at(name),
+                                                0, allocatedBytes, control));
+  }
+  probe.envelope = bindAutomaticOnnxShapes(contract, probe.inputs, 1,
+                                           generation.contextLimit, control);
+  // Bound root output allocations before ORT runs. This is not a bound on
+  // weights or internal backend activations, which retain their own owner.
+  const auto limit = metadataLimit(control);
+  for (const auto& name : contract.modelOutputs) {
+    const auto& bounds = probe.envelope.tensors.at(name);
+    if (!bounds.maxBytes || allocatedBytes > limit || *bounds.maxBytes > limit - allocatedBytes)
+      rejectShape("AUTOMATIC_GENERATION_PROBE_BYTES");
+    allocatedBytes += *bounds.maxBytes;
+  }
+  requireActive(control);
+  return probe;
+}
+
+std::map<std::string, NamedTensor>
+AutomaticOnnxRequestBinding::materializeGenerationInputs(const RoleExecutionContext& ctx) const
+{
+  const auto control = validationControl(ctx);
+  requireActive(control);
+  const auto& profile = generation();
+  const auto shapes = generationShapes(*m_source, m_envelope.inputShapes,
+    m_envelope.maxNewTokens, m_envelope.maxContext, ctx.inferenceEpoch, control);
+  std::set<std::string> supplied;
+  for (const auto& item : ctx.inputsByScope) {
+    requireActive(control);
+    if (!isEncodedTensorBundle(item.second.payload)) continue;
+    for (const auto& value : decodeTensorBundleViews(item.second.payload))
+      supplied.insert("graph/" + value.name);
+  }
+  const auto prompt = static_cast<std::uint64_t>(
+    m_envelope.inputShapes.at(profile.tokenInput).at(profile.tokenSequenceAxis));
+  const auto past = ctx.inferenceEpoch == 0 ? 0 : addExtent(prompt, ctx.inferenceEpoch - 1);
+  std::map<std::string, NamedTensor> result;
+  std::uint64_t allocatedBytes = 0;
+  for (const auto& name : m_inputs) {
+    requireActive(control);
+    if (name == profile.tokenInput || supplied.count(name)) continue;
+    const bool state = std::any_of(profile.states.begin(), profile.states.end(),
+      [&] (const auto& value) { return value.input == name; });
+    if (state && ctx.inferenceEpoch != 0) continue;
+    if (!state && name != profile.maskInput && name != profile.positionInput)
+      rejectShape("AUTOMATIC_GENERATION_INPUT_FACT");
+    auto value = generationInputTensor(*m_source, profile, name, shapes.at(name), past,
+                                       allocatedBytes, control);
+    result.emplace(name.substr(6), std::move(value));
+  }
+  requireActive(control);
+  return result;
+}
+
+void
+AutomaticOnnxSourceBinding::validateModelProbeOutputs(
+  const ExecutionShapeEnvelope& envelope,
+  const std::vector<AutomaticOnnxTensorObservation>& observed,
+  const NativeAssemblyControl& control) const
+{
+  validateEnvelopeIdentity(*m_contract, envelope, control);
+  validateAdmittedTensorShapes(*m_contract, envelope, m_contract->modelOutputs, observed, 0, control);
+  requireActive(control);
+}
+
 NativeAutomaticShapeSeed
 automaticOnnxShapeSeed(const ExecutionShapeEnvelope& envelope)
 {
@@ -1665,6 +1919,142 @@ AutomaticOnnxRequestBinding::validateOutputs(
   validateAdmittedTensorShapes(*m_source, m_envelope, m_outputs, observed,
                               ctx.inferenceEpoch, control);
   requireActive(control);
+}
+
+bool
+AutomaticOnnxRequestBinding::requiresStateFeedbackNormalization() const
+{
+  const auto& states = generation().states;
+  return std::any_of(states.begin(), states.end(), [] (const auto& state) {
+    return state.update != AutomaticAttentionState::Update::REPLACE_FULL ||
+           state.inputAxes != state.outputAxes;
+  });
+}
+
+std::vector<NamedTensor>
+AutomaticOnnxRequestBinding::normalizeStateFeedback(
+  const std::vector<NamedTensorView>& raw, const RoleExecutionContext& ctx,
+  const std::vector<NamedTensorView>& predecessors) const
+{
+  const auto control = validationControl(ctx);
+  requireActive(control);
+  const auto& profile = generation();
+  const auto shapes = generationShapes(*m_source, m_envelope.inputShapes,
+    m_envelope.maxNewTokens, m_envelope.maxContext, ctx.inferenceEpoch, control);
+  if (raw.size() != profile.states.size()) rejectShape("AUTOMATIC_STATE_FEEDBACK_SET");
+  std::map<std::string, const NamedTensorView*> selected;
+  for (const auto& tensor : raw) {
+    requireActive(control);
+    const auto state = std::find_if(profile.states.begin(), profile.states.end(),
+      [&] (const auto& value) { return value.output.substr(6) == tensor.name; });
+    if (state == profile.states.end()) rejectShape("AUTOMATIC_STATE_FEEDBACK_SET");
+    validateNamedTensorView(tensor);
+    if (!selected.emplace(state->output, &tensor).second)
+      rejectShape("AUTOMATIC_STATE_FEEDBACK_SET");
+  }
+  // No candidate is allocated or exposed until all raw successors are admitted.
+  for (const auto& state : profile.states) {
+    const auto found = selected.find(state.output);
+    if (found == selected.end() || found->second->elementType != state.elementType ||
+        found->second->shape != shapes.at(state.output))
+      rejectShape("AUTOMATIC_STATE_FEEDBACK_BINDING");
+  }
+  const auto deltaCount = std::count_if(profile.states.begin(), profile.states.end(),
+    [] (const auto& state) { return state.update == AutomaticAttentionState::Update::APPEND_DELTA; });
+  if (predecessors.size() > static_cast<std::size_t>(deltaCount))
+    rejectShape("AUTOMATIC_STATE_PREDECESSOR_SET");
+  std::map<std::string, const NamedTensorView*> previous;
+  for (const auto& tensor : predecessors) {
+    requireActive(control);
+    const auto state = std::find_if(profile.states.begin(), profile.states.end(),
+      [&] (const auto& value) {
+        return value.update == AutomaticAttentionState::Update::APPEND_DELTA &&
+               value.input.substr(6) == tensor.name;
+      });
+    if (state == profile.states.end()) rejectShape("AUTOMATIC_STATE_PREDECESSOR_SET");
+    validateNamedTensorView(tensor);
+    if (!previous.emplace(state->input, &tensor).second ||
+        tensor.elementType != state->elementType || tensor.shape != shapes.at(state->input))
+      rejectShape("AUTOMATIC_STATE_PREDECESSOR_BINDING");
+  }
+  std::map<std::string, std::vector<std::int64_t>> targetShapes;
+  std::uint64_t candidateBytes = 0;
+  for (const auto& state : profile.states) {
+    requireActive(control);
+    const auto& source = *selected.at(state.output);
+    std::vector<std::int64_t> target(4);
+    for (std::size_t logical = 0; logical < 4; ++logical)
+      target.at(state.inputAxes[logical]) = source.shape.at(state.outputAxes[logical]);
+    if (state.update == AutomaticAttentionState::Update::APPEND_DELTA) {
+      const auto& before = shapes.at(state.input);
+      const auto past = before.at(state.inputAxes[2]);
+      if (past != 0 && !previous.count(state.input))
+        rejectShape("AUTOMATIC_STATE_PREDECESSOR_REQUIRED");
+      target.at(state.inputAxes[2]) = shapeDimension(addExtent(past,
+        source.shape.at(state.outputAxes[2])));
+    }
+    else if (state.update != AutomaticAttentionState::Update::REPLACE_FULL) {
+      rejectShape("AUTOMATIC_GENERATION_STATE_UPDATE");
+    }
+    candidateBytes = addExtent(candidateBytes, tensorStorageByteSize(state.elementType, target));
+    if (candidateBytes > control.maxAssembledBytes)
+      rejectShape("AUTOMATIC_STATE_FEEDBACK_BUDGET");
+    targetShapes.emplace(state.input, std::move(target));
+  }
+  std::vector<NamedTensor> result;
+  result.reserve(profile.states.size());
+  for (const auto& state : profile.states) {
+    requireActive(control);
+    const auto& source = *selected.at(state.output);
+    NamedTensor target;
+    target.name = state.input.substr(6);
+    target.elementType = state.elementType;
+    target.shape = targetShapes.at(state.input);
+    const bool append = state.update == AutomaticAttentionState::Update::APPEND_DELTA;
+    if (!append && state.inputAxes == state.outputAxes) {
+      target.payload.assign(source.payload.begin(), source.payload.end());
+    }
+    else {
+      const auto width = tensorElementByteSize(state.elementType);
+      const auto strides = [&] (const std::vector<std::int64_t>& shape) {
+        std::array<std::uint64_t, 4> result{1, 1, 1, 1};
+        for (unsigned axis = 3; axis > 0; --axis)
+          result[axis - 1] = multiplyExtent(result[axis], shape.at(axis));
+        return result;
+      };
+      const auto sourceStrides = strides(source.shape);
+      const auto before = previous.find(state.input);
+      const NamedTensorView* prefix = before == previous.end() ? nullptr : before->second;
+      const auto prefixStrides = prefix ? strides(prefix->shape) : std::array<std::uint64_t, 4>{};
+      const auto past = append ? shapes.at(state.input).at(state.inputAxes[2]) : 0;
+      target.payload.resize(tensorStorageByteSize(state.elementType, target.shape));
+      const auto count = target.payload.size() / width;
+      for (std::size_t index = 0; index < count; ++index) {
+        if (index % 4096 == 0) requireActive(control);
+        auto remaining = index;
+        std::array<std::uint64_t, 4> coordinates{};
+        for (int axis = 3; axis >= 0; --axis) {
+          coordinates[axis] = remaining % target.shape[axis];
+          remaining /= target.shape[axis];
+        }
+        const bool fromPrefix = append && coordinates[state.inputAxes[2]] <
+          static_cast<std::uint64_t>(past);
+        if (append && !fromPrefix) coordinates[state.inputAxes[2]] -= past;
+        const auto& inputAxes = fromPrefix ? state.inputAxes : state.outputAxes;
+        const auto& inputStrides = fromPrefix ? prefixStrides : sourceStrides;
+        const auto& bytes = fromPrefix ? prefix->payload : source.payload;
+        std::uint64_t sourceIndex = 0;
+        for (unsigned logical = 0; logical < 4; ++logical)
+          sourceIndex += coordinates[state.inputAxes[logical]] * inputStrides[inputAxes[logical]];
+        if (sourceIndex >= bytes.size() / width) rejectShape("AUTOMATIC_STATE_FEEDBACK_INDEX");
+        std::copy_n(bytes.data() + sourceIndex * width, width,
+                    target.payload.data() + index * width);
+      }
+    }
+    result.push_back(std::move(target));
+  }
+  requireActive(control);
+  return result;
 }
 
 } // namespace ndnsf::di

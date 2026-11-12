@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePortableKv.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderResidencyV4.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <cstdint>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace ndnsf::di {
 
@@ -253,7 +255,26 @@ public:
   virtual std::shared_ptr<const AutomaticOnnxRequestBinding>
   validateAutomaticRequestBinding(const NativeSelectionProjectionV3& projection,
                                   const NativeRequestControl& control) const;
+
+  /** Build an owned successor in input layout. Default supports legacy rename only.
+   * Automatic adapters validate their actual binding and source-specific geometry.
+   */
+  virtual std::vector<NamedTensor>
+  makeStateFeedback(const std::vector<NamedTensorView>& raw,
+                    const std::vector<std::string>& inputNames,
+                    const std::vector<std::string>& outputNames,
+                    const RoleExecutionContext& ctx) const;
 };
+
+/** Select raw state views and dispatch backend feedback before encoding a candidate.
+ * All borrowed payloads remain owned by outputs until this synchronous call returns.
+ */
+TensorBundle
+makeNativeProviderDecodeState(const NativeModelRunner* runner,
+                              const std::map<std::string, TensorBundle>& outputs,
+                              const std::vector<std::string>& inputNames,
+                              const std::vector<std::string>& outputNames,
+                              const RoleExecutionContext& ctx);
 
 /** One result of the existing bounded preparation operation.
  * Reusable runners never retain the invocation's immutable binding.

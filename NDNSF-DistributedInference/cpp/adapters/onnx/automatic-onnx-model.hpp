@@ -132,7 +132,9 @@ struct ShapeRelation
 struct AutomaticAttentionState
 {
   enum class Role { KEY, VALUE };
+  enum class Update { REPLACE_FULL, APPEND_DELTA };
   Role role = Role::KEY;
+  Update update = Update::REPLACE_FULL;
   std::uint64_t operatorIndex = 0;
   std::string input;
   std::string output;
@@ -148,7 +150,7 @@ struct AutomaticAttentionState
   std::uint64_t headSize = 0;
 };
 
-/** Source-proven feedback under empty-past, full replacement, all-ones mask
+/** Source-proven feedback under empty-past, full/delta update, all-ones mask
  * and contiguous position policy. Request token/EOS/sampling policy and runtime
  * readiness remain with their existing owners, independently of this proof.
  */
@@ -187,6 +189,8 @@ struct AutomaticOnnxContract
   std::vector<ShapeRelation> relations;
   /** Source-owned small INT32/INT64 constants; absent values are not zero. */
   std::map<std::string, std::vector<std::int64_t>> integerLiterals;
+  /** Source-owned single FLOAT/FLOAT16/BFLOAT16 values, as exact LE bytes. */
+  std::map<std::string, std::vector<std::uint8_t>> floatingLiterals;
   std::optional<AutomaticGenerationContract> generation;
 
   /** Preserve the existing ndnsf-di-automatic-facts-v1 canonical identity. */

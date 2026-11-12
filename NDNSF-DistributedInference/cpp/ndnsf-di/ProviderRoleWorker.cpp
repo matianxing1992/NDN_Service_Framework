@@ -236,43 +236,12 @@ withoutProviderLocalState(const TensorBundle& bundle,
 TensorBundle
 providerDecodeStateFromOutputs(
   const std::map<std::string, TensorBundle>& outputs,
-  const RoleSpec& role)
+  const RoleSpec& role, const NativeModelRunner& runner, const RoleExecutionContext& ctx)
 {
   NativeWorkScope stateWork(role.workStatistics, "role-decode-state-pack",
                             NativeWorkKind::LOCAL);
-  if (role.stateInputNames.size() != role.stateOutputNames.size() ||
-      role.stateInputNames.empty()) {
-    throw std::invalid_argument(
-      "Provider decode-state input/output metadata length mismatch");
-  }
-  std::vector<NamedTensor> nextState;
-  nextState.reserve(role.stateInputNames.size());
-  for (std::size_t index = 0; index < role.stateOutputNames.size(); ++index) {
-    bool found = false;
-    for (const auto& output : outputs) {
-      if (!isEncodedTensorBundle(output.second.payload)) {
-        continue;
-      }
-      try {
-        auto tensor = findTensor(
-          decodeTensorBundle(output.second.payload, role.workStatistics),
-          role.stateOutputNames[index]);
-        tensor.name = role.stateInputNames[index];
-        nextState.push_back(std::move(tensor));
-        found = true;
-        break;
-      }
-      catch (const std::out_of_range&) {
-      }
-    }
-    if (!found) {
-      throw std::runtime_error(
-        "Provider role is missing decode-state output: " +
-        role.stateOutputNames[index]);
-    }
-  }
-  return makeEncodedTensorBundle("__ndnsf_provider_decode_state",
-                                 std::move(nextState));
+  return makeNativeProviderDecodeState(&runner, outputs, role.stateInputNames,
+                                       role.stateOutputNames, ctx);
 }
 
 /** Reject a sealed step template before any input fetch, runner preparation or
@@ -1685,6 +1654,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   NativeWorkScope inputWork(item.role.workStatistics, "role-input-bind", NativeWorkKind::LOCAL);
   RoleExecutionContext ctx;
   ctx.automaticBinding = std::move(automaticBinding);
+  result.automaticBinding = ctx.automaticBinding;
   ctx.executionGuard = item.executionGuard;
   ctx.workStatistics = item.role.workStatistics;
   ctx.sessionId = item.sessionId;
@@ -1882,7 +1852,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     // only outputsByScope would overwrite the state-bearing bundle before the
     // outer NativeProviderRuntime can stage its decode-state transaction.
     result.providerDecodeState = providerDecodeStateFromOutputs(
-      result.outputsByScope, item.role);
+      result.outputsByScope, item.role, *runner, ctx);
   }
   if (item.role.streamingStateExecution &&
       runner->supportsOpaqueStateHandles()) {

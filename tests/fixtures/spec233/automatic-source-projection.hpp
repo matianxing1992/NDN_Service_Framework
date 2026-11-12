@@ -5,6 +5,8 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
@@ -87,6 +89,36 @@ automaticSourceProjection(const AutomaticOnnxModel& model, const NativeAutomatic
   projection.dataflow.terminalResponseOwner = true;
   return projection;
 }
+
+/** Complete actual runner metadata shared by source/epoch fixtures. */
+inline NativeModelRunnerSpec
+automaticSourceRunnerSpec(const std::string& modelPath, const std::string& scratchRoot,
+                          const NativeSelectionProjectionV3& projection,
+                          const std::string& sourceBindingJson)
+{
+  const auto& role = projection.assembly;
+  NativeModelRunnerSpec spec;
+  spec.role = role.selectedRole;
+  spec.kind = "onnx";
+  spec.backend = role.backend;
+  spec.path = modelPath;
+  spec.metadata = {{"artifactDigest", role.artifactDigest}, {"fragmentDigest", role.artifactDigest},
+    {"recipeDigest", role.recipeDigest}, {"modelManifestDigest", role.modelManifestDigest},
+    {"artifactProfileDigest", role.artifactProfileDigest}, {"graphDigest", role.graphDigest},
+    {"canonicalInitializerDigest", role.canonicalInitializerDigest},
+    {"adapterDescriptorDigest", role.adapterDescriptorDigest},
+    {"assemblerDescriptorDigest", role.assemblerDescriptorDigest}, {"backendAbi", role.backendAbi},
+    {"precision", role.precision}, {"quantization", role.quantization}, {"layout", role.layout},
+    {"padding", role.padding}, {"maxSourceBytes", std::to_string(role.maxSourceBytes)},
+    {"maxAssembledBytes", std::to_string(role.maxAssembledBytes)},
+    {"maxNodes", std::to_string(role.maxNodes)}, {"providerIdentity", projection.provider},
+    {"providerBootId", "source-boot"}, {"residentSession", "true"},
+    {"automaticSourceBinding", sourceBindingJson}};
+  bindNativeRunnerPreparationContext(spec, projection,
+    {projection.provider, "source-boot", 1, scratchRoot});
+  return spec;
+}
+
 
 } // namespace ndnsf::di::fixture
 

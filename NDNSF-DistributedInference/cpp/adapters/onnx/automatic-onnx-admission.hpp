@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,6 +16,7 @@ struct NativeModelRunnerSpec;
 struct NativeSelectionProjectionV3;
 struct NativeRequestControl;
 struct RoleExecutionContext;
+struct AutomaticOnnxTensorObservation;
 
 /** Immutable model facts. No request authority, seed, payload or readiness. */
 class AutomaticOnnxSourceBinding
@@ -32,6 +34,12 @@ public:
   std::string canonicalJson(const NativeAssemblyControl& control) const;
   const AutomaticOnnxContract& sourceContract() const { return *m_contract; }
   const std::string& modelDigest() const { return m_modelDigest; }
+
+  /** Model-only output admission; this confers no request authority. */
+  void
+  validateModelProbeOutputs(const ExecutionShapeEnvelope& envelope,
+                           const std::vector<AutomaticOnnxTensorObservation>& observed,
+                           const NativeAssemblyControl& control) const;
 
 private:
   friend class AutomaticOnnxRequestBinding;
@@ -59,6 +67,25 @@ struct AutomaticOnnxTensorObservation
   std::uint64_t payloadBytes = 0;
 };
 
+/** One synchronous model probe, owned until backend execution drains. */
+struct AutomaticOnnxGenerationProbe
+{
+  std::vector<NamedTensor> inputs;
+  ExecutionShapeEnvelope envelope;
+};
+
+/** Current full-root profile with source-proven full/delta updates and state axes. */
+void
+validateAutomaticOnnxGenerationRole(const AutomaticOnnxContract& source,
+                                    const std::vector<std::string>& scopedInputs,
+                                    const std::vector<std::string>& scopedOutputs);
+
+AutomaticOnnxGenerationProbe
+makeAutomaticOnnxGenerationProbe(const AutomaticOnnxSourceBinding& source,
+                                const std::vector<std::string>& rawInputNames,
+                                const std::vector<std::string>& rawOutputNames,
+                                const NativeAssemblyControl& control);
+
 /** One admitted invocation. No permission, callback or execution-state owner. */
 class AutomaticOnnxRequestBinding
 {
@@ -70,6 +97,12 @@ public:
   const AutomaticOnnxContract& source() const { return *m_source; }
   const ExecutionShapeEnvelope& envelope() const { return m_envelope; }
   const std::vector<std::string>& controlInputs() const { return m_controlInputs; }
+
+  const AutomaticGenerationContract& generation() const;
+
+  /** Derive only proven controls and initial empty caches, never request tokens. */
+  std::map<std::string, NamedTensor>
+  materializeGenerationInputs(const RoleExecutionContext& ctx) const;
 
   void
   requireInvocation(const RoleExecutionContext& ctx, const NativeModelRunnerSpec& spec,
@@ -83,6 +116,18 @@ public:
   void
   validateOutputs(const std::vector<AutomaticOnnxTensorObservation>& observed,
                   const RoleExecutionContext& ctx) const;
+
+  /** Whether source-proven feedback requires append or physical axis normalization. */
+  bool
+  requiresStateFeedbackNormalization() const;
+
+  /** Build input-layout state candidates; raw views are borrowed only during this call.
+   * Validate every member before allocation. This never commits execution state.
+   */
+  std::vector<NamedTensor>
+  normalizeStateFeedback(const std::vector<NamedTensorView>& raw,
+                         const RoleExecutionContext& ctx,
+                         const std::vector<NamedTensorView>& predecessors = {}) const;
 
 private:
   AutomaticOnnxRequestBinding(std::shared_ptr<const AutomaticOnnxContract> source,

@@ -415,6 +415,82 @@ BOOST_AUTO_TEST_CASE(IntegerLiteralsRequireRealHeadersExactShapeAndIntegerRange)
   }
 }
 
+BOOST_AUTO_TEST_CASE(TypedShapeFillReaderRejectsForgedEvidenceAfterDigestRecomputation)
+{
+  auto op = operation("ConstantOfShape", {"shape"}, {"filled"});
+  op.integerListAttributes["tensor.value.int64"] = {1};
+  auto model = contract({integerTensor("shape", {fixed(1)}),
+                         integerTensor("filled", {fixed(2)})}, {op}, {"shape"}, {"filled"});
+  const auto encoded = model.canonicalJson(shapeControl());
+  BOOST_CHECK_EQUAL(AutomaticOnnxContract::fromCanonicalJson(encoded, shapeControl())
+                      .canonicalJson(shapeControl()), encoded);
+  const auto original = nativeParseJson(encoded);
+  for (int failure = 0; failure < 24; ++failure) {
+    auto bad = original;
+    auto& item = bad["facts"]["operators"][0];
+    auto& lists = item["integerLists"];
+    if (failure == 0) lists["tensor.value.int64"] = NativeJson::array();
+    if (failure == 1) lists["tensor.value.int64"] = NativeJson::array({1, 1});
+    if (failure == 2) lists["tensor.value.int64"] = NativeJson::array({true});
+    if (failure == 3) lists["tensor.value.int64"] = NativeJson::array({1.0});
+    if (failure == 4) lists["tensor.value.unknown"] = NativeJson::array({1});
+    if (failure == 5) lists["tensor.value.int32"] = NativeJson::array({1});
+    if (failure == 6) item["op"] = "Identity";
+    if (failure == 7) item["domain"] = "com.microsoft";
+    if (failure == 8) item["opset"] = 8;
+    if (failure == 9) item["opset"] = 22;
+    if (failure == 10) item["atomicBody"] = true;
+    if (failure == 11) item["functionScope"] = "function/0";
+    if (failure == 12) item["overload"] = "custom";
+    if (failure == 13) item["attributeReferences"]["value"] = "unbound";
+    if (failure == 14) item["inputs"] = NativeJson::array();
+    if (failure == 15) item["outputs"] = NativeJson::array();
+    if (failure == 16) item["inputs"] = NativeJson::array({""});
+    if (failure == 17) item["outputs"] = NativeJson::array({""});
+    if (failure == 18) item["integers"]["tensor.value.int64"] = 1;
+    if (failure == 19) item["attributeReferences"]["tensor.value.int64"] = "unbound";
+    if (failure == 20) item["integers"]["value"] = 1;
+    if (failure == 21) lists["value"] = NativeJson::array({1});
+    if (failure == 22) lists["tensor.value.int64"] = NativeJson::array({18446744073709551615ULL});
+    if (failure == 23) {
+      lists.erase("tensor.value.int64"); lists["tensor.value.bool"] = NativeJson::array({1});
+    }
+    bad["factsDigest"] = nativePlanningDigest(nativeCanonicalJson(bad["facts"]));
+    BOOST_CHECK_THROW(AutomaticOnnxContract::fromCanonicalJson(nativeCanonicalJson(bad),
+                                                              shapeControl()), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(TypedShapeFillRequiresExactTypeRangeAndSingleFill)
+{
+  for (const auto type : {6, 7, 9}) {
+    auto output = integerTensor("filled", {fixed(2)});
+    output.onnxElementType = type; output.wireElementType = onnxTensorWireType(type);
+    const std::string key = type == 6 ? "tensor.value.int32" :
+      type == 7 ? "tensor.value.int64" : "tensor.value.bool";
+    auto op = operation("ConstantOfShape", {"shape"}, {"filled"});
+    op.integerListAttributes[key] = {1};
+    const auto base = contract({integerTensor("shape", {fixed(1)}), output},
+                               {op}, {"shape"}, {"filled"});
+    for (const auto value : {std::numeric_limits<std::int64_t>::min(), std::int64_t(-1),
+                             std::int64_t(0), std::int64_t(1), std::int64_t(2),
+                             std::int64_t(2147483648LL),
+                             std::numeric_limits<std::int64_t>::max()}) {
+      auto model = base; model.operators[0].integerListAttributes[key] = {value};
+      model.factsDigest = nativePlanningDigest(model.factsJson());
+      const bool valid = type == 7 || (type == 9 ? value == 0 || value == 1 :
+        value >= std::numeric_limits<std::int32_t>::min() &&
+        value <= std::numeric_limits<std::int32_t>::max());
+      if (valid) {
+        const auto encoded = model.canonicalJson(shapeControl());
+        BOOST_CHECK_EQUAL(AutomaticOnnxContract::fromCanonicalJson(encoded, shapeControl())
+                            .canonicalJson(shapeControl()), encoded);
+      }
+      else BOOST_CHECK_THROW(model.canonicalJson(shapeControl()), std::invalid_argument);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(IntegerLiteralReaderRejectsCoerciveOrOversizedValues)
 {
   auto literal = integerTensor("literal", {});
@@ -431,6 +507,78 @@ BOOST_AUTO_TEST_CASE(IntegerLiteralReaderRejectsCoerciveOrOversizedValues)
     if (failure == 4) value["integerLiterals"] = NativeJson::array();
     BOOST_CHECK_THROW(AutomaticOnnxContract::fromCanonicalJson(nativeCanonicalJson(value),
                                                               shapeControl()), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FloatingLiteralVersionThreeKeepsVersionTwoAndFactsIdentity)
+{
+  auto literal = tensor("literal", {});
+  literal.provenance = {"constant-header-v1"};
+  const auto base = contract({literal}, {}, {}, {"literal"});
+  const auto legacyBytes = base.canonicalJson(shapeControl());
+  const auto legacy = nativeParseJson(legacyBytes);
+  BOOST_CHECK_EQUAL(legacy.at("schema").get<std::string>(),
+                    "ndnsf-di-automatic-onnx-contract-v2");
+  BOOST_CHECK_EQUAL(legacy.size(), 9U);
+  BOOST_CHECK(!legacy.contains("floatingLiterals"));
+  BOOST_CHECK_EQUAL(AutomaticOnnxContract::fromCanonicalJson(legacyBytes, shapeControl())
+                     .canonicalJson(shapeControl()), legacyBytes);
+  auto model = base;
+  model.floatingLiterals["graph/literal"] = {0, 0, 128, 255};
+  const auto encoded = model.canonicalJson(shapeControl());
+  const auto value = nativeParseJson(encoded);
+  BOOST_CHECK_EQUAL(value.at("schema").get<std::string>(),
+                    "ndnsf-di-automatic-onnx-contract-v3");
+  BOOST_CHECK(value.at("floatingLiterals").at("graph/literal") ==
+              NativeJson::array({0, 0, 128, 255}));
+  const auto decoded = AutomaticOnnxContract::fromCanonicalJson(encoded, shapeControl());
+  BOOST_CHECK(decoded.floatingLiterals == model.floatingLiterals);
+  BOOST_CHECK_EQUAL(decoded.canonicalJson(shapeControl()), encoded);
+  BOOST_CHECK_EQUAL(model.factsJson(), base.factsJson());
+  BOOST_CHECK_EQUAL(model.factsDigest, base.factsDigest);
+  BOOST_CHECK_NE(model.digest(shapeControl()), base.digest(shapeControl()));
+  auto different = model; different.floatingLiterals.at("graph/literal")[3] = 127;
+  BOOST_CHECK_NE(different.digest(shapeControl()), model.digest(shapeControl()));
+  for (unsigned failure = 0; failure < 11; ++failure) {
+    auto changed = value;
+    if (failure == 0) changed["schema"] = "ndnsf-di-automatic-onnx-contract-v2";
+    if (failure == 1) changed.erase("floatingLiterals");
+    if (failure == 2) changed["floatingLiterals"] = NativeJson::object();
+    if (failure == 3) changed["floatingLiterals"]["graph/literal"][0] = true;
+    if (failure == 4) changed["floatingLiterals"]["graph/literal"][0] = 0.5;
+    if (failure == 5) changed["floatingLiterals"]["graph/literal"][0] = -1;
+    if (failure == 6) changed["floatingLiterals"]["graph/literal"][0] = 256;
+    if (failure == 7) changed["floatingLiterals"]["graph/literal"] = NativeJson::array();
+    if (failure == 8) changed["floatingLiterals"]["graph/literal"].push_back(0);
+    if (failure == 9) changed["unexpected"] = 1;
+    if (failure == 10) changed["floatingLiterals"]["graph/literal"] = "000080ff";
+    BOOST_TEST_CONTEXT("floating contract mutation=" << failure) {
+      BOOST_CHECK_THROW(AutomaticOnnxContract::fromCanonicalJson(nativeCanonicalJson(changed),
+                                                                shapeControl()), std::exception);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(FloatingLiteralsRequireConstantScalarHeadersAndExactStorage)
+{
+  auto literal = tensor("literal", {fixed(1)});
+  literal.provenance = {"initializer-header-v1"};
+  const auto base = contract({literal}, {}, {}, {"literal"});
+  for (unsigned failure = 0; failure < 8; ++failure) {
+    auto model = base;
+    model.floatingLiterals["graph/literal"] = {0, 0, 128, 63};
+    if (failure == 0) model.floatingLiterals["graph/missing"] = {0, 0, 0, 0};
+    if (failure == 1) model.tensors[0].provenance = {"graph-input-v1"};
+    if (failure == 2) model.tensors[0].dimensions = std::vector<DimensionConstraint>{fixed(0)};
+    if (failure == 3) model.tensors[0].dimensions = std::vector<DimensionConstraint>{fixed(2)};
+    if (failure == 4) model.tensors[0].dimensions = std::vector<DimensionConstraint>{symbol("N")};
+    if (failure == 5) model.tensors[0].dimensions.reset();
+    if (failure == 6) {
+      model.tensors[0].onnxElementType = 7;
+      model.tensors[0].wireElementType = TensorElementType::Int64;
+    }
+    if (failure == 7) model.floatingLiterals["graph/literal"].pop_back();
+    BOOST_CHECK_THROW(model.canonicalJson(shapeControl()), std::invalid_argument);
   }
 }
 

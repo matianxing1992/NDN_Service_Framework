@@ -40,6 +40,8 @@ main(int argc, char** argv)
           {"normalizedInitializerDigest", model.inspection.canonicalIdentity.initializerDigest}};
         facts["tensorCount"] = model.contract.tensors.size();
         facts["integerLiterals"] = model.contract.integerLiterals;
+        facts["floatingLiterals"] = model.contract.floatingLiterals;
+        facts["contractSchema"] = ndnsf::di::nativeParseJson(contractJson).at("schema");
         facts["generationSourceProof"] = ndnsf::di::automaticOnnxGenerationJson(
           model.contract.generation);
         facts["generationDiagnostic"] = model.generationDiagnostic;

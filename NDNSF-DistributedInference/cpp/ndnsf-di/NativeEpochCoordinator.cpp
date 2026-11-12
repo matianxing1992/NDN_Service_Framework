@@ -1,15 +1,18 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "request-work-statistics.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <cstdlib>
@@ -25,6 +28,43 @@ namespace {
 
 constexpr const char* FEEDBACK_TENSOR = "__ndnsf_token_feedback_terminal";
 constexpr const char* EPOCH_TERMINAL_TENSOR = "__ndnsf_epoch_terminal";
+
+
+TensorElementType
+automaticTensorType(const AutomaticOnnxRequestBinding& binding, const std::string& name)
+{
+  const auto& tensors = binding.source().tensors;
+  const auto found = std::find_if(tensors.begin(), tensors.end(),
+    [&] (const auto& tensor) { return tensor.name == name; });
+  if (found == tensors.end() || !found->wireElementType)
+    throw std::invalid_argument("AUTOMATIC_GENERATION_TENSOR_TYPE");
+  return *found->wireElementType;
+}
+
+void
+validateAutomaticGenerationConfig(const NativeEpochCoordinatorConfig& config)
+{
+  if (!config.automaticBinding) return;
+  const auto& binding = *config.automaticBinding;
+  const auto& profile = binding.generation();
+  if (config.checkpointFinalize || config.conversationStateBinding)
+    throw std::invalid_argument("AUTOMATIC_CONVERSATION_UNSUPPORTED");
+  if (config.maxEpochs != binding.envelope().maxNewTokens ||
+      config.tokenInputName != profile.tokenInput.substr(6) ||
+      config.stateInputNames.size() != profile.states.size() ||
+      config.stateOutputNames.size() != profile.states.size())
+    throw std::invalid_argument("AUTOMATIC_GENERATION_CONFIG_BINDING");
+  std::map<std::string, std::string> pairs;
+  for (std::size_t index = 0; index < config.stateInputNames.size(); ++index) {
+    if (!pairs.emplace(config.stateInputNames[index], config.stateOutputNames[index]).second)
+      throw std::invalid_argument("AUTOMATIC_GENERATION_CONFIG_BINDING");
+  }
+  for (const auto& state : profile.states) {
+    const auto found = pairs.find(state.input.substr(6));
+    if (found == pairs.end() || found->second != state.output.substr(6))
+      throw std::invalid_argument("AUTOMATIC_GENERATION_CONFIG_BINDING");
+  }
+}
 
 void
 logFeedbackBoundary(const NativeEpochCoordinatorConfig& config, std::size_t epoch,
@@ -280,19 +320,39 @@ isTerminalActivation(const TensorBundle& bundle)
 }
 
 TensorBundle
-makeTokenFeedback(std::int64_t token, bool terminal)
+makeTokenFeedback(std::int64_t token, bool terminal,
+                  const NativeEpochCoordinatorConfig& config)
 {
-  std::vector<std::uint8_t> tokenBytes(sizeof(token));
-  std::memcpy(tokenBytes.data(), &token, sizeof(token));
-  std::vector<std::uint8_t> terminalByte{static_cast<std::uint8_t>(terminal ? 1 : 0)};
-  return makeEncodedTensorBundle(
-    "token-feedback",
-    {
-      NamedTensor{"input_ids", TensorElementType::Int64, {1, 1},
-                  std::move(tokenBytes)},
-      NamedTensor{FEEDBACK_TENSOR, TensorElementType::Bool, {1},
-                  std::move(terminalByte)},
-    });
+  auto type = TensorElementType::Int64;
+  std::string name = "input_ids";
+  if (config.automaticBinding) {
+    const auto& binding = *config.automaticBinding;
+    const auto& profile = binding.generation();
+    type = automaticTensorType(binding, profile.tokenInput);
+    name = profile.tokenInput.substr(6);
+    if (token < 0 || static_cast<std::uint64_t>(token) >= profile.vocabularySize)
+      throw std::invalid_argument("AUTOMATIC_GENERATION_TOKEN_RANGE");
+  }
+  std::vector<std::uint8_t> tokenBytes;
+  if (type == TensorElementType::Int32) {
+    if (token < 0 || token > std::numeric_limits<std::int32_t>::max())
+      throw std::overflow_error("automatic token feedback exceeds Int32");
+    const auto narrowed = static_cast<std::int32_t>(token);
+    tokenBytes.resize(sizeof(narrowed));
+    std::memcpy(tokenBytes.data(), &narrowed, sizeof(narrowed));
+  }
+  else if (type == TensorElementType::Int64) {
+    tokenBytes.resize(sizeof(token));
+    std::memcpy(tokenBytes.data(), &token, sizeof(token));
+  }
+  else {
+    throw std::invalid_argument("AUTOMATIC_GENERATION_INTEGER_INPUT");
+  }
+  return makeEncodedTensorBundle("token-feedback", {
+    NamedTensor{std::move(name), type, {1, 1}, std::move(tokenBytes)},
+    NamedTensor{FEEDBACK_TENSOR, TensorElementType::Bool, {1},
+                {static_cast<std::uint8_t>(terminal ? 1 : 0)}},
+  });
 }
 
 TensorBundle
@@ -622,18 +682,40 @@ tokenIdsFromInputs(const NativeEpochCoordinatorConfig& config,
     if (found == tensors.end()) {
       continue;
     }
-    if (result || found->elementType != TensorElementType::Int64 ||
-        found->shape.empty() || found->payload.empty() ||
-        found->payload.size() % sizeof(std::int64_t) != 0) {
-      throw std::invalid_argument(
-        "native epoch coordinator requires one canonical Int64 token input");
+    auto type = TensorElementType::Int64;
+    if (config.automaticBinding) {
+      const auto& binding = *config.automaticBinding;
+      const auto& profile = binding.generation();
+      type = automaticTensorType(binding, profile.tokenInput);
+      if (found->shape.size() != 2 || found->shape.at(profile.tokenBatchAxis) != 1 ||
+          found->shape.at(profile.tokenSequenceAxis) <= 0)
+        throw std::invalid_argument("AUTOMATIC_GENERATION_TOKEN_SHAPE");
     }
-    std::vector<std::int64_t> tokens(found->payload.size() / sizeof(std::int64_t));
-    std::memcpy(tokens.data(), found->payload.data(), found->payload.size());
-    if (std::any_of(tokens.begin(), tokens.end(), [] (std::int64_t token) {
-          return token < 0;
-        })) {
-      throw std::invalid_argument("native epoch coordinator token ID is negative");
+    const auto width = type == TensorElementType::Int32 ? sizeof(std::int32_t) :
+                       type == TensorElementType::Int64 ? sizeof(std::int64_t) : 0;
+    if (result || width == 0 || found->elementType != type ||
+        found->shape.empty() || found->payload.empty() || found->payload.size() % width != 0) {
+      throw std::invalid_argument(config.automaticBinding
+        ? "AUTOMATIC_GENERATION_INTEGER_INPUT"
+        : "native epoch coordinator requires one canonical Int64 token input");
+    }
+    std::vector<std::int64_t> tokens(found->payload.size() / width);
+    if (type == TensorElementType::Int64) {
+      std::memcpy(tokens.data(), found->payload.data(), found->payload.size());
+    }
+    else {
+      for (std::size_t index = 0; index < tokens.size(); ++index) {
+        std::int32_t value;
+        std::memcpy(&value, found->payload.data() + index * width, width);
+        tokens[index] = value;
+      }
+    }
+    for (const auto token : tokens) {
+      if (token < 0)
+        throw std::invalid_argument("native epoch coordinator token ID is negative");
+      if (config.automaticBinding && static_cast<std::uint64_t>(token) >=
+          config.automaticBinding->generation().vocabularySize)
+        throw std::invalid_argument("AUTOMATIC_GENERATION_TOKEN_RANGE");
     }
     result = std::move(tokens);
   }
@@ -909,10 +991,19 @@ decodeStateIdentityForEpoch(
   return identity;
 }
 
-NamedTensorView
-lastLogitsView(
-  const std::map<std::string, TensorBundle>& outputs,
-  const std::shared_ptr<NativeWorkStatistics>& workStatistics)
+struct LogitsSlice
+{
+  TensorElementType elementType;
+  ndn::span<const std::uint8_t> payload;
+  std::size_t vocabulary;
+  std::size_t offset;
+  std::size_t stride;
+};
+
+LogitsSlice
+lastLogitsView(const std::map<std::string, TensorBundle>& outputs,
+               const NativeEpochCoordinatorConfig& config,
+               const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   // A resident Provider returns a small encoded decode-state bundle alongside
   // the activation bundle.  Do not select the first encoded scope by map
@@ -920,8 +1011,9 @@ lastLogitsView(
   // contain logits.  The logits tensor is the stable content contract here.
   // The selected views borrow from `outputs`, which the caller keeps alive for the duration of
   // this function, so the returned view stays valid without copying the unused prefill rows.
-  std::vector<NamedTensorView> tensors;
-  const NamedTensorView* logits = nullptr;
+  const auto* profile = config.automaticBinding ? &config.automaticBinding->generation() : nullptr;
+  const auto name = profile ? profile->logitsOutput.substr(6) : std::string("logits");
+  std::optional<NamedTensorView> logits;
   for (const auto& item : outputs) {
     // A local value is read through the same entry as an encoded one: the sampler does not care
     // which hop produced the logits, and a local producer would otherwise look like "no
@@ -929,6 +1021,7 @@ lastLogitsView(
     const bool readable = item.second.localTensors ||
       isEncodedTensorBundle(item.second.payload);
     if (!readable) continue;
+    std::vector<NamedTensorView> tensors;
     try {
       tensors = decodeTensorBundleViews(item.second, workStatistics);
     }
@@ -936,57 +1029,90 @@ lastLogitsView(
       // A non-bundle scope in the same result is not an error here; it simply has no logits.
       continue;
     }
-    const auto found = std::find_if(tensors.begin(), tensors.end(), [] (const auto& tensor) {
-      return tensor.name == "logits";
-    });
-    if (found != tensors.end()) {
-      logits = &*found;
-      break;
-    }
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [&] (const auto& tensor) { return tensor.name == name; });
+    if (found == tensors.end()) continue;
+    if (logits) throw std::invalid_argument("AUTOMATIC_GENERATION_LOGITS_AMBIGUOUS");
+    // Copy metadata; payload bytes stay owned by outputs throughout sampling.
+    logits = *found;
+    if (!profile) break;
   }
-  if (!logits) {
-    throw std::runtime_error("native epoch coordinator received no logits value");
-  }
+  if (!logits) throw std::runtime_error("native epoch coordinator received no logits value");
   if ((logits->elementType != TensorElementType::Float32 &&
-       logits->elementType != TensorElementType::Float16) ||
-      logits->shape.empty() || logits->payload.empty()) {
+       logits->elementType != TensorElementType::Float16 &&
+       !(profile && logits->elementType == TensorElementType::BFLOAT16)) ||
+      logits->shape.empty() || logits->payload.empty())
     throw std::invalid_argument("native epoch coordinator logits are invalid");
+  const auto width = tensorElementByteSize(logits->elementType);
+  if (!profile) {
+    const auto vocabulary = static_cast<std::size_t>(logits->shape.back());
+    if (vocabulary == 0 || vocabulary > logits->payload.size() / width ||
+        logits->payload.size() % (vocabulary * width) != 0)
+      throw std::invalid_argument("native epoch coordinator logits vocabulary is invalid");
+    return {logits->elementType, logits->payload, vocabulary,
+            logits->payload.size() - vocabulary * width, width};
   }
-  const auto elementBytes = tensorElementByteSize(logits->elementType);
-  const auto vocabulary = static_cast<std::size_t>(logits->shape.back());
-  if (vocabulary == 0 || vocabulary > logits->payload.size() / elementBytes ||
-      logits->payload.size() % (vocabulary * elementBytes) != 0) {
-    throw std::invalid_argument("native epoch coordinator logits vocabulary is invalid");
+  if (logits->elementType != automaticTensorType(*config.automaticBinding, profile->logitsOutput) ||
+      logits->shape.size() != 3 || logits->shape.at(profile->logitsBatchAxis) != 1 ||
+      logits->shape.at(profile->logitsSequenceAxis) <= 0 ||
+      logits->shape.at(profile->logitsVocabularyAxis) <= 0 ||
+      static_cast<std::uint64_t>(logits->shape.at(profile->logitsVocabularyAxis)) !=
+        profile->vocabularySize)
+    throw std::invalid_argument("AUTOMATIC_GENERATION_LOGITS_SHAPE");
+  validateNamedTensorView(*logits);
+  std::array<std::size_t, 3> strides{};
+  std::size_t denseBytes = width;
+  for (std::size_t axis = 3; axis-- > 0;) {
+    const auto extent = static_cast<std::uint64_t>(logits->shape[axis]);
+    if (extent == 0 || extent > logits->payload.size() / denseBytes)
+      throw std::invalid_argument("AUTOMATIC_GENERATION_LOGITS_SHAPE");
+    strides[axis] = denseBytes;
+    denseBytes *= static_cast<std::size_t>(extent);
   }
-  // Own metadata, borrow only the final row from the unchanged output bundle.
-  auto result = *logits;
-  result.payload = result.payload.last(vocabulary * elementBytes);
-  return result;
+  if (denseBytes != logits->payload.size())
+    throw std::invalid_argument("AUTOMATIC_GENERATION_LOGITS_SHAPE");
+  const auto vocabulary = static_cast<std::size_t>(profile->vocabularySize);
+  const auto offset = static_cast<std::size_t>(
+    logits->shape.at(profile->logitsSequenceAxis) - 1) * strides[profile->logitsSequenceAxis];
+  const auto stride = strides[profile->logitsVocabularyAxis];
+  if (offset > logits->payload.size() - width ||
+      vocabulary - 1 > (logits->payload.size() - width - offset) / stride)
+    throw std::invalid_argument("AUTOMATIC_GENERATION_LOGITS_SHAPE");
+  return {logits->elementType, logits->payload, vocabulary, offset, stride};
 }
 
 float
-readLogit(const NamedTensorView& logits, std::size_t index)
+readLogit(const LogitsSlice& logits, std::size_t index)
 {
+  if (index >= logits.vocabulary) throw std::out_of_range("logits slice index");
+  const auto* bytes = logits.payload.data() + logits.offset + index * logits.stride;
   float value;
   if (logits.elementType == TensorElementType::Float32) {
-    std::memcpy(&value, logits.payload.data() + index * sizeof(float), sizeof(float));
+    std::memcpy(&value, bytes, sizeof(value));
   }
-  else {
+  else if (logits.elementType == TensorElementType::BFLOAT16) {
+    std::uint16_t raw;
+    std::memcpy(&raw, bytes, sizeof(raw));
+    const auto bits = static_cast<std::uint32_t>(raw) << 16;
+    std::memcpy(&value, &bits, sizeof(value));
+  }
+  else if (logits.elementType == TensorElementType::Float16) {
     std::uint16_t bits;
-    std::memcpy(&bits, logits.payload.data() + index * sizeof(bits), sizeof(bits));
+    std::memcpy(&bits, bytes, sizeof(bits));
     const auto exponent = (bits >> 10) & 0x1f;
     const auto fraction = bits & 0x3ff;
-    if (exponent == 0x1f) {
+    if (exponent == 0x1f)
       throw std::invalid_argument("native epoch coordinator logits are non-finite");
-    }
     const float magnitude = exponent == 0
       ? std::ldexp(static_cast<float>(fraction), -24)
       : std::ldexp(static_cast<float>(1024 + fraction), static_cast<int>(exponent) - 25);
     value = (bits & 0x8000) ? -magnitude : magnitude;
   }
-  if (!std::isfinite(value)) {
-    throw std::invalid_argument("native epoch coordinator logits are non-finite");
+  else {
+    throw std::invalid_argument("native epoch coordinator logits are invalid");
   }
+  if (!std::isfinite(value))
+    throw std::invalid_argument("native epoch coordinator logits are non-finite");
   return value;
 }
 
@@ -1013,8 +1139,8 @@ sampleToken(const std::map<std::string, TensorBundle>& outputs,
             const std::vector<std::int64_t>& generated,
             std::size_t step)
 {
-  const auto inputLogits = lastLogitsView(outputs, config.workStatistics);
-  const auto vocabulary = static_cast<std::size_t>(inputLogits.shape.back());
+  const auto inputLogits = lastLogitsView(outputs, config, config.workStatistics);
+  const auto vocabulary = inputLogits.vocabulary;
   if (config.samplingTopK == 0 || config.samplingTopK > vocabulary ||
       !std::isfinite(config.samplingTopP) || config.samplingTopP <= 0.0 || config.samplingTopP > 1.0 ||
       !std::isfinite(config.samplingRepetitionPenalty) || config.samplingRepetitionPenalty < 0.1 ||
@@ -1403,8 +1529,9 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         executable.automaticBinding = config.automaticBinding;
       }
     }
-    if (config.automaticBinding || executable.automaticBinding)
-      throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
+    if (executable.automaticBinding && !config.automaticBinding)
+      config.automaticBinding = executable.automaticBinding;
+    if (epoch == 0) validateAutomaticGenerationConfig(config);
 
     auto epochLineage = extractAndVerifyInputLineage(executable, inputs);
     if (!epochLineage) {
@@ -1706,7 +1833,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       // operation index, so sharing one wrapped bundle between two edges would
       // hand a unit a name and lineage belonging to another rank. The token value
       // is the same; the binding is not.
-      const auto baseFeedback = makeTokenFeedback(token, terminal);
+      const auto baseFeedback = makeTokenFeedback(token, terminal, config);
       std::vector<std::pair<DependencyEdge, TensorBundle>> feedbackBundles;
       feedbackBundles.reserve(feedbackEdges.size());
       for (const auto& edge : feedbackEdges) {
@@ -1770,11 +1897,6 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
         throwIfStopped(config);
       }
-      if (nextInputPrefetch) {
-        // Non-cancellable compatibility fetches retain their old position:
-        // after the event commit, but before feedback publication.
-        startRemainingInputPrefetch(config, *nextInputPrefetch, true);
-      }
       generated.push_back(token);
       if (config.textDecoder) {
         generatedText = std::move(stableCandidateText);
@@ -1800,6 +1922,12 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       detail::logNativeWorkPhase(config.requestId, "epoch_publish_feedback",
                                 feedbackPublishTiming, config.role, config.attemptEpoch);
       throwIfStopped(config);
+      if (nextInputPrefetch) {
+        // Compatibility reads may synchronously wait for this internal
+        // TOKEN_FEEDBACK object. Start them after publication and defer startup
+        // failures until the next epoch consumes the read.
+        startRemainingInputPrefetch(config, *nextInputPrefetch, true);
+      }
       const auto stateCommitTiming = detail::nativePhaseStarted();
       NativeWorkScope commitWork(config.workStatistics, "epoch-state-commit",
                                  NativeWorkKind::UNCLASSIFIED);

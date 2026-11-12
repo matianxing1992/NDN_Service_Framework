@@ -281,54 +281,24 @@ decodeStateBindingFor(const NativeModelRunnerSpec& spec,
 }
 
 TensorBundle
-stateBundleFromResult(const ProviderRoleResult& result, const RoleSpec& role)
+stateBundleFromResult(const ProviderRoleResult& result, const RoleSpec& role,
+                      const std::function<void()>& executionGuard)
 {
   NativeWorkScope stateWork(role.workStatistics, "role-state-result-pack",
                             NativeWorkKind::LOCAL);
-  if (role.stateInputNames.size() != role.stateOutputNames.size() ||
-      role.stateInputNames.empty()) {
-    throw std::invalid_argument(
-      "Provider decode-state input/output metadata length mismatch");
-  }
-  std::vector<NamedTensor> nextState;
-  nextState.reserve(role.stateInputNames.size());
-  for (std::size_t index = 0; index < role.stateOutputNames.size(); ++index) {
-    bool found = false;
-    for (const auto& output : result.outputsByScope) {
-      // The successor may have been produced as a local value or as encoded bytes; the state
-      // transaction reads it by name either way. This is an original serialization boundary, so
-      // the selected tensor is copied out of its owner here -- the local owner is not retained
-      // past the commit.
-      const bool readable = output.second.localTensors ||
-        isEncodedTensorBundle(output.second.payload);
-      if (!readable) continue;
-      try {
-        const auto views = decodeTensorBundleViews(output.second, role.workStatistics);
-        const auto view = std::find_if(views.begin(), views.end(),
-          [&] (const NamedTensorView& tensor) {
-            return tensor.name == role.stateOutputNames[index];
-          });
-        if (view == views.end()) continue;
-        NamedTensor tensor;
-        tensor.name = role.stateInputNames[index];
-        tensor.elementType = view->elementType;
-        tensor.shape = view->shape;
-        tensor.payload.assign(view->payload.begin(), view->payload.end());
-        nextState.push_back(std::move(tensor));
-        found = true;
-        break;
-      }
-      catch (const std::invalid_argument&) {
-      }
-    }
-    if (!found) {
-      throw std::runtime_error(
-        "Provider role is missing decode-state output: " +
-        role.stateOutputNames[index]);
-    }
-  }
-  return makeEncodedTensorBundle("__ndnsf_provider_decode_state",
-                                 std::move(nextState));
+  if (role.automaticBinding && result.automaticBinding &&
+      role.automaticBinding != result.automaticBinding)
+    throw std::invalid_argument("AUTOMATIC_STATE_FEEDBACK_EXECUTION_BINDING");
+  RoleExecutionContext ctx;
+  ctx.requestId = role.requestId;
+  ctx.attemptEpoch = role.attemptEpoch;
+  ctx.inferenceEpoch = role.inferenceEpoch;
+  ctx.role = role.role;
+  ctx.executionGuard = executionGuard;
+  ctx.workStatistics = role.workStatistics;
+  ctx.automaticBinding = result.automaticBinding ? result.automaticBinding : role.automaticBinding;
+  return makeNativeProviderDecodeState(result.runner.get(), result.outputsByScope,
+    role.stateInputNames, role.stateOutputNames, ctx);
 }
 
 TensorBundle
@@ -3284,7 +3254,7 @@ NativeProviderRuntime::executeRoleAsyncImpl(
           state = *result.providerDecodeState;
         }
         else {
-          state = stateBundleFromResult(result, role);
+          state = stateBundleFromResult(result, role, executionGuard);
         }
         if (executionGuard) executionGuard();
         if (!m_decodeStateStore.stageCandidate(
