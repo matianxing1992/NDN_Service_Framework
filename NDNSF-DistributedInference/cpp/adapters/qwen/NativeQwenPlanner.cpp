@@ -230,9 +230,15 @@ NativeQwenLayerSplit::enumerateImpl(const NativeModelDescriptor& model,
       m_weightBytesByRole.at(role), std::nullopt, std::nullopt,
       std::nullopt, std::nullopt, 1.10};
   }
+  // Communication is derived from the step template rather than declared by
+  // hand. Until a step plan exists this pipeline candidate moves hidden states
+  // whose sizes the abstract planning placeholders do not fix, so they stay
+  // unknown instead of being reported as zero bytes.
+  const auto transfer = nativeStepCommunicationCost(candidate.executionPlan);
   candidate.estimatedCosts = {{"role_count", std::uint64_t(m_roles.size())},
     {"rank_count", std::uint64_t(m_roles.size())}, {"decoder_layers", std::uint64_t(m_layerRanges.back().second)},
-    {"known_transfer_bytes", std::uint64_t(0)}, {"unknown_transfer_tensors", std::uint64_t(2)}};
+    {"known_transfer_bytes", transfer.knownTransferBytes},
+    {"unknown_transfer_tensors", transfer.unknownTransferTensors + std::uint64_t(2)}};
   candidate.candidateDigest = candidate.computedDigest();
   candidate.validate(graph);
   return {std::move(candidate)};

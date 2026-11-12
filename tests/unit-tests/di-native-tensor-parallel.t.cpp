@@ -696,6 +696,58 @@ BOOST_AUTO_TEST_CASE(ProviderWithoutCapabilityCannotExecuteStepPlan)
   BOOST_CHECK(nativeProviderCanExecute(provider, pipeline));
 }
 
+BOOST_AUTO_TEST_CASE(StepCommunicationCostCountsRemoteEdgesOnly)
+{
+  // Two ranks, one layer: each rank receives exactly one remote partial per
+  // reduction, so a degree-2 plan must report four remote edges over one layer
+  // (attention and MLP reductions, one peer each).
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  NativeExecutionPlan tp;
+  qwen::projectQwenTpPlan(tp, shape, 2, "entry", "S0R0");
+
+  const auto cost = nativeStepCommunicationCost(tp);
+  BOOST_CHECK_EQUAL(cost.remoteEdges, 4U);
+
+  // The projection deliberately uses symbolic dimensions, so the byte total is
+  // unknown. Reporting it as zero would understate the cost.
+  BOOST_CHECK_EQUAL(cost.knownTransferBytes, 0U);
+  BOOST_CHECK_EQUAL(cost.unknownTransferTensors, 4U);
+
+  // A fixed-shape remote slot is costed exactly: 1*25*1024 float32 elements.
+  auto fixed = tp;
+  for (auto& step : fixed.steps) {
+    for (auto& slot : step.inputSlots) {
+      if (slot.source != "REMOTE_STEP") continue;
+      slot.shape = {std::int64_t(1), std::int64_t(25), std::int64_t(1024)};
+      slot.dtype = "float32";
+    }
+  }
+  const auto exact = nativeStepCommunicationCost(fixed);
+  BOOST_CHECK_EQUAL(exact.remoteEdges, 4U);
+  BOOST_CHECK_EQUAL(exact.unknownTransferTensors, 0U);
+  BOOST_CHECK_EQUAL(exact.knownTransferBytes, 4U * 25U * 1024U * 4U);
+
+  // An unknown dtype is unknown, never assumed to be four bytes.
+  auto badDtype = fixed;
+  for (auto& step : badDtype.steps)
+    for (auto& slot : step.inputSlots)
+      if (slot.source == "REMOTE_STEP") slot.dtype = "int4-packed";
+  const auto unknown = nativeStepCommunicationCost(badDtype);
+  BOOST_CHECK_EQUAL(unknown.remoteEdges, 4U);
+  BOOST_CHECK_EQUAL(unknown.knownTransferBytes, 0U);
+  BOOST_CHECK_EQUAL(unknown.unknownTransferTensors, 4U);
+
+  // A legacy pipeline plan moves no step traffic at all.
+  NativeExecutionPlan pipeline;
+  pipeline.roles = {"/LLM/Pipeline/Stage/0"};
+  const auto none = nativeStepCommunicationCost(pipeline);
+  BOOST_CHECK_EQUAL(none.remoteEdges, 0U);
+  BOOST_CHECK_EQUAL(none.knownTransferBytes, 0U);
+  BOOST_CHECK_EQUAL(none.unknownTransferTensors, 0U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

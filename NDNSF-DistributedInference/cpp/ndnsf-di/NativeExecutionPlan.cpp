@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -468,6 +469,66 @@ NativeExecutionStepSpec::validate() const
       throw std::invalid_argument("execution step local state slot is empty or duplicated");
     }
   }
+}
+
+namespace {
+
+/** Element width of a fixed-width slot dtype. Anything else is unknown rather
+ * than assumed to be four bytes.
+ */
+std::optional<std::uint64_t>
+slotDtypeBytes(const std::string& dtype)
+{
+  if (dtype == "float32" || dtype == "int32") return 4;
+  if (dtype == "float16" || dtype == "bfloat16") return 2;
+  if (dtype == "int64") return 8;
+  if (dtype == "bool" || dtype == "uint8" || dtype == "int8") return 1;
+  return std::nullopt;
+}
+
+} // namespace
+
+NativeStepCommunicationCost
+nativeStepCommunicationCost(const NativeExecutionPlan& plan)
+{
+  NativeStepCommunicationCost cost;
+  // A remote input is carried once per consuming step, which is exactly one
+  // network transfer per contributing unit per reduction. Local slots are
+  // in-process and cost nothing on the wire.
+  for (const auto& step : plan.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "REMOTE_STEP") continue;
+      ++cost.remoteEdges;
+      const auto elementBytes = slotDtypeBytes(slot.dtype);
+      if (!elementBytes) {
+        ++cost.unknownTransferTensors;
+        continue;
+      }
+      std::uint64_t bytes = *elementBytes;
+      bool known = true;
+      for (const auto& dimension : slot.shape) {
+        const auto* value = std::get_if<std::int64_t>(&dimension);
+        // A symbolic dimension means the real payload depends on a runtime
+        // value, so the tensor is reported as unknown instead of guessed.
+        if (value == nullptr || *value <= 0 ||
+            bytes > std::numeric_limits<std::uint64_t>::max() /
+                      static_cast<std::uint64_t>(*value)) {
+          known = false;
+          break;
+        }
+        bytes *= static_cast<std::uint64_t>(*value);
+      }
+      if (!known) {
+        ++cost.unknownTransferTensors;
+        continue;
+      }
+      if (bytes > std::numeric_limits<std::uint64_t>::max() - cost.knownTransferBytes) {
+        throw std::overflow_error("step communication cost exceeds uint64");
+      }
+      cost.knownTransferBytes += bytes;
+    }
+  }
+  return cost;
 }
 
 void

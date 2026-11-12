@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <variant>
@@ -294,6 +295,21 @@ struct NativeDeviceBindingV3
   std::string sharingPolicy;
 };
 
+/** Communication a sealed step plan must move between units, derived from the
+ * step slots rather than from provider-local measurements.
+ *
+ * Unknown is never zero: a slot whose dtype or any dimension is symbolic cannot
+ * be costed, so it is counted in unknownTransferTensors instead of contributing
+ * a made-up byte count. A caller that sums only knownTransferBytes would then
+ * understate the real cost whenever unknownTransferTensors is non-zero.
+ */
+struct NativeStepCommunicationCost
+{
+  std::uint64_t remoteEdges = 0;
+  std::uint64_t knownTransferBytes = 0;
+  std::uint64_t unknownTransferTensors = 0;
+};
+
 struct NativeExecutionPlan
 {
   int version = 1;
@@ -322,6 +338,12 @@ struct NativeExecutionPlan
   /** Reject malformed step templates, dependency bindings and version skew. */
   void validateSteps() const;
 };
+
+/** Sum every REMOTE_STEP input of a sealed step plan. A plan without steps has
+ * no inter-unit step traffic and yields an all-zero cost.
+ */
+NativeStepCommunicationCost
+nativeStepCommunicationCost(const NativeExecutionPlan& plan);
 
 /** Provider-local R1 reservation policy. This class deliberately lives in DI:
  * generic NDNSF applications are not required to reserve exclusive resources.
