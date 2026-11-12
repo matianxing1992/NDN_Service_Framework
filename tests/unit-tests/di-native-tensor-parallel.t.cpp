@@ -5775,6 +5775,58 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(ProjectedPlanIsNotAPipelineSoGenerationShapingRejectsIt)
+{
+  // Exit 4's blocker, recorded as a fact rather than a passing claim. The
+  // requester-owned generation feedback is shaped from one pipeline source and one
+  // terminal, but a tensor-parallel plan has each rank producing partials for the
+  // other: neither set is non-empty. So the generation path cannot shape feedback
+  // for this plan, and the reason is the plan's own topology rather than anything
+  // in the coordinator.
+  //
+  // C6 says the answer is one feedback edge per receiving unit and the terminal
+  // owner from the sealed projection, not graph arithmetic. That work is not done;
+  // this case pins the precondition it has to satisfy so a later change cannot
+  // quietly claim generation works while the shape is still rejected.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  BOOST_REQUIRE_EQUAL(plan.roles.size(), 2U);
+
+  std::set<std::string> sources(plan.roles.begin(), plan.roles.end());
+  std::set<std::string> terminals = sources;
+  for (const auto& edge : plan.dependencies) {
+    for (const auto& role : edge.consumers) sources.erase(role);
+    for (const auto& role : edge.producers) terminals.erase(role);
+  }
+  // Both ranks consume and produce partials, so a pipeline-shaped set is empty.
+  BOOST_CHECK_EQUAL(sources.size(), 0U);
+  BOOST_CHECK_EQUAL(terminals.size(), 0U);
+  // The eligibility rule the generation path applies, restated: this plan cannot
+  // pass it. When per-consumer feedback lands, this assertion is what has to change.
+  const bool pipelineShaped = sources.size() == 1 && terminals.size() == 1;
+  BOOST_CHECK(!pipelineShaped);
+
+  // The terminal owner is still identifiable without graph arithmetic, which is
+  // what C6 requires the coordinator to use instead. The projected plan names it
+  // through the egress role that owns the head step.
+  std::set<std::string> headOwners;
+  for (const auto& step : plan.steps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
+    headOwners.insert(step.unitId);
+  }
+  BOOST_CHECK_EQUAL(headOwners.size(), 1U);
+
+  // Every unit needs feedback, not just the pipeline source: a decode step on
+  // either rank consumes the sampled token. Stated as the count the future
+  // per-consumer shaping must produce.
+  BOOST_CHECK_EQUAL(plan.roles.size(), 2U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
