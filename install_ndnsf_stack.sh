@@ -924,7 +924,8 @@ def build_marker(args: argparse.Namespace) -> None:
         raise ValueError(f"build directory may not be a symlink: {raw_build}")
     build = raw_build.resolve(strict=True)
     root = Path(args.root).resolve(strict=True)
-    if not build.is_dir() or build == root or root in build.parents:
+    if (not build.is_dir() or build == root or
+            (root in build.parents and build != root / "build")):
         raise ValueError(f"build directory must be outside the source checkout: {build}")
     marker = build / ".ndnsf-stack-build.json"
     expected = {"schema": SCHEMA, "root": str(root), "buildDir": str(build)}
@@ -1353,6 +1354,9 @@ prepare_build_dir() {
     fi
     BUILD_DIR="$(realpath -m -- "$BUILD_DIR")"
     case "$BUILD_DIR" in
+      "$ROOT/build")
+        # Maintained in-checkout host output tree (see AGENTS.md).
+        ;;
       "$ROOT"|"$ROOT"/*)
         echo "Build artifacts must stay outside the repository: $BUILD_DIR" >&2
         exit 2
