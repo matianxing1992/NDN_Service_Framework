@@ -39,6 +39,7 @@
 #include <map>
 #include <system_error>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 #include <sstream>
 #include <string>
@@ -3800,6 +3801,101 @@ BOOST_AUTO_TEST_CASE(FrozenGraphClassifiesIntoTheEntryTaxonomy)
   // No node may appear in both.
   for (const auto& name : attnNames)
     BOOST_CHECK(mlpNames.count(name) == 0);
+}
+
+
+BOOST_AUTO_TEST_CASE(ExtractedEntryGraphIsSelfContainedAndLoadable)
+{
+  // An entry must be a real standalone graph: its own nodes, every initializer
+  // its nodes reference, and a boundary computed from membership rather than
+  // from names. This case extracts layer 0's attention entry from the frozen
+  // export and checks those properties, then confirms ORT accepts it.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromString(std::string(bytes.begin(), bytes.end())));
+
+  std::vector<std::string> names;
+  names.reserve(model.graph().node_size());
+  for (const auto& node : model.graph().node()) names.push_back(node.name());
+  const auto entries = qwen::classifyQwenTpEntryNodes(names, 28);
+
+  // Layer 0 attention: fifteen nodes, q/k/v through o_proj.
+  const auto& layer0Attn = entries.at(1);
+  BOOST_REQUIRE_EQUAL(layer0Attn.kind, std::string("ATTN"));
+  BOOST_REQUIRE_EQUAL(layer0Attn.layer, 0U);
+
+  auto extracted = qwen::extractQwenTpEntryModel(model, layer0Attn, "S0R0/ATTN/0");
+  // Node cover is exactly the classified set.
+  BOOST_CHECK_EQUAL(std::uint64_t(extracted.graph().node_size()),
+                    layer0Attn.nodeIndices.size());
+  // A boundary exists on both sides, or the entry could not be a separate graph.
+  BOOST_CHECK(extracted.graph().input_size() > 0);
+  BOOST_CHECK(extracted.graph().output_size() > 0);
+  // Every initializer the extracted nodes reference is present, and no unrelated
+  // one travelled along.
+  std::set<std::string> referenced;
+  for (const auto& node : extracted.graph().node())
+    for (const auto& input : node.input()) if (!input.empty()) referenced.insert(input);
+  std::set<std::string> carried;
+  for (const auto& init : extracted.graph().initializer()) carried.insert(init.name());
+  for (const auto& name : carried)
+    BOOST_CHECK(referenced.count(name) != 0);
+  BOOST_CHECK(!carried.empty());
+
+  // ORT must accept the extracted graph. The production shape keeps the
+  // initializers external and shared, because C3 requires each entry to take only
+  // the ranges it needs rather than copying gigabytes per rank. So the extracted
+  // model is written beside the same sidecar and loaded from a file, which is
+  // exactly how a Provider will load it.
+  const auto directory = std::filesystem::temp_directory_path() /
+    ("spec224-entry-extract-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(directory, cleanupError);
+  std::filesystem::create_directories(directory);
+  const auto modelPath = directory / "attn0.onnx";
+  const auto sidecarPath = directory / "model.onnx_data";
+  {
+    std::string wire;
+    BOOST_REQUIRE(extracted.SerializeToString(&wire));
+    std::ofstream out(modelPath, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(out));
+    out.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+  }
+  // The sidecar is immutable shared storage, so link it rather than copying
+  // 918 MB. A hard link is required, not a symlink: ORT resolves a symlink and
+  // then rejects the sidecar for escaping the model directory, while a hard link
+  // makes the same inode appear at the expected path inside it.
+  std::filesystem::create_hard_link(
+    path.substr(0, path.find_last_of('/')) + "/model.onnx_data", sidecarPath,
+    cleanupError);
+  BOOST_REQUIRE_MESSAGE(!cleanupError,
+    "sidecar hard link failed (needs one filesystem): " + cleanupError.message());
+
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-entry-extract");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  try {
+    Ort::Session session(ortEnv, modelPath.c_str(), options);
+    BOOST_CHECK(session.GetInputCount() > 0);
+    BOOST_CHECK(session.GetOutputCount() > 0);
+  }
+  catch (const Ort::Exception& error) {
+    std::filesystem::remove_all(directory, cleanupError);
+    BOOST_FAIL(std::string("ORT rejected the extracted entry graph: ") + error.what());
+  }
+  std::filesystem::remove_all(directory, cleanupError);
 }
 
 

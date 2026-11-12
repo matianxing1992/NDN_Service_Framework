@@ -3,6 +3,8 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 
+#include <onnx/onnx_pb.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -228,6 +230,29 @@ struct QwenTpEntryNodes
 std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
                          std::uint64_t layers);
+
+/** Extract one entry's subgraph out of a parsed source model.
+ *
+ * The entry keeps only the nodes its classification named, plus every
+ * initializer and value_info those nodes reference, so ORT can load it as a
+ * standalone graph. Inputs and outputs are the tensors that cross the entry
+ * boundary: an input is produced outside the entry, an output is consumed
+ * outside it. Nothing is inferred from names; the boundary is computed from the
+ * node set.
+ *
+ * The source model is moved, not copied: the frozen export carries a
+ * multi-gigabyte external initializer set, and copying it once per entry is the
+ * per-entry memory blowup the allocation rules forbid.
+ *
+ * @param source       Parsed source model, consumed.
+ * @param entry        Entry whose nodes to keep.
+ * @param entryId      Identifier used for the entry's graph name and digest.
+ * @returns A self-contained model for this entry.
+ * @throws std::invalid_argument when the entry names no node of the source.
+ */
+onnx::ModelProto
+extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
+                        const std::string& entryId);
 
 /** One verified subgraph entry a tensor-parallel unit executes.
  *

@@ -849,6 +849,137 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 
 } // namespace
 
+onnx::ModelProto
+extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
+                        const std::string& entryId)
+{
+  if (entryId.empty() || entry.nodeIndices.empty()) {
+    throw std::invalid_argument("tensor-parallel entry extraction needs an id and nodes");
+  }
+  const auto& graph = source.graph();
+  const auto nodeCount = static_cast<std::uint64_t>(graph.node_size());
+  if (*std::max_element(entry.nodeIndices.begin(), entry.nodeIndices.end()) >= nodeCount) {
+    throw std::invalid_argument(
+      "tensor-parallel entry names a node outside the source graph");
+  }
+
+  // Membership first: a boundary is defined by what the entry does not contain.
+  std::set<std::uint64_t> owned(entry.nodeIndices.begin(), entry.nodeIndices.end());
+  // Every tensor name the entry mentions, so initializers and value_info that
+  // its nodes need travel with it.
+  std::set<std::string> referenced;
+  for (const auto index : owned) {
+    const auto& node = graph.node(static_cast<int>(index));
+    for (const auto& input : node.input())
+      if (!input.empty()) referenced.insert(input);
+    for (const auto& output : node.output())
+      if (!output.empty()) referenced.insert(output);
+  }
+  // Names produced anywhere in the source, so an input of this entry can be told
+  // apart from an internal tensor or an initializer.
+  std::set<std::string> producedOutside;
+  std::set<std::string> initializerNames;
+  for (int i = 0; i < graph.initializer_size(); ++i)
+    initializerNames.insert(graph.initializer(i).name());
+  for (std::uint64_t index = 0; index < nodeCount; ++index) {
+    if (owned.count(index) != 0) continue;
+    for (const auto& output : graph.node(static_cast<int>(index)).output())
+      if (!output.empty()) producedOutside.insert(output);
+  }
+
+  onnx::ModelProto result;
+  result.set_ir_version(source.ir_version());
+  result.set_producer_name("ndnsf-di-tp-entry");
+  for (const auto& opset : source.opset_import())
+    *result.add_opset_import() = opset;
+  auto* out = result.mutable_graph();
+  out->set_name("TP entry " + entryId);
+
+  // Nodes stay in source order so the extracted graph is deterministic.
+  for (const auto index : owned)
+    *out->add_node() = graph.node(static_cast<int>(index));
+
+  // An initializer the entry references is shared, immutable data: move it
+  // rather than copy it, because the frozen export's initializer set is
+  // gigabytes and a per-entry copy is exactly the blowup the rules forbid.
+  std::set<std::string> moved;
+  for (int i = 0; i < graph.initializer_size(); ++i) {
+    const auto& name = graph.initializer(i).name();
+    if (referenced.count(name) == 0) continue;
+    auto* target = out->add_initializer();
+    target->Swap(source.mutable_graph()->mutable_initializer(i));
+    moved.insert(name);
+  }
+  for (const auto& value : graph.value_info())
+    if (referenced.count(value.name()) != 0)
+      *out->add_value_info() = value;
+
+  // Boundary tensors: referenced, not produced inside, and not an initializer of
+  // this entry. The type comes from the source's value_info or graph input.
+  // A tensor's type may be declared as a graph input, a graph output, or a
+  // value_info entry. The frozen export declares the KV state only as outputs,
+  // so omitting that source would make the attention entry look type-less.
+  const auto findValue = [&graph] (const std::string& name) -> const onnx::ValueInfoProto* {
+    for (const auto& input : graph.input())
+      if (input.name() == name) return &input;
+    for (const auto& output : graph.output())
+      if (output.name() == name) return &output;
+    for (const auto& value : graph.value_info())
+      if (value.name() == name) return &value;
+    return nullptr;
+  };
+  for (const auto& name : referenced) {
+    const bool producedInside = [&] {
+      for (const auto index : owned)
+        for (const auto& output : graph.node(static_cast<int>(index)).output())
+          if (output == name) return true;
+      return false;
+    }();
+    if (producedInside) continue;
+    if (moved.count(name) != 0) continue;
+    if (initializerNames.count(name) != 0) continue;
+    const auto* value = findValue(name);
+    if (value == nullptr) {
+      // Without a declared type ORT cannot load the subgraph, and inventing one
+      // would decide the entry's interface from a guess.
+      throw std::invalid_argument(
+        "tensor-parallel entry input has no declared type in the source: " + name);
+    }
+    *out->add_input() = *value;
+    if (out->input_size() > 4096) {
+      throw std::invalid_argument(
+        "tensor-parallel entry has an implausible number of boundary inputs");
+    }
+  }
+
+  // Outputs: referenced, produced inside, and consumed outside this entry.
+  for (const auto& name : referenced) {
+    bool producedInside = false;
+    for (const auto index : owned)
+      for (const auto& output : graph.node(static_cast<int>(index)).output())
+        if (output == name) producedInside = true;
+    if (!producedInside) continue;
+    // A tensor consumed outside this entry, or one the source declares as a
+    // model output, must be exposed; anything else internal stays internal.
+    const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
+      [&name] (const auto& value) { return value.name() == name; });
+    if (producedOutside.count(name) == 0 && !declaredOutput) continue;
+    const auto* value = findValue(name);
+    if (value == nullptr) {
+      throw std::invalid_argument(
+        "tensor-parallel entry output has no declared type in the source: " + name);
+    }
+    *out->add_output() = *value;
+  }
+  if (out->input_size() == 0 || out->output_size() == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel entry has no boundary, so it cannot be a separate graph");
+  }
+  for (const auto& function : source.functions())
+    *result.add_functions() = function;
+  return result;
+}
+
 std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
                          std::uint64_t layers)
