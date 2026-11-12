@@ -64,6 +64,42 @@ public:
   std::string checkTemplate(const std::vector<NativeExecutionStepSpec>& steps,
                             const std::string& unitId) const;
 
+  /** Whether this unit retains KV state behind an opaque handle.
+   *
+   * Only the attention entries hold KV: INIT has no session state, MLP is a pure
+   * function of its inputs, and HEAD samples. C6 states the consequence
+   * explicitly -- the parent must not report "no state support" merely because
+   * those children cannot answer a state question.
+   */
+  bool supportsOpaqueStateHandles() const override;
+
+  /** The unit's state handle, aggregated from the attention children.
+   *
+   * The handle names this unit, not one child, because a caller restores the whole
+   * rank at once. The token carries each child's own handle so a later restore can
+   * reach the exact sub-session that owns each layer's KV.
+   *
+   * @returns Nothing when the unit holds no attention state for this session, or
+   *          when any attention child is missing its handle: a partial aggregate
+   *          would let a checkpoint omit layers and still look complete.
+   */
+  std::optional<NativeOpaqueStateHandleV1>
+  stateHandleSnapshot(const std::string& sessionId) const override;
+
+  /** Release the session's state in every child.
+   *
+   * Releasing only some children would leave KV resident for a session the caller
+   * considers terminal, which is the leak the bounded-lifecycle rule forbids.
+   */
+  void releaseSessionState(const std::string& sessionId) override;
+
+  /** Whether the whole rank can be retained without a tensor bundle.
+   *
+   * True only when every attention child supports it; reporting support from one
+   * child would promise a transfer that fails half way.
+   */
+  bool supportsConversationStateTransfer() const override;
+
 private:
   const QwenTpEntryContract* findEntry(const std::string& entryId) const;
 

@@ -5033,6 +5033,155 @@ BOOST_AUTO_TEST_CASE(ShapeIsDerivedFromTheGraphNotFromCallerConstants)
 }
 
 
+namespace {
+
+/** Child runner that reports state support and can be told to fail it.
+ *
+ * The parent's state answers are conjunctions over its attention children, so the
+ * cases need children whose support can differ. This stands in for the ONNX
+ * adapter without loading a session.
+ */
+class FakeStatefulRunner final : public NativeModelRunner
+{
+public:
+  explicit FakeStatefulRunner(bool stateful) : m_stateful(stateful) {}
+
+  std::map<std::string, TensorBundle>
+  run(const RoleExecutionContext&) override
+  {
+    return {};
+  }
+
+  bool
+  supportsOpaqueStateHandles() const override
+  {
+    return m_stateful;
+  }
+
+  std::optional<NativeOpaqueStateHandleV1>
+  stateHandleSnapshot(const std::string& sessionId) const override
+  {
+    if (!m_stateful) return std::nullopt;
+    NativeOpaqueStateHandleV1 handle;
+    handle.providerIdentity = "/provider/fake";
+    handle.providerBootId = "fake-boot";
+    handle.sessionId = sessionId;
+    handle.role = "child";
+    handle.token = "ndnsf-resident-state-v1:child";
+    handle.stateInferenceEpoch = 3;
+    return handle;
+  }
+
+  void
+  releaseSessionState(const std::string& sessionId) override
+  {
+    ++releaseCalls;
+    lastReleasedSession = sessionId;
+  }
+
+  bool
+  supportsConversationStateTransfer() const override
+  {
+    return m_stateful;
+  }
+
+  mutable std::size_t releaseCalls = 0;
+  mutable std::string lastReleasedSession;
+
+private:
+  bool m_stateful;
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
+{
+  // C6: INIT/MLP/HEAD cannot answer a state question, and a unit that reported "no
+  // state support" because of them would disable reuse for a perfectly good rank.
+  // The converse matters too: promising support from one child would promise a
+  // transfer that fails half way.
+  std::vector<qwen::QwenTpEntryContract> table;
+  for (const auto& spec : std::vector<std::pair<std::string, std::string>>{
+         {"S0R0/INIT/0", "INIT"}, {"S0R0/ATTN/0", "ATTN"},
+         {"S0R0/MLP/0", "MLP"}, {"S0R0/ATTN/1", "ATTN"},
+         {"S0R0/HEAD/2", "HEAD"}}) {
+    qwen::QwenTpEntryContract entry;
+    entry.entryId = spec.first;
+    entry.unitId = "S0R0";
+    entry.kind = spec.second;
+    entry.inputNames = {"in"};
+    entry.outputNames = {"out"};
+    entry.relativeGraphPath = "entry.onnx";
+    entry.graphDigest = "sha256:" + std::string(64, 'a');
+    entry.validate();
+    table.push_back(std::move(entry));
+  }
+
+  const auto makeRunner = [] (std::vector<qwen::QwenTpEntryContract> entries,
+                              bool stateful) {
+    return qwen::NativeQwenTensorRunner(
+      std::move(entries),
+      [stateful] (const NativeModelRunnerSpec&) {
+        return std::static_pointer_cast<NativeModelRunner>(
+          std::make_shared<FakeStatefulRunner>(stateful));
+      },
+      [] (const qwen::QwenTpEntryContract& entry) {
+        NativeModelRunnerSpec spec;
+        spec.role = entry.entryId;
+        return spec;
+      });
+  };
+
+  // All children stateful: the unit is stateful, and its handle names the unit
+  // while carrying each attention child's token.
+  {
+    auto runner = makeRunner(table, true);
+    BOOST_CHECK(runner.supportsOpaqueStateHandles());
+    BOOST_CHECK(runner.supportsConversationStateTransfer());
+    const auto handle = runner.stateHandleSnapshot("state-session");
+    BOOST_REQUIRE(handle.has_value());
+    // The handle names the unit, not one child: a caller restores the whole rank.
+    BOOST_CHECK_EQUAL(handle->role, std::string("S0R0"));
+    BOOST_CHECK_EQUAL(handle->sessionId, std::string("state-session"));
+    BOOST_CHECK(handle->token.rfind("ndnsf-resident-state-v1:", 0) == 0);
+    // Every attention child contributed its token.
+    BOOST_CHECK(handle->token.find("S0R0/ATTN/0=") != std::string::npos);
+    BOOST_CHECK(handle->token.find("S0R0/ATTN/1=") != std::string::npos);
+    // No session handle is invented for a session nothing knows about.
+    BOOST_CHECK_EQUAL(handle->providerIdentity, std::string("/provider/fake"));
+    BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, 3U);
+
+    // Release reaches every child, including the ones without state.
+    runner.releaseSessionState("state-session");
+    BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  }
+
+  // A non-stateful attention child makes the whole unit non-stateful: a partial
+  // aggregate would let a checkpoint omit layers and still look complete.
+  {
+    const auto runner = makeRunner(table, false);
+    BOOST_CHECK(!runner.supportsOpaqueStateHandles());
+    BOOST_CHECK(!runner.supportsConversationStateTransfer());
+    BOOST_CHECK(!runner.stateHandleSnapshot("state-session").has_value());
+  }
+
+  // A unit with no attention entry at all holds no KV, so it must not claim state
+  // support merely because no child disagreed.
+  {
+    auto withoutAttention = table;
+    withoutAttention.erase(
+      std::remove_if(withoutAttention.begin(), withoutAttention.end(),
+        [] (const auto& entry) { return entry.kind == "ATTN"; }),
+      withoutAttention.end());
+    BOOST_REQUIRE(!withoutAttention.empty());
+    const auto runner = makeRunner(withoutAttention, true);
+    BOOST_CHECK(!runner.supportsOpaqueStateHandles());
+    BOOST_CHECK(!runner.supportsConversationStateTransfer());
+    BOOST_CHECK(!runner.stateHandleSnapshot("state-session").has_value());
+  }
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

@@ -79,6 +79,102 @@ NativeQwenTensorRunner::checkTemplate(const std::vector<NativeExecutionStepSpec>
   return {};
 }
 
+namespace {
+
+/** Attention entries are the only ones that can own KV state. */
+bool holdsKvState(const QwenTpEntryContract& entry)
+{
+  return entry.kind == "ATTN";
+}
+
+} // namespace
+
+bool
+NativeQwenTensorRunner::supportsOpaqueStateHandles() const
+{
+  // C6: INIT/MLP/HEAD legitimately cannot answer a state question, so the unit's
+  // answer comes from the attention children only. Requiring every child would
+  // make a correct unit report "no state support" and disable reuse entirely.
+  bool anyAttention = false;
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    anyAttention = true;
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) return false;
+    if (!child->second->supportsOpaqueStateHandles()) return false;
+  }
+  return anyAttention;
+}
+
+std::optional<NativeOpaqueStateHandleV1>
+NativeQwenTensorRunner::stateHandleSnapshot(const std::string& sessionId) const
+{
+  if (!supportsOpaqueStateHandles()) return std::nullopt;
+  NativeOpaqueStateHandleV1 unit;
+  // One token per attention child, so a restore can reach the exact sub-session
+  // that owns each layer's KV. The unit handle names the unit; the token names
+  // the children.
+  std::string token = "ndnsf-resident-state-v1:tp-unit";
+  std::size_t children = 0;
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) return std::nullopt;
+    const auto handle = child->second->stateHandleSnapshot(sessionId);
+    if (!handle) {
+      // A partial aggregate would let a checkpoint omit layers and still look
+      // complete, so a missing child means this unit has no handle to give.
+      return std::nullopt;
+    }
+    token += ";" + entry.entryId + "=" + handle->token;
+    ++children;
+  }
+  if (children == 0) return std::nullopt;
+  unit.sessionId = sessionId;
+  unit.role = m_entries.front().unitId;
+  unit.token = std::move(token);
+  // Identity and epoch come from the children, which know the Provider binding;
+  // taking them from this runner would invent a binding it never received.
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    const auto child = m_children.find(entry.entryId);
+    const auto handle = child->second->stateHandleSnapshot(sessionId);
+    if (!handle) return std::nullopt;
+    unit.providerIdentity = handle->providerIdentity;
+    unit.providerBootId = handle->providerBootId;
+    unit.stateInferenceEpoch = handle->stateInferenceEpoch;
+    break;
+  }
+  return unit;
+}
+
+void
+NativeQwenTensorRunner::releaseSessionState(const std::string& sessionId)
+{
+  // Every child, not only the attention ones: a non-state child may still hold
+  // request-scoped buffers, and leaving them resident for a session the caller
+  // considers terminal is the leak the lifecycle rule forbids.
+  for (auto& child : m_children) {
+    if (child.second) child.second->releaseSessionState(sessionId);
+  }
+}
+
+bool
+NativeQwenTensorRunner::supportsConversationStateTransfer() const
+{
+  // Promising transfer from one child would promise something that fails half
+  // way, so the answer is the conjunction over the KV holders.
+  bool anyAttention = false;
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    anyAttention = true;
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) return false;
+    if (!child->second->supportsConversationStateTransfer()) return false;
+  }
+  return anyAttention;
+}
+
 std::map<std::string, TensorBundle>
 NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
 {
