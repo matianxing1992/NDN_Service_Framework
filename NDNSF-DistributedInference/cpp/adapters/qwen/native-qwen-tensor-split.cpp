@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <cctype>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -18,6 +19,34 @@
 namespace ndnsf::di::qwen {
 
 namespace {
+
+/** Turn a unit id or kind into a file-name component.
+ *
+ * Unit ids carry role separators and report characters, so the name is reduced
+ * to [A-Za-z0-9_-] rather than escaped: an entry file is internal to one
+ * assembly root, and a predictable name is worth more there than a reversible
+ * one.
+ */
+std::string
+sanitizeEntryFileName(const std::string& value)
+{
+  std::string result;
+  result.reserve(value.size());
+  for (const auto ch : value) {
+    const auto candidate = static_cast<unsigned char>(ch);
+    if (std::isalnum(candidate) != 0 || ch == '-' || ch == '_') {
+      result.push_back(ch);
+    }
+    else if (!result.empty() && result.back() != '_') {
+      result.push_back('_');
+    }
+  }
+  while (!result.empty() && result.back() == '_') result.pop_back();
+  if (result.empty()) {
+    throw std::invalid_argument("tensor-parallel entry name has no usable characters");
+  }
+  return result;
+}
 
 /** Read a file back for verification. */
 std::vector<std::uint8_t>
@@ -886,6 +915,85 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 
 } // namespace
 
+std::vector<QwenTpEntryNodes>
+classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
+{
+  const auto& graph = model.graph();
+  std::vector<std::string> names;
+  names.reserve(graph.node_size());
+  for (const auto& node : graph.node()) names.push_back(node.name());
+  auto entries = classifyQwenTpEntryNodes(names, layers);
+
+  // A node with no layer and only initializer inputs is constant-derived. Naming
+  // puts it in INIT, but its value is really a weight rearrangement that belongs
+  // wherever its consumer is: the frozen export's single such node transposes the
+  // tied embedding table for lm_head, so INIT would carry a piece of the egress
+  // computation and HEAD would be missing an input.
+  std::set<std::string> initializerNames;
+  for (int i = 0; i < graph.initializer_size(); ++i)
+    initializerNames.insert(graph.initializer(i).name());
+  std::vector<bool> relocated(names.size(), false);
+  for (int i = 0; i < graph.node_size(); ++i) {
+    const auto& node = graph.node(i);
+    // Layer nodes keep their place; only the unclassified ones are candidates.
+    if (node.name().find("layers.") != std::string::npos) continue;
+    if (node.input().empty()) continue;
+    bool constantOnly = true;
+    for (const auto& input : node.input()) {
+      if (input.empty()) continue;
+      if (initializerNames.count(input) == 0) {
+        constantOnly = false;
+        break;
+      }
+    }
+    if (!constantOnly) continue;
+
+    // Find every entry that consumes this node's output.
+    std::set<std::size_t> consumers;
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      for (const auto nodeIndex : entries[index].nodeIndices) {
+        if (nodeIndex == static_cast<std::uint64_t>(i)) continue;
+        for (const auto& input : graph.node(static_cast<int>(nodeIndex)).input()) {
+          for (const auto& output : node.output()) {
+            if (input == output) consumers.insert(index);
+          }
+        }
+      }
+    }
+    if (consumers.size() != 1) {
+      // Zero consumers means the node is dead; more than one would need the same
+      // value in two entries, which a per-entry file cannot express.
+      continue;
+    }
+    // Remove first, then insert: doing it the other way round would delete the
+    // node from the entry it was just added to, silently dropping it from the
+    // graph -- which the coverage check below then reports as a lost node.
+    for (auto& entry : entries) {
+      auto& nodes = entry.nodeIndices;
+      nodes.erase(std::remove(nodes.begin(), nodes.end(),
+                              static_cast<std::uint64_t>(i)), nodes.end());
+    }
+    auto& targetNodes = entries[*consumers.begin()].nodeIndices;
+    targetNodes.push_back(static_cast<std::uint64_t>(i));
+    std::sort(targetNodes.begin(), targetNodes.end());
+    relocated[i] = true;
+  }
+  // Coverage is invariant: relocation moves a node, never drops one.
+  std::size_t covered = 0;
+  for (const auto& entry : entries) covered += entry.nodeIndices.size();
+  if (covered != names.size()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry relocation lost a graph node");
+  }
+  for (const auto& entry : entries) {
+    if (entry.nodeIndices.empty()) {
+      throw std::invalid_argument(
+        "tensor-parallel entry relocation emptied an entry");
+    }
+  }
+  return entries;
+}
+
 onnx::ModelProto
 extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
                         const std::string& entryId)
@@ -912,16 +1020,18 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
     for (const auto& output : node.output())
       if (!output.empty()) referenced.insert(output);
   }
-  // Names produced anywhere in the source, so an input of this entry can be told
-  // apart from an internal tensor or an initializer.
-  std::set<std::string> producedOutside;
   std::set<std::string> initializerNames;
   for (int i = 0; i < graph.initializer_size(); ++i)
     initializerNames.insert(graph.initializer(i).name());
+  // Names *consumed* outside this entry. An output boundary is exactly this: a
+  // tensor the entry produces that something else reads. Collecting the outside
+  // nodes' outputs instead would describe the wrong direction and leave every
+  // non-terminal entry with no declared outputs at all.
+  std::set<std::string> consumedOutside;
   for (std::uint64_t index = 0; index < nodeCount; ++index) {
     if (owned.count(index) != 0) continue;
-    for (const auto& output : graph.node(static_cast<int>(index)).output())
-      if (!output.empty()) producedOutside.insert(output);
+    for (const auto& input : graph.node(static_cast<int>(index)).input())
+      if (!input.empty()) consumedOutside.insert(input);
   }
 
   onnx::ModelProto result;
@@ -1000,7 +1110,7 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
     // model output, must be exposed; anything else internal stays internal.
     const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
       [&name] (const auto& value) { return value.name() == name; });
-    if (producedOutside.count(name) == 0 && !declaredOutput) continue;
+    if (consumedOutside.count(name) == 0 && !declaredOutput) continue;
     const auto* value = findValue(name);
     if (value == nullptr) {
       throw std::invalid_argument(
@@ -1015,6 +1125,64 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
   for (const auto& function : source.functions())
     *result.add_functions() = function;
   return result;
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers)
+{
+  if (root.empty() || unitId.empty() || graphBytes.empty() || layers == 0) {
+    throw std::invalid_argument("tensor-parallel entry assembly needs a root, unit, graph and layers");
+  }
+  // The source is parsed once per stack. Extraction consumes the model, and
+  // re-parsing the frozen export for every entry would be ~59 full protobuf
+  // builds of a 918 MB initializer set.
+  onnx::ModelProto probe;
+  if (!probe.ParseFromString(std::string(graphBytes.begin(), graphBytes.end()))) {
+    throw std::runtime_error("tensor-parallel entry assembly could not parse the source graph");
+  }
+  // Graph-aware classification, so a constant-derived node follows its consumer
+  // instead of being filed under INIT by name.
+  const auto classified = classifyQwenTpEntryNodes(probe, layers);
+
+  std::error_code directoryError;
+  std::filesystem::create_directories(root, directoryError);
+  if (directoryError) {
+    throw std::runtime_error(
+      "tensor-parallel entry root is unavailable: " + directoryError.message());
+  }
+
+  std::vector<QwenTpEntryContract> table;
+  table.reserve(classified.size());
+  // Extraction moves initializers out of the source, so each entry needs its own
+  // parsed copy. The copy shares no bytes with the caller's buffer, which also
+  // means a failure half-way cannot leave the caller's graph partially consumed.
+  for (const auto& entry : classified) {
+    onnx::ModelProto source;
+    if (!source.ParseFromString(std::string(graphBytes.begin(), graphBytes.end()))) {
+      throw std::runtime_error(
+        "tensor-parallel entry assembly could not re-parse the source graph");
+    }
+    const auto fileName = sanitizeEntryFileName(unitId) + "-" +
+      sanitizeEntryFileName(entry.kind) + "-" + std::to_string(entry.layer) + ".onnx";
+    table.push_back(writeQwenTpEntry(root, unitId, entry, source, fileName));
+  }
+  if (table.empty()) {
+    throw std::runtime_error("tensor-parallel entry assembly produced no entries");
+  }
+  // Validate the finished table as a whole: each contract already validated
+  // itself, but a duplicate id or a disagreeing unit could still slip through.
+  std::set<std::string> ids;
+  for (const auto& entry : table) {
+    if (entry.unitId != unitId) {
+      throw std::logic_error("tensor-parallel entry assembly mixed units");
+    }
+    if (!ids.insert(entry.entryId).second) {
+      throw std::logic_error("tensor-parallel entry assembly repeated an entry id");
+    }
+  }
+  return table;
 }
 
 std::string

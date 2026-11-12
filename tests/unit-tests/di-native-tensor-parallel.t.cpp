@@ -4060,6 +4060,88 @@ BOOST_AUTO_TEST_CASE(EntryTableRoundTripsAndRefusesUnverifiedTables)
 }
 
 
+BOOST_AUTO_TEST_CASE(UnitEntryTableAssemblesFromOneRankArtifact)
+{
+  // The whole chain in one call: classify, extract, write, return the table. This
+  // is the artifact a rank actually produces, so the case checks the properties a
+  // consumer depends on rather than any internal step.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-unit-table-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+
+  const auto table = qwen::assembleQwenTpEntryTable(root, "S0R0", bytes, 28);
+  // One INIT, ATTN and MLP per layer, one HEAD: 1 + 56 + 1.
+  BOOST_REQUIRE_EQUAL(table.size(), 58U);
+
+  std::size_t attention = 0;
+  std::size_t mlp = 0;
+  std::set<std::string> ids;
+  std::set<std::string> files;
+  for (const auto& entry : table) {
+    // Every entry belongs to the unit that was asked for, and is loadable.
+    BOOST_CHECK_EQUAL(entry.unitId, std::string("S0R0"));
+    BOOST_CHECK(entry.hasGraphFile());
+    BOOST_CHECK(ids.insert(entry.entryId).second);
+    // Names are unique, so no entry can overwrite another.
+    BOOST_CHECK(files.insert(entry.relativeGraphPath).second);
+    // The file exists and its digest describes the bytes on disk.
+    const auto target = root / entry.relativeGraphPath;
+    BOOST_REQUIRE_MESSAGE(std::filesystem::exists(target),
+      "entry file missing: " + target.string());
+    std::ifstream verify(target, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(verify));
+    const std::vector<std::uint8_t> onDisk((std::istreambuf_iterator<char>(verify)),
+                                            std::istreambuf_iterator<char>());
+    ndn::util::Sha256 digest;
+    digest.update(ndn::span<const std::uint8_t>(onDisk.data(), onDisk.size()));
+    auto hex = digest.toString();
+    std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    BOOST_CHECK_EQUAL(entry.graphDigest, "sha256:" + hex);
+    if (entry.kind == "ATTN") ++attention;
+    if (entry.kind == "MLP") ++mlp;
+  }
+  BOOST_CHECK_EQUAL(attention, 28U);
+  BOOST_CHECK_EQUAL(mlp, 28U);
+
+  // The table survives the transport the runner uses.
+  const auto roundTripped = qwen::parseQwenTpEntryTable(qwen::qwenTpEntryTableJson(table));
+  BOOST_CHECK_EQUAL(roundTripped.size(), table.size());
+  for (std::size_t index = 0; index < table.size(); ++index) {
+    BOOST_CHECK_EQUAL(roundTripped[index].entryId, table[index].entryId);
+    BOOST_CHECK_EQUAL(roundTripped[index].graphDigest, table[index].graphDigest);
+    BOOST_CHECK_EQUAL(roundTripped[index].relativeGraphPath, table[index].relativeGraphPath);
+  }
+
+  // No staging files survived, so a reader cannot pick up a half-written entry.
+  for (const auto& item : std::filesystem::directory_iterator(root)) {
+    BOOST_CHECK(item.path().extension() != ".staging");
+  }
+
+  // A graph that cannot be parsed is refused rather than producing an empty table.
+  BOOST_CHECK_THROW(qwen::assembleQwenTpEntryTable(root, "S0R0",
+    std::vector<std::uint8_t>{1, 2, 3}, 28), std::runtime_error);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

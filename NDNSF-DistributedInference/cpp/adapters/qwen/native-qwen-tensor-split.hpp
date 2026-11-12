@@ -232,6 +232,23 @@ std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
                          std::uint64_t layers);
 
+/** Classify using the graph, so constant-derived nodes land where they belong.
+ *
+ * Naming alone cannot place a node outside every layer whose only inputs are
+ * initializers. The frozen export has exactly one: a transpose of the tied
+ * embedding table, consumed by lm_head. Naming would put it in INIT, which is
+ * wrong twice over -- INIT is defined as turning accepted token ids into the
+ * embedding X0, and the transpose feeds the egress head. A constant-derived node
+ * therefore follows its consumer.
+ *
+ * @param model Source graph.
+ * @param layers Number of transformer layers.
+ * @throws std::invalid_argument when such a node's consumers span entries, since
+ *         no single entry could own it.
+ */
+std::vector<QwenTpEntryNodes>
+classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers);
+
 /** Extract one entry's subgraph out of a parsed source model.
  *
  * The entry keeps only the nodes its classification named, plus every
@@ -317,6 +334,31 @@ QwenTpEntryContract
 writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
                  const QwenTpEntryNodes& entry, onnx::ModelProto& source,
                  const std::string& graphName);
+
+/** Assemble one unit's whole entry table from a rank artifact.
+ *
+ * This is the single path from a source graph to a loadable unit: classify the
+ * source, extract each entry, write it, and return the verified table. Keeping it
+ * one function is deliberate. Splitting it would let a caller assemble part of a
+ * table and hand the runner a unit whose entries disagree about which graph they
+ * came from.
+ *
+ * All entries are written under `root`, named from the unit id and entry kind, so
+ * a unit's files are identifiable without opening them.
+ *
+ * @param root       Assembly root, created if absent.
+ * @param unitId     Unit that owns every entry in the result.
+ * @param graphBytes Serialized source graph for this rank.
+ * @param layers     Number of transformer layers the graph carries.
+ * @returns The verified entry table, in classification order.
+ * @throws std::runtime_error when the source cannot be parsed, and
+ *         std::invalid_argument when classification or writing fails; a partially
+ *         written table is never returned.
+ */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers);
 
 /** Serialize a verified entry table for the runner spec.
  *
