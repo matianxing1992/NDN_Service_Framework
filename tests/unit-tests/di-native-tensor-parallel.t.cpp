@@ -6,6 +6,11 @@
  * model tensor parallelism numerically (that is T002) and do not run a
  * Provider (that is T003).
  */
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "ndn-service-framework/ServiceProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderGroupCoordinator.hpp"
+#include "tests/integration-tests/ndnsf-integration-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -15,6 +20,7 @@
 #include <onnx/onnx_pb.h>
 #include <onnxruntime_cxx_api.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -5546,6 +5552,226 @@ BOOST_AUTO_TEST_CASE(AStepPublishesItsPartialBeforeTheUnitFinishes)
   // output edges, so the final pass did not resend what the steps already sent.
   BOOST_CHECK_EQUAL(io->publishCalls.load(), roleOutputCount);
   BOOST_CHECK_EQUAL(io->publishedScopes.size(), roleOutputCount);
+}
+
+
+namespace {
+
+ProviderGroupCoordinatorOptions
+makeSpec224CoordinatorOptions()
+{
+  ProviderGroupCoordinatorOptions options;
+  options.randomBytes = [] (std::size_t size) {
+    return ProviderGroupBytes(size, 0x4d);
+  };
+  options.wrapEpochKey = [] (const std::string& provider,
+                             const ProviderGroupBytes& key) {
+    ProviderGroupBytes result(provider.begin(), provider.end());
+    result.push_back(':');
+    result.insert(result.end(), key.begin(), key.end());
+    return result;
+  };
+  return options;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
+{
+  // Exit 3's real test: two Providers, two faces, one partial crossing between
+  // them. Every earlier case used a fake IO, so none of them could fail if the
+  // production transport were broken. This one uses the production
+  // NdnsfCollaborationDependencyIo on both sides.
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = 2;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() ==
+                ndn_service_framework::test::EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto forwardInterest = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) { producerFace.receive(interest); });
+  auto forwardData = producerFace.onSendData.connect(
+      [&] (const ndn::Data& data) { consumerFace.receive(data); });
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  const ndn::Name requestId("/request/spec224-partial-exchange");
+  const std::string planDigest = sha('1');
+  const std::string groupId = "spec224-tp-group";
+  const std::string sourceLayout = sha('2');
+  const std::string targetLayout = sha('3');
+  const std::string tensorDigest = sha('4');
+
+  GroupOperationV1 operation;
+  operation.operationIndex = 0;
+  operation.kind = "TP_PARTIAL";
+  operation.producerRanks = {"0"};
+  operation.consumerRanks = {"1"};
+  operation.tensorLayoutDigest = sourceLayout;
+  operation.maxBytes = 1024;
+  operation.maxSegments = 8;
+
+  auto producerCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  const auto capability = producerCoordinator->createCapability(
+    requestId.toUri(), "attempt-1", planDigest, groupId, 3,
+    {{producer.getName().toUri(), 0, "offer-producer", producer.getName().toUri()},
+     {consumer.getName().toUri(), 1, "offer-consumer", consumer.getName().toUri()}},
+    {operation}, 128 * 1024, 2000, 10000);
+  auto consumerCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  consumerCoordinator->installCapability(
+    capability, producerCoordinator->epochKeyForProvider(producer.getName().toUri()),
+    true);
+
+  NativeTensorEndpointV3 endpoint;
+  endpoint.producerNamespace = producer.getName().toUri();
+  endpoint.requester = profile.userIdentity.toUri();
+  endpoint.requestId = requestId.toUri();
+  endpoint.attempt = 1;
+  endpoint.planDigest = planDigest;
+  endpoint.groupId = groupId;
+  endpoint.groupEpoch = "3";
+  endpoint.operation = operation.kind;
+  endpoint.round = operation.operationIndex;
+  endpoint.sourceKind = "ROLE";
+  // The tensor-parallel unit identity: rank 0's attention partial reaching rank 1.
+  endpoint.producerRole = "S0R0";
+  endpoint.producerRank = 0;
+  endpoint.consumerRole = "S0R1";
+  endpoint.consumerRoles = {"S0R1"};
+  endpoint.tensorId = "attn_partial";
+  endpoint.tensorDigest = tensorDigest;
+  endpoint.layoutDigest = sourceLayout;
+  endpoint.targetLayoutDigest = targetLayout;
+  endpoint.microbatch = 0;
+  endpoint.segmentCount = operation.maxSegments;
+  endpoint.manifestDigest = sha('5');
+  endpoint.securityProfile = "NDNSF_DATA_V1";
+  endpoint.noProgressDeadlineMs = capability.noProgressMs;
+  endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+  {
+    auto identity = nativeEndpointJson(endpoint);
+    identity.erase("endpoint_digest");
+    identity.erase("consumer_role");
+    endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+  }
+
+  DependencyEdge edge;
+  edge.scope = "tp-attn-0-r0-from-r1";
+  edge.producerRole = endpoint.producerRole;
+  edge.consumerRole = endpoint.consumerRole;
+  edge.consumerRoles = endpoint.consumerRoles;
+  edge.plannedDataName = tensorObjectNamePrefix(endpoint);
+  edge.tensors = {endpoint.tensorId};
+  edge.requestId = endpoint.requestId;
+  edge.attemptEpoch = endpoint.attempt;
+  edge.useNdnsfDataV1 = true;
+  edge.collectiveOperationIndex = operation.operationIndex;
+  edge.collectiveProducerRank = "0";
+  edge.collectiveSourceLayoutDigest = sourceLayout;
+  edge.collectiveTargetLayoutDigest = targetLayout;
+  edge.collectiveTensorDigest = tensorDigest;
+  edge.transportScope = groupId;
+  edge.producerProvider = producer.getName().toUri();
+  edge.declaredByV3 = true;
+  edge.manifestDataName = tensorObjectManifestName(endpoint);
+  edge.maxSegments = endpoint.segmentCount;
+  edge.endpointDigest = endpoint.endpointDigest;
+  edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+  edge.namingOperationStride = endpoint.namingOperationStride;
+  edge.planDigest = planDigest;
+  edge.manifestContractDigest = endpoint.manifestDigest;
+  edge.tensorDigest = tensorDigest;
+  edge.layoutDigest = sourceLayout;
+  edge.securityProfile = endpoint.securityProfile;
+  edge.operationKind = operation.kind;
+  edge.round = operation.operationIndex;
+  edge.microbatch = 0;
+  edge.noProgressDeadlineMs = capability.noProgressMs;
+  edge.hardDeadlineMs = capability.hardDeadlineMs;
+  // The sealed step binding this whole change exists to carry.
+  edge.producerStepId = "S0R0/ATTN/0";
+  edge.producerSlotId = "attn_partial";
+  edge.consumerStepId = "S0R1/SUM_ATTN/0";
+  edge.consumerSlotId = "peer_partial";
+
+  ndn_service_framework::ServiceProvider::CollaborationAssignment producerAssignment;
+  producerAssignment.role = endpoint.producerRole;
+  producerAssignment.service = profile.serviceName;
+  producerAssignment.workDeadline = std::chrono::steady_clock::now() +
+      std::chrono::seconds(90);
+  producerAssignment.workCurrent = [] { return true; };
+  ndn_service_framework::ServiceProvider::CollaborationAssignment consumerAssignment;
+  consumerAssignment.role = endpoint.consumerRole;
+  consumerAssignment.service = profile.serviceName;
+  consumerAssignment.workDeadline = producerAssignment.workDeadline;
+  consumerAssignment.workCurrent = [] { return true; };
+  ndn_service_framework::ServiceProvider::CollaborationContext producerContext(
+    producer, profile.userIdentity, requestId,
+    ndn_service_framework::RequestMessage(), producerAssignment);
+  ndn_service_framework::ServiceProvider::CollaborationContext consumerContext(
+    consumer, profile.userIdentity, requestId,
+    ndn_service_framework::RequestMessage(), consumerAssignment);
+
+  // The partial is a real encoded tensor bundle, not raw floats: the SUM path
+  // decodes it, so a raw payload would only pass if decoding were skipped.
+  NamedTensor tensor;
+  tensor.name = "attn_partial";
+  tensor.elementType = TensorElementType::Float32;
+  tensor.shape = {std::int64_t(2)};
+  const std::vector<float> values = {1.5f, -2.25f};
+  tensor.payload.resize(values.size() * sizeof(float));
+  std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+  TensorBundle original;
+  original.name = "attn_partial";
+  original.payload = encodeTensorBundle({tensor});
+  original.expectedBytes = original.payload.size();
+
+  // Segment size above the encoded bundle, so this partial is one segment. The
+  // exchange being tested is the transport and its admission, not segmentation;
+  // a 7-byte segment size would split a one-tensor bundle into more pieces than
+  // the signed operation permits and fail for an unrelated reason.
+  BOOST_REQUIRE(original.payload.size() < 4096);
+  NdnsfCollaborationDependencyIo producerIo(producerContext, 3000, 4096, 60000,
+                                            producerCoordinator);
+  NdnsfCollaborationDependencyIo consumerIo(consumerContext, 3000, 4096, 60000,
+                                            consumerCoordinator);
+  try {
+    producerIo.publishOutput("spec224-tp-session", edge, original);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("publish failed: ") + error.what());
+  }
+
+  // The consumer's wait is driven by the environment's pump, so a transport that
+  // never delivers would time out rather than hang.
+  auto fetched = consumerIo.prefetchInput("spec224-tp-session", edge);
+  environment.pumpUntil([&] {
+    return fetched.wait_for(std::chrono::milliseconds(0)) ==
+           std::future_status::ready;
+  });
+  std::optional<TensorBundle> reconstructed;
+  BOOST_REQUIRE_NO_THROW(reconstructed = fetched.get());
+  BOOST_REQUIRE(reconstructed);
+  // The value that arrives is the value that was published, decoded back to the
+  // same floats: the peer sees this rank's partial, which is the whole point.
+  const auto decoded = decodeTensorBundle(reconstructed->payload);
+  BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+  BOOST_CHECK_EQUAL(decoded.front().name, std::string("attn_partial"));
+  BOOST_REQUIRE_EQUAL(decoded.front().shape.size(), 1U);
+  BOOST_CHECK_EQUAL(decoded.front().shape.front(), std::int64_t(2));
+  std::vector<float> arrived(2);
+  std::memcpy(arrived.data(), decoded.front().payload.data(), arrived.size() * sizeof(float));
+  BOOST_CHECK_CLOSE(arrived[0], 1.5f, 1e-6);
+  BOOST_CHECK_CLOSE(arrived[1], -2.25f, 1e-6);
 }
 
 
