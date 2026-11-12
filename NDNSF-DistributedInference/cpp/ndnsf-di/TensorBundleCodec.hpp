@@ -180,6 +180,22 @@ std::vector<std::uint8_t>
 encodeTensorBundle(const std::vector<NamedTensor>& tensors,
                    const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
 
+/** Element-wise float32 reduction of one contribution into `accumulator[slot]`.
+ *
+ * SUM is a local admission operation in the sealed step template, not a
+ * service, worker or session: the consumer reduces the contributions it already
+ * admitted, then runs its next entry. Keeping the arithmetic here rather than in
+ * an adapter is what makes every backend reduce identically, so one rank's
+ * rounding cannot decide a shared result.
+ *
+ * The first contribution initialises the slot. Later ones must agree on tensor
+ * name and payload size, and the payload must be a whole number of float32
+ * elements; a mismatch is a contract violation, never something to truncate.
+ */
+void
+accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
+                       const std::string& slot, const TensorBundle& contribution);
+
 /** Validate borrowed payloads and synchronously copy them into owned wire bytes. */
 std::vector<std::uint8_t>
 encodeTensorBundleViews(const std::vector<NamedTensorView>& tensors,

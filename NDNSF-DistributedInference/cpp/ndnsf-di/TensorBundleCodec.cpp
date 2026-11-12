@@ -1411,9 +1411,8 @@ applyCertifiedTensorRedistributions(const RoleExecutionContext& context)
 }
 
 void
-StepExecutionResult::accumulate(std::map<std::string, TensorBundle>& accumulator,
-                                const std::string& slot,
-                                const TensorBundle& contribution)
+accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
+                       const std::string& slot, const TensorBundle& contribution)
 {
   const auto found = accumulator.find(slot);
   if (found == accumulator.end()) {
