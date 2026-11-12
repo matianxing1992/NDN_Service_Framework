@@ -7878,6 +7878,58 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(NodeOwnershipIsSingleValuedSoRanksCannotShareALayer)
+{
+  // Expanded the stage into rank roles on paper and hit the constraint the splitter
+  // cannot satisfy today: nodeRoles maps each graph node to exactly one owning role, and
+  // validate requires the set of owners to equal the role set. A sharded rank owns no
+  // node of its own -- both ranks execute the same layers -- so either the map gains a
+  // second owner per node or the roles are refused for owning nothing.
+  //
+  // Stated as the two rules, with the shape that breaks them.
+  std::map<std::string, std::string> nodeRoles;
+  nodeRoles["embedding"] = "S0R0";
+  nodeRoles["layer-00"] = "S0R0";
+  nodeRoles["final-norm-head"] = "S0R0";
+  // A stage-per-role candidate: every node has one owner and every owner owns a node.
+  std::set<std::string> stageRoles = {"S0R0"};
+  std::set<std::string> stageOwners;
+  for (const auto& item : nodeRoles) stageOwners.insert(item.second);
+  BOOST_CHECK(stageOwners == stageRoles);
+
+  // Expanding to ranks: the role set grows, the node set does not, so the owners no
+  // longer cover the roles.
+  std::set<std::string> rankRoles = {"S0R0", "S0R1"};
+  BOOST_CHECK(stageOwners != rankRoles);
+  // Assigning the layer to the second rank instead would leave the first owning only
+  // part of it, which is not what a shard does: both ranks execute the whole layer.
+  BOOST_CHECK_EQUAL(nodeRoles.count("layer-00"), 1U);
+  BOOST_CHECK_EQUAL(nodeRoles.at("layer-00"), std::string("S0R0"));
+  // So the map cannot express "these two roles both own this node", and that is the
+  // first thing a rank expansion would need.
+  BOOST_CHECK_MESSAGE(nodeRoles.size() == 3U,
+    "nodeRoles gained a second entry per node, so multi-owner is expressible now");
+
+  // And the consequence is not merely validation: the role preparer derives a role's
+  // source boundary from its owned nodes, then refuses a role whose input or output set
+  // is empty. A rank that owns no node therefore owns no boundary, so it has no source
+  // slice to assemble.
+  //
+  // The projected plan avoids the question entirely by keeping roles and units distinct:
+  // a role names one unit, and the unit list says which layers that unit executes.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan projected;
+  qwen::projectQwenTpPlan(projected, shape, 2, "entry", "S0R0");
+  std::set<std::string> units;
+  for (const auto& step : projected.steps) units.insert(step.unitId);
+  BOOST_CHECK_EQUAL(units.size(), projected.roles.size());
+  BOOST_TEST_MESSAGE("nodeRoles single-owner; projected roles=" << projected.roles.size()
+                    << " units=" << units.size());
+}
+
 BOOST_AUTO_TEST_CASE(StageRoleWithRankListCannotSatisfyThePlacementContract)
 {
   // Checked the smaller alternative before touching the role model: keep one role per
