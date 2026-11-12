@@ -3157,6 +3157,88 @@ BOOST_AUTO_TEST_CASE(TensorBackendRegistrationMirrorsTheProductionOrder)
   }
 }
 
+BOOST_AUTO_TEST_CASE(SealedSumRequiresEveryDeclaredContribution)
+{
+  // A SUM over a subset would produce a different tensor while still looking
+  // like a successful reduction, so the worker must refuse a step whose declared
+  // contribution was never admitted. The role here keeps its subgraph steps but
+  // loses the input edge that feeds the reduction, which is exactly the shape of
+  // a consumer that was handed an incomplete role spec.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/missing-partial";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  // Drop every edge that feeds a reduction. The attention steps keep their own
+  // local and epoch inputs, so they still run and the failure is the SUM's.
+  const auto before = role.inputs.size();
+  role.inputs.erase(
+    std::remove_if(role.inputs.begin(), role.inputs.end(),
+      [] (const auto& edge) {
+        return edge.consumerStepId.find("/SUM_") != std::string::npos;
+      }),
+    role.inputs.end());
+  BOOST_REQUIRE(role.inputs.size() < before);
+
+  const auto runner = [] (const RoleExecutionContext& ctx) {
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Supply only the epoch inputs; no peer contribution exists.
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("missing-partial-session", std::move(role),
+    std::make_shared<CountingDependencyIo>(), runner, initial);
+  try {
+    (void)future.get();
+    BOOST_FAIL("a SUM with a missing contribution was executed");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK(std::string(error.what()).find("missing an admitted contribution") !=
+                std::string::npos);
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

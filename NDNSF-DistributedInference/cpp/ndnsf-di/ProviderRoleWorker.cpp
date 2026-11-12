@@ -1172,12 +1172,24 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkIt
     }
 
     if (step.operation == "SUM") {
-      // SUM is local arithmetic over the values this unit already holds. It has
-      // no graph and no session, so it never reaches the runner.
+      // A SUM is admitted as a whole: every contribution it declares must already
+      // be present, because a reduction over a subset would silently produce a
+      // different tensor. This is the worker's admission duty, which is why the
+      // arithmetic function deliberately keeps no admission state of its own.
+      for (const auto& slot : step.inputSlots) {
+        if (inputs.find(slot.slotId) == inputs.end()) {
+          throw std::runtime_error(
+            "sealed SUM step is missing an admitted contribution: " + slot.slotId);
+        }
+      }
+      // Fixed rank order, not arrival order: C5 requires the same sum regardless
+      // of which partial arrived first. The sealed template lists the local slot
+      // first and the peers in rank order, so following it is deterministic.
       std::map<std::string, TensorBundle> accumulator;
-      for (const auto& input : inputs) {
+      for (const auto& slot : step.inputSlots) {
+        const auto input = inputs.find(slot.slotId);
         accumulateDecodedTensorBundle(accumulator, step.outputSlots.front().slotId,
-          decodeTensorBundle(input.second.payload), input.second.name);
+          decodeTensorBundle(input->second.payload), input->second.name);
       }
       const auto merged = accumulator.find(step.outputSlots.front().slotId);
       if (merged == accumulator.end()) {
