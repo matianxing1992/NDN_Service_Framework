@@ -579,8 +579,14 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
         makeIndexSlot("position_ids", "LOCAL_STEP", "int64", initStep(unit.roleId)));
       attn.inputSlots.push_back(
         makeIndexSlot("attn_mask", "LOCAL_STEP", "int32", initStep(unit.roleId)));
-      // o_proj produces a full-width residual partial, not a head-wide one.
-      attn.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden)};
+      // Two outputs with different roles. `partial` is this rank's reduction
+      // contribution and travels to both SUM steps. `residual` is the local X
+      // the MLP entry still needs: it is deliberately a named slot so the
+      // consumer is explicit, and it must never be added into any rank's
+      // contribution set, otherwise every rank would add X once and the SUM
+      // would produce degree times the residual.
+      attn.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden),
+                          makeSlot("residual", "LOCAL_STEP", {}, shape.hidden)};
       attn.localStateSlots = {"kv." + std::to_string(layer) + ".key",
                               "kv." + std::to_string(layer) + ".value"};
       plan.steps.push_back(std::move(attn));
@@ -608,9 +614,19 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       mlp.unitId = unit.roleId;
       mlp.operation = "CALL_SUBGRAPH";
       mlp.artifactEntry = entry(unit.roleId, "MLP", layer);
+      // The entry performs the original skip/norm in-graph, so it needs both the
+      // merged attention partial and this rank's residual, and it keeps the
+      // post-attention residual X' for the next layer and the head.
       mlp.inputSlots = {makeSlot("merged", "LOCAL_STEP",
-                                 sumAttnStep(unit.roleId, layer), shape.hidden)};
-      mlp.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden)};
+                                 sumAttnStep(unit.roleId, layer), shape.hidden),
+                        makeSlot("residual", "LOCAL_STEP",
+                                 attnStep(unit.roleId, layer), shape.hidden)};
+      // The produced residual is a different value from the consumed one, so it
+      // needs its own name: within one step an input and an output may not share
+      // a slot id, and reusing "residual" here would hide that they are the
+      // pre- and post-MLP activations.
+      mlp.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden),
+                         makeSlot("post_residual", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(mlp));
 
       ndnsf::di::NativeExecutionStepSpec sumMlp;
@@ -640,6 +656,9 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       head.artifactEntry = entry(unit.roleId, "HEAD", shape.layers);
       head.inputSlots = {makeSlot("merged", "LOCAL_STEP",
                                   sumMlpStep(unit.roleId, shape.layers - 1),
+                                  shape.hidden),
+                         makeSlot("post_residual", "LOCAL_STEP",
+                                  mlpStep(unit.roleId, shape.layers - 1),
                                   shape.hidden)};
       // Logits are vocabulary-wide, not hidden-wide: the head output slot must
       // describe the real width or a consumer would size its read buffer from

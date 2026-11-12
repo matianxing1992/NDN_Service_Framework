@@ -945,6 +945,76 @@ BOOST_AUTO_TEST_CASE(InitStepProducesTypedSideInputsForEveryAttentionStep)
     [] (const auto& dependency) { return dependency.tensors.at(0) != "partial"; }));
 }
 
+BOOST_AUTO_TEST_CASE(ResidualStaysLocalAndOutOfTheContributionSet)
+{
+  // C2: each rank keeps its own residual and the SUM only reduces partials. If
+  // the residual were added into a rank's contribution, every rank would add it
+  // once and the SUM would yield degree times the residual.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  const auto find = [&] (const std::string& stepId) -> const NativeExecutionStepSpec* {
+    const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
+      [&] (const auto& step) { return step.stepId == stepId; });
+    return found == plan.steps.end() ? nullptr : &*found;
+  };
+  const auto slotOf = [] (const NativeExecutionStepSpec& step, const std::string& id,
+                          bool output) -> const NativeStepSlotSpec* {
+    const auto& slots = output ? step.outputSlots : step.inputSlots;
+    const auto found = std::find_if(slots.begin(), slots.end(),
+      [&] (const auto& slot) { return slot.slotId == id; });
+    return found == slots.end() ? nullptr : &*found;
+  };
+
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      const auto* attn = find(std::string(unit) + "/ATTN/" + std::to_string(layer));
+      const auto* sumAttn = find(std::string(unit) + "/SUM_ATTN/" + std::to_string(layer));
+      const auto* mlp = find(std::string(unit) + "/MLP/" + std::to_string(layer));
+      const auto* sumMlp = find(std::string(unit) + "/SUM_MLP/" + std::to_string(layer));
+      BOOST_REQUIRE(attn && sumAttn && mlp && sumMlp);
+
+      // The attention step keeps the layer input as a named local residual.
+      const auto* attnResidual = slotOf(*attn, "residual", true);
+      BOOST_REQUIRE(attnResidual != nullptr);
+      BOOST_CHECK_EQUAL(attnResidual->source, std::string("LOCAL_STEP"));
+      BOOST_CHECK(attnResidual->producerStepId.empty());
+
+      // The MLP step reads that residual directly from ATTN, not via SUM.
+      const auto* fedResidual = slotOf(*mlp, "residual", false);
+      BOOST_REQUIRE(fedResidual != nullptr);
+      BOOST_CHECK_EQUAL(fedResidual->producerStepId, attn->stepId);
+      BOOST_CHECK_EQUAL(fedResidual->source, std::string("LOCAL_STEP"));
+
+      // The SUM steps must not consume any residual: they reduce partials only.
+      for (const auto* sum : {sumAttn, sumMlp}) {
+        BOOST_CHECK(std::none_of(sum->inputSlots.begin(), sum->inputSlots.end(),
+          [] (const auto& slot) { return slot.slotId.rfind("residual", 0) == 0 ||
+                                         slot.slotId.rfind("post_residual", 0) == 0; }));
+        // Every SUM input is a single-rank partial, never a merged value.
+        for (const auto& slot : sum->inputSlots)
+          BOOST_CHECK_EQUAL(slot.slotId.rfind("merged", 0), std::string::npos);
+      }
+
+      // The post-MLP residual is a distinct value from the pre-MLP one.
+      const auto* postResidual = slotOf(*mlp, "post_residual", true);
+      BOOST_REQUIRE(postResidual != nullptr);
+      BOOST_CHECK(slotOf(*mlp, "residual", true) == nullptr);
+    }
+  }
+
+  // No residual may cross the network: every dependency carries a partial.
+  for (const auto& dependency : plan.dependencies) {
+    BOOST_REQUIRE_EQUAL(dependency.tensors.size(), 1U);
+    BOOST_CHECK_EQUAL(dependency.tensors.at(0), std::string("partial"));
+  }
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
