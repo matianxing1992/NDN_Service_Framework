@@ -362,6 +362,17 @@ applyNativeProviderExecutionControl(
   const std::map<std::string, std::string>& fields,
   ExecutionAttemptAuthority& authority);
 
+/** Whether this role is the one that answers the requester.
+ *
+ * A pipeline terminal has no output edges, so the historical test was
+ * `outputs.empty()`. A tensor-parallel egress unit keeps its partial edges -- C6
+ * requires that -- and still answers, so the question has to be asked about the
+ * terminal slot instead: a role whose template produces a value nothing consumes is
+ * the role that reports it.
+ */
+bool
+nativeProviderRoleAnswersRequester(const RoleSpec& roleSpec);
+
 std::optional<std::vector<uint8_t>>
 nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
                                    const ProviderRoleResult& result,

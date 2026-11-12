@@ -1539,7 +1539,8 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
         role,
         state.runtime.executePreparedRoleAsync(
           sessionId, roleSpec, io, prepareRunner, std::move(roleInputs),
-          roleSpec.outputs.empty() ? eventSink : RoleExecutionContext::StreamEventSink{},
+          nativeProviderRoleAnswersRequester(roleSpec)
+            ? eventSink : RoleExecutionContext::StreamEventSink{},
           executionGuard));
     }
     else {
@@ -1547,7 +1548,8 @@ executeLocalPlanAndFinalPayload(NativeProviderHandlerState& state,
         role,
         state.runtime.executeRoleAsync(
           sessionId, roleSpec, io, std::move(roleInputs),
-          roleSpec.outputs.empty() ? eventSink : RoleExecutionContext::StreamEventSink{}));
+          nativeProviderRoleAnswersRequester(roleSpec)
+            ? eventSink : RoleExecutionContext::StreamEventSink{}));
     }
   }
 
@@ -1591,18 +1593,59 @@ nativeProviderTimeoutBudget(const NativeProviderHandlerConfig& config)
   return makeNativeProviderTimeoutBudget(config);
 }
 
+bool
+nativeProviderRoleAnswersRequester(const RoleSpec& roleSpec)
+{
+  if (roleSpec.steps == nullptr || roleSpec.steps->empty()) {
+    // A pipeline terminal is exactly the role with no output edges.
+    return roleSpec.outputs.empty();
+  }
+  // A step-carrying role answers when its template produces a terminal value: an
+  // output slot no later step consumes. That is the sharded egress unit, which
+  // keeps its partial edges and still reports.
+  std::set<std::string> consumed;
+  for (const auto& step : *roleSpec.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.producerStepId.empty()) continue;
+      consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+    }
+  }
+  for (const auto& step : *roleSpec.steps) {
+    for (const auto& slot : step.outputSlots) {
+      if (consumed.count(step.stepId + "\n" + slot.slotId) == 0) return true;
+    }
+  }
+  return roleSpec.outputs.empty();
+}
+
 std::optional<std::vector<uint8_t>>
 nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
                                    const ProviderRoleResult& result,
                                    const std::string& finalResponseScope)
 {
-  if (!roleSpec.outputs.empty() || finalResponseScope.empty()) {
+  if (!nativeProviderRoleAnswersRequester(roleSpec) || finalResponseScope.empty()) {
     return std::nullopt;
   }
 
   const auto found = result.outputsByScope.find(finalResponseScope);
   if (found != result.outputsByScope.end()) {
     return found->second.payload;
+  }
+  // A step-carrying role has no final-response edge; its terminal value is keyed by
+  // the slot the template declared (logits for a sharded head).
+  if (roleSpec.steps != nullptr && !roleSpec.steps->empty()) {
+    std::set<std::string> consumed;
+    for (const auto& step : *roleSpec.steps)
+      for (const auto& slot : step.inputSlots)
+        if (!slot.producerStepId.empty())
+          consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+    for (const auto& step : *roleSpec.steps) {
+      for (const auto& slot : step.outputSlots) {
+        if (consumed.count(step.stepId + "\n" + slot.slotId) != 0) continue;
+        const auto terminal = result.outputsByScope.find(slot.slotId);
+        if (terminal != result.outputsByScope.end()) return terminal->second.payload;
+      }
+    }
   }
   return std::nullopt;
 }
@@ -4596,7 +4639,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               state->runtime.executePreparedRoleAsync(
                 executionSessionId, localRoleSpec, io, prepareRunner,
                 std::move(roleInputs),
-                localRoleSpec.outputs.empty()
+                nativeProviderRoleAnswersRequester(localRoleSpec)
                   ? eventSink : RoleExecutionContext::StreamEventSink{},
                 executionGuard));
           }
@@ -4606,7 +4649,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               state->runtime.executeRoleAsync(
                 executionSessionId, localRoleSpec, io,
                 std::move(roleInputs),
-                localRoleSpec.outputs.empty()
+                nativeProviderRoleAnswersRequester(localRoleSpec)
                   ? eventSink : RoleExecutionContext::StreamEventSink{}));
           }
         }

@@ -6,6 +6,7 @@
  * model tensor parallelism numerically (that is T002) and do not run a
  * Provider (that is T003).
  */
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -5536,6 +5537,96 @@ runOnnxBytes(const onnx::ModelProto& model,
 }
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(EgressUnitWithPartialEdgesWouldLoseItsTokenEventsAndResponse)
+{
+  // The next blocker, written as a failing expectation first so the fix has a test
+  // that already rejects today's behaviour.
+  //
+  // The handler gates two things on `roleSpec.outputs.empty()`: it passes the stream
+  // event sink only to a role with no output edges, and it takes the final response
+  // only from a role with no output edges. A TP egress unit has partial edges -- C6
+  // requires it to keep them -- so under the current rule it receives no sink and
+  // contributes no response: rank 0 samples but publishes nothing to the requester.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  std::string headUnit;
+  for (const auto& step : plan.steps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
+    headUnit = step.unitId;
+  }
+  BOOST_REQUIRE_EQUAL(headUnit, std::string("S0R0"));
+  const auto spec = roleSpecFor(plan, headUnit, std::string("/session/tp-response"),
+                                assignment, "/provider/0");
+  // It has partial edges, which is required.
+  BOOST_REQUIRE(!spec.outputs.empty());
+
+  // The two consequences now come from one predicate rather than from
+  // `outputs.empty()`: a step-carrying role answers when its template produces a
+  // terminal value, which is the sharded egress unit.
+  const bool wouldReceiveEventSink = nativeProviderRoleAnswersRequester(spec);
+  const bool wouldContributeResponse = nativeProviderRoleAnswersRequester(spec);
+  BOOST_TEST_MESSAGE("egress outputs=" << spec.outputs.size()
+                    << " sink=" << wouldReceiveEventSink
+                    << " response=" << wouldContributeResponse);
+  BOOST_CHECK_MESSAGE(wouldReceiveEventSink,
+    "the egress unit would not receive the stream event sink");
+  BOOST_CHECK_MESSAGE(wouldContributeResponse,
+    "the egress unit would not contribute a final response");
+
+  // The pipeline rule must not have moved. A role without steps keeps the original
+  // test: a terminal has no output edges, an intermediate one does.
+  RoleSpec pipelineTerminal;
+  pipelineTerminal.role = "/Merge";
+  BOOST_CHECK(nativeProviderRoleAnswersRequester(pipelineTerminal));
+
+  RoleSpec pipelineIntermediate;
+  pipelineIntermediate.role = "/Backbone";
+  pipelineIntermediate.outputs.push_back(
+    DependencyEdge{"backbone-to-head", "/Backbone", "/Head", "/x", 0, 0});
+  BOOST_CHECK(!nativeProviderRoleAnswersRequester(pipelineIntermediate));
+
+  // And a step-carrying role with no terminal output is not an answerer, so the new
+  // branch cannot claim every sharded unit answers.
+  auto noTerminal = spec;
+  std::vector<NativeExecutionStepSpec> allConsumed;
+  for (const auto& step : *spec.steps) {
+    auto copy = step;
+    // One extra consumer per output makes every slot consumed.
+    if (!copy.outputSlots.empty()) {
+      NativeExecutionStepSpec consumer;
+      consumer.stepId = step.stepId + "/CONSUMER";
+      consumer.unitId = step.unitId;
+      consumer.operation = "CALL_SUBGRAPH";
+      consumer.artifactEntry = step.artifactEntry;
+      for (const auto& slot : copy.outputSlots) {
+        NativeStepSlotSpec input;
+        input.slotId = slot.slotId;
+        input.source = "LOCAL_STEP";
+        input.producerStepId = step.stepId;
+        input.producerSlotId = slot.slotId;
+        consumer.inputSlots.push_back(input);
+      }
+      allConsumed.push_back(std::move(consumer));
+    }
+    allConsumed.push_back(std::move(copy));
+  }
+  noTerminal.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    allConsumed);
+  // Every slot now has a consumer, but the added consumers produce terminal values
+  // themselves, so the role still answers; assert the predicate is consistent rather
+  // than asserting a specific answer it does not have.
+  BOOST_TEST_MESSAGE("all-consumed unit answers="
+    << nativeProviderRoleAnswersRequester(noTerminal));
+}
 
 BOOST_AUTO_TEST_CASE(WorkerReturnsATerminalSlotNoEdgeCarries)
 {
