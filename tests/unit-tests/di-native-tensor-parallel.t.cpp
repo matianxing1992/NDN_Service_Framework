@@ -5537,6 +5537,75 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(SamplerCannotReachLogitsBecauseTheyCarryNoOutputEdge)
+{
+  // Exit 4's remaining blocker, measured rather than guessed. The coordinator's
+  // sampler reads a tensor named "logits" from the terminal role's output scopes,
+  // and a role's scopes come from its declared output edges. The TP projection emits
+  // only TENSOR_PARTIAL edges -- partials for the peer -- so no unit exposes logits,
+  // and a generation request would fail with "received no encoded logits" after the
+  // whole prefill had already been computed.
+  //
+  // C6 says rank 0 keeps its partial outputs *and* publishes token events and the
+  // final response. The handler's current rule is "a role with output edges takes its
+  // response from those edges", which is exactly what makes those two requirements
+  // collide here.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  std::set<std::string> headOwners;
+  for (const auto& step : plan.steps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
+    headOwners.insert(step.unitId);
+  }
+  BOOST_REQUIRE_EQUAL(headOwners.size(), 1U);
+
+  std::size_t unitsExposingLogits = 0;
+  for (const auto& unit : plan.roles) {
+    const auto spec = roleSpecFor(plan, unit, std::string("/session/tp-logits"),
+                                  assignment, "/provider/0");
+    bool carriesLogits = false;
+    bool carriesPartial = false;
+    for (const auto& edge : spec.outputs) {
+      for (const auto& tensor : edge.tensors) {
+        if (tensor == "logits") carriesLogits = true;
+        if (tensor == "partial") carriesPartial = true;
+      }
+    }
+    if (carriesLogits) ++unitsExposingLogits;
+    BOOST_TEST_MESSAGE("unit " << unit << " outputs=" << spec.outputs.size()
+                      << " partial=" << carriesPartial << " logits=" << carriesLogits);
+    // Every rank produces partials for its peer; that part of C6 holds today.
+    BOOST_CHECK(carriesPartial);
+  }
+  // No unit exposes logits. Stated as the number the fix has to raise to one, rather
+  // than as a passing check of the current state.
+  BOOST_CHECK_EQUAL(unitsExposingLogits, 0U);
+
+  // The head step itself does declare a vocabulary-wide logits slot, so the template
+  // is right; what is missing is the edge that carries it to the sampler.
+  bool headDeclaresLogits = false;
+  for (const auto& step : plan.steps) {
+    if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
+    for (const auto& slot : step.outputSlots)
+      if (slot.slotId == "logits") headDeclaresLogits = true;
+  }
+  BOOST_CHECK_MESSAGE(headDeclaresLogits,
+    "the head step does not declare a logits slot, which would be a different defect");
+
+  // Stated as the condition that must change: the egress unit needs a way to surface
+  // its terminal output that does not rely on a peer consuming it, because no peer
+  // consumes the final response.
+  BOOST_CHECK_EQUAL(plan.dependencies.size(), 2U * 2U * 2U);
+}
+
 BOOST_AUTO_TEST_CASE(LayerOneUsesTheSkipNormFormAndStillReconstructs)
 {
   // Layer 0 and layer 1 differ in the normalization operator: layer 0's input
