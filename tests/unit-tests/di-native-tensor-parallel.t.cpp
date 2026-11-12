@@ -9,9 +9,12 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -19,6 +22,7 @@
 namespace {
 
 using namespace ndnsf::di;
+namespace qwen = ndnsf::di::qwen;
 
 const char* DIGEST_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -367,6 +371,209 @@ BOOST_AUTO_TEST_CASE(LegacyWireStillParsesWithoutStepFields)
   BOOST_REQUIRE_EQUAL(parsed.dependencies.size(), 1U);
   BOOST_CHECK(parsed.dependencies[0].dependencyId.empty());
   BOOST_CHECK(parsed.dependencies[0].producerStepId.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// ShardMath — real INT4 partition arithmetic, independent of any fixture that
+// calls the splitter under test. Expected values are constructed by hand.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+qwen::QwenTpShape
+frozenShape()
+{
+  // Frozen Qwen3-0.6B export facts (see research.md#t001-graph-verification).
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024;
+  shape.layers = 28;
+  shape.queryHeads = 16;
+  shape.kvHeads = 8;
+  shape.headDim = 128;
+  shape.ffn = 3072;
+  return shape;
+}
+
+const qwen::QwenInitializerSlice*
+findSlice(const qwen::QwenRankLayerSlices& layer, const std::string& suffix)
+{
+  for (const auto& slice : layer.initializers) {
+    if (slice.name.size() >= suffix.size() &&
+        slice.name.compare(slice.name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      return &slice;
+    }
+  }
+  return nullptr;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(ShardMath)
+
+BOOST_AUTO_TEST_CASE(PlanSplitsFrozenShapeByWholeHeads)
+{
+  const auto shape = frozenShape();
+  const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0);
+  const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1);
+  BOOST_REQUIRE_EQUAL(rank0.size(), 28U);
+  BOOST_REQUIRE_EQUAL(rank1.size(), 28U);
+
+  const auto& layer = rank0.front();
+  // Exactly the seven sharded projections; norms are intentionally absent.
+  BOOST_CHECK_EQUAL(layer.initializers.size(), 7U);
+
+  // q_proj: 16 heads -> 8 per rank; head 0..7 gives [0,1024), rank1 [1024,2048).
+  const auto* q0 = findSlice(layer, "attn.q_proj.MatMul.weight");
+  const auto* q1 = findSlice(rank1.front(), "attn.q_proj.MatMul.weight");
+  BOOST_REQUIRE(q0 != nullptr);
+  BOOST_REQUIRE(q1 != nullptr);
+  BOOST_CHECK_EQUAL(q0->begin, 0U);
+  BOOST_CHECK_EQUAL(q0->end, 1024U);
+  BOOST_CHECK_EQUAL(q1->begin, 1024U);
+  BOOST_CHECK_EQUAL(q1->end, 2048U);
+  BOOST_CHECK(q0->axis == qwen::QwenSliceAxis::OutputChannels);
+
+  // k/v_proj: 8 KV heads -> 4 per rank.
+  const auto* k0 = findSlice(layer, "attn.k_proj.MatMul.weight");
+  BOOST_REQUIRE(k0 != nullptr);
+  BOOST_CHECK_EQUAL(k0->begin, 0U);
+  BOOST_CHECK_EQUAL(k0->end, 512U);
+  BOOST_CHECK_EQUAL(k0->slicedN, 512U);
+
+  // o_proj reduces over the attention channels: rank1 starts at 1024.
+  const auto* o1 = findSlice(rank1.front(), "attn.o_proj.MatMul.weight");
+  BOOST_REQUIRE(o1 != nullptr);
+  BOOST_CHECK(o1->axis == qwen::QwenSliceAxis::InputChannels);
+  BOOST_CHECK_EQUAL(o1->begin, 1024U);
+  BOOST_CHECK_EQUAL(o1->end, 2048U);
+  BOOST_CHECK_EQUAL(o1->slicedK, 1024U);
+
+  // gate and up must share one FFN interval, and down reduces over it.
+  const auto* gate1 = findSlice(rank1.front(), "mlp.gate_proj.MatMul.weight");
+  const auto* up1 = findSlice(rank1.front(), "mlp.up_proj.MatMul.weight");
+  const auto* down1 = findSlice(rank1.front(), "mlp.down_proj.MatMul.weight");
+  BOOST_REQUIRE(gate1 != nullptr);
+  BOOST_REQUIRE(up1 != nullptr);
+  BOOST_REQUIRE(down1 != nullptr);
+  BOOST_CHECK_EQUAL(gate1->begin, up1->begin);
+  BOOST_CHECK_EQUAL(gate1->end, up1->end);
+  BOOST_CHECK_EQUAL(gate1->begin, 1536U);
+  BOOST_CHECK_EQUAL(gate1->end, 3072U);
+  BOOST_CHECK(down1->axis == qwen::QwenSliceAxis::InputChannels);
+  BOOST_CHECK_EQUAL(down1->begin, 1536U);
+  BOOST_CHECK_EQUAL(down1->slicedK, 1536U);
+}
+
+BOOST_AUTO_TEST_CASE(UnevenHeadsOrUnalignedCutAreRejected)
+{
+  auto odd = frozenShape();
+  odd.queryHeads = 15;          // not divisible by 2
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(odd, 2, 0), std::invalid_argument);
+
+  auto misaligned = frozenShape();
+  // 16 heads x 98 = 1568 wide; half is 784, which is not a multiple of 32.
+  misaligned.headDim = 98;
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(misaligned, 2, 0), std::invalid_argument);
+
+  auto unalignedFfn = frozenShape();
+  // 3000 / 2 = 1500, not a multiple of the 32-wide block.
+  unalignedFfn.ffn = 3000;
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(unalignedFfn, 2, 0), std::invalid_argument);
+
+  const auto shape = frozenShape();
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape, 1, 0), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape, 2, 2), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(PackedInt4OutputSliceCopiesWholeRows)
+{
+  // 4 output channels x 64 reduction channels: 2 blocks per row, 16 bytes each.
+  const std::uint64_t n = 4, k = 64;
+  const auto bytes = qwen::packedInt4Bytes(n, k);
+  BOOST_CHECK_EQUAL(bytes, 4U * 2U * 16U);
+
+  std::vector<std::uint8_t> packed(static_cast<std::size_t>(bytes));
+  for (std::size_t i = 0; i < packed.size(); ++i) packed[i] = static_cast<std::uint8_t>(i & 0xff);
+
+  const auto sliced = qwen::slicePackedInt4(packed, n, k, qwen::QwenSliceAxis::OutputChannels, 1, 3);
+  BOOST_CHECK_EQUAL(sliced.size(), 2U * 2U * 16U);
+  // Rows 1 and 2 are contiguous in the source.
+  BOOST_CHECK(std::equal(sliced.begin(), sliced.end(), packed.begin() + 32));
+  // Values are untouched: no nibble was re-packed.
+  BOOST_CHECK_EQUAL(sliced.front(), packed[32]);
+}
+
+BOOST_AUTO_TEST_CASE(PackedInt4InputSliceKeepsWholeBlocks)
+{
+  const std::uint64_t n = 3, k = 128;   // 4 blocks per row
+  const auto bytes = qwen::packedInt4Bytes(n, k);
+  std::vector<std::uint8_t> packed(static_cast<std::size_t>(bytes));
+  for (std::size_t i = 0; i < packed.size(); ++i) packed[i] = static_cast<std::uint8_t>((i * 7) & 0xff);
+
+  // Keep blocks 1..2 of every row: 2 blocks x 16 bytes per row.
+  const auto sliced = qwen::slicePackedInt4(packed, n, k, qwen::QwenSliceAxis::InputChannels, 32, 96);
+  BOOST_CHECK_EQUAL(sliced.size(), n * 2U * 16U);
+  for (std::uint64_t row = 0; row < n; ++row) {
+    const auto source = row * 4U * 16U + 1U * 16U;
+    for (std::size_t byte = 0; byte < 32; ++byte) {
+      BOOST_CHECK_EQUAL(sliced[static_cast<std::size_t>(row) * 32U + byte], packed[source + byte]);
+    }
+  }
+
+  // A cut that is not block aligned must be refused, not silently rounded.
+  BOOST_CHECK_THROW(qwen::slicePackedInt4(packed, n, k, qwen::QwenSliceAxis::InputChannels, 8, 96),
+                    std::invalid_argument);
+  // A wrong source size is refused too.
+  std::vector<std::uint8_t> shortPacked(packed.begin(), packed.end() - 1);
+  BOOST_CHECK_THROW(qwen::slicePackedInt4(shortPacked, n, k, qwen::QwenSliceAxis::OutputChannels, 0, 1),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(Int4ScalesFollowTheWeightSliceAxis)
+{
+  const std::uint64_t n = 4, k = 64;   // 2 blocks
+  const auto blocks = k / qwen::QWEN_INT4_BLOCK_SIZE;
+  std::vector<std::uint8_t> scales(static_cast<std::size_t>(n * blocks * 4U));
+  for (std::size_t i = 0; i < scales.size(); ++i) scales[i] = static_cast<std::uint8_t>(i & 0xff);
+
+  const auto rows = qwen::sliceInt4Scales(scales, n, k, qwen::QwenSliceAxis::OutputChannels, 1, 3);
+  BOOST_CHECK_EQUAL(rows.size(), 2U * blocks * 4U);
+  BOOST_CHECK(std::equal(rows.begin(), rows.end(), scales.begin() + blocks * 4));
+
+  const auto cols = qwen::sliceInt4Scales(scales, n, k, qwen::QwenSliceAxis::InputChannels, 32, 64);
+  BOOST_CHECK_EQUAL(cols.size(), n * 1U * 4U);
+  for (std::uint64_t row = 0; row < n; ++row) {
+    for (std::size_t byte = 0; byte < 4; ++byte) {
+      BOOST_CHECK_EQUAL(cols[static_cast<std::size_t>(row) * 4U + byte],
+                        scales[static_cast<std::size_t>(row * blocks + 1U) * 4U + byte]);
+    }
+  }
+
+  std::vector<std::uint8_t> truncated(scales.begin(), scales.end() - 1);
+  BOOST_CHECK_THROW(qwen::sliceInt4Scales(truncated, n, k, qwen::QwenSliceAxis::OutputChannels, 0, 1),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(RankSlicesCoverDistinctDisjointChannels)
+{
+  const auto shape = frozenShape();
+  const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0);
+  const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1);
+  // Every layer's slices are disjoint and together cover the full axis: this is
+  // what rules out two ranks duplicating work or leaving a gap.
+  for (std::size_t layer = 0; layer < rank0.size(); ++layer) {
+    BOOST_REQUIRE_EQUAL(rank0[layer].initializers.size(), rank1[layer].initializers.size());
+    for (std::size_t i = 0; i < rank0[layer].initializers.size(); ++i) {
+      const auto& left = rank0[layer].initializers[i];
+      const auto& right = rank1[layer].initializers[i];
+      BOOST_CHECK_EQUAL(left.name, right.name);
+      BOOST_CHECK(left.axis == right.axis);
+      BOOST_CHECK_EQUAL(left.end, right.begin);
+      BOOST_CHECK_EQUAL(left.begin, 0U);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
