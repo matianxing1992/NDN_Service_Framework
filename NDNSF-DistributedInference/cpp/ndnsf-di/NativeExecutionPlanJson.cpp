@@ -120,6 +120,12 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
   sink("layout", value.layout);
   sink("padding", value.padding);
   sink("protection_epoch", value.protectionEpoch);
+  // Tensor-parallel rank identity. Only emitted when the role actually is a TP
+  // rank, so every legacy role keeps its exact wire bytes and digest.
+  if (value.tensorParallelDegree != 0) {
+    sink("tensor_parallel_degree", value.tensorParallelDegree);
+    sink("tensor_parallel_rank", value.tensorParallelRank);
+  }
   sink("merge_kind", value.mergeKind);
   sink("postprocess_identity", value.postprocessIdentity);
   sink("postprocess_output_name", value.postprocessOutputName);
@@ -737,6 +743,8 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
   role.padding = node.get<std::string>("padding", "");
   role.protectionEpoch = node.get<std::string>(
     "protection_epoch", "plaintext-v1");
+  role.tensorParallelDegree = node.get<std::uint64_t>("tensor_parallel_degree", 0);
+  role.tensorParallelRank = node.get<std::uint64_t>("tensor_parallel_rank", 0);
   role.mergeKind = node.get<std::string>("merge_kind", "");
   role.postprocessIdentity = node.get<std::string>(
     "postprocess_identity", "");

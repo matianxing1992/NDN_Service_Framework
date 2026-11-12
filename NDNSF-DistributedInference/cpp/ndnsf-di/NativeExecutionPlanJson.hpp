@@ -77,6 +77,13 @@ struct NativeSelectionRoleV3
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
   std::uint64_t maxNodes = 0;
+  // Tensor-parallel identity of this rank. Two ranks of one stage own the same
+  // layer interval and therefore the same node set, so without these the two
+  // roles would derive an identical recipe digest while holding different
+  // weight shards. Zero degree means the role is not tensor-parallel and keeps
+  // its legacy digest bytes.
+  std::uint64_t tensorParallelDegree = 0;
+  std::uint64_t tensorParallelRank = 0;
 };
 
 struct NativeGenerationExecutionContractV1

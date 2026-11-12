@@ -8,6 +8,7 @@
  */
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -1013,6 +1014,77 @@ BOOST_AUTO_TEST_CASE(ResidualStaysLocalAndOutOfTheContributionSet)
     BOOST_CHECK_EQUAL(dependency.tensors.at(0), std::string("partial"));
   }
   BOOST_CHECK_NO_THROW(plan.validateSteps());
+}
+
+BOOST_AUTO_TEST_CASE(TpRanksDeriveDistinctRecipeDigests)
+{
+  // Two ranks of one stage own the same layer interval and therefore the same
+  // canonical node set. The certified recipe JSON is what the worker derives and
+  // checks, so without a rank identity both ranks would produce one recipe
+  // digest while holding different shards of the weight.
+  const auto digest = [] (const char* tag) { return nativePlanningDigest(tag); };
+
+  const auto role = [] (std::uint64_t rank, std::uint64_t degree) {
+    NativeSelectionRoleV3 value;
+    value.role = "S0R" + std::to_string(rank);
+    value.selectedRole = value.role;
+    value.rank = rank;
+    value.layerBegin = 0;
+    value.layerEnd = 1;
+    value.backend = "onnxruntime-cpu";
+    value.roleKind = degree > 1 ? "HYBRID_RANK" : "PIPELINE_RANGE";
+    value.artifactDigest = "sha256:" + std::string(64, '0');
+    value.recipeDigest = "sha256:" + std::string(64, '0');
+    value.adapterId = "qwen";
+    value.adapterVersion = "1";
+    value.modelManifestDigest = "sha256:" + std::string(64, '1');
+    value.artifactProfileDigest = "sha256:" + std::string(64, '2');
+    value.graphDigest = "sha256:" + std::string(64, '3');
+    value.canonicalInitializerDigest = "sha256:" + std::string(64, '4');
+    value.adapterDescriptorDigest = "sha256:" + std::string(64, '5');
+    value.assemblerDescriptorDigest = "sha256:" + std::string(64, '6');
+    value.backendAbi = "onnxruntime-1-cpu";
+    // Identical node cover on purpose: that is what makes one stage one stage.
+    value.nodeIndices = {1, 2, 3};
+    value.expectedInputs = {{"x", "float32", {std::int64_t(1), std::int64_t(4)}}};
+    value.expectedOutputs = {{"partial", "float32", {std::int64_t(1), std::int64_t(4)}}};
+    value.precision = "fp32";
+    value.quantization = "int4";
+    value.layout = "native";
+    value.padding = "none";
+    value.protectionEpoch = "plaintext-v1";
+    value.maxSourceBytes = 4096;
+    value.maxAssembledBytes = 2048;
+    value.maxNodes = 4;
+    if (degree > 1) {
+      value.tensorParallelDegree = degree;
+      value.tensorParallelRank = rank;
+    }
+    return value;
+  };
+
+  const auto rank0 = role(0, 2);
+  const auto rank1 = role(1, 2);
+
+  // Same interval and same nodes: only the rank differs.
+  BOOST_CHECK_EQUAL(rank1.layerBegin, rank0.layerBegin);
+  BOOST_CHECK_EQUAL(rank1.layerEnd, rank0.layerEnd);
+  BOOST_CHECK(rank1.nodeIndices == rank0.nodeIndices);
+
+  // The certified recipe must therefore differ, or the parent could not tell the
+  // two shards apart.
+  const auto recipe0 = canonicalNativeOnnxRecipeJson(rank0);
+  const auto recipe1 = canonicalNativeOnnxRecipeJson(rank1);
+  BOOST_CHECK(recipe0 != recipe1);
+  BOOST_CHECK(nativePlanningDigest(recipe0) != nativePlanningDigest(recipe1));
+  BOOST_CHECK(recipe0.find("tensorParallelDegree") != std::string::npos);
+  BOOST_CHECK(recipe0.find("tensorParallelRank") != std::string::npos);
+
+  // A pipeline role emits neither member and keeps its legacy digest shape.
+  const auto pipeline = role(0, 1);
+  const auto pipelineRecipe = canonicalNativeOnnxRecipeJson(pipeline);
+  BOOST_CHECK(pipelineRecipe.find("tensorParallelDegree") == std::string::npos);
+  BOOST_CHECK(pipelineRecipe.find("tensorParallelRank") == std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

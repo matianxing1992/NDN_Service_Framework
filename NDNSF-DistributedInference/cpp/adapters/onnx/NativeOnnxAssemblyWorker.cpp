@@ -723,6 +723,14 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
   // bind the compact-graph checker rule into the recipe digest.
   if (recipe.materializedRole)
     members.emplace_back("materializedRole", "true");
+  // A tensor-parallel rank owns the same layer interval and node set as its
+  // peer, so without the rank identity both ranks would derive one recipe
+  // digest while holding different shards. The members appear only for TP
+  // roles, keeping every legacy recipe digest byte-identical.
+  if (recipe.tensorParallelDegree != 0) {
+    members.emplace_back("tensorParallelDegree", jsonUint(recipe.tensorParallelDegree));
+    members.emplace_back("tensorParallelRank", jsonUint(recipe.tensorParallelRank));
+  }
   return jsonSortedObject(std::move(members));
 }
 
@@ -761,6 +769,20 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
       return false;
     }
     out.materializedRole = materializedRole->boolean;
+  }
+
+  // Optional TP rank identity: present only for tensor-parallel recipes, so a
+  // legacy payload stays valid and unchanged.
+  if (requireObjectMember(recipeNode, "tensorParallelRank")) {
+    const auto* degree = requireObjectMember(recipeNode, "tensorParallelDegree");
+    const auto* rank = requireObjectMember(recipeNode, "tensorParallelRank");
+    if (degree == nullptr || rank == nullptr ||
+        !unsignedFromJson(*degree, out.tensorParallelDegree) ||
+        !unsignedFromJson(*rank, out.tensorParallelRank) ||
+        out.tensorParallelDegree < 2 || out.tensorParallelRank >= out.tensorParallelDegree) {
+      failure = "certified tensor-parallel rank identity is invalid";
+      return false;
+    }
   }
 
   const char* kDigestKeys[] = {

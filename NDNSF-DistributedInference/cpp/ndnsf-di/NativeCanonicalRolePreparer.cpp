@@ -357,6 +357,14 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
         role.precision = m_profile.precision; role.quantization = m_profile.quantization;
         role.layout = m_profile.layout; role.padding = m_profile.padding;
         role.maxSourceBytes = m_profile.maxSourceBytes; role.maxAssembledBytes = m_profile.maxAssembledBytes; role.maxNodes = m_profile.maxNodes;
+        // Two ranks of one tensor-parallel stage own the same layer interval and
+        // therefore the same node set, so the plain recipe JSON would derive one
+        // digest for both. Bind the rank identity; a pipeline role leaves the
+        // fields at zero and keeps its legacy digest bytes.
+        if (degree > 1) {
+          role.tensorParallelDegree = degree;
+          role.tensorParallelRank = rank;
+        }
         role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
       }
       result.push_back(std::move(role));
