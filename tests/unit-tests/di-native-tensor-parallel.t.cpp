@@ -5538,6 +5538,67 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(EgressSpecCarriesEverythingButTheGenerationContract)
+{
+  // Measured, one requirement at a time, so the remaining gap is named rather than
+  // discovered at run time. The coordinator needs four things from an egress spec; this
+  // case records which are present today and which is not.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  // The feedback edges the planner builds: one per receiving unit.
+  for (const auto& consumer : plan.roles) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {consumer};
+    feedback.keyScope = "token-feedback-" + consumer;
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto spec = roleSpecFor(plan, "S0R0", std::string("/session/tp-egress"),
+                                assignment, "/provider/0");
+
+  // 1. A sealed template, which the coordinator drives epoch by epoch.
+  BOOST_CHECK(spec.steps != nullptr && !spec.steps->empty());
+  // 2. A TOKEN_FEEDBACK output edge, which is how it infers the terminal role. Two,
+  //    because both units receive feedback.
+  std::size_t feedbackOutputs = 0;
+  for (const auto& edge : spec.outputs)
+    if (edge.operationKind == "TOKEN_FEEDBACK") ++feedbackOutputs;
+  BOOST_CHECK_EQUAL(feedbackOutputs, 2U);
+  // 3. A terminal step value the sampler can read.
+  BOOST_CHECK(nativeProviderRoleAnswersRequester(spec));
+  // 4. Decode-state names, which it copies into the coordinator so each epoch commits
+  //    one state successor. These are absent: the TP projection declares no generation
+  //    contract, and the contract is where stateInputNames comes from.
+  BOOST_TEST_MESSAGE("egress spec: steps=" << spec.steps->size()
+                    << " outputs=" << spec.outputs.size()
+                    << " feedbackOutputs=" << feedbackOutputs
+                    << " stateInputs=" << spec.stateInputNames.size()
+                    << " stateOutputs=" << spec.stateOutputNames.size());
+  BOOST_CHECK_EQUAL(spec.stateInputNames.size(), 0U);
+  BOOST_CHECK_EQUAL(spec.stateOutputNames.size(), 0U);
+
+  // The template itself does mark per-layer KV, so the information exists; what is
+  // missing is the generation contract that would carry it to the coordinator. Stated
+  // as the count the fix has to raise above zero.
+  std::size_t stateSteps = 0;
+  for (const auto& step : *spec.steps)
+    if (!step.localStateSlots.empty()) ++stateSteps;
+  BOOST_CHECK(stateSteps > 0);
+}
+
 BOOST_AUTO_TEST_CASE(TensorParallelTemplateDeclaresPerLayerKvState)
 {
   // C6: "unit 的 KV contract 列全所有层的本 rank slices". The template marks each
