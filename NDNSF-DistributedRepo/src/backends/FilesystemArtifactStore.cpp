@@ -714,22 +714,29 @@ FilesystemArtifactPayloadStore::readRangeImpl(const ArtifactReference& artifact,
   artifact.validate();
   validateRange(artifact, range, 0, false, m_maxRangeBytes);
   const auto committed = committedPath(artifact);
-  std::error_code committedError;
-  const auto committedStatus = fs::symlink_status(committed, committedError);
-  if (committedError && committedError != std::errc::no_such_file_or_directory) {
-    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
-                             committedError.message());
-  }
-  if (fs::is_symlink(committedStatus)) {
-    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
-                             committed);
-  }
-  if (committedOnly && !fs::exists(committedStatus))
-    throw std::runtime_error("repo-artifact-committed-payload-unavailable");
-  const auto path = fs::exists(committedStatus) ? committed : stagingPath(artifact, generation);
-  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  // One open decides what the stat pair used to: O_NOFOLLOW rejects a symlink,
+  // ENOENT means the committed payload is absent, and a successful open proves
+  // the descriptor itself is the checked inode. The read path runs once per
+  // original packet, so this removes two metadata syscalls from every packet.
+  std::string path = committed;
+  int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
-    throwSystem("repo-artifact-read-failed", "open", path);
+    const int openError = errno;
+    if (openError == ELOOP) {
+      throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                               committed);
+    }
+    if (committedOnly) {
+      if (openError == ENOENT)
+        throw std::runtime_error("repo-artifact-committed-payload-unavailable");
+      errno = openError;
+      throwSystem("repo-artifact-committed-stat-failed", "open", committed);
+    }
+    path = stagingPath(artifact, generation);
+    fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+      throwSystem("repo-artifact-read-failed", "open", path);
+    }
   }
   std::vector<uint8_t> bytes(static_cast<size_t>(range.lengthBytes));
   try {
