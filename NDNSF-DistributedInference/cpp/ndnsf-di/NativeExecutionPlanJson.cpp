@@ -1905,7 +1905,12 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
               contract.eosTokenIds.begin(), contract.eosTokenIds.end(), value) !=
               contract.eosTokenIds.end();
           }) ||
-        feedbackCount != 1) {
+        // C6 requires one feedback edge per receiving unit, so a sharded plan has one
+        // per role. A pipeline plan keeps the single edge it always had. Any other
+        // count is still refused: two edges for three roles would leave a unit without
+        // its next-epoch input while the others ran.
+        (feedbackCount != 1 &&
+         feedbackCount != projection.plan.roles.size())) {
       throw std::invalid_argument(
         "V3 Selection generation contract is incomplete");
     }
