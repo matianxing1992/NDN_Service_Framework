@@ -21,6 +21,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
@@ -4336,6 +4337,245 @@ BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
   BOOST_CHECK_EQUAL(missing.backend, std::string(""));
 
   std::filesystem::remove_all(directory, cleanupError);
+}
+
+
+namespace {
+
+/** Build a tiny two-layer graph shaped like the export's naming.
+ *
+ * The chain under test is classification, extraction, the entry table, the
+ * factory and a real ORT session. Those need the export's node naming and layer
+ * layout, not its operators, so the graph uses elementwise ops and runs in
+ * milliseconds instead of loading 918 MB of weights per entry.
+ */
+onnx::ModelProto
+makeTinyRankGraph()
+{
+  onnx::ModelProto model;
+  model.set_ir_version(9);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(17);
+  auto* graph = model.mutable_graph();
+  graph->set_name("tiny-rank");
+  const auto addValue = [graph] (const std::string& name) {
+    auto* value = graph->add_value_info();
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(1);
+    tensor->mutable_shape()->add_dim()->set_dim_value(4);
+  };
+  const auto addNode = [graph] (const std::string& name, const std::string& input,
+                                const std::string& output) {
+    auto* node = graph->add_node();
+    node->set_name(name);
+    node->set_op_type("Relu");
+    node->set_domain("");
+    node->add_input(input);
+    node->add_output(output);
+  };
+  graph->add_input()->CopyFrom([&] {
+    auto* value = graph->add_value_info();
+    value->set_name("input_ids");
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(1);
+    tensor->mutable_shape()->add_dim()->set_dim_value(4);
+    return *value;
+  }());
+  // Every intermediate tensor is declared, as the real export does. Without
+  // this an entry boundary would have no type to expose, and extraction would
+  // have to invent one.
+  const auto declare = [graph] (const std::string& name) {
+    auto* value = graph->add_value_info();
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(1);
+    tensor->mutable_shape()->add_dim()->set_dim_value(4);
+  };
+  // INIT: outside every layer and not the head.
+  addNode("/model/embed_tokens/Gather", "input_ids", "x0");
+  declare("x0");
+  // Two transformer layers, each split at the post-attention normalization.
+  for (int layer = 0; layer < 2; ++layer) {
+    const auto prefix = "/model/layers." + std::to_string(layer);
+    addNode(prefix + "/attn/op", layer == 0 ? "x0" : "x" + std::to_string(layer),
+            "attn" + std::to_string(layer));
+    declare("attn" + std::to_string(layer));
+    addNode(prefix + "/post_attention_layernorm/op", "attn" + std::to_string(layer),
+            "x" + std::to_string(layer + 1));
+    declare("x" + std::to_string(layer + 1));
+  }
+  // The final normalization under layers.<N> belongs to HEAD.
+  addNode("/model/layers.2/final_norm_layernorm/op", "x2", "x_final");
+  declare("x_final");
+  addNode("/lm_head/MatMul", "x_final", "logits");
+  addValue("logits");
+  auto* output = graph->add_output();
+  output->set_name("logits");
+  auto* tensor = output->mutable_type()->mutable_tensor_type();
+  tensor->set_elem_type(onnx::TensorProto::FLOAT);
+  tensor->mutable_shape()->add_dim()->set_dim_value(1);
+  tensor->mutable_shape()->add_dim()->set_dim_value(4);
+  return model;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(TinyRankArtifactRunsAStepThroughTheRealFactory)
+{
+  // The whole chain on a real artifact: classify, extract, write, table, spec,
+  // factory dispatch, parent runner, child ORT session. The graph is small and
+  // synthetic, but every component is the production one, so a broken link
+  // between them cannot pass.
+  auto model = makeTinyRankGraph();
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-tiny-rank-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+  const auto modelPath = root / "model.onnx";
+  {
+    std::ofstream out(modelPath, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(out));
+    out.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+  }
+
+  const auto table = qwen::assembleQwenTpEntryTable(root, "S0R0", bytes, 2);
+  // One INIT, two layers of ATTN and MLP, one HEAD.
+  BOOST_REQUIRE_EQUAL(table.size(), 6U);
+  for (const auto& entry : table) {
+    BOOST_CHECK_EQUAL(entry.unitId, std::string("S0R0"));
+    BOOST_CHECK(entry.hasGraphFile());
+  }
+
+  // Build the spec the assembler would produce and create the runner the way a
+  // Provider does: through the registry, not by constructing the class directly.
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = modelPath.string();
+  spec.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson(table);
+  spec.metadata["tensorParallelEntryRoot"] = root.string();
+  spec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+  auto* parent = dynamic_cast<qwen::NativeQwenTensorRunner*>(runner.get());
+  BOOST_REQUIRE_MESSAGE(parent != nullptr,
+    "the TP backend did not produce a parent runner");
+
+  // Execute one real attention step through the parent and its child session.
+  const auto attn = std::find_if(table.begin(), table.end(),
+    [] (const auto& entry) { return entry.kind == "ATTN" && entry.layer == 0; });
+  BOOST_REQUIRE(attn != table.end());
+  const auto init = std::find_if(table.begin(), table.end(),
+    [] (const auto& entry) { return entry.kind == "INIT"; });
+  BOOST_REQUIRE(init != table.end());
+  // Feed the INIT entry first, since the attention entry consumes its output.
+  NativeExecutionStepSpec initStep;
+  initStep.stepId = "S0R0/INIT";
+  initStep.unitId = "S0R0";
+  initStep.operation = "CALL_SUBGRAPH";
+  initStep.artifactEntry = init->entryId;
+  NativeStepSlotSpec initInput;
+  initInput.slotId = "input_ids";
+  initInput.source = "EPOCH_INPUT";
+  initStep.inputSlots.push_back(initInput);
+
+  RoleExecutionContext initContext;
+  initContext.role = "S0R0";
+  initContext.activeStep = std::make_shared<const NativeExecutionStepSpec>(initStep);
+  initContext.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{initStep});
+  NamedTensor ids;
+  ids.name = "input_ids";
+  ids.elementType = TensorElementType::Float32;
+  ids.shape = {1, 4};
+  const std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f};
+  ids.payload.resize(values.size() * sizeof(float));
+  std::memcpy(ids.payload.data(), values.data(), ids.payload.size());
+  TensorBundle idsBundle;
+  idsBundle.name = "input_ids";
+  idsBundle.payload = encodeTensorBundle({ids});
+  idsBundle.expectedBytes = idsBundle.payload.size();
+  initContext.stepInputsBySlot.emplace("input_ids", std::move(idsBundle));
+
+  const auto initOutputs = parent->run(initContext);
+  BOOST_CHECK(!initOutputs.empty());
+
+  // Now the attention step, fed from the INIT output, which proves the two
+  // entries really are separate sessions with a real boundary between them.
+  NativeExecutionStepSpec attnStep;
+  attnStep.stepId = "S0R0/ATTN/0";
+  attnStep.unitId = "S0R0";
+  attnStep.operation = "CALL_SUBGRAPH";
+  attnStep.artifactEntry = attn->entryId;
+  NativeStepSlotSpec attnInput;
+  attnInput.slotId = attn->inputNames.front();
+  attnInput.source = "LOCAL_STEP";
+  attnStep.inputSlots.push_back(attnInput);
+
+  RoleExecutionContext attnContext;
+  attnContext.role = "S0R0";
+  attnContext.activeStep = std::make_shared<const NativeExecutionStepSpec>(attnStep);
+  attnContext.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{attnStep});
+  // Reuse the INIT output as the attention input; its name is the boundary the
+  // extraction computed, which is exactly what has to line up.
+  const auto& boundary = initOutputs.begin()->second;
+  attnContext.stepInputsBySlot.emplace(attn->inputNames.front(), boundary);
+  const auto attnOutputs = parent->run(attnContext);
+  BOOST_CHECK(!attnOutputs.empty());
+
+  // A step whose entry this runner does not hold is refused, so the dispatch is
+  // not silently falling back to something else. The assertion names the specific
+  // refusal: accepting any invalid_argument would also pass if the failure came
+  // from a later, unrelated check, which is exactly what a guard must not do.
+  NativeExecutionStepSpec stranger = attnStep;
+  stranger.artifactEntry = "S0R0/ATTN/999";
+  RoleExecutionContext strangerContext = attnContext;
+  strangerContext.activeStep = std::make_shared<const NativeExecutionStepSpec>(stranger);
+  try {
+    (void)parent->run(strangerContext);
+    BOOST_FAIL("a step naming an unheld entry was executed");
+  }
+  catch (const std::invalid_argument& error) {
+    BOOST_CHECK_MESSAGE(
+      std::string(error.what()).find("does not hold") != std::string::npos,
+      "the refusal came from a later check instead of the entry lookup: " +
+      std::string(error.what()));
+  }
+
+  // A RUNNER step is refused too: reductions belong to the worker, and a runner
+  // that reduced locally would be the second scheduler C4 forbids.
+  NativeExecutionStepSpec sumStep = attnStep;
+  sumStep.operation = "SUM";
+  sumStep.artifactEntry.clear();
+  RoleExecutionContext sumContext = attnContext;
+  sumContext.activeStep = std::make_shared<const NativeExecutionStepSpec>(sumStep);
+  try {
+    (void)parent->run(sumContext);
+    BOOST_FAIL("a SUM step was executed by the runner");
+  }
+  catch (const std::invalid_argument& error) {
+    BOOST_CHECK_MESSAGE(
+      std::string(error.what()).find("does not execute SUM") != std::string::npos,
+      "unexpected SUM refusal: " + std::string(error.what()));
+  }
+
+  std::filesystem::remove_all(root, cleanupError);
 }
 
 
