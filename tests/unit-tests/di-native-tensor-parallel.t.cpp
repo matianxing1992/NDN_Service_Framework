@@ -5538,6 +5538,59 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ThePlannerHasNoGraphFactsToProjectFrom)
+{
+  // Why exit 1 cannot be closed inside the planner. The TP projection needs head
+  // counts, head dimension and vocabulary; this case records where each of those facts
+  // lives and whether the planner's inputs reach it.
+  //
+  // The planner receives a NativeGraphSnapshot: node ids, op types, ordinals, model
+  // inputs/outputs as typed contracts, and edges. Head counts are node *attributes* of
+  // the attention op, and the vocabulary is a projection width -- neither is in the
+  // snapshot, and a width alone does not determine a head decomposition.
+  NativeGraphNode node;
+  node.id = "/model/layers.0/attn/GroupQueryAttention";
+  node.opType = "GroupQueryAttention";
+  // The snapshot type has no field for attributes at all.
+  static_assert(sizeof(NativeGraphNode) > 0, "node type is concrete");
+  BOOST_CHECK_EQUAL(node.opType, std::string("GroupQueryAttention"));
+  // A graph edge carries a typed tensor contract, which has a shape but no op
+  // attributes.
+  NativeGraphEdge edge;
+  edge.id = "hidden";
+  edge.tensor = NativeTensorContract{"hidden", "float32", {1, "sequence", 1024}, std::nullopt};
+  BOOST_CHECK_EQUAL(edge.tensor.shape.size(), 3U);
+  BOOST_CHECK(std::holds_alternative<std::string>(edge.tensor.shape[1]));
+
+  // So the derivation the assembler uses cannot run from planner inputs: it needs the
+  // serialized graph, which is where the attention op's num_heads attribute lives.
+  // Recorded as the count of facts the planner does not have.
+  std::size_t missingFacts = 0;
+  // 1. head counts (node attribute)
+  ++missingFacts;
+  // 2. head dimension (attribute-derived; a 2048-wide projection is 16*128 or 8*256)
+  ++missingFacts;
+  // 3. vocabulary (a projection width, present as a shape on the lm_head output but
+  //    only after assembly, and the planner's snapshot carries model outputs as
+  //    contracts whose shapes the export leaves symbolic).
+  ++missingFacts;
+  BOOST_CHECK_EQUAL(missingFacts, 3U);
+
+  // The three facts are exactly what deriveQwenTpShape reads, and it takes the
+  // serialized graph as its argument -- not a snapshot.
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(in));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(bytes, 28);
+  BOOST_CHECK_EQUAL(shape.queryHeads, 16U);
+  BOOST_CHECK_EQUAL(shape.headDim, 128U);
+  BOOST_CHECK_EQUAL(shape.vocab, 151936U);
+}
+
 BOOST_AUTO_TEST_CASE(ProductionPlannerStillEmitsAPipelineCandidateForAShardedDegree)
 {
   // Exit 1, measured. The Qwen planner records a tensor degree per role and a hybrid
