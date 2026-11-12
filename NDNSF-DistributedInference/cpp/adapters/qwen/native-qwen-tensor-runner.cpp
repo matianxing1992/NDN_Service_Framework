@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
@@ -106,6 +107,99 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
     outputs.emplace(graphOutput, found->second);
   }
   return outputs;
+}
+
+namespace {
+
+/** Read one entry contract out of the spec metadata.
+ *
+ * The spec is a flat string map, so the entry table travels as one JSON value
+ * under a fixed key. A role dispatched to this backend without a table is a
+ * configuration error, not an empty unit.
+ */
+std::vector<QwenTpEntryContract>
+entriesFromSpec(const NativeModelRunnerSpec& spec)
+{
+  const auto found = spec.metadata.find("tensorParallelEntries");
+  if (found == spec.metadata.end() || found->second.empty()) {
+    throw std::invalid_argument(
+      "native-qwen-tensor spec carries no entry table");
+  }
+  const auto parsed = nativeParseJson(found->second);
+  if (!parsed.is_array() || parsed.empty()) {
+    throw std::invalid_argument(
+      "native-qwen-tensor entry table is empty or not an array");
+  }
+  std::vector<QwenTpEntryContract> entries;
+  entries.reserve(parsed.size());
+  for (const auto& item : parsed) {
+    QwenTpEntryContract entry;
+    entry.entryId = item.at("entryId").get<std::string>();
+    entry.unitId = item.at("unitId").get<std::string>();
+    entry.kind = item.at("kind").get<std::string>();
+    entry.layer = item.at("layer").get<std::uint64_t>();
+    for (const auto& name : item.at("inputNames"))
+      entry.inputNames.push_back(name.get<std::string>());
+    for (const auto& name : item.at("outputNames"))
+      entry.outputNames.push_back(name.get<std::string>());
+    entries.push_back(std::move(entry));
+  }
+  return entries;
+}
+
+/** Child specs inherit the parent's backend-neutral identity and point at one
+ * entry's model file. The session cache is deliberately absent: C4 keeps a whole
+ * prepared group in the parent and does not raise the default cache capacity.
+ */
+NativeModelRunnerSpec
+childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
+{
+  NativeModelRunnerSpec child;
+  child.role = entry.entryId;
+  child.kind = parent.kind;
+  // Children run through the ordinary ONNX creator, not this backend.
+  child.backend = "onnxruntime";
+  // Each entry is one assembled subgraph file. The parent records the directory
+  // it was handed, and the entry id names the file inside it.
+  const auto root = parent.metadata.find("tensorParallelEntryRoot");
+  if (root == parent.metadata.end() || root->second.empty()) {
+    throw std::invalid_argument(
+      "native-qwen-tensor spec carries no entry root");
+  }
+  child.path = root->second + "/" + entry.entryId + ".onnx";
+  child.metadata = parent.metadata;
+  // The entry's own graph names are the IO contract; the runner maps scopes.
+  for (std::size_t index = 0; index < entry.inputNames.size(); ++index)
+    child.metadata["inputScope." + std::to_string(index)] = entry.inputNames[index];
+  for (std::size_t index = 0; index < entry.outputNames.size(); ++index)
+    child.metadata["outputScope." + std::to_string(index)] = entry.outputNames[index];
+  return child;
+}
+
+} // namespace
+
+void
+registerQwenTensorBackend(RegistryNativeModelRunnerFactory& factory)
+{
+  // The children are created through this same registry, so the ONNX backend
+  // must already be present. Registering this one first would make every child
+  // construction fail at run time instead of at startup.
+  if (!factory.hasBackend("onnxruntime")) {
+    throw std::invalid_argument(
+      "native-qwen-tensor requires the onnxruntime backend to be registered first");
+  }
+  factory.registerBackend(QWEN_TENSOR_RUNNER_BACKEND,
+    [&factory] (const NativeModelRunnerSpec& spec) {
+      auto entries = entriesFromSpec(spec);
+      return std::make_shared<NativeQwenTensorRunner>(
+        std::move(entries),
+        [&factory] (const NativeModelRunnerSpec& child) {
+          return factory.create(child);
+        },
+        [&spec] (const QwenTpEntryContract& entry) {
+          return childSpec(spec, entry);
+        });
+    });
 }
 
 } // namespace ndnsf::di::qwen

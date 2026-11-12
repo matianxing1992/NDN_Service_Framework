@@ -60,6 +60,30 @@ private:
   std::map<std::string, std::shared_ptr<NativeModelRunner>> m_children;
 };
 
+/** Backend name this parent runner registers under.
+ *
+ * A distinct backend keeps the ordinary ONNX creators untouched: a role whose
+ * spec says "native-qwen-tensor" is dispatched here, and every other role keeps
+ * its existing one-session runner.
+ */
+inline constexpr const char* QWEN_TENSOR_RUNNER_BACKEND = "native-qwen-tensor";
+
+/** Register the parent runner on an existing registry.
+ *
+ * Reuses the registry rather than introducing a second factory: the spec picks
+ * this backend, and the creator below builds the children through the same
+ * registry's ordinary ONNX creator with an empty session cache, exactly as C4
+ * describes. That keeps one dispatch path and one place where backends are
+ * registered.
+ *
+ * @param factory Registry that must already hold the ONNX backend, because the
+ *                children are created through it. Freezing happens in the
+ *                caller's existing startup sequence, not here.
+ * @throws std::invalid_argument when the ONNX backend is not yet registered.
+ */
+void
+registerQwenTensorBackend(RegistryNativeModelRunnerFactory& factory);
+
 } // namespace ndnsf::di::qwen
 
 #endif // NDNSF_DI_QWEN_NATIVE_TENSOR_RUNNER_HPP

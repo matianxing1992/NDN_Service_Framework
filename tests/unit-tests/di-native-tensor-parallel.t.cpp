@@ -21,6 +21,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <onnx/onnx_pb.h>
@@ -2912,6 +2913,15 @@ BOOST_AUTO_TEST_CASE(SumDecodesBundlesInsteadOfAddingFramingBytes)
   BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f}));
 }
 
+BOOST_AUTO_TEST_CASE(TensorRunnerRegistrationRequiresTheOnnxBackend)
+{
+  // The parent runner builds its children through the same registry, so
+  // registering it before the ONNX backend would only fail later, at run time.
+  // Requiring the ordering here turns that into a startup error.
+  RegistryNativeModelRunnerFactory empty;
+  BOOST_CHECK_THROW(qwen::registerQwenTensorBackend(empty), std::invalid_argument);
+  BOOST_CHECK(!empty.hasBackend(qwen::QWEN_TENSOR_RUNNER_BACKEND));
+}
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
