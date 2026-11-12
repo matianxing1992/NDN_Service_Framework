@@ -1185,8 +1185,30 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
   return table;
 }
 
+std::string
+qwenTpStepDeclarationJson(const std::vector<NativeExecutionStepSpec>& steps)
+{
+  if (steps.empty()) {
+    throw std::invalid_argument("tensor-parallel step declaration must not be empty");
+  }
+  NativeJson array = NativeJson::array();
+  for (const auto& step : steps) {
+    if (step.stepId.empty() || step.unitId.empty() || step.operation.empty()) {
+      throw std::invalid_argument("tensor-parallel step declaration is incomplete");
+    }
+    NativeJson item = NativeJson::object();
+    item["stepId"] = step.stepId;
+    item["unitId"] = step.unitId;
+    item["operation"] = step.operation;
+    item["artifactEntry"] = step.artifactEntry;
+    array.push_back(std::move(item));
+  }
+  return array.dump();
+}
+
 void
-configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers)
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps)
 {
   if (spec.path.empty() || layers == 0 || spec.role.empty()) {
     throw std::invalid_argument(
@@ -1204,6 +1226,10 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers)
   // The parent locates its children relative to this directory.
   spec.metadata["tensorParallelEntryRoot"] = modelPath.parent_path().string();
   spec.metadata["tensorParallelEntryCount"] = std::to_string(table.size());
+  // Also declare the step descriptors the table must satisfy, so runner
+  // construction can reject a mismatched pair instead of discovering it after a
+  // partial has already been published.
+  spec.metadata["tensorParallelSteps"] = qwenTpStepDeclarationJson(steps);
   // The parent runner is selected by backend name, and the single-file rank model
   // is no longer what executes.
   spec.backend = "native-qwen-tensor";

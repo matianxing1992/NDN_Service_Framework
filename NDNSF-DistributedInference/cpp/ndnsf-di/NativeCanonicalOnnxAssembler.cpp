@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
@@ -3704,6 +3705,38 @@ prepareNativeCanonicalOnnxRole(
     }
     bindNativeRunnerOutputScopes(projection, spec);
     bindNativeRunnerUnrankedInputs(projection, spec);
+    // A rank that must execute a sealed step template gets its per-entry table
+    // here, after the rank file is final and before the spec leaves the
+    // assembler. Doing it earlier would split a file that is still being
+    // finalized; doing it later would hand the Provider a whole-role spec that
+    // runs the complete rank graph once per step.
+    if (!projection.plan.steps.empty()) {
+      const auto rankRole = projection.assemblyContract().selectedRole;
+      // The unit's layer range is authoritative for how many layers the rank
+      // graph carries: a sharded unit covers every layer, so the taxonomy must
+      // match that range rather than be inferred from step ids.
+      // The assembly contract's role range is authoritative for how many layers
+      // the rank graph carries: a sharded unit covers every layer, so the entry
+      // taxonomy must match that range rather than be inferred from step ids.
+      const auto& contract = projection.assemblyContract();
+      const std::uint64_t layers = contract.layerEnd > contract.layerBegin
+        ? contract.layerEnd : 0;
+      if (layers == 0) {
+        throw std::runtime_error(
+          "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_LAYERS_UNKNOWN: the role does not "
+          "declare a layer range, so the entry taxonomy cannot be built");
+      }
+      std::vector<NativeExecutionStepSpec> ownedSteps;
+      for (const auto& step : projection.plan.steps)
+        if (step.unitId == rankRole) ownedSteps.push_back(step);
+      if (ownedSteps.empty()) {
+        throw std::runtime_error(
+          "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_NO_STEPS: the role has no steps to bind");
+      }
+      qwen::configureQwenTpRankSpec(spec, layers, ownedSteps);
+      logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
+                              static_cast<std::uint64_t>(layers), "entries");
+    }
     requireActiveAssembly(options, projection.deadlineMs);
     logAssemblyProgressLine(projection, "RUNNER_SPEC_READY", 1.0, 0, "runner");
     if (!protectedRole) std::filesystem::remove_all(rootPath);

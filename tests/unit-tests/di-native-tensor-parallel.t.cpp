@@ -4275,7 +4275,19 @@ BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
   spec.kind = "onnx";
   spec.backend = "onnxruntime";
   spec.path = rankModel.string();
-  qwen::configureQwenTpRankSpec(spec, 28);
+  // The spec travels with the step descriptors it must satisfy, so runner
+  // construction can reject a mismatched pair.
+  NativeExecutionPlan plan;
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 28; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  std::vector<NativeExecutionStepSpec> ownedSteps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0") ownedSteps.push_back(step);
+  BOOST_REQUIRE(!ownedSteps.empty());
+  qwen::configureQwenTpRankSpec(spec, 28, ownedSteps);
 
   // The spec now selects the parent runner and carries a verified table.
   BOOST_CHECK_EQUAL(spec.backend, std::string("native-qwen-tensor"));
@@ -4319,7 +4331,8 @@ BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
   NativeModelRunnerSpec missing;
   missing.role = "S0R0";
   missing.path = (directory / "absent.onnx").string();
-  BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(missing, 28), std::runtime_error);
+  BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(missing, 28, ownedSteps),
+                    std::runtime_error);
   BOOST_CHECK_EQUAL(missing.backend, std::string(""));
 
   std::filesystem::remove_all(directory, cleanupError);

@@ -378,7 +378,16 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
  * @throws std::runtime_error when the rank artifact cannot be read or split.
  */
 void
-configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers);
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps);
+
+/** Serialize the step descriptors a spec carries for consistency checking.
+ *
+ * Only identity fields travel: the worker still owns the authoritative template,
+ * and duplicating slot detail here would create a second source of truth.
+ */
+std::string
+qwenTpStepDeclarationJson(const std::vector<NativeExecutionStepSpec>& steps);
 
 /** Serialize a verified entry table for the runner spec.
  *

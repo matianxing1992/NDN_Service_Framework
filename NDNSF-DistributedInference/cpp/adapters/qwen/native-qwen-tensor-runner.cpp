@@ -149,6 +149,32 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
 
 namespace {
 
+/** Parse the minimal step descriptors a spec may carry for validation.
+ *
+ * Only the fields the consistency check needs are read. The worker still owns the
+ * authoritative template from the sealed plan; this copy exists so construction
+ * can reject an obviously mismatched table.
+ */
+std::vector<NativeExecutionStepSpec>
+parseDeclaredSteps(const std::string& json)
+{
+  const auto parsed = nativeParseJson(json);
+  if (!parsed.is_array()) {
+    throw std::invalid_argument("native-qwen-tensor step declaration is not an array");
+  }
+  std::vector<NativeExecutionStepSpec> steps;
+  steps.reserve(parsed.size());
+  for (const auto& item : parsed) {
+    NativeExecutionStepSpec step;
+    step.stepId = item.at("stepId").get<std::string>();
+    step.unitId = item.at("unitId").get<std::string>();
+    step.operation = item.at("operation").get<std::string>();
+    step.artifactEntry = item.value("artifactEntry", std::string{});
+    steps.push_back(std::move(step));
+  }
+  return steps;
+}
+
 /** Read one entry contract out of the spec metadata.
  *
  * The spec is a flat string map, so the entry table travels as one JSON value
@@ -219,7 +245,7 @@ registerQwenTensorBackend(RegistryNativeModelRunnerFactory& factory)
   factory.registerBackend(QWEN_TENSOR_RUNNER_BACKEND,
     [&factory] (const NativeModelRunnerSpec& spec) {
       auto entries = entriesFromSpec(spec);
-      return std::make_shared<NativeQwenTensorRunner>(
+      auto runner = std::make_shared<NativeQwenTensorRunner>(
         std::move(entries),
         [&factory] (const NativeModelRunnerSpec& child) {
           return factory.create(child);
@@ -227,6 +253,21 @@ registerQwenTensorBackend(RegistryNativeModelRunnerFactory& factory)
         [&spec] (const QwenTpEntryContract& entry) {
           return childSpec(spec, entry);
         });
+      // The runner is the only place that holds both the table and, later, the
+      // template the worker will drive. Validate the pair the caller declared, so
+      // a mismatch surfaces at construction rather than after partials are
+      // published. A spec without a declared template skips the check: the
+      // worker supplies the template at admission.
+      const auto declared = spec.metadata.find("tensorParallelSteps");
+      if (declared != spec.metadata.end() && !declared->second.empty()) {
+        const auto steps = parseDeclaredSteps(declared->second);
+        const auto problem = runner->checkTemplate(steps, spec.role);
+        if (!problem.empty()) {
+          throw std::invalid_argument(
+            "native-qwen-tensor entry table does not match its template: " + problem);
+        }
+      }
+      return runner;
     });
 }
 
