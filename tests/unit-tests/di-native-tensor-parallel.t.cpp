@@ -533,6 +533,115 @@ BOOST_AUTO_TEST_CASE(StepBoundDependencyIsNotJudgedAsASourceCut)
   BOOST_CHECK_NO_THROW(tensorParallel.validate(graph));
 }
 
+BOOST_AUTO_TEST_CASE(FixedAssignmentCarriesSealedStepsAndTheirDependencies)
+{
+  // A fixed assignment is what a Provider caches and reloads. If it drops the
+  // step template, the Providers receives the dependency edges without the step
+  // DAG those edges bind to, so the cached contract must round-trip them.
+  NativeSelectionProjectionV3 first;
+  first.provider = "/provider/0";
+  first.requestId = "/request/1";
+  first.attempt = 1;
+  first.planCoreDigest = nativePlanningDigest("core");
+  first.planDigest = nativePlanningDigest("plan");
+  first.ackClosedDigest = nativePlanningDigest("ack");
+  first.offerDigest = nativePlanningDigest("offer");
+  first.securityPolicySnapshotDigest = nativePlanningDigest("security");
+  first.requestContractDigest = nativePlanningDigest("contract");
+  first.deadlineMs = 120000;
+
+  first.executionRole.roleId = "S0R0";
+  first.executionRole.stageId = "S0R0";
+  first.executionRole.rank = 0;
+  first.executionRole.layerBegin = 0;
+  first.executionRole.layerEnd = 1;
+  first.executionRole.backend = "onnxruntime-cpu";
+  first.executionRole.adapterId = "qwen";
+  first.executionRole.adapterVersion = "1";
+
+  NativeSelectionRoleV3 assembly;
+  assembly.role = "S0R0";
+  assembly.selectedRole = "S0R0";
+  assembly.rank = 0;
+  assembly.layerBegin = 0;
+  assembly.layerEnd = 1;
+  assembly.backend = "onnxruntime-cpu";
+  assembly.roleKind = "PIPELINE_RANGE";
+  assembly.artifactDigest = nativePlanningDigest("artifact");
+  assembly.recipeDigest = nativePlanningDigest("recipe");
+  assembly.adapterId = "qwen";
+  assembly.adapterVersion = "1";
+  assembly.modelManifestDigest = nativePlanningDigest("manifest");
+  assembly.artifactProfileDigest = nativePlanningDigest("profile");
+  assembly.graphDigest = nativePlanningDigest("graph");
+  assembly.canonicalInitializerDigest = nativePlanningDigest("initializer");
+  assembly.adapterDescriptorDigest = nativePlanningDigest("adapter");
+  assembly.assemblerDescriptorDigest = nativePlanningDigest("assembler");
+  assembly.backendAbi = "onnxruntime-1-cpu";
+  assembly.nodeIndices = {0, 1, 2, 3};
+  assembly.expectedInputs = {{"x", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  assembly.expectedOutputs = {{"y", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  assembly.precision = "fp32";
+  assembly.quantization = "int4";
+  assembly.layout = "native";
+  assembly.padding = "none";
+  assembly.protectionEpoch = "plaintext-v1";
+  assembly.maxSourceBytes = 4096;
+  assembly.maxAssembledBytes = 2048;
+  assembly.maxNodes = 4;
+  first.selectedRole = assembly;
+  first.assembly = assembly;
+
+  // Every role the template names must have a Provider owner, otherwise the
+  // cached contract cannot say where a remote contribution comes from.
+  first.fixedProviderByRole = {{"S0R0", first.provider}, {"S0R1", "/provider/1"}};
+
+  first.dataflow.role = "S0R0";
+  first.dataflow.requestId = first.requestId;
+  first.dataflow.attempt = 1;
+  first.dataflow.planDigest = first.planDigest;
+  first.dataflow.dataflowDigest = nativePlanningDigest("dataflow");
+  first.dataflow.terminalResponseOwner = true;
+
+  first.deviceBinding.mode = "CPU";
+  first.deviceBinding.provider = first.provider;
+  first.deviceBinding.role = "S0R0";
+  first.deviceBinding.offerDigest = first.offerDigest;
+  first.deviceBinding.topologyProfileDigest = nativePlanningDigest("topology");
+  first.deviceBinding.resourceSnapshotDigest = nativePlanningDigest("resources");
+  first.deviceBinding.resourceSequence = 1;
+  first.deviceBinding.sharingPolicy = "EXCLUSIVE_ROLE";
+
+  NativeExecutionPlan plan = twoRankPlan();
+  // Keep only this role's contribution: one remote input plus its dependency.
+  plan.roles = {"S0R0", "S0R1"};
+  first.plan = plan;
+
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(first);
+  BOOST_REQUIRE(fixed != nullptr);
+  BOOST_CHECK_EQUAL(fixed->executionTemplate()->steps.size(), plan.steps.size());
+  BOOST_CHECK_EQUAL(fixed->executionTemplate()->stepPlanVersion,
+                    std::string(NATIVE_STEP_PLAN_VERSION_V1));
+  BOOST_CHECK_EQUAL(fixed->executionTemplate()->tensorDegree, 2U);
+
+  // The cached wire must reproduce the same template and the same digest.
+  std::istringstream source(nativeFixedRoleAssignmentV1ToJson(*fixed));
+  const auto restored = nativeFixedRoleAssignmentV1FromJson(source);
+  BOOST_CHECK_EQUAL(restored->digest(), fixed->digest());
+  const auto& templateAfter = restored->executionTemplate();
+  BOOST_REQUIRE_EQUAL(templateAfter->steps.size(), plan.steps.size());
+  for (std::size_t i = 0; i < plan.steps.size(); ++i) {
+    BOOST_CHECK_EQUAL(templateAfter->steps[i].stepId, plan.steps[i].stepId);
+    BOOST_CHECK_EQUAL(templateAfter->steps[i].unitId, plan.steps[i].unitId);
+    BOOST_CHECK_EQUAL(templateAfter->steps[i].operation, plan.steps[i].operation);
+    BOOST_CHECK_EQUAL(templateAfter->steps[i].inputSlots.size(),
+                      plan.steps[i].inputSlots.size());
+  }
+  BOOST_REQUIRE_EQUAL(templateAfter->dependencies.size(), plan.dependencies.size());
+  BOOST_CHECK_EQUAL(templateAfter->dependencies[0].consumerSlotId,
+                    plan.dependencies[0].consumerSlotId);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

@@ -39,6 +39,9 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
 std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
   const NativeJson& bindings, const NativeFixedExecutionTemplateV1& fixed);
 void requireOnlyBindingKeys(const NativeJson& value, std::initializer_list<const char*> keys);
+void bindFixedTemplateSteps(NativeExecutionPlan& plan, const NativeFixedExecutionTemplateV1& fixed);
+std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_tree::ptree& root);
+NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps);
 
 NativeJson jsonValue(const NativeAssemblyTensorContractV3& value);
 NativeJson jsonValue(const NativeSelectionRoleV3& value);
@@ -1248,6 +1251,13 @@ dependencyFromV3Json(const boost::property_tree::ptree& dep)
     dep.get<std::string>("collectiveTargetLayoutDigest", "");
   spec.collectiveTensorDigest =
     dep.get<std::string>("collectiveTensorDigest", "");
+  // The same encoder emits these for a step-bound dependency, so the decoder
+  // must read them back or a fixed template silently loses its step binding.
+  spec.dependencyId = dep.get<std::string>("dependency_id", "");
+  spec.producerStepId = dep.get<std::string>("producer_step_id", "");
+  spec.producerSlotId = dep.get<std::string>("producer_slot_id", "");
+  spec.consumerStepId = dep.get<std::string>("consumer_step_id", "");
+  spec.consumerSlotId = dep.get<std::string>("consumer_slot_id", "");
   if (const auto redistributions = dep.get_child_optional("redistributions")) {
     std::set<std::string> redistributionIdentities;
     for (const auto& item : *redistributions) {
@@ -1379,60 +1389,8 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
       service.get<std::string>("step_plan_version", ""));
     plan.tensorDegree = service.get<std::uint64_t>("tensorDegree",
       service.get<std::uint64_t>("tensor_degree", 1));
-    if (const auto steps = service.get_child_optional("steps")) {
-      for (const auto& stepNode : steps.get()) {
-        const auto& step = stepNode.second;
-        NativeExecutionStepSpec spec;
-        spec.stepId = step.get<std::string>("step_id", "");
-        spec.unitId = step.get<std::string>("unit_id", "");
-        spec.operation = step.get<std::string>("operation", "");
-        spec.artifactEntry = step.get<std::string>("artifact_entry", "");
-        const auto slotsOf = [] (const boost::property_tree::ptree& value,
-                                 const char* key) {
-          std::vector<NativeStepSlotSpec> slots;
-          const auto children = value.get_child_optional(key);
-          if (!children) return slots;
-          for (const auto& child : *children) {
-            const auto& slot = child.second;
-            NativeStepSlotSpec parsed;
-            parsed.slotId = slot.get<std::string>("slot_id", "");
-            parsed.dtype = slot.get<std::string>("dtype", "");
-            parsed.layoutDigest = slot.get<std::string>("layout_digest", "");
-            parsed.source = slot.get<std::string>("source", "");
-            parsed.producerStepId = slot.get<std::string>("producer_step_id", "");
-            const auto shape = slot.get_child_optional("shape");
-            if (shape) {
-              for (const auto& dim : *shape) {
-                const auto text = dim.second.get_value<std::string>();
-                if (text.empty()) continue;
-                // Numeric dimensions are validated as positive integers; any
-                // other spelling stays a symbolic dimension.
-                std::size_t consumed = 0;
-                long long number = 0;
-                try {
-                  number = std::stoll(text, &consumed);
-                }
-                catch (const std::exception&) {
-                  consumed = 0;
-                }
-                if (consumed == text.size() && !text.empty()) {
-                  parsed.shape.push_back(static_cast<std::int64_t>(number));
-                }
-                else {
-                  parsed.shape.push_back(text);
-                }
-              }
-            }
-            slots.push_back(std::move(parsed));
-          }
-          return slots;
-        };
-        spec.inputSlots = slotsOf(step, "input_slots");
-        spec.outputSlots = slotsOf(step, "output_slots");
-        spec.localStateSlots = stringArrayFromJson(step, "local_state_slots");
-        plan.steps.push_back(std::move(spec));
-      }
-    }
+    if (const auto steps = service.get_child_optional("steps"))
+      plan.steps = nativeStepsFromJson(*steps);
     const auto dependencies = service.get_child_optional("dependencies");
     if (dependencies) {
       for (const auto& depNode : dependencies.get()) {
@@ -1535,6 +1493,93 @@ boost::property_tree::ptree legacyTreeFromValue(const NativeJson& value)
   boost::property_tree::ptree root;
   fillLegacyTreeFromValue(value, root);
   return root;
+}
+
+NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps)
+{
+  auto slots = [] (const std::vector<NativeStepSlotSpec>& values) {
+    auto result = NativeJson::array();
+    for (const auto& value : values) {
+      auto shape = NativeJson::array();
+      for (const auto& dim : value.shape) {
+        std::visit([&shape] (const auto& item) { shape.push_back(item); }, dim);
+      }
+      auto entry = NativeJson{{"slot_id", value.slotId}, {"dtype", value.dtype},
+                              {"shape", std::move(shape)},
+                              {"layout_digest", value.layoutDigest},
+                              {"source", value.source}};
+      if (!value.producerStepId.empty()) entry["producer_step_id"] = value.producerStepId;
+      result.push_back(std::move(entry));
+    }
+    return result;
+  };
+  auto result = NativeJson::array();
+  for (const auto& step : steps) {
+    auto entry = NativeJson{{"step_id", step.stepId}, {"unit_id", step.unitId},
+                            {"operation", step.operation},
+                            {"input_slots", slots(step.inputSlots)},
+                            {"output_slots", slots(step.outputSlots)},
+                            {"local_state_slots", step.localStateSlots}};
+    if (!step.artifactEntry.empty()) entry["artifact_entry"] = step.artifactEntry;
+    result.push_back(std::move(entry));
+  }
+  return result;
+}
+
+std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_tree::ptree& root)
+{
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& stepNode : root) {
+    const auto& step = stepNode.second;
+    NativeExecutionStepSpec spec;
+    spec.stepId = step.get<std::string>("step_id", "");
+    spec.unitId = step.get<std::string>("unit_id", "");
+    spec.operation = step.get<std::string>("operation", "");
+    spec.artifactEntry = step.get<std::string>("artifact_entry", "");
+    const auto slotsOf = [] (const boost::property_tree::ptree& value, const char* key) {
+      std::vector<NativeStepSlotSpec> slots;
+      const auto children = value.get_child_optional(key);
+      if (!children) return slots;
+      for (const auto& child : *children) {
+        const auto& slot = child.second;
+        NativeStepSlotSpec parsed;
+        parsed.slotId = slot.get<std::string>("slot_id", "");
+        parsed.dtype = slot.get<std::string>("dtype", "");
+        parsed.layoutDigest = slot.get<std::string>("layout_digest", "");
+        parsed.source = slot.get<std::string>("source", "");
+        parsed.producerStepId = slot.get<std::string>("producer_step_id", "");
+        if (const auto shape = slot.get_child_optional("shape")) {
+          for (const auto& dim : *shape) {
+            const auto text = dim.second.get_value<std::string>();
+            if (text.empty()) continue;
+            // Numeric dimensions parse as positive integers; any other
+            // spelling stays a symbolic dimension.
+            std::size_t consumed = 0;
+            long long number = 0;
+            try {
+              number = std::stoll(text, &consumed);
+            }
+            catch (const std::exception&) {
+              consumed = 0;
+            }
+            if (consumed == text.size() && !text.empty()) {
+              parsed.shape.push_back(static_cast<std::int64_t>(number));
+            }
+            else {
+              parsed.shape.push_back(text);
+            }
+          }
+        }
+        slots.push_back(std::move(parsed));
+      }
+      return slots;
+    };
+    spec.inputSlots = slotsOf(step, "input_slots");
+    spec.outputSlots = slotsOf(step, "output_slots");
+    spec.localStateSlots = stringArrayFromJson(step, "local_state_slots");
+    steps.push_back(std::move(spec));
+  }
+  return steps;
 }
 
 bool sameGeneratedJson(const NativeJson& left, const NativeJson& right)
@@ -1707,6 +1752,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   if (fixedAssignment) {
     projection.plan.dependencies = bindFixedTemplateDependencies(
       typedRoot.at("dependencies"), *fixedAssignment->executionTemplate());
+    bindFixedTemplateSteps(projection.plan, *fixedAssignment->executionTemplate());
     for (const auto& dependency : projection.plan.dependencies) {
       for (const auto& role : dependency.producers) appendRole(role);
       for (const auto& role : dependency.consumers) appendRole(role);
@@ -2287,9 +2333,18 @@ NativeJson fixedDependenciesJson(const std::vector<NativeDependencySpec>& depend
 
 NativeJson fixedTemplateJson(const NativeFixedExecutionTemplateV1& value)
 {
-  return NativeJson{{"provider_by_role", value.providerByRole}, {"dependencies", fixedDependenciesJson(value.dependencies)},
+  auto result = NativeJson{{"provider_by_role", value.providerByRole},
+    {"dependencies", fixedDependenciesJson(value.dependencies)},
     {"dataflow", jsonValue(value.dataflow)}, {"generation_interface", fixedGenerationJson(value.generation)},
     {"expand_role_epochs", value.expandRoleEpochs}};
+  // Legacy templates carry no steps and must keep their exact bytes, so the
+  // step keys appear only when a template actually seals a step plan.
+  if (!value.steps.empty()) {
+    result["steps"] = nativeStepsJson(value.steps);
+    result["step_plan_version"] = value.stepPlanVersion;
+    result["tensor_degree"] = value.tensorDegree;
+  }
+  return result;
 }
 
 bool sameFixedGeneration(const NativeGenerationExecutionContractV1& left,
@@ -2528,9 +2583,16 @@ NativeFixedExecutionTemplateV1 normalizeExecutionTemplate(NativeFixedExecutionTe
 NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
 {
   NativeFixedExecutionTemplateV1 result;
-  if (!value.is_object() || value.size() != 5 || !value.at("dependencies").is_array() ||
+  const bool withSteps = value.is_object() && value.contains("steps");
+  if (!value.is_object() || value.size() != (withSteps ? 8U : 5U) ||
+      !value.at("dependencies").is_array() ||
       !value.at("expand_role_epochs").is_boolean())
     throw std::invalid_argument("invalid fixed execution template fields");
+  if (withSteps) {
+    result.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
+    result.stepPlanVersion = value.at("step_plan_version").get<std::string>();
+    result.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
+  }
   result.providerByRole = value.at("provider_by_role").get<std::map<std::string, std::string>>();
   result.expandRoleEpochs = value.at("expand_role_epochs").get<bool>();
   for (const auto& item : value.at("dependencies")) {
@@ -2633,6 +2695,24 @@ std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
     }
   }
   return dependencies;
+}
+
+/** Carry the sealed step template into the invocation's execution plan. A
+ * template without steps leaves the plan on its legacy whole-role path.
+ */
+void bindFixedTemplateSteps(NativeExecutionPlan& plan,
+                            const NativeFixedExecutionTemplateV1& fixed)
+{
+  if (fixed.steps.empty()) {
+    if (!fixed.stepPlanVersion.empty() || fixed.tensorDegree != 1)
+      throw std::invalid_argument("fixed template has step metadata without steps");
+    return;
+  }
+  if (fixed.stepPlanVersion.empty() || fixed.tensorDegree < 2)
+    throw std::invalid_argument("fixed template step plan metadata is incomplete");
+  plan.steps = fixed.steps;
+  plan.stepPlanVersion = fixed.stepPlanVersion;
+  plan.tensorDegree = fixed.tensorDegree;
 }
 
 NativeJson endpointBindingsJson(const std::vector<NativeTensorEndpointV3>& endpoints)
@@ -3130,6 +3210,9 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
   if (providerByRole.empty()) providerByRole.emplace(role->selectedRole, projection.provider);
   NativeFixedExecutionTemplateV1 configuration{std::move(providerByRole), projection.plan.dependencies,
     projection.dataflow, projection.generationContract};
+  configuration.steps = projection.plan.steps;
+  configuration.stepPlanVersion = projection.plan.stepPlanVersion;
+  configuration.tensorDegree = projection.plan.tensorDegree;
   collapseFixedRoleEpochs(configuration);
   auto executionTemplate = std::make_shared<const NativeFixedExecutionTemplateV1>(
     normalizeExecutionTemplate(std::move(configuration)));

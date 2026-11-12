@@ -228,6 +228,13 @@ struct NativeFixedExecutionTemplateV1
   NativeGenerationExecutionContractV1 generation;
   // Complete repeated ROLE epochs are stored once; invocation supplies budget.
   bool expandRoleEpochs = false;
+  // Sealed token-local step template. A fixed assignment that carries steps
+  // must hand them to the invocation, otherwise a Provider would receive the
+  // dependency edges without the step DAG those edges bind to. Empty keeps the
+  // legacy pipeline template byte-identical.
+  std::vector<NativeExecutionStepSpec> steps;
+  std::string stepPlanVersion;
+  std::uint64_t tensorDegree = 1;
 };
 
 /** Fixed storage is a decoded contract, never invocation authority. */
