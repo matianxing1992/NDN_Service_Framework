@@ -49,21 +49,21 @@ struct NativeStoredModelPacketIo
     commitConcurrent;
 };
 
-/** Own at most six asynchronous original-packet commits on one caller thread.
+/** Own at most three asynchronous original-packet commits on one caller thread.
  * Tasks must honor their supplied cancellation check. Observers record verified
  * durable successes on the owner thread in submission order, including during
  * failure drain; they must not advance an object/journal or publish a root.
  * All referenced observer inputs must outlive this scope. Destruction cancels
  * and drains without throwing; normal callers explicitly finish before use.
- * Six in-flight groups consume at most 192 MiB of wires. A caller preparing a
- * seventh group can retain another 32 MiB; this is not a total RSS bound.
+ * Three in-flight groups consume at most 96 MiB of wires. A caller preparing a
+ * fourth group can retain another 32 MiB; this is not a total RSS bound.
  */
 class NativeModelCommitPipeline
 {
 public:
   using CurrentCheck = std::function<void()>;
   using Commit = std::function<void(const CurrentCheck&)>;
-  static constexpr std::size_t MAX_ACTIVE_COMMITS = 6;
+  static constexpr std::size_t MAX_ACTIVE_COMMITS = 3;
 
   explicit NativeModelCommitPipeline(CurrentCheck requireCurrent);
   ~NativeModelCommitPipeline() noexcept;
