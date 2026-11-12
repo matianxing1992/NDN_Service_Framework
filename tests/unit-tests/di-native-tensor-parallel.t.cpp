@@ -4845,6 +4845,148 @@ BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
 }
 
 
+BOOST_AUTO_TEST_CASE(ShardedAssemblyNarrowsEachEntryToItsRankSlice)
+{
+  // Without slicing, every rank loads complete weights and the partition saves
+  // nothing. This case checks the property that matters: an attention entry on
+  // rank 0 holds half the query rows, not all of them, and the packed bytes are
+  // the source's own rows rather than a re-quantization.
+  const std::uint64_t layers = 2;
+  auto model = makeTinyRankGraph(layers);
+  // Add a genuine packed INT4 projection to layer 0 so the slice has something to
+  // narrow: q_proj is [N=2*K/32*16 bytes] with K=64, N=4.
+  const std::uint64_t n = 4;
+  const std::uint64_t k = 64;
+  const auto packedBytes = qwen::packedInt4Bytes(n, k);
+  {
+    auto* graph = model.mutable_graph();
+    auto* weight = graph->add_initializer();
+    weight->set_name("model.layers.0.attn.q_proj.MatMul.weight_Q4");
+    weight->set_data_type(onnx::TensorProto::UINT8);
+    weight->set_data_location(onnx::TensorProto::DEFAULT);
+    weight->add_dims(static_cast<std::int64_t>(n));
+    weight->add_dims(static_cast<std::int64_t>(k / qwen::QWEN_INT4_BLOCK_SIZE));
+    weight->add_dims(static_cast<std::int64_t>(qwen::QWEN_INT4_BLOB_BYTES));
+    std::vector<std::uint8_t> payload(packedBytes);
+    for (std::size_t index = 0; index < payload.size(); ++index)
+      payload[index] = static_cast<std::uint8_t>(index & 0xFF);
+    // Row identity is visible in the first byte of each row, which is what the
+    // case checks after slicing.
+    const auto rowBytes = packedBytes / n;
+    for (std::uint64_t row = 0; row < n; ++row)
+      payload[row * rowBytes] = static_cast<std::uint8_t>(0xA0 + row);
+    weight->set_raw_data(payload.data(), payload.size());
+
+    auto* scales = graph->add_initializer();
+    scales->set_name("model.layers.0.attn.q_proj.MatMul.weight_scales");
+    scales->set_data_type(onnx::TensorProto::FLOAT);
+    scales->set_data_location(onnx::TensorProto::DEFAULT);
+    scales->add_dims(static_cast<std::int64_t>(n * (k / qwen::QWEN_INT4_BLOCK_SIZE)));
+    std::vector<std::uint8_t> scaleBytes(
+      static_cast<std::size_t>(n * (k / qwen::QWEN_INT4_BLOCK_SIZE)) * sizeof(float));
+    for (std::size_t index = 0; index < scaleBytes.size(); ++index)
+      scaleBytes[index] = static_cast<std::uint8_t>(index & 0x7F);
+    scales->set_raw_data(scaleBytes.data(), scaleBytes.size());
+    // Point the existing attention node at it so extraction keeps the weight.
+    for (int i = 0; i < graph->node_size(); ++i) {
+      if (graph->node(i).name() == "/model/layers.0/attn/op") {
+        graph->mutable_node(i)->add_input(
+          "model.layers.0.attn.q_proj.MatMul.weight_Q4");
+        graph->mutable_node(i)->add_input(
+          "model.layers.0.attn.q_proj.MatMul.weight_scales");
+      }
+    }
+  }
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-shard-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+
+  // Rank 0 owns the first half of the output rows.
+  qwen::QwenRankLayerSlices rank0;
+  rank0.layer = 0;
+  qwen::QwenInitializerSlice slice;
+  slice.name = "model.layers.0.attn.q_proj.MatMul.weight";
+  slice.axis = qwen::QwenSliceAxis::OutputChannels;
+  slice.begin = 0;
+  slice.end = n / 2;
+  slice.slicedK = k;
+  slice.slicedN = n / 2;
+  slice.validate();
+  rank0.initializers.push_back(slice);
+
+  qwen::QwenTpAssemblyShards shards;
+  shards.slicesByLayer = {rank0};
+  shards.readExternal = [] (std::uint64_t, std::uint64_t) {
+    return std::vector<std::uint8_t>{};
+  };
+
+  const auto table = qwen::assembleQwenTpEntryTable(root, "S0R0", bytes, layers, shards);
+  const auto attn = std::find_if(table.begin(), table.end(),
+    [] (const auto& entry) { return entry.kind == "ATTN" && entry.layer == 0; });
+  BOOST_REQUIRE(attn != table.end());
+
+  // Load the written entry and read the weight back out of it.
+  const auto path = root / attn->relativeGraphPath;
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(in));
+  const std::vector<std::uint8_t> entryBytes((std::istreambuf_iterator<char>(in)),
+                                             std::istreambuf_iterator<char>());
+  onnx::ModelProto entryModel;
+  BOOST_REQUIRE(entryModel.ParseFromString(
+    std::string(entryBytes.begin(), entryBytes.end())));
+  const onnx::TensorProto* weight = nullptr;
+  for (const auto& init : entryModel.graph().initializer()) {
+    if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight_Q4") {
+      weight = &init;
+      break;
+    }
+  }
+  BOOST_REQUIRE(weight != nullptr);
+  // Half the rows, and the bytes are the source's first half unchanged.
+  BOOST_REQUIRE_EQUAL(weight->dims(0), static_cast<std::int64_t>(n / 2));
+  BOOST_REQUIRE_EQUAL(static_cast<std::uint64_t>(weight->raw_data().size()),
+                      qwen::packedInt4Bytes(n / 2, k));
+  const auto rowBytes = qwen::packedInt4Bytes(n, k) / n;
+  BOOST_CHECK_EQUAL(static_cast<unsigned char>(weight->raw_data()[0]), 0xA0U);
+  BOOST_CHECK_EQUAL(static_cast<unsigned char>(weight->raw_data()[rowBytes]), 0xA1U);
+
+  // A slice list for a layer this graph does not have leaves every entry at full
+  // width. That is not an error, and the case states it explicitly so the property
+  // above is not confused with "assembly always shrinks something".
+  qwen::QwenTpAssemblyShards wrongLayer;
+  rank0.layer = 7;
+  wrongLayer.slicesByLayer = {rank0};
+  wrongLayer.readExternal = shards.readExternal;
+  const auto untouched = qwen::assembleQwenTpEntryTable(root, "S0R0", bytes, layers,
+                                                        wrongLayer);
+  const auto untouchedAttn = std::find_if(untouched.begin(), untouched.end(),
+    [] (const auto& entry) { return entry.kind == "ATTN" && entry.layer == 0; });
+  BOOST_REQUIRE(untouchedAttn != untouched.end());
+  {
+    std::ifstream check(root / untouchedAttn->relativeGraphPath, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(check));
+    const std::vector<std::uint8_t> raw((std::istreambuf_iterator<char>(check)),
+                                        std::istreambuf_iterator<char>());
+    onnx::ModelProto untouchedModel;
+    BOOST_REQUIRE(untouchedModel.ParseFromString(std::string(raw.begin(), raw.end())));
+    for (const auto& init : untouchedModel.graph().initializer()) {
+      if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight_Q4") {
+        BOOST_CHECK_EQUAL(init.dims(0), static_cast<std::int64_t>(n));
+        break;
+      }
+    }
+  }
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

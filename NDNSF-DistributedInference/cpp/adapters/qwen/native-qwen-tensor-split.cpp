@@ -1132,6 +1132,15 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers)
 {
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers,
+                                  QwenTpAssemblyShards{});
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards)
+{
   if (root.empty() || unitId.empty() || graphBytes.empty() || layers == 0) {
     throw std::invalid_argument("tensor-parallel entry assembly needs a root, unit, graph and layers");
   }
@@ -1166,7 +1175,8 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
     }
     const auto fileName = sanitizeEntryFileName(unitId) + "-" +
       sanitizeEntryFileName(entry.kind) + "-" + std::to_string(entry.layer) + ".onnx";
-    table.push_back(writeQwenTpEntry(root, unitId, entry, source, fileName));
+    table.push_back(writeQwenTpEntry(root, unitId, entry, source, fileName,
+                                     shards.enabled() ? &shards : nullptr));
   }
   if (table.empty()) {
     throw std::runtime_error("tensor-parallel entry assembly produced no entries");
@@ -1183,6 +1193,174 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
     }
   }
   return table;
+}
+
+std::uint64_t
+applyQwenTpRankSlices(onnx::ModelProto& entry,
+                      const QwenRankLayerSlices* layerSlices,
+                      const std::function<std::vector<std::uint8_t>(
+                        std::uint64_t offset, std::uint64_t length)>& readExternal)
+{
+  if (layerSlices == nullptr) return 0;
+  if (!readExternal) {
+    throw std::invalid_argument("tensor-parallel slicing needs a sidecar reader");
+  }
+  auto* graph = entry.mutable_graph();
+  if (graph->initializer_size() == 0) return 0;
+
+  // Index the entry's initializers by name so a slice is matched by its declared
+  // base name plus the suffixes the export uses, not by a positional guess.
+  const auto findByName = [graph] (const std::string& name) -> onnx::TensorProto* {
+    for (int i = 0; i < graph->initializer_size(); ++i) {
+      if (graph->mutable_initializer(i)->name() == name) {
+        return graph->mutable_initializer(i);
+      }
+    }
+    return nullptr;
+  };
+
+  std::uint64_t referenced = 0;
+  for (const auto& slice : layerSlices->initializers) {
+    // A slice names the logical base; the export's real tensors carry the
+    // _Q4/_scales suffix. Both are derived from the same base.
+    const auto weightName = slice.name + "_Q4";
+    const auto scaleName = slice.name + "_scales";
+    auto* weight = findByName(weightName);
+    if (weight == nullptr) {
+      // Not this entry's weight. An attention entry has no MLP projection and
+      // vice versa, so absence is expected rather than an error.
+      continue;
+    }
+    auto* scales = findByName(scaleName);
+    // Packed layout is [N, K/block, blob]; the dims are the authority on N and K.
+    if (weight->dims_size() < 1 || weight->dims_size() > 3) {
+      throw std::runtime_error(
+        "tensor-parallel weight has an unexpected rank: " + weightName);
+    }
+    const auto n = static_cast<std::uint64_t>(weight->dims(0));
+    const auto blocks = weight->dims_size() >= 2
+      ? static_cast<std::uint64_t>(weight->dims(1)) : 0;
+    const auto k = blocks * QWEN_INT4_BLOCK_SIZE;
+    if (k == 0 || packedInt4Bytes(n, k) !=
+        static_cast<std::uint64_t>(weight->raw_data().size()) &&
+        weight->data_location() == onnx::TensorProto::DEFAULT) {
+      // Inline weights are validated by size; external ones by dims alone.
+      throw std::runtime_error(
+        "tensor-parallel weight dimensions disagree with its packed size: " +
+        weightName);
+    }
+
+    // The range a slice addresses on its axis.
+    const auto limit = slice.axis == QwenSliceAxis::OutputChannels ? n : k;
+    if (slice.end <= slice.begin || slice.end > limit) {
+      throw std::runtime_error(
+        "tensor-parallel slice range is outside the weight: " + weightName);
+    }
+
+    if (slice.axis == QwenSliceAxis::OutputChannels) {
+      // Contiguous rows: keep the sidecar, narrow the window. This is the case
+      // that keeps a rank from loading its peer's weight rows at all.
+      const auto blocksPerRow = k / QWEN_INT4_BLOCK_SIZE;
+      const auto rowBytes = blocksPerRow * QWEN_INT4_BLOB_BYTES;
+      std::uint64_t baseOffset = 0;
+      std::string location;
+      for (const auto& kv : weight->external_data()) {
+        if (kv.key() == "offset") baseOffset = std::stoull(kv.value());
+        if (kv.key() == "location") location = kv.value();
+      }
+      if (weight->data_location() == onnx::TensorProto::EXTERNAL) {
+        if (location.empty()) {
+          throw std::runtime_error(
+            "tensor-parallel external weight has no location: " + weightName);
+        }
+        const auto offset = baseOffset + slice.begin * rowBytes;
+        const auto length = (slice.end - slice.begin) * rowBytes;
+        weight->clear_external_data();
+        auto* offsetEntry = weight->add_external_data();
+        offsetEntry->set_key("location");
+        offsetEntry->set_value(location);
+        auto* offsetValue = weight->add_external_data();
+        offsetValue->set_key("offset");
+        offsetValue->set_value(std::to_string(offset));
+        auto* lengthValue = weight->add_external_data();
+        lengthValue->set_key("length");
+        lengthValue->set_value(std::to_string(length));
+        weight->set_dims(0, static_cast<std::int64_t>(slice.end - slice.begin));
+        referenced += length;
+      }
+      else {
+        const auto sliced = slicePackedInt4(
+          std::vector<std::uint8_t>(weight->raw_data().begin(), weight->raw_data().end()),
+          n, k, slice.axis, slice.begin, slice.end);
+        weight->set_raw_data(sliced.data(), sliced.size());
+        weight->set_dims(0, static_cast<std::int64_t>(slice.end - slice.begin));
+        referenced += sliced.size();
+      }
+    }
+    else {
+      // Non-contiguous: read the weight, select block columns per row, inline the
+      // result. Only this entry's own weight is materialized.
+      std::vector<std::uint8_t> source;
+      if (weight->data_location() == onnx::TensorProto::EXTERNAL) {
+        std::uint64_t baseOffset = 0;
+        std::uint64_t length = 0;
+        for (const auto& kv : weight->external_data()) {
+          if (kv.key() == "offset") baseOffset = std::stoull(kv.value());
+          if (kv.key() == "length") length = std::stoull(kv.value());
+        }
+        if (length != packedInt4Bytes(n, k)) {
+          throw std::runtime_error(
+            "tensor-parallel external weight length disagrees with its dims: " +
+            weightName);
+        }
+        source = readExternal(baseOffset, length);
+      }
+      else {
+        source.assign(weight->raw_data().begin(), weight->raw_data().end());
+      }
+      const auto sliced = slicePackedInt4(source, n, k, slice.axis,
+                                          slice.begin, slice.end);
+      weight->set_data_location(onnx::TensorProto::DEFAULT);
+      weight->clear_external_data();
+      weight->set_raw_data(sliced.data(), sliced.size());
+      weight->set_dims(0, static_cast<std::int64_t>(n));
+      weight->set_dims(1, static_cast<std::int64_t>(
+        (slice.end - slice.begin) / QWEN_INT4_BLOCK_SIZE));
+      referenced += sliced.size();
+    }
+
+    // Scales share the weight's axis: one value per (row, block column).
+    if (scales != nullptr && scales->data_type() == onnx::TensorProto::FLOAT) {
+      std::vector<std::uint8_t> scaleBytes;
+      if (scales->data_location() == onnx::TensorProto::EXTERNAL) {
+        std::uint64_t baseOffset = 0;
+        std::uint64_t length = 0;
+        for (const auto& kv : scales->external_data()) {
+          if (kv.key() == "offset") baseOffset = std::stoull(kv.value());
+          if (kv.key() == "length") length = std::stoull(kv.value());
+        }
+        scaleBytes = readExternal(baseOffset, length);
+      }
+      else {
+        scaleBytes.assign(scales->raw_data().begin(), scales->raw_data().end());
+      }
+      const auto slicedScales = sliceInt4Scales(scaleBytes, n, k, slice.axis,
+                                                slice.begin, slice.end);
+      scales->set_data_location(onnx::TensorProto::DEFAULT);
+      scales->clear_external_data();
+      scales->set_raw_data(slicedScales.data(), slicedScales.size());
+      if (slice.axis == QwenSliceAxis::OutputChannels) {
+        scales->set_dims(0, static_cast<std::int64_t>(
+          (slice.end - slice.begin) * (k / QWEN_INT4_BLOCK_SIZE)));
+      }
+      else {
+        scales->set_dims(0, static_cast<std::int64_t>(
+          n * ((slice.end - slice.begin) / QWEN_INT4_BLOCK_SIZE)));
+      }
+      referenced += slicedScales.size();
+    }
+  }
+  return referenced;
 }
 
 std::string
@@ -1400,7 +1578,8 @@ parseQwenTpEntryTable(const std::string& json)
 QwenTpEntryContract
 writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
                  const QwenTpEntryNodes& entry, onnx::ModelProto& source,
-                 const std::string& graphName)
+                 const std::string& graphName,
+                 const QwenTpAssemblyShards* shards)
 {
   if (root.empty() || unitId.empty()) {
     throw std::invalid_argument("tensor-parallel entry write needs a root and a unit");
@@ -1413,6 +1592,27 @@ writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
   }
   const auto entryId = unitId + "/" + entry.kind + "/" + std::to_string(entry.layer);
   auto model = extractQwenTpEntryModel(source, entry, entryId);
+
+  // Narrow this entry's weights to the rank's own shard before the file is
+  // written, so the digest covers what the rank will actually load. INIT and HEAD
+  // own no sharded projection, so they pass no slices.
+  if (shards != nullptr && shards->enabled()) {
+    const QwenRankLayerSlices* owned = nullptr;
+    for (const auto& candidate : shards->slicesByLayer) {
+      if (candidate.layer == entry.layer) {
+        owned = &candidate;
+        break;
+      }
+    }
+    if (owned != nullptr && (entry.kind == "ATTN" || entry.kind == "MLP")) {
+      // Matching nothing is legal: an entry can hold only normalizations, and a
+      // layer may have no sharded projection in a small fixture. The caller that
+      // needs to know a real shard was narrowed asserts the resulting sizes, which
+      // is stronger than rejecting here -- a rank with silently full weights would
+      // still pass a "sliced something" check.
+      (void)applyQwenTpRankSlices(model, owned, shards->readExternal);
+    }
+  }
 
   // Boundary names come from the extracted graph itself, in its own declaration
   // order, so a consumer and the file cannot disagree about the interface.

@@ -7,6 +7,7 @@
 #include <onnx/onnx_pb.h>
 
 #include <cstddef>
+#include <functional>
 #include <filesystem>
 #include <cstdint>
 #include <string>
@@ -316,6 +317,23 @@ struct QwenTpEntryContract
   }
 };
 
+/** Options that make assembly produce a rank's own shards.
+ *
+ * Without these, every entry keeps the source graph's full-width projections and
+ * each rank loads complete weights. They are optional only because a caller that
+ * has no verified shape cannot slice; a tensor-parallel Provider always has one.
+ */
+struct QwenTpAssemblyShards
+{
+  // Per layer, the slices this rank owns. Empty means "do not slice".
+  std::vector<QwenRankLayerSlices> slicesByLayer;
+  // Bounded read of the shared sidecar for non-contiguous slices.
+  std::function<std::vector<std::uint8_t>(std::uint64_t offset, std::uint64_t length)>
+    readExternal;
+
+  bool enabled() const { return !slicesByLayer.empty(); }
+};
+
 /** Write one extracted entry and return its verified contract.
  *
  * The file lands inside `root` at a path derived from the entry id, and the
@@ -334,7 +352,8 @@ struct QwenTpEntryContract
 QwenTpEntryContract
 writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
                  const QwenTpEntryNodes& entry, onnx::ModelProto& source,
-                 const std::string& graphName);
+                 const std::string& graphName,
+                 const QwenTpAssemblyShards* shards = nullptr);
 
 /** Assemble one unit's whole entry table from a rank artifact.
  *
@@ -360,6 +379,44 @@ std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers);
+
+/** Assemble a rank's entry table with its own weight shards. */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards);
+
+/** Rewrite an extracted entry's sharded weights to this rank's slice.
+ *
+ * An extracted entry still carries the source graph's full-width projections.
+ * A rank owns only its share, so without this every rank would load complete
+ * weights: the memory the partition exists to save, spent on both ranks.
+ *
+ * Two slice shapes are handled differently, and the difference is not an
+ * optimization detail:
+ *  - An output-channel slice over packed INT4 is a contiguous byte range, so the
+ *    initializer keeps pointing at the shared sidecar with a narrowed offset,
+ *    length and dims. No weight byte is copied.
+ *  - An input-channel slice keeps every output row but drops block columns, so
+ *    the bytes are not contiguous. Those are materialized inline, and only for
+ *    the entry's own weight, not the whole model.
+ *
+ * Scales follow the same axis as their weight, because a scale is indexed by the
+ * same (output row, block column) pair. A slice whose name matches no initializer
+ * in the entry is ignored: an entry legitimately lacks other layers' weights.
+ *
+ * @param entry  Extracted entry model, rewritten in place.
+ * @param layerSlices The rank's slices for this entry's layer, or nullptr for an
+ *        entry that owns no sharded weight (INIT, HEAD).
+ * @param readExternal Bounded read of the shared sidecar, used only for a slice
+ *        whose bytes are not contiguous and must be materialized.
+ * @returns Bytes of initializer data this entry now references, for accounting.
+ */
+std::uint64_t
+applyQwenTpRankSlices(onnx::ModelProto& entry,
+                      const QwenRankLayerSlices* layerSlices,
+                      const std::function<std::vector<std::uint8_t>(
+                        std::uint64_t offset, std::uint64_t length)>& readExternal);
 
 /** Verify a rank's entry set before its READY record may be published.
  *
