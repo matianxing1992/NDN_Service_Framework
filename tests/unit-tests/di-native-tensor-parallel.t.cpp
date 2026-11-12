@@ -1897,6 +1897,197 @@ BOOST_AUTO_TEST_CASE(ResidualChainMatchesTheUnsplitSkipNorm)
   BOOST_CHECK(maxWrong > 1e-3);
 }
 
+BOOST_AUTO_TEST_CASE(RealGroupQueryAttentionAcceptsSplitHeads)
+{
+  // The attention case above builds the score/softmax/value chain by hand so the
+  // GQA broadcast is explicit. This case instead runs the production
+  // com.microsoft.GroupQueryAttention kernel the frozen export actually uses,
+  // because a hand-built substitute cannot show that the real op accepts a
+  // rank's head subset.
+  //
+  // Establishing the contract took probing: the op needs past_key, past_value,
+  // seqlens_k and total_seq inputs, and it has 3-4 outputs where the present
+  // key/value slots may not be empty when declared.
+  constexpr std::int64_t kSeq = 4;
+  constexpr std::int64_t kQueryHeads = 4;
+  constexpr std::int64_t kKvHeads = 2;
+  constexpr std::int64_t kHeadDim = 8;
+  constexpr std::int64_t kDegree = 2;
+
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-gqa");
+  std::mt19937 rng(41);
+  const auto randomValues = [&] (std::size_t count) {
+    std::vector<float> values(count);
+    for (auto& value : values) value = float(int(rng() % 21) - 10) * 0.1f;
+    return values;
+  };
+
+  // Run one GroupQueryAttention over [1, seq, heads*dim] tensors.
+  const auto runGqa = [&] (std::int64_t qHeads, std::int64_t kvHeads,
+                           const std::vector<float>& q,
+                           const std::vector<float>& k,
+                           const std::vector<float>& v) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec224-gqa");
+
+    auto* node = graph->add_node();
+    node->set_name("gqa");
+    node->set_op_type("GroupQueryAttention");
+    node->set_domain("com.microsoft");
+    for (const char* in : {"Q", "K", "V", "past_key", "past_value", "seqlens_k", "total_seq"})
+      node->add_input(in);
+    node->add_output("Y");
+    node->add_output("present_key");
+    node->add_output("present_value");
+    const auto addInt = [&] (const char* key, std::int64_t value) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(key);
+      attribute->set_type(onnx::AttributeProto::INT);
+      attribute->set_i(value);
+    };
+    const auto addFloat = [&] (const char* key, float value) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(key);
+      attribute->set_type(onnx::AttributeProto::FLOAT);
+      attribute->set_f(value);
+    };
+    addInt("num_heads", qHeads);
+    addInt("kv_num_heads", kvHeads);
+    addFloat("scale", 1.0f / std::sqrt(float(kHeadDim)));
+    addInt("do_rotary", 0);
+    addInt("rotary_interleaved", 0);
+    addFloat("softcap", 0.0f);
+
+    const auto addInitializer = [&] (const char* name, std::vector<std::int64_t> dims,
+                                     onnx::TensorProto_DataType type) {
+      auto* init = graph->add_initializer();
+      init->set_name(name);
+      init->set_data_type(type);
+      for (const auto dim : dims) init->add_dims(dim);
+      return init;
+    };
+    // Empty past: one generation step, no cache yet.
+    addInitializer("past_key", {1, kvHeads, 0, kHeadDim}, onnx::TensorProto_DataType_FLOAT);
+    addInitializer("past_value", {1, kvHeads, 0, kHeadDim}, onnx::TensorProto_DataType_FLOAT);
+    addInitializer("seqlens_k", {1}, onnx::TensorProto_DataType_INT32)
+      ->add_int32_data(std::int32_t(kSeq - 1));
+    addInitializer("total_seq", {1}, onnx::TensorProto_DataType_INT32)
+      ->add_int32_data(std::int32_t(kSeq));
+
+    const auto addIO = [&] (const char* name, bool isInput, std::int64_t width) {
+      auto* value = isInput ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(kSeq);
+      tensor->mutable_shape()->add_dim()->set_dim_value(width);
+    };
+    addIO("Q", true, qHeads * kHeadDim);
+    addIO("K", true, kvHeads * kHeadDim);
+    addIO("V", true, kvHeads * kHeadDim);
+    addIO("Y", false, qHeads * kHeadDim);
+    // Present cache outputs keep the head, sequence, dim layout.
+    const auto addPresent = [&] (const char* name) {
+      auto* value = graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(kvHeads);
+      tensor->mutable_shape()->add_dim()->set_dim_value(kSeq);
+      tensor->mutable_shape()->add_dim()->set_dim_value(kHeadDim);
+    };
+    addPresent("present_key");
+    addPresent("present_value");
+
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> qShape{1, kSeq, qHeads * kHeadDim};
+    const std::vector<std::int64_t> kvShape{1, kSeq, kvHeads * kHeadDim};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value inputs[] = {
+      Ort::Value::CreateTensor<float>(memory, const_cast<float*>(q.data()), q.size(),
+                                      qShape.data(), qShape.size()),
+      Ort::Value::CreateTensor<float>(memory, const_cast<float*>(k.data()), k.size(),
+                                      kvShape.data(), kvShape.size()),
+      Ort::Value::CreateTensor<float>(memory, const_cast<float*>(v.data()), v.size(),
+                                      kvShape.data(), kvShape.size())};
+    const char* inputNames[] = {"Q", "K", "V"};
+    const char* outputNames[] = {"Y"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, inputs, 3, outputNames, 1);
+    const auto* data = outputs[0].GetTensorData<float>();
+    return std::vector<float>(data, data + kSeq * qHeads * kHeadDim);
+  };
+
+  const auto q = randomValues(kSeq * kQueryHeads * kHeadDim);
+  const auto k = randomValues(kSeq * kKvHeads * kHeadDim);
+  const auto v = randomValues(kSeq * kKvHeads * kHeadDim);
+  const auto reference = runGqa(kQueryHeads, kKvHeads, q, k, v);
+  BOOST_REQUIRE_EQUAL(reference.size(), std::size_t(kSeq * kQueryHeads * kHeadDim));
+
+  // Split query and KV heads in the same proportion, then place each rank's
+  // result back at its own head offset.
+  const auto gatherHeads = [] (const std::vector<float>& source, std::int64_t sourceHeads,
+                               std::int64_t beginHead, std::int64_t headCount) {
+    std::vector<float> result(std::size_t(kSeq * headCount * kHeadDim));
+    for (std::int64_t s = 0; s < kSeq; ++s)
+      for (std::int64_t h = 0; h < headCount; ++h)
+        for (std::int64_t d = 0; d < kHeadDim; ++d)
+          result[std::size_t((s * headCount + h) * kHeadDim + d)] =
+            source[std::size_t((s * sourceHeads + beginHead + h) * kHeadDim + d)];
+    return result;
+  };
+
+  const auto assemble = [&] (bool reuseRankZeroKv) {
+    std::vector<float> merged(std::size_t(kSeq * kQueryHeads * kHeadDim), 0.0f);
+    for (std::int64_t rank = 0; rank < kDegree; ++rank) {
+      const auto qPerRank = kQueryHeads / kDegree;
+      const auto kvPerRank = kKvHeads / kDegree;
+      const auto rankQ = gatherHeads(q, kQueryHeads, rank * qPerRank, qPerRank);
+      const auto kvBegin = reuseRankZeroKv ? 0 : rank * kvPerRank;
+      const auto rankK = gatherHeads(k, kKvHeads, kvBegin, kvPerRank);
+      const auto rankV = gatherHeads(v, kKvHeads, kvBegin, kvPerRank);
+      const auto partial = runGqa(qPerRank, kvPerRank, rankQ, rankK, rankV);
+      for (std::int64_t s = 0; s < kSeq; ++s)
+        for (std::int64_t h = 0; h < qPerRank; ++h)
+          for (std::int64_t d = 0; d < kHeadDim; ++d)
+            merged[std::size_t((s * kQueryHeads + rank * qPerRank + h) * kHeadDim + d)] =
+              partial[std::size_t((s * qPerRank + h) * kHeadDim + d)];
+    }
+    return merged;
+  };
+
+  const auto split = assemble(false);
+  double maxError = 0.0;
+  double magnitude = 0.0;
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    maxError = std::max(maxError, double(std::fabs(split[i] - reference[i])));
+    magnitude = std::max(magnitude, double(std::fabs(reference[i])));
+  }
+  BOOST_TEST_MESSAGE("real GQA split: max abs err " << maxError
+    << " against magnitude " << magnitude);
+  BOOST_CHECK(magnitude > 1e-3);
+  BOOST_CHECK(maxError < 1e-5);
+
+  // The grouping mistake: both ranks attend with rank 0's KV heads.
+  const auto wrong = assemble(true);
+  double wrongError = 0.0;
+  for (std::size_t i = 0; i < reference.size(); ++i)
+    wrongError = std::max(wrongError, double(std::fabs(wrong[i] - reference[i])));
+  BOOST_TEST_MESSAGE("wrong KV grouping: max abs err " << wrongError);
+  BOOST_CHECK(wrongError > 1e-3);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
