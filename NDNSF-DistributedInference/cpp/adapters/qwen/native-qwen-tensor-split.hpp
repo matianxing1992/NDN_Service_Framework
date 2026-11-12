@@ -355,6 +355,25 @@ NativeGenerationExecutionContractV1
 buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape& shape,
                               const QwenTpSealedGeneration& sealed);
 
+/** Bind a caller-supplied generation contract to a sharded plan's own KV slots.
+ *
+ * The application supplies generation options, and its state-name defaults describe one
+ * role's KV. A sharded unit owns every layer's slices, so the names must come from the
+ * template instead -- otherwise the coordinator commits state for tensors that do not
+ * exist, or omits the layers that do.
+ *
+ * Only the state fields are rewritten. The token input, budget, sampling parameters and
+ * digests stay the caller's, because those are request facts rather than model facts.
+ *
+ * @param plan     Projected plan whose attention state slots are authoritative.
+ * @param contract Generation contract to rewrite in place.
+ * @throws std::invalid_argument when the plan has no attention state, or the contract
+ *         is not a streaming generation contract.
+ */
+void
+bindQwenTpGenerationState(const NativeExecutionPlan& plan,
+                          NativeGenerationExecutionContractV1& contract);
+
 /** Geometry a rank's entry graph must be rewritten to describe.
  *
  * Slicing the weights is only half of a shard: the operators still declare the

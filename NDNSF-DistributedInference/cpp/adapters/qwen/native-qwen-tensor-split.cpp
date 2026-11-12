@@ -1289,6 +1289,44 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   return shape;
 }
 
+void
+bindQwenTpGenerationState(const NativeExecutionPlan& plan,
+                          NativeGenerationExecutionContractV1& contract)
+{
+  if (!contract.enabled || contract.mode != "TOKEN_STREAMING") {
+    throw std::invalid_argument(
+      "tensor-parallel generation state needs a streaming generation contract");
+  }
+  std::vector<std::string> inputs;
+  std::vector<std::string> outputs;
+  std::set<std::string> seen;
+  for (const auto& step : plan.steps) {
+    for (const auto& slot : step.localStateSlots) {
+      if (!seen.insert(slot).second) continue;
+      const auto suffix = slot.substr(slot.find('.') + 1);
+      if (slot.rfind("kv.", 0) != 0 || suffix.find('.') == std::string::npos) {
+        throw std::invalid_argument(
+          "tensor-parallel template state slot is not a KV slot: " + slot);
+      }
+      inputs.push_back("past_key_values." + suffix);
+      outputs.push_back("present." + suffix);
+    }
+  }
+  if (inputs.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel generation state found no attention state to carry");
+  }
+  contract.stateInputNames = std::move(inputs);
+  contract.stateOutputNames = std::move(outputs);
+  std::string successor;
+  for (std::size_t index = 0; index < contract.stateInputNames.size(); ++index) {
+    if (index != 0) successor += ',';
+    successor += contract.stateInputNames[index] + "=" +
+                 contract.stateOutputNames[index];
+  }
+  contract.stateSuccessorMap = std::move(successor);
+}
+
 NativeGenerationExecutionContractV1
 buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape& shape,
                               const QwenTpSealedGeneration& sealed)

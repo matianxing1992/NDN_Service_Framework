@@ -5697,6 +5697,72 @@ BOOST_AUTO_TEST_CASE(ProductionPlannerStillEmitsAPipelineCandidateForAShardedDeg
   BOOST_CHECK_EQUAL(pipelineStateSlots, 0U);
 }
 
+BOOST_AUTO_TEST_CASE(ApplicationStateDefaultsAreReplacedByThePlansOwnKvSlots)
+{
+  // The application's generation options carry default state names written for one
+  // role's KV. A sharded unit owns every layer, so those defaults must be replaced by
+  // the template's slots -- otherwise the coordinator commits state for tensors that do
+  // not exist and skips the layers that do.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  // The defaults an application contract carries today.
+  NativeGenerationExecutionContractV1 contract;
+  contract.enabled = true;
+  contract.mode = "TOKEN_STREAMING";
+  contract.maxGeneratedTokens = 4;
+  contract.tokenInputName = "input_ids";
+  contract.stateInputNames = {"attention_kv_in", "recurrent_state_in",
+                              "convolution_state_in"};
+  contract.stateOutputNames = {"attention_kv_out", "recurrent_state_out",
+                               "convolution_state_out"};
+  contract.eosTokenIds = {2};
+  contract.samplingDigest = "sha256:" + std::string(64, 'a');
+  contract.tokenizerDigest = "sha256:" + std::string(64, 'b');
+
+  qwen::bindQwenTpGenerationState(plan, contract);
+
+  // Every name is now one the exported graph actually has.
+  for (const auto& name : contract.stateInputNames)
+    BOOST_CHECK(name.rfind("past_key_values.", 0) == 0);
+  for (const auto& name : contract.stateOutputNames)
+    BOOST_CHECK(name.rfind("present.", 0) == 0);
+  // One pair per attention state slot in the template, no duplicates.
+  std::set<std::string> distinct;
+  std::size_t stateSlots = 0;
+  for (const auto& step : plan.steps)
+    for (const auto& slot : step.localStateSlots)
+      if (distinct.insert(slot).second) ++stateSlots;
+  BOOST_CHECK_EQUAL(contract.stateInputNames.size(), stateSlots);
+  BOOST_CHECK_EQUAL(contract.stateOutputNames.size(), stateSlots);
+  // The application's defaults are gone, not merely augmented.
+  BOOST_CHECK(std::find(contract.stateInputNames.begin(), contract.stateInputNames.end(),
+                        "attention_kv_in") == contract.stateInputNames.end());
+  // The request facts are untouched.
+  BOOST_CHECK_EQUAL(contract.maxGeneratedTokens, 4U);
+  BOOST_CHECK_EQUAL(contract.samplingDigest, std::string("sha256:" + std::string(64, 'a')));
+  BOOST_CHECK_EQUAL(contract.eosTokenIds.size(), 1U);
+  // And the successor map covers every pair, which the decoder validates.
+  BOOST_CHECK_EQUAL(std::count(contract.stateSuccessorMap.begin(),
+                               contract.stateSuccessorMap.end(), '='),
+                    static_cast<std::ptrdiff_t>(stateSlots));
+
+  // A non-streaming contract is refused rather than partially rewritten.
+  auto notStreaming = contract;
+  notStreaming.mode = "COMPLETE";
+  BOOST_CHECK_THROW(qwen::bindQwenTpGenerationState(plan, notStreaming),
+                    std::invalid_argument);
+  // A plan with no attention state cannot bind names to it.
+  NativeExecutionPlan bare;
+  bare.roles = plan.roles;
+  BOOST_CHECK_THROW(qwen::bindQwenTpGenerationState(bare, contract),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(ShardedGenerationContractSatisfiesTheSealerRequirements)
 {
   // The contract the coordinator needs, built from the template rather than from a
