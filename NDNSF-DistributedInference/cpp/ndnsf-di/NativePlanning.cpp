@@ -452,11 +452,46 @@ std::string NativeSplitCandidate::canonicalJson() const
   };
   const auto postprocessing = nativeParseJson(postprocessingJson);
   if (!postprocessing.is_object()) throw std::invalid_argument("candidate postprocessing must be an object");
+  // A step template is planning data that changes what the request means, so it
+  // must be bound into the candidate identity: two templates that partition the
+  // same roles differently must not digest identically. Legacy pipeline plans
+  // carry no steps, so their canonical bytes stay exactly as before.
+  auto executionPlanJson = NativeJson{{"roles", executionPlan.roles},
+                                      {"dependencies", dependencies},
+                                      {"node_roles", nodeRoles}};
+  if (!executionPlan.steps.empty()) {
+    auto steps = NativeJson::array();
+    for (const auto& step : executionPlan.steps) {
+      const auto slots = [] (const auto& values) {
+        auto result = NativeJson::array();
+        for (const auto& slot : values) {
+          auto shape = NativeJson::array();
+          for (const auto& dim : slot.shape) {
+            std::visit([&shape] (const auto& item) { shape.push_back(item); }, dim);
+          }
+          result.push_back(NativeJson{{"slot_id", slot.slotId}, {"dtype", slot.dtype},
+                                      {"shape", shape}, {"layout_digest", slot.layoutDigest},
+                                      {"source", slot.source},
+                                      {"producer_step_id", slot.producerStepId}});
+        }
+        return result;
+      };
+      steps.push_back(NativeJson{{"step_id", step.stepId}, {"unit_id", step.unitId},
+                                 {"operation", step.operation},
+                                 {"artifact_entry", step.artifactEntry},
+                                 {"input_slots", slots(step.inputSlots)},
+                                 {"output_slots", slots(step.outputSlots)},
+                                 {"local_state_slots", step.localStateSlots}});
+    }
+    executionPlanJson["steps"] = std::move(steps);
+    executionPlanJson["step_plan_version"] = executionPlan.stepPlanVersion;
+    executionPlanJson["tensor_degree"] = executionPlan.tensorDegree;
+  }
   return nativeCanonicalJson(NativeJson{
     {"source", source}, {"splitter", {{"name", splitter.name}, {"version", splitter.version},
       {"state_digest", splitter.configurationDigest}, {"deterministic", splitter.deterministic}}},
     {"model", nativeParseJson(model.canonicalJson())}, {"graph_digest", graphDigest},
-    {"execution_plan", {{"roles", executionPlan.roles}, {"dependencies", dependencies}, {"node_roles", nodeRoles}}},
+    {"execution_plan", std::move(executionPlanJson)},
     {"fragments_by_role", fragmentsByRole}, {"artifacts_by_role", artifactsByRole},
     {"requirements_by_role", resources}, {"cross_partition_tensors", crossPartitionTensors},
     {"estimated_costs", costs}, {"tensor_degrees_by_role", tensorDegreesByRole},
@@ -575,15 +610,25 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
   }
   if (dependencyTensors != cuts)
     throw std::invalid_argument("split candidate dependency tensors do not match its cuts");
-  std::vector<std::string> ready;
-  for (const auto& role : incoming) if (!role.second) ready.push_back(role.first);
-  std::size_t visited = 0;
-  while (!ready.empty()) {
-    const auto role = ready.back(); ready.pop_back(); ++visited;
-    for (const auto& consumer : outgoing[role])
-      if (--incoming.at(consumer) == 0) ready.push_back(consumer);
+  // A step template legitimately makes the coarse role graph cyclic: two
+  // tensor-parallel units exchange partials in both directions while the
+  // token-local step DAG stays acyclic. When the plan carries steps, that DAG
+  // is the authority; otherwise the original role-level check still applies
+  // unchanged.
+  if (executionPlan.steps.empty()) {
+    std::vector<std::string> ready;
+    for (const auto& role : incoming) if (!role.second) ready.push_back(role.first);
+    std::size_t visited = 0;
+    while (!ready.empty()) {
+      const auto role = ready.back(); ready.pop_back(); ++visited;
+      for (const auto& consumer : outgoing[role])
+        if (--incoming.at(consumer) == 0) ready.push_back(consumer);
+    }
+    if (visited != roles.size()) throw std::invalid_argument("split candidate role dependencies are cyclic");
   }
-  if (visited != roles.size()) throw std::invalid_argument("split candidate role dependencies are cyclic");
+  else {
+    executionPlan.validateSteps();
+  }
   if (!tensorDegreesByRole.empty() || !rankArtifactDigestsByRole.empty()) {
     if (tensorDegreesByRole.size() != roles.size() || rankArtifactDigestsByRole.size() != roles.size())
       throw std::invalid_argument("split candidate rank metadata cover is incomplete");
