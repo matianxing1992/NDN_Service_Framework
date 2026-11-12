@@ -9,6 +9,12 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+
+#include <onnx/onnx_pb.h>
+#include <onnxruntime_cxx_api.h>
+
+#include <cstring>
+#include <random>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -1085,6 +1091,160 @@ BOOST_AUTO_TEST_CASE(TpRanksDeriveDistinctRecipeDigests)
   const auto pipelineRecipe = canonicalNativeOnnxRecipeJson(pipeline);
   BOOST_CHECK(pipelineRecipe.find("tensorParallelDegree") == std::string::npos);
   BOOST_CHECK(pipelineRecipe.find("tensorParallelRank") == std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
+{
+  // The shard arithmetic is only useful if the sliced initializers still produce
+  // the same numbers through the real MatMulNBits kernel. Reimplementing the
+  // multiply here would check the helper against itself, so this case builds
+  // genuine ONNX graphs and runs them in ORT.
+  constexpr std::uint64_t K = 64;      // two 32-wide blocks
+  constexpr std::uint64_t N = 8;
+  constexpr std::uint64_t blocks = K / qwen::QWEN_INT4_BLOCK_SIZE;
+  constexpr std::uint64_t rowBytes = blocks * qwen::QWEN_INT4_BLOB_BYTES;
+
+  // One environment for the whole case; every session below borrows it.
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-shard-math");
+
+  std::mt19937 rng(7);
+  std::vector<std::uint8_t> packed(N * rowBytes, 0);
+  for (auto& byte : packed) byte = std::uint8_t(rng() & 0xFF);
+  std::vector<float> scales(N * blocks, 0.5f);
+  std::vector<float> activation(2 * K);
+  for (auto& value : activation) value = float(int(rng() % 21) - 10) * 0.25f;
+
+  const auto scaleBytes = [&] {
+    std::vector<std::uint8_t> bytes(scales.size() * sizeof(float));
+    std::memcpy(bytes.data(), scales.data(), bytes.size());
+    return bytes;
+  }();
+  const auto toFloat = [] (const std::vector<std::uint8_t>& bytes) {
+    std::vector<float> values(bytes.size() / sizeof(float));
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    return values;
+  };
+
+  // Build and run one MatMulNBits graph. Input is [1, 2, k], output [1, 2, n].
+  const auto runKernel = [&] (std::uint64_t k, std::uint64_t n,
+                              const std::vector<std::uint8_t>& weight,
+                              const std::vector<float>& rankScales,
+                              const std::vector<float>& input) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph(); graph->set_name("spec224-shard-math");
+    auto* node = graph->add_node();
+    node->set_name("mm"); node->set_op_type("MatMulNBits");
+    node->set_domain("com.microsoft");
+    node->add_input("A"); node->add_input("B"); node->add_input("S");
+    node->add_output("Y");
+    const auto addInt = [&] (const char* name, std::int64_t value) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(name);
+      attribute->set_type(onnx::AttributeProto::INT);
+      attribute->set_i(value);
+    };
+    addInt("K", std::int64_t(k));
+    addInt("N", std::int64_t(n));
+    addInt("bits", 4);
+    addInt("block_size", std::int64_t(qwen::QWEN_INT4_BLOCK_SIZE));
+
+    auto* weightInit = graph->add_initializer();
+    weightInit->set_name("B");
+    weightInit->set_data_type(onnx::TensorProto_DataType_UINT8);
+    weightInit->add_dims(std::int64_t(n));
+    weightInit->add_dims(std::int64_t(k / qwen::QWEN_INT4_BLOCK_SIZE));
+    weightInit->add_dims(std::int64_t(qwen::QWEN_INT4_BLOB_BYTES));
+    weightInit->set_raw_data(weight.data(), weight.size());
+
+    auto* scaleInit = graph->add_initializer();
+    scaleInit->set_name("S");
+    scaleInit->set_data_type(onnx::TensorProto_DataType_FLOAT);
+    scaleInit->add_dims(std::int64_t(rankScales.size()));
+    scaleInit->set_raw_data(rankScales.data(), rankScales.size() * sizeof(float));
+
+    const auto addIO = [&] (const char* name, bool input) {
+      auto* value = input ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(2);
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(input ? k : n));
+    };
+    addIO("A", true);
+    addIO("Y", false);
+
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> shape{1, 2, std::int64_t(k)};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto inputValue = Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(input.data()), input.size(), shape.data(), shape.size());
+    const char* inputNames[] = {"A"};
+    const char* outputNames[] = {"Y"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &inputValue, 1,
+                               outputNames, 1);
+    const auto* data = outputs[0].GetTensorData<float>();
+    return std::vector<float>(data, data + 2 * n);
+  };
+
+  const auto reference = runKernel(K, N, packed, scales, activation);
+  BOOST_REQUIRE_EQUAL(reference.size(), 2 * N);
+
+  // Output-channel split: each rank owns whole rows of B and their scales, and
+  // its columns must equal the corresponding reference columns.
+  {
+    const auto leftWeight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::OutputChannels, 0, N / 2);
+    const auto rightWeight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::OutputChannels, N / 2, N);
+    const auto leftScales = toFloat(qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::OutputChannels, 0, N / 2));
+    const auto rightScales = toFloat(qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::OutputChannels, N / 2, N));
+    const auto left = runKernel(K, N / 2, leftWeight, leftScales, activation);
+    const auto right = runKernel(K, N / 2, rightWeight, rightScales, activation);
+    for (std::uint64_t i = 0; i < 2; ++i) {
+      for (std::uint64_t c = 0; c < N / 2; ++c) {
+        BOOST_CHECK_SMALL(left[i * (N / 2) + c] - reference[i * N + c], 1e-4f);
+        BOOST_CHECK_SMALL(right[i * (N / 2) + c] - reference[i * N + N / 2 + c], 1e-4f);
+      }
+    }
+  }
+
+  // Input-channel split: each rank reduces over half of K and the two partials
+  // must sum to the unsplit result.
+  {
+    const std::uint64_t half = K / 2;
+    const auto leftWeight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::InputChannels, 0, half);
+    const auto rightWeight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::InputChannels, half, K);
+    const auto leftScales = toFloat(qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::InputChannels, 0, half));
+    const auto rightScales = toFloat(qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::InputChannels, half, K));
+    // Row-major [1,2,K]: take the matching half of each row, not a flat range.
+    std::vector<float> leftInput(2 * half), rightInput(2 * half);
+    for (std::uint64_t row = 0; row < 2; ++row) {
+      for (std::uint64_t k = 0; k < half; ++k) {
+        leftInput[row * half + k] = activation[row * K + k];
+        rightInput[row * half + k] = activation[row * K + half + k];
+      }
+    }
+    const auto left = runKernel(half, N, leftWeight, leftScales, leftInput);
+    const auto right = runKernel(half, N, rightWeight, rightScales, rightInput);
+    for (std::size_t i = 0; i < reference.size(); ++i)
+      BOOST_CHECK_SMALL((left[i] + right[i]) - reference[i], 1e-3f);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

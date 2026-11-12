@@ -2025,11 +2025,14 @@ def build(bld):
     # Spec224 T001 step-contract regressions link the production DI library so
     # the sealed plan types, their wire round-trip and the placement-facing
     # step template are the same objects the Provider loads.
+    # ONNXRUNTIME is required, not optional: the shard-math case compares the
+    # sliced MatMulNBits results against the unsplit one, so the test must run
+    # real ORT kernels rather than reimplement the arithmetic it is checking.
     bld.program(target='../spec224-tp-tests', name='spec224-tp-tests',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-native-tensor-parallel.t.cpp')],
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
+                use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()],
                 install_path=None)
