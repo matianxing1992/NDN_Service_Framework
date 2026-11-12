@@ -1443,6 +1443,331 @@ BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
   BOOST_CHECK(maxAbsolute < 1e-3);
 }
 
+BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
+{
+  // C2 for attention: each rank computes attention for its own whole heads, and
+  // the O projection reduces over the same attention channels. The composition
+  // must equal the unsplit block:
+  //   attn = concat_h( softmax(Q_h K_h^T / sqrt(d)) V_h )
+  //   Y    = attn W_O^T  ==  SUM_r( attn_r W_O,r^T )
+  //
+  // The part that can silently go wrong is the GQA grouping after the split:
+  // 16 query heads over 8 KV heads is a group of 2, so a rank holding 8 query
+  // heads must hold exactly 4 KV heads to keep the same grouping. A rank with
+  // the wrong KV count would still run and still produce plausible numbers.
+  //
+  // RoPE is deliberately absent. It is a per-head, position-wise rotation, so
+  // splitting heads commutes with it; covering it here would test the frozen
+  // export's cos/sin tables rather than the partition. That belongs to the
+  // assembled-entry comparison.
+  constexpr std::uint64_t hidden = 1024;
+  constexpr std::uint64_t queryHeads = 16;
+  constexpr std::uint64_t kvHeads = 8;
+  constexpr std::uint64_t headDim = 128;
+  constexpr std::uint64_t seq = 4;
+  constexpr std::uint64_t degree = 2;
+  constexpr std::uint64_t queryWidth = queryHeads * headDim;
+  constexpr std::uint64_t kvWidth = kvHeads * headDim;
+  constexpr std::uint64_t blockSize = qwen::QWEN_INT4_BLOCK_SIZE;
+  constexpr std::uint64_t blobBytes = qwen::QWEN_INT4_BLOB_BYTES;
+
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-attention-block");
+  std::mt19937 rng(23);
+
+  const auto randomPacked = [&] (std::uint64_t n, std::uint64_t k) {
+    std::vector<std::uint8_t> bytes(n * (k / blockSize) * blobBytes);
+    for (auto& byte : bytes) byte = std::uint8_t(rng() & 0xFF);
+    return bytes;
+  };
+  const auto randomScales = [&] (std::uint64_t count) {
+    std::vector<float> values(count);
+    for (auto& value : values) value = 0.001f + 0.0005f * float(rng() % 8);
+    return values;
+  };
+  std::vector<float> input(hidden * seq);
+  for (auto& value : input) value = float(int(rng() % 21) - 10) * 0.02f;
+
+  // One attention block: three INT4 projections, head-wise scaled dot-product
+  // attention with GQA broadcast and a causal mask, then the INT4 O projection.
+  // The head counts are parameters so the same builder serves the unsplit block
+  // and each rank's shard.
+  const auto runAttention = [&] (std::uint64_t qHeads, std::uint64_t kHeads,
+                                 const std::vector<std::uint8_t>& wq,
+                                 const std::vector<float>& sq,
+                                 const std::vector<std::uint8_t>& wk,
+                                 const std::vector<float>& sk,
+                                 const std::vector<std::uint8_t>& wv,
+                                 const std::vector<float>& sv,
+                                 std::uint64_t oK,
+                                 const std::vector<std::uint8_t>& wo,
+                                 const std::vector<float>& so) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec224-attention-block");
+
+    const auto addNbits = [&] (const char* name, const char* in, const char* out,
+                               std::uint64_t k, std::uint64_t n,
+                               const std::vector<std::uint8_t>& weight,
+                               const std::vector<float>& scales) {
+      auto* node = graph->add_node();
+      node->set_name(name);
+      node->set_op_type("MatMulNBits");
+      node->set_domain("com.microsoft");
+      node->add_input(in);
+      node->add_input(std::string(name) + "_B");
+      node->add_input(std::string(name) + "_S");
+      node->add_output(out);
+      const auto addInt = [&] (const char* key, std::int64_t value) {
+        auto* attribute = node->add_attribute();
+        attribute->set_name(key);
+        attribute->set_type(onnx::AttributeProto::INT);
+        attribute->set_i(value);
+      };
+      addInt("K", std::int64_t(k));
+      addInt("N", std::int64_t(n));
+      addInt("bits", 4);
+      addInt("block_size", std::int64_t(blockSize));
+      auto* weightInit = graph->add_initializer();
+      weightInit->set_name(std::string(name) + "_B");
+      weightInit->set_data_type(onnx::TensorProto_DataType_UINT8);
+      weightInit->add_dims(std::int64_t(n));
+      weightInit->add_dims(std::int64_t(k / blockSize));
+      weightInit->add_dims(std::int64_t(blobBytes));
+      weightInit->set_raw_data(weight.data(), weight.size());
+      auto* scaleInit = graph->add_initializer();
+      scaleInit->set_name(std::string(name) + "_S");
+      scaleInit->set_data_type(onnx::TensorProto_DataType_FLOAT);
+      scaleInit->add_dims(std::int64_t(scales.size()));
+      scaleInit->set_raw_data(scales.data(), scales.size() * sizeof(float));
+    };
+    const auto addOp = [&] (const char* op, std::vector<const char*> ins, const char* out) {
+      auto* node = graph->add_node();
+      node->set_op_type(op);
+      for (const auto* in : ins) node->add_input(in);
+      node->add_output(out);
+      return node;
+    };
+    const auto addInts = [&] (onnx::NodeProto* node, const char* key,
+                              std::initializer_list<std::int64_t> values) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(key);
+      attribute->set_type(onnx::AttributeProto::INTS);
+      for (const auto value : values) attribute->add_ints(value);
+    };
+    const auto addFloat = [&] (onnx::NodeProto* node, const char* key, float value) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(key);
+      attribute->set_type(onnx::AttributeProto::FLOAT);
+      attribute->set_f(value);
+    };
+
+    addNbits("wq", "X", "q_flat", hidden, qHeads * headDim, wq, sq);
+    addNbits("wk", "X", "k_flat", hidden, kHeads * headDim, wk, sk);
+    addNbits("wv", "X", "v_flat", hidden, kHeads * headDim, wv, sv);
+
+    // (batch, seq, head, dim) -> (batch, head, seq, dim) so MatMul works per head.
+    const auto toHeads = [&] (const char* in, const char* out, std::uint64_t heads,
+                              std::uint64_t width) {
+      auto* shape = graph->add_initializer();
+      shape->set_name(std::string(out) + "_shape");
+      shape->set_data_type(onnx::TensorProto_DataType_INT64);
+      shape->add_dims(4);
+      for (const std::int64_t value : {std::int64_t(1), std::int64_t(seq),
+                                       std::int64_t(heads), std::int64_t(width)})
+        shape->add_int64_data(value);
+      addOp("Reshape", {in, (std::string(out) + "_shape").c_str()},
+            (std::string(out) + "_4d").c_str());
+      auto* transpose = addOp("Transpose", {(std::string(out) + "_4d").c_str()}, out);
+      addInts(transpose, "perm", {0, 2, 1, 3});
+    };
+    toHeads("q_flat", "q", qHeads, headDim);
+    toHeads("k_flat", "k", kHeads, headDim);
+    toHeads("v_flat", "v", kHeads, headDim);
+
+    // GQA: every KV head is shared by queryHeads/kvHeads consecutive query heads.
+    const auto group = qHeads / kHeads;
+    // Insert a length-1 group axis, then broadcast it to `group` copies. The
+    // reshape target must keep the element count, so the group axis goes in as
+    // 1 and the expand target is what carries `group`.
+    auto* kGroupedShape = graph->add_initializer();
+    kGroupedShape->set_name("k_grouped_shape");
+    kGroupedShape->set_data_type(onnx::TensorProto_DataType_INT64);
+    kGroupedShape->add_dims(5);
+    for (const std::int64_t value : {std::int64_t(1), std::int64_t(kHeads),
+                                     std::int64_t(1), std::int64_t(seq),
+                                     std::int64_t(headDim)})
+      kGroupedShape->add_int64_data(value);
+    auto* expandShape = graph->add_initializer();
+    expandShape->set_name("k_expand_shape");
+    expandShape->set_data_type(onnx::TensorProto_DataType_INT64);
+    expandShape->add_dims(5);
+    for (const std::int64_t value : {std::int64_t(1), std::int64_t(kHeads),
+                                     std::int64_t(group), std::int64_t(seq),
+                                     std::int64_t(headDim)})
+      expandShape->add_int64_data(value);
+    addOp("Reshape", {"k", "k_grouped_shape"}, "k_grouped");
+    addOp("Expand", {"k_grouped", "k_expand_shape"}, "k_broadcast");
+    auto* kFinalShape = graph->add_initializer();
+    kFinalShape->set_name("k_final_shape");
+    kFinalShape->set_data_type(onnx::TensorProto_DataType_INT64);
+    kFinalShape->add_dims(4);
+    for (const std::int64_t value : {std::int64_t(1), std::int64_t(qHeads),
+                                     std::int64_t(seq), std::int64_t(headDim)})
+      kFinalShape->add_int64_data(value);
+    addOp("Reshape", {"k_broadcast", "k_final_shape"}, "k_heads");
+    addOp("Reshape", {"v", "k_grouped_shape"}, "v_grouped");
+    addOp("Expand", {"v_grouped", "k_expand_shape"}, "v_broadcast");
+    addOp("Reshape", {"v_broadcast", "k_final_shape"}, "v_heads");
+
+    // scores = Q K^T * scale + causal mask
+    auto* transposeK = addOp("Transpose", {"k_heads"}, "k_heads_t");
+    addInts(transposeK, "perm", {0, 1, 3, 2});
+    addOp("MatMul", {"q", "k_heads_t"}, "scores");
+    auto* scaleInit = graph->add_initializer();
+    scaleInit->set_name("scale");
+    scaleInit->set_data_type(onnx::TensorProto_DataType_FLOAT);
+    scaleInit->add_dims(1);
+    scaleInit->add_float_data(1.0f / std::sqrt(float(headDim)));
+    addOp("Mul", {"scores", "scale"}, "scores_scaled");
+
+    // Causal mask: 0 on and below the diagonal, a large negative above it.
+    auto* mask = graph->add_initializer();
+    mask->set_name("causal_mask");
+    mask->set_data_type(onnx::TensorProto_DataType_FLOAT);
+    mask->add_dims(1);
+    mask->add_dims(1);
+    mask->add_dims(std::int64_t(seq));
+    mask->add_dims(std::int64_t(seq));
+    for (std::uint64_t row = 0; row < seq; ++row)
+      for (std::uint64_t column = 0; column < seq; ++column)
+        mask->add_float_data(column <= row ? 0.0f : -10000.0f);
+    addOp("Add", {"scores_scaled", "causal_mask"}, "scores_masked");
+    auto* softmax = addOp("Softmax", {"scores_masked"}, "probs");
+    {
+      auto* attribute = softmax->add_attribute();
+      attribute->set_name("axis");
+      attribute->set_type(onnx::AttributeProto::INT);
+      attribute->set_i(3);
+    }
+
+    addOp("MatMul", {"probs", "v_heads"}, "attn_heads");
+    auto* back = addOp("Transpose", {"attn_heads"}, "attn_heads_seq");
+    addInts(back, "perm", {0, 2, 1, 3});
+    auto* flatShape = graph->add_initializer();
+    flatShape->set_name("attn_flat_shape");
+    flatShape->set_data_type(onnx::TensorProto_DataType_INT64);
+    flatShape->add_dims(3);
+    for (const std::int64_t value : {std::int64_t(1), std::int64_t(seq),
+                                     std::int64_t(qHeads * headDim)})
+      flatShape->add_int64_data(value);
+    addOp("Reshape", {"attn_heads_seq", "attn_flat_shape"}, "attn_flat");
+    addNbits("wo", "attn_flat", "Y", oK, hidden, wo, so);
+
+    const auto addIO = [&] (const char* name, bool isInput, std::int64_t width) {
+      auto* value = isInput ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(seq));
+      tensor->mutable_shape()->add_dim()->set_dim_value(width);
+    };
+    addIO("X", true, std::int64_t(hidden));
+    addIO("Y", false, std::int64_t(hidden));
+
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> shape{1, std::int64_t(seq), std::int64_t(hidden)};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto inputValue = Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(input.data()), input.size(), shape.data(), shape.size());
+    const char* inputNames[] = {"X"};
+    const char* outputNames[] = {"Y"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &inputValue, 1,
+                               outputNames, 1);
+    const auto* data = outputs[0].GetTensorData<float>();
+    return std::vector<float>(data, data + hidden * seq);
+  };
+
+  const auto wq = randomPacked(queryWidth, hidden);
+  const auto sq = randomScales(queryWidth * (hidden / blockSize));
+  const auto wk = randomPacked(kvWidth, hidden);
+  const auto sk = randomScales(kvWidth * (hidden / blockSize));
+  const auto wv = randomPacked(kvWidth, hidden);
+  const auto sv = randomScales(kvWidth * (hidden / blockSize));
+  const auto wo = randomPacked(hidden, queryWidth);
+  const auto so = randomScales(hidden * (queryWidth / blockSize));
+
+  const auto reference = runAttention(queryHeads, kvHeads, wq, sq, wk, sk, wv, sv,
+                                      queryWidth, wo, so);
+  BOOST_REQUIRE_EQUAL(reference.size(), hidden * seq);
+
+  // Per-rank shards. Query and KV heads split by whole heads in the same
+  // proportion, so the local GQA group stays 2 exactly as in the unsplit graph.
+  const auto scaleBytesOf = [] (const std::vector<float>& values) {
+    std::vector<std::uint8_t> bytes(values.size() * sizeof(float));
+    std::memcpy(bytes.data(), values.data(), bytes.size());
+    return bytes;
+  };
+  const auto toFloat = [] (const std::vector<std::uint8_t>& bytes) {
+    std::vector<float> values(bytes.size() / sizeof(float));
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    return values;
+  };
+
+  std::vector<float> reduced(hidden * seq, 0.0f);
+  for (std::uint64_t rank = 0; rank < degree; ++rank) {
+    const auto qPerRank = queryHeads / degree;
+    const auto kvPerRank = kvHeads / degree;
+    const auto qBegin = rank * qPerRank * headDim;
+    const auto qEnd = qBegin + qPerRank * headDim;
+    const auto kvBegin = rank * kvPerRank * headDim;
+    const auto kvEnd = kvBegin + kvPerRank * headDim;
+
+    const auto rankWq = qwen::slicePackedInt4(wq, queryWidth, hidden,
+      qwen::QwenSliceAxis::OutputChannels, qBegin, qEnd);
+    const auto rankWk = qwen::slicePackedInt4(wk, kvWidth, hidden,
+      qwen::QwenSliceAxis::OutputChannels, kvBegin, kvEnd);
+    const auto rankWv = qwen::slicePackedInt4(wv, kvWidth, hidden,
+      qwen::QwenSliceAxis::OutputChannels, kvBegin, kvEnd);
+    const auto rankSq = toFloat(qwen::sliceInt4Scales(scaleBytesOf(sq), queryWidth, hidden,
+      qwen::QwenSliceAxis::OutputChannels, qBegin, qEnd));
+    const auto rankSk = toFloat(qwen::sliceInt4Scales(scaleBytesOf(sk), kvWidth, hidden,
+      qwen::QwenSliceAxis::OutputChannels, kvBegin, kvEnd));
+    const auto rankSv = toFloat(qwen::sliceInt4Scales(scaleBytesOf(sv), kvWidth, hidden,
+      qwen::QwenSliceAxis::OutputChannels, kvBegin, kvEnd));
+    // The O projection reduces over this rank's attention channels only.
+    const auto rankWo = qwen::slicePackedInt4(wo, hidden, queryWidth,
+      qwen::QwenSliceAxis::InputChannels, qBegin, qEnd);
+    const auto rankSo = toFloat(qwen::sliceInt4Scales(scaleBytesOf(so), hidden, queryWidth,
+      qwen::QwenSliceAxis::InputChannels, qBegin, qEnd));
+
+    const auto partial = runAttention(qPerRank, kvPerRank, rankWq, rankSq, rankWk, rankSk,
+                                      rankWv, rankSv, qPerRank * headDim, rankWo, rankSo);
+    BOOST_REQUIRE_EQUAL(partial.size(), reduced.size());
+    for (std::size_t i = 0; i < partial.size(); ++i) reduced[i] += partial[i];
+  }
+
+  double maxAbsolute = 0.0;
+  double maxReference = 0.0;
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    maxAbsolute = std::max(maxAbsolute, double(std::fabs(reduced[i] - reference[i])));
+    maxReference = std::max(maxReference, double(std::fabs(reference[i])));
+  }
+  BOOST_TEST_MESSAGE("attention block max abs error " << maxAbsolute
+    << " against max |reference| " << maxReference);
+  BOOST_CHECK(maxReference > 1e-3);
+  BOOST_CHECK(maxAbsolute < 1e-4);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
