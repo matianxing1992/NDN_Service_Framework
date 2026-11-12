@@ -5369,7 +5369,8 @@ struct AttentionEntryFixture
  * on the shard arithmetic.
  */
 AttentionEntryFixture
-makeShardedLayerZeroAttention(std::uint64_t degree, std::uint64_t rank)
+makeShardedEntry(std::uint64_t degree, std::uint64_t rank, const char* kind,
+                 std::uint64_t layer)
 {
   const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
@@ -5383,9 +5384,8 @@ makeShardedLayerZeroAttention(std::uint64_t degree, std::uint64_t rank)
 
   const auto shape = qwen::deriveQwenTpShape(bytes, 28);
   const auto entries = qwen::classifyQwenTpEntryNodes(model, 28);
-  const auto attn = std::find_if(entries.begin(), entries.end(), [] (const auto& e) {
-    return e.kind == "ATTN" && e.layer == 0;
-  });
+  const auto attn = std::find_if(entries.begin(), entries.end(),
+    [&] (const auto& e) { return e.kind == kind && e.layer == layer; });
   if (attn == entries.end()) return {};
 
   qwen::QwenTpRankGeometry geometry;
@@ -5398,7 +5398,8 @@ makeShardedLayerZeroAttention(std::uint64_t degree, std::uint64_t rank)
   geometry.hidden = shape.hidden;
   geometry.ffn = shape.ffn;
 
-  auto entry = qwen::extractQwenTpEntryModel(model, *attn, "S0R0/ATTN/0");
+  auto entry = qwen::extractQwenTpEntryModel(model, *attn,
+    std::string("S0R0/") + kind + "/" + std::to_string(layer));
   // Degree one is the unsplit reference: no slices and no parameter rewrite, so the
   // same extraction path produces the baseline the sharded graph is compared with.
   const qwen::QwenRankLayerSlices* layer0 = nullptr;
@@ -5406,7 +5407,7 @@ makeShardedLayerZeroAttention(std::uint64_t degree, std::uint64_t rank)
   if (degree > 1) {
     slices = qwen::planQwenTensorSlices(shape, degree, rank);
     for (const auto& candidate : slices)
-      if (candidate.layer == 0) layer0 = &candidate;
+      if (candidate.layer == layer) layer0 = &candidate;
   }
 
   // Read the sidecar ranges directly: the extracted entry keeps external-data
@@ -5536,6 +5537,108 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ShardedMlpPartialsSumToTheUnsplitExport)
+{
+  // C2's MLP identity, the counterpart to the attention case: gate/up split their
+  // output channels and down reduces over the same interval, so
+  //   Y = SUM_r( act(x W_gate,r^T) * (x W_up,r^T) ) W_down,r^T
+  // equals the unsplit block. The down projection is the part that can silently go
+  // wrong: it reduces over a channel range that must match the shard's own gate/up
+  // interval, not the source's.
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
+    "frozen export is required at " + path);
+  const auto reference = makeShardedEntry(1, 0, "MLP", 0);
+  const auto rank0 = makeShardedEntry(2, 0, "MLP", 0);
+  const auto rank1 = makeShardedEntry(2, 1, "MLP", 0);
+  BOOST_REQUIRE(reference.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank0.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank1.entry.graph().node_size() > 0);
+
+  const std::uint64_t hidden = 1024;
+  std::vector<float> residual(hidden);
+  for (std::uint64_t i = 0; i < hidden; ++i)
+    residual[i] = 0.02f * float(static_cast<int>(i % 23) - 11);
+
+  const auto feed = [&] (const onnx::ModelProto& model) {
+    std::set<std::string> oneValueInputs;
+    std::map<std::string, std::vector<float>> inputs;
+    std::map<std::string, std::vector<std::int64_t>> shapes;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      std::vector<std::int64_t> shape;
+      for (const auto& d : value.type().tensor_type().shape().dim())
+        shape.push_back(d.has_dim_value() ? d.dim_value() : 1);
+      shapes[name] = shape;
+      std::size_t count = 1;
+      for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+      // The MLP entry takes the pre-attention residual and the attention output.
+      // Both are float hidden vectors, so both get the real values; leaving either
+      // zero makes every downstream value zero and the comparison vacuous.
+      const bool isHiddenVector = count == hidden &&
+        value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT;
+      inputs[name] = isHiddenVector ? residual : std::vector<float>(count, 0.0f);
+    }
+    std::map<std::string, std::int32_t> types;
+    for (const auto& value : model.graph().input())
+      types[value.name()] = value.type().tensor_type().elem_type();
+    return runOnnxBytes(model, inputs, shapes, types, oneValueInputs);
+  };
+
+  const auto referenceOut = feed(reference.entry);
+  const auto rank0Out = feed(rank0.entry);
+  const auto rank1Out = feed(rank1.entry);
+  // The MLP entry's terminal output is the down projection's result.
+  const auto findDown = [] (const std::map<std::string, std::vector<float>>& outputs)
+    -> const std::vector<float>* {
+    for (const auto& item : outputs)
+      if (item.first.find("down_proj") != std::string::npos) return &item.second;
+    return nullptr;
+  };
+  const auto* expected = findDown(referenceOut);
+  const auto* left = findDown(rank0Out);
+  const auto* right = findDown(rank1Out);
+  BOOST_REQUIRE_MESSAGE(expected != nullptr && left != nullptr && right != nullptr,
+    "the MLP entry does not expose a down_proj output");
+  BOOST_REQUIRE_EQUAL(left->size(), expected->size());
+  BOOST_REQUIRE_EQUAL(right->size(), expected->size());
+
+  double magnitude = 0.0;
+  for (const auto value : *expected) magnitude = std::max(magnitude, std::fabs(double(value)));
+  BOOST_REQUIRE(magnitude > 0.0);
+  double worst = 0.0;
+  std::size_t mismatches = 0;
+  for (std::size_t i = 0; i < expected->size(); ++i) {
+    const double sum = double((*left)[i]) + double((*right)[i]);
+    const double error = std::fabs(sum - double((*expected)[i]));
+    worst = std::max(worst, error);
+    if (error > 1e-3 * magnitude) ++mismatches;
+  }
+  BOOST_TEST_MESSAGE("mlp size=" << expected->size() << " magnitude=" << magnitude
+                    << " worst_error=" << worst << " mismatches=" << mismatches);
+  BOOST_CHECK_MESSAGE(mismatches == 0,
+    "sharded MLP partials differ from the unsplit output: worst " +
+    std::to_string(worst) + " against magnitude " + std::to_string(magnitude));
+
+  // Each rank must hold half the FFN width, or the reduction is over the wrong
+  // channel range and the sum above could still look plausible on some inputs.
+  for (const auto* model : {&rank0.entry, &rank1.entry}) {
+    for (const auto& node : model->graph().node()) {
+      if (node.op_type() != "MatMulNBits") continue;
+      for (const auto& attr : node.attribute()) {
+        if (attr.name() != "N") continue;
+        if (node.name().find("gate_proj") != std::string::npos ||
+            node.name().find("up_proj") != std::string::npos)
+          BOOST_CHECK_EQUAL(attr.i(), 1536);
+        if (node.name().find("down_proj") != std::string::npos)
+          BOOST_CHECK_EQUAL(attr.i(), 1024);
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(ShardedAttentionPartialsSumToTheUnsplitExport)
 {
   // The comparison every earlier case left out. Structures, declarations and byte
@@ -5552,9 +5655,9 @@ BOOST_AUTO_TEST_CASE(ShardedAttentionPartialsSumToTheUnsplitExport)
     "canonical-source.onnx";
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
     "frozen export is required at " + path);
-  const auto reference = makeShardedLayerZeroAttention(1, 0);
-  const auto rank0 = makeShardedLayerZeroAttention(2, 0);
-  const auto rank1 = makeShardedLayerZeroAttention(2, 1);
+  const auto reference = makeShardedEntry(1, 0, "ATTN", 0);
+  const auto rank0 = makeShardedEntry(2, 0, "ATTN", 0);
+  const auto rank1 = makeShardedEntry(2, 1, "ATTN", 0);
   BOOST_REQUIRE(reference.entry.graph().node_size() > 0);
   BOOST_REQUIRE(rank0.entry.graph().node_size() > 0);
   BOOST_REQUIRE(rank1.entry.graph().node_size() > 0);
