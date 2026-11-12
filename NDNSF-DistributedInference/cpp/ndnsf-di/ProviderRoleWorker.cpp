@@ -245,6 +245,30 @@ providerDecodeStateFromOutputs(
                                  std::move(nextState));
 }
 
+/** Reject a sealed step template before any input fetch, runner preparation or
+ * cached output is touched.
+ *
+ * The gate has to run first, not beside the execution branch: a step-carrying
+ * role must not fetch peer partials or prepare a runner for a computation this
+ * Provider cannot perform, and it must never be answered from the whole-role
+ * output cache, whose key does not include the step template.
+ *
+ * The two failures stay distinguishable. An unsupported plan version is a
+ * contract error the operator must fix; a supported version that this build
+ * cannot execute is an implementation gap.
+ */
+void
+requireNoSealedSteps(const RoleSpec& role)
+{
+  if (role.steps == nullptr) return;
+  if (role.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1)
+    throw std::invalid_argument(
+      "Provider role carries an unsupported step plan version");
+  throw std::runtime_error(
+    "DI_NATIVE_STEP_EXECUTION_UNWIRED: this Provider cannot yet execute a "
+    "sealed step template");
+}
+
 } // namespace
 
 void
@@ -447,6 +471,8 @@ ProviderRoleWorker::executeAsyncImpl(
     throw std::invalid_argument(
       "ProviderRoleWorker requires NativeModelRunner or preparation callback");
   }
+  // Before any fetch, preparation or cache lookup.
+  requireNoSealedSteps(role);
   if (collective.has_value()) {
     if (!collective->runtime || collective->rank.empty() ||
         collective->inputSequence == 0) {
@@ -1254,18 +1280,6 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     const bool coordinatorOwnsStreaming = item.role.generationLineage.has_value();
     NativeWorkScope adapterWork(item.role.workStatistics, "role-adapter",
                                NativeWorkKind::UNCLASSIFIED);
-    // A tensor-parallel unit runs a token-local step DAG, not one model call.
-    // Refuse rather than fall through to the whole-role runner: silently running
-    // the peer-incomplete artifact as one role would produce plausible numbers
-    // from the wrong computation, which is worse than failing.
-    if (item.role.steps != nullptr) {
-      if (item.role.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1)
-        throw std::invalid_argument(
-          "Provider role carries an unsupported step plan version");
-      throw std::runtime_error(
-        "DI_NATIVE_STEP_EXECUTION_UNWIRED: this Provider cannot yet execute a "
-        "sealed step template");
-    }
     if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_streamed role=" + item.role.role);

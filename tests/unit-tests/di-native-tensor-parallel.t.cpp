@@ -2392,38 +2392,53 @@ BOOST_AUTO_TEST_CASE(RoleSpecCarriesOnlyItsOwnUnitsSteps)
   BOOST_CHECK_EQUAL(legacy.tensorDegree, 1U);
 }
 
-/** Minimal DependencyIo: enough to drive the worker's execution branch without
- * inventing a transport. Fetching a declared input returns an empty bundle so a
- * case that only cares about the pre-execution decision never blocks.
+/** DependencyIo that counts every call, so a case can prove the worker never
+ * started fetching. Fetching returns a never-ready future on purpose: if the
+ * gate is misplaced the case fails fast instead of blocking a test thread.
  */
-class InertDependencyIo final : public DependencyIo
+class CountingDependencyIo final : public DependencyIo
 {
 public:
   std::future<TensorBundle>
-  prefetchInput(const std::string&, const DependencyEdge& edge) override
+  prefetchInput(const std::string&, const DependencyEdge&) override
   {
-    TensorBundle bundle;
-    bundle.name = edge.tensors.empty() ? std::string{} : edge.tensors.front();
-    bundle.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
-    std::promise<TensorBundle> promise;
-    promise.set_value(std::move(bundle));
-    return promise.get_future();
+    ++prefetchCalls;
+    return std::promise<TensorBundle>{}.get_future();
   }
 
   void
   publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
   {
+    ++publishCalls;
   }
+
+  std::atomic<std::size_t> prefetchCalls{0};
+  std::atomic<std::size_t> publishCalls{0};
 };
 
-BOOST_AUTO_TEST_CASE(WorkerRefusesASealedStepRoleInsteadOfRunningItWhole)
+/** Preparation callback that counts invocations. Returning a null runner is
+ * enough: the gate must reject before this is ever called.
+ */
+class CountingRunnerPreparation
 {
-  // The worker runs one model call per role. A role that carries a sealed step
-  // template needs a different execution model, so the two must not be
-  // conflated: falling through to the whole-role runner would compute something
-  // plausible from a peer-incomplete artifact. The worker must refuse, and the
-  // refusal must name the condition so an operator can tell it apart from an
-  // ordinary adapter failure.
+public:
+  ProviderRoleWorker::NativeRunnerPreparation shared()
+  {
+    return [this] {
+      ++calls;
+      return std::shared_ptr<NativeModelRunner>{};
+    };
+  }
+
+  std::atomic<std::size_t> calls{0};
+};
+
+BOOST_AUTO_TEST_CASE(WorkerRefusesASealedStepRoleBeforeAnyWork)
+{
+  // The gate must run before input fetch, runner preparation and cached-output
+  // lookup. Otherwise a step-carrying role would pull peer partials and prepare a
+  // runner for a computation this Provider cannot perform, and could even be
+  // answered from the whole-role output cache, whose key has no step template.
   qwen::QwenTpShape shape;
   shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
   shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
@@ -2438,49 +2453,60 @@ BOOST_AUTO_TEST_CASE(WorkerRefusesASealedStepRoleInsteadOfRunningItWhole)
   session.attemptEpoch = 1;
   auto role = roleSpecFor(plan, "S0R0", session, assignment, "/provider/0");
   BOOST_REQUIRE(role.steps != nullptr);
+  // Declare an input so a misplaced gate would visibly start fetching it.
+  DependencyEdge pendingInput;
+  pendingInput.scope = "peer-partial";
+  pendingInput.producerRole = "S0R1";
+  pendingInput.consumerRole = "S0R0";
+  pendingInput.plannedDataName = "/peer/partial";
+  pendingInput.tensors = {"partial"};
+  role.inputs.push_back(pendingInput);
 
+  auto io = std::make_shared<CountingDependencyIo>();
+  CountingRunnerPreparation preparation;
   ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
-  // No outputs are declared, so the worker only has to reach the execution
-  // branch. The point of the case is that it refuses before running anything.
-  auto future = worker.executeAsync(
-    "step-refusal-session", std::move(role), std::make_shared<InertDependencyIo>(),
-    [] (const RoleExecutionContext&) {
-      BOOST_FAIL("the whole-role runner must not run for a step-carrying role");
-      return std::map<std::string, TensorBundle>{};
-    });
-  BOOST_CHECK_THROW(future.get(), std::runtime_error);
+
+  // The refusal is synchronous: it must not even enqueue a work item, which is
+  // what makes "zero fetch, zero prepare, zero runner call" testable.
+  BOOST_CHECK_THROW(
+    worker.executePreparedAsync("step-refusal-session", std::move(role), io,
+                                   preparation.shared()),
+    std::runtime_error);
+  BOOST_CHECK_EQUAL(io->prefetchCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(preparation.calls, 0U);
+  BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
 }
 
-BOOST_AUTO_TEST_CASE(WorkerRejectsAnUnknownStepPlanVersion)
+BOOST_AUTO_TEST_CASE(WorkerRejectsAnUnknownStepPlanVersionSynchronously)
 {
-  // Version skew is refused separately from "not wired yet": an unknown version
-  // is a contract error the operator must fix, not an implementation gap.
+  // Version skew is a contract error, reported separately from the
+  // implementation gap so an operator can tell them apart. It is also refused
+  // before any work starts.
+  auto io = std::make_shared<CountingDependencyIo>();
+  CountingRunnerPreparation preparation;
   ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+
   RoleSpec role;
   role.role = "/Stage/0";
   role.requestId = "/request/version-skew";
   role.attemptEpoch = 1;
-  role.tensorDegree = 1;
   role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
     std::vector<NativeExecutionStepSpec>{});
   role.stepPlanVersion = "step-plan-v99";
   role.tensorDegree = 2;
-  auto future = worker.executeAsync(
-    "version-skew-session", std::move(role), std::make_shared<InertDependencyIo>(),
-    [] (const RoleExecutionContext&) {
-      BOOST_FAIL("the whole-role runner must not run for a step-carrying role");
-      return std::map<std::string, TensorBundle>{};
-    });
+
   try {
-    (void)future.get();
+    (void)worker.executePreparedAsync("version-skew-session", std::move(role), io,
+                                     preparation.shared());
     BOOST_FAIL("an unknown step plan version was accepted");
   }
   catch (const std::invalid_argument& error) {
     BOOST_CHECK_EQUAL(std::string(error.what()),
                       std::string("Provider role carries an unsupported step plan version"));
   }
+  BOOST_CHECK_EQUAL(io->prefetchCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(preparation.calls.load(), 0U);
 }
-
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
