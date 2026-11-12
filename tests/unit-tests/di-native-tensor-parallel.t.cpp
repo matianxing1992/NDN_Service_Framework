@@ -7878,6 +7878,78 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(ProjectedPlanAlreadyNamesUnitsSoItsCandidateNeedsNoExpansion)
+{
+  // A projected plan is already in expanded form: its steps name unit roles, not a stage,
+  // and its plan degree is the tensor degree. So the candidate that carries it declares
+  // those units as roles with a per-role degree of one. Nothing is left for the template
+  // to expand -- which is why this shape can be produced without touching the splitter.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan projected;
+  qwen::projectQwenTpPlan(projected, shape, 2, "entry", "S0R0");
+  projected.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+
+  BOOST_CHECK_EQUAL(projected.tensorDegree, 2U);
+  BOOST_CHECK_EQUAL(projected.roles.size(), 2U);
+  // Every step already names a role in the plan -- the property the expansion produces.
+  for (const auto& step : projected.steps) {
+    BOOST_CHECK(std::find(projected.roles.begin(), projected.roles.end(),
+                          step.unitId) != projected.roles.end());
+  }
+  // Slot references follow the rule the step validator enforces: a LOCAL_STEP is
+  // produced inside this unit, a REMOTE_STEP by a peer. The SUM steps are the interesting
+  // case -- they consume this rank's partial locally and the peer's over the network --
+  // so asserting every producer is in the same unit would be wrong, and it is what my
+  // first version of this case did.
+  std::size_t localSlots = 0;
+  std::size_t remoteSlots = 0;
+  for (const auto& step : projected.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.producerStepId.empty()) continue;
+      const auto producerUnit = slot.producerStepId.substr(
+        0, slot.producerStepId.find('/'));
+      if (slot.source == "LOCAL_STEP") {
+        ++localSlots;
+        BOOST_CHECK_EQUAL(producerUnit, step.unitId);
+      }
+      else if (slot.source == "REMOTE_STEP") {
+        ++remoteSlots;
+        BOOST_CHECK(producerUnit != step.unitId);
+      }
+    }
+  }
+  BOOST_CHECK_GT(localSlots, 0U);
+  // The peer partials are what makes this a sharded plan rather than a copy of one.
+  BOOST_CHECK_GT(remoteSlots, 0U);
+
+  // The candidate shape: units as roles, per-role degree one, plan degree two. That
+  // combination satisfies both the step template's degree rule and the hybrid-plan rule,
+  // because no individual role is sharded across Providers.
+  NativeSplitCandidate candidate;
+  candidate.executionPlan = projected;
+  for (const auto& unit : projected.roles) {
+    candidate.executionPlan.roles.push_back(unit);
+    candidate.tensorDegreesByRole[unit] = 1;
+    candidate.rankArtifactDigestsByRole[unit] = {"sha256:" + std::string(64, 'a')};
+    candidate.artifactsByRole[unit] = {"sha256:" + std::string(64, 'a')};
+  }
+  candidate.executionPlan.roles = projected.roles;
+  BOOST_CHECK_EQUAL(candidate.tensorDegreesByRole.size(), 2U);
+  for (const auto& item : candidate.tensorDegreesByRole)
+    BOOST_CHECK_EQUAL(item.second, 1U);
+  // No role is sharded, so no hybrid plan is required -- while the plan's own degree is
+  // still two, which its step template needs.
+  BOOST_CHECK_EQUAL(candidate.executionPlan.tensorDegree, 2U);
+  BOOST_CHECK(!std::any_of(candidate.tensorDegreesByRole.begin(),
+                           candidate.tensorDegreesByRole.end(),
+                           [] (const auto& item) { return item.second != 1; }));
+  // And the step template still validates, which is the whole point of carrying it.
+  BOOST_CHECK_NO_THROW(candidate.executionPlan.validateSteps());
+}
+
 BOOST_AUTO_TEST_CASE(TemplateExpansionRenamesStepsPerRankAndKeepsIntraUnitEdges)
 {
   // The expansion implemented this round, checked on a template shaped like the catalog
