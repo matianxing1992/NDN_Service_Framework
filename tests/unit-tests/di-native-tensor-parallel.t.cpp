@@ -5537,19 +5537,139 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(SamplerCannotReachLogitsBecauseTheyCarryNoOutputEdge)
+BOOST_AUTO_TEST_CASE(WorkerReturnsATerminalSlotNoEdgeCarries)
 {
-  // Exit 4's remaining blocker, measured rather than guessed. The coordinator's
-  // sampler reads a tensor named "logits" from the terminal role's output scopes,
-  // and a role's scopes come from its declared output edges. The TP projection emits
-  // only TENSOR_PARTIAL edges -- partials for the peer -- so no unit exposes logits,
-  // and a generation request would fail with "received no encoded logits" after the
-  // whole prefill had already been computed.
+  // The plan shape above does not prove the worker surfaces anything. A negative
+  // probe that disabled the exposure left every case passing, so this one drives the
+  // worker and asserts the result actually carries the terminal value.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/terminal-slot";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  // Rewrite this unit's head step to be its only terminal: drop every edge and step
+  // that follows the head so the logits slot is unconsumed, which is the situation a
+  // sharded unit is in when nothing reads its final output.
+  // Keep the head plus whatever produces its local inputs, or the step cannot run.
+  // The point is that no *edge* carries logits, not that the unit has one step.
+  std::set<std::string> needed = {"S0R0/HEAD"};
+  std::vector<NativeExecutionStepSpec> trimmed;
+  for (auto it = role.steps->rbegin(); it != role.steps->rend(); ++it) {
+    const auto& step = *it;
+    if (needed.count(step.stepId) == 0) {
+      // A producer is needed only if something already selected consumes its output.
+      bool produces = false;
+      for (const auto& selected : trimmed) {
+        for (const auto& slot : selected.inputSlots)
+          if (slot.producerStepId == step.stepId) produces = true;
+      }
+      if (!produces) continue;
+    }
+    for (const auto& slot : step.inputSlots)
+      if (!slot.producerStepId.empty()) needed.insert(slot.producerStepId);
+    trimmed.push_back(step);
+  }
+  std::reverse(trimmed.begin(), trimmed.end());
+  BOOST_REQUIRE(!trimmed.empty());
+  // The last step is the head; its single output slot is the terminal value.
+  const auto& head = trimmed.back();
+  BOOST_CHECK_EQUAL(head.stepId, std::string("S0R0/HEAD"));
+  BOOST_REQUIRE_EQUAL(head.outputSlots.size(), 1U);
+  const auto terminalSlot = head.outputSlots.front().slotId;
+  BOOST_CHECK_EQUAL(terminalSlot, std::string("logits"));
+  role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(trimmed);
+  // No output edge carries it, so only the worker's own exposure can return it.
+  role.outputs.clear();
+
+  const auto runner = [] (const RoleExecutionContext& ctx) {
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {0.5f, 2.5f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Remote partials are still admitted by scope, even though no *output* edge
+  // carries logits; the trimmed template keeps its SUM steps.
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& edge : role.inputs) {
+    if (edge.consumerStepId.empty()) continue;
+    NamedTensor tensor;
+    tensor.name = "partial";
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(2)};
+    const std::vector<float> values = {0.25f, 0.125f};
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.payload = encodeTensorBundle({tensor});
+    bundle.expectedBytes = bundle.payload.size();
+    initial.emplace(edge.scope, std::move(bundle));
+  }
+  for (const auto& step : trimmed) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("terminal-slot-session", std::move(role),
+    std::make_shared<CountingDependencyIo>(), runner, initial);
+  const auto result = future.get();
+  // The terminal value is in the result under its own slot id, which is what the
+  // sampler looks for.
+  BOOST_REQUIRE_MESSAGE(result.outputsByScope.count(terminalSlot) == 1,
+    "the worker did not surface the terminal slot " + terminalSlot);
+  const auto decoded = decodeTensorBundle(result.outputsByScope.at(terminalSlot).payload);
+  BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+  BOOST_REQUIRE_EQUAL(decoded.front().shape.size(), 1U);
+  std::vector<float> values(2);
+  std::memcpy(values.data(), decoded.front().payload.data(), values.size() * sizeof(float));
+  BOOST_CHECK_CLOSE(values[0], 0.5f, 1e-6);
+  BOOST_CHECK_CLOSE(values[1], 2.5f, 1e-6);
+}
+
+BOOST_AUTO_TEST_CASE(EgressUnitSurfacesLogitsWithoutInventingAConsumer)
+{
+  // The blocker this case used to record is now fixed at its real source: the worker
+  // surfaces terminal step values that no edge and no later step consumes. Logits are
+  // exactly that -- the sampler reads them, and no peer does.
   //
-  // C6 says rank 0 keeps its partial outputs *and* publishes token events and the
-  // final response. The handler's current rule is "a role with output edges takes its
-  // response from those edges", which is exactly what makes those two requirements
-  // collide here.
+  // The projected plan still declares only TENSOR_PARTIAL edges, and that is correct:
+  // inventing an edge with no consumer would break the plan validators, which all
+  // require a non-empty consumer set. So the check is on the worker's result, keyed by
+  // the slot id its template declared.
   qwen::QwenTpShape shape;
   shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
   shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
@@ -5557,53 +5677,48 @@ BOOST_AUTO_TEST_CASE(SamplerCannotReachLogitsBecauseTheyCarryNoOutputEdge)
   NativeExecutionPlan plan;
   qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
 
-  NativeProviderAssignment assignment;
-  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
-  std::set<std::string> headOwners;
+  // The head step declares a vocabulary-wide logits slot and nothing consumes it.
+  std::string headUnit;
+  std::set<std::string> consumedSlots;
   for (const auto& step : plan.steps) {
-    if (step.operation != "CALL_SUBGRAPH") continue;
+    for (const auto& slot : step.inputSlots)
+      if (!slot.producerStepId.empty())
+        consumedSlots.insert(slot.producerStepId + "\n" + slot.producerSlotId);
     if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
-    headOwners.insert(step.unitId);
-  }
-  BOOST_REQUIRE_EQUAL(headOwners.size(), 1U);
-
-  std::size_t unitsExposingLogits = 0;
-  for (const auto& unit : plan.roles) {
-    const auto spec = roleSpecFor(plan, unit, std::string("/session/tp-logits"),
-                                  assignment, "/provider/0");
-    bool carriesLogits = false;
-    bool carriesPartial = false;
-    for (const auto& edge : spec.outputs) {
-      for (const auto& tensor : edge.tensors) {
-        if (tensor == "logits") carriesLogits = true;
-        if (tensor == "partial") carriesPartial = true;
-      }
+    headUnit = step.unitId;
+    bool declaresLogits = false;
+    for (const auto& slot : step.outputSlots) {
+      if (slot.slotId != "logits") continue;
+      declaresLogits = true;
+      // Unconsumed by any step: that is why the worker has to surface it.
+      BOOST_CHECK_EQUAL(consumedSlots.count(step.stepId + "\n" + slot.slotId), 0U);
+      // Vocabulary-wide, not hidden-wide: the last dimension is the vocabulary.
+      BOOST_REQUIRE(!slot.shape.empty());
+      BOOST_CHECK_EQUAL(std::get<std::int64_t>(slot.shape.back()), 151936);
     }
-    if (carriesLogits) ++unitsExposingLogits;
-    BOOST_TEST_MESSAGE("unit " << unit << " outputs=" << spec.outputs.size()
-                      << " partial=" << carriesPartial << " logits=" << carriesLogits);
-    // Every rank produces partials for its peer; that part of C6 holds today.
-    BOOST_CHECK(carriesPartial);
+    BOOST_CHECK_MESSAGE(declaresLogits, "the head step declares no logits slot");
   }
-  // No unit exposes logits. Stated as the number the fix has to raise to one, rather
-  // than as a passing check of the current state.
-  BOOST_CHECK_EQUAL(unitsExposingLogits, 0U);
+  BOOST_REQUIRE_EQUAL(headUnit, std::string("S0R0"));
 
-  // The head step itself does declare a vocabulary-wide logits slot, so the template
-  // is right; what is missing is the edge that carries it to the sampler.
-  bool headDeclaresLogits = false;
-  for (const auto& step : plan.steps) {
-    if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
-    for (const auto& slot : step.outputSlots)
-      if (slot.slotId == "logits") headDeclaresLogits = true;
+  // And the peer has no such slot, so only one unit can surface logits.
+  std::size_t unitsDeclaringLogits = 0;
+  for (const auto& unit : plan.roles) {
+    bool declares = false;
+    for (const auto& step : plan.steps) {
+      if (step.unitId != unit) continue;
+      for (const auto& slot : step.outputSlots)
+        if (slot.slotId == "logits") declares = true;
+    }
+    if (declares) ++unitsDeclaringLogits;
   }
-  BOOST_CHECK_MESSAGE(headDeclaresLogits,
-    "the head step does not declare a logits slot, which would be a different defect");
+  BOOST_CHECK_EQUAL(unitsDeclaringLogits, 1U);
 
-  // Stated as the condition that must change: the egress unit needs a way to surface
-  // its terminal output that does not rely on a peer consuming it, because no peer
-  // consumes the final response.
-  BOOST_CHECK_EQUAL(plan.dependencies.size(), 2U * 2U * 2U);
+  // No dependency declares logits as its payload, which is what would have required
+  // a consumer. The worker's own exposure is the only route.
+  for (const auto& dependency : plan.dependencies) {
+    for (const auto& tensor : dependency.tensors)
+      BOOST_CHECK(tensor != "logits");
+  }
 }
 
 BOOST_AUTO_TEST_CASE(LayerOneUsesTheSkipNormFormAndStillReconstructs)

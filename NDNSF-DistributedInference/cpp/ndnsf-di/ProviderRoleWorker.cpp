@@ -1357,6 +1357,33 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     }
     result.outputsByScope.emplace(edge.scope, found->second);
   }
+
+  // Surface terminal step values that no edge carries. A sharded unit's head
+  // produces logits that no peer consumes -- the sampler reads them -- and relying
+  // on an output edge would require inventing a consumer that does not exist. Only
+  // values with no consumer inside this unit are surfaced, so intermediate
+  // activations stay out of the result.
+  std::set<std::string> consumedKeys;
+  for (const auto& step : steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.producerStepId.empty()) continue;
+      consumedKeys.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+    }
+  }
+  std::set<std::string> edgeKeys;
+  for (const auto& edge : item.role.outputs)
+    edgeKeys.insert(edge.producerStepId + "\n" + edge.producerSlotId);
+  for (const auto& step : steps) {
+    for (const auto& slot : step.outputSlots) {
+      const auto key = step.stepId + "\n" + slot.slotId;
+      if (consumedKeys.count(key) != 0) continue;
+      if (edgeKeys.count(key) != 0) continue;
+      const auto found = produced.find(key);
+      if (found == produced.end()) continue;
+      // Keyed by slot id so a reader finds it by the name the template declared.
+      result.outputsByScope.emplace(slot.slotId, found->second);
+    }
+  }
   return result;
 }
 
