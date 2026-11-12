@@ -79,6 +79,7 @@ struct NativePlacementPlanCore
   std::optional<NativeJson> placementDecisionV4;
   std::shared_ptr<const NativeFixedPlacementCoreV1> fixedCoreOwner;
   bool reusedFixedCore = false; // Runtime evidence, never a wire authority.
+  std::optional<NativeAutomaticShapeSeed> automaticShapeSeed;
 
   const std::map<std::string, NativeSelectionRoleV3>& roleContracts() const
   { return fixedCoreOwner ? fixedCoreOwner->roles() : assemblyByRole; }
@@ -102,6 +103,7 @@ struct NativePlanSealingInputs
   // Synchronous request-local view; never retained by a returned core.
   const std::vector<NativeSelectionRoleV3>* borrowedPreparedRoles = nullptr;
   std::shared_ptr<const NativeFixedPlacementCoreV1> previousFixedCore;
+  std::optional<NativeAutomaticShapeSeed> automaticShapeSeed;
 };
 
 /** Execution-owner contracts, bound after the plan digest is finalized. */

@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
@@ -9,6 +11,8 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 
 #include <ndn-cxx/util/sha256.hpp>
 
@@ -1775,13 +1779,34 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     canonicalSourceDigest);
 }
 
-std::optional<NativeModelRunnerSpec>
-tryLoadNativeCanonicalOnnxRoleFromCache(
+void
+validateNativeAutomaticCachedRunnerSource(
   ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
-  const NativeSelectionProjectionV3& projection,
-  const NativeCanonicalOnnxAssemblerOptions& options,
-  const std::string& canonicalSourceName,
-  const std::string& canonicalSourceDigest)
+  const NativeSelectionProjectionV3& projection, const NativeModelRunnerSpec& spec,
+  const NativeCanonicalOnnxAssemblerOptions& options)
+{
+  if (!projection.automaticShapeSeed) return;
+  if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
+  NativeAssemblyControl control;
+  control.deadline = std::min(ctx.assignment().workDeadline,
+    std::chrono::steady_clock::now() + std::chrono::milliseconds(options.assemblyTimeoutMs));
+  control.maxSourceBytes = projection.assemblyContract().maxSourceBytes;
+  control.maxAssembledBytes = std::min(projection.assemblyContract().maxAssembledBytes,
+                                     NativeCanonicalMaterialPublicationMaxBytes);
+  control.requireActive = [&] {
+    if (!ctx.hasCurrentWorkAuthority() || (ctx.isStreamed() && ctx.streamCancelled()))
+      throw std::runtime_error("DI_NATIVE_REQUEST_CANCELLED_OR_EXPIRED");
+    requireActiveAssembly(options, projection.deadlineMs);
+  };
+  validateAutomaticOnnxRunnerSource(spec, projection, control);
+}
+
+namespace {
+
+NativeCanonicalOnnxFetchers
+canonicalOnnxFetchersFor(ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+                        const NativeSelectionProjectionV3& projection)
 {
   NativeCanonicalOnnxFetchers fetchers;
   const auto storedObjectKeys = projection.storedModelObjectKeyLease;
@@ -1797,9 +1822,38 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     }
     return ctx.getArtifact(name);
   };
+  fetchers.fetchEncryptedLargeData = [&ctx, storedObjectKeys] (
+      const ndn::Name& name, const ndn::Name& service) {
+    if (!service.empty() && service != ctx.assignment().service)
+      return std::optional<ndn::Buffer>{};
+    if (storedObjectKeys) {
+      if (!storedObjectKeys->contains(name))
+        throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
+      return nativeFetchAndOpenStoredModelObjectCurrent(
+        ctx, *storedObjectKeys, name,
+        ctx.assignment().workDeadline);
+    }
+    return ctx.fetchEncryptedLargeDataCurrent(name, ctx.assignment().workDeadline);
+  };
+  return fetchers;
+}
+
+} // namespace
+
+std::optional<NativeModelRunnerSpec>
+tryLoadNativeCanonicalOnnxRoleFromCache(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection,
+  const NativeCanonicalOnnxAssemblerOptions& options,
+  const std::string& canonicalSourceName,
+  const std::string& canonicalSourceDigest)
+{
+  const auto fetchers = canonicalOnnxFetchersFor(ctx, projection);
   auto effective = options;
-  effective.shouldCancel = [&ctx, configured = options.shouldCancel] {
-    return (configured && configured()) || (ctx.isStreamed() && ctx.streamCancelled());
+  effective.shouldCancel = [&ctx, configured = options.shouldCancel,
+                           automatic = projection.automaticShapeSeed.has_value()] {
+    return (configured && configured()) || (ctx.isStreamed() && ctx.streamCancelled()) ||
+           (automatic && !ctx.hasCurrentWorkAuthority());
   };
   return tryLoadNativeCanonicalOnnxRoleFromCache(
     fetchers, projection, effective, canonicalSourceName, canonicalSourceDigest);
@@ -1819,6 +1873,48 @@ validateCanonicalRootPayload(const std::optional<ndn::Buffer>& payload,
   if (sha256Hex(*payload) != recipe.modelManifestDigest)
     throw std::runtime_error("DI_CANONICAL_ROOT_DIGEST_MISMATCH");
   validateBoundedMaterialJson(*payload, "DI_CANONICAL_ROOT_SCHEMA_MISMATCH");
+  if (projection.automaticShapeSeed) {
+    // PropertyTree erases JSON primitive types. Check automatic declarations
+    // before its legacy numeric reader can turn a malformed value into zero.
+    const auto root = nativeParseJson(std::string(payload->begin(), payload->end()), 64);
+    const auto metadata = root.find("metadata");
+    if (metadata == root.end() || !metadata->is_object() ||
+        !metadata->contains("materialManifestDataName"))
+      throw std::runtime_error("DI_AUTOMATIC_SOURCE_METADATA_MISSING");
+    const auto validString = [] (const NativeJson& value, const char* field) {
+      const auto found = value.find(field);
+      return found != value.end() && found->is_string() && !found->get<std::string>().empty();
+    };
+    const auto validSize = [] (const NativeJson& value, const char* field) {
+      const auto found = value.find(field);
+      return found != value.end() && found->is_number_unsigned() &&
+             found->get<std::uint64_t>() != 0;
+    };
+    if (!validString(root, "modelIdentityDigest") || !validString(root, "modelName") ||
+        !validString(*metadata, "canonicalSourceDigest") ||
+        !validSize(*metadata, "canonicalSourceBytes") ||
+        !validString(*metadata, "materialManifestDataName") ||
+        !validString(*metadata, "materialManifestDigest") ||
+        !validString(*metadata, "materialIdentityDigest") ||
+        !validSize(*metadata, "materialManifestBytes"))
+      throw std::runtime_error("DI_AUTOMATIC_SOURCE_ROOT_METADATA_INVALID");
+    const auto initializerBytes = metadata->find("canonicalInitializerBytes");
+    const auto initializerDigest = metadata->find("canonicalInitializerObjectDigest");
+    if ((initializerBytes == metadata->end()) != (initializerDigest == metadata->end()) ||
+        (initializerBytes != metadata->end() &&
+         (!initializerBytes->is_number_unsigned() || !initializerDigest->is_string())))
+      throw std::runtime_error("DI_AUTOMATIC_SOURCE_ROOT_METADATA_INVALID");
+    const auto inlineObjects = metadata->find("materialObjects");
+    if (inlineObjects != metadata->end()) {
+      if (!inlineObjects->is_array())
+        throw std::runtime_error("DI_AUTOMATIC_SOURCE_ROOT_METADATA_INVALID");
+    }
+    else if (!validString(*metadata, "materialReceiptDataName") ||
+             !validString(*metadata, "materialReceiptDigest") ||
+             !validSize(*metadata, "materialReceiptBytes")) {
+      throw std::runtime_error("DI_AUTOMATIC_SOURCE_ROOT_METADATA_INVALID");
+    }
+  }
 }
 
 void
@@ -1835,6 +1931,61 @@ validateCanonicalRootHeader(const boost::property_tree::ptree& root,
     throw std::runtime_error("DI_CANONICAL_ROOT_PROFILE_MISMATCH");
 }
 
+AutomaticOnnxSourceBinding
+automaticSourceForMaterial(const NativeCanonicalSource::MaterialManifest& manifest,
+                           const boost::property_tree::ptree& root,
+                           const NativeSelectionProjectionV3& projection,
+                           const NativeAssemblyControl& control)
+{
+  control.requireActive();
+  const auto metadata = root.get_child_optional("metadata");
+  if (!metadata || manifest.schema != "ndnsf-di-canonical-material-manifest-v2" ||
+      manifest.automaticSourceJson.empty())
+    throw std::runtime_error("DI_AUTOMATIC_SOURCE_METADATA_MISSING");
+  if (manifest.sourceDigest != firstString(*metadata, {"canonicalSourceDigest"}) ||
+      manifest.graphDigest != projection.assemblyContract().graphDigest ||
+      manifest.initializerDigest != projection.assemblyContract().canonicalInitializerDigest ||
+      manifest.manifestDigest != firstString(*metadata, {"materialIdentityDigest"}) ||
+      manifest.manifestDigest != firstString(*metadata, {"materialManifestDigest"}))
+    throw std::runtime_error("DI_CANONICAL_MATERIAL_IDENTITY_MISMATCH");
+  auto binding = AutomaticOnnxSourceBinding::fromSourceMetadata(
+    nativeParseJson(manifest.automaticSourceJson, 64), manifest.sourceDigest,
+    firstUint64(*metadata, {"canonicalInitializerBytes"}),
+    firstString(*metadata, {"canonicalInitializerObjectDigest"}), control);
+  if (binding.sourceContract().sourceDigest != root.get<std::string>("modelIdentityDigest", ""))
+    throw std::runtime_error("DI_AUTOMATIC_SOURCE_MODEL_IDENTITY_MISMATCH");
+  (void)admitAutomaticOnnxProjection(binding, projection, control);
+  return binding;
+}
+
+AutomaticOnnxSourceBinding
+loadAutomaticCachedSource(const NativeCanonicalOnnxFetchers& fetchers,
+                          const boost::property_tree::ptree& root,
+                          const NativeSelectionProjectionV3& projection,
+                          const NativeAssemblyControl& control)
+{
+  control.requireActive();
+  const auto metadata = root.get_child_optional("metadata");
+  if (!metadata) throw std::runtime_error("DI_AUTOMATIC_SOURCE_METADATA_MISSING");
+  const auto name = firstString(*metadata, {"materialManifestDataName"});
+  const auto digest = firstString(*metadata, {"materialManifestDigest"});
+  const auto bytes = firstUint64(*metadata, {"materialManifestBytes"});
+  if (name.empty() || !isSha256Digest(digest) || bytes == 0 ||
+      bytes > NativeCanonicalMaterialPublicationMaxBytes || bytes > control.maxSourceBytes ||
+      bytes > control.maxAssembledBytes / MaterialManifestParseMultiplier)
+    throw std::runtime_error("DI_CANONICAL_MATERIAL_MANIFEST_UNAVAILABLE");
+  auto payload = fetchers.fetchEncryptedLargeData(ndn::Name(name),
+                                                 ndn::Name(projection.plan.serviceName));
+  std::vector<std::uint8_t> absent;
+  NativePlaintextBufferGuard scrubber{payload ? *payload : absent};
+  if (!payload || payload->size() != bytes || sha256Hex(*payload) != digest)
+    throw std::runtime_error("DI_CANONICAL_MATERIAL_MANIFEST_UNAVAILABLE");
+  control.requireActive();
+  validateBoundedMaterialJson(*payload, "DI_CANONICAL_MATERIAL_MANIFEST_INVALID");
+  const auto manifest = parseNativeCanonicalMaterialManifest(*payload);
+  return automaticSourceForMaterial(*manifest, root, projection, control);
+}
+
 } // namespace
 
 std::optional<NativeModelRunnerSpec>
@@ -1845,6 +1996,9 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const std::string& canonicalSourceName,
   const std::string& canonicalSourceDigest)
 {
+  validateNativeAutomaticSelectionBinding(projection);
+  if (projection.automaticShapeSeed)
+    (void)automaticOnnxIoContractForProjection(projection);
   if (options.cacheDir.empty() || options.providerIdentity.empty())
     return std::nullopt;
   const bool protectedRole = projection.assemblyContract().protectionEpoch != "plaintext-v1";
@@ -1874,6 +2028,21 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   static_cast<void>(canonicalSourceDigest);
   if (!isSha256Digest(projection.assemblyContract().recipeDigest))
     return std::nullopt;
+
+  std::optional<boost::property_tree::ptree> verifiedCurrentRoot;
+  const auto currentRoot = [&] () -> const boost::property_tree::ptree& {
+    if (!verifiedCurrentRoot) {
+      const auto payload = fetchers.getArtifact(ndn::Name(projection.canonicalArtifactName));
+      validateCanonicalRootPayload(payload, projection);
+      std::istringstream input(std::string(payload->begin(), payload->end()));
+      boost::property_tree::ptree root;
+      boost::property_tree::read_json(input, root);
+      validateCanonicalRootHeader(root, projection);
+      requireActiveAssembly(options, projection.deadlineMs);
+      verifiedCurrentRoot.emplace(std::move(root));
+    }
+    return *verifiedCurrentRoot;
+  };
 
   const auto cacheRoot = std::filesystem::path(options.cacheDir);
   const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
@@ -1910,14 +2079,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         !options.cacheCompatibilitySourceDir.empty() ||
         projection.canonicalArtifactName.empty())
       return std::nullopt;
-    const auto rootPayload = fetchers.getArtifact(ndn::Name(projection.canonicalArtifactName));
-    validateCanonicalRootPayload(rootPayload, projection);
-    std::istringstream rootInput(std::string(rootPayload->begin(), rootPayload->end()));
-    boost::property_tree::ptree currentRoot;
-    boost::property_tree::read_json(rootInput, currentRoot);
-    validateCanonicalRootHeader(currentRoot, projection);
-    requireActiveAssembly(options, projection.deadlineMs);
-    const auto sourceMetadata = currentRoot.get_child_optional("metadata");
+    const auto& root = currentRoot();
+    const auto sourceMetadata = root.get_child_optional("metadata");
     const auto currentSourceDigest = sourceMetadata
       ? firstString(*sourceMetadata, {"canonicalSourceDigest", "canonical_source_digest",
                                       "sourceDigest", "source_digest"}) : std::string{};
@@ -1925,8 +2088,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         firstUint64(*sourceMetadata, {"canonicalSourceBytes", "canonical_source_bytes",
                                      "sourceBytes", "source_bytes"}) == 0)
       throw std::runtime_error("DI_CANONICAL_SOURCE_METADATA_MISSING");
-    const auto modelName = currentRoot.get<std::string>("modelName", projection.plan.modelName);
-    const auto modelDigest = currentRoot.get<std::string>("modelIdentityDigest", "");
+    const auto modelName = root.get<std::string>("modelName", projection.plan.modelName);
+    const auto modelDigest = root.get<std::string>("modelIdentityDigest", "");
     if (modelName.empty() || modelDigest.empty())
       throw std::runtime_error("DI_CANONICAL_ROOT_MODEL_IDENTITY_MISSING");
     const auto plaintextRoleRoot = cacheRoot / "assembled" / safeRole(
@@ -1980,6 +2143,22 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       std::filesystem::remove_all(entry, cleanupError);
     });
   };
+
+  std::string automaticSourceBindingJson;
+  if (projection.automaticShapeSeed) {
+    if (!fetchers.getArtifact || !fetchers.fetchEncryptedLargeData ||
+        projection.canonicalArtifactName.empty()) return std::nullopt;
+    if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000)
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
+    const NativeAssemblyControl control{
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(options.assemblyTimeoutMs),
+      [&] { requireActiveAssembly(options, projection.deadlineMs); },
+      projection.assemblyContract().maxSourceBytes, projection.assemblyContract().maxAssembledBytes};
+    // All current source/seed parsing and serialization stays outside cache
+    // recovery: an invalid request must not discard a valid assembled entry.
+    const auto binding = loadAutomaticCachedSource(fetchers, currentRoot(), projection, control);
+    automaticSourceBindingJson = binding.canonicalJson(control);
+  }
 
   try {
     const auto modelPath = directory /
@@ -2121,7 +2300,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
         spec.metadata["encryptedArtifactDigest"] = std::move(encryptedArtifactDigest);
       }
     }
-    if (projection.generationContract.enabled) {
+    if (projection.generationContract.enabled && !projection.automaticShapeSeed) {
         const auto& generation = projection.generationContract;
         if (!generation.stateSuccessorMap.empty())
           spec.metadata["stateSuccessorMap"] = generation.stateSuccessorMap;
@@ -2168,6 +2347,9 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       if (options.reportProgress)
         options.reportProgress("ENTRY_TABLE_READY", 0.95);
     }
+    bindAutomaticOnnxRunnerIo(spec, projection);
+    if (!automaticSourceBindingJson.empty())
+      spec.metadata["automaticSourceBinding"] = automaticSourceBindingJson;
     if (options.reportProgress)
       options.reportProgress("CACHE_HIT", 0.90);
     return spec;
@@ -2439,6 +2621,9 @@ prepareNativeCanonicalOnnxRole(
       projection.assemblyContract().maxAssembledBytes > std::numeric_limits<std::uint64_t>::max() - MaxAssemblyMetadataBytes)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
   requireActiveAssembly(options, projection.deadlineMs);
+  validateNativeAutomaticSelectionBinding(projection);
+  if (projection.automaticShapeSeed)
+    (void)automaticOnnxIoContractForProjection(projection);
   if (options.providerIdentity.empty() || !options.signManifest) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_SIGNER_MISSING");
   }
@@ -2672,6 +2857,7 @@ prepareNativeCanonicalOnnxRole(
     const auto rootFile = rootPath / "root.json";
     const auto sourceFile = rootPath / "canonical.onnx";
     NativeCanonicalSource canonicalSource;
+    std::string automaticSourceBindingJson;
     NativeCanonicalMaterializedFiles materializedFiles;
     const auto initializerFile = rootPath / "model.onnx.data";
     std::shared_ptr<const NativeCanonicalByteRangeSource> initializerFileOwner;
@@ -2794,6 +2980,8 @@ prepareNativeCanonicalOnnxRole(
       materialManifestBytes != 0 ||
       inlineMaterialObjects || !materialReceiptName.empty() ||
       !materialReceiptDigest.empty() || materialReceiptBytes != 0;
+    if (projection.automaticShapeSeed && !materialMetadataPresent)
+      throw std::runtime_error("DI_AUTOMATIC_SOURCE_METADATA_MISSING");
     if (!materialMetadataPresent && sourceName.empty())
       throw std::runtime_error("DI_CANONICAL_SOURCE_NAME_MISSING");
 
@@ -2876,7 +3064,9 @@ prepareNativeCanonicalOnnxRole(
                                      materialReceiptBytes != 0)))
         throw std::runtime_error("DI_CANONICAL_MATERIAL_METADATA_MISSING");
       if (materialManifestBytes > projection.assemblyContract().maxSourceBytes ||
-          materialManifestBytes > projection.assemblyContract().maxAssembledBytes)
+          materialManifestBytes > projection.assemblyContract().maxAssembledBytes ||
+          (projection.automaticShapeSeed &&
+           materialManifestBytes > NativeCanonicalMaterialPublicationMaxBytes))
         throw std::runtime_error("DI_CANONICAL_MATERIAL_MANIFEST_UNAVAILABLE");
       const auto checkedMultiply = [] (const std::uint64_t value,
                                        const std::uint64_t multiplier) {
@@ -2906,6 +3096,11 @@ prepareNativeCanonicalOnnxRole(
           materialManifest->graphDigest != projection.assemblyContract().graphDigest ||
           materialManifest->initializerDigest != projection.assemblyContract().canonicalInitializerDigest)
         throw std::runtime_error("DI_CANONICAL_MATERIAL_IDENTITY_MISMATCH");
+      if (projection.automaticShapeSeed) {
+        const auto binding = automaticSourceForMaterial(*materialManifest, root,
+                                                        projection, assemblyControl);
+        automaticSourceBindingJson = binding.canonicalJson(assemblyControl);
+      }
       // The parsed manifest is the authenticated owner from this point on;
       // release the transport copy before retaining selected payloads.
       manifestBytes.clear();
@@ -3740,7 +3935,7 @@ prepareNativeCanonicalOnnxRole(
     // role before the runner is constructed; keeping the projection fields on
     // the assembled spec prevents an adapter-local default from changing the
     // signed dynamic-past or causal-position contract.
-    if (projection.generationContract.enabled) {
+    if (projection.generationContract.enabled && !projection.automaticShapeSeed) {
       const auto& generation = projection.generationContract;
       if (!generation.stateSuccessorMap.empty())
         spec.metadata["stateSuccessorMap"] = generation.stateSuccessorMap;
@@ -3773,6 +3968,7 @@ prepareNativeCanonicalOnnxRole(
     }
     bindNativeRunnerOutputScopes(projection, spec);
     bindNativeRunnerUnrankedInputs(projection, spec);
+    bindAutomaticOnnxRunnerIo(spec, projection);
     // A rank that must execute a sealed step template gets its per-entry table
     // here, after the rank file is final and before the spec leaves the
     // assembler. Doing it earlier would split a file that is still being
@@ -3822,6 +4018,8 @@ prepareNativeCanonicalOnnxRole(
                               static_cast<std::uint64_t>(layers), "entries");
     }
     requireActiveAssembly(options, projection.deadlineMs);
+    if (!automaticSourceBindingJson.empty())
+      spec.metadata["automaticSourceBinding"] = std::move(automaticSourceBindingJson);
     logAssemblyProgressLine(projection, "RUNNER_SPEC_READY", 1.0, 0, "runner");
     if (!protectedRole) std::filesystem::remove_all(rootPath);
     // The Provider cache receives the runner metadata and installs its own
@@ -3866,36 +4064,12 @@ prepareNativeCanonicalOnnxRole(
   const NativeSelectionProjectionV3& projection,
   const NativeCanonicalOnnxAssemblerOptions& options)
 {
-  NativeCanonicalOnnxFetchers fetchers;
-  const auto storedObjectKeys = projection.storedModelObjectKeyLease;
-  if (static_cast<bool>(storedObjectKeys) !=
-      !projection.storedModelCacheIdentity.empty())
-    throw std::runtime_error("DI_STORED_MODEL_KEY_CACHE_IDENTITY_MISMATCH");
-  fetchers.getArtifact = [&ctx, storedObjectKeys] (const ndn::Name& name) {
-    if (storedObjectKeys) {
-      if (!storedObjectKeys->contains(name))
-        throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
-      return nativeFetchAndOpenStoredModelObjectCurrent(
-        ctx, *storedObjectKeys, name, ctx.assignment().workDeadline);
-    }
-    return ctx.getArtifact(name);
-  };
-  fetchers.fetchEncryptedLargeData = [&ctx, storedObjectKeys] (
-      const ndn::Name& name, const ndn::Name& service) {
-    if (!service.empty() && service != ctx.assignment().service)
-      return std::optional<ndn::Buffer>{};
-    if (storedObjectKeys) {
-      if (!storedObjectKeys->contains(name))
-        throw std::runtime_error("DI_STORED_MODEL_OBJECT_KEY_MISSING");
-      return nativeFetchAndOpenStoredModelObjectCurrent(
-        ctx, *storedObjectKeys, name,
-        ctx.assignment().workDeadline);
-    }
-    return ctx.fetchEncryptedLargeDataCurrent(name, ctx.assignment().workDeadline);
-  };
+  const auto fetchers = canonicalOnnxFetchersFor(ctx, projection);
   auto effective = options;
-  effective.shouldCancel = [&ctx, configured = options.shouldCancel] {
-    return (configured && configured()) || (ctx.isStreamed() && ctx.streamCancelled());
+  effective.shouldCancel = [&ctx, configured = options.shouldCancel,
+                           automatic = projection.automaticShapeSeed.has_value()] {
+    return (configured && configured()) || (ctx.isStreamed() && ctx.streamCancelled()) ||
+           (automatic && !ctx.hasCurrentWorkAuthority());
   };
   return prepareNativeCanonicalOnnxRole(fetchers, projection, effective);
 }

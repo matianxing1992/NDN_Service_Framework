@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -404,9 +405,14 @@ void NativePreparedCanonicalPublication::validate() const
     try {
       const auto metadata = nativeParseJson(preparedMetadataJson);
       if (!metadata.is_object() ||
-          metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1" ||
           nativeCanonicalJson(metadata) != preparedMetadataJson)
         throw std::invalid_argument("native prepared metadata is invalid");
+      // Value validation has no operation owner; publication/recovery also
+      // validate under their live control before using these facts.
+      const NativeAssemblyControl metadataControl{
+        std::chrono::steady_clock::time_point::max(), [] {}, 0,
+        NativeCanonicalMaterialPublicationMaxBytes};
+      validateNativePreparedMetadataVersion(metadata, metadataControl);
     }
     catch (...) {
       throw std::invalid_argument("native prepared metadata is invalid");
@@ -1190,6 +1196,8 @@ NativePreparedCanonicalPublication NativeCanonicalArtifactPublisher::prepareUnca
     control.deadline, [&control] { control.requireActive(); },
     std::max(model.canonicalSourceBytes, model.canonicalInitializerBytes),
     m_options.maxPublicationBytes};
+  if (source && !source->preparedMetadataJson.empty())
+    validateNativePreparedMetadataVersion(nativeParseJson(source->preparedMetadataJson), sourceControl);
   if (!source || (!materialBacked && source->modelBytes.empty()) ||
       (!materialBacked && (source->modelBytes.size() != model.canonicalSourceBytes ||
        nativePlanningDigest(source->modelBytes.data(), source->modelBytes.size()) !=

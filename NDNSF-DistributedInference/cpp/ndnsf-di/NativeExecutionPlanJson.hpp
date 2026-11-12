@@ -5,6 +5,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantTypes.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-automatic-shape-seed.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
 
 #include <boost/property_tree/ptree_fwd.hpp>
@@ -84,6 +85,7 @@ struct NativeSelectionRoleV3
   // its legacy digest bytes.
   std::uint64_t tensorParallelDegree = 0;
   std::uint64_t tensorParallelRank = 0;
+  std::string automaticContractDigest;
 };
 
 struct NativeGenerationExecutionContractV1
@@ -148,6 +150,7 @@ struct NativeSelectionProjectionV3
   NativeRoleDataflowContractV3 dataflow;
   NativeDeviceBindingV3 deviceBinding;
   NativeGenerationExecutionContractV1 generationContract;
+  std::optional<NativeAutomaticShapeSeed> automaticShapeSeed;
   std::optional<ConversationStateReferenceV1> conversationStateReference;
   std::optional<ConversationTurnBindingV1> conversationTurnBinding;
   // Optional bounded native recovery contract, admitted with this Selection.

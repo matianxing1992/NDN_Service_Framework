@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 
 #include <atomic>
 #include <mutex>
@@ -39,6 +40,14 @@ NativeModelRunner::~NativeModelRunner() noexcept
   auto& registry = runnerCacheIdentityRegistry();
   std::lock_guard<std::mutex> lock(registry.mutex);
   registry.identities.erase(this);
+}
+
+std::shared_ptr<const AutomaticOnnxRequestBinding>
+NativeModelRunner::validateAutomaticRequestBinding(
+  const NativeSelectionProjectionV3&, const NativeRequestControl& control) const
+{
+  control.requireActive();
+  throw std::invalid_argument("AUTOMATIC_SOURCE_RUNNER_UNSUPPORTED");
 }
 
 std::uint64_t

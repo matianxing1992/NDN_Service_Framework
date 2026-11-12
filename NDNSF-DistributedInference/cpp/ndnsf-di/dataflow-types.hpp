@@ -23,6 +23,7 @@ namespace ndnsf::di {
 // to carry a borrowed view of them, so they are declared here rather than
 // including the planner from this shared value header.
 struct NativeExecutionStepSpec;
+class AutomaticOnnxRequestBinding;
 
 // A value held in this process as typed host tensors rather than as an encoded
 // bundle. It is defined beside the codec because it borrows `NamedTensorView`;
@@ -248,6 +249,8 @@ struct RoleSpec
   std::shared_ptr<const std::vector<NativeExecutionStepSpec>> steps;
   std::string stepPlanVersion;
   std::uint64_t tensorDegree = 1;
+  // Process-local immutable admission, retained independently of runner reuse.
+  std::shared_ptr<const AutomaticOnnxRequestBinding> automaticBinding;
 };
 
 /** Attach certified endpoints to a role spec's edges.
@@ -330,6 +333,10 @@ struct RoleExecutionContext
   // Slot-resolved values for the active step: local slots already produced in
   // this unit, remote slots already admitted. Keyed by sealed slot id.
   std::map<std::string, TensorBundle> stepInputsBySlot;
+  std::shared_ptr<const AutomaticOnnxRequestBinding> automaticBinding;
+  // Synchronous worker-owned fence; never retained by an adapter/session.
+  // It may run under the adapter execution lock and must not re-enter the runner.
+  std::function<void()> executionGuard;
 };
 
 using RoleRunner = std::function<std::map<std::string, TensorBundle>(

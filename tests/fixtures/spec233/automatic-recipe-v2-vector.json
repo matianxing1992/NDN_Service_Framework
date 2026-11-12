@@ -1,0 +1,10 @@
+{
+  "schema": "spec233-automatic-recipe-v2-vector-v1",
+  "provenance": "Frozen Spec182 independent reference row; exact original recipe keys, numeric dimensions and ordering, with only specified v2 schema and automaticContractDigest added; canonical JSON and SHA computed with Python stdlib, not production C++ serializers",
+  "legacyFixtureSha256": "77300e135a960e8c8cb26c9500e2058934ef47a87aabb19191cffafee289330e",
+  "legacyCase": "chain-whole-inline",
+  "contractDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "canonicalRecipe": "{\"adapterDescriptorDigest\":\"sha256:3250e1a246b6474dcb63701a2151cae53fa996e1e9216ec75319dcef8f38fe94\",\"artifactProfileDigest\":\"sha256:0fd96faa18054754625706418707d4f5a36f16f69bc3accbf232df7f08e613a9\",\"assemblerDescriptorDigest\":\"sha256:0c7081c4868b524c2f8ad010508a96cb4a782057afece2f884e21f031fc6bb9f\",\"automaticContractDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"backendAbi\":\"onnxruntime\",\"canonicalInitializerDigest\":\"sha256:d17ebe52d251b61d49de569296970d42b619897ab6db0ea52921ab554ba07d82\",\"expectedInputs\":[{\"dtype\":\"float32\",\"name\":\"X\",\"shape\":[2,2]}],\"expectedOutputs\":[{\"dtype\":\"float32\",\"name\":\"Y\",\"shape\":[2,2]}],\"graphDigest\":\"sha256:b5199a674ffa8be96deb80b2ebbd58fa87d7154e7fb3d2d1bfc2a779a5fed8cf\",\"inputNames\":[\"X\"],\"layerBegin\":0,\"layerEnd\":0,\"layout\":\"native\",\"maxAssembledBytes\":8589934592,\"maxNodes\":1000000,\"maxSourceBytes\":8589934592,\"modelManifestDigest\":\"sha256:f7e68826f1ec9ed55c6353873c5f8aaf15f073ccd06e3bcdabe9855f9c416536\",\"nodeIndices\":[0,1],\"outputNames\":[\"Y\"],\"padding\":\"none\",\"precision\":\"fp32\",\"quantization\":\"none\",\"roleKind\":\"COMPONENT_SET\",\"schema\":\"ndnsf-di-certified-onnx-assembly-v2\"}",
+  "recipeDigest": "sha256:2f1c5b75056de9c5ff70182f3f39182f3973cf8e16b21a3a5f23468ae2ef557e",
+  "expectedModelDigest": "sha256:59269bc795b453dcc15fcb34dd6c9b1625070bc094f32361fcd236c3b6600383"
+}

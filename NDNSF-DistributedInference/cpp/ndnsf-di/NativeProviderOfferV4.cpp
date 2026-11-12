@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -1125,14 +1126,14 @@ issueNativeProviderOfferV4(const std::vector<std::uint8_t>& requestPayload,
 
   NativeJson request;
   try {
-    request = nativeParseJson(std::string(requestPayload.begin(), requestPayload.end()));
+    const auto parsed = parseNativeRequestOffer(
+      std::string(requestPayload.begin(), requestPayload.end()));
+    if (!parsed) return std::nullopt;
+    request = *parsed;
   }
   catch (const std::exception&) {
     return std::nullopt;
   }
-  if (!request.is_object() ||
-      request.value("schema", std::string{}) != "ndnsf-di-request-envelope-v2")
-    return std::nullopt;
 
   const auto requestId = request.value("request_id", std::string{});
   const auto service = request.value("service", std::string{});

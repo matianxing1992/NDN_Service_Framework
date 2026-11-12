@@ -219,6 +219,11 @@ public:
   runtimeMetricsSnapshot() const final
   { return m_inner->runtimeMetricsSnapshot(); }
 
+  std::shared_ptr<const AutomaticOnnxRequestBinding>
+  validateAutomaticRequestBinding(const NativeSelectionProjectionV3& projection,
+                                  const NativeRequestControl& control) const final
+  { return m_inner->validateAutomaticRequestBinding(projection, control); }
+
   bool supportsOpaqueStateHandles() const final
   { return m_inner->supportsOpaqueStateHandles(); }
 

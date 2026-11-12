@@ -14,8 +14,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 namespace ndnsf::di {
+
+struct NativeRequestControl;
+struct NativeSelectionProjectionV3;
+class AutomaticOnnxRequestBinding;
 
 struct NativeModelRunnerSpec
 {
@@ -239,6 +245,44 @@ public:
   /** Release all adapter-owned buffers for one conversation state. */
   virtual bool
   releaseConversationState(const NativeConversationStateHandleV1& state);
+
+  /** Check current automatic source/shape binding before executable readiness.
+   * Default runners do not support automatic models. Never retain the current
+   * projection, authorization callback or request control in a shared runner.
+   */
+  virtual std::shared_ptr<const AutomaticOnnxRequestBinding>
+  validateAutomaticRequestBinding(const NativeSelectionProjectionV3& projection,
+                                  const NativeRequestControl& control) const;
+};
+
+/** One result of the existing bounded preparation operation.
+ * Reusable runners never retain the invocation's immutable binding.
+ */
+struct NativePreparedRunner
+{
+  NativePreparedRunner() = default;
+
+  NativePreparedRunner(std::nullptr_t)
+  {
+  }
+
+  template<typename T,
+           std::enable_if_t<std::is_convertible_v<std::shared_ptr<T>,
+                                                 std::shared_ptr<NativeModelRunner>>, int> = 0>
+  NativePreparedRunner(std::shared_ptr<T> value)
+    : runner(std::move(value))
+  {
+  }
+
+  NativePreparedRunner(std::shared_ptr<NativeModelRunner> value,
+                       std::shared_ptr<const AutomaticOnnxRequestBinding> binding)
+    : runner(std::move(value))
+    , automaticBinding(std::move(binding))
+  {
+  }
+
+  std::shared_ptr<NativeModelRunner> runner;
+  std::shared_ptr<const AutomaticOnnxRequestBinding> automaticBinding;
 };
 
 class LambdaModelRunner final : public NativeModelRunner

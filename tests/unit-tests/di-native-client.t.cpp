@@ -7,6 +7,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include <openssl/evp.h>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
@@ -15,6 +16,7 @@
 
 #include <boost/test/unit_test.hpp>
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include <algorithm>
 #include <future>
 #include <deque>
 #include <limits>
@@ -184,6 +186,56 @@ BOOST_AUTO_TEST_CASE(ProductionRequestIdsCarryProcessOwnerScope)
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_FIXTURE_TEST_SUITE(Spec182ClientState, ClientStateFixture)
+
+BOOST_AUTO_TEST_CASE(CoreExplicitDiscoveryKeepsOriginalInputPrivateAndEnforcesLimit)
+{
+  struct Captured {
+    std::mutex mutex;
+    std::vector<ndn::Buffer> payloads;
+  };
+  const auto captured = std::make_shared<Captured>();
+  user->setRequestPublisher([captured](const auto&, const auto&, const auto&, const auto&,
+                                      const ndn_service_framework::RequestMessage& message, size_t) {
+    std::lock_guard<std::mutex> lock(captured->mutex);
+    captured->payloads.push_back(message.getPayload());
+  });
+  const std::string original = R"({"schema":"ndnsf-di-request-envelope-v3","input_payload_b64":"PRIVATE_INPUT"})";
+  const ndn::Buffer body(original.begin(), original.end());
+  ndn_service_framework::RequestCapabilities capabilities;
+  capabilities.setField("RequestScopedConfidentialityV1", "required");
+  const auto noop = [](const auto&...) {};
+  const auto begin = [&](const ndn::Buffer& discovery, const ndn::Name& requestId) {
+    return user->BeginCollaborationWithProviders(ndn::Name("/generic/work"), body,
+      100, 1000, noop, noop, noop, requestId, {}, capabilities, std::nullopt,
+      {}, {}, {}, {}, {}, std::optional<ndn::Buffer>(discovery));
+  };
+  for (const std::size_t bytes : {32U, 4096U}) {
+    ndn::Buffer discovery(bytes);
+    std::fill(discovery.begin(), discovery.end(), 'd');
+    const auto id = begin(discovery, ndn::Name("/client-test/discovery/" + std::to_string(bytes)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    bool observed = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      face.getIoContext().restart(); face.getIoContext().poll();
+      {
+        std::lock_guard<std::mutex> lock(captured->mutex);
+        if (!captured->payloads.empty()) {
+          BOOST_CHECK(captured->payloads.back() == discovery);
+          BOOST_CHECK(captured->payloads.back() != body);
+          captured->payloads.clear(); observed = true;
+        }
+      }
+      if (observed) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    user->CancelCollaboration(id);
+    BOOST_CHECK(observed);
+  }
+  const auto pending = user->getPendingCallCount();
+  BOOST_CHECK_THROW(begin(ndn::Buffer(4097), ndn::Name("/client-test/discovery/oversized")),
+                    std::invalid_argument);
+  BOOST_CHECK_EQUAL(user->getPendingCallCount(), pending);
+}
 
 BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
 {
@@ -1068,6 +1120,85 @@ BOOST_AUTO_TEST_CASE(Spec184TurnPublicationRace)
   BOOST_CHECK_THROW(owner.acceptTokenPrefix(replacement, {4}), std::runtime_error);
   BOOST_CHECK(initialBound.load() || initialBindFailed.load());
   BOOST_CHECK(replacementBound.load() || replacementBindFailed.load());
+}
+
+BOOST_AUTO_TEST_CASE(AutomaticRequestRejectsLegacyAssignmentBeforeBackendActions)
+{
+  using namespace ndn_service_framework;
+  using namespace ndn_service_framework::test;
+  const auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/client-test/provider"));
+  const auto authorityCert = makeRsaIdentity(keyChain, ndn::Name("/client-test/provider-aa"));
+  IsolatedTestTrust providerTrust{providerCert, authorityCert};
+  LocalServiceProvider provider(face, ndn::Name("/client-test"), providerCert,
+                                authorityCert, providerTrust.schemaPath());
+  std::size_t runnerCalls = 0;
+  std::size_t preparationCalls = 0;
+  std::size_t protectedCalls = 0;
+  class CountingFactory final : public NativeModelRunnerFactory
+  {
+  public:
+    explicit CountingFactory(std::size_t& calls) : m_calls(calls) {}
+    std::shared_ptr<NativeModelRunner>
+    create(const NativeModelRunnerSpec&) const override
+    {
+      ++m_calls;
+      throw std::logic_error("unexpected backend creation");
+    }
+  private:
+    std::size_t& m_calls;
+  };
+  NativeProviderHandlerConfig config;
+  config.executionPolicy = "DATA_DRIVEN_V2";
+  config.plan.executionPolicy = config.executionPolicy;
+  config.localProviderName = providerCert.getIdentity().toUri();
+  config.providerBootId = "automatic-assignment-guard";
+  config.runnerFactory = std::make_shared<CountingFactory>(runnerCalls);
+  config.runnerPreparationFactory = [&] (auto&, const auto&, const auto&) {
+    ++preparationCalls;
+    throw std::logic_error("unexpected role preparation");
+    return NativeModelRunnerSpec{};
+  };
+  config.protectedRuntimeFactory = [&] (auto&, const auto&, const auto&, const auto&)
+      -> std::shared_ptr<ProtectedRuntime> {
+    ++protectedCalls;
+    throw std::logic_error("unexpected protected runtime");
+  };
+  std::string failure;
+  config.nativeFailureObserver =
+    std::make_shared<NativeProviderHandlerConfig::NativeFailureObserver>(
+      [&] (const auto&, const std::string& reason) { failure = reason; });
+  // All callback inputs and the real Core provider outlive this synchronous handler/runtime.
+  auto runtime = makeNativeProviderCollaborationRuntime(std::move(config));
+  NativeAutomaticShapeSeed seed{nativePlanningDigest("contract"), nativePlanningDigest("binding"),
+    nativePlanningDigest("budget"), nativePlanningDigest("envelope"), 32, 0, {{"graph/X", {2, 2}}}};
+  const std::vector<std::string> assignments{"", "role=Backbone;", "{}"};
+  for (std::size_t index = 0; index < assignments.size(); ++index) {
+    const std::string requestId = "/client-test/automatic-guard/" + std::to_string(index);
+    const auto wire = nativeCanonicalJson(NativeJson{
+      {"schema", "ndnsf-di-request-envelope-v3"}, {"schema_version", 3},
+      {"request_id", requestId}, {"attempt", 1},
+      {"task", {{"adapter", "automatic-onnx"}, {"generation_mode", "TOKEN_DIAGNOSTIC"}}},
+      {"automatic_shape_seed", nativeAutomaticShapeSeedToJson(seed)}});
+    BOOST_REQUIRE(parseNativeRequestEnvelope(wire).has_value());
+    BOOST_REQUIRE(!ndnsf::di::detail::requiresSelectionGenerationOptions(wire, false));
+    RequestMessage request;
+    ndn::Buffer payload(wire.begin(), wire.end());
+    request.setPayload(payload, payload.size());
+    ServiceProvider::CollaborationAssignment assignment;
+    assignment.role = "/Backbone";
+    assignment.service = ndn::Name("/di/infer");
+    assignment.assignmentPayload = ndn::Buffer(assignments[index].begin(), assignments[index].end());
+    assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    assignment.workCurrent = [] { return true; };
+    ServiceProvider::CollaborationContext context(provider, ndn::Name("/client-test/user"),
+      ndn::Name(requestId), request, std::move(assignment));
+    failure.clear();
+    runtime.handler(context, request);
+    BOOST_CHECK_EQUAL(failure, "automatic Selection differs from its original request");
+    BOOST_CHECK_EQUAL(runnerCalls, 0U);
+    BOOST_CHECK_EQUAL(preparationCalls, 0U);
+    BOOST_CHECK_EQUAL(protectedCalls, 0U);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(HandleRetainsCoreOwnerAfterClientClose)

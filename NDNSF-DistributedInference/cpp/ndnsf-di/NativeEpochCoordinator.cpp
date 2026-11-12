@@ -157,6 +157,11 @@ roleSpecForEpoch(const NativeEpochCoordinatorConfig& config, std::size_t sequenc
     ? config.roleSpecFactory(sequence)
     : roleSpecFor(config.plan, config.role, config.sessionId,
                   config.assignment, config.localProvider, sequence);
+  if (config.automaticBinding) {
+    if (role.automaticBinding && role.automaticBinding != config.automaticBinding)
+      throw std::invalid_argument("AUTOMATIC_REQUEST_BINDING_OWNER_MISMATCH");
+    role.automaticBinding = config.automaticBinding;
+  }
   role.workStatistics = config.workStatistics;
   const auto bindFeedback = [&](DependencyEdge& edge) {
     if (edge.operationKind != "TOKEN_FEEDBACK") return;
@@ -1280,7 +1285,8 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
     throw std::invalid_argument("only the terminal role may publish token events");
   }
 
-  if (config.prepareRunner && !config.conversationStateBinding) {
+  const bool sharedPreparation = config.prepareRunner && !config.conversationStateBinding;
+  if (sharedPreparation) {
     // Selection/grant/runtime validation is complete before this point. Queue
     // exactly one preparation on the bounded Provider worker while epoch-zero
     // dependency fetches wait. Every epoch consumes the same shared future;
@@ -1381,6 +1387,24 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
         }
       }
     }
+
+    if (epoch == 0 && sharedPreparation) {
+      const auto prepared = config.prepareRunner();
+      if (!prepared.runner)
+        throw std::runtime_error("Provider runner preparation returned no NativeModelRunner");
+      if (prepared.automaticBinding) {
+        if (config.automaticBinding && config.automaticBinding != prepared.automaticBinding)
+          throw std::invalid_argument("AUTOMATIC_REQUEST_BINDING_OWNER_MISMATCH");
+        config.automaticBinding = prepared.automaticBinding;
+      }
+      if (config.automaticBinding) {
+        if (executable.automaticBinding && executable.automaticBinding != config.automaticBinding)
+          throw std::invalid_argument("AUTOMATIC_REQUEST_BINDING_OWNER_MISMATCH");
+        executable.automaticBinding = config.automaticBinding;
+      }
+    }
+    if (config.automaticBinding || executable.automaticBinding)
+      throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
 
     auto epochLineage = extractAndVerifyInputLineage(executable, inputs);
     if (!epochLineage) {

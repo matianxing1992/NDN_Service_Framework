@@ -30,7 +30,13 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 // Official ONNX 1.17 full-protobuf headers via the configured ONNX prefix.
 // onnx_pb.h defines ONNX_API (visibility) before it pulls in the generated
@@ -1332,6 +1338,95 @@ BOOST_AUTO_TEST_CASE(FinalizeRejectsCountAndIoNameMismatch)
 // Child-side S1 metadata validation over the worker envelope.
 // ---------------------------------------------------------------------------
 
+BOOST_AUTO_TEST_CASE(AutomaticRecipeMatchesIndependentGoldenAndRejectsDowngrade)
+{
+  std::ifstream fixture("tests/fixtures/spec233/automatic-recipe-v2-vector.json");
+  BOOST_REQUIRE(fixture.good());
+  const auto golden = NativeJson::parse(fixture);
+  auto recipe = recipeFromVector(workerAcceptRow());
+  recipe.automaticContractDigest = golden.at("contractDigest").get<std::string>();
+  // This frozen row has exactly X/Y float32[2,2]. Preserve numeric axes rather
+  // than the compatibility fixture loader's string-only property tree values.
+  recipe.expectedInputs.at(0).shape = {std::int64_t(2), std::int64_t(2)};
+  recipe.expectedOutputs.at(0).shape = {std::int64_t(2), std::int64_t(2)};
+  BOOST_CHECK_EQUAL(canonicalNativeOnnxRecipeJson(recipe),
+                    golden.at("canonicalRecipe").get<std::string>());
+  recipe.recipeDigest = golden.at("recipeDigest").get<std::string>();
+  const auto metadata = buildNativeOnnxWorkerRequestMetadata(recipe);
+  const auto checked = validateNativeOnnxWorkerMetadata(metadata);
+  BOOST_REQUIRE(checked.ok);
+  BOOST_CHECK_EQUAL(checked.value.recipeDigest, recipe.recipeDigest);
+  BOOST_CHECK_EQUAL(checked.value.recipe.automaticContractDigest, recipe.automaticContractDigest);
+  const auto original = nativeParseJson(metadata);
+  for (int failure = 0; failure != 7; ++failure) {
+    auto value = original;
+    if (failure == 0) value["recipe"]["schema"] = "ndnsf-di-certified-onnx-assembly-v1";
+    if (failure == 1) value["recipe"].erase("automaticContractDigest");
+    if (failure == 2) value["recipe"]["automaticContractDigest"] = "sha256:" + std::string(64, '3');
+    if (failure == 3) value["recipe"]["automaticContractDigest"] = "invalid";
+    if (failure == 4) value["recipe"]["unknown"] = true;
+    if (failure == 5) value["schema"] = "ndnsf-di-native-assembly-request-v2";
+    if (failure == 6) value["recipe"]["expectedInputs"][0]["unknown"] = true;
+    BOOST_CHECK(!validateNativeOnnxWorkerMetadata(nativeCanonicalJson(value)).ok);
+  }
+  const auto result = assembleInProcess(sourceFromRow(workerAcceptRow()), recipe);
+  BOOST_CHECK_EQUAL(result.modelDigest, golden.at("expectedModelDigest").get<std::string>());
+  std::set<std::string> rankDigests;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    auto ranked = recipe;
+    ranked.tensorParallelDegree = 2;
+    ranked.tensorParallelRank = rank;
+    const auto rankedCanonical = canonicalNativeOnnxRecipeJson(ranked);
+    ranked.recipeDigest = sha256HexOf(std::vector<std::uint8_t>(
+      rankedCanonical.begin(), rankedCanonical.end()));
+    BOOST_CHECK(rankDigests.insert(ranked.recipeDigest).second);
+    BOOST_CHECK(ranked.recipeDigest != recipe.recipeDigest);
+    const auto rankedMetadata = buildNativeOnnxWorkerRequestMetadata(ranked);
+    const auto rankedCheck = validateNativeOnnxWorkerMetadata(rankedMetadata);
+    BOOST_REQUIRE(rankedCheck.ok);
+    BOOST_CHECK_EQUAL(rankedCheck.value.recipe.automaticContractDigest,
+                      recipe.automaticContractDigest);
+    BOOST_CHECK_EQUAL(rankedCheck.value.recipe.tensorParallelDegree, 2U);
+    BOOST_CHECK_EQUAL(rankedCheck.value.recipe.tensorParallelRank, rank);
+    for (const auto* missing : {"tensorParallelDegree", "tensorParallelRank"}) {
+      auto incomplete = nativeParseJson(rankedMetadata);
+      incomplete["recipe"].erase(missing);
+      const auto incompleteCanonical = nativeCanonicalJson(incomplete["recipe"]);
+      incomplete["recipeDigest"] = sha256HexOf(std::vector<std::uint8_t>(
+        incompleteCanonical.begin(), incompleteCanonical.end()));
+      const auto rejected = validateNativeOnnxWorkerMetadata(nativeCanonicalJson(incomplete));
+      BOOST_CHECK(!rejected.ok);
+      BOOST_CHECK(rejected.failureMessage.find("tensor-parallel rank identity") !=
+                  std::string::npos);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(AutomaticRecipeInstalledChildRetainsLegacyModelBytes)
+{
+  const auto worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const auto row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  auto recipe = recipeFromVector(row);
+  recipe.automaticContractDigest = "sha256:" + std::string(64, '2');
+  for (const bool materialized : {false, true}) {
+    recipe.materializedRole = materialized;
+    const auto expected = assembleInProcess(source, recipe);
+    const auto actual = runNativeOnnxAssemblyWorkerAt({worker, ""}, source, recipe,
+                                                    extractionControl());
+    BOOST_CHECK_EQUAL(actual.modelDigest, expected.modelDigest);
+    BOOST_CHECK(actual.modelBytes == expected.modelBytes);
+    // The independent frozen vector distinguishes retained materialized bytes
+    // from the shape-inferred/extracted model. No production serializer oracle.
+    const auto expectedBytes = fromHex(row.get<std::string>(
+      materialized ? "modelHex" : "expectedModelHex"));
+    BOOST_TEST_CONTEXT("materializedRole=" << materialized) {
+      BOOST_CHECK(actual.modelBytes == expectedBytes);
+      BOOST_CHECK_EQUAL(actual.modelDigest, sha256HexOf(expectedBytes));
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(MetadataAcceptsCanonicalEnvelopeRoundtrip)
 {
   const auto& row = workerAcceptRow();
@@ -1874,6 +1969,75 @@ BOOST_AUTO_TEST_SUITE(Spec182OnnxActivation)
 // invoked, and that no activated artifact survived under a fresh cache
 // namespace.  Worker cases spawn the real installed DI_NativeOnnxAssemblyWorker
 // and the frozen chain-whole-inline digest anchors the result bytes.
+
+BOOST_AUTO_TEST_CASE(AutomaticIoRequiresSourceFactsAndPreservesLegacyColdAssembly)
+{
+  const auto row = workerAcceptRow();
+  const auto source = sourceFromRow(row);
+  const auto rootPayload = activationRootPayload(row, source.modelBytes);
+  auto projection = activationProjection(row, rootPayload);
+  projection.attempt = 1;
+  projection.planDigest = nativePlanningDigest("io-cold-plan");
+  projection.executionRole.roleId = projection.assembly.selectedRole;
+  projection.dataflow.role = projection.executionRole.roleId;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
+  projection.dataflow.terminalResponseOwner = true;
+  BOOST_REQUIRE_NO_THROW(roleSpecFromSelectionProjectionV3(projection, kActivationProvider));
+  const auto directory = std::filesystem::temp_directory_path() /
+    ("ndnsf-spec233-source-required-" + std::to_string(::getpid()));
+  BOOST_REQUIRE(std::filesystem::create_directory(directory));
+  struct Cleanup
+  {
+    std::filesystem::path path;
+    ~Cleanup()
+    {
+      std::error_code ignored;
+      std::filesystem::remove_all(path, ignored);
+    }
+  } cleanup{directory};
+  const auto signs = activationSignLog();
+  auto options = activationOptions((directory / "cache").string(),
+                                  activationRealWorkerLocation(), signs);
+  const auto counters = ActivationFetchCounters{};
+  const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
+    kActivationSourceName, source.modelBytes, counters);
+  // Keep the independent legacy extraction golden. An automatic marker alone
+  // cannot upgrade this source-only root into a source-proven publication.
+  projection.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(projection.assembly));
+  const auto cold = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  BOOST_CHECK_EQUAL(sha256HexOf(activationReadFile(cold.path)),
+                    row.get<std::string>("expectedModelDigest"));
+  BOOST_CHECK_EQUAL(cold.metadata.at("outputScope"), "final-response");
+  BOOST_CHECK_EQUAL(cold.metadata.at("final"), "true");
+  const auto cachedLegacy = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
+  BOOST_REQUIRE(cachedLegacy);
+  BOOST_CHECK_EQUAL(cachedLegacy->metadata.at("outputScope"), "final-response");
+  BOOST_CHECK_EQUAL(cachedLegacy->metadata.at("final"), "true");
+  BOOST_CHECK_EQUAL(*counters.sourceFetches, 1U);
+  NativeAutomaticShapeSeed seed{nativePlanningDigest("io-source"), nativePlanningDigest("binding"),
+    nativePlanningDigest("budget"), nativePlanningDigest("envelope"), 16, 0,
+    {{"graph/X", {2, 2}}}};
+  projection.automaticShapeSeed = seed;
+  projection.requestContractDigest = nativePlanningDigest("io-structural-request");
+  projection.assembly.automaticContractDigest = seed.contractDigest;
+  projection.assembly.backend = "onnxruntime-cpu";
+  projection.assembly.artifactDigest = row.get<std::string>("expectedModelDigest");
+  projection.assembly.expectedInputs.at(0).shape = {std::int64_t(2), std::int64_t(2)};
+  projection.assembly.expectedOutputs.at(0).shape = {std::int64_t(2), std::int64_t(2)};
+  projection.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(projection.assembly));
+  projection.selectedRole = projection.assembly;
+  projection.dataflow.terminalResponseOwner = true;
+  BOOST_REQUIRE_NO_THROW(validateNativeAutomaticSelectionBinding(projection));
+  BOOST_CHECK_THROW(prepareNativeCanonicalOnnxRole(fetchers, projection, options), std::exception);
+  BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache(fetchers, projection, options),
+                    std::exception);
+  BOOST_CHECK_EQUAL(*counters.sourceFetches, 1U);
+  BOOST_CHECK(std::filesystem::exists(cold.path));
+}
 
 BOOST_AUTO_TEST_CASE(ActivationRefusesToAssembleWithoutWorkerLocation)
 {

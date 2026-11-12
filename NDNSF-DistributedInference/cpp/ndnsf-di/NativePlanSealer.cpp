@@ -70,6 +70,8 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
   }
   if (core.placementDecisionV4)
     value["placement_decision_v4"] = *core.placementDecisionV4;
+  if (core.automaticShapeSeed)
+    value["automatic_shape_seed"] = nativeAutomaticShapeSeedToJson(*core.automaticShapeSeed);
   if (core.fixedCoreOwner) {
     // Keep the original canonical root bytes, without reconstructing the
     // immutable role array. Object iteration uses the same sorted key order.
@@ -202,7 +204,17 @@ void validateCoreFields(const NativePlacementPlanCore& core, bool validateAssemb
         assembly->second.role + "#" + std::to_string(assembly->second.rank) != role) {
       throw std::invalid_argument("native assembly logical role/rank differs from assignment");
     }
+    const auto& automaticDigest = assembly->second.automaticContractDigest;
+    if (core.automaticShapeSeed ? automaticDigest != core.automaticShapeSeed->contractDigest
+                                : !automaticDigest.empty())
+      throw std::invalid_argument("sealed role automatic contract differs from its request seed");
     if (validateAssemblies && !core.fixedCoreOwner) validateNativeAssembly(assembly->second);
+  }
+  if (core.automaticShapeSeed) {
+    (void)nativeAutomaticShapeSeedToJson(*core.automaticShapeSeed);
+    if (!isDigest(core.requestContractDigest) || core.automaticShapeSeed->maxNewTokens !=
+        (core.generationContract.enabled ? core.generationContract.maxGeneratedTokens : 0))
+      throw std::invalid_argument("sealed automatic request budget or identity mismatch");
   }
 }
 } // namespace
@@ -489,6 +501,7 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.assemblyByRole = inputs.assemblyByRole;
   core.requestContractDigest = inputs.requestContractDigest;
   core.generationContract = inputs.generationContract;
+  core.automaticShapeSeed = inputs.automaticShapeSeed;
   for (const auto& item : core.roleContracts()) {
     if (item.second.adapterId != snapshot.model.adapterId ||
         item.second.adapterVersion != snapshot.model.adapterVersion) {
@@ -637,6 +650,7 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   core.requesterIdentity = inputs.requesterIdentity; core.protectionEpoch = inputs.protectionEpoch;
   core.expiresAtMs = inputs.expiresAtMs; core.requestContractDigest = inputs.requestContractDigest;
   core.generationContract = inputs.generationContract;
+  core.automaticShapeSeed = inputs.automaticShapeSeed;
   core.placementObservationSnapshotDigest = inputs.placementObservationSnapshotDigest;
   core.placementDecisionV4 = proposal.placementDecisionV4;
   const auto& previous = inputs.previousFixedCore;
@@ -808,6 +822,7 @@ NativeSelectionProjectionV3 makeProjection(
   projection.deadlineMs = sealed.core.expiresAtMs;
   projection.requestContractDigest = sealed.core.requestContractDigest;
   projection.generationContract = sealed.core.generationContract;
+  projection.automaticShapeSeed = sealed.core.automaticShapeSeed;
   projection.groupCapabilityV1 = inputs.groupCapabilityV1;
   projection.conversationStateReference = inputs.conversationStateReference;
   projection.conversationTurnBinding = inputs.conversationTurnBinding;

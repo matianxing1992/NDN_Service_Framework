@@ -386,6 +386,71 @@ struct Fixture
 
 BOOST_AUTO_TEST_SUITE(Spec194V4Offer)
 
+BOOST_AUTO_TEST_CASE(AutomaticRequestVersionUsesExistingOfferAdmission)
+{
+  Fixture f;
+  const auto original = f.requestPayload();
+  auto request = nativeParseJson(std::string(original.begin(), original.end()));
+  NativeAutomaticShapeSeed seed;
+  seed.contractDigest = nativePlanningDigest("offer-only-contract");
+  seed.bindingDigest = nativePlanningDigest("offer-only-binding");
+  seed.budgetDigest = nativePlanningDigest("offer-only-budget");
+  seed.envelopeDigest = nativePlanningDigest("offer-only-envelope");
+  seed.maxContext = 1;
+  seed.inputShapes.emplace("graph/name,with=punctuation", std::vector<std::int64_t>{2, 3});
+  request["schema"] = "ndnsf-di-request-envelope-v3";
+  request["schema_version"] = 3;
+  request["task"] = {{"adapter", "automatic-onnx"}};
+  request["automatic_shape_seed"] = nativeAutomaticShapeSeedToJson(seed);
+  const auto wire = nativeCanonicalJson(request);
+  const auto issued = issueNativeProviderOfferV4({wire.begin(), wire.end()},
+    f.offerConfig(), f.telemetry(), 1000);
+  BOOST_REQUIRE(issued);
+  // This remains a signed resource offer, not model or stage readiness proof.
+  BOOST_CHECK(!issued->capabilityFieldValue.empty());
+  for (int failure = 0; failure != 5; ++failure) {
+    auto changed = request;
+    if (failure == 0) changed["schema"] = "ndnsf-di-request-envelope-v2";
+    if (failure == 1) changed["schema"] = "ndnsf-di-request-envelope-v99";
+    if (failure == 2) changed["automatic_shape_seed"]["unexpected"] = true;
+    if (failure == 3) changed.erase("automatic_shape_seed");
+    if (failure == 4) changed["schema_version"] = 2;
+    const auto rejected = nativeCanonicalJson(changed);
+    BOOST_CHECK(!issueNativeProviderOfferV4({rejected.begin(), rejected.end()},
+      f.offerConfig(), f.telemetry(), 1000));
+  }
+  NativeModelDescriptor model;
+  model.modelName = "automatic-offer-summary";
+  model.contentDigest = nativePlanningDigest("content");
+  model.semanticsDigest = nativePlanningDigest("semantics"); model.graphDigest = f.graphDigest;
+  model.modelFormat = "onnx"; model.precision = "float32";
+  model.adapterId = "automatic-onnx"; model.adapterVersion = "1";
+  model.adapter = fixture::modelAdapter(model.adapterId, model.adapterVersion,
+                                       model.modelFormat, model.precision);
+  NativeRequestContract contract{f.service, "task", model.adapterId,
+    model.adapter.descriptorDigest(), nativePlanningDigest("composition"), nativePlanningDigest("task")};
+  NativeApplicationInput input;
+  input.taskName = "task"; input.payload = {1};
+  input.inputSchemaDigest = model.adapter.inputSchemaDigest;
+  input.optionsSchemaDigest = model.adapter.optionsSchemaDigest;
+  NativeCandidateArtifactInventoryV4 inventory;
+  inventory.identities = {f.candidateArtifact()};
+  inventory.digest = nativePlanningDigest(nativeCanonicalJson(NativeJson(inventory.identities)));
+  const auto encoded = encodeNativeRequestEnvelope(model, input, contract, f.requestId, 1,
+    10000, std::nullopt, f.roster, inventory, NativePlacementProbeAllowlistV4{},
+    f.requesterIdentity, seed);
+  BOOST_REQUIRE(encoded.discoveryPayload);
+  const auto summary = parseNativeRequestOffer(std::string(
+    encoded.discoveryPayload->begin(), encoded.discoveryPayload->end()));
+  BOOST_REQUIRE(summary);
+  BOOST_CHECK(summary->at("task").at("placement_profile") == "DI_PLACEMENT_V4");
+  BOOST_CHECK(summary->at("request_contract_digest") == encoded.requestContractDigest);
+  BOOST_CHECK_LE(encoded.discoveryPayload->size(), 4096);
+  BOOST_REQUIRE(issueNativeProviderOfferV4(*encoded.discoveryPayload,
+    f.offerConfig(), f.telemetry(), 1000));
+
+}
+
 BOOST_AUTO_TEST_CASE(UnsignedDigestReusesOnlyCanonicalRootSignatureBytes)
 {
   Fixture f;

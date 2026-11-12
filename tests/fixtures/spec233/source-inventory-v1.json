@@ -1,0 +1,80 @@
+{
+  "schema": "spec233-frozen-source-inventory-v1",
+  "origin": "B2c-full-cycle-r3 installed C++ source owner before hash-helper extraction",
+  "rows": [
+    {
+      "row": "Q06-F32",
+      "modelDigest": "sha256:0a8f1cfe531fc7b15d26db55090f0667863f0c62c952dff128cf23cd421e3fbc",
+      "externalFiles": [
+        {
+          "bytes": 2090336256,
+          "digest": "sha256:e0927a7de2fe7c2a9b50a121905cf2edda78fb2900c85c1790db98188bbfe4be",
+          "location": "model.onnx_data"
+        }
+      ],
+      "sourceDigest": "sha256:a8a24142cb8a5f71724898f72301676c26783b20663a363a02c8e7d5e9237b8c"
+    },
+    {
+      "row": "Q06-I8",
+      "modelDigest": "sha256:ccf8734e59fdf7475b2dc0c117005e267a3a08342c1d951e0a79f0bce57bf62a",
+      "externalFiles": [],
+      "sourceDigest": "sha256:f42b243e707d8c540c0590ddbe63585aab2cda34e6c2384308df3bf52d066b8d"
+    },
+    {
+      "row": "Q06-I4",
+      "modelDigest": "sha256:d43d836fc5e240df9013733ccd214972c5d21bd9ec47e574e4f1e359cf90aed0",
+      "externalFiles": [],
+      "sourceDigest": "sha256:26528aa6d8fc4e8addf28df5348464e0a2f3ed7758f38e4f8d33e10e9b789fdf"
+    },
+    {
+      "row": "Q06-F16",
+      "modelDigest": "sha256:0f22b563c630f056c69a244a3850870f942f11547fa71661c12b1525557053bb",
+      "externalFiles": [],
+      "sourceDigest": "sha256:3a3ce08cffe648fb399a27e90edba82c0fdb90cc3973ec371478e56e25447225"
+    },
+    {
+      "row": "Q4-F16",
+      "modelDigest": "sha256:d97869b48ece61af1686aa691e15af27d2a7c1837b968bfebc4ad3b92145c888",
+      "externalFiles": [
+        {
+          "bytes": 2051932160,
+          "digest": "sha256:d170bf1ebf48f952cbf99be474ce021a1b1b7252550ae1dee5ac762bef50de3b",
+          "location": "model_fp16.onnx_data"
+        },
+        {
+          "bytes": 2068316160,
+          "digest": "sha256:ff8cd00fbfdf8fedf9c917521ace6620ea175999a8439def0b81206432bb1c72",
+          "location": "model_fp16.onnx_data_1"
+        },
+        {
+          "bytes": 2068316160,
+          "digest": "sha256:bd0c045bf9d0bcd6ac064ce51d8e18388558d58dd32e43c47ae89b6746407f61",
+          "location": "model_fp16.onnx_data_2"
+        },
+        {
+          "bytes": 1866465280,
+          "digest": "sha256:43651e915cb27b2676b97d99e86685260d311ef37849cd34615ca558d7d91858",
+          "location": "model_fp16.onnx_data_3"
+        }
+      ],
+      "sourceDigest": "sha256:734c3defc39e0d21e569e0471651f73a91c490c6480dc2a102c9177b2efd57af"
+    },
+    {
+      "row": "Q4-I4",
+      "modelDigest": "sha256:d3e946f9e38577411b0251051c91a1f20c3c0c831e1cf76a13c58ce279d950de",
+      "externalFiles": [
+        {
+          "bytes": 2096005120,
+          "digest": "sha256:050398248de4fce7b31b2d2caa909596e4c7aa0f35696270df46b8aaf2209fc8",
+          "location": "model_q4f16.onnx_data"
+        },
+        {
+          "bytes": 677150720,
+          "digest": "sha256:363ff5e70ebeb5866afea8eb80b7bdfe22d94d735a8c4d2ebf90c75424c2a410",
+          "location": "model_q4f16.onnx_data_1"
+        }
+      ],
+      "sourceDigest": "sha256:c8e21a571fb942606dda70e3d9ec19096837aaa25b44a9e6c01911fb9b2b5eee"
+    }
+  ]
+}

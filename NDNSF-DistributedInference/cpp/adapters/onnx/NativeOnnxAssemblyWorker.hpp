@@ -59,6 +59,8 @@ inline constexpr std::uint8_t kNativeOnnxWorkerDigestOnlyStatus = 3;
 // camelCase keys; canonical digest definition in the S1 contract).
 inline constexpr const char* kNativeOnnxCertifiedRecipeSchema =
   "ndnsf-di-certified-onnx-assembly-v1";
+inline constexpr const char* NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA =
+  "ndnsf-di-certified-onnx-assembly-v2";
 
 /** Parsed request frame header (all lengths little-endian on the wire). */
 struct NativeOnnxRequestHeader

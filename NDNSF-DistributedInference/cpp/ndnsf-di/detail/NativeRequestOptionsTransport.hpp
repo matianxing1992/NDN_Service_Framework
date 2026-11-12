@@ -20,7 +20,8 @@ NativeEncodedRequest encodeNativeRequestEnvelopeForRuntime(
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
   std::string requesterIdentity, const std::string& optionsTransport,
-  const std::shared_ptr<NativeWorkStatistics>& statistics = {});
+  const std::shared_ptr<NativeWorkStatistics>& statistics = {},
+  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed = std::nullopt);
 
 // Returns true only for the explicit Selection generation mode. Throws for
 // an invalid native mode or a deployment that has not enabled that mode.

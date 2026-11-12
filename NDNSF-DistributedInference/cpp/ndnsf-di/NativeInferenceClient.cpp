@@ -2422,6 +2422,7 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       error.code != Code::ProviderFailure) return false;
   NativeGenerationRecovery recovery;
   NativeApplicationInput input;
+  std::optional<NativeAutomaticShapeSeed> automaticShapeSeed;
   std::vector<std::string> oldScopes;
   std::string oldRequest;
   RecoveryExpectations oldRecovery;
@@ -2451,6 +2452,7 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     input = operation->input;
     input.payload = operation->preparedInput->payload;
     input.taskName = operation->preparedInput->taskName;
+    automaticShapeSeed = operation->preparedInput->automaticShapeSeed;
     for (const auto& scope : operation->planned->corePlan.keyScopes) oldScopes.push_back(scope.name);
   }
   const auto providers = candidateProviderUris(operation->options.providerNames);
@@ -2464,7 +2466,7 @@ bool beginReplacement(const std::shared_ptr<NativeInferenceHandle::Operation>& o
     providers, inventory, probeAllowlist,
     operation->runtime ? operation->runtime->requesterIdentity : std::string{},
     operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"),
-    operation->options.workStatistics);
+    operation->options.workStatistics, automaticShapeSeed);
   if (oldConversationTurn && conversations) {
     try {
       replacementConversationTurn = conversations->replaceAttempt(
@@ -2893,6 +2895,8 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
+      if (operation->encodedRequest && operation->encodedRequest->discoveryPayload)
+        capabilities.setField("RequestScopedConfidentialityV1", "required");
       if (!operation->options.providerNames.empty() &&
           operation->options.providerNames.size() <= 16 &&
           operation->encodedRequest &&
@@ -3023,13 +3027,17 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
             operation->requestId, sourceAttempt);
         }, "stream-error");
       };
+      std::optional<ndn::Buffer> discoveryPayload;
+      if (operation->encodedRequest->discoveryPayload)
+        discoveryPayload.emplace(operation->encodedRequest->discoveryPayload->begin(),
+                                 operation->encodedRequest->discoveryPayload->end());
       operation->user->BeginCollaborationWithProviders(ndn::Name(operation->runtime->contract.serviceName),
         ndn::Buffer(operation->encodedRequest->wire.begin(), operation->encodedRequest->wire.end()),
         static_cast<int>(operation->coreOptions.ackTimeoutMs),
         static_cast<int>(operation->coreOptions.timeoutMs), ackClosed, response, timeout,
         ndn::Name(coreRequestId), std::move(ackCoverage), capabilities, operation->options.stream,
         streamEvent, streamComplete, streamError, operation->options.providerNames,
-        operation->controlStatistics);
+        operation->controlStatistics, discoveryPayload);
     }
     catch (const NativeDiError& error) { failOperation(operation, error, sourceAttempt); }
     catch (...) { failOperation(operation, NativeDiError(
@@ -3089,6 +3097,20 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         operation->model, options.taskName.empty() ? input.taskName : options.taskName,
         input.inputSchemaDigest, input.optionsSchemaDigest, input.payload,
         input.repositoryReference, operation->deadline);
+      if (operation->model.adapterId == "automatic-onnx") {
+        if (!operation->runtime || !operation->runtime->automaticShapeSeedFactory ||
+            !prepared.repositoryReference.empty())
+          throw std::invalid_argument("automatic request has no shape binder or inline input");
+        const auto cancelled = operation->cancelled;
+        NativeRequestControl control{operation->coreRequestId, operation->attempt,
+          operation->deadline, [cancelled] { return cancelled->load(); },
+          operation->options.workStatistics};
+        control.requireActive();
+        prepared.automaticShapeSeed = operation->runtime->automaticShapeSeedFactory(
+          prepared, options.generation, control);
+        (void)nativeAutomaticShapeSeedToJson(*prepared.automaticShapeSeed);
+        control.requireActive();
+      }
     }
     catch (const NativeDiError&) { throw; }
     catch (const std::exception&) {
@@ -3140,7 +3162,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
                                    operation->options.providerNames),
         operation->runtime ? operation->runtime->requesterIdentity : std::string{},
     operation->runtime ? operation->runtime->optionsTransport : std::string("INLINE"),
-    operation->options.workStatistics);
+    operation->options.workStatistics, operation->preparedInput->automaticShapeSeed);
     }
     catch (const std::exception& error) {
       std::string detail = "native request contract encoding failed";

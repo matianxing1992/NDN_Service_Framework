@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp"
@@ -11,6 +13,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/collaboration-work-observer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -202,6 +205,7 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
                          payload.size());
   const auto first = text.find_first_not_of(" \t\r\n");
   if (first != std::string::npos && text[first] == '{') {
+    const auto typedHeader = nativeParseJson(text, 64);
     boost::property_tree::ptree root;
     try {
       std::istringstream input(text);
@@ -215,8 +219,10 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
     const auto schemaVersion = root.get<int>("schema_version", 0);
     const bool referenced = (schema == "ndnsf-di-selection-invocation-v1" && schemaVersion == 1) ||
       (schema == "ndnsf-di-selection-invocation-v2" && schemaVersion == 2) ||
-      (schema == "ndnsf-di-selection-invocation-v3" && schemaVersion == 3);
-    if (!referenced && (schema != "ndnsf-di-selection-v3" || schemaVersion != 3)) {
+      (schema == "ndnsf-di-selection-invocation-v3" && schemaVersion == 3) ||
+      (schema == "ndnsf-di-selection-invocation-v4" && schemaVersion == 4);
+    if (!referenced && !((schema == "ndnsf-di-selection-v3" && schemaVersion == 3) ||
+                         (schema == "ndnsf-di-selection-v4" && schemaVersion == 4))) {
       throw std::invalid_argument(
         "V3 Selection projection schema mismatch: schema=" + schema +
         " schema_version=" + std::to_string(schemaVersion));
@@ -228,6 +234,18 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
     }
     else if (referenced && validatedProjection) {
       const auto& checked = *validatedProjection;
+      const bool automatic = schema == "ndnsf-di-selection-invocation-v4";
+      if (automatic != checked.automaticShapeSeed.has_value())
+        throw std::invalid_argument("validated invocation automatic version mismatch");
+      if (automatic) {
+        const auto& header = typedHeader;
+        validateNativeSelectionInvocationBindingShapeV1(header);
+        if (header.at("automatic_shape_seed") !=
+              nativeAutomaticShapeSeedToJson(*checked.automaticShapeSeed) ||
+            header.value("request_contract_digest", NativeJson{}) != checked.requestContractDigest)
+          throw std::invalid_argument("validated invocation shape seed differs from its wire");
+        validateNativeAutomaticSelectionBinding(checked);
+      }
       if (root.get<std::string>("fixed_role_ref", "") != checked.fixedRoleReference ||
           checked.fixedRoleReference.empty() ||
           root.get<std::string>("provider", "") != checked.provider ||
@@ -526,6 +544,10 @@ struct LocalGenerationStateNames
 LocalGenerationStateNames
 localGenerationStateNames(const NativeSelectionProjectionV3& projection)
 {
+  if (projection.automaticShapeSeed) {
+    auto value = automaticOnnxIoContractForProjection(projection);
+    return {std::move(value.io.stateInputNames), std::move(value.io.stateOutputNames)};
+  }
   const auto contains = [] (const auto& tensors, const std::string& name) {
     return std::any_of(tensors.begin(), tensors.end(),
                        [&name] (const auto& tensor) {
@@ -1258,21 +1280,13 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
     const std::string wire(payload.begin(), payload.end());
     const auto first = wire.find_first_not_of(" \t\r\n");
     if (first != std::string::npos && wire[first] == '{') {
-      boost::property_tree::ptree root;
-      try {
-        std::istringstream input(wire);
-        boost::property_tree::read_json(input, root);
-      }
-      catch (const boost::property_tree::json_parser::json_parser_error& exc) {
-        throw std::invalid_argument(
-          std::string("malformed native DI request envelope: ") + exc.what());
-      }
-      if (root.get<std::string>("schema", "") == "ndnsf-di-request-envelope-v2") {
-        const auto transport = root.get<std::string>("input_transport", "");
+      const auto parsed = parseNativeRequestEnvelope(wire);
+      if (parsed) {
+        const auto& root = *parsed;
+        const auto transport = root.value("input_transport", std::string{});
         if (transport == "REPO_REF") {
-          const auto dataName = root.get<std::string>("input_reference.dataName", "");
-          const auto plaintextSize = root.get<std::uint64_t>(
-            "input_reference.plaintextSize", 0);
+          const auto dataName = root.at("input_reference").value("dataName", std::string{});
+          const auto plaintextSize = root.at("input_reference").value("plaintextSize", std::uint64_t{0});
           if (dataName.empty() || dataName.front() != '/' || plaintextSize == 0) {
             throw std::invalid_argument(
               "native DI REPO_REF request has invalid input reference");
@@ -1289,7 +1303,7 @@ initialInputsFromRequest(ndn_service_framework::ServiceProvider::CollaborationCo
           payload = *fetched;
         }
         else if (transport == "INLINE") {
-          const auto encoded = root.get<std::string>("input_payload_b64", "");
+          const auto encoded = root.value("input_payload_b64", std::string{});
           if (statistics) {
             statistics->addCount("request.encodedInputValueBytes", encoded.size());
             statistics->addCount("request.inputEnvelopeRepresentationBytes", wire.size());
@@ -1978,6 +1992,23 @@ validateNativePreparedRunnerSpec(
       !matches({"maxNodes", "max_nodes"},
                std::to_string(assembly.maxNodes))) {
     return "DI_PROVIDER_ASSEMBLY_METADATA_MISMATCH";
+  }
+  if (projection.automaticShapeSeed) {
+    try {
+      const auto actual = readAutomaticOnnxRunnerIo(spec);
+      if (!actual || actual->canonicalJson() !=
+          automaticOnnxIoContractForProjection(projection).canonicalJson())
+        return "DI_PROVIDER_AUTOMATIC_IO_MISMATCH";
+    }
+    catch (const std::invalid_argument&) {
+      return "DI_PROVIDER_AUTOMATIC_IO_MISMATCH";
+    }
+    catch (const NativeJson::exception&) {
+      return "DI_PROVIDER_AUTOMATIC_IO_MISMATCH";
+    }
+  }
+  else if (spec.metadata.count("automaticIoContract") != 0) {
+    return "DI_PROVIDER_AUTOMATIC_IO_MISMATCH";
   }
   return std::nullopt;
 }
@@ -2682,19 +2713,24 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       NativeWorkScope assignmentWork(workStatistics, "selection-assignment-decode",
                                      NativeWorkKind::UNCLASSIFIED);
       std::shared_ptr<const NativeFixedRoleAssignmentV1> referencedFixed;
+      NativeWorkScope ingressWork(workStatistics, "selection-ingress-parse",
+                                  NativeWorkKind::LOCAL);
+      const auto header = jsonAssignment ? nativeParseJson(assignmentText, 64) : NativeJson::object();
+      validateNativeAutomaticSelectionRequestBinding(requestPayloadText, header);
       if (jsonAssignment) {
-        NativeWorkScope ingressWork(workStatistics, "selection-ingress-parse",
-                                    NativeWorkKind::LOCAL);
-        const auto header = nativeParseJson(assignmentText);
         const auto invocationSchema = header.value("schema", std::string{});
-        const bool compactInvocation = invocationSchema == "ndnsf-di-selection-invocation-v2";
-        const bool rangeInvocation = invocationSchema == "ndnsf-di-selection-invocation-v3";
+        const bool automaticInvocation = invocationSchema == "ndnsf-di-selection-invocation-v4";
+        const bool compactInvocation = invocationSchema == "ndnsf-di-selection-invocation-v2" ||
+          (automaticInvocation && header.value("binding_encoding", NativeJson{}) == "compact");
+        const bool rangeInvocation = invocationSchema == "ndnsf-di-selection-invocation-v3" ||
+          (automaticInvocation && header.value("binding_encoding", NativeJson{}) == "range");
         if (invocationSchema == "ndnsf-di-selection-invocation-v1" || compactInvocation ||
-            rangeInvocation) {
+            rangeInvocation || automaticInvocation) {
           validateNativeSelectionInvocationBindingShapeV1(header);
           const auto ref = header.at("fixed_role_ref").get<std::string>();
           if (!header.at("schema_version").is_number_integer() ||
-              header.at("schema_version") != NativeJson(rangeInvocation ? 3 : compactInvocation ? 2 : 1) ||
+              header.at("schema_version") != NativeJson(automaticInvocation ? 4 :
+                rangeInvocation ? 3 : compactInvocation ? 2 : 1) ||
               header.at("provider").get<std::string>() != ctx.localProvider().toUri() ||
               header.at("request_id").get<std::string>() != ctx.sessionId() ||
               !header.at("execution_role").is_object() || header.at("execution_role").size() != 1 ||
@@ -2775,6 +2811,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           }
         }
       }
+      ingressWork.finish();
       NativeWorkScope decodeWork(workStatistics, "selection-codec-decode", NativeWorkKind::LOCAL);
       auto decodedAssignment = decodeNativeProviderAssignment(
         ctx.assignment().assignmentPayload, role, referencedFixed.get());
@@ -2789,6 +2826,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       }
       const auto assignmentFields = std::move(decodedAssignment.fields);
       auto selectionProjection = std::move(decodedAssignment.projection);
+      if (selectionProjection && selectionProjection->automaticShapeSeed &&
+          (selectionProjection->conversationTurnBinding ||
+           selectionProjection->conversationStateReference || selectionProjection->protectedKvRestore))
+        throw std::invalid_argument("AUTOMATIC_CONVERSATION_UNSUPPORTED");
+
       if (selectionGenerationOptions &&
           (!selectionProjection || !selectionProjection->generationContract.enabled ||
            selectionProjection->requestContractDigest.empty())) {
@@ -2796,6 +2838,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         return;
       }
       if (selectionProjection) {
+        validateNativeAutomaticSelectionRequestBinding(requestPayloadText, *selectionProjection);
         if (selectionProjection->provider != ctx.localProvider().toUri()) {
           failInvocation("DI_SELECTION_PROVIDER_MISMATCH");
           return;
@@ -2804,7 +2847,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           failInvocation("DI_SELECTION_REQUEST_MISMATCH");
           return;
         }
-        if (!selectionProjection->requestContractDigest.empty()) {
+        if (!selectionProjection->automaticShapeSeed &&
+            !selectionProjection->requestContractDigest.empty()) {
           if (!nativeRequestContractDigestMatches(
                 selectionProjection->requestContractDigest,
                 request.getPayload())) {
@@ -3327,6 +3371,15 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           if (prior) prior();
         };
       }
+      if (selectionProjection && selectionProjection->automaticShapeSeed) {
+        executionGuard = [&ctx, prior = std::move(executionGuard)] {
+          if (!ctx.hasCurrentWorkAuthority() ||
+              std::chrono::steady_clock::now() >= ctx.assignment().workDeadline ||
+              (ctx.isStreamed() && ctx.streamCancelled()))
+            throw std::runtime_error("DI_EXECUTION_CANCELLED_OR_EXPIRED");
+          if (prior) prior();
+        };
+      }
       ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
       if (config.executionPolicy == "DATA_DRIVEN_V2") {
         const auto expectedBackend = nativeProviderFieldValue(
@@ -3347,7 +3400,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                            expectedBackend, expectedDevice, expectedArtifact,
                            role, reportStatus, readinessOperationId,
                            preparationStatusSequence, runnerPreparationSequence,
-                           stageAttemptEpoch] {
+                           stageAttemptEpoch] () -> NativePreparedRunner {
             const detail::ScopedFixedAssignmentWork fixedWork(projection.requestId, "provider-preparation");
             const auto preparationId = std::to_string(
               runnerPreparationSequence->fetch_add(1, std::memory_order_relaxed) + 1);
@@ -3358,6 +3411,27 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                                    projection.planDigest, "observed", {},
                                    stageAttemptEpoch, preparationId);
             if (executionGuard) executionGuard();
+            const auto admitCurrentAutomaticRunner = [&] (const auto& runner)
+                -> std::shared_ptr<const AutomaticOnnxRequestBinding> {
+              if (!projection.automaticShapeSeed) return {};
+              NativeRequestControl control;
+              control.requestId = projection.requestId;
+              control.attempt = projection.attempt;
+              control.deadline = ctx.assignment().workDeadline;
+              control.cancelled = [&ctx, executionGuard] {
+                if (!ctx.hasCurrentWorkAuthority() ||
+                    (ctx.isStreamed() && ctx.streamCancelled())) return true;
+                if (executionGuard) executionGuard();
+                return false;
+              };
+              control.requireActive();
+              auto binding = runner->validateAutomaticRequestBinding(projection, control);
+              if (!binding) throw std::invalid_argument("AUTOMATIC_REQUEST_BINDING_REQUIRED");
+              if (binding->envelope().maxNewTokens != 0)
+                throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
+              control.requireActive();
+              return binding;
+            };
             if (runnerReuseLookup) {
               auto runner = runnerReuseLookup(projection, protectedRuntime);
               if (runner) {
@@ -3378,6 +3452,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                       expectedArtifact)) {
                   throw std::runtime_error(*error);
                 }
+                const auto binding = admitCurrentAutomaticRunner(runner);
                 logProviderStageMarker("RUNNER_READY", projection.requestId,
                                        ctx.localProvider().toUri(), role,
                                        projection.planDigest, "observed", {},
@@ -3386,7 +3461,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                              preparationStatusSequence->fetch_add(
                                1, std::memory_order_relaxed) + 1,
                              1.0, "READY");
-                return runner;
+                return {std::move(runner), binding};
               }
             }
             logProviderBoundaryStdout("RUNNER_PREPARATION_FACTORY_BEGIN",
@@ -3416,6 +3491,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                   expectedArtifact)) {
               throw std::runtime_error(*error);
             }
+            const auto binding = admitCurrentAutomaticRunner(runner);
             logProviderStageMarker("RUNNER_READY", projection.requestId,
                                    ctx.localProvider().toUri(), role,
                                    projection.planDigest, "observed", {},
@@ -3424,7 +3500,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                          preparationStatusSequence->fetch_add(
                            1, std::memory_order_relaxed) + 1,
                          1.0, "READY");
-            return runner;
+            return {std::move(runner), binding};
           };
         }
         else {
@@ -3503,7 +3579,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         };
         const auto loadRunner = [state, prepareRunner, current, role] {
           current();
-          return prepareRunner ? state->runtime.prepareRunnerAsync(prepareRunner, current).get()
+          return prepareRunner ? state->runtime.prepareRunnerAsync(prepareRunner, current).get().runner
                                : state->runtime.registeredRunnerForRole(role);
         };
         kvRestore = nativeRestoreKvForInvocation(state->runtime, ctx, *config.handoff,

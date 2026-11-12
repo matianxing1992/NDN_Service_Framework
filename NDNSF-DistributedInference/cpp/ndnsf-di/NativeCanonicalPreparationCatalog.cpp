@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 
 #include <atomic>
@@ -64,6 +66,33 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
   };
   std::map<std::string, Group> groups;
   for (auto& entry : entries) {
+    std::string automaticSourceJson;
+    if (!entry.source.preparedMetadataJson.empty()) {
+      if (entry.source.preparedMetadataJson.size() > NativeCanonicalMaterialPublicationMaxBytes)
+        throw std::invalid_argument("native catalog prepared metadata exceeds its bound");
+      const auto metadata = nativeParseJson(entry.source.preparedMetadataJson, 64);
+      if (metadata.value("schema", std::string{}) == "ndnsf-di-prepared-metadata-v2" ||
+          metadata.contains("automatic_onnx")) {
+        const auto decoded = decodeNativePreparedOnnxMetadata(metadata, control);
+        const auto& source = metadata.at("source");
+        if (!decoded.automaticContract ||
+            nativeCanonicalJson(metadata.at("descriptor")) !=
+              entry.model.descriptor.canonicalJson() ||
+            source.at("digest") != NativeJson(entry.model.canonicalSourceDigest) ||
+            source.at("bytes") != NativeJson(entry.model.canonicalSourceBytes) ||
+            source.at("initializer_bytes") != NativeJson(entry.model.canonicalInitializerBytes) ||
+            source.at("initializer_object_digest") !=
+              NativeJson(entry.model.canonicalInitializerObjectDigest) ||
+            decoded.graph.canonicalIdentity.graphDigest != entry.model.canonicalGraphDigest ||
+            decoded.graph.canonicalIdentity.initializerDigest !=
+              entry.model.canonicalInitializerDigest) {
+          throw std::invalid_argument("native catalog automatic source identity differs");
+        }
+        automaticSourceJson = nativeCanonicalJson(metadata.at("automatic_onnx"));
+      }
+    }
+    if (entry.model.descriptor.adapter.name == "automatic-onnx" && automaticSourceJson.empty())
+      throw std::invalid_argument("native catalog automatic source metadata is missing");
     const bool entryHasConversationTokenEncoder =
       static_cast<bool>(entry.conversationTokenEncoder);
     // Validate every model/source before making any publication port available.
@@ -78,7 +107,8 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     // here.  A caller may supply a previously verified immutable package when
     // a source was restored from a durable catalog.
     if (!entry.source.materialManifest)
-      entry.source.materialManifest = deriveNativeCanonicalMaterialManifest(entry.source, control);
+      entry.source.materialManifest = deriveNativeCanonicalMaterialManifest(
+        entry.source, control, automaticSourceJson);
     else
       entry.source.materialManifest->validate([&] {
         control.requireActive();
@@ -87,6 +117,8 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
       });
     if (!entry.source.materialManifest)
       throw std::invalid_argument("native catalog material manifest is missing");
+    if (entry.source.materialManifest->automaticSourceJson != automaticSourceJson)
+      throw std::invalid_argument("native catalog material source metadata differs");
     if (entry.source.materialManifest->payloadsComplete)
       validateNativeCanonicalMaterialManifest(entry.source, *entry.source.materialManifest, control);
     else if (!entry.source.modelBytes.empty())

@@ -1157,7 +1157,9 @@ def build(bld):
             '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/onnx',
             bld.path.ant_glob(
                 'NDNSF-DistributedInference/cpp/adapters/onnx/*.hpp',
-                excl=['NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp']))
+                excl=['NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp',
+                      'NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp',
+                      'NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp']))
         bld.install_files(
             '${INCLUDEDIR}/NDNSF-DistributedInference/cpp/adapters/yolo',
             bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.hpp'))

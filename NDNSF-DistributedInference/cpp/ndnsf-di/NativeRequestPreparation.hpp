@@ -3,12 +3,14 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-automatic-shape-seed.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,7 @@ struct NativePreparedInput
   std::string adapterVersion;
   bool encoded = false;
   NativeModelDescriptor expectedModel;
+  std::optional<NativeAutomaticShapeSeed> automaticShapeSeed;
 
   void validate() const;
 };

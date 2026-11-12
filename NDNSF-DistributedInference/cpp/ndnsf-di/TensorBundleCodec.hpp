@@ -27,6 +27,8 @@ enum class TensorElementType : std::uint32_t
   Bool = 4,
   UInt8 = 5,
   Int32 = 6,
+  INT8 = 7,
+  BFLOAT16 = 8,
 };
 
 struct NamedTensor
@@ -138,6 +140,18 @@ sha256TensorBytes(const std::vector<std::uint8_t>& bytes);
 
 std::size_t
 tensorElementByteSize(TensorElementType elementType);
+
+/** Exact dense payload bytes with existing wire geometry limits; allocates no payload. */
+std::uint64_t
+tensorStorageByteSize(TensorElementType elementType, const std::vector<std::int64_t>& shape);
+
+/** Canonical scalar label used by graph, layout and transfer contracts. */
+const char*
+tensorElementTypeName(TensorElementType elementType);
+
+/** Resolve a canonical scalar label; unknown labels throw invalid_argument. */
+TensorElementType
+tensorElementTypeFromName(const std::string& name);
 
 /** Sum the decoded tensor payload bytes without counting bundle framing. */
 std::size_t

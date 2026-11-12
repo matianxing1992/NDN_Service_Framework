@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
@@ -102,6 +103,8 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
   sink("required_device_memory_mb", value.requiredDeviceMemoryMb);
   sink("artifact_digest", value.artifactDigest);
   sink("recipe_digest", value.recipeDigest);
+  if (!value.automaticContractDigest.empty())
+    sink("automatic_contract_digest", value.automaticContractDigest);
   sink("role_kind", value.roleKind);
   sink("adapter_id", value.adapterId);
   sink("adapter_version", value.adapterVersion);
@@ -694,6 +697,10 @@ validateSelectionRoleFields(const NativeSelectionRoleV3& role,
   const bool completeNativeIdentity = isSha256Digest(role.modelManifestDigest) &&
     isSha256Digest(role.artifactProfileDigest) && isSha256Digest(role.graphDigest) &&
     isSha256Digest(role.adapterDescriptorDigest);
+  if (!role.automaticContractDigest.empty() &&
+      (!isSha256Digest(role.automaticContractDigest) || validNativePostprocess ||
+       !completeAssemblyIdentity || !completeAssemblyRecipe))
+    throw std::invalid_argument("automatic role has an incomplete ONNX contract identity");
   if (validNativePostprocess &&
       (!isCpuBackend(role.backend) || role.expectedInputs.empty() ||
        role.expectedOutputs.size() != 1 ||
@@ -723,6 +730,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     node.get<std::uint64_t>("required_device_memory_mb", 0);
   role.artifactDigest = node.get<std::string>("artifact_digest", "");
   role.recipeDigest = node.get<std::string>("recipe_digest", "");
+  role.automaticContractDigest = node.get<std::string>("automatic_contract_digest", "");
   role.roleKind = node.get<std::string>("role_kind", "");
   role.adapterId = node.get<std::string>("adapter_id", "");
   role.adapterVersion = node.get<std::string>("adapter_version", "");
@@ -775,6 +783,7 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.protectionEpoch == right.protectionEpoch &&
          left.requiredDeviceMemoryMb == right.requiredDeviceMemoryMb &&
          left.artifactDigest == right.artifactDigest &&
+         left.automaticContractDigest == right.automaticContractDigest &&
           (!compareRecipe || left.recipeDigest == right.recipeDigest) &&
          left.roleKind == right.roleKind && left.adapterId == right.adapterId &&
          left.adapterVersion == right.adapterVersion &&
@@ -1705,6 +1714,45 @@ void restoreSelectionRoleShapes(NativeSelectionRoleV3& role, const NativeJson& n
     restore(role.expectedOutputs, "expected_outputs");
 }
 
+std::string
+automaticInvocationEncoding(const NativeJson& value)
+{
+  if (value.value("schema", std::string{}) != "ndnsf-di-selection-invocation-v4") {
+    if (value.contains("binding_encoding") ||
+        (value.contains("automatic_shape_seed") &&
+         value.value("schema", std::string{}) != "ndnsf-di-selection-v4"))
+      throw std::invalid_argument("legacy Selection cannot carry automatic invocation encoding");
+    return {};
+  }
+  if (!value.contains("schema_version") || !value.at("schema_version").is_number_integer() ||
+      value.at("schema_version") != NativeJson(4) ||
+      !value.contains("binding_encoding") || !value.at("binding_encoding").is_string() ||
+      !value.contains("automatic_shape_seed"))
+    throw std::invalid_argument("automatic invocation version or encoding is incomplete");
+  const auto encoding = value.at("binding_encoding").get<std::string>();
+  if (encoding != "explicit" && encoding != "compact" && encoding != "range")
+    throw std::invalid_argument("unsupported automatic invocation encoding");
+  const auto seed = nativeAutomaticShapeSeedFromJson(value.at("automatic_shape_seed"));
+  if (!value.contains("request_contract_digest") ||
+      !value.at("request_contract_digest").is_string() ||
+      !isSha256Digest(value.at("request_contract_digest").get<std::string>()))
+    throw std::invalid_argument("automatic invocation has no request contract identity");
+  const auto generation = value.find("generation_contract");
+  if (generation == value.end()) {
+    if (seed.maxNewTokens != 0)
+      throw std::invalid_argument("automatic invocation omits its generation budget");
+  }
+  else if (!generation->is_object() || !generation->contains("max_generated_tokens") ||
+           !generation->at("max_generated_tokens").is_number_integer() ||
+           (!generation->at("max_generated_tokens").is_number_unsigned() &&
+            generation->at("max_generated_tokens").get<std::int64_t>() < 0) ||
+           generation->at("max_generated_tokens").get<std::uint64_t>() == 0 ||
+           generation->at("max_generated_tokens").get<std::uint64_t>() > MAX_NATIVE_GENERATED_TOKENS ||
+           generation->at("max_generated_tokens").get<std::uint64_t>() != seed.maxNewTokens)
+    throw std::invalid_argument("automatic invocation has inconsistent generation budgets");
+  return encoding;
+}
+
 NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   const NativeJson& typedRoot, const boost::property_tree::ptree& root,
   const std::string& selectedRole,
@@ -1713,10 +1761,30 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   const NativeFixedRoleAssignmentV1* fixedAssignment = nullptr,
   bool allowCompactProjection = false)
 {
-  const bool rangeInvocation = typedRoot.value("schema", std::string{}) ==
-    "ndnsf-di-selection-invocation-v3";
-  const auto invocationVersion = rangeInvocation ? 3 : 1;
+  const auto schema = typedRoot.value("schema", std::string{});
+  const bool automatic = schema == "ndnsf-di-selection-v4" ||
+    schema == "ndnsf-di-selection-invocation-v4";
+  if (automatic && (!typedRoot.contains("schema_version") ||
+      !typedRoot.at("schema_version").is_number_integer() || typedRoot.at("schema_version") != 4))
+    throw std::invalid_argument("automatic Selection version is invalid");
+  const auto encoding = automaticInvocationEncoding(typedRoot);
+  if (typedRoot.contains("automatic_shape_seed") != automatic || encoding == "compact")
+    throw std::invalid_argument("Selection automatic metadata or expanded encoding mismatch");
+  if (!automatic) {
+    if (typedRoot.contains("assembly") && typedRoot.at("assembly").is_object() &&
+        typedRoot.at("assembly").contains("automatic_contract_digest"))
+      throw std::invalid_argument("legacy Selection cannot carry an automatic assembly field");
+    if (typedRoot.contains("roles") && typedRoot.at("roles").is_array()) {
+      for (const auto& role : typedRoot.at("roles"))
+        if (role.is_object() && role.contains("automatic_contract_digest"))
+          throw std::invalid_argument("legacy Selection cannot carry automatic role fields");
+    }
+  }
+  const bool rangeInvocation = schema == "ndnsf-di-selection-invocation-v3" || encoding == "range";
+  const auto invocationVersion = automatic ? 4 : rangeInvocation ? 3 : 1;
   if (fixedAssignment) {
+    if (automatic != !fixedAssignment->roleOwner()->automaticContractDigest.empty())
+      throw std::invalid_argument("invocation version differs from its fixed automatic role");
     validateNativeSelectionInvocationBindingShapeV1(typedRoot);
     if (!typedRoot.contains("fixed_role_ref") ||
         !typedRoot.at("fixed_role_ref").is_string() ||
@@ -1756,14 +1824,18 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     return projection;
   }
   if (root.get<std::string>("schema", "") !=
-        (fixedAssignment ? (rangeInvocation ? "ndnsf-di-selection-invocation-v3" :
+        (automatic ? (fixedAssignment ? "ndnsf-di-selection-invocation-v4" : "ndnsf-di-selection-v4") :
+         fixedAssignment ? (rangeInvocation ? "ndnsf-di-selection-invocation-v3" :
                                              "ndnsf-di-selection-invocation-v1") :
                            "ndnsf-di-selection-v3") ||
-      root.get<int>("schema_version", 0) != (fixedAssignment ? invocationVersion : 3)) {
+      root.get<int>("schema_version", 0) != (automatic ? 4 : fixedAssignment ? invocationVersion : 3)) {
     throw std::invalid_argument("V3 Selection projection schema mismatch");
   }
 
   NativeSelectionProjectionV3 projection;
+  if (automatic)
+    projection.automaticShapeSeed = nativeAutomaticShapeSeedFromJson(
+      typedRoot.at("automatic_shape_seed"));
   projection.provider = root.get<std::string>("provider", "");
   if (fixedAssignment && projection.provider != fixedAssignment->provider()) {
     throw std::invalid_argument("cached role invocation Provider mismatch");
@@ -2304,6 +2376,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     (void)nativeReadKvRestore(*projection.protectedKvRestore, projection,
       saved.protection.ownerIdentity, ndn::Name(saved.receipt.serviceName), 0);
   }
+  validateNativeAutomaticSelectionBinding(projection);
   return projection;
 }
 
@@ -2314,7 +2387,7 @@ nativeSelectionProjectionV3FromJson(std::istream& input,
                                     const std::string& selectedRole)
 {
   const std::string wire{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-  const auto typedRoot = nativeParseJson(wire);
+  const auto typedRoot = nativeParseJson(wire, 64);
   std::istringstream legacyInput(wire);
   boost::property_tree::ptree root;
   boost::property_tree::read_json(legacyInput, root);
@@ -2325,7 +2398,7 @@ NativeSelectionProjectionV3 detail::decodeNativeSelectionProjectionV3WithLegacyT
   const std::string& wire, const boost::property_tree::ptree& root,
   const std::string& selectedRole)
 {
-  const auto typedRoot = nativeParseJson(wire);
+  const auto typedRoot = nativeParseJson(wire, 64);
   return decodeSelectionProjectionV3(typedRoot, root, selectedRole);
 }
 
@@ -2973,6 +3046,11 @@ NativeJson selectionInvocationFields(const NativeSelectionProjectionV3& value,
     {"dependencies", referenceExecutionRole ? dependencyBindingsJson(value.plan.dependencies) : jsonArray(value.plan.dependencies)},
   };
   if (!value.requestContractDigest.empty()) root["request_contract_digest"] = value.requestContractDigest;
+  if (value.automaticShapeSeed) {
+    root["schema"] = "ndnsf-di-selection-v4";
+    root["schema_version"] = 4;
+    root["automatic_shape_seed"] = nativeAutomaticShapeSeedToJson(*value.automaticShapeSeed);
+  }
   if (value.generationContract.enabled) root["generation_contract"] = referenceExecutionRole
     ? generationBindingsJson(value.generationContract) : jsonValue(value.generationContract);
   if (value.conversationStateReference) root["conversation_state_reference"] = jsonValue(*value.conversationStateReference);
@@ -3014,9 +3092,12 @@ NativeJson compactEndpointBindings(const NativeJson& values)
 
 NativeJson expandInvocationBindings(const NativeJson& value)
 {
-  if (value.value("schema", std::string{}) != "ndnsf-di-selection-invocation-v2" ||
+  const auto automaticEncoding = automaticInvocationEncoding(value);
+  const bool automatic = !automaticEncoding.empty();
+  if (automatic ? automaticEncoding != "compact" :
+      (value.value("schema", std::string{}) != "ndnsf-di-selection-invocation-v2" ||
       !value.contains("schema_version") || !value.at("schema_version").is_number_integer() ||
-      value.at("schema_version") != NativeJson(2))
+      value.at("schema_version") != NativeJson(2)))
     throw std::invalid_argument("invalid compact invocation transport version");
   constexpr std::size_t MAX_BYTES = 4U << 20;
   const auto encodedBytes = nativeCanonicalJson(value).size();
@@ -3059,8 +3140,11 @@ NativeJson expandInvocationBindings(const NativeJson& value)
     }
     bindings = std::move(entries);
   }
-  expanded["schema"] = "ndnsf-di-selection-invocation-v1";
-  expanded["schema_version"] = 1;
+  if (automatic) expanded["binding_encoding"] = "explicit";
+  else {
+    expanded["schema"] = "ndnsf-di-selection-invocation-v1";
+    expanded["schema_version"] = 1;
+  }
   if (nativeCanonicalJson(expanded).size() > MAX_BYTES)
     throw std::invalid_argument("expanded invocation exceeds wire bound");
   return expanded;
@@ -3071,8 +3155,12 @@ rangeInvocationLogicalSize(const NativeJson& value)
 {
   constexpr std::size_t LIMIT = 4U << 20;
   auto legacy = value;
-  legacy["schema"] = "ndnsf-di-selection-invocation-v1";
-  legacy["schema_version"] = 1;
+  if (automaticInvocationEncoding(value) == "range")
+    legacy["binding_encoding"] = "explicit";
+  else {
+    legacy["schema"] = "ndnsf-di-selection-invocation-v1";
+    legacy["schema_version"] = 1;
+  }
   const auto epochs = unsignedBinding(legacy.at("dataflow").at("endpoint_range"), "epoch_count");
   legacy["dataflow"].erase("endpoint_range");
   auto size = nativeCanonicalJson(legacy).size();
@@ -3113,13 +3201,15 @@ rangeInvocationLogicalSize(const NativeJson& value)
 
 void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
 {
-  if (value.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2") {
+  const auto automaticEncoding = automaticInvocationEncoding(value);
+  if (value.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2" ||
+      automaticEncoding == "compact") {
     validateNativeSelectionInvocationBindingShapeV1(expandInvocationBindings(value));
     return;
   }
   const bool rangeInvocation = value.value("schema", std::string{}) ==
-    "ndnsf-di-selection-invocation-v3";
-  if (rangeInvocation && (!value.contains("schema_version") ||
+    "ndnsf-di-selection-invocation-v3" || automaticEncoding == "range";
+  if (rangeInvocation && automaticEncoding.empty() && (!value.contains("schema_version") ||
       !value.at("schema_version").is_number_integer() || value.at("schema_version") != 3))
     throw std::invalid_argument("invalid range invocation transport version");
   const auto& dependencies = value.at("dependencies");
@@ -3322,7 +3412,9 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
     normalizeExecutionTemplate(std::move(configuration)));
   validateFixedTemplateProviderCover(*executionTemplate, role->selectedRole, projection.provider);
   const auto digest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
-    {"schema", "ndnsf-di-fixed-assignment-v1"}, {"provider", projection.provider},
+    {"schema", role->automaticContractDigest.empty()
+      ? "ndnsf-di-fixed-assignment-v1" : "ndnsf-di-fixed-assignment-v2"},
+    {"provider", projection.provider},
     {"selected_role", role->selectedRole},
     {"role", jsonValue(*role)}, {"execution_template", fixedTemplateJson(*executionTemplate)}}));
   return std::make_shared<const NativeFixedRoleAssignmentV1>(
@@ -3332,8 +3424,10 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
 std::string nativeFixedRoleAssignmentV1ToJson(const NativeFixedRoleAssignmentV1& assignment)
 {
   ++detail::fixedAssignmentWork().sourceEncodes;
-  return nativeCanonicalJson(NativeJson{{"schema", "ndnsf-di-fixed-assignment-v1"},
-    {"schema_version", 1}, {"provider", assignment.provider()},
+  const bool automatic = !assignment.roleOwner()->automaticContractDigest.empty();
+  return nativeCanonicalJson(NativeJson{{"schema", automatic
+      ? "ndnsf-di-fixed-assignment-v2" : "ndnsf-di-fixed-assignment-v1"},
+    {"schema_version", automatic ? 2 : 1}, {"provider", assignment.provider()},
     {"selected_role", assignment.roleOwner()->selectedRole},
     {"role", jsonValue(*assignment.roleOwner())},
     {"execution_template", fixedTemplateJson(*assignment.executionTemplate())}, {"digest", assignment.digest()}});
@@ -3344,10 +3438,13 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
   ++detail::fixedAssignmentWork().sourceParses;
   const std::string wire{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
   if (wire.size() > (4U << 20)) throw std::invalid_argument("fixed role source exceeds wire limit");
-  const auto root = nativeParseJson(wire);
+  const auto root = nativeParseJson(wire, 64);
+  const bool automatic = root.value("schema", std::string{}) == "ndnsf-di-fixed-assignment-v2";
   if (!root.is_object() || root.size() != 7 ||
-      root.at("schema").get<std::string>() != "ndnsf-di-fixed-assignment-v1" ||
-      !root.at("schema_version").is_number_integer() || root.at("schema_version") != NativeJson(1))
+      root.at("schema").get<std::string>() != (automatic
+        ? "ndnsf-di-fixed-assignment-v2" : "ndnsf-di-fixed-assignment-v1") ||
+      !root.at("schema_version").is_number_integer() ||
+      root.at("schema_version") != NativeJson(automatic ? 2 : 1))
     throw std::invalid_argument("fixed role source schema mismatch");
   const auto provider = root.at("provider").get<std::string>();
   const auto selected = root.at("selected_role").get<std::string>();
@@ -3356,6 +3453,9 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
   const auto& roleJson = root.at("role");
   auto role = selectionRoleFromV3Json(legacyTreeFromValue(roleJson), selected);
   restoreSelectionRoleShapes(role, roleJson);
+  if (automatic != !role.automaticContractDigest.empty())
+    throw std::invalid_argument("fixed role automatic contract version mismatch");
+  if (automatic) validateNativeAssembly(role);
   // Parsed positive integers are unsigned, while tensor dimensions are int64.
   // Compare canonical wire identity, retaining numeric versus symbolic types.
   if (nativeCanonicalJson(jsonValue(role)) != nativeCanonicalJson(roleJson))
@@ -3364,7 +3464,8 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
     fixedTemplateFromJson(root.at("execution_template")));
   validateFixedTemplateProviderCover(*executionTemplate, selected, provider);
   const auto digest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
-    {"schema", "ndnsf-di-fixed-assignment-v1"}, {"provider", provider},
+    {"schema", automatic ? "ndnsf-di-fixed-assignment-v2" : "ndnsf-di-fixed-assignment-v1"},
+    {"provider", provider},
     {"selected_role", selected}, {"role", jsonValue(role)},
     {"execution_template", fixedTemplateJson(*executionTemplate)}}));
   if (!root.at("digest").is_string() || root.at("digest").get<std::string>() != digest)
@@ -3472,9 +3573,16 @@ makeSelectionInvocationValue(
                cachedRole.adapterId, cachedRole.adapterVersion))
     throw std::invalid_argument("invocation cannot reuse a different execution role");
   auto root = selectionInvocationFields(projection, true);
-  root["schema"] = projection.dataflow.endpointRange ?
-    "ndnsf-di-selection-invocation-v3" : "ndnsf-di-selection-invocation-v1";
-  root["schema_version"] = projection.dataflow.endpointRange ? 3 : 1;
+  if (projection.automaticShapeSeed) {
+    root["schema"] = "ndnsf-di-selection-invocation-v4";
+    root["schema_version"] = 4;
+    root["binding_encoding"] = projection.dataflow.endpointRange ? "range" : "explicit";
+  }
+  else {
+    root["schema"] = projection.dataflow.endpointRange ?
+      "ndnsf-di-selection-invocation-v3" : "ndnsf-di-selection-invocation-v1";
+    root["schema_version"] = projection.dataflow.endpointRange ? 3 : 1;
+  }
   root["fixed_role_ref"] = fixedAssignment.digest();
   if (source) {
     validateFixedRoleSource(*source);
@@ -3516,8 +3624,11 @@ nativeSelectionInvocationV2ToJson(
   const auto expandedDataflowBytes = measure ? nativeCanonicalJson(root.at("dataflow")).size() : 0;
   for (const auto* key : {"may_publish", "must_fetch"})
     root["dataflow"][key] = compactEndpointBindings(root.at("dataflow").at(key));
-  root["schema"] = "ndnsf-di-selection-invocation-v2";
-  root["schema_version"] = 2;
+  if (projection.automaticShapeSeed) root["binding_encoding"] = "compact";
+  else {
+    root["schema"] = "ndnsf-di-selection-invocation-v2";
+    root["schema_version"] = 2;
+  }
   const auto wire = nativeCanonicalJson(root);
   if (measure) {
     logRuntimeEvidence("NDNSF_DI_INVOCATION_WIRE requestId=" + projection.requestId +
@@ -3550,8 +3661,9 @@ NativeSelectionProjectionV3 nativeSelectionInvocationV1FromJson(
   const NativeFixedRoleAssignmentV1& fixedAssignment)
 {
   const std::string wire{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-  auto root = nativeParseJson(wire);
-  if (root.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2")
+  auto root = nativeParseJson(wire, 64);
+  if (root.value("schema", std::string{}) == "ndnsf-di-selection-invocation-v2" ||
+      automaticInvocationEncoding(root) == "compact")
     root = expandInvocationBindings(root);
   return decodeSelectionProjectionV3(root, legacyTreeFromValue(root), selectedRole,
     nullptr, false, &fixedAssignment);
@@ -3808,7 +3920,7 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
   // allocating fixed node/interface arrays merely to validate their values.
   strings({&role.adapterDescriptorDigest, &role.adapterId, &role.adapterVersion,
     &role.artifactDigest, &role.artifactProfileDigest, &role.assemblerDescriptorDigest,
-    &role.backend, &role.backendAbi, &role.canonicalInitializerDigest});
+    &role.automaticContractDigest, &role.backend, &role.backendAbi, &role.canonicalInitializerDigest});
   for (const auto& device : role.deviceSet) validateAssemblyStringEncoding(device);
   tensors(role.expectedInputs);
   tensors(role.expectedOutputs);
@@ -3821,6 +3933,9 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
+  if (!role.automaticContractDigest.empty() &&
+      nativePlanningDigest(canonicalNativeOnnxRecipeJson(role)) != role.recipeDigest)
+    throw std::invalid_argument("automatic role recipe digest differs from its canonical contract");
   // Custom numeric locale facets can change the legacy integer conversions.
   // Preserve that path; typed canonical integers round trip in classic locale.
   if (std::locale() != std::locale::classic()) {
@@ -3836,6 +3951,27 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   const auto confidence = legacyTreeFromValue(NativeJson(role.postprocessConfidenceThreshold))
     .get_value<double>(0.0);
   validateSelectionRoleFields(role, confidence);
+}
+
+void
+validateNativeAutomaticSelectionBinding(const NativeSelectionProjectionV3& projection)
+{
+  const auto& selected = projection.selectedRoleContract();
+  const auto& assembly = projection.assemblyContract();
+  if (!projection.automaticShapeSeed) {
+    if (!selected.automaticContractDigest.empty() || !assembly.automaticContractDigest.empty())
+      throw std::invalid_argument("automatic Selection has no request shape seed");
+    return;
+  }
+  const auto& seed = *projection.automaticShapeSeed;
+  (void)nativeAutomaticShapeSeedToJson(seed);
+  if (!isSha256Digest(projection.requestContractDigest) ||
+      selected.automaticContractDigest != seed.contractDigest ||
+      assembly.automaticContractDigest != seed.contractDigest ||
+      !sameAssembly(selected, assembly) || seed.maxNewTokens !=
+        (projection.generationContract.enabled ? projection.generationContract.maxGeneratedTokens : 0))
+    throw std::invalid_argument("automatic Selection role, request or budget binding mismatch");
+  validateNativeAssembly(assembly);
 }
 
 void
@@ -3859,6 +3995,12 @@ validateNativeSelectionProjectionSetV3(
   std::size_t terminalOwners = 0;
 
   for (const auto& projection : projections) {
+    validateNativeAutomaticSelectionBinding(projection);
+    if (projection.automaticShapeSeed.has_value() != first.automaticShapeSeed.has_value() ||
+        (projection.automaticShapeSeed &&
+         nativeAutomaticShapeSeedToJson(*projection.automaticShapeSeed) !=
+           nativeAutomaticShapeSeedToJson(*first.automaticShapeSeed)))
+      throw std::invalid_argument("projection set has inconsistent automatic request shape seeds");
     if (projection.dataflow.endpointRange.has_value() != first.dataflow.endpointRange.has_value())
       throw std::invalid_argument("projection set mixes compact and expanded endpoints");
     if (projection.dataflow.endpointRange) {

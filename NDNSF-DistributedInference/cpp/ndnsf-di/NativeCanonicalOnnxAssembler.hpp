@@ -94,6 +94,15 @@ struct NativeCanonicalOnnxAssemblerOptions
   std::shared_ptr<NativePersistentRecipeResidencyIndex> persistentRecipeResidencyIndex;
 };
 
+/** Check the current automatic seed before a cached descriptor is rebound.
+ * Retains no request control and does not require a plaintext model path.
+ */
+void
+validateNativeAutomaticCachedRunnerSource(
+  ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
+  const NativeSelectionProjectionV3& projection, const NativeModelRunnerSpec& spec,
+  const NativeCanonicalOnnxAssemblerOptions& options);
+
 /** Bind every local assembly cache to the current admitted stored-object keys.
  * Call once on fresh options, after configuring the protected runtime and role digest.
  */

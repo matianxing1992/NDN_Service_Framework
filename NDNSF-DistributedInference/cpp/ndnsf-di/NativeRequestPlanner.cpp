@@ -1286,6 +1286,8 @@ NativePlannedRequest planNativeRequestImpl(
                                NativeWorkKind::UNCLASSIFIED);
   const auto contextCopyTiming = planPhaseStarted();
   control.requireActive();
+  validateNativeAutomaticRequestBinding(encoded, model.descriptor, runtime.contract, control.requestId,
+                                        control.attempt, options.generation);
   runtime.budget.validate();
   ports.splitterIdentity.validate();
   ports.placementIdentity.validate();
@@ -1810,6 +1812,7 @@ NativePlannedRequest planNativeRequestImpl(
     // original wire deadline for its execution and dataflow leases.
     sealing.expiresAtMs = context.deadlineMs;
     sealing.requestContractDigest = encoded.requestContractDigest;
+    sealing.automaticShapeSeed = encoded.automaticShapeSeed;
     sealing.placementObservationSnapshotDigest =
       context.placementObservationSnapshotDigest;
     if (options.generation) {
@@ -2271,7 +2274,10 @@ std::optional<NativeJson> bindNativeRequestTransferProfileV1(
         !constants.is_object() || constants.size() > 32 ||
         !dependencies.is_array() || dependencies.empty() || dependencies.size() > 64)
       return std::nullopt;
-    const auto envelope = NativeJson::parse(request.wire.begin(), request.wire.end());
+    const auto parsedEnvelope = parseNativeRequestEnvelope(
+      std::string(request.wire.begin(), request.wire.end()));
+    if (!parsedEnvelope) return std::nullopt;
+    const auto& envelope = *parsedEnvelope;
     std::uint64_t pastTokens = 0;
     const bool continued = turn && turn->parent.parentContextEpoch > 0;
     if (continued) {
@@ -2294,8 +2300,7 @@ std::optional<NativeJson> bindNativeRequestTransferProfileV1(
           nativePlanningDigest(request.wire.data(), request.wire.size()) != request.requestContractDigest)
         return std::nullopt;
     }
-    if (envelope.value("schema", std::string{}) != "ndnsf-di-request-envelope-v2" ||
-        envelope.value("input_transport", std::string{}) != "INLINE") return std::nullopt;
+    if (envelope.value("input_transport", std::string{}) != "INLINE") return std::nullopt;
     const auto base64 = envelope.at("input_payload_b64").get<std::string>();
     if (base64.empty() || base64.size() % 4 || base64.size() > 4 * (((16ULL << 20) + 2) / 3))
       return std::nullopt;
@@ -2447,8 +2452,6 @@ static std::optional<std::uint64_t> estimateRequestTransferBytes(
     }
     if (!selected || !selected->at("tensors").is_array() ||
         selected->at("tensors").size() != shared.size()) return std::nullopt;
-    const std::map<std::string, std::uint64_t> widths{
-      {"float32", 4}, {"float16", 2}, {"int32", 4}, {"int64", 8}, {"bool", 1}, {"uint8", 1}};
     std::set<std::string> seen;
     std::uint64_t total = 0;
     std::vector<TensorBundleEncodingMember> members;
@@ -2458,10 +2461,10 @@ static std::optional<std::uint64_t> estimateRequestTransferBytes(
       const auto found = shared.find(name);
       const auto dtype = tensor.at("dtype").get<std::string>();
       if (found == shared.end() || !seen.insert(name).second ||
-          dtype != found->second.dtype || !widths.count(dtype) ||
+          dtype != found->second.dtype ||
           !tensor.at("shape").is_array() ||
           tensor.at("shape").size() != found->second.shape.size()) return std::nullopt;
-      std::uint64_t bytes = widths.at(dtype);
+      std::uint64_t bytes = tensorElementByteSize(tensorElementTypeFromName(dtype));
       for (std::size_t i = 0; i < found->second.shape.size(); ++i) {
         const auto& dimension = tensor.at("shape")[i];
         if (!dimension.is_number_integer()) return std::nullopt;

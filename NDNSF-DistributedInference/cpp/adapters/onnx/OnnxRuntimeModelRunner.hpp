@@ -190,6 +190,10 @@ public:
                          std::shared_ptr<OnnxKvStateObserver> stateObserver);
   ~OnnxRuntimeModelRunner() final;
 
+  std::shared_ptr<const AutomaticOnnxRequestBinding>
+  validateAutomaticRequestBinding(const NativeSelectionProjectionV3& projection,
+                                  const NativeRequestControl& control) const final;
+
   std::map<std::string, TensorBundle>
   run(const RoleExecutionContext& ctx) final;
 
@@ -252,8 +256,11 @@ public:
   releaseConversationState(const NativeConversationStateHandleV1& state) final;
 
 private:
+  enum class InvocationKind { REQUEST, MODEL_WARMUP };
   class SharedSession;
   class Impl;
+  std::map<std::string, TensorBundle>
+  runImpl(const RoleExecutionContext& ctx, InvocationKind kind);
   std::optional<std::map<std::string, TensorBundle>>
   runStreamedImpl(const RoleExecutionContext& ctx);
   void initializeEvidence();

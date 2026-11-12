@@ -1920,6 +1920,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                                          (assembledDiskHit ? "assembled-disk-hit" :
                                           "assembled-built"));
           spec = *lease.runnerSpec();
+          validateNativeAutomaticCachedRunnerSource(ctx, projection, spec, options);
           // A protected ciphertext is bound to the current key reference,
           // but the immutable template is bound to the model/role/recipe
           // identity. Rebind the current grant's descriptor after a

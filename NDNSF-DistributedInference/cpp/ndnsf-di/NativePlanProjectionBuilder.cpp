@@ -141,10 +141,7 @@ std::uint64_t fixedBundleBytes(const NativeSelectionRoleV3& producer,
       match(producer.expectedOutputs);
       match(producer.expectedInputs);
       if (!found) return 0;
-      std::uint64_t bytes = found->dtype == "float32" ? 4 :
-        found->dtype == "float16" ? 2 : found->dtype == "int64" ? 8 :
-        (found->dtype == "bool" || found->dtype == "uint8") ? 1 : 0;
-      if (bytes == 0) return 0;
+      std::uint64_t bytes = tensorElementByteSize(tensorElementTypeFromName(found->dtype));
       for (const auto& dimension : found->shape) {
         if (!std::holds_alternative<std::int64_t>(dimension)) return 0;
         const auto value = std::get<std::int64_t>(dimension);
@@ -665,6 +662,11 @@ void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjec
     else value.selectedRole = core.roleContracts().at(item.first);
     value.executionRole = item.second.executionRole;
     value.generationContract = core.generationContract;
+    value.automaticShapeSeed = core.automaticShapeSeed;
+    if (core.automaticShapeSeed) {
+      value.requestContractDigest = core.requestContractDigest;
+      if (!value.fixedRoleOwner) value.assembly = value.selectedRole;
+    }
     value.dataflow = dataflow;
     // The sealed template travels with the projection this builder submits for certification.
     // Without it the validator sees a degree-two plan with no steps, applies the role-level

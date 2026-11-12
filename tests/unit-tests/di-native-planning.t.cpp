@@ -4,6 +4,7 @@
 #include "tests/fixtures/spec182/native-qwen-config.hpp"
 #include "tests/fixtures/spec182/native-candidate-json-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <fstream>
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
@@ -2110,6 +2111,73 @@ BOOST_AUTO_TEST_CASE(OwnedOnnxGraphRejectsForeignAdapterSourceAndExpiredControl)
   limited = control; limited.requireActive = [] { throw std::runtime_error("fixture-cancelled"); };
   BOOST_CHECK_EXCEPTION(inspectNativeOnnxPlanningGraph(source, descriptor, limited), std::runtime_error,
     [](const auto& error) { return std::string(error.what()) == "fixture-cancelled"; });
+}
+
+BOOST_AUTO_TEST_CASE(AutomaticSeedSealsEveryRoleAndChangesOnlyCurrentCoreIdentity)
+{
+  // Structural sealing fixture; actual source proof remains the ONNX adapter's owner.
+  TwoRolePlacement fixture;
+  const auto proposal = NativePreSplitFirstPlacement().propose(fixture.snapshot, fixture.candidate);
+  NativePlanSealingInputs inputs;
+  inputs.artifacts.sourceByRole = {{fixture.first, "/canonical/first"},
+                                   {fixture.second, "/canonical/second"}};
+  inputs.artifacts.artifactDigestByRole = {{fixture.first, digest("first-artifact")},
+                                          {fixture.second, digest("second-artifact")}};
+  inputs.artifacts.manifestDigest = digest("manifest");
+  inputs.artifacts.recipeDigest = digest("recipe");
+  inputs.artifacts.requestId = fixture.snapshot.requestId;
+  inputs.artifacts.attempt = fixture.snapshot.attempt;
+  inputs.artifacts.modelDigest = fixture.snapshot.model.contentDigest;
+  inputs.artifacts.graphDigest = fixture.snapshot.graph.graphDigest;
+  inputs.requesterIdentity = "/requester"; inputs.protectionEpoch = "protected-v1";
+  inputs.expiresAtMs = 2000000000000ULL;
+  inputs.requestContractDigest = digest("request-wire");
+  ndnsf::di::fixture::assemblies(inputs);
+  NativeAutomaticShapeSeed seed;
+  seed.contractDigest = digest("source-contract"); seed.bindingDigest = digest("binding");
+  seed.budgetDigest = digest("budget"); seed.envelopeDigest = digest("envelope");
+  seed.maxContext = 16; seed.inputShapes.emplace("graph/x", std::vector<std::int64_t>{1, 4});
+  inputs.automaticShapeSeed = seed;
+  for (auto& item : inputs.assemblyByRole) {
+    item.second.automaticContractDigest = seed.contractDigest;
+    item.second.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(item.second));
+  }
+  const auto core = NativePlanSealer::sealCore(fixture.snapshot, proposal, inputs);
+  BOOST_REQUIRE(core.automaticShapeSeed);
+  BOOST_CHECK_EQUAL(core.automaticShapeSeed->envelopeDigest, seed.envelopeDigest);
+  const NativeSecurityPolicySnapshot security{digest("automatic-policy"), true};
+  std::vector<NativeGrantBinding> grants;
+  for (const auto& offer : fixture.snapshot.offers) {
+    const auto view = NativePlanSealer::grantView(core, offer, security);
+    grants.push_back({view.provider, view.role, "/grant/automatic-" + std::to_string(grants.size()),
+                      digest("grant-" + view.role), view.provider});
+  }
+  const auto sealed = NativePlanSealer::finalizeSecurity(core, grants, security);
+  for (const auto& offer : fixture.snapshot.offers) {
+    const auto projected = NativePlanSealer::project(sealed, offer.provider,
+      ndnsf::di::fixture::projection(sealed, offer.provider));
+    BOOST_REQUIRE(projected.automaticShapeSeed);
+    BOOST_CHECK_EQUAL(projected.automaticShapeSeed->envelopeDigest, seed.envelopeDigest);
+    BOOST_CHECK_EQUAL(projected.selectedRoleContract().automaticContractDigest, seed.contractDigest);
+  }
+  auto nextInputs = inputs;
+  nextInputs.automaticShapeSeed->maxContext = 32;
+  nextInputs.automaticShapeSeed->budgetDigest = digest("next-budget");
+  nextInputs.automaticShapeSeed->envelopeDigest = digest("next-envelope");
+  const auto next = NativePlanSealer::sealCore(fixture.snapshot, proposal, nextInputs);
+  BOOST_CHECK_NE(core.coreDigest, next.coreDigest);
+  const auto fixed = NativePlanSealer::shareFixedCore(core);
+  const auto warm = NativePlanSealer::shareFixedCore(next, fixed.fixedCoreOwner);
+  BOOST_CHECK_EQUAL(warm.fixedCoreOwner.get(), fixed.fixedCoreOwner.get());
+  BOOST_CHECK_EQUAL(warm.automaticShapeSeed->envelopeDigest, digest("next-envelope"));
+  for (int failure = 0; failure != 4; ++failure) {
+    auto changed = inputs;
+    if (failure == 0) changed.automaticShapeSeed.reset();
+    if (failure == 1) changed.assemblyByRole.begin()->second.automaticContractDigest = digest("foreign");
+    if (failure == 2) changed.requestContractDigest.clear();
+    if (failure == 3) changed.automaticShapeSeed->maxNewTokens = 1;
+    BOOST_CHECK_THROW(NativePlanSealer::sealCore(fixture.snapshot, proposal, changed), std::exception);
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

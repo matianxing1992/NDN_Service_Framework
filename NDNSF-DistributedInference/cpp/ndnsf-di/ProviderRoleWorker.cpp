@@ -420,7 +420,7 @@ ProviderRoleWorker::executePreparedAsync(
                           std::move(executionGuard));
 }
 
-std::future<std::shared_ptr<NativeModelRunner>>
+std::future<NativePreparedRunner>
 ProviderRoleWorker::prepareRunnerAsync(
   NativeRunnerPreparation prepareRunner,
   std::function<void()> executionGuard)
@@ -430,7 +430,7 @@ ProviderRoleWorker::prepareRunnerAsync(
       "ProviderRoleWorker requires a runner preparation callback");
   }
   auto promise = std::make_shared<
-    std::promise<std::shared_ptr<NativeModelRunner>>>();
+    std::promise<NativePreparedRunner>>();
   auto future = promise->get_future();
   {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -1143,15 +1143,15 @@ ProviderRoleWorker::executePreparation(const PreparationItem& item)
     if (item.executionGuard) {
       item.executionGuard();
     }
-    auto runner = item.prepareRunner();
-    if (!runner) {
+    auto prepared = item.prepareRunner();
+    if (!prepared.runner) {
       throw std::runtime_error(
         "Provider runner preparation returned no NativeModelRunner");
     }
     if (item.executionGuard) {
       item.executionGuard();
     }
-    item.promise->set_value(std::move(runner));
+    item.promise->set_value(std::move(prepared));
   }
   catch (...) {
     try {
@@ -1633,6 +1633,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   std::map<std::string, TensorBundle> inputsByScope = item.initialInputsByScope;
 
   auto runner = item.runner;
+  auto automaticBinding = item.role.automaticBinding;
   if (!runner) {
     logDiTimelineTrace(
       "di-provider", "role_preparation_start", requestId,
@@ -1642,7 +1643,13 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
        {"providerBootId", item.role.candidateDecodeStateIdentity ?
                             item.role.candidateDecodeStateIdentity->providerBootId : "none"},
        {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
-    runner = item.prepareRunner();
+    auto prepared = item.prepareRunner();
+    runner = std::move(prepared.runner);
+    if (automaticBinding && prepared.automaticBinding &&
+        automaticBinding != prepared.automaticBinding)
+      throw std::runtime_error("AUTOMATIC_REQUEST_BINDING_OWNER_MISMATCH");
+    if (prepared.automaticBinding)
+      automaticBinding = std::move(prepared.automaticBinding);
     if (!runner) {
       throw std::runtime_error(
         "Provider role preparation returned no NativeModelRunner");
@@ -1677,6 +1684,8 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
 
   NativeWorkScope inputWork(item.role.workStatistics, "role-input-bind", NativeWorkKind::LOCAL);
   RoleExecutionContext ctx;
+  ctx.automaticBinding = std::move(automaticBinding);
+  ctx.executionGuard = item.executionGuard;
   ctx.workStatistics = item.role.workStatistics;
   ctx.sessionId = item.sessionId;
   ctx.role = item.role.role;
@@ -1734,8 +1743,11 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     logRuntimeTrace("NDNSF_DI_WORKER event=inputs_validated role=" + item.role.role);
   }
 
-  result.exactForwardCacheKey = exactForwardCacheKeyFor(
-    item, runner.get(), inputsByScope);
+  // Automatic admission is request-owned and must run even for equal bytes.
+  // Reuse the immutable model/session, not an unchecked prior execution.
+  if (!ctx.automaticBinding) {
+    result.exactForwardCacheKey = exactForwardCacheKeyFor(item, runner.get(), inputsByScope);
+  }
   if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
     NativeWorkScope traceWork(item.role.workStatistics, "role-input-trace",
                               NativeWorkKind::UNCLASSIFIED);
@@ -1755,7 +1767,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   // A generation epoch may update adapter-owned KV or depend on lineage not
   // represented in the pure-output cache key, even with equal tensor bytes.
   // Reusing a loaded runner must not suppress that state transition.
-  const bool canReuseOutputs = !hasStreamSideEffect &&
+  const bool canReuseOutputs = !ctx.automaticBinding && !hasStreamSideEffect &&
     !item.role.streamingStateExecution && !item.role.generationLineage;
   inputWork.finish();
   if (item.role.workStatistics) {

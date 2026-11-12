@@ -1,6 +1,8 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
@@ -2078,5 +2080,296 @@ BOOST_AUTO_TEST_CASE(NativeV3ProjectionSetRejectsCycleAndMultipleTerminalOwners)
   BOOST_CHECK_THROW(validateNativeSelectionProjectionSetV3(terminal),
                     std::invalid_argument);
 }
+
+namespace {
+// Structural wire fixture only; source semantic/rebind oracles are separate.
+NativeSelectionProjectionV3
+automaticProjection()
+{
+  auto value = parseProjection(projectionJson(1, {}, "CPU", {}, false, true));
+  value.selectedRole.automaticContractDigest = digest('2');
+  value.selectedRole.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(value.selectedRole));
+  value.assembly = value.selectedRole;
+  NativeAutomaticShapeSeed seed;
+  seed.contractDigest = digest('2'); seed.bindingDigest = digest('3');
+  seed.budgetDigest = digest('4'); seed.envelopeDigest = digest('5');
+  seed.maxContext = 16; seed.inputShapes.emplace("graph/x", std::vector<std::int64_t>{1, 4});
+  value.automaticShapeSeed = seed;
+  return value;
+}
+}
+
+BOOST_AUTO_TEST_SUITE(Spec233AutomaticSelection)
+
+BOOST_AUTO_TEST_CASE(CompleteAliasAndFixedInvocationsRetainCurrentSeed)
+{
+  auto projection = automaticProjection();
+  const auto full = nativeSelectionProjectionV3ToJson(projection);
+  const auto fullRoot = nativeParseJson(full);
+  BOOST_CHECK(fullRoot.at("schema") == "ndnsf-di-selection-v4");
+  BOOST_CHECK(fullRoot.at("schema_version") == 4);
+  BOOST_CHECK(fullRoot.at("automatic_shape_seed") ==
+    nativeAutomaticShapeSeedToJson(*projection.automaticShapeSeed));
+  const auto decoded = parseProjection(full);
+  BOOST_CHECK_EQUAL(decoded.assemblyContract().automaticContractDigest, digest('2'));
+  BOOST_CHECK_EQUAL(nativeSelectionProjectionV3ToJson(decoded), full);
+  projection.compactAssembly = true;
+  const auto alias = nativeParseJson(nativeSelectionProjectionV3ToJson(projection));
+  BOOST_CHECK(alias.at("assembly_same_as_role") == true);
+  BOOST_CHECK(!alias.contains("assembly"));
+  BOOST_CHECK_EQUAL(parseProjection(nativeCanonicalJson(alias)).automaticShapeSeed->envelopeDigest,
+                    digest('5'));
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  const auto fixedWire = nativeFixedRoleAssignmentV1ToJson(*fixed);
+  const auto fixedRoot = nativeParseJson(fixedWire);
+  BOOST_CHECK(fixedRoot.at("schema") == "ndnsf-di-fixed-assignment-v2");
+  BOOST_CHECK(fixedRoot.at("schema_version") == 2);
+  BOOST_CHECK(!fixedRoot.contains("automatic_shape_seed"));
+  std::istringstream fixedInput(fixedWire);
+  const auto restored = nativeFixedRoleAssignmentV1FromJson(fixedInput);
+  BOOST_CHECK_EQUAL(restored->digest(), fixed->digest());
+  for (const bool compact : {false, true}) {
+    const auto wire = compact ? nativeSelectionInvocationV2ToJson(projection, *restored)
+                              : nativeSelectionInvocationV1ToJson(projection, *restored);
+    const auto root = nativeParseJson(wire);
+    BOOST_CHECK(root.at("schema") == "ndnsf-di-selection-invocation-v4");
+    BOOST_CHECK(root.at("schema_version") == 4);
+    BOOST_CHECK(root.at("binding_encoding") == (compact ? "compact" : "explicit"));
+    std::istringstream input(wire);
+    const auto current = nativeSelectionInvocationV1FromJson(input, "S0R0", *restored);
+    BOOST_CHECK_EQUAL(current.fixedRoleOwner.get(), restored->roleOwner().get());
+    BOOST_CHECK_EQUAL(current.automaticShapeSeed->contractDigest, digest('2'));
+    const ndn::Buffer payload(wire.begin(), wire.end());
+    BOOST_CHECK_NO_THROW(parseNativeProviderAssignmentFields(payload, "S0R0", &current));
+  }
+  // Fixed identity contains source/role interfaces, never this request's seed.
+  projection.automaticShapeSeed->maxContext = 32;
+  projection.automaticShapeSeed->bindingDigest = digest('6');
+  projection.automaticShapeSeed->budgetDigest = digest('7');
+  projection.automaticShapeSeed->envelopeDigest = digest('8');
+  BOOST_CHECK_EQUAL(nativeFixedRoleAssignmentV1FromProjection(projection)->digest(), fixed->digest());
+  std::istringstream currentInput(nativeSelectionInvocationV1ToJson(projection, *restored));
+  const auto current = nativeSelectionInvocationV1FromJson(currentInput, "S0R0", *restored);
+  BOOST_CHECK_EQUAL(current.automaticShapeSeed->maxContext, 32);
+  BOOST_CHECK_EQUAL(current.automaticShapeSeed->envelopeDigest, digest('8'));
+}
+
+BOOST_AUTO_TEST_CASE(RejectsDowngradeMissingSeedsAndContractOnlyRecipeTamper)
+{
+  const auto projection = automaticProjection();
+  const auto original = nativeParseJson(nativeSelectionProjectionV3ToJson(projection));
+  for (int failure = 0; failure != 10; ++failure) {
+    auto value = original;
+    if (failure == 0) { value["schema"] = "ndnsf-di-selection-v3"; value["schema_version"] = 3; }
+    if (failure == 1) value.erase("automatic_shape_seed");
+    if (failure == 2) value["automatic_shape_seed"]["contractDigest"] = digest('9');
+    if (failure == 3) value["roles"][0]["automatic_contract_digest"] = digest('9');
+    if (failure == 4) value["assembly"]["automatic_contract_digest"] = digest('9');
+    if (failure == 5) value["schema_version"] = 4.0;
+    if (failure == 6) value["binding_encoding"] = "explicit";
+    if (failure == 7) value["automatic_shape_seed"]["maxNewTokens"] = 1;
+    if (failure == 8) {
+      value["schema"] = "ndnsf-di-selection-v3"; value["schema_version"] = 3;
+      value.erase("automatic_shape_seed");
+    }
+    if (failure == 9) {
+      value["schema"] = "ndnsf-di-selection-v3"; value["schema_version"] = 3;
+      value.erase("automatic_shape_seed");
+      value["roles"][0]["automatic_contract_digest"] = "";
+      value["assembly"]["automatic_contract_digest"] = "";
+    }
+    BOOST_CHECK_THROW(parseProjection(nativeCanonicalJson(value)), std::exception);
+  }
+  auto changed = projection;
+  changed.selectedRole.automaticContractDigest = digest('9');
+  changed.assembly = changed.selectedRole;
+  changed.automaticShapeSeed->contractDigest = digest('9');
+  BOOST_CHECK_THROW(validateNativeAutomaticSelectionBinding(changed), std::invalid_argument);
+  BOOST_CHECK(!nativeSelectionRoleContractsEqualExceptCertificatesV3(
+    projection.selectedRole, changed.selectedRole, true, true));
+  NativeCanonicalOnnxAssemblerOptions options;
+  // Invalid metadata must fail before any cache or source read, even through
+  // the direct cache entry, rather than just producing a cache miss.
+  BOOST_CHECK_THROW(tryLoadNativeCanonicalOnnxRoleFromCache({}, changed, options, {}, {}),
+                    std::invalid_argument);
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  const auto originalFixed = nativeParseJson(nativeFixedRoleAssignmentV1ToJson(*fixed));
+  for (int failure = 0; failure != 3; ++failure) {
+    auto value = originalFixed;
+    if (failure == 0) { value["schema"] = "ndnsf-di-fixed-assignment-v1"; value["schema_version"] = 1; }
+    if (failure == 1) value["role"].erase("automatic_contract_digest");
+    if (failure == 2) value["role"]["automatic_contract_digest"] = digest('9');
+    std::istringstream input(nativeCanonicalJson(value));
+    BOOST_CHECK_THROW(nativeFixedRoleAssignmentV1FromJson(input), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(InvocationChecksEncodingSeedAndValidatedOwnerBeforeUse)
+{
+  const auto projection = automaticProjection();
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  const auto wire = nativeSelectionInvocationV1ToJson(projection, *fixed);
+  const auto original = nativeParseJson(wire);
+  std::istringstream input(wire);
+  const auto checked = nativeSelectionInvocationV1FromJson(input, "S0R0", *fixed);
+  for (int failure = 0; failure != 9; ++failure) {
+    auto value = original;
+    if (failure == 0) value.erase("binding_encoding");
+    if (failure == 1) value["binding_encoding"] = "other";
+    if (failure == 2) value["dataflow"]["endpoint_range"] = {{"epoch_count", 2}, {"operation_stride", 1}};
+    if (failure == 3) value["dataflow"]["must_fetch"] = {{"common", NativeJson::object()},
+                                                        {"entries", NativeJson::array()}};
+    if (failure == 4) value.erase("automatic_shape_seed");
+    if (failure == 5) { value["schema"] = "ndnsf-di-selection-invocation-v1"; value["schema_version"] = 1; }
+    if (failure == 6) value["automatic_shape_seed"]["contractDigest"] = digest('9');
+    if (failure == 7) value["automatic_shape_seed"]["envelopeDigest"] = digest('9');
+    if (failure == 8) value["request_contract_digest"] = digest('8');
+    const auto changedWire = nativeCanonicalJson(value);
+    const ndn::Buffer payload(changedWire.begin(), changedWire.end());
+    if (failure < 6) {
+      BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(value), std::exception);
+    }
+    // The already-validated projection must not replace different wire metadata.
+    BOOST_CHECK_THROW(parseNativeProviderAssignmentFields(payload, "S0R0", &checked), std::exception);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(RangeInvocationPreservesSeedAndRejectsExpandedOversize)
+{
+  auto projection = automaticProjection();
+  const auto generation = parseProjection(streamingProjectionJson());
+  projection.generationContract = generation.generationContract;
+  projection.plan.dependencies = generation.plan.dependencies;
+  projection.automaticShapeSeed->maxNewTokens = 8;
+  projection.dataflow.endpointRange = NativeGenerationEndpointRangeV1{9, 1};
+  // Use the maintained producer for fixture setup, not a partial digest copy.
+  auto flow = nativeDataflowJson(projection.dataflow);
+  flow.erase("dataflow_digest");
+  projection.dataflow.dataflowDigest = nativePlanningDigest(nativeCanonicalJson(flow));
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  const auto wire = nativeSelectionInvocationV3ToJson(projection, *fixed);
+  auto root = nativeParseJson(wire);
+  BOOST_CHECK(root.at("schema") == "ndnsf-di-selection-invocation-v4");
+  BOOST_CHECK(root.at("binding_encoding") == "range");
+  std::istringstream input(wire);
+  const auto restored = nativeSelectionInvocationV1FromJson(input, "S0R0", *fixed);
+  BOOST_REQUIRE(restored.dataflow.endpointRange);
+  BOOST_CHECK_EQUAL(restored.dataflow.endpointRange->epochCount, 9);
+  BOOST_CHECK_EQUAL(restored.automaticShapeSeed->maxNewTokens, 8);
+  auto mixed = root; mixed["binding_encoding"] = "explicit";
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(mixed), std::invalid_argument);
+  root["generation_contract"]["max_generated_tokens"] = 1025;
+  root["automatic_shape_seed"]["maxNewTokens"] = 1025;
+  root["automatic_shape_seed"]["maxContext"] = 4096;
+  root["dataflow"]["endpoint_range"]["epoch_count"] = 1026;
+  NativeJson endpoint{{"producer_namespace", "/provider/" + std::string(8000, 'a')},
+    {"requester", "/requester"}, {"group_id", "group"}, {"group_epoch", "epoch"},
+    {"microbatch", 0}, {"segment_count", 1}, {"manifest_digest", digest('a')},
+    {"endpoint_digest", digest('b')}, {"no_progress_deadline_ms", 1000},
+    {"hard_deadline_ms", 5000}};
+  root["dataflow"]["may_publish"] = NativeJson::array({endpoint});
+  BOOST_CHECK_LT(nativeCanonicalJson(root).size(), 4U << 20);
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(root), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(CompactObjectBindingsExpandWithoutLosingAutomaticMetadata)
+{
+  auto projection = automaticProjection();
+  const auto generation = parseProjection(streamingProjectionJson());
+  projection.generationContract = generation.generationContract;
+  projection.plan.dependencies = generation.plan.dependencies;
+  projection.automaticShapeSeed->maxNewTokens = 8;
+  for (std::uint64_t epoch = 0; epoch != 9; ++epoch) {
+    auto transfer = endpoint("S0R0", "S0R0", nativePlanningDigest(std::to_string(epoch)));
+    transfer.consumerRoles = {"S0R0"}; transfer.requestId = projection.requestId;
+    transfer.planDigest = projection.planDigest; transfer.round = epoch;
+    transfer.namingOperationStride = 1;
+    certifyNamingEndpoint(transfer);
+    projection.dataflow.mustFetch.push_back(transfer);
+    transfer.tensorId = "published-activation";
+    certifyNamingEndpoint(transfer);
+    projection.dataflow.mayPublish.push_back(transfer);
+  }
+  NativeReadinessPredicateV3 ready;
+  ready.mode = "ALL"; ready.endpointDigests = {projection.dataflow.mustFetch.front().endpointDigest};
+  projection.dataflow.waitFor = {ready};
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  const auto explicitWire = nativeSelectionInvocationV1ToJson(projection, *fixed);
+  const auto compactWire = nativeSelectionInvocationV2ToJson(projection, *fixed);
+  const auto compact = nativeParseJson(compactWire);
+  BOOST_CHECK(compact.at("dataflow").at("must_fetch").is_object());
+  BOOST_CHECK(compact.at("binding_encoding") == "compact");
+  BOOST_CHECK_LT(compactWire.size(), explicitWire.size());
+  std::istringstream input(compactWire);
+  const auto decoded = nativeSelectionInvocationV1FromJson(input, "S0R0", *fixed);
+  BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch.size(), 9);
+  BOOST_CHECK_EQUAL(decoded.automaticShapeSeed->envelopeDigest, digest('5'));
+  BOOST_CHECK_EQUAL(nativeSelectionInvocationV1ToJson(decoded, *fixed), explicitWire);
+  auto wrongEncoding = compact; wrongEncoding["binding_encoding"] = "explicit";
+  BOOST_CHECK_THROW(validateNativeSelectionInvocationBindingShapeV1(wrongEncoding), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(OriginalRequestSeedAndModeAreCheckedBeforeBackendUse)
+{
+  auto projection = automaticProjection();
+  projection.selectedRole.adapterId = "automatic-onnx";
+  projection.executionRole.adapterId = projection.selectedRole.adapterId;
+  projection.selectedRole.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(projection.selectedRole));
+  projection.assembly = projection.selectedRole;
+  NativeJson request{{"schema", "ndnsf-di-request-envelope-v3"}, {"schema_version", 3},
+    {"request_id", projection.requestId}, {"attempt", projection.attempt},
+    {"task", {{"adapter", "automatic-onnx"}, {"generation_mode", "TOKEN_DIAGNOSTIC"}}},
+    {"automatic_shape_seed", nativeAutomaticShapeSeedToJson(*projection.automaticShapeSeed)}};
+  const auto wire = nativeCanonicalJson(request);
+  projection.requestContractDigest = nativePlanningDigest(wire);
+  BOOST_CHECK_NO_THROW(validateNativeAutomaticSelectionRequestBinding(wire, projection));
+  const auto header = nativeParseJson(nativeSelectionProjectionV3ToJson(projection));
+  BOOST_CHECK_NO_THROW(validateNativeAutomaticSelectionRequestBinding(wire, header));
+  for (int failure = 0; failure != 8; ++failure) {
+    auto value = request; auto selected = projection;
+    if (failure == 0) value["automatic_shape_seed"]["envelopeDigest"] = digest('9');
+    if (failure == 1) selected.automaticShapeSeed->envelopeDigest = digest('9');
+    if (failure == 2) value["request_id"] = "/different";
+    if (failure == 3) value["attempt"] = 2;
+    if (failure == 4) value["task"]["generation_mode"] = "TOKEN_STREAMING";
+    if (failure == 5) selected.automaticShapeSeed.reset();
+    if (failure == 6) selected.requestContractDigest = digest('9');
+    if (failure == 7) selected.selectedRole.adapterId = "legacy";
+    BOOST_CHECK_THROW(validateNativeAutomaticSelectionRequestBinding(
+      nativeCanonicalJson(value), selected), std::exception);
+  }
+  // This overload runs before fixed-role cache/source lookup, without a restored role.
+  for (int failure = 0; failure != 9; ++failure) {
+    auto selected = header;
+    if (failure == 0) selected["automatic_shape_seed"]["envelopeDigest"] = digest('9');
+    if (failure == 1) selected.erase("automatic_shape_seed");
+    if (failure == 2) selected["request_contract_digest"] = digest('9');
+    if (failure == 3) selected["request_id"] = "/different";
+    if (failure == 4) selected["attempt"] = 2;
+    if (failure == 5) selected["generation_contract"] = NativeJson::object();
+    if (failure == 6) selected["schema"] = "ndnsf-di-selection-v3";
+    if (failure == 7) selected["schema_version"] = 3;
+    if (failure == 8) selected["schema_version"] = "4";
+    BOOST_CHECK_THROW(validateNativeAutomaticSelectionRequestBinding(wire, selected), std::exception);
+  }
+  auto invocationHeader = header;
+  invocationHeader["schema"] = "ndnsf-di-selection-invocation-v4";
+  BOOST_CHECK_NO_THROW(validateNativeAutomaticSelectionRequestBinding(wire, invocationHeader));
+  BOOST_CHECK_THROW(validateNativeAutomaticSelectionRequestBinding(
+    R"({"dataName":"/outer/reference"})", header), std::exception);
+  BOOST_CHECK_THROW(validateNativeAutomaticSelectionRequestBinding(
+    R"({"schema":"ndnsf-di-request-envelope-v2"})", projection), std::exception);
+  BOOST_CHECK_THROW(validateNativeAutomaticSelectionRequestBinding(
+    R"({"dataName":"/outer/reference"})", projection), std::exception);
+  const auto deep = std::string("{\"schema\":\"ndnsf-di-selection-v4\",\"x\":") +
+    std::string(256, '[') + "0" + std::string(256, ']') + "}";
+  BOOST_CHECK_THROW(parseProjection(deep), std::invalid_argument);
+  const ndn::Buffer payload(deep.begin(), deep.end());
+  BOOST_CHECK_THROW(parseNativeProviderAssignmentFields(payload, "S0R0"), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::test

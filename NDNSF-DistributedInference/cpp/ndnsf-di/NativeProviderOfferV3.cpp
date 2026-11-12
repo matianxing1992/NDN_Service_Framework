@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "request-work-statistics.hpp"
 
 #include <boost/scope_exit.hpp>
@@ -18,7 +19,6 @@
 namespace ndnsf::di {
 namespace {
 
-constexpr const char* REQUEST_SCHEMA = "ndnsf-di-request-envelope-v2";
 constexpr const char* PLACEMENT_PROFILE = "DI_PLACEMENT_V3";
 constexpr const char* PLACEMENT_PROFILE_V4 = "DI_PLACEMENT_V4";
 constexpr std::uint64_t MAX_GPU_RESOURCE_AGE_MS = 2000;
@@ -211,15 +211,18 @@ issueNativeProviderOfferV3(const std::vector<std::uint8_t>& requestPayload,
   NativeWorkScope parseWork(work, "ack-offer-parse", NativeWorkKind::LOCAL);
   validateConfig(config);
   const std::string wire(requestPayload.begin(), requestPayload.end());
+  try {
+    if (!parseNativeRequestOffer(wire)) return std::nullopt;
+  }
+  catch (const std::exception&) {
+    return reject("DI_V3_REQUEST_REJECTED");
+  }
   boost::property_tree::ptree root;
   try {
     std::istringstream input(wire);
     boost::property_tree::read_json(input, root);
   }
   catch (const boost::property_tree::json_parser::json_parser_error&) {
-    return std::nullopt;
-  }
-  if (root.get<std::string>("schema", "") != REQUEST_SCHEMA) {
     return std::nullopt;
   }
   const auto task = root.get_child_optional("task");

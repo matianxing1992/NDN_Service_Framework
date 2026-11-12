@@ -2,7 +2,12 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativePhaseTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -16,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <limits>
@@ -317,9 +323,28 @@ sessionIdentity(const NativeModelRunnerSpec& spec,
   const auto metadata = [&spec] (std::initializer_list<const char*> keys) {
     return runnerMetadataValue(spec, keys);
   };
+  const auto automaticIo = spec.metadata.find("automaticIoContract");
+  const auto automaticSource = spec.metadata.find("automaticSourceBinding");
+  if (automaticSource != spec.metadata.end() &&
+      (automaticSource->second.empty() ||
+       automaticSource->second.size() > NativeCanonicalMaterialPublicationMaxBytes))
+    throw std::invalid_argument("AUTOMATIC_SOURCE_BINDING_LIMIT");
+  if (automaticSource != spec.metadata.end() && automaticIo == spec.metadata.end())
+    throw std::invalid_argument("AUTOMATIC_SOURCE_IO_REQUIRED");
+  if (automaticIo != spec.metadata.end() &&
+      automaticIo->second.size() > NATIVE_AUTOMATIC_ONNX_IO_MAX_BYTES)
+    throw std::invalid_argument("AUTOMATIC_IO_LIMIT");
   const auto protectedIdentity = metadata({"protectedResidentIdentity"});
   if (!protectedIdentity.empty()) {
-    return protectedIdentity;
+    if (automaticIo == spec.metadata.end())
+      return protectedIdentity;
+    auto framed = std::string(automaticSource == spec.metadata.end()
+      ? "ndnsf-di-protected-session-io-v1:" : "ndnsf-di-protected-session-source-v1:") +
+      std::to_string(protectedIdentity.size()) + ":" + protectedIdentity +
+      std::to_string(automaticIo->second.size()) + ":" + automaticIo->second;
+    if (automaticSource != spec.metadata.end())
+      framed += std::to_string(automaticSource->second.size()) + ":" + automaticSource->second;
+    return sha256TensorBytes(std::vector<std::uint8_t>(framed.begin(), framed.end()));
   }
   const auto modelDigest = metadata({"assembledModelDigest", "artifactDigest",
                                      "evidence.artifactDigest", "digest", "sha256"});
@@ -359,6 +384,14 @@ sessionIdentity(const NativeModelRunnerSpec& spec,
                           "protectionEpoch"}) {
     frame(key);
     frame(metadata({key}));
+  }
+  if (automaticIo != spec.metadata.end()) {
+    frame("automaticIoContract");
+    frame(automaticIo->second);
+  }
+  if (automaticSource != spec.metadata.end()) {
+    frame("automaticSourceBinding");
+    frame(automaticSource->second);
   }
   if (!metadata({"assembledFileSetDigest"}).empty()) {
     frame("assembledArtifactSchema");
@@ -873,42 +906,31 @@ elementCount(const std::vector<int64_t>& shape)
 ONNXTensorElementDataType
 toOnnxElementType(TensorElementType type)
 {
-  switch (type) {
-    case TensorElementType::Float32:
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
-    case TensorElementType::Float16:
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
-    case TensorElementType::Int64:
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
-    case TensorElementType::Int32:
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
-    case TensorElementType::Bool:
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
-    case TensorElementType::UInt8:
-      return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
-  }
-  throw std::invalid_argument("unsupported NDNSF tensor element type");
+  return static_cast<ONNXTensorElementDataType>(onnxTensorScalarType(type));
 }
 
 TensorElementType
 fromOnnxElementType(ONNXTensorElementDataType type)
 {
-  switch (type) {
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
-      return TensorElementType::Float32;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
-      return TensorElementType::Float16;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
-      return TensorElementType::Int64;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
-      return TensorElementType::Int32;
-    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
-      return TensorElementType::Bool;
-    default:
-      throw std::runtime_error(
-        "ONNX Runtime tensor dtype is not supported by the pilot codec: " +
-        std::to_string(static_cast<int>(type)));
+  const auto wire = onnxTensorWireType(static_cast<std::int32_t>(type));
+  if (!wire) {
+    throw std::runtime_error("ONNX Runtime tensor dtype is not supported by the codec: " +
+                             std::to_string(static_cast<int>(type)));
   }
+  return *wire;
+}
+
+AutomaticOnnxTensorObservation
+observeOrtTensor(const std::string& name, const Ort::Value& value)
+{
+  if (!value.IsTensor()) throw std::invalid_argument("AUTOMATIC_EXECUTION_TENSOR_REQUIRED");
+  const auto info = value.GetTensorTypeAndShapeInfo();
+  const auto type = fromOnnxElementType(info.GetElementType());
+  auto shape = info.GetShape();
+  const auto bytes = tensorStorageByteSize(type, shape);
+  if (info.GetElementCount() != bytes / tensorElementByteSize(type))
+    throw std::invalid_argument("AUTOMATIC_EXECUTION_TENSOR_BYTES");
+  return {name, type, std::move(shape), bytes};
 }
 
 NamedTensor
@@ -1104,13 +1126,29 @@ outputScopeFor(const NativeModelRunnerSpec& spec,
   return scope.empty() ? outputName : scope;
 }
 
+std::optional<AutomaticOnnxSourceBinding>
+readAutomaticSourceBinding(const NativeModelRunnerSpec& spec)
+{
+  const auto source = spec.metadata.find("automaticSourceBinding");
+  if (source == spec.metadata.end()) return std::nullopt;
+  if (spec.metadata.count("automaticIoContract") == 0)
+    throw std::invalid_argument("AUTOMATIC_SOURCE_IO_REQUIRED");
+  // Load-time parsing owns only immutable bounded metadata. Current request
+  // authority is checked separately at admission and is never retained here.
+  const NativeAssemblyControl control{std::chrono::steady_clock::time_point::max(), [] {},
+    NativeCanonicalMaterialPublicationMaxBytes, NativeCanonicalMaterialPublicationMaxBytes};
+  return AutomaticOnnxSourceBinding::fromCanonicalJson(source->second, control);
+}
+
 } // namespace
 
 class OnnxRuntimeModelRunner::SharedSession
 {
 public:
   explicit SharedSession(const NativeModelRunnerSpec& spec)
-    : environment(ORT_LOGGING_LEVEL_WARNING, "ndnsf-di")
+    : automaticIo(readAutomaticOnnxRunnerIo(spec))
+    , automaticSource(readAutomaticSourceBinding(spec))
+    , environment(ORT_LOGGING_LEVEL_WARNING, "ndnsf-di")
     , selection(resolveRuntimeProviderSelection(spec))
     , graphMetadata(detail::inspectOnnxRuntimeGraphMetadata(spec.path,
                     selection.selectedProvider == "cuda" &&
@@ -1122,8 +1160,26 @@ public:
     , session(environment, spec.path.c_str(), sessionOptions)
   {
     detail::verifyOnnxRuntimeGraphMetadataSource(spec.path, graphMetadata);
+    if (automaticIo) {
+      const auto names = [this] (bool inputs) {
+        Ort::AllocatorWithDefaultOptions allocator;
+        std::vector<std::string> result;
+        const auto count = inputs ? session.GetInputCount() : session.GetOutputCount();
+        result.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+          auto name = inputs ? session.GetInputNameAllocated(index, allocator)
+                             : session.GetOutputNameAllocated(index, allocator);
+          result.emplace_back(name.get());
+        }
+        return result;
+      };
+      if (names(true) != automaticIo->io.inputNames || names(false) != automaticIo->io.outputNames)
+        throw std::invalid_argument("AUTOMATIC_IO_SESSION_SIGNATURE");
+    }
   }
 
+  const std::optional<AutomaticOnnxIoContract> automaticIo;
+  const std::optional<AutomaticOnnxSourceBinding> automaticSource;
   // ORT shares the native environment. Own its reference through session teardown,
   // then release it here rather than during process-wide static destruction.
   Ort::Env environment;
@@ -1155,6 +1211,13 @@ public:
     , profilingEnabled(!runnerMetadataValue(
         spec, {"providerProfilePrefix", "provider_profile_prefix"}).empty())
   {
+    if (sharedSession->automaticIo) {
+      if (!sharedSession->automaticIo->io.stateInputNames.empty()) {
+        statefulIo = std::shared_ptr<const StatefulOnnxIoContractV1>(
+          sharedSession, &sharedSession->automaticIo->io);
+      }
+      return;
+    }
     const auto statefulInputMetadata = metadataNames(
       spec, {"stateInputNames", "state_input_names",
              "stateInputTensors", "state_input_tensors"});
@@ -1264,7 +1327,7 @@ public:
       positions.validate(contract);
       causalPositionInputs = std::move(positions);
     }
-    statefulIo = std::move(contract);
+    statefulIo = std::make_shared<const StatefulOnnxIoContractV1>(std::move(contract));
   }
 
   ~Impl()
@@ -1289,7 +1352,7 @@ public:
   OnnxRuntimeProviderSelection selection;
   Ort::Session& session;
   OnnxRuntimeSessionCache::Lease sessionLease;
-  std::optional<StatefulOnnxIoContractV1> statefulIo;
+  std::shared_ptr<const StatefulOnnxIoContractV1> statefulIo;
   std::optional<CausalPositionInputContractV1> causalPositionInputs;
   bool profilingEnabled = false;
   bool profilingFailed = false;
@@ -1421,6 +1484,9 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   if (m_spec.path.empty()) {
     throw std::invalid_argument("ONNX Runtime runner requires model path");
   }
+  // A cache hit must reject mixed metadata just like an independent load.
+  // The load owner separately retains its parsed immutable contract.
+  (void)readAutomaticOnnxRunnerIo(m_spec);
   const auto selection = resolveRuntimeProviderSelection(m_spec);
   const bool protectedBacking =
     m_spec.metadata.count("encryptedArtifactPath") != 0 ||
@@ -1514,8 +1580,10 @@ OnnxRuntimeModelRunner::warmup()
   // real request supplies the producer's actual tensors and is the executable
   // readiness evidence for this CPU session.  Record the skip explicitly
   // instead of feeding a rank-0 placeholder that fails the probe.
-  const auto unrankedInputs = metadataNames(
+  const auto& automaticIo = m_impl->sharedSession->automaticIo;
+  const auto legacyUnranked = automaticIo ? std::vector<std::string>{} : metadataNames(
     m_spec, {"unrankedInputNames", "unranked_input_names"});
+  const auto& unrankedInputs = automaticIo ? automaticIo->unrankedInputNames : legacyUnranked;
   if (m_impl->selection.selectedProvider == "cpu" && !unrankedInputs.empty()) {
     m_impl->sharedSession->warmupSkippedUnrankedInput = true;
     if (m_evidence) {
@@ -1598,7 +1666,7 @@ OnnxRuntimeModelRunner::warmup()
     setWarmupInt64(causal.positionIdsInputName, 0);
     setWarmupInt64(causal.cachePositionInputName, 0);
   }
-  (void)run(warmup);
+  (void)runImpl(warmup, InvocationKind::MODEL_WARMUP);
   if (m_evidence) {
     m_evidence->warmupCompleted = true;
     m_evidence->validate();
@@ -1635,6 +1703,24 @@ OnnxRuntimeModelRunner::runStreamed(const RoleExecutionContext& ctx)
 std::map<std::string, TensorBundle>
 OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
 {
+  return runImpl(ctx, InvocationKind::REQUEST);
+}
+
+std::map<std::string, TensorBundle>
+OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind kind)
+{
+  const auto binding = kind == InvocationKind::REQUEST ? ctx.automaticBinding : nullptr;
+  if (kind == InvocationKind::REQUEST) {
+    if (static_cast<bool>(m_impl->sharedSession->automaticSource) != static_cast<bool>(binding))
+      throw std::invalid_argument("AUTOMATIC_REQUEST_BINDING_REQUIRED");
+    if (binding) {
+      if (binding->envelope().maxNewTokens != 0)
+        throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
+      binding->requireInvocation(ctx, m_spec,
+        m_impl->sharedSession->automaticSource->sourceContract());
+    }
+  }
+
   NativeWorkScope adapterWork(ctx.workStatistics, "onnx-adapter", NativeWorkKind::UNCLASSIFIED);
   NativeWorkScope lockWork(ctx.workStatistics, "onnx-session-lock", NativeWorkKind::WAIT);
   // The CUDA state map below is part of the persistent session transaction.
@@ -1667,19 +1753,22 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     OrtAllocatorType::OrtArenaAllocator,
     OrtMemTypeDefault);
 
-  std::vector<std::string> inputNames = metadataNames(
-    m_spec,
-    {"inputNames", "input_names", "input_tensors", "input_tensor"});
-  if (inputNames.empty()) {
-    const auto count = m_impl->session.GetInputCount();
-    for (std::size_t i = 0; i < count; ++i) {
-      auto name = m_impl->session.GetInputNameAllocated(i, allocator);
-      inputNames.emplace_back(name.get());
+  const auto& automaticIo = m_impl->sharedSession->automaticIo;
+  std::vector<std::string> legacyInputNames;
+  if (!automaticIo) {
+    legacyInputNames = metadataNames(
+      m_spec, {"inputNames", "input_names", "input_tensors", "input_tensor"});
+    if (legacyInputNames.empty()) {
+      const auto count = m_impl->session.GetInputCount();
+      for (std::size_t i = 0; i < count; ++i) {
+        auto name = m_impl->session.GetInputNameAllocated(i, allocator);
+        legacyInputNames.emplace_back(name.get());
+      }
     }
+    if (m_impl->statefulIo)
+      legacyInputNames = m_impl->statefulIo->inputNames;
   }
-  if (m_impl->statefulIo) {
-    inputNames = m_impl->statefulIo->inputNames;
-  }
+  const auto& inputNames = automaticIo ? automaticIo->io.inputNames : legacyInputNames;
   std::map<std::string, TensorBundle> causalPositionInputs;
   if (m_impl->causalPositionInputs) {
     if (effectiveContext.sessionId == "native-runtime-warmup") {
@@ -1700,24 +1789,25 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
   }
 
-  const bool deviceResidentState = m_impl->statefulIo.has_value() &&
+  const bool deviceResidentState = static_cast<bool>(m_impl->statefulIo) &&
     m_impl->selection.selectedProvider == "cuda";
   // CPU state is request-resident only for the coordinator-owned streaming
   // path.  Keep ordinary run() callers on the explicit TensorBundle contract.
-  const bool hostResidentState = m_impl->statefulIo.has_value() &&
+  const bool hostResidentState = static_cast<bool>(m_impl->statefulIo) &&
     m_impl->selection.selectedProvider != "cuda" &&
     effectiveContext.streamingStateExecution;
   const bool residentState = deviceResidentState || hostResidentState;
   const auto conversationBinding = m_impl->conversationBindingBySession.find(
     effectiveContext.sessionId);
-  const bool restoringConversation = m_impl->statefulIo.has_value() &&
+  const bool restoringConversation = static_cast<bool>(m_impl->statefulIo) &&
     conversationBinding != m_impl->conversationBindingBySession.end();
   if (m_impl->statefulIo && effectiveContext.sessionId != "native-runtime-warmup" &&
       effectiveContext.inferenceEpoch == 0) {
     ++m_impl->runtimeMetrics.stateRecomputes;
   }
-  if (residentState && effectiveContext.inferenceEpoch == 0 &&
-      !restoringConversation) {
+  const bool resetResidentState = residentState && effectiveContext.inferenceEpoch == 0 &&
+    !restoringConversation;
+  if (resetResidentState && !binding) {
     // Session reuse is allowed, but state is request-scoped and must not cross
     // a fresh generation boundary.
     m_impl->eraseSessionStateLocked(effectiveContext.sessionId);
@@ -1735,6 +1825,9 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   inputValues.reserve(inputNames.size());
   inputNamePtrs.reserve(inputNames.size());
 
+  std::vector<AutomaticOnnxTensorObservation> observedInputs;
+  std::vector<NamedTensorView> actualCpuControls;
+  if (binding) observedInputs.reserve(inputNames.size());
   for (std::size_t i = 0; i < inputNames.size(); ++i) {
     const auto& inputName = inputNames[i];
     auto typeInfo = m_impl->session.GetInputTypeInfo(i);
@@ -1801,6 +1894,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
           else {
             boundHostInputs.emplace(inputName, &deviceState->second);
           }
+          if (binding)
+            observedInputs.push_back(observeOrtTensor(inputName, deviceState->second));
           ++m_impl->runtimeMetrics.stateInputHits;
           continue;
         }
@@ -1828,6 +1923,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         inputBundle = &inputBundleFor(effectiveContext, m_spec, inputName, i);
       }
       catch (const std::out_of_range&) {
+        if (automaticIo)
+          throw std::invalid_argument("AUTOMATIC_IO_EXPLICIT_INPUT_REQUIRED: " + inputName);
         if (!isStateInput) {
           throw;
         }
@@ -1846,6 +1943,8 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
         inputBundle = &zeroState;
       }
     }
+    if (automaticIo && !isEncodedTensorBundle(inputBundle->payload))
+      throw std::invalid_argument("AUTOMATIC_IO_NAMED_INPUT_REQUIRED: " + inputName);
     const auto expectedType = tensorInfo.GetElementType();
     NativeWorkScope tensorWork(ctx.workStatistics, "onnx-input-tensor", NativeWorkKind::LOCAL);
     auto tensor = tensorForInput(*inputBundle, inputName, inputShapes.back());
@@ -1854,7 +1953,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     if (expectedType != onnxType) {
       throw std::invalid_argument("ONNX Runtime input dtype mismatch for " + inputName);
     }
-    if (!tensor.shape.empty()) {
+    if (automaticIo || !tensor.shape.empty()) {
       inputShapes.back() = tensor.shape;
     }
     inputBuffers.push_back(std::move(tensor.payload));
@@ -1891,21 +1990,36 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       inputShapes.back().size(),
       onnxType));
     cpuInputIndexes.emplace(inputName, inputValues.size() - 1);
-  }
-
-  std::vector<std::string> outputNames = metadataNames(
-    m_spec,
-    {"outputNames", "output_names", "output_tensors", "output_tensor"});
-  if (outputNames.empty()) {
-    const auto count = m_impl->session.GetOutputCount();
-    for (std::size_t i = 0; i < count; ++i) {
-      auto name = m_impl->session.GetOutputNameAllocated(i, allocator);
-      outputNames.emplace_back(name.get());
+    if (binding) {
+      observedInputs.push_back(observeOrtTensor(inputName, inputValues.back()));
+      const auto& controls = binding->controlInputs();
+      if (std::find(controls.begin(), controls.end(), inputName) != controls.end()) {
+        actualCpuControls.push_back({inputName, tensor.elementType, inputShapes.back(),
+          ndn::span<const std::uint8_t>(inputBuffers.back().data(), inputBuffers.back().size())});
+      }
     }
   }
-  if (m_impl->statefulIo) {
-    outputNames = m_impl->statefulIo->outputNames;
+
+  if (binding) {
+    binding->validateInputs(observedInputs, actualCpuControls, effectiveContext);
+    if (resetResidentState) m_impl->eraseSessionStateLocked(effectiveContext.sessionId);
   }
+
+  std::vector<std::string> legacyOutputNames;
+  if (!automaticIo) {
+    legacyOutputNames = metadataNames(
+      m_spec, {"outputNames", "output_names", "output_tensors", "output_tensor"});
+    if (legacyOutputNames.empty()) {
+      const auto count = m_impl->session.GetOutputCount();
+      for (std::size_t i = 0; i < count; ++i) {
+        auto name = m_impl->session.GetOutputNameAllocated(i, allocator);
+        legacyOutputNames.emplace_back(name.get());
+      }
+    }
+    if (m_impl->statefulIo)
+      legacyOutputNames = m_impl->statefulIo->outputNames;
+  }
+  const auto& outputNames = automaticIo ? automaticIo->io.outputNames : legacyOutputNames;
 
   if (runtimeTimingEnabled()) {
     std::ostringstream record;
@@ -2053,6 +2167,16 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   }
   const auto delayDone = std::chrono::steady_clock::now();
 
+  if (binding) {
+    if (outputs.size() != outputNames.size())
+      throw std::invalid_argument("AUTOMATIC_EXECUTION_OUTPUT_SET");
+    std::vector<AutomaticOnnxTensorObservation> observedOutputs;
+    observedOutputs.reserve(outputs.size());
+    for (std::size_t index = 0; index < outputs.size(); ++index)
+      observedOutputs.push_back(observeOrtTensor(outputNames[index], outputs[index]));
+    binding->validateOutputs(observedOutputs, effectiveContext);
+  }
+
   NativeWorkScope outputWork(ctx.workStatistics, "onnx-output-convert", NativeWorkKind::LOCAL);
   // Backing storage for a local result. `namedOutputs` borrows from these buffers (and from
   // `auxiliaryOutputs` for passthrough values), so a LocalTensorBundle must keep all of them
@@ -2162,8 +2286,10 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     NativeWorkScope sampleWork(ctx.workStatistics, "onnx-kv-sample", NativeWorkKind::LOCAL);
     m_impl->stateObserver->record(effectiveContext, std::move(stateSamples));
   }
-  for (const auto& name : metadataNames(
-         m_spec, {"passthroughTensors", "passthrough_tensors"})) {
+  const auto legacyPassthrough = automaticIo ? std::vector<std::string>{} : metadataNames(
+    m_spec, {"passthroughTensors", "passthrough_tensors"});
+  const auto& passthrough = automaticIo ? automaticIo->passthroughTensors : legacyPassthrough;
+  for (const auto& name : passthrough) {
     const auto duplicate = std::find_if(
       namedOutputs.begin(), namedOutputs.end(), [&name] (const NamedTensorView& tensor) {
         return tensor.name == name;
@@ -2229,7 +2355,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   // preference -- it did, and the local path was unreachable through the parent runner even
   // though every reader understood it.
   const bool forceEncodedOutput = localOutputs ? false :
-    (effectiveContext.streamingStateExecution ||
+    (automaticIo.has_value() || effectiveContext.streamingStateExecution ||
      !metadataValue(m_spec, {"output_tensor", "outputTensor", "forceOutputBundle",
                              "force_output_bundle"}).empty() ||
      metadataValue(m_spec, {"final", "is_final"}) == "true");
@@ -2344,7 +2470,7 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
       "__ndnsf_provider_decode_state",
       makeEncodedTensorBundle("__ndnsf_provider_decode_state", std::move(handles)));
   }
-  const auto kvOutputNames = metadataNames(
+  const auto kvOutputNames = automaticIo ? std::vector<std::string>{} : metadataNames(
     m_spec, {"kvOutputTensors", "kv_output_tensors"});
   if (!kvOutputNames.empty()) {
     auto kvTensors = selectTensorViews(namedOutputs, kvOutputNames);
@@ -2420,6 +2546,9 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
       !ctx.streamEventSink) {
     return std::nullopt;
   }
+  if (m_impl->sharedSession->automaticSource || ctx.automaticBinding)
+    throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
+
   if (!m_impl->statefulIo) {
     throw std::invalid_argument(
       "streaming ONNX generation requires a declared stateful I/O contract");
@@ -2726,6 +2855,21 @@ OnnxRuntimeModelRunner::executionEvidence() const
   return m_evidence;
 }
 
+std::shared_ptr<const AutomaticOnnxRequestBinding>
+OnnxRuntimeModelRunner::validateAutomaticRequestBinding(
+  const NativeSelectionProjectionV3& projection, const NativeRequestControl& control) const
+{
+  control.requireActive();
+  if (const auto error = validateNativePreparedRunnerSpec(projection, m_spec))
+    throw std::invalid_argument(*error);
+  if (!m_impl->sharedSession->automaticSource)
+    throw std::invalid_argument("AUTOMATIC_SOURCE_RUNNER_BINDING");
+  if (projection.automaticShapeSeed && projection.automaticShapeSeed->maxNewTokens != 0)
+    throw std::invalid_argument("AUTOMATIC_GENERATION_RUNTIME_UNSUPPORTED");
+  return AutomaticOnnxRequestBinding::admit(*m_impl->sharedSession->automaticSource,
+                                            projection, control);
+}
+
 std::optional<ExecutionEvidence>
 OnnxRuntimeModelRunner::executionEvidenceSnapshot() const
 {
@@ -2747,7 +2891,7 @@ OnnxRuntimeModelRunner::supportsOpaqueStateHandles() const
   // for the duration of a streamed request.  The handle is only an internal
   // epoch/control reference; conversation promotion below moves the actual
   // typed state into the adapter-owned conversation cache.
-  return m_impl != nullptr && m_impl->statefulIo.has_value();
+  return m_impl != nullptr && static_cast<bool>(m_impl->statefulIo);
 }
 
 std::optional<NativeOpaqueStateHandleV1>
@@ -2767,7 +2911,7 @@ OnnxRuntimeModelRunner::stateHandleSnapshot(const std::string& sessionId) const
 bool
 OnnxRuntimeModelRunner::supportsConversationStateTransfer() const
 {
-  return m_impl != nullptr && m_impl->statefulIo.has_value();
+  return m_impl != nullptr && static_cast<bool>(m_impl->statefulIo);
 }
 
 namespace {
@@ -3386,6 +3530,13 @@ OnnxRuntimeModelRunner::releaseConversationState(
 #else
 
 namespace ndnsf::di {
+
+std::shared_ptr<const AutomaticOnnxRequestBinding>
+OnnxRuntimeModelRunner::validateAutomaticRequestBinding(
+  const NativeSelectionProjectionV3& projection, const NativeRequestControl& control) const
+{
+  return NativeModelRunner::validateAutomaticRequestBinding(projection, control);
+}
 
 // Keep the ABI-stable PImpl complete in a build without the optional ONNX
 // Runtime development package.  The public header therefore has the same

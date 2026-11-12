@@ -70,6 +70,7 @@ struct NativeEpochCoordinatorConfig
   // for this invocation's sequential token/finalize epochs. A new invocation
   // prepares independently; no metadata-only startup runner is substituted.
   ProviderRoleWorker::NativeRunnerPreparation prepareRunner;
+  std::shared_ptr<const AutomaticOnnxRequestBinding> automaticBinding;
   // V3 Selection supplies exact endpoint-authorized role edges. Generation
   // epochs must reuse those edges instead of reconstructing legacy edges from
   // the plan, while retaining the plan-owned TOKEN_FEEDBACK control edge.

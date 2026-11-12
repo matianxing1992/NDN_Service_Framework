@@ -2957,7 +2957,7 @@ NativeProviderRuntime::executePreparedRoleAsync(
                               std::launch::async);
 }
 
-std::future<std::shared_ptr<NativeModelRunner>>
+std::future<NativePreparedRunner>
 NativeProviderRuntime::prepareRunnerAsync(
   ProviderRoleWorker::NativeRunnerPreparation prepareRunner,
   std::function<void()> executionGuard)
@@ -3008,6 +3008,9 @@ NativeProviderRuntime::executeRoleAsyncImpl(
   std::launch stateCompletionPolicy,
   std::optional<ConversationStateUseLeaseV1> readyUse)
 {
+  if (role.automaticBinding && (role.conversationStateBinding || readyUse))
+    throw std::invalid_argument("AUTOMATIC_CONVERSATION_UNSUPPORTED");
+
   if (readyUse && (!role.conversationStateBinding || role.stateInputNames.empty() || prepareRunner))
     throw std::invalid_argument("READY use requires one stateful continuation without preparation");
   if (executionGuard) executionGuard();

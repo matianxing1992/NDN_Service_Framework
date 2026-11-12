@@ -1209,6 +1209,34 @@ namespace ndn_service_framework{
                                          std::shared_ptr<ControlByteStatistics>
                                              controlStatistics);
 
+            /** Begin with an application-owned, bounded discovery view.
+             * The original request remains the request-scoped execution input.
+             * Existing overloads retain their original binary symbols.
+             */
+            ndn::Name BeginCollaborationWithProviders(
+                                         const ServiceName& service,
+                                         const RequestPayload& initialRequest,
+                                         int ackCollectionTimeMs,
+                                         int timeoutMs,
+                                         CollaborationAckClosedHandler onAckClosed,
+                                         ResponseHandler onFinalResponse,
+                                         TimeoutHandler onTimeout,
+                                         const RequestId& requestId,
+                                         CollaborationAckCoverageHandler onAckCoverage,
+                                         const RequestCapabilities& requestCapabilities,
+                                         const std::optional<StreamRequestOptions>&
+                                             streamOptions,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamEvent,
+                                         std::function<void(const ndn::Buffer&)>
+                                             onStreamComplete,
+                                         std::function<void(const StreamedInvocationError&)>
+                                             onStreamError,
+                                         const std::vector<ndn::Name>& providerNames,
+                                         std::shared_ptr<ControlByteStatistics>
+                                             controlStatistics,
+                                         const std::optional<ndn::Buffer>& discoveryPayload);
+
             /** Commit a plan against the immutable ACK closure.
              * @param requestId Pending deferred invocation, owned by this User.
              * @param ackClosedDigest Digest received in the ACK closure callback.

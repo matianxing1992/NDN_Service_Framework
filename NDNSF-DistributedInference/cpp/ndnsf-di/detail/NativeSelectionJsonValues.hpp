@@ -17,6 +17,9 @@ void
 validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflow);
 NativeJson nativeDeviceBindingJson(const NativeDeviceBindingV3& binding);
 void validateNativeAssembly(const NativeSelectionRoleV3& role);
+/** Check request-local automatic metadata before decoding or cache use.
+ * Source-envelope reconstruction and object admission remain with the adapter. */
+void validateNativeAutomaticSelectionBinding(const NativeSelectionProjectionV3& projection);
 namespace detail {
 // Reuse the complete endpoint admission contract at the naming leaf.
 void validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint);

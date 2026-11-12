@@ -35,6 +35,7 @@
 #include <dirent.h>
 #include <filesystem>
 #include <fcntl.h>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -716,7 +717,8 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
     {"precision", '"' + jsonString(recipe.precision) + '"'},
     {"quantization", '"' + jsonString(recipe.quantization) + '"'},
     {"roleKind", '"' + jsonString(recipe.roleKind) + '"'},
-    {"schema", '"' + std::string(kNativeOnnxCertifiedRecipeSchema) + '"'},
+    {"schema", '"' + std::string(recipe.automaticContractDigest.empty()
+      ? kNativeOnnxCertifiedRecipeSchema : NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA) + '"'},
   };
   // Keep the legacy recipe digest unchanged for ordinary full-source roles.
   // A materialized role is a different authenticated worker input and must
@@ -731,6 +733,9 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
     members.emplace_back("tensorParallelDegree", jsonUint(recipe.tensorParallelDegree));
     members.emplace_back("tensorParallelRank", jsonUint(recipe.tensorParallelRank));
   }
+  if (!recipe.automaticContractDigest.empty())
+    members.emplace_back("automaticContractDigest",
+      '"' + jsonString(recipe.automaticContractDigest) + '"');
   return jsonSortedObject(std::move(members));
 }
 
@@ -749,8 +754,56 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
     return false;
   }
   if (schema->type != JsonNode::Type::String ||
-      schema->text != kNativeOnnxCertifiedRecipeSchema) {
+      (schema->text != kNativeOnnxCertifiedRecipeSchema &&
+       schema->text != NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA)) {
     failure = "certified recipe schema mismatch";
+    return false;
+  }
+  const auto* automaticDigest = requireObjectMember(recipeNode, "automaticContractDigest");
+  if (schema->text == NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA) {
+    if (automaticDigest == nullptr || automaticDigest->type != JsonNode::Type::String ||
+        !isSha256Digest(automaticDigest->text)) {
+      failure = "automatic certified recipe has no valid contract digest";
+      return false;
+    }
+    out.automaticContractDigest = automaticDigest->text;
+    // V2 is an exact contract. Keep the legacy reader's compatibility policy,
+    // while preventing new fields from escaping the certified digest in V2.
+    constexpr const char* FIELDS[] = {
+      "adapterDescriptorDigest", "artifactProfileDigest", "assemblerDescriptorDigest",
+      "automaticContractDigest", "backendAbi", "canonicalInitializerDigest",
+      "expectedInputs", "expectedOutputs", "graphDigest", "inputNames", "layerBegin",
+      "layerEnd", "layout", "materializedRole", "maxAssembledBytes", "maxNodes",
+      "maxSourceBytes", "modelManifestDigest", "nodeIndices", "outputNames", "padding",
+      "precision", "quantization", "roleKind", "schema", "tensorParallelDegree",
+      "tensorParallelRank",
+    };
+    for (const auto& member : recipeNode.object) {
+      if (std::none_of(std::begin(FIELDS), std::end(FIELDS),
+                       [&](const char* key) { return member.first == key; })) {
+        failure = "automatic certified recipe has an unknown field";
+        return false;
+      }
+    }
+    for (const auto* key : {"expectedInputs", "expectedOutputs"}) {
+      const auto* contracts = requireObjectMember(recipeNode, key);
+      if (contracts == nullptr || contracts->type != JsonNode::Type::Array) {
+        failure = "automatic certified recipe has no tensor contracts";
+        return false;
+      }
+      for (const auto& contract : contracts->array) {
+        if (contract.type != JsonNode::Type::Object || contract.object.size() != 3 ||
+            requireObjectMember(contract, "name") == nullptr ||
+            requireObjectMember(contract, "dtype") == nullptr ||
+            requireObjectMember(contract, "shape") == nullptr) {
+          failure = "automatic certified tensor contract has unexpected fields";
+          return false;
+        }
+      }
+    }
+  }
+  else if (automaticDigest != nullptr) {
+    failure = "legacy certified recipe cannot carry an automatic contract";
     return false;
   }
   if (roleKind->type != JsonNode::Type::String || roleKind->text.empty()) {
@@ -773,9 +826,9 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
 
   // Optional TP rank identity: present only for tensor-parallel recipes, so a
   // legacy payload stays valid and unchanged.
-  if (requireObjectMember(recipeNode, "tensorParallelRank")) {
-    const auto* degree = requireObjectMember(recipeNode, "tensorParallelDegree");
-    const auto* rank = requireObjectMember(recipeNode, "tensorParallelRank");
+  const auto* degree = requireObjectMember(recipeNode, "tensorParallelDegree");
+  const auto* rank = requireObjectMember(recipeNode, "tensorParallelRank");
+  if (degree != nullptr || rank != nullptr) {
     if (degree == nullptr || rank == nullptr ||
         !unsignedFromJson(*degree, out.tensorParallelDegree) ||
         !unsignedFromJson(*rank, out.tensorParallelRank) ||
@@ -1965,6 +2018,10 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
                               const std::filesystem::path& modelFile)
 {
   entryActiveGate(control);
+  // Producer location maps are consumed during material publication. A selected
+  // role uses its own single sidecar; this worker protocol must not drop a map.
+  if (!source.externalFileRanges.empty())
+    workerFail("SOURCE_OWNERSHIP");
   const bool fileBacked = !modelFile.empty();
   if (fileBacked && (!recipe.materializedRole || !source.modelBytes.empty()))
     workerFail("SOURCE_OWNERSHIP");
@@ -2091,6 +2148,7 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
         releasable.materialPayloads);
       releasable.materialManifest.reset();
       releasable.initializerRangeSource.reset();
+      releasable.externalFileRanges.clear();
       parentSourceReleased = true;
     };
     const auto closeInput = [&] {

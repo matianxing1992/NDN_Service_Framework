@@ -5,9 +5,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "ndn-service-framework/NDNSFMessages.hpp"
 #include <openssl/evp.h>
 #include <ndn-cxx/name.hpp>
-#include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
 #include <cctype>
 #include <limits>
@@ -39,6 +39,232 @@ std::string base64(const std::vector<std::uint8_t>& bytes)
   result.resize(static_cast<std::size_t>(size));
   return result;
 }
+
+NativeJson
+automaticDiscoverySummary(const NativeJson& envelope, const std::string& requestDigest)
+{
+  auto summary = NativeJson{
+    {"schema", "ndnsf-di-request-discovery-v1"}, {"schema_version", 1},
+    {"request_contract_digest", requestDigest},
+    {"automatic_contract_digest", envelope.at("automatic_shape_seed").at("contractDigest")},
+    {"graphDigest", envelope.at("graph_digest")}};
+  for (const auto* key : {"request_id", "attempt", "service", "model_identity_hash",
+                          "plan_deadline_ms"})
+    summary[key] = envelope.at(key);
+  summary["task"] = {{"adapter", "automatic-onnx"},
+    {"placement_profile", envelope.at("task").at("placement_profile")}};
+  if (envelope.at("task").at("placement_profile") == "DI_PLACEMENT_V4") {
+    for (const auto* key : {"graph_digest", "candidate_providers", "candidate_set_digest",
+                            "candidate_artifacts", "candidate_artifact_set_digest", "rtt_pairs",
+                            "goodput_edges", "probe_scope_digest", "requester_identity"})
+      summary[key] = envelope.at(key);
+  }
+  return summary;
+}
+}
+
+std::optional<NativeAutomaticShapeSeed>
+nativeRequestAutomaticShapeSeed(const NativeJson& envelope)
+{
+  if (!envelope.is_object() || !envelope.contains("schema") ||
+      !envelope.at("schema").is_string())
+    throw std::invalid_argument("native request has no schema");
+  const auto& schema = envelope.at("schema").get_ref<const std::string&>();
+  const bool automatic = schema == "ndnsf-di-request-envelope-v3";
+  if (!automatic && schema != "ndnsf-di-request-envelope-v2")
+    throw std::invalid_argument("unsupported native request schema");
+  const auto task = envelope.find("task");
+  const bool automaticAdapter = task != envelope.end() && task->is_object() &&
+    task->value("adapter", NativeJson{}) == "automatic-onnx";
+  if (!automatic) {
+    if (envelope.contains("automatic_shape_seed") || automaticAdapter)
+      throw std::invalid_argument("automatic request cannot use legacy schema");
+    return std::nullopt;
+  }
+  if (!envelope.contains("schema_version") ||
+      !envelope.at("schema_version").is_number_integer() ||
+      envelope.at("schema_version") != NativeJson(3) || !automaticAdapter ||
+      !envelope.contains("automatic_shape_seed"))
+    throw std::invalid_argument("automatic request version or adapter mismatch");
+  return nativeAutomaticShapeSeedFromJson(envelope.at("automatic_shape_seed"));
+}
+
+std::optional<NativeJson>
+parseNativeRequestEnvelope(const std::string& wire)
+{
+  const auto first = wire.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos || wire[first] != '{') return std::nullopt;
+  if (wire.size() > MAX_WIRE)
+    throw std::invalid_argument("native request exceeds wire limit");
+  NativeJson root;
+  try {
+    root = nativeParseJson(wire, 64);
+  }
+  catch (const std::exception&) {
+    // Classify decoded root keys even when strict parsing rejected a
+    // duplicate. This permissive pass is bounded too; it never admits data.
+    bool native = false;
+    bool schemaValue = false;
+    try {
+      (void)NativeJson::parse(wire, [&](int depth, NativeJson::parse_event_t event,
+                                      NativeJson& value) {
+        if (depth > 64) throw std::invalid_argument("native request exceeds nesting limit");
+        if (depth == 1 && event == NativeJson::parse_event_t::key) {
+          schemaValue = value == "schema";
+          if (value == "automatic_shape_seed") native = true;
+        }
+        else if (depth == 1 && event == NativeJson::parse_event_t::value && schemaValue) {
+          if (value.is_string() &&
+              value.get_ref<const std::string&>().rfind("ndnsf-di-request-", 0) == 0)
+            native = true;
+          schemaValue = false;
+        }
+        return true;
+      });
+    }
+    catch (const std::exception&) {
+      throw std::invalid_argument("malformed native request JSON");
+    }
+    if (native) throw std::invalid_argument("native request failed strict JSON validation");
+    return std::nullopt;
+  }
+
+  if (!root.is_object()) return std::nullopt;
+  const auto schema = root.find("schema");
+  if (schema == root.end() || !schema->is_string() ||
+      schema->get_ref<const std::string&>().rfind("ndnsf-di-request-envelope-", 0) != 0) {
+    if (root.contains("automatic_shape_seed"))
+      throw std::invalid_argument("automatic request has no native version");
+    return std::nullopt;
+  }
+  (void)nativeRequestAutomaticShapeSeed(root);
+  return root;
+}
+
+std::optional<NativeJson>
+parseNativeRequestOffer(const std::string& wire)
+{
+  if (auto envelope = parseNativeRequestEnvelope(wire)) return envelope;
+  const auto first = wire.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos || wire[first] != '{') return std::nullopt;
+  NativeJson value;
+  try { value = nativeParseJson(wire, 64); }
+  catch (const std::exception&) { return std::nullopt; }
+  if (!value.is_object() || !value.contains("schema") || !value.at("schema").is_string() ||
+      value.at("schema").get_ref<const std::string&>().rfind("ndnsf-di-request-discovery-", 0) != 0)
+    return std::nullopt;
+  using ndn_service_framework::RequestMessage;
+  if (wire.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE ||
+      value.at("schema") != "ndnsf-di-request-discovery-v1" ||
+      !value.contains("schema_version") || !value.at("schema_version").is_number_integer() ||
+      value.at("schema_version") != 1 || !value.contains("task") ||
+      !value.at("task").is_object() || value.at("task").size() != 2 ||
+      value.at("task").value("adapter", NativeJson{}) != "automatic-onnx")
+    throw std::invalid_argument("invalid native request discovery version or adapter");
+  const auto profile = value.at("task").value("placement_profile", NativeJson{});
+  const bool v4 = profile == "DI_PLACEMENT_V4";
+  if ((!v4 && profile != "DI_PLACEMENT_V3") || value.size() != (v4 ? 20U : 11U))
+    throw std::invalid_argument("invalid native discovery field cover");
+  std::set<std::string> keys{"schema", "schema_version", "request_contract_digest",
+    "automatic_contract_digest", "graphDigest", "request_id", "attempt", "service",
+    "model_identity_hash", "plan_deadline_ms", "task"};
+  if (v4) for (const auto* key : {"graph_digest", "candidate_providers", "candidate_set_digest",
+                                 "candidate_artifacts", "candidate_artifact_set_digest",
+                                 "rtt_pairs", "goodput_edges", "probe_scope_digest",
+                                 "requester_identity"}) keys.emplace(key);
+  for (const auto& key : keys) {
+    if (!value.contains(key)) throw std::invalid_argument("native discovery omits a field");
+  }
+  for (const auto* key : {"request_contract_digest", "automatic_contract_digest",
+                          "graphDigest", "model_identity_hash"}) {
+    if (!value.at(key).is_string() || !digest(value.at(key).get<std::string>()))
+      throw std::invalid_argument("native discovery digest is invalid");
+  }
+  for (const auto* key : {"request_id", "service"}) {
+    if (!value.at(key).is_string() || value.at(key).get_ref<const std::string&>().empty())
+      throw std::invalid_argument("native discovery identity is empty");
+  }
+  for (const auto* key : {"attempt", "plan_deadline_ms"}) {
+    if (!value.at(key).is_number_integer() ||
+        (!value.at(key).is_number_unsigned() && value.at(key).get<std::int64_t>() < 0) ||
+        value.at(key).get<std::uint64_t>() == 0)
+      throw std::invalid_argument("native discovery request scope is invalid");
+  }
+  if (v4 && value.at("graph_digest") != value.at("graphDigest"))
+    throw std::invalid_argument("native discovery graph identities disagree");
+  return value;
+}
+
+void
+validateNativeAutomaticSelectionRequestBinding(
+  const std::string& requestWire, const NativeJson& header)
+{
+  const auto request = parseNativeRequestEnvelope(requestWire);
+  const auto seed = request ? nativeRequestAutomaticShapeSeed(*request) : std::nullopt;
+  const auto selectedSeed = header.contains("automatic_shape_seed")
+    ? std::optional<NativeAutomaticShapeSeed>(
+        nativeAutomaticShapeSeedFromJson(header.at("automatic_shape_seed"))) : std::nullopt;
+  if (!seed && !selectedSeed) return;
+  if (!seed || !selectedSeed ||
+      (header.value("schema", NativeJson{}) != "ndnsf-di-selection-v4" &&
+       header.value("schema", NativeJson{}) != "ndnsf-di-selection-invocation-v4") ||
+      !header.contains("schema_version") || !header.at("schema_version").is_number_integer() ||
+      header.at("schema_version") != 4 ||
+      nativePlanningDigest(requestWire) != header.value("request_contract_digest", NativeJson{}) ||
+      nativeAutomaticShapeSeedToJson(*seed) != nativeAutomaticShapeSeedToJson(*selectedSeed) ||
+      request->value("request_id", NativeJson{}) != header.value("request_id", NativeJson{}) ||
+      !request->contains("attempt") || !request->at("attempt").is_number_integer() ||
+      (!request->at("attempt").is_number_unsigned() && request->at("attempt").get<std::int64_t>() < 0) ||
+      request->at("attempt").get<std::uint64_t>() == 0 ||
+      request->at("attempt") != header.value("attempt", NativeJson{}) ||
+      request->at("task").value("generation_mode", NativeJson{}) !=
+        (header.contains("generation_contract") ? "TOKEN_STREAMING" : "TOKEN_DIAGNOSTIC"))
+    throw std::invalid_argument("automatic Selection differs from its original request");
+}
+
+void
+validateNativeAutomaticSelectionRequestBinding(
+  const std::string& requestWire, const NativeSelectionProjectionV3& projection)
+{
+  NativeJson header{{"schema", projection.automaticShapeSeed
+      ? "ndnsf-di-selection-v4" : "ndnsf-di-selection-v3"},
+    {"schema_version", projection.automaticShapeSeed ? 4 : 3},
+    {"request_id", projection.requestId}, {"attempt", projection.attempt},
+    {"request_contract_digest", projection.requestContractDigest}};
+  if (projection.automaticShapeSeed)
+    header["automatic_shape_seed"] = nativeAutomaticShapeSeedToJson(*projection.automaticShapeSeed);
+  if (projection.generationContract.enabled) header["generation_contract"] = NativeJson::object();
+  validateNativeAutomaticSelectionRequestBinding(requestWire, header);
+  if (projection.automaticShapeSeed && projection.selectedRoleContract().adapterId != "automatic-onnx")
+    throw std::invalid_argument("automatic Selection adapter differs from its original request");
+}
+
+void
+validateNativeAutomaticRequestBinding(
+  const NativeEncodedRequest& request, const NativeModelDescriptor& model,
+  const NativeRequestContract& contract,
+  const std::string& requestId, std::uint64_t attempt,
+  const std::optional<NativeGenerationExecutionContractV1>& generation)
+{
+  const auto root = parseNativeRequestEnvelope(
+    std::string(request.wire.begin(), request.wire.end()));
+  const auto wireSeed = root ? nativeRequestAutomaticShapeSeed(*root) : std::nullopt;
+  const bool automatic = contract.adapterName == "automatic-onnx";
+  if (!automatic && !request.automaticShapeSeed && !wireSeed) return;
+  if (!automatic || !root || !request.automaticShapeSeed || !wireSeed ||
+      nativePlanningDigest(request.wire.data(), request.wire.size()) !=
+        request.requestContractDigest ||
+      root->value("request_id", NativeJson{}) != requestId ||
+      root->value("attempt", NativeJson{}) != attempt ||
+      root->value("service", NativeJson{}) != contract.serviceName ||
+      root->value("model_identity_hash", NativeJson{}) != request.modelIntentDigest ||
+      request.modelIntentDigest != model.intentDigest() ||
+      root->at("task").value("generation_mode", NativeJson{}) != contract.generationMode ||
+      nativeAutomaticShapeSeedToJson(*wireSeed) !=
+        nativeAutomaticShapeSeedToJson(*request.automaticShapeSeed) ||
+      wireSeed->maxNewTokens != (generation && generation->enabled
+        ? generation->maxGeneratedTokens : 0))
+    throw std::invalid_argument("automatic request wire/metadata binding mismatch");
 }
 
 bool
@@ -241,12 +467,15 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
   std::string requesterIdentity, bool selectionGenerationOptions,
-  const std::shared_ptr<NativeWorkStatistics>& statistics = {})
+  const std::shared_ptr<NativeWorkStatistics>& statistics = {},
+  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed = std::nullopt)
 {
   NativeWorkScope encodingWork(statistics, "request-envelope-encode", NativeWorkKind::LOCAL);
   if (selectionGenerationOptions && contract.generationMode != "TOKEN_STREAMING")
     throw std::invalid_argument("Selection generation options require TOKEN_STREAMING");
   model.validate();
+  if ((contract.adapterName == "automatic-onnx") != automaticShapeSeed.has_value())
+    throw std::invalid_argument("automatic request requires its bound shape seed");
   if (model.artifactReference) {
     // The descriptor graphDigest is the adapter/planning graph identity.  A
     // model reference carries the canonical source graph identity, which is
@@ -270,6 +499,22 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   if (input.payload.size() > MAX_WIRE || input.options.size() > MAX_WIRE ||
       input.repositoryReference.size() > MAX_WIRE)
     throw std::invalid_argument("DI request input exceeds limit");
+
+  if (automaticShapeSeed) {
+    if (contract.generationMode == "TOKEN_STREAMING") {
+      const auto options = nativeParseJson(std::string(input.options.begin(), input.options.end()));
+      const auto count = options.is_object() ? options.find("maxNewTokens") : options.end();
+      if (!options.is_object() || count == options.end() || !count->is_number_integer() ||
+          (!count->is_number_unsigned() && count->get<std::int64_t>() < 0) ||
+          count->get<std::uint64_t>() == 0 ||
+          count->get<std::uint64_t>() > MAX_NATIVE_GENERATED_TOKENS ||
+          count->get<std::uint64_t>() != automaticShapeSeed->maxNewTokens)
+        throw std::invalid_argument("automatic seed token budget differs from application options");
+    }
+    else if (automaticShapeSeed->maxNewTokens != 0) {
+      throw std::invalid_argument("automatic tensor-forward request has a generation budget");
+    }
+  }
 
   NativeJson reference = NativeJson::object();
   std::string transport;
@@ -324,6 +569,13 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
       {"adapter_composition_digest", contract.adapterCompositionDigest},
       {"task_descriptor_digest", contract.taskDescriptorDigest},
       {"generation_mode", contract.generationMode}, {"placement_profile", "DI_PLACEMENT_V3"}}}};
+  if (automaticShapeSeed) {
+    envelope["schema"] = "ndnsf-di-request-envelope-v3";
+    envelope["schema_version"] = 3;
+    envelope["automatic_shape_seed"] = nativeAutomaticShapeSeedToJson(*automaticShapeSeed);
+    envelope["graph_digest"] = model.graphDigest;
+    result.automaticShapeSeed = automaticShapeSeed;
+  }
   if (selectionGenerationOptions) {
     envelope["options_transport"] = "SELECTION_GENERATION_V1";
     envelope["options_digest"] = optionsDigest;
@@ -462,7 +714,30 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
       {"committed_prefix_digest", nativePlanningDigest(prefix)}};
     result.recovery = value;
   }
-  const auto wire = nativeCanonicalJson(envelope);
+  auto wire = nativeCanonicalJson(envelope);
+  if (automaticShapeSeed) {
+    using ndn_service_framework::RequestMessage;
+    auto discovery = nativeCanonicalJson(automaticDiscoverySummary(envelope, nativePlanningDigest(wire)));
+    if (discovery.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE &&
+        envelope.at("task").at("placement_profile") == "DI_PLACEMENT_V4") {
+      // Keep the optional V4 scope whole or use the existing V3 profile.
+      // Never publish a partial candidate/probe inventory.
+      for (const auto* key : {"candidate_providers", "candidate_set_digest", "candidate_artifacts",
+                              "candidate_artifact_set_digest", "rtt_pairs", "goodput_edges",
+                              "probe_scope_digest", "requester_identity"}) envelope.erase(key);
+      envelope["task"]["placement_profile"] = "DI_PLACEMENT_V3";
+      result.candidateArtifacts.clear(); result.candidateProviders.clear();
+      result.candidateSetDigest.clear(); result.candidateArtifactSetDigest.clear();
+      result.allowedRttPairs.clear(); result.allowedGoodputEdges.clear();
+      result.probeScopeDigest.clear(); result.requesterIdentity.clear();
+      wire = nativeCanonicalJson(envelope);
+      discovery = nativeCanonicalJson(automaticDiscoverySummary(envelope, nativePlanningDigest(wire)));
+      if (statistics) statistics->addCount("request.automaticDiscoveryV4BudgetFallbacks", 1);
+    }
+    if (discovery.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE)
+      throw std::invalid_argument("automatic discovery exceeds the Core metadata limit");
+    result.discoveryPayload.emplace(discovery.begin(), discovery.end());
+  }
   if (wire.size() > MAX_WIRE) throw std::invalid_argument("DI request envelope exceeds limit");
   result.wire.assign(wire.begin(), wire.end());
   result.requestContractDigest = nativePlanningDigest(wire);
@@ -490,11 +765,12 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   const std::vector<std::string>& candidateProviders,
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
-  std::string requesterIdentity)
+  std::string requesterIdentity,
+  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed)
 {
   return encodeNativeRequestEnvelopeImpl(model, input, contract, requestId, attempt,
     deadlineMs, recovery, candidateProviders, candidateArtifactInventory,
-    probeAllowlist, std::move(requesterIdentity), false);
+    probeAllowlist, std::move(requesterIdentity), false, {}, automaticShapeSeed);
 }
 
 namespace detail {
@@ -507,41 +783,24 @@ NativeEncodedRequest encodeNativeRequestEnvelopeForRuntime(
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
   std::string requesterIdentity, const std::string& optionsTransport,
-  const std::shared_ptr<NativeWorkStatistics>& statistics)
+  const std::shared_ptr<NativeWorkStatistics>& statistics,
+  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed)
 {
   if (optionsTransport != "INLINE" && optionsTransport != "SELECTION_GENERATION_V1")
     throw std::invalid_argument("unsupported native request options transport");
   return encodeNativeRequestEnvelopeImpl(model, input, contract, requestId, attempt,
     deadlineMs, recovery, candidateProviders, candidateArtifactInventory,
-    probeAllowlist, std::move(requesterIdentity), optionsTransport != "INLINE", statistics);
+    probeAllowlist, std::move(requesterIdentity), optionsTransport != "INLINE", statistics,
+    automaticShapeSeed);
 }
 
 bool requiresSelectionGenerationOptions(const std::string& requestWire,
                                         bool allowSelectionGenerationOptions)
 {
-  // Decode keys before checking the mode: escaped JSON keys must not bypass
-  // deployment permission or the Selection-only contract.
-  NativeJson root;
-  try { root = nativeParseJson(requestWire); }
-  catch (const std::exception&) {
-    // Classification only: Boost preserves duplicate keys and decodes escapes.
-    // Never downgrade a malformed native envelope to the legacy receiver path,
-    // including when any duplicate schema value identifies the native schema.
-    boost::property_tree::ptree legacy;
-    try {
-      std::istringstream input(requestWire);
-      boost::property_tree::read_json(input, legacy);
-    }
-    catch (const boost::property_tree::json_parser::json_parser_error&) { return false; }
-    for (const auto& item : legacy) {
-      if (item.first == "schema" && item.second.data() == "ndnsf-di-request-envelope-v2")
-        throw std::invalid_argument("native request envelope failed strict JSON validation");
-    }
-    return false;
-  }
-  if (!root.is_object() || root.value("schema", NativeJson{}) !=
-      "ndnsf-di-request-envelope-v2")
-    return false;
+  // Classify and validate automatic metadata before the INLINE early return.
+  const auto parsed = parseNativeRequestEnvelope(requestWire);
+  if (!parsed) return false;
+  const auto& root = *parsed;
   const auto mode = root.value("options_transport", std::string("INLINE"));
   if (mode == "INLINE" && !root.contains("options_digest")) return false;
   if (mode != "SELECTION_GENERATION_V1" || !allowSelectionGenerationOptions ||

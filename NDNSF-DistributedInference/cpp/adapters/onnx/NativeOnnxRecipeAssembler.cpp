@@ -1,4 +1,8 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "automatic-onnx-model.hpp"
+#include "automatic-onnx-generation.hpp"
+#include "automatic-onnx-inference.hpp"
+#include "onnx-tensor-type.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
@@ -30,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -53,6 +58,13 @@ namespace {
 
 [[noreturn]] void fail(const char* code);
 
+bool
+isBuiltinConstant(const onnx::NodeProto& node, bool localFunction)
+{
+  return !localFunction && (node.domain().empty() || node.domain() == "ai.onnx") &&
+    node.op_type() == "Constant" && node.overload().empty() && node.output_size() == 1;
+}
+
 class NativeShapeSchemaRegistry final : public onnx::ISchemaRegistry
 {
 public:
@@ -70,9 +82,11 @@ public:
       .Input(4, "g_idx", "Optional group indices", "tensor(int32)", onnx::OpSchema::Optional)
       .Input(5, "bias", "Optional bias", "T", onnx::OpSchema::Optional)
       .Output(0, "Y", "Matrix product", "T")
-      .TypeConstraint("T", {"tensor(float)", "tensor(float16)"}, "Activation type")
+      .TypeConstraint("T", {"tensor(float)", "tensor(float16)", "tensor(bfloat16)"},
+                      "Activation type")
       .TypeConstraint("TQ", {"tensor(uint8)"}, "Packed weights")
-      .TypeConstraint("TZ", {"tensor(uint8)", "tensor(float)", "tensor(float16)"},
+      .TypeConstraint("TZ", {"tensor(uint8)", "tensor(float)", "tensor(float16)",
+                             "tensor(bfloat16)"},
                       "Zero-point representation")
       .TypeAndShapeInferenceFunction([] (onnx::InferenceContext& context) {
         onnx::propagateElemTypeFromInputToOutput(context, 0, 0);
@@ -1160,6 +1174,7 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
           sourceToReleaseAfterParse->initializerBytes.reset();
         }
         sourceToReleaseAfterParse->initializerRangeSource.reset();
+        sourceToReleaseAfterParse->externalFileRanges.clear();
       }
       const auto inputs = collectBoundaryIo(inferredGraph.input(),
                                             inferredGraph.value_info(),
@@ -1186,6 +1201,7 @@ assembleCertifiedOnnxChain(const NativeCanonicalSource& source,
       sourceToReleaseAfterParse->initializerBytes.reset();
     }
     sourceToReleaseAfterParse->initializerRangeSource.reset();
+    sourceToReleaseAfterParse->externalFileRanges.clear();
   }
 
   // `original` still owns the complete authenticated source graph and all of
@@ -1367,7 +1383,7 @@ std::uint64_t tensorElementCount(const onnx::TensorProto& tensor)
   for (int i = 0; i < tensor.dims_size(); ++i) {
     const auto dim = tensor.dims(i);
     if (dim < 0) failNormalization("INITIALIZER_ENCODING_INVALID");
-    if (static_cast<std::uint64_t>(dim) >
+    if (count != 0 && static_cast<std::uint64_t>(dim) >
         std::numeric_limits<std::uint64_t>::max() / count)
       failNormalization("INITIALIZER_ENCODING_INVALID");
     count *= static_cast<std::uint64_t>(dim);
@@ -1683,6 +1699,11 @@ normalizedOnnxInitializerPayload(const std::vector<std::uint8_t>& serializedTens
     failNormalization("INITIALIZER_ENCODING_INVALID");
   const int dataType = tensor.data_type();
   const auto count = tensorElementCount(tensor);
+  if (count == 0 && (!tensor.raw_data().empty() || tensor.float_data_size() != 0 ||
+      tensor.double_data_size() != 0 || tensor.int32_data_size() != 0 ||
+      tensor.int64_data_size() != 0 || tensor.uint64_data_size() != 0 ||
+      tensor.string_data_size() != 0))
+    failNormalization("INITIALIZER_ENCODING_INVALID");
 
   NormalizedInitializerPayload payload;
   payload.shape.reserve(static_cast<std::size_t>(tensor.dims_size()));
@@ -1778,8 +1799,7 @@ normalizedOnnxInitializerPayload(const std::vector<std::uint8_t>& serializedTens
             failNormalization("INITIALIZER_ENCODING_INVALID");
         }
       }
-      // count == 0 leaves an empty payload; a non-empty typed/raw field on
-      // a zero-element tensor is caught by the exact length checks above.
+      // The zero-element payload was checked before entering the type branches.
     }
   }
   return payload;
@@ -1793,45 +1813,57 @@ namespace {
 // strictly from the bytes the caller authenticated; it never opens a path
 // declared inside the model.
 void collectAttributeTensors(const onnx::AttributeProto& attribute,
-                             std::vector<onnx::TensorProto*>& tensors)
+                             std::vector<onnx::TensorProto*>& tensors,
+                             bool rejectSparse = false)
 {
+  if (rejectSparse && (attribute.type() == onnx::AttributeProto::SPARSE_TENSOR ||
+                       attribute.type() == onnx::AttributeProto::SPARSE_TENSORS))
+    fail("AUTOMATIC_SPARSE_UNSUPPORTED");
   if (attribute.has_t()) tensors.push_back(const_cast<onnx::TensorProto*>(&attribute.t()));
   for (int i = 0; i < attribute.tensors_size(); ++i)
     tensors.push_back(const_cast<onnx::TensorProto*>(&attribute.tensors(i)));
 }
 
-void collectGraphTensors(onnx::GraphProto& graph, std::vector<onnx::TensorProto*>& tensors)
+void collectGraphTensors(onnx::GraphProto& graph, std::vector<onnx::TensorProto*>& tensors,
+                         bool rejectSparse = false)
 {
+  if (rejectSparse && graph.sparse_initializer_size() != 0)
+    fail("AUTOMATIC_SPARSE_UNSUPPORTED");
   for (int i = 0; i < graph.initializer_size(); ++i)
     tensors.push_back(graph.mutable_initializer(i));
   for (int i = 0; i < graph.node_size(); ++i) {
     auto* node = graph.mutable_node(i);
     for (int j = 0; j < node->attribute_size(); ++j) {
       auto* attribute = node->mutable_attribute(j);
-      collectAttributeTensors(*attribute, tensors);
-      if (attribute->has_g()) collectGraphTensors(*attribute->mutable_g(), tensors);
+      collectAttributeTensors(*attribute, tensors, rejectSparse);
+      if (attribute->has_g()) collectGraphTensors(*attribute->mutable_g(), tensors, rejectSparse);
       for (int k = 0; k < attribute->graphs_size(); ++k)
-        collectGraphTensors(*attribute->mutable_graphs(k), tensors);
+        collectGraphTensors(*attribute->mutable_graphs(k), tensors, rejectSparse);
     }
   }
 }
 
-void collectModelTensors(onnx::ModelProto& model, std::vector<onnx::TensorProto*>& tensors)
+void collectModelTensors(onnx::ModelProto& model, std::vector<onnx::TensorProto*>& tensors,
+                         bool rejectSparse = false)
 {
-  collectGraphTensors(*model.mutable_graph(), tensors);
+  collectGraphTensors(*model.mutable_graph(), tensors, rejectSparse);
   for (int i = 0; i < model.functions_size(); ++i) {
     auto* function = model.mutable_functions(i);
-    // FunctionProto.attribute is a name list in this schema version; tensor
-    // payloads only live in the function nodes' attributes (incl. nested
-    // attribute graphs) and in node attributes of the main graph.
+    for (int j = 0; j < function->attribute_proto_size(); ++j) {
+      auto* attribute = function->mutable_attribute_proto(j);
+      collectAttributeTensors(*attribute, tensors, rejectSparse);
+      if (attribute->has_g()) collectGraphTensors(*attribute->mutable_g(), tensors, rejectSparse);
+      for (int k = 0; k < attribute->graphs_size(); ++k)
+        collectGraphTensors(*attribute->mutable_graphs(k), tensors, rejectSparse);
+    }
     for (int j = 0; j < function->node_size(); ++j) {
       auto* node = function->mutable_node(j);
       for (int k = 0; k < node->attribute_size(); ++k) {
         auto* attribute = node->mutable_attribute(k);
-        collectAttributeTensors(*attribute, tensors);
-        if (attribute->has_g()) collectGraphTensors(*attribute->mutable_g(), tensors);
+        collectAttributeTensors(*attribute, tensors, rejectSparse);
+        if (attribute->has_g()) collectGraphTensors(*attribute->mutable_g(), tensors, rejectSparse);
         for (int m = 0; m < attribute->graphs_size(); ++m)
-          collectGraphTensors(*attribute->mutable_graphs(m), tensors);
+          collectGraphTensors(*attribute->mutable_graphs(m), tensors, rejectSparse);
       }
     }
   }
@@ -1932,6 +1964,63 @@ ExternalByteRange validatedExternalByteRange(const onnx::TensorProto& tensor,
 }
 
 ExternalByteRange
+validatedExternalByteRange(const onnx::TensorProto& tensor, const NativeCanonicalSource& source)
+{
+  if (source.externalFileRanges.empty()) {
+    return validatedExternalByteRange(tensor, nativeCanonicalInitializerByteSize(source));
+  }
+  std::string location;
+  for (const auto& item : tensor.external_data()) {
+    if (item.key() == "location") location = item.value();
+  }
+  const auto found = source.externalFileRanges.find(location);
+  if (found == source.externalFileRanges.end()) fail("EXTERNAL_LOCATION");
+  auto range = validatedExternalByteRange(tensor, found->second.bytes);
+  range.offset = checkedAdd(found->second.offset, range.offset);
+  return range;
+}
+
+void
+validateExternalLocations(const std::vector<onnx::TensorProto*>& tensors,
+                          const NativeCanonicalSource& source)
+{
+  constexpr std::size_t MAX_EXTERNAL_LOCATION_BYTES = 4096;
+  if (source.externalFileRanges.empty()) {
+    (void)validateAndPinLocation(tensors);
+    return;
+  }
+  if (!source.initializerRangeSource || source.initializerBytes ||
+      source.externalFileRanges.size() > NATIVE_ONNX_MAX_EXTERNAL_FILES) fail("EXTERNAL_BINDING");
+  std::uint64_t end = 0;
+  std::set<std::string> referenced;
+  for (const auto& [location, range] : source.externalFileRanges) {
+    if (location.empty() || location.size() > MAX_EXTERNAL_LOCATION_BYTES ||
+        location.front() == '/' || location.back() == '/' ||
+        location.find('\\') != std::string::npos || location.find('\0') != std::string::npos ||
+        range.bytes == 0 || range.offset != end) fail("EXTERNAL_LOCATION");
+    std::size_t begin = 0;
+    while (begin < location.size()) {
+      const auto slash = location.find('/', begin);
+      const auto part = location.substr(begin, slash == std::string::npos
+        ? std::string::npos : slash - begin);
+      if (part.empty() || part == "." || part == "..") fail("EXTERNAL_LOCATION");
+      if (slash == std::string::npos) break;
+      begin = slash + 1;
+    }
+    end = checkedAdd(end, range.bytes);
+  }
+  if (end != source.initializerRangeSource->size()) fail("EXTERNAL_RANGE");
+  for (const auto* tensor : tensors) {
+    if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
+    (void)validatedExternalByteRange(*tensor, source);
+    for (const auto& item : tensor->external_data()) {
+      if (item.key() == "location") referenced.insert(item.value());
+    }
+  }
+  if (referenced.size() != source.externalFileRanges.size()) fail("EXTERNAL_BINDING");
+}
+
+ExternalByteRange
 validatedExternalByteRange(const onnx::TensorProto& tensor,
                            const std::vector<std::uint8_t>& bytes)
 {
@@ -1981,7 +2070,7 @@ inlineValidatedExternals(const std::vector<onnx::TensorProto*>& tensors,
   for (auto* tensor : tensors) {
     checkActive(*control);
     if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
-    const auto range = validatedExternalByteRange(*tensor, nativeCanonicalInitializerByteSize(source));
+    const auto range = validatedExternalByteRange(*tensor, source);
     if (range.length > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
       fail("EXTERNAL_RANGE");
     total = checkedAdd(total, range.length);
@@ -2258,6 +2347,9 @@ onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
                                   const NativeOnnxModelFileInput* modelFile)
 {
   checkActive(control);
+  if (!source.externalFileRanges.empty() &&
+      (!source.initializerRangeSource || source.initializerBytes))
+    fail("EXTERNAL_BINDING");
   const std::uint64_t sourceBytes = modelFile != nullptr
     ? modelFile->bytes : static_cast<std::uint64_t>(source.modelBytes.size());
   if (control.maxSourceBytes == 0 || sourceBytes == 0 ||
@@ -2297,7 +2389,7 @@ onnx::ModelProto ownedSourceModel(const NativeCanonicalSource& source,
     });
   if (hasExternal != hasInitializer) fail("EXTERNAL_BINDING");
   if (hasInitializer) {
-    validateAndPinLocation(externalTensors);
+    validateExternalLocations(externalTensors, source);
     if (source.initializerBytes && source.initializerRangeSource)
       (void)nativeCanonicalInitializerDigest(source, control);
     if (source.initializerRangeSource) {
@@ -2441,7 +2533,7 @@ std::vector<TensorIndexEntry> buildTensorIndex(
         const auto count = tensorElementCount(initializer);
         const auto expected = rawByteLength(initializer.data_type(), count);
         const auto range = externalSource
-          ? validatedExternalByteRange(initializer, nativeCanonicalInitializerByteSize(*externalSource))
+          ? validatedExternalByteRange(initializer, *externalSource)
           : validatedExternalByteRange(initializer, *externalBytes);
         if (range.length != expected || expected > std::numeric_limits<std::size_t>::max())
           failNormalization("INITIALIZER_ENCODING_INVALID");
@@ -2719,6 +2811,23 @@ NativeJson materialReferenceJson(const NativeCanonicalSource::MaterialReference&
   return result;
 }
 
+NativeJson
+materialAutomaticSourceValue(const std::string& encoded)
+{
+  if (encoded.empty() || encoded.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    throw std::invalid_argument("native automatic material metadata exceeds its bound");
+  auto value = nativeParseJson(encoded, 64);
+  if (!value.is_object() || value.size() != 2 || !value.contains("contract") ||
+      !value.at("contract").is_object() || !value.contains("externalFiles") ||
+      !value.at("externalFiles").is_array() ||
+      value.at("externalFiles").size() > NATIVE_ONNX_MAX_EXTERNAL_FILES ||
+      nativeCanonicalJson(value) != encoded)
+    throw std::invalid_argument("native automatic material metadata is invalid");
+  // Complete inventory/source semantics belong to the admission owner. Keep
+  // this structural material reader independently linkable in the worker.
+  return value;
+}
+
 } // namespace
 
 std::string NativeCanonicalSource::MaterialManifest::canonicalJson() const
@@ -2726,13 +2835,20 @@ std::string NativeCanonicalSource::MaterialManifest::canonicalJson() const
   NativeJson references = NativeJson::array();
   for (const auto& reference : this->references)
     references.push_back(materialReferenceJson(reference));
-  return nativeCanonicalJson(NativeJson{
+  auto value = NativeJson{
     {"graphDigest", graphDigest},
     {"initializerDigest", initializerDigest},
     {"references", std::move(references)},
     {"schema", schema},
     {"sourceDigest", sourceDigest},
-    {"templatePayloadId", templatePayloadId}});
+    {"templatePayloadId", templatePayloadId}};
+  if (!automaticSourceJson.empty())
+    value["automaticSource"] = materialAutomaticSourceValue(automaticSourceJson);
+  auto encoded = nativeCanonicalJson(value);
+  if (schema == "ndnsf-di-canonical-material-manifest-v2" &&
+      encoded.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    throw std::invalid_argument("native canonical material metadata exceeds its bound");
+  return encoded;
 }
 
 void NativeCanonicalSource::MaterialManifest::validate() const
@@ -2751,7 +2867,10 @@ NativeCanonicalSource::MaterialManifest::validate(
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
       });
   };
-  if (schema != "ndnsf-di-canonical-material-manifest-v1" ||
+  const bool legacy = schema == "ndnsf-di-canonical-material-manifest-v1";
+  const bool automatic = schema == "ndnsf-di-canonical-material-manifest-v2";
+  if ((!legacy && !automatic) || (legacy && !automaticSourceJson.empty()) ||
+      (automatic && automaticSourceJson.empty()) ||
       !validDigest(sourceDigest) || !validDigest(graphDigest) ||
       !validDigest(initializerDigest) || !validDigest(manifestDigest) ||
       templatePayloadId.empty() || (payloadsComplete && payloads.empty()) ||
@@ -2850,6 +2969,31 @@ NativeCanonicalSource::MaterialManifest::validate(
       if (!referencedPayloadIds.count(payload.payloadId))
         throw std::invalid_argument("native canonical selected payload is unreferenced");
   }
+}
+
+std::vector<std::string>
+inspectNativeOnnxExternalLocations(const std::vector<std::uint8_t>& modelBytes,
+                                    const NativeAssemblyControl& control)
+{
+  checkActive(control);
+  if (modelBytes.empty() || control.maxSourceBytes == 0 ||
+      modelBytes.size() > control.maxSourceBytes ||
+      modelBytes.size() > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    fail("SOURCE_LIMIT");
+  onnx::ModelProto model;
+  if (!model.ParseFromArray(modelBytes.data(), static_cast<int>(modelBytes.size())))
+    fail("PARSE");
+  checkActive(control);
+  std::vector<onnx::TensorProto*> tensors;
+  collectModelTensors(model, tensors, true);
+  std::set<std::string> locations;
+  for (auto* tensor : tensors) {
+    checkActive(control);
+    if (tensor->data_location() != onnx::TensorProto::EXTERNAL) continue;
+    locations.insert(validateAndPinLocation({tensor}));
+    if (locations.size() > NATIVE_ONNX_MAX_EXTERNAL_FILES) fail("EXTERNAL_BINDING");
+  }
+  return {locations.begin(), locations.end()};
 }
 
 std::uint64_t
@@ -2960,12 +3104,26 @@ std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
 deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
                                       const NativeAssemblyControl& control)
 {
+  return deriveNativeCanonicalMaterialManifest(source, control, {});
+}
+
+std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
+deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
+                                      const NativeAssemblyControl& control,
+                                      const std::string& automaticSourceJson)
+{
   checkActive(control);
+  if (!automaticSourceJson.empty())
+    (void)materialAutomaticSourceValue(automaticSourceJson);
   auto model = ownedSourceModel(source, control, false);
   const auto entries = buildTensorIndex(
     model, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
     &control, &source);
   auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
+  if (!automaticSourceJson.empty()) {
+    result->schema = "ndnsf-di-canonical-material-manifest-v2";
+    result->automaticSourceJson = automaticSourceJson;
+  }
   std::uint64_t materialBytes = 0;
   const auto accountMaterial = [&] (std::size_t bytes) {
     materialBytes = checkedAdd(materialBytes, static_cast<std::uint64_t>(bytes));
@@ -3024,8 +3182,7 @@ deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
       accountMaterial(headerBytes.size());
       result->payloads.push_back({headerPayloadId, headerDigest, headerBytes});
 
-      const auto range = validatedExternalByteRange(initializer,
-                                                    nativeCanonicalInitializerByteSize(source));
+      const auto range = validatedExternalByteRange(initializer, source);
       const auto offset = range.offset;
       const auto length = range.length;
 
@@ -3171,11 +3328,16 @@ parseNativeCanonicalMaterialManifest(const std::vector<std::uint8_t>& bytes)
 {
   if (bytes.empty() || bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
     throw std::invalid_argument("native canonical material manifest bytes are invalid");
-  const auto root = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+  const auto root = nativeParseJson(std::string(bytes.begin(), bytes.end()), 64);
   if (!root.is_object())
     throw std::invalid_argument("native canonical material manifest is not an object");
   auto result = std::make_shared<NativeCanonicalSource::MaterialManifest>();
   result->schema = root.value("schema", std::string{});
+  if (result->schema == "ndnsf-di-canonical-material-manifest-v2" &&
+      bytes.size() > NativeCanonicalMaterialPublicationMaxBytes)
+    throw std::invalid_argument("native automatic material metadata exceeds its bound");
+  if (root.contains("automaticSource"))
+    result->automaticSourceJson = nativeCanonicalJson(root.at("automaticSource"));
   result->sourceDigest = root.value("sourceDigest", std::string{});
   result->graphDigest = root.value("graphDigest", std::string{});
   result->initializerDigest = root.value("initializerDigest", std::string{});
@@ -3729,8 +3891,7 @@ void validateNativeCanonicalMaterialManifest(
         if (sourceInitializer->data_location() == onnx::TensorProto::EXTERNAL) {
           if (!source.initializerBytes && !source.initializerRangeSource)
             throw std::invalid_argument("native canonical material initializer chunks are invalid");
-          const auto range = validatedExternalByteRange(*sourceInitializer,
-                                                        nativeCanonicalInitializerByteSize(source));
+          const auto range = validatedExternalByteRange(*sourceInitializer, source);
           offset = range.offset;
           length = range.length;
           expectedRange = static_cast<bool>(source.initializerRangeSource);
@@ -3836,17 +3997,15 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
   return identity;
 }
 
-NativeOnnxGraphInspection
-inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
-  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
+static NativeOnnxGraphInspection
+inspectSourceGraphFacts(const NativeCanonicalSource& source,
+                        const NativeModelDescriptor& expectedModel,
+                        const NativeAssemblyControl& control,
+                        const onnx::ModelProto& original,
+                        const std::vector<TensorIndexEntry>& entries,
+                        std::uint64_t materializedBudget,
+                        std::vector<AutomaticTensorContract>* automaticTensors = nullptr)
 {
-  expectedModel.validate();
-  if (expectedModel.modelFormat != "onnx") fail("GRAPH_MODEL_FORMAT");
-  std::uint64_t materializedBudget = 0;
-  const auto original = ownedSourceModel(source, control, false, &materializedBudget);
-  const auto entries = buildTensorIndex(
-    original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
-    &control, &source);
   NativeOnnxGraphInspection result;
   result.canonicalIdentity = {sha256HexOf(graphFactsJson(original, entries)),
                               sha256HexOf(initializerContentJson(entries))};
@@ -3867,7 +4026,11 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     checkActive(control);
     return inferenceInitializerNames.count(value.name()) != 0;
   }), valueInfo->end());
-  try { inferNativeShapes(inferred); }
+  bool inferenceSucceeded = false;
+  try {
+    inferNativeShapes(inferred);
+    inferenceSucceeded = true;
+  }
   catch (const std::exception&) {
     // Python infer_shapes returns a copy. A failed C++ inference may have
     // partially mutated its argument, so restore the original before fallback.
@@ -3876,6 +4039,123 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
   checkActive(control);
   const auto& graph = inferred.graph();
   if (graph.node_size() != original.graph().node_size()) fail("GRAPH_NODE_ORDER");
+
+  if (automaticTensors != nullptr) {
+    std::map<std::string, AutomaticTensorContract> contracts;
+    std::uint64_t metadataBytes = 0;
+    const auto automaticMetadataLimit = std::min(control.maxAssembledBytes,
+                                                  NativeCanonicalMaterialPublicationMaxBytes);
+    const auto charge = [&](std::uint64_t bytes) {
+      metadataBytes = checkedAdd(metadataBytes, bytes);
+      if (metadataBytes > automaticMetadataLimit) fail("AUTOMATIC_TENSOR_METADATA_SIZE");
+      checkActive(control);
+    };
+    const auto addValues = [&](const auto& values, const char* provenance) {
+      for (const auto& value : values) {
+        const auto encodedBytes = value.ByteSizeLong();
+        if (encodedBytes > automaticMetadataLimit / 8)
+          fail("AUTOMATIC_TENSOR_METADATA_SIZE");
+        charge(encodedBytes * 8 + sizeof(AutomaticTensorContract));
+        if (value.name().empty()) fail("AUTOMATIC_TENSOR_NAME");
+        auto& contract = contracts[value.name()];
+        contract = AutomaticTensorContract{};
+        contract.name = "graph/" + value.name();
+        contract.provenance = {provenance};
+        if (!value.type().has_tensor_type()) continue;
+        const auto& type = value.type().tensor_type();
+        contract.onnxElementType = type.elem_type();
+        contract.wireElementType = onnxTensorWireType(type.elem_type());
+        if (!type.has_shape()) continue;
+        contract.dimensions.emplace();
+        for (const auto& dim : type.shape().dim()) {
+          charge(sizeof(DimensionConstraint) + dim.dim_param().size() + 64);
+          DimensionConstraint axis;
+          if (dim.has_dim_value()) {
+            if (dim.dim_value() < 0) fail("AUTOMATIC_TENSOR_DIMENSION");
+            axis.kind = DimensionConstraint::Kind::FIXED;
+            axis.fixed = dim.dim_value();
+            axis.upperBound = static_cast<std::uint64_t>(axis.fixed);
+          }
+          else if (dim.has_dim_param() && !dim.dim_param().empty()) {
+            axis.kind = DimensionConstraint::Kind::SYMBOL;
+            axis.symbol = "graph/" + dim.dim_param();
+          }
+          contract.dimensions->push_back(std::move(axis));
+        }
+      }
+    };
+    // Initializer headers are authoritative over redundant value_info.
+    // Port declarations remain the graph's public contract when inference fails.
+    addValues(graph.value_info(), inferenceSucceeded ? "onnx-inference-v1" : "graph-annotation-v1");
+    addValues(graph.input(), "graph-input-v1");
+    addValues(graph.output(), "graph-output-v1");
+    const auto addLiteralHeader = [&](const std::string& name, int type, const auto& dimensions,
+                                      const char* provenance) {
+      charge(name.size() + sizeof(AutomaticTensorContract));
+      AutomaticTensorContract contract;
+      contract.name = "graph/" + name;
+      contract.onnxElementType = type;
+      contract.wireElementType = onnxTensorWireType(type);
+      contract.provenance = {provenance};
+      contract.dimensions.emplace();
+      for (const auto dim : dimensions) {
+        charge(sizeof(DimensionConstraint));
+        if (dim < 0) fail("AUTOMATIC_TENSOR_DIMENSION");
+        contract.dimensions->push_back({DimensionConstraint::Kind::FIXED, dim, {},
+                                        static_cast<std::uint64_t>(dim)});
+      }
+      contracts[name] = std::move(contract);
+    };
+    for (const auto& tensor : graph.initializer())
+      addLiteralHeader(tensor.name(), tensor.data_type(), tensor.dims(), "initializer-header-v1");
+    std::set<std::string> localConstantDomains;
+    for (const auto& function : original.functions()) {
+      checkActive(control);
+      if (function.name() == "Constant" && function.overload().empty())
+        localConstantDomains.insert(function.domain());
+    }
+    for (const auto& node : original.graph().node()) {
+      checkActive(control);
+      if (!isBuiltinConstant(node, localConstantDomains.count(node.domain()))) continue;
+      bool literal = false;
+      for (const auto& attribute : node.attribute()) {
+        checkActive(control);
+        if (!attribute.ref_attr_name().empty()) continue;
+        const auto add = [&](int type, const auto& dimensions) {
+          if (literal) fail("AUTOMATIC_CONSTANT_LITERAL_CONFLICT");
+          literal = true;
+          addLiteralHeader(node.output(0), type, dimensions, "constant-header-v1");
+        };
+        if (attribute.name() == "value" && attribute.has_t())
+          add(attribute.t().data_type(), attribute.t().dims());
+        else if (attribute.name() == "value_int" && attribute.type() == onnx::AttributeProto::INT)
+          add(onnx::TensorProto::INT64, std::vector<std::int64_t>{});
+        else if (attribute.name() == "value_float" && attribute.type() == onnx::AttributeProto::FLOAT)
+          add(onnx::TensorProto::FLOAT, std::vector<std::int64_t>{});
+        else if (attribute.name() == "value_string" && attribute.type() == onnx::AttributeProto::STRING)
+          add(onnx::TensorProto::STRING, std::vector<std::int64_t>{});
+        else if (attribute.name() == "value_ints" && attribute.type() == onnx::AttributeProto::INTS)
+          add(onnx::TensorProto::INT64, std::vector<std::int64_t>{attribute.ints_size()});
+        else if (attribute.name() == "value_floats" && attribute.type() == onnx::AttributeProto::FLOATS)
+          add(onnx::TensorProto::FLOAT, std::vector<std::int64_t>{attribute.floats_size()});
+        else if (attribute.name() == "value_strings" && attribute.type() == onnx::AttributeProto::STRINGS)
+          add(onnx::TensorProto::STRING, std::vector<std::int64_t>{attribute.strings_size()});
+      }
+    }
+    // Values lacking annotations still exist and have explicitly unknown type/rank.
+    for (const auto& node : graph.node()) {
+      for (const auto& name : node.output()) {
+        if (name.empty() || contracts.count(name)) continue;
+        charge(name.size() + sizeof(AutomaticTensorContract));
+        AutomaticTensorContract contract;
+        contract.name = "graph/" + name;
+        contract.provenance = {"graph-value-v1"};
+        contracts.emplace(name, std::move(contract));
+      }
+    }
+    automaticTensors->reserve(contracts.size());
+    for (auto& [name, contract] : contracts) automaticTensors->push_back(std::move(contract));
+  }
 
   static const std::map<int, std::pair<std::string, std::uint64_t>> types = {
     {1, {"float32", 4}}, {2, {"uint8", 1}}, {3, {"int8", 1}}, {4, {"uint16", 2}},
@@ -4013,6 +4293,716 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     {"nodes", nodes}, {"tensorProducers", producers}, {"tensorConsumers", consumers}});
   checkActive(control);
   return result;
+}
+
+namespace {
+
+using AutomaticConstants = std::map<std::string, const onnx::TensorProto*>;
+using AutomaticTypes = std::map<std::string, std::int32_t>;
+using AutomaticShapes = std::map<std::string, std::vector<std::optional<std::int64_t>>>;
+using AutomaticOpsets = std::map<std::string, std::int64_t>;
+
+std::string
+standardDomain(std::string domain)
+{
+  return domain == "ai.onnx" ? "" : domain;
+}
+
+template<typename Imports>
+AutomaticOpsets
+automaticOpsets(const Imports& imports)
+{
+  AutomaticOpsets result;
+  for (const auto& entry : imports) {
+    const auto domain = standardDomain(entry.domain());
+    if (entry.version() <= 0 || !result.emplace(domain, entry.version()).second)
+      fail("AUTOMATIC_OPSET");
+  }
+  return result;
+}
+
+std::int64_t
+requiredAutomaticInteger(const AutomaticOnnxOperatorFact& operation, const char* name)
+{
+  const auto found = operation.integerAttributes.find(name);
+  if (found == operation.integerAttributes.end()) fail("AUTOMATIC_QUANT_ATTRIBUTE");
+  return found->second;
+}
+
+std::uint64_t
+automaticMultiply(std::uint64_t left, std::uint64_t right)
+{
+  if (right != 0 && left > std::numeric_limits<std::uint64_t>::max() / right)
+    fail("AUTOMATIC_QUANT_OVERFLOW");
+  return left * right;
+}
+
+std::uint64_t
+automaticProduct(const std::vector<std::int64_t>& shape)
+{
+  std::uint64_t count = 1;
+  for (const auto dim : shape) {
+    if (dim < 0) fail("AUTOMATIC_QUANT_SHAPE");
+    count = automaticMultiply(count, static_cast<std::uint64_t>(dim));
+  }
+  return count;
+}
+
+void
+validateAutomaticNBits(const AutomaticOnnxOperatorFact& op, QuantizedOperatorFact& quant)
+{
+  const auto k = requiredAutomaticInteger(op, "K");
+  const auto n = requiredAutomaticInteger(op, "N");
+  const auto block = requiredAutomaticInteger(op, "block_size");
+  const auto bits = requiredAutomaticInteger(op, "bits");
+  if (k <= 0 || n <= 0 || block < 16 || (block & (block - 1)) != 0 || bits < 2 || bits > 8 ||
+      op.inputs.size() < 3 || op.inputs.size() > 6 || op.outputs.size() != 1 ||
+      op.inputs[0].empty() || op.inputs[1].empty() || op.inputs[2].empty())
+    fail("AUTOMATIC_QUANT_ATTRIBUTE");
+  quant.bits = bits;
+  quant.blockSize = block;
+  if (op.inputs.size() < 4 || op.inputs[3].empty())
+    quant.implicitZeroPoint = std::int64_t{1} << (bits - 1);
+  const auto blocks = 1 + (static_cast<std::uint64_t>(k) - 1) / block;
+  const auto scales = automaticMultiply(static_cast<std::uint64_t>(n), blocks);
+  const auto blob = automaticMultiply(static_cast<std::uint64_t>(block), bits) / 8;
+  bool weightKnown = false, scaleKnown = false, zeroKnown = quant.implicitZeroPoint.has_value();
+  for (const auto& value : quant.constantInputs) {
+    const auto count = automaticProduct(value.shape);
+    if (value.inputIndex == 1) {
+      if (value.onnxElementType != onnx::TensorProto::UINT8 || value.shape.size() != 3 ||
+          value.shape[0] != n || static_cast<std::uint64_t>(value.shape[1]) != blocks ||
+          static_cast<std::uint64_t>(value.shape[2]) != blob ||
+          count != automaticMultiply(scales, blob)) fail("AUTOMATIC_QUANT_PACKING");
+      weightKnown = true;
+    }
+    if (value.inputIndex == 2 || value.inputIndex == 3 || value.inputIndex == 5) {
+      const bool floating = value.onnxElementType == onnx::TensorProto::FLOAT ||
+        value.onnxElementType == onnx::TensorProto::FLOAT16 ||
+        value.onnxElementType == onnx::TensorProto::BFLOAT16;
+      const auto expected = value.inputIndex == 5 ? static_cast<std::uint64_t>(n) : scales;
+      if (value.inputIndex == 3 && value.onnxElementType == onnx::TensorProto::UINT8) {
+        const auto columns = (automaticMultiply(blocks, static_cast<std::uint64_t>(bits)) + 7) / 8;
+        const auto zeroBytes = automaticMultiply(static_cast<std::uint64_t>(n), columns);
+        if (count != zeroBytes || (value.shape.empty() && zeroBytes != 1) ||
+            value.shape.size() > 2 ||
+            (value.shape.size() == 2 && (value.shape[0] != n ||
+             static_cast<std::uint64_t>(value.shape[1]) != columns)))
+          fail("AUTOMATIC_QUANT_ZERO_POINT");
+      }
+      else if (!floating || count != expected) fail("AUTOMATIC_QUANT_SCALE");
+      else if ((value.shape.empty() && expected != 1) || value.shape.size() > 2 ||
+               (value.shape.size() == 2 && (value.shape[0] != n ||
+                static_cast<std::uint64_t>(value.shape[1]) != blocks)) ||
+               (value.inputIndex == 5 && value.shape.size() != 1 && count != 1))
+        fail("AUTOMATIC_QUANT_SCALE");
+      if (value.inputIndex == 2) scaleKnown = true;
+      if (value.inputIndex == 3) zeroKnown = true;
+    }
+    if (value.inputIndex == 4 && value.onnxElementType != onnx::TensorProto::INT32)
+      fail("AUTOMATIC_QUANT_TYPE");
+  }
+  quant.staticParametersValidated = weightKnown && scaleKnown && zeroKnown;
+}
+
+void
+validateAutomaticStandardQuantization(const AutomaticOnnxOperatorFact& op,
+                                      QuantizedOperatorFact& quant,
+                                      const AutomaticTypes& types,
+                                      const AutomaticShapes& shapes)
+{
+  const auto* schema = onnx::OpSchemaRegistry::Schema(op.opType, static_cast<int>(op.opset), "");
+  if (schema == nullptr) fail("AUTOMATIC_QUANT_SCHEMA");
+  if (op.inputs.size() < static_cast<std::size_t>(schema->min_input()) ||
+      op.inputs.size() > static_cast<std::size_t>(schema->max_input()) ||
+      op.outputs.size() < static_cast<std::size_t>(schema->min_output()) ||
+      op.outputs.size() > static_cast<std::size_t>(schema->max_output()))
+    fail("AUTOMATIC_QUANT_ARITY");
+  for (std::size_t k = 0; k < op.inputs.size(); ++k)
+    if (op.inputs[k].empty() && k < schema->inputs().size() &&
+        schema->inputs()[k].GetOption() == onnx::OpSchema::Single)
+      fail("AUTOMATIC_QUANT_ARITY");
+  for (std::size_t k = 0; k < op.outputs.size(); ++k)
+    if (op.outputs[k].empty() && k < schema->outputs().size() &&
+        schema->outputs()[k].GetOption() == onnx::OpSchema::Single)
+      fail("AUTOMATIC_QUANT_ARITY");
+  std::map<std::string, std::int32_t> boundTypes;
+  for (std::size_t k = 0; k < op.inputs.size(); ++k) {
+    const auto found = types.find(op.inputs[k]);
+    if (found == types.end() || found->second == 0) continue;
+    if (k >= schema->inputs().size()) fail("AUTOMATIC_QUANT_ARITY");
+    const auto& parameter = schema->inputs()[k];
+    onnx::TypeProto type;
+    type.mutable_tensor_type()->set_elem_type(found->second);
+    if (!parameter.GetTypes().count(onnx::Utils::DataTypeUtils::ToType(type)))
+      fail("AUTOMATIC_QUANT_TYPE");
+    const auto inserted = boundTypes.emplace(parameter.GetTypeStr(), found->second);
+    if (!inserted.second && inserted.first->second != found->second)
+      fail("AUTOMATIC_QUANT_TYPE");
+  }
+  for (std::size_t k = 0; k < op.outputs.size(); ++k) {
+    const auto found = types.find(op.outputs[k]);
+    if (found == types.end() || found->second == 0) continue;
+    if (k >= schema->outputs().size()) fail("AUTOMATIC_QUANT_ARITY");
+    const auto& parameter = schema->outputs()[k];
+    onnx::TypeProto type;
+    type.mutable_tensor_type()->set_elem_type(found->second);
+    if (!parameter.GetTypes().count(onnx::Utils::DataTypeUtils::ToType(type)))
+      fail("AUTOMATIC_QUANT_TYPE");
+    const auto inserted = boundTypes.emplace(parameter.GetTypeStr(), found->second);
+    if (!inserted.second && inserted.first->second != found->second)
+      fail("AUTOMATIC_QUANT_TYPE");
+  }
+  const AutomaticOnnxConstantFact* scale = nullptr;
+  const AutomaticOnnxConstantFact* zero = nullptr;
+  for (const auto& value : quant.constantInputs) {
+    if (value.inputIndex == 1) scale = &value;
+    if (value.inputIndex == 2) zero = &value;
+    if (op.opType == "QLinearMatMul" && value.inputIndex != 0 && value.inputIndex != 3 &&
+        automaticProduct(value.shape) != 1) fail("AUTOMATIC_QUANT_SHAPE");
+  }
+  if (op.opType == "QuantizeLinear" || op.opType == "DequantizeLinear") {
+    const auto axis = op.integerAttributes.find("axis");
+    const auto block = op.integerAttributes.find("block_size");
+    if (axis != op.integerAttributes.end()) quant.axis = axis->second;
+    if (block != op.integerAttributes.end()) {
+      if (block->second < 0) fail("AUTOMATIC_QUANT_ATTRIBUTE");
+      quant.blockSize = block->second;
+    }
+    if (scale && zero && (automaticProduct(scale->shape) != automaticProduct(zero->shape) ||
+        (automaticProduct(scale->shape) != 1 && scale->shape != zero->shape)))
+      fail("AUTOMATIC_QUANT_ZERO_POINT");
+    if (scale && automaticProduct(scale->shape) == 0) fail("AUTOMATIC_QUANT_SCALE");
+    if (!op.attributeReferences.empty()) return;
+    auto shape = shapes.find(op.inputs.front());
+    bool shapeProven = scale && automaticProduct(scale->shape) == 1;
+    if (scale && (!quant.blockSize || *quant.blockSize == 0)) {
+      if (scale->shape.size() > 1) fail("AUTOMATIC_QUANT_SCALE");
+      if (shape != shapes.end() && automaticProduct(scale->shape) > 1) {
+        auto selected = quant.axis.value_or(1);
+        if (selected < 0) selected += static_cast<std::int64_t>(shape->second.size());
+        if (selected < 0 || static_cast<std::size_t>(selected) >= shape->second.size())
+          fail("AUTOMATIC_QUANT_SCALE");
+        if (shape->second[selected]) {
+          if (scale->shape.front() != *shape->second[selected]) fail("AUTOMATIC_QUANT_SCALE");
+          shapeProven = true;
+        }
+      }
+    }
+    else if (scale && quant.blockSize && *quant.blockSize > 0) {
+      shapeProven = false;
+      if (shape != shapes.end()) {
+        auto selected = quant.axis.value_or(1);
+        if (selected < 0) selected += static_cast<std::int64_t>(shape->second.size());
+        if (selected < 0 || static_cast<std::size_t>(selected) >= shape->second.size() ||
+            scale->shape.size() != shape->second.size()) fail("AUTOMATIC_QUANT_SCALE");
+        shapeProven = true;
+        for (std::size_t d = 0; d < scale->shape.size(); ++d) {
+          if (!shape->second[d]) { shapeProven = false; continue; }
+          const auto n = *shape->second[d];
+          const auto expected = d == static_cast<std::size_t>(selected)
+            ? (n == 0 ? 0 : 1 + (n - 1) / *quant.blockSize) : n;
+          if (scale->shape[d] != expected) fail("AUTOMATIC_QUANT_SCALE");
+        }
+      }
+    }
+    quant.staticParametersValidated = scale != nullptr && shapeProven &&
+      (op.inputs.size() < 3 || op.inputs[2].empty() || zero != nullptr);
+  }
+  else {
+    quant.bits = 8;
+    quant.staticParametersValidated = op.opType == "DynamicQuantizeLinear";
+  }
+}
+
+
+NativeJson
+automaticPorts(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>& values,
+                const std::set<std::string>& excluded = {})
+{
+  auto ports = NativeJson::array();
+  for (const auto& value : values) {
+    if (excluded.count(value.name())) continue;
+    const auto& type = value.type().tensor_type();
+    NativeJson shape = nullptr;
+    if (type.has_shape()) {
+      shape = NativeJson::array();
+      for (const auto& dim : type.shape().dim()) {
+        if (dim.has_dim_value()) shape.push_back(dim.dim_value());
+        else if (dim.has_dim_param()) shape.push_back(dim.dim_param());
+        else shape.push_back(nullptr);
+      }
+    }
+    ports.push_back(NativeJson{{"name", value.name()}, {"onnxType", type.elem_type()},
+                               {"shape", shape}});
+  }
+  return ports;
+}
+
+} // namespace
+
+AutomaticOnnxModel
+inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyControl& control)
+{
+  AutomaticOnnxModel result;
+  result.opened = openAutomaticOnnxSource(input.modelFile, control);
+  result.contract.sourceDigest = result.opened.sourceDigest;
+  const auto& source = result.opened.source;
+  std::uint64_t materializedBudget = 0;
+  const auto original = ownedSourceModel(source, control, false, &materializedBudget);
+  const auto entries = buildTensorIndex(original, nullptr, &control, &source);
+  std::map<std::string, const TensorIndexEntry*> indexed;
+  for (const auto& entry : entries) indexed.emplace(entry.name, &entry);
+  const auto rootOpsets = automaticOpsets(original.opset_import());
+  std::uint64_t factBytes = 0;
+  const auto factLimit = std::min(control.maxAssembledBytes,
+                                 NativeCanonicalMaterialPublicationMaxBytes);
+  const auto accountFacts = [&](std::uint64_t bytes) {
+    if (factLimit == 0 || bytes > factLimit - factBytes)
+      fail("AUTOMATIC_FACTS_LIMIT");
+    factBytes += bytes;
+  };
+  accountFacts(0);
+  using FunctionKey = std::tuple<std::string, std::string, std::string>;
+  std::map<FunctionKey, std::size_t> functions;
+  for (int i = 0; i < original.functions_size(); ++i) {
+    checkActive(control);
+    const auto& fn = original.functions(i);
+    accountFacts(sizeof(FunctionKey) + fn.domain().size() + fn.name().size() + fn.overload().size());
+    if (!functions.emplace(FunctionKey{fn.domain(), fn.name(), fn.overload()}, i).second)
+      fail("AUTOMATIC_FUNCTION_AMBIGUOUS");
+  }
+  const auto addIntegerLiteral = [&](const std::string& name,
+                                     std::vector<std::int64_t> values) {
+    checkActive(control);
+    if (values.size() > 64) fail("AUTOMATIC_LITERAL_COUNT");
+    accountFacts(128 + name.size() + values.size() * sizeof(std::int64_t));
+    if (!result.contract.integerLiterals.emplace("graph/" + name, std::move(values)).second)
+      fail("AUTOMATIC_LITERAL_DUPLICATE");
+  };
+  const auto addIntegerTensor = [&](const std::string& name, const onnx::TensorProto& tensor) {
+    checkActive(control);
+    if (tensor.data_type() != onnx::TensorProto::INT32 &&
+        tensor.data_type() != onnx::TensorProto::INT64) return;
+    const auto count = tensorElementCount(tensor);
+    if (count > 64) return;
+    const auto width = tensor.data_type() == onnx::TensorProto::INT32 ? 4U : 8U;
+    std::optional<onnx::TensorProto> material;
+    if (tensor.data_location() == onnx::TensorProto::EXTERNAL) {
+      const auto range = validatedExternalByteRange(tensor, source);
+      if (range.length != count * width) fail("AUTOMATIC_LITERAL_RANGE");
+      material = materializeExternalTensor(tensor, nullptr, &control, &source);
+    }
+    const auto& value = material ? *material : tensor;
+    if (value.ByteSizeLong() > factLimit) fail("AUTOMATIC_LITERAL_LIMIT");
+    const auto encoded = deterministicMessageVector(value);
+    const auto normalized = normalizedOnnxInitializerPayload(encoded);
+    if (normalized.content.size() != count * width) fail("AUTOMATIC_LITERAL_BYTES");
+    std::vector<std::int64_t> values;
+    values.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      std::uint64_t bits = 0;
+      for (unsigned byte = 0; byte < width; ++byte)
+        bits |= static_cast<std::uint64_t>(normalized.content[i * width + byte]) << (byte * 8);
+      if (width == 4) {
+        values.push_back(bits <= std::uint64_t(std::numeric_limits<std::int32_t>::max())
+          ? static_cast<std::int64_t>(bits) : static_cast<std::int64_t>(bits) - (1LL << 32));
+      }
+      else {
+        values.push_back(bits <= std::uint64_t(std::numeric_limits<std::int64_t>::max())
+          ? static_cast<std::int64_t>(bits)
+          : -1 - static_cast<std::int64_t>(std::numeric_limits<std::uint64_t>::max() - bits));
+      }
+    }
+    addIntegerLiteral(name, std::move(values));
+  };
+  for (const auto& tensor : original.graph().initializer())
+    addIntegerTensor(tensor.name(), tensor);
+  for (const auto& node : original.graph().node()) {
+    checkActive(control);
+    if (!isBuiltinConstant(node, functions.count(FunctionKey{
+          node.domain(), node.op_type(), node.overload()}))) continue;
+    for (const auto& attr : node.attribute()) {
+      if (!attr.ref_attr_name().empty()) continue;
+      if (attr.name() == "value" && attr.has_t()) addIntegerTensor(node.output(0), attr.t());
+      else if (attr.name() == "value_int" && attr.type() == onnx::AttributeProto::INT)
+        addIntegerLiteral(node.output(0), {attr.i()});
+      else if (attr.name() == "value_ints" && attr.type() == onnx::AttributeProto::INTS &&
+               attr.ints_size() <= 64)
+        addIntegerLiteral(node.output(0), {attr.ints().begin(), attr.ints().end()});
+    }
+  }
+  std::set<std::size_t> visitedFunctions;
+  std::vector<std::size_t> pendingFunctions;
+  std::optional<std::size_t> currentFunction;
+  std::set<std::pair<std::size_t, std::size_t>> functionEdges;
+  using Nodes = google::protobuf::RepeatedPtrField<onnx::NodeProto>;
+  std::function<void(const onnx::GraphProto&, const std::string&,
+                     const AutomaticOpsets&)> walkGraph;
+  std::function<void(const Nodes&, AutomaticConstants, AutomaticTypes, AutomaticShapes,
+                     const std::string&, const AutomaticOpsets&)> walkNodes;
+  walkNodes = [&](const Nodes& nodes, AutomaticConstants constants, AutomaticTypes types,
+                  AutomaticShapes shapes, const std::string& scope, const AutomaticOpsets& opsets) {
+    for (const auto& node : nodes) {
+      checkActive(control);
+      if (isBuiltinConstant(node, functions.count(FunctionKey{
+            node.domain(), node.op_type(), node.overload()}))) {
+        for (const auto& attr : node.attribute()) {
+          if (attr.name() == "value" && attr.has_t() && attr.ref_attr_name().empty()) {
+            constants.emplace(node.output(0), &attr.t());
+            types[node.output(0)] = attr.t().data_type();
+            auto& shape = shapes[node.output(0)];
+            shape.clear();
+            for (const auto dim : attr.t().dims()) shape.push_back(dim);
+          }
+        }
+      }
+    }
+    for (int i = 0; i < nodes.size(); ++i) {
+      checkActive(control);
+      const auto& node = nodes.Get(i);
+      accountFacts(sizeof(AutomaticOnnxOperatorFact) + scope.size() + node.domain().size() +
+                   node.op_type().size());
+      for (const auto& name : node.input()) accountFacts(sizeof(std::string) + name.size());
+      for (const auto& name : node.output()) accountFacts(sizeof(std::string) + name.size());
+      AutomaticOnnxOperatorFact op;
+      op.scope = scope;
+      op.nodeIndex = i;
+      op.domain = node.domain();
+      op.opType = node.op_type();
+      op.overload = node.overload();
+      const auto version = opsets.find(standardDomain(node.domain()));
+      if (version == opsets.end() || version->second > std::numeric_limits<int>::max())
+        fail("AUTOMATIC_OPSET");
+      op.opset = version->second;
+      op.inputs.assign(node.input().begin(), node.input().end());
+      op.outputs.assign(node.output().begin(), node.output().end());
+      std::set<std::string> attributes;
+      for (const auto& attr : node.attribute()) {
+        accountFacts(64 + attr.name().size() + attr.ref_attr_name().size() +
+                     automaticMultiply(attr.ints_size(), sizeof(std::int64_t)));
+        if (!attributes.insert(attr.name()).second) fail("AUTOMATIC_ATTRIBUTE");
+        if (!attr.ref_attr_name().empty()) {
+          op.attributeReferences[attr.name()] = attr.ref_attr_name();
+          continue;
+        }
+        if (attr.type() == onnx::AttributeProto::INT) op.integerAttributes[attr.name()] = attr.i();
+        if (attr.type() == onnx::AttributeProto::INTS)
+          op.integerListAttributes[attr.name()] = {attr.ints().begin(), attr.ints().end()};
+        if (attr.has_g() || attr.graphs_size() != 0) op.atomicBody = true;
+      }
+      std::optional<std::size_t> functionIndex;
+      const auto function = functions.find(FunctionKey{
+        node.domain(), node.op_type(), node.overload()});
+      if (function != functions.end()) {
+        functionIndex = function->second;
+        op.functionScope = "function/" + std::to_string(*functionIndex);
+      }
+      op.atomicBody = op.atomicBody || functionIndex.has_value();
+      const bool nbits = !functionIndex && node.domain() == "com.microsoft" &&
+        node.op_type() == "MatMulNBits" && op.opset == 1;
+      const bool standard = !functionIndex && standardDomain(node.domain()).empty() &&
+        (node.op_type() == "MatMulInteger" || node.op_type() == "QLinearMatMul" ||
+         node.op_type() == "QuantizeLinear" || node.op_type() == "DequantizeLinear" ||
+         node.op_type() == "DynamicQuantizeLinear");
+      if (nbits && (op.inputs.size() < 3 || op.inputs.size() > 6 || op.outputs.size() != 1 ||
+          op.inputs[0].empty() || op.inputs[1].empty() || op.inputs[2].empty()))
+        fail("AUTOMATIC_QUANT_ARITY");
+      if (standard) {
+        const auto* schema = onnx::OpSchemaRegistry::Schema(node.op_type(),
+          static_cast<int>(op.opset), "");
+        if (schema == nullptr) fail("AUTOMATIC_QUANT_SCHEMA");
+        if (op.attributeReferences.empty()) schema->Verify(node);
+        for (const auto& [name, attribute] : schema->attributes()) {
+          if (attribute.default_value.type() == onnx::AttributeProto::INT &&
+              !attributes.count(name))
+            op.integerAttributes[name] = attribute.default_value.i();
+        }
+      }
+      const auto operationIndex = result.contract.operators.size();
+      result.contract.operators.push_back(op);
+      if (nbits || standard) {
+        QuantizedOperatorFact quant;
+        quant.operatorIndex = operationIndex;
+        for (int k = 0; k < node.input_size(); ++k) {
+          const auto found = constants.find(node.input(k));
+          if (found == constants.end()) continue;
+          const auto& tensor = *found->second;
+          accountFacts(sizeof(AutomaticOnnxConstantFact) + node.input(k).size() + 71 +
+                       automaticMultiply(tensor.dims_size(), sizeof(std::int64_t)));
+          AutomaticOnnxConstantFact fact;
+          fact.inputIndex = k;
+          fact.valueName = node.input(k);
+          fact.onnxElementType = tensor.data_type();
+          fact.shape.assign(tensor.dims().begin(), tensor.dims().end());
+          fact.storageBytes = rawByteLength(tensor.data_type(), tensorElementCount(tensor));
+          const auto top = scope == "graph" ? indexed.find(node.input(k)) : indexed.end();
+          if (top != indexed.end()) fact.normalizedContentDigest = top->second->contentDigest;
+          else {
+            const auto bytes = deterministicMessageVector(tensor);
+            fact.normalizedContentDigest = digest(normalizedOnnxInitializerPayload(bytes).content);
+          }
+          quant.constantInputs.push_back(std::move(fact));
+        }
+        if (nbits && op.attributeReferences.empty()) {
+          validateAutomaticNBits(op, quant);
+          const auto activation = types.find(node.input(0));
+          std::optional<int> expected;
+          if (activation != types.end() && activation->second != 0) expected = activation->second;
+          for (const auto& value : quant.constantInputs) {
+            if (value.inputIndex == 2) {
+              if (expected && *expected != value.onnxElementType) fail("AUTOMATIC_QUANT_TYPE");
+              expected = value.onnxElementType;
+            }
+          }
+          if (expected && *expected != onnx::TensorProto::FLOAT &&
+              *expected != onnx::TensorProto::FLOAT16 && *expected != onnx::TensorProto::BFLOAT16)
+            fail("AUTOMATIC_QUANT_TYPE");
+          const auto output = types.find(node.output(0));
+          if (expected && output != types.end() && output->second != 0 &&
+              output->second != *expected) fail("AUTOMATIC_QUANT_TYPE");
+          for (const auto& value : quant.constantInputs) {
+            if (expected && (value.inputIndex == 5 ||
+                (value.inputIndex == 3 && value.onnxElementType != onnx::TensorProto::UINT8)) &&
+                value.onnxElementType != *expected) fail("AUTOMATIC_QUANT_TYPE");
+          }
+        }
+        else if (standard) {
+          validateAutomaticStandardQuantization(op, quant, types, shapes);
+          if (op.opType == "QuantizeLinear" || op.opType == "DequantizeLinear") {
+            int type = 0;
+            if (op.opType == "DequantizeLinear") {
+              const auto found = types.find(node.input(0));
+              if (found != types.end()) type = found->second;
+            }
+            else {
+              if (node.input_size() > 2) {
+                const auto found = types.find(node.input(2));
+                if (found != types.end()) type = found->second;
+              }
+              if (type == 0 && op.integerAttributes.count("output_dtype"))
+                type = static_cast<int>(op.integerAttributes.at("output_dtype"));
+              if (type == 0 && (node.input_size() < 3 || node.input(2).empty()))
+                type = onnx::TensorProto::UINT8;
+            }
+            if (type == onnx::TensorProto::INT4 || type == onnx::TensorProto::UINT4) quant.bits = 4;
+            if (type == onnx::TensorProto::INT8 || type == onnx::TensorProto::UINT8) quant.bits = 8;
+          }
+        }
+        result.contract.quantization.push_back(std::move(quant));
+      }
+      for (int j = 0; j < node.attribute_size(); ++j) {
+        const auto& attr = node.attribute(j);
+        const auto nested = scope + "/node/" + std::to_string(i) +
+          "/attribute/" + std::to_string(j);
+        if (attr.has_g()) walkGraph(attr.g(), nested, opsets);
+        for (int g = 0; g < attr.graphs_size(); ++g)
+          walkGraph(attr.graphs(g), nested + "/" + std::to_string(g), opsets);
+      }
+      if (functionIndex) {
+        if (currentFunction) functionEdges.emplace(*currentFunction, *functionIndex);
+        if (visitedFunctions.insert(*functionIndex).second)
+          pendingFunctions.push_back(*functionIndex);
+      }
+    }
+  };
+  walkGraph = [&](const onnx::GraphProto& graph, const std::string& scope,
+                   const AutomaticOpsets& opsets) {
+    if (graph.sparse_initializer_size() != 0) fail("AUTOMATIC_SPARSE_UNSUPPORTED");
+    AutomaticConstants constants;
+    AutomaticTypes types;
+    AutomaticShapes shapes;
+    for (const auto& tensor : graph.initializer()) {
+      if (!constants.emplace(tensor.name(), &tensor).second) fail("AUTOMATIC_INITIALIZER_NAME");
+      types[tensor.name()] = tensor.data_type();
+      auto& shape = shapes[tensor.name()];
+      for (const auto dim : tensor.dims()) shape.push_back(dim);
+    }
+    for (const auto* values : {&graph.input(), &graph.output()})
+      for (const auto& value : *values)
+        if (!constants.count(value.name()) && !types.count(value.name())) {
+          const auto& type = value.type().tensor_type();
+          types[value.name()] = type.elem_type();
+          if (type.has_shape()) {
+            auto& shape = shapes[value.name()];
+            for (const auto& dim : type.shape().dim())
+              shape.push_back(dim.has_dim_value() && dim.dim_value() >= 0
+                                ? std::optional<std::int64_t>(dim.dim_value())
+                                                 : std::nullopt);
+          }
+        }
+    walkNodes(graph.node(), std::move(constants), std::move(types), std::move(shapes),
+              scope, opsets);
+  };
+  walkGraph(original.graph(), "graph", rootOpsets);
+  for (std::size_t i = 0; i < pendingFunctions.size(); ++i) {
+    currentFunction = pendingFunctions[i];
+    const auto& fn = original.functions(*currentFunction);
+    walkNodes(fn.node(), {}, {}, {}, "function/" + std::to_string(*currentFunction),
+              automaticOpsets(fn.opset_import()));
+  }
+  std::map<std::size_t, std::size_t> indegree;
+  for (const auto f : visitedFunctions) indegree.emplace(f, 0);
+  std::map<std::size_t, std::vector<std::size_t>> functionConsumers;
+  for (const auto& edge : functionEdges) {
+    ++indegree.at(edge.second);
+    functionConsumers[edge.first].push_back(edge.second);
+  }
+  std::vector<std::size_t> ready;
+  for (const auto& [f, degree] : indegree) if (degree == 0) ready.push_back(f);
+  for (std::size_t i = 0; i < ready.size(); ++i) {
+    checkActive(control);
+    const auto found = functionConsumers.find(ready[i]);
+    if (found == functionConsumers.end()) continue;
+    for (const auto next : found->second)
+      if (--indegree.at(next) == 0) ready.push_back(next);
+  }
+  if (ready.size() != visitedFunctions.size()) fail("AUTOMATIC_FUNCTION_RECURSION");
+  checkActive(control);
+  const auto factsJson = result.contract.factsJson();
+  if (factsJson.size() > control.maxAssembledBytes) fail("AUTOMATIC_FACTS_LIMIT");
+  result.contract.factsDigest = nativePlanningDigest(factsJson);
+  std::int64_t maximumBits = 0;
+  bool dynamic = false;
+  bool weightOnly = !result.contract.quantization.empty();
+  for (const auto& quant : result.contract.quantization) {
+    if (quant.bits) maximumBits = std::max(maximumBits, *quant.bits);
+    const auto& op = result.contract.operators.at(quant.operatorIndex);
+    dynamic = dynamic || op.opType == "DynamicQuantizeLinear";
+    weightOnly = weightOnly && op.domain == "com.microsoft" && op.opType == "MatMulNBits";
+  }
+  std::string precision;
+  if (maximumBits != 0) precision = "int" + std::to_string(maximumBits);
+  else {
+    std::map<int, std::uint64_t> storage;
+    for (const auto& tensor : original.graph().initializer()) {
+      if (tensor.data_type() == onnx::TensorProto::STRING) continue;
+      const auto bytes = rawByteLength(tensor.data_type(), tensorElementCount(tensor));
+      storage[tensor.data_type()] = checkedAdd(storage[tensor.data_type()], bytes);
+    }
+    int selected = 0;
+    std::uint64_t largest = 0;
+    for (const auto& [type, bytes] : storage) {
+      if ((type == onnx::TensorProto::FLOAT || type == onnx::TensorProto::FLOAT16 ||
+           type == onnx::TensorProto::BFLOAT16 || type == onnx::TensorProto::DOUBLE) &&
+          bytes > largest) {
+        selected = type;
+        largest = bytes;
+      }
+    }
+    if (selected == 0) {
+      for (const auto& output : original.graph().output()) {
+        if (output.type().has_tensor_type() && output.type().tensor_type().elem_type() != 0) {
+          selected = output.type().tensor_type().elem_type();
+          break;
+        }
+      }
+    }
+    if (selected == 0) fail("AUTOMATIC_PRECISION_UNSUPPORTED");
+    if (selected == onnx::TensorProto::FLOAT16) precision = "fp16";
+    else if (selected == onnx::TensorProto::BFLOAT16) precision = "bf16";
+    else if (selected == onnx::TensorProto::DOUBLE) precision = "fp64";
+    else if (selected == onnx::TensorProto::FLOAT) precision = "fp32";
+    else precision = dtypeLabel(selected);
+  }
+  auto& descriptor = result.descriptor;
+  auto& adapter = descriptor.adapter;
+  adapter.name = "automatic-onnx";
+  adapter.version = "1";
+  adapter.abi = "ndnsf-di-automatic-onnx-v1";
+  adapter.modelFormats = {"onnx"};
+  adapter.tasks = {"tensor-forward"};
+  adapter.backends = {"onnxruntime"};
+  adapter.precisions = {precision};
+  const auto schemaDigest = [](const NativeJson& schema) {
+    return nativePlanningDigest(nativeCanonicalJson(schema));
+  };
+  std::set<std::string> initializerNames;
+  for (const auto& tensor : original.graph().initializer()) initializerNames.insert(tensor.name());
+  adapter.inputSchemaDigest = schemaDigest(NativeJson{{"format", "NDITB001"},
+    {"ports", automaticPorts(original.graph().input(), initializerNames)}});
+  adapter.resultSchemaDigest = schemaDigest(NativeJson{{"format", "NDITB001"},
+    {"ports", automaticPorts(original.graph().output())}});
+  adapter.optionsSchemaDigest = schemaDigest(NativeJson{{"owner", "native-request"},
+    {"modelOptions", NativeJson::array()}});
+  adapter.graphSchemaDigest = schemaDigest(NativeJson{{"schema", "native-source-graph-v1"},
+    {"fields", {"graphDigest", "nodes", "topologicalOrder", "legalCutEdges", "modelInputs",
+                 "modelOutputs", "edges"}},
+    {"nodeFields", {"id", "opType", "ordinal"}},
+    {"edgeFields", {"id", "producer", "consumers", "tensor"}},
+    {"tensorFields", {"name", "dtype", "shape", "estimatedBytes"}},
+    {"dimensions", {"int64", "symbol"}}, {"estimatedBytes", "optional-uint64"}});
+  adapter.splitSchemaDigest = schemaDigest(NativeJson{{"enabled", false}});
+  adapter.stateSchemaDigest = schemaDigest(NativeJson{{"generation", false}});
+  adapter.stateDigest = schemaDigest(NativeJson{{"schema", adapter.abi},
+    {"sourceDigest", result.opened.sourceDigest}, {"factsDigest", result.contract.factsDigest}});
+  adapter.graphInspectable = true;
+  descriptor.modelName = "onnx-" + result.opened.sourceDigest.substr(7);
+  descriptor.contentDigest = result.opened.sourceDigest;
+  descriptor.semanticsDigest = result.contract.factsDigest;
+  descriptor.graphDigest = sha256HexOf(graphFactsJson(original, entries));
+  descriptor.modelFormat = "onnx";
+  descriptor.precision = precision;
+  descriptor.adapterId = adapter.name;
+  descriptor.adapterVersion = adapter.version;
+  descriptor.sourceRevision = result.opened.modelDigest;
+  if (dynamic) descriptor.quantizationSubtype = "dynamic_int8";
+  else if (weightOnly && maximumBits == 4) descriptor.quantizationSubtype = "weight_only_int4";
+  else if (weightOnly && maximumBits == 8) descriptor.quantizationSubtype = "weight_only_int8";
+  descriptor.validate();
+  result.inspection = inspectSourceGraphFacts(source, descriptor, control, original, entries,
+                                             materializedBudget, &result.contract.tensors);
+  for (const auto& tensor : result.inspection.graph.modelInputs)
+    result.contract.modelInputs.push_back("graph/" + tensor.name);
+  for (const auto& tensor : result.inspection.graph.modelOutputs)
+    result.contract.modelOutputs.push_back("graph/" + tensor.name);
+  // Call-site function scopes are checked by the automatic metadata pass.
+  // An unrelated local overload must not hide a builtin schema at other nodes.
+  const onnx::ModelProto builtinSchemaModel;
+  const NativeShapeSchemaRegistry automaticSchemas(builtinSchemaModel);
+  refineAutomaticOnnxTensorFacts(original, automaticSchemas, result.contract, control);
+  result.contract.relations = deriveAutomaticOnnxShapeRelations(result.contract, control);
+  result.contract.validateSourceFacts(control);
+  std::exception_ptr ownerFailure;
+  auto generationControl = control;
+  generationControl.requireActive = [&] {
+    try {
+      control.requireActive();
+    }
+    catch (...) {
+      ownerFailure = std::current_exception();
+      throw;
+    }
+  };
+  try {
+    result.contract.generation = deriveAutomaticOnnxGeneration(result.contract, generationControl);
+    if (!result.contract.generation)
+      result.generationDiagnostic = "AUTOMATIC_GENERATION_UNPROVEN";
+  }
+  catch (const AutomaticGenerationUnproven& error) {
+    if (ownerFailure) std::rethrow_exception(ownerFailure);
+    result.generationDiagnostic = std::string(error.what()).substr(0, 128);
+  }
+  result.contract.validate(control);
+  descriptor.graphDigest = result.inspection.graph.graphDigest;
+  descriptor.validate();
+  checkActive(control);
+  return result;
+}
+
+NativeOnnxGraphInspection
+inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
+  const NativeModelDescriptor& expectedModel, const NativeAssemblyControl& control)
+{
+  expectedModel.validate();
+  if (expectedModel.modelFormat != "onnx") fail("GRAPH_MODEL_FORMAT");
+  std::uint64_t materializedBudget = 0;
+  const auto original = ownedSourceModel(source, control, false, &materializedBudget);
+  const auto entries = buildTensorIndex(
+    original, source.initializerBytes ? &source.initializerBytes->asVector() : nullptr,
+    &control, &source);
+  return inspectSourceGraphFacts(source, expectedModel, control, original, entries,
+                                 materializedBudget);
 }
 
 NativeOnnxGraphInspection

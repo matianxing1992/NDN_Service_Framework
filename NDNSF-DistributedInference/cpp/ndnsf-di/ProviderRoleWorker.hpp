@@ -192,7 +192,7 @@ class ProviderRoleWorker
 {
 public:
   using NativeRunnerPreparation =
-    std::function<std::shared_ptr<NativeModelRunner>()>;
+    std::function<NativePreparedRunner()>;
 
   explicit ProviderRoleWorker(
     std::size_t workerCount = std::thread::hardware_concurrency(),
@@ -236,11 +236,11 @@ public:
 
   /**
    * Queue post-Selection runner preparation on the bounded Provider worker.
-   * The returned future carries the one prepared runner; it does not execute
+   * The returned future carries the runner and current binding; it does not execute
    * the role.  This lets a coordinator overlap preparation with dependency
    * waiting without creating an unbounded per-request thread.
    */
-  std::future<std::shared_ptr<NativeModelRunner>>
+  std::future<NativePreparedRunner>
   prepareRunnerAsync(NativeRunnerPreparation prepareRunner,
                      std::function<void()> executionGuard = {});
 
@@ -330,7 +330,7 @@ private:
   struct PreparationItem
   {
     NativeRunnerPreparation prepareRunner;
-    std::shared_ptr<std::promise<std::shared_ptr<NativeModelRunner>>> promise;
+    std::shared_ptr<std::promise<NativePreparedRunner>> promise;
     std::function<void()> executionGuard;
   };
 

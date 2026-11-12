@@ -11533,6 +11533,33 @@ namespace ndn_service_framework
         const std::vector<ndn::Name>& providerNames,
         std::shared_ptr<ControlByteStatistics> controlStatistics)
     {
+        return BeginCollaborationWithProviders(
+            service, initialRequest, ackCollectionTimeMs, timeoutMs,
+            std::move(onAckClosed), std::move(onFinalResponse), std::move(onTimeout),
+            requestedRequestId, std::move(onAckCoverage), requestCapabilities,
+            requestedStreamOptions, std::move(onStreamEvent), std::move(onStreamComplete),
+            std::move(onStreamError), providerNames, std::move(controlStatistics), std::nullopt);
+    }
+
+    ndn::Name ServiceUser::BeginCollaborationWithProviders(
+        const ServiceName& service,
+        const RequestPayload& initialRequest,
+        int ackCollectionTimeMs,
+        int timeoutMs,
+        CollaborationAckClosedHandler onAckClosed,
+        ResponseHandler onFinalResponse,
+        TimeoutHandler onTimeout,
+        const RequestId& requestedRequestId,
+        CollaborationAckCoverageHandler onAckCoverage,
+        const RequestCapabilities& requestCapabilities,
+        const std::optional<StreamRequestOptions>& requestedStreamOptions,
+        std::function<void(const ndn::Buffer&)> onStreamEvent,
+        std::function<void(const ndn::Buffer&)> onStreamComplete,
+        std::function<void(const StreamedInvocationError&)> onStreamError,
+        const std::vector<ndn::Name>& providerNames,
+        std::shared_ptr<ControlByteStatistics> controlStatistics,
+        const std::optional<ndn::Buffer>& discoveryPayload)
+    {
         if (!onAckClosed || ackCollectionTimeMs <= 0 ||
             timeoutMs <= ackCollectionTimeMs) {
             throw std::invalid_argument(
@@ -11553,6 +11580,7 @@ namespace ndn_service_framework
         ndn_service_framework::RequestMessage requestMessage;
         auto payload = initialRequest;
         requestMessage.setPayload(payload, payload.size());
+        if (discoveryPayload) requestMessage.setDiscoveryPayload(*discoveryPayload);
         requestMessage.setStrategy(ndn_service_framework::tlv::AllSelected);
         if (!requestCapabilities.getFields().empty()) {
             requestMessage.setRequestCapabilities(requestCapabilities);

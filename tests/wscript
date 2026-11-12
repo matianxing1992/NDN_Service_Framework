@@ -5,6 +5,131 @@ top = '..'
 import os
 
 def build(bld):
+    if 'di' in bld.env.NDNSF_COMPONENTS and bld.env.HAVE_ONNXRUNTIME_CPP:
+        spec233_has_repo = 'repo' in bld.env.NDNSF_COMPONENTS
+        bld.program(target='../spec233-automatic-source-probe',
+                    name='spec233-automatic-source-probe',
+                    source=['installed-api/installed-automatic-source-probe.cpp'],
+                    includes=['..', '../ndn-service-framework'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
+                    cxxflags=['-std=c++17', '-O0', '-g0'], rpath=[bld.env.LIBDIR],
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
+        bld.program(target='../spec233-onnx-source', name='spec233-onnx-source',
+                    source=['main.cpp', 'unit-tests/spec233-onnx-source.t.cpp',
+                            'unit-tests/spec233-automatic-shapes.t.cpp',
+                            'unit-tests/spec233-automatic-generation.t.cpp',
+                            'unit-tests/spec233-prepared-metadata.t.cpp',
+                            'unit-tests/spec233-automatic-io.t.cpp',
+                            'unit-tests/distributed-inference-native-plan.t.cpp',
+                            'unit-tests/di-native-onnx-recipe.t.cpp',
+                            'unit-tests/di-native-client.t.cpp',
+                            'unit-tests/distributed-inference-protected-runtime-grant.t.cpp',
+                            'unit-tests/distributed-inference-async-runtime.t.cpp',
+                            'unit-tests/spec189-logits-dtype.t.cpp',
+                            'unit-tests/spec194-v4-offer.t.cpp',
+                            'unit-tests/di-native-planning.t.cpp',
+                            'unit-tests/di-native-canonical-publisher.t.cpp',
+                            'unit-tests/di-native-assembly.t.cpp'] +
+                           (['unit-tests/spec190-repo-lookup-reuse.t.cpp'] if spec233_has_repo else []),
+                    includes=['..', '../ndn-service-framework'] +
+                             (['../NDNSF-DistributedRepo/include'] if spec233_has_repo else []),
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME' +
+                        (' ndnsf-distributed-repo sqlite3' if spec233_has_repo else ''),
+                    cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
+                    rpath=[bld.env.LIBDIR], install_path='${PREFIX}/libexec/ndnsf-tests')
+        bld.program(target='../spec233-onnx-source-asan', name='spec233-onnx-source-asan',
+                    source=['main.cpp', 'unit-tests/spec233-onnx-source.t.cpp',
+                            'unit-tests/spec233-automatic-shapes.t.cpp',
+                            'unit-tests/spec233-automatic-generation.t.cpp',
+                            'unit-tests/spec233-prepared-metadata.t.cpp',
+                            'unit-tests/spec233-automatic-io.t.cpp',
+                            'unit-tests/distributed-inference-native-plan.t.cpp',
+                            'unit-tests/di-native-onnx-recipe.t.cpp',
+                            'unit-tests/di-native-client.t.cpp',
+                            'unit-tests/distributed-inference-protected-runtime-grant.t.cpp',
+                            'unit-tests/distributed-inference-async-runtime.t.cpp',
+                            'unit-tests/spec189-logits-dtype.t.cpp',
+                            'unit-tests/spec194-v4-offer.t.cpp',
+                            'unit-tests/di-native-planning.t.cpp',
+                            'unit-tests/di-native-canonical-publisher.t.cpp',
+                            'unit-tests/di-native-assembly.t.cpp',
+                            'unit-tests/spec233-tensor-types.t.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/native-automatic-shape-seed.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/protected-preparation-index.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-preparation.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-model.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-shape.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-generation.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-inference.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.cpp',
+                            '../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp'] +
+                           (['unit-tests/spec190-repo-lookup-reuse.t.cpp'] if spec233_has_repo else []),
+                    includes=['..', '../ndn-service-framework'] +
+                             (['../NDNSF-DistributedRepo/include'] if spec233_has_repo else []),
+                    use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME' +
+                        (' sqlite3' if spec233_has_repo else ''),
+                    lib=['ndnsf-distributed-inference', 'ndn-service-framework'] +
+                        (['ndnsf-distributed-repo'] if spec233_has_repo else []),
+                    libpath=[bld.env.LIBDIR], rpath=[bld.env.LIBDIR],
+                    cxxflags=['-std=c++17', '-O0', '-g0', '-fno-omit-frame-pointer',
+                              '-fsanitize=address,undefined'],
+                    linkflags=['-fsanitize=address,undefined'],
+                    defines=['HAVE_TESTS'], install_path=None)
+        # Session/kernel preflight only; it does not qualify inference or generation.
+        bld.program(target='../spec233-onnx-model-preflight', name='spec233-onnx-model-preflight',
+                    source=['installed-api/installed-onnx-model-load-probe.cpp'],
+                    use='ONNXRUNTIME', cxxflags=['-std=c++17', '-O0', '-g0'],
+                    rpath=bld.env.LIBPATH_ONNXRUNTIME,
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
+        # Independent uncut numerical reference; frozen names are test data only.
+        # Installed-path oracle: exercise the production codec, never a fixture reimplementation.
+        bld.program(target='../spec233-tensor-types', name='spec233-tensor-types',
+                    source=['main.cpp', 'unit-tests/spec233-tensor-types.t.cpp'],
+                    includes=['..', '../ndn-service-framework'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
+                    cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
+                    rpath=[bld.env.LIBDIR], install_path='${PREFIX}/libexec/ndnsf-tests')
+        # Run only codec cases in isolated scratch after installing the normal DI library.
+        # The executable owns the instrumented production codec; other DI code is uninstrumented.
+        bld.program(target='../spec233-tensor-types-asan', name='spec233-tensor-types-asan',
+                    source=['main.cpp', 'unit-tests/spec233-tensor-types.t.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp'],
+                    includes=['..', '../ndn-service-framework'],
+                    use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
+                    lib=['ndnsf-distributed-inference'], libpath=[bld.env.LIBDIR],
+                    cxxflags=['-std=c++17', '-O0', '-g0', '-fno-omit-frame-pointer',
+                              '-fsanitize=address,undefined'],
+                    linkflags=['-fsanitize=address,undefined'], defines=['HAVE_TESTS'],
+                    rpath=[bld.env.LIBDIR], install_path=None)
     bld.program(target='../spec226-nac-transport', name='spec226-nac-transport',
                 source=['main.cpp', 'unit-tests/nac-consumer-transport.t.cpp',
                         '../ndn-service-framework/nac-consumer-transport.cpp'],

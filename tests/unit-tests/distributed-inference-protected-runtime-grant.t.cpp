@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
@@ -17,6 +18,8 @@
 #include <future>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <chrono>
@@ -1274,12 +1277,42 @@ BOOST_FIXTURE_TEST_CASE(BoundRunnerPublisherChecksCurrentAuthorityBeforeCacheHit
   NativeProviderRunnerReuseCache cache(1);
   cache.setAuthority(authority);
   auto publish = cache.bindPublisher(projection, binding.provider, binding.providerBootId, runtime);
-  auto runner = makeNativeModelRunner([] (const RoleExecutionContext&) {
-    return std::map<std::string, TensorBundle>{};
-  });
+  class AdmissionRunner final : public NativeModelRunner
+  {
+  public:
+    std::map<std::string, TensorBundle>
+    run(const RoleExecutionContext&) override { return {}; }
+
+    std::shared_ptr<const AutomaticOnnxRequestBinding>
+    validateAutomaticRequestBinding(const NativeSelectionProjectionV3& current,
+                                    const NativeRequestControl& control) const override
+    {
+      control.requireActive();
+      BOOST_CHECK_EQUAL(current.requestId, control.requestId);
+      ++admissions;
+      return {};
+    }
+
+    mutable std::size_t admissions = 0;
+  };
+  auto runner = std::make_shared<AdmissionRunner>();
   publish(runner);
   publish(runner);
   BOOST_CHECK_EQUAL(authority->counters().activeUses, 1U);
+  auto leased = cache.lookup(projection, binding.provider, binding.providerBootId, runtime);
+  BOOST_REQUIRE(leased);
+  BOOST_CHECK(leased.get() != runner.get());
+  NativeRequestControl admissionControl;
+  admissionControl.requestId = projection.requestId;
+  admissionControl.attempt = projection.attempt;
+  admissionControl.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  leased->validateAutomaticRequestBinding(projection, admissionControl);
+  BOOST_CHECK_EQUAL(runner->admissions, 1U);
+  admissionControl.cancelled = [] { return true; };
+  BOOST_CHECK_THROW(leased->validateAutomaticRequestBinding(projection, admissionControl),
+                    std::runtime_error);
+  BOOST_CHECK_EQUAL(runner->admissions, 1U);
+  leased.reset();
   authority->retire(identity);
   BOOST_CHECK_EXCEPTION(publish(runner), std::runtime_error,
     [] (const std::runtime_error& error) {

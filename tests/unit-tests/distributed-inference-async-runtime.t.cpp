@@ -1668,22 +1668,22 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerPreparesRunnerOnlyAfterBoundedQueueAdmiss
 {
   RoleSpec role{"/PreparedRole", {}, {}};
   auto io = std::make_shared<FakeDependencyIo>();
+  std::promise<void> started;
+  std::atomic<std::size_t> preparationCalls{0};
   ProviderRoleWorker worker(
     1, 4, 1024, std::chrono::seconds(120), 1);
-  std::promise<void> started;
   std::promise<void> releasePromise;
   auto release = releasePromise.get_future().share();
 
   auto blocking = worker.executeAsync(
     "prepared-blocking", role, io,
-    [&] (const RoleExecutionContext&) {
+    [&started, release] (const RoleExecutionContext&) {
       started.set_value();
       release.wait();
       return std::map<std::string, TensorBundle>{};
     });
   started.get_future().wait();
 
-  std::atomic<std::size_t> preparationCalls{0};
   auto prepared = worker.executePreparedAsync(
     "prepared-after-selection", role, io,
     [&] {
@@ -4261,6 +4261,10 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshReque
 
 BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPrefix)
 {
+  // Captured observations outlive the runtime's joined worker callbacks.
+  std::atomic<std::size_t> calls{0};
+  std::atomic<bool> restored{false};
+  std::size_t events = 0;
   NativeProviderRuntime runtime(1, 1024, 1024, 4, 1024, 4, 1024, 4, 1'000);
   const auto origin = exactStateIdentity();
   NativeModelRunnerSpec runnerSpec;
@@ -4275,8 +4279,6 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
     {"state.schemaDigest", origin.stateSchemaDigest},
   };
 
-  std::atomic<std::size_t> calls{0};
-  std::atomic<bool> restored{false};
   auto runner = makeNativeModelRunner(
     [&calls, &restored] (const RoleExecutionContext& ctx) {
       const auto call = calls.fetch_add(1);
@@ -4284,8 +4286,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
         const auto found = ctx.inputsByScope.find(
           "__ndnsf_provider_decode_state");
         BOOST_REQUIRE(found != ctx.inputsByScope.end());
-        const auto& state = findTensor(
-          decodeTensorBundle(found->second.payload), "attention_kv_in");
+        const auto decoded = decodeTensorBundle(found->second.payload);
+        const auto& state = findTensor(decoded, "attention_kv_in");
         BOOST_CHECK(state.payload == rawTensorPayload<std::int64_t>({42}));
         restored.store(true);
       }
@@ -4360,7 +4362,6 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
   config.conversationStateBinding = binding;
   config.conversationStateLookupNowMs = 200;
   config.prepareRunner = [runner] { return runner; };
-  std::size_t events = 0;
   config.eventSink = [&events] (const std::vector<std::uint8_t>&) {
     ++events;
     return true;
@@ -4412,6 +4413,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorRestoresConversationStateAndExtendsPr
 
 BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorOverlapsRunnerPreparationWithInputWait)
 {
+  std::promise<void> preparationStarted;
   NativeProviderRuntime runtime(1, 8);
   const auto identity = exactStateIdentity("overlap-request", 1,
                                            "overlap-generation");
@@ -4425,7 +4427,6 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorOverlapsRunnerPreparationWithInputWai
       runnerCalls->fetch_add(1);
       return std::map<std::string, TensorBundle>{};
     });
-  std::promise<void> preparationStarted;
   auto preparationStartedFuture = preparationStarted.get_future();
 
   NativeExecutionPlan plan;
@@ -4464,15 +4465,24 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorOverlapsRunnerPreparationWithInputWai
     [config = std::move(config)] () mutable {
       return runNativeEpochCoordinator(std::move(config));
     });
-  BOOST_REQUIRE(preparationStartedFuture.wait_for(std::chrono::seconds(2)) ==
-                std::future_status::ready);
-
-  io->publishOutput(
-    "overlap-session", activation,
-    makeEncodedTensorBundle(
-      "activation-input",
-      {NamedTensor{"activation", TensorElementType::Float32, {1, 1},
-                   rawTensorPayload<float>({1.0f})}}));
+  const auto publishActivation = [&] {
+    io->publishOutput(
+      "overlap-session", activation,
+      makeEncodedTensorBundle(
+        "activation-input",
+        {NamedTensor{"activation", TensorElementType::Float32, {1, 1},
+                     rawTensorPayload<float>({1.0f})}}));
+  };
+  try {
+    BOOST_REQUIRE(preparationStartedFuture.wait_for(std::chrono::seconds(2)) ==
+                  std::future_status::ready);
+  }
+  catch (...) {
+    // Release both registered and future readers before the async future joins.
+    publishActivation();
+    throw;
+  }
+  publishActivation();
   BOOST_CHECK_EXCEPTION(
     coordination.get(), std::runtime_error,
     [] (const std::runtime_error& error) {

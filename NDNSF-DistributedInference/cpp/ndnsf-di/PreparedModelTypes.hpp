@@ -1,10 +1,17 @@
 #ifndef NDNSF_DI_PREPARED_MODEL_TYPES_HPP
 #define NDNSF_DI_PREPARED_MODEL_TYPES_HPP
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
 namespace ndnsf::di {
+
+/** Model artifact input; model semantics are derived from its actual ONNX graph. */
+struct OnnxModelInput
+{
+  std::filesystem::path modelFile;
+};
 
 /** Read-only capabilities derived from the verified adapter and task. */
 struct ModelCapabilities

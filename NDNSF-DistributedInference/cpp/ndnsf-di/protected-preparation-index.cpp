@@ -1,4 +1,5 @@
 #include "protected-preparation-index.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/material-receipt.hpp"
@@ -273,10 +274,13 @@ try {
     NativeCanonicalMaterialPublicationMaxBytes);
   const auto metadata = nativeParseJson(result.preparedMetadataJson);
   if (nativeCanonicalJson(metadata) != result.preparedMetadataJson ||
-      metadata.value("schema", std::string{}) != "ndnsf-di-prepared-metadata-v1" ||
       !metadata.at("protectedObjects").is_array() ||
       metadata.at("protectedObjects").size() > MAX_POINTERS - 2)
     reject("METADATA_INVALID");
+  const NativeAssemblyControl metadataControl{
+    request.deadline, [&request] { requireActive(request); }, 0,
+    NativeCanonicalMaterialPublicationMaxBytes};
+  validateNativePreparedMetadataVersion(metadata, metadataControl);
   using Reference = ndn_service_framework::LargeDataPublishResult;
   std::map<std::string, Reference> objects;
   const auto add = [&](Reference reference) {

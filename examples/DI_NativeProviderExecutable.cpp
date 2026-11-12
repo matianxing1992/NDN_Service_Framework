@@ -2421,6 +2421,8 @@ main(int argc, char** argv)
                     templateHit ? "template-hit" :
                       (assembledDiskHit ? "assembled-disk-hit" : "assembled-built"));
                   spec = *lease.runnerSpec();
+                  validateNativeAutomaticCachedRunnerSource(
+                    ctx, projection, spec, assemblyOptions);
                   // Protected ciphertext is bound to the current key
                   // reference, while the immutable template is bound to the
                   // model/role/recipe identity.  A new grant may therefore

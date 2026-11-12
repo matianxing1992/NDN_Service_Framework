@@ -28,6 +28,35 @@ constexpr std::size_t MAX_LINEAGE_STRING_BYTES = 4096;
 constexpr std::size_t MAX_LINEAGE_WIRE_BYTES = 64U * 1024U;
 constexpr std::size_t MAX_PACKED_TENSOR_BYTES = 64U * 1024U * 1024U;
 
+struct TensorTypeDescriptor
+{
+  TensorElementType type;
+  const char* name;
+  std::size_t bytes;
+};
+
+constexpr std::array<TensorTypeDescriptor, 8> TENSOR_TYPES{{
+  {TensorElementType::Float32, "float32", 4},
+  {TensorElementType::Float16, "float16", 2},
+  {TensorElementType::Int64, "int64", 8},
+  {TensorElementType::Bool, "bool", 1},
+  {TensorElementType::UInt8, "uint8", 1},
+  {TensorElementType::Int32, "int32", 4},
+  {TensorElementType::INT8, "int8", 1},
+  {TensorElementType::BFLOAT16, "bfloat16", 2},
+}};
+
+const TensorTypeDescriptor&
+findTensorType(TensorElementType type)
+{
+  const auto found = std::find_if(TENSOR_TYPES.begin(), TENSOR_TYPES.end(),
+    [type](const auto& item) { return item.type == type; });
+  if (found == TENSOR_TYPES.end()) {
+    throw std::invalid_argument("unsupported tensor element type");
+  }
+  return *found;
+}
+
 const std::string&
 packedTensorBundleMagic()
 {
@@ -676,21 +705,24 @@ decodeTensorObjectManifest(const std::vector<std::uint8_t>& wire)
 std::size_t
 tensorElementByteSize(TensorElementType elementType)
 {
-  switch (elementType) {
-    case TensorElementType::Float32:
-      return 4;
-    case TensorElementType::Float16:
-      return 2;
-    case TensorElementType::Int64:
-      return 8;
-    case TensorElementType::Int32:
-      return 4;
-    case TensorElementType::Bool:
-      return 1;
-    case TensorElementType::UInt8:
-      return 1;
+  return findTensorType(elementType).bytes;
+}
+
+const char*
+tensorElementTypeName(TensorElementType elementType)
+{
+  return findTensorType(elementType).name;
+}
+
+TensorElementType
+tensorElementTypeFromName(const std::string& name)
+{
+  const auto found = std::find_if(TENSOR_TYPES.begin(), TENSOR_TYPES.end(),
+    [&name](const auto& item) { return name == item.name; });
+  if (found == TENSOR_TYPES.end()) {
+    throw std::invalid_argument("unsupported tensor element type label");
   }
-  throw std::invalid_argument("unsupported tensor element type");
+  return found->type;
 }
 
 std::size_t
@@ -716,15 +748,9 @@ tensorPayloadBytes(const TensorBundle& bundle)
   return tensorPayloadBytes(decodeTensorBundle(bundle.payload));
 }
 
-namespace {
-
-void
-validateTensorMetadata(const std::string& name, TensorElementType elementType,
-                       const std::vector<std::int64_t>& shape, std::size_t payloadBytes)
+std::uint64_t
+tensorStorageByteSize(TensorElementType elementType, const std::vector<std::int64_t>& shape)
 {
-  if (name.empty() || name.size() > MAX_TENSOR_NAME_BYTES) {
-    throw std::invalid_argument("tensor bundle tensor name has invalid size");
-  }
   if (shape.size() > MAX_TENSOR_RANK) {
     throw std::invalid_argument("tensor bundle tensor rank exceeds limit");
   }
@@ -745,6 +771,29 @@ validateTensorMetadata(const std::string& name, TensorElementType elementType,
     throw std::invalid_argument("tensor bundle tensor payload exceeds limit");
   }
   const auto expectedBytes = elements * elementBytes;
+  return expectedBytes;
+}
+
+namespace {
+
+void
+validateTensorValues(TensorElementType type, ndn::span<const std::uint8_t> payload)
+{
+  if (type == TensorElementType::Bool &&
+      std::any_of(payload.begin(), payload.end(),
+                  [](std::uint8_t value) { return value > 1; })) {
+    throw std::invalid_argument("boolean tensor payload must contain only zero or one");
+  }
+}
+
+void
+validateTensorMetadata(const std::string& name, TensorElementType elementType,
+                       const std::vector<std::int64_t>& shape, std::size_t payloadBytes)
+{
+  if (name.empty() || name.size() > MAX_TENSOR_NAME_BYTES) {
+    throw std::invalid_argument("tensor bundle tensor name has invalid size");
+  }
+  const auto expectedBytes = tensorStorageByteSize(elementType, shape);
   if (payloadBytes != expectedBytes) {
     throw std::invalid_argument("tensor bundle tensor payload size does not match dtype and shape");
   }
@@ -756,6 +805,8 @@ void
 validateNamedTensor(const NamedTensor& tensor)
 {
   validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
+  validateTensorValues(tensor.elementType,
+    ndn::span<const std::uint8_t>(tensor.payload.data(), tensor.payload.size()));
 }
 
 void
@@ -764,6 +815,7 @@ validateNamedTensorView(const NamedTensorView& tensor)
   validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
   if (!tensor.payload.empty() && tensor.payload.data() == nullptr)
     throw std::invalid_argument("nonempty tensor view has no storage");
+  validateTensorValues(tensor.elementType, tensor.payload);
 }
 
 bool
@@ -863,7 +915,12 @@ encodeTensorBundleImpl(const std::vector<Tensor>& tensors)
   std::vector<TensorBundleEncodingMember> members;
   members.reserve(tensors.size());
   for (const auto& tensor : tensors) {
-    validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
+    if constexpr (std::is_same_v<Tensor, NamedTensor>) {
+      validateNamedTensor(tensor);
+    }
+    else {
+      validateNamedTensorView(tensor);
+    }
     if (!tensor.payload.empty() && tensor.payload.data() == nullptr)
       throw std::invalid_argument("nonempty tensor payload has no storage");
     members.push_back({tensor.name.size(), tensor.shape.size(), tensor.payload.size()});
@@ -1000,7 +1057,12 @@ decodeTensorBundleImpl(const std::vector<std::uint8_t>& payload)
         payload.data() + offset, static_cast<std::size_t>(payloadSize));
       offset += static_cast<std::size_t>(payloadSize);
     }
-    validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape, tensor.payload.size());
+    if constexpr (std::is_same_v<Tensor, NamedTensor>) {
+      validateNamedTensor(tensor);
+    }
+    else {
+      validateNamedTensorView(tensor);
+    }
     tensors.push_back(std::move(tensor));
   }
   if (offset != payload.size()) {

@@ -6,6 +6,7 @@
 namespace ndnsf::di {
 
 class NativePreparedPlanningTemplate;
+struct AutomaticOnnxContract;
 /** Exact legacy snapshot bytes, with verified immutable subtree reuse. */
 std::string nativePlacementObservationCanonicalJson(const NativeJson& snapshot,
   const NativePreparedPlanningTemplate* prepared = nullptr);
@@ -120,6 +121,8 @@ struct NativeRequestCatalog
   NativeStateTensorMapping stateMapping;
   /** Prepare-time candidate/role analysis reused by every request. */
   std::shared_ptr<const NativePreparedPlanningCache> planningCache;
+  /** Immutable automatic facts; absent for legacy prepared metadata. */
+  std::shared_ptr<const AutomaticOnnxContract> automaticContract;
 
   static NativeRequestCatalog load(const std::string& configurationJson,
     NativeCanonicalSource source, const NativeAssemblyControl& control);

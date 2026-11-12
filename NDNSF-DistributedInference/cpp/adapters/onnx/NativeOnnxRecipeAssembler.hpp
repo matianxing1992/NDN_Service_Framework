@@ -17,6 +17,8 @@
 
 namespace ndnsf::di {
 
+inline constexpr std::size_t NATIVE_ONNX_MAX_EXTERNAL_FILES = 64;
+
 /** Shared ownership for a canonical byte object.
  *
  * The source is copied through several immutable preparation records.  Keeping
@@ -271,6 +273,9 @@ struct NativeCanonicalSource
     // authenticated reference index with only the selected payload bytes;
     // the canonical JSON/digest remains the producer's full index.
     bool payloadsComplete = true;
+    // V2 carries source facts and physical inventory, never owner object keys.
+    // Empty preserves the complete V1 wire representation.
+    std::string automaticSourceJson;
 
     std::string canonicalJson() const;
     void validate() const;
@@ -280,6 +285,12 @@ struct NativeCanonicalSource
   std::vector<std::uint8_t> modelBytes;
   std::optional<NativeCanonicalByteBuffer> initializerBytes;
   std::shared_ptr<const NativeCanonicalByteRangeSource> initializerRangeSource;
+  /** Original external locations mapped into one bounded logical range reader. */
+  struct ExternalFileRange
+  {
+    std::uint64_t offset = 0;
+    std::uint64_t bytes = 0;
+  };
   std::shared_ptr<const MaterialManifest> materialManifest;
   // Bytes fetched after Selection.  They are deliberately separate from the
   // producer-owned manifest payload list so a Provider cannot imply that the
@@ -314,6 +325,9 @@ struct NativeCanonicalSource
   // Versioned reference-only preparation metadata. It contains bounded graph
   // inspection facts, never canonical model or initializer bytes.
   std::string preparedMetadataJson;
+  // Empty preserves the legacy single-location source contract. Appended to
+  // retain positional aggregate initialization of the existing source fields.
+  std::map<std::string, ExternalFileRange> externalFileRanges;
 };
 
 /**
@@ -339,6 +353,11 @@ struct NativeAssemblyControl
   std::uint64_t maxSourceBytes = 0;
   std::uint64_t maxAssembledBytes = 0;
 };
+
+/** Collect external locations from owned bytes; never open graph-declared paths. */
+std::vector<std::string>
+inspectNativeOnnxExternalLocations(const std::vector<std::uint8_t>& modelBytes,
+                                    const NativeAssemblyControl& control);
 
 /** Physical external object size; conflicting vector/range ownership is rejected. */
 std::uint64_t
@@ -466,6 +485,12 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
 std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
 deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
                                       const NativeAssemblyControl& control);
+
+/** Bind already inspected automatic source metadata while deriving payloads. */
+std::shared_ptr<const NativeCanonicalSource::MaterialManifest>
+deriveNativeCanonicalMaterialManifest(const NativeCanonicalSource& source,
+                                      const NativeAssemblyControl& control,
+                                      const std::string& automaticSourceJson);
 
 /** Parse an authenticated producer manifest without materializing payloads. */
 std::shared_ptr<NativeCanonicalSource::MaterialManifest>

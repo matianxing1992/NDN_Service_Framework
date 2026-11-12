@@ -1,4 +1,5 @@
 #include "stored-model-preparation.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
@@ -218,6 +219,11 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     require(catalog.preparation != nullptr);
     source = catalog.preparation->sourceRefFor(catalog.model.descriptor);
     require(source && source->materialManifest && !source->preparedMetadataJson.empty());
+    // This API exposes an ownership fence rather than a separate deadline.
+    const NativeAssemblyControl metadataControl{
+      std::chrono::steady_clock::time_point::max(), io.requireCurrent, 0,
+      NativeCanonicalMaterialPublicationMaxBytes};
+    validateNativePreparedMetadataVersion(nativeParseJson(source->preparedMetadataJson), metadataControl);
     options = catalog.preparation->publicationFor(catalog.model.descriptor);
     require(nativeCanonicalPublicationIdentity(nativeParseJson(configurationJson)) ==
             options.publicationIdentityDigest);
@@ -352,6 +358,7 @@ nativeOpenStoredPreparedModel(const NativeStoredModelHandle& handle,
   const auto materialJson = objectText("material-manifest", "materialManifest");
   const auto receiptJson = objectText("material-receipt", "materialReceipt");
   publication.preparedMetadataJson = objectText("prepared-metadata", "preparedMetadata");
+  validateNativePreparedMetadataVersion(nativeParseJson(publication.preparedMetadataJson), control);
   NativeCanonicalSource source;
   source.preparedMetadataJson = publication.preparedMetadataJson;
   source.materialManifest = parseNativeCanonicalMaterialManifest(bytes(materialJson));

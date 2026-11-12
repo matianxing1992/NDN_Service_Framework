@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -97,7 +98,8 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
   // an adapter-local default.  Preserve it on the prepared runner spec so the
   // ORT runner can distinguish epoch-zero zero-state inputs from ordinary
   // application tensors and enforce predecessor state on later epochs.
-  if (projection.generationContract.enabled) {
+  bindAutomaticOnnxRunnerIo(spec, projection);
+  if (projection.generationContract.enabled && !projection.automaticShapeSeed) {
     // These fields are projection-owned.  Clear adapter-provided values before
     // applying the authenticated contract so an absent optional field cannot
     // leave a stale successor or position binding in the runner spec.

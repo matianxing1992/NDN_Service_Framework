@@ -8,10 +8,12 @@
 #include <charconv>
 #include <cfenv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iomanip>
 #include <locale>
+#include <limits>
 #include <sstream>
 #include <set>
 #include <stdexcept>
@@ -22,12 +24,14 @@ namespace ndnsf::di {
 // canonical rendering follows sdk/placement.py's json.dumps contract.
 using NativeJson = nlohmann::json;
 
-inline NativeJson nativeParseJson(const std::string& wire)
+inline NativeJson nativeParseJson(const std::string& wire, std::size_t maxDepth)
 {
   std::vector<std::set<std::string>> objectKeys;
   try {
-    return NativeJson::parse(wire, [&objectKeys] (int, NativeJson::parse_event_t event,
+    return NativeJson::parse(wire, [&objectKeys, maxDepth] (int depth, NativeJson::parse_event_t event,
                                                  NativeJson& value) {
+      if (static_cast<std::size_t>(depth) > maxDepth)
+        throw std::invalid_argument("native JSON exceeds nesting limit");
       if (event == NativeJson::parse_event_t::object_start) objectKeys.emplace_back();
       else if (event == NativeJson::parse_event_t::object_end) objectKeys.pop_back();
       else if (event == NativeJson::parse_event_t::key &&
@@ -40,6 +44,11 @@ inline NativeJson nativeParseJson(const std::string& wire)
   catch (const NativeJson::exception& error) {
     throw std::invalid_argument(std::string("invalid native JSON: ") + error.what());
   }
+}
+
+inline NativeJson nativeParseJson(const std::string& wire)
+{
+  return nativeParseJson(wire, std::numeric_limits<std::size_t>::max());
 }
 
 namespace canonical_json_detail {

@@ -61,6 +61,12 @@ struct NativeRequestRuntime
     const NativeArtifactBinding&, const NativeSelectionProjectionV3&,
     const NativeFixedRoleAssignmentV1&, const NativeRecipientKeyMaterialV1&,
     const std::string&, std::uint64_t, const NativeRequestControl&)> modelObjectKeyPublisher;
+  // Adapter-owned synchronous binding; captures only immutable source facts.
+  // The borrowed control and prepared payload must not escape the call.
+  std::function<NativeAutomaticShapeSeed(
+    const NativePreparedInput&,
+    const std::optional<NativeGenerationExecutionContractV1>&,
+    const NativeRequestControl&)> automaticShapeSeedFactory;
 };
 
 std::shared_ptr<const ndn_service_framework::ParticipantSelectionPolicy>

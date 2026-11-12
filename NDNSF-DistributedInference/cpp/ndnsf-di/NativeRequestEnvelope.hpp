@@ -1,6 +1,7 @@
 #pragma once
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-automatic-shape-seed.hpp"
 
 namespace ndnsf::di {
 
@@ -78,7 +79,39 @@ struct NativeEncodedRequest
   std::vector<NativeJson> allowedGoodputEdges;
   std::string probeScopeDigest;
   std::optional<NativeGenerationRecovery> recovery;
+  std::optional<NativeAutomaticShapeSeed> automaticShapeSeed;
+  std::optional<std::vector<std::uint8_t>> discoveryPayload;
 };
+
+/** Classify native requests before any legacy fallback. Invalid or unsupported
+ * native JSON throws; a non-native payload returns nullopt. */
+std::optional<NativeJson>
+parseNativeRequestEnvelope(const std::string& wire);
+
+/** Read a complete envelope or a bounded, input-free ACK discovery summary. */
+std::optional<NativeJson>
+parseNativeRequestOffer(const std::string& wire);
+
+/** Validate the version boundary and read the portable automatic shape seed. */
+std::optional<NativeAutomaticShapeSeed>
+nativeRequestAutomaticShapeSeed(const NativeJson& envelope);
+
+/** Recheck the automatic wire and its derived DTO before planner side effects. */
+void
+validateNativeAutomaticRequestBinding(
+  const NativeEncodedRequest& request, const NativeModelDescriptor& model,
+  const NativeRequestContract& contract,
+  const std::string& requestId, std::uint64_t attempt,
+  const std::optional<NativeGenerationExecutionContractV1>& generation);
+
+void
+validateNativeAutomaticSelectionRequestBinding(
+  const std::string& requestWire, const NativeSelectionProjectionV3& projection);
+
+/** Check the immutable wire header before fixed-role cache/source lookup. */
+void
+validateNativeAutomaticSelectionRequestBinding(
+  const std::string& requestWire, const NativeJson& selectionHeader);
 
 /** Return whether a request contract uses a generation mode understood by the
  * native requester/provider wire contract.  All public construction paths use
@@ -103,6 +136,7 @@ NativeEncodedRequest encodeNativeRequestEnvelope(
   const std::vector<std::string>& candidateProviders = {},
   const std::optional<NativeCandidateArtifactInventoryV4>& candidateArtifactInventory = std::nullopt,
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist = std::nullopt,
-  std::string requesterIdentity = {});
+  std::string requesterIdentity = {},
+  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed = std::nullopt);
 
 } // namespace ndnsf::di
