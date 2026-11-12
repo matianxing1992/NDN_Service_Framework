@@ -7878,6 +7878,56 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(StageRoleWithRankListCannotSatisfyThePlacementContract)
+{
+  // Checked the smaller alternative before touching the role model: keep one role per
+  // stage and give it a rank list, instead of one role per rank. The placement contract
+  // rules it out, and this case records why rather than leaving it as a preference.
+  //
+  // Every placement decision reads per-role facts keyed by role name:
+  // requirementsByRole, artifactsByRole, rankArtifactDigestsByRole and the plan's own
+  // roles list. A stage role with two ranks would need each of those to become
+  // per-(role, rank), which is the same change as one role per rank -- only spread
+  // across more maps instead of fewer roles.
+  NativeSplitCandidate candidate;
+  candidate.executionPlan.roles = {"/Stage/0"};
+  candidate.requirementsByRole["/Stage/0"] = NativeRoleResourceRequirement{
+    {"onnxruntime"}, 1024, std::nullopt, std::nullopt, std::nullopt, std::nullopt, 1.10};
+  candidate.tensorDegreesByRole["/Stage/0"] = 2;
+  candidate.artifactsByRole["/Stage/0"] = {"sha256:" + std::string(64, 'a')};
+  candidate.rankArtifactDigestsByRole["/Stage/0"] = {
+    "sha256:" + std::string(64, 'a'), "sha256:" + std::string(64, 'b')};
+
+  // The degree says two ranks; the role list says one role. Both are true today, and
+  // placement reads the role list, so it would place one role once and give it one
+  // artifact -- leaving the second rank's artifact unplaced.
+  BOOST_CHECK_EQUAL(candidate.executionPlan.roles.size(), 1U);
+  BOOST_CHECK_EQUAL(candidate.tensorDegreesByRole.at("/Stage/0"), 2U);
+  BOOST_CHECK_EQUAL(candidate.rankArtifactDigestsByRole.at("/Stage/0").size(), 2U);
+  BOOST_CHECK_EQUAL(candidate.artifactsByRole.at("/Stage/0").size(), 1U);
+
+  // The projected plan, by contrast, names one role per rank, so every per-role map has
+  // an entry per rank and placement can place both.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan projected;
+  qwen::projectQwenTpPlan(projected, shape, 2, "entry", "S0R0");
+  BOOST_CHECK_EQUAL(projected.roles.size(), 2U);
+  // One role per rank, each covering every layer -- which is what a sharded unit is.
+  std::set<std::string> units;
+  for (const auto& step : projected.steps) units.insert(step.unitId);
+  BOOST_CHECK_EQUAL(units.size(), projected.roles.size());
+
+  // So the smaller alternative does not exist: the per-rank split has to happen where
+  // the plan is built, because everything downstream is keyed by role.
+  BOOST_TEST_MESSAGE("stage-role candidate: roles=" << candidate.executionPlan.roles.size()
+                    << " degree=" << candidate.tensorDegreesByRole.at("/Stage/0")
+                    << " rankArtifacts=" << candidate.rankArtifactDigestsByRole.at("/Stage/0").size()
+                    << " | projected roles=" << projected.roles.size());
+}
+
 BOOST_AUTO_TEST_CASE(CertifiedEndpointsJoinThePlansStepBoundEdges)
 {
   // The join the networked sharded run needs: plan gives identity and step binding,
