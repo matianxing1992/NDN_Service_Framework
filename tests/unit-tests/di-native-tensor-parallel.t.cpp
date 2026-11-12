@@ -748,4 +748,99 @@ BOOST_AUTO_TEST_CASE(UnsupportedExportFeaturesAreRejectedByName)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// PlanProjection — the Qwen adapter turns verified shape facts into sealed
+// roles/steps/dependencies. These cases assert the projection's structure,
+// which T003 will execute; they do not run a Provider.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(PlanProjection)
+
+BOOST_AUTO_TEST_CASE(ProjectionEmitsPerLayerStepDagForBothRanks)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  BOOST_CHECK_EQUAL(plan.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(plan.stepPlanVersion, std::string(NATIVE_STEP_PLAN_VERSION_V1));
+  BOOST_CHECK_EQUAL(plan.tensorDegree, 2U);
+  // 4 steps per layer per rank, plus one head on the egress rank only.
+  BOOST_CHECK_EQUAL(plan.steps.size(), 2U * 2U * 4U + 1U);
+
+  const auto count = [&] (const std::string& kind) {
+    return std::count_if(plan.steps.begin(), plan.steps.end(),
+      [&] (const auto& step) {
+        return step.stepId.find(kind) != std::string::npos;
+      });
+  };
+  BOOST_CHECK_EQUAL(count("/ATTN/"), 4U);
+  BOOST_CHECK_EQUAL(count("/SUM_ATTN/"), 4U);
+  BOOST_CHECK_EQUAL(count("/MLP/"), 4U);
+  BOOST_CHECK_EQUAL(count("/SUM_MLP/"), 4U);
+  BOOST_CHECK_EQUAL(count("/HEAD"), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(SumStepsReferenceEveryPeerContribution)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  for (const auto& step : plan.steps) {
+    if (step.operation != "SUM") continue;
+    // One local contribution plus one per peer: this is what makes the SUM
+    // generic in degree rather than hard-coded to two ranks.
+    BOOST_CHECK_EQUAL(step.inputSlots.size(), 2U);
+    std::size_t local = 0;
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source == "LOCAL_STEP") ++local;
+      BOOST_CHECK(!slot.producerStepId.empty());
+    }
+    BOOST_CHECK_EQUAL(local, 1U);
+    BOOST_CHECK(step.artifactEntry.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(DependencyBindingsMatchTheStepsTheyCarry)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  // Two ranks x two remote contributions x one layer.
+  BOOST_REQUIRE_EQUAL(plan.dependencies.size(), 4U);
+  std::set<std::string> identities;
+  for (const auto& dependency : plan.dependencies) {
+    BOOST_CHECK(!dependency.dependencyId.empty());
+    BOOST_CHECK(identities.insert(dependency.dependencyId).second);
+    BOOST_CHECK(dependency.useNdnsfDataV1);
+    BOOST_CHECK_EQUAL(dependency.operationKind, std::string("TENSOR_PARTIAL"));
+    BOOST_CHECK(!dependency.producerStepId.empty());
+    BOOST_CHECK(!dependency.consumerStepId.empty());
+    BOOST_CHECK(!dependency.consumerSlotId.empty());
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ProjectionIsRejectedForDegreeOneOrEmptyPrefix)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+
+  NativeExecutionPlan plan;
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(plan, shape, 1, "entry", "S0R0"),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(plan, shape, 2, "", "S0R0"),
+                    std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()

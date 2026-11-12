@@ -403,4 +403,223 @@ qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
   return shape;
 }
 
+namespace {
+
+QwenTpUnit
+unitFor(std::uint64_t rank, const QwenTpShape& shape)
+{
+  QwenTpUnit unit;
+  unit.roleId = "S0R" + std::to_string(rank);
+  unit.rank = rank;
+  unit.layerBegin = 0;
+  unit.layerEnd = shape.layers;
+  return unit;
+}
+
+ndnsf::di::NativeStepSlotSpec
+makeSlot(const std::string& id, const std::string& source,
+         const std::string& producerStep = {})
+{
+  ndnsf::di::NativeStepSlotSpec slot;
+  slot.slotId = id;
+  // The step contract only needs a stable type/layout identity here; the
+  // sealed selection role carries the authoritative per-entry shapes.
+  slot.dtype = "float32";
+  slot.shape = {std::int64_t(1), std::string("sequence"), std::string("hidden")};
+  slot.layoutDigest = "sha256:" + std::string(64, '0');
+  slot.source = source;
+  slot.producerStepId = producerStep;
+  return slot;
+}
+
+std::string
+attnStep(const std::string& unit, std::uint64_t layer)
+{
+  return unit + "/ATTN/" + std::to_string(layer);
+}
+
+std::string
+sumAttnStep(const std::string& unit, std::uint64_t layer)
+{
+  return unit + "/SUM_ATTN/" + std::to_string(layer);
+}
+
+std::string
+mlpStep(const std::string& unit, std::uint64_t layer)
+{
+  return unit + "/MLP/" + std::to_string(layer);
+}
+
+std::string
+sumMlpStep(const std::string& unit, std::uint64_t layer)
+{
+  return unit + "/SUM_MLP/" + std::to_string(layer);
+}
+
+} // namespace
+
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix)
+{
+  shape.validate();
+  if (degree < 2) {
+    throw std::invalid_argument("tensor-parallel template requires degree >= 2");
+  }
+  if (entryPrefix.empty()) {
+    throw std::invalid_argument("tensor-parallel template requires an entry prefix");
+  }
+  QwenTpTemplate result;
+  result.degree = degree;
+  for (std::uint64_t rank = 0; rank < degree; ++rank) {
+    result.units.push_back(unitFor(rank, shape));
+    result.slicesByRank.push_back(planQwenTensorSlices(shape, degree, rank));
+  }
+  return result;
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole)
+{
+  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix);
+  plan.roles.clear();
+  plan.steps.clear();
+  plan.dependencies.clear();
+  for (const auto& unit : tp.units) plan.roles.push_back(unit.roleId);
+  plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V1;
+  plan.tensorDegree = degree;
+  plan.modelFamily = "qwen";
+  plan.plannerKind = "native-qwen-tensor";
+
+  const auto entry = [&] (const std::string& unit, const char* kind,
+                          std::uint64_t layer) {
+    return entryPrefix + "/" + unit + "/" + kind + "/" + std::to_string(layer);
+  };
+
+  for (const auto& unit : tp.units) {
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      // Attention partial on this rank. Layer 0 reads the epoch input; later
+      // layers read the MLP sum of the previous layer.
+      ndnsf::di::NativeExecutionStepSpec attn;
+      attn.stepId = attnStep(unit.roleId, layer);
+      attn.unitId = unit.roleId;
+      attn.operation = "CALL_SUBGRAPH";
+      attn.artifactEntry = entry(unit.roleId, "ATTN", layer);
+      attn.inputSlots = {layer == 0
+        ? makeSlot("x", "EPOCH_INPUT")
+        : makeSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1))};
+      attn.outputSlots = {makeSlot("partial", "LOCAL_STEP")};
+      attn.localStateSlots = {"kv." + std::to_string(layer) + ".key",
+                              "kv." + std::to_string(layer) + ".value"};
+      plan.steps.push_back(std::move(attn));
+
+      // SUM over this rank's partial and every peer's partial. The contributor
+      // set comes from the degree, never from a hard-coded pair.
+      ndnsf::di::NativeExecutionStepSpec sumAttn;
+      sumAttn.stepId = sumAttnStep(unit.roleId, layer);
+      sumAttn.unitId = unit.roleId;
+      sumAttn.operation = "SUM";
+      sumAttn.inputSlots.push_back(
+        makeSlot("local", "LOCAL_STEP", attnStep(unit.roleId, layer)));
+      std::size_t peerIndex = 0;
+      for (const auto& peer : tp.units) {
+        if (peer.rank == unit.rank) continue;
+        sumAttn.inputSlots.push_back(
+          makeSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
+                   attnStep(peer.roleId, layer)));
+      }
+      sumAttn.outputSlots = {makeSlot("merged", "LOCAL_STEP")};
+      plan.steps.push_back(std::move(sumAttn));
+
+      ndnsf::di::NativeExecutionStepSpec mlp;
+      mlp.stepId = mlpStep(unit.roleId, layer);
+      mlp.unitId = unit.roleId;
+      mlp.operation = "CALL_SUBGRAPH";
+      mlp.artifactEntry = entry(unit.roleId, "MLP", layer);
+      mlp.inputSlots = {makeSlot("merged", "LOCAL_STEP",
+                                 sumAttnStep(unit.roleId, layer))};
+      mlp.outputSlots = {makeSlot("partial", "LOCAL_STEP")};
+      plan.steps.push_back(std::move(mlp));
+
+      ndnsf::di::NativeExecutionStepSpec sumMlp;
+      sumMlp.stepId = sumMlpStep(unit.roleId, layer);
+      sumMlp.unitId = unit.roleId;
+      sumMlp.operation = "SUM";
+      sumMlp.inputSlots.push_back(
+        makeSlot("local", "LOCAL_STEP", mlpStep(unit.roleId, layer)));
+      peerIndex = 0;
+      for (const auto& peer : tp.units) {
+        if (peer.rank == unit.rank) continue;
+        sumMlp.inputSlots.push_back(
+          makeSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
+                   mlpStep(peer.roleId, layer)));
+      }
+      sumMlp.outputSlots = {makeSlot("merged", "LOCAL_STEP")};
+      plan.steps.push_back(std::move(sumMlp));
+    }
+
+    // Only the egress unit owns the complete head; every rank still keeps its
+    // own KV slices and receipts.
+    if (unit.roleId == egressRole) {
+      ndnsf::di::NativeExecutionStepSpec head;
+      head.stepId = unit.roleId + "/HEAD";
+      head.unitId = unit.roleId;
+      head.operation = "CALL_SUBGRAPH";
+      head.artifactEntry = entry(unit.roleId, "HEAD", shape.layers);
+      head.inputSlots = {makeSlot("merged", "LOCAL_STEP",
+                                  sumMlpStep(unit.roleId, shape.layers - 1))};
+      head.outputSlots = {makeSlot("logits", "LOCAL_STEP")};
+      plan.steps.push_back(std::move(head));
+    }
+  }
+
+  // One dependency per remote contribution, bound to the exact producing and
+  // consuming step/slot. The identity reuses keyScope and stays unique.
+  for (const auto& unit : tp.units) {
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      for (const auto& peer : tp.units) {
+        if (peer.rank == unit.rank) continue;
+        for (const auto* kind : {"ATTN", "MLP"}) {
+          const auto producerStep = std::string(peer.roleId) + "/" + kind + "/" +
+                                    std::to_string(layer);
+          const auto consumerStep = std::string(unit.roleId) + "/SUM_" + kind + "/" +
+                                    std::to_string(layer);
+          std::string consumerSlot;
+          std::size_t peerIndex = 0;
+          for (const auto& candidate : tp.units) {
+            if (candidate.rank == unit.rank) continue;
+            if (candidate.rank == peer.rank) {
+              consumerSlot = "remote" + std::to_string(peerIndex);
+              break;
+            }
+            ++peerIndex;
+          }
+          const bool attn = std::string(kind) == "ATTN";
+          ndnsf::di::NativeDependencySpec dependency;
+          dependency.producers = {peer.roleId};
+          dependency.consumers = {unit.roleId};
+          dependency.keyScope = std::string("tp-") + (attn ? "attn" : "mlp") + "-" +
+                                std::to_string(layer) + "-r" + std::to_string(unit.rank) +
+                                "-from-r" + std::to_string(peer.rank);
+          dependency.dependencyId = dependency.keyScope;
+          dependency.topicPrefix = "/NDNSF/DI/QWEN";
+          dependency.objectNameTemplate =
+            "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
+          dependency.tensors = {"partial"};
+          dependency.operationKind = "TENSOR_PARTIAL";
+          dependency.useNdnsfDataV1 = true;
+          dependency.producerStepId = producerStep;
+          dependency.producerSlotId = "partial";
+          dependency.consumerStepId = consumerStep;
+          dependency.consumerSlotId = consumerSlot;
+          plan.dependencies.push_back(std::move(dependency));
+        }
+      }
+    }
+  }
+  plan.validateSteps();
+}
+
 } // namespace ndnsf::di::qwen

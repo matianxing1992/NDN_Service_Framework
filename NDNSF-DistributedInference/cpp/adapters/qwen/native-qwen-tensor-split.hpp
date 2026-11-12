@@ -1,6 +1,8 @@
 #ifndef NDNSF_DI_QWEN_TENSOR_SPLIT_HPP
 #define NDNSF_DI_QWEN_TENSOR_SPLIT_HPP
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -164,6 +166,61 @@ qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
                      std::uint64_t hidden, std::uint64_t layers,
                      std::uint64_t queryHeads, std::uint64_t kvHeads,
                      std::uint64_t headDim, std::uint64_t ffn);
+
+/** One rank unit the TP plan exposes to placement. */
+struct QwenTpUnit
+{
+  std::string roleId;
+  std::uint64_t rank = 0;
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+};
+
+/** The complete sealed TP template for one model and degree. */
+struct QwenTpTemplate
+{
+  std::uint64_t degree = 1;
+  std::vector<QwenTpUnit> units;
+  // Per rank, per layer: the initializer slices that rank owns.
+  std::vector<std::vector<QwenRankLayerSlices>> slicesByRank;
+};
+
+/**
+ * Build the unit/step template for one verified shape and degree.
+ *
+ * Each unit covers every layer; inside a token a unit runs one attention step,
+ * one SUM, one MLP step and one SUM per layer, then the head on rank 0 only.
+ * The steps reference recipe entries by name, so the caller supplies the entry
+ * naming rule it will actually assemble (`entryPrefix`).
+ *
+ * @param shape       Verified shape facts.
+ * @param degree      Tensor-parallel degree.
+ * @param entryPrefix Prefix for generated recipe entry ids.
+ * @returns Units and per-rank slice plans.
+ * @throws std::invalid_argument for an unsplittable shape or degree.
+ */
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix);
+
+/**
+ * Project one template into sealed execution steps and dependencies.
+ *
+ * The result is deliberately data, not a second scheduler: `roleSpecFor` and
+ * the existing worker consume it exactly like any other plan. Step ids encode
+ * their token-local position so the runtime can bind a contribution to the
+ * exact step that produced it.
+ *
+ * @param plan       Plan receiving the roles, steps and dependencies.
+ * @param shape      Verified shape facts.
+ * @param degree     Tensor-parallel degree.
+ * @param entryPrefix Prefix for generated recipe entry ids.
+ * @param egressRole  Role that owns the final response.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole);
 
 } // namespace ndnsf::di::qwen
 
