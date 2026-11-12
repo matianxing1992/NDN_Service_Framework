@@ -4386,7 +4386,7 @@ namespace {
  * milliseconds instead of loading 918 MB of weights per entry.
  */
 onnx::ModelProto
-makeTinyRankGraph()
+makeTinyRankGraph(std::uint64_t layers = 2)
 {
   onnx::ModelProto model;
   model.set_ir_version(9);
@@ -4436,7 +4436,7 @@ makeTinyRankGraph()
   addNode("/model/embed_tokens/Gather", "input_ids", "x0");
   declare("x0");
   // Two transformer layers, each split at the post-attention normalization.
-  for (int layer = 0; layer < 2; ++layer) {
+  for (std::uint64_t layer = 0; layer < layers; ++layer) {
     const auto prefix = "/model/layers." + std::to_string(layer);
     addNode(prefix + "/attn/op", layer == 0 ? "x0" : "x" + std::to_string(layer),
             "attn" + std::to_string(layer));
@@ -4446,7 +4446,8 @@ makeTinyRankGraph()
     declare("x" + std::to_string(layer + 1));
   }
   // The final normalization under layers.<N> belongs to HEAD.
-  addNode("/model/layers.2/final_norm_layernorm/op", "x2", "x_final");
+  addNode("/model/layers." + std::to_string(layers) +
+            "/final_norm_layernorm/op", "x" + std::to_string(layers), "x_final");
   declare("x_final");
   addNode("/lm_head/MatMul", "x_final", "logits");
   addValue("logits");
@@ -4740,6 +4741,105 @@ BOOST_AUTO_TEST_CASE(RankEntriesAreVerifiedBeforeReadyIsPublished)
     BOOST_CHECK(!qwen::verifyQwenTpRankEntries(root, "S0R0", table, {}, budget).empty());
     BOOST_CHECK(!qwen::verifyQwenTpRankEntries(root, "", table, steps, budget).empty());
   }
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+
+BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
+{
+  // The join that was still missing: a real rank artifact assembled into a spec,
+  // verified against a real projected plan, then executed step by step. Every
+  // earlier case fixed one side; a classifier or projector defect that only shows
+  // when both meet -- like the HEAD layer index that stayed at zero -- passed them
+  // all and failed only here.
+  const std::uint64_t layers = 2;
+  auto model = makeTinyRankGraph(layers);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  qwen::QwenTpShape shape;
+  // Degree two needs query heads and KV heads divisible by two, and the packed
+  // weight blocks need a K that splits on 32-element boundaries.
+  shape.hidden = 64; shape.layers = layers; shape.queryHeads = 2;
+  shape.kvHeads = 2; shape.headDim = 32; shape.ffn = 64;
+  shape.vocab = 8;
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-join-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+
+  // Assemble rank 0 exactly as the assembler does, then hand the table to the
+  // spec configuration path that performs verification.
+  const auto table = qwen::assembleQwenTpEntryTable(root, "S0R0", bytes, layers);
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  const auto modelPath = root / "model.onnx";
+  {
+    std::ofstream out(modelPath, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(out));
+    out.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+  }
+  spec.path = modelPath.string();
+
+  // The plan is projected against those same contracts, so the ids it names are
+  // the ids the table holds. A prefix-derived projection would look plausible and
+  // be rejected here, which is the check working.
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = layers;
+    units.push_back(std::move(unit));
+  }
+  auto bothRanks = table;
+  for (auto entry : table) {
+    entry.unitId = "S0R1";
+    entry.entryId = "S0R1" + entry.entryId.substr(entry.entryId.find('/'));
+    entry.relativeGraphPath = "rank1-" + entry.relativeGraphPath;
+    bothRanks.push_back(std::move(entry));
+  }
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", units, bothRanks);
+
+  std::vector<NativeExecutionStepSpec> ownedSteps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0") ownedSteps.push_back(step);
+  BOOST_REQUIRE(!ownedSteps.empty());
+
+  // This call assembles nothing (the files exist) but it re-writes the table and
+  // runs verification. If the classifier and the projector disagree about entry
+  // identity, it throws.
+  const auto budget = std::uint64_t(1024) * 1024;
+  BOOST_CHECK_NO_THROW(qwen::configureQwenTpRankSpec(spec, layers, ownedSteps, budget));
+  BOOST_CHECK_EQUAL(spec.backend, std::string("native-qwen-tensor"));
+  const auto configured = qwen::parseQwenTpEntryTable(
+    spec.metadata.at("tensorParallelEntries"));
+  BOOST_CHECK_EQUAL(configured.size(), table.size());
+
+  // Every step's entry must be one the configured table holds. This is the
+  // property the HEAD defect violated, asserted directly rather than trusted.
+  std::set<std::string> held;
+  for (const auto& entry : configured) held.insert(entry.entryId);
+  for (const auto& step : ownedSteps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    BOOST_CHECK_MESSAGE(held.count(step.artifactEntry) == 1,
+      "step " + step.stepId + " names an entry the configured table lacks: " +
+      step.artifactEntry);
+  }
+
+  // And the factory serves it, through the same registry a Provider uses.
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  BOOST_CHECK_NO_THROW(factory.create(spec));
 
   std::filesystem::remove_all(root, cleanupError);
 }
