@@ -5538,6 +5538,54 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(PlannerRolesArePerStageWhileShardingNeedsOneRolePerRank)
+{
+  // A structural obstacle, not a missing call. The planner's candidate has one role per
+  // stage and records that stage's degree beside it; the TP projection produces one
+  // role per rank. Those are different role models, so wiring the projection into the
+  // planner would change what a role means for placement, artifacts and layer ranges --
+  // not add a step to one role.
+  //
+  // Stated as the two shapes side by side.
+  //
+  // Planner shape: one stage role, degree beside it.
+  std::vector<std::string> stageRoles = {"/Stage/0"};
+  std::vector<std::uint64_t> stageDegrees = {2};
+  BOOST_CHECK_EQUAL(stageRoles.size(), 1U);
+  BOOST_CHECK_EQUAL(stageDegrees.size(), 1U);
+
+  // Projection shape: one role per rank, each covering every layer.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan projected;
+  qwen::projectQwenTpPlan(projected, shape, 2, "entry", "S0R0");
+  BOOST_CHECK_EQUAL(projected.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(projected.tensorDegree, 2U);
+
+  // The mismatch: the planner would have one role where the projection has two, and
+  // every per-role fact -- artifact digest, layer range, weight bytes, provider
+  // assignment -- is keyed by role. So the change is to the candidate's role model,
+  // not to a single plan.
+  BOOST_TEST_MESSAGE("planner roles=" << stageRoles.size()
+                    << " degrees=" << stageDegrees.size()
+                    << " | projected roles=" << projected.roles.size()
+                    << " degree=" << projected.tensorDegree);
+  BOOST_CHECK_MESSAGE(stageRoles.size() != projected.roles.size(),
+    "the role counts already agree, so this obstacle has been removed");
+
+  // Each projected role covers every layer, which is what a sharded unit does; a
+  // planner stage role covers its own range. Two stages and two ranks cannot share one
+  // list without changing what the list means.
+  std::set<std::uint64_t> layersPerUnit;
+  for (const auto& step : projected.steps)
+    if (step.artifactEntry.find("/ATTN/") != std::string::npos)
+      layersPerUnit.insert(static_cast<std::uint64_t>(
+        std::stoull(step.stepId.substr(step.stepId.find("/ATTN/") + 6))));
+  BOOST_CHECK_EQUAL(layersPerUnit.size(), shape.layers);
+}
+
 BOOST_AUTO_TEST_CASE(ThePlannerHasNoGraphFactsToProjectFrom)
 {
   // Why exit 1 cannot be closed inside the planner. The TP projection needs head
