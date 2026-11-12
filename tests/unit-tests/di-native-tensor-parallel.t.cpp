@@ -5697,6 +5697,265 @@ BOOST_AUTO_TEST_CASE(ProductionPlannerStillEmitsAPipelineCandidateForAShardedDeg
   BOOST_CHECK_EQUAL(pipelineStateSlots, 0U);
 }
 
+namespace {
+
+std::string tpDigest(char value)
+{
+  return "sha256:" + std::string(64, value);
+}
+
+/** A decode-state identity for a sharded unit, valid by construction. */
+DecodeStateIdentityV1 tpStateIdentity(const std::string& role, std::uint32_t layerEnd,
+                                      std::uint64_t stateEpoch)
+{
+  DecodeStateIdentityV1 identity;
+  identity.modelDigest = tpDigest('1');
+  identity.graphSemanticDigest = tpDigest('2');
+  identity.artifactDigest = tpDigest('3');
+  identity.adapterDigest = tpDigest('4');
+  identity.tokenizerDigest = tpDigest('5');
+  identity.runnerDigest = tpDigest('6');
+  identity.roleName = role;
+  identity.roleSplitDigest = tpDigest('7');
+  identity.layerBegin = 0;
+  identity.layerEnd = layerEnd;
+  identity.prefixDigest = tpDigest('8');
+  identity.prefixTokenCount = 1;
+  identity.positionDigest = tpDigest('9');
+  identity.precision = "fp32";
+  identity.layoutDigest = tpDigest('a');
+  identity.stateSchemaDigest = tpDigest('b');
+  identity.stateComponentDigests = {tpDigest('c'), tpDigest('d')};
+  identity.runtimeAbiDigest = tpDigest('e');
+  identity.securityDomainDigest = tpDigest('f');
+  identity.providerIdentity = "/provider/0";
+  identity.providerBootId = "boot-tp";
+  identity.cacheEpoch = 7;
+  identity.stateInferenceEpoch = stateEpoch;
+  identity.requestId = "/request/tp-sampling";
+  identity.attemptEpoch = 1;
+  identity.generationId = "tp-generation-0001";
+  identity.validate();
+  return identity;
+}
+
+/** IO that answers the epoch's inputs and records what was published. */
+class TpSamplingIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge& edge) override
+  {
+    ++prefetchCalls;
+    std::promise<TensorBundle> promise;
+    // A peer partial, shaped and typed to match the local contribution: SUM refuses
+    // contributions that disagree on identity, type, shape or size, and that refusal is
+    // the contract rather than an obstacle to work around.
+    NamedTensor tensor;
+    tensor.name = "partial";
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(1), std::int64_t(4)};
+    tensor.payload.assign(4 * sizeof(float), 0);
+    float* values = reinterpret_cast<float*>(tensor.payload.data());
+    for (std::size_t index = 0; index < 4; ++index) values[index] = 0.25f;
+    TensorBundle bundle;
+    bundle.name = edge.scope;
+    bundle.payload = encodeTensorBundle({tensor});
+    bundle.expectedBytes = bundle.payload.size();
+    promise.set_value(std::move(bundle));
+    return promise.get_future();
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge& edge,
+                const TensorBundle&) override
+  {
+    ++publishCalls;
+    publishedScopes.push_back(edge.scope);
+  }
+
+  std::atomic<std::size_t> prefetchCalls{0};
+  std::atomic<std::size_t> publishCalls{0};
+  std::mutex mutex;
+  std::vector<std::string> publishedScopes;
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(CoordinatorSamplesOneTokenThroughATensorParallelEgressSpec)
+{
+  // The end-to-end piece exit 4 was missing: a real coordinator, a projected
+  // tensor-parallel egress spec, and a token sampled from logits the runner produced.
+  // Everything below is production code except the runner standing in for ONNX.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  // Feedback to both units, as the planner shapes it.
+  for (const auto& consumer : plan.roles) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {consumer};
+    feedback.keyScope = "token-feedback-" + consumer;
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+
+  // The plan's own operation stride: a streamed NDNSF_DATA_V1 plan derives each epoch's
+  // operation index from it, so a plan with feedback edges must carry one.
+  plan.streamingOperationStride = plan.dependencies.size();
+
+  // The generation contract the application would supply, with the plan's own state
+  // names bound in.
+  NativeGenerationExecutionContractV1 contract;
+  contract.enabled = true;
+  contract.mode = "TOKEN_STREAMING";
+  contract.maxGeneratedTokens = 1;
+  contract.tokenInputName = "input_ids";
+  contract.eosTokenIds = {2};
+  contract.samplingDigest = tpDigest('a');
+  contract.tokenizerDigest = tpDigest('b');
+  qwen::bindQwenTpGenerationState(plan, contract);
+  BOOST_REQUIRE(!contract.stateInputNames.empty());
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto identity = tpStateIdentity("S0R0", 1, 0);
+
+  NativeProviderRuntime runtime(1);
+  NativeModelRunnerSpec runnerSpec;
+  runnerSpec.role = "S0R0";
+  runnerSpec.kind = "onnx-model";
+  runnerSpec.backend = "tp-test";
+  runnerSpec.path = "/tmp/tp-egress.onnx";
+  runnerSpec.metadata = std::map<std::string, std::string>{
+    {"evidence.modelDigest", identity.modelDigest},
+    {"evidence.planDigest", tpDigest('0')},
+    {"evidence.providerName", identity.providerIdentity},
+    {"evidence.providerBootId", identity.providerBootId},
+    {"state.securityEpoch", "7"},
+    {"state.generationId", identity.generationId},
+    {"state.schemaDigest", identity.stateSchemaDigest},
+  };
+
+  // The KV successors have to travel as role outputs, because that is where the runtime
+  // looks for decode state: the worker packs state from outputsByScope by tensor name,
+  // and a scope the unit does not declare never reaches it. One edge per state output,
+  // each carrying its own tensor.
+  for (const auto& name : contract.stateOutputNames) {
+    DependencyEdge stateEdge;
+    stateEdge.scope = name;
+    stateEdge.producerRole = "S0R0";
+    stateEdge.tensors = {name};
+    stateEdge.plannedDataName = "/tp/state/" + name;
+    plan.dependencies.push_back(NativeDependencySpec{{"S0R0"}, {}, name,
+      "/tp/state", "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{sequence}",
+      1, 0, {name}});
+    plan.dependencies.back().operationKind = "ACTIVATION";
+  }
+
+  // The runner stands in for the parent: it answers the step it is asked for, emits
+  // vocabulary-wide logits whose maximum is at token 5, and returns the KV successor
+  // under the export's names.
+  std::atomic<std::size_t> runnerCalls{0};
+  const auto runner = makeNativeModelRunner(
+    [&runnerCalls, &contract] (const RoleExecutionContext& ctx) {
+      ++runnerCalls;
+      BOOST_REQUIRE(ctx.activeStep != nullptr);
+      // Each output slot carries exactly one tensor. A SUM over a multi-tensor
+      // bundle is refused, because a contribution is one value rather than a set --
+      // so the state tensors travel under their own names instead of riding along in
+      // every slot.
+      //
+      // The head's slot value IS the vocabulary-wide logits: the template names that
+      // slot "logits" and the sampler reads the tensor of that name, so a narrow
+      // placeholder here would be what the sampler saw.
+      const bool head = ctx.activeStep->artifactEntry.find("/HEAD/") !=
+                        std::string::npos;
+      std::map<std::string, TensorBundle> outputs;
+      for (const auto& slot : ctx.activeStep->outputSlots) {
+        NamedTensor value;
+        value.name = slot.slotId;
+        value.elementType = TensorElementType::Float32;
+        if (head && slot.slotId == "logits") {
+          value.shape = {1, static_cast<std::int64_t>(151936)};
+          value.payload.assign(static_cast<std::size_t>(151936) * sizeof(float), 0);
+          float* values = reinterpret_cast<float*>(value.payload.data());
+          // Token 5 wins clearly, so the sampled id cannot be a tie or a default.
+          values[5] = 4.0f;
+          values[9] = 1.0f;
+        }
+        else {
+          value.shape = {std::int64_t(1), std::int64_t(4)};
+          value.payload.assign(4 * sizeof(float), 0);
+          float* slotValues = reinterpret_cast<float*>(value.payload.data());
+          for (std::size_t index = 0; index < 4; ++index) slotValues[index] = 0.5f;
+        }
+        outputs.emplace(slot.slotId,
+          makeEncodedTensorBundle(slot.slotId, {std::move(value)}));
+      }
+      for (const auto& name : contract.stateOutputNames) {
+        NamedTensor state;
+        state.name = name;
+        state.elementType = TensorElementType::Float32;
+        state.shape = {1, 4, 1, 128};
+        state.payload.assign(4 * 128 * sizeof(float), 0);
+        outputs.emplace(name, makeEncodedTensorBundle(name, {std::move(state)}));
+      }
+      return outputs;
+    });
+  runtime.registerRunner(runnerSpec, runner);
+
+  auto io = std::make_shared<TpSamplingIo>();
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "tp-sampling-session";
+  config.requestId = "/request/tp-sampling";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = tpDigest('0');
+  config.localProvider = "/provider/0";
+  config.role = "S0R0";
+  config.initialInputs = {
+    {"input_ids", makeEncodedTensorBundle("prompt",
+      {NamedTensor{"input_ids", TensorElementType::Int64, {1, 1},
+                   [](auto) { return std::vector<std::uint8_t>(sizeof(std::int64_t) * 1, 0); }
+                     (0)}})},
+  };
+  config.maxEpochs = 1;
+  config.stateInputNames = contract.stateInputNames;
+  config.stateOutputNames = contract.stateOutputNames;
+  config.stateIdentityTemplate = identity;
+  config.positionPolicyDigest = identity.positionDigest;
+  config.samplingDigest = contract.samplingDigest;
+  config.prepareRunner = [runner] { return runner; };
+  std::vector<std::string> events;
+  config.eventSink = [&events] (const std::vector<std::uint8_t>& payload) {
+    events.emplace_back(payload.begin(), payload.end());
+    return true;
+  };
+
+  const auto result = runNativeEpochCoordinator(std::move(config));
+
+  // One token epoch ran, one event was admitted, and the token is the argmax of the
+  // logits the runner produced -- not a value the coordinator invented.
+  // The unit's template has four subgraph steps for one layer, so the runner is called
+  // once per step rather than once per epoch -- which is what the sealed template
+  // means by driving the unit.
+  BOOST_CHECK_EQUAL(runnerCalls.load(), 4U);
+  BOOST_REQUIRE_EQUAL(events.size(), 1U);
+  BOOST_TEST_MESSAGE("token event: " << events.front());
+  BOOST_CHECK(events.front().find("\"tokenId\":5") != std::string::npos);
+  BOOST_CHECK_EQUAL(result.epochsExecuted, 1U);
+  // The final payload is the terminal response the requester receives.
+  BOOST_CHECK(result.finalPayload.has_value());
+}
+
 BOOST_AUTO_TEST_CASE(ApplicationStateDefaultsAreReplacedByThePlansOwnKvSlots)
 {
   // The application's generation options carry default state names written for one

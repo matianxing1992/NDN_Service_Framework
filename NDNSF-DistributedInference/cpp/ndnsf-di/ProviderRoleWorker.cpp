@@ -1139,6 +1139,8 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   // plan validated as a DAG, so a single pass in template order reaches a
   // fixpoint: every producer is visited before its consumers.
   std::map<std::string, TensorBundle> produced;
+  // State successors collected from the adapter, keyed by their declared names.
+  std::map<std::string, TensorBundle> stateScopes;
   ProviderRoleResult result;
   result.runner = item.runner;
 
@@ -1290,6 +1292,16 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       produced.emplace(step.stepId + "\n" + slot.slotId, found->second);
     }
+    // Keep the decode-state successors the adapter returned. They are not step slots
+    // -- the runtime packs state from the result by tensor name -- so dropping them
+    // here would make every epoch report a missing state output even though the
+    // adapter produced it. Only declared state names are kept, so an adapter cannot
+    // smuggle an undeclared scope into the result.
+    for (const auto& name : item.role.stateOutputNames) {
+      const auto found = outputs.find(name);
+      if (found == outputs.end()) continue;
+      stateScopes.emplace(name, found->second);
+    }
 
     // Publish this step's remote partial now, not after the unit finishes. A peer
     // waiting for this contribution would otherwise wait for work that itself
@@ -1357,6 +1369,11 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     }
     result.outputsByScope.emplace(edge.scope, found->second);
   }
+
+  // Decode-state successors travel under their own names, before the terminal-value
+  // exposure, so the runtime finds them by tensor name.
+  for (auto& item : stateScopes)
+    result.outputsByScope.emplace(item.first, std::move(item.second));
 
   // Surface terminal step values that no edge carries. A sharded unit's head
   // produces logits that no peer consumes -- the sampler reads them -- and relying
@@ -1430,6 +1447,11 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       throw std::runtime_error(
         "Provider role preparation returned no NativeModelRunner");
     }
+    // Record the prepared runner on the item as well. Every later consumer reads
+    // `item.runner` -- the sealed-step path among them -- so leaving the prepared
+    // value only in this local would make a lazily prepared step-carrying role fail
+    // with "requires a prepared runner" even though preparation succeeded.
+    item.runner = runner;
     logDiTimelineTrace(
       "di-provider", "role_preparation_done", requestId,
       {{"sessionId", item.sessionId},
