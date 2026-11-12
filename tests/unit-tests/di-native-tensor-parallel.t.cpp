@@ -7878,6 +7878,59 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(NetworkEndpointsComeFromTheProjectionNotFromThePlan)
+{
+  // Why the network case cannot reuse the projected plan's edges as they are. The plan
+  // says who produces what; the V3 endpoint says how it crosses the network, and the
+  // endpoint is certified by the projection builder from an authenticated group
+  // binding. roleSpecFor copies the plan's edges and sets none of the endpoint fields.
+  //
+  // So an edge has identity and step binding from the plan, and needs a projection to
+  // acquire a transport identity. That split is why the existing network case builds
+  // its endpoint by hand: it is exercising the transport, not the projection.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto spec = roleSpecFor(plan, "S0R1", std::string("/session/tp-network"),
+                                assignment, "/provider/1");
+  BOOST_REQUIRE(!spec.inputs.empty());
+
+  std::size_t withEndpoint = 0;
+  std::size_t withStepBinding = 0;
+  for (const auto& edge : spec.inputs) {
+    if (!edge.useNdnsfDataV1) continue;
+    if (!edge.endpointDigest.empty() && !edge.manifestDataName.empty() &&
+        edge.maxSegments != 0 && edge.securityProfile == "NDNSF_DATA_V1") {
+      ++withEndpoint;
+    }
+    if (!edge.consumerStepId.empty() && !edge.consumerSlotId.empty()) ++withStepBinding;
+  }
+  BOOST_TEST_MESSAGE("DATA_V1 inputs=" << spec.inputs.size()
+                    << " withStepBinding=" << withStepBinding
+                    << " withEndpoint=" << withEndpoint);
+  // The step binding travels with the edge, which is what the worker matches on.
+  BOOST_CHECK(withStepBinding > 0);
+  // The endpoint does not, which is what network publication validates.
+  BOOST_CHECK_EQUAL(withEndpoint, 0U);
+
+  // The two are separate contracts with separate owners: the sealed plan owns identity
+  // and binding, the certified projection owns the transport endpoint. A composition
+  // has to carry both, and this case is the record that the plan alone carries one.
+  for (const auto& edge : spec.inputs) {
+    if (!edge.useNdnsfDataV1) continue;
+    BOOST_CHECK(edge.endpointDigest.empty());
+    BOOST_CHECK(edge.manifestDataName.empty());
+    BOOST_CHECK_EQUAL(edge.maxSegments, 0U);
+    BOOST_CHECK(edge.securityProfile.empty());
+  }
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorMustPublishEveryFeedbackEdgeNotJustTheFirst)
 {
   // C6: the coordinator admits the token event once, then handles every feedback
