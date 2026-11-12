@@ -8,6 +8,7 @@
  */
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStepExecutor.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include <onnx/onnx_pb.h>
@@ -2330,6 +2331,119 @@ BOOST_AUTO_TEST_CASE(SumAccumulatesContributionsAndRejectsMismatch)
     BOOST_CHECK_THROW(
       StepExecutionResult::accumulate(accumulator, "remote0", odd), std::invalid_argument);
   }
+}
+
+BOOST_AUTO_TEST_CASE(StepExecutorRunsTheDagAndWaitsForRemoteContributions)
+{
+  // The executor is the piece that turns a sealed template into execution. Its
+  // two responsibilities are ordering and never inventing data: a SUM with a
+  // missing remote partial must stay pending, and a repeated contribution must
+  // not be counted twice.
+  const auto bundle = [] (std::vector<float> values) {
+    TensorBundle result;
+    result.name = "partial";
+    result.payload.resize(values.size() * sizeof(float));
+    std::memcpy(result.payload.data(), values.data(), result.payload.size());
+    return result;
+  };
+  const auto valuesOf = [] (const TensorBundle& tensor) {
+    std::vector<float> values(tensor.payload.size() / sizeof(float));
+    std::memcpy(values.data(), tensor.payload.data(), tensor.payload.size());
+    return values;
+  };
+
+  NativeExecutionPlan plan = twoRankPlan();
+  std::size_t subgraphCalls = 0;
+  std::vector<std::string> order;
+  const auto runner = [&] (const StepExecutionContext& context) -> std::optional<StepExecutionResult> {
+    order.push_back(context.stepId);
+    StepExecutionResult produced;
+    if (context.operation == "CALL_SUBGRAPH") {
+      ++subgraphCalls;
+      // Every subgraph step in this fixture emits a named partial.
+      produced.outputsBySlot["partial"] = bundle({1.0f, 0.0f});
+      return produced;
+    }
+    // SUM reduces local plus every admitted remote contribution into one
+    // tensor. Accumulating under each input's own slot id would keep them
+    // separate and silently return only the local one.
+    std::map<std::string, TensorBundle> accumulator;
+    for (const auto& input : context.inputsBySlot)
+      StepExecutionResult::accumulate(accumulator, "merged", input.second);
+    StepExecutionResult summed;
+    summed.outputsBySlot["merged"] = accumulator.at("merged");
+    return summed;
+  };
+
+  NativeStepExecutor executor(plan, "S0R0", runner);
+  // INIT is not in this fixture, so the first runnable step is ATTN.
+  BOOST_CHECK_EQUAL(executor.complete(), false);
+  BOOST_CHECK(std::find(executor.pendingSteps().begin(), executor.pendingSteps().end(),
+                        "S0R0/ATTN/0") != executor.pendingSteps().end());
+
+  // ATTN declares an EPOCH_INPUT slot, so the caller must supply it; without it
+  // the step correctly stays pending.
+  const std::map<std::string, TensorBundle> epoch = {{"in", bundle({1.0f, 1.0f})}};
+  auto first = executor.advance(epoch, "/session", "/request", 1, 1);
+  // The attention step ran; its SUM cannot, because the peer partial is absent.
+  BOOST_CHECK_EQUAL(subgraphCalls, 1U);
+  BOOST_CHECK(order.size() == 1 && order.front() == "S0R0/ATTN/0");
+  BOOST_CHECK_EQUAL(executor.complete(), false);
+
+  // A repeated contribution to the same slot is refused rather than counted.
+  BOOST_CHECK(executor.admit("S0R0/SUM_ATTN/0", "remote", bundle({5.0f, 5.0f})) == true);
+  BOOST_CHECK(executor.admit("S0R0/SUM_ATTN/0", "remote", bundle({5.0f, 5.0f})) == false);
+  // A slot that is not a declared remote input of that step is refused too.
+  BOOST_CHECK(executor.admit("S0R0/SUM_ATTN/0", "local", bundle({1.0f, 1.0f})) == false);
+  BOOST_CHECK(executor.admit("S0R0/ATTN/0", "in", bundle({1.0f, 1.0f})) == false);
+
+  // This fixture's unit is ATTN -> SUM_ATTN -> MLP, so the admitted peer
+  // partial unblocks both the reduction and the MLP after it in one pass.
+  auto second = executor.advance(epoch, "/session", "/request", 1, 1);
+  BOOST_CHECK_EQUAL(second.outputsBySlot.count("merged"), 1U);
+  BOOST_CHECK(valuesOf(second.outputsBySlot.at("merged")) == std::vector<float>({6.0f, 5.0f}));
+  BOOST_CHECK_EQUAL(executor.complete(), true);
+  BOOST_CHECK(executor.pendingSteps().empty());
+
+  // Running again must not re-execute finished steps.
+  const auto before = subgraphCalls;
+  auto third = executor.advance(epoch, "/session", "/request", 1, 1);
+  BOOST_CHECK_EQUAL(subgraphCalls, before);
+  BOOST_CHECK(third.outputsBySlot.empty());
+
+  // Ordering must follow the template, not the map iteration order.
+  BOOST_CHECK(std::is_sorted(order.begin(), order.end(),
+    [&plan] (const auto& left, const auto& right) {
+      const auto indexOf = [&plan] (const std::string& id) {
+        for (std::size_t i = 0; i < plan.steps.size(); ++i)
+          if (plan.steps[i].stepId == id) return i;
+        return plan.steps.size();
+      };
+      return indexOf(left) < indexOf(right);
+    }));
+}
+
+BOOST_AUTO_TEST_CASE(StepExecutorRefusesUndeclaredUnitsAndMissingEpochInputs)
+{
+  NativeExecutionPlan plan = twoRankPlan();
+  const auto runner = [] (const StepExecutionContext&) {
+    StepExecutionResult produced;
+    return std::optional<StepExecutionResult>(produced);
+  };
+
+  // A unit the plan does not declare cannot be executed.
+  BOOST_CHECK_THROW(NativeStepExecutor(plan, "S9R9", runner), std::invalid_argument);
+  // Neither can a unit with no steps of its own, nor an empty adapter port.
+  BOOST_CHECK_THROW(NativeStepExecutor(plan, "", runner), std::invalid_argument);
+  BOOST_CHECK_THROW(NativeStepExecutor(plan, "S0R0", StepRunner{}), std::invalid_argument);
+
+  // An EPOCH_INPUT slot with no supplied value leaves the step pending instead
+  // of running it with an empty tensor.
+  auto withEpoch = twoRankPlan();
+  withEpoch.steps[0].inputSlots.push_back(slot("input_ids", "EPOCH_INPUT"));
+  NativeStepExecutor executor(withEpoch, "S0R0", runner);
+  (void)executor.advance({}, "/session", "/request", 1, 1);
+  BOOST_CHECK_EQUAL(executor.complete(), false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

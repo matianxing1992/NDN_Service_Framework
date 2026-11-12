@@ -253,8 +253,6 @@ struct StepExecutionContext
   std::map<std::string, TensorBundle> inputsBySlot;
   // Exact dependency contract for each remote input, keyed by slot id.
   std::map<std::string, DependencyEdge> inputEdgesBySlot;
-  // Contributions already admitted for a SUM step, keyed by slot id.
-  std::map<std::string, TensorBundle> contributionsBySlot;
   std::optional<GenerationEpochLineageV1> generationLineage;
   std::uint32_t generationInputTokenCount = 0;
 };
