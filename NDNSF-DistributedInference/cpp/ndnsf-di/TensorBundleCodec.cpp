@@ -1453,4 +1453,67 @@ accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
   for (std::size_t index = 0; index < elements; ++index) sum[index] += addend[index];
 }
 
+void
+accumulateDecodedTensorBundle(std::map<std::string, TensorBundle>& accumulator,
+                              const std::string& slot,
+                              const std::vector<NamedTensor>& contribution,
+                              const std::string& bundleName)
+{
+  if (contribution.empty()) {
+    throw std::invalid_argument("step SUM contribution has no tensors");
+  }
+  // SUM reduces one tensor: the partial both ranks contribute. More than one
+  // tensor would make the reduction order-dependent, so it is refused rather
+  // than silently reduced over the first one.
+  if (contribution.size() != 1) {
+    throw std::invalid_argument(
+      "step SUM contribution must carry exactly one tensor");
+  }
+  const auto& tensor = contribution.front();
+  if (tensor.elementType != TensorElementType::Float32) {
+    throw std::invalid_argument(
+      "step SUM contribution is not float32");
+  }
+  if (tensor.payload.empty() || tensor.payload.size() % sizeof(float) != 0) {
+    throw std::invalid_argument(
+      "step SUM contribution payload is empty or not a whole number of float32 elements");
+  }
+
+  const auto existing = accumulator.find(slot);
+  if (existing == accumulator.end()) {
+    // Encode a fresh single-tensor bundle so the accumulator has the same wire
+    // shape every other step input has.
+    TensorBundle initial;
+    initial.name = bundleName;
+    initial.payload = encodeTensorBundle({tensor});
+    initial.expectedBytes = initial.payload.size();
+    accumulator.emplace(slot, std::move(initial));
+    return;
+  }
+
+  // Later contributions must match the accumulated tensor exactly. The
+  // accumulator is decoded to compare, because the stored form is a bundle.
+  const auto decoded = decodeTensorBundle(existing->second.payload);
+  if (decoded.size() != 1 || decoded.front().name != tensor.name ||
+      decoded.front().elementType != tensor.elementType ||
+      decoded.front().shape != tensor.shape ||
+      decoded.front().payload.size() != tensor.payload.size()) {
+    throw std::invalid_argument(
+      "step SUM contributions disagree on tensor identity, type, shape or size");
+  }
+  const auto elements = tensor.payload.size() / sizeof(float);
+  std::vector<std::uint8_t> sum(decoded.front().payload);
+  auto* target = reinterpret_cast<float*>(sum.data());
+  const auto* addend = reinterpret_cast<const float*>(tensor.payload.data());
+  for (std::size_t index = 0; index < elements; ++index) target[index] += addend[index];
+
+  auto replaced = decoded.front();
+  replaced.payload = std::move(sum);
+  TensorBundle updated;
+  updated.name = existing->second.name;
+  updated.payload = encodeTensorBundle({replaced});
+  updated.expectedBytes = updated.payload.size();
+  existing->second = std::move(updated);
+}
+
 } // namespace ndnsf::di

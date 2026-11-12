@@ -196,6 +196,24 @@ void
 accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
                        const std::string& slot, const TensorBundle& contribution);
 
+/** Sum one decoded contribution into `accumulator` under `slot`.
+ *
+ * A step input is an encoded bundle, not raw floats, so a SUM must decode it
+ * before adding: treating the encoded payload as float32 would add its framing
+ * and names as if they were values. Every contribution is checked, including the
+ * first, and all of them must agree on the tensor name, element type, shape and
+ * payload size — a SUM over mismatched contributions is a contract violation, not
+ * something to coerce.
+ *
+ * The first contribution of a slot initialises the accumulator from a copy so the
+ * caller's bundle is never mutated.
+ */
+void
+accumulateDecodedTensorBundle(std::map<std::string, TensorBundle>& accumulator,
+                              const std::string& slot,
+                              const std::vector<NamedTensor>& contribution,
+                              const std::string& bundleName);
+
 /** Validate borrowed payloads and synchronously copy them into owned wire bytes. */
 std::vector<std::uint8_t>
 encodeTensorBundleViews(const std::vector<NamedTensorView>& tensors,

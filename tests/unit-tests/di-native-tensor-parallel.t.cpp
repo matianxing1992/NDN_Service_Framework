@@ -2831,6 +2831,87 @@ BOOST_AUTO_TEST_CASE(ProjectionReferencesOnlyVerifiedEntryContracts)
     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(SumDecodesBundlesInsteadOfAddingFramingBytes)
+{
+  // A step input is an encoded bundle, not raw floats. Adding the encoded payload
+  // as if it were float32 would fold its framing and tensor name into the values,
+  // which is wrong but numerically plausible — so this case checks the decoded
+  // result against hand-computed floats.
+  const auto bundleOf = [] (const std::string& name, std::vector<float> values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(1), std::int64_t(values.size())};
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return std::vector<NamedTensor>{std::move(tensor)};
+  };
+  const auto valuesOf = [] (const TensorBundle& bundle) {
+    const auto decoded = decodeTensorBundle(bundle.payload);
+    BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+    BOOST_REQUIRE(decoded.front().elementType == TensorElementType::Float32);
+    std::vector<float> values(decoded.front().payload.size() / sizeof(float));
+    std::memcpy(values.data(), decoded.front().payload.data(), decoded.front().payload.size());
+    return values;
+  };
+
+  std::map<std::string, TensorBundle> accumulator;
+  accumulateDecodedTensorBundle(accumulator, "remote0",
+    bundleOf("partial", {1.0f, 2.0f}), "scope");
+  BOOST_REQUIRE_EQUAL(accumulator.count("remote0"), 1U);
+  // The first contribution initialises; the accumulator holds a real bundle whose
+  // decoded values are exactly the input, with no framing mixed in.
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.0f, 2.0f}));
+
+  accumulateDecodedTensorBundle(accumulator, "remote0",
+    bundleOf("partial", {0.5f, -1.0f}), "scope");
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f}));
+
+  // A different element type is refused rather than reinterpreted.
+  {
+    NamedTensor ints;
+    ints.name = "partial";
+    ints.elementType = TensorElementType::Int32;
+    ints.shape = {std::int64_t(2)};
+    ints.payload.resize(sizeof(std::int32_t) * 2, 0);
+    BOOST_CHECK_THROW(
+      accumulateDecodedTensorBundle(accumulator, "remote0", {ints}, "scope"),
+      std::invalid_argument);
+  }
+  // A different tensor name, shape or payload size is refused.
+  BOOST_CHECK_THROW(
+    accumulateDecodedTensorBundle(accumulator, "remote0",
+      bundleOf("other", {1.0f, 2.0f}), "scope"),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    accumulateDecodedTensorBundle(accumulator, "remote0",
+      bundleOf("partial", {1.0f}), "scope"),
+    std::invalid_argument);
+  // Zero tensors and more than one tensor are both refused: a SUM reduces one
+  // partial, and reducing over several would be order-dependent.
+  BOOST_CHECK_THROW(
+    accumulateDecodedTensorBundle(accumulator, "remote0", {}, "scope"),
+    std::invalid_argument);
+  {
+    auto two = bundleOf("partial", {1.0f, 2.0f});
+    two.push_back(two.front());
+    BOOST_CHECK_THROW(
+      accumulateDecodedTensorBundle(accumulator, "remote0", two, "scope"),
+      std::invalid_argument);
+  }
+  // A non-float32-aligned payload cannot be summed.
+  {
+    auto odd = bundleOf("partial", {1.0f});
+    odd.front().payload.push_back(0);
+    BOOST_CHECK_THROW(
+      accumulateDecodedTensorBundle(accumulator, "remote0", odd, "scope"),
+      std::invalid_argument);
+  }
+
+  // The accumulator survived every rejection unchanged.
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f}));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
