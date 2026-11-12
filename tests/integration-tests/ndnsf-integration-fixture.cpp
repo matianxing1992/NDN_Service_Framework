@@ -14,6 +14,8 @@
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
+#include <boost/asio/executor_work_guard.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -100,26 +102,25 @@ pumpFaces(ndn::DummyClientFace& userFace,
           bool pumpProviderFaces,
           const std::function<bool()>& done)
 {
+  const auto pump = [](ndn::DummyClientFace& face) {
+    auto& io = face.getIoContext();
+    io.restart();
+    // Face::processEvents(timeout) calls io.stop() at the batch boundary.
+    // Concurrent production workers interpret that as shutdown, not yielding.
+    // Keep idle loops alive and yield without exposing a false cancellation.
+    io.run_for(std::chrono::milliseconds(5));
+  };
   for (int i = 0; i < 200 && !done(); ++i) {
     // NAC-ABE Producers request the Attribute Authority public parameters as
     // soon as they are constructed. Process the authority first so its Data is
     // available before the User/Provider event loops are pumped in this round.
     if (pumpAttributeAuthority) {
-      attributeAuthorityFace.processEvents(ndn::time::milliseconds(5));
+      pump(attributeAuthorityFace);
     }
-    userFace.processEvents(ndn::time::milliseconds(5));
+    pump(userFace);
     if (pumpProviderFaces) {
       for (auto* providerFace : providerFaces) {
-        providerFace->processEvents(ndn::time::milliseconds(5));
-      }
-    }
-    userFace.getIoContext().restart();
-    if (pumpAttributeAuthority) {
-      attributeAuthorityFace.getIoContext().restart();
-    }
-    if (pumpProviderFaces) {
-      for (auto* providerFace : providerFaces) {
-        providerFace->getIoContext().restart();
+        pump(*providerFace);
       }
     }
   }
@@ -223,6 +224,9 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
   }
 
   m_userFace = std::make_unique<ndn::DummyClientFace>(m_userIo, *m_keyChain, faceOptions);
+  m_faceWorkGuards.push_back(boost::asio::make_work_guard(m_userIo));
+  m_faceWorkGuards.push_back(boost::asio::make_work_guard(m_providerIo));
+  m_faceWorkGuards.push_back(boost::asio::make_work_guard(m_attributeAuthorityIo));
   m_providerFace = std::make_unique<ndn::DummyClientFace>(m_providerIo, *m_keyChain, faceOptions);
   m_attributeAuthorityFace = std::make_unique<ndn::DummyClientFace>(
       m_attributeAuthorityIo, *m_keyChain, faceOptions);
@@ -391,6 +395,7 @@ NdnsfIntegrationEnvironment::NdnsfIntegrationEnvironment(BootstrapProfile profil
     m_extraProviders.back()->useSigningKeyChainForTest(*m_keyChain);
     m_extraProviders.back()->setHandlerThreads(1);
     m_extraProviders.back()->setAckThreads(1);
+    m_faceWorkGuards.push_back(boost::asio::make_work_guard(face->getIoContext()));
     m_extraProviderFaces.push_back(std::move(face));
   }
 
@@ -476,7 +481,9 @@ NdnsfIntegrationEnvironment::~NdnsfIntegrationEnvironment()
       for (auto* face : faces) {
         try {
           face->getIoContext().restart();
-          face->processEvents(ndn::time::milliseconds(1));
+          // Closing a Face can cancel its own processEvents timeout timer.
+          // An io_context deadline remains bounded even while shutdown drains.
+          face->getIoContext().run_for(std::chrono::milliseconds(1));
           face->getIoContext().restart();
           face->getIoContext().poll();
         }

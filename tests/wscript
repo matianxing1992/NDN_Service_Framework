@@ -752,15 +752,22 @@ def build(bld):
 
     # Spec192 T003/T004 drives the public Persistent API through authenticated
     # in-process ServiceUser/Provider transport and independent disk/SQLite oracles.
-    bld.program(target='../spec192-repo-persistent-api',
-                name='spec192-repo-persistent-api',
+    for suffix in ('', '-asan'):
+        flags = ['-fPIC', '-O0', '-g0', '-fno-inline']
+        links = ['-Wl,--no-relax']
+        if suffix:
+            flags += ['-g1', '-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+            links += ['-fsanitize=address,undefined']
+        bld.program(target='../spec192-repo-persistent-api' + suffix,
+                name='spec192-repo-persistent-api' + suffix,
                 source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/controller-bootstrap-lifetime.t.cpp'),
                         bld.path.find_node('integration-tests/spec192-persistent-artifact-api.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX ONNXRUNTIME NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
+                cxxflags=flags,
+                linkflags=links,
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec192 T007 offline legacy import: the unit target validates source
@@ -1881,7 +1888,8 @@ def build(bld):
 
     # Faults are scoped to a test-owned destination and never enter production targets.
     for name in ('unit-tests', 'spec202-repo-conformance', 'spec192-repo-inapp-api',
-                 'spec192-repo-persistent-api', 'spec192-repo-legacy-import-unit'):
+                 'spec192-repo-persistent-api', 'spec192-repo-persistent-api-asan',
+                 'spec192-repo-legacy-import-unit'):
         bld.get_tgen_by_name(name).linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',
             '-Wl,--wrap=flock']

@@ -165,6 +165,18 @@ after cancellation, before repeating model publication. The latter has no
 captured stack or established cause. Those failures remain qualification limits;
 the checkpoint must not be treated as a release with proven sustained stability.
 
+B49 follow-up isolated an additional bootstrap callback lifetime defect:
+ServiceUser discarded controller-fetch Interest and retry handles, allowing a
+manifest timeout to use its destroyed scheduler. Scoped fetch owners now cancel
+those operations and invalidate queued validation callbacks on teardown or
+replacement. Six lifecycle regressions pass 38 assertions in both ordinary and
+ASAN fixture builds. The authenticated packet publication/restart test passes
+166 assertions with the instrumented fixture after correcting its event pump
+and shutdown drain; production shared libraries are not sanitizer-instrumented.
+The storage suite passes 145 cases and 41,226 assertions. These results do not
+prove the cause of the earlier uncaptured memory violation. Global installation
+and installed runtime qualification are still pending before a stable checkpoint.
+
 Persistent serving can read up to 16 exact segmented Interests from the same
 immutable packet set under one bounded batch admission. Fresh current metadata,
 physical availability and the applicable live claim bracket the reads; each

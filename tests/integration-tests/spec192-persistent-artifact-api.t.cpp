@@ -2709,6 +2709,7 @@ struct OwnerClientRestartExpectation
 OwnerClientRestartExpectation
 runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
 {
+  constexpr int ACK_COLLECTION_MS = 3000;
   std::vector<std::pair<const char*, std::optional<std::string>>> previousEnvironment;
   auto restoreEnvironment = ndn::make_scope_exit([&] {
     for (const auto& [name, value] : previousEnvironment) {
@@ -2924,7 +2925,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   };
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
     return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
-      [] { return std::optional<std::vector<uint8_t>>{}; }, verify, 250, 15000);
+      [] { return std::optional<std::vector<uint8_t>>{}; }, verify, ACK_COLLECTION_MS, 15000);
   }), std::invalid_argument);
   BOOST_CHECK(node->list().empty());
   size_t position = 0;
@@ -2934,7 +2935,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   };
   const auto inserted = runWithFacePump(environment, [&] {
     return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
-      nextPacket, verify, 250, 15000);
+      nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_REQUIRE_EQUAL(inserted.lifecycleState, "COMMITTED");
   // commitUserStorageOriginalPackets has stopped its Source filter.
@@ -2945,7 +2946,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
     return repo::RepoClient::requestSelectedService(environment.user(),
       environment.provider(1).getName(), repoService(servicePrefix, "MANIFEST"),
-      repo::encodeUserStorageInsertRequest(insert), 250, 15000);
+      repo::encodeUserStorageInsertRequest(insert), ACK_COLLECTION_MS, 15000);
   }), std::runtime_error);
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
     return repo::RepoClient::requestUserStorageUsage(environment.user(), target, {}, 15000,
@@ -3015,7 +3016,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   position = 0;
   const auto renewed = runWithFacePump(environment, [&] {
     return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, renewedInsert,
-      nextPacket, verify, 250, 15000);
+      nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_CHECK_EQUAL(renewed.operationId, inserted.operationId);
   auto otherGrant = grant;
@@ -3034,7 +3035,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   position = 0;
   const auto shared = runWithFacePump(environment, [&] {
     return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, sharedInsert,
-      nextPacket, verify, 250, 15000);
+      nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_CHECK_EQUAL(shared.operationId, inserted.operationId);
   BOOST_CHECK_NE(shared.operationId, sharedInsert.operationId);

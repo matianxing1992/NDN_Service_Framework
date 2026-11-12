@@ -2160,6 +2160,8 @@ namespace ndn_service_framework{
                 const ndn::Block& parameters, int attempt);
             // Face-owned prepared control calls; expiry follows their existing message owner.
             std::map<ndn::Name, ndn::Interest> m_preparedControlInterests;
+            std::shared_ptr<detail::PolicyStatusFetch> m_policyManifestFetch;
+            std::shared_ptr<detail::PolicyStatusFetch> m_permissionsFetch;
             std::unique_ptr<ndn::security::InterestSigner> m_controlInterestSigner;
             ndn::KeyChain* m_controlInterestSigningKeyChain = nullptr;
             // Face-owned original acknowledgements live through the signed call expiry.

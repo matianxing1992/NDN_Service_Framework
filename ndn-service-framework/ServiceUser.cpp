@@ -3359,6 +3359,8 @@ namespace ndn_service_framework
 
     ServiceUser::~ServiceUser()
     {
+        m_policyManifestFetch.reset();
+        m_permissionsFetch.reset();
         for (auto& call : m_pendingCalls) {
             for (auto& fetch : call.second.largeResponseFetches) fetch.second->stop();
             call.second.largeResponseFetches.clear();
@@ -5668,13 +5670,20 @@ namespace ndn_service_framework
 
         NDN_LOG_INFO("Fetch user permissions: " << interestName
                      << " attempt=1/" << permissionFetchMaxAttempts());
-        m_face.expressInterest(
+        m_permissionsFetch = std::make_shared<detail::PolicyStatusFetch>();
+        const std::weak_ptr<detail::PolicyStatusFetch> owner = m_permissionsFetch;
+        m_permissionsFetch->pending = m_face.expressInterest(
             interest,
-            std::bind(&ServiceUser::onPermissionResponseData, this, _1, _2),
-            [this](const ndn::Interest& interest, const ndn::lp::Nack&) {
+            [this, owner](const ndn::Interest& interest, const ndn::Data& data) {
+                if (owner.expired()) return;
+                onPermissionResponseData(interest, data);
+            },
+            [this, owner](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                if (owner.expired()) return;
                 onPermissionResponseTimeout(interest, 1);
             },
-            [this](const ndn::Interest& interest) {
+            [this, owner](const ndn::Interest& interest) {
+                if (owner.expired()) return;
                 onPermissionResponseTimeout(interest, 1);
             });
     }
@@ -14954,11 +14963,13 @@ namespace ndn_service_framework
     void ServiceUser::onPermissionResponseData(const ndn::Interest& interest,
                                                const ndn::Data& data)
     {
+        const std::weak_ptr<detail::PolicyStatusFetch> owner = m_permissionsFetch;
         const auto expectedController = extractPermissionControllerIdentity(interest, currentControllerIdentityForControl());
         if (!expectedController || data.getName() != interest.getName()) return;
         validator->validateWithConfiguredTrustSchema(
             data,
-            [this, expectedController](const ndn::Data& validatedData) {
+            [this, owner, expectedController](const ndn::Data& validatedData) {
+                if (owner.expired()) return;
                 if (expectedController &&
                     !isSignedByIdentity(validatedData, *expectedController)) {
                     NDN_LOG_ERROR("PermissionResponse Data signer mismatch: "
@@ -15012,19 +15023,28 @@ namespace ndn_service_framework
                      << "/" << maxAttempts
                      << " retryAttempt=" << nextAttempt
                      << " backoffMs=" << backoffMs);
-        m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
-            [this, interest, nextAttempt] {
+        const std::weak_ptr<detail::PolicyStatusFetch> owner = m_permissionsFetch;
+        if (owner.expired()) return;
+        m_permissionsFetch->retry = m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
+            [this, owner, interest, nextAttempt] {
+                const auto fetch = owner.lock();
+                if (!fetch) return;
                 ndn::Interest retryInterest(interest);
                 retryInterest.refreshNonce();
                 retryInterest.setInterestLifetime(
                     ndn::time::milliseconds(permissionFetchLifetimeMs()));
-                m_face.expressInterest(
+                fetch->pending = m_face.expressInterest(
                     retryInterest,
-                    std::bind(&ServiceUser::onPermissionResponseData, this, _1, _2),
-                    [this, nextAttempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                    [this, owner](const ndn::Interest& interest, const ndn::Data& data) {
+                        if (owner.expired()) return;
+                        onPermissionResponseData(interest, data);
+                    },
+                    [this, owner, nextAttempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                        if (owner.expired()) return;
                         onPermissionResponseTimeout(interest, nextAttempt);
                     },
-                    [this, nextAttempt](const ndn::Interest& interest) {
+                    [this, owner, nextAttempt](const ndn::Interest& interest) {
+                        if (owner.expired()) return;
                         onPermissionResponseTimeout(interest, nextAttempt);
                     });
             });
@@ -15091,13 +15111,20 @@ namespace ndn_service_framework
         NDN_LOG_INFO("Fetch policy manifest: " << interestName
                      << " attempt=" << attempt
                      << "/" << permissionFetchMaxAttempts());
-        m_face.expressInterest(
+        m_policyManifestFetch = std::make_shared<detail::PolicyStatusFetch>();
+        const std::weak_ptr<detail::PolicyStatusFetch> owner = m_policyManifestFetch;
+        m_policyManifestFetch->pending = m_face.expressInterest(
             interest,
-            std::bind(&ServiceUser::onPolicyManifestData, this, _1, _2),
-            [this, attempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+            [this, owner](const ndn::Interest& interest, const ndn::Data& data) {
+                if (owner.expired()) return;
+                onPolicyManifestData(interest, data);
+            },
+            [this, owner, attempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                if (owner.expired()) return;
                 onPolicyManifestTimeout(interest, attempt);
             },
-            [this, attempt](const ndn::Interest& interest) {
+            [this, owner, attempt](const ndn::Interest& interest) {
+                if (owner.expired()) return;
                 onPolicyManifestTimeout(interest, attempt);
             });
     }
@@ -15105,11 +15132,13 @@ namespace ndn_service_framework
     void ServiceUser::onPolicyManifestData(const ndn::Interest& interest,
                                            const ndn::Data& data)
     {
+        const std::weak_ptr<detail::PolicyStatusFetch> owner = m_policyManifestFetch;
         const auto expectedController = extractPermissionControllerIdentity(interest, currentControllerIdentityForControl());
         if (!expectedController || data.getName() != interest.getName()) return;
         validator->validateWithConfiguredTrustSchema(
             data,
-            [this, expectedController](const ndn::Data& validatedData) {
+            [this, owner, expectedController](const ndn::Data& validatedData) {
+                if (owner.expired()) return;
                 if (expectedController &&
                     !isSignedByIdentity(validatedData, *expectedController)) {
                     NDN_LOG_ERROR("PolicyManifest Data signer mismatch: "
@@ -15163,19 +15192,28 @@ namespace ndn_service_framework
                      << "/" << maxAttempts
                      << " retryAttempt=" << nextAttempt
                      << " backoffMs=" << backoffMs);
-        m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
-            [this, interest, nextAttempt] {
+        const std::weak_ptr<detail::PolicyStatusFetch> owner = m_policyManifestFetch;
+        if (owner.expired()) return;
+        m_policyManifestFetch->retry = m_scheduler.schedule(ndn::time::milliseconds(backoffMs),
+            [this, owner, interest, nextAttempt] {
+                const auto fetch = owner.lock();
+                if (!fetch) return;
                 ndn::Interest retryInterest(interest);
                 retryInterest.refreshNonce();
                 retryInterest.setInterestLifetime(
                     ndn::time::milliseconds(permissionFetchLifetimeMs()));
-                m_face.expressInterest(
+                fetch->pending = m_face.expressInterest(
                     retryInterest,
-                    std::bind(&ServiceUser::onPolicyManifestData, this, _1, _2),
-                    [this, nextAttempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                    [this, owner](const ndn::Interest& interest, const ndn::Data& data) {
+                        if (owner.expired()) return;
+                        onPolicyManifestData(interest, data);
+                    },
+                    [this, owner, nextAttempt](const ndn::Interest& interest, const ndn::lp::Nack&) {
+                        if (owner.expired()) return;
                         onPolicyManifestTimeout(interest, nextAttempt);
                     },
-                    [this, nextAttempt](const ndn::Interest& interest) {
+                    [this, owner, nextAttempt](const ndn::Interest& interest) {
+                        if (owner.expired()) return;
                         onPolicyManifestTimeout(interest, nextAttempt);
                     });
             });
