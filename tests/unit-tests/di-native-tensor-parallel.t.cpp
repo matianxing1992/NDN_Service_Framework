@@ -4142,6 +4142,100 @@ BOOST_AUTO_TEST_CASE(UnitEntryTableAssemblesFromOneRankArtifact)
 }
 
 
+BOOST_AUTO_TEST_CASE(RunnerRefusesATableThatDoesNotMatchItsTemplate)
+{
+  // The runner and the template come from two places: the table from assembly,
+  // the template from the sealed plan. A unit is loadable only when they agree,
+  // and the agreement must be checked before the first step -- failing half-way
+  // through would leave partials already published for a unit that cannot finish.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+
+  // A table whose entry ids match the template the projection produces.
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  std::vector<qwen::QwenTpEntryContract> table;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != "S0R0" || step.operation != "CALL_SUBGRAPH") continue;
+    qwen::QwenTpEntryContract entry;
+    entry.entryId = step.artifactEntry;
+    entry.unitId = "S0R0";
+    entry.kind = "ATTN";
+    entry.inputNames = {"in"};
+    entry.outputNames = {"out"};
+    entry.relativeGraphPath = "entry-" + std::to_string(table.size()) + ".onnx";
+    entry.graphDigest = "sha256:" + std::string(64, 'a');
+    entry.validate();
+    table.push_back(std::move(entry));
+  }
+  BOOST_REQUIRE(!table.empty());
+
+  const auto unitSteps = [&plan] {
+    std::vector<NativeExecutionStepSpec> steps;
+    for (const auto& step : plan.steps)
+      if (step.unitId == "S0R0") steps.push_back(step);
+    return steps;
+  }();
+  BOOST_REQUIRE(!unitSteps.empty());
+
+  const auto makeRunner = [] (std::vector<qwen::QwenTpEntryContract> entries) {
+    return qwen::NativeQwenTensorRunner(
+      std::move(entries),
+      [] (const NativeModelRunnerSpec&) { return std::shared_ptr<NativeModelRunner>{}; },
+      [] (const qwen::QwenTpEntryContract&) { return NativeModelRunnerSpec{}; });
+  };
+
+  // The matching table passes.
+  {
+    const auto runner = makeRunner(table);
+    BOOST_CHECK_EQUAL(runner.checkTemplate(unitSteps, "S0R0"), std::string(""));
+  }
+  // An entry the template needs but the table lacks.
+  {
+    auto missing = table;
+    missing.pop_back();
+    const auto runner = makeRunner(missing);
+    const auto problem = runner.checkTemplate(unitSteps, "S0R0");
+    BOOST_CHECK(problem.find("does not hold") != std::string::npos);
+  }
+  // An entry no step references: the artifact is not the one this template
+  // describes, so it must be refused rather than loaded and ignored.
+  {
+    auto extra = table;
+    auto surplus = extra.front();
+    surplus.entryId = "S0R0/ATTN/999";
+    extra.push_back(surplus);
+    const auto runner = makeRunner(extra);
+    const auto problem = runner.checkTemplate(unitSteps, "S0R0");
+    BOOST_CHECK(problem.find("no step references") != std::string::npos);
+  }
+  // A table carrying a peer unit's entry.
+  {
+    auto foreign = table;
+    foreign.front().unitId = "S0R1";
+    const auto runner = makeRunner(foreign);
+    const auto problem = runner.checkTemplate(unitSteps, "S0R0");
+    BOOST_CHECK(problem.find("another unit") != std::string::npos);
+  }
+  // A step belonging to another unit.
+  {
+    const auto runner = makeRunner(table);
+    auto steps = unitSteps;
+    steps.front().unitId = "S0R1";
+    const auto problem = runner.checkTemplate(steps, "S0R0");
+    BOOST_CHECK(problem.find("another unit") != std::string::npos);
+  }
+  // An empty template and an empty unit id are both refused.
+  {
+    const auto runner = makeRunner(table);
+    BOOST_CHECK(!runner.checkTemplate({}, "S0R0").empty());
+    BOOST_CHECK(!runner.checkTemplate(unitSteps, "").empty());
+  }
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

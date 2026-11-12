@@ -41,6 +41,44 @@ NativeQwenTensorRunner::findEntry(const std::string& entryId) const
   return found == m_entries.end() ? nullptr : &*found;
 }
 
+std::string
+NativeQwenTensorRunner::checkTemplate(const std::vector<NativeExecutionStepSpec>& steps,
+                                      const std::string& unitId) const
+{
+  if (steps.empty()) return "the unit template has no steps";
+  if (unitId.empty()) return "the unit id is empty";
+  std::set<std::string> referenced;
+  for (const auto& step : steps) {
+    if (step.unitId != unitId) {
+      return "step " + step.stepId + " belongs to another unit";
+    }
+    if (step.operation == "SUM") continue;
+    if (step.operation != "CALL_SUBGRAPH") {
+      return "step " + step.stepId + " has an unsupported operation";
+    }
+    if (step.artifactEntry.empty()) {
+      return "step " + step.stepId + " names no entry";
+    }
+    if (referenced.insert(step.artifactEntry).second &&
+        findEntry(step.artifactEntry) == nullptr) {
+      return "the unit template needs an entry this runner does not hold: " +
+             step.artifactEntry;
+    }
+  }
+  // The converse also matters: an entry no step references was assembled but
+  // never runs, which means the rank artifact is not the one this template
+  // describes.
+  for (const auto& entry : m_entries) {
+    if (entry.unitId != unitId) {
+      return "the entry table carries another unit's entry: " + entry.entryId;
+    }
+    if (referenced.count(entry.entryId) == 0) {
+      return "the entry table holds an entry no step references: " + entry.entryId;
+    }
+  }
+  return {};
+}
+
 std::map<std::string, TensorBundle>
 NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
 {

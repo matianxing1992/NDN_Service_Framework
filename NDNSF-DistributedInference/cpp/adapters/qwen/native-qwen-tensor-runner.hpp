@@ -51,6 +51,19 @@ public:
    */
   const std::vector<QwenTpEntryContract>& entries() const { return m_entries; }
 
+  /** Whether this runner can execute the given template.
+   *
+   * A unit is only loadable when every CALL_SUBGRAPH step names an entry this
+   * runner holds and every held entry belongs to the unit. Checking it before the
+   * first step means a mismatched table fails at admission rather than half-way
+   * through a sequence that already published partials.
+   *
+   * @returns Empty when the template is executable, otherwise the first problem,
+   *          phrased for the operator who has to fix the table.
+   */
+  std::string checkTemplate(const std::vector<NativeExecutionStepSpec>& steps,
+                            const std::string& unitId) const;
+
 private:
   const QwenTpEntryContract* findEntry(const std::string& entryId) const;
 
