@@ -19,6 +19,11 @@
 
 namespace ndnsf::di {
 
+// Sealed step template types live in NativeExecutionPlan.hpp. A role only needs
+// to carry a borrowed view of them, so they are declared here rather than
+// including the planner from this shared value header.
+struct NativeExecutionStepSpec;
+
 struct TensorBundle
 {
   std::string name;
@@ -177,6 +182,13 @@ struct RoleSpec
   // their own device bindings and expose only an opaque Provider-local handle;
   // CPU adapters continue to use the ordinary host-tensor representation.
   bool streamingStateExecution = false;
+  // Sealed token-local step template this role must execute. Empty keeps the
+  // legacy whole-role path, which is why every existing role is unaffected.
+  // A role that carries steps cannot be executed by a runner that only knows
+  // how to run a whole role, so the worker must not silently fall back.
+  std::shared_ptr<const std::vector<NativeExecutionStepSpec>> steps;
+  std::string stepPlanVersion;
+  std::uint64_t tensorDegree = 1;
 };
 
 struct RoleExecutionContext

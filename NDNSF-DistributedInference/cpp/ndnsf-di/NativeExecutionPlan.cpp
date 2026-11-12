@@ -978,6 +978,22 @@ roleSpecFor(const NativeExecutionPlan& plan,
       }
     }
   }
+  // Carry this role's slice of the sealed template. Only the steps belonging to
+  // this unit travel with it, because a unit never runs a peer's step: peers
+  // contribute values through admitted dependencies, not by executing here.
+  if (!plan.steps.empty()) {
+    auto owned = std::make_shared<std::vector<NativeExecutionStepSpec>>();
+    for (const auto& step : plan.steps)
+      if (step.unitId == role) owned->push_back(step);
+    if (owned->empty())
+      throw std::invalid_argument(
+        "sealed step plan has no steps for role " + role);
+    // The shared owner outlives every asynchronous drain of this role, which is
+    // what lets the worker reference the template without copying it per epoch.
+    spec.steps = std::move(owned);
+    spec.stepPlanVersion = plan.stepPlanVersion;
+    spec.tensorDegree = plan.tensorDegree;
+  }
   return spec;
 }
 

@@ -2446,6 +2446,63 @@ BOOST_AUTO_TEST_CASE(StepExecutorRefusesUndeclaredUnitsAndMissingEpochInputs)
   BOOST_CHECK_EQUAL(executor.complete(), false);
 }
 
+BOOST_AUTO_TEST_CASE(RoleSpecCarriesOnlyItsOwnUnitsSteps)
+{
+  // The worker receives a role, not a plan. If the template did not travel with
+  // the role, the worker could not execute steps at all; if it travelled whole,
+  // a unit would hold its peers' steps and could execute them.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  ExecutionAttemptKey session;
+  session.requestId = "/session/1";
+  session.attemptEpoch = 1;
+
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    const auto spec = roleSpecFor(plan, unit, session, assignment, "/provider/0");
+    BOOST_REQUIRE(spec.steps != nullptr);
+    BOOST_CHECK_EQUAL(spec.stepPlanVersion, std::string(NATIVE_STEP_PLAN_VERSION_V1));
+    BOOST_CHECK_EQUAL(spec.tensorDegree, 2U);
+    // Only this unit's steps, and every one of them.
+    std::size_t expected = 0;
+    for (const auto& step : plan.steps) {
+      if (step.unitId != unit) continue;
+      ++expected;
+    }
+    BOOST_CHECK_EQUAL(spec.steps->size(), expected);
+    for (const auto& step : *spec.steps)
+      BOOST_CHECK_EQUAL(step.unitId, std::string(unit));
+  }
+
+  // A pipeline plan carries no steps, so the legacy role is unchanged.
+  NativeExecutionPlan pipeline;
+  pipeline.roles = {"/LLM/Pipeline/Stage/0"};
+  pipeline.dependencies = {[] {
+    NativeDependencySpec dependency;
+    dependency.producers = {"/LLM/Pipeline/Stage/0"};
+    dependency.consumers = {"/LLM/Pipeline/Stage/0"};
+    dependency.keyScope = "legacy";
+    dependency.topicPrefix = "/topic";
+    dependency.objectNameTemplate = "{producerProvider}/{keyScope}/{sequence}";
+    dependency.tensors = {"hidden"};
+    dependency.operationKind = "ACTIVATION";
+    return dependency;
+  }()};
+  NativeProviderAssignment single;
+  single.providerByRole = {{"/LLM/Pipeline/Stage/0", "/provider/0"}};
+  const auto legacy = roleSpecFor(pipeline, "/LLM/Pipeline/Stage/0", session, single,
+                                  "/provider/0");
+  BOOST_CHECK(legacy.steps == nullptr);
+  BOOST_CHECK(legacy.stepPlanVersion.empty());
+  BOOST_CHECK_EQUAL(legacy.tensorDegree, 1U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
