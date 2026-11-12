@@ -5537,6 +5537,113 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(LayerOneUsesTheSkipNormFormAndStillReconstructs)
+{
+  // Layer 0 and layer 1 differ in the normalization operator: layer 0's input
+  // normalization is SimplifiedLayerNormalization, layer 1's is the skip form. The
+  // shard arithmetic is the same, but the entry's boundary and in-graph composition
+  // are not, so layer 0 passing does not imply layer 1 does.
+  //
+  // Layer 1's MLP is compared here because it is the block that carries the skip
+  // form on its own input side: post_attention_layernorm is a skip normalization for
+  // every layer, and layer 1's input_layernorm switches to it too.
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
+    "frozen export is required at " + path);
+  const auto reference = makeShardedEntry(1, 0, "MLP", 1);
+  const auto rank0 = makeShardedEntry(2, 0, "MLP", 1);
+  const auto rank1 = makeShardedEntry(2, 1, "MLP", 1);
+  BOOST_REQUIRE_MESSAGE(reference.entry.graph().node_size() > 0,
+    "layer 1 has no MLP entry");
+  BOOST_REQUIRE(rank0.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank1.entry.graph().node_size() > 0);
+
+  // The two hidden inputs layer 1's MLP consumes: layer 0's pre-MLP residual and
+  // layer 0's MLP output. Distinct values, so a shard that swapped them would show.
+  const std::uint64_t hidden = 1024;
+  std::vector<float> preResidual(hidden);
+  std::vector<float> previousMlp(hidden);
+  for (std::uint64_t i = 0; i < hidden; ++i) {
+    preResidual[i] = 0.02f * float(static_cast<int>(i % 37) - 18);
+    previousMlp[i] = 0.015f * float(static_cast<int>((i + 7) % 41) - 20);
+  }
+
+  const auto feed = [&] (const onnx::ModelProto& model) {
+    std::map<std::string, std::vector<float>> inputs;
+    std::map<std::string, std::vector<std::int64_t>> shapes;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      std::vector<std::int64_t> shape;
+      for (const auto& d : value.type().tensor_type().shape().dim())
+        shape.push_back(d.has_dim_value() ? d.dim_value() : 1);
+      shapes[name] = shape;
+      std::size_t count = 1;
+      for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+      const bool isHiddenVector = count == hidden &&
+        value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT;
+      if (!isHiddenVector) {
+        inputs[name] = std::vector<float>(count, 0.0f);
+        continue;
+      }
+      // The previous layer's MLP output is the tensor the skip normalization adds;
+      // the other hidden input is the residual it normalizes.
+      inputs[name] = name.find("down_proj") != std::string::npos
+        ? previousMlp : preResidual;
+    }
+    std::map<std::string, std::int32_t> types;
+    for (const auto& value : model.graph().input())
+      types[value.name()] = value.type().tensor_type().elem_type();
+    return runOnnxBytes(model, inputs, shapes, types, {});
+  };
+
+  const auto referenceOut = feed(reference.entry);
+  const auto findDown = [] (const std::map<std::string, std::vector<float>>& outputs)
+    -> const std::vector<float>* {
+    for (const auto& item : outputs)
+      if (item.first.find("down_proj") != std::string::npos) return &item.second;
+    return nullptr;
+  };
+  const auto* expected = findDown(referenceOut);
+  BOOST_REQUIRE(expected != nullptr);
+
+  std::vector<float> combined(expected->size(), 0.0f);
+  for (const auto* model : {&rank0.entry, &rank1.entry}) {
+    const auto out = feed(*model);
+    const auto* contribution = findDown(out);
+    BOOST_REQUIRE(contribution != nullptr);
+    BOOST_REQUIRE_EQUAL(contribution->size(), combined.size());
+    for (std::size_t i = 0; i < combined.size(); ++i)
+      combined[i] += (*contribution)[i];
+  }
+
+  double magnitude = 0.0;
+  for (const auto value : *expected) magnitude = std::max(magnitude, std::fabs(double(value)));
+  BOOST_REQUIRE_MESSAGE(magnitude > 0.0, "layer 1's reference output is all zeros");
+  double worst = 0.0;
+  std::size_t mismatches = 0;
+  for (std::size_t i = 0; i < expected->size(); ++i) {
+    const double error = std::fabs(double(combined[i]) - double((*expected)[i]));
+    worst = std::max(worst, error);
+    if (error > 1e-3 * magnitude) ++mismatches;
+  }
+  BOOST_TEST_MESSAGE("layer1 mlp size=" << expected->size() << " magnitude=" << magnitude
+                    << " worst_error=" << worst << " mismatches=" << mismatches);
+  BOOST_CHECK_MESSAGE(mismatches == 0,
+    "layer 1's sharded MLP differs from the unsplit layer 1: worst " +
+    std::to_string(worst) + " against magnitude " + std::to_string(magnitude));
+
+  // The operators that differ from layer 0 must be present, or this case is quietly
+  // testing a layer that happens to look like layer 0.
+  bool sawSkipNorm = false;
+  for (const auto& node : reference.entry.graph().node())
+    if (node.op_type() == "SkipSimplifiedLayerNormalization") sawSkipNorm = true;
+  BOOST_CHECK_MESSAGE(sawSkipNorm,
+    "layer 1's MLP entry has no skip normalization, so it does not exercise the form "
+    "that distinguishes it from layer 0");
+}
+
 BOOST_AUTO_TEST_CASE(HeadIsNeverShardedSoItsLogitsMatchTheUnsplitHead)
 {
   // C6: "本方案 head 不切分". The head owns the final normalization and the vocabulary
