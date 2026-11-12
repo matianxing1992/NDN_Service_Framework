@@ -334,6 +334,21 @@ private:
   ProviderRoleResult
   runReadyRole(const WorkItem& item);
 
+  /** Run one unit's sealed step template to completion.
+   *
+   * Only reached for a role that carries a template, and only after every
+   * declared input has been admitted, because the existing wait-all gate stays
+   * in charge of transport. What this adds is the step dimension: the runner is
+   * called once per CALL_SUBGRAPH step with that step named in the context, and
+   * SUM steps are reduced locally. A step's result is not a role result, so
+   * nothing is published or returned until the whole template has run.
+   *
+   * @param ctx   Context already carrying lineage, epoch and the admitted inputs.
+   * @param item  The work item that owns the runner, guards and statistics.
+   */
+  ProviderRoleResult
+  runSealedSteps(const RoleExecutionContext& ctx, const WorkItem& item);
+
   std::map<std::string, TensorBundle>
   getCachedOutputs(const std::string& key);
 

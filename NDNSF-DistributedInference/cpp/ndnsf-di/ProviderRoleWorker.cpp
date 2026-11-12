@@ -258,15 +258,27 @@ providerDecodeStateFromOutputs(
  * cannot execute is an implementation gap.
  */
 void
-requireNoSealedSteps(const RoleSpec& role)
+requireConsistentStepTemplate(const RoleSpec& role)
 {
-  if (role.steps == nullptr) return;
+  // A pointer is not a complete contract: an empty template, a version without a
+  // template, or a degree above one without a template are all inconsistent and
+  // must be refused before any work starts.
+  const bool hasTemplate = role.steps != nullptr && !role.steps->empty();
+  if (role.stepPlanVersion.empty() && !hasTemplate && role.tensorDegree <= 1) return;
   if (role.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1)
     throw std::invalid_argument(
       "Provider role carries an unsupported step plan version");
-  throw std::runtime_error(
-    "DI_NATIVE_STEP_EXECUTION_UNWIRED: this Provider cannot yet execute a "
-    "sealed step template");
+  if (!hasTemplate)
+    throw std::invalid_argument(
+      "Provider role declares a step plan without a step template");
+  if (role.tensorDegree < 2)
+    throw std::invalid_argument(
+      "Provider role step template requires a tensor degree of at least two");
+  for (const auto& step : *role.steps) {
+    if (step.unitId != role.role)
+      throw std::invalid_argument(
+        "Provider role step template contains another unit's step");
+  }
 }
 
 } // namespace
@@ -471,8 +483,10 @@ ProviderRoleWorker::executeAsyncImpl(
     throw std::invalid_argument(
       "ProviderRoleWorker requires NativeModelRunner or preparation callback");
   }
-  // Before any fetch, preparation or cache lookup.
-  requireNoSealedSteps(role);
+  // Before any fetch, preparation or cache lookup: a step-carrying role must
+  // declare a complete template. The step path now exists, so the gate rejects
+  // only an inconsistent declaration rather than the whole capability.
+  requireConsistentStepTemplate(role);
   if (collective.has_value()) {
     if (!collective->runtime || collective->rank.empty() ||
         collective->inputSequence == 0) {
@@ -1097,6 +1111,127 @@ ProviderRoleWorker::execute(const WorkItem& item)
 }
 
 ProviderRoleResult
+ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkItem& item)
+{
+  if (!item.role.steps || item.role.steps->empty()) {
+    throw std::invalid_argument("runSealedSteps requires a sealed step template");
+  }
+  if (!item.runner) {
+    throw std::invalid_argument("runSealedSteps requires a prepared runner");
+  }
+  // One token, one unit, one template. Ordering follows the template, which the
+  // plan validated as a DAG, so a single pass in template order reaches a
+  // fixpoint: every producer is visited before its consumers.
+  std::map<std::string, TensorBundle> produced;
+  ProviderRoleResult result;
+  result.runner = item.runner;
+
+  const auto& steps = *item.role.steps;
+  for (const auto& step : steps) {
+    if (step.unitId != item.role.role) {
+      throw std::invalid_argument(
+        "sealed step belongs to another unit than the executing role");
+    }
+
+    // Resolve this step's inputs from the values already produced in this unit.
+    // Every remote slot arrives here through the admitted role inputs, which the
+    // worker has already validated; matching is by the sealed producer step and
+    // slot, never by tensor name.
+    std::map<std::string, TensorBundle> inputs;
+    for (const auto& slot : step.inputSlots) {
+      // A LOCAL_STEP is produced by an earlier step of this same unit. A
+      // REMOTE_STEP names a producer in the peer unit, which this worker never
+      // executes, so it is resolved from the admitted inputs below instead.
+      if (slot.producerStepId.empty() || slot.source == "REMOTE_STEP") continue;
+      const auto key = slot.producerStepId + "\n" + slot.producerSlotId;
+      const auto found = produced.find(key);
+      if (found == produced.end()) {
+        throw std::runtime_error(
+          "sealed step input was never produced: " + slot.slotId);
+      }
+      inputs.emplace(slot.slotId, found->second);
+    }
+    // Remote partials are admitted into the step's own slots by the dependency
+    // path, so they are already part of the role inputs. Bind them by the sealed
+    // consumer step and slot rather than assuming they share a name.
+    for (const auto& edge : item.role.inputs) {
+      if (edge.consumerStepId != step.stepId) continue;
+      const auto admitted = ctx.inputsByScope.find(edge.scope);
+      if (admitted == ctx.inputsByScope.end()) {
+        throw std::runtime_error(
+          "sealed step remote input was not admitted: " + edge.scope);
+      }
+      inputs.emplace(edge.consumerSlotId, admitted->second);
+    }
+    // EPOCH_INPUT slots are the request's own inputs, already admitted by scope.
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      const auto admitted = ctx.inputsByScope.find(slot.slotId);
+      if (admitted != ctx.inputsByScope.end())
+        inputs.emplace(slot.slotId, admitted->second);
+    }
+
+    if (step.operation == "SUM") {
+      // SUM is local arithmetic over the values this unit already holds. It has
+      // no graph and no session, so it never reaches the runner.
+      std::map<std::string, TensorBundle> accumulator;
+      for (const auto& input : inputs) {
+        accumulateDecodedTensorBundle(accumulator, step.outputSlots.front().slotId,
+          decodeTensorBundle(input.second.payload), input.second.name);
+      }
+      const auto merged = accumulator.find(step.outputSlots.front().slotId);
+      if (merged == accumulator.end()) {
+        throw std::runtime_error("sealed SUM step produced no value");
+      }
+      produced.emplace(step.stepId + "\n" + step.outputSlots.front().slotId,
+                       merged->second);
+      continue;
+    }
+
+    if (step.operation != "CALL_SUBGRAPH") {
+      throw std::invalid_argument("sealed step has an unsupported operation");
+    }
+
+    // One runner call for exactly this step. The context names the step and its
+    // slot values, so the adapter resolves its entry from the sealed table rather
+    // than deciding anything about ordering.
+    RoleExecutionContext stepContext = ctx;
+    stepContext.activeStep =
+      std::make_shared<const NativeExecutionStepSpec>(step);
+    stepContext.roleSteps = item.role.steps;
+    stepContext.stepInputsBySlot = inputs;
+    stepContext.streamEventSink = {};
+    if (item.executionGuard) item.executionGuard();
+    const auto outputs = item.runner->run(stepContext);
+    if (item.executionGuard) item.executionGuard();
+
+    // A step's output is keyed by its own declared slot, so the next step can
+    // bind it without knowing the adapter's internal naming.
+    for (const auto& slot : step.outputSlots) {
+      const auto found = outputs.find(slot.slotId);
+      if (found == outputs.end()) {
+        throw std::runtime_error(
+          "sealed step did not produce its declared output: " + slot.slotId);
+      }
+      produced.emplace(step.stepId + "\n" + slot.slotId, found->second);
+    }
+  }
+
+  // The unit is complete only now, so its declared role outputs are packed from
+  // the terminal steps. Every output edge names the step that produced it.
+  for (const auto& edge : item.role.outputs) {
+    const auto key = edge.producerStepId + "\n" + edge.producerSlotId;
+    const auto found = produced.find(key);
+    if (found == produced.end()) {
+      throw std::runtime_error(
+        "sealed unit did not produce a declared output edge: " + edge.scope);
+    }
+    result.outputsByScope.emplace(edge.scope, found->second);
+  }
+  return result;
+}
+
+ProviderRoleResult
 ProviderRoleWorker::runReadyRole(const WorkItem& item)
 {
   NativeWorkScope roleWork(item.role.workStatistics, "role-worker",
@@ -1280,7 +1415,18 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     const bool coordinatorOwnsStreaming = item.role.generationLineage.has_value();
     NativeWorkScope adapterWork(item.role.workStatistics, "role-adapter",
                                NativeWorkKind::UNCLASSIFIED);
-    if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
+    // A sealed tensor-parallel unit runs its template instead of making one
+    // whole-role call. The template is validated and its steps belong to this
+    // role, so the runner is invoked once per step rather than once per unit.
+    const bool sealedSteps = item.role.steps && !item.role.steps->empty();
+    if (sealedSteps) {
+      auto stepped = runSealedSteps(ctx, item);
+      result.outputsByScope = std::move(stepped.outputsByScope);
+      if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+        logRuntimeTrace("NDNSF_DI_WORKER event=runner_steps role=" + item.role.role);
+      }
+    }
+    else if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_streamed role=" + item.role.role);
       }

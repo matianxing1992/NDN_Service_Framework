@@ -2456,50 +2456,73 @@ public:
   std::atomic<std::size_t> calls{0};
 };
 
-BOOST_AUTO_TEST_CASE(WorkerRefusesASealedStepRoleBeforeAnyWork)
+BOOST_AUTO_TEST_CASE(WorkerRefusesAnInconsistentStepDeclarationBeforeAnyWork)
 {
-  // The gate must run before input fetch, runner preparation and cached-output
-  // lookup. Otherwise a step-carrying role would pull peer partials and prepare a
-  // runner for a computation this Provider cannot perform, and could even be
-  // answered from the whole-role output cache, whose key has no step template.
-  qwen::QwenTpShape shape;
-  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
-  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
-  shape.vocab = 151936;
-  NativeExecutionPlan plan;
-  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
-
-  NativeProviderAssignment assignment;
-  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
-  ExecutionAttemptKey session;
-  session.requestId = "/session/step-refusal";
-  session.attemptEpoch = 1;
-  auto role = roleSpecFor(plan, "S0R0", session, assignment, "/provider/0");
-  BOOST_REQUIRE(role.steps != nullptr);
-  // Declare an input so a misplaced gate would visibly start fetching it.
-  DependencyEdge pendingInput;
-  pendingInput.scope = "peer-partial";
-  pendingInput.producerRole = "S0R1";
-  pendingInput.consumerRole = "S0R0";
-  pendingInput.plannedDataName = "/peer/partial";
-  pendingInput.tensors = {"partial"};
-  role.inputs.push_back(pendingInput);
-
+  // A pointer is not a contract. An empty template, a version without a
+  // template, a degree above one without a template, and a template carrying
+  // another unit's step are all inconsistent, and each must be refused before
+  // input fetch, runner preparation or cached-output lookup. Otherwise a role
+  // would pull peer partials and prepare a runner for a computation it cannot
+  // legally perform.
   auto io = std::make_shared<CountingDependencyIo>();
   CountingRunnerPreparation preparation;
   ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
 
-  // The refusal is synchronous: it must not even enqueue a work item, which is
-  // what makes "zero fetch, zero prepare, zero runner call" testable.
-  BOOST_CHECK_THROW(
-    worker.executePreparedAsync("step-refusal-session", std::move(role), io,
-                                   preparation.shared()),
-    std::runtime_error);
+  const auto baseRole = [] {
+    RoleSpec role;
+    role.role = "/Stage/0";
+    role.requestId = "/request/step-gate";
+    role.attemptEpoch = 1;
+    // Declare an input so a misplaced gate would visibly start fetching it.
+    DependencyEdge pendingInput;
+    pendingInput.scope = "peer-partial";
+    pendingInput.producerRole = "/Stage/1";
+    pendingInput.consumerRole = "/Stage/0";
+    pendingInput.plannedDataName = "/peer/partial";
+    pendingInput.tensors = {"partial"};
+    role.inputs.push_back(pendingInput);
+    return role;
+  };
+
+  // A declared step plan with no template.
+  {
+    auto role = baseRole();
+    role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+    role.tensorDegree = 2;
+    BOOST_CHECK_THROW(
+      worker.executePreparedAsync("gate-empty-template", std::move(role), io,
+                                  preparation.shared()),
+      std::invalid_argument);
+  }
+  // A degree above one with no template would be a tensor-parallel role that
+  // cannot execute anything.
+  {
+    auto role = baseRole();
+    role.tensorDegree = 2;
+    BOOST_CHECK_THROW(
+      worker.executePreparedAsync("gate-degree-no-template", std::move(role), io,
+                                  preparation.shared()),
+      std::invalid_argument);
+  }
+  // A template whose steps belong to a peer unit.
+  {
+    auto role = baseRole();
+    role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+      std::vector<NativeExecutionStepSpec>{twoRankSteps().front()});
+    // twoRankSteps().front() belongs to S0R0, not to this role.
+    role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+    role.tensorDegree = 2;
+    BOOST_CHECK_THROW(
+      worker.executePreparedAsync("gate-foreign-step", std::move(role), io,
+                                  preparation.shared()),
+      std::invalid_argument);
+  }
+
+  // Nothing was fetched, prepared or published in any of those rejections.
   BOOST_CHECK_EQUAL(io->prefetchCalls.load(), 0U);
-  BOOST_CHECK_EQUAL(preparation.calls, 0U);
+  BOOST_CHECK_EQUAL(preparation.calls.load(), 0U);
   BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
 }
-
 BOOST_AUTO_TEST_CASE(WorkerRejectsAnUnknownStepPlanVersionSynchronously)
 {
   // Version skew is a contract error, reported separately from the
@@ -2993,6 +3016,108 @@ BOOST_AUTO_TEST_CASE(RoleSpecEdgesCarryTheSealedStepBinding)
   BOOST_REQUIRE_EQUAL(legacy.inputs.size(), 1U);
   BOOST_CHECK(legacy.inputs.front().consumerStepId.empty());
   BOOST_CHECK(legacy.inputs.front().producerStepId.empty());
+}
+
+BOOST_AUTO_TEST_CASE(WorkerRunsASealedTemplateStepByStep)
+{
+  // The unit template is driven here, not by a separate scheduler: the worker
+  // calls the runner once per CALL_SUBGRAPH step and reduces SUM locally. This
+  // case is the positive flow the task asks for — the runner is a lambda, so the
+  // assertion is about the worker's behaviour, not about an adapter.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  auto role = roleSpecFor(plan, "S0R0", [] {
+    ExecutionAttemptKey key;
+    key.requestId = "/session/step-flow";
+    key.attemptEpoch = 1;
+    return key;
+  }(), [] {
+    NativeProviderAssignment assignment;
+    assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+    return assignment;
+  }(), "/provider/0");
+
+  // Record every step the worker asks the runner to execute.
+  std::vector<std::string> executed;
+  std::mutex executedMutex;
+  const auto runner = [&] (const RoleExecutionContext& ctx) {
+    BOOST_REQUIRE(ctx.activeStep != nullptr);
+    BOOST_REQUIRE(ctx.roleSteps != nullptr);
+    {
+      std::lock_guard<std::mutex> lock(executedMutex);
+      executed.push_back(ctx.activeStep->stepId);
+    }
+    // Produce exactly the declared output slots so the worker can bind them.
+    // A real adapter returns an encoded bundle (C5), which is what SUM decodes,
+    // so the fixture must too — a raw float payload would only pass because SUM
+    // was not reached.
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Feed the epoch inputs the INIT step declares and the peer partial each SUM
+  // needs, keyed by the scope the sealed edges use.
+  std::map<std::string, TensorBundle> initial;
+  const auto epochBundle = [] (const char* name) {
+    TensorBundle bundle;
+    bundle.name = name;
+    bundle.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+    return bundle;
+  };
+  for (const auto& edge : role.inputs) {
+    if (edge.consumerStepId.empty()) continue;
+    TensorBundle partial;
+    partial.name = "partial";
+    NamedTensor tensor;
+    tensor.name = "partial";
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(2)};
+    const std::vector<float> values = {0.5f, 0.25f};
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    partial.payload = encodeTensorBundle({tensor});
+    partial.expectedBytes = partial.payload.size();
+    initial.emplace(edge.scope, std::move(partial));
+  }
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      initial.emplace(slot.slotId, epochBundle(slot.slotId.c_str()));
+    }
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("step-flow-session", std::move(role),
+    std::make_shared<CountingDependencyIo>(), runner, initial);
+  const auto result = future.get();
+
+  // Every CALL_SUBGRAPH step ran, and no SUM did: reductions never reach the
+  // runner because they have no graph.
+  std::lock_guard<std::mutex> lock(executedMutex);
+  BOOST_CHECK(!executed.empty());
+  for (const auto& stepId : executed)
+    BOOST_CHECK(stepId.find("/SUM_") == std::string::npos);
+  // The unit completes once, so its declared outputs are present.
+  BOOST_CHECK(!result.outputsByScope.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
