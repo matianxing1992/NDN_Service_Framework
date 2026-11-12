@@ -79,6 +79,11 @@ struct NativeObservedProviderOfferV3
   std::string signature;
   bool canProvision = false;
   bool hasModel = false;
+  // Execution capabilities this Provider actually implements, such as
+  // step-plan-v1 and sum-v1. Empty means only the legacy whole-role path is
+  // supported. A plan that needs a sealed step template must not be admitted
+  // to a Provider that did not declare the matching capability.
+  std::vector<std::string> capabilities;
   std::string offerDigest;
 };
 

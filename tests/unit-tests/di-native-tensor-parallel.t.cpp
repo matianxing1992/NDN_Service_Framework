@@ -642,6 +642,60 @@ BOOST_AUTO_TEST_CASE(FixedAssignmentCarriesSealedStepsAndTheirDependencies)
                     plan.dependencies[0].consumerSlotId);
 }
 
+BOOST_AUTO_TEST_CASE(CapabilityRequirementsFollowTheSealedStepPlan)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+
+  // A tensor-parallel plan carries SUM steps, so it requires both capabilities.
+  NativeExecutionPlan tp;
+  qwen::projectQwenTpPlan(tp, shape, 2, "entry", "S0R0");
+  const auto required = nativePlanRequiredCapabilities(tp);
+  BOOST_CHECK_EQUAL(required.size(), 2U);
+  BOOST_CHECK(std::find(required.begin(), required.end(),
+    std::string(NATIVE_STEP_PLAN_CAPABILITY_V1)) != required.end());
+  BOOST_CHECK(std::find(required.begin(), required.end(),
+    std::string(NATIVE_SUM_CAPABILITY_V1)) != required.end());
+
+  // A legacy pipeline plan requires nothing, so an old Provider stays usable.
+  NativeExecutionPlan pipeline;
+  pipeline.roles = {"/LLM/Pipeline/Stage/0"};
+  BOOST_CHECK(nativePlanRequiredCapabilities(pipeline).empty());
+}
+
+BOOST_AUTO_TEST_CASE(ProviderWithoutCapabilityCannotExecuteStepPlan)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  NativeExecutionPlan tp;
+  qwen::projectQwenTpPlan(tp, shape, 2, "entry", "S0R0");
+
+  NativeProviderPlanningView provider;
+  provider.provider = "/provider/a";
+  provider.offerDigest = nativePlanningDigest("offer-a");
+  provider.acceptedRoles = tp.roles;
+  provider.backends = {"onnxruntime"};
+  provider.freeBytes = 1ULL << 40;
+  provider.resourceSequence = 1;
+  provider.preparationAccepted = true;
+  provider.executionAllowed = true;
+
+  // Declaring the DAG alone is not enough: SUM is a separate local operation.
+  provider.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V1};
+  BOOST_CHECK(!nativeProviderCanExecute(provider, tp));
+
+  provider.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_SUM_CAPABILITY_V1};
+  BOOST_CHECK(nativeProviderCanExecute(provider, tp));
+
+  // The legacy pipeline plan stays admissible to a capability-less Provider.
+  NativeExecutionPlan pipeline;
+  pipeline.roles = {"/LLM/Pipeline/Stage/0"};
+  provider.capabilities.clear();
+  BOOST_CHECK(nativeProviderCanExecute(provider, pipeline));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

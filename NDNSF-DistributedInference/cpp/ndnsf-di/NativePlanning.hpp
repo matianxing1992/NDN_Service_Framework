@@ -241,6 +241,12 @@ struct NativeProviderPlanningView
   std::uint64_t resourceSequence = 0;
   bool preparationAccepted = false;
   bool executionAllowed = false;
+  // Execution capabilities the Provider declared and the planner verified.
+  // Empty means the legacy whole-role path only. Kept last so existing
+  // positional aggregate initialization keeps its meaning: inserting it beside
+  // the other string vectors would silently shift residencyDigests, and both
+  // fields have the same type, so the compiler could not catch the mistake.
+  std::vector<std::string> capabilities;
 
   void validate() const;
 };
@@ -460,6 +466,19 @@ private:
   std::map<std::string, std::shared_ptr<const NativeModelAdapter>> m_adapters;
   bool m_frozen = false;
 };
+
+/** Capabilities a sealed plan requires from every unit that executes it.
+ * A plan without steps requires none, so legacy pipeline Providers stay
+ * admissible; a plan with steps requires the step-plan capability and, when it
+ * contains a SUM step, the sum capability as well.
+ */
+std::vector<std::string>
+nativePlanRequiredCapabilities(const NativeExecutionPlan& plan);
+
+/** Whether one Provider's declared capabilities cover what the plan requires. */
+bool
+nativeProviderCanExecute(const NativeProviderPlanningView& offer,
+                         const NativeExecutionPlan& plan);
 
 std::string nativePlanningDigest(const std::string& canonical);
 // Hash owned binary sources without allocating an intermediate string.

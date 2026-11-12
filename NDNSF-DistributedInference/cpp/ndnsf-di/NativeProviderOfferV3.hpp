@@ -23,6 +23,10 @@ struct NativeProviderOfferV3Config
   std::vector<std::string> acceptedRoles;
   std::vector<std::string> backends;
   std::vector<std::string> devices;
+  // Execution capabilities this binary really implements. Empty keeps the
+  // offer byte-identical to a legacy Provider and therefore accepts only the
+  // whole-role path.
+  std::vector<std::string> capabilities;
   bool canProvision = true;
   bool hasModel = false;
   // Required for GPU offers: one native memory observation per visible device,

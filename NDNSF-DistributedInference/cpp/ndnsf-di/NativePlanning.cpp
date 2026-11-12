@@ -51,8 +51,10 @@ bool contains(const std::vector<std::string>& values, const std::string& value)
 }
 
 bool canPlaceRole(const NativeProviderPlanningView& offer, const std::string& role,
-                  const NativeRoleResourceRequirement& requirement)
+                  const NativeRoleResourceRequirement& requirement,
+                  const NativeExecutionPlan& plan)
 {
+  if (!nativeProviderCanExecute(offer, plan)) return false;
   if (!contains(offer.acceptedRoles, role) ||
       std::none_of(requirement.backends.begin(), requirement.backends.end(),
                    [&offer] (const auto& backend) { return contains(offer.backends, backend); })) {
@@ -694,13 +696,41 @@ void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,
     const auto alreadyReserved = reserved == reservedBytes.end() ? 0 : reserved->second;
     if (offer == snapshot.offers.end() || !peak || alreadyReserved > offer->freeBytes ||
         *peak > offer->freeBytes - alreadyReserved ||
-        !canPlaceRole(*offer, role, candidate.requirementsByRole.at(role))) {
+        !canPlaceRole(*offer, role, candidate.requirementsByRole.at(role),
+                      candidate.executionPlan)) {
       throw std::invalid_argument("placement proposal requires feasible Providers");
     }
     if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - *peak)
       throw std::overflow_error("placement Provider memory reservation overflows uint64");
     reservedBytes[it->second] = alreadyReserved + *peak;
   }
+}
+
+std::vector<std::string>
+nativePlanRequiredCapabilities(const NativeExecutionPlan& plan)
+{
+  // A plan without a step template needs nothing beyond the legacy path, so an
+  // old Provider stays admissible for ordinary pipeline execution.
+  if (plan.steps.empty()) return {};
+  std::vector<std::string> required{NATIVE_STEP_PLAN_CAPABILITY_V1};
+  // SUM is a distinct local operation: declaring the DAG alone does not imply
+  // the provider can also reduce partials.
+  if (std::any_of(plan.steps.begin(), plan.steps.end(),
+                  [] (const auto& step) { return step.operation == "SUM"; })) {
+    required.emplace_back(NATIVE_SUM_CAPABILITY_V1);
+  }
+  return required;
+}
+
+bool
+nativeProviderCanExecute(const NativeProviderPlanningView& offer,
+                         const NativeExecutionPlan& plan)
+{
+  const auto required = nativePlanRequiredCapabilities(plan);
+  return std::all_of(required.begin(), required.end(),
+    [&offer] (const auto& capability) {
+      return contains(offer.capabilities, capability);
+    });
 }
 
 std::string nativePlanningDigest(const std::string& canonical)
@@ -761,7 +791,8 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
       const auto alreadyReserved = reserved == reservedBytes.end() ? 0 : reserved->second;
       const bool fits = peak && alreadyReserved <= offer.freeBytes &&
         *peak <= offer.freeBytes - alreadyReserved;
-      if (fits && canPlaceRole(offer, role, candidate.requirementsByRole.at(role))) {
+      if (fits && canPlaceRole(offer, role, candidate.requirementsByRole.at(role),
+                               candidate.executionPlan)) {
         eligible.push_back(&offer);
         if (!usedProviders.count(offer.provider)) distinct.push_back(&offer);
       }

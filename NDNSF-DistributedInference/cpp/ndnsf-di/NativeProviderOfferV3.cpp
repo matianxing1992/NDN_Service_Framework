@@ -103,7 +103,8 @@ validateConfig(const NativeProviderOfferV3Config& config)
       config.backends.empty() || !config.signDigest) {
     throw std::invalid_argument("invalid native V3 Provider offer configuration");
   }
-  for (const auto* values : {&config.acceptedRoles, &config.backends, &config.devices}) {
+  for (const auto* values : {&config.acceptedRoles, &config.backends, &config.devices,
+                             &config.capabilities}) {
     if (std::set<std::string>(values->begin(), values->end()).size() != values->size() ||
         std::any_of(values->begin(), values->end(), [] (const std::string& value) {
           return value.empty();
@@ -144,6 +145,8 @@ canonicalOffer(const NativeProviderOfferV3Config& config,
          << ",\"bandwidth_mbps\":0.0"
          << ",\"boot_epoch\":" << quote(config.bootEpoch)
          << ",\"can_provision\":" << (config.canProvision ? "true" : "false")
+         << (config.capabilities.empty() ? "" :
+             ",\"capabilities\":" + stringArray(config.capabilities))
          << ",\"captured_at_ms\":" << capturedAtMs
          << ",\"estimated_wait_ms\":0.0"
          << ",\"execution_disposition\":\"ACCEPT_WITH_PREPARATION\""

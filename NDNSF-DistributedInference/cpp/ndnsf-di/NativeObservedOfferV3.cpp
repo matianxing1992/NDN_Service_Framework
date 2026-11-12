@@ -123,7 +123,8 @@ NativeObservedProviderOfferV3 decodeNativeProviderOfferV3(const std::string& wir
       "model_digest", "graph_digest", "status", "execution_disposition", "preparation_accepted",
       "topology", "resources", "residency", "accepted_roles", "backends", "queue_depth",
       "estimated_wait_ms", "rtt_ms", "bandwidth_mbps", "boot_epoch", "captured_at_ms",
-      "expires_at_ms", "signer_key_id", "signature", "ack_reservation", "can_provision", "has_model"});
+      "expires_at_ms", "signer_key_id", "signature", "ack_reservation", "can_provision", "has_model",
+      "capabilities"});
     require(field<std::string>(value, "schema") == "DI_PLACEMENT_V3" &&
             field<std::uint64_t>(value, "schema_version") == 3, "Provider offer schema mismatch");
     NativeObservedProviderOfferV3 result;
@@ -151,6 +152,18 @@ NativeObservedProviderOfferV3 decodeNativeProviderOfferV3(const std::string& wir
     result.signature = field<std::string>(value, "signature");
     result.canProvision = field<bool>(value, "can_provision");
     result.hasModel = field<bool>(value, "has_model");
+    // A capability list is optional on the wire so every existing offer stays
+    // byte-identical; absence means "legacy whole-role execution only", never
+    // "all capabilities". Duplicates and empty names are rejected.
+    if (value.contains("capabilities")) {
+      require(value.at("capabilities").is_array(), "offer capabilities must be an array");
+      result.capabilities = field<std::vector<std::string>>(value, "capabilities");
+      std::set<std::string> unique;
+      for (const auto& capability : result.capabilities) {
+        require(!capability.empty() && unique.insert(capability).second,
+                "offer capability is empty or duplicated");
+      }
+    }
     require(!field<bool>(value, "ack_reservation"), "V3 offer cannot reserve a lease");
     require(!result.requestId.empty() && result.attempt && !result.service.empty() &&
             !result.provider.empty() && digest(result.modelDigest) && digest(result.graphDigest) &&
