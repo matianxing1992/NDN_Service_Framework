@@ -584,6 +584,20 @@ ProviderRoleWorker::executeAsyncImpl(
     return future;
   }
 
+  // A step-carrying unit must not wait for every input before it starts. Its peer
+  // produces the partials for later steps only after running its earlier ones, so
+  // a wait-all gate makes both ranks wait for something neither can produce yet.
+  // The prefetches stay in flight and each step awaits only its own slots.
+  if (!pendingInputs.empty() && item.role.steps && !item.role.steps->empty()) {
+    for (auto& pending : pendingInputs) {
+      item.pendingInputsByScope.emplace(
+        pending.edge.scope,
+        std::shared_future<TensorBundle>(std::move(pending.future)));
+      item.inputTimings.push_back(std::move(pending.timing));
+    }
+    enqueueReady(std::move(item));
+    return future;
+  }
   if (pendingInputs.empty()) {
     enqueueReady(std::move(item));
   }
@@ -1151,15 +1165,54 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkIt
       }
       inputs.emplace(slot.slotId, found->second);
     }
-    // Remote partials are admitted into the step's own slots by the dependency
-    // path, so they are already part of the role inputs. Bind them by the sealed
-    // consumer step and slot rather than assuming they share a name.
+    // Remote partials are awaited per step, not up front: a step runs as soon as
+    // its own slots are present, which is what lets the peer produce later
+    // partials. Awaiting the whole role's inputs first is the deadlock this path
+    // exists to remove.
     for (const auto& edge : item.role.inputs) {
       if (edge.consumerStepId != step.stepId) continue;
-      const auto admitted = ctx.inputsByScope.find(edge.scope);
+      auto admitted = ctx.inputsByScope.find(edge.scope);
       if (admitted == ctx.inputsByScope.end()) {
-        throw std::runtime_error(
-          "sealed step remote input was not admitted: " + edge.scope);
+        const auto pending = item.pendingInputsByScope.find(edge.scope);
+        if (pending == item.pendingInputsByScope.end()) {
+          throw std::runtime_error(
+            "sealed step remote input was never started: " + edge.scope);
+        }
+        // Wait only for this step's own contribution, and never without a bound:
+        // a peer that never publishes still has to end the unit rather than hold
+        // a compute worker hostage. The deadline is the whole unit's, measured
+        // from admission, so a template cannot buy more time by having more steps.
+        const auto deadline = item.queuedAt + m_dependencyWaitTimeout;
+        // Poll rather than block once, so a destroyed worker releases its compute
+        // thread promptly. Without this the destructor's cancellation would not be
+        // observed here and the unit would only end at its deadline.
+        while (true) {
+          {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_stopping) {
+              throw std::runtime_error(
+                "dependency wait failed: CANCELLED for " + edge.scope);
+            }
+          }
+          if (pending->second.wait_for(std::chrono::milliseconds(2)) ==
+              std::future_status::ready) {
+            break;
+          }
+          if (std::chrono::steady_clock::now() >= deadline) {
+            throw std::runtime_error(
+              "dependency wait failed: DEADLINE_EXPIRED for " + edge.scope);
+          }
+        }
+        auto bundle = pending->second.get();
+        validateTensorBundleForEdge(edge, bundle);
+        // The admitted map belongs to the caller's context, which is const here;
+        // the value is bound directly below instead.
+        if (!inputs.emplace(edge.consumerSlotId, std::move(bundle)).second) {
+          throw std::runtime_error(
+            "sealed step has duplicate contributions for one slot: " +
+            edge.consumerSlotId);
+        }
+        continue;
       }
       // Two edges feeding one slot would let a contribution be counted twice,
       // which inflates the reduction without looking wrong. The sealed template
@@ -1354,9 +1407,16 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
       return sink(payload);
     };
   }
+  // A step-carrying unit admits each remote input when the step that needs it
+  // runs, so requiring every declared input here would reintroduce the wait-all
+  // gate this path exists to remove. Each awaited bundle is validated at that
+  // point instead, so an unvalidated input still cannot reach a step.
+  const bool stepsAwaitTheirOwnInputs =
+    item.role.steps && !item.role.steps->empty();
   for (const auto& edge : item.role.inputs) {
     const auto input = ctx.inputsByScope.find(edge.scope);
     if (input == ctx.inputsByScope.end()) {
+      if (stepsAwaitTheirOwnInputs) continue;
       throw std::runtime_error(
         "Provider role is missing a declared input: " + edge.scope);
     }

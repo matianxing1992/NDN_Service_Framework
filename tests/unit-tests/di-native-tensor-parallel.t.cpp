@@ -3542,7 +3542,10 @@ BOOST_AUTO_TEST_CASE(CancellationTerminatesTheUnitExactlyOnce)
   catch (const std::exception& error) {
     BOOST_TEST_MESSAGE("cancellation failure: " << error.what());
   }
-  BOOST_CHECK_EQUAL(runnerCalls.load(), 0U);
+  // The unit may legitimately have run its local-only leading steps before the
+  // cancellation reached it: that is the point of not waiting for every input up
+  // front. What must not happen is publishing anything, because a partial from a
+  // cancelled unit would look like a result to the peer.
   BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
 }
 
@@ -5329,6 +5332,96 @@ BOOST_AUTO_TEST_CASE(ShardedEntryDeclaresTheWidthsItsWeightsActuallyHave)
       BOOST_CHECK_EQUAL(k, static_cast<std::int64_t>(queryWidth / 2));
       BOOST_CHECK_EQUAL(n, static_cast<std::int64_t>(hidden));
     }
+  }
+}
+
+
+BOOST_AUTO_TEST_CASE(AUnitStartsBeforeItsPeerPublishesLaterPartials)
+{
+  // The deadlock the wait-all gate caused, stated directly: rank 0's first
+  // attention step needs no remote input, so it must run even though the peer has
+  // published nothing. Under the old gate the unit never started, and two real
+  // Providers would wait for each other forever.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/progressive";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  std::atomic<std::size_t> subgraphCalls{0};
+  const auto runner = [&subgraphCalls] (const RoleExecutionContext& ctx) {
+    ++subgraphCalls;
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Epoch inputs only. Every remote scope stays pending for the whole case, which
+  // is exactly the state a peer is in while it waits for this unit.
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  auto io = std::make_shared<NeverReadyDependencyIo>();
+  // Long timeout so the case is about progress, not the deadline.
+  ProviderRoleWorker worker(2, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("progressive-session", std::move(role), io,
+                                    runner, initial);
+
+  // Wait for the local steps to complete. This is what could not happen before:
+  // the unit ran without any remote input arriving.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (subgraphCalls.load() < 1 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  BOOST_CHECK_MESSAGE(subgraphCalls.load() >= 1,
+    "the unit did not run its local steps while its peer was silent");
+
+  // It must still finish: the missing contribution ends the unit rather than
+  // holding a compute worker, so the promise resolves with a failure.
+  try {
+    (void)future.get();
+    BOOST_FAIL("a unit completed without its peer's contribution");
+  }
+  catch (const std::exception& error) {
+    const std::string message = error.what();
+    BOOST_CHECK(message.find("DEADLINE_EXPIRED") != std::string::npos ||
+                message.find("CANCELLED") != std::string::npos);
   }
 }
 

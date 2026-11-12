@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -279,6 +280,17 @@ private:
     std::chrono::steady_clock::time_point queuedAt;
     std::optional<CollectiveExecutionBinding> collective;
     std::function<void()> executionGuard;
+    // For a step-carrying role: the prefetches already started, keyed by scope.
+    // They are awaited per step rather than up front, because a unit whose first
+    // step needs nothing from its peer must run before the peer's later partial
+    // exists. Waiting for all inputs first is what makes two ranks wait on each
+    // other forever.
+    // Shared so a const work item can await them: std::future::get is non-const,
+    // and the item travels through the queue by value but is read as const.
+    std::map<std::string, std::shared_future<TensorBundle>> pendingInputsByScope;
+    // Scopes whose output edge was already published by their producing step, so
+    // the unit's final pass does not publish the same object twice.
+    std::set<std::string> publishedScopes;
   };
 
   struct PendingInput
