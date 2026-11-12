@@ -365,6 +365,23 @@ approval again or hide an exception in a special-case branch.
   with no meaningful next action; report the concrete condition. If the host
   goal state cannot be resumed through available tools, explain that limitation
   without claiming it was restored, and continue authorized work in the turn.
+- **Decide rather than stall on a design fork.** When a choice changes already
+  written code, state the options with their concrete cost and ask once, in the
+  same turn, with a recommendation. If no answer arrives within ten minutes,
+  proceed with the recommended option, record it as an assumption in the task
+  evidence, and continue; do not idle, keep re-asking, or wait while other
+  actionable work exists. A later user answer overrides the assumption and the
+  work is corrected then. Reserve genuine blocking for information only the
+  user can supply, such as credentials, topology details or an unavailable
+  external artifact.
+- **Follow the binding contract before extending a design.** A Spec's
+  contracts/ and data-model.md may forbid an architecture that looks natural
+  from the code alone, for example a second scheduler or a new virtual
+  execution port. Read the binding section for the affected mechanism before
+  adding a type or port, and treat its prohibitions as requirements: if the
+  contract says to extend an existing interface instead, do that even when a
+  new interface is easier. If the contract itself seems wrong, raise that
+  explicitly instead of diverging silently.
 
 ## NDNSF-DI experiment storage
 
