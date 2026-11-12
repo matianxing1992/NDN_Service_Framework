@@ -2,6 +2,7 @@
 #define NDNSF_DI_QWEN_TENSOR_SPLIT_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <onnx/onnx_pb.h>
@@ -316,6 +317,43 @@ struct QwenTpEntryContract
     return !relativeGraphPath.empty() && !graphDigest.empty();
   }
 };
+
+/** Generation contract a sharded plan needs so its egress unit can sample.
+ *
+ * The unit only reports its logits; the coordinator is what samples, and it reads the
+ * contract to learn the token input, the decode-state pairs, the position policy and
+ * the sampling parameters. Without one, the coordinator copies zero state names and
+ * commits no KV, and every epoch would run without a state successor.
+ *
+ * Every field is a fact the template already knows except the sealing digests, which
+ * the caller supplies because they are part of the sealed request rather than of the
+ * model. The state pairs come from the template's own attention state slots, so the
+ * contract cannot describe layers the plan does not execute.
+ *
+ * @param plan      Projected plan whose steps and slots supply the state pairs.
+ * @param shape     Verified shape facts.
+ * @param sealed    Digests and sampling values from the accepted request.
+ * @throws std::invalid_argument when the template has no attention state, or the
+ *         supplied contract is incomplete for sealing.
+ */
+struct QwenTpSealedGeneration
+{
+  std::size_t maxGeneratedTokens = 0;
+  std::string samplingDigest;
+  std::string tokenizerDigest;
+  std::vector<std::int64_t> eosTokenIds;
+  std::string samplingMode = "Greedy";
+  double samplingTemperature = 0.0;
+  std::uint64_t samplingTopK = 1;
+  double samplingTopP = 1.0;
+  double samplingRepetitionPenalty = 1.0;
+  std::uint64_t samplingSeed = 1'750'001;
+  std::string generationId;
+};
+
+NativeGenerationExecutionContractV1
+buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape& shape,
+                              const QwenTpSealedGeneration& sealed);
 
 /** Geometry a rank's entry graph must be rewritten to describe.
  *

@@ -5538,6 +5538,98 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ShardedGenerationContractSatisfiesTheSealerRequirements)
+{
+  // The contract the coordinator needs, built from the template rather than from a
+  // constant, and checked against every rule the decoder enforces.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  for (const auto& consumer : plan.roles) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {consumer};
+    feedback.keyScope = "token-feedback-" + consumer;
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+
+  qwen::QwenTpSealedGeneration sealed;
+  sealed.maxGeneratedTokens = 4;
+  sealed.samplingDigest = "sha256:" + std::string(64, 'a');
+  sealed.tokenizerDigest = "sha256:" + std::string(64, 'b');
+  sealed.eosTokenIds = {2};
+  const auto contract = qwen::buildQwenTpGenerationContract(plan, shape, sealed);
+
+  BOOST_CHECK(contract.enabled);
+  BOOST_CHECK_EQUAL(contract.mode, std::string("TOKEN_STREAMING"));
+  BOOST_CHECK_EQUAL(contract.maxGeneratedTokens, 4U);
+  BOOST_CHECK_EQUAL(contract.tokenInputName, std::string("input_ids"));
+  // One state pair per attention slot across every layer, in template order.
+  std::size_t stateSlots = 0;
+  std::set<std::string> distinct;
+  for (const auto& step : plan.steps)
+    for (const auto& slot : step.localStateSlots)
+      if (distinct.insert(slot).second) ++stateSlots;
+  BOOST_REQUIRE(stateSlots > 0);
+  BOOST_CHECK_EQUAL(contract.stateInputNames.size(), stateSlots);
+  BOOST_CHECK_EQUAL(contract.stateOutputNames.size(), stateSlots);
+  // The decoder requires: non-empty, equal length, unique on both sides.
+  std::set<std::string> uniqueInputs(contract.stateInputNames.begin(),
+                                     contract.stateInputNames.end());
+  std::set<std::string> uniqueOutputs(contract.stateOutputNames.begin(),
+                                      contract.stateOutputNames.end());
+  BOOST_CHECK_EQUAL(uniqueInputs.size(), contract.stateInputNames.size());
+  BOOST_CHECK_EQUAL(uniqueOutputs.size(), contract.stateOutputNames.size());
+  // The successor map is the canonical one-to-one form the decoder parses.
+  BOOST_CHECK_EQUAL(std::count(contract.stateSuccessorMap.begin(),
+                               contract.stateSuccessorMap.end(), '='),
+                    static_cast<std::ptrdiff_t>(stateSlots));
+  BOOST_CHECK(contract.stateSuccessorMap.find(
+    contract.stateInputNames.front() + "=" + contract.stateOutputNames.front()) == 0);
+  // The names must be the export's, because the runner resolves them against the ONNX
+  // session: past_key_values.* on input, present.* on output.
+  for (const auto& name : contract.stateInputNames)
+    BOOST_CHECK(name.rfind("past_key_values.", 0) == 0);
+  for (const auto& name : contract.stateOutputNames)
+    BOOST_CHECK(name.rfind("present.", 0) == 0);
+  // Sampling values are copied, not defaulted.
+  BOOST_CHECK_EQUAL(contract.samplingDigest, sealed.samplingDigest);
+  BOOST_CHECK_EQUAL(contract.tokenizerDigest, sealed.tokenizerDigest);
+  BOOST_CHECK_EQUAL(contract.eosTokenIds.size(), 1U);
+  // The stride must cover every dependency, which the decoder checks.
+  BOOST_CHECK(contract.streamingOperationStride >= plan.dependencies.size());
+  BOOST_CHECK(contract.streamingOperationStride > 0);
+
+  // An incomplete contract is refused rather than sealed with a gap.
+  auto noBudget = sealed;
+  noBudget.maxGeneratedTokens = 0;
+  BOOST_CHECK_THROW(qwen::buildQwenTpGenerationContract(plan, shape, noBudget),
+                    std::invalid_argument);
+  auto noEos = sealed;
+  noEos.eosTokenIds.clear();
+  BOOST_CHECK_THROW(qwen::buildQwenTpGenerationContract(plan, shape, noEos),
+                    std::invalid_argument);
+  auto badDigest = sealed;
+  badDigest.samplingDigest = "sha256:short";
+  BOOST_CHECK_THROW(qwen::buildQwenTpGenerationContract(plan, shape, badDigest),
+                    std::invalid_argument);
+  // A plan whose template carries no attention state cannot satisfy the contract.
+  NativeExecutionPlan bare;
+  bare.roles = plan.roles;
+  bare.tensorDegree = 2;
+  BOOST_CHECK_THROW(qwen::buildQwenTpGenerationContract(bare, shape, sealed),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(SealerRequiresExactlyOneFeedbackEdgeWhichShardingCannotProvide)
 {
   // The next blocker, stated as the constant that conflicts. C6 requires one feedback

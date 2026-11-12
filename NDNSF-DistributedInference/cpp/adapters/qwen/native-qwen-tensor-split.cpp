@@ -1289,6 +1289,96 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   return shape;
 }
 
+NativeGenerationExecutionContractV1
+buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape& shape,
+                              const QwenTpSealedGeneration& sealed)
+{
+  if (sealed.maxGeneratedTokens == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel generation contract needs a token budget");
+  }
+  if (sealed.samplingDigest.size() != 71 || sealed.tokenizerDigest.size() != 71) {
+    throw std::invalid_argument(
+      "tensor-parallel generation contract needs canonical digests");
+  }
+  if (sealed.eosTokenIds.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel generation contract needs at least one EOS id");
+  }
+  // The state pairs come from the template, so the contract cannot name a layer the
+  // plan does not execute. One pair per attention state slot, taken in template order
+  // so the successor map and the pairs agree.
+  std::vector<std::string> inputs;
+  std::vector<std::string> outputs;
+  std::set<std::string> seen;
+  for (const auto& step : plan.steps) {
+    for (const auto& slot : step.localStateSlots) {
+      if (!seen.insert(slot).second) continue;
+      // The template names the value it owns as `kv.<layer>.<key|value>`; the export
+      // spells the same tensors `past_key_values.<layer>.<key|value>` on input and
+      // `present.<layer>.<key|value>` on output. The contract must use the export's
+      // names because the runner resolves them against the ONNX session, so the
+      // template name is a logical identity rather than a graph name.
+      const auto suffix = slot.substr(slot.find('.') + 1);  // "<layer>.<key|value>"
+      if (slot.rfind("kv.", 0) != 0 || suffix.find('.') == std::string::npos) {
+        throw std::invalid_argument(
+          "tensor-parallel template state slot is not a KV slot: " + slot);
+      }
+      inputs.push_back("past_key_values." + suffix);
+      outputs.push_back("present." + suffix);
+    }
+  }
+  if (inputs.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel generation contract found no attention state to carry");
+  }
+
+  NativeGenerationExecutionContractV1 contract;
+  contract.enabled = true;
+  contract.mode = "TOKEN_STREAMING";
+  contract.maxGeneratedTokens = sealed.maxGeneratedTokens;
+  contract.tokenInputName = "input_ids";
+  contract.stateInputNames = std::move(inputs);
+  contract.stateOutputNames = std::move(outputs);
+  // One-to-one mapping in the same order, which is the canonical form the decoder
+  // validates.
+  std::string successor;
+  for (std::size_t index = 0; index < contract.stateInputNames.size(); ++index) {
+    if (index != 0) successor += ',';
+    successor += contract.stateInputNames[index] + "=" +
+                 contract.stateOutputNames[index];
+  }
+  contract.stateSuccessorMap = std::move(successor);
+  contract.positionInputPolicy = "position_ids";
+  contract.attentionMaskInputName = "attention_mask";
+  contract.positionIdsInputName = "position_ids";
+  contract.eosTokenIds = sealed.eosTokenIds;
+  contract.samplingDigest = sealed.samplingDigest;
+  contract.tokenizerDigest = sealed.tokenizerDigest;
+  contract.samplingMode = sealed.samplingMode;
+  contract.samplingTemperature = sealed.samplingTemperature;
+  contract.samplingTopK = sealed.samplingTopK;
+  contract.samplingTopP = sealed.samplingTopP;
+  contract.samplingRepetitionPenalty = sealed.samplingRepetitionPenalty;
+  contract.samplingSeed = sealed.samplingSeed;
+  contract.generationId = sealed.generationId;
+  // One operation per transfer plus the feedback rounds: the decoder requires the
+  // stride to be at least the dependency count, and each feedback edge owns its own
+  // index, so the stride is the dependency count itself.
+  contract.streamingOperationStride = plan.dependencies.size();
+  if (contract.streamingOperationStride < plan.dependencies.size() ||
+      contract.streamingOperationStride == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel generation contract has no operation stride room");
+  }
+  // Vocabulary must match what the head produces, or the sampler reads past its logits.
+  if (shape.vocab == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel generation contract has no vocabulary");
+  }
+  return contract;
+}
+
 void
 QwenTpRankGeometry::validate() const
 {
