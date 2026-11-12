@@ -3630,6 +3630,97 @@ BOOST_AUTO_TEST_CASE(AUnitAdvancesWithASingleComputeWorker)
 }
 
 
+BOOST_AUTO_TEST_CASE(ARunnerThatIgnoresStepsCannotSilentlyServeATemplate)
+{
+  // A step-carrying role must never be served by a runner that executes whole
+  // roles. The failure has to be loud: such a runner runs the complete graph and
+  // returns outputs keyed by its own graph names, while the worker binds results
+  // by sealed slot id. This case pins that mismatch, because the alternative --
+  // a runner whose graph names happened to match slot ids -- would produce
+  // plausible numbers from a peer-incomplete rank artifact.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/whole-role-runner";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  // A runner that behaves like the ordinary ONNX adapter: it ignores the step
+  // fields and returns its graph's own output names.
+  std::atomic<std::size_t> calls{0};
+  const auto runner = [&calls] (const RoleExecutionContext& ctx) {
+    ++calls;
+    BOOST_CHECK(ctx.activeStep != nullptr);
+    std::map<std::string, TensorBundle> outputs;
+    NamedTensor tensor;
+    tensor.name = "logits";
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(2)};
+    const std::vector<float> values = {1.0f, 2.0f};
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    TensorBundle bundle;
+    bundle.name = "logits";
+    bundle.payload = encodeTensorBundle({tensor});
+    bundle.expectedBytes = bundle.payload.size();
+    // The graph name, not the sealed slot id.
+    outputs.emplace("logits", std::move(bundle));
+    return outputs;
+  };
+
+  // Supply every admitted scope as well, so the role reaches execution and the
+  // failure is the output mismatch rather than a dependency wait.
+  const auto inputBundle = [] (const std::string& name) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(2)};
+    tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+    TensorBundle bundle;
+    bundle.name = name;
+    bundle.payload = encodeTensorBundle({tensor});
+    bundle.expectedBytes = bundle.payload.size();
+    return bundle;
+  };
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& edge : role.inputs) {
+    if (edge.consumerStepId.empty()) continue;
+    initial.emplace(edge.scope, inputBundle("partial"));
+  }
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      if (initial.count(slot.slotId) != 0) continue;
+      initial.emplace(slot.slotId, inputBundle(slot.slotId));
+    }
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("whole-role-session", std::move(role),
+    std::make_shared<CountingDependencyIo>(), runner, initial);
+  try {
+    (void)future.get();
+    BOOST_FAIL("a whole-role runner served a sealed template without failing");
+  }
+  catch (const std::runtime_error& error) {
+    // The refusal must name the missing declared output, not some coincidental
+    // later failure.
+    BOOST_CHECK(std::string(error.what()).find("did not produce its declared output") !=
+                std::string::npos);
+  }
+  // It was called exactly once: the mismatch is detected on the first step, so
+  // the unit never advances past it.
+  BOOST_CHECK_EQUAL(calls.load(), 1U);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
