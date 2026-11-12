@@ -3120,6 +3120,43 @@ BOOST_AUTO_TEST_CASE(WorkerRunsASealedTemplateStepByStep)
   BOOST_CHECK(!result.outputsByScope.empty());
 }
 
+BOOST_AUTO_TEST_CASE(TensorBackendRegistrationMirrorsTheProductionOrder)
+{
+  // Production registers ONNX, then the YOLO merge backend, then the TP parent.
+  // Reproducing that order here shows the same sequence the factory uses is
+  // accepted, and that dispatching to the TP backend reaches the parent creator
+  // rather than failing with "no backend registered".
+  RegistryNativeModelRunnerFactory factory;
+  // Without ONNX first the TP registration must refuse, which is exactly the
+  // misconfiguration the production ordering avoids.
+  BOOST_CHECK_THROW(qwen::registerQwenTensorBackend(factory), std::invalid_argument);
+
+  // A backend with the ONNX name is enough to satisfy the ordering requirement;
+  // the creator is never invoked in this case.
+  factory.registerBackend("onnxruntime",
+    [] (const NativeModelRunnerSpec&) { return std::shared_ptr<NativeModelRunner>{}; });
+  BOOST_CHECK_NO_THROW(qwen::registerQwenTensorBackend(factory));
+  BOOST_CHECK(factory.hasBackend(qwen::QWEN_TENSOR_RUNNER_BACKEND));
+
+  // A TP spec with no entry table is refused by the creator, which proves the
+  // dispatch reached it rather than stopping at an unknown backend.
+  NativeModelRunnerSpec spec;
+  spec.role = "/TP#0";
+  spec.kind = "onnx-model";
+  spec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+  try {
+    (void)factory.create(spec);
+    BOOST_FAIL("a TP spec without an entry table was accepted");
+  }
+  catch (const std::invalid_argument& error) {
+    const std::string message = error.what();
+    BOOST_CHECK(message.find("entry table") != std::string::npos);
+  }
+  catch (const std::out_of_range&) {
+    BOOST_FAIL("the TP backend was not registered");
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionLeaseService.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceProvider.hpp"
@@ -1432,6 +1433,9 @@ main(int argc, char** argv)
       [] (const NativeModelRunnerSpec& spec) {
         return makeNativeYoloMergeRunner(spec);
       });
+    // Same registration as the library factory: the tensor-parallel parent
+    // runner needs the ONNX backend above, and every other role is unaffected.
+    ndnsf::di::qwen::registerQwenTensorBackend(*factory);
     if (options.wiringCheckOnly || options.tracerDeterministicRunner) {
       factory->registerBackend(
         "onnxruntime",

@@ -18,6 +18,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -537,6 +538,11 @@ makeProviderRunnerFactory(const std::shared_ptr<ProviderMetrics>& metrics,
                            [] (const NativeModelRunnerSpec& spec) {
                              return makeNativeYoloMergeRunner(spec);
                            });
+  // The tensor-parallel parent runner builds its children through this same
+  // registry, so it is registered after the ONNX backend it depends on. A
+  // role that names this backend gets a parent holding its entries; every other
+  // role keeps its ordinary single-session runner.
+  qwen::registerQwenTensorBackend(*factory);
   factory->freeze();
   return std::make_shared<CountingProviderRunnerFactory>(std::move(factory), metrics);
 }
