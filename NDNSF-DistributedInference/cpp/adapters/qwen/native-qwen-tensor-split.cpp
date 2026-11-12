@@ -580,8 +580,14 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                        makeIndexSlot("attention_mask", "EPOCH_INPUT", "int64")};
     // The export derives positions from the input length and casts the mask to
     // int32 before attention, so the produced side inputs carry those types.
+    //
+    // INIT also owns the embedding: the first attention entry must read a
+    // residual X0 that some step actually produced, not the request input.
+    // Reading EPOCH_INPUT there would skip the embedding lookup entirely, which
+    // the frozen export performs as a Gather over the shared table.
     init.outputSlots = {makeIndexSlot("position_ids", "LOCAL_STEP", "int64"),
-                        makeIndexSlot("attn_mask", "LOCAL_STEP", "int32")};
+                        makeIndexSlot("attn_mask", "LOCAL_STEP", "int32"),
+                        makeSlot("x0", "LOCAL_STEP", {}, shape.hidden)};
     plan.steps.push_back(std::move(init));
 
     for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
@@ -592,8 +598,11 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       attn.unitId = unit.roleId;
       attn.operation = "CALL_SUBGRAPH";
       attn.artifactEntry = entry(unit.roleId, "ATTN", layer);
+      // Layer 0 reads the embedded X0 from INIT; every later layer reads the
+      // previous layer's MLP sum, which already includes both residuals. Neither
+      // comes from the peer, so no network edge is created for it.
       attn.inputSlots = {layer == 0
-        ? makeSlot("x", "EPOCH_INPUT", {}, shape.hidden)
+        ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
         : makeFedSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1), "merged", shape.hidden)};
       // Both side inputs come from this unit's INIT, never from the peer: every
       // rank owns the same positions and mask, so fetching them would be a

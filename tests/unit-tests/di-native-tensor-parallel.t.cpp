@@ -2587,6 +2587,79 @@ BOOST_AUTO_TEST_CASE(LocalSlotMustNameItsProducerOutputAndMatchItsType)
   BOOST_CHECK_THROW(localRemote.validateSteps(), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(InitProducesTheEmbeddedResidualThatLayerZeroReads)
+{
+  // Audit A3: the projection had INIT producing only the side inputs, so the
+  // first attention entry read its residual from EPOCH_INPUT and the embedding
+  // lookup was never part of the template. A tensor-parallel unit must start from
+  // the embedded X0, exactly as the frozen export does with a Gather over the
+  // shared table.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  const auto find = [&] (const std::string& stepId) -> const NativeExecutionStepSpec* {
+    const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
+      [&] (const auto& step) { return step.stepId == stepId; });
+    return found == plan.steps.end() ? nullptr : &*found;
+  };
+  const auto slotOf = [] (const NativeExecutionStepSpec& step, const std::string& id,
+                          bool output) -> const NativeStepSlotSpec* {
+    const auto& slots = output ? step.outputSlots : step.inputSlots;
+    const auto found = std::find_if(slots.begin(), slots.end(),
+      [&] (const auto& slot) { return slot.slotId == id; });
+    return found == slots.end() ? nullptr : &*found;
+  };
+
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    const auto* init = find(std::string(unit) + "/INIT");
+    BOOST_REQUIRE(init != nullptr);
+    // INIT produces the embedded residual alongside the side inputs.
+    const auto* x0 = slotOf(*init, "x0", true);
+    BOOST_REQUIRE(x0 != nullptr);
+    BOOST_CHECK_EQUAL(x0->dtype, std::string("float32"));
+    BOOST_CHECK_EQUAL(x0->layoutDigest,
+                      std::string(qwen::QWEN_TP_ACTIVATION_LAYOUT_DIGEST));
+
+    // Layer 0 reads it from INIT, not from the request input.
+    const auto* attn0 = find(std::string(unit) + "/ATTN/0");
+    BOOST_REQUIRE(attn0 != nullptr);
+    const auto* fed = slotOf(*attn0, "x", false);
+    BOOST_REQUIRE(fed != nullptr);
+    BOOST_CHECK_EQUAL(fed->source, std::string("LOCAL_STEP"));
+    BOOST_CHECK_EQUAL(fed->producerStepId, init->stepId);
+    BOOST_CHECK_EQUAL(fed->producerSlotId, std::string("x0"));
+
+    // Later layers read the previous MLP sum, which already carries both
+    // residuals, so they must not read EPOCH_INPUT either.
+    if (shape.layers > 1) {
+      const auto* attn1 = find(std::string(unit) + "/ATTN/1");
+      BOOST_REQUIRE(attn1 != nullptr);
+      const auto* fed1 = slotOf(*attn1, "x", false);
+      BOOST_REQUIRE(fed1 != nullptr);
+      BOOST_CHECK_EQUAL(fed1->producerStepId,
+                        std::string(unit) + "/SUM_MLP/0");
+      BOOST_CHECK_EQUAL(fed1->producerSlotId, std::string("merged"));
+    }
+  }
+
+  // The whole template must still validate: every local slot now names a real
+  // producer output that agrees on type, shape and layout.
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+
+  // No attention residual may be an EPOCH_INPUT, which would reintroduce the
+  // skipped embedding.
+  for (const auto& step : plan.steps) {
+    if (step.stepId.find("/ATTN/") == std::string::npos) continue;
+    const auto& x = *std::find_if(step.inputSlots.begin(), step.inputSlots.end(),
+      [] (const auto& slot) { return slot.slotId == "x"; });
+    BOOST_CHECK_EQUAL(x.source, std::string("LOCAL_STEP"));
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
