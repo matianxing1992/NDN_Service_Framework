@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <system_error>
 #include <utility>
 #include <sstream>
@@ -2086,6 +2087,85 @@ BOOST_AUTO_TEST_CASE(RealGroupQueryAttentionAcceptsSplitHeads)
     wrongError = std::max(wrongError, double(std::fabs(wrong[i] - reference[i])));
   BOOST_TEST_MESSAGE("wrong KV grouping: max abs err " << wrongError);
   BOOST_CHECK(wrongError > 1e-3);
+}
+
+BOOST_AUTO_TEST_CASE(FrozenExportPackingMatchesTheSliceAssumptions)
+{
+  // The slice helpers assume every packed weight is [N, K/32, 16] uint8 with a
+  // float32 scale per [N, K/32] block. That assumption is what makes an
+  // output-channel slice a whole-row copy and an input-channel slice a
+  // block-aligned column copy. One counter-example anywhere in the export would
+  // make those helpers silently wrong for that tensor, so the whole graph is
+  // checked rather than a sample.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path +
+    " (set NDNSF_SPEC224_FROZEN_MODEL); qualification cannot skip it");
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  BOOST_REQUIRE(!bytes.empty());
+
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromString(
+    std::string(bytes.begin(), bytes.end())));
+  std::map<std::string, const onnx::TensorProto*> initializers;
+  for (const auto& init : model.graph().initializer())
+    initializers.emplace(init.name(), &init);
+
+  std::size_t checked = 0;
+  for (const auto& node : model.graph().node()) {
+    if (node.op_type() != "MatMulNBits") continue;
+    // Only the schema positions matter here: input 1 is B, input 2 is scales.
+    BOOST_REQUIRE_EQUAL(node.input_size(), 3);
+    std::int64_t k = 0, n = 0, blockSize = 0, bits = 0;
+    for (const auto& attribute : node.attribute()) {
+      if (attribute.name() == "K") k = attribute.i();
+      else if (attribute.name() == "N") n = attribute.i();
+      else if (attribute.name() == "block_size") blockSize = attribute.i();
+      else if (attribute.name() == "bits") bits = attribute.i();
+    }
+    BOOST_REQUIRE(k > 0);
+    BOOST_REQUIRE(n > 0);
+    // The helpers are only valid for this exact quantization.
+    BOOST_CHECK_EQUAL(bits, std::int64_t(4));
+    BOOST_CHECK_EQUAL(blockSize, std::int64_t(qwen::QWEN_INT4_BLOCK_SIZE));
+    const auto weight = initializers.find(node.input(1));
+    const auto scales = initializers.find(node.input(2));
+    BOOST_REQUIRE(weight != initializers.end());
+    BOOST_REQUIRE(scales != initializers.end());
+
+    const auto blocks = k / qwen::QWEN_INT4_BLOCK_SIZE;
+    // Packed blob layout: one row per output channel, one 16-byte blob per
+    // 32-wide block.
+    BOOST_REQUIRE_EQUAL(weight->second->dims_size(), 3);
+    BOOST_CHECK_EQUAL(weight->second->dims(0), n);
+    BOOST_CHECK_EQUAL(weight->second->dims(1), blocks);
+    BOOST_CHECK_EQUAL(weight->second->dims(2), std::int64_t(qwen::QWEN_INT4_BLOB_BYTES));
+    BOOST_CHECK_EQUAL(weight->second->data_type(), int(onnx::TensorProto_DataType_UINT8));
+    // One float32 scale per output channel per block.
+    BOOST_REQUIRE_EQUAL(scales->second->dims_size(), 1);
+    BOOST_CHECK_EQUAL(scales->second->dims(0), n * blocks);
+    BOOST_CHECK_EQUAL(scales->second->data_type(), int(onnx::TensorProto_DataType_FLOAT));
+    // External payload length must agree with the declared geometry, or the
+    // slicing helpers would read past what the sidecar actually holds.
+    std::uint64_t externalLength = 0;
+    for (const auto& entry : weight->second->external_data()) {
+      if (entry.key() == "length") externalLength = std::stoull(entry.value());
+    }
+    if (externalLength != 0)
+      BOOST_CHECK_EQUAL(externalLength, qwen::packedInt4Bytes(n, k));
+    ++checked;
+  }
+  // The recorded fact is 7 projections per layer over 28 layers.
+  BOOST_CHECK_EQUAL(checked, 196U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
