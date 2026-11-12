@@ -5748,6 +5748,26 @@ public:
   {
     ++prefetchCalls;
     std::promise<TensorBundle> promise;
+    // A TOKEN_FEEDBACK edge carries the sampled token plus the terminal marker. The
+    // marker is what tells a non-terminal unit its work is done for this request, so
+    // answering with a partial here would leave the peer waiting for an epoch that
+    // never ends.
+    if (edge.operationKind == "TOKEN_FEEDBACK") {
+      const std::int64_t token = 13;
+      std::vector<std::uint8_t> tokenBytes(sizeof(token));
+      std::memcpy(tokenBytes.data(), &token, sizeof(token));
+      TensorBundle feedback;
+      feedback.name = edge.scope;
+      feedback.payload = encodeTensorBundle({
+        NamedTensor{"input_ids", TensorElementType::Int64, {1, 1},
+                    std::move(tokenBytes)},
+        NamedTensor{"__ndnsf_token_feedback_terminal", TensorElementType::Bool, {1},
+                    std::vector<std::uint8_t>{1}},
+      });
+      feedback.expectedBytes = feedback.payload.size();
+      promise.set_value(std::move(feedback));
+      return promise.get_future();
+    }
     // A peer partial, shaped and typed to match the local contribution: SUM refuses
     // contributions that disagree on identity, type, shape or size, and that refusal is
     // the contract rather than an obstacle to work around.
@@ -5781,6 +5801,198 @@ public:
 };
 
 } // namespace
+
+BOOST_AUTO_TEST_CASE(BothTensorParallelUnitsRunATokenEpochThroughTheCoordinator)
+{
+  // The composition the previous case left out: both units of the sharded plan run a
+  // token epoch, not just the egress unit. Each unit has its own KV state and its own
+  // template; only the egress unit samples and publishes a token event.
+  //
+  // One layer, one epoch, two coordinators. This is still one process with fake IO --
+  // the network exchange is a separate, already-verified case -- but it is the first
+  // time both halves of the shard execute a full token step together.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  // The feedback edges the planner shapes: one per receiving unit, produced by the
+  // egress unit. The coordinator derives the terminal role from these, so a plan
+  // without them has no unit allowed to publish an event.
+  for (const auto& consumer : plan.roles) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {consumer};
+    feedback.keyScope = "token-feedback-" + consumer;
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+  plan.streamingOperationStride = plan.dependencies.size();
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+
+  NativeGenerationExecutionContractV1 contract;
+  contract.enabled = true;
+  contract.mode = "TOKEN_STREAMING";
+  contract.maxGeneratedTokens = 1;
+  contract.tokenInputName = "input_ids";
+  contract.eosTokenIds = {2};
+  contract.samplingDigest = tpDigest('a');
+  contract.tokenizerDigest = tpDigest('b');
+  qwen::bindQwenTpGenerationState(plan, contract);
+
+  // Each unit's own identity: the role name differs, so a unit cannot restore another's
+  // KV by accident.
+  const auto identityFor = [] (const std::string& role) {
+    return tpStateIdentity(role, 1, 0);
+  };
+
+  struct UnitRun {
+    std::size_t runnerCalls = 0;
+    std::size_t events = 0;
+    std::set<std::string> stateScopes;
+  };
+  std::map<std::string, UnitRun> runs;
+
+  for (const auto& unit : plan.roles) {
+    const auto identity = identityFor(unit);
+    NativeProviderRuntime runtime(1);
+    NativeModelRunnerSpec runnerSpec;
+    runnerSpec.role = unit;
+    runnerSpec.kind = "onnx-model";
+    runnerSpec.backend = "tp-test";
+    runnerSpec.path = "/tmp/tp-unit.onnx";
+    runnerSpec.metadata = std::map<std::string, std::string>{
+      {"evidence.modelDigest", identity.modelDigest},
+      {"evidence.planDigest", tpDigest('0')},
+      {"evidence.providerName", identity.providerIdentity},
+      {"evidence.providerBootId", identity.providerBootId},
+      {"state.securityEpoch", "7"},
+      {"state.generationId", identity.generationId},
+      {"state.schemaDigest", identity.stateSchemaDigest},
+    };
+
+    const bool egress = unit == "S0R0";
+    auto& run = runs[unit];
+    const auto runner = makeNativeModelRunner(
+      [&run, &contract, &identity, egress] (const RoleExecutionContext& ctx) {
+        ++run.runnerCalls;
+        const bool head = ctx.activeStep->artifactEntry.find("/HEAD/") !=
+                          std::string::npos;
+        std::map<std::string, TensorBundle> outputs;
+        for (const auto& slot : ctx.activeStep->outputSlots) {
+          NamedTensor value;
+          value.name = slot.slotId;
+          value.elementType = TensorElementType::Float32;
+          if (head && slot.slotId == "logits" && egress) {
+            value.shape = {1, static_cast<std::int64_t>(151936)};
+            value.payload.assign(static_cast<std::size_t>(151936) * sizeof(float), 0);
+            float* values = reinterpret_cast<float*>(value.payload.data());
+            // A different winner per unit would prove which one sampled.
+            values[13] = 5.0f;
+          }
+          else {
+            value.shape = {std::int64_t(1), std::int64_t(4)};
+            value.payload.assign(4 * sizeof(float), 0);
+            float* values = reinterpret_cast<float*>(value.payload.data());
+            for (std::size_t index = 0; index < 4; ++index) values[index] = 0.5f;
+          }
+          outputs.emplace(slot.slotId,
+            makeEncodedTensorBundle(slot.slotId, {std::move(value)}));
+        }
+        for (const auto& name : contract.stateOutputNames) {
+          NamedTensor state;
+          state.name = name;
+          state.elementType = TensorElementType::Float32;
+          state.shape = {1, 4, 1, 128};
+          state.payload.assign(4 * 128 * sizeof(float), 0);
+          outputs.emplace(name, makeEncodedTensorBundle(name, {std::move(state)}));
+          run.stateScopes.insert(name);
+        }
+        return outputs;
+      });
+    runtime.registerRunner(runnerSpec, runner);
+
+    auto io = std::make_shared<TpSamplingIo>();
+    NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+    config.sessionId = "tp-both-" + unit;
+    config.requestId = "/request/tp-sampling";
+    config.attemptEpoch = 1;
+    config.lineagePlanDigest = tpDigest('0');
+    config.localProvider = identity.providerIdentity;
+    config.role = unit;
+    config.initialInputs = {
+      {"input_ids", makeEncodedTensorBundle("prompt",
+        {NamedTensor{"input_ids", TensorElementType::Int64, {1, 1},
+                     std::vector<std::uint8_t>(sizeof(std::int64_t), 0)}})},
+    };
+    config.maxEpochs = 1;
+    config.stateInputNames = contract.stateInputNames;
+    config.stateOutputNames = contract.stateOutputNames;
+    config.stateIdentityTemplate = identity;
+    config.positionPolicyDigest = identity.positionDigest;
+    config.samplingDigest = contract.samplingDigest;
+    config.prepareRunner = [runner] { return runner; };
+    // The coordinator derives the terminal role from a feedback *output* edge, so the
+    // unit that owns one is the one allowed an event sink. Check that here rather than
+    // assuming the role name is the criterion.
+    {
+      NativeProviderAssignment local;
+      local.providerByRole = assignment.providerByRole;
+      const auto spec = roleSpecFor(plan, unit, std::string("probe"), local,
+                                    identity.providerIdentity);
+      std::size_t feedbackOutputs = 0;
+      for (const auto& edge : spec.outputs)
+        if (edge.operationKind == "TOKEN_FEEDBACK") ++feedbackOutputs;
+      BOOST_TEST_MESSAGE("unit " << unit << " feedback outputs=" << feedbackOutputs
+                        << " egress=" << egress);
+      BOOST_CHECK_EQUAL(feedbackOutputs > 0, egress);
+    }
+    // Only the egress unit may publish token events; the peer must be given no sink.
+    if (egress) {
+      config.eventSink = [&run] (const std::vector<std::uint8_t>& payload) {
+        ++run.events;
+        if (std::string(payload.begin(), payload.end()).find("\"tokenId\":13") ==
+            std::string::npos) {
+          throw std::runtime_error("the egress unit published a different token");
+        }
+        return true;
+      };
+    }
+
+    try {
+      const auto result = runNativeEpochCoordinator(std::move(config));
+      BOOST_CHECK_EQUAL(result.epochsExecuted, 1U);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("unit ") + unit + " failed: " + error.what());
+    }
+    // Both units committed their own state; neither reported a missing successor.
+    BOOST_CHECK_GT(run.stateScopes.size(), 0U);
+  }
+
+  // Both units ran their template, and only the egress unit produced an event.
+  BOOST_REQUIRE_EQUAL(runs.size(), 2U);
+  // The egress unit runs four subgraph steps (INIT, ATTN, MLP, HEAD); the peer runs
+  // three, because the head is where sampling happens and only one unit holds it.
+  BOOST_CHECK_EQUAL(runs.at("S0R0").runnerCalls, 4U);
+  BOOST_CHECK_EQUAL(runs.at("S0R1").runnerCalls, 3U);
+  BOOST_CHECK_EQUAL(runs.at("S0R0").events, 1U);
+  BOOST_CHECK_EQUAL(runs.at("S0R1").events, 0U);
+  // Each unit returned the KV successors under the export's names.
+  for (const auto& item : runs) {
+    BOOST_CHECK_EQUAL(item.second.stateScopes.size(), contract.stateOutputNames.size());
+    for (const auto& name : item.second.stateScopes)
+      BOOST_CHECK(name.rfind("present.", 0) == 0);
+  }
+}
 
 BOOST_AUTO_TEST_CASE(CoordinatorSamplesOneTokenThroughATensorParallelEgressSpec)
 {
