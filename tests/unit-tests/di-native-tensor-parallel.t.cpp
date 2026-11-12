@@ -5538,6 +5538,52 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(SealerRequiresExactlyOneFeedbackEdgeWhichShardingCannotProvide)
+{
+  // The next blocker, stated as the constant that conflicts. C6 requires one feedback
+  // edge per receiving unit; the V3 projection decoder requires exactly one
+  // TOKEN_FEEDBACK dependency, so a two-unit plan fails validation before any Provider
+  // ever sees it.
+  //
+  // This is a real conflict between two binding requirements, not a bug in either: the
+  // decoder was written for a pipeline where feedback has one consumer.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  // Feedback as the planner now builds it: one edge per receiving unit.
+  for (const auto& consumer : plan.roles) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {consumer};
+    feedback.keyScope = "token-feedback-" + consumer;
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+
+  const auto feedbackCount = std::count_if(
+    plan.dependencies.begin(), plan.dependencies.end(),
+    [] (const auto& dependency) {
+      return dependency.operationKind == "TOKEN_FEEDBACK";
+    });
+  // The count a sharded plan needs, against the count the decoder accepts.
+  BOOST_CHECK_EQUAL(feedbackCount, 2);
+  BOOST_TEST_MESSAGE("feedback edges=" << feedbackCount
+                    << " roles=" << plan.roles.size());
+  BOOST_CHECK_MESSAGE(feedbackCount != 1,
+    "the sharded plan has exactly one feedback edge, so the decoder's rule would "
+    "already accept it and this case would prove nothing");
+  // The conflict, stated as the value that has to change on one side or the other.
+  BOOST_CHECK_EQUAL(plan.roles.size(), 2U);
+}
+
 BOOST_AUTO_TEST_CASE(EgressSpecCarriesEverythingButTheGenerationContract)
 {
   // Measured, one requirement at a time, so the remaining gap is named rather than
