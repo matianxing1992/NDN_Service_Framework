@@ -291,16 +291,25 @@ inspectQwenNBitsGraph(const std::vector<std::uint8_t>& modelBytes,
     if (facts.k == 0 || facts.n == 0) {
       throw std::invalid_argument("tensor-parallel graph has a MatMulNBits without K/N");
     }
-    // Inputs are (A, B[, bias][, zero_point][, g_idx]); only the packed weight
-    // and its scales are expected in the frozen export.
-    if (node.input_size() < 2) {
-      throw std::invalid_argument("tensor-parallel graph has a MatMulNBits without weights");
+    // Official com.microsoft.MatMulNBits input order:
+    //   A (activation), B (packed weight), scales,
+    //   zero_points?, g_idx?, bias?
+    // Input 0 is the activation, not a weight: reading B from it would take a
+    // graph tensor for the packed initializer. The optional slots sit after
+    // scales and may be present-but-empty, which ONNX uses for "absent".
+    if (node.input_size() < 3 ||
+        node.input(1).empty() || node.input(2).empty()) {
+      throw std::invalid_argument(
+        "tensor-parallel graph has a MatMulNBits without packed weight or scales");
     }
-    facts.weightInitializer = node.input(0);
-    facts.scalesInitializer = node.input(1);
-    facts.hasBias = node.input_size() > 2 && !node.input(2).empty();
-    facts.hasZeroPoint = node.input_size() > 3 && !node.input(3).empty();
-    facts.hasGroupIndex = node.input_size() > 4 && !node.input(4).empty();
+    const auto present = [&node] (int index) {
+      return node.input_size() > index && !node.input(index).empty();
+    };
+    facts.weightInitializer = node.input(1);
+    facts.scalesInitializer = node.input(2);
+    facts.hasZeroPoint = present(3);
+    facts.hasGroupIndex = present(4);
+    facts.hasBias = present(5);
     if (facts.hasZeroPoint || facts.hasGroupIndex) {
       throw std::invalid_argument("tensor-parallel graph has an unsupported "
                                   "zero-point or group-index MatMulNBits");

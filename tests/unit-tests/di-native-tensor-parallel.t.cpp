@@ -598,15 +598,26 @@ namespace {
 /** Build one INT4 linear node with the maintained MatMulNBits attributes. */
 void
 appendNBitsNode(onnx::GraphProto& graph, const std::string& name,
-                std::uint64_t k, std::uint64_t n, int extraInputs = 0)
+                std::uint64_t k, std::uint64_t n, int optionalThrough = 0)
 {
   auto* node = graph.add_node();
   node->set_name(name);
   node->set_op_type("MatMulNBits");
   node->set_domain("com.microsoft");
-  node->add_input("w");
-  node->add_input("s");
-  for (int i = 0; i < extraInputs; ++i) node->add_input("extra" + std::to_string(i));
+  // Official com.microsoft.MatMulNBits input order:
+  //   A (activation), B (packed weight), scales, zero_points?, g_idx?, bias?
+  // The frozen export uses exactly the first three. Optional slots appear as
+  // empty names, which is how ONNX spells "absent".
+  node->add_input("/model/layers.0/input_layernorm/output_0");
+  node->add_input(name + "_B");
+  node->add_input(name + "_scales");
+  // `optionalThrough` names the last optional slot that is actually present:
+  // 0 none, 3 zero_points, 4 g_idx, 5 bias. Slots before it are emitted as
+  // empty names, which is the ONNX spelling for an absent optional input.
+  for (int slot = 3; slot <= optionalThrough; ++slot) {
+    node->add_input(slot == optionalThrough ? name + "_optional" + std::to_string(slot)
+                                            : std::string());
+  }
   const auto addInt = [&] (const char* attributeName, std::uint64_t value) {
     auto* attribute = node->add_attribute();
     attribute->set_name(attributeName);
@@ -630,7 +641,7 @@ struct QwenLogWidths
 
 /** Serialize an ONNX model holding the given projections. */
 std::vector<std::uint8_t>
-graphWith(QwenLogWidths widths, std::uint64_t layers, int extraInputsOnQ = 0)
+graphWith(QwenLogWidths widths, std::uint64_t layers, int optionalThroughOnQ = 0)
 {
   onnx::ModelProto model;
   model.set_ir_version(7);
@@ -639,7 +650,7 @@ graphWith(QwenLogWidths widths, std::uint64_t layers, int extraInputsOnQ = 0)
   for (std::uint64_t layer = 0; layer < layers; ++layer) {
     const auto prefix = "model.layers." + std::to_string(layer) + ".";
     appendNBitsNode(*graph, prefix + "attn.q_proj.MatMul_Q4", widths.hidden,
-                    widths.query * widths.headDim, extraInputsOnQ);
+                    widths.query * widths.headDim, optionalThroughOnQ);
     appendNBitsNode(*graph, prefix + "attn.k_proj.MatMul_Q4", widths.hidden,
                     widths.kv * widths.headDim);
     appendNBitsNode(*graph, prefix + "attn.v_proj.MatMul_Q4", widths.hidden,
@@ -669,6 +680,10 @@ BOOST_AUTO_TEST_CASE(GraphInspectionReadsFrozenProjectionWidths)
   BOOST_CHECK_EQUAL(q.n, 2048U);
   BOOST_CHECK_EQUAL(q.bits, 4U);
   BOOST_CHECK_EQUAL(q.blockSize, 32U);
+  // The parser must take B and scales from their schema positions, not from
+  // inputs 0/1: input 0 is the activation and is not an initializer at all.
+  BOOST_CHECK_EQUAL(q.weightInitializer, q.nodeName + "_B");
+  BOOST_CHECK_EQUAL(q.scalesInitializer, q.nodeName + "_scales");
   BOOST_CHECK(!q.hasBias);
   BOOST_CHECK(!q.hasZeroPoint);
   BOOST_CHECK(!q.hasGroupIndex);
@@ -689,12 +704,12 @@ BOOST_AUTO_TEST_CASE(ShapeFactsAreCrossCheckedAgainstTheGraph)
   BOOST_CHECK_THROW(qwen::inspectQwenNBitsGraph(bytes, 2), std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFactsWhenPresent)
+BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFacts)
 {
-  // Read-only cross-check against the real frozen export when this machine has
-  // it cached. The graph is 338 KB of metadata (weights stay in the sidecar),
-  // so this costs a file read and no model load. Absence is a skip, never a
-  // pass: the synthetic cases above remain the portable contract check.
+  // Qualification entry, not a convenience cross-check: the frozen export is a
+  // required input, so a missing file fails instead of skipping. The graph is
+  // 338 KB of metadata (weights stay in the sidecar), so this costs a file read
+  // and no model load, and it can run in a normal check.
   const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
   const std::string path = raw != nullptr && *raw != '\0'
     ? std::string(raw)
@@ -702,22 +717,34 @@ BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFactsWhenPresent)
                   "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
                   "canonical-source.onnx");
   // A directory opens successfully on Linux and only fails during the read, so
-  // the presence check must test for a regular file rather than stream state.
+  // presence is tested as a regular file rather than through stream state.
   std::error_code statusError;
-  if (!std::filesystem::is_regular_file(path, statusError) || statusError) {
-    BOOST_TEST_MESSAGE("frozen export not present; skipping real-model cross-check");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path +
+    " (set NDNSF_SPEC224_FROZEN_MODEL); qualification cannot skip it");
   std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    BOOST_TEST_MESSAGE("frozen export not readable; skipping real-model cross-check");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
                                         std::istreambuf_iterator<char>());
   BOOST_REQUIRE(!bytes.empty());
+
   const auto nodes = qwen::inspectQwenNBitsGraph(bytes, 28);
   BOOST_CHECK_EQUAL(nodes.size(), 196U);
+
+  // Field-level checks against the real graph, not just counts: the packed
+  // weight and scales must be the schema positions, the optional slots must be
+  // absent, and the widths must agree with the recorded GQA geometry.
+  const auto& q = nodes.front();
+  BOOST_CHECK_EQUAL(q.weightInitializer, std::string("model.layers.0.attn.q_proj.MatMul.weight_Q4"));
+  BOOST_CHECK_EQUAL(q.scalesInitializer, std::string("model.layers.0.attn.q_proj.MatMul.weight_scales"));
+  BOOST_CHECK_EQUAL(q.k, 1024U);
+  BOOST_CHECK_EQUAL(q.n, 2048U);
+  BOOST_CHECK_EQUAL(q.bits, 4U);
+  BOOST_CHECK_EQUAL(q.blockSize, 32U);
+  BOOST_CHECK(!q.hasBias);
+  BOOST_CHECK(!q.hasZeroPoint);
+  BOOST_CHECK(!q.hasGroupIndex);
+
   const auto shape = qwen::qwenTpShapeFromNodes(nodes, 1024, 28, 16, 8, 128, 3072);
   const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0);
   const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1);
@@ -737,14 +764,24 @@ BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFactsWhenPresent)
 
 BOOST_AUTO_TEST_CASE(UnsupportedExportFeaturesAreRejectedByName)
 {
-  // A third input is the bias slot; a fourth is zero-point. The frozen export
-  // has neither, and a zero-point layout is not something this partition cuts.
-  const auto biasOnly = graphWith(QwenLogWidths{}, 1, 1);
+  // Optional inputs sit after scales in schema order: zero_points, g_idx, bias.
+  // An export with a zero-point or g_idx cannot be cut by this partition; a
+  // bias alone is representable and must be reported, not silently dropped.
+  // Slot 5 is bias, with slots 3 and 4 left empty: a representable export that
+  // must report hasBias without being rejected.
+  const auto biasOnly = graphWith(QwenLogWidths{}, 1, 5);
   const auto biasNodes = qwen::inspectQwenNBitsGraph(biasOnly, 1);
   BOOST_CHECK(biasNodes.front().hasBias);
+  BOOST_CHECK(!biasNodes.front().hasZeroPoint);
+  BOOST_CHECK(!biasNodes.front().hasGroupIndex);
 
-  const auto zeroPoint = graphWith(QwenLogWidths{}, 1, 2);
+  // Slot 3 is zero_points and slot 4 is g_idx: both are layouts this
+  // partition cannot cut, so each must be refused rather than mis-sliced.
+  const auto zeroPoint = graphWith(QwenLogWidths{}, 1, 3);
   BOOST_CHECK_THROW(qwen::inspectQwenNBitsGraph(zeroPoint, 1), std::invalid_argument);
+
+  const auto groupIndex = graphWith(QwenLogWidths{}, 1, 4);
+  BOOST_CHECK_THROW(qwen::inspectQwenNBitsGraph(groupIndex, 1), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
