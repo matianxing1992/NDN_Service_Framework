@@ -33,6 +33,7 @@
 #include <fstream>
 #include <iterator>
 #include <system_error>
+#include <utility>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1766,6 +1767,134 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
     << " against max |reference| " << maxReference);
   BOOST_CHECK(maxReference > 1e-3);
   BOOST_CHECK(maxAbsolute < 1e-4);
+}
+
+BOOST_AUTO_TEST_CASE(ResidualChainMatchesTheUnsplitSkipNorm)
+{
+  // C2: the residual stays local, so the layer is
+  //   X' = X + SUM_r(A_r)      and then norm(X') feeds the MLP.
+  // The tempting wrong form adds the residual per rank before the SUM:
+  //   SUM_r(X + A_r) = degree*X + SUM_r(A_r)
+  // which is numerically different and still produces finite, plausible output.
+  // This case runs the real SkipSimplifiedLayerNormalization kernel the frozen
+  // export uses, so both forms are compared through production arithmetic.
+  constexpr std::uint64_t hidden = 64;
+  constexpr std::uint64_t seq = 2;
+  constexpr std::uint64_t degree = 2;
+
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-residual");
+  std::mt19937 rng(31);
+
+  std::vector<float> x0(hidden * seq);
+  for (auto& value : x0) value = float(int(rng() % 21) - 10) * 0.05f;
+  std::vector<float> normWeight(hidden);
+  for (auto& value : normWeight) value = 0.8f + 0.01f * float(rng() % 40);
+  // Two rank partials with the same shape as the residual stream.
+  std::vector<float> partialA(hidden * seq), partialB(hidden * seq);
+  for (auto& value : partialA) value = float(int(rng() % 21) - 10) * 0.02f;
+  for (auto& value : partialB) value = float(int(rng() % 21) - 10) * 0.02f;
+
+  // Run one SkipSimplifiedLayerNormalization and return the normalized output
+  // together with the skip sum, which is exactly X' in the C2 formula.
+  const auto runSkip = [&] (const std::vector<float>& x, const std::vector<float>& skip) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec224-residual");
+
+    auto* node = graph->add_node();
+    node->set_name("skip");
+    node->set_op_type("SkipSimplifiedLayerNormalization");
+    node->set_domain("com.microsoft");
+    node->add_input("X"); node->add_input("S"); node->add_input("W");
+    node->add_output("Y");
+    node->add_output("");
+    node->add_output("");
+    node->add_output("Sum");
+    {
+      auto* attribute = node->add_attribute();
+      attribute->set_name("epsilon");
+      attribute->set_type(onnx::AttributeProto::FLOAT);
+      attribute->set_f(1e-6f);
+    }
+    auto* weight = graph->add_initializer();
+    weight->set_name("W");
+    weight->set_data_type(onnx::TensorProto_DataType_FLOAT);
+    weight->add_dims(std::int64_t(hidden));
+    weight->set_raw_data(normWeight.data(), normWeight.size() * sizeof(float));
+
+    const auto addIO = [&] (const char* name, bool isInput) {
+      auto* value = isInput ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(seq));
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(hidden));
+    };
+    addIO("X", true);
+    addIO("S", true);
+    addIO("Y", false);
+    addIO("Sum", false);
+
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> shape{1, std::int64_t(seq), std::int64_t(hidden)};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value inputs[] = {
+      Ort::Value::CreateTensor<float>(memory, const_cast<float*>(x.data()), x.size(),
+                                      shape.data(), shape.size()),
+      Ort::Value::CreateTensor<float>(memory, const_cast<float*>(skip.data()), skip.size(),
+                                      shape.data(), shape.size())};
+    const char* inputNames[] = {"X", "S"};
+    const char* outputNames[] = {"Y", "Sum"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, inputs, 2, outputNames, 2);
+    const auto count = hidden * seq;
+    const float* y = outputs[0].GetTensorData<float>();
+    const float* sum = outputs[1].GetTensorData<float>();
+    return std::make_pair(std::vector<float>(y, y + count), std::vector<float>(sum, sum + count));
+  };
+
+  // The two candidate residuals differ exactly as C2 describes.
+  //   correct: X' = X + A + B          (residual added once, outside the SUM)
+  //   wrong:   X' = 2X + A + B         (each rank added X before the SUM)
+  std::vector<float> mergedA(hidden * seq), wrongA(hidden * seq);
+  for (std::size_t i = 0; i < mergedA.size(); ++i) {
+    mergedA[i] = partialA[i] + partialB[i];
+    wrongA[i] = x0[i] + partialA[i] + partialB[i];
+  }
+
+  // The kernel treats its S input as the skip contribution and returns
+  // Sum = X + S. Passing the merged partial therefore yields the correct
+  // residual, and passing X plus the merged partial yields the inflated one.
+  const auto correct = runSkip(x0, mergedA);
+  const auto wrong = runSkip(x0, wrongA);
+  for (std::size_t i = 0; i < mergedA.size(); ++i) {
+    BOOST_CHECK_SMALL(correct.second[i] - (x0[i] + mergedA[i]), 1e-5f);
+    BOOST_CHECK_SMALL(wrong.second[i] - (2.0f * x0[i] + mergedA[i]), 1e-5f);
+  }
+
+  // LayerNorm is invariant to a positive uniform scaling: norm(2x) == norm(x).
+  // So if the wrong form were 2(X + A + B) it would be absorbed here and the
+  // error would only surface later, if at all. It is not, because the partials
+  // are added once rather than twice, and the difference must survive the
+  // normalization. That is what makes this check worth running.
+  double maxWrong = 0.0, scale = 0.0;
+  for (std::size_t i = 0; i < correct.first.size(); ++i) {
+    maxWrong = std::max(maxWrong, double(std::fabs(wrong.first[i] - correct.first[i])));
+    scale = std::max(scale, double(std::fabs(correct.first[i])));
+  }
+  BOOST_TEST_MESSAGE("residual chain: normalized outputs differ by " << maxWrong
+    << " against magnitude " << scale);
+  BOOST_CHECK(scale > 1e-3);
+  BOOST_CHECK(maxWrong > 1e-3);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
