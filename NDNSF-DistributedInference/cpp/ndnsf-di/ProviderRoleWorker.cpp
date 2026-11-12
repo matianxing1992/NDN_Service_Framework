@@ -1254,6 +1254,18 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
     const bool coordinatorOwnsStreaming = item.role.generationLineage.has_value();
     NativeWorkScope adapterWork(item.role.workStatistics, "role-adapter",
                                NativeWorkKind::UNCLASSIFIED);
+    // A tensor-parallel unit runs a token-local step DAG, not one model call.
+    // Refuse rather than fall through to the whole-role runner: silently running
+    // the peer-incomplete artifact as one role would produce plausible numbers
+    // from the wrong computation, which is worse than failing.
+    if (item.role.steps != nullptr) {
+      if (item.role.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1)
+        throw std::invalid_argument(
+          "Provider role carries an unsupported step plan version");
+      throw std::runtime_error(
+        "DI_NATIVE_STEP_EXECUTION_UNWIRED: this Provider cannot yet execute a "
+        "sealed step template");
+    }
     if (hasStreamSideEffect && !coordinatorOwnsStreaming) {
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_streamed role=" + item.role.role);

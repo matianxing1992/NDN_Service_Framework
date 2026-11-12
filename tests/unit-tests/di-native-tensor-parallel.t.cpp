@@ -9,6 +9,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStepExecutor.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include <onnx/onnx_pb.h>
@@ -32,6 +33,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <map>
 #include <system_error>
@@ -2501,6 +2503,95 @@ BOOST_AUTO_TEST_CASE(RoleSpecCarriesOnlyItsOwnUnitsSteps)
   BOOST_CHECK(legacy.steps == nullptr);
   BOOST_CHECK(legacy.stepPlanVersion.empty());
   BOOST_CHECK_EQUAL(legacy.tensorDegree, 1U);
+}
+
+/** Minimal DependencyIo: enough to drive the worker's execution branch without
+ * inventing a transport. Fetching a declared input returns an empty bundle so a
+ * case that only cares about the pre-execution decision never blocks.
+ */
+class InertDependencyIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge& edge) override
+  {
+    TensorBundle bundle;
+    bundle.name = edge.tensors.empty() ? std::string{} : edge.tensors.front();
+    bundle.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+    std::promise<TensorBundle> promise;
+    promise.set_value(std::move(bundle));
+    return promise.get_future();
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
+  {
+  }
+};
+
+BOOST_AUTO_TEST_CASE(WorkerRefusesASealedStepRoleInsteadOfRunningItWhole)
+{
+  // The worker runs one model call per role. A role that carries a sealed step
+  // template needs a different execution model, so the two must not be
+  // conflated: falling through to the whole-role runner would compute something
+  // plausible from a peer-incomplete artifact. The worker must refuse, and the
+  // refusal must name the condition so an operator can tell it apart from an
+  // ordinary adapter failure.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  ExecutionAttemptKey session;
+  session.requestId = "/session/step-refusal";
+  session.attemptEpoch = 1;
+  auto role = roleSpecFor(plan, "S0R0", session, assignment, "/provider/0");
+  BOOST_REQUIRE(role.steps != nullptr);
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  // No outputs are declared, so the worker only has to reach the execution
+  // branch. The point of the case is that it refuses before running anything.
+  auto future = worker.executeAsync(
+    "step-refusal-session", std::move(role), std::make_shared<InertDependencyIo>(),
+    [] (const RoleExecutionContext&) {
+      BOOST_FAIL("the whole-role runner must not run for a step-carrying role");
+      return std::map<std::string, TensorBundle>{};
+    });
+  BOOST_CHECK_THROW(future.get(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(WorkerRejectsAnUnknownStepPlanVersion)
+{
+  // Version skew is refused separately from "not wired yet": an unknown version
+  // is a contract error the operator must fix, not an implementation gap.
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  RoleSpec role;
+  role.role = "/Stage/0";
+  role.requestId = "/request/version-skew";
+  role.attemptEpoch = 1;
+  role.tensorDegree = 1;
+  role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{});
+  role.stepPlanVersion = "step-plan-v99";
+  role.tensorDegree = 2;
+  auto future = worker.executeAsync(
+    "version-skew-session", std::move(role), std::make_shared<InertDependencyIo>(),
+    [] (const RoleExecutionContext&) {
+      BOOST_FAIL("the whole-role runner must not run for a step-carrying role");
+      return std::map<std::string, TensorBundle>{};
+    });
+  try {
+    (void)future.get();
+    BOOST_FAIL("an unknown step plan version was accepted");
+  }
+  catch (const std::invalid_argument& error) {
+    BOOST_CHECK_EQUAL(std::string(error.what()),
+                      std::string("Provider role carries an unsupported step plan version"));
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
