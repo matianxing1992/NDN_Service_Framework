@@ -322,7 +322,7 @@ private:
   workerLoop();
 
   void
-  execute(const WorkItem& item);
+  execute(WorkItem& item);
 
   void
   executePreparation(const PreparationItem& item);
@@ -344,7 +344,7 @@ private:
               std::exception_ptr failure);
 
   ProviderRoleResult
-  runReadyRole(const WorkItem& item);
+  runReadyRole(WorkItem& item);
 
   /** Run one unit's sealed step template to completion.
    *
@@ -358,8 +358,12 @@ private:
    * @param ctx   Context already carrying lineage, epoch and the admitted inputs.
    * @param item  The work item that owns the runner, guards and statistics.
    */
+  /** Run one unit's sealed template, publishing each remote partial as its step
+   * completes. `item` is non-const because it records which scopes were already
+   * published, so the final pass does not send the same object twice.
+   */
   ProviderRoleResult
-  runSealedSteps(const RoleExecutionContext& ctx, const WorkItem& item);
+  runSealedSteps(const RoleExecutionContext& ctx, WorkItem& item);
 
   std::map<std::string, TensorBundle>
   getCachedOutputs(const std::string& key);

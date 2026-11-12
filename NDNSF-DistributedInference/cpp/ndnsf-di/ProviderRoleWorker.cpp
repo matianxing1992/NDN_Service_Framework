@@ -1054,7 +1054,7 @@ ProviderRoleWorker::executePreparation(const PreparationItem& item)
 }
 
 void
-ProviderRoleWorker::execute(const WorkItem& item)
+ProviderRoleWorker::execute(WorkItem& item)
 {
   std::atomic<bool> watchdogDone{false};
   std::thread watchdog;
@@ -1093,6 +1093,8 @@ ProviderRoleWorker::execute(const WorkItem& item)
     });
   }
   try {
+    // `item` is local to this execution, so recording which scopes were published
+    // early cannot leak into a retry of the same role.
     auto result = runReadyRole(item);
     watchdogDone.store(true, std::memory_order_release);
     if (watchdog.joinable()) {
@@ -1125,7 +1127,7 @@ ProviderRoleWorker::execute(const WorkItem& item)
 }
 
 ProviderRoleResult
-ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkItem& item)
+ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& item)
 {
   if (!item.role.steps || item.role.steps->empty()) {
     throw std::invalid_argument("runSealedSteps requires a sealed step template");
@@ -1288,11 +1290,65 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkIt
       }
       produced.emplace(step.stepId + "\n" + slot.slotId, found->second);
     }
+
+    // Publish this step's remote partial now, not after the unit finishes. A peer
+    // waiting for this contribution would otherwise wait for work that itself
+    // waits on the peer. The scope is recorded so the final pass does not publish
+    // the same object twice.
+    for (const auto& edge : item.role.outputs) {
+      if (edge.producerStepId != step.stepId) continue;
+      const auto key = step.stepId + "\n" + edge.producerSlotId;
+      const auto value = produced.find(key);
+      if (value == produced.end()) {
+        throw std::runtime_error(
+          "sealed step output edge has no produced value: " + edge.scope);
+      }
+      auto bundle = value->second;
+      // The same stripping the final pass applies: Provider-local state never
+      // travels, and a peer must not receive a bundle that would be rejected as a
+      // dependency for naming state.
+      for (const auto& tensor : edge.tensors) {
+        if (std::find(item.role.stateOutputNames.begin(),
+                      item.role.stateOutputNames.end(), tensor) !=
+            item.role.stateOutputNames.end()) {
+          throw std::logic_error(
+            "planned dependency explicitly names Provider-local decode state");
+        }
+      }
+      auto stripped = withoutProviderLocalState(bundle, item.role.stateOutputNames,
+                                                item.role.workStatistics);
+      validateTensorBundleForEdge(edge, stripped, false);
+      // Charge the transfer where it actually happens. The final pass skips this
+      // edge, so leaving it out here would make the timing ledger claim the partial
+      // was never sent.
+      completeStageTransferObservation(edge, stripped, "send");
+      if (item.executionGuard) item.executionGuard();
+      item.io->publishOutput(item.sessionId, edge, stripped);
+      item.publishedScopes.insert(edge.scope);
+      if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
+        logRuntimeTrace("NDNSF_DI_WORKER event=step_partial_published role=" +
+                        item.role.role + " scope=" + edge.scope);
+      }
+    }
   }
 
   // The unit is complete only now, so its declared role outputs are packed from
-  // the terminal steps. Every output edge names the step that produced it.
+  // the terminal steps. Every output edge names the step that produced it. An edge
+  // whose step already published it is returned but not sent again: republishing
+  // the same name and content would be idempotent for a reader and wasteful for
+  // the transport, and a second send after a peer consumed the first is exactly
+  // the duplicate the contract asks to ignore rather than repeat.
   for (const auto& edge : item.role.outputs) {
+    if (item.publishedScopes.count(edge.scope) != 0) {
+      const auto key = edge.producerStepId + "\n" + edge.producerSlotId;
+      const auto found = produced.find(key);
+      if (found == produced.end()) {
+        throw std::runtime_error(
+          "sealed unit did not produce a declared output edge: " + edge.scope);
+      }
+      result.outputsByScope.emplace(edge.scope, found->second);
+      continue;
+    }
     const auto key = edge.producerStepId + "\n" + edge.producerSlotId;
     const auto found = produced.find(key);
     if (found == produced.end()) {
@@ -1305,7 +1361,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkIt
 }
 
 ProviderRoleResult
-ProviderRoleWorker::runReadyRole(const WorkItem& item)
+ProviderRoleWorker::runReadyRole(WorkItem& item)
 {
   NativeWorkScope roleWork(item.role.workStatistics, "role-worker",
                           NativeWorkKind::UNCLASSIFIED, item.role.inferenceEpoch);
@@ -1583,6 +1639,10 @@ ProviderRoleWorker::runReadyRole(const WorkItem& item)
   std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;
   stagedOutputs.reserve(item.role.outputs.size());
   for (const auto& edge : item.role.outputs) {
+    // Already sent by the step that produced it. Skipping here is what keeps the
+    // transport from receiving the same object twice, and it is also why the final
+    // pass must not re-validate an edge whose bundle was already accepted.
+    if (item.publishedScopes.count(edge.scope) != 0) continue;
     for (const auto& tensor : edge.tensors) {
       if (std::find(item.role.stateOutputNames.begin(),
                     item.role.stateOutputNames.end(), tensor) !=
