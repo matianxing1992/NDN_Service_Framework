@@ -4236,6 +4236,96 @@ BOOST_AUTO_TEST_CASE(RunnerRefusesATableThatDoesNotMatchItsTemplate)
 }
 
 
+BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
+{
+  // The end of the assembly chain: a rank's single file becomes a parent spec
+  // whose entries ORT can actually load. This is the only case that proves the
+  // external-data layout works, because ORT refuses a sidecar path that resolves
+  // outside the model's own directory.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string source = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(source, statusError) && !statusError,
+    "frozen export is required at " + source + " (set NDNSF_SPEC224_FROZEN_MODEL)");
+
+  // Reproduce a rank artifact: the graph beside its shared sidecar.
+  const auto directory = std::filesystem::temp_directory_path() /
+    ("spec224-rank-spec-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(directory, cleanupError);
+  std::filesystem::create_directories(directory);
+  const auto rankModel = directory / "model.onnx";
+  std::filesystem::copy_file(source, rankModel, cleanupError);
+  BOOST_REQUIRE_MESSAGE(!cleanupError, "rank model copy failed: " + cleanupError.message());
+  // Name the sidecar after the location the graph itself declares. The frozen
+  // export says "model.onnx_data"; production rewrites that to "model.onnx.data"
+  // when it assembles, but this fixture copies the graph verbatim, so it must
+  // match what the bytes ask for.
+  std::filesystem::create_hard_link(
+    source.substr(0, source.find_last_of('/')) + "/model.onnx_data",
+    directory / "model.onnx_data", cleanupError);
+  BOOST_REQUIRE_MESSAGE(!cleanupError, "sidecar link failed: " + cleanupError.message());
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = rankModel.string();
+  qwen::configureQwenTpRankSpec(spec, 28);
+
+  // The spec now selects the parent runner and carries a verified table.
+  BOOST_CHECK_EQUAL(spec.backend, std::string("native-qwen-tensor"));
+  BOOST_CHECK_EQUAL(spec.metadata["tensorParallelEntryRoot"], directory.string());
+  const auto table = qwen::parseQwenTpEntryTable(spec.metadata.at("tensorParallelEntries"));
+  BOOST_CHECK_EQUAL(table.size(), 58U);
+  BOOST_CHECK_EQUAL(spec.metadata.at("tensorParallelEntryCount"), std::string("58"));
+
+  // Every entry's file sits in the same directory as the shared sidecar the
+  // initializers point at.
+  for (const auto& entry : table) {
+    const auto target = directory / entry.relativeGraphPath;
+    BOOST_REQUIRE_MESSAGE(std::filesystem::exists(target),
+      "entry file missing: " + target.string());
+    BOOST_CHECK_EQUAL(target.parent_path(), directory);
+  }
+
+  // ORT must load a real entry from that layout. Loading the graph alone would
+  // not prove it: the external data path is what fails when the layout is wrong.
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-rank-spec");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  const auto attnEntry = std::find_if(table.begin(), table.end(),
+    [] (const auto& entry) {
+      return entry.kind == "ATTN" && entry.layer == 0;
+    });
+  BOOST_REQUIRE(attnEntry != table.end());
+  try {
+    Ort::Session session(ortEnv,
+      (directory / attnEntry->relativeGraphPath).c_str(), options);
+    BOOST_CHECK(session.GetInputCount() > 0);
+    BOOST_CHECK(session.GetOutputCount() > 0);
+  }
+  catch (const Ort::Exception& error) {
+    std::filesystem::remove_all(directory, cleanupError);
+    BOOST_FAIL(std::string("ORT rejected a rewritten entry: ") + error.what());
+  }
+
+  // A spec whose model is missing is refused rather than silently left as a
+  // whole-role spec, which would run the rank graph once per step.
+  NativeModelRunnerSpec missing;
+  missing.role = "S0R0";
+  missing.path = (directory / "absent.onnx").string();
+  BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(missing, 28), std::runtime_error);
+  BOOST_CHECK_EQUAL(missing.backend, std::string(""));
+
+  std::filesystem::remove_all(directory, cleanupError);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

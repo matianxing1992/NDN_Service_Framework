@@ -2,6 +2,7 @@
 #define NDNSF_DI_QWEN_TENSOR_SPLIT_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -359,6 +360,25 @@ std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers);
+
+/** Turn an assembled rank spec into a tensor-parallel parent spec.
+ *
+ * Assembly produces one file per role: the rank's graph beside its shared
+ * initializer sidecar. Tensor parallelism needs one file per entry instead, so
+ * this splits that rank artifact into its entry table and rewrites the spec to
+ * select the parent runner.
+ *
+ * Entries are written into the rank artifact's own directory, not a subdirectory.
+ * The initializers stay external and shared (C3), so each entry's external data
+ * path is "model.onnx.data"; ORT refuses a path that resolves outside the model's
+ * directory, which a nested layout would produce.
+ *
+ * @param spec   Rank spec produced by assembly; rewritten in place.
+ * @param layers Number of transformer layers the rank graph carries.
+ * @throws std::runtime_error when the rank artifact cannot be read or split.
+ */
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers);
 
 /** Serialize a verified entry table for the runner spec.
  *

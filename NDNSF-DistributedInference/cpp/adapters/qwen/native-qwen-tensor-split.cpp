@@ -1185,6 +1185,30 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
   return table;
 }
 
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers)
+{
+  if (spec.path.empty() || layers == 0 || spec.role.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel rank spec needs an assembled path, a role and layers");
+  }
+  const std::filesystem::path modelPath(spec.path);
+  if (!std::filesystem::is_regular_file(modelPath)) {
+    throw std::runtime_error(
+      "tensor-parallel rank spec names an unreadable model: " + spec.path);
+  }
+  const auto graphBytes = readEntryFile(modelPath);
+  auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
+                                        graphBytes, layers);
+  spec.metadata["tensorParallelEntries"] = qwenTpEntryTableJson(table);
+  // The parent locates its children relative to this directory.
+  spec.metadata["tensorParallelEntryRoot"] = modelPath.parent_path().string();
+  spec.metadata["tensorParallelEntryCount"] = std::to_string(table.size());
+  // The parent runner is selected by backend name, and the single-file rank model
+  // is no longer what executes.
+  spec.backend = "native-qwen-tensor";
+}
+
 std::string
 qwenTpEntryTableJson(const std::vector<QwenTpEntryContract>& entries)
 {
