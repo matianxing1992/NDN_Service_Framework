@@ -2318,6 +2318,26 @@ BOOST_AUTO_TEST_CASE(SumAccumulatesContributionsAndRejectsMismatch)
   BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f, 6.0f}));
   BOOST_CHECK(valuesOf(accumulator.at("remote1")) == std::vector<float>({7.0f, 8.0f, 9.0f}));
 
+  // The first contribution is validated too. An empty or misaligned initial
+  // value would poison every later sum and would never be examined again,
+  // because the accumulator already exists by then.
+  {
+    std::map<std::string, TensorBundle> firstEmpty;
+    TensorBundle empty;
+    empty.name = "partial";
+    BOOST_CHECK_THROW(
+      accumulateTensorBundle(firstEmpty, "remote0", empty), std::invalid_argument);
+    BOOST_CHECK(firstEmpty.empty());
+
+    std::map<std::string, TensorBundle> firstOdd;
+    TensorBundle odd;
+    odd.name = "partial";
+    odd.payload = {std::uint8_t(1), std::uint8_t(2), std::uint8_t(3)};
+    BOOST_CHECK_THROW(
+      accumulateTensorBundle(firstOdd, "remote0", odd), std::invalid_argument);
+    BOOST_CHECK(firstOdd.empty());
+  }
+
   // A contribution with a different payload size is a contract violation, not
   // something to silently truncate.
   BOOST_CHECK_THROW(

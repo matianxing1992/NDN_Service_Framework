@@ -1410,10 +1410,30 @@ applyCertifiedTensorRedistributions(const RoleExecutionContext& context)
   return transformed;
 }
 
+namespace {
+
+/** A contribution is summable only if it is a whole number of float32 elements.
+ * The first contribution is checked too: an empty or misaligned payload accepted
+ * as the initial value would poison every later sum, and it would never be
+ * examined again because the accumulator already exists.
+ */
+void
+requireSummablePayload(const TensorBundle& contribution)
+{
+  if (contribution.payload.empty() ||
+      contribution.payload.size() % sizeof(float) != 0) {
+    throw std::invalid_argument(
+      "step SUM contribution is empty or not a whole number of float32 elements");
+  }
+}
+
+} // namespace
+
 void
 accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
                        const std::string& slot, const TensorBundle& contribution)
 {
+  requireSummablePayload(contribution);
   const auto found = accumulator.find(slot);
   if (found == accumulator.end()) {
     accumulator.emplace(slot, contribution);
@@ -1423,7 +1443,6 @@ accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
   // A SUM over mismatched contributions would silently produce a wrong tensor,
   // so the contract is enforced here rather than left to the arithmetic below.
   if (target.name != contribution.name ||
-      target.payload.size() % sizeof(float) != 0 ||
       contribution.payload.size() != target.payload.size()) {
     throw std::invalid_argument(
       "step SUM contributions disagree on tensor identity or payload size");
