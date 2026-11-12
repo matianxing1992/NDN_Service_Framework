@@ -7878,6 +7878,85 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(CatalogExpandsRankRolesButNotStepUnits)
+{
+  // The catalog already has the split I was looking for: a candidate names stage roles,
+  // and prepared roles carry (stage, rank) pairs whose selectedRole is the rank's own
+  // name. The template then rewrites dependency producers and consumers from stage
+  // names into selected rank names.
+  //
+  // What it does not rewrite is the step template's unitId. A step names the unit that
+  // runs it, so after expansion a step would still name the stage while the plan's roles
+  // list holds the selected rank names -- and the worker looks a step's unit up in that
+  // list.
+  //
+  // This is the concrete, small gap: expansion covers dependencies and not steps.
+  const std::string stage = "/Stage/0";
+  const std::string rank0 = "/Stage/0#0";
+  const std::string rank1 = "/Stage/0#1";
+
+  NativeExecutionPlan stagePlan;
+  stagePlan.roles = {stage};
+  NativeDependencySpec dep;
+  dep.producers = {stage};
+  dep.consumers = {stage};
+  dep.keyScope = "tp-partial";
+  dep.topicPrefix = "/NDNSF/DI/QWEN";
+  dep.objectNameTemplate = "{producerProvider}/x/{sequence}";
+  dep.tensors = {"partial"};
+  dep.operationKind = "TENSOR_PARTIAL";
+  dep.useNdnsfDataV1 = true;
+  stagePlan.dependencies.push_back(dep);
+
+  // After the template's expansion: dependencies name rank roles.
+  std::map<std::string, std::vector<std::string>> selectedByStage{
+    {stage, {rank0, rank1}}};
+  const auto expand = [&selectedByStage] (const std::vector<std::string>& stages) {
+    std::vector<std::string> result;
+    for (const auto& name : stages) {
+      const auto& roles = selectedByStage.at(name);
+      result.insert(result.end(), roles.begin(), roles.end());
+    }
+    return result;
+  };
+  auto expanded = stagePlan;
+  expanded.roles.clear();
+  for (const auto& item : selectedByStage) {
+    for (const auto& selected : item.second) expanded.roles.push_back(selected);
+  }
+  for (auto& dependency : expanded.dependencies) {
+    dependency.producers = expand(dependency.producers);
+    dependency.consumers = expand(dependency.consumers);
+  }
+  BOOST_CHECK_EQUAL(expanded.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(expanded.dependencies.front().producers.size(), 2U);
+  BOOST_CHECK_EQUAL(expanded.dependencies.front().consumers.size(), 2U);
+
+  // Now a step template whose unit names the stage. Expansion leaves it unrewritten,
+  // so it names a role the plan no longer has.
+  NativeExecutionStepSpec step;
+  step.stepId = stage + "/ATTN/0";
+  step.unitId = stage;
+  step.operation = "CALL_SUBGRAPH";
+  step.artifactEntry = "/ATTN/0";
+  step.outputSlots.push_back(NativeStepSlotSpec{
+    "partial", "float32", {1, 4}, tpDigest('a'), "REMOTE_STEP", "", ""});
+  expanded.steps.push_back(step);
+
+  const auto unitKnown = std::find(expanded.roles.begin(), expanded.roles.end(),
+                                   expanded.steps.front().unitId) != expanded.roles.end();
+  BOOST_TEST_MESSAGE("expanded roles=" << expanded.roles.size()
+                    << " step unit=" << expanded.steps.front().unitId
+                    << " unitKnown=" << unitKnown);
+  // The gap, stated as the false that has to become true: a step's unit must name one
+  // of the plan's roles, and after expansion it names the stage.
+  BOOST_CHECK(!unitKnown);
+  // The rewrite the fix needs: the step's unit becomes the rank role it belongs to. For
+  // a sharded stage every rank runs every step, so each stage step expands into one step
+  // per rank rather than being assigned to one of them.
+  BOOST_CHECK_EQUAL(selectedByStage.at(stage).size(), 2U);
+}
+
 BOOST_AUTO_TEST_CASE(NodeOwnershipIsSingleValuedSoRanksCannotShareALayer)
 {
   // Expanded the stage into rank roles on paper and hit the constraint the splitter
