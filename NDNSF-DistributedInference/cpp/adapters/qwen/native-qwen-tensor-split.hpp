@@ -317,6 +317,27 @@ struct QwenTpEntryContract
   }
 };
 
+/** Geometry a rank's entry graph must be rewritten to describe.
+ *
+ * Slicing the weights is only half of a shard: the operators still declare the
+ * source widths, so a graph with half the weight rows would fail to load or, worse,
+ * load and compute a different function. Every field here is a source fact; the
+ * rank's own values are derived from them.
+ */
+struct QwenTpRankGeometry
+{
+  std::uint64_t degree = 1;
+  std::uint64_t rank = 0;
+  std::uint64_t headDim = 0;
+  // Source widths of the sharded projections.
+  std::uint64_t queryWidth = 0;
+  std::uint64_t kvWidth = 0;
+  std::uint64_t hidden = 0;
+  std::uint64_t ffn = 0;
+
+  void validate() const;
+};
+
 /** Options that make assembly produce a rank's own shards.
  *
  * Without these, every entry keeps the source graph's full-width projections and
@@ -330,6 +351,10 @@ struct QwenTpAssemblyShards
   // Bounded read of the shared sidecar for non-contiguous slices.
   std::function<std::vector<std::uint8_t>(std::uint64_t offset, std::uint64_t length)>
     readExternal;
+
+  // Geometry for the operator rewrite. Empty degree means "weights only", which
+  // is only correct when every sharded width already equals the source value.
+  QwenTpRankGeometry geometry;
 
   bool enabled() const { return !slicesByLayer.empty(); }
 };
@@ -434,6 +459,31 @@ applyQwenTpRankSlices(onnx::ModelProto& entry,
                       const QwenRankLayerSlices* layerSlices,
                       const std::function<std::vector<std::uint8_t>(
                         std::uint64_t offset, std::uint64_t length)>& readExternal);
+
+/** Rewrite an entry's operator parameters to this rank's shard.
+ *
+ * The weights are already narrowed by `applyQwenTpRankSlices`; this makes the
+ * graph agree with them. Three classes of declaration move together, and a shard
+ * that updated only some of them would produce a shape error at load:
+ *
+ *  - `MatMulNBits` `K`/`N`: an output-channel shard halves N, an input-channel
+ *    shard halves K. Leaving them at source width makes ORT reject the weight.
+ *  - `GroupQueryAttention` head counts: whole heads per rank, which is what makes
+ *    the reduced Q/K/V widths and the attention op consistent.
+ *  - Value constraints that name a sharded width: the q/k normalization reshapes
+ *    and the KV state dimensions. These are matched by value, not by name, because
+ *    the export names them by literal content.
+ *
+ * A constant that equals none of the source widths is left alone: it describes
+ * something this partition does not divide, such as the head dimension.
+ *
+ * @param entry    Extracted entry model, rewritten in place.
+ * @param geometry Source geometry and this rank's index within it.
+ * @returns How many operator attributes and value constraints changed, so a caller
+ *          can tell "this entry had nothing to adapt" from "adaptation ran".
+ */
+std::uint64_t
+adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& geometry);
 
 /** Verify a rank's entry set before its READY record may be published.
  *

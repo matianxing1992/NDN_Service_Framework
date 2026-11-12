@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <cctype>
 #include <fstream>
@@ -1288,6 +1289,140 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   return shape;
 }
 
+void
+QwenTpRankGeometry::validate() const
+{
+  if (degree < 2) {
+    throw std::invalid_argument("tensor-parallel geometry requires degree >= 2");
+  }
+  if (rank >= degree) {
+    throw std::invalid_argument("tensor-parallel geometry has a rank outside its degree");
+  }
+  if (headDim == 0 || queryWidth == 0 || kvWidth == 0 || hidden == 0 || ffn == 0) {
+    throw std::invalid_argument("tensor-parallel geometry is incomplete");
+  }
+  if (queryWidth % degree != 0 || kvWidth % degree != 0 || ffn % degree != 0) {
+    throw std::invalid_argument(
+      "tensor-parallel geometry does not divide evenly by its degree");
+  }
+}
+
+std::uint64_t
+adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& geometry)
+{
+  geometry.validate();
+  auto* graph = entry.mutable_graph();
+  const auto shard = [&] (std::uint64_t width) { return width / geometry.degree; };
+  const auto queryShard = shard(geometry.queryWidth);
+  const auto kvShard = shard(geometry.kvWidth);
+  const auto ffnShard = shard(geometry.ffn);
+
+  // A constant is rewritten only if it names a width this partition divides. The
+  // export spells these as literal values, so matching is by value; a value that
+  // matches nothing (head dimension, hidden size after o_proj) is not ours.
+  const auto remap = [&] (std::int64_t value) -> std::optional<std::int64_t> {
+    if (value < 0) return std::nullopt;
+    const auto magnitude = static_cast<std::uint64_t>(value);
+    if (magnitude == geometry.queryWidth)
+      return static_cast<std::int64_t>(queryShard);
+    if (magnitude == geometry.kvWidth)
+      return static_cast<std::int64_t>(kvShard);
+    if (magnitude == geometry.ffn)
+      return static_cast<std::int64_t>(ffnShard);
+    return std::nullopt;
+  };
+
+  std::uint64_t changes = 0;
+
+  // 1. Operator attributes that declare a sharded width.
+  for (int i = 0; i < graph->node_size(); ++i) {
+    auto* node = graph->mutable_node(i);
+    if (node->op_type() == "MatMulNBits") {
+      const bool outputSharded = node->name().find("q_proj") != std::string::npos ||
+        node->name().find("k_proj") != std::string::npos ||
+        node->name().find("v_proj") != std::string::npos ||
+        node->name().find("gate_proj") != std::string::npos ||
+        node->name().find("up_proj") != std::string::npos;
+      const bool inputSharded = node->name().find("o_proj") != std::string::npos ||
+        node->name().find("down_proj") != std::string::npos;
+      for (int a = 0; a < node->attribute_size(); ++a) {
+        auto* attr = node->mutable_attribute(a);
+        if (!attr->has_i()) continue;
+        if (attr->name() == "N" && outputSharded) {
+          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          ++changes;
+        }
+        else if (attr->name() == "K" && inputSharded) {
+          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          ++changes;
+        }
+      }
+    }
+    else if (node->op_type() == "GroupQueryAttention") {
+      for (int a = 0; a < node->attribute_size(); ++a) {
+        auto* attr = node->mutable_attribute(a);
+        if (!attr->has_i()) continue;
+        if (attr->name() == "num_heads") {
+          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          ++changes;
+        }
+        else if (attr->name() == "kv_num_heads") {
+          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          ++changes;
+        }
+      }
+    }
+  }
+
+  // 2. Initializer constants that spell a sharded width.
+  for (int i = 0; i < graph->initializer_size(); ++i) {
+    auto* init = graph->mutable_initializer(i);
+    if (init->data_type() != onnx::TensorProto::INT64) continue;
+    if (init->data_location() != onnx::TensorProto::DEFAULT) continue;
+    if (init->raw_data().empty() || init->raw_data().size() % sizeof(std::int64_t) != 0) {
+      continue;
+    }
+    std::string bytes = init->raw_data();
+    bool changed = false;
+    for (std::size_t offset = 0; offset + sizeof(std::int64_t) <= bytes.size();
+         offset += sizeof(std::int64_t)) {
+      std::int64_t value = 0;
+      std::memcpy(&value, bytes.data() + offset, sizeof(value));
+      const auto replacement = remap(value);
+      if (!replacement) continue;
+      std::memcpy(bytes.data() + offset, &*replacement, sizeof(std::int64_t));
+      changed = true;
+    }
+    if (changed) {
+      init->set_raw_data(bytes.data(), bytes.size());
+      ++changes;
+    }
+  }
+
+  // 3. Value constraints that state a sharded width, such as the KV state shape
+  // and the q/k normalization reshapes.
+  const auto rewriteValueInfo = [&] (onnx::ValueInfoProto* value) {
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    auto* shape = tensor->mutable_shape();
+    for (int d = 0; d < shape->dim_size(); ++d) {
+      auto* dim = shape->mutable_dim(d);
+      if (!dim->has_dim_value()) continue;
+      const auto replacement = remap(dim->dim_value());
+      if (!replacement) continue;
+      dim->set_dim_value(*replacement);
+      ++changes;
+    }
+  };
+  for (int i = 0; i < graph->value_info_size(); ++i)
+    rewriteValueInfo(graph->mutable_value_info(i));
+  for (int i = 0; i < graph->input_size(); ++i)
+    rewriteValueInfo(graph->mutable_input(i));
+  for (int i = 0; i < graph->output_size(); ++i)
+    rewriteValueInfo(graph->mutable_output(i));
+
+  return changes;
+}
+
 std::uint64_t
 applyQwenTpRankSlices(onnx::ModelProto& entry,
                       const QwenRankLayerSlices* layerSlices,
@@ -1590,6 +1725,15 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
     }
     const auto shape = deriveQwenTpShape(graphBytes, layers);
     shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank);
+    // The operators must describe the narrowed weights, or ORT rejects the entry
+    // at load; the geometry is read from the same shape the slices came from.
+    shards.geometry.degree = tensorDegree;
+    shards.geometry.rank = tensorRank;
+    shards.geometry.headDim = shape.headDim;
+    shards.geometry.queryWidth = shape.queryWidth();
+    shards.geometry.kvWidth = shape.kvWidth();
+    shards.geometry.hidden = shape.hidden;
+    shards.geometry.ffn = shape.ffn;
     // The sidecar sits beside the rank file; only a non-contiguous slice needs it
     // in memory, and only for that entry's own weight.
     const auto sidecar = modelPath.parent_path() / "model.onnx.data";
@@ -1739,6 +1883,13 @@ writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
       // is stronger than rejecting here -- a rank with silently full weights would
       // still pass a "sliced something" check.
       (void)applyQwenTpRankSlices(model, owned, shards->readExternal);
+      // The weights are narrow now, so the operators must describe them. Doing it
+      // only when the caller supplied geometry keeps the slice-only path honest:
+      // it produces a model whose weights and declarations disagree, which is a
+      // tool for a byte-level test rather than something a Provider may load.
+      if (shards->geometry.degree > 1) {
+        (void)adaptQwenTpEntryParameters(model, shards->geometry);
+      }
     }
   }
 

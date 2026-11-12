@@ -5182,6 +5182,157 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
 }
 
 
+BOOST_AUTO_TEST_CASE(ShardedEntryDeclaresTheWidthsItsWeightsActuallyHave)
+{
+  // Slicing weights without rewriting the operators produces a graph that does not
+  // load: ORT cross-checks MatMulNBits N against the packed weight's first dim.
+  // This case builds a graph with the export's own declared widths, shards it, and
+  // checks every declaration agrees with the weight that accompanies it.
+  const std::uint64_t layers = 1;
+  auto model = makeTinyRankGraph(layers);
+  const std::uint64_t hidden = 64;
+  const std::uint64_t queryWidth = 128;   // 2 heads * 64
+  const std::uint64_t kvWidth = 64;       // 1 kv head * 64
+  const std::uint64_t ffn = 128;
+  {
+    auto* graph = model.mutable_graph();
+    const auto addPacked = [graph] (const std::string& name, std::uint64_t n,
+                                    std::uint64_t k) {
+      auto* weight = graph->add_initializer();
+      weight->set_name(name + "_Q4");
+      weight->set_data_type(onnx::TensorProto::UINT8);
+      weight->set_data_location(onnx::TensorProto::DEFAULT);
+      weight->add_dims(static_cast<std::int64_t>(n));
+      weight->add_dims(static_cast<std::int64_t>(k / qwen::QWEN_INT4_BLOCK_SIZE));
+      weight->add_dims(static_cast<std::int64_t>(qwen::QWEN_INT4_BLOB_BYTES));
+      std::vector<std::uint8_t> payload(qwen::packedInt4Bytes(n, k), 0x5A);
+      weight->set_raw_data(payload.data(), payload.size());
+      auto* scales = graph->add_initializer();
+      scales->set_name(name + "_scales");
+      scales->set_data_type(onnx::TensorProto::FLOAT);
+      scales->set_data_location(onnx::TensorProto::DEFAULT);
+      scales->add_dims(static_cast<std::int64_t>(n * (k / qwen::QWEN_INT4_BLOCK_SIZE)));
+      std::vector<std::uint8_t> scalarBytes(
+        static_cast<std::size_t>(n * (k / qwen::QWEN_INT4_BLOCK_SIZE)) * sizeof(float), 0);
+      scales->set_raw_data(scalarBytes.data(), scalarBytes.size());
+    };
+    // A real MatMulNBits-shaped node carries K/N attributes; the exporter's values
+    // are what a shard has to change.
+    const auto addNBits = [graph] (const std::string& name, std::uint64_t n,
+                                   std::uint64_t k) {
+      // The node's weight inputs are the initializer names the export uses, so the
+      // case checks the real correspondence rather than a lookalike.
+      auto* node = graph->add_node();
+      node->set_name(name);
+      node->set_op_type("MatMulNBits");
+      node->set_domain("com.microsoft");
+      node->add_input("attn0");
+      node->add_input("model.layers.0.attn." + name + ".weight_Q4");
+      node->add_input("model.layers.0.attn." + name + ".weight_scales");
+      node->add_output(name + "_out");
+      auto* kAttr = node->add_attribute();
+      kAttr->set_name("K");
+      kAttr->set_type(onnx::AttributeProto::INT);
+      kAttr->set_i(static_cast<std::int64_t>(k));
+      auto* nAttr = node->add_attribute();
+      nAttr->set_name("N");
+      nAttr->set_type(onnx::AttributeProto::INT);
+      nAttr->set_i(static_cast<std::int64_t>(n));
+    };
+    addPacked("model.layers.0.attn.q_proj.MatMul.weight", queryWidth, hidden);
+    addNBits("q_proj.MatMul", queryWidth, hidden);
+    addPacked("model.layers.0.attn.o_proj.MatMul.weight", hidden, queryWidth);
+    addNBits("o_proj.MatMul", hidden, queryWidth);
+  }
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  qwen::QwenTpRankGeometry geometry;
+  geometry.degree = 2;
+  geometry.rank = 0;
+  geometry.headDim = 64;
+  geometry.queryWidth = queryWidth;
+  geometry.kvWidth = kvWidth;
+  geometry.hidden = hidden;
+  geometry.ffn = ffn;
+  geometry.validate();
+
+  // Both halves of a shard, in the order assembly applies them: narrow the
+  // weights, then make the declarations describe them. Testing either alone would
+  // miss exactly the disagreement this case exists to catch.
+  qwen::QwenRankLayerSlices rank0;
+  rank0.layer = 0;
+  const auto addSliceFor = [&rank0] (const std::string& base,
+                                     qwen::QwenSliceAxis axis, std::uint64_t begin,
+                                     std::uint64_t end, std::uint64_t slicedK,
+                                     std::uint64_t slicedN) {
+    qwen::QwenInitializerSlice slice;
+    slice.name = base;
+    slice.axis = axis;
+    slice.begin = begin;
+    slice.end = end;
+    slice.slicedK = slicedK;
+    slice.slicedN = slicedN;
+    slice.validate();
+    rank0.initializers.push_back(slice);
+  };
+  addSliceFor("model.layers.0.attn.q_proj.MatMul.weight",
+              qwen::QwenSliceAxis::OutputChannels, 0, queryWidth / 2, hidden,
+              queryWidth / 2);
+  addSliceFor("model.layers.0.attn.o_proj.MatMul.weight",
+              qwen::QwenSliceAxis::InputChannels, 0, queryWidth / 2,
+              queryWidth / 2, hidden);
+
+  auto sharded = model;
+  const auto noExternal = [] (std::uint64_t, std::uint64_t) {
+    return std::vector<std::uint8_t>{};
+  };
+  (void)qwen::applyQwenTpRankSlices(sharded, &rank0, noExternal);
+  const auto changes = qwen::adaptQwenTpEntryParameters(sharded, geometry);
+  BOOST_CHECK(changes > 0);
+
+  const auto attributeOf = [] (const onnx::NodeProto& node, const char* name)
+    -> std::int64_t {
+    for (const auto& attr : node.attribute())
+      if (attr.name() == name) return attr.i();
+    return -1;
+  };
+  const auto weightDimsOf = [] (const onnx::ModelProto& source, const std::string& name) {
+    for (const auto& init : source.graph().initializer())
+      if (init.name() == name) return std::pair<std::int64_t, std::int64_t>(
+        init.dims(0), init.dims(1));
+    return std::pair<std::int64_t, std::int64_t>(-1, -1);
+  };
+
+  for (const auto& node : sharded.graph().node()) {
+    if (node.op_type() != "MatMulNBits") continue;
+    const auto k = attributeOf(node, "K");
+    const auto n = attributeOf(node, "N");
+    // The weight that this node multiplies must have exactly these dims.
+    const auto weightName = node.input(1);
+    const auto dims = weightDimsOf(sharded, weightName);
+    BOOST_CHECK_MESSAGE(dims.first == n,
+      "declared N " + std::to_string(n) + " != weight rows " +
+      std::to_string(dims.first) + " for " + node.name());
+    BOOST_CHECK_MESSAGE(dims.second * qwen::QWEN_INT4_BLOCK_SIZE == k,
+      "declared K " + std::to_string(k) + " != weight blocks*32 " +
+      std::to_string(dims.second * qwen::QWEN_INT4_BLOCK_SIZE) + " for " + node.name());
+    // q_proj keeps its K (the hidden width is replicated) and halves N;
+    // o_proj halves K and keeps N. A shard that moved the wrong one would fail
+    // the checks above, so state the expectation too.
+    if (node.name().find("q_proj") != std::string::npos) {
+      BOOST_CHECK_EQUAL(k, static_cast<std::int64_t>(hidden));
+      BOOST_CHECK_EQUAL(n, static_cast<std::int64_t>(queryWidth / 2));
+    }
+    if (node.name().find("o_proj") != std::string::npos) {
+      BOOST_CHECK_EQUAL(k, static_cast<std::int64_t>(queryWidth / 2));
+      BOOST_CHECK_EQUAL(n, static_cast<std::int64_t>(hidden));
+    }
+  }
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
