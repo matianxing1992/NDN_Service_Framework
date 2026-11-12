@@ -197,6 +197,38 @@ struct QwenTpUnit
   std::uint64_t layerEnd = 0;
 };
 
+/** Which entry a source-graph node belongs to.
+ *
+ * The taxonomy is fixed by C2: one INIT per unit, one ATTN and one MLP per
+ * layer, and a single HEAD on the egress unit. Classification is by the frozen
+ * export's own naming, not by ordinal, because the export interleaves
+ * preprocessing nodes with layer nodes.
+ */
+struct QwenTpEntryNodes
+{
+  std::string kind;      // "INIT" | "ATTN" | "MLP" | "HEAD"
+  std::uint64_t layer = 0;
+  // Source-graph node indices, ascending so the entry keeps the source order.
+  std::vector<std::uint64_t> nodeIndices;
+};
+
+/** Classify one source graph's nodes into the per-entry subgraphs.
+ *
+ * A rank shards every layer, so each unit gets an identical taxonomy over the
+ * same node set; what differs between ranks is the initializer slice, not which
+ * nodes an entry contains. That is why this function takes no degree.
+ *
+ * @param nodeNames Node names in source order.
+ * @param layers    Number of transformer layers (28 for the frozen export).
+ * @returns One entry per kind and layer, INIT first and HEAD last.
+ * @throws std::invalid_argument when a node matches no entry, or a layer is
+ *         missing an attention or MLP part: an unclassified node would silently
+ *         be dropped from every entry and never executed.
+ */
+std::vector<QwenTpEntryNodes>
+classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
+                         std::uint64_t layers);
+
 /** One verified subgraph entry a tensor-parallel unit executes.
  *
  * The projection must not invent the entry naming rule or the entry interface:

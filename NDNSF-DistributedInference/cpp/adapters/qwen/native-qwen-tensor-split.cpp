@@ -849,6 +849,111 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 
 } // namespace
 
+std::vector<QwenTpEntryNodes>
+classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
+                         std::uint64_t layers)
+{
+  if (nodeNames.empty() || layers == 0) {
+    throw std::invalid_argument("tensor-parallel entry classification needs a graph");
+  }
+  // Layer indices run [0, layers); the export also carries a final
+  // normalization under layers.<layers>, which belongs to HEAD rather than to a
+  // transformer layer.
+  std::vector<QwenTpEntryNodes> entries;
+  QwenTpEntryNodes init;
+  init.kind = "INIT";
+  QwenTpEntryNodes head;
+  head.kind = "HEAD";
+  std::vector<std::pair<QwenTpEntryNodes, QwenTpEntryNodes>> perLayer(layers);
+  for (auto& pair : perLayer) {
+    pair.first.kind = "ATTN";
+    pair.second.kind = "MLP";
+  }
+
+  const auto layerOf = [layers] (const std::string& name) -> std::optional<std::uint64_t> {
+    const auto marker = name.find("layers.");
+    if (marker == std::string::npos) return std::nullopt;
+    const auto begin = marker + 7;
+    std::size_t consumed = 0;
+    unsigned long long value = 0;
+    try {
+      value = std::stoull(name.substr(begin), &consumed);
+    }
+    catch (const std::exception&) {
+      return std::nullopt;
+    }
+    if (consumed == 0) return std::nullopt;
+    // The digit run must end at the path separator, or "layers.1" would match
+    // "layers.10".
+    if (begin + consumed < name.size() && name[begin + consumed] != '/') return std::nullopt;
+    if (value >= layers + 1) return std::nullopt;
+    return static_cast<std::uint64_t>(value);
+  };
+
+  for (std::size_t index = 0; index < nodeNames.size(); ++index) {
+    const auto& name = nodeNames[index];
+    const auto nodeIndex = static_cast<std::uint64_t>(index);
+    const auto layer = layerOf(name);
+    if (!layer) {
+      // Everything outside a layer is either embedding/position/mask
+      // preprocessing (INIT) or the tied lm_head.
+      if (name.find("lm_head") != std::string::npos) head.nodeIndices.push_back(nodeIndex);
+      else init.nodeIndices.push_back(nodeIndex);
+      continue;
+    }
+    if (*layer == layers) {
+      // layers.<N> is the final normalization, which HEAD consumes.
+      head.nodeIndices.push_back(nodeIndex);
+      continue;
+    }
+    auto& attention = perLayer[*layer].first;
+    auto& mlp = perLayer[*layer].second;
+    attention.layer = *layer;
+    mlp.layer = *layer;
+    // The split inside a layer is the post-attention normalization: everything
+    // before it produces the attention partial, everything from it onward is the
+    // MLP entry. Using the node name keeps this independent of ONNX ordinals.
+    if (name.find("post_attention_layernorm") != std::string::npos) {
+      mlp.nodeIndices.push_back(nodeIndex);
+      // The normalization itself belongs to the MLP entry, and so does every
+      // later node of the layer.
+      for (std::size_t later = index + 1; later < nodeNames.size(); ++later) {
+        if (layerOf(nodeNames[later]) != *layer) break;
+        mlp.nodeIndices.push_back(static_cast<std::uint64_t>(later));
+        index = later;
+      }
+      continue;
+    }
+    attention.nodeIndices.push_back(nodeIndex);
+  }
+
+  if (init.nodeIndices.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry classification found no INIT nodes");
+  }
+  for (const auto& pair : perLayer) {
+    if (pair.first.nodeIndices.empty() || pair.second.nodeIndices.empty()) {
+      throw std::invalid_argument(
+        "tensor-parallel entry classification left a layer without attention or MLP nodes");
+    }
+  }
+  entries.push_back(std::move(init));
+  for (auto& pair : perLayer) {
+    entries.push_back(std::move(pair.first));
+    entries.push_back(std::move(pair.second));
+  }
+  if (!head.nodeIndices.empty()) entries.push_back(std::move(head));
+  // The taxonomy must cover the graph exactly: a node in no entry would never be
+  // executed, which reads as a silently missing computation.
+  std::size_t covered = 0;
+  for (const auto& entry : entries) covered += entry.nodeIndices.size();
+  if (covered != nodeNames.size()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry classification does not cover every graph node");
+  }
+  return entries;
+}
+
 void
 QwenTpEntryContract::validate() const
 {

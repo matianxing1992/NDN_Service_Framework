@@ -3721,6 +3721,88 @@ BOOST_AUTO_TEST_CASE(ARunnerThatIgnoresStepsCannotSilentlyServeATemplate)
 }
 
 
+BOOST_AUTO_TEST_CASE(FrozenGraphClassifiesIntoTheEntryTaxonomy)
+{
+  // C2 fixes the entry taxonomy: INIT once, ATTN and MLP per layer, HEAD once.
+  // Classification is by the export's own naming, because the graph interleaves
+  // preprocessing nodes with layer nodes. This case runs against the frozen
+  // export so the taxonomy is checked on the graph that will actually execute.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path +
+    " (set NDNSF_SPEC224_FROZEN_MODEL); qualification cannot skip it");
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  BOOST_REQUIRE(!bytes.empty());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromString(std::string(bytes.begin(), bytes.end())));
+
+  std::vector<std::string> names;
+  names.reserve(model.graph().node_size());
+  for (const auto& node : model.graph().node()) names.push_back(node.name());
+
+  const auto entries = qwen::classifyQwenTpEntryNodes(names, 28);
+  // INIT, then ATTN and MLP for each of 28 layers, then HEAD.
+  BOOST_REQUIRE_EQUAL(entries.size(), 1U + 2U * 28U + 1U);
+  BOOST_CHECK_EQUAL(entries.front().kind, std::string("INIT"));
+  BOOST_CHECK_EQUAL(entries.back().kind, std::string("HEAD"));
+
+  std::size_t total = 0;
+  std::size_t attentionEntries = 0;
+  std::size_t mlpEntries = 0;
+  for (const auto& entry : entries) {
+    total += entry.nodeIndices.size();
+    if (entry.kind == "ATTN") ++attentionEntries;
+    if (entry.kind == "MLP") ++mlpEntries;
+    BOOST_CHECK(!entry.nodeIndices.empty());
+  }
+  BOOST_CHECK_EQUAL(attentionEntries, 28U);
+  BOOST_CHECK_EQUAL(mlpEntries, 28U);
+  // Every node belongs to exactly one entry: a node in none would never execute.
+  BOOST_CHECK_EQUAL(total, names.size());
+
+  // Per-layer entries must be contiguous and non-overlapping in source order, so
+  // an entry can be extracted as a node subset without gaps.
+  std::vector<std::uint64_t> seen;
+  for (const auto& entry : entries) {
+    for (const auto auto_index : entry.nodeIndices) seen.push_back(auto_index);
+  }
+  std::sort(seen.begin(), seen.end());
+  BOOST_CHECK_EQUAL(seen.size(), names.size());
+  BOOST_CHECK(std::adjacent_find(seen.begin(), seen.end()) == seen.end());
+  BOOST_CHECK_EQUAL(seen.front(), 0U);
+  BOOST_CHECK_EQUAL(seen.back(), std::uint64_t(names.size() - 1));
+
+  // The first layer's attention entry must hold the projections and the GQA op,
+  // and its MLP entry the three MLP projections. This is the split that matters:
+  // an attention entry that swallowed the MLP would execute the wrong subgraph.
+  const auto& layer0Attn = entries.at(1);
+  const auto& layer0Mlp = entries.at(2);
+  const auto namesOf = [&names] (const qwen::QwenTpEntryNodes& entry) {
+    std::set<std::string> result;
+    for (const auto index : entry.nodeIndices) result.insert(names.at(index));
+    return result;
+  };
+  const auto attnNames = namesOf(layer0Attn);
+  const auto mlpNames = namesOf(layer0Mlp);
+  BOOST_CHECK(attnNames.count("/model/layers.0/attn/GroupQueryAttention") == 1);
+  BOOST_CHECK(attnNames.count("/model/layers.0/attn/o_proj/MatMul_Q4") == 1);
+  BOOST_CHECK(mlpNames.count("/model/layers.0/mlp/down_proj/MatMul_Q4") == 1);
+  BOOST_CHECK(mlpNames.count("/model/layers.0/post_attention_layernorm/SkipLayerNorm") == 1);
+  // No node may appear in both.
+  for (const auto& name : attnNames)
+    BOOST_CHECK(mlpNames.count(name) == 0);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
