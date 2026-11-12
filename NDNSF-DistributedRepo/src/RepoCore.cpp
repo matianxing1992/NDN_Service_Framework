@@ -1257,11 +1257,24 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
         try {
           const auto segment = name[-1].toSegment();
           const auto table = proof->segments.find(packetBaseName(canonical));
-          if (table != proof->segments.end()) {
-            for (const auto& position : table->second) {
-              if (position.segment == segment && matchesName(position.packetIndex)) {
+          if (table != proof->segments.end() && !table->second.empty()) {
+            const auto& positions = table->second;
+            const auto first = positions.front().segment;
+            // Dense segments use one ordinal access; sparse or high values use
+            // the bounded sorted table, exactly as the exact-read lookup does.
+            if (segment >= first && segment - first < positions.size()) {
+              const auto& position = positions[static_cast<std::size_t>(segment - first)];
+              if (position.segment == segment && matchesName(position.packetIndex))
                 index = position.packetIndex;
-                break;
+            }
+            if (!index) {
+              auto position = std::lower_bound(positions.begin(), positions.end(), segment,
+                [](const auto& item, uint64_t wanted) { return item.segment < wanted; });
+              for (; position != positions.end() && position->segment == segment; ++position) {
+                if (matchesName(position->packetIndex)) {
+                  index = position->packetIndex;
+                  break;
+                }
               }
             }
           }
@@ -1278,8 +1291,12 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
           }
         }
       }
+      // A name outside the already admitted object means this batch spans
+      // objects. That is not an admission or integrity failure: the batch is
+      // simply not applicable and the caller falls back to exact reads, which
+      // repeat the full per-packet validation.
       if (!index)
-        throw std::runtime_error("repo-original-packet-batch-metadata-changed");
+        return std::nullopt;
       indices.push_back(*index);
       continue;
     }
