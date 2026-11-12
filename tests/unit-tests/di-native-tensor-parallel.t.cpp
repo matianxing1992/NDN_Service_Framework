@@ -4579,6 +4579,136 @@ BOOST_AUTO_TEST_CASE(TinyRankArtifactRunsAStepThroughTheRealFactory)
 }
 
 
+BOOST_AUTO_TEST_CASE(RankEntriesAreVerifiedBeforeReadyIsPublished)
+{
+  // D6: the parent checks every returned entry and the set as a whole before the
+  // rank's READY may be shared. Each refusal is asserted by its own message, so a
+  // failure from a later check cannot stand in for the one being tested.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0") steps.push_back(step);
+  BOOST_REQUIRE(!steps.empty());
+
+  // A table whose ids match the template, with real files whose digests match.
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-rank-verify-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+  std::vector<qwen::QwenTpEntryContract> table;
+  for (const auto& step : steps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    const auto name = "entry-" + std::to_string(table.size()) + ".onnx";
+    const std::vector<std::uint8_t> content(64, static_cast<std::uint8_t>(table.size()));
+    {
+      std::ofstream out(root / name, std::ios::binary);
+      BOOST_REQUIRE(static_cast<bool>(out));
+      out.write(reinterpret_cast<const char*>(content.data()),
+                static_cast<std::streamsize>(content.size()));
+    }
+    ndn::util::Sha256 digest;
+    digest.update(ndn::span<const std::uint8_t>(content.data(), content.size()));
+    auto hex = digest.toString();
+    std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    qwen::QwenTpEntryContract entry;
+    entry.entryId = step.artifactEntry;
+    entry.unitId = "S0R0";
+    entry.kind = "ATTN";
+    entry.inputNames = {"in"};
+    entry.outputNames = {"out"};
+    entry.relativeGraphPath = name;
+    entry.graphDigest = "sha256:" + hex;
+    entry.validate();
+    table.push_back(std::move(entry));
+  }
+  BOOST_REQUIRE(!table.empty());
+  const std::uint64_t budget = 1024 * 1024;
+  BOOST_CHECK_EQUAL(qwen::verifyQwenTpRankEntries(root, "S0R0", table, steps, budget),
+                    std::string(""));
+
+  const auto expectRefusal = [&] (std::vector<qwen::QwenTpEntryContract> candidate,
+                                  const std::string& needle,
+                                  std::uint64_t candidateBudget = 1024 * 1024) {
+    const auto problem = qwen::verifyQwenTpRankEntries(root, "S0R0", candidate,
+                                                       steps, candidateBudget);
+    BOOST_CHECK_MESSAGE(problem.find(needle) != std::string::npos,
+      "expected a refusal containing '" + needle + "', got '" + problem + "'");
+  };
+
+  // Missing entry a step needs.
+  {
+    auto candidate = table;
+    candidate.pop_back();
+    expectRefusal(candidate, "missing an entry");
+  }
+  // Entry no step references.
+  {
+    auto candidate = table;
+    auto surplus = candidate.front();
+    surplus.entryId = "S0R0/ATTN/999";
+    candidate.push_back(surplus);
+    expectRefusal(candidate, "no step references");
+  }
+  // Another unit's entry.
+  {
+    auto candidate = table;
+    candidate.front().unitId = "S0R1";
+    expectRefusal(candidate, "another unit");
+  }
+  // A repeated id.
+  {
+    auto candidate = table;
+    candidate.push_back(candidate.front());
+    expectRefusal(candidate, "repeated an entry id");
+  }
+  // A digest that does not match the file.
+  {
+    auto candidate = table;
+    candidate.front().graphDigest = "sha256:" + std::string(64, 'f');
+    expectRefusal(candidate, "does not match its file");
+  }
+  // A missing file.
+  {
+    auto candidate = table;
+    candidate.front().relativeGraphPath = "absent.onnx";
+    expectRefusal(candidate, "missing or empty");
+  }
+  // A budget that each file fits but the set does not. This is the case that
+  // distinguishes a per-rank budget from a per-entry one: with 64-byte files and
+  // a 100-byte budget every entry passes on its own, and only the running total
+  // rejects the rank. A budget below a single file would not test the distinction.
+  {
+    const auto perFile = std::filesystem::file_size(root / table.front().relativeGraphPath);
+    BOOST_REQUIRE(perFile > 0);
+    const auto generousForOneFile = perFile + 36;
+    BOOST_REQUIRE(generousForOneFile > perFile);
+    BOOST_REQUIRE(table.size() > 1);
+    BOOST_REQUIRE(generousForOneFile < perFile * table.size());
+    expectRefusal(table, "byte budget", generousForOneFile);
+  }
+  // A zero budget is refused outright rather than treated as unlimited.
+  {
+    expectRefusal(table, "no byte budget", 0);
+  }
+  // An empty table and an empty step set are both refused.
+  {
+    BOOST_CHECK(!qwen::verifyQwenTpRankEntries(root, "S0R0", {}, steps, budget).empty());
+    BOOST_CHECK(!qwen::verifyQwenTpRankEntries(root, "S0R0", table, {}, budget).empty());
+    BOOST_CHECK(!qwen::verifyQwenTpRankEntries(root, "", table, steps, budget).empty());
+  }
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

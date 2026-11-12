@@ -361,6 +361,36 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers);
 
+/** Verify a rank's entry set before its READY record may be published.
+ *
+ * D6 requires the parent to check every returned entry and the set as a whole.
+ * The checks are ordered from cheapest to most expensive, because a rejected
+ * rank must fail before any file is read in full:
+ *
+ *  - a step references an entry the table lacks, or the table holds an entry no
+ *    step references;
+ *  - an entry belongs to another unit, or two entries share an id;
+ *  - a path is absolute, escapes the root, or is not a plain name;
+ *  - a digest is not canonical, or a file's bytes do not match its digest;
+ *  - the table's files exceed the rank's total byte budget.
+ *
+ * The budget is per rank, not per entry: D6 forbids resetting it for each entry,
+ * which would let a rank quietly assemble N times its declared size.
+ *
+ * @param root            Assembly root the entries must stay inside.
+ * @param unitId          Unit whose READY is being considered.
+ * @param table           Entry table the rank returned.
+ * @param steps           Sealed steps the unit must be able to execute.
+ * @param rankedByteBudget Total bytes this rank may occupy.
+ * @returns Empty when the rank may be published READY, otherwise the first
+ *          problem, phrased for the operator who has to fix the assembly.
+ */
+std::string
+verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& unitId,
+                        const std::vector<QwenTpEntryContract>& table,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget);
+
 /** Turn an assembled rank spec into a tensor-parallel parent spec.
  *
  * Assembly produces one file per role: the rank's graph beside its shared

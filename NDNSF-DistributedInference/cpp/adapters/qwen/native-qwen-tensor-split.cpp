@@ -1186,6 +1186,91 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
 }
 
 std::string
+verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& unitId,
+                        const std::vector<QwenTpEntryContract>& table,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget)
+{
+  if (unitId.empty()) return "the rank has no unit id";
+  if (rankedByteBudget == 0) return "the rank has no byte budget";
+  if (table.empty()) return "the rank returned no entries";
+  if (steps.empty()) return "the unit has no sealed steps";
+
+  // 1. Set agreement, both directions: a missing entry cannot execute a step, and
+  // an unreferenced entry means the artifact is not the one the plan describes.
+  std::set<std::string> referenced;
+  for (const auto& step : steps) {
+    if (step.unitId != unitId) {
+      return "step " + step.stepId + " belongs to another unit";
+    }
+    if (step.operation == "SUM") continue;
+    if (step.operation != "CALL_SUBGRAPH") {
+      return "step " + step.stepId + " has an unsupported operation";
+    }
+    if (step.artifactEntry.empty()) {
+      return "step " + step.stepId + " names no entry";
+    }
+    referenced.insert(step.artifactEntry);
+  }
+  std::set<std::string> held;
+  for (const auto& entry : table) {
+    if (entry.unitId != unitId) {
+      return "the rank returned another unit's entry: " + entry.entryId;
+    }
+    if (!held.insert(entry.entryId).second) {
+      return "the rank repeated an entry id: " + entry.entryId;
+    }
+  }
+  for (const auto& id : referenced) {
+    if (held.count(id) == 0) return "the rank is missing an entry a step needs: " + id;
+  }
+  for (const auto& id : held) {
+    if (referenced.count(id) == 0) {
+      return "the rank returned an entry no step references: " + id;
+    }
+  }
+
+  // 2. Path and digest shape, before any file is opened.
+  for (const auto& entry : table) {
+    if (!entry.hasGraphFile()) {
+      return "the entry carries no graph file: " + entry.entryId;
+    }
+    const std::filesystem::path relative(entry.relativeGraphPath);
+    if (relative.is_absolute() || relative.has_parent_path()) {
+      return "the entry path is not a plain relative name: " + entry.entryId;
+    }
+    if (entry.graphDigest.size() != 71 || entry.graphDigest.compare(0, 7, "sha256:") != 0) {
+      return "the entry digest is not canonical: " + entry.entryId;
+    }
+  }
+
+  // 3. Content and budget. The budget is checked as bytes are accumulated so a
+  // rank that overruns stops without reading its remaining entries.
+  std::uint64_t total = 0;
+  for (const auto& entry : table) {
+    const auto path = root / entry.relativeGraphPath;
+    std::error_code sizeError;
+    const auto bytes = std::filesystem::file_size(path, sizeError);
+    if (sizeError || bytes == 0) {
+      return "the entry file is missing or empty: " + entry.entryId;
+    }
+    if (bytes > rankedByteBudget || total > rankedByteBudget - bytes) {
+      return "the rank exceeds its total byte budget at entry: " + entry.entryId;
+    }
+    total += bytes;
+    std::error_code readError;
+    const auto content = readEntryFile(path);
+    if (content.size() != bytes) {
+      return "the entry file changed while being verified: " + entry.entryId;
+    }
+    if (sha256Hex(content) != entry.graphDigest) {
+      return "the entry digest does not match its file: " + entry.entryId;
+    }
+  }
+  return {};
+}
+
+std::string
 qwenTpStepDeclarationJson(const std::vector<NativeExecutionStepSpec>& steps)
 {
   if (steps.empty()) {
