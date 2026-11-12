@@ -175,6 +175,155 @@ NativeQwenTensorRunner::supportsConversationStateTransfer() const
   return anyAttention;
 }
 
+std::optional<NativeConversationStateHandleV1>
+NativeQwenTensorRunner::promoteSessionStateToConversation(
+  const std::string& sessionId, const std::string& conversationKey)
+{
+  if (sessionId.empty() || conversationKey.empty()) return std::nullopt;
+  if (!supportsConversationStateTransfer()) return std::nullopt;
+  // Children that promoted, so a later failure can release exactly those.
+  std::vector<std::pair<std::shared_ptr<NativeModelRunner>,
+                        NativeConversationStateHandleV1>> committed;
+  const auto release = [&committed] {
+    for (auto& item : committed) {
+      try {
+        item.first->releaseConversationState(item.second);
+      }
+      catch (...) {
+        // A rollback failure must not replace the original promotion failure; the
+        // caller needs to know why the commit did not happen.
+      }
+    }
+    committed.clear();
+  };
+
+  NativeConversationStateHandleV1 unit;
+  std::size_t children = 0;
+  std::string unitToken = "ndnsf-resident-state-v1:tp-unit-conversation";
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) {
+      release();
+      return std::nullopt;
+    }
+    // One key per child: two attention children sharing a key would make the
+    // adapter refuse the second promotion as a duplicate conversation.
+    const auto childKey = conversationKey + "/" + entry.entryId;
+    std::optional<NativeConversationStateHandleV1> promoted;
+    try {
+      promoted = child->second->promoteSessionStateToConversation(sessionId, childKey);
+    }
+    catch (...) {
+      release();
+      return std::nullopt;
+    }
+    if (!promoted) {
+      // A child that cannot promote fails the whole unit: a checkpoint missing one
+      // layer must not be published as complete.
+      release();
+      return std::nullopt;
+    }
+    if (children == 0) {
+      // Identity comes from the first child, which knows the Provider binding;
+      // this runner never received one and must not invent it.
+      unit.opaque.providerIdentity = promoted->opaque.providerIdentity;
+      unit.opaque.providerBootId = promoted->opaque.providerBootId;
+      unit.opaque.stateInferenceEpoch = promoted->opaque.stateInferenceEpoch;
+    }
+    unitToken += ";" + entry.entryId + "=" + promoted->opaque.token;
+    committed.emplace_back(child->second, *promoted);
+    ++children;
+  }
+  if (children == 0) return std::nullopt;
+  unit.conversationKey = conversationKey;
+  // The unit's logical size is the sum of its children's, so a caller bounding
+  // memory sees the whole rank rather than one layer.
+  unit.logicalBytes = 0;
+  for (const auto& item : committed) unit.logicalBytes += item.second.logicalBytes;
+  unit.opaque.sessionId = sessionId;
+  unit.opaque.role = m_entries.front().unitId;
+  unit.opaque.token = std::move(unitToken);
+  try {
+    unit.validate();
+  }
+  catch (...) {
+    release();
+    return std::nullopt;
+  }
+  return unit;
+}
+
+bool
+NativeQwenTensorRunner::restoreConversationState(
+  const NativeConversationStateHandleV1& state, const std::string& sessionId)
+{
+  if (sessionId.empty() || state.conversationKey.empty()) return false;
+  // Restore is all-or-nothing. A child that fails leaves the ones already restored
+  // holding state from a different checkpoint, so those are rolled back before this
+  // returns false.
+  std::vector<std::shared_ptr<NativeModelRunner>> restored;
+  const auto rollback = [&restored] {
+    for (auto& child : restored) {
+      try {
+        child->releaseSessionState("");  // per-session release is a no-op for ""
+      }
+      catch (...) {
+      }
+    }
+    restored.clear();
+  };
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) {
+      rollback();
+      return false;
+    }
+    bool ok = false;
+    try {
+      ok = child->second->restoreConversationState(state, sessionId);
+    }
+    catch (...) {
+      rollback();
+      return false;
+    }
+    if (!ok) {
+      rollback();
+      return false;
+    }
+    restored.push_back(child->second);
+  }
+  return !restored.empty();
+}
+
+bool
+NativeQwenTensorRunner::releaseConversationState(
+  const NativeConversationStateHandleV1& state)
+{
+  if (state.conversationKey.empty()) return false;
+  // Best effort across every KV child: one failing release must not prevent the
+  // others from freeing their buffers, but the caller still learns it failed.
+  bool allReleased = true;
+  std::size_t attempts = 0;
+  for (const auto& entry : m_entries) {
+    if (!holdsKvState(entry)) continue;
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) {
+      allReleased = false;
+      continue;
+    }
+    ++attempts;
+    try {
+      if (!child->second->releaseConversationState(state)) allReleased = false;
+    }
+    catch (...) {
+      allReleased = false;
+    }
+  }
+  return attempts != 0 && allReleased;
+}
+
 std::map<std::string, TensorBundle>
 NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
 {

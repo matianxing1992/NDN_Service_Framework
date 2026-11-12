@@ -5101,6 +5101,44 @@ public:
     lastReleasedSession = sessionId;
   }
 
+  std::optional<NativeConversationStateHandleV1>
+  promoteSessionStateToConversation(const std::string& sessionId,
+                                    const std::string& conversationKey) override
+  {
+    if (!m_stateful || failPromote) return std::nullopt;
+    ++promoteCalls;
+    NativeConversationStateHandleV1 handle;
+    handle.opaque.providerIdentity = "/provider/fake";
+    handle.opaque.providerBootId = "fake-boot";
+    handle.opaque.sessionId = sessionId;
+    handle.opaque.role = "child";
+    handle.opaque.token = "ndnsf-resident-state-v1:child-conversation";
+    handle.conversationKey = conversationKey;
+    handle.logicalBytes = 4096;
+    return handle;
+  }
+
+  bool
+  restoreConversationState(const NativeConversationStateHandleV1&,
+                           const std::string&) override
+  {
+    ++restoreCalls;
+    return m_stateful && !failRestore;
+  }
+
+  bool
+  releaseConversationState(const NativeConversationStateHandleV1&) override
+  {
+    ++releaseConversationCalls;
+    return m_stateful;
+  }
+
+  mutable std::size_t promoteCalls = 0;
+  mutable std::size_t restoreCalls = 0;
+  mutable std::size_t releaseConversationCalls = 0;
+  bool failPromote = false;
+  bool failRestore = false;
+
   bool
   supportsConversationStateTransfer() const override
   {
@@ -5774,6 +5812,111 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
   BOOST_CHECK_CLOSE(arrived[1], -2.25f, 1e-6);
 }
 
+
+BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
+{
+  // C6's parent transaction: commit only when all children succeed, release the
+  // uncommitted branch otherwise. A unit that published a checkpoint missing one
+  // layer would look complete and restore the wrong KV.
+  std::vector<qwen::QwenTpEntryContract> table;
+  for (const auto& spec : std::vector<std::pair<std::string, std::string>>{
+         {"S0R0/INIT/0", "INIT"}, {"S0R0/ATTN/0", "ATTN"},
+         {"S0R0/MLP/0", "MLP"}, {"S0R0/ATTN/1", "ATTN"}}) {
+    qwen::QwenTpEntryContract entry;
+    entry.entryId = spec.first;
+    entry.unitId = "S0R0";
+    entry.kind = spec.second;
+    entry.inputNames = {"in"};
+    entry.outputNames = {"out"};
+    entry.relativeGraphPath = "entry.onnx";
+    entry.graphDigest = "sha256:" + std::string(64, 'a');
+    entry.validate();
+    table.push_back(std::move(entry));
+  }
+
+  // Children keyed by entry id, so the case can make one fail individually.
+  std::map<std::string, std::shared_ptr<FakeStatefulRunner>> children;
+  const auto makeRunner = [&children] (std::vector<qwen::QwenTpEntryContract> entries) {
+    return qwen::NativeQwenTensorRunner(
+      std::move(entries),
+      [&children] (const NativeModelRunnerSpec& spec) {
+        auto child = std::make_shared<FakeStatefulRunner>(true);
+        children[spec.role] = child;
+        return std::static_pointer_cast<NativeModelRunner>(child);
+      },
+      [] (const qwen::QwenTpEntryContract& entry) {
+        NativeModelRunnerSpec spec;
+        spec.role = entry.entryId;
+        return spec;
+      });
+  };
+
+  // All children succeed: one handle, covering both attention children, with a
+  // per-child conversation key so two layers cannot collide on one key.
+  {
+    children.clear();
+    auto runner = makeRunner(table);
+    const auto handle = runner.promoteSessionStateToConversation(
+      "promote-session", "conv/unit");
+    BOOST_REQUIRE(handle.has_value());
+    BOOST_CHECK_EQUAL(handle->conversationKey, std::string("conv/unit"));
+    BOOST_CHECK_EQUAL(handle->opaque.role, std::string("S0R0"));
+    BOOST_CHECK(handle->opaque.token.find("S0R0/ATTN/0=") != std::string::npos);
+    BOOST_CHECK(handle->opaque.token.find("S0R0/ATTN/1=") != std::string::npos);
+    // The unit's size is the sum, so a caller bounding memory sees the rank.
+    BOOST_CHECK_EQUAL(handle->logicalBytes, 2U * 4096U);
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->promoteCalls, 1U);
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->promoteCalls, 1U);
+    // Non-KV children are not asked to promote at all.
+    BOOST_CHECK_EQUAL(children.at("S0R0/INIT/0")->promoteCalls, 0U);
+    BOOST_CHECK_EQUAL(children.at("S0R0/MLP/0")->promoteCalls, 0U);
+  }
+
+  // One child fails: no handle, and the child that did promote is released, so the
+  // uncommitted branch does not linger holding KV.
+  {
+    children.clear();
+    auto runner = makeRunner(table);
+    children["S0R0/ATTN/1"]->failPromote = true;
+    const auto handle = runner.promoteSessionStateToConversation(
+      "promote-session", "conv/unit");
+    BOOST_CHECK(!handle.has_value());
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->releaseConversationCalls, 1U);
+  }
+
+  // Restore is all-or-nothing too: a failing child makes the unit fail, and the
+  // already-restored children are released rather than left on mixed checkpoints.
+  {
+    children.clear();
+    auto runner = makeRunner(table);
+    const auto handle = runner.promoteSessionStateToConversation(
+      "restore-session", "conv/restore");
+    BOOST_REQUIRE(handle.has_value());
+    children["S0R0/ATTN/1"]->failRestore = true;
+    BOOST_CHECK(!runner.restoreConversationState(*handle, "restore-session"));
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->restoreCalls, 1U);
+  }
+
+  // Release reaches every KV child and reports success only when all of them agree.
+  {
+    children.clear();
+    auto runner = makeRunner(table);
+    const auto handle = runner.promoteSessionStateToConversation(
+      "release-session", "conv/release");
+    BOOST_REQUIRE(handle.has_value());
+    BOOST_CHECK(runner.releaseConversationState(*handle));
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->releaseConversationCalls, 1U);
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->releaseConversationCalls, 1U);
+  }
+
+  // An empty session or conversation key is refused rather than promoted.
+  {
+    children.clear();
+    auto runner = makeRunner(table);
+    BOOST_CHECK(!runner.promoteSessionStateToConversation("", "conv/unit").has_value());
+    BOOST_CHECK(!runner.promoteSessionStateToConversation("s", "").has_value());
+  }
+}
 
 BOOST_AUTO_TEST_CASE(OnlyTheEgressUnitPublishesTokenEventsInAShardedPlan)
 {

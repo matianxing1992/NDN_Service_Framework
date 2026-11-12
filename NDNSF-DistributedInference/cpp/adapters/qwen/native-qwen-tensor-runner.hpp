@@ -100,6 +100,38 @@ public:
    */
   bool supportsConversationStateTransfer() const override;
 
+  /** Promote every KV-holding child's request state under one unit handle.
+   *
+   * C6 requires the parent transaction to commit only when all children succeed and
+   * to release the uncommitted branch otherwise. A child that could not promote
+   * therefore cannot leave the unit half-committed: the already-promoted children
+   * are released before this returns, and no handle is produced.
+   *
+   * The unit's conversation key is suffixed per child, because two attention
+   * children would otherwise claim the same key and the second promotion would be
+   * refused by the adapter as a duplicate -- which reads as a failure rather than
+   * as the collision it is.
+   *
+   * @returns The unit handle on success, nothing on any child failure.
+   */
+  std::optional<NativeConversationStateHandleV1>
+  promoteSessionStateToConversation(const std::string& sessionId,
+                                    const std::string& conversationKey) override;
+
+  /** Restore a unit handle into every KV-holding child.
+   *
+   * All-or-nothing: a child that fails is rolled back along with the ones already
+   * restored, so an exception cannot leave the unit holding state from two
+   * different checkpoints.
+   */
+  bool
+  restoreConversationState(const NativeConversationStateHandleV1& state,
+                           const std::string& sessionId) override;
+
+  /** Release the unit's conversation state in every KV-holding child. */
+  bool
+  releaseConversationState(const NativeConversationStateHandleV1& state) override;
+
 private:
   const QwenTpEntryContract* findEntry(const std::string& entryId) const;
 
