@@ -32,7 +32,13 @@ public:
     std::vector<std::uint64_t> tensorDegrees = {1, 1, 1},
     std::string inputIngressRole = {},
     std::string resultEgressRole = {},
-    std::string modelFamily = "qwen");
+    std::string modelFamily = "qwen",
+    /** Per-rank artifact digests, used only when a stage declares degree > 1.
+     * Each vector must hold exactly `degree` distinct digests: two ranks of one
+     * stage hold different shards, so reusing one digest would give both ranks
+     * the same artifact identity. Empty keeps the legacy single-artifact path.
+     */
+    std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole = {});
 
   NativeStrategyIdentity identity() const override;
   /** Build the maintained semantic graph from pinned model metadata. This is
@@ -61,6 +67,7 @@ private:
 
   std::vector<LayerRange> m_layerRanges;
   std::map<std::string, std::string> m_artifactDigestsByRole;
+  std::map<std::string, std::vector<std::string>> m_rankArtifactDigestsByRole;
   std::map<std::string, std::uint64_t> m_weightBytesByRole;
   std::vector<std::string> m_roles;
   std::vector<std::uint64_t> m_tensorDegrees;

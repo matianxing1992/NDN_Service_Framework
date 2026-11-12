@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <onnx/onnx_pb.h>
@@ -746,6 +747,78 @@ BOOST_AUTO_TEST_CASE(StepCommunicationCostCountsRemoteEdgesOnly)
   BOOST_CHECK_EQUAL(none.remoteEdges, 0U);
   BOOST_CHECK_EQUAL(none.knownTransferBytes, 0U);
   BOOST_CHECK_EQUAL(none.unknownTransferTensors, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(ShardedStageRequiresOneArtifactPerRank)
+{
+  // One stage covering [0,1) with degree 2: both ranks share the layer range
+  // but hold different shards, so the stage cannot hand them one artifact.
+  const auto digest = [] (const char* tag) { return nativePlanningDigest(tag); };
+  const auto role = std::string("/LLM/Pipeline/Stage/0");
+
+  const auto descriptor = fixture::completeModel({"tp-model", digest("content"),
+    digest("semantics"), digest("graph"), "onnx", "float32", "qwen", "1"});
+  // The splitter expects the maintained semantic layer cover: embedding, one
+  // numbered layer per range entry, then final norm/head. Build it explicitly so
+  // the snapshot digest is bound to this descriptor.
+  NativeGraphSnapshot graph;
+  graph.graphDigest = descriptor.graphDigest;
+  graph.nodes = {{"embedding", "embedding", 0}, {"layer-00", "op", 1},
+                 {"final-norm-head", "head", 2}};
+  graph.topologicalOrder = {"embedding", "layer-00", "final-norm-head"};
+  graph.modelInputs = {{"input_ids", "int64", {std::int64_t(1)}, 8}};
+  graph.modelOutputs = {{"logits", "float32", {std::int64_t(1)}, 4}};
+
+  // Degree 2 without per-rank digests is refused at construction: the stage
+  // artifact alone would give both ranks the same identity.
+  BOOST_CHECK_THROW(
+    qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+                               {role}, {2}),
+    std::invalid_argument);
+
+  // A per-rank list of the wrong size, with duplicates, or with a non-digest
+  // is equally unusable.
+  BOOST_CHECK_THROW(
+    qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+                               {role}, {2}, {}, {}, "qwen", {{role, {digest("r0")}}}),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+                               {role}, {2}, {}, {}, "qwen",
+                               {{role, {digest("r0"), digest("r0")}}}),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(
+    qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+                               {role}, {2}, {}, {}, "qwen",
+                               {{role, {digest("r0"), "not-a-digest"}}}),
+    std::invalid_argument);
+
+  // A degree-one stage must not claim shards either.
+  BOOST_CHECK_THROW(
+    qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+                               {role}, {1}, {}, {}, "qwen",
+                               {{role, {digest("r0")}}}),
+    std::invalid_argument);
+
+  // The valid form carries the two ranks into the candidate, plus the sealed
+  // hybrid topology the generic candidate check demands for degree > 1.
+  auto splitter = qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+    {role}, {2}, {}, {}, "qwen", {{role, {digest("r0"), digest("r1")}}});
+  const auto candidates = splitter.enumerate(descriptor, graph, NativeCandidateBudget{1, 100, 1});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  BOOST_CHECK_EQUAL(candidate.tensorDegreesByRole.at(role), 2U);
+  BOOST_REQUIRE_EQUAL(candidate.rankArtifactDigestsByRole.at(role).size(), 2U);
+  BOOST_CHECK_EQUAL(candidate.rankArtifactDigestsByRole.at(role)[0], digest("r0"));
+  BOOST_CHECK_EQUAL(candidate.rankArtifactDigestsByRole.at(role)[1], digest("r1"));
+  BOOST_REQUIRE(candidate.hybridPlan.has_value());
+  BOOST_CHECK_EQUAL(candidate.hybridPlan->stages, 1U);
+  BOOST_CHECK_EQUAL(candidate.hybridPlan->tensorDegrees.back(), 2U);
+
+  // Two different shard sets must not share a splitter identity.
+  const auto other = qwen::NativeQwenLayerSplit({{0, 1}}, {{role, digest("stage")}}, {{role, 4096}},
+    {role}, {2}, {}, {}, "qwen", {{role, {digest("r9"), digest("r8")}}}).identity();
+  BOOST_CHECK(other.configurationDigest != splitter.identity().configurationDigest);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

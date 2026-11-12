@@ -27,7 +27,8 @@ NativeQwenLayerSplit::NativeQwenLayerSplit(
   std::vector<std::uint64_t> tensorDegrees,
   std::string inputIngressRole,
   std::string resultEgressRole,
-  std::string modelFamily)
+  std::string modelFamily,
+  std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole)
   : m_layerRanges(std::move(layerRanges))
   , m_artifactDigestsByRole(std::move(artifactDigestsByRole))
   , m_weightBytesByRole(std::move(weightBytesByRole))
@@ -36,6 +37,7 @@ NativeQwenLayerSplit::NativeQwenLayerSplit(
   , m_inputIngressRole(std::move(inputIngressRole))
   , m_resultEgressRole(std::move(resultEgressRole))
   , m_modelFamily(std::move(modelFamily))
+  , m_rankArtifactDigestsByRole(std::move(rankArtifactDigestsByRole))
 {
   if (m_modelFamily != "qwen" && m_modelFamily != "llama")
     throw std::invalid_argument("native splitter model family is unsupported");
@@ -47,11 +49,33 @@ NativeQwenLayerSplit::NativeQwenLayerSplit(
     throw std::invalid_argument("native transformer splitter role cover is incomplete");
   }
   for (std::size_t i = 0; i < m_roles.size(); ++i) {
+    // The layer range stays a stage range: one stage covers [begin, end) and
+    // its degree says how many ranks share that range. Two stages may not
+    // repeat a range, so the continuity check below is unchanged.
     if (m_layerRanges[i].first >= m_layerRanges[i].second ||
         (i != 0 && m_layerRanges[i - 1].second != m_layerRanges[i].first) ||
-        m_tensorDegrees[i] != 1 || m_weightBytesByRole.at(m_roles[i]) == 0 ||
+        m_tensorDegrees[i] == 0 || m_tensorDegrees[i] > 1024 ||
+        m_weightBytesByRole.at(m_roles[i]) == 0 ||
         !isDigest(m_artifactDigestsByRole.at(m_roles[i]))) {
       throw std::invalid_argument("native transformer splitter configuration is unsupported");
+    }
+    // A sharded stage must name one distinct artifact per rank. Reusing the
+    // stage artifact would give every rank the same identity, which the
+    // downstream role expansion would then hand to each rank unchanged.
+    const auto ranked = m_rankArtifactDigestsByRole.find(m_roles[i]);
+    if (m_tensorDegrees[i] == 1) {
+      if (ranked != m_rankArtifactDigestsByRole.end())
+        throw std::invalid_argument("native transformer splitter shards a degree-one stage");
+      continue;
+    }
+    if (ranked == m_rankArtifactDigestsByRole.end() ||
+        ranked->second.size() != m_tensorDegrees[i] ||
+        std::set<std::string>(ranked->second.begin(), ranked->second.end()).size() !=
+          ranked->second.size() ||
+        std::any_of(ranked->second.begin(), ranked->second.end(),
+                    [] (const auto& digest) { return !isDigest(digest); })) {
+      throw std::invalid_argument(
+        "native transformer splitter sharded stage needs one distinct artifact per rank");
     }
   }
   if (m_layerRanges.front().first != 0) {
@@ -71,7 +95,17 @@ NativeStrategyIdentity NativeQwenLayerSplit::identity() const
   canonical << m_modelFamily << "-layer-split|1|";
   for (std::size_t i = 0; i < m_roles.size(); ++i) {
       canonical << m_roles[i] << ':' << m_layerRanges[i].first << '-' <<
-      m_layerRanges[i].second << ':' << m_artifactDigestsByRole.at(m_roles[i]) << ';';
+      m_layerRanges[i].second << ':' << m_artifactDigestsByRole.at(m_roles[i]) <<
+      ":d" << m_tensorDegrees[i];
+      // A sharded stage's identity depends on its per-rank artifacts, so two
+      // different shard sets cannot claim the same splitter identity.
+      const auto ranked = m_rankArtifactDigestsByRole.find(m_roles[i]);
+      if (ranked != m_rankArtifactDigestsByRole.end()) {
+        canonical << '[';
+        for (const auto& digest : ranked->second) canonical << digest << ',';
+        canonical << ']';
+      }
+      canonical << ';';
   }
   if (!m_inputIngressRole.empty())
     canonical << "ingress=" << m_inputIngressRole << ";egress=" << m_resultEgressRole << ';';
@@ -221,10 +255,18 @@ NativeQwenLayerSplit::enumerateImpl(const NativeModelDescriptor& model,
     }
     candidate.roleStateInputsByRole[role] = stateInputs;
     candidate.roleStateOutputsByRole[role] = stateOutputs;
+    const auto ranked = m_rankArtifactDigestsByRole.find(role);
+    const auto degree = m_tensorDegrees[i];
     candidate.fragmentsByRole[role] = artifact;
-    candidate.artifactsByRole[role] = {artifact};
-    candidate.rankArtifactDigestsByRole[role] = {artifact};
-    candidate.tensorDegreesByRole[role] = 1;
+    if (ranked == m_rankArtifactDigestsByRole.end()) {
+      candidate.artifactsByRole[role] = {artifact};
+      candidate.rankArtifactDigestsByRole[role] = {artifact};
+    }
+    else {
+      candidate.artifactsByRole[role] = ranked->second;
+      candidate.rankArtifactDigestsByRole[role] = ranked->second;
+    }
+    candidate.tensorDegreesByRole[role] = degree;
     candidate.requirementsByRole[role] = {
       {"onnxruntime"},
       m_weightBytesByRole.at(role), std::nullopt, std::nullopt,
@@ -235,6 +277,19 @@ NativeQwenLayerSplit::enumerateImpl(const NativeModelDescriptor& model,
   // whose sizes the abstract planning placeholders do not fix, so they stay
   // unknown instead of being reported as zero bytes.
   const auto transfer = nativeStepCommunicationCost(candidate.executionPlan);
+  // A sharded stage needs a sealed hybrid plan: the generic candidate check
+  // refuses a degree > 1 without one, because rank topology and redistribution
+  // must be part of the sealed contract rather than inferred at run time.
+  if (std::any_of(m_tensorDegrees.begin(), m_tensorDegrees.end(),
+                  [] (std::uint64_t degree) { return degree != 1; })) {
+    NativeHybridPlan hybrid;
+    hybrid.stages = m_roles.size();
+    hybrid.tensorDegrees = m_tensorDegrees;
+    for (std::size_t stage = 0; stage < m_roles.size(); ++stage)
+      for (std::uint64_t rank = 0; rank < m_tensorDegrees[stage]; ++rank)
+        hybrid.rankLabels.push_back("S" + std::to_string(stage) + "R" + std::to_string(rank));
+    candidate.hybridPlan = std::move(hybrid);
+  }
   candidate.estimatedCosts = {{"role_count", std::uint64_t(m_roles.size())},
     {"rank_count", std::uint64_t(m_roles.size())}, {"decoder_layers", std::uint64_t(m_layerRanges.back().second)},
     {"known_transfer_bytes", transfer.knownTransferBytes},
