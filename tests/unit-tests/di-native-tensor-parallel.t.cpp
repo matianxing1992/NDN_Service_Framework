@@ -2743,6 +2743,94 @@ BOOST_AUTO_TEST_CASE(ProjectionAcceptsCallerSuppliedUnitIds)
     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(ProjectionReferencesOnlyVerifiedEntryContracts)
+{
+  // Audit A1/C1.4: the projection used to invent entry ids from a prefix, so a
+  // plan could reference an entry the assembler never produced and the failure
+  // would only appear inside the worker. With verified contracts every
+  // CALL_SUBGRAPH id must come from one.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+
+  const std::vector<qwen::QwenTpUnit> units = {
+    {"/TP#0", 0, 0, 1},
+    {"/TP#1", 1, 0, 1},
+  };
+  const auto contract = [] (const std::string& unit, const std::string& kind,
+                            std::uint64_t layer) {
+    qwen::QwenTpEntryContract entry;
+    entry.entryId = "assembled/" + unit + "/" + kind + "/" + std::to_string(layer);
+    entry.unitId = unit;
+    entry.kind = kind;
+    entry.layer = layer;
+    entry.inputNames = {"in"};
+    entry.outputNames = {"out"};
+    return entry;
+  };
+
+  std::vector<qwen::QwenTpEntryContract> entries;
+  for (const auto& unit : units) {
+    entries.push_back(contract(unit.roleId, "INIT", 0));
+    entries.push_back(contract(unit.roleId, "ATTN", 0));
+    entries.push_back(contract(unit.roleId, "MLP", 0));
+  }
+  entries.push_back(contract("/TP#0", "HEAD", 1));
+
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "/TP#0", units, entries);
+
+  // Every artifact entry is one of the verified ids, never a generated one.
+  std::set<std::string> verifiedIds;
+  for (const auto& entry : entries) verifiedIds.insert(entry.entryId);
+  std::size_t subgraphSteps = 0;
+  for (const auto& step : plan.steps) {
+    if (step.operation != "CALL_SUBGRAPH") {
+      BOOST_CHECK(step.artifactEntry.empty());
+      continue;
+    }
+    ++subgraphSteps;
+    BOOST_CHECK(verifiedIds.count(step.artifactEntry) != 0);
+  }
+  BOOST_CHECK_EQUAL(subgraphSteps, entries.size());
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+
+  // A missing entry is refused rather than named on the fly.
+  auto missingHead = entries;
+  missingHead.pop_back();
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "/TP#0", units, missingHead),
+    std::invalid_argument);
+
+  // An entry owned by the wrong unit does not satisfy the step that needs it.
+  auto wrongUnit = entries;
+  wrongUnit.back().unitId = "/TP#1";
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "/TP#0", units, wrongUnit),
+    std::invalid_argument);
+
+  // Duplicate ids and incomplete contracts are refused up front.
+  auto duplicated = entries;
+  duplicated.push_back(entries.front());
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "/TP#0", units, duplicated),
+    std::invalid_argument);
+  auto incomplete = entries;
+  incomplete.front().outputNames.clear();
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "/TP#0", units, incomplete),
+    std::invalid_argument);
+
+  // An entry with the right unit but the wrong kind is not a substitute either.
+  auto wrongKind = entries;
+  for (auto& entry : wrongKind)
+    if (entry.kind == "HEAD") entry.kind = "ATTN";
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "/TP#0", units, wrongKind),
+    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

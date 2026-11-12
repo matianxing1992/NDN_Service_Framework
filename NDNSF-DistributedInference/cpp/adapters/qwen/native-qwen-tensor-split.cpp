@@ -615,13 +615,21 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   projectQwenTpPlan(plan, shape, degree, entryPrefix, egressRole, units);
 }
 
+namespace {
+
+/** Shared projection body.
+ *
+ * `verified` is null when the caller let the projection name its own entries,
+ * and non-null when the caller supplied assembled entry contracts. The body
+ * resolves every CALL_SUBGRAPH step through whichever rule applies, so there is
+ * exactly one projector rather than two that can drift apart.
+ */
 void
-projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
-                  std::uint64_t degree, const std::string& entryPrefix,
-                  const std::string& egressRole,
-                  const std::vector<QwenTpUnit>& units)
+projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                std::uint64_t degree, const std::string& entryPrefix,
+                const std::string& egressRole, const QwenTpTemplate& tp,
+                const std::vector<QwenTpEntryContract>* verified)
 {
-  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix, units);
   // The egress unit owns the head, so it must be one of the declared units.
   if (std::none_of(tp.units.begin(), tp.units.end(),
                    [&egressRole] (const auto& unit) { return unit.roleId == egressRole; })) {
@@ -637,9 +645,25 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   plan.modelFamily = "qwen";
   plan.plannerKind = "native-qwen-tensor";
 
+  // Resolve one step's artifact entry. With verified contracts the id must come
+  // from a contract owned by the same unit and carrying the same kind and layer;
+  // inventing a name would let a plan reference an entry the assembler never
+  // produced, which only fails much later inside the worker.
   const auto entry = [&] (const std::string& unit, const char* kind,
                           std::uint64_t layer) {
-    return entryPrefix + "/" + unit + "/" + kind + "/" + std::to_string(layer);
+    if (verified == nullptr)
+      return entryPrefix + "/" + unit + "/" + kind + "/" + std::to_string(layer);
+    const auto matched = std::find_if(verified->begin(), verified->end(),
+      [&] (const auto& contract) {
+        return contract.unitId == unit && contract.kind == kind &&
+               contract.layer == layer;
+      });
+    if (matched == verified->end()) {
+      throw std::invalid_argument(
+        "tensor-parallel step has no verified entry contract for its unit, "
+        "kind and layer");
+    }
+    return matched->entryId;
   };
 
   for (const auto& unit : tp.units) {
@@ -821,6 +845,45 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
     }
   }
   plan.validateSteps();
+}
+
+} // namespace
+
+void
+QwenTpEntryContract::validate() const
+{
+  if (entryId.empty() || unitId.empty() || inputNames.empty() ||
+      outputNames.empty() || kind.empty()) {
+    throw std::invalid_argument("tensor-parallel entry contract is incomplete");
+  }
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units)
+{
+  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix, units);
+  projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr);
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const std::vector<QwenTpEntryContract>& entries)
+{
+  // A distinct placeholder prefix: no id is derived from it, because every entry
+  // must come from a verified contract.
+  auto tp = buildQwenTpTemplate(shape, degree, "/verified", units);
+  tp.entries = entries;
+  for (const auto& contract : tp.entries) contract.validate();
+  std::set<std::string> ids;
+  for (const auto& contract : tp.entries)
+    if (!ids.insert(contract.entryId).second)
+      throw std::invalid_argument("tensor-parallel entry ids are duplicated");
+  projectTemplate(plan, shape, degree, "/verified", egressRole, tp, &tp.entries);
 }
 
 } // namespace ndnsf::di::qwen

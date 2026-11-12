@@ -197,6 +197,31 @@ struct QwenTpUnit
   std::uint64_t layerEnd = 0;
 };
 
+/** One verified subgraph entry a tensor-parallel unit executes.
+ *
+ * The projection must not invent the entry naming rule or the entry interface:
+ * the caller assembles these from the source graph and hands over what it
+ * verified, and the projection only references them by id. That keeps the plan a
+ * description of entries the assembler really produced rather than a guess at
+ * names it hopes to find later.
+ */
+struct QwenTpEntryContract
+{
+  std::string entryId;
+  // Unit that owns this entry, matching a QwenTpUnit role id.
+  std::string unitId;
+  // ONNX boundary names of the subgraph, in the order the assembler emits them.
+  std::vector<std::string> inputNames;
+  std::vector<std::string> outputNames;
+  // Slice of the model this entry executes: which layer, and which projection
+  // kind. Empty kind marks INIT and HEAD, which are per-unit rather than
+  // per-layer.
+  std::string kind;
+  std::uint64_t layer = 0;
+
+  void validate() const;
+};
+
 /** The complete sealed TP template for one model and degree. */
 struct QwenTpTemplate
 {
@@ -204,6 +229,9 @@ struct QwenTpTemplate
   std::vector<QwenTpUnit> units;
   // Per rank, per layer: the initializer slices that rank owns.
   std::vector<std::vector<QwenRankLayerSlices>> slicesByRank;
+  // Verified entries referenced by the projected steps, empty when the caller
+  // let the projection name them.
+  std::vector<QwenTpEntryContract> entries;
 };
 
 /**
@@ -271,6 +299,24 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   std::uint64_t degree, const std::string& entryPrefix,
                   const std::string& egressRole,
                   const std::vector<QwenTpUnit>& units);
+
+/**
+ * Project against caller-verified entries.
+ *
+ * Every CALL_SUBGRAPH step must resolve to an entry owned by the same unit, with
+ * the kind and layer the step needs; the projection refuses to name an entry
+ * that was not verified rather than emitting a plausible-looking id. `entryPrefix`
+ * is unused in this form because the ids come from the contracts.
+ *
+ * @param entries Verified entry contracts for every unit.
+ * @throws std::invalid_argument when an entry is missing, duplicated or belongs
+ *         to another unit.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const std::vector<QwenTpEntryContract>& entries);
 
 } // namespace ndnsf::di::qwen
 
