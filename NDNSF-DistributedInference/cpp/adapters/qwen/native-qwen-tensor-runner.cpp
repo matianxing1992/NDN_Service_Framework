@@ -130,21 +130,9 @@ entriesFromSpec(const NativeModelRunnerSpec& spec)
     throw std::invalid_argument(
       "native-qwen-tensor entry table is empty or not an array");
   }
-  std::vector<QwenTpEntryContract> entries;
-  entries.reserve(parsed.size());
-  for (const auto& item : parsed) {
-    QwenTpEntryContract entry;
-    entry.entryId = item.at("entryId").get<std::string>();
-    entry.unitId = item.at("unitId").get<std::string>();
-    entry.kind = item.at("kind").get<std::string>();
-    entry.layer = item.at("layer").get<std::uint64_t>();
-    for (const auto& name : item.at("inputNames"))
-      entry.inputNames.push_back(name.get<std::string>());
-    for (const auto& name : item.at("outputNames"))
-      entry.outputNames.push_back(name.get<std::string>());
-    entries.push_back(std::move(entry));
-  }
-  return entries;
+  // One parser for the table, shared with the assembler, so the runner cannot
+  // accept a table the writer would have refused.
+  return parseQwenTpEntryTable(found->second);
 }
 
 /** Child specs inherit the parent's backend-neutral identity and point at one
@@ -166,7 +154,9 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
     throw std::invalid_argument(
       "native-qwen-tensor spec carries no entry root");
   }
-  child.path = root->second + "/" + entry.entryId + ".onnx";
+  // The contract names the file it was written from, relative to the root, so a
+  // path never has to be re-derived from an id.
+  child.path = root->second + "/" + entry.relativeGraphPath;
   child.metadata = parent.metadata;
   // The entry's own graph names are the IO contract; the runner maps scopes.
   for (std::size_t index = 0; index < entry.inputNames.size(); ++index)

@@ -3997,6 +3997,69 @@ BOOST_AUTO_TEST_CASE(WrittenEntryIsVerifiableAndStaysInsideItsRoot)
 }
 
 
+BOOST_AUTO_TEST_CASE(EntryTableRoundTripsAndRefusesUnverifiedTables)
+{
+  // The runner receives its entry table through the spec's flat metadata, so the
+  // writer and the parser must agree exactly. A table that loses a field, repeats
+  // an id, or names a file without a digest must fail rather than produce a
+  // runner that loads something it cannot verify.
+  qwen::QwenTpEntryContract entry;
+  entry.entryId = "S0R0/ATTN/0";
+  entry.unitId = "S0R0";
+  entry.kind = "ATTN";
+  entry.layer = 0;
+  entry.inputNames = {"hidden_states"};
+  entry.outputNames = {"attn_partial"};
+  entry.relativeGraphPath = "S0R0-attn0.onnx";
+  entry.graphDigest = "sha256:" + std::string(64, 'a');
+  entry.validate();
+
+  const auto json = qwen::qwenTpEntryTableJson({entry});
+  const auto parsed = qwen::parseQwenTpEntryTable(json);
+  BOOST_REQUIRE_EQUAL(parsed.size(), 1U);
+  BOOST_CHECK_EQUAL(parsed.front().entryId, entry.entryId);
+  BOOST_CHECK_EQUAL(parsed.front().unitId, entry.unitId);
+  BOOST_CHECK_EQUAL(parsed.front().kind, entry.kind);
+  BOOST_CHECK_EQUAL(parsed.front().layer, entry.layer);
+  BOOST_CHECK_EQUAL(parsed.front().relativeGraphPath, entry.relativeGraphPath);
+  BOOST_CHECK_EQUAL(parsed.front().graphDigest, entry.graphDigest);
+  BOOST_CHECK(parsed.front().inputNames == entry.inputNames);
+  BOOST_CHECK(parsed.front().outputNames == entry.outputNames);
+  BOOST_CHECK(parsed.front().hasGraphFile());
+
+  // A contract without its file cannot be written at all: serializing it would
+  // let a runner load a graph the assembler never produced.
+  auto unassembled = entry;
+  unassembled.graphDigest.clear();
+  BOOST_CHECK_THROW(qwen::qwenTpEntryTableJson({unassembled}), std::invalid_argument);
+  // An empty table is refused rather than treated as "no entries yet".
+  BOOST_CHECK_THROW(qwen::qwenTpEntryTableJson({}), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable(""), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable("[]"), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable("{}"), std::invalid_argument);
+
+  // A repeated id would make the runner load one file twice under two names.
+  const auto duplicated = "[" + json.substr(1, json.size() - 2) + "," +
+    json.substr(1, json.size() - 2) + "]";
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable(duplicated), std::invalid_argument);
+
+  // A dropped field is corruption, not a default.
+  NativeJson tampered = NativeJson::parse(json);
+  tampered[0].erase("graphDigest");
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable(tampered.dump()), std::exception);
+
+  // An escaping path is refused by the same validation the writer uses.
+  NativeJson escaping = NativeJson::parse(json);
+  escaping[0]["relativeGraphPath"] = "../outside.onnx";
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable(escaping.dump()), std::invalid_argument);
+
+  // An unknown kind is refused: it would select no execution path.
+  NativeJson unknownKind = NativeJson::parse(json);
+  unknownKind[0]["kind"] = "MOON";
+  BOOST_CHECK_THROW(qwen::parseQwenTpEntryTable(unknownKind.dump()), std::invalid_argument);
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

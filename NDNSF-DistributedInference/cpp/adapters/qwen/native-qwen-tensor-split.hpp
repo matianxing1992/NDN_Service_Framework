@@ -318,6 +318,27 @@ writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
                  const QwenTpEntryNodes& entry, onnx::ModelProto& source,
                  const std::string& graphName);
 
+/** Serialize a verified entry table for the runner spec.
+ *
+ * The spec is a flat string map, so the table travels as one JSON value. It is
+ * written from verified contracts only: serializing a hand-built table would let
+ * a runner load a file the assembler never produced.
+ *
+ * @throws std::invalid_argument when a contract is invalid or lacks its file,
+ *         so an unverified table cannot be written at all.
+ */
+std::string
+qwenTpEntryTableJson(const std::vector<QwenTpEntryContract>& entries);
+
+/** Parse an entry table written by qwenTpEntryTableJson.
+ *
+ * Symmetric with the writer: every field the writer emits is required, and each
+ * contract is validated, so a truncated or hand-edited table fails here instead
+ * of producing a runner that loads the wrong file.
+ */
+std::vector<QwenTpEntryContract>
+parseQwenTpEntryTable(const std::string& json);
+
 /** The complete sealed TP template for one model and degree. */
 struct QwenTpTemplate
 {

@@ -4,6 +4,8 @@
 
 #include <ndn-cxx/util/sha256.hpp>
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -1013,6 +1015,71 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
   for (const auto& function : source.functions())
     *result.add_functions() = function;
   return result;
+}
+
+std::string
+qwenTpEntryTableJson(const std::vector<QwenTpEntryContract>& entries)
+{
+  if (entries.empty()) {
+    throw std::invalid_argument("tensor-parallel entry table must not be empty");
+  }
+  NativeJson table = NativeJson::array();
+  for (const auto& entry : entries) {
+    entry.validate();
+    if (!entry.hasGraphFile()) {
+      throw std::invalid_argument(
+        "tensor-parallel entry table requires an assembled graph for: " +
+        entry.entryId);
+    }
+    NativeJson item = NativeJson::object();
+    item["entryId"] = entry.entryId;
+    item["unitId"] = entry.unitId;
+    item["kind"] = entry.kind;
+    item["layer"] = entry.layer;
+    item["relativeGraphPath"] = entry.relativeGraphPath;
+    item["graphDigest"] = entry.graphDigest;
+    item["inputNames"] = NativeJson(entry.inputNames);
+    item["outputNames"] = NativeJson(entry.outputNames);
+    table.push_back(std::move(item));
+  }
+  return table.dump();
+}
+
+std::vector<QwenTpEntryContract>
+parseQwenTpEntryTable(const std::string& json)
+{
+  if (json.empty()) {
+    throw std::invalid_argument("tensor-parallel entry table is empty");
+  }
+  const auto parsed = nativeParseJson(json);
+  if (!parsed.is_array() || parsed.empty()) {
+    throw std::invalid_argument("tensor-parallel entry table is not a non-empty array");
+  }
+  std::vector<QwenTpEntryContract> entries;
+  entries.reserve(parsed.size());
+  std::set<std::string> ids;
+  for (const auto& item : parsed) {
+    QwenTpEntryContract entry;
+    // Read every field the writer emits; a missing one is a corrupted table, not
+    // a default.
+    entry.entryId = item.at("entryId").get<std::string>();
+    entry.unitId = item.at("unitId").get<std::string>();
+    entry.kind = item.at("kind").get<std::string>();
+    entry.layer = item.at("layer").get<std::uint64_t>();
+    entry.relativeGraphPath = item.at("relativeGraphPath").get<std::string>();
+    entry.graphDigest = item.at("graphDigest").get<std::string>();
+    for (const auto& name : item.at("inputNames"))
+      entry.inputNames.push_back(name.get<std::string>());
+    for (const auto& name : item.at("outputNames"))
+      entry.outputNames.push_back(name.get<std::string>());
+    entry.validate();
+    if (!ids.insert(entry.entryId).second) {
+      throw std::invalid_argument(
+        "tensor-parallel entry table repeats an entry id: " + entry.entryId);
+    }
+    entries.push_back(std::move(entry));
+  }
+  return entries;
 }
 
 QwenTpEntryContract
