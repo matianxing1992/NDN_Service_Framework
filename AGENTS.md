@@ -41,6 +41,12 @@
 - Respect analysis-only requests. Do not launch product builds, MiniNDN, SIF
   construction or cluster jobs merely to revise documentation or inspect source.
   Authorized manuscript revisions include the LaTeX builds specified below.
+- When you ask the user for a decision or approval and no answer arrives within
+  10 minutes, continue with the option you recommended, record the choice and
+  its rationale in the active task record, and do not leave the work waiting.
+  Prefer the reversible option; stop and ask again only for irreversible or
+  destructive actions, and never treat silence as authorization to push,
+  delete durable data, or relax a security contract.
 - Preserve unrelated worktree and index changes. Stage explicit authorized paths;
   never use `git add -A` or destructive resets. Commit when requested or required
   by the per-task completion rule below. Push only when explicitly requested.
