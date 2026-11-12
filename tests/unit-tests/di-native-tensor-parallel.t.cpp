@@ -13,6 +13,7 @@
 #include <onnx/onnx_pb.h>
 #include <onnxruntime_cxx_api.h>
 
+#include <cmath>
 #include <cstring>
 #include <random>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -1245,6 +1246,201 @@ BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
     for (std::size_t i = 0; i < reference.size(); ++i)
       BOOST_CHECK_SMALL((left[i] + right[i]) - reference[i], 1e-3f);
   }
+}
+
+BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
+{
+  // The C2 claim for the MLP is
+  //   Y = X' + SUM_r( (SiLU(X' W_gate,r) * (X' W_up,r)) W_down,r )
+  // with gate/up split on the FFN axis and down split on the same axis.
+  // Checking one MatMulNBits at a time cannot show that the three-projection
+  // composition still matches, so this case builds the whole block twice — once
+  // unsplit, once per rank — and compares the reduced result.
+  //
+  // Real frozen geometry: hidden 1024, FFN 3072, block size 32.
+  constexpr std::uint64_t hidden = 1024;
+  constexpr std::uint64_t ffn = 3072;
+  constexpr std::uint64_t degree = 2;
+  constexpr std::uint64_t ffnPerRank = ffn / degree;
+  constexpr std::uint64_t seq = 2;
+  constexpr std::uint64_t blockSize = qwen::QWEN_INT4_BLOCK_SIZE;
+  constexpr std::uint64_t blobBytes = qwen::QWEN_INT4_BLOB_BYTES;
+
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-mlp-block");
+  std::mt19937 rng(11);
+
+  const auto randomPacked = [&] (std::uint64_t n, std::uint64_t k) {
+    std::vector<std::uint8_t> bytes(n * (k / blockSize) * blobBytes);
+    for (auto& byte : bytes) byte = std::uint8_t(rng() & 0xFF);
+    return bytes;
+  };
+  const auto randomScales = [&] (std::uint64_t count) {
+    std::vector<float> values(count);
+    for (auto& value : values) value = 0.001f + 0.0005f * float(rng() % 8);
+    return values;
+  };
+  std::vector<float> input(hidden * seq);
+  for (auto& value : input) value = float(int(rng() % 41) - 20) * 0.05f;
+
+  // Build one graph: a chain of MatMulNBits with the Qwen MLP activation and
+  // the elementwise product, ending in a final MatMulNBits.
+  const auto runMlp = [&] (std::uint64_t rankFfn,
+                           const std::vector<std::uint8_t>& gateW,
+                           const std::vector<float>& gateS,
+                           const std::vector<std::uint8_t>& upW,
+                           const std::vector<float>& upS,
+                           const std::vector<std::uint8_t>& downW,
+                           const std::vector<float>& downS) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec224-mlp-block");
+
+    const auto addNbits = [&] (const char* name, const char* in, const char* out,
+                               std::uint64_t k, std::uint64_t n,
+                               const std::vector<std::uint8_t>& weight,
+                               const std::vector<float>& scales) {
+      auto* node = graph->add_node();
+      node->set_name(name);
+      node->set_op_type("MatMulNBits");
+      node->set_domain("com.microsoft");
+      node->add_input(in);
+      node->add_input(std::string(name) + "_B");
+      node->add_input(std::string(name) + "_S");
+      node->add_output(out);
+      const auto addInt = [&] (const char* key, std::int64_t value) {
+        auto* attribute = node->add_attribute();
+        attribute->set_name(key);
+        attribute->set_type(onnx::AttributeProto::INT);
+        attribute->set_i(value);
+      };
+      addInt("K", std::int64_t(k));
+      addInt("N", std::int64_t(n));
+      addInt("bits", 4);
+      addInt("block_size", std::int64_t(blockSize));
+      auto* weightInit = graph->add_initializer();
+      weightInit->set_name(std::string(name) + "_B");
+      weightInit->set_data_type(onnx::TensorProto_DataType_UINT8);
+      weightInit->add_dims(std::int64_t(n));
+      weightInit->add_dims(std::int64_t(k / blockSize));
+      weightInit->add_dims(std::int64_t(blobBytes));
+      weightInit->set_raw_data(weight.data(), weight.size());
+      auto* scaleInit = graph->add_initializer();
+      scaleInit->set_name(std::string(name) + "_S");
+      scaleInit->set_data_type(onnx::TensorProto_DataType_FLOAT);
+      scaleInit->add_dims(std::int64_t(scales.size()));
+      scaleInit->set_raw_data(scales.data(), scales.size() * sizeof(float));
+    };
+    const auto addSimple = [&] (const char* op, std::vector<const char*> ins,
+                                const char* out) {
+      auto* node = graph->add_node();
+      node->set_op_type(op);
+      for (const auto* in : ins) node->add_input(in);
+      node->add_output(out);
+    };
+
+    addNbits("gate", "X", "gate_out", hidden, rankFfn, gateW, gateS);
+    addNbits("up", "X", "up_out", hidden, rankFfn, upW, upS);
+    addSimple("Sigmoid", {"gate_out"}, "gate_sigmoid");
+    addSimple("Mul", {"gate_out", "gate_sigmoid"}, "gate_act");
+    addSimple("Mul", {"gate_act", "up_out"}, "act_out");
+    addNbits("down", "act_out", "Y", rankFfn, hidden, downW, downS);
+
+    auto* in = graph->add_input();
+    in->set_name("X");
+    auto* inType = in->mutable_type()->mutable_tensor_type();
+    inType->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+    inType->mutable_shape()->add_dim()->set_dim_value(1);
+    inType->mutable_shape()->add_dim()->set_dim_value(std::int64_t(seq));
+    inType->mutable_shape()->add_dim()->set_dim_value(std::int64_t(hidden));
+    auto* out = graph->add_output();
+    out->set_name("Y");
+    auto* outType = out->mutable_type()->mutable_tensor_type();
+    outType->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+    outType->mutable_shape()->add_dim()->set_dim_value(1);
+    outType->mutable_shape()->add_dim()->set_dim_value(std::int64_t(seq));
+    outType->mutable_shape()->add_dim()->set_dim_value(std::int64_t(hidden));
+
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> shape{1, std::int64_t(seq), std::int64_t(hidden)};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto inputValue = Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(input.data()), input.size(), shape.data(), shape.size());
+    const char* inputNames[] = {"X"};
+    const char* outputNames[] = {"Y"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &inputValue, 1,
+                               outputNames, 1);
+    const auto* data = outputs[0].GetTensorData<float>();
+    return std::vector<float>(data, data + hidden * seq);
+  };
+
+  // Unsplit reference.
+  const auto gateW = randomPacked(ffn, hidden);
+  const auto gateS = randomScales(ffn * (hidden / blockSize));
+  const auto upW = randomPacked(ffn, hidden);
+  const auto upS = randomScales(ffn * (hidden / blockSize));
+  const auto downW = randomPacked(hidden, ffn);
+  const auto downS = randomScales(hidden * (ffn / blockSize));
+  const auto reference = runMlp(ffn, gateW, gateS, upW, upS, downW, downS);
+  BOOST_REQUIRE_EQUAL(reference.size(), hidden * seq);
+
+  // Per-rank partials, then the SUM the runtime would perform.
+  std::vector<float> reduced(hidden * seq, 0.0f);
+  const auto scaleBytesOf = [] (const std::vector<float>& values) {
+    std::vector<std::uint8_t> bytes(values.size() * sizeof(float));
+    std::memcpy(bytes.data(), values.data(), bytes.size());
+    return bytes;
+  };
+  const auto toFloat = [] (const std::vector<std::uint8_t>& bytes) {
+    std::vector<float> values(bytes.size() / sizeof(float));
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    return values;
+  };
+  for (std::uint64_t rank = 0; rank < degree; ++rank) {
+    const auto begin = rank * ffnPerRank;
+    const auto end = begin + ffnPerRank;
+    // gate/up: output channels.
+    const auto gateRank = qwen::slicePackedInt4(gateW, ffn, hidden,
+      qwen::QwenSliceAxis::OutputChannels, begin, end);
+    const auto upRank = qwen::slicePackedInt4(upW, ffn, hidden,
+      qwen::QwenSliceAxis::OutputChannels, begin, end);
+    const auto gateSRank = toFloat(qwen::sliceInt4Scales(scaleBytesOf(gateS), ffn, hidden,
+      qwen::QwenSliceAxis::OutputChannels, begin, end));
+    const auto upSRank = toFloat(qwen::sliceInt4Scales(scaleBytesOf(upS), ffn, hidden,
+      qwen::QwenSliceAxis::OutputChannels, begin, end));
+    // down: the same FFN interval on its reduction axis.
+    const auto downRank = qwen::slicePackedInt4(downW, hidden, ffn,
+      qwen::QwenSliceAxis::InputChannels, begin, end);
+    const auto downSRank = toFloat(qwen::sliceInt4Scales(scaleBytesOf(downS), hidden, ffn,
+      qwen::QwenSliceAxis::InputChannels, begin, end));
+
+    const auto partial = runMlp(ffnPerRank, gateRank, gateSRank, upRank, upSRank,
+                                downRank, downSRank);
+    BOOST_REQUIRE_EQUAL(partial.size(), reduced.size());
+    for (std::size_t i = 0; i < partial.size(); ++i) reduced[i] += partial[i];
+  }
+
+  // Each partial is a small sum of products, so the reduction tolerance is
+  // tighter than a relative comparison would need; check both magnitude and
+  // shape so a silently-zero output cannot pass.
+  double maxAbsolute = 0.0;
+  double maxReference = 0.0;
+  for (std::size_t i = 0; i < reference.size(); ++i) {
+    maxAbsolute = std::max(maxAbsolute, double(std::fabs(reduced[i] - reference[i])));
+    maxReference = std::max(maxReference, double(std::fabs(reference[i])));
+  }
+  BOOST_TEST_MESSAGE("MLP block max abs error " << maxAbsolute
+    << " against max |reference| " << maxReference);
+  BOOST_CHECK(maxReference > 1e-3);
+  BOOST_CHECK(maxAbsolute < 1e-3);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
