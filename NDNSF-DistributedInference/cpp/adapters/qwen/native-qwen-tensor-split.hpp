@@ -224,6 +224,22 @@ QwenTpTemplate
 buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
                     const std::string& entryPrefix);
 
+/** Build the template for caller-supplied units.
+ *
+ * The units carry their own role ids, so a caller that derived them from a
+ * Catalog stage never has a naming rule imposed on it. The list must be
+ * internally consistent: one unit per rank in [0, degree), distinct non-empty
+ * role ids, and every unit covering all layers, because a tensor-parallel rank
+ * holds a shard of every layer rather than a layer range.
+ *
+ * @param units Explicit units; validated as described above.
+ * @throws std::invalid_argument when the units do not describe this degree.
+ */
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix,
+                    const std::vector<QwenTpUnit>& units);
+
 /**
  * Project one template into sealed execution steps and dependencies.
  *
@@ -242,6 +258,19 @@ void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                   std::uint64_t degree, const std::string& entryPrefix,
                   const std::string& egressRole);
+
+/**
+ * Project with caller-supplied units.
+ *
+ * @param units Explicit units; the roles in the plan are exactly these ids, so
+ *              nothing downstream has to know a naming convention.
+ * @param egressRole Must be one of the units; it owns the head.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units);
 
 } // namespace ndnsf::di::qwen
 

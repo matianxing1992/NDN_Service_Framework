@@ -2680,6 +2680,69 @@ BOOST_AUTO_TEST_CASE(InitProducesTheEmbeddedResidualThatLayerZeroReads)
   }
 }
 
+BOOST_AUTO_TEST_CASE(ProjectionAcceptsCallerSuppliedUnitIds)
+{
+  // Audit A1: the projection imposed "S0R<rank>" on every role, so a caller that
+  // derived unit ids from a Catalog stage had to rename them afterwards. The
+  // contract requires an explicit QwenTpUnit list instead.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+
+  const std::vector<qwen::QwenTpUnit> units = {
+    {"/LLM/TP/Stage/decode#0", 0, 0, 1},
+    {"/LLM/TP/Stage/decode#1", 1, 0, 1},
+  };
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", units.front().roleId, units);
+
+  // The plan's roles are exactly the supplied ids, with no naming convention
+  // applied on top.
+  BOOST_REQUIRE_EQUAL(plan.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(plan.roles[0], units[0].roleId);
+  BOOST_CHECK_EQUAL(plan.roles[1], units[1].roleId);
+  for (const auto& step : plan.steps) {
+    BOOST_CHECK(step.unitId == units[0].roleId || step.unitId == units[1].roleId);
+  }
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+
+  // A degree mismatch, duplicate role ids, duplicate ranks and an out-of-range
+  // rank are all refused rather than silently coerced.
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "entry", units.front().roleId,
+                            {units.front()}),
+    std::invalid_argument);
+  auto duplicateId = units;
+  duplicateId[1].roleId = duplicateId[0].roleId;
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "entry", units.front().roleId, duplicateId),
+    std::invalid_argument);
+  auto duplicateRank = units;
+  duplicateRank[1].rank = 0;
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "entry", units.front().roleId, duplicateRank),
+    std::invalid_argument);
+  auto outOfRange = units;
+  outOfRange[1].rank = 7;
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "entry", units.front().roleId, outOfRange),
+    std::invalid_argument);
+
+  // A tensor-parallel unit holds a shard of every layer, so a partial layer cover
+  // is refused instead of being read as a pipeline stage.
+  auto partialCover = units;
+  partialCover[1].layerEnd = 0;
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "entry", units.front().roleId, partialCover),
+    std::invalid_argument);
+
+  // The egress role must be one of the declared units.
+  BOOST_CHECK_THROW(
+    qwen::projectQwenTpPlan(plan, shape, 2, "entry", "/not/a/unit", units),
+    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

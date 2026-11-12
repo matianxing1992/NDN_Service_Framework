@@ -478,13 +478,23 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   NativeRequestCatalog result;
   if (splitterKind == "QWEN" || splitterKind == "LLAMA") {
     const auto modelFamily = splitterKind == "LLAMA" ? "llama" : "qwen";
+    // A sharded stage needs one artifact per rank. The catalog accepts the
+    // per-rank map when present and leaves it empty otherwise, in which case the
+    // splitter keeps the legacy single-artifact path for degree-one stages only.
+    std::map<std::string, std::vector<std::string>> rankArtifacts;
+    if (split.contains("rank_artifact_digests_by_role")) {
+      for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
+        rankArtifacts.emplace(item.key(),
+          item.value().get<std::vector<std::string>>());
+      }
+    }
     auto strategy = std::make_shared<qwen::NativeQwenLayerSplit>(
       split.at("layer_ranges").get<std::vector<qwen::NativeQwenLayerSplit::LayerRange>>(),
       split.at("artifact_digests_by_role").get<std::map<std::string, std::string>>(),
       split.at("weight_bytes_by_role").get<std::map<std::string, std::uint64_t>>(),
       split.at("roles").get<std::vector<std::string>>(), split.at("tensor_degrees").get<std::vector<std::uint64_t>>(),
       split.value("input_ingress_role", std::string{}), split.value("result_egress_role", std::string{}),
-      modelFamily);
+      modelFamily, std::move(rankArtifacts));
     model.graph = strategy->inspectGraph(model.descriptor, model.descriptor.sourceRevision, entry.recipe.maxNodes);
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);

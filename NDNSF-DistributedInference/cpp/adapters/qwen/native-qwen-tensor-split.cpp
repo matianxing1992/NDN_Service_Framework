@@ -526,9 +526,12 @@ sumMlpStep(const std::string& unit, std::uint64_t layer)
 
 } // namespace
 
-QwenTpTemplate
-buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
-                    const std::string& entryPrefix)
+namespace {
+
+/** Shared validation for both template builders. */
+void
+validateTemplateInputs(const QwenTpShape& shape, std::uint64_t degree,
+                       const std::string& entryPrefix)
 {
   shape.validate();
   if (degree < 2) {
@@ -537,12 +540,66 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
   if (entryPrefix.empty()) {
     throw std::invalid_argument("tensor-parallel template requires an entry prefix");
   }
+}
+
+/** A caller-supplied unit list must describe exactly this degree and cover every
+ * layer: a tensor-parallel rank holds a shard of all layers, never a range.
+ */
+void
+validateUnits(const std::vector<QwenTpUnit>& units, std::uint64_t degree,
+              std::uint64_t layers)
+{
+  if (units.size() != degree) {
+    throw std::invalid_argument(
+      "tensor-parallel units do not cover the declared degree");
+  }
+  std::set<std::uint64_t> ranks;
+  std::set<std::string> roleIds;
+  for (const auto& unit : units) {
+    if (unit.roleId.empty() || !roleIds.insert(unit.roleId).second) {
+      throw std::invalid_argument(
+        "tensor-parallel units have an empty or duplicate role id");
+    }
+    if (unit.rank >= degree || !ranks.insert(unit.rank).second) {
+      throw std::invalid_argument(
+        "tensor-parallel units have a duplicate or out-of-range rank");
+    }
+    if (unit.layerBegin != 0 || unit.layerEnd != layers) {
+      throw std::invalid_argument(
+        "tensor-parallel unit does not cover every layer");
+    }
+  }
+}
+
+} // namespace
+
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix)
+{
+  validateTemplateInputs(shape, degree, entryPrefix);
+  std::vector<QwenTpUnit> units;
+  units.reserve(degree);
+  for (std::uint64_t rank = 0; rank < degree; ++rank)
+    units.push_back(unitFor(rank, shape));
+  return buildQwenTpTemplate(shape, degree, entryPrefix, units);
+}
+
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix,
+                    const std::vector<QwenTpUnit>& units)
+{
+  validateTemplateInputs(shape, degree, entryPrefix);
+  validateUnits(units, degree, shape.layers);
   QwenTpTemplate result;
   result.degree = degree;
-  for (std::uint64_t rank = 0; rank < degree; ++rank) {
-    result.units.push_back(unitFor(rank, shape));
-    result.slicesByRank.push_back(planQwenTensorSlices(shape, degree, rank));
-  }
+  result.units = units;
+  // Slices are indexed by rank, so the per-rank plans follow the unit ranks
+  // rather than the list order.
+  result.slicesByRank.resize(degree);
+  for (const auto& unit : units)
+    result.slicesByRank[unit.rank] = planQwenTensorSlices(shape, degree, unit.rank);
   return result;
 }
 
@@ -551,7 +608,26 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   std::uint64_t degree, const std::string& entryPrefix,
                   const std::string& egressRole)
 {
-  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix);
+  std::vector<QwenTpUnit> units;
+  units.reserve(degree);
+  for (std::uint64_t rank = 0; rank < degree; ++rank)
+    units.push_back(unitFor(rank, shape));
+  projectQwenTpPlan(plan, shape, degree, entryPrefix, egressRole, units);
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units)
+{
+  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix, units);
+  // The egress unit owns the head, so it must be one of the declared units.
+  if (std::none_of(tp.units.begin(), tp.units.end(),
+                   [&egressRole] (const auto& unit) { return unit.roleId == egressRole; })) {
+    throw std::invalid_argument(
+      "tensor-parallel egress role is not one of the declared units");
+  }
   plan.roles.clear();
   plan.steps.clear();
   plan.dependencies.clear();
