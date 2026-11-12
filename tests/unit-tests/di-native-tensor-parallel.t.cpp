@@ -5537,6 +5537,82 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(HeadIsNeverShardedSoItsLogitsMatchTheUnsplitHead)
+{
+  // C6: "本方案 head 不切分". The head owns the final normalization and the vocabulary
+  // projection. A sharded vocabulary would give rank 0, which samples, only part of
+  // the distribution -- and the graph would still load and run.
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
+    "frozen export is required at " + path);
+  const auto reference = makeShardedEntry(1, 0, "HEAD", 28);
+  const auto rank0 = makeShardedEntry(2, 0, "HEAD", 28);
+  const auto rank1 = makeShardedEntry(2, 1, "HEAD", 28);
+  (void)rank0;
+  BOOST_REQUIRE(reference.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank0.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank1.entry.graph().node_size() > 0);
+
+  // The vocabulary width is the vocabulary projection's own declared output width,
+  // which is independent of how the table reaches it.
+  const std::uint64_t hidden = 1024;
+  std::vector<float> residual(hidden);
+  for (std::uint64_t i = 0; i < hidden; ++i)
+    residual[i] = 0.02f * float(static_cast<int>(i % 31) - 15);
+
+  const auto feed = [&] (const onnx::ModelProto& model) {
+    std::map<std::string, std::vector<float>> inputs;
+    std::map<std::string, std::vector<std::int64_t>> shapes;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      std::vector<std::int64_t> shape;
+      for (const auto& d : value.type().tensor_type().shape().dim())
+        shape.push_back(d.has_dim_value() ? d.dim_value() : 1);
+      shapes[name] = shape;
+      std::size_t count = 1;
+      for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+      const bool isHiddenVector = count == hidden &&
+        value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT;
+      inputs[name] = isHiddenVector ? residual : std::vector<float>(count, 0.0f);
+    }
+    std::map<std::string, std::int32_t> types;
+    for (const auto& value : model.graph().input())
+      types[value.name()] = value.type().tensor_type().elem_type();
+    return runOnnxBytes(model, inputs, shapes, types, {});
+  };
+
+  const auto referenceOut = feed(reference.entry);
+  BOOST_REQUIRE(referenceOut.count("logits") == 1);
+  const auto& expected = referenceOut.at("logits");
+  // The frozen export's vocabulary, taken from the produced tensor rather than from
+  // a constant in this file.
+  BOOST_CHECK_EQUAL(expected.size(), 151936U);
+
+  double magnitude = 0.0;
+  for (const auto value : expected) magnitude = std::max(magnitude, std::fabs(double(value)));
+  BOOST_REQUIRE(magnitude > 0.0);
+
+  for (const auto* model : {&rank0.entry, &rank1.entry}) {
+    const auto out = feed(*model);
+    BOOST_REQUIRE(out.count("logits") == 1);
+    const auto& logits = out.at("logits");
+    // Equal length is what "the head is not sharded" means: a sharded vocabulary
+    // would return fewer logits, not merely different ones.
+    BOOST_CHECK_EQUAL(logits.size(), expected.size());
+    double worst = 0.0;
+    for (std::size_t i = 0; i < std::min(logits.size(), expected.size()); ++i)
+      worst = std::max(worst, std::fabs(double(logits[i]) - double(expected[i])));
+    BOOST_TEST_MESSAGE("head logits=" << logits.size() << " magnitude=" << magnitude
+                      << " worst_error=" << worst);
+    // Exact: nothing in this entry is sharded, so any difference at all means the
+    // shard touched the head.
+    BOOST_CHECK_EQUAL(worst, 0.0);
+  }
+}
+
+
 BOOST_AUTO_TEST_CASE(ShardedAttentionAndMlpComposeThroughTheSharedResidual)
 {
   // The layer, not one block. Attention's O projection and the MLP's down projection
