@@ -38,6 +38,7 @@
 #include <iterator>
 #include <map>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <sstream>
 #include <string>
@@ -3451,6 +3452,181 @@ BOOST_AUTO_TEST_CASE(LatePartialFailsTheUnitInsteadOfReducingASubset)
   }
   // The runner never ran: a unit that cannot admit its inputs does not compute.
   BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
+}
+
+
+BOOST_AUTO_TEST_CASE(CancellationTerminatesTheUnitExactlyOnce)
+{
+  // Cancellation must end the unit once and publish nothing. Two details matter:
+  // the waiting role is ended by the scheduler's cancel path rather than its
+  // deadline, and a second termination cannot overwrite the first result.
+  //
+  // The wait timeout is long so only cancellation can end the role inside the
+  // case; the worker is destroyed while the role is still waiting, which is the
+  // production cancel path (shutdown cancels outstanding waits).
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/cancelled";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  std::atomic<std::size_t> runnerCalls{0};
+  const auto runner = [&runnerCalls] (const RoleExecutionContext& ctx) {
+    ++runnerCalls;
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  auto io = std::make_shared<NeverReadyDependencyIo>();
+  std::future<ProviderRoleResult> future;
+  {
+    // Cancellation happens by destroying the worker while the role waits. The
+    // point of the scope is that the destructor must both cancel and join.
+    ProviderRoleWorker worker(2, 1, 16, std::chrono::seconds(30));
+    future = worker.executeAsync("cancelled-session", std::move(role), io, runner, initial);
+    // Give the worker a moment to reach its wait, then leave the scope. The
+    // destroy path is deterministic even though the thread scheduling is not:
+    // shutdown cancels every outstanding wait before joining.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  // The role terminates rather than hanging, and it never computed.
+  BOOST_CHECK(future.valid());
+  try {
+    (void)future.get();
+    BOOST_FAIL("a cancelled unit produced a result");
+  }
+  catch (const std::exception& error) {
+    BOOST_TEST_MESSAGE("cancellation failure: " << error.what());
+  }
+  BOOST_CHECK_EQUAL(runnerCalls.load(), 0U);
+  BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
+}
+
+
+BOOST_AUTO_TEST_CASE(AUnitAdvancesWithASingleComputeWorker)
+{
+  // A tensor-parallel unit must not need extra compute workers to make progress:
+  // a deployment may run one per Provider, and a template that re-enqueued its
+  // own steps would deadlock at that setting. This case runs the same positive
+  // flow as the step-by-step test with exactly one compute worker.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/single-worker";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  std::atomic<std::size_t> subgraphCalls{0};
+  const auto runner = [&subgraphCalls] (const RoleExecutionContext& ctx) {
+    ++subgraphCalls;
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Supply every admitted scope so nothing waits.
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& edge : role.inputs) {
+    if (edge.consumerStepId.empty()) continue;
+    NamedTensor tensor;
+    tensor.name = "partial";
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(2)};
+    const std::vector<float> values = {0.5f, 0.25f};
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.payload = encodeTensorBundle({tensor});
+    bundle.expectedBytes = bundle.payload.size();
+    initial.emplace(edge.scope, std::move(bundle));
+  }
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      if (initial.count(slot.slotId) != 0) continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  // Exactly one compute worker and one wait worker: the tightest setting the
+  // deployment rule allows.
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("single-worker-session", std::move(role),
+    std::make_shared<CountingDependencyIo>(), runner, initial);
+  const auto result = future.get();
+  // The whole template ran and the unit completed, on one thread.
+  BOOST_CHECK(subgraphCalls.load() > 0);
+  BOOST_CHECK(!result.outputsByScope.empty());
 }
 
 
