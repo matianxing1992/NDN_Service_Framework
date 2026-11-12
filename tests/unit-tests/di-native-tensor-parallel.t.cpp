@@ -821,6 +821,59 @@ BOOST_AUTO_TEST_CASE(ShardedStageRequiresOneArtifactPerRank)
   BOOST_CHECK(other.configurationDigest != splitter.identity().configurationDigest);
 }
 
+BOOST_AUTO_TEST_CASE(ProjectedSlotsCarryTheRealTrailingWidth)
+{
+  // The frozen export makes head geometry and residual width different, so a
+  // slot that says "hidden" everywhere is wrong: logits are vocabulary-wide and
+  // every attention/MLP partial is residual-wide.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  const auto width = [] (const NativeStepSlotSpec& slot) -> std::int64_t {
+    return std::get<std::int64_t>(slot.shape.at(2));
+  };
+  const auto find = [&] (const std::string& stepId) -> const NativeExecutionStepSpec& {
+    const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
+      [&] (const auto& step) { return step.stepId == stepId; });
+    BOOST_REQUIRE(found != plan.steps.end());
+    return *found;
+  };
+
+  // Residual stream: attention partial and its merged sum are hidden-wide.
+  BOOST_CHECK_EQUAL(width(find("S0R0/ATTN/0").outputSlots.at(0)), 1024);
+  BOOST_CHECK_EQUAL(width(find("S0R0/SUM_ATTN/0").outputSlots.at(0)), 1024);
+  BOOST_CHECK_EQUAL(width(find("S0R0/MLP/0").outputSlots.at(0)), 1024);
+  BOOST_CHECK_EQUAL(width(find("S0R0/SUM_MLP/0").outputSlots.at(0)), 1024);
+
+  // Logits are vocabulary-wide, not hidden-wide.
+  const auto& head = find("S0R0/HEAD");
+  BOOST_CHECK_EQUAL(width(head.outputSlots.at(0)), 151936);
+  BOOST_CHECK_EQUAL(head.outputSlots.at(0).slotId, std::string("logits"));
+
+  // Every slot declares one shared activation layout instead of a placeholder.
+  const auto zeroDigest = "sha256:" + std::string(64, '0');
+  for (const auto& step : plan.steps) {
+    for (const auto& slot : step.inputSlots) {
+      BOOST_CHECK_EQUAL(slot.layoutDigest, std::string(qwen::QWEN_TP_ACTIVATION_LAYOUT_DIGEST));
+      BOOST_CHECK(slot.layoutDigest != zeroDigest);
+      BOOST_CHECK_EQUAL(slot.dtype, std::string("float32"));
+    }
+    for (const auto& slot : step.outputSlots) {
+      BOOST_CHECK_EQUAL(slot.layoutDigest, std::string(qwen::QWEN_TP_ACTIVATION_LAYOUT_DIGEST));
+      BOOST_CHECK(slot.layoutDigest != zeroDigest);
+    }
+  }
+
+  // Producer and consumer of one remote contribution must agree on the exact
+  // width, which the dependency check now enforces.
+  BOOST_CHECK_EQUAL(width(find("S0R1/ATTN/0").outputSlots.at(0)),
+                    width(find("S0R0/SUM_ATTN/0").inputSlots.at(1)));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
@@ -841,6 +894,7 @@ frozenShape()
   shape.kvHeads = 8;
   shape.headDim = 128;
   shape.ffn = 3072;
+  shape.vocab = 151936;
   return shape;
 }
 
@@ -1134,11 +1188,11 @@ BOOST_AUTO_TEST_CASE(ShapeFactsAreCrossCheckedAgainstTheGraph)
   const auto bytes = graphWith(QwenLogWidths{}, 1);
   const auto nodes = qwen::inspectQwenNBitsGraph(bytes, 1);
   // Declared geometry matching the graph is accepted.
-  BOOST_CHECK_NO_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 16, 8, 128, 3072));
+  BOOST_CHECK_NO_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 16, 8, 128, 3072, 151936));
   // A declared width that disagrees with the export is rejected, not sliced.
-  BOOST_CHECK_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 8, 4, 128, 3072),
+  BOOST_CHECK_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 8, 4, 128, 3072, 151936),
                     std::invalid_argument);
-  BOOST_CHECK_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 16, 8, 128, 2048),
+  BOOST_CHECK_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 16, 8, 128, 2048, 151936),
                     std::invalid_argument);
   // A layer-count mismatch is likewise refused.
   BOOST_CHECK_THROW(qwen::inspectQwenNBitsGraph(bytes, 2), std::invalid_argument);
@@ -1185,7 +1239,7 @@ BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFacts)
   BOOST_CHECK(!q.hasZeroPoint);
   BOOST_CHECK(!q.hasGroupIndex);
 
-  const auto shape = qwen::qwenTpShapeFromNodes(nodes, 1024, 28, 16, 8, 128, 3072);
+  const auto shape = qwen::qwenTpShapeFromNodes(nodes, 1024, 28, 16, 8, 128, 3072, 151936);
   const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0);
   const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1);
   BOOST_REQUIRE_EQUAL(rank0.size(), 28U);

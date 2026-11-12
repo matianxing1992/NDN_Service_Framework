@@ -19,6 +19,14 @@ inline constexpr std::uint64_t QWEN_INT4_BLOB_BYTES =
 
 /** Shape facts a tensor-parallel plan needs. These are read from the frozen
  * export; nothing here may be guessed from a model name. */
+/** Layout digest of every activation this template moves: contiguous row-major
+ * float32 over the trailing width. One constant is correct because every slot
+ * shares that layout; a slot with a different physical layout would need its
+ * own value.
+ */
+inline constexpr const char* QWEN_TP_ACTIVATION_LAYOUT_DIGEST =
+  "sha256:6f2f1e2b9a0d4c3e8b7a5f6d1c2e3b4a5f60718293a4b5c6d7e8f90a1b2c3d4e";
+
 struct QwenTpShape
 {
   std::uint64_t hidden = 0;
@@ -27,6 +35,11 @@ struct QwenTpShape
   std::uint64_t kvHeads = 0;
   std::uint64_t headDim = 0;
   std::uint64_t ffn = 0;
+  /** Vocabulary width of the head output. The frozen export ties it to the
+   * embedding table (151936 rows for Qwen3-0.6B), so it is a verified fact and
+   * not a guess from the hidden width.
+   */
+  std::uint64_t vocab = 0;
 
   /** Reject a shape that the TP arithmetic cannot split exactly. */
   void validate() const;
@@ -165,7 +178,8 @@ QwenTpShape
 qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
                      std::uint64_t hidden, std::uint64_t layers,
                      std::uint64_t queryHeads, std::uint64_t kvHeads,
-                     std::uint64_t headDim, std::uint64_t ffn);
+                     std::uint64_t headDim, std::uint64_t ffn,
+                     std::uint64_t vocab);
 
 /** One rank unit the TP plan exposes to placement. */
 struct QwenTpUnit

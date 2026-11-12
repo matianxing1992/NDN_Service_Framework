@@ -345,7 +345,8 @@ QwenTpShape
 qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
                      std::uint64_t hidden, std::uint64_t layers,
                      std::uint64_t queryHeads, std::uint64_t kvHeads,
-                     std::uint64_t headDim, std::uint64_t ffn)
+                     std::uint64_t headDim, std::uint64_t ffn,
+                     std::uint64_t vocab)
 {
   QwenTpShape shape;
   shape.hidden = hidden;
@@ -354,6 +355,7 @@ qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
   shape.kvHeads = kvHeads;
   shape.headDim = headDim;
   shape.ffn = ffn;
+  shape.vocab = vocab;
   shape.validate();
   // Cross-check the declared geometry against the graph itself: a projection
   // whose width disagrees with `heads * headDim` (or the FFN width) means the
@@ -427,15 +429,22 @@ unitFor(std::uint64_t rank, const QwenTpShape& shape)
 
 ndnsf::di::NativeStepSlotSpec
 makeSlot(const std::string& id, const std::string& source,
-         const std::string& producerStep = {})
+         const std::string& producerStep = {}, std::uint64_t lastDim = 0)
 {
   ndnsf::di::NativeStepSlotSpec slot;
   slot.slotId = id;
-  // The step contract only needs a stable type/layout identity here; the
-  // sealed selection role carries the authoritative per-entry shapes.
+  // Every value crossing a step boundary is a float32 activation. The first two
+  // dimensions stay symbolic because the batch and sequence lengths are chosen
+  // per request; the trailing width is a verified model fact and is therefore
+  // concrete whenever the caller knows it.
   slot.dtype = "float32";
-  slot.shape = {std::int64_t(1), std::string("sequence"), std::string("hidden")};
-  slot.layoutDigest = "sha256:" + std::string(64, '0');
+  slot.shape = {std::int64_t(1), std::string("sequence"),
+                lastDim == 0 ? std::variant<std::int64_t, std::string>(std::string("hidden"))
+                             : std::variant<std::int64_t, std::string>(std::int64_t(lastDim))};
+  // One stable activation layout for the whole template: contiguous row-major
+  // over the trailing dimension. A single digest is right because every slot
+  // shares it; different layouts would need different digests.
+  slot.layoutDigest = QWEN_TP_ACTIVATION_LAYOUT_DIGEST;
   slot.source = source;
   slot.producerStepId = producerStep;
   return slot;
@@ -517,9 +526,10 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       attn.operation = "CALL_SUBGRAPH";
       attn.artifactEntry = entry(unit.roleId, "ATTN", layer);
       attn.inputSlots = {layer == 0
-        ? makeSlot("x", "EPOCH_INPUT")
-        : makeSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1))};
-      attn.outputSlots = {makeSlot("partial", "LOCAL_STEP")};
+        ? makeSlot("x", "EPOCH_INPUT", {}, shape.hidden)
+        : makeSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1), shape.hidden)};
+      // o_proj produces a full-width residual partial, not a head-wide one.
+      attn.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden)};
       attn.localStateSlots = {"kv." + std::to_string(layer) + ".key",
                               "kv." + std::to_string(layer) + ".value"};
       plan.steps.push_back(std::move(attn));
@@ -531,15 +541,15 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       sumAttn.unitId = unit.roleId;
       sumAttn.operation = "SUM";
       sumAttn.inputSlots.push_back(
-        makeSlot("local", "LOCAL_STEP", attnStep(unit.roleId, layer)));
+        makeSlot("local", "LOCAL_STEP", attnStep(unit.roleId, layer), shape.hidden));
       std::size_t peerIndex = 0;
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) continue;
         sumAttn.inputSlots.push_back(
           makeSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
-                   attnStep(peer.roleId, layer)));
+                   attnStep(peer.roleId, layer), shape.hidden));
       }
-      sumAttn.outputSlots = {makeSlot("merged", "LOCAL_STEP")};
+      sumAttn.outputSlots = {makeSlot("merged", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(sumAttn));
 
       ndnsf::di::NativeExecutionStepSpec mlp;
@@ -548,8 +558,8 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       mlp.operation = "CALL_SUBGRAPH";
       mlp.artifactEntry = entry(unit.roleId, "MLP", layer);
       mlp.inputSlots = {makeSlot("merged", "LOCAL_STEP",
-                                 sumAttnStep(unit.roleId, layer))};
-      mlp.outputSlots = {makeSlot("partial", "LOCAL_STEP")};
+                                 sumAttnStep(unit.roleId, layer), shape.hidden)};
+      mlp.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(mlp));
 
       ndnsf::di::NativeExecutionStepSpec sumMlp;
@@ -557,15 +567,15 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       sumMlp.unitId = unit.roleId;
       sumMlp.operation = "SUM";
       sumMlp.inputSlots.push_back(
-        makeSlot("local", "LOCAL_STEP", mlpStep(unit.roleId, layer)));
+        makeSlot("local", "LOCAL_STEP", mlpStep(unit.roleId, layer), shape.hidden));
       peerIndex = 0;
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) continue;
         sumMlp.inputSlots.push_back(
           makeSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
-                   mlpStep(peer.roleId, layer)));
+                   mlpStep(peer.roleId, layer), shape.hidden));
       }
-      sumMlp.outputSlots = {makeSlot("merged", "LOCAL_STEP")};
+      sumMlp.outputSlots = {makeSlot("merged", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(sumMlp));
     }
 
@@ -578,8 +588,12 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       head.operation = "CALL_SUBGRAPH";
       head.artifactEntry = entry(unit.roleId, "HEAD", shape.layers);
       head.inputSlots = {makeSlot("merged", "LOCAL_STEP",
-                                  sumMlpStep(unit.roleId, shape.layers - 1))};
-      head.outputSlots = {makeSlot("logits", "LOCAL_STEP")};
+                                  sumMlpStep(unit.roleId, shape.layers - 1),
+                                  shape.hidden)};
+      // Logits are vocabulary-wide, not hidden-wide: the head output slot must
+      // describe the real width or a consumer would size its read buffer from
+      // the residual stream.
+      head.outputSlots = {makeSlot("logits", "LOCAL_STEP", {}, shape.vocab)};
       plan.steps.push_back(std::move(head));
     }
   }
