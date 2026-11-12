@@ -2439,6 +2439,37 @@ public:
   std::atomic<std::size_t> publishCalls{0};
 };
 
+/** DependencyIo whose fetches never become ready, so a role's declared input
+ * stays pending and the worker's dependency deadline is what ends the unit.
+ */
+class NeverReadyDependencyIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge&) override
+  {
+    ++prefetchCalls;
+    // Keep the promise alive in the object so the future is never satisfied and
+    // never broken; only the deadline can end the wait.
+    std::promise<TensorBundle> pending;
+    auto future = pending.get_future();
+    std::lock_guard<std::mutex> lock(mutex);
+    promises.push_back(std::move(pending));
+    return future;
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
+  {
+    ++publishCalls;
+  }
+
+  std::atomic<std::size_t> prefetchCalls{0};
+  std::atomic<std::size_t> publishCalls{0};
+  std::mutex mutex;
+  std::vector<std::promise<TensorBundle>> promises;
+};
+
 /** Preparation callback that counts invocations. Returning a null runner is
  * enough: the gate must reject before this is ever called.
  */
@@ -3336,6 +3367,90 @@ BOOST_AUTO_TEST_CASE(SealedStepRejectsDuplicateContributionsForOneSlot)
     BOOST_CHECK(std::string(error.what()).find("duplicate contributions") !=
                 std::string::npos);
   }
+}
+
+
+BOOST_AUTO_TEST_CASE(LatePartialFailsTheUnitInsteadOfReducingASubset)
+{
+  // A peer partial that never arrives is the ordinary tensor-parallel failure:
+  // one rank waits while the other never publishes. The worker must fail the unit
+  // once, at its dependency deadline, rather than reducing whatever arrived or
+  // blocking a compute worker forever.
+  //
+  // The wait timeout is short so the case is deterministic without sleeping for
+  // the production default.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/late-partial";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  const auto runner = [] (const RoleExecutionContext& ctx) {
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Only the epoch inputs are supplied. The peer scope stays pending so the role
+  // never reaches execution.
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  auto io = std::make_shared<NeverReadyDependencyIo>();
+  // Two compute workers so the queue itself is not the limiter; the wait
+  // scheduler deadline is what must end the unit.
+  ProviderRoleWorker worker(2, 1, 16, std::chrono::milliseconds(150));
+  auto future = worker.executeAsync("late-partial-session", std::move(role), io,
+                                    runner, initial);
+  try {
+    (void)future.get();
+    BOOST_FAIL("a unit with a missing peer partial completed");
+  }
+  catch (const std::exception& error) {
+    // The failure must be the wait, not a silent subset reduction.
+    const std::string message = error.what();
+    BOOST_TEST_MESSAGE("late partial failure: " << message);
+    BOOST_CHECK(message.find("dependency wait") != std::string::npos ||
+                message.find("deadline") != std::string::npos ||
+                message.find("timed out") != std::string::npos);
+  }
+  // The runner never ran: a unit that cannot admit its inputs does not compute.
+  BOOST_CHECK_EQUAL(io->publishCalls.load(), 0U);
 }
 
 
