@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "tests/fixtures/spec182/native-model-fixture.hpp"
 
 #include <onnx/onnx_pb.h>
 #include <google/protobuf/text_format.h>
@@ -379,6 +380,96 @@ BOOST_AUTO_TEST_CASE(LegacyWireStillParsesWithoutStepFields)
   BOOST_REQUIRE_EQUAL(parsed.dependencies.size(), 1U);
   BOOST_CHECK(parsed.dependencies[0].dependencyId.empty());
   BOOST_CHECK(parsed.dependencies[0].producerStepId.empty());
+}
+
+BOOST_AUTO_TEST_CASE(StepBoundDependencyIsNotJudgedAsASourceCut)
+{
+  // A pipeline candidate's dependency carries a real source-graph cut, so its
+  // tensor set must equal the declared cuts. A step-bound TP dependency carries
+  // a partial produced inside a step, which is not a source cut at all.
+  const auto graphDigest = nativePlanningDigest("spec224-cut-graph");
+  NativeGraphSnapshot graph;
+  graph.graphDigest = graphDigest;
+  graph.nodes = {{"layer-00", "op", 0}, {"layer-01", "op", 1}};
+  graph.topologicalOrder = {"layer-00", "layer-01"};
+  graph.legalCutEdges = {"hidden-layer-00-to-01"};
+  graph.edges = {{"hidden-layer-00-to-01", "layer-00", {"layer-01"},
+                  {"hidden-layer-00-to-01", "float32", {std::int64_t(1)}, 4}}};
+  graph.modelInputs = {{"input_ids", "int64", {std::int64_t(1)}, 8}};
+  graph.modelOutputs = {{"logits", "float32", {std::int64_t(1)}, 4}};
+
+  auto candidate = [] (const NativeGraphSnapshot& g) {
+    NativeSplitCandidate value;
+    value.source = "PRE_SPLIT";
+    value.splitter = {"test-splitter", "1", nativePlanningDigest("splitter")};
+    value.model = fixture::completeModel({"tp-model", nativePlanningDigest("content"),
+      nativePlanningDigest("semantics"), g.graphDigest, "onnx", "float32", "qwen", "1"});
+    value.graphDigest = g.graphDigest;
+    value.executionPlan.roles = {"S0R0", "S0R1"};
+    value.fragmentsByRole = {{"S0R0", nativePlanningDigest("f0")},
+                             {"S0R1", nativePlanningDigest("f1")}};
+    value.artifactsByRole = {{"S0R0", {nativePlanningDigest("f0")}},
+                             {"S0R1", {nativePlanningDigest("f1")}}};
+    value.requirementsByRole = {{"S0R0", {{"onnxruntime"}, 1024, 0, 0, 0, 0, 1.1}},
+                                {"S0R1", {{"onnxruntime"}, 1024, 0, 0, 0, 0, 1.1}}};
+    value.nodeRoles = {{"layer-00", "S0R0"}, {"layer-01", "S0R1"}};
+    return value;
+  };
+
+  // Legacy pipeline form: dependency tensor equals the declared cut.
+  auto pipeline = candidate(graph);
+  pipeline.crossPartitionTensors = {"hidden-layer-00-to-01"};
+  NativeDependencySpec edge;
+  edge.producers = {"S0R0"};
+  edge.consumers = {"S0R1"};
+  edge.keyScope = "activation";
+  edge.topicPrefix = "/service/tp";
+  edge.objectNameTemplate = "{producerProvider}/{keyScope}";
+  edge.tensors = {"hidden-layer-00-to-01"};
+  edge.operationKind = "ACTIVATION";
+  pipeline.executionPlan.dependencies = {edge};
+  pipeline.candidateDigest = pipeline.computedDigest();
+  BOOST_CHECK_NO_THROW(pipeline.validate(graph));
+
+  // A pipeline dependency whose tensor is not a declared cut is still wrong.
+  auto mismatched = candidate(graph);
+  mismatched.crossPartitionTensors = {"hidden-layer-00-to-01"};
+  auto wrongTensor = edge;
+  wrongTensor.tensors = {"partial-not-a-cut"};
+  mismatched.executionPlan.dependencies = {wrongTensor};
+  mismatched.candidateDigest = mismatched.computedDigest();
+  BOOST_CHECK_THROW(mismatched.validate(graph), std::invalid_argument);
+
+  // Step-bound form: the carried tensor is a step partial with no source cut.
+  auto tensorParallel = candidate(graph);
+  tensorParallel.crossPartitionTensors = {"hidden-layer-00-to-01"};
+  auto stepEdge = edge;
+  stepEdge.tensors = {"partial"};
+  stepEdge.operationKind = "TENSOR_PARTIAL";
+  stepEdge.useNdnsfDataV1 = true;
+  stepEdge.dependencyId = "tp-attn-0";
+  stepEdge.producerStepId = "S0R1/ATTN/0";
+  stepEdge.producerSlotId = "partial";
+  stepEdge.consumerStepId = "S0R0/SUM_ATTN/0";
+  stepEdge.consumerSlotId = "remote";
+  tensorParallel.executionPlan.dependencies = {stepEdge};
+  auto attn0 = NativeExecutionStepSpec{};
+  attn0.stepId = "S0R1/ATTN/0";
+  attn0.unitId = "S0R1";
+  attn0.operation = "CALL_SUBGRAPH";
+  attn0.artifactEntry = "entry/S0R1/ATTN/0";
+  attn0.outputSlots = {slot("partial", "LOCAL_STEP")};
+  auto sum0 = NativeExecutionStepSpec{};
+  sum0.stepId = "S0R0/SUM_ATTN/0";
+  sum0.unitId = "S0R0";
+  sum0.operation = "SUM";
+  sum0.inputSlots = {slot("remote", "REMOTE_STEP", "S0R1/ATTN/0")};
+  sum0.outputSlots = {slot("merged", "LOCAL_STEP")};
+  tensorParallel.executionPlan.steps = {attn0, sum0};
+  tensorParallel.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  tensorParallel.executionPlan.tensorDegree = 2;
+  tensorParallel.candidateDigest = tensorParallel.computedDigest();
+  BOOST_CHECK_NO_THROW(tensorParallel.validate(graph));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

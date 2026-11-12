@@ -608,7 +608,13 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
       for (const auto& consumer : dependency.consumers)
         if (outgoing[producer].insert(consumer).second) ++incoming.at(consumer);
   }
-  if (dependencyTensors != cuts)
+  // Source-cut ownership and derived step edges are different things. A
+  // pipeline dependency carries a tensor that really is a source-graph cut, so
+  // its tensor set must equal the declared cuts. A step-bound tensor-parallel
+  // dependency instead carries a partial produced inside a step, which has no
+  // source-graph edge at all; requiring it to be a legal cut would reject every
+  // valid TP plan. Source cuts stay validated as a subset of legal cuts above.
+  if (executionPlan.steps.empty() && dependencyTensors != cuts)
     throw std::invalid_argument("split candidate dependency tensors do not match its cuts");
   // A step template legitimately makes the coarse role graph cyclic: two
   // tensor-parallel units exchange partials in both directions while the
