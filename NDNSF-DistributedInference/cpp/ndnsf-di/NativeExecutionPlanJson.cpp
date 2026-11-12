@@ -2721,6 +2721,12 @@ void bindFixedTemplateSteps(NativeExecutionPlan& plan,
   plan.steps = fixed.steps;
   plan.stepPlanVersion = fixed.stepPlanVersion;
   plan.tensorDegree = fixed.tensorDegree;
+  // Validate the assembled plan, not just the template metadata. The template
+  // was normalized when it was sealed, but the invocation's plan binds it to a
+  // concrete role and dependency set, and that combination is what the Provider
+  // would execute. Without this check a malformed template that somehow reached
+  // the cache would be accepted as long as its metadata looked complete.
+  plan.validateSteps();
 }
 
 NativeJson endpointBindingsJson(const std::vector<NativeTensorEndpointV3>& endpoints)

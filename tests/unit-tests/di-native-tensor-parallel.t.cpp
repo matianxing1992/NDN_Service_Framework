@@ -2168,6 +2168,117 @@ BOOST_AUTO_TEST_CASE(FrozenExportPackingMatchesTheSliceAssumptions)
   BOOST_CHECK_EQUAL(checked, 196U);
 }
 
+BOOST_AUTO_TEST_CASE(CachedTemplateStepsAreValidatedWhenBound)
+{
+  // The fixed template is normalized when sealed, but binding it to an
+  // invocation produces a new plan whose role/dependency combination is what
+  // the Provider would execute. That combination must be validated too: a
+  // template whose metadata merely looks complete must still be refused if its
+  // step DAG does not hold together.
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/provider/0";
+  projection.requestId = "/request/1";
+  projection.attempt = 1;
+  projection.planCoreDigest = nativePlanningDigest("core");
+  projection.planDigest = nativePlanningDigest("plan");
+  projection.ackClosedDigest = nativePlanningDigest("ack");
+  projection.offerDigest = nativePlanningDigest("offer");
+  projection.securityPolicySnapshotDigest = nativePlanningDigest("security");
+  projection.deadlineMs = 120000;
+
+  // Every role the template names needs an owner, including the remote peer:
+  // the cached contract must say where a contribution comes from.
+  projection.fixedProviderByRole = {{"S0R0", projection.provider},
+                                    {"S0R1", "/provider/1"}};
+  NativeSelectionRoleV3 assembly;
+  assembly.role = "S0R0";
+  assembly.selectedRole = "S0R0";
+  assembly.rank = 0;
+  assembly.layerBegin = 0;
+  assembly.layerEnd = 1;
+  assembly.backend = "onnxruntime-cpu";
+  assembly.roleKind = "HYBRID_RANK";
+  assembly.artifactDigest = nativePlanningDigest("artifact");
+  assembly.recipeDigest = nativePlanningDigest("recipe");
+  assembly.adapterId = "qwen";
+  assembly.adapterVersion = "1";
+  assembly.modelManifestDigest = nativePlanningDigest("manifest");
+  assembly.artifactProfileDigest = nativePlanningDigest("profile");
+  assembly.graphDigest = nativePlanningDigest("graph");
+  assembly.canonicalInitializerDigest = nativePlanningDigest("initializer");
+  assembly.adapterDescriptorDigest = nativePlanningDigest("adapter");
+  assembly.assemblerDescriptorDigest = nativePlanningDigest("assembler");
+  assembly.backendAbi = "onnxruntime-1-cpu";
+  assembly.nodeIndices = {1, 2};
+  assembly.expectedInputs = {{"x", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  assembly.expectedOutputs = {{"y", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  assembly.precision = "fp32";
+  assembly.quantization = "int4";
+  assembly.layout = "native";
+  assembly.padding = "none";
+  assembly.protectionEpoch = "plaintext-v1";
+  assembly.maxSourceBytes = 4096;
+  assembly.maxAssembledBytes = 2048;
+  assembly.maxNodes = 4;
+  projection.selectedRole = assembly;
+  projection.assembly = assembly;
+
+  projection.executionRole.roleId = "S0R0";
+  projection.executionRole.stageId = "S0R0";
+  projection.executionRole.rank = 0;
+  projection.executionRole.layerBegin = 0;
+  projection.executionRole.layerEnd = 1;
+  projection.executionRole.backend = assembly.backend;
+  projection.executionRole.adapterId = assembly.adapterId;
+  projection.executionRole.adapterVersion = assembly.adapterVersion;
+
+  projection.dataflow.role = "S0R0";
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = 1;
+  projection.dataflow.planDigest = projection.planDigest;
+  projection.dataflow.dataflowDigest = nativePlanningDigest("dataflow");
+  projection.dataflow.terminalResponseOwner = true;
+
+  projection.deviceBinding.mode = "CPU";
+  projection.deviceBinding.provider = projection.provider;
+  projection.deviceBinding.role = "S0R0";
+  projection.deviceBinding.offerDigest = projection.offerDigest;
+  projection.deviceBinding.topologyProfileDigest = nativePlanningDigest("topology");
+  projection.deviceBinding.resourceSnapshotDigest = nativePlanningDigest("resources");
+  projection.deviceBinding.resourceSequence = 1;
+  projection.deviceBinding.sharingPolicy = "EXCLUSIVE_ROLE";
+
+  projection.plan.roles = {"S0R0", "S0R1"};
+  projection.plan.steps = twoRankSteps();
+  projection.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  projection.plan.tensorDegree = 2;
+  projection.plan.dependencies = twoRankPlan().dependencies;
+
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+  BOOST_REQUIRE(fixed != nullptr);
+
+  // A well-formed template survives the cached round trip.
+  std::istringstream source(nativeFixedRoleAssignmentV1ToJson(*fixed));
+  const auto restored = nativeFixedRoleAssignmentV1FromJson(source);
+  BOOST_CHECK_EQUAL(restored->digest(), fixed->digest());
+  const auto& templateAfter = restored->executionTemplate();
+  BOOST_REQUIRE_EQUAL(templateAfter->steps.size(), projection.plan.steps.size());
+  BOOST_CHECK_NO_THROW(templateAfter->steps.front().validate());
+
+  // A template whose step DAG has been broken must not survive binding. The
+  // check lives where the template becomes a plan, so it must reject the same
+  // defect the plan validator rejects.
+  auto broken = projection.plan.steps;
+  broken.at(2).inputSlots.at(1).producerStepId = "S0R1/DOES_NOT_EXIST";
+  NativeExecutionPlan bound;
+  bound.roles = projection.plan.roles;
+  bound.steps = broken;
+  bound.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  bound.tensorDegree = 2;
+  bound.dependencies = projection.plan.dependencies;
+  BOOST_CHECK_THROW(bound.validateSteps(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
