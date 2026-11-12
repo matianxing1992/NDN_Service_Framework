@@ -1239,6 +1239,50 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
   };
   for (const auto& name : names) {
     requireActive();
+    if (manifest) {
+      // Same-object fast path: this batch already resolved and will re-validate
+      // the manifest once at the end, so later names only need their index in
+      // that immutable manifest instead of another snapshot read and payload
+      // probe per packet.
+      const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
+      const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
+      const auto matchesName = [&](std::size_t candidate) {
+        return candidate < manifest->packetNames.size() &&
+          (manifest->packetNames[candidate] == canonical ||
+           manifest->packetNames[candidate] == alternate);
+      };
+      std::optional<std::size_t> index;
+      const auto proof = getPacketIndexProof(*manifest, manifest);
+      if (proof && !name.empty() && name[-1].isSegment()) {
+        try {
+          const auto segment = name[-1].toSegment();
+          const auto table = proof->segments.find(packetBaseName(canonical));
+          if (table != proof->segments.end()) {
+            for (const auto& position : table->second) {
+              if (position.segment == segment && matchesName(position.packetIndex)) {
+                index = position.packetIndex;
+                break;
+              }
+            }
+          }
+        }
+        catch (const ndn::tlv::Error&) {
+          // Non-numeric segments fall back to the exact name comparison below.
+        }
+      }
+      if (!index) {
+        for (std::size_t candidate = 0; candidate < manifest->packetNames.size(); ++candidate) {
+          if (matchesName(candidate)) {
+            index = candidate;
+            break;
+          }
+        }
+      }
+      if (!index)
+        throw std::runtime_error("repo-original-packet-batch-metadata-changed");
+      indices.push_back(*index);
+      continue;
+    }
     bool rejected = false;
     const auto sameHolder = [&](const RepoObjectManifest& candidate) {
       if (!manifest) {
