@@ -49,6 +49,8 @@ NativeJson jsonValue(const NativeRoleDataflowContractV3& value);
 NativeJson jsonValue(const NativeDeviceBindingV3& value);
 NativeJson jsonValue(const NativeGenerationExecutionContractV1& value);
 NativeJson jsonValue(const RedistributionSpec& value);
+NativeJson jsonValue(const NativeStepSlotSpec& value);
+NativeJson jsonValue(const NativeExecutionStepSpec& value);
 NativeJson jsonValue(const NativeDependencySpec& value);
 NativeJson jsonValue(const ConversationStateReferenceV1& value);
 NativeJson jsonValue(const ConversationTurnBindingV1& value);
@@ -354,6 +356,40 @@ NativeJson jsonValue(const RedistributionSpec& value)
   return result;
 }
 
+NativeJson jsonValue(const NativeStepSlotSpec& value)
+{
+  auto result = NativeJson::object();
+  result["slot_id"] = value.slotId;
+  result["dtype"] = value.dtype;
+  result["shape"] = NativeJson::array();
+  for (const auto& dimension : value.shape) {
+    std::visit([&result] (const auto& item) { result["shape"].push_back(item); }, dimension);
+  }
+  result["layout_digest"] = value.layoutDigest;
+  result["source"] = value.source;
+  // Only a step-fed slot carries a producer; the key is omitted rather than
+  // emitted empty so a legacy reader sees no new field at all.
+  if (!value.producerStepId.empty()) result["producer_step_id"] = value.producerStepId;
+  return result;
+}
+
+NativeJson jsonValue(const NativeExecutionStepSpec& value)
+{
+  auto result = NativeJson::object();
+  result["step_id"] = value.stepId;
+  result["unit_id"] = value.unitId;
+  result["operation"] = value.operation;
+  if (!value.artifactEntry.empty()) result["artifact_entry"] = value.artifactEntry;
+  result["input_slots"] = jsonArray(value.inputSlots);
+  result["output_slots"] = jsonArray(value.outputSlots);
+  // localStateSlots is already a string array; emit it through the same helper
+  // the rest of the schema uses.
+  auto states = NativeJson::array();
+  for (const auto& name : value.localStateSlots) states.push_back(name);
+  result["local_state_slots"] = std::move(states);
+  return result;
+}
+
 NativeJson jsonValue(const NativeDependencySpec& value)
 {
   auto result = NativeJson::object();
@@ -373,6 +409,16 @@ NativeJson jsonValue(const NativeDependencySpec& value)
   result["collectiveTensorDigest"] = value.collectiveTensorDigest;
   result["redistributions"] = jsonArray(value.redistributions);
   result["transportProfile"] = value.useNdnsfDataV1 ? "NDNSF_DATA_V1" : "COLLAB_LARGE_V1";
+  // Step binding is emitted only when sealed; legacy pipeline dependencies keep
+  // their original byte-identical object so old wire round-trips do not change.
+  if (!value.dependencyId.empty()) result["dependency_id"] = value.dependencyId;
+  if (!value.producerStepId.empty() || !value.producerSlotId.empty() ||
+      !value.consumerStepId.empty() || !value.consumerSlotId.empty()) {
+    result["producer_step_id"] = value.producerStepId;
+    result["producer_slot_id"] = value.producerSlotId;
+    result["consumer_step_id"] = value.consumerStepId;
+    result["consumer_slot_id"] = value.consumerSlotId;
+  }
   return result;
 }
 
@@ -1329,6 +1375,64 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
         "unsupported native execution plan executionPolicy");
     }
     plan.roles = stringArrayFromJson(service, "roles");
+    plan.stepPlanVersion = service.get<std::string>("stepPlanVersion",
+      service.get<std::string>("step_plan_version", ""));
+    plan.tensorDegree = service.get<std::uint64_t>("tensorDegree",
+      service.get<std::uint64_t>("tensor_degree", 1));
+    if (const auto steps = service.get_child_optional("steps")) {
+      for (const auto& stepNode : steps.get()) {
+        const auto& step = stepNode.second;
+        NativeExecutionStepSpec spec;
+        spec.stepId = step.get<std::string>("step_id", "");
+        spec.unitId = step.get<std::string>("unit_id", "");
+        spec.operation = step.get<std::string>("operation", "");
+        spec.artifactEntry = step.get<std::string>("artifact_entry", "");
+        const auto slotsOf = [] (const boost::property_tree::ptree& value,
+                                 const char* key) {
+          std::vector<NativeStepSlotSpec> slots;
+          const auto children = value.get_child_optional(key);
+          if (!children) return slots;
+          for (const auto& child : *children) {
+            const auto& slot = child.second;
+            NativeStepSlotSpec parsed;
+            parsed.slotId = slot.get<std::string>("slot_id", "");
+            parsed.dtype = slot.get<std::string>("dtype", "");
+            parsed.layoutDigest = slot.get<std::string>("layout_digest", "");
+            parsed.source = slot.get<std::string>("source", "");
+            parsed.producerStepId = slot.get<std::string>("producer_step_id", "");
+            const auto shape = slot.get_child_optional("shape");
+            if (shape) {
+              for (const auto& dim : *shape) {
+                const auto text = dim.second.get_value<std::string>();
+                if (text.empty()) continue;
+                // Numeric dimensions are validated as positive integers; any
+                // other spelling stays a symbolic dimension.
+                std::size_t consumed = 0;
+                long long number = 0;
+                try {
+                  number = std::stoll(text, &consumed);
+                }
+                catch (const std::exception&) {
+                  consumed = 0;
+                }
+                if (consumed == text.size() && !text.empty()) {
+                  parsed.shape.push_back(static_cast<std::int64_t>(number));
+                }
+                else {
+                  parsed.shape.push_back(text);
+                }
+              }
+            }
+            slots.push_back(std::move(parsed));
+          }
+          return slots;
+        };
+        spec.inputSlots = slotsOf(step, "input_slots");
+        spec.outputSlots = slotsOf(step, "output_slots");
+        spec.localStateSlots = stringArrayFromJson(step, "local_state_slots");
+        plan.steps.push_back(std::move(spec));
+      }
+    }
     const auto dependencies = service.get_child_optional("dependencies");
     if (dependencies) {
       for (const auto& depNode : dependencies.get()) {
@@ -1367,6 +1471,16 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
         }
         spec.tensors = stringArrayFromJson(dep, "tensors");
         spec.segmentNaming = segmentNamingFromJson(dep, spec.expectedSegments);
+        spec.dependencyId = dep.get<std::string>("dependency_id",
+          dep.get<std::string>("dependencyId", ""));
+        spec.producerStepId = dep.get<std::string>("producer_step_id",
+          dep.get<std::string>("producerStepId", ""));
+        spec.producerSlotId = dep.get<std::string>("producer_slot_id",
+          dep.get<std::string>("producerSlotId", ""));
+        spec.consumerStepId = dep.get<std::string>("consumer_step_id",
+          dep.get<std::string>("consumerStepId", ""));
+        spec.consumerSlotId = dep.get<std::string>("consumer_slot_id",
+          dep.get<std::string>("consumerSlotId", ""));
         if (spec.keyScope.empty()) {
           throw std::invalid_argument(
             "native execution plan dependency missing keyScope");
@@ -1374,6 +1488,7 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
         plan.dependencies.push_back(std::move(spec));
       }
     }
+    plan.validateSteps();
     plans.emplace(serviceName, std::move(plan));
   }
   return plans;
@@ -2222,6 +2337,11 @@ bool sameFixedDependency(const NativeDependencySpec& left, const NativeDependenc
       right.collectiveSourceLayoutDigest, right.collectiveTargetLayoutDigest, right.collectiveTensorDigest,
       right.segmentNaming.mode, right.segmentNaming.staticSegmentCount, right.segmentNaming.dynamicFallback) ||
       (left.operationKind != "TOKEN_FEEDBACK" && left.keyScope != right.keyScope) ||
+      left.dependencyId != right.dependencyId ||
+      left.producerStepId != right.producerStepId ||
+      left.producerSlotId != right.producerSlotId ||
+      left.consumerStepId != right.consumerStepId ||
+      left.consumerSlotId != right.consumerSlotId ||
       left.redistributions.size() != right.redistributions.size()) return false;
   for (std::size_t index = 0; index < left.redistributions.size(); ++index) {
     const auto& l = left.redistributions[index];

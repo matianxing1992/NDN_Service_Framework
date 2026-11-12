@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/DecodeStateIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iterator>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -381,6 +383,214 @@ NativeDependencySpec::NativeDependencySpec(std::vector<std::string> producers,
   , expectedBytes(expectedBytes)
   , tensors(std::move(tensors))
 {
+}
+
+namespace {
+
+bool
+isStepOperation(const std::string& operation)
+{
+  return operation == "CALL_SUBGRAPH" || operation == "SUM";
+}
+
+bool
+isSlotSource(const std::string& source)
+{
+  return source == "EPOCH_INPUT" || source == "TOKEN_FEEDBACK" ||
+         source == "LOCAL_STEP" || source == "REMOTE_STEP" ||
+         source == "LOCAL_STATE";
+}
+
+bool
+isDependencySlotSource(const std::string& source)
+{
+  return source == "LOCAL_STEP" || source == "REMOTE_STEP";
+}
+
+} // namespace
+
+void
+NativeStepSlotSpec::validate() const
+{
+  if (slotId.empty() || dtype.empty() || layoutDigest.empty() || !isSlotSource(source)) {
+    throw std::invalid_argument("execution step slot identity is incomplete");
+  }
+  for (const auto& dim : shape) {
+    if (const auto* text = std::get_if<std::string>(&dim)) {
+      if (text->empty()) throw std::invalid_argument("execution step slot has an empty symbol");
+    }
+    else if (std::get<std::int64_t>(dim) <= 0) {
+      throw std::invalid_argument("execution step slot has a non-positive dimension");
+    }
+  }
+}
+
+void
+NativeExecutionStepSpec::validate() const
+{
+  if (stepId.empty() || unitId.empty() || !isStepOperation(operation)) {
+    throw std::invalid_argument("execution step identity or operation is invalid");
+  }
+  // SUM is a local reduction over admitted contributions: it has no subgraph,
+  // so it must not fabricate an artifact entry or an empty ONNX graph.
+  if ((operation == "CALL_SUBGRAPH") != !artifactEntry.empty()) {
+    throw std::invalid_argument("execution step artifact entry disagrees with its operation");
+  }
+  std::set<std::string> inputIds;
+  for (const auto& slot : inputSlots) {
+    slot.validate();
+    if (!inputIds.insert(slot.slotId).second) {
+      throw std::invalid_argument("execution step has duplicate input slots");
+    }
+    // An input fed by another step must name it, so a dependency slot can never
+    // be satisfied by an unbound local placeholder; the inverse keeps a slot
+    // that claims a producer from being read as an epoch input.
+    if (isDependencySlotSource(slot.source) != !slot.producerStepId.empty()) {
+      throw std::invalid_argument("execution step input slot producer binding disagrees with its source");
+    }
+    if (slot.producerStepId == stepId) {
+      throw std::invalid_argument("execution step consumes its own output");
+    }
+  }
+  std::set<std::string> outputIds;
+  for (const auto& slot : outputSlots) {
+    slot.validate();
+    if (inputIds.count(slot.slotId) != 0 || !outputIds.insert(slot.slotId).second) {
+      throw std::invalid_argument("execution step output slot is missing or ambiguous");
+    }
+    if (!slot.producerStepId.empty()) {
+      throw std::invalid_argument("execution step output slot names a foreign producer");
+    }
+  }
+  std::set<std::string> stateIds;
+  for (const auto& name : localStateSlots) {
+    if (name.empty() || !stateIds.insert(name).second) {
+      throw std::invalid_argument("execution step local state slot is empty or duplicated");
+    }
+  }
+}
+
+void
+NativeExecutionPlan::validateSteps() const
+{
+  const std::set<std::string> roleSet(roles.begin(), roles.end());
+  if (stepPlanVersion.empty()) {
+    if (!steps.empty()) {
+      throw std::invalid_argument("execution plan carries steps without a step plan version");
+    }
+    if (tensorDegree != 1) {
+      throw std::invalid_argument("execution plan tensor degree requires a step plan");
+    }
+    return;
+  }
+  if (stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1 || steps.empty()) {
+    throw std::invalid_argument("execution plan declares an unsupported or empty step plan");
+  }
+  if (tensorDegree < 2) {
+    throw std::invalid_argument("execution plan step template requires tensor degree >= 2");
+  }
+  if (roleSet.size() != roles.size()) {
+    throw std::invalid_argument("execution plan declares duplicate units");
+  }
+
+  std::map<std::string, const NativeExecutionStepSpec*> byId;
+  for (const auto& step : steps) {
+    step.validate();
+    if (roleSet.count(step.unitId) == 0) {
+      throw std::invalid_argument("execution step belongs to an undeclared unit");
+    }
+    if (!byId.emplace(step.stepId, &step).second) {
+      throw std::invalid_argument("execution plan declares duplicate step ids");
+    }
+  }
+
+  // Every step-to-step edge must resolve to one declared producer step, and the
+  // template as a whole must be acyclic. Cycle checking happens on the step DAG
+  // rather than on the coarse role graph, because two tensor-parallel units
+  // legitimately reference each other's previous-step partials.
+  //
+  // Slot names are step-local: a consumer names its own input slot, and the
+  // dependency contract separately binds that input to a named output slot of
+  // the producer. Requiring the two names to match would forbid the legitimate
+  // case where the same tensor feeds several differently-named inputs.
+  std::map<std::string, std::set<std::string>> successors;
+  std::map<std::string, std::size_t> incoming;
+  for (const auto& step : steps) {
+    incoming[step.stepId];
+    for (const auto& slot : step.inputSlots) {
+      if (slot.producerStepId.empty()) continue;
+      if (byId.find(slot.producerStepId) == byId.end()) {
+        throw std::invalid_argument("execution step slot names an unknown producer step");
+      }
+      if (successors[slot.producerStepId].insert(step.stepId).second) {
+        ++incoming[step.stepId];
+      }
+    }
+  }
+  std::vector<std::string> ready;
+  for (const auto& [id, count] : incoming) {
+    if (count == 0) ready.push_back(id);
+  }
+  std::size_t visited = 0;
+  while (!ready.empty()) {
+    const auto id = ready.back();
+    ready.pop_back();
+    ++visited;
+    for (const auto& next : successors[id]) {
+      if (--incoming.at(next) == 0) ready.push_back(next);
+    }
+  }
+  if (visited != steps.size()) {
+    throw std::invalid_argument("execution step template is cyclic");
+  }
+
+  // Dependency identity is the existing keyScope and must be unique; the
+  // group label is never a lookup key. Step-bound dependencies must agree with
+  // the template on both ends.
+  std::set<std::string> dependencyIds;
+  for (const auto& dependency : dependencies) {
+    const auto& id = dependency.dependencyId.empty() ? dependency.keyScope
+                                                     : dependency.dependencyId;
+    if (id.empty() || !dependencyIds.insert(id).second) {
+      throw std::invalid_argument("execution plan dependency identity is missing or duplicated");
+    }
+    const bool bound = !dependency.producerStepId.empty() ||
+                       !dependency.producerSlotId.empty() ||
+                       !dependency.consumerStepId.empty() ||
+                       !dependency.consumerSlotId.empty();
+    if (!bound) continue;
+    if (dependency.producerStepId.empty() || dependency.producerSlotId.empty() ||
+        dependency.consumerStepId.empty() || dependency.consumerSlotId.empty()) {
+      throw std::invalid_argument("execution plan dependency step binding is partial");
+    }
+    const auto consumer = byId.find(dependency.consumerStepId);
+    if (consumer == byId.end()) {
+      throw std::invalid_argument("execution plan dependency names an unknown consumer step");
+    }
+    const bool consumed = std::any_of(consumer->second->inputSlots.begin(),
+      consumer->second->inputSlots.end(), [&dependency] (const auto& slot) {
+        return slot.slotId == dependency.consumerSlotId &&
+               slot.producerStepId == dependency.producerStepId;
+      });
+    if (!consumed) {
+      throw std::invalid_argument("execution plan dependency is not an admitted step input");
+    }
+    const auto producer = byId.find(dependency.producerStepId);
+    if (producer == byId.end()) {
+      throw std::invalid_argument("execution plan dependency names an unknown producer step");
+    }
+    if (producer->second->outputSlots.end() ==
+        std::find_if(producer->second->outputSlots.begin(),
+                     producer->second->outputSlots.end(),
+                     [&dependency] (const auto& slot) {
+                       return slot.slotId == dependency.producerSlotId;
+                     })) {
+      throw std::invalid_argument("execution plan dependency producer slot is undeclared");
+    }
+    if (dependency.operationKind.empty()) {
+      throw std::invalid_argument("execution plan step dependency lacks an operation kind");
+    }
+  }
 }
 
 std::string

@@ -2784,7 +2784,15 @@ buildNativePlacementObservationSnapshotV4(
             {"estimated_bytes_source", byteEstimate.second.empty()
               ? NativeJson(nullptr) : NativeJson(byteEstimate.second)},
             {"expected_segments", dependency.expectedSegments},
-            {"operation_kind", dependency.operationKind}});
+            {"operation_kind", dependency.operationKind},
+            // Step binding is projected so a strategy can see the real
+            // per-step communication event instead of one coarse role edge.
+            // Legacy pipeline dependencies carry empty values and keep their
+            // original object shape.
+            {"producer_step_id", dependency.producerStepId},
+            {"consumer_step_id", dependency.consumerStepId},
+            {"producer_slot_id", dependency.producerSlotId},
+            {"consumer_slot_id", dependency.consumerSlotId}});
         }
       }
     }

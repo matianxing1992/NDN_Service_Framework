@@ -1439,9 +1439,17 @@ NativeRolePlacementProposalV3 NativeObservationAwarePlacementV4::proposeRolesImp
     const auto estimatedBytes = dependency.contains("estimated_bytes") ?
       jsonUnsigned(dependency.at("estimated_bytes")) : std::nullopt;
     const auto operation = dependency.value("operation_kind", std::string{});
+    // A step-bound dependency belongs to the sealed token-local step DAG. Two
+    // tensor-parallel units legitimately exchange partials in both directions,
+    // so their coarse role order is not a topological order and must not be
+    // judged as one. The step template's own acyclicity is validated where the
+    // plan is sealed and parsed.
+    const bool stepBound = dependency.contains("producer_step_id") &&
+      dependency.at("producer_step_id").is_string() &&
+      !dependency.at("producer_step_id").get<std::string>().empty();
     for (const auto& producerKey : producers) {
       for (const auto& consumerKey : consumers) {
-        if (operation != "TOKEN_FEEDBACK" &&
+        if (!stepBound && operation != "TOKEN_FEEDBACK" &&
             roleOrderIndex.at(producerKey) >= roleOrderIndex.at(consumerKey))
           return baseline("ROLE_DAG_NOT_TOPOLOGICAL", statesExamined, chirps);
         V4RoleEdge edge{producerKey, consumerKey,

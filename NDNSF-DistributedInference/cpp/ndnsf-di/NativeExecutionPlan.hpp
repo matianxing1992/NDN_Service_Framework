@@ -12,6 +12,7 @@
 #include <mutex>
 #include <ostream>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace ndnsf::di {
@@ -66,6 +67,59 @@ struct SegmentNamingSpec
   bool dynamicFallback = true;
 };
 
+/** One sealed typed boundary of an execution step.
+ *
+ * A slot names a tensor the step produces or consumes and fixes the shape,
+ * dtype and layout contract the runtime must verify before the step runs. The
+ * source distinguishes where a consumed slot comes from, so the executor can
+ * admit epoch entry inputs and step dependencies independently instead of
+ * waiting for one flat "all role inputs ready" gate.
+ */
+struct NativeStepSlotSpec
+{
+  std::string slotId;
+  std::string dtype;
+  std::vector<std::variant<std::int64_t, std::string>> shape;
+  std::string layoutDigest;
+  // EPOCH_INPUT | TOKEN_FEEDBACK | LOCAL_STEP | REMOTE_STEP | LOCAL_STATE
+  std::string source;
+  // Set only for LOCAL_STEP/REMOTE_STEP: the step in this same token template
+  // that produces the slot. Empty for every other source.
+  std::string producerStepId;
+
+  void validate() const;
+};
+
+/** One step of the sealed token-local execution projection.
+ *
+ * A step belongs to exactly one placement unit and the template as a whole
+ * must be a DAG. `operation` selects a subgraph call (which must reference a
+ * verified recipe entry) or a local SUM (which must not fabricate an artifact
+ * entry or an empty ONNX graph). Both kinds share one dependency admission and
+ * lifecycle.
+ */
+struct NativeExecutionStepSpec
+{
+  std::string stepId;
+  std::string unitId;
+  // CALL_SUBGRAPH | SUM
+  std::string operation;
+  // Required for CALL_SUBGRAPH and rejected for SUM.
+  std::string artifactEntry;
+  std::vector<NativeStepSlotSpec> inputSlots;
+  std::vector<NativeStepSlotSpec> outputSlots;
+  std::vector<std::string> localStateSlots;
+
+  void validate() const;
+};
+
+/** Step-plan version a plan must declare before its steps may run. */
+inline constexpr const char* NATIVE_STEP_PLAN_VERSION_V1 = "step-plan-v1";
+/** Capability value a Provider must advertise to accept a step plan. */
+inline constexpr const char* NATIVE_STEP_PLAN_CAPABILITY_V1 = "step-plan-v1";
+/** Capability value a Provider must advertise to perform a local SUM. */
+inline constexpr const char* NATIVE_SUM_CAPABILITY_V1 = "sum-v1";
+
 struct NativeDependencySpec
 {
   NativeDependencySpec() = default;
@@ -102,6 +156,17 @@ struct NativeDependencySpec
   std::string collectiveTargetLayoutDigest;
   std::string collectiveTensorDigest;
   std::vector<RedistributionSpec> redistributions;
+  // Explicit dependency identity, unique within one plan. It reuses the
+  // existing keyScope value rather than introducing a second identity space;
+  // groupId stays a security/membership label and is never used to look a
+  // dependency up.
+  std::string dependencyId;
+  // Step binding for tensor-parallel plans: the producing step/output slot and
+  // the consuming step/input slot. Empty for legacy pipeline dependencies.
+  std::string producerStepId;
+  std::string producerSlotId;
+  std::string consumerStepId;
+  std::string consumerSlotId;
 };
 
 /** One complete request-scoped execution unit. Tensor-parallel ranks are
@@ -243,6 +308,19 @@ struct NativeExecutionPlan
   std::uint64_t streamingOperationStride = 0;
   std::vector<std::string> roles;
   std::vector<NativeDependencySpec> dependencies;
+  // Sealed token-local step template. Empty for every legacy pipeline plan,
+  // which then keeps its original whole-role run path unchanged.
+  std::vector<NativeExecutionStepSpec> steps;
+  // Step-plan version this plan requires. Empty means the plan carries no step
+  // semantics; a non-empty value must equal NATIVE_STEP_PLAN_VERSION_V1 and
+  // imply a non-empty `steps` template.
+  std::string stepPlanVersion;
+  // Tensor-parallel degree this plan was sealed for. 1 means pipeline; the
+  // value is part of the sealed contract and is never chosen by a Provider.
+  std::uint64_t tensorDegree = 1;
+
+  /** Reject malformed step templates, dependency bindings and version skew. */
+  void validateSteps() const;
 };
 
 /** Provider-local R1 reservation policy. This class deliberately lives in DI:
