@@ -854,24 +854,95 @@ BOOST_AUTO_TEST_CASE(ProjectedSlotsCarryTheRealTrailingWidth)
   BOOST_CHECK_EQUAL(width(head.outputSlots.at(0)), 151936);
   BOOST_CHECK_EQUAL(head.outputSlots.at(0).slotId, std::string("logits"));
 
-  // Every slot declares one shared activation layout instead of a placeholder.
+  // Slots declare one of exactly two documented layouts: activations, or the
+  // integer side inputs. A slot with neither is an undeclared placeholder.
   const auto zeroDigest = "sha256:" + std::string(64, '0');
+  const auto checkSlot = [&zeroDigest] (const NativeStepSlotSpec& slot) {
+    const bool activation = slot.dtype == "float32";
+    const bool integer = slot.dtype == "int64" || slot.dtype == "int32";
+    BOOST_CHECK(activation || integer);
+    BOOST_CHECK_EQUAL(slot.layoutDigest, activation
+      ? std::string(qwen::QWEN_TP_ACTIVATION_LAYOUT_DIGEST)
+      : std::string(qwen::QWEN_TP_INDEX_LAYOUT_DIGEST));
+    BOOST_CHECK(slot.layoutDigest != zeroDigest);
+  };
   for (const auto& step : plan.steps) {
-    for (const auto& slot : step.inputSlots) {
-      BOOST_CHECK_EQUAL(slot.layoutDigest, std::string(qwen::QWEN_TP_ACTIVATION_LAYOUT_DIGEST));
-      BOOST_CHECK(slot.layoutDigest != zeroDigest);
-      BOOST_CHECK_EQUAL(slot.dtype, std::string("float32"));
-    }
-    for (const auto& slot : step.outputSlots) {
-      BOOST_CHECK_EQUAL(slot.layoutDigest, std::string(qwen::QWEN_TP_ACTIVATION_LAYOUT_DIGEST));
-      BOOST_CHECK(slot.layoutDigest != zeroDigest);
-    }
+    for (const auto& slot : step.inputSlots) checkSlot(slot);
+    for (const auto& slot : step.outputSlots) checkSlot(slot);
   }
 
   // Producer and consumer of one remote contribution must agree on the exact
   // width, which the dependency check now enforces.
   BOOST_CHECK_EQUAL(width(find("S0R1/ATTN/0").outputSlots.at(0)),
                     width(find("S0R0/SUM_ATTN/0").inputSlots.at(1)));
+}
+
+BOOST_AUTO_TEST_CASE(InitStepProducesTypedSideInputsForEveryAttentionStep)
+{
+  // Positions and the attention mask are request-derived side inputs. Without an
+  // admitted producer each attention entry would have to invent them, and a
+  // float32 declaration would misdescribe an int64/int32 wire.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  const auto find = [&] (const std::string& stepId) -> const NativeExecutionStepSpec* {
+    const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
+      [&] (const auto& step) { return step.stepId == stepId; });
+    return found == plan.steps.end() ? nullptr : &*found;
+  };
+  const auto slotOf = [] (const NativeExecutionStepSpec& step, const std::string& id,
+                          bool output) -> const NativeStepSlotSpec* {
+    const auto& slots = output ? step.outputSlots : step.inputSlots;
+    const auto found = std::find_if(slots.begin(), slots.end(),
+      [&] (const auto& slot) { return slot.slotId == id; });
+    return found == slots.end() ? nullptr : &*found;
+  };
+
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    const auto* init = find(std::string(unit) + "/INIT");
+    BOOST_REQUIRE(init != nullptr);
+    BOOST_CHECK_EQUAL(init->operation, std::string("CALL_SUBGRAPH"));
+    BOOST_CHECK(!init->artifactEntry.empty());
+
+    // Inputs are the request's raw ids and mask; outputs are the typed side
+    // inputs, with the mask cast to int32 exactly as the export does.
+    const auto* ids = slotOf(*init, "input_ids", false);
+    const auto* mask = slotOf(*init, "attention_mask", false);
+    const auto* positions = slotOf(*init, "position_ids", true);
+    const auto* attnMask = slotOf(*init, "attn_mask", true);
+    BOOST_REQUIRE(ids && mask && positions && attnMask);
+    BOOST_CHECK_EQUAL(ids->dtype, std::string("int64"));
+    BOOST_CHECK_EQUAL(ids->source, std::string("EPOCH_INPUT"));
+    BOOST_CHECK_EQUAL(mask->dtype, std::string("int64"));
+    BOOST_CHECK_EQUAL(positions->dtype, std::string("int64"));
+    BOOST_CHECK_EQUAL(attnMask->dtype, std::string("int32"));
+    BOOST_CHECK_EQUAL(attnMask->layoutDigest,
+                      std::string(qwen::QWEN_TP_INDEX_LAYOUT_DIGEST));
+
+    // Every attention step in that unit consumes both, from its own INIT.
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      const auto* attn = find(std::string(unit) + "/ATTN/" + std::to_string(layer));
+      BOOST_REQUIRE(attn != nullptr);
+      const auto* fedPositions = slotOf(*attn, "position_ids", false);
+      const auto* fedMask = slotOf(*attn, "attn_mask", false);
+      BOOST_REQUIRE(fedPositions && fedMask);
+      BOOST_CHECK_EQUAL(fedPositions->producerStepId, init->stepId);
+      BOOST_CHECK_EQUAL(fedMask->producerStepId, init->stepId);
+      BOOST_CHECK_EQUAL(fedMask->dtype, std::string("int32"));
+      // Local, not remote: both ranks derive identical side inputs.
+      BOOST_CHECK_EQUAL(fedPositions->source, std::string("LOCAL_STEP"));
+    }
+  }
+
+  // The template must still be a valid step DAG with the side inputs wired.
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+  // And no remote dependency may be created for a side input.
+  BOOST_CHECK(std::none_of(plan.dependencies.begin(), plan.dependencies.end(),
+    [] (const auto& dependency) { return dependency.tensors.at(0) != "partial"; }));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -1299,8 +1370,9 @@ BOOST_AUTO_TEST_CASE(ProjectionEmitsPerLayerStepDagForBothRanks)
   BOOST_CHECK_EQUAL(plan.roles.size(), 2U);
   BOOST_CHECK_EQUAL(plan.stepPlanVersion, std::string(NATIVE_STEP_PLAN_VERSION_V1));
   BOOST_CHECK_EQUAL(plan.tensorDegree, 2U);
-  // 4 steps per layer per rank, plus one head on the egress rank only.
-  BOOST_CHECK_EQUAL(plan.steps.size(), 2U * 2U * 4U + 1U);
+  // Per rank: one INIT, then 4 steps per layer, plus one head on the egress
+  // rank only.
+  BOOST_CHECK_EQUAL(plan.steps.size(), 2U * (1U + 2U * 4U) + 1U);
 
   const auto count = [&] (const std::string& kind) {
     return std::count_if(plan.steps.begin(), plan.steps.end(),

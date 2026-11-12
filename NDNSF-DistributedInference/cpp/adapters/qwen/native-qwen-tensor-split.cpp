@@ -450,6 +450,33 @@ makeSlot(const std::string& id, const std::string& source,
   return slot;
 }
 
+/** Integer slot for token ids, positions and the attention mask.
+ *
+ * These are not activations: the frozen export feeds int64 ids through a Gather
+ * and casts the mask to int32 before GroupQueryAttention, so declaring them
+ * float32 would misdescribe the wire. Their widths are batch/sequence only,
+ * which stay symbolic for the same reason the activations do.
+ */
+ndnsf::di::NativeStepSlotSpec
+makeIndexSlot(const std::string& id, const std::string& source, const char* dtype,
+              const std::string& producerStep = {})
+{
+  ndnsf::di::NativeStepSlotSpec slot;
+  slot.slotId = id;
+  slot.dtype = dtype;
+  slot.shape = {std::int64_t(1), std::string("sequence")};
+  slot.layoutDigest = QWEN_TP_INDEX_LAYOUT_DIGEST;
+  slot.source = source;
+  slot.producerStepId = producerStep;
+  return slot;
+}
+
+std::string
+initStep(const std::string& unit)
+{
+  return unit + "/INIT";
+}
+
 std::string
 attnStep(const std::string& unit, std::uint64_t layer)
 {
@@ -517,6 +544,23 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   };
 
   for (const auto& unit : tp.units) {
+    // INIT runs once per unit before any layer: it turns the request's raw
+    // inputs into the typed side inputs every attention step consumes. Without
+    // it the template would have no admitted producer for positions and mask,
+    // and each attention entry would have to invent them.
+    ndnsf::di::NativeExecutionStepSpec init;
+    init.stepId = initStep(unit.roleId);
+    init.unitId = unit.roleId;
+    init.operation = "CALL_SUBGRAPH";
+    init.artifactEntry = entry(unit.roleId, "INIT", 0);
+    init.inputSlots = {makeIndexSlot("input_ids", "EPOCH_INPUT", "int64"),
+                       makeIndexSlot("attention_mask", "EPOCH_INPUT", "int64")};
+    // The export derives positions from the input length and casts the mask to
+    // int32 before attention, so the produced side inputs carry those types.
+    init.outputSlots = {makeIndexSlot("position_ids", "LOCAL_STEP", "int64"),
+                        makeIndexSlot("attn_mask", "LOCAL_STEP", "int32")};
+    plan.steps.push_back(std::move(init));
+
     for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
       // Attention partial on this rank. Layer 0 reads the epoch input; later
       // layers read the MLP sum of the previous layer.
@@ -528,6 +572,13 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       attn.inputSlots = {layer == 0
         ? makeSlot("x", "EPOCH_INPUT", {}, shape.hidden)
         : makeSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1), shape.hidden)};
+      // Both side inputs come from this unit's INIT, never from the peer: every
+      // rank owns the same positions and mask, so fetching them would be a
+      // pointless network dependency.
+      attn.inputSlots.push_back(
+        makeIndexSlot("position_ids", "LOCAL_STEP", "int64", initStep(unit.roleId)));
+      attn.inputSlots.push_back(
+        makeIndexSlot("attn_mask", "LOCAL_STEP", "int32", initStep(unit.roleId)));
       // o_proj produces a full-width residual partial, not a head-wide one.
       attn.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden)};
       attn.localStateSlots = {"kv." + std::to_string(layer) + ".key",

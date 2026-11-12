@@ -27,6 +27,13 @@ inline constexpr std::uint64_t QWEN_INT4_BLOB_BYTES =
 inline constexpr const char* QWEN_TP_ACTIVATION_LAYOUT_DIGEST =
   "sha256:6f2f1e2b9a0d4c3e8b7a5f6d1c2e3b4a5f60718293a4b5c6d7e8f90a1b2c3d4e";
 
+/** Layout digest of the integer side inputs: token ids, position ids and the
+ * attention mask. They are a different physical layout from the activations,
+ * which is why they must not reuse the activation digest.
+ */
+inline constexpr const char* QWEN_TP_INDEX_LAYOUT_DIGEST =
+  "sha256:2b8e4d1f7c3a5960a4d2e8b1c6f7093a5e7d2b4c8f1a3e6d9b0c2f5a7e1d3b6c";
+
 struct QwenTpShape
 {
   std::uint64_t hidden = 0;
