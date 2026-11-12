@@ -5538,6 +5538,64 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ProductionPlannerStillEmitsAPipelineCandidateForAShardedDegree)
+{
+  // Exit 1, measured. The Qwen planner records a tensor degree per role and a hybrid
+  // rank label set, but it never calls the TP projection: the candidate's plan keeps
+  // the plain per-stage ACTIVATION dependencies, with no steps and no generation
+  // contract. So a sharded plan cannot come from planning today, whatever the
+  // downstream can now accept.
+  //
+  // C6 requires the requester to generate feedback per receiving unit, and the degree
+  // is already carried -- what is missing is the projection call that turns a degree
+  // into a step template.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 4; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+
+  // What the planner produces today: a pipeline plan over the same roles.
+  NativeExecutionPlan pipeline;
+  pipeline.roles = {"S0R0"};
+  NativeDependencySpec activation;
+  activation.producers = {"S0R0"};
+  activation.consumers = {"S0R0"};
+  activation.keyScope = "native-qwen-activation";
+  activation.topicPrefix = "/NDNSF/DI/QWEN";
+  activation.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
+  activation.tensors = {"hidden-layer-3-to-4"};
+  activation.operationKind = "ACTIVATION";
+  pipeline.dependencies.push_back(activation);
+
+  // What a sharded plan needs: steps, a degree, and one feedback edge per unit.
+  NativeExecutionPlan sharded;
+  qwen::projectQwenTpPlan(sharded, shape, 2, "entry", "S0R0");
+  BOOST_CHECK_EQUAL(sharded.tensorDegree, 2U);
+  BOOST_CHECK(!sharded.steps.empty());
+  BOOST_CHECK_EQUAL(sharded.roles.size(), 2U);
+
+  // The difference the planner has to bridge, stated as counts.
+  BOOST_TEST_MESSAGE("pipeline: roles=" << pipeline.roles.size()
+                    << " steps=" << pipeline.steps.size()
+                    << " degree=" << pipeline.tensorDegree
+                    << " deps=" << pipeline.dependencies.size());
+  BOOST_CHECK_EQUAL(pipeline.tensorDegree, 1U);
+  BOOST_CHECK(pipeline.steps.empty());
+  // And the pipeline plan has no feedback edge, so a generation request over it would
+  // be rejected by the decoder for a different reason than the sharded one was.
+  BOOST_CHECK(std::none_of(pipeline.dependencies.begin(), pipeline.dependencies.end(),
+    [] (const auto& dependency) {
+      return dependency.operationKind == "TOKEN_FEEDBACK";
+    }));
+  // The state slots a generation contract would need exist only in the sharded
+  // template, which is where the contract draws them from.
+  std::size_t pipelineStateSlots = 0;
+  for (const auto& step : pipeline.steps)
+    pipelineStateSlots += step.localStateSlots.size();
+  BOOST_CHECK_EQUAL(pipelineStateSlots, 0U);
+}
+
 BOOST_AUTO_TEST_CASE(ShardedGenerationContractSatisfiesTheSealerRequirements)
 {
   // The contract the coordinator needs, built from the template rather than from a
