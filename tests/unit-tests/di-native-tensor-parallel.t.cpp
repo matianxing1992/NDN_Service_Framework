@@ -2279,6 +2279,59 @@ BOOST_AUTO_TEST_CASE(CachedTemplateStepsAreValidatedWhenBound)
   BOOST_CHECK_THROW(bound.validateSteps(), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(SumAccumulatesContributionsAndRejectsMismatch)
+{
+  // SUM is the only cross-rank reduction in the template, and it is local to
+  // the consumer. Making it a shared value operation rather than adapter code
+  // keeps every backend reducing identically.
+  const auto makeBundle = [] (const std::string& name, std::vector<float> values) {
+    TensorBundle bundle;
+    bundle.name = name;
+    bundle.payload.resize(values.size() * sizeof(float));
+    std::memcpy(bundle.payload.data(), values.data(), bundle.payload.size());
+    return bundle;
+  };
+  const auto valuesOf = [] (const TensorBundle& bundle) {
+    std::vector<float> values(bundle.payload.size() / sizeof(float));
+    std::memcpy(values.data(), bundle.payload.data(), bundle.payload.size());
+    return values;
+  };
+
+  std::map<std::string, TensorBundle> accumulator;
+  StepExecutionResult::accumulate(accumulator, "remote0", makeBundle("partial", {1.0f, 2.0f, 3.0f}));
+  BOOST_REQUIRE_EQUAL(accumulator.count("remote0"), 1U);
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.0f, 2.0f, 3.0f}));
+
+  // The first contribution initialises, later ones add.
+  StepExecutionResult::accumulate(accumulator, "remote0", makeBundle("partial", {0.5f, -1.0f, 2.0f}));
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f, 5.0f}));
+  StepExecutionResult::accumulate(accumulator, "remote0", makeBundle("partial", {0.0f, 0.0f, 1.0f}));
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f, 6.0f}));
+
+  // Slots stay independent: a second slot must not be merged into the first.
+  StepExecutionResult::accumulate(accumulator, "remote1", makeBundle("partial", {7.0f, 8.0f, 9.0f}));
+  BOOST_CHECK(valuesOf(accumulator.at("remote0")) == std::vector<float>({1.5f, 1.0f, 6.0f}));
+  BOOST_CHECK(valuesOf(accumulator.at("remote1")) == std::vector<float>({7.0f, 8.0f, 9.0f}));
+
+  // A contribution with a different payload size is a contract violation, not
+  // something to silently truncate.
+  BOOST_CHECK_THROW(
+    StepExecutionResult::accumulate(accumulator, "remote0", makeBundle("partial", {1.0f, 2.0f})),
+    std::invalid_argument);
+  // A different tensor under the same slot is equally wrong.
+  BOOST_CHECK_THROW(
+    StepExecutionResult::accumulate(accumulator, "remote0", makeBundle("other", {1.0f, 2.0f, 3.0f})),
+    std::invalid_argument);
+  // A payload that is not a whole number of float32 elements cannot be summed.
+  {
+    TensorBundle odd;
+    odd.name = "partial";
+    odd.payload = {std::uint8_t(1), std::uint8_t(2), std::uint8_t(3)};
+    BOOST_CHECK_THROW(
+      StepExecutionResult::accumulate(accumulator, "remote0", odd), std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

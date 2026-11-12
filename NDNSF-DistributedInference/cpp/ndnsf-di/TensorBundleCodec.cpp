@@ -1410,4 +1410,29 @@ applyCertifiedTensorRedistributions(const RoleExecutionContext& context)
   return transformed;
 }
 
+void
+StepExecutionResult::accumulate(std::map<std::string, TensorBundle>& accumulator,
+                                const std::string& slot,
+                                const TensorBundle& contribution)
+{
+  const auto found = accumulator.find(slot);
+  if (found == accumulator.end()) {
+    accumulator.emplace(slot, contribution);
+    return;
+  }
+  auto& target = found->second;
+  // A SUM over mismatched contributions would silently produce a wrong tensor,
+  // so the contract is enforced here rather than left to the arithmetic below.
+  if (target.name != contribution.name ||
+      target.payload.size() % sizeof(float) != 0 ||
+      contribution.payload.size() != target.payload.size()) {
+    throw std::invalid_argument(
+      "step SUM contributions disagree on tensor identity or payload size");
+  }
+  const auto elements = target.payload.size() / sizeof(float);
+  auto* sum = reinterpret_cast<float*>(target.payload.data());
+  const auto* addend = reinterpret_cast<const float*>(contribution.payload.data());
+  for (std::size_t index = 0; index < elements; ++index) sum[index] += addend[index];
+}
+
 } // namespace ndnsf::di

@@ -222,6 +222,68 @@ struct RoleExecutionContext
   StreamEventSink streamEventSink;
 };
 
+/** One sealed step's local execution request.
+ *
+ * A tensor-parallel role is not one model invocation: it is a token-local DAG
+ * of subgraph calls and local reductions. This is the per-step unit the worker
+ * hands to an adapter, so the adapter never has to re-derive which entry to run
+ * or which inputs it owns.
+ *
+ * `artifactEntry` is the sealed recipe entry for CALL_SUBGRAPH and is empty for
+ * SUM, which reduces admitted contributions and therefore has no model file.
+ */
+struct StepExecutionContext
+{
+  std::shared_ptr<class NativeWorkStatistics> workStatistics;
+  std::string sessionId;
+  std::string role;
+  std::string stepId;
+  std::string requestId;
+  std::string providerBootId;
+  std::uint64_t attemptEpoch = 0;
+  std::uint64_t inferenceEpoch = 0;
+  // CALL_SUBGRAPH | SUM
+  std::string operation;
+  // Sealed recipe entry for CALL_SUBGRAPH; empty for SUM.
+  std::string artifactEntry;
+  // Local step inputs, resolved from the sealed slots: local slots were produced
+  // by an earlier step in this same unit, remote slots arrived as admitted
+  // dependencies. The names are the slot ids, not graph tensor names, so a
+  // consumer never has to guess a producer's internal naming.
+  std::map<std::string, TensorBundle> inputsBySlot;
+  // Exact dependency contract for each remote input, keyed by slot id.
+  std::map<std::string, DependencyEdge> inputEdgesBySlot;
+  // Contributions already admitted for a SUM step, keyed by slot id.
+  std::map<std::string, TensorBundle> contributionsBySlot;
+  std::optional<GenerationEpochLineageV1> generationLineage;
+  std::uint32_t generationInputTokenCount = 0;
+};
+
+/** One step's local result: outputs keyed by the sealed slot id. */
+struct StepExecutionResult
+{
+  std::map<std::string, TensorBundle> outputsBySlot;
+
+  /** Sum this result into `accumulator` under `slot`, element-wise on float32.
+   *
+   * SUM is a local reduction over admitted contributions, so it lives here
+   * rather than in any adapter: every backend must reduce identically, and a
+   * backend-specific sum would let one rank's rounding decide the result. The
+   * first contribution initialises the accumulator; later ones must match its
+   * element type, element count and payload size exactly, because a mismatched
+   * contribution is a contract violation and not something to coerce.
+   */
+  static void accumulate(std::map<std::string, TensorBundle>& accumulator,
+                         const std::string& slot, const TensorBundle& contribution);
+};
+
+/** Adapter port for executing one sealed step. Returns a null optional when the
+ * adapter cannot serve the request, so the caller can fall back explicitly
+ * instead of receiving a silently empty result.
+ */
+using StepRunner = std::function<std::optional<StepExecutionResult>(
+  const StepExecutionContext&)>;
+
 using RoleRunner = std::function<std::map<std::string, TensorBundle>(
   const RoleExecutionContext&)>;
 
