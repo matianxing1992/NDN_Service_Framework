@@ -5537,6 +5537,144 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ShardedAttentionAndMlpComposeThroughTheSharedResidual)
+{
+  // The layer, not one block. Attention's O projection and the MLP's down projection
+  // are each individually equivalent, but the layer composes them through two
+  // skip/norm pairs that carry a second output: post_attention_layernorm emits both
+  // the normalized value and the residual it added, and the MLP consumes both. If
+  // the shard composed them differently, both blocks would still be right and the
+  // layer would still be wrong.
+  //
+  // Order of operations, as the export wires it:
+  //   a = attention(post_input_norm(x0));  r = post_attention_norm(x0 + a)
+  //   y = n + down(act(n gate)(n up))  where n = r.normalized, and r.residual is the
+  //   value the MLP adds back.
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
+    "frozen export is required at " + path);
+  const std::uint64_t hidden = 1024;
+  std::vector<float> residual(hidden);
+  for (std::uint64_t i = 0; i < hidden; ++i)
+    residual[i] = 0.02f * float(static_cast<int>(i % 29) - 14);
+
+  const auto feed = [&] (const onnx::ModelProto& model) {
+    std::set<std::string> oneValueInputs;
+    std::map<std::string, std::vector<float>> inputs;
+    std::map<std::string, std::vector<std::int64_t>> shapes;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      std::vector<std::int64_t> shape;
+      for (const auto& d : value.type().tensor_type().shape().dim())
+        shape.push_back(d.has_dim_value() ? d.dim_value() : 1);
+      shapes[name] = shape;
+      std::size_t count = 1;
+      for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+      const bool isHiddenVector = count == hidden &&
+        value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT;
+      inputs[name] = isHiddenVector ? residual : std::vector<float>(count, 0.0f);
+      if (name.find("attn_mask_subgraph/Gather/Cast") != std::string::npos)
+        oneValueInputs.insert(name);
+    }
+    std::map<std::string, std::int32_t> types;
+    for (const auto& value : model.graph().input())
+      types[value.name()] = value.type().tensor_type().elem_type();
+    return runOnnxBytes(model, inputs, shapes, types, oneValueInputs);
+  };
+
+  // Reference: attention then MLP on the same input, in the export's own order.
+  const auto referenceAttn = makeShardedEntry(1, 0, "ATTN", 0);
+  const auto referenceMlp = makeShardedEntry(1, 0, "MLP", 0);
+  BOOST_REQUIRE(referenceAttn.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(referenceMlp.entry.graph().node_size() > 0);
+  const auto referenceAttnOut = feed(referenceAttn.entry);
+  const std::string attnOutName = "/model/layers.0/attn/o_proj/MatMul/output_0";
+  BOOST_REQUIRE(referenceAttnOut.count(attnOutName) == 1);
+  const auto& attentionResult = referenceAttnOut.at(attnOutName);
+
+  // The MLP entry takes the pre-attention residual and the attention output as two
+  // separate inputs; feeding the real attention result into the second is what makes
+  // this a layer comparison rather than two independent blocks.
+  const auto feedMlp = [&] (const onnx::ModelProto& model,
+                            const std::vector<float>& attention) {
+    std::set<std::string> oneValueInputs;
+    std::map<std::string, std::vector<float>> inputs;
+    std::map<std::string, std::vector<std::int64_t>> shapes;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      std::vector<std::int64_t> shape;
+      for (const auto& d : value.type().tensor_type().shape().dim())
+        shape.push_back(d.has_dim_value() ? d.dim_value() : 1);
+      shapes[name] = shape;
+      std::size_t count = 1;
+      for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+      if (count != hidden ||
+          value.type().tensor_type().elem_type() != onnx::TensorProto::FLOAT) {
+        inputs[name] = std::vector<float>(count, 0.0f);
+        continue;
+      }
+      inputs[name] = name.find("o_proj") != std::string::npos ? attention : residual;
+    }
+    std::map<std::string, std::int32_t> types;
+    for (const auto& value : model.graph().input())
+      types[value.name()] = value.type().tensor_type().elem_type();
+    return runOnnxBytes(model, inputs, shapes, types, oneValueInputs);
+  };
+
+  const auto referenceLayer = feedMlp(referenceMlp.entry, attentionResult);
+  const std::string mlpOutName = "/model/layers.0/mlp/down_proj/MatMul/output_0";
+  BOOST_REQUIRE(referenceLayer.count(mlpOutName) == 1);
+  const auto& expected = referenceLayer.at(mlpOutName);
+
+  // Sharded, in the order the step template prescribes. C2's table is explicit:
+  // MLP(l) takes Xl (this rank's own residual) and SUM_ATTN (the merged attention
+  // partial), not its own partial. Feeding a single rank's partial would test a
+  // composition the partition never performs -- and it would fail even though both
+  // blocks are correct.
+  std::vector<float> mergedAttention;
+  for (const std::uint64_t rank : {0U, 1U}) {
+    const auto attn = makeShardedEntry(2, rank, "ATTN", 0);
+    BOOST_REQUIRE(attn.entry.graph().node_size() > 0);
+    const auto attnOut = feed(attn.entry);
+    BOOST_REQUIRE(attnOut.count(attnOutName) == 1);
+    const auto& partial = attnOut.at(attnOutName);
+    if (mergedAttention.empty()) mergedAttention.assign(partial.size(), 0.0f);
+    BOOST_REQUIRE_EQUAL(partial.size(), mergedAttention.size());
+    for (std::size_t i = 0; i < mergedAttention.size(); ++i)
+      mergedAttention[i] += partial[i];
+  }
+
+  std::vector<float> combined(expected.size(), 0.0f);
+  for (const std::uint64_t rank : {0U, 1U}) {
+    const auto mlp = makeShardedEntry(2, rank, "MLP", 0);
+    BOOST_REQUIRE(mlp.entry.graph().node_size() > 0);
+    const auto mlpOut = feedMlp(mlp.entry, mergedAttention);
+    BOOST_REQUIRE(mlpOut.count(mlpOutName) == 1);
+    const auto& contribution = mlpOut.at(mlpOutName);
+    BOOST_REQUIRE_EQUAL(contribution.size(), combined.size());
+    for (std::size_t i = 0; i < combined.size(); ++i)
+      combined[i] += contribution[i];
+  }
+
+  double magnitude = 0.0;
+  for (const auto value : expected) magnitude = std::max(magnitude, std::fabs(double(value)));
+  BOOST_REQUIRE(magnitude > 0.0);
+  double worst = 0.0;
+  std::size_t mismatches = 0;
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    const double error = std::fabs(double(combined[i]) - double(expected[i]));
+    worst = std::max(worst, error);
+    if (error > 1e-3 * magnitude) ++mismatches;
+  }
+  BOOST_TEST_MESSAGE("layer size=" << expected.size() << " magnitude=" << magnitude
+                    << " worst_error=" << worst << " mismatches=" << mismatches);
+  BOOST_CHECK_MESSAGE(mismatches == 0,
+    "the sharded layer differs from the unsplit layer: worst " +
+    std::to_string(worst) + " against magnitude " + std::to_string(magnitude));
+}
+
 BOOST_AUTO_TEST_CASE(ShardedMlpPartialsSumToTheUnsplitExport)
 {
   // C2's MLP identity, the counterpart to the attention case: gate/up split their
