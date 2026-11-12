@@ -1293,7 +1293,8 @@ qwenTpStepDeclarationJson(const std::vector<NativeExecutionStepSpec>& steps)
 
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
-                        const std::vector<NativeExecutionStepSpec>& steps)
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget)
 {
   if (spec.path.empty() || layers == 0 || spec.role.empty()) {
     throw std::invalid_argument(
@@ -1307,6 +1308,17 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   const auto graphBytes = readEntryFile(modelPath);
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
                                         graphBytes, layers);
+  // Verify the finished set before the spec can leave the assembler. Checking
+  // here means a rank whose entries are incomplete, mis-digested or over budget
+  // never becomes a loadable spec, so the Provider cannot publish READY for it.
+  // The budget is the assembled artifact's own declared maximum: D6 requires one
+  // total for the rank rather than a limit per entry.
+  const auto problem = verifyQwenTpRankEntries(modelPath.parent_path(), spec.role,
+                                               table, steps, rankedByteBudget);
+  if (!problem.empty()) {
+    throw std::runtime_error(
+      "DI_NATIVE_ASSEMBLY_ENTRY_SET_REJECTED: " + problem);
+  }
   spec.metadata["tensorParallelEntries"] = qwenTpEntryTableJson(table);
   // The parent locates its children relative to this directory.
   spec.metadata["tensorParallelEntryRoot"] = modelPath.parent_path().string();
@@ -1476,8 +1488,13 @@ classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
   std::vector<QwenTpEntryNodes> entries;
   QwenTpEntryNodes init;
   init.kind = "INIT";
+  init.layer = 0;
   QwenTpEntryNodes head;
   head.kind = "HEAD";
+  // HEAD sits after the last transformer layer, so its layer index is the layer
+  // count itself. The step template names the head entry by that index, and a
+  // mismatch here would leave every projected head step without a contract.
+  head.layer = layers;
   std::vector<std::pair<QwenTpEntryNodes, QwenTpEntryNodes>> perLayer(layers);
   for (auto& pair : perLayer) {
     pair.first.kind = "ATTN";

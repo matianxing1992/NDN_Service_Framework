@@ -405,11 +405,15 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  *
  * @param spec   Rank spec produced by assembly; rewritten in place.
  * @param layers Number of transformer layers the rank graph carries.
+ * @param steps  Sealed steps this unit must be able to execute.
+ * @param rankedByteBudget Total bytes this rank may occupy. It is one budget for
+ *        the whole rank, per D6, not a limit applied afresh to each entry.
  * @throws std::runtime_error when the rank artifact cannot be read or split.
  */
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
-                        const std::vector<NativeExecutionStepSpec>& steps);
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget);
 
 /** Serialize the step descriptors a spec carries for consistency checking.
  *

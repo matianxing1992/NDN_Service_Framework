@@ -3733,7 +3733,8 @@ prepareNativeCanonicalOnnxRole(
         throw std::runtime_error(
           "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_NO_STEPS: the role has no steps to bind");
       }
-      qwen::configureQwenTpRankSpec(spec, layers, ownedSteps);
+      qwen::configureQwenTpRankSpec(spec, layers, ownedSteps,
+                                    contract.maxAssembledBytes);
       logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
                               static_cast<std::uint64_t>(layers), "entries");
     }

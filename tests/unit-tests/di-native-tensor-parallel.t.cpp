@@ -3770,6 +3770,13 @@ BOOST_AUTO_TEST_CASE(FrozenGraphClassifiesIntoTheEntryTaxonomy)
   }
   BOOST_CHECK_EQUAL(attentionEntries, 28U);
   BOOST_CHECK_EQUAL(mlpEntries, 28U);
+  // The head's layer index must be the layer count, not zero. The projected head
+  // step names its entry by that index, so a mismatch would leave the head step
+  // without a contract and only surface when a rank tries to execute it.
+  const auto headEntry = std::find_if(entries.begin(), entries.end(),
+    [] (const auto& entry) { return entry.kind == "HEAD"; });
+  BOOST_REQUIRE(headEntry != entries.end());
+  BOOST_CHECK_EQUAL(headEntry->layer, 28U);
   // Every node belongs to exactly one entry: a node in none would never execute.
   BOOST_CHECK_EQUAL(total, names.size());
 
@@ -4277,18 +4284,46 @@ BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
   spec.backend = "onnxruntime";
   spec.path = rankModel.string();
   // The spec travels with the step descriptors it must satisfy, so runner
-  // construction can reject a mismatched pair.
+  // construction can reject a mismatched pair. The plan must be projected against
+  // the entries the assembler actually writes, not against a naming convention:
+  // a prefix-derived id would be a plausible-looking name the table never holds,
+  // which is precisely what the verification refuses.
+  const auto graphBytes = [&] {
+    std::ifstream in(source, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(in));
+    return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)),
+                                     std::istreambuf_iterator<char>());
+  }();
+  const auto verified = qwen::assembleQwenTpEntryTable(directory, "S0R0", graphBytes, 28);
   NativeExecutionPlan plan;
   qwen::QwenTpShape shape;
   shape.hidden = 1024; shape.layers = 28; shape.queryHeads = 16;
   shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
   shape.vocab = 151936;
-  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  // Both units are needed: the plan declares a degree of two, so it must carry a
+  // step template for each rank even though this case only assembles rank 0.
+  auto verifiedBoth = verified;
+  for (auto entry : verified) {
+    entry.unitId = "S0R1";
+    entry.entryId = "S0R1" + entry.entryId.substr(entry.entryId.find('/'));
+    entry.relativeGraphPath = "rank1-" + entry.relativeGraphPath;
+    verifiedBoth.push_back(std::move(entry));
+  }
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = shape.layers;
+    units.push_back(std::move(unit));
+  }
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", units, verifiedBoth);
   std::vector<NativeExecutionStepSpec> ownedSteps;
   for (const auto& step : plan.steps)
     if (step.unitId == "S0R0") ownedSteps.push_back(step);
   BOOST_REQUIRE(!ownedSteps.empty());
-  qwen::configureQwenTpRankSpec(spec, 28, ownedSteps);
+  qwen::configureQwenTpRankSpec(spec, 28, ownedSteps, 1024ULL * 1024ULL);
 
   // The spec now selects the parent runner and carries a verified table.
   BOOST_CHECK_EQUAL(spec.backend, std::string("native-qwen-tensor"));
@@ -4332,8 +4367,9 @@ BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
   NativeModelRunnerSpec missing;
   missing.role = "S0R0";
   missing.path = (directory / "absent.onnx").string();
-  BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(missing, 28, ownedSteps),
-                    std::runtime_error);
+  BOOST_CHECK_THROW(
+    qwen::configureQwenTpRankSpec(missing, 28, ownedSteps, 1024ULL * 1024ULL),
+    std::runtime_error);
   BOOST_CHECK_EQUAL(missing.backend, std::string(""));
 
   std::filesystem::remove_all(directory, cleanupError);
