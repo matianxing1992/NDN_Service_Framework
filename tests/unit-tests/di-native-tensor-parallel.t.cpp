@@ -5813,6 +5813,61 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(CoordinatorMustPublishEveryFeedbackEdgeNotJustTheFirst)
+{
+  // C6: the coordinator admits the token event once, then handles every feedback
+  // edge. Publishing only the first would leave the peer without its next-epoch
+  // input while the coordinator reported success -- a silent stall on the next
+  // decode step.
+  //
+  // This case pins the shape the coordinator must consume: a unit with several
+  // feedback output edges, each with its own consumer and operation index.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  for (std::uint64_t index = 0; index < plan.roles.size(); ++index) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {plan.roles[index]};
+    feedback.keyScope = "token-feedback-" + plan.roles[index];
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    feedback.collectiveOperationIndex = index;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto egress = roleSpecFor(plan, "S0R0", std::string("/session/feedback-all"),
+                                  assignment, "/provider/0");
+  std::vector<std::string> scopes;
+  std::set<std::uint64_t> indices;
+  for (const auto& edge : egress.outputs) {
+    if (edge.operationKind != "TOKEN_FEEDBACK") continue;
+    // Distinct scope and index per edge: two edges sharing either would make the
+    // second publication collide with the first rather than reach its consumer.
+    BOOST_CHECK(scopes.end() == std::find(scopes.begin(), scopes.end(), edge.scope));
+    scopes.push_back(edge.scope);
+    BOOST_CHECK(indices.insert(edge.collectiveOperationIndex).second);
+  }
+  BOOST_CHECK_EQUAL(scopes.size(), plan.roles.size());
+  BOOST_CHECK_EQUAL(indices.size(), plan.roles.size());
+  // And the receivers are the units themselves, not one shared consumer.
+  std::set<std::string> consumers;
+  for (const auto& edge : egress.outputs) {
+    if (edge.operationKind != "TOKEN_FEEDBACK") continue;
+    consumers.insert(edge.consumerRole);
+  }
+  BOOST_CHECK_EQUAL(consumers.size(), plan.roles.size());
+}
+
 BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
 {
   // C6's parent transaction: commit only when all children succeed, release the

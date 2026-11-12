@@ -1609,12 +1609,20 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       NativeWorkScope feedbackWork(config.workStatistics, "epoch-feedback-prepare",
                                    NativeWorkKind::UNCLASSIFIED);
       const auto nextRole = executableRoleForEpoch(config, epoch + 1);
-      const auto feedbackEdge = std::find_if(
-        nextRole.outputs.begin(), nextRole.outputs.end(), [] (const auto& edge) {
-          return edge.operationKind == "TOKEN_FEEDBACK";
-        });
-      if (feedbackEdge == nextRole.outputs.end()) {
+      // Every feedback edge, not the first one. A sharded stage produces one edge
+      // per receiving unit, and publishing only the first would leave the peer
+      // without its next-epoch input while the coordinator reported success.
+      std::vector<DependencyEdge> feedbackEdges;
+      for (const auto& edge : nextRole.outputs)
+        if (edge.operationKind == "TOKEN_FEEDBACK") feedbackEdges.push_back(edge);
+      if (feedbackEdges.empty()) {
         throw std::runtime_error("terminal role is missing TOKEN_FEEDBACK output");
+      }
+      std::set<std::string> feedbackScopes;
+      for (const auto& edge : feedbackEdges) {
+        if (!feedbackScopes.insert(edge.scope).second) {
+          throw std::runtime_error("terminal role repeats a TOKEN_FEEDBACK scope");
+        }
       }
       detail::NativePhaseTiming prefetchTiming;
       if ((!terminal || config.checkpointFinalize) && epoch < config.maxEpochs) {
@@ -1627,27 +1635,33 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           config.io, nextRole, std::map<std::string, TensorBundle>{});
         beginInputPrefetch(config, *nextInputPrefetch);
       }
-      auto feedbackBundle = makeTokenFeedback(token, terminal);
-      if (!terminal) {
-        feedbackBundle = attachGenerationEpochLineage(
-          feedbackBundle,
-          lineageForEdge(
-            nextGenerationLineage(config, *epochLineage, token),
-            *feedbackEdge));
-      }
-      else if (config.checkpointFinalize) {
-        // Preserve the final-token lineage for the bounded state-only pass
-        // through non-terminal roles. Ordinary streams retain the historical
-        // marker-only drain semantics.
-        auto finalizationLineage = nextGenerationLineage(
-          config, *epochLineage, token);
-        finalizationLineage.transitionKind =
-          GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
-        feedbackBundle = attachGenerationEpochLineage(
-          feedbackBundle,
-          lineageForEdge(
-            std::move(finalizationLineage),
-            *feedbackEdge));
+      // One bundle per edge: the lineage binds the edge's own consumer and
+      // operation index, so sharing one wrapped bundle between two edges would
+      // hand a unit a name and lineage belonging to another rank. The token value
+      // is the same; the binding is not.
+      const auto baseFeedback = makeTokenFeedback(token, terminal);
+      std::vector<std::pair<DependencyEdge, TensorBundle>> feedbackBundles;
+      feedbackBundles.reserve(feedbackEdges.size());
+      for (const auto& edge : feedbackEdges) {
+        auto bundle = baseFeedback;
+        if (!terminal) {
+          bundle = attachGenerationEpochLineage(
+            bundle,
+            lineageForEdge(
+              nextGenerationLineage(config, *epochLineage, token), edge));
+        }
+        else if (config.checkpointFinalize) {
+          // Preserve the final-token lineage for the bounded state-only pass
+          // through non-terminal roles. Ordinary streams retain the historical
+          // marker-only drain semantics.
+          auto finalizationLineage = nextGenerationLineage(
+            config, *epochLineage, token);
+          finalizationLineage.transitionKind =
+            GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
+          bundle = attachGenerationEpochLineage(
+            bundle, lineageForEdge(std::move(finalizationLineage), edge));
+        }
+        feedbackBundles.emplace_back(edge, std::move(bundle));
       }
 
       const auto feedbackReadyNs = transferNowNs();
@@ -1661,7 +1675,8 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       feedbackWork.finish();
       detail::logNativeWorkPhase(config.requestId, "epoch_prepare_feedback",
                                 feedbackTiming, config.role, config.attemptEpoch);
-      logFeedbackBoundary(config, epoch, *feedbackEdge, "ready");
+      for (const auto& item : feedbackBundles)
+        logFeedbackBoundary(config, epoch, item.first, "ready");
       if (nextInputPrefetch) {
         // Preserve the first-read fence before synchronous event admission.
         // Its interval includes the overlapped construction above.
@@ -1702,13 +1717,18 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       const auto feedbackPublishTiming = detail::nativePhaseStarted();
       NativeWorkScope publishWork(config.workStatistics, "epoch-feedback-publish",
                                   NativeWorkKind::UNCLASSIFIED);
-      logFeedbackBoundary(config, epoch, *feedbackEdge, "publish_begin");
-      const auto feedbackPublicationStarted = transferNowNs();
-      config.io->publishOutput(config.sessionId, *feedbackEdge, feedbackBundle);
-      observeCoordinatorTransfer(config, nextRole, feedbackBundle,
-        NativeTransferPoint::OUTPUT_PUBLICATION, feedbackPublicationStarted,
-        transferNowNs(), feedbackReadyNs);
-      logFeedbackBoundary(config, epoch, *feedbackEdge, "publish_done");
+      // Publish every edge. The token event above was admitted once, before this
+      // loop, so a multi-unit stage still produces exactly one user-visible token
+      // while each unit receives its own bound feedback.
+      for (const auto& item : feedbackBundles) {
+        logFeedbackBoundary(config, epoch, item.first, "publish_begin");
+        const auto feedbackPublicationStarted = transferNowNs();
+        config.io->publishOutput(config.sessionId, item.first, item.second);
+        observeCoordinatorTransfer(config, nextRole, item.second,
+          NativeTransferPoint::OUTPUT_PUBLICATION, feedbackPublicationStarted,
+          transferNowNs(), feedbackReadyNs);
+        logFeedbackBoundary(config, epoch, item.first, "publish_done");
+      }
       publishWork.finish();
       detail::logNativeWorkPhase(config.requestId, "epoch_publish_feedback",
                                 feedbackPublishTiming, config.role, config.attemptEpoch);
