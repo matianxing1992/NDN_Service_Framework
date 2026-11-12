@@ -1,7 +1,7 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_NATIVE_EXECUTION_PLAN_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_NATIVE_EXECUTION_PLAN_HPP
 
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/dataflow-types.hpp"
 
 #include <ndn-cxx/encoding/buffer.hpp>
 #include <ndn-cxx/name.hpp>

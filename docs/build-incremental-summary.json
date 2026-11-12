@@ -1,0 +1,165 @@
+{
+  "branch": "Experimental",
+  "base_commit": "00b0cd501d7d8112d4b1158a52e4b302f05cea7a",
+  "kv_cache_review_commit": "8027f6c6b5e9c339e809da24a85661c183cbb421",
+  "files_sha256": {
+    "wscript": "b6b2ca8cf3764b2d74108a4038b239a5469489f26d7daab43731cd63909da4cd",
+    "tests/wscript": "1169287b4aca67442d3929943eae570d8ec6ba1ca810c3ec87784bea10c8ae03",
+    "scripts/spec201-build-closure.py": "15933d16a82433fa65030a1f7ac930d36da258bef3fce5c419ba0aa0407a6024",
+    "tests/python/test_incremental_build_graph.py": "3983be9931336aaf9bcede9c92352334948434d3e87079bc8c5a80450cd79e1b",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/dataflow-types.hpp": "50b3621c98214603d9cde801bdc1a860edf00caba4d119e33e6485eb9fa29871",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp": "ac87d6a49613acbb068ef835eb78358b3361ecda5cfdd1b96e4553c38323fb4b",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp": "359428833d5116d8be9dab6cbe80acfe352ecd71178446f80c8aba8529db29b1",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp": "0438cee544b9402bb7dcc8205fa53d5d917d2ffa232f25cdd616556f74a8722c",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp": "b031d1cbe097c08015ef7d3e59e3b25c50c85424908513730283114c0f7a4d85",
+    "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp": "42dd05832bacf37b2390c2a1f5286a8fd74a84df85d13f42c16aaef2ab401a2f",
+    "tests/integration-tests/spec181-exact-tensor-transport.t.cpp": "5fb3d1c5008e271ba53b30f72a9c2c24308ca1e4a391dd781d3aa2c21f459775"
+  },
+  "build_configuration_sha256": "3ad3575f81440720d756b08ea91c74d3fe1bde8e7f026763c86549658a377d8c",
+  "configured_components": [
+    "core",
+    "repo",
+    "di",
+    "uav"
+  ],
+  "shared": true,
+  "static": false,
+  "with_tests": true,
+  "jobs": 6,
+  "memory_limit": "none imposed",
+  "system_swap_configuration": "unchanged",
+  "graph": {
+    "before_registered_compile_tasks": 2703,
+    "after_default_compile_tasks": 219,
+    "after_default_output_collisions": 0,
+    "note": "Graph counts are not executed compilation counts or a measured speedup."
+  },
+  "builds": {
+    "build": {
+      "cpp_compilations": 93,
+      "links": 10,
+      "elapsed": "9:54.35",
+      "max_rss_kib_largest_child": "3041368",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 2368.86,
+      "system_cpu_seconds": 413.3
+    },
+    "build-final": {
+      "cpp_compilations": 51,
+      "links": 7,
+      "elapsed": "7:32.25",
+      "max_rss_kib_largest_child": "2801036",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 1533.45,
+      "system_cpu_seconds": 300.91
+    },
+    "build-fixture": {
+      "cpp_compilations": 1,
+      "links": 1,
+      "elapsed": "1:11.27",
+      "max_rss_kib_largest_child": "2812032",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 59.46,
+      "system_cpu_seconds": 5.65
+    },
+    "build-probe": {
+      "cpp_compilations": 1,
+      "links": 0,
+      "elapsed": "0:19.63",
+      "max_rss_kib_largest_child": "1522024",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 17.64,
+      "system_cpu_seconds": 1.94
+    },
+    "build-restore": {
+      "cpp_compilations": 1,
+      "links": 0,
+      "elapsed": "0:19.84",
+      "max_rss_kib_largest_child": "1521932",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 18.28,
+      "system_cpu_seconds": 1.56
+    },
+    "build-noop": {
+      "cpp_compilations": 0,
+      "links": 0,
+      "elapsed": "0:07.30",
+      "max_rss_kib_largest_child": "44808",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 6.17,
+      "system_cpu_seconds": 1.07
+    },
+    "build-noop-final": {
+      "cpp_compilations": 0,
+      "links": 0,
+      "elapsed": "0:06.76",
+      "max_rss_kib_largest_child": "44820",
+      "time_exit": "0",
+      "waf_success": true,
+      "user_cpu_seconds": 5.95,
+      "system_cpu_seconds": 0.88
+    },
+    "install": {
+      "cpp_compilations": 0,
+      "links": 0,
+      "waf_success": true
+    }
+  },
+  "tests": {
+    "graph": {
+      "passed": 6
+    },
+    "native_plan": {
+      "passed": 54,
+      "assertions": 707
+    },
+    "protected_runtime": {
+      "passed": 45,
+      "assertions": 614
+    },
+    "exact_tensor_transport": {
+      "passed": 68,
+      "assertions": 2535
+    },
+    "focused_final_repetitions": {
+      "passed": 3,
+      "assertions_each": 413
+    }
+  },
+  "installed_sdk": {
+    "consumer_compile_exit": 0,
+    "consumer_runtime_exit": 0,
+    "linked_di_library": "/usr/local/lib/libndnsf-distributed-inference.so",
+    "cli": "/usr/local/bin/ndnsf-di --help",
+    "cli_exit": 0
+  },
+  "not_run": [
+    "MiniNDN Qwen inference",
+    "Tiger deployment",
+    "static-library compilation",
+    "full default installed-target build"
+  ],
+  "historical_failure": {
+    "boundary": "LargeTensorUsesBoundedSignedPackets; SIGSEGV, fixture line 1606",
+    "qualification": "Initial binary hash unavailable; focused gdb did not reproduce; scoped signal ownership correction is source-supported, unique cause unproven.",
+    "excerpt": "NDNSF_INTEGRATION_BOOTSTRAP_READY sha256:522B1B3F52F658BB2CFF6FD1A6460909D23D42673A422435EB23D1A2B57EF130\nunknown location(0): \u001b[4;31;49mfatal error: in \"Spec181ExactTensorTransport/LargeTensorUsesBoundedSignedPackets\": signal: SIGSEGV, si_code: 0 (memory access violation at address: 0x00000080)\u001b[0;39;49m\n../tests/integration-tests/spec181-exact-tensor-transport.t.cpp(1606): \u001b[1;36;49mlast checkpoint\u001b[0;39;49m\n\nTest module \"ndn_rpc_framework\" has failed with:\n  67 test cases out of 68 passed\n  1 test case out of 68 failed\n  1 test case out of 68 aborted\n  753 assertions out of 754 passed\n  1 assertion out of 754 failed"
+  },
+  "runtime_test_targets": "ndnsf-distributed-inference,di-native-provider,DI_NativeRequester,DI_NativeArtifactAuthority,di-native-assembly-worker,NDNSF_RepoPacketServer,App_ServiceController,spec181-exact-tensor-transport,spec181-protected-runtime-closure,spec181-native-plan-closure",
+  "commands": {
+    "build": "systemd-run --user --wait --pipe --collect --unit=ndnsf-incremental-build --working-directory=/home/tianxing/NDN/ndn-service-framework -p OOMPolicy=stop -p KillMode=control-group /usr/bin/time -v bash scripts/build-safe.sh build --targets=ndnsf-distributed-inference,di-native-provider,DI_NativeRequester,DI_NativeArtifactAuthority,di-native-assembly-worker,NDNSF_RepoPacketServer,App_ServiceController,spec181-exact-tensor-transport,spec181-protected-runtime-closure,spec181-native-plan-closure",
+    "probe": "Same launcher, --targets=ndnsf-distributed-inference; append a temporary comment to NativeProviderReadiness.cpp, build, remove comment, build.",
+    "graph": "python3 tests/python/test_incremental_build_graph.py",
+    "native": "build/{spec181-native-plan-closure,spec181-protected-runtime-closure,spec181-exact-tensor-transport} --log_level=error --report_level=short",
+    "install": "sudo -n ./waf install --targets=ndnsf-distributed-inference,di-native-provider,DI_NativeRequester,DI_NativeArtifactAuthority,di-native-assembly-worker,NDNSF_RepoPacketServer,App_ServiceController --jobs=6"
+  },
+  "closeout": {
+    "raw_logs": "Removed after verifying this aggregate, final test counts and necessary first-failure excerpt. Per-sample traces and original full logs are not retained.",
+    "retained": "Existing build configuration/objects, installed SDK/apps, source changes, aggregate timing/test counts, first-failure excerpt."
+  }
+}

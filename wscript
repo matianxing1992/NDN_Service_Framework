@@ -969,6 +969,7 @@ int main() { return requiredApi == nullptr; }
     conf.write_config_header('config.hpp')
 
 def build(bld):
+    bld._ndnsf_default_scope = not bld.targets and bld.cmd in ('build', 'install')
     if not bld.env.NDNSF_COMPONENTS:
         bld.fatal('Reconfigure with --components before building or installing this source')
     if 'uav' in bld.env.NDNSF_COMPONENTS and bld.env.HAVE_GSTREAMER:
@@ -1018,52 +1019,33 @@ def build(bld):
                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-publication-repo.cpp',
                    'NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-repo.cpp']),
             ])
-        bld.objects(target='ndnsf-di-core-objects', source=di_core_sources,
-                    includes=['.', 'ndn-service-framework'],
-                    use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL' +
-                        (' ndnsf-distributed-repo' if 'repo' in bld.env.NDNSF_COMPONENTS else ''),
-                    cxxflags=['-fPIC'])
-        bld.objects(
-            target='ndnsf-di-adapter-onnx-objects',
-            source=bld.path.ant_glob(
-                'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp'),
-            includes=['.', 'ndn-service-framework',
-                      'NDNSF-DistributedInference/cpp/adapters/onnx'],
-            use='NDN_CXX BOOST PROTOBUF ONNX ONNXRUNTIME', cxxflags=['-fPIC'])
-        bld.objects(
-            target='ndnsf-di-adapter-yolo-objects',
-            source=bld.path.ant_glob(
-                'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp'),
-            includes=['.', 'ndn-service-framework'],
-            use='NDN_CXX BOOST', cxxflags=['-fPIC'])
-        bld.objects(
-            target='ndnsf-di-adapter-qwen-objects',
-            source=bld.path.ant_glob(
-                'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp'),
-            includes=['.', 'ndn-service-framework'],
-            use='BOOST', cxxflags=['-fPIC'])
-
-        # One installable native DI library is the link boundary for C++
-        # consumers and the optional Python binding.  Keep the source closure
-        # identical to the object groups above; adapters remain model-specific
-        # while the shared library owns no Python runtime.
-        di_library_sources = di_core_sources + bld.path.ant_glob(
-            'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp') + \
-            bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp') + \
-            bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp')
         di_library_use = 'ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL'
         if 'repo' in bld.env.NDNSF_COMPONENTS:
             di_library_use += ' ndnsf-distributed-repo'
         if bld.env.HAVE_ONNXRUNTIME_CPP:
             di_library_use += ' ONNXRUNTIME'
+        di_compile_use = di_library_use + (' TOKENIZER_BRIDGE' if bld.env.enable_shared else '')
+        di_source_groups = [('ndnsf-di-core-objects', di_core_sources)]
+        for adapter in ('onnx', 'yolo', 'qwen'):
+            di_source_groups.append((
+                'ndnsf-di-adapter-' + adapter + '-objects',
+                bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/' + adapter + '/*.cpp')))
+        di_objects = [bld.objects(
+            target=name, source=sources, use=di_compile_use,
+            includes=['.', 'ndn-service-framework',
+                      'NDNSF-DistributedInference/cpp/adapters/onnx'],
+            cxxflags=['-fPIC']) for name, sources in di_source_groups]
+        di_object_use = ' '.join(name for name, _ in di_source_groups)
+        di_compile_owner = None
         if bld.env.enable_shared:
             # The pinned Rust tokenizer engine links into the installed DI shared
             # library (spec182 T007-A frozen production integration).
             di_shlib_use = di_library_use + ' TOKENIZER_BRIDGE'
-            bld.shlib(name='ndnsf-distributed-inference',
+            di_compile_owner = bld.shlib(features='cxx cxxshlib',
+                      name='ndnsf-distributed-inference',
                       target='ndnsf-distributed-inference',
-                      source=di_library_sources,
-                      use=di_shlib_use,
+                      source=[],
+                      use=di_object_use + ' ' + di_shlib_use,
                       includes=['.', 'ndn-service-framework',
                                 'NDNSF-DistributedInference/cpp/adapters/onnx'],
                       export_includes=['.', 'ndn-service-framework',
@@ -1071,17 +1053,25 @@ def build(bld):
                       install_path='${LIBDIR}',
                       linkflags=['-Wl,-rpath,$ORIGIN'])
         if bld.env.enable_static:
-            bld.stlib(name='ndnsf-distributed-inference-static'
+            di_static = bld.stlib(features='cxx cxxstlib',
+                      name='ndnsf-distributed-inference-static'
                       if bld.env.enable_shared else 'ndnsf-distributed-inference',
                       target='ndnsf-distributed-inference-static'
                       if bld.env.enable_shared else 'ndnsf-distributed-inference',
-                      source=di_library_sources,
-                      use=di_library_use,
+                      source=[],
+                      use=di_object_use + ' ' + di_library_use,
                       includes=['.', 'ndn-service-framework',
                                 'NDNSF-DistributedInference/cpp/adapters/onnx'],
                       export_includes=['.', 'ndn-service-framework',
                                        'NDNSF-DistributedInference/cpp'],
                       install_path='${LIBDIR}')
+            if di_compile_owner is None:
+                di_compile_owner = di_static
+        if di_compile_owner is not None:
+            # Preserve the installed library's existing object paths/UIDs while
+            # assigning each disjoint source set to exactly one object group.
+            for generator in di_objects:
+                generator.idx = di_compile_owner.idx
 
     if 'repo' in bld.env.NDNSF_COMPONENTS:
         bld.recurse('NDNSF-DistributedRepo')
@@ -1200,6 +1190,14 @@ def build(bld):
         VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes,
         **package_install_paths)
 
+    if bld._ndnsf_default_scope:
+        # Select installable products and metadata, retaining every test target
+        # for explicit --targets=NAME or --targets=* qualification.
+        bld.targets = ','.join(
+            generator.name for group in bld.groups for generator in group
+            if getattr(generator, 'install_path', None) and generator.name and
+            'install_task' not in generator.to_list(generator.features))
+
     # A selected-target install still needs the public header installation
     # tasks. Waf otherwise posts only the explicitly named native targets and
     # silently omits these anonymous install_files generators. Do not change
@@ -1207,5 +1205,7 @@ def build(bld):
     if bld.cmd == 'install':
         for group in bld.groups:
             for task_generator in list(group):
-                if 'install_task' in getattr(task_generator, 'features', []):
+                features = task_generator.to_list(task_generator.features)
+                if ('install_task' in features or
+                        ('subst' in features and str(task_generator.target).endswith('.pc'))):
                     task_generator.post()

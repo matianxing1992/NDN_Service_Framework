@@ -1,7 +1,7 @@
 #ifndef NDNSF_DISTRIBUTED_INFERENCE_PROVIDER_ROLE_WORKER_HPP
 #define NDNSF_DISTRIBUTED_INFERENCE_PROVIDER_ROLE_WORKER_HPP
 
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/dataflow-types.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"

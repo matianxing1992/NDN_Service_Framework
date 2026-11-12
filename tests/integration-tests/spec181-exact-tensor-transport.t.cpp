@@ -351,7 +351,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::size_t sourceInterestTransmissions = 0;
   bool holdManifestInterests = false;
   std::vector<ndn::Interest> heldManifestInterests;
-  auto forwardInterest = consumerFace.onSendInterest.connect(
+  ndn::signal::ScopedConnection forwardInterest = consumerFace.onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
         bool isExpectedManifest = false;
         {
@@ -413,7 +413,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         }
         producerFace.receive(interest);
       });
-  auto forwardData = producerFace.onSendData.connect([&] (const ndn::Data& data) {
+  ndn::signal::ScopedConnection forwardData = producerFace.onSendData.connect(
+    [&] (const ndn::Data& data) {
     const bool root = data.getName().get(-1) == ndn::name::Component("MANIFEST");
     if (observedSizing && root && holdObservedManifest && requestedSegments.empty()) {
       heldManifest = data;

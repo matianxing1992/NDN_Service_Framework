@@ -23,14 +23,17 @@ def identity(path):
     return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
-def inspect_graph(root, lock, targets):
+def load_build_graph(root, lock, targets, command='build'):
+    """Load the maintained Waf graph without running tasks or saving state."""
     os.chdir(root)
     waf = sorted(root.glob('.waf3-*/waflib/__init__.py'))
     if len(waf) != 1:
         raise RuntimeError("SPEC201_WAF_LIBRARY_AMBIGUOUS")
     sys.path[:0] = [str(waf[0].parent.parent), str(root / '.waf-tools')]
-    from waflib import Context, Build, Options
+    from waflib import Context, Build, Logs, Options
     from waflib.Tools import cxx, c, ccroot  # noqa: F401
+    if Logs.log is None:
+        Logs.init_log()
     values = {}
     for node in ast.parse(lock.read_text()).body:
         if (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
@@ -44,8 +47,12 @@ def inspect_graph(root, lock, targets):
     Context.run_dir = values['run_dir']
     Context.launch_dir = str(root)
     Context.g_module = Context.load_module(str(root / 'wscript'))
-    build = Build.BuildContext(top_dir=values['top_dir'], out_dir=values['out_dir'],
-                               run_dir=values['run_dir'])
+    if command not in ('build', 'install'):
+        raise ValueError('unsupported read-only graph command')
+    context_type = Build.InstallContext if command == 'install' else Build.BuildContext
+    build = context_type(top_dir=values['top_dir'], out_dir=values['out_dir'],
+                         run_dir=values['run_dir'])
+    build.options = Options.options
     def forbidden(*args, **kwargs):
         raise RuntimeError('SPEC201_READ_ONLY_GRAPH_FORBIDS_EXECUTION')
     build.exec_command = forbidden
@@ -53,6 +60,11 @@ def inspect_graph(root, lock, targets):
     build.restore()
     build.load_envs()
     build.recurse([str(root)])
+    return build
+
+
+def inspect_graph(root, lock, targets):
+    build = load_build_graph(root, lock, targets)
     for target in targets:
         build.get_tgen_by_name(target).post()
     build.cur_tasks = []
