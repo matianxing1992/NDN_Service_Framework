@@ -230,6 +230,45 @@ NativePreparedPlanningTemplate::NativePreparedPlanningTemplate(
       dependency.producers = expand(dependency.producers);
       dependency.consumers = expand(dependency.consumers);
     }
+    // A stage's steps run on every rank of that stage, so one stage step becomes one
+    // step per rank. Rewriting only the dependencies would leave each step naming the
+    // stage, which is no longer one of the plan's roles -- and the worker looks a step's
+    // unit up in that list. Slot references between steps follow the same rename, per
+    // rank, so an intra-unit edge keeps pointing at its own rank's producer rather than
+    // at whichever rank was rewritten last.
+    if (!execution.steps.empty()) {
+      std::vector<NativeExecutionStepSpec> expandedSteps;
+      expandedSteps.reserve(execution.steps.size() * selectedByStage.size());
+      for (const auto& step : execution.steps) {
+        const auto stageStep = selectedByStage.find(step.unitId);
+        if (stageStep == selectedByStage.end())
+          throw std::invalid_argument(
+            "prepared step names a unit with no selected roles: " + step.unitId);
+        const auto renamed = [&stageStep] (const std::string& stepId) {
+          // Step ids are "<stage>/<kind>/<index>"; a rank's copy is
+          // "<rank>/<kind>/<index>". Only ids that begin with this stage's prefix
+          // belong to it, so an edge from another stage is left alone.
+          const std::string prefix = stageStep->first + "/";
+          if (stepId.rfind(prefix, 0) != 0) return stepId;
+          return stepId.substr(prefix.size());
+        };
+        for (const auto& selected : stageStep->second) {
+          auto copy = step;
+          copy.unitId = selected;
+          copy.stepId = selected + "/" + renamed(step.stepId);
+          for (auto& slot : copy.inputSlots) {
+            if (slot.producerStepId.empty()) continue;
+            // The producer is in the same stage: its copy on this rank. A producer in
+            // another stage keeps its own expansion, which that stage's loop renames.
+            if (slot.producerStepId.rfind(stageStep->first + "/", 0) == 0) {
+              slot.producerStepId = selected + "/" + renamed(slot.producerStepId);
+            }
+          }
+          expandedSteps.push_back(std::move(copy));
+        }
+      }
+      execution.steps = std::move(expandedSteps);
+    }
     m_execution.push_back(std::move(execution));
   }
 }

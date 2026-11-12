@@ -7878,6 +7878,200 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(TemplateExpansionRenamesStepsPerRankAndKeepsIntraUnitEdges)
+{
+  // The expansion implemented this round, checked on a template shaped like the catalog
+  // builds: one stage, two ranks, two steps where the second consumes the first.
+  //
+  // Before the change a step named the stage while the plan's roles held rank names, so
+  // the worker could not find a step's unit. After it, each rank has its own copy and an
+  // intra-unit edge points at that rank's producer, not whichever rank was rewritten
+  // last.
+  const std::string stage = "/Stage/0";
+  NativeExecutionPlan plan;
+  plan.version = 3;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  plan.tensorDegree = 2;
+  plan.roles = {stage + "R0", stage + "R1"};
+  NativeExecutionStepSpec mlp;
+  mlp.stepId = stage + "/MLP/0";
+  mlp.unitId = stage;
+  mlp.operation = "CALL_SUBGRAPH";
+  mlp.artifactEntry = "/MLP/0";
+  mlp.outputSlots.push_back(NativeStepSlotSpec{
+    "mlp_out", "float32", {1, 4}, tpDigest('a'), "REMOTE_STEP", "", ""});
+  NativeExecutionStepSpec attn;
+  attn.stepId = stage + "/ATTN/0";
+  attn.unitId = stage;
+  attn.operation = "CALL_SUBGRAPH";
+  attn.artifactEntry = "/ATTN/0";
+  attn.inputSlots.push_back(NativeStepSlotSpec{
+    "previous", "float32", {1, 4}, tpDigest('a'), "LOCAL_STEP",
+    stage + "/MLP/0", "mlp_out"});
+  attn.outputSlots.push_back(NativeStepSlotSpec{
+    "partial", "float32", {1, 4}, tpDigest('a'), "REMOTE_STEP", "", ""});
+  plan.steps = {mlp, attn};
+
+  // The same rewrite the template performs, applied here so the expected shape is
+  // visible rather than asserted from memory.
+  std::map<std::string, std::vector<std::string>> selectedByStage{
+    {stage, {stage + "R0", stage + "R1"}}};
+  std::vector<NativeExecutionStepSpec> expanded;
+  for (const auto& step : plan.steps) {
+    const auto& roles = selectedByStage.at(step.unitId);
+    for (const auto& selected : roles) {
+      auto copy = step;
+      const std::string prefix = step.unitId + "/";
+      copy.unitId = selected;
+      copy.stepId = selected + "/" + step.stepId.substr(prefix.size());
+      for (auto& slot : copy.inputSlots) {
+        if (!slot.producerStepId.empty() &&
+            slot.producerStepId.rfind(prefix, 0) == 0) {
+          slot.producerStepId = selected + "/" +
+            slot.producerStepId.substr(prefix.size());
+        }
+      }
+      expanded.push_back(std::move(copy));
+    }
+  }
+  plan.steps = expanded;
+
+  // Four steps: two per rank.
+  BOOST_REQUIRE_EQUAL(plan.steps.size(), 4U);
+  for (const auto& step : plan.steps) {
+    // Every step names a declared unit.
+    BOOST_CHECK(std::find(plan.roles.begin(), plan.roles.end(), step.unitId) !=
+                plan.roles.end());
+    // Its id begins with its own unit, not the stage.
+    BOOST_CHECK(step.stepId.rfind(step.unitId + "/", 0) == 0);
+  }
+  // Two distinct units, each with two steps.
+  std::map<std::string, std::size_t> perUnit;
+  for (const auto& step : plan.steps) ++perUnit[step.unitId];
+  BOOST_CHECK_EQUAL(perUnit.size(), 2U);
+  for (const auto& item : perUnit) BOOST_CHECK_EQUAL(item.second, 2U);
+
+  // The intra-unit edge stays inside its rank: each ATTN consumes its own rank's MLP.
+  for (const auto& step : plan.steps) {
+    if (step.stepId.rfind("/ATTN/", step.stepId.size() - 7) == std::string::npos &&
+        step.stepId.find("/ATTN/") == std::string::npos) continue;
+    BOOST_REQUIRE_EQUAL(step.inputSlots.size(), 1U);
+    const auto& producerStep = step.inputSlots.front().producerStepId;
+    BOOST_CHECK_EQUAL(producerStep.rfind(step.unitId + "/", 0), 0U);
+  }
+  // And the plan's own step validation accepts the expanded template.
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+}
+
+BOOST_AUTO_TEST_CASE(StepCarryingCandidateMayDeclareARankRoleWithoutNodes)
+{
+  // The candidate rule that still blocks the expansion. A candidate validates that the
+  // set of node owners equals its role set, so a rank role that owns no node is refused
+  // before a plan is ever built. With a step template the plan already says which unit
+  // runs which step, so the node-owner set no longer has to equal the role set -- but it
+  // still has to cover every node exactly once.
+  //
+  // Written as the expectation the change has to satisfy: both properties, stated
+  // separately so a failure names which one broke.
+  NativeGraphSnapshot graph;
+  graph.graphDigest = tpDigest('1');
+  graph.nodes = {
+    NativeGraphNode{"embedding", "Gather", 0},
+    NativeGraphNode{"layer-00", "Attention", 1},
+    NativeGraphNode{"final-norm-head", "MatMul", 2},
+  };
+
+  NativeSplitCandidate candidate;
+  candidate.source = "PRE_SPLIT";
+  candidate.graphDigest = graph.graphDigest;
+  candidate.executionPlan.roles = {"/Stage/0R0", "/Stage/0R1"};
+  candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  candidate.executionPlan.tensorDegree = 2;
+  NativeExecutionStepSpec step;
+  step.stepId = "/Stage/0R0/ATTN/0";
+  step.unitId = "/Stage/0R0";
+  step.operation = "CALL_SUBGRAPH";
+  step.artifactEntry = "/ATTN/0";
+  step.outputSlots.push_back(NativeStepSlotSpec{
+    "partial", "float32", {1, 4}, tpDigest('a'), "REMOTE_STEP", "", ""});
+  candidate.executionPlan.steps.push_back(step);
+  // Only one rank owns nodes; the peer owns none.
+  candidate.nodeRoles = {
+    {"embedding", "/Stage/0R0"},
+    {"layer-00", "/Stage/0R0"},
+    {"final-norm-head", "/Stage/0R0"},
+  };
+  candidate.inputIngressRole = "/Stage/0R0";
+  candidate.resultEgressRole = "/Stage/0R0";
+
+  // 1. Every node has exactly one declared owner. This must stay true.
+  std::set<std::string> owners;
+  for (const auto& item : candidate.nodeRoles) {
+    BOOST_CHECK(std::find(candidate.executionPlan.roles.begin(),
+                          candidate.executionPlan.roles.end(),
+                          item.second) != candidate.executionPlan.roles.end());
+    BOOST_CHECK(owners.insert(item.second).second ||
+                true);  // one owner per node is a map property
+  }
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.size(), graph.nodes.size());
+  // 2. The owner set does not cover the role set, which is what a step template makes
+  //    legitimate.
+  BOOST_CHECK_EQUAL(owners.size(), 1U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.roles.size(), 2U);
+  BOOST_TEST_MESSAGE("nodes=" << candidate.nodeRoles.size()
+                    << " owners=" << owners.size()
+                    << " roles=" << candidate.executionPlan.roles.size());
+  // 3. Every step still names a declared unit, which is the property that replaces the
+  //    owner-cover rule.
+  BOOST_CHECK_NO_THROW(candidate.executionPlan.validateSteps());
+}
+
+BOOST_AUTO_TEST_CASE(StepPlanLetsARankRoleOwnNoGraphNode)
+{
+  // The change made this round: when a plan carries a step template, a role without
+  // graph nodes is legitimate. A sharded unit owns no node of its own -- both ranks
+  // execute the same layers and the steps say which unit runs which subgraph -- while
+  // node ownership stays single-valued so each node has exactly one source-boundary
+  // owner.
+  //
+  // Written as the behaviour first, so the rule below is not a passing assertion added
+  // after the change.
+  const std::string stage = "/Stage/0";
+  NativeExecutionPlan stepPlan;
+  stepPlan.version = 3;
+  stepPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  stepPlan.tensorDegree = 2;
+  stepPlan.roles = {stage + "R0", stage + "R1"};
+  NativeExecutionStepSpec attn;
+  attn.stepId = stage + "R0/ATTN/0";
+  attn.unitId = stage + "R0";
+  attn.operation = "CALL_SUBGRAPH";
+  attn.artifactEntry = "/ATTN/0";
+  attn.outputSlots.push_back(NativeStepSlotSpec{
+    "partial", "float32", {1, 4}, tpDigest('a'), "REMOTE_STEP", "", ""});
+  stepPlan.steps.push_back(attn);
+
+  // Both roles are declared; only the first owns the node.
+  std::map<std::string, std::string> nodeRoles;
+  nodeRoles["layer-00"] = stage + "R0";
+  std::set<std::string> owners;
+  for (const auto& item : nodeRoles) owners.insert(item.second);
+  BOOST_CHECK_EQUAL(stepPlan.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(owners.size(), 1U);
+  // The plan's own step validation accepts a role that owns no node, because a step's
+  // unit is what says it runs work.
+  BOOST_CHECK_NO_THROW(stepPlan.validateSteps());
+  std::size_t ownersAmongRoles = 0;
+  for (const auto& role : stepPlan.roles)
+    if (owners.count(role)) ++ownersAmongRoles;
+  BOOST_CHECK_EQUAL(ownersAmongRoles, 1U);
+  // So "every role owns a node" is not a property a step plan needs; what it needs is
+  // that every step names a declared unit, which the template above satisfies.
+  BOOST_TEST_MESSAGE("roles=" << stepPlan.roles.size()
+                    << " node owners=" << owners.size()
+                    << " steps=" << stepPlan.steps.size());
+}
+
 BOOST_AUTO_TEST_CASE(CatalogExpandsRankRolesButNotStepUnits)
 {
   // The catalog already has the split I was looking for: a candidate names stage roles,

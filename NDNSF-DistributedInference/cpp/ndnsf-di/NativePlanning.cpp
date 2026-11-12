@@ -587,8 +587,21 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
       throw std::invalid_argument("split candidate node owner is absent or undeclared");
     ownedRoles.insert(owner->second);
   }
-  if (ownedRoles != roles)
-    throw std::invalid_argument("split candidate has a role without graph nodes");
+  // With a step template, a unit that owns every layer's shard legitimately owns no
+  // graph node: both ranks execute the same layers and the steps say which unit runs
+  // which subgraph, so ownership of the source graph no longer has to cover the role
+  // set. What must still hold is that every node has exactly one declared owner, which
+  // the loop above checks. Without steps the original cover rule is unchanged, so a
+  // pipeline candidate still cannot declare a role that owns nothing.
+  if (executionPlan.steps.empty()) {
+    if (ownedRoles != roles)
+      throw std::invalid_argument("split candidate has a role without graph nodes");
+  }
+  else if (!std::includes(roles.begin(), roles.end(),
+                          ownedRoles.begin(), ownedRoles.end())) {
+    // A node owner must be one of the candidate's roles; `roles` is a set here.
+    throw std::invalid_argument("split candidate node owner is undeclared");
+  }
   const auto stateValid = [&](const auto& contracts) {
     if (contracts.size() != roles.size())
       throw std::invalid_argument("split candidate state I/O role cover is incomplete");
