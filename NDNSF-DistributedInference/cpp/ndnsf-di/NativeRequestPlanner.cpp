@@ -1664,8 +1664,38 @@ NativePlannedRequest planNativeRequestImpl(
         for (const auto& role : edge.consumers) sources.erase(role);
         for (const auto& role : edge.producers) terminals.erase(role);
       }
-      if (sources.size() != 1 || terminals.size() != 1)
+      // A tensor-parallel plan is not a pipeline: every rank produces partials
+      // for the other, so neither set is non-empty. C6 requires feedback to be
+      // generated per receiving unit instead, with the terminal owner taken from
+      // the sealed projection. Refusing that plan here would mean tensor
+      // parallelism cannot generate at all, which is the case this records.
+      const bool tensorParallel = execution.tensorDegree > 1;
+      // For a sharded plan the egress unit is the one that owns the head step, not
+      // a graph sink: every rank produces partials, so both sets are empty and no
+      // amount of edge arithmetic yields the owner. C6 requires exactly this --
+      // take the owner from the sealed projection rather than infer it.
+      std::set<std::string> tpEgressUnits;
+      std::set<std::string> tpUnits;
+      if (tensorParallel) {
+        for (const auto& step : execution.steps) {
+          if (step.unitId.empty()) continue;
+          tpUnits.insert(step.unitId);
+          if (step.operation != "CALL_SUBGRAPH") continue;
+          if (step.artifactEntry.find("/HEAD/") == std::string::npos) continue;
+          tpEgressUnits.insert(step.unitId);
+        }
+        if (tpUnits.size() != execution.roles.size()) {
+          throw std::invalid_argument(
+            "generation tensor-parallel plan has steps for only some units");
+        }
+        if (tpEgressUnits.size() != 1) {
+          throw std::invalid_argument(
+            "generation tensor-parallel plan must have exactly one head-owning unit");
+        }
+      }
+      else if (sources.size() != 1 || terminals.size() != 1) {
         throw std::invalid_argument("generation requires one pipeline source and terminal");
+      }
       const auto& generation = *options.generation;
       if (generation.tokenInputName.empty() || generation.stateInputNames.empty() ||
           generation.stateInputNames.size() != generation.stateOutputNames.size() ||
@@ -1678,7 +1708,12 @@ NativePlannedRequest planNativeRequestImpl(
         const auto includes = [](const auto& tensors, const std::string& name) {
           return std::any_of(tensors.begin(), tensors.end(), [&](const auto& tensor) { return tensor.name == name; });
         };
-        if (role.selectedRole == *sources.begin() && !includes(role.expectedInputs, generation.tokenInputName))
+        // For a sharded plan every unit consumes the sampled token: a decode step
+        // on either rank needs it, not only the pipeline source. Requiring it of
+        // one source would let a rank silently miss its next-epoch input.
+        const bool consumesToken = tensorParallel
+          ? true : role.selectedRole == *sources.begin();
+        if (consumesToken && !includes(role.expectedInputs, generation.tokenInputName))
           throw std::invalid_argument("generation source omits the token input");
         std::size_t localStateCount = 0;
         for (std::size_t index = 0; index < generation.stateInputNames.size(); ++index) {
@@ -1702,41 +1737,58 @@ NativePlannedRequest planNativeRequestImpl(
       const auto hash = [](const NativeJson& value) {
         return nativePlanningDigest(nativeCanonicalJson(value));
       };
-      NativeDependencySpec feedback;
-      feedback.producers = {*terminals.begin()}; feedback.consumers = {*sources.begin()};
-      feedback.keyScope = "token-feedback-" + hash({{"request", control.requestId},
-        {"attempt", control.attempt}, {"producer", feedback.producers.front()},
-        {"consumer", feedback.consumers.front()}}).substr(7, 16);
-      feedback.topicPrefix = "/token-feedback";
-      feedback.objectNameTemplate = "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
-      feedback.tensors = {"input_ids"}; feedback.operationKind = "TOKEN_FEEDBACK";
-      feedback.useNdnsfDataV1 = true;
       // A dependency can carry several tensor transfers. Reserve a round for
-      // each transfer before the feedback round, rather than overlapping the
+      // each transfer before the feedback rounds, rather than overlapping the
       // next epoch whenever transfer count exceeds dependency count.
       std::uint64_t transferCount = 0;
       for (const auto& edge : execution.dependencies) {
         transferCount += edge.redistributions.empty() ? edge.tensors.size() : edge.redistributions.size();
         if (transferCount >= (1U << 20)) throw std::invalid_argument("generation operation bound exceeded");
       }
-      feedback.collectiveOperationIndex = transferCount;
-      // A validated single-source/single-terminal DAG is connected. Group
-      // membership therefore uses this same sorted provider set, including a
-      // one-provider self-feedback group for a full-model request.
+      const auto feedbackLayout = hash({{"tensor", "input_ids"},
+        {"layout", "int64[1,1]"}, {"operation", "TOKEN_FEEDBACK"}});
+      const auto feedbackTensor = hash(NativeJson::array({"input_ids"}));
       std::set<std::string> providers;
-      std::string terminalProvider;
-      for (const auto& role : proposal.roles) {
-        const auto& provider = proposal.providerByRole.at(role.selectedRole);
-        providers.insert(provider);
-        if (role.selectedRole == feedback.producers.front()) terminalProvider = provider;
+      for (const auto& role : proposal.roles)
+        providers.insert(proposal.providerByRole.at(role.selectedRole));
+
+      // C6: one feedback edge per receiving unit, each bound to its own consumer
+      // and its own operation index. Reusing the owner's bundle for the peer would
+      // hand it a name and lineage that belong to another rank, so each edge is
+      // built separately even though the token value is the same.
+      const std::string feedbackOwner = tensorParallel
+        ? *tpEgressUnits.begin() : *terminals.begin();
+      std::vector<std::string> feedbackConsumers;
+      if (tensorParallel) {
+        for (const auto& unit : tpUnits) feedbackConsumers.push_back(unit);
       }
-      if (terminalProvider.empty()) throw std::invalid_argument("generation terminal has no provider");
-      feedback.collectiveProducerRank = std::to_string(std::distance(providers.begin(), providers.find(terminalProvider)));
-      feedback.collectiveSourceLayoutDigest = feedback.collectiveTargetLayoutDigest =
-        hash({{"tensor", "input_ids"}, {"layout", "int64[1,1]"}, {"operation", "TOKEN_FEEDBACK"}});
-      feedback.collectiveTensorDigest = hash(NativeJson::array({"input_ids"}));
-      execution.dependencies.push_back(std::move(feedback));
-      execution.streamingOperationStride = transferCount + 1;
+      else {
+        feedbackConsumers.push_back(*sources.begin());
+      }
+      std::uint64_t feedbackIndex = transferCount;
+      for (const auto& consumer : feedbackConsumers) {
+        NativeDependencySpec feedback;
+        feedback.producers = {feedbackOwner};
+        feedback.consumers = {consumer};
+        feedback.keyScope = "token-feedback-" + hash({{"request", control.requestId},
+          {"attempt", control.attempt}, {"producer", feedback.producers.front()},
+          {"consumer", feedback.consumers.front()}}).substr(7, 16);
+        feedback.topicPrefix = "/token-feedback";
+        feedback.objectNameTemplate = "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+        feedback.tensors = {"input_ids"}; feedback.operationKind = "TOKEN_FEEDBACK";
+        feedback.useNdnsfDataV1 = true;
+        // Each edge owns a distinct operation index, so two consumers cannot
+        // collide on one signed operation.
+        feedback.collectiveOperationIndex = feedbackIndex++;
+        const auto producerProvider = proposal.providerByRole.at(feedbackOwner);
+        feedback.collectiveProducerRank = std::to_string(
+          std::distance(providers.begin(), providers.find(producerProvider)));
+        feedback.collectiveSourceLayoutDigest = feedbackLayout;
+        feedback.collectiveTargetLayoutDigest = feedbackLayout;
+        feedback.collectiveTensorDigest = feedbackTensor;
+        execution.dependencies.push_back(std::move(feedback));
+      }
+      execution.streamingOperationStride = feedbackIndex;
     }
     if (policyBudgetFallback) control.requireActive();
     else extensionControl.requireActive();
