@@ -850,6 +850,77 @@ effectiveExpectedSegments(const NativeDependencySpec& dependency)
 
 } // namespace
 
+std::size_t
+bindNativeEdgeEndpoints(RoleSpec& spec,
+                        const std::vector<NativeEdgeEndpointBinding>& bindings)
+{
+  // A binding names its producer and consumer; the edge it belongs to is the one that
+  // names both. Ambiguity is refused rather than resolved by order, because two edges
+  // between the same roles would otherwise receive one binding's transport identity.
+  // Every field the binding states must match the edge. A role pair alone is not
+  // unique -- each layer produces an attention and an MLP partial for the same peer --
+  // so a binding that names only roles would be ambiguous, and one that names the
+  // dependency and the step/slot pair identifies exactly one edge.
+  const auto matches = [&bindings] (const DependencyEdge& edge) {
+    std::vector<const NativeEdgeEndpointBinding*> found;
+    for (const auto& binding : bindings) {
+      if (binding.producerRole != edge.producerRole) continue;
+      if (binding.consumerRole != edge.consumerRole) continue;
+      if (!binding.dependencyId.empty() && binding.dependencyId != edge.scope) continue;
+      if (!binding.operationKind.empty() && binding.operationKind != edge.operationKind) continue;
+      if (!binding.producerStepId.empty() &&
+          binding.producerStepId != edge.producerStepId) continue;
+      if (!binding.producerSlotId.empty() &&
+          binding.producerSlotId != edge.producerSlotId) continue;
+      if (!binding.consumerStepId.empty() &&
+          binding.consumerStepId != edge.consumerStepId) continue;
+      if (!binding.consumerSlotId.empty() &&
+          binding.consumerSlotId != edge.consumerSlotId) continue;
+      found.push_back(&binding);
+    }
+    return found;
+  };
+  const auto apply = [] (DependencyEdge& edge, const NativeEdgeEndpointBinding& binding) {
+    edge.endpointDigest = binding.endpointDigest;
+    edge.manifestDataName = binding.manifestDataName;
+    if (!binding.plannedDataName.empty()) edge.plannedDataName = binding.plannedDataName;
+    edge.tensorDigest = binding.tensorDigest;
+    edge.layoutDigest = binding.layoutDigest;
+    edge.collectiveTargetLayoutDigest = binding.targetLayoutDigest;
+    edge.securityProfile = binding.securityProfile;
+    edge.maxSegments = binding.maxSegments;
+    edge.noProgressDeadlineMs = binding.noProgressDeadlineMs;
+    edge.hardDeadlineMs = binding.hardDeadlineMs;
+    edge.declaredByV3 = true;
+  };
+  std::set<const NativeEdgeEndpointBinding*> consumed;
+  std::size_t bound = 0;
+  const auto visit = [&] (DependencyEdge& edge) {
+    if (!edge.useNdnsfDataV1) return;
+    const auto found = matches(edge);
+    if (found.empty()) {
+      throw std::invalid_argument(
+        "DATA_V1 edge has no certified endpoint: " + edge.scope);
+    }
+    if (found.size() != 1) {
+      throw std::invalid_argument(
+        "DATA_V1 edge matches more than one certified endpoint: " + edge.scope);
+    }
+    apply(edge, *found.front());
+    consumed.insert(found.front());
+    ++bound;
+  };
+  for (auto& edge : spec.inputs) visit(edge);
+  for (auto& edge : spec.outputs) visit(edge);
+  for (const auto& binding : bindings) {
+    if (consumed.count(&binding) == 0) {
+      throw std::invalid_argument(
+        "certified endpoint matched no DATA_V1 edge: " + binding.endpointDigest);
+    }
+  }
+  return bound;
+}
+
 RoleSpec
 roleSpecFor(const NativeExecutionPlan& plan,
             const std::string& role,

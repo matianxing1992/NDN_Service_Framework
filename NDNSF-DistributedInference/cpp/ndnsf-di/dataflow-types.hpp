@@ -135,6 +135,39 @@ validateTensorBundleForEdge(const DependencyEdge& edge,
                             const TensorBundle& bundle,
                             bool requireReconstructed = true);
 
+/** Transport identity for one consumer edge, taken from a certified projection.
+ *
+ * The sealed plan says who produces what; a certified projection says how the value
+ * crosses the network. A networked run needs both on the same runtime edge, so this is
+ * the join between them.
+ */
+struct NativeEdgeEndpointBinding
+{
+  std::string producerRole;
+  std::string consumerRole;
+  // Discriminators. A role pair is not unique: one layer produces both an attention
+  // and an MLP partial for the same peer, and every layer does it again. The binding
+  // therefore names the dependency it belongs to and the step/slot pair on each side,
+  // and every field present must match the runtime edge exactly.
+  std::string dependencyId;
+  std::string operationKind;
+  std::string producerStepId;
+  std::string producerSlotId;
+  std::string consumerStepId;
+  std::string consumerSlotId;
+  std::string endpointDigest;
+  std::string manifestDataName;
+  std::string plannedDataName;
+  std::string tensorDigest;
+  std::string layoutDigest;
+  std::string targetLayoutDigest;
+  std::string securityProfile;
+  std::string groupId;
+  std::size_t maxSegments = 0;
+  std::uint64_t noProgressDeadlineMs = 0;
+  std::uint64_t hardDeadlineMs = 0;
+};
+
 struct RoleSpec
 {
   RoleSpec() = default;
@@ -203,6 +236,21 @@ struct RoleSpec
   std::string stepPlanVersion;
   std::uint64_t tensorDegree = 1;
 };
+
+/** Attach certified endpoints to a role spec's edges.
+ *
+ * Each binding is matched to exactly one input or output edge by producer and consumer
+ * role. An edge that carries DATA_V1 and matches no binding is refused, and so is a
+ * binding that matches no edge: either would leave the run looking configured while an
+ * edge could never be published or fetched.
+ *
+ * @returns How many edges were bound.
+ * @throws std::invalid_argument on a missing or ambiguous match.
+ */
+std::size_t
+bindNativeEdgeEndpoints(RoleSpec& spec,
+                        const std::vector<NativeEdgeEndpointBinding>& bindings);
+
 
 struct RoleExecutionContext
 {

@@ -7878,6 +7878,103 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(CertifiedEndpointsJoinThePlansStepBoundEdges)
+{
+  // The join the networked sharded run needs: plan gives identity and step binding,
+  // the certified projection gives the transport endpoint, and both must live on the
+  // same runtime edge or the transport cannot publish what the worker will match.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto spec = roleSpecFor(plan, "S0R1", std::string("/session/tp-join"),
+                          assignment, "/provider/1");
+  BOOST_REQUIRE(!spec.inputs.empty());
+
+  // One certified endpoint per DATA_V1 edge, inputs and outputs alike: an output edge
+  // is published under the same transport, so it needs an endpoint as well.
+  std::vector<NativeEdgeEndpointBinding> bindings;
+  std::vector<DependencyEdge> dataV1Edges;
+  for (const auto& edge : spec.inputs)
+    if (edge.useNdnsfDataV1) dataV1Edges.push_back(edge);
+  for (const auto& edge : spec.outputs)
+    if (edge.useNdnsfDataV1) dataV1Edges.push_back(edge);
+  for (const auto& edge : dataV1Edges) {
+    NativeEdgeEndpointBinding binding;
+    binding.producerRole = edge.producerRole;
+    binding.consumerRole = edge.consumerRole;
+    binding.dependencyId = edge.scope;
+    binding.operationKind = edge.operationKind;
+    binding.producerStepId = edge.producerStepId;
+    binding.producerSlotId = edge.producerSlotId;
+    binding.consumerStepId = edge.consumerStepId;
+    binding.consumerSlotId = edge.consumerSlotId;
+    binding.endpointDigest = tpDigest('1');
+    binding.manifestDataName = "/provider/0/NDNSF/DI/QWEN/manifest/" + edge.scope;
+    binding.tensorDigest = tpDigest('2');
+    binding.layoutDigest = tpDigest('3');
+    binding.targetLayoutDigest = tpDigest('3');
+    binding.securityProfile = "NDNSF_DATA_V1";
+    binding.maxSegments = 8;
+    binding.noProgressDeadlineMs = 2000;
+    binding.hardDeadlineMs = 10000;
+    bindings.push_back(std::move(binding));
+  }
+  BOOST_REQUIRE(!bindings.empty());
+
+  const auto bound = bindNativeEdgeEndpoints(spec, bindings);
+  BOOST_CHECK_EQUAL(bound, bindings.size());
+  // Every DATA_V1 input now carries both halves: the step binding from the plan and the
+  // endpoint from the projection.
+  // Inspect the spec's own edges after binding, not the copies taken before it.
+  std::size_t complete = 0;
+  for (const auto& edge : spec.inputs) {
+    if (!edge.useNdnsfDataV1) continue;
+    BOOST_CHECK(!edge.endpointDigest.empty());
+    BOOST_CHECK(!edge.manifestDataName.empty());
+    BOOST_CHECK_EQUAL(edge.maxSegments, 8U);
+    BOOST_CHECK_EQUAL(edge.securityProfile, std::string("NDNSF_DATA_V1"));
+    BOOST_CHECK(!edge.consumerStepId.empty());
+    BOOST_CHECK(!edge.consumerSlotId.empty());
+    BOOST_CHECK(edge.declaredByV3);
+    if (!edge.endpointDigest.empty() && !edge.consumerStepId.empty()) ++complete;
+  }
+  // Two inputs among the four bound edges; both halves present on each.
+  BOOST_CHECK_EQUAL(complete, 2U);
+  BOOST_CHECK_EQUAL(bound, 4U);
+
+  // A DATA_V1 edge with no binding is refused rather than left unpublishable.
+  {
+    auto missing = spec;
+    std::vector<NativeEdgeEndpointBinding> fewer(bindings.begin(), bindings.end() - 1);
+    BOOST_CHECK_THROW(bindNativeEdgeEndpoints(missing, fewer), std::invalid_argument);
+  }
+  // A binding that matches no edge is refused too, so a stale projection cannot pass
+  // silently while the plan's edges stay unbound.
+  {
+    auto extra = spec;
+    auto surplus = bindings.front();
+    surplus.producerRole = "/Ghost";
+    surplus.dependencyId = "/ghost";
+    auto withSurplus = bindings;
+    withSurplus.push_back(surplus);
+    BOOST_CHECK_THROW(bindNativeEdgeEndpoints(extra, withSurplus), std::invalid_argument);
+  }
+  // Two bindings for one edge are refused instead of resolved by order.
+  {
+    auto ambiguous = spec;
+    auto duplicated = bindings;
+    duplicated.push_back(bindings.front());
+    BOOST_CHECK_THROW(bindNativeEdgeEndpoints(ambiguous, duplicated),
+                      std::invalid_argument);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(NetworkEndpointsComeFromTheProjectionNotFromThePlan)
 {
   // Why the network case cannot reuse the projected plan's edges as they are. The plan
