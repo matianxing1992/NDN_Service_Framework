@@ -1161,7 +1161,15 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, const WorkIt
         throw std::runtime_error(
           "sealed step remote input was not admitted: " + edge.scope);
       }
-      inputs.emplace(edge.consumerSlotId, admitted->second);
+      // Two edges feeding one slot would let a contribution be counted twice,
+      // which inflates the reduction without looking wrong. The sealed template
+      // declares one dependency per contribution, so a second one is a contract
+      // violation rather than something to merge.
+      if (!inputs.emplace(edge.consumerSlotId, admitted->second).second) {
+        throw std::runtime_error(
+          "sealed step has duplicate contributions for one slot: " +
+          edge.consumerSlotId);
+      }
     }
     // EPOCH_INPUT slots are the request's own inputs, already admitted by scope.
     for (const auto& slot : step.inputSlots) {

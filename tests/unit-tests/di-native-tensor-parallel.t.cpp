@@ -3239,6 +3239,106 @@ BOOST_AUTO_TEST_CASE(SealedSumRequiresEveryDeclaredContribution)
   }
 }
 
+BOOST_AUTO_TEST_CASE(SealedStepRejectsDuplicateContributionsForOneSlot)
+{
+  // Two edges feeding one slot would count a contribution twice, inflating the
+  // reduction without looking wrong. The sealed template declares one dependency
+  // per contribution, so the worker refuses rather than merging them.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/duplicate-contribution";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+
+  // Duplicate the edge that feeds the first reduction, giving it a distinct scope
+  // so both copies are admitted. The template still names one contribution for
+  // that slot, so the second must be refused.
+  const auto sumEdge = std::find_if(role.inputs.begin(), role.inputs.end(),
+    [] (const auto& edge) {
+      return edge.consumerStepId.find("/SUM_ATTN/") != std::string::npos;
+    });
+  BOOST_REQUIRE(sumEdge != role.inputs.end());
+  auto duplicate = *sumEdge;
+  duplicate.scope = duplicate.scope + "/duplicate";
+  duplicate.plannedDataName = duplicate.plannedDataName + "/duplicate";
+  role.inputs.push_back(duplicate);
+
+  const auto runner = [] (const RoleExecutionContext& ctx) {
+    std::map<std::string, TensorBundle> outputs;
+    for (const auto& slot : ctx.activeStep->outputSlots) {
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      const std::vector<float> values = {1.0f, 2.0f};
+      tensor.payload.resize(values.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      outputs.emplace(slot.slotId, std::move(bundle));
+    }
+    return outputs;
+  };
+
+  // Supply every admitted scope, including both copies, so the failure is the
+  // duplicate slot and not a missing input.
+  std::map<std::string, TensorBundle> initial;
+  for (const auto& edge : role.inputs) {
+    NamedTensor tensor;
+    tensor.name = "partial";
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {std::int64_t(2)};
+    const std::vector<float> values = {0.5f, 0.25f};
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.payload = encodeTensorBundle({tensor});
+    bundle.expectedBytes = bundle.payload.size();
+    if (!edge.consumerStepId.empty())
+      initial.emplace(edge.scope, std::move(bundle));
+  }
+  for (const auto& step : *role.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.source != "EPOCH_INPUT") continue;
+      if (initial.count(slot.slotId) != 0) continue;
+      NamedTensor tensor;
+      tensor.name = slot.slotId;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {std::int64_t(2)};
+      tensor.payload = std::vector<std::uint8_t>(sizeof(float) * 2, 0);
+      TensorBundle bundle;
+      bundle.name = slot.slotId;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      initial.emplace(slot.slotId, std::move(bundle));
+    }
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+  auto future = worker.executeAsync("duplicate-contribution-session", std::move(role),
+    std::make_shared<CountingDependencyIo>(), runner, initial);
+  try {
+    (void)future.get();
+    BOOST_FAIL("a duplicate contribution for one slot was counted twice");
+  }
+  catch (const std::runtime_error& error) {
+    BOOST_CHECK(std::string(error.what()).find("duplicate contributions") !=
+                std::string::npos);
+  }
+}
+
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
