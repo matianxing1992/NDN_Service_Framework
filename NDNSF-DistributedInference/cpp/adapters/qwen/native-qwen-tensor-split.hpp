@@ -6,6 +6,7 @@
 #include <onnx/onnx_pb.h>
 
 #include <cstddef>
+#include <filesystem>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -275,9 +276,47 @@ struct QwenTpEntryContract
   // per-layer.
   std::string kind;
   std::uint64_t layer = 0;
+  // Path of this entry's graph file, relative to the assembly root. Absolute
+  // paths would bind a contract to one machine's layout, and a relative path is
+  // also what lets the parent verify the file stays inside the root.
+  std::string relativeGraphPath;
+  // Content identity of that file, so a cached entry can be checked rather than
+  // trusted by name.
+  std::string graphDigest;
 
   void validate() const;
+
+  /** Whether this contract carries everything a runner needs to load the entry.
+   *
+   * A contract built without assembly (the projection path) names boundary
+   * tensors only; one built by assembly also names a verified file. Keeping the
+   * distinction explicit stops a runner from treating the first kind as loadable.
+   */
+  bool hasGraphFile() const
+  {
+    return !relativeGraphPath.empty() && !graphDigest.empty();
+  }
 };
+
+/** Write one extracted entry and return its verified contract.
+ *
+ * The file lands inside `root` at a path derived from the entry id, and the
+ * digest is computed from the bytes actually written, so the contract describes
+ * the file on disk rather than the intent to write one.
+ *
+ * @param root       Assembly root; it must already exist.
+ * @param unitId     Unit that owns the entry.
+ * @param entry      Classified node set.
+ * @param source     Parsed source model, consumed.
+ * @param graphName  File name for this entry, without directory components.
+ * @returns The entry's contract, including the relative path and digest.
+ * @throws std::invalid_argument when the name is not a plain file name, which is
+ *         what keeps an entry from writing outside the root.
+ */
+QwenTpEntryContract
+writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
+                 const QwenTpEntryNodes& entry, onnx::ModelProto& source,
+                 const std::string& graphName);
 
 /** The complete sealed TP template for one model and degree. */
 struct QwenTpTemplate

@@ -2,13 +2,48 @@
 
 #include <onnx/onnx_pb.h>
 
+#include <ndn-cxx/util/sha256.hpp>
+
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <stdexcept>
 
 namespace ndnsf::di::qwen {
+
+namespace {
+
+/** Read a file back for verification. */
+std::vector<std::uint8_t>
+readEntryFile(const std::filesystem::path& path)
+{
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    throw std::runtime_error("tensor-parallel entry file is unreadable: " +
+                             path.string());
+  }
+  return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+}
+
+/** Canonical lowercase SHA-256 over the bytes. */
+std::string
+sha256Hex(const std::vector<std::uint8_t>& bytes)
+{
+  ndn::util::Sha256 digest;
+  digest.update(ndn::span<const std::uint8_t>(bytes.data(), bytes.size()));
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return "sha256:" + hex;
+}
+
+} // namespace
 namespace {
 
 /** Reject zero, non-divisible or overflowing partitions before any slicing. */
@@ -980,6 +1015,84 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
   return result;
 }
 
+QwenTpEntryContract
+writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
+                 const QwenTpEntryNodes& entry, onnx::ModelProto& source,
+                 const std::string& graphName)
+{
+  if (root.empty() || unitId.empty()) {
+    throw std::invalid_argument("tensor-parallel entry write needs a root and a unit");
+  }
+  const std::filesystem::path name(graphName);
+  if (graphName.empty() || name.is_absolute() || name.has_parent_path() ||
+      name.has_root_path()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry file name must be a plain name: " + graphName);
+  }
+  const auto entryId = unitId + "/" + entry.kind + "/" + std::to_string(entry.layer);
+  auto model = extractQwenTpEntryModel(source, entry, entryId);
+
+  // Boundary names come from the extracted graph itself, in its own declaration
+  // order, so a consumer and the file cannot disagree about the interface.
+  QwenTpEntryContract contract;
+  contract.entryId = entryId;
+  contract.unitId = unitId;
+  contract.kind = entry.kind;
+  contract.layer = entry.layer;
+  for (const auto& input : model.graph().input()) contract.inputNames.push_back(input.name());
+  for (const auto& output : model.graph().output()) contract.outputNames.push_back(output.name());
+
+  std::string wire;
+  if (!model.SerializeToString(&wire) || wire.empty()) {
+    throw std::runtime_error("tensor-parallel entry graph failed to serialize");
+  }
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  // Verify after writing, not before: the digest must describe the file that is
+  // actually there, or a truncated write would still match its contract.
+  const auto target = root / name;
+  {
+    std::error_code directoryError;
+    std::filesystem::create_directories(target.parent_path(), directoryError);
+    if (directoryError) {
+      throw std::runtime_error(
+        "tensor-parallel entry directory is unavailable: " + directoryError.message());
+    }
+    const auto staging = target.string() + ".staging";
+    {
+      std::ofstream out(staging, std::ios::binary | std::ios::trunc);
+      if (!out) {
+        throw std::runtime_error("tensor-parallel entry file is not writable: " +
+                                 staging);
+      }
+      out.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+      out.flush();
+      if (!out) {
+        throw std::runtime_error("tensor-parallel entry write failed: " + staging);
+      }
+    }
+    std::error_code renameError;
+    std::filesystem::rename(staging, target, renameError);
+    if (renameError) {
+      std::error_code cleanupError;
+      std::filesystem::remove(staging, cleanupError);
+      throw std::runtime_error("tensor-parallel entry rename failed: " +
+                               renameError.message());
+    }
+  }
+  const auto written = readEntryFile(target);
+  if (written.size() != bytes.size() ||
+      !std::equal(written.begin(), written.end(), bytes.begin())) {
+    throw std::runtime_error(
+      "tensor-parallel entry file does not match the serialized graph: " +
+      target.string());
+  }
+  contract.relativeGraphPath = name.generic_string();
+  contract.graphDigest = sha256Hex(written);
+  contract.validate();
+  return contract;
+}
+
 std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
                          std::uint64_t layers)
@@ -1091,6 +1204,33 @@ QwenTpEntryContract::validate() const
   if (entryId.empty() || unitId.empty() || inputNames.empty() ||
       outputNames.empty() || kind.empty()) {
     throw std::invalid_argument("tensor-parallel entry contract is incomplete");
+  }
+  if (kind != "INIT" && kind != "HEAD" && kind != "ATTN" && kind != "MLP") {
+    throw std::invalid_argument(
+      "tensor-parallel entry contract has an unknown kind: " + kind);
+  }
+  // A file reference is all-or-nothing: a path without a digest would let a
+  // cached entry be trusted by name alone.
+  if (relativeGraphPath.empty() != graphDigest.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry contract has a partial file reference");
+  }
+  if (!relativeGraphPath.empty()) {
+    const std::filesystem::path relative(relativeGraphPath);
+    if (relative.is_absolute()) {
+      throw std::invalid_argument(
+        "tensor-parallel entry graph path must be relative to its assembly root");
+    }
+    for (const auto& part : relative) {
+      if (part == "..") {
+        throw std::invalid_argument(
+          "tensor-parallel entry graph path must not escape its assembly root");
+      }
+    }
+    if (graphDigest.size() != 71 || graphDigest.compare(0, 7, "sha256:") != 0) {
+      throw std::invalid_argument(
+        "tensor-parallel entry graph digest is not a canonical sha256");
+    }
   }
 }
 
