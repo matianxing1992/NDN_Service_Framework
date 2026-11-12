@@ -1245,11 +1245,18 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
       // that immutable manifest instead of another snapshot read and payload
       // probe per packet.
       const auto canonical = name.toUri(ndn::name::UriFormat::CANONICAL);
-      const auto alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
+      // The alternate spelling is only needed when the canonical form does not
+      // match, so it stays unbuilt on the normal path.
+      std::optional<std::string> alternate;
       const auto matchesName = [&](std::size_t candidate) {
-        return candidate < manifest->packetNames.size() &&
-          (manifest->packetNames[candidate] == canonical ||
-           manifest->packetNames[candidate] == alternate);
+        if (candidate >= manifest->packetNames.size())
+          return false;
+        const auto& stored = manifest->packetNames[candidate];
+        if (stored == canonical)
+          return true;
+        if (!alternate)
+          alternate = name.toUri(ndn::name::UriFormat::ALTERNATE);
+        return stored == *alternate;
       };
       std::optional<std::size_t> index;
       const auto proof = getPacketIndexProof(*manifest, manifest);
