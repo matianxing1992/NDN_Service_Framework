@@ -379,6 +379,7 @@ NativeJson jsonValue(const NativeStepSlotSpec& value)
   // Only a step-fed slot carries a producer; the key is omitted rather than
   // emitted empty so a legacy reader sees no new field at all.
   if (!value.producerStepId.empty()) result["producer_step_id"] = value.producerStepId;
+  if (!value.producerSlotId.empty()) result["producer_slot_id"] = value.producerSlotId;
   return result;
 }
 
@@ -1517,6 +1518,7 @@ NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps)
                               {"layout_digest", value.layoutDigest},
                               {"source", value.source}};
       if (!value.producerStepId.empty()) entry["producer_step_id"] = value.producerStepId;
+      if (!value.producerSlotId.empty()) entry["producer_slot_id"] = value.producerSlotId;
       result.push_back(std::move(entry));
     }
     return result;
@@ -1556,6 +1558,7 @@ std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_t
         parsed.layoutDigest = slot.get<std::string>("layout_digest", "");
         parsed.source = slot.get<std::string>("source", "");
         parsed.producerStepId = slot.get<std::string>("producer_step_id", "");
+        parsed.producerSlotId = slot.get<std::string>("producer_slot_id", "");
         if (const auto shape = slot.get_child_optional("shape")) {
           for (const auto& dim : *shape) {
             const auto text = dim.second.get_value<std::string>();

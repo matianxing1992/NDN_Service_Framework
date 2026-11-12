@@ -51,7 +51,7 @@ const char* DIGEST_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 NativeStepSlotSpec
 slot(const std::string& id, const std::string& source,
-     const std::string& producerStep = "")
+     const std::string& producerStep = "", const std::string& producerSlot = "")
 {
   NativeStepSlotSpec result;
   result.slotId = id;
@@ -60,6 +60,7 @@ slot(const std::string& id, const std::string& source,
   result.layoutDigest = DIGEST_A;
   result.source = source;
   result.producerStepId = producerStep;
+  result.producerSlotId = producerSlot;
   return result;
 }
 
@@ -89,16 +90,16 @@ twoRankSteps()
   sum0.stepId = "S0R0/SUM_ATTN/0";
   sum0.unitId = "S0R0";
   sum0.operation = "SUM";
-  sum0.inputSlots = {slot("local", "LOCAL_STEP", "S0R0/ATTN/0"),
-                     slot("remote", "REMOTE_STEP", "S0R1/ATTN/0")};
+  sum0.inputSlots = {slot("local", "LOCAL_STEP", "S0R0/ATTN/0", "partial"),
+                     slot("remote", "REMOTE_STEP", "S0R1/ATTN/0", "partial")};
   sum0.outputSlots = {slot("merged", "LOCAL_STEP")};
 
   NativeExecutionStepSpec sum1;
   sum1.stepId = "S0R1/SUM_ATTN/0";
   sum1.unitId = "S0R1";
   sum1.operation = "SUM";
-  sum1.inputSlots = {slot("local", "LOCAL_STEP", "S0R1/ATTN/0"),
-                     slot("remote", "REMOTE_STEP", "S0R0/ATTN/0")};
+  sum1.inputSlots = {slot("local", "LOCAL_STEP", "S0R1/ATTN/0", "partial"),
+                     slot("remote", "REMOTE_STEP", "S0R0/ATTN/0", "partial")};
   sum1.outputSlots = {slot("merged", "LOCAL_STEP")};
 
   NativeExecutionStepSpec mlp0;
@@ -106,7 +107,7 @@ twoRankSteps()
   mlp0.unitId = "S0R0";
   mlp0.operation = "CALL_SUBGRAPH";
   mlp0.artifactEntry = "entry/S0R0/MLP/0";
-  mlp0.inputSlots = {slot("merged", "LOCAL_STEP", "S0R0/SUM_ATTN/0")};
+  mlp0.inputSlots = {slot("merged", "LOCAL_STEP", "S0R0/SUM_ATTN/0", "merged")};
   mlp0.outputSlots = {slot("partial", "LOCAL_STEP")};
 
   return {attn0, attn1, sum0, sum1, mlp0};
@@ -171,6 +172,7 @@ planWire(const NativeExecutionPlan& plan)
         entry["layout_digest"] = value.layoutDigest;
         entry["source"] = value.source;
         if (!value.producerStepId.empty()) entry["producer_step_id"] = value.producerStepId;
+        if (!value.producerSlotId.empty()) entry["producer_slot_id"] = value.producerSlotId;
         out.push_back(std::move(entry));
       }
       return out;
@@ -538,7 +540,7 @@ BOOST_AUTO_TEST_CASE(StepBoundDependencyIsNotJudgedAsASourceCut)
   sum0.stepId = "S0R0/SUM_ATTN/0";
   sum0.unitId = "S0R0";
   sum0.operation = "SUM";
-  sum0.inputSlots = {slot("remote", "REMOTE_STEP", "S0R1/ATTN/0")};
+  sum0.inputSlots = {slot("remote", "REMOTE_STEP", "S0R1/ATTN/0", "partial")};
   sum0.outputSlots = {slot("merged", "LOCAL_STEP")};
   tensorParallel.executionPlan.steps = {attn0, sum0};
   tensorParallel.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
@@ -2507,6 +2509,84 @@ BOOST_AUTO_TEST_CASE(WorkerRejectsAnUnknownStepPlanVersionSynchronously)
   BOOST_CHECK_EQUAL(io->prefetchCalls.load(), 0U);
   BOOST_CHECK_EQUAL(preparation.calls.load(), 0U);
 }
+BOOST_AUTO_TEST_CASE(LocalSlotMustNameItsProducerOutputAndMatchItsType)
+{
+  // A local slot has no dependency edge to carry its type contract, so the step
+  // validator must check it against the producer's declared output. Without
+  // this a float32 value could feed an int32 input inside one unit and the
+  // mismatch would only appear as a wrong read at execution time.
+  const auto build = [] {
+    NativeExecutionPlan plan;
+    plan.serviceName = "/service/tp";
+    plan.modelName = "qwen3-0.6b";
+    plan.roles = {"S0R0", "S0R1"};
+    plan.steps = twoRankSteps();
+    plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+    plan.tensorDegree = 2;
+    plan.dependencies = {
+      [] { NativeDependencySpec d; d.producers = {"S0R1"}; d.consumers = {"S0R0"};
+           d.keyScope = "e0"; d.dependencyId = "e0"; d.topicPrefix = "/t";
+           d.objectNameTemplate = "{producerProvider}/{keyScope}/{sequence}";
+           d.tensors = {"partial"}; d.operationKind = "TENSOR_PARTIAL";
+           d.useNdnsfDataV1 = true;
+           d.producerStepId = "S0R1/ATTN/0"; d.producerSlotId = "partial";
+           d.consumerStepId = "S0R0/SUM_ATTN/0"; d.consumerSlotId = "remote";
+           return d; }(),
+      [] { NativeDependencySpec d; d.producers = {"S0R0"}; d.consumers = {"S0R1"};
+           d.keyScope = "e1"; d.dependencyId = "e1"; d.topicPrefix = "/t";
+           d.objectNameTemplate = "{producerProvider}/{keyScope}/{sequence}";
+           d.tensors = {"partial"}; d.operationKind = "TENSOR_PARTIAL";
+           d.useNdnsfDataV1 = true;
+           d.producerStepId = "S0R0/ATTN/0"; d.producerSlotId = "partial";
+           d.consumerStepId = "S0R1/SUM_ATTN/0"; d.consumerSlotId = "remote";
+           return d; }(),
+    };
+    return plan;
+  };
+
+  auto valid = build();
+  BOOST_CHECK_NO_THROW(valid.validateSteps());
+
+  // Naming a producer step without its output slot is refused: a consumer's own
+  // slot name is step-local and cannot locate the producer's output.
+  auto missingSlot = build();
+  missingSlot.steps[2].inputSlots[0].producerSlotId.clear();
+  BOOST_CHECK_THROW(missingSlot.validateSteps(), std::invalid_argument);
+
+  // Naming an output the producer does not declare is refused.
+  auto foreignSlot = build();
+  foreignSlot.steps[2].inputSlots[0].producerSlotId = "not-an-output";
+  BOOST_CHECK_THROW(foreignSlot.validateSteps(), std::invalid_argument);
+
+  // A type mismatch inside one unit is refused here rather than at execution.
+  auto wrongType = build();
+  wrongType.steps[2].inputSlots[0].dtype = "int32";
+  BOOST_CHECK_THROW(wrongType.validateSteps(), std::invalid_argument);
+
+  // The same for shape and layout, which a bfloat16/row-major reader would
+  // otherwise misread as valid.
+  auto wrongShape = build();
+  wrongShape.steps[2].inputSlots[0].shape = {std::int64_t(1), std::int64_t(25),
+                                             std::int64_t(512)};
+  BOOST_CHECK_THROW(wrongShape.validateSteps(), std::invalid_argument);
+  auto wrongLayout = build();
+  wrongLayout.steps[2].inputSlots[0].layoutDigest =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+  BOOST_CHECK_THROW(wrongLayout.validateSteps(), std::invalid_argument);
+
+  // LOCAL_STEP must stay inside the unit. Binding it to a peer's step would tell
+  // the runtime to read in-process a value that only exists after a fetch.
+  auto crossUnit = build();
+  crossUnit.steps[2].inputSlots[0].producerStepId = "S0R1/ATTN/0";
+  BOOST_CHECK_THROW(crossUnit.validateSteps(), std::invalid_argument);
+
+  // And REMOTE_STEP must not point inside the unit, which would create a network
+  // dependency the peer never publishes.
+  auto localRemote = build();
+  localRemote.steps[2].inputSlots[1].producerStepId = "S0R0/ATTN/0";
+  BOOST_CHECK_THROW(localRemote.validateSteps(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

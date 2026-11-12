@@ -450,6 +450,20 @@ makeSlot(const std::string& id, const std::string& source,
   return slot;
 }
 
+/** Same as makeSlot but binds the exact producer output slot as well. The data
+ * model requires that binding: a consumer names its own input slot, so the
+ * producer's output cannot be found by name.
+ */
+ndnsf::di::NativeStepSlotSpec
+makeFedSlot(const std::string& id, const std::string& source,
+            const std::string& producerStep, const std::string& producerSlot,
+            std::uint64_t lastDim)
+{
+  auto slot = makeSlot(id, source, producerStep, lastDim);
+  slot.producerSlotId = producerSlot;
+  return slot;
+}
+
 /** Integer slot for token ids, positions and the attention mask.
  *
  * These are not activations: the frozen export feeds int64 ids through a Gather
@@ -468,6 +482,15 @@ makeIndexSlot(const std::string& id, const std::string& source, const char* dtyp
   slot.layoutDigest = QWEN_TP_INDEX_LAYOUT_DIGEST;
   slot.source = source;
   slot.producerStepId = producerStep;
+  return slot;
+}
+
+ndnsf::di::NativeStepSlotSpec
+makeFedIndexSlot(const std::string& id, const std::string& source, const char* dtype,
+                 const std::string& producerStep, const std::string& producerSlot)
+{
+  auto slot = makeIndexSlot(id, source, dtype, producerStep);
+  slot.producerSlotId = producerSlot;
   return slot;
 }
 
@@ -571,14 +594,14 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       attn.artifactEntry = entry(unit.roleId, "ATTN", layer);
       attn.inputSlots = {layer == 0
         ? makeSlot("x", "EPOCH_INPUT", {}, shape.hidden)
-        : makeSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1), shape.hidden)};
+        : makeFedSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1), "merged", shape.hidden)};
       // Both side inputs come from this unit's INIT, never from the peer: every
       // rank owns the same positions and mask, so fetching them would be a
       // pointless network dependency.
       attn.inputSlots.push_back(
-        makeIndexSlot("position_ids", "LOCAL_STEP", "int64", initStep(unit.roleId)));
+        makeFedIndexSlot("position_ids", "LOCAL_STEP", "int64", initStep(unit.roleId), "position_ids"));
       attn.inputSlots.push_back(
-        makeIndexSlot("attn_mask", "LOCAL_STEP", "int32", initStep(unit.roleId)));
+        makeFedIndexSlot("attn_mask", "LOCAL_STEP", "int32", initStep(unit.roleId), "attn_mask"));
       // Two outputs with different roles. `partial` is this rank's reduction
       // contribution and travels to both SUM steps. `residual` is the local X
       // the MLP entry still needs: it is deliberately a named slot so the
@@ -598,13 +621,13 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       sumAttn.unitId = unit.roleId;
       sumAttn.operation = "SUM";
       sumAttn.inputSlots.push_back(
-        makeSlot("local", "LOCAL_STEP", attnStep(unit.roleId, layer), shape.hidden));
+        makeFedSlot("local", "LOCAL_STEP", attnStep(unit.roleId, layer), "partial", shape.hidden));
       std::size_t peerIndex = 0;
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) continue;
         sumAttn.inputSlots.push_back(
-          makeSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
-                   attnStep(peer.roleId, layer), shape.hidden));
+          makeFedSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
+                      attnStep(peer.roleId, layer), "partial", shape.hidden));
       }
       sumAttn.outputSlots = {makeSlot("merged", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(sumAttn));
@@ -617,10 +640,10 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       // The entry performs the original skip/norm in-graph, so it needs both the
       // merged attention partial and this rank's residual, and it keeps the
       // post-attention residual X' for the next layer and the head.
-      mlp.inputSlots = {makeSlot("merged", "LOCAL_STEP",
-                                 sumAttnStep(unit.roleId, layer), shape.hidden),
-                        makeSlot("residual", "LOCAL_STEP",
-                                 attnStep(unit.roleId, layer), shape.hidden)};
+      mlp.inputSlots = {makeFedSlot("merged", "LOCAL_STEP",
+                                 sumAttnStep(unit.roleId, layer), "merged", shape.hidden),
+                        makeFedSlot("residual", "LOCAL_STEP",
+                                 attnStep(unit.roleId, layer), "residual", shape.hidden)};
       // The produced residual is a different value from the consumed one, so it
       // needs its own name: within one step an input and an output may not share
       // a slot id, and reusing "residual" here would hide that they are the
@@ -634,13 +657,13 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       sumMlp.unitId = unit.roleId;
       sumMlp.operation = "SUM";
       sumMlp.inputSlots.push_back(
-        makeSlot("local", "LOCAL_STEP", mlpStep(unit.roleId, layer), shape.hidden));
+        makeFedSlot("local", "LOCAL_STEP", mlpStep(unit.roleId, layer), "partial", shape.hidden));
       peerIndex = 0;
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) continue;
         sumMlp.inputSlots.push_back(
-          makeSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
-                   mlpStep(peer.roleId, layer), shape.hidden));
+          makeFedSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
+                      mlpStep(peer.roleId, layer), "partial", shape.hidden));
       }
       sumMlp.outputSlots = {makeSlot("merged", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(sumMlp));
@@ -654,11 +677,11 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
       head.unitId = unit.roleId;
       head.operation = "CALL_SUBGRAPH";
       head.artifactEntry = entry(unit.roleId, "HEAD", shape.layers);
-      head.inputSlots = {makeSlot("merged", "LOCAL_STEP",
-                                  sumMlpStep(unit.roleId, shape.layers - 1),
+      head.inputSlots = {makeFedSlot("merged", "LOCAL_STEP",
+                                  sumMlpStep(unit.roleId, shape.layers - 1),"merged",
                                   shape.hidden),
-                         makeSlot("post_residual", "LOCAL_STEP",
-                                  mlpStep(unit.roleId, shape.layers - 1),
+                         makeFedSlot("post_residual", "LOCAL_STEP",
+                                  mlpStep(unit.roleId, shape.layers - 1), "post_residual",
                                   shape.hidden)};
       // Logits are vocabulary-wide, not hidden-wide: the head output slot must
       // describe the real width or a consumer would size its read buffer from

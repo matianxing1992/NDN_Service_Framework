@@ -432,9 +432,27 @@ std::string NativeSplitCandidate::canonicalJson() const
   // sealed later and are intentionally outside the maintained candidate schema.
   for (const auto& edge : executionPlan.dependencies)
     for (const auto& producer : edge.producers)
-      for (const auto& consumer : edge.consumers)
-        dependencies.push_back(NativeJson{{"producer", producer}, {"consumer", consumer},
-                                          {"tensor_edges", edge.tensors}});
+      for (const auto& consumer : edge.consumers) {
+        auto entry = NativeJson{{"producer", producer}, {"consumer", consumer},
+                                {"tensor_edges", edge.tensors}};
+        // A step-bound dependency carries more identity than its endpoints: the
+        // dependency id, the step/slot pair on both sides and the operation kind
+        // all change what the edge means. Without them, two candidates that bind
+        // the same producer/consumer/tensor to different steps would digest
+        // identically, so the sealed plan could not tell them apart. The extra
+        // fields appear only for step-bound edges, which keeps every pipeline
+        // candidate's canonical bytes unchanged.
+        if (!edge.producerStepId.empty() || !edge.consumerStepId.empty()) {
+          entry["dependency_id"] = edge.dependencyId;
+          entry["operation_kind"] = edge.operationKind;
+          entry["producer_step_id"] = edge.producerStepId;
+          entry["producer_slot_id"] = edge.producerSlotId;
+          entry["consumer_step_id"] = edge.consumerStepId;
+          entry["consumer_slot_id"] = edge.consumerSlotId;
+          entry["use_ndnsf_data_v1"] = edge.useNdnsfDataV1;
+        }
+        dependencies.push_back(std::move(entry));
+      }
   auto resources = NativeJson::object();
   for (const auto& role : requirementsByRole) resources[role.first] = nativeParseJson(role.second.canonicalJson());
   auto costs = NativeJson::object();
@@ -474,7 +492,8 @@ std::string NativeSplitCandidate::canonicalJson() const
           result.push_back(NativeJson{{"slot_id", slot.slotId}, {"dtype", slot.dtype},
                                       {"shape", shape}, {"layout_digest", slot.layoutDigest},
                                       {"source", slot.source},
-                                      {"producer_step_id", slot.producerStepId}});
+                                      {"producer_step_id", slot.producerStepId},
+                                      {"producer_slot_id", slot.producerSlotId}});
         }
         return result;
       };

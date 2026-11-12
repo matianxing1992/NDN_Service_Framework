@@ -87,6 +87,10 @@ struct NativeStepSlotSpec
   // Set only for LOCAL_STEP/REMOTE_STEP: the step in this same token template
   // that produces the slot. Empty for every other source.
   std::string producerStepId;
+  // Set together with producerStepId: the exact output slot of that producer.
+  // A consumer names its own input slot, so matching by name would be a guess;
+  // the data model requires an explicit producer slot instead.
+  std::string producerSlotId;
 
   void validate() const;
 };

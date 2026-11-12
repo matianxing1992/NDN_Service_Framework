@@ -424,6 +424,13 @@ NativeStepSlotSpec::validate() const
       throw std::invalid_argument("execution step slot has a non-positive dimension");
     }
   }
+  // A step-bound slot must name the producing output slot as well as the
+  // producing step: the consumer's own input name is step-local and cannot be
+  // used to find the producer's output.
+  if (!producerStepId.empty() != !producerSlotId.empty()) {
+    throw std::invalid_argument(
+      "execution step slot names a producer step without its output slot");
+  }
 }
 
 void
@@ -580,8 +587,44 @@ NativeExecutionPlan::validateSteps() const
     incoming[step.stepId];
     for (const auto& slot : step.inputSlots) {
       if (slot.producerStepId.empty()) continue;
-      if (byId.find(slot.producerStepId) == byId.end()) {
+      const auto producer = byId.find(slot.producerStepId);
+      if (producer == byId.end()) {
         throw std::invalid_argument("execution step slot names an unknown producer step");
+      }
+      // LOCAL_STEP means produced in this same unit, in-process; REMOTE_STEP
+      // means it travels over Named Data from a peer unit. Getting the two
+      // confused is a real defect: a LOCAL_STEP bound to a peer's step would tell
+      // the runtime to read a value in-process that only exists after a network
+      // fetch, and a REMOTE_STEP bound inside the unit would create a dependency
+      // the peer never publishes. The dependency check enforces the same rule
+      // from the edge side, so a plan that satisfies one side but not the other
+      // is inconsistent rather than merely unusual.
+      const bool sameUnit = producer->second->unitId == step.unitId;
+      if (sameUnit != (slot.source == "LOCAL_STEP")) {
+        throw std::invalid_argument(
+          "execution step local or remote slot disagrees with its producer unit");
+      }
+      // A local slot has no dependency edge to carry its type contract, so it is
+      // checked against the producer's declared output here. Without this a
+      // float32 value could feed an int32 input inside one unit and the mismatch
+      // would only surface as a wrong read at execution time. The binding is the
+      // explicit producer slot, never a name guess.
+      if (slot.source == "LOCAL_STEP") {
+        const auto& outputs = producer->second->outputSlots;
+        const auto matched = std::find_if(outputs.begin(), outputs.end(),
+          [&slot] (const auto& candidate) {
+            return candidate.slotId == slot.producerSlotId;
+          });
+        if (matched == outputs.end()) {
+          throw std::invalid_argument(
+            "execution step local slot names an undeclared producer output slot");
+        }
+        if (matched->dtype != slot.dtype ||
+            matched->shape != slot.shape ||
+            matched->layoutDigest != slot.layoutDigest) {
+          throw std::invalid_argument(
+            "execution step local slot type, shape or layout disagrees with its producer");
+        }
       }
       if (successors[slot.producerStepId].insert(step.stepId).second) {
         ++incoming[step.stepId];
