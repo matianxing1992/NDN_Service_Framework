@@ -590,6 +590,53 @@ NativeExecutionPlan::validateSteps() const
     if (dependency.operationKind.empty()) {
       throw std::invalid_argument("execution plan step dependency lacks an operation kind");
     }
+    // The slot contract must agree on the wire: a producer slot carries the
+    // tensor type the consumer expects, and the consumer reads it as a step
+    // input, never as an epoch or feedback value. Without this, a plan could
+    // bind a dependency to a slot whose declared source contradicts it.
+    const auto& producerSlot = *std::find_if(producer->second->outputSlots.begin(),
+      producer->second->outputSlots.end(), [&dependency] (const auto& slot) {
+        return slot.slotId == dependency.producerSlotId;
+      });
+    const auto& consumerSlot = *std::find_if(consumer->second->inputSlots.begin(),
+      consumer->second->inputSlots.end(), [&dependency] (const auto& slot) {
+        return slot.slotId == dependency.consumerSlotId;
+      });
+    if (producerSlot.dtype != consumerSlot.dtype ||
+        producerSlot.layoutDigest != consumerSlot.layoutDigest) {
+      throw std::invalid_argument(
+        "execution plan step dependency slot type or layout disagrees");
+    }
+    if (consumerSlot.source != "LOCAL_STEP" && consumerSlot.source != "REMOTE_STEP") {
+      throw std::invalid_argument(
+        "execution plan step dependency consumer slot is not a step input");
+    }
+    // A remote producer and a local one must be distinguishable, otherwise the
+    // runtime cannot tell which contributions travel over Named Data.
+    const bool sameUnit = producer->second->unitId == consumer->second->unitId;
+    if (sameUnit != (consumerSlot.source == "LOCAL_STEP")) {
+      throw std::invalid_argument(
+        "execution plan step dependency source disagrees with its unit placement");
+    }
+  }
+  // Reverse cover: every remote step input must be carried by exactly one
+  // dependency, or it would silently wait forever. A local step input is
+  // produced by the same unit in-process and needs no admitted network edge, so
+  // requiring one there would forbid ordinary in-unit chaining.
+  for (const auto& step : steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (slot.producerStepId.empty() || slot.source != "REMOTE_STEP") continue;
+      const auto matched = std::count_if(dependencies.begin(), dependencies.end(),
+        [&step, &slot] (const auto& dependency) {
+          return dependency.consumerStepId == step.stepId &&
+                 dependency.consumerSlotId == slot.slotId &&
+                 dependency.producerStepId == slot.producerStepId;
+        });
+      if (matched != 1) {
+        throw std::invalid_argument(
+          "execution plan step input has no unique admitting dependency");
+      }
+    }
   }
 }
 

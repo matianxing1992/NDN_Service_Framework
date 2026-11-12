@@ -110,21 +110,30 @@ twoRankPlan()
   plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
   plan.tensorDegree = 2;
 
-  NativeDependencySpec dependency;
-  dependency.producers = {"S0R0", "S0R1"};
-  dependency.consumers = {"S0R0", "S0R1"};
-  dependency.keyScope = "tp-attn-0";
-  dependency.dependencyId = "tp-attn-0";
-  dependency.topicPrefix = "/service/tp";
-  dependency.objectNameTemplate = "{producerProvider}/{keyScope}/{sequence}";
-  dependency.tensors = {"partial"};
-  dependency.operationKind = "TENSOR_PARTIAL";
-  dependency.useNdnsfDataV1 = true;
-  dependency.producerStepId = "S0R1/ATTN/0";
-  dependency.producerSlotId = "partial";
-  dependency.consumerStepId = "S0R0/SUM_ATTN/0";
-  dependency.consumerSlotId = "remote";
-  plan.dependencies = {dependency};
+  // One dependency per remote contribution, each bound to the exact producer
+  // and consumer step. A single producer/consumer list spanning both ranks
+  // would bind S0R0's partial to S0R0's own SUM, which is what the slot
+  // contract must reject.
+  const auto remote = [&] (const std::string& producer, const std::string& consumer,
+                           const std::string& id) {
+    NativeDependencySpec dependency;
+    dependency.producers = {producer};
+    dependency.consumers = {consumer};
+    dependency.keyScope = id;
+    dependency.dependencyId = id;
+    dependency.topicPrefix = "/service/tp";
+    dependency.objectNameTemplate = "{producerProvider}/{keyScope}/{sequence}";
+    dependency.tensors = {"partial"};
+    dependency.operationKind = "TENSOR_PARTIAL";
+    dependency.useNdnsfDataV1 = true;
+    dependency.producerStepId = producer + "/ATTN/0";
+    dependency.producerSlotId = "partial";
+    dependency.consumerStepId = consumer + "/SUM_ATTN/0";
+    dependency.consumerSlotId = "remote";
+    return dependency;
+  };
+  plan.dependencies = {remote("S0R1", "S0R0", "tp-attn-r0-from-r1"),
+                       remote("S0R0", "S0R1", "tp-attn-r1-from-r0")};
   return plan;
 }
 
@@ -304,6 +313,55 @@ BOOST_AUTO_TEST_CASE(SlotProducerBindingMustMatchItsSource)
   BOOST_CHECK_THROW(wrongProducer.validateSteps(), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(StepInputRequiresAUniqueAdmittingDependency)
+{
+  // A remote input slot that no dependency carries would wait forever, so the
+  // plan must refuse it. This is the reverse direction of the binding check.
+  auto missing = twoRankPlan();
+  missing.dependencies.pop_back();
+  BOOST_CHECK_THROW(missing.validateSteps(), std::invalid_argument);
+
+  // Two dependencies admitting the same slot is equally ambiguous.
+  auto duplicated = twoRankPlan();
+  duplicated.dependencies.push_back(duplicated.dependencies.front());
+  BOOST_CHECK_THROW(duplicated.validateSteps(), std::invalid_argument);
+
+  // Local step inputs need no admitting dependency: dropping every remote slot
+  // leaves a plan whose remaining edges are all in-process, and it must pass.
+  auto localOnly = twoRankPlan();
+  for (auto& step : localOnly.steps) {
+    step.inputSlots.erase(std::remove_if(step.inputSlots.begin(), step.inputSlots.end(),
+      [] (const auto& candidate) { return candidate.source == "REMOTE_STEP"; }),
+      step.inputSlots.end());
+  }
+  localOnly.dependencies.clear();
+  BOOST_CHECK_NO_THROW(localOnly.validateSteps());
+}
+
+BOOST_AUTO_TEST_CASE(StepDependencySlotTypeAndSourceAreChecked)
+{
+  // Producer and consumer must agree on the wire type of the carried tensor.
+  auto wrongType = twoRankPlan();
+  wrongType.steps[2].inputSlots[1].dtype = "float16";
+  BOOST_CHECK_THROW(wrongType.validateSteps(), std::invalid_argument);
+
+  auto wrongLayout = twoRankPlan();
+  wrongLayout.steps[2].inputSlots[1].layoutDigest =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+  BOOST_CHECK_THROW(wrongLayout.validateSteps(), std::invalid_argument);
+
+  // LOCAL_STEP across units would claim an in-process edge that does not exist.
+  auto wrongSource = twoRankPlan();
+  wrongSource.steps[2].inputSlots[1].source = "LOCAL_STEP";
+  BOOST_CHECK_THROW(wrongSource.validateSteps(), std::invalid_argument);
+
+  // REMOTE_STEP inside one unit claims a network edge that does not exist.
+  auto sameUnitRemote = twoRankPlan();
+  sameUnitRemote.steps[3].inputSlots[1].source = "REMOTE_STEP";
+  sameUnitRemote.steps[3].inputSlots[1].producerStepId = "S0R1/ATTN/0";
+  BOOST_CHECK_THROW(sameUnitRemote.validateSteps(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(DependencyIdentityAndStepBindingAreChecked)
 {
   auto duplicateIdentity = twoRankPlan();
@@ -346,10 +404,13 @@ BOOST_AUTO_TEST_CASE(PlanWireRoundTripPreservesStepContract)
   BOOST_CHECK_EQUAL(parsed.steps[2].inputSlots[1].producerStepId, "S0R1/ATTN/0");
   BOOST_CHECK_EQUAL(parsed.steps[2].inputSlots[1].source, "REMOTE_STEP");
   BOOST_CHECK_EQUAL(parsed.steps[0].localStateSlots.size(), 2U);
-  BOOST_REQUIRE_EQUAL(parsed.dependencies.size(), 1U);
-  BOOST_CHECK_EQUAL(parsed.dependencies[0].dependencyId, "tp-attn-0");
+  BOOST_REQUIRE_EQUAL(parsed.dependencies.size(), 2U);
+  BOOST_CHECK_EQUAL(parsed.dependencies[0].dependencyId, "tp-attn-r0-from-r1");
+  BOOST_CHECK_EQUAL(parsed.dependencies[0].producerStepId, "S0R1/ATTN/0");
   BOOST_CHECK_EQUAL(parsed.dependencies[0].consumerStepId, "S0R0/SUM_ATTN/0");
   BOOST_CHECK_EQUAL(parsed.dependencies[0].consumerSlotId, "remote");
+  BOOST_CHECK_EQUAL(parsed.dependencies[1].dependencyId, "tp-attn-r1-from-r0");
+  BOOST_CHECK_EQUAL(parsed.dependencies[1].consumerStepId, "S0R1/SUM_ATTN/0");
 }
 
 BOOST_AUTO_TEST_CASE(PlanWireRejectsMalformedStepTemplates)
