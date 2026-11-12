@@ -5538,6 +5538,60 @@ runOnnxBytes(const onnx::ModelProto& model,
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(TensorParallelTemplateDeclaresPerLayerKvState)
+{
+  // C6: "unit 的 KV contract 列全所有层的本 rank slices". The template marks each
+  // attention step's local state slots, and the state API aggregates those children --
+  // so a missing declaration would make a unit claim no KV at all while its attention
+  // entries really do hold it.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  std::map<std::uint64_t, std::size_t> kvSlotsByLayer;
+  for (const auto& step : plan.steps) {
+    if (step.localStateSlots.empty()) continue;
+    // Only attention carries KV: MLP is a pure function, the head samples, INIT has no
+    // session state.
+    BOOST_CHECK_EQUAL(step.artifactEntry.find("/ATTN/") != std::string::npos, true);
+    for (const auto& slot : step.localStateSlots) {
+      BOOST_CHECK_EQUAL(slot.find("/model/layers.") == std::string::npos, true);
+    }
+    // The layer is part of the template only through the step id, so count by it.
+    std::uint64_t layer = 0;
+    const auto marker = step.stepId.find("/ATTN/");
+    if (marker != std::string::npos)
+      layer = static_cast<std::uint64_t>(std::stoull(step.stepId.substr(marker + 6)));
+    kvSlotsByLayer[layer] += step.localStateSlots.size();
+  }
+  // Every layer appears once with both key and value. Both ranks share the plan, so
+  // each layer has two attention steps -- one per unit -- and the map counts both.
+  BOOST_CHECK_EQUAL(kvSlotsByLayer.size(), shape.layers);
+  for (const auto& item : kvSlotsByLayer)
+    BOOST_CHECK_EQUAL(item.second, 4U);
+
+  // And they are distinct names across layers, so restoring one layer cannot silently
+  // overwrite another.
+  // Uniqueness is required within a step, not across the plan: both ranks carry the
+  // same layer's slot names because each unit owns its own sessions, and the state API
+  // keeps them apart per child. That is exactly why the unit handle carries one token
+  // per attention child rather than one conversation key.
+  for (const auto& step : plan.steps) {
+    std::set<std::string> perStep;
+    for (const auto& slot : step.localStateSlots)
+      BOOST_CHECK(perStep.insert(slot).second);
+  }
+  // And no non-attention step declares any state, so a unit's KV contract covers the
+  // attention entries only.
+  for (const auto& step : plan.steps) {
+    if (step.localStateSlots.empty()) continue;
+    BOOST_CHECK(step.artifactEntry.find("/ATTN/") != std::string::npos);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(EgressUnitWithPartialEdgesWouldLoseItsTokenEventsAndResponse)
 {
   // The next blocker, written as a failing expectation first so the fix has a test
