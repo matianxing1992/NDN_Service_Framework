@@ -5775,6 +5775,65 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(OnlyTheEgressUnitPublishesTokenEventsInAShardedPlan)
+{
+  // Whether the coordinator can tell which unit samples. It infers a terminal role
+  // from a TOKEN_FEEDBACK *output* edge. My suspicion was that per-unit feedback
+  // would give both units one and make both terminal; that is worth checking rather
+  // than assuming, because the feedback edge is produced by the egress unit and
+  // merely consumed by each receiver.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  // The projection itself carries no feedback edge; the planner adds them. Add the
+  // two the planner now builds, so this measures the real shape.
+  for (const auto& consumer : plan.roles) {
+    NativeDependencySpec feedback;
+    feedback.producers = {"S0R0"};
+    feedback.consumers = {consumer};
+    feedback.keyScope = "token-feedback-" + consumer;
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    plan.dependencies.push_back(std::move(feedback));
+  }
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  std::map<std::string, std::size_t> feedbackOutputs;
+  for (const auto& unit : plan.roles) {
+    const auto spec = roleSpecFor(plan, unit, std::string("/session/tp-feedback"),
+                                  assignment, "/provider/0");
+    for (const auto& edge : spec.outputs) {
+      if (edge.operationKind != "TOKEN_FEEDBACK") continue;
+      ++feedbackOutputs[unit];
+    }
+  }
+  // The egress unit produces feedback for both consumers, so it owns two output
+  // edges; the peer produces none because it samples nothing.
+  BOOST_TEST_MESSAGE("feedback outputs by unit: S0R0="
+    << (feedbackOutputs.count("S0R0") ? feedbackOutputs["S0R0"] : 0)
+    << " S0R1=" << (feedbackOutputs.count("S0R1") ? feedbackOutputs["S0R1"] : 0));
+  BOOST_CHECK_EQUAL(feedbackOutputs.count("S0R0") ? feedbackOutputs["S0R0"] : 0, 2U);
+  BOOST_CHECK_EQUAL(feedbackOutputs.count("S0R1") ? feedbackOutputs["S0R1"] : 0, 0U);
+
+  // So the scope-based inference still identifies exactly one terminal role, and
+  // my earlier concern was wrong: only the egress unit publishes token events.
+  std::set<std::string> terminalUnits;
+  for (const auto& item : feedbackOutputs)
+    if (item.second > 0) terminalUnits.insert(item.first);
+  BOOST_CHECK_EQUAL(terminalUnits.size(), 1U);
+  BOOST_CHECK_EQUAL(*terminalUnits.begin(), std::string("S0R0"));
+}
+
+
 BOOST_AUTO_TEST_CASE(EveryTensorParallelUnitNeedsItsOwnFeedbackEdge)
 {
   // C6: feedback is generated per receiving unit, each bound to its own consumer
