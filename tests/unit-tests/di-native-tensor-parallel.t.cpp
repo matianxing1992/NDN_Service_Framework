@@ -5353,6 +5353,312 @@ BOOST_AUTO_TEST_CASE(HiddenWidthIsNotPartitionedEvenWhenItEqualsKvWidth)
   }
 }
 
+namespace {
+
+struct AttentionEntryFixture
+{
+  onnx::ModelProto entry;
+  std::map<std::string, onnx::TensorProto> initializers;
+};
+
+/** Build the layer-0 attention entry from the frozen export, sharded for rank 0.
+ *
+ * All initializers are carried inline so the entry can be loaded from a byte
+ * buffer: the frozen weights live in a 918 MB sidecar, and reading the slices back
+ * out of it here would make this case depend on the sidecar's location rather than
+ * on the shard arithmetic.
+ */
+AttentionEntryFixture
+makeShardedLayerZeroAttention(std::uint64_t degree, std::uint64_t rank)
+{
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return {};
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  onnx::ModelProto model;
+  if (!model.ParseFromString(std::string(bytes.begin(), bytes.end()))) return {};
+
+  const auto shape = qwen::deriveQwenTpShape(bytes, 28);
+  const auto entries = qwen::classifyQwenTpEntryNodes(model, 28);
+  const auto attn = std::find_if(entries.begin(), entries.end(), [] (const auto& e) {
+    return e.kind == "ATTN" && e.layer == 0;
+  });
+  if (attn == entries.end()) return {};
+
+  qwen::QwenTpRankGeometry geometry;
+  geometry.degree = degree == 1 ? 2 : degree;  // validate() requires >= 2
+  geometry.rank = 0;
+  geometry.rank = 0;
+  geometry.headDim = shape.headDim;
+  geometry.queryWidth = shape.queryWidth();
+  geometry.kvWidth = shape.kvWidth();
+  geometry.hidden = shape.hidden;
+  geometry.ffn = shape.ffn;
+
+  auto entry = qwen::extractQwenTpEntryModel(model, *attn, "S0R0/ATTN/0");
+  // Degree one is the unsplit reference: no slices and no parameter rewrite, so the
+  // same extraction path produces the baseline the sharded graph is compared with.
+  const qwen::QwenRankLayerSlices* layer0 = nullptr;
+  std::vector<qwen::QwenRankLayerSlices> slices;
+  if (degree > 1) {
+    slices = qwen::planQwenTensorSlices(shape, degree, rank);
+    for (const auto& candidate : slices)
+      if (candidate.layer == 0) layer0 = &candidate;
+  }
+
+  // Read the sidecar ranges directly: the extracted entry keeps external-data
+  // references, and this fixture needs the bytes inline.
+  const auto sidecar = path.substr(0, path.find_last_of('/')) + "/model.onnx_data";
+  const auto readRange = [&sidecar] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream data(sidecar, std::ios::binary);
+    if (!data) throw std::runtime_error("sidecar unreadable");
+    data.seekg(static_cast<std::streamoff>(offset));
+    std::vector<std::uint8_t> out(length);
+    data.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(length));
+    if (!data) throw std::runtime_error("sidecar short read");
+    return out;
+  };
+  for (int i = 0; i < entry.mutable_graph()->initializer_size(); ++i) {
+    auto* init = entry.mutable_graph()->mutable_initializer(i);
+    if (init->data_location() != onnx::TensorProto::EXTERNAL) continue;
+    std::uint64_t offset = 0, length = 0;
+    for (const auto& kv : init->external_data()) {
+      if (kv.key() == "offset") offset = std::stoull(kv.value());
+      if (kv.key() == "length") length = std::stoull(kv.value());
+    }
+    const auto raw = readRange(offset, length);
+    init->set_data_location(onnx::TensorProto::DEFAULT);
+    init->clear_external_data();
+    init->set_raw_data(raw.data(), raw.size());
+  }
+  if (layer0 != nullptr)
+    (void)qwen::applyQwenTpRankSlices(entry, layer0, readRange);
+  if (degree > 1) (void)qwen::adaptQwenTpEntryParameters(entry, geometry);
+  return {std::move(entry), {}};
+}
+
+/** Run one input/output set through an ORT session built from bytes.
+ *
+ * Inputs are created with the element type the graph declares, not float: the
+ * attention entry takes int32 masks and int64 positions, and ORT rejects a float
+ * buffer for either.
+ */
+std::map<std::string, std::vector<float>>
+runOnnxBytes(const onnx::ModelProto& model,
+             const std::map<std::string, std::vector<float>>& inputsByInputName,
+             const std::map<std::string, std::vector<std::int64_t>>& shapes,
+             const std::map<std::string, std::int32_t>& elemTypes,
+             const std::set<std::string>& oneValueInputs = {})
+{
+  std::string wire;
+  if (!model.SerializeToString(&wire)) throw std::runtime_error("serialize failed");
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec224-numeric");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  Ort::Session session(env, wire.data(), wire.size(), options);
+  Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(
+    OrtArenaAllocator, OrtMemTypeDefault);
+
+  std::vector<std::string> inputNames;
+  std::vector<std::string> outputNames;
+  std::vector<Ort::Value> inputs;
+  // One owned buffer per declared type; the graph's own declaration decides which.
+  std::vector<std::vector<float>> ownedFloat;
+  std::vector<std::vector<std::int64_t>> ownedInt64;
+  std::vector<std::vector<std::int32_t>> ownedInt32;
+  std::vector<int> kinds;
+  for (const auto& name : session.GetInputNames()) {
+    const auto found = inputsByInputName.find(name);
+    if (found == inputsByInputName.end()) throw std::runtime_error("missing input " + name);
+    if (shapes.find(name) == shapes.end()) throw std::runtime_error("missing shape " + name);
+    const auto typeIt = elemTypes.find(name);
+    const int type = typeIt == elemTypes.end() ? 1 : typeIt->second;
+    const auto& shape = shapes.at(name);
+    std::size_t count = 1;
+    for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+    const bool one = oneValueInputs.count(name) != 0;
+    if (type == 7) {  // int64
+      ownedInt64.emplace_back(count, one ? 1 : 0);
+      kinds.push_back(7);
+    }
+    else if (type == 6) {  // int32
+      // The mask scalar is int32; ignoring the override here is why the op saw a
+      // zero total length even after the name was added.
+      ownedInt32.emplace_back(count, one ? 1 : 0);
+      kinds.push_back(6);
+    }
+    else {
+      ownedFloat.push_back(found->second);
+      kinds.push_back(1);
+    }
+    inputNames.push_back(name);
+  }
+  std::size_t floatIndex = 0, int64Index = 0, int32Index = 0;
+  for (std::size_t i = 0; i < inputNames.size(); ++i) {
+    const auto& shape = shapes.at(inputNames[i]);
+    if (kinds[i] == 7) {
+      inputs.push_back(Ort::Value::CreateTensor<std::int64_t>(memory,
+        ownedInt64[int64Index].data(), ownedInt64[int64Index].size(),
+        shape.data(), shape.size()));
+      ++int64Index;
+    }
+    else if (kinds[i] == 6) {
+      inputs.push_back(Ort::Value::CreateTensor<std::int32_t>(memory,
+        ownedInt32[int32Index].data(), ownedInt32[int32Index].size(),
+        shape.data(), shape.size()));
+      ++int32Index;
+    }
+    else {
+      inputs.push_back(Ort::Value::CreateTensor<float>(memory,
+        ownedFloat[floatIndex].data(), ownedFloat[floatIndex].size(),
+        shape.data(), shape.size()));
+      ++floatIndex;
+    }
+  }
+  for (const auto& name : session.GetOutputNames()) outputNames.push_back(name);
+  std::vector<const char*> inPtrs, outPtrs;
+  for (const auto& name : inputNames) inPtrs.push_back(name.c_str());
+  for (const auto& name : outputNames) outPtrs.push_back(name.c_str());
+  auto outputs = session.Run(Ort::RunOptions{nullptr}, inPtrs.data(), inputs.data(),
+                             inputs.size(), outPtrs.data(), outPtrs.size());
+  std::map<std::string, std::vector<float>> result;
+  for (std::size_t i = 0; i < outputs.size(); ++i) {
+    const auto info = outputs[i].GetTensorTypeAndShapeInfo();
+    const auto count = info.GetElementCount();
+    const float* data = outputs[i].GetTensorData<float>();
+    result.emplace(outputNames[i], std::vector<float>(data, data + count));
+  }
+  return result;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(ShardedAttentionPartialsSumToTheUnsplitExport)
+{
+  // The comparison every earlier case left out. Structures, declarations and byte
+  // ranges were checked; nothing compared a sharded entry's arithmetic against the
+  // same export unsplit. A slicing error would pass all of those and still change
+  // the logits.
+  //
+  // C2's attention identity: each rank computes its own whole heads, and the O
+  // projection reduces over the same channels, so
+  //   Y = SUM_r( attn_r @ W_O,r^T ).
+  // Rank 0 and rank 1 partials must therefore add up to the unsplit output.
+  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+    "canonical-source.onnx";
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
+    "frozen export is required at " + path);
+  const auto reference = makeShardedLayerZeroAttention(1, 0);
+  const auto rank0 = makeShardedLayerZeroAttention(2, 0);
+  const auto rank1 = makeShardedLayerZeroAttention(2, 1);
+  BOOST_REQUIRE(reference.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank0.entry.graph().node_size() > 0);
+  BOOST_REQUIRE(rank1.entry.graph().node_size() > 0);
+
+  // One token, no past: the smallest real decode step.
+  const std::uint64_t hidden = 1024;
+  const std::uint64_t kvHeads = 8;
+  const std::uint64_t headDim = 128;
+  std::vector<float> residual(hidden);
+  for (std::uint64_t i = 0; i < hidden; ++i)
+    residual[i] = 0.02f * float(static_cast<int>(i % 19) - 9);
+
+  // Feed every declared input by its declared shape. Floats get real values only
+  // for the residual and the (empty) KV state; the rest are metadata whose content
+  // does not reach the weights under test.
+  const auto feed = [&] (const onnx::ModelProto& model) {
+    std::set<std::string> oneValueInputs;
+    std::map<std::string, std::vector<float>> inputs;
+    std::map<std::string, std::vector<std::int64_t>> shapes;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      std::vector<std::int64_t> shape;
+      for (const auto& d : value.type().tensor_type().shape().dim())
+        shape.push_back(d.has_dim_value() ? d.dim_value() : 1);
+      shapes[name] = shape;
+      std::size_t count = 1;
+      for (const auto axis : shape) count *= static_cast<std::size_t>(axis);
+      if (name.find("embed_tokens") != std::string::npos) {
+        inputs[name] = residual;
+      }
+      else if (name.find("past_key_values") != std::string::npos) {
+        // Empty past: shape is [1, kvHeads, 0, headDim], so `count` is already 0.
+        inputs[name] = std::vector<float>(count, 0.0f);
+      }
+      else {
+        inputs[name] = std::vector<float>(count, 0.0f);
+      }
+      // The scalar the attention op reads as `total_sequence_length` arrives as
+      // the entry's int32 `Gather/Cast` input, not under that name; it must be
+      // positive or the op refuses a one-token step.
+      if (name.find("attn_mask_subgraph/Gather/Cast") != std::string::npos) {
+        oneValueInputs.insert(name);
+      }
+    }
+    std::map<std::string, std::int32_t> types;
+    for (const auto& value : model.graph().input())
+      types[value.name()] = value.type().tensor_type().elem_type();
+    return runOnnxBytes(model, inputs, shapes, types, oneValueInputs);
+  };
+
+  const auto referenceOut = feed(reference.entry);
+  const auto rank0Out = feed(rank0.entry);
+  const auto rank1Out = feed(rank1.entry);
+
+  // The residual-stream output is the O projection's result, the same tensor name
+  // in all three graphs.
+  const std::string outName = "/model/layers.0/attn/o_proj/MatMul/output_0";
+  BOOST_REQUIRE(referenceOut.count(outName) == 1);
+  BOOST_REQUIRE(rank0Out.count(outName) == 1);
+  BOOST_REQUIRE(rank1Out.count(outName) == 1);
+  const auto& expected = referenceOut.at(outName);
+  const auto& left = rank0Out.at(outName);
+  const auto& right = rank1Out.at(outName);
+  BOOST_REQUIRE_EQUAL(left.size(), expected.size());
+  BOOST_REQUIRE_EQUAL(right.size(), expected.size());
+
+  // Compare the sum against the unsplit result, relative to the reference's own
+  // magnitude so the tolerance means something.
+  double referenceMagnitude = 0.0;
+  for (const auto value : expected) referenceMagnitude = std::max(referenceMagnitude,
+                                                                  std::fabs(double(value)));
+  BOOST_REQUIRE(referenceMagnitude > 0.0);
+  double worst = 0.0;
+  std::size_t mismatches = 0;
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    const double sum = double(left[i]) + double(right[i]);
+    const double error = std::fabs(sum - double(expected[i]));
+    worst = std::max(worst, error);
+    if (error > 1e-3 * referenceMagnitude) ++mismatches;
+  }
+  BOOST_TEST_MESSAGE("received_size=" << expected.size()
+                    << " magnitude=" << referenceMagnitude
+                    << " worst_error=" << worst
+                    << " mismatches=" << mismatches);
+  // INT4 weights and float accumulation reorder the reduction, so exact equality is
+  // not the claim. The claim is that the partials reconstruct the unsplit result to
+  // within float noise of its own magnitude.
+  BOOST_CHECK_MESSAGE(mismatches == 0,
+    "sharded partials differ from the unsplit output: worst " +
+    std::to_string(worst) + " against magnitude " + std::to_string(referenceMagnitude));
+
+  // Each rank must hold half the KV heads, or the grouping is wrong and the numbers
+  // above would not reconstruct.
+  for (const auto* model : {&rank0.entry, &rank1.entry}) {
+    for (const auto& node : model->graph().node()) {
+      if (node.op_type() != "GroupQueryAttention") continue;
+      for (const auto& attr : node.attribute()) {
+        if (attr.name() == "num_heads") BOOST_CHECK_EQUAL(attr.i(), 8);
+        if (attr.name() == "kv_num_heads") BOOST_CHECK_EQUAL(attr.i(), 4);
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(ShardedEntryDeclaresTheWidthsItsWeightsActuallyHave)
 {
   // Slicing weights without rewriting the operators produces a graph that does not

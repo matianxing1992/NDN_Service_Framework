@@ -1421,6 +1421,63 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     heads->set_dim_value(static_cast<std::int64_t>(kvShard / geometry.headDim));
     ++changes;
   };
+  // 4. Intermediate tensor shapes. ORT cross-checks a node's K/N against its
+  // input's declared width, so a sharded projection whose output still claims the
+  // source width fails at load even though every weight is correct. The width is
+  // taken from the producing node rather than from the number, for the same reason
+  // as above.
+  const auto widthOfProducer = [&] (const std::string& tensor)
+    -> std::optional<std::int64_t> {
+    for (int i = 0; i < graph->node_size(); ++i) {
+      const auto& node = graph->node(i);
+      bool produces = false;
+      for (const auto& output : node.output())
+        if (output == tensor) produces = true;
+      if (!produces) continue;
+      if (node.op_type() == "MatMulNBits") {
+        for (const auto& attr : node.attribute())
+          if (attr.name() == "N" && attr.has_i()) return attr.i();
+        return std::nullopt;
+      }
+      if (node.op_type() == "GroupQueryAttention") {
+        std::optional<std::int64_t> heads;
+        for (const auto& attr : node.attribute())
+          if (attr.name() == "num_heads" && attr.has_i()) heads = attr.i();
+        if (!heads) return std::nullopt;
+        return *heads * static_cast<std::int64_t>(geometry.headDim);
+      }
+      if (node.op_type() == "Reshape" && node.input_size() >= 2) {
+        const auto& targetName = node.input(1);
+        for (int j = 0; j < graph->initializer_size(); ++j) {
+          const auto& init = graph->initializer(j);
+          if (init.name() != targetName) continue;
+          if (init.data_type() != onnx::TensorProto::INT64) return std::nullopt;
+          if (init.raw_data().size() < sizeof(std::int64_t)) return std::nullopt;
+          std::int64_t last = 0;
+          const auto offset = init.raw_data().size() - sizeof(std::int64_t);
+          std::memcpy(&last, init.raw_data().data() + offset, sizeof(last));
+          return last;
+        }
+      }
+      return std::nullopt;
+    }
+    return std::nullopt;
+  };
+  const auto rewriteProducerWidth = [&] (onnx::ValueInfoProto* value) {
+    const auto width = widthOfProducer(value->name());
+    if (!width) return;
+    auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
+    if (shape->dim_size() == 0) return;
+    auto* last = shape->mutable_dim(shape->dim_size() - 1);
+    // Only rewrite a declared value; a symbolic axis stays symbolic.
+    if (!last->has_dim_value()) return;
+    if (last->dim_value() == *width) return;
+    last->set_dim_value(*width);
+    ++changes;
+  };
+  for (int i = 0; i < graph->value_info_size(); ++i)
+    rewriteProducerWidth(graph->mutable_value_info(i));
+
   for (int i = 0; i < graph->value_info_size(); ++i)
     shardKvState(graph->mutable_value_info(i));
   for (int i = 0; i < graph->input_size(); ++i)
