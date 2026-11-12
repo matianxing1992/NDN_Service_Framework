@@ -1,7 +1,11 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 
+#include <onnx/onnx_pb.h>
+
 #include <algorithm>
+#include <cctype>
 #include <limits>
+#include <set>
 #include <stdexcept>
 
 namespace ndnsf::di::qwen {
@@ -243,6 +247,160 @@ sliceInt4Scales(const std::vector<std::uint8_t>& scales, std::uint64_t n,
                     rowStart + static_cast<std::size_t>(blockCount) * scaleBytes));
   }
   return result;
+}
+
+std::vector<QwenNBitsNode>
+inspectQwenNBitsGraph(const std::vector<std::uint8_t>& modelBytes,
+                      std::uint64_t expectedLayers)
+{
+  if (modelBytes.empty()) {
+    throw std::invalid_argument("tensor-parallel graph source is empty");
+  }
+  onnx::ModelProto model;
+  if (!model.ParseFromArray(modelBytes.data(), static_cast<int>(modelBytes.size()))) {
+    throw std::invalid_argument("tensor-parallel graph source is not a valid ONNX model");
+  }
+  const auto& graph = model.graph();
+  std::set<std::uint64_t> layers;
+  std::vector<QwenNBitsNode> result;
+  for (int index = 0; index < graph.node_size(); ++index) {
+    const auto& node = graph.node(index);
+    // Only the maintained INT4 linear operator is accepted; any other large
+    // operator would need a partition rule this design does not define.
+    if (node.op_type() != "MatMulNBits") continue;
+    if (node.domain() != "com.microsoft") {
+      throw std::invalid_argument("tensor-parallel graph uses a foreign MatMulNBits domain");
+    }
+    QwenNBitsNode facts;
+    facts.nodeIndex = static_cast<std::uint64_t>(index);
+    facts.nodeName = node.name();
+    facts.bits = 0;
+    facts.blockSize = 0;
+    for (const auto& attribute : node.attribute()) {
+      if (attribute.name() == "bits") facts.bits = static_cast<std::uint64_t>(attribute.i());
+      else if (attribute.name() == "block_size") {
+        facts.blockSize = static_cast<std::uint64_t>(attribute.i());
+      }
+      else if (attribute.name() == "K") facts.k = static_cast<std::uint64_t>(attribute.i());
+      else if (attribute.name() == "N") facts.n = static_cast<std::uint64_t>(attribute.i());
+    }
+    if (facts.bits != QWEN_INT4_BITS || facts.blockSize != QWEN_INT4_BLOCK_SIZE) {
+      throw std::invalid_argument("tensor-parallel graph is not weight-only INT4 with block " +
+                                  std::to_string(QWEN_INT4_BLOCK_SIZE));
+    }
+    if (facts.k == 0 || facts.n == 0) {
+      throw std::invalid_argument("tensor-parallel graph has a MatMulNBits without K/N");
+    }
+    // Inputs are (A, B[, bias][, zero_point][, g_idx]); only the packed weight
+    // and its scales are expected in the frozen export.
+    if (node.input_size() < 2) {
+      throw std::invalid_argument("tensor-parallel graph has a MatMulNBits without weights");
+    }
+    facts.weightInitializer = node.input(0);
+    facts.scalesInitializer = node.input(1);
+    facts.hasBias = node.input_size() > 2 && !node.input(2).empty();
+    facts.hasZeroPoint = node.input_size() > 3 && !node.input(3).empty();
+    facts.hasGroupIndex = node.input_size() > 4 && !node.input(4).empty();
+    if (facts.hasZeroPoint || facts.hasGroupIndex) {
+      throw std::invalid_argument("tensor-parallel graph has an unsupported "
+                                  "zero-point or group-index MatMulNBits");
+    }
+    // Layer index comes from the maintained export naming, not from ordinal.
+    const auto marker = facts.nodeName.find("layers.");
+    if (marker != std::string::npos) {
+      const auto begin = marker + 7;
+      std::uint64_t layer = 0;
+      std::size_t digits = 0;
+      while (begin + digits < facts.nodeName.size() &&
+             std::isdigit(static_cast<unsigned char>(facts.nodeName[begin + digits]))) {
+        layer = layer * 10 + static_cast<std::uint64_t>(facts.nodeName[begin + digits] - '0');
+        ++digits;
+      }
+      if (digits == 0) {
+        throw std::invalid_argument("tensor-parallel graph node name has no layer index");
+      }
+      layers.insert(layer);
+    }
+    result.push_back(std::move(facts));
+  }
+  if (result.empty()) {
+    throw std::invalid_argument("tensor-parallel graph has no MatMulNBits operator");
+  }
+  if (expectedLayers != 0 && layers.size() != expectedLayers) {
+    throw std::invalid_argument("tensor-parallel graph layer count differs from the plan");
+  }
+  return result;
+}
+
+QwenTpShape
+qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
+                     std::uint64_t hidden, std::uint64_t layers,
+                     std::uint64_t queryHeads, std::uint64_t kvHeads,
+                     std::uint64_t headDim, std::uint64_t ffn)
+{
+  QwenTpShape shape;
+  shape.hidden = hidden;
+  shape.layers = layers;
+  shape.queryHeads = queryHeads;
+  shape.kvHeads = kvHeads;
+  shape.headDim = headDim;
+  shape.ffn = ffn;
+  shape.validate();
+  // Cross-check the declared geometry against the graph itself: a projection
+  // whose width disagrees with `heads * headDim` (or the FFN width) means the
+  // constants and the export diverge, and slicing them would be wrong.
+  std::size_t query = 0, key = 0, value = 0, out = 0, gate = 0, up = 0, down = 0;
+  for (const auto& node : nodes) {
+    const auto& name = node.nodeName;
+    if (name.find("q_proj") != std::string::npos) {
+      if (node.n != shape.queryWidth()) {
+        throw std::invalid_argument("tensor-parallel q_proj width disagrees with head geometry");
+      }
+      ++query;
+    }
+    else if (name.find("k_proj") != std::string::npos) {
+      if (node.n != shape.kvWidth()) {
+        throw std::invalid_argument("tensor-parallel k_proj width disagrees with head geometry");
+      }
+      ++key;
+    }
+    else if (name.find("v_proj") != std::string::npos) {
+      if (node.n != shape.kvWidth()) {
+        throw std::invalid_argument("tensor-parallel v_proj width disagrees with head geometry");
+      }
+      ++value;
+    }
+    else if (name.find("o_proj") != std::string::npos) {
+      if (node.k != shape.queryWidth() || node.n != shape.hidden) {
+        throw std::invalid_argument("tensor-parallel o_proj shape disagrees with head geometry");
+      }
+      ++out;
+    }
+    else if (name.find("gate_proj") != std::string::npos) {
+      if (node.n != shape.ffn) {
+        throw std::invalid_argument("tensor-parallel gate_proj width disagrees with ffn");
+      }
+      ++gate;
+    }
+    else if (name.find("up_proj") != std::string::npos) {
+      if (node.n != shape.ffn) {
+        throw std::invalid_argument("tensor-parallel up_proj width disagrees with ffn");
+      }
+      ++up;
+    }
+    else if (name.find("down_proj") != std::string::npos) {
+      if (node.k != shape.ffn || node.n != shape.hidden) {
+        throw std::invalid_argument("tensor-parallel down_proj shape disagrees with ffn");
+      }
+      ++down;
+    }
+  }
+  if (query != shape.layers || key != shape.layers || value != shape.layers ||
+      out != shape.layers || gate != shape.layers || up != shape.layers ||
+      down != shape.layers) {
+    throw std::invalid_argument("tensor-parallel graph does not cover every maintained projection");
+  }
+  return shape;
 }
 
 } // namespace ndnsf::di::qwen

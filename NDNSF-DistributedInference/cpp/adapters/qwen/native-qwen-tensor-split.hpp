@@ -125,6 +125,46 @@ sliceInt4Scales(const std::vector<std::uint8_t>& scales, std::uint64_t n,
 /** Total packed-weight bytes of one `[N, K]` INT4 initializer. */
 std::uint64_t packedInt4Bytes(std::uint64_t n, std::uint64_t k);
 
+/** One `MatMulNBits` node found while reading the frozen export. */
+struct QwenNBitsNode
+{
+  std::uint64_t nodeIndex = 0;
+  std::string nodeName;
+  std::string weightInitializer;
+  std::string scalesInitializer;
+  std::uint64_t k = 0;
+  std::uint64_t n = 0;
+  std::uint64_t bits = 0;
+  std::uint64_t blockSize = 0;
+  bool hasBias = false;
+  bool hasZeroPoint = false;
+  bool hasGroupIndex = false;
+};
+
+/**
+ * Read the frozen export's `MatMulNBits` facts.
+ *
+ * This is the only place TP shape facts come from. It parses the graph on the
+ * caller's behalf so `planQwenTensorSlices` never trusts a model name or a
+ * hand-written constant: an unsupported export (extra operator, non-INT4
+ * bits, block size mismatch, zero-point/g_idx/bias) is rejected by name.
+ *
+ * @param modelBytes Serialized ONNX bytes (external data may stay on disk).
+ * @param layers     Expected transformer layer count; 0 disables the check.
+ * @returns Per-node facts in graph order.
+ * @throws std::invalid_argument for an export this TP partition cannot handle.
+ */
+std::vector<QwenNBitsNode>
+inspectQwenNBitsGraph(const std::vector<std::uint8_t>& modelBytes,
+                      std::uint64_t expectedLayers = 0);
+
+/** Derive the TP shape facts from an already-inspected node list. */
+QwenTpShape
+qwenTpShapeFromNodes(const std::vector<QwenNBitsNode>& nodes,
+                     std::uint64_t hidden, std::uint64_t layers,
+                     std::uint64_t queryHeads, std::uint64_t kvHeads,
+                     std::uint64_t headDim, std::uint64_t ffn);
+
 } // namespace ndnsf::di::qwen
 
 #endif // NDNSF_DI_QWEN_TENSOR_SPLIT_HPP

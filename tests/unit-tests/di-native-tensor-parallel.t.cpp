@@ -11,10 +11,18 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 
+#include <onnx/onnx_pb.h>
+#include <google/protobuf/text_format.h>
+
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <system_error>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -574,6 +582,169 @@ BOOST_AUTO_TEST_CASE(RankSlicesCoverDistinctDisjointChannels)
       BOOST_CHECK_EQUAL(left.begin, 0U);
     }
   }
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Frozen-export shape facts: the TP shape must be read from the graph, never
+// assumed. These cases use a synthetic graph so they run without the 900 MB
+// weight file; the real frozen model is exercised by the installed
+// qualification in T005.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Build one INT4 linear node with the maintained MatMulNBits attributes. */
+void
+appendNBitsNode(onnx::GraphProto& graph, const std::string& name,
+                std::uint64_t k, std::uint64_t n, int extraInputs = 0)
+{
+  auto* node = graph.add_node();
+  node->set_name(name);
+  node->set_op_type("MatMulNBits");
+  node->set_domain("com.microsoft");
+  node->add_input("w");
+  node->add_input("s");
+  for (int i = 0; i < extraInputs; ++i) node->add_input("extra" + std::to_string(i));
+  const auto addInt = [&] (const char* attributeName, std::uint64_t value) {
+    auto* attribute = node->add_attribute();
+    attribute->set_name(attributeName);
+    attribute->set_type(onnx::AttributeProto::INT);
+    attribute->set_i(static_cast<std::int64_t>(value));
+  };
+  addInt("bits", 4);
+  addInt("block_size", 32);
+  addInt("K", k);
+  addInt("N", n);
+}
+
+struct QwenLogWidths
+{
+  std::uint64_t hidden = 1024;
+  std::uint64_t query = 16;
+  std::uint64_t kv = 8;
+  std::uint64_t headDim = 128;
+  std::uint64_t ffn = 3072;
+};
+
+/** Serialize an ONNX model holding the given projections. */
+std::vector<std::uint8_t>
+graphWith(QwenLogWidths widths, std::uint64_t layers, int extraInputsOnQ = 0)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(7);
+  auto* graph = model.mutable_graph();
+  graph->set_name("tp");
+  for (std::uint64_t layer = 0; layer < layers; ++layer) {
+    const auto prefix = "model.layers." + std::to_string(layer) + ".";
+    appendNBitsNode(*graph, prefix + "attn.q_proj.MatMul_Q4", widths.hidden,
+                    widths.query * widths.headDim, extraInputsOnQ);
+    appendNBitsNode(*graph, prefix + "attn.k_proj.MatMul_Q4", widths.hidden,
+                    widths.kv * widths.headDim);
+    appendNBitsNode(*graph, prefix + "attn.v_proj.MatMul_Q4", widths.hidden,
+                    widths.kv * widths.headDim);
+    appendNBitsNode(*graph, prefix + "attn.o_proj.MatMul_Q4",
+                    widths.query * widths.headDim, widths.hidden);
+    appendNBitsNode(*graph, prefix + "mlp.gate_proj.MatMul_Q4", widths.hidden, widths.ffn);
+    appendNBitsNode(*graph, prefix + "mlp.up_proj.MatMul_Q4", widths.hidden, widths.ffn);
+    appendNBitsNode(*graph, prefix + "mlp.down_proj.MatMul_Q4", widths.ffn, widths.hidden);
+  }
+  std::string bytes;
+  model.SerializeToString(&bytes);
+  return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_SUITE(ShapeFacts)
+
+BOOST_AUTO_TEST_CASE(GraphInspectionReadsFrozenProjectionWidths)
+{
+  const auto bytes = graphWith(QwenLogWidths{}, 2);
+  const auto nodes = qwen::inspectQwenNBitsGraph(bytes, 2);
+  BOOST_REQUIRE_EQUAL(nodes.size(), 14U);
+  const auto& q = nodes.front();
+  BOOST_CHECK_EQUAL(q.k, 1024U);
+  BOOST_CHECK_EQUAL(q.n, 2048U);
+  BOOST_CHECK_EQUAL(q.bits, 4U);
+  BOOST_CHECK_EQUAL(q.blockSize, 32U);
+  BOOST_CHECK(!q.hasBias);
+  BOOST_CHECK(!q.hasZeroPoint);
+  BOOST_CHECK(!q.hasGroupIndex);
+}
+
+BOOST_AUTO_TEST_CASE(ShapeFactsAreCrossCheckedAgainstTheGraph)
+{
+  const auto bytes = graphWith(QwenLogWidths{}, 1);
+  const auto nodes = qwen::inspectQwenNBitsGraph(bytes, 1);
+  // Declared geometry matching the graph is accepted.
+  BOOST_CHECK_NO_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 16, 8, 128, 3072));
+  // A declared width that disagrees with the export is rejected, not sliced.
+  BOOST_CHECK_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 8, 4, 128, 3072),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::qwenTpShapeFromNodes(nodes, 1024, 1, 16, 8, 128, 2048),
+                    std::invalid_argument);
+  // A layer-count mismatch is likewise refused.
+  BOOST_CHECK_THROW(qwen::inspectQwenNBitsGraph(bytes, 2), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFactsWhenPresent)
+{
+  // Read-only cross-check against the real frozen export when this machine has
+  // it cached. The graph is 338 KB of metadata (weights stay in the sidecar),
+  // so this costs a file read and no model load. Absence is a skip, never a
+  // pass: the synthetic cases above remain the portable contract check.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  // A directory opens successfully on Linux and only fails during the read, so
+  // the presence check must test for a regular file rather than stream state.
+  std::error_code statusError;
+  if (!std::filesystem::is_regular_file(path, statusError) || statusError) {
+    BOOST_TEST_MESSAGE("frozen export not present; skipping real-model cross-check");
+    return;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    BOOST_TEST_MESSAGE("frozen export not readable; skipping real-model cross-check");
+    return;
+  }
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  BOOST_REQUIRE(!bytes.empty());
+  const auto nodes = qwen::inspectQwenNBitsGraph(bytes, 28);
+  BOOST_CHECK_EQUAL(nodes.size(), 196U);
+  const auto shape = qwen::qwenTpShapeFromNodes(nodes, 1024, 28, 16, 8, 128, 3072);
+  const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0);
+  const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1);
+  BOOST_REQUIRE_EQUAL(rank0.size(), 28U);
+  BOOST_REQUIRE_EQUAL(rank1.size(), 28U);
+  BOOST_CHECK_EQUAL(rank0.front().initializers.size(), 7U);
+  // Every layer must partition without a gap or overlap on both ranks.
+  for (std::size_t layer = 0; layer < rank0.size(); ++layer) {
+    for (std::size_t i = 0; i < rank0[layer].initializers.size(); ++i) {
+      const auto& left = rank0[layer].initializers[i];
+      const auto& right = rank1[layer].initializers[i];
+      BOOST_CHECK_EQUAL(left.name, right.name);
+      BOOST_CHECK_EQUAL(left.end, right.begin);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(UnsupportedExportFeaturesAreRejectedByName)
+{
+  // A third input is the bias slot; a fourth is zero-point. The frozen export
+  // has neither, and a zero-point layout is not something this partition cuts.
+  const auto biasOnly = graphWith(QwenLogWidths{}, 1, 1);
+  const auto biasNodes = qwen::inspectQwenNBitsGraph(biasOnly, 1);
+  BOOST_CHECK(biasNodes.front().hasBias);
+
+  const auto zeroPoint = graphWith(QwenLogWidths{}, 1, 2);
+  BOOST_CHECK_THROW(qwen::inspectQwenNBitsGraph(zeroPoint, 1), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
