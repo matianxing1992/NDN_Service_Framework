@@ -40,6 +40,8 @@
 #include <system_error>
 #include <thread>
 #include <unistd.h>
+
+#include <ndn-cxx/util/sha256.hpp>
 #include <utility>
 #include <sstream>
 #include <string>
@@ -3896,6 +3898,102 @@ BOOST_AUTO_TEST_CASE(ExtractedEntryGraphIsSelfContainedAndLoadable)
     BOOST_FAIL(std::string("ORT rejected the extracted entry graph: ") + error.what());
   }
   std::filesystem::remove_all(directory, cleanupError);
+}
+
+
+BOOST_AUTO_TEST_CASE(WrittenEntryIsVerifiableAndStaysInsideItsRoot)
+{
+  // A contract is only trustworthy if its digest describes the file that is
+  // actually on disk. This writes one entry, re-reads it, and checks the digest
+  // matches the bytes -- then confirms the path rules that keep an entry from
+  // writing outside the assembly root.
+  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const std::string path = raw != nullptr && *raw != '\0'
+    ? std::string(raw)
+    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
+                  "canonical-source.onnx");
+  std::error_code statusError;
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
+    "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
+  std::ifstream in(path, std::ios::binary);
+  BOOST_REQUIRE_MESSAGE(static_cast<bool>(in), "frozen export is not readable: " + path);
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+
+  // Path rules first: these are refusals, so they must not need a source model.
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-entry-write-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+  onnx::ModelProto scratch;
+  BOOST_REQUIRE(scratch.ParseFromString(std::string(bytes.begin(), bytes.end())));
+  qwen::QwenTpEntryNodes entry;
+  entry.kind = "ATTN";
+  entry.layer = 0;
+  entry.nodeIndices = {7};
+  // Absolute, parent-bearing and escaped names are all refused before any write.
+  for (const std::string bad : {"/etc/passwd", "../escape.onnx", "sub/dir.onnx"}) {
+    BOOST_CHECK_THROW(
+      qwen::writeQwenTpEntry(root, "S0R0", entry, scratch, bad),
+      std::invalid_argument);
+  }
+  // Nothing was written by the refused calls.
+  std::size_t writtenFiles = 0;
+  for (const auto& item : std::filesystem::directory_iterator(root)) {
+    (void)item;
+    ++writtenFiles;
+  }
+  BOOST_CHECK_EQUAL(writtenFiles, 0U);
+
+  // Now a real write. The source is parsed again because a refused call must not
+  // have consumed it.
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromString(std::string(bytes.begin(), bytes.end())));
+  std::vector<std::string> names;
+  names.reserve(model.graph().node_size());
+  for (const auto& node : model.graph().node()) names.push_back(node.name());
+  const auto entries = qwen::classifyQwenTpEntryNodes(names, 28);
+  const auto contract = qwen::writeQwenTpEntry(
+    root, "S0R0", entries.at(1), model, "attn0.onnx");
+
+  BOOST_CHECK_EQUAL(contract.unitId, std::string("S0R0"));
+  BOOST_CHECK_EQUAL(contract.kind, std::string("ATTN"));
+  BOOST_CHECK(contract.hasGraphFile());
+  BOOST_CHECK_EQUAL(contract.relativeGraphPath, std::string("attn0.onnx"));
+  BOOST_CHECK_EQUAL(contract.graphDigest.size(), 71U);
+
+  // The digest must describe the file on disk, not the intent to write one.
+  const auto target = root / contract.relativeGraphPath;
+  BOOST_CHECK(std::filesystem::exists(target));
+  std::ifstream verify(target, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(verify));
+  const std::vector<std::uint8_t> onDisk((std::istreambuf_iterator<char>(verify)),
+                                         std::istreambuf_iterator<char>());
+  BOOST_CHECK(!onDisk.empty());
+  ndn::util::Sha256 digest;
+  digest.update(ndn::span<const std::uint8_t>(onDisk.data(), onDisk.size()));
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  BOOST_CHECK_EQUAL(contract.graphDigest, "sha256:" + hex);
+  // No staging file survived a successful write.
+  BOOST_CHECK(!std::filesystem::exists(target.string() + ".staging"));
+  // The boundary names come from the written graph itself.
+  BOOST_CHECK(!contract.inputNames.empty());
+  BOOST_CHECK(!contract.outputNames.empty());
+
+  // A partial file reference is refused, so a cache can never trust a name alone.
+  qwen::QwenTpEntryContract partial = contract;
+  partial.graphDigest.clear();
+  BOOST_CHECK_THROW(partial.validate(), std::invalid_argument);
+  qwen::QwenTpEntryContract escaped = contract;
+  escaped.relativeGraphPath = "../outside.onnx";
+  BOOST_CHECK_THROW(escaped.validate(), std::invalid_argument);
+
+  std::filesystem::remove_all(root, cleanupError);
 }
 
 
