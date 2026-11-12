@@ -1317,21 +1317,6 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   const auto kvShard = shard(geometry.kvWidth);
   const auto ffnShard = shard(geometry.ffn);
 
-  // A constant is rewritten only if it names a width this partition divides. The
-  // export spells these as literal values, so matching is by value; a value that
-  // matches nothing (head dimension, hidden size after o_proj) is not ours.
-  const auto remap = [&] (std::int64_t value) -> std::optional<std::int64_t> {
-    if (value < 0) return std::nullopt;
-    const auto magnitude = static_cast<std::uint64_t>(value);
-    if (magnitude == geometry.queryWidth)
-      return static_cast<std::int64_t>(queryShard);
-    if (magnitude == geometry.kvWidth)
-      return static_cast<std::int64_t>(kvShard);
-    if (magnitude == geometry.ffn)
-      return static_cast<std::int64_t>(ffnShard);
-    return std::nullopt;
-  };
-
   std::uint64_t changes = 0;
 
   // 1. Operator attributes that declare a sharded width.
@@ -1374,51 +1359,74 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     }
   }
 
-  // 2. Initializer constants that spell a sharded width.
-  for (int i = 0; i < graph->initializer_size(); ++i) {
-    auto* init = graph->mutable_initializer(i);
-    if (init->data_type() != onnx::TensorProto::INT64) continue;
-    if (init->data_location() != onnx::TensorProto::DEFAULT) continue;
-    if (init->raw_data().empty() || init->raw_data().size() % sizeof(std::int64_t) != 0) {
-      continue;
+  // 2. Reshape targets, matched by the node that consumes them rather than by the
+  // numeric value. KV width and hidden width are both 1024 in this export, so a
+  // value match would halve the residual stream along with the KV head dimension.
+  // The two normalizations are distinguishable only by their own names.
+  for (int i = 0; i < graph->node_size(); ++i) {
+    const auto& node = graph->node(i);
+    if (node.op_type() != "Reshape") continue;
+    std::optional<std::int64_t> target;
+    if (node.name().find("q_norm/Reshape_2") != std::string::npos) {
+      target = static_cast<std::int64_t>(queryShard);
     }
-    std::string bytes = init->raw_data();
-    bool changed = false;
-    for (std::size_t offset = 0; offset + sizeof(std::int64_t) <= bytes.size();
-         offset += sizeof(std::int64_t)) {
-      std::int64_t value = 0;
-      std::memcpy(&value, bytes.data() + offset, sizeof(value));
-      const auto replacement = remap(value);
-      if (!replacement) continue;
-      std::memcpy(bytes.data() + offset, &*replacement, sizeof(std::int64_t));
-      changed = true;
+    else if (node.name().find("k_norm/Reshape_2") != std::string::npos) {
+      target = static_cast<std::int64_t>(kvShard);
     }
-    if (changed) {
-      init->set_raw_data(bytes.data(), bytes.size());
-      ++changes;
+    if (!target || node.input_size() < 2) continue;
+    const auto& targetName = node.input(1);
+    for (int j = 0; j < graph->initializer_size(); ++j) {
+      auto* init = graph->mutable_initializer(j);
+      if (init->name() != targetName) continue;
+      if (init->data_type() != onnx::TensorProto::INT64) break;
+      if (init->data_location() != onnx::TensorProto::DEFAULT) break;
+      if (init->raw_data().empty() || init->raw_data().size() % sizeof(std::int64_t) != 0)
+        break;
+      std::string bytes = init->raw_data();
+      bool changed = false;
+      // The shape is [batch, sequence, width]; only the last entry is the sharded
+      // one. Rewriting every slot would corrupt the batch and sequence markers.
+      const auto slots = bytes.size() / sizeof(std::int64_t);
+      if (slots >= 1) {
+        const auto offset = (slots - 1) * sizeof(std::int64_t);
+        std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
+        changed = true;
+      }
+      if (changed) {
+        init->set_raw_data(bytes.data(), bytes.size());
+        ++changes;
+      }
+      break;
     }
   }
 
-  // 3. Value constraints that state a sharded width, such as the KV state shape
-  // and the q/k normalization reshapes.
-  const auto rewriteValueInfo = [&] (onnx::ValueInfoProto* value) {
-    auto* tensor = value->mutable_type()->mutable_tensor_type();
-    auto* shape = tensor->mutable_shape();
-    for (int d = 0; d < shape->dim_size(); ++d) {
-      auto* dim = shape->mutable_dim(d);
-      if (!dim->has_dim_value()) continue;
-      const auto replacement = remap(dim->dim_value());
-      if (!replacement) continue;
-      dim->set_dim_value(*replacement);
-      ++changes;
+  // 3. KV state dimensions, matched by name. These are the only value constraints
+  // this partition changes: the state tensors are [batch, kvHeads, sequence,
+  // headDim] and the head axis carries the sharded count. Rewriting value_info
+  // dimensions by value would also halve the residual stream, because kvHeads *
+  // headDim happens to equal hidden in this export.
+  const auto shardKvState = [&] (onnx::ValueInfoProto* value) {
+    const auto& name = value->name();
+    const bool isState = name.find("past_key_values.") == 0 ||
+                         name.find("present.") == 0;
+    if (!isState) return;
+    auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
+    // [batch, kvHeads, sequence, headDim]
+    if (shape->dim_size() < 4) return;
+    auto* heads = shape->mutable_dim(1);
+    if (!heads->has_dim_value()) return;
+    if (static_cast<std::uint64_t>(heads->dim_value()) != geometry.kvWidth / geometry.headDim) {
+      return;
     }
+    heads->set_dim_value(static_cast<std::int64_t>(kvShard / geometry.headDim));
+    ++changes;
   };
   for (int i = 0; i < graph->value_info_size(); ++i)
-    rewriteValueInfo(graph->mutable_value_info(i));
+    shardKvState(graph->mutable_value_info(i));
   for (int i = 0; i < graph->input_size(); ++i)
-    rewriteValueInfo(graph->mutable_input(i));
+    shardKvState(graph->mutable_input(i));
   for (int i = 0; i < graph->output_size(); ++i)
-    rewriteValueInfo(graph->mutable_output(i));
+    shardKvState(graph->mutable_output(i));
 
   return changes;
 }

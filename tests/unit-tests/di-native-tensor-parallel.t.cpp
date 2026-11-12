@@ -5242,6 +5242,117 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
 }
 
 
+BOOST_AUTO_TEST_CASE(HiddenWidthIsNotPartitionedEvenWhenItEqualsKvWidth)
+{
+  // The frozen export's KV width and hidden size are both 1024, so matching value
+  // constraints by number alone rewrites every hidden-width tensor to 512:
+  // o_proj's output, the residual stream, the embedding lookup. Those are not
+  // partitioned, and a graph that halves them either fails to load or computes a
+  // different function while every weight is correct.
+  const std::uint64_t hidden = 1024;
+  const std::uint64_t kvWidth = 1024;   // equal to hidden in this export
+  const std::uint64_t queryWidth = 2048;
+  const std::uint64_t ffn = 3072;
+
+  qwen::QwenTpRankGeometry geometry;
+  geometry.degree = 2;
+  geometry.rank = 0;
+  geometry.headDim = 128;
+  geometry.queryWidth = queryWidth;
+  geometry.kvWidth = kvWidth;
+  geometry.hidden = hidden;
+  geometry.ffn = ffn;
+  geometry.validate();
+  // The geometry itself cannot distinguish them, which is why value matching alone
+  // is not enough.
+  BOOST_CHECK_EQUAL(geometry.hidden, geometry.kvWidth);
+
+  auto model = makeTinyRankGraph(1);
+  {
+    auto* graph = model.mutable_graph();
+    // A hidden-width value_info, as o_proj's output really is, plus a kv-width one
+    // that must change. Both spell 1024.
+    // The KV one uses the export's real state name, since the rewrite is by name:
+    // "kv_stream" would match nothing and prove nothing.
+    for (const auto& name : {std::string("hidden_stream"),
+                             std::string("past_key_values.0.key")}) {
+      auto* value = graph->add_value_info();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto::FLOAT);
+      auto* shape = tensor->mutable_shape();
+      shape->add_dim()->set_dim_param("batch");
+      if (name.rfind("past_key_values.", 0) == 0) {
+        // [batch, kvHeads, sequence, headDim] as the export declares it.
+        shape->add_dim()->set_dim_value(8);
+        shape->add_dim()->set_dim_param("sequence");
+        shape->add_dim()->set_dim_value(128);
+      }
+      else {
+        shape->add_dim()->set_dim_value(static_cast<std::int64_t>(1024));
+      }
+    }
+    // Real nodes so the rewrite has something to inspect: an o_proj (input-channel
+    // shard, keeps N=hidden) and a k_proj (output-channel shard, halves N).
+    const auto addNBits = [graph] (const std::string& name, std::uint64_t n,
+                                   std::uint64_t k) {
+      auto* node = graph->add_node();
+      node->set_name(name);
+      node->set_op_type("MatMulNBits");
+      node->set_domain("com.microsoft");
+      node->add_input("in");
+      node->add_output(name + "_out");
+      for (const auto& attr : {std::pair<std::string, std::int64_t>{"K", static_cast<std::int64_t>(k)},
+                               std::pair<std::string, std::int64_t>{"N", static_cast<std::int64_t>(n)}}) {
+        auto* a = node->add_attribute();
+        a->set_name(attr.first);
+        a->set_type(onnx::AttributeProto::INT);
+        a->set_i(attr.second);
+      }
+    };
+    addNBits("model.layers.0.attn.k_proj.MatMul_Q4", kvWidth, hidden);
+    addNBits("model.layers.0.attn.o_proj.MatMul_Q4", hidden, queryWidth);
+  }
+
+  auto adapted = model;
+  (void)qwen::adaptQwenTpEntryParameters(adapted, geometry);
+
+  // The k_proj halves its output width; the o_proj keeps hidden and halves K.
+  for (const auto& node : adapted.graph().node()) {
+    if (node.op_type() != "MatMulNBits") continue;
+    std::int64_t k = -1, n = -1;
+    for (const auto& attr : node.attribute()) {
+      if (attr.name() == "K") k = attr.i();
+      if (attr.name() == "N") n = attr.i();
+    }
+    if (node.name().find("k_proj") != std::string::npos) {
+      BOOST_CHECK_EQUAL(n, static_cast<std::int64_t>(kvWidth / 2));
+      BOOST_CHECK_EQUAL(k, static_cast<std::int64_t>(hidden));
+    }
+    if (node.name().find("o_proj") != std::string::npos) {
+      BOOST_CHECK_EQUAL(n, static_cast<std::int64_t>(hidden));
+      BOOST_CHECK_EQUAL(k, static_cast<std::int64_t>(queryWidth / 2));
+    }
+  }
+
+  // The hidden-width value constraint must stay at 1024. Halving it is the defect
+  // this case exists to catch, and it cannot be seen from the weights alone.
+  for (const auto& value : adapted.graph().value_info()) {
+    if (value.name() != "hidden_stream") continue;
+    BOOST_REQUIRE(value.type().tensor_type().shape().dim_size() == 2);
+    BOOST_CHECK_EQUAL(value.type().tensor_type().shape().dim(1).dim_value(), 1024);
+  }
+  for (const auto& value : adapted.graph().value_info()) {
+    if (value.name() != "past_key_values.0.key") continue;
+    const auto& shape = value.type().tensor_type().shape();
+    BOOST_REQUIRE(shape.dim_size() == 4);
+    // Head axis halves; sequence length and head dimension do not.
+    BOOST_CHECK_EQUAL(shape.dim(1).dim_value(), 4);
+    BOOST_CHECK(shape.dim(2).has_dim_param());
+    BOOST_CHECK_EQUAL(shape.dim(3).dim_value(), 128);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(ShardedEntryDeclaresTheWidthsItsWeightsActuallyHave)
 {
   // Slicing weights without rewriting the operators produces a graph that does not
