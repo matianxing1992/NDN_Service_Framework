@@ -7921,6 +7921,83 @@ sha256HexOfBytes(const std::vector<std::uint8_t>& bytes)
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
+{
+  // The Provider's own gate before it creates a runner. A tensor-parallel spec re-targets
+  // its backend at the parent runner while the sealed contract still names the assembled
+  // backend, so the equality check would refuse every sharded role. This drives the real
+  // validator rather than restating its rule.
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  NativeSelectionProjectionV3 projection;
+  projection.canonicalArtifactName = "/artifact/S0R0";
+  auto& assembly = projection.assembly;
+  assembly.selectedRole = "S0R0";
+  assembly.backend = "onnxruntime";
+  assembly.backendAbi = "onnxruntime-cpu-v1";
+  assembly.modelManifestDigest = sha('1');
+  assembly.artifactProfileDigest = sha('2');
+  assembly.graphDigest = sha('3');
+  assembly.canonicalInitializerDigest = sha('4');
+  assembly.adapterDescriptorDigest = sha('5');
+  assembly.assemblerDescriptorDigest = sha('6');
+  assembly.nodeIndices = {0, 1};
+  assembly.expectedInputs = {
+    NativeAssemblyTensorContractV3{"input_ids", "int64", {1, "sequence"}}};
+  assembly.expectedOutputs = {
+    NativeAssemblyTensorContractV3{"logits", "float32", {1, "sequence", 151936}}};
+  assembly.precision = "int8";
+  assembly.quantization = "weight_only_int4";
+  assembly.layout = "native";
+  assembly.padding = "none";
+  assembly.maxSourceBytes = 985894912ULL;
+  assembly.maxAssembledBytes = 3392676128ULL;
+  assembly.maxNodes = 10000;
+  assembly.artifactDigest = sha('7');
+  assembly.recipeDigest = sha('8');
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = "/var/tmp/spec224-publish/S0R0/model.onnx";
+  spec.metadata = {
+    {"fragmentDigest", assembly.artifactDigest},
+    {"recipeDigest", assembly.recipeDigest},
+    {"modelManifestDigest", assembly.modelManifestDigest},
+    {"artifactProfileDigest", assembly.artifactProfileDigest},
+    {"graphDigest", assembly.graphDigest},
+    {"canonicalInitializerDigest", assembly.canonicalInitializerDigest},
+    {"adapterDescriptorDigest", assembly.adapterDescriptorDigest},
+    {"assemblerDescriptorDigest", assembly.assemblerDescriptorDigest},
+    {"backendAbi", assembly.backendAbi},
+    {"precision", assembly.precision},
+    {"quantization", assembly.quantization},
+    {"layout", assembly.layout},
+    {"padding", assembly.padding},
+    {"maxSourceBytes", std::to_string(assembly.maxSourceBytes)},
+    {"maxAssembledBytes", std::to_string(assembly.maxAssembledBytes)},
+    {"maxNodes", std::to_string(assembly.maxNodes)},
+  };
+  // The unmodified spec is acceptable, so the case is not passing on a broken baseline.
+  BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, spec).has_value());
+
+  // Re-targeting the backend to the parent runner is refused while the spec carries no
+  // entry table: the exception belongs to a table, not to the backend name.
+  auto retargeted = spec;
+  retargeted.backend = "native-qwen-tensor";
+  const auto withoutTable = validateNativePreparedRunnerSpec(projection, retargeted);
+  BOOST_REQUIRE(withoutTable.has_value());
+  BOOST_CHECK_EQUAL(*withoutTable, std::string("DI_PROVIDER_ASSEMBLY_RUNNER_MISMATCH"));
+
+  // With a table and its root the same spec is accepted, which is the sharded case.
+  retargeted.metadata["tensorParallelEntries"] = R"([{"entryId":"S0R0/ATTN/0"}])";
+  retargeted.metadata["tensorParallelEntryRoot"] = "/var/tmp/spec224-publish/S0R0";
+  BOOST_CHECK_MESSAGE(!validateNativePreparedRunnerSpec(projection, retargeted).has_value(),
+    "a sharded spec with an entry table was still refused");
+}
+
 BOOST_AUTO_TEST_CASE(AssemblerTablesSurviveTheArtifactFileValidation)
 {
   // The link from assembly to publication: `validateNativeAssembledArtifactFiles` is what a

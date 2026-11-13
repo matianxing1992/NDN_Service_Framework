@@ -1879,7 +1879,17 @@ validateNativePreparedRunnerSpec(
       assembly.maxAssembledBytes == 0 || assembly.maxNodes == 0) {
     return "DI_PROVIDER_ASSEMBLY_IDENTITY_INCOMPLETE";
   }
-  if (spec.role != assembly.selectedRole || spec.backend != assembly.backend ||
+  // A tensor-parallel role assembles the same artifact and then re-targets its spec at the
+  // parent runner: the file on disk is one rank's model, but what executes is the entry
+  // table behind it. The sealed contract still names the backend it was assembled for, so
+  // accepting the parent backend here is a declared exception rather than a loosened check
+  // -- and it only applies when the spec actually carries a table.
+  const bool tensorParallelBackend =
+    spec.backend == "native-qwen-tensor" &&
+    spec.metadata.count("tensorParallelEntries") != 0 &&
+    spec.metadata.count("tensorParallelEntryRoot") != 0;
+  if (spec.role != assembly.selectedRole ||
+      (spec.backend != assembly.backend && !tensorParallelBackend) ||
       spec.path.empty()) {
     return "DI_PROVIDER_ASSEMBLY_RUNNER_MISMATCH";
   }
