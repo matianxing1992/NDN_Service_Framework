@@ -215,6 +215,22 @@ struct RepoDataPublication
   std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
 };
 
+class VerifiedRepoUserStoragePacketSetV1;
+
+/** Owner-claim retrieval: the same fetch operation in its verified Owner mode.
+ *  The result carries the transport proof RepoClient mints, never an execution
+ *  authorization. */
+struct RepoOwnerClaimFetch
+{
+  std::string objectName;
+  std::string targetId;
+  std::string repoNode;
+  uint32_t ackCollectionTimeMs = 1000;
+  uint64_t maxPacketCount = 65536;
+  uint64_t maxPacketWireBytes = 256ULL * 1024 * 1024;
+  uint64_t maxManifestWireBytes = 4ULL * 1024 * 1024;
+};
+
 /** Requested original-Data retrieval. */
 struct RepoDataFetch
 {
@@ -227,6 +243,9 @@ struct RepoDataFetch
   uint64_t maxWireBytes = 0;
   std::string targetId;
   std::string repoNode;
+  /** When set, the retrieval verifies and returns an Owner-claimed packet set
+   *  instead of an unproven wire list. */
+  std::optional<RepoOwnerClaimFetch> ownerClaim;
   uint64_t rangeOffsetBytes = 0;
   uint64_t rangeLengthBytes = 0;
   bool hasRange = false;
@@ -241,6 +260,9 @@ struct RepoDataFetchResult
   std::string wireDigest;
   bool digestVerified = false;
   std::vector<std::string> attemptedSources;
+  /** Present only for an Owner-claim fetch; minted by RepoClient after matching
+   *  the manifest, every indexed packet and the ordered wire digest. */
+  std::shared_ptr<const VerifiedRepoUserStoragePacketSetV1> ownerPacketSet;
 };
 
 /** Owner-scoped listing or a Repo inventory page. */

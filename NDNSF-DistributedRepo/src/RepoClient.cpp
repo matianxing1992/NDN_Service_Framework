@@ -2941,6 +2941,36 @@ RepoClient::fetchData(const RepoDataFetch& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data retrieval requires a persistent client",
                           "fetchData");
+  if (input.ownerClaim) {
+    // Owner-claim mode: RepoClient mints the proof only after matching the
+    // manifest, every indexed packet and the ordered wire digest.
+    const auto& claim = *input.ownerClaim;
+    RepoUserStoragePacketSetFetchLimits limits;
+    limits.ackCollectionTimeMs = claim.ackCollectionTimeMs;
+    limits.maxPacketCount = claim.maxPacketCount;
+    limits.maxPacketWireBytes = claim.maxPacketWireBytes;
+    const auto verifier = input.verifyWire;
+    const auto verifyPacket = [verifier](const ndn::Data& packet) {
+      if (!verifier || !*verifier)
+        return true;
+      const auto& wire = packet.wireEncode();
+      return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
+    };
+    auto verified = RepoClient::fetchOriginalDataPacketSetFromUserStorage(
+      *m_impl->user, m_impl->target(claim.targetId, claim.repoNode), claim.objectName,
+      verifyPacket, remainingMs(options.deadline), limits);
+    RepoDataFetchResult result;
+    result.wireBytes = 0;
+    for (const auto& wire : verified.packetWires())
+      result.wireBytes += wire.size();
+    result.packets = verified.packetWires();
+    result.digestVerified = true;
+    result.wireDigest = "sha256:" + verified.manifest().sha256;
+    result.ownerPacketSet = std::shared_ptr<const VerifiedRepoUserStoragePacketSetV1>(
+      new VerifiedRepoUserStoragePacketSetV1(std::move(verified)));
+    return result;
+  }
+
   std::vector<std::string> orderedNames;
   uint64_t wireBudget = 0;
   std::string expectedDigest;

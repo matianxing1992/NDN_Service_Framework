@@ -195,8 +195,28 @@ NativeKvHandoffOwner::verifyAndPromote(std::shared_ptr<User> user,
       return context->user->validateProducerPacketWireUntil(
         ndn::Buffer(wire.begin(), wire.end()), producer, context->deadline);
     };
-    auto original = repo::RepoClient::fetchOriginalDataPacketSetFromUserStorage(*context->user,
-      replica, role.rootName.toUri(), verifier, context->remaining(), limits);
+    auto ownerConfig = repo::PersistentRepoClientConfig{};
+    ownerConfig.servicePrefix = ndn::Name(target.servicePrefix);
+    ownerConfig.providerScope = {ndn::Name(target.providerIdentity)};
+    ownerConfig.dataOnly = true;
+    auto ownerClient = repo::RepoClient::makePersistent(context->user, std::move(ownerConfig));
+    repo::RepoDataFetch ownerRequest;
+    ownerRequest.ownerClaim = repo::RepoOwnerClaimFetch{
+      role.rootName.toUri(), target.providerIdentity, target.repoNode,
+      limits.ackCollectionTimeMs, limits.maxPacketCount, limits.maxPacketWireBytes,
+      limits.maxManifestWireBytes};
+    ownerRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+      [verifier](const std::vector<uint8_t>& wire) {
+        const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
+        return verifier(packet);
+      });
+    repo::RepoOperationOptions ownerOptions;
+    ownerOptions.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::max(1, context->remaining()));
+    ownerOptions.requireCurrent = [context] { context->current(); };
+    auto ownerResult = ownerClient.fetchData(ownerRequest, ownerOptions);
+    require(ownerResult.ownerPacketSet != nullptr, "handoff owner proof missing");
+    const auto& original = *ownerResult.ownerPacketSet;
     require(original.manifest().size == role.originalWireBytes &&
       original.manifest().sha256 == role.originalWireSha256 &&
       original.claim().ownerEpoch == role.ownerEpoch, "handoff actual Repo tuple changed");
