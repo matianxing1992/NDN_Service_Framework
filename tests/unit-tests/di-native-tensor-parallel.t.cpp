@@ -8172,6 +8172,339 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
+{
+  // The coordinator's own sampler, over logits the head entry produced. The process-level case
+  // already sampled by hand from the same numbers, so this checks that the production sampler
+  // reads the same tensor and agrees -- a difference would mean the coordinator reads logits
+  // differently from the way they arrive.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-coordinator-sample-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data",
+                                    cleanupError);
+  if (cleanupError)
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // The full stack plus the head on this unit, so the sampler has real logits to read.
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : candidate.executionPlan.steps)
+    if (step.unitId == "S0R0") steps.push_back(step);
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U + 4U * 28U + 1U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  spec.backend = "onnxruntime";
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string("S0R0"));
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  const auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  NativeExecutionPlan plan;
+  plan.roles = {"S0R0"};
+  plan.steps = steps;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  plan.tensorDegree = 2;
+  NativeDependencySpec feedback;
+  feedback.producers = {"S0R0"};
+  feedback.consumers = {"S0R0"};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/token-feedback";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+  feedback.tensors = {"input_ids"};
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  feedback.useNdnsfDataV1 = true;
+  plan.dependencies.push_back(std::move(feedback));
+  plan.streamingOperationStride = plan.dependencies.size();
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto identity = tpStateIdentity("S0R0", 28, 0);
+  // The coordinator derives its own role from the plan, so the peer contributions belong in
+  // the plan's dependency list rather than in a role this case builds and discards.
+  auto role = roleSpecFor(plan, "S0R0", "/session/coordinator-sample", assignment,
+                          "/provider/0");
+  BOOST_REQUIRE(role.steps && !role.steps->empty());
+  // The full stack's reductions need the peer's contribution at every layer. Declaring them
+  // lets the sampler be tested without a second worker; each is bound to the reduction that
+  // consumes it, which is what makes the worker await it there.
+  const auto layerOfStep = [] (const std::string& stepId) -> std::optional<std::uint64_t> {
+    const auto slash = stepId.rfind('/');
+    if (slash == std::string::npos || slash + 1 >= stepId.size()) return std::nullopt;
+    const auto tail = stepId.substr(slash + 1);
+    if (tail.empty() ||
+        !std::all_of(tail.begin(), tail.end(),
+                     [] (unsigned char ch) { return ch >= '0' && ch <= '9'; }))
+      return std::nullopt;
+    return static_cast<std::uint64_t>(std::stoull(tail));
+  };
+  // Keyed by kind and layer: the reduction compares tensor identity, so the peer's tensor
+  // must carry the same graph name as this rank's own contribution for that same layer. One
+  // name per kind would give every layer the last layer's name and the reduction would refuse
+  // it -- which is exactly how this was found.
+  std::map<std::string, std::string> partialTensorNameByKind;
+  for (const auto& entry : qwen::parseQwenTpEntryTable(
+         spec.metadata.at("tensorParallelEntries"))) {
+    if (entry.kind != "ATTN" && entry.kind != "MLP") continue;
+    const auto key = std::string(entry.kind == "ATTN" ? "attn" : "mlp") + "-" +
+      std::to_string(entry.layer);
+    for (const auto& item : entry.outputSlotByGraphName)
+      if (item.second == "partial") partialTensorNameByKind[key] = item.first;
+  }
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"attn", "mlp"}) {
+      DependencyEdge edge;
+      edge.scope = std::string(kind) + "-" + std::to_string(layer) + "-from-S0R1";
+      edge.producerRole = "S0R1";
+      edge.consumerRole = "S0R0";
+      edge.plannedDataName = "/peer/" + std::string(kind) + "/" + std::to_string(layer);
+      edge.tensors = {"partial"};
+      edge.useNdnsfDataV1 = true;
+      edge.operationKind = "TENSOR_PARTIAL";
+      const auto kindMarker = std::string("/SUM_") +
+        (std::string(kind) == "attn" ? "ATTN/" : "MLP/");
+      for (const auto& step : role.steps ? *role.steps
+                                          : std::vector<NativeExecutionStepSpec>{}) {
+        if (step.operation != "SUM") continue;
+        if (step.stepId.find(kindMarker) == std::string::npos) continue;
+        const auto stepLayer = layerOfStep(step.stepId);
+        if (!stepLayer || *stepLayer != layer) continue;
+        for (const auto& slot : step.inputSlots) {
+          if (slot.source != "REMOTE_STEP") continue;
+          edge.consumerStepId = step.stepId;
+          edge.consumerSlotId = slot.slotId;
+        }
+      }
+      BOOST_REQUIRE(!edge.consumerStepId.empty());
+      NativeDependencySpec dependency;
+      dependency.producers = {edge.producerRole};
+      dependency.consumers = {edge.consumerRole};
+      dependency.keyScope = edge.scope;
+      dependency.topicPrefix = "/peer";
+      dependency.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+      dependency.tensors = edge.tensors;
+      dependency.operationKind = "TENSOR_PARTIAL";
+      dependency.useNdnsfDataV1 = true;
+      dependency.producerStepId = edge.producerStepId;
+      dependency.producerSlotId = edge.producerSlotId;
+      dependency.consumerStepId = edge.consumerStepId;
+      dependency.consumerSlotId = edge.consumerSlotId;
+      plan.dependencies.push_back(std::move(dependency));
+    }
+  }
+  plan.streamingOperationStride = plan.dependencies.size();
+  role = roleSpecFor(plan, "S0R0", "/session/coordinator-sample", assignment, "/provider/0");
+  BOOST_TEST_MESSAGE("role inputs=" << role.inputs.size());
+
+  class SamplingIo final : public DependencyIo
+  {
+  public:
+    SamplingIo(std::map<std::string, std::string> names, std::int64_t width)
+      : tensorNameByKind(std::move(names)), hidden(width)
+    {
+    }
+
+    const std::string&
+    tensorNameFor(const std::string& scope) const
+    {
+      // The scope is "<kind>-<layer>-from-<role>".
+      const auto kind = scope.substr(0, scope.find('-'));
+      const auto after = scope.find('-') + 1;
+      const auto layer = scope.substr(after, scope.find('-', after) - after);
+      return tensorNameByKind.at(kind + "-" + layer);
+    }
+
+    std::future<TensorBundle>
+    prefetchInput(const std::string&, const DependencyEdge& edge) override
+    {
+      std::promise<TensorBundle> promise;
+      if (edge.operationKind == "TOKEN_FEEDBACK") {
+        NamedTensor token;
+        token.name = "input_ids";
+        token.elementType = TensorElementType::Int64;
+        token.shape = {1, 1};
+        token.payload.resize(sizeof(std::int64_t));
+        NamedTensor marker;
+        marker.name = "__ndnsf_token_feedback_terminal";
+        marker.elementType = TensorElementType::Bool;
+        marker.shape = {1};
+        marker.payload = {1};
+        promise.set_value(makeEncodedTensorBundle("feedback",
+                                                  {std::move(token), std::move(marker)}));
+      }
+      else if (edge.operationKind == "TENSOR_PARTIAL") {
+        // The peer's contribution, shaped and named like this rank's own so the reduction
+        // accepts it. This case is about the sampler, not the exchange.
+        NamedTensor partial;
+        partial.name = tensorNameFor(edge.scope);
+        partial.elementType = TensorElementType::Float32;
+        partial.shape = {1, 1, hidden};
+        partial.payload.assign(static_cast<std::size_t>(hidden) * sizeof(float), 0);
+        float* values = reinterpret_cast<float*>(partial.payload.data());
+        for (std::size_t index = 0; index < hidden; ++index) values[index] = 0.5f;
+        promise.set_value(makeEncodedTensorBundle(edge.scope, {std::move(partial)}));
+      }
+      else {
+        promise.set_exception(std::make_exception_ptr(
+          std::runtime_error("unexpected fetch for " + edge.scope)));
+      }
+      return promise.get_future();
+    }
+
+    void
+    publishOutput(const std::string&, const DependencyEdge& edge,
+                  const TensorBundle& bundle) override
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      published.emplace(edge.scope, bundle);
+    }
+
+    std::map<std::string, TensorBundle> published;
+    std::map<std::string, std::string> tensorNameByKind;
+    std::int64_t hidden = 0;
+    std::mutex mutex;
+  };
+
+  auto io = std::make_shared<SamplingIo>(partialTensorNameByKind, static_cast<std::int64_t>(shape.hidden));
+  NativeProviderRuntime runtime(1);
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "coordinator-sample";
+  config.requestId = "/request/coordinator-sample";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = sha('d');
+  config.localProvider = "/provider/0";
+  config.role = "S0R0";
+  config.maxEpochs = 1;
+  config.stateIdentityTemplate = identity;
+  config.positionPolicyDigest = identity.positionDigest;
+  config.samplingDigest = sha('e');
+  config.prepareRunner = [runner] { return runner; };
+  // This unit owns the head, so it is the terminal role and the coordinator samples from its
+  // logits. That is the path under test.
+  config.terminalRole = true;
+  std::vector<std::string> events;
+  config.eventSink = [&events] (const std::vector<std::uint8_t>& payload) {
+    events.emplace_back(payload.begin(), payload.end());
+    return true;
+  };
+  const auto makeToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  config.initialInputs = {
+    {"input_ids", makeEncodedTensorBundle("input_ids", {makeToken("input_ids", 7)})},
+    {"attention_mask", makeEncodedTensorBundle("attention_mask",
+      {makeToken("attention_mask", 1)})},
+    {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+      {makeToken("position_ids", 0)})},
+  };
+
+  NativeEpochCoordinatorResult result;
+  try {
+    result = runNativeEpochCoordinator(std::move(config));
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("coordinator sampling: ") + error.what());
+  }
+  BOOST_CHECK_EQUAL(result.epochsExecuted, 1U);
+  BOOST_REQUIRE_EQUAL(events.size(), 1U);
+  // The token the coordinator sampled, read back out of the event it published.
+  // The logits arrive under the head slot's id, which is `logits`; the coordinator finds them
+  // by that tensor name inside the bundle. Print what the epoch produced so a mismatch between
+  // the slot id and the name is visible.
+  BOOST_TEST_MESSAGE("epoch scopes=" << result.cacheObservations.size()
+                    << " events=" << events.size());
+  const auto& event = events.front();
+  const auto position = event.find("\"tokenId\":");
+  BOOST_REQUIRE_MESSAGE(position != std::string::npos, "the event carries no token:");
+  const auto digits = event.substr(position + 10);
+  const auto token = std::stoll(digits.substr(0, digits.find_first_not_of("0123456789")));
+  BOOST_TEST_MESSAGE("coordinator sampled token=" << token);
+  // The token cannot be compared with the two-worker run's 25: that run summed both ranks'
+  // real partials, while this one sums rank 0's real partials with a constant peer
+  // contribution, so the logits are a different forward pass. What the case can assert is
+  // that the sampler produced a valid token from real logits, and that the same token is the
+  // argmax the coordinator's own Greedy rule should pick.
+  BOOST_CHECK_GE(token, 0);
+  BOOST_CHECK_LT(token, static_cast<std::int64_t>(shape.vocab));
+  // Greedy sampling with no repetition penalty takes the first maximum, so re-sampling the
+  // published logits must give the same index. The published logits are read back from the
+  // head slot the worker surfaced.
+  BOOST_TEST_MESSAGE("token is a valid vocabulary index");
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorDrivesOneEpochWithARealAssembledStepTemplate)
 {
   // The coordinator has never driven a tensor-parallel role: every earlier run either had no

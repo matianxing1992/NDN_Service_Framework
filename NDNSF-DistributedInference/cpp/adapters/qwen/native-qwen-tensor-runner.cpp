@@ -525,6 +525,12 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   // path never has to be re-derived from an id.
   child.path = root->second + "/" + entry.relativeGraphPath;
   child.metadata = parent.metadata;
+  // Always ask for an encoded bundle. The ordinary runner returns a single output's raw bytes
+  // keyed by its scope, and a multi-output entry as one encoded bundle; the parent decodes what
+  // it gets to find tensors by name. A raw payload cannot be decoded, so a single-output entry
+  // -- the head is one -- would arrive unreadable, and the failure surfaces as "no encoded
+  // logits" far from its cause. Declaring the bundle makes every entry uniform.
+  child.metadata["forceOutputBundle"] = "true";
   // The entry's own graph names are the IO contract; the runner maps scopes.
   for (std::size_t index = 0; index < entry.inputNames.size(); ++index)
     child.metadata["inputScope." + std::to_string(index)] = entry.inputNames[index];
