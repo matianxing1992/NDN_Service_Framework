@@ -194,6 +194,23 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
+  // CA08: close must not claim a drain it did not observe, and an operation started
+  // after close must be refused instead of running on released state.
+  TemporaryDirectory temporary("close");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  BOOST_CHECK(client.close(std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+
+  RepoInspectionRequest inspection;
+  inspection.kind = RepoInspectionRequest::Kind::NODE;
+  BOOST_CHECK_THROW(client.inspect(inspection, makeOptions()), RepoClientError);
+
+  RepoFilePublication publication;
+  publication.sourcePath = (temporary.path() / "missing.bin").string();
+  publication.reference = fixtureReference();
+  BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
+}
+
 BOOST_AUTO_TEST_CASE(RemoveRequiresATypedTargetAndCleanupId) {
   // CA07: a delete without a target, a cleanup id or any object binding must be a
   // caller error, not a silent default to epoch zero or a constant cleanup id.

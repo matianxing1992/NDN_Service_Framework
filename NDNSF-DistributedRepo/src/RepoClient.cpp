@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <cctype>
 #include <condition_variable>
 #include <cstdio>
@@ -2715,6 +2716,23 @@ toArtifactHandle(const RepoHandle& input)
 
 struct RepoClient::Impl
 {
+  /** Counts operations that are still running so close() can report the truth
+   *  instead of claiming a drain it did not observe. */
+  struct Ticket
+  {
+    Impl* owner;
+    explicit Ticket(Impl* value, const char* phase)
+      : owner(value)
+    {
+      if (owner->closing.load())
+        throw RepoClientError("CLOSED", "RepoClient is closing", phase);
+      owner->active.fetch_add(1);
+    }
+    ~Ticket() { owner->active.fetch_sub(1); }
+    Ticket(const Ticket&) = delete;
+    Ticket& operator=(const Ticket&) = delete;
+  };
+
   RepoArtifactTarget
   target(const RepoTarget& declared) const
   {
@@ -2731,6 +2749,8 @@ struct RepoClient::Impl
   std::optional<ArtifactRepositoryApi> file;
   std::string servicePrefix;
   bool dataOnly = false;
+  std::atomic<int> active{0};
+  std::atomic<bool> closing{false};
 };
 
 RepoClient
@@ -2771,10 +2791,15 @@ RepoClient::close(std::chrono::steady_clock::time_point deadline)
 {
   if (!m_impl)
     return true;
-  // The file engine owns its workers; releasing it drains them. Nothing is left
-  // referencing the caller after this returns.
-  m_impl.reset();
-  (void)deadline;
+  // Refuse new work first, then report whether the in-flight ones actually drained.
+  // Releasing the engine here would free state under a running call, so the release
+  // stays with the destructor and the return value states the truth about draining.
+  m_impl->closing.store(true);
+  while (m_impl->active.load() > 0) {
+    if (std::chrono::steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
   return true;
 }
 
@@ -2782,6 +2807,7 @@ RepoPublishResult
 RepoClient::publishFile(const RepoFilePublication& input,
                         const RepoOperationOptions& options)
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl || !m_impl->file)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
   if (input.reference.logicalName.empty() || input.reference.contentDigest.empty())
@@ -2830,6 +2856,7 @@ RepoPublishResult
 RepoClient::publishData(const RepoDataPublication& input,
                         const RepoOperationOptions& options)
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishData");
   if (!m_impl->user)
@@ -2912,6 +2939,7 @@ RepoFetchResult
 RepoClient::fetchFile(const RepoFileFetch& input,
                       const RepoOperationOptions& options) const
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl || !m_impl->file)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchFile");
   if (input.targetPath.empty())
@@ -2966,6 +2994,7 @@ RepoDataFetchResult
 RepoClient::fetchData(const RepoDataFetch& input,
                       const RepoOperationOptions& options) const
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchData");
   if (!m_impl->user)
@@ -3087,6 +3116,7 @@ RepoWriteGrant
 RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
                            const RepoOperationOptions& options)
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "authorizeWrite");
   if (!m_impl->user)
@@ -3129,6 +3159,7 @@ RepoInspection
 RepoClient::inspect(const RepoInspectionRequest& input,
                     const RepoOperationOptions& options) const
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl || !m_impl->file)
     throw RepoClientError("CLOSED", "RepoClient is closed", "inspect");
   RepoInspection inspection;
@@ -3202,6 +3233,7 @@ RepoClient::inspect(const RepoInspectionRequest& input,
 RepoPage
 RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& options) const
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "list");
   if (!m_impl->user)
@@ -3251,6 +3283,7 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
 RepoDeleteResult
 RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& options)
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "remove");
   // Shape errors are caller mistakes: report them before the mode check, otherwise an
@@ -3313,6 +3346,7 @@ RepoCandidateSet
 RepoClient::discover(const RepoDiscoveryRequest& input,
                      const RepoOperationOptions& options) const
 {
+  Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl || !m_impl->file)
     throw RepoClientError("CLOSED", "RepoClient is closed", "discover");
   ArtifactCapabilityRequirements requirements;
