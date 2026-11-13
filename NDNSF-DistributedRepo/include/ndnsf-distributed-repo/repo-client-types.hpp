@@ -199,6 +199,9 @@ struct RepoDataPublication
   std::optional<ProducerObjectSource> object;
   std::string producerIdentity;
   std::string targetId;
+  /** Node name of the target; derived only when the deployment does not give
+   *  one, because a Repo node name is not always the provider's last component. */
+  std::string repoNode;
   /** Owner authorization the writer was given; empty means self-owned. */
   std::string ownerIdentity;
   std::string grantId;
@@ -221,6 +224,7 @@ struct RepoDataFetch
   std::vector<std::string> packetNames;
   uint64_t maxWireBytes = 0;
   std::string targetId;
+  std::string repoNode;
   uint64_t rangeOffsetBytes = 0;
   uint64_t rangeLengthBytes = 0;
   bool hasRange = false;
@@ -248,6 +252,7 @@ struct RepoListRequest
 {
   RepoListScope scope = RepoListScope::OWNER_OBJECTS;
   std::string targetId;
+  std::string repoNode;
   std::string cursor;
   uint32_t limit = 100;
   std::string catalogRevision;
@@ -354,6 +359,7 @@ struct RepoDiscoveryRequest
 struct RepoWriteAuthorization
 {
   std::string targetId;
+  std::string repoNode;
   std::string writerIdentity;
   std::string objectName;
   std::string grantId;

@@ -2700,12 +2700,14 @@ toArtifactHandle(const RepoHandle& input)
 struct RepoClient::Impl
 {
   RepoArtifactTarget
-  target(const std::string& providerIdentity) const
+  target(const std::string& providerIdentity, const std::string& node = {}) const
   {
     RepoArtifactTarget resolved;
     resolved.providerIdentity = providerIdentity;
-    resolved.repoNode = providerIdentity.empty()
-      ? std::string() : ndn::Name(providerIdentity)[-1].toUri();
+    resolved.repoNode = !node.empty()
+      ? node
+      : (providerIdentity.empty() ? std::string()
+                                  : ndn::Name(providerIdentity)[-1].toUri());
     resolved.servicePrefix = servicePrefix.empty()
       ? std::string(DEFAULT_SERVICE_NAME) : servicePrefix;
     return resolved;
@@ -2714,6 +2716,7 @@ struct RepoClient::Impl
   std::shared_ptr<ndn_service_framework::ServiceUser> user;
   std::optional<ArtifactRepositoryApi> file;
   std::string servicePrefix;
+  bool dataOnly = false;
 };
 
 RepoClient
@@ -2732,7 +2735,10 @@ RepoClient::makePersistent(std::shared_ptr<ndn_service_framework::ServiceUser> u
     throw std::invalid_argument("persistent RepoClient requires a ServiceUser");
   auto impl = std::make_unique<Impl>();
   impl->servicePrefix = config.servicePrefix.toUri();
-  impl->file = ArtifactRepositoryApi::makePersistent(*user, std::move(config));
+  const bool dataOnly = config.dataOnly;
+  if (!dataOnly)
+    impl->file = ArtifactRepositoryApi::makePersistent(*user, std::move(config));
+  impl->dataOnly = dataOnly;
   impl->user = std::move(user);
   return RepoClient(std::move(impl));
 }
@@ -2798,7 +2804,7 @@ RepoPublishResult
 RepoClient::publishData(const RepoDataPublication& input,
                         const RepoOperationOptions& options)
 {
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishData");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
@@ -2858,7 +2864,7 @@ RepoClient::publishData(const RepoDataPublication& input,
     const auto& wire = packet.wireEncode();
     return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
-  const auto target = m_impl->target(input.targetId);
+  const auto target = m_impl->target(input.targetId, input.repoNode);
   const auto manifest = RepoClient::commitUserStorageOriginalPackets(
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
@@ -2928,7 +2934,7 @@ RepoDataFetchResult
 RepoClient::fetchData(const RepoDataFetch& input,
                       const RepoOperationOptions& options) const
 {
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchData");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
@@ -2962,7 +2968,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   auto wires = RepoClient::fetchOriginalDataPackets(
-    m_impl->user, m_impl->target(input.targetId), names, wireBudget,
+    m_impl->user, m_impl->target(input.targetId, input.repoNode), names, wireBudget,
     verifyPacket, remainingMs(options.deadline), options.requireCurrent);
   RepoDataFetchResult result;
   result.wireBytes = 0;
@@ -3002,7 +3008,7 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   request.objectName = input.objectName;
   request.expiresAtMs = input.expiresAtMs;
   const auto encoded = request.toJson();
-  const auto target = m_impl->target(input.targetId);
+  const auto target = m_impl->target(input.targetId, input.repoNode);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
@@ -3087,7 +3093,7 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   request.afterObjectName = input.cursor;
   request.limit = input.limit;
   const auto encoded = request.toJson();
-  const auto target = m_impl->target(input.targetId);
+  const auto target = m_impl->target(input.targetId, input.repoNode);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),

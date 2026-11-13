@@ -42,6 +42,10 @@ struct PersistentRepoClientConfig
   int operationWaitTimeoutMs = 5000;
   int fetchFailureCooldownMs = 3000;
   size_t maxFetchHealthEntries = 1024;
+  /** Skip the file engine when the caller only performs original-Data
+   *  operations; the data path borrows the ServiceUser and never needs the
+   *  file client's stores or workers. */
+  bool dataOnly = false;
 };
 
 struct RepoCandidate
