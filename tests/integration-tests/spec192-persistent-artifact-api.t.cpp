@@ -5971,8 +5971,7 @@ BOOST_AUTO_TEST_CASE(PublishDataRejectsAMissingVerifierBeforeAnySideEffect)
     return true;
   };
   publication.packets = std::move(source);
-  publication.targetId = target.providerIdentity;
-  publication.repoNode = target.repoNode;
+  publication.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
   publication.producerIdentity = publisher->getName().toUri();
   publication.ownerIdentity = publisher->getName().toUri();
   publication.generation = 1;
