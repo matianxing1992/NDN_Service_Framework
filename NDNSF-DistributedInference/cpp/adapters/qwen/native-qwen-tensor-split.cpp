@@ -795,10 +795,15 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // output to X' inside the normalization, so a single pre-added tensor would be
       // added twice. The two contributions therefore stay separate slots, each bound to
       // the step that produced it on this unit; neither comes from the peer.
+      // Layer 1 onwards, the skip normalization adds the previous layer's MLP projection to
+      // its post-attention value. The post-attention value is that layer's `post_residual`
+      // -- the residual plus the attention projection, which the MLP entry already formed --
+      // not the attention reduction alone. Feeding the reduction alone would drop the
+      // residual stream from every layer after the first.
       attn.inputSlots = {layer == 0
         ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
-        : makeFedSlot("post_attention", "LOCAL_STEP", sumAttnStep(unit.roleId, layer - 1),
-                      "merged", shape.hidden)};
+        : makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
+                      "post_residual", shape.hidden)};
       if (layer > 0) {
         attn.inputSlots.push_back(
           makeFedSlot("previous_mlp", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1),
@@ -2460,8 +2465,10 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
         // post-attention residual, so the two inputs are told apart by which one the MLP
         // produced. Declaration order is not reliable -- the export's order follows its own
         // graph construction, not the semantic read-out order.
-        const bool fromMlp = name.find("mlp") != std::string::npos ||
-                             name.find("down_proj") != std::string::npos;
+        // Layer 1's two inputs: the previous layer's post-attention normalization output and
+        // its MLP projection output. Both live under `layers.0`, so the path does not
+        // distinguish them -- the producing op does, and only the MLP's is a `down_proj`.
+        const bool fromMlp = name.find("down_proj") != std::string::npos;
         if (fromMlp) {
           contract.inputSlotByGraphName[name] = "previous_mlp";
         }

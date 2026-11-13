@@ -2732,22 +2732,21 @@ BOOST_AUTO_TEST_CASE(InitProducesTheEmbeddedResidualThatLayerZeroReads)
     BOOST_CHECK_EQUAL(fed->producerStepId, init->stepId);
     BOOST_CHECK_EQUAL(fed->producerSlotId, std::string("x0"));
 
-    // Later layers read two separate values from the previous layer -- its
-    // post-attention residual and its MLP output -- because the export's skip
-    // normalization adds the MLP output itself. Feeding their pre-computed sum would make
-    // the addition happen twice, so neither input may be the combined value alone.
+    // Later layers read two separate values from the previous layer -- the post-attention
+    // residual and the MLP output -- because the export's skip normalization adds the MLP
+    // output itself. The first is the MLP entry's `post_residual`, which already carries the
+    // residual plus the attention projection; feeding the attention reduction alone would
+    // drop the residual stream from every layer after the first.
     if (shape.layers > 1) {
       const auto* attn1 = find(std::string(unit) + "/ATTN/1");
       BOOST_REQUIRE(attn1 != nullptr);
       const auto* postAttn = slotOf(*attn1, "post_attention", false);
       BOOST_REQUIRE(postAttn != nullptr);
-      BOOST_CHECK_EQUAL(postAttn->producerStepId,
-                        std::string(unit) + "/SUM_ATTN/0");
-      BOOST_CHECK_EQUAL(postAttn->producerSlotId, std::string("merged"));
+      BOOST_CHECK_EQUAL(postAttn->producerStepId, std::string(unit) + "/MLP/0");
+      BOOST_CHECK_EQUAL(postAttn->producerSlotId, std::string("post_residual"));
       const auto* previousMlp = slotOf(*attn1, "previous_mlp", false);
       BOOST_REQUIRE(previousMlp != nullptr);
-      BOOST_CHECK_EQUAL(previousMlp->producerStepId,
-                        std::string(unit) + "/SUM_MLP/0");
+      BOOST_CHECK_EQUAL(previousMlp->producerStepId, std::string(unit) + "/SUM_MLP/0");
       BOOST_CHECK_EQUAL(previousMlp->producerSlotId, std::string("merged"));
     }
   }
@@ -8085,7 +8084,7 @@ public:
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
+BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
 {
   // The execution the whole exit-1 chain was for: a runner created from a real assembled
   // table, driven by the production worker over the sealed template, with the reduction the
@@ -8155,26 +8154,34 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
     {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
      {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
 
-  // The whole first layer: INIT, ATTN, SUM_ATTN, MLP, SUM_MLP. This is the shortest chain
-  // with every kind of step in it -- a subgraph that reads state, a reduction over two
-  // ranks, a subgraph that consumes that reduction, and a second reduction -- so a wiring
-  // defect anywhere in the block shows up here.
+  // Two layers, so the cross-layer edge is exercised: layer 1's attention reads layer 0's
+  // MLP sum, which the template declares and the worker has to resolve from a step it
+  // already ran. Ten steps -- INIT plus five per layer -- and nothing from layer 2.
+  // The layer number is the trailing id component, so it is parsed rather than matched as a
+  // substring: "/1" also matches "/10".
+  const auto layerOfStep = [] (const std::string& stepId) -> std::optional<std::uint64_t> {
+    const auto slash = stepId.rfind('/');
+    if (slash == std::string::npos || slash + 1 >= stepId.size()) return std::nullopt;
+    const auto tail = stepId.substr(slash + 1);
+    if (tail.empty() ||
+        !std::all_of(tail.begin(), tail.end(),
+                     [] (unsigned char ch) { return ch >= '0' && ch <= '9'; }))
+      return std::nullopt;
+    return static_cast<std::uint64_t>(std::stoull(tail));
+  };
   std::vector<NativeExecutionStepSpec> steps;
   for (const auto& step : candidate.executionPlan.steps) {
     if (step.unitId != "S0R0") continue;
-    const auto& id = step.stepId;
-    // Only layer 0: a later layer needs the previous layer's sums, which are not part of
-    // this block.
-    const bool layerZero = id.find("/0") != std::string::npos ||
-      id.find("/INIT") != std::string::npos;
-    if (!layerZero) continue;
-    if (id.find("/ATTN/1") != std::string::npos ||
-        id.find("/SUM_ATTN/1") != std::string::npos ||
-        id.find("/MLP/1") != std::string::npos ||
-        id.find("/SUM_MLP/1") != std::string::npos) continue;
+    if (step.stepId.find("/INIT") != std::string::npos) {
+      steps.push_back(step);
+      continue;
+    }
+    const auto layer = layerOfStep(step.stepId);
+    if (!layer || *layer > 1) continue;
     steps.push_back(step);
   }
-  BOOST_REQUIRE_EQUAL(steps.size(), 5U);
+  // INIT plus four steps per layer: ATTN, SUM_ATTN, MLP, SUM_MLP.
+  BOOST_REQUIRE_EQUAL(steps.size(), 9U);
 
   NativeModelRunnerSpec spec;
   spec.role = "S0R0";
@@ -8205,13 +8212,14 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
   // as a dependency on the step that consumes it, which is how the worker knows when to
   // await it instead of waiting for both up front.
   auto io = std::make_shared<StepPartialIo>();
+  for (const auto* layerOf : {"0", "1"}) {
   for (const auto* kind : {"attn", "mlp"}) {
-    const auto scope = std::string("peer-") + kind + "-0";
+    const auto scope = std::string("peer-") + kind + "-" + layerOf;
     DependencyEdge peer;
     peer.scope = scope;
     peer.producerRole = "S0R1";
     peer.consumerRole = "S0R0";
-    peer.plannedDataName = "/peer/" + std::string(kind) + "/0";
+    peer.plannedDataName = "/peer/" + std::string(kind) + "/" + layerOf;
     peer.tensors = {"partial"};
     peer.useNdnsfDataV1 = true;
     peer.operationKind = "TENSOR_PARTIAL";
@@ -8223,7 +8231,7 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
     for (const auto& entry : qwen::parseQwenTpEntryTable(
            spec.metadata.at("tensorParallelEntries"))) {
       if (entry.kind != (std::string(kind) == "attn" ? "ATTN" : "MLP")) continue;
-      if (entry.layer != 0) continue;
+      if (entry.layer != std::stoull(layerOf)) continue;
       for (const auto& item : entry.outputSlotByGraphName) {
         if (item.second != "partial") continue;
         graphTensorName = item.first;
@@ -8232,7 +8240,7 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
     BOOST_REQUIRE_MESSAGE(!graphTensorName.empty(),
       "the assembled table names no partial output for " + std::string(kind));
     const auto marker = std::string("/SUM_") + (std::string(kind) == "attn"
-      ? "ATTN/0" : "MLP/0");
+      ? "ATTN/" : "MLP/") + layerOf;
     for (const auto& step : steps) {
       if (step.operation != "SUM") continue;
       if (step.stepId.find(marker) == std::string::npos) continue;
@@ -8257,6 +8265,7 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
     for (std::size_t index = 0; index < shape.hidden; ++index)
       values[index] = 0.5f;
     io->byScope[scope] = makeEncodedTensorBundle(scope, {std::move(partial)});
+  }
   }
 
   // The prompt: one token, position zero, mask all ones.
@@ -8939,8 +8948,11 @@ BOOST_AUTO_TEST_CASE(ConsecutiveLayersCarryResidualAndKvAcrossTheStepChain)
   // differently, so they cannot share one slot.
   BOOST_REQUIRE_EQUAL(attn1->inputSlots.size(), 5U);
   BOOST_CHECK_EQUAL(attn1->inputSlots[0].slotId, std::string("post_attention"));
-  BOOST_CHECK_EQUAL(attn1->inputSlots[0].producerStepId,
-                    std::string("S0R0/SUM_ATTN/0"));
+  // The post-attention value is the MLP entry's post_residual, not the attention reduction:
+  // the residual stream is part of it, and using the reduction alone would drop it from
+  // every layer after the first.
+  BOOST_CHECK_EQUAL(attn1->inputSlots[0].producerStepId, std::string("S0R0/MLP/0"));
+  BOOST_CHECK_EQUAL(attn1->inputSlots[0].producerSlotId, std::string("post_residual"));
   BOOST_CHECK_EQUAL(attn1->inputSlots[1].slotId, std::string("previous_mlp"));
   BOOST_CHECK_EQUAL(attn1->inputSlots[1].producerStepId,
                     std::string("S0R0/SUM_MLP/0"));
