@@ -2607,6 +2607,22 @@ RepoClient::requestFetchRange(
 
 namespace {
 
+/** A missing verifier is not an implicit approval: every original-packet path
+ *  fails closed before it issues a request, pulls a source packet or registers a
+ *  temporary Producer. A caller that truly trusts its source passes an explicit
+ *  verifier that returns true. */
+void
+requireWireVerifier(
+  const std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>>& verifier,
+  const char* phase)
+{
+  if (!verifier || !*verifier) {
+    throw RepoClientError("VERIFIER_REQUIRED",
+                          std::string(phase) + " requires a caller-owned wire verifier",
+                          phase);
+  }
+}
+
 RepoClientError
 unsupported(const char* operation)
 {
@@ -2810,6 +2826,7 @@ RepoClient::publishData(const RepoDataPublication& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data publication requires a persistent client",
                           "publishData");
+  requireWireVerifier(input.verifyWire, "publishData");
   if (!input.packets || !input.packets->next)
     throw std::invalid_argument("publishData requires a packet source");
   const auto& source = *input.packets;
@@ -2860,8 +2877,6 @@ RepoClient::publishData(const RepoDataPublication& input,
   };
   const auto verifier = input.verifyWire;
   const auto verifySignature = [verifier](const ndn::Data& packet) {
-    if (!verifier || !*verifier)
-      return true;
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
@@ -2941,6 +2956,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data retrieval requires a persistent client",
                           "fetchData");
+  requireWireVerifier(input.verifyWire, "fetchData");
   if (input.ownerClaim) {
     // Owner-claim mode: RepoClient mints the proof only after matching the
     // manifest, every indexed packet and the ordered wire digest.
@@ -2951,8 +2967,6 @@ RepoClient::fetchData(const RepoDataFetch& input,
     limits.maxPacketWireBytes = claim.maxPacketWireBytes;
     const auto verifier = input.verifyWire;
     const auto verifyPacket = [verifier](const ndn::Data& packet) {
-      if (!verifier || !*verifier)
-        return true;
       const auto& wire = packet.wireEncode();
       return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
     };
@@ -2990,8 +3004,6 @@ RepoClient::fetchData(const RepoDataFetch& input,
     limits.maxManifestWireBytes = bound.maxManifestWireBytes;
     const auto verifier = input.verifyWire;
     const auto verifyPacket = [verifier](const ndn::Data& packet) {
-      if (!verifier || !*verifier)
-        return true;
       const auto& wire = packet.wireEncode();
       return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
     };
@@ -3027,8 +3039,6 @@ RepoClient::fetchData(const RepoDataFetch& input,
 
   const auto verifier = input.verifyWire;
   const auto verifyPacket = [verifier](const ndn::Data& packet) {
-    if (!verifier || !*verifier)
-      return true;
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };

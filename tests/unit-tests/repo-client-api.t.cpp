@@ -186,6 +186,38 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(DataOperationsNeverPullTheSourceBeforeRejecting) {
+  TemporaryDirectory temporary("no-side-effects");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+
+  // CA01: a missing verifier must never be an implicit approval, and the
+  // rejection has to happen before the packet source is touched. The in-app
+  // client answers UNSUPPORTED first; either way the source must stay untouched.
+  int pulled = 0;
+  RepoDataPublication publication;
+  PacketSource source;
+  source.packetNames = {"/example/spec240/owner/object/0"};
+  source.packetOffsets = {0, 8};
+  source.expectedWireBytes = 8;
+  source.expectedDigest = "sha256:" + std::string(64, '0');
+  source.next = [&pulled](std::vector<uint8_t>& wire) {
+    ++pulled;
+    wire.assign(8, 0);
+    return true;
+  };
+  publication.packets = std::move(source);
+  publication.targetId = "/provider";
+  BOOST_CHECK_THROW(client.publishData(publication, makeOptions()), RepoClientError);
+  BOOST_CHECK_EQUAL(pulled, 0);
+
+  RepoDataFetch fetch;
+  fetch.packetNames = {"/example/spec240/owner/object/0"};
+  fetch.maxWireBytes = 8;
+  fetch.targetId = "/provider";
+  BOOST_CHECK_THROW(client.fetchData(fetch, makeOptions()), RepoClientError);
+  BOOST_CHECK_EQUAL(pulled, 0);
+}
+
 BOOST_AUTO_TEST_CASE(InvalidInputFailsBeforeSideEffects)
 {
   TemporaryDirectory temporary("invalid");
