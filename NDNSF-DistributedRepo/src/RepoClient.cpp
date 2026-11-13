@@ -2674,6 +2674,16 @@ toRepoHandle(const ArtifactHandle& input)
   return handle;
 }
 
+RepoArtifactTarget
+toTarget(const std::string& targetId)
+{
+  RepoArtifactTarget target;
+  target.providerIdentity = targetId;
+  target.repoNode = ndn::Name(targetId)[-1].toUri();
+  target.servicePrefix = RepoClient::DEFAULT_SERVICE_NAME;
+  return target;
+}
+
 ArtifactHandle
 toArtifactHandle(const RepoHandle& input)
 {
@@ -2847,9 +2857,40 @@ RepoClient::fetchData(const RepoDataFetch&, const RepoOperationOptions&) const
 }
 
 RepoWriteGrant
-RepoClient::authorizeWrite(const RepoWriteAuthorization&, const RepoOperationOptions&)
+RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
+                           const RepoOperationOptions& options)
 {
-  throw unsupported("authorizeWrite");
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "authorizeWrite");
+  if (!m_impl->user)
+    throw RepoClientError("UNSUPPORTED",
+                          "write authorization requires a persistent client",
+                          "authorizeWrite");
+  if (input.objectName.empty() || input.writerIdentity.empty() || input.targetId.empty())
+    throw std::invalid_argument("authorizeWrite requires target, writer and object");
+  RepoUserStorageGrantRequest request;
+  request.grantId = input.grantId.empty() ? ("grant-" + input.objectName) : input.grantId;
+  request.writerIdentity = input.writerIdentity;
+  request.objectName = input.objectName;
+  request.expiresAtMs = input.expiresAtMs;
+  const auto encoded = request.toJson();
+  const auto target = toTarget(input.targetId);
+  const auto wire = RepoClient::requestSelectedService(
+    *m_impl->user, ndn::Name(target.providerIdentity),
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
+    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
+    remainingMs(options.deadline), {}, {});
+  const auto reply = RepoUserStorageGrantReply::fromJson(
+    std::string(wire.begin(), wire.end()));
+  RepoWriteGrant grant;
+  grant.ownerIdentity = reply.grant.ownerIdentity;
+  grant.writerIdentity = reply.grant.writerIdentity;
+  grant.objectName = reply.grant.objectName;
+  grant.targetId = target.repoNode;
+  grant.grantId = reply.grant.grantId;
+  grant.ownerEpoch = reply.grant.ownerEpoch;
+  grant.expiresAtMs = reply.grant.expiresAtMs;
+  return grant;
 }
 
 RepoInspection
@@ -2902,15 +2943,83 @@ RepoClient::inspect(const RepoInspectionRequest& input,
 }
 
 RepoPage
-RepoClient::list(const RepoListRequest&, const RepoOperationOptions&) const
+RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& options) const
 {
-  throw unsupported("list");
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "list");
+  if (!m_impl->user)
+    throw RepoClientError("UNSUPPORTED",
+                          "owner listing requires a persistent client", "list");
+  if (input.scope != RepoListScope::OWNER_OBJECTS)
+    throw RepoClientError("UNSUPPORTED",
+                          "Repo inventory listing is not implemented yet", "list");
+  if (input.targetId.empty())
+    throw std::invalid_argument("list requires a target");
+  RepoUserStorageListRequest request;
+  request.afterObjectName = input.cursor;
+  request.limit = input.limit;
+  const auto encoded = request.toJson();
+  const auto target = toTarget(input.targetId);
+  const auto wire = RepoClient::requestSelectedService(
+    *m_impl->user, ndn::Name(target.providerIdentity),
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
+    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
+    remainingMs(options.deadline), {}, {});
+  const auto reply = RepoUserStorageListReply::fromJson(
+    std::string(wire.begin(), wire.end()));
+  RepoPage page;
+  page.nextCursor = reply.nextAfterObjectName;
+  for (const auto& claim : reply.objects) {
+    RepoListItem item;
+    FileReference reference;
+    reference.logicalName = claim.object.objectName;
+    reference.contentDigest = claim.object.wireSha256;
+    reference.sizeBytes = claim.object.payloadWireBytes;
+    reference.publisherIdentity = claim.ownerIdentity;
+    item.reference = std::move(reference);
+    item.storedBytes = claim.object.payloadWireBytes;
+    item.generation = std::to_string(claim.object.generation);
+    item.lifecycleState = claim.state == RepoUserStorageClaimState::COMMITTED
+      ? "COMMITTED" : "UNKNOWN";
+    page.items.push_back(std::move(item));
+  }
+  return page;
 }
 
 RepoDeleteResult
-RepoClient::remove(const RepoDeleteRequest&, const RepoOperationOptions&)
+RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& options)
 {
-  throw unsupported("remove");
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "remove");
+  if (!m_impl->user)
+    throw RepoClientError("UNSUPPORTED",
+                          "removal requires a persistent client", "remove");
+  if (input.targets.size() != 1 || input.targets.front().empty())
+    throw std::invalid_argument("remove requires exactly one target");
+  RepoUserStorageDeleteRequest request;
+  request.cleanupId = input.generation.empty() ? std::string("remove") : input.generation;
+  request.objectName = std::get<FileReference>(input.reference).logicalName;
+  request.ownerEpoch = input.expectedEpoch.empty()
+    ? 0 : static_cast<uint64_t>(std::stoull(input.expectedEpoch));
+  const auto encoded = request.toJson();
+  const auto target = toTarget(input.targets.front());
+  const auto wire = RepoClient::requestSelectedService(
+    *m_impl->user, ndn::Name(target.providerIdentity),
+    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
+    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
+    remainingMs(options.deadline), {}, {});
+  const auto reply = RepoUserStorageDeleteReply::fromJson(
+    std::string(wire.begin(), wire.end()));
+  RepoDeleteResult result;
+  RepoReplicaResult replica;
+  replica.targetId = target.repoNode;
+  replica.state = reply.state == "DELETED" ? RepoTargetState::COMMITTED
+                                           : RepoTargetState::UNKNOWN;
+  replica.message = reply.state;
+  result.targets.push_back(std::move(replica));
+  result.confirmed = reply.state == "DELETED";
+  result.removedCount = result.confirmed ? 1 : 0;
+  return result;
 }
 
 RepoCandidateSet
