@@ -4,11 +4,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
+# Run this module against the built extension directory (PYTHONPATH pointing at
+# the spec201-repo-python build output). Importing the installed package copy in
+# the same process registers the same pybind types twice and must not be mixed.
 import _py_repoclient as native
 
 PAYLOAD = b"spec240 unified client facade v1"
@@ -53,6 +59,30 @@ class UnifiedRepoClientTest(unittest.TestCase):
             self.repo_root, OWNER, reference(), 30000)
         self.assertEqual(inspected["availability"], "AVAILABLE")
         self.assertEqual(inspected["stored_bytes"], len(PAYLOAD))
+
+    def test_a_second_process_reads_the_published_object(self) -> None:
+        published = native.unified_publish_file(
+            self.repo_root, OWNER, self.source, reference(), 30000)
+        self.assertEqual(published["state"], "COMMITTED")
+
+        destination = os.path.join(self.root, "second-process.bin")
+        script = (
+            "import json, sys\n"
+            "import _py_repoclient as native\n"
+            "root, owner, reference, destination = json.loads(sys.argv[1])\n"
+            "result = native.unified_fetch_file(root, owner, reference, destination, 30000)\n"
+            "print(json.dumps(result))\n"
+        )
+        # The child is a fresh process: it cannot see this process' in-memory
+        # catalog or admission state, so a successful read is a restart oracle.
+        completed = subprocess.run(
+            [sys.executable, "-c", script,
+             json.dumps([self.repo_root, OWNER, reference(), destination])],
+            capture_output=True, text=True, timeout=120, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertGreater(int(json.loads(completed.stdout)["bytes_written"]), 0)
+        with open(destination, "rb") as handle:
+            self.assertEqual(handle.read(), PAYLOAD)
 
     def test_publish_rejects_an_empty_reference_before_side_effects(self) -> None:
         # pybind maps the native invalid_argument rejection to ValueError.
