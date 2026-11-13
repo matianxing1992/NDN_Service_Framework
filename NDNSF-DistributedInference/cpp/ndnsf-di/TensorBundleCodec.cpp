@@ -1498,8 +1498,16 @@ accumulateDecodedTensorBundle(std::map<std::string, TensorBundle>& accumulator,
       decoded.front().elementType != tensor.elementType ||
       decoded.front().shape != tensor.shape ||
       decoded.front().payload.size() != tensor.payload.size()) {
+    // Report what disagreed: a reduction over two rank partials fails on shape or identity
+    // for reasons a caller cannot guess from the message alone.
     throw std::invalid_argument(
-      "step SUM contributions disagree on tensor identity, type, shape or size");
+      std::string("step SUM contributions disagree on tensor identity, type, shape or "
+                  "size: accumulated name=") + decoded.front().name +
+      " type=" + std::to_string(static_cast<int>(decoded.front().elementType)) +
+      " payload=" + std::to_string(decoded.front().payload.size()) +
+      " vs name=" + tensor.name +
+      " type=" + std::to_string(static_cast<int>(tensor.elementType)) +
+      " payload=" + std::to_string(tensor.payload.size()));
   }
   const auto elements = tensor.payload.size() / sizeof(float);
   std::vector<std::uint8_t> sum(decoded.front().payload);

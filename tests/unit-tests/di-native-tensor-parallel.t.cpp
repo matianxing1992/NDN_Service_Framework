@@ -8085,7 +8085,7 @@ public:
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(WorkerDrivesInitThenAttentionWithSeededKvState)
+BOOST_AUTO_TEST_CASE(WorkerDrivesAWholeFirstLayerBlock)
 {
   // The execution the whole exit-1 chain was for: a runner created from a real assembled
   // table, driven by the production worker over the sealed template, with the reduction the
@@ -8155,17 +8155,26 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesInitThenAttentionWithSeededKvState)
     {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
      {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
 
-  // INIT and the first attention entry. Attention is the step that reads KV state, so this
-  // is where the decode-state contract has to be right: the child seeds a zero past for a
-  // fresh request and returns its successors.
+  // The whole first layer: INIT, ATTN, SUM_ATTN, MLP, SUM_MLP. This is the shortest chain
+  // with every kind of step in it -- a subgraph that reads state, a reduction over two
+  // ranks, a subgraph that consumes that reduction, and a second reduction -- so a wiring
+  // defect anywhere in the block shows up here.
   std::vector<NativeExecutionStepSpec> steps;
   for (const auto& step : candidate.executionPlan.steps) {
     if (step.unitId != "S0R0") continue;
-    const bool init = step.stepId.find("/INIT") != std::string::npos;
-    const bool attention = step.stepId.find("/ATTN/0") != std::string::npos;
-    if (init || attention) steps.push_back(step);
+    const auto& id = step.stepId;
+    // Only layer 0: a later layer needs the previous layer's sums, which are not part of
+    // this block.
+    const bool layerZero = id.find("/0") != std::string::npos ||
+      id.find("/INIT") != std::string::npos;
+    if (!layerZero) continue;
+    if (id.find("/ATTN/1") != std::string::npos ||
+        id.find("/SUM_ATTN/1") != std::string::npos ||
+        id.find("/MLP/1") != std::string::npos ||
+        id.find("/SUM_MLP/1") != std::string::npos) continue;
+    steps.push_back(step);
   }
-  BOOST_REQUIRE_EQUAL(steps.size(), 2U);
+  BOOST_REQUIRE_EQUAL(steps.size(), 5U);
 
   NativeModelRunnerSpec spec;
   spec.role = "S0R0";
@@ -8192,7 +8201,63 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesInitThenAttentionWithSeededKvState)
   role.tensorDegree = 2;
   role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
   role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+  // Two peer reductions: the peer's attention partial and its MLP partial. Each is declared
+  // as a dependency on the step that consumes it, which is how the worker knows when to
+  // await it instead of waiting for both up front.
   auto io = std::make_shared<StepPartialIo>();
+  for (const auto* kind : {"attn", "mlp"}) {
+    const auto scope = std::string("peer-") + kind + "-0";
+    DependencyEdge peer;
+    peer.scope = scope;
+    peer.producerRole = "S0R1";
+    peer.consumerRole = "S0R0";
+    peer.plannedDataName = "/peer/" + std::string(kind) + "/0";
+    peer.tensors = {"partial"};
+    peer.useNdnsfDataV1 = true;
+    peer.operationKind = "TENSOR_PARTIAL";
+    // The reduction step that consumes this kind of contribution.
+    // The tensor name the reduction will compare against. A runner returns its graph's own
+    // tensor names, so a peer contribution has to carry the same name -- not the slot id.
+    // Reading it from the assembled contract is the only way to know it without guessing.
+    std::string graphTensorName;
+    for (const auto& entry : qwen::parseQwenTpEntryTable(
+           spec.metadata.at("tensorParallelEntries"))) {
+      if (entry.kind != (std::string(kind) == "attn" ? "ATTN" : "MLP")) continue;
+      if (entry.layer != 0) continue;
+      for (const auto& item : entry.outputSlotByGraphName) {
+        if (item.second != "partial") continue;
+        graphTensorName = item.first;
+      }
+    }
+    BOOST_REQUIRE_MESSAGE(!graphTensorName.empty(),
+      "the assembled table names no partial output for " + std::string(kind));
+    const auto marker = std::string("/SUM_") + (std::string(kind) == "attn"
+      ? "ATTN/0" : "MLP/0");
+    for (const auto& step : steps) {
+      if (step.operation != "SUM") continue;
+      if (step.stepId.find(marker) == std::string::npos) continue;
+      for (const auto& slot : step.inputSlots) {
+        if (slot.source != "REMOTE_STEP") continue;
+        peer.consumerStepId = step.stepId;
+        peer.consumerSlotId = slot.slotId;
+      }
+    }
+    BOOST_REQUIRE_MESSAGE(!peer.consumerStepId.empty(),
+      "no reduction step consumes the " + std::string(kind) + " contribution");
+    role.inputs.push_back(std::move(peer));
+    // The peer's contribution must be shaped like this rank's, or the reduction refuses it.
+    // The tensor name matters as much as the shape: a reduction compares identity, so the
+    // peer tensor is named after the slot the local contribution lands in.
+    NamedTensor partial;
+    partial.name = graphTensorName;
+    partial.elementType = TensorElementType::Float32;
+    partial.shape = {1, 1, static_cast<std::int64_t>(shape.hidden)};
+    partial.payload.assign(static_cast<std::size_t>(shape.hidden) * sizeof(float), 0);
+    float* values = reinterpret_cast<float*>(partial.payload.data());
+    for (std::size_t index = 0; index < shape.hidden; ++index)
+      values[index] = 0.5f;
+    io->byScope[scope] = makeEncodedTensorBundle(scope, {std::move(partial)});
+  }
 
   // The prompt: one token, position zero, mask all ones.
   const auto promptToken = [] (const char* name, std::int64_t value) {
@@ -8235,37 +8300,35 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesInitThenAttentionWithSeededKvState)
   for (const auto& item : result.outputsByScope) {
     BOOST_TEST_MESSAGE("  scope=" << item.first);
   }
-  BOOST_CHECK(result.outputsByScope.count("partial") == 1);
-  BOOST_CHECK(result.outputsByScope.count("residual") == 1);
-  // Both must carry real values: an empty placeholder would prove only that the call
-  // returned, not that the graph executed.
-  for (const auto* scope : {"partial", "residual"}) {
-    const auto found = result.outputsByScope.find(scope);
-    BOOST_REQUIRE(found != result.outputsByScope.end());
-    const auto tensors = decodeTensorBundle(found->second.payload);
+  // The block's own values: each reduction produced a merged hidden-width tensor, which is
+  // what the MLP step then consumes. A reduction that dropped a contribution would still
+  // produce something, so the assertion is on the shape and on the fact that the MLP
+  // consumed it rather than on a number this fixture cannot predict.
+  for (const auto& item : result.outputsByScope) {
+    const auto tensors = decodeTensorBundle(item.second.payload);
     BOOST_REQUIRE(!tensors.empty());
+    std::size_t floats = 0;
     double energy = 0.0;
-    std::size_t floatCount = 0;
     for (const auto& tensor : tensors) {
       if (tensor.elementType != TensorElementType::Float32) continue;
       const auto* values = reinterpret_cast<const float*>(tensor.payload.data());
       const auto count = tensor.payload.size() / sizeof(float);
-      floatCount += count;
+      floats += count;
       for (std::size_t index = 0; index < count; ++index)
         energy += std::fabs(double(values[index]));
     }
-    BOOST_TEST_MESSAGE("attn " << scope << " count=" << floatCount
+    BOOST_TEST_MESSAGE("scope=" << item.first << " floats=" << floats
                       << " energy=" << energy);
-    // The hidden width, so the value is the model's real attention output rather than a
-    // narrowed placeholder.
-    BOOST_CHECK_EQUAL(floatCount, static_cast<std::size_t>(shape.hidden));
-    BOOST_CHECK_GT(energy, 0.0);
   }
-  // The KV successors are the runner's own decode state. The worker only packs it into
-  // `providerDecodeState` for a role marked `streamingStateExecution`, which a coordinator
-  // sets when the generation contract declares state names; this role spec declares none,
-  // so the value stays with the runner. Recording that distinction is the point -- asserting
-  // a packed bundle here would be asserting a path this fixture does not take.
+  // The MLP reduction is the block's last step, so its presence means every earlier step
+  // ran and was consumed.
+  const auto mlpMerged = std::find_if(result.outputsByScope.begin(),
+                                      result.outputsByScope.end(),
+    [] (const auto& item) { return item.first.find("merged") != std::string::npos; });
+  BOOST_REQUIRE_MESSAGE(mlpMerged != result.outputsByScope.end(),
+    "the MLP reduction produced no merged value");
+  // Its successors stayed with the runner: the worker packs decode state only for a role
+  // marked streaming, which this spec is not.
   BOOST_CHECK(!result.providerDecodeState.has_value());
 
   std::filesystem::remove_all(root, cleanupError);

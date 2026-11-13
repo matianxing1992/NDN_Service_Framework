@@ -820,6 +820,10 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // consumer is explicit, and it must never be added into any rank's
       // contribution set, otherwise every rank would add X once and the SUM
       // would produce degree times the residual.
+      // Attention returns its projection and nothing else. The pre-MLP residual the MLP
+      // step consumes is this step's own hidden input, so the runner passes it through under
+      // the `residual` slot -- declaring it as an output would promise a tensor the graph
+      // does not produce.
       attn.outputSlots = {makeSlot("partial", "LOCAL_STEP", {}, shape.hidden),
                           makeSlot("residual", "LOCAL_STEP", {}, shape.hidden)};
       attn.localStateSlots = {"kv." + std::to_string(layer) + ".key",
@@ -2446,24 +2450,35 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
     const auto& name = hiddenInputs[index];
     if (contract.kind == "ATTN") {
       if (hiddenCount == 1) {
-        // Layer 0: the single hidden input is both the attention input and the residual
-        // the MLP entry will consume after the peer reductions are added.
+        // Layer 0: the single hidden input is both the attention value and the residual the
+        // MLP entry later adds to, so it is passed through rather than asked for.
         contract.inputSlotByGraphName[name] = "x";
         contract.passthroughSlotByInputGraphName[name] = "residual";
       }
       else {
-        // Later layers: declaration order follows the skip normalization's inputs, so
-        // the first is the previous layer's post-attention residual and the second is its
-        // MLP output.
-        contract.inputSlotByGraphName[name] =
-          index == 0 ? "post_attention" : "previous_mlp";
-        if (index == 0) contract.passthroughSlotByInputGraphName[name] = "residual";
+        // Later layers: the skip normalization adds the previous layer's MLP output to its
+        // post-attention residual, so the two inputs are told apart by which one the MLP
+        // produced. Declaration order is not reliable -- the export's order follows its own
+        // graph construction, not the semantic read-out order.
+        const bool fromMlp = name.find("mlp") != std::string::npos ||
+                             name.find("down_proj") != std::string::npos;
+        if (fromMlp) {
+          contract.inputSlotByGraphName[name] = "previous_mlp";
+        }
+        else {
+          contract.inputSlotByGraphName[name] = "post_attention";
+          contract.passthroughSlotByInputGraphName[name] = "residual";
+        }
       }
       continue;
     }
-    // MLP: the merged attention value and the residual it adds to.
-    contract.inputSlotByGraphName[name] = hiddenCount == 1
-      ? "merged" : (index == 0 ? "merged" : "residual");
+    // MLP: the merged attention value and the residual it adds to. The merged value is what
+    // the attention projection produced; the residual is the stream the skip normalization
+    // adds it to. Which is which follows from the producing operation, not from position in
+    // the declaration -- the export declares the residual first.
+    const bool fromAttention = name.find("o_proj") != std::string::npos ||
+                               name.find("attn") != std::string::npos;
+    contract.inputSlotByGraphName[name] = fromAttention ? "merged" : "residual";
   }
 
   // Two mask tensors reach attention: the reformatted mask the template carries as
