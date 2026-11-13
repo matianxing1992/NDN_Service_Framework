@@ -7878,6 +7878,121 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(ProjectedCandidateValidatesAgainstItsOwnGraph)
+{
+  // The candidate builder, validated by the rule that will receive it. Everything below
+  // is the production path: build, then candidate.validate on a real graph.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+
+  // The planning graph a Qwen splitter requires: embedding, one node per layer, head.
+  NativeGraphSnapshot graph;
+  graph.graphDigest = tpDigest('1');
+  graph.nodes = {
+    NativeGraphNode{"embedding", "Gather", 0},
+    NativeGraphNode{"layer-00", "Attention", 1},
+    NativeGraphNode{"final-norm-head", "MatMul", 2},
+  };
+  // A snapshot must carry its topological order, one entry per node.
+  graph.topologicalOrder = {"embedding", "layer-00", "final-norm-head"};
+
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 1;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 1;
+
+  // A descriptor that passes its own validation: every identity digest is required, so a
+  // partial descriptor stops the candidate before the rules under test are reached.
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = tpDigest('1');
+  model.semanticsDigest = tpDigest('2');
+  model.graphDigest = graph.graphDigest;
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = tpDigest('3');
+  model.adapter.inputSchemaDigest = tpDigest('4');
+  model.adapter.optionsSchemaDigest = tpDigest('5');
+  model.adapter.resultSchemaDigest = tpDigest('6');
+  model.adapter.graphSchemaDigest = tpDigest('7');
+  model.adapter.splitSchemaDigest = tpDigest('8');
+  model.adapter.stateSchemaDigest = tpDigest('9');
+
+  NativeRoleResourceRequirement requirement;
+  requirement.backends = {"onnxruntime"};
+  requirement.weightBytes = 1024;
+  requirement.workspaceBytes = 0;
+  requirement.kvBytes = 0;
+  requirement.activationBytes = 0;
+  requirement.transientBytes = 0;
+  std::map<std::string, std::string> artifacts{
+    {"S0R0", tpDigest('a')}, {"S0R1", tpDigest('b')}};
+  std::map<std::string, NativeRoleResourceRequirement> requirements{
+    {"S0R0", requirement}, {"S0R1", requirement}};
+
+  const auto candidate = qwen::buildQwenTpCandidate(
+    graph, shape, {unit0, unit1}, "entry", "S0R0", model, artifacts, requirements);
+
+  // The shape the template will expand: units as roles, degree one each, plan degree two.
+  BOOST_CHECK_EQUAL(candidate.executionPlan.roles.size(), 2U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.tensorDegree, 2U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.stepPlanVersion,
+                    std::string(NATIVE_STEP_PLAN_VERSION_V1));
+  BOOST_CHECK(!candidate.executionPlan.steps.empty());
+  for (const auto& item : candidate.tensorDegreesByRole)
+    BOOST_CHECK_EQUAL(item.second, 1U);
+  // Every node has exactly one owner, and it is the ingress unit.
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.size(), graph.nodes.size());
+  for (const auto& item : candidate.nodeRoles)
+    BOOST_CHECK_EQUAL(item.second, std::string("S0R0"));
+  BOOST_CHECK_EQUAL(candidate.inputIngressRole, std::string("S0R0"));
+  BOOST_CHECK_EQUAL(candidate.resultEgressRole, std::string("S0R0"));
+  // No hybrid plan: the hybrid rule is for a role split across Providers, and no role
+  // is. The plan's degree of two and the per-role degrees of one measure different
+  // things -- partials per layer, and Providers per role -- so a hybrid plan declaring
+  // two for one stage would contradict the per-role vector and be refused.
+  BOOST_CHECK(!candidate.hybridPlan.has_value());
+
+  // The real check: the candidate validates against its graph, step template included.
+  // The message is printed on failure because validate enforces many rules and the
+  // first one hit is the useful information.
+  try {
+    candidate.validate(graph);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("candidate.validate: ") + error.what());
+  }
+  // And its digest binds the whole contract, so a later mutation is detected.
+  BOOST_CHECK_EQUAL(candidate.candidateDigest, candidate.computedDigest());
+
+  // Negative: a unit set that leaves a role without an artifact is refused.
+  auto missingArtifact = artifacts;
+  missingArtifact.erase("S0R1");
+  BOOST_CHECK_THROW(qwen::buildQwenTpCandidate(graph, shape, {unit0, unit1}, "entry",
+                                               "S0R0", model, missingArtifact,
+                                               requirements),
+                    std::invalid_argument);
+  // Negative: an egress role that is not a unit is refused.
+  BOOST_CHECK_THROW(qwen::buildQwenTpCandidate(graph, shape, {unit0, unit1}, "entry",
+                                               "S0R9", model, artifacts, requirements),
+                    std::invalid_argument);
+  // Negative: a single unit is not a sharded plan.
+  BOOST_CHECK_THROW(qwen::buildQwenTpCandidate(graph, shape, {unit0}, "entry", "S0R0",
+                                               model, artifacts, requirements),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(ProjectedPlanAlreadyNamesUnitsSoItsCandidateNeedsNoExpansion)
 {
   // A projected plan is already in expanded form: its steps name unit roles, not a stage,

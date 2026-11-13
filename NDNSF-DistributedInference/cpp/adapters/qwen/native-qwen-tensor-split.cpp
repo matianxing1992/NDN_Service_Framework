@@ -1289,6 +1289,121 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   return shape;
 }
 
+NativeSplitCandidate
+buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                     const std::vector<QwenTpUnit>& units, const std::string& entryPrefix,
+                     const std::string& egressRole, const NativeModelDescriptor& model,
+                     const std::map<std::string, std::string>& artifactByUnit,
+                     const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit)
+{
+  if (units.size() < 2) {
+    throw std::invalid_argument(
+      "tensor-parallel candidate needs at least two units");
+  }
+  std::set<std::string> roleIds;
+  for (const auto& unit : units) {
+    if (unit.roleId.empty() || !roleIds.insert(unit.roleId).second) {
+      throw std::invalid_argument(
+        "tensor-parallel candidate units repeat or are unnamed");
+    }
+    if (artifactByUnit.count(unit.roleId) == 0 ||
+        requirementByUnit.count(unit.roleId) == 0) {
+      throw std::invalid_argument(
+        "tensor-parallel candidate unit has no artifact or requirement: " + unit.roleId);
+    }
+  }
+  if (roleIds.count(egressRole) == 0) {
+    throw std::invalid_argument(
+      "tensor-parallel candidate egress role is not one of its units");
+  }
+
+  NativeSplitCandidate candidate;
+  candidate.source = "PRE_SPLIT";
+  // The strategy identity names what produced this candidate. It is part of the sealed
+  // contract, so it is filled rather than left empty: an empty identity is refused at
+  // validation and would make the candidate unusable.
+  candidate.splitter.name = "native-qwen-tensor-parallel";
+  candidate.splitter.version = "1";
+  candidate.splitter.configurationDigest = nativePlanningDigest(
+    std::string("qwen-tensor-parallel|1|") + std::to_string(units.size()) + "|" +
+    entryPrefix + "|" + egressRole);
+  candidate.model = model;
+  candidate.graphDigest = graph.graphDigest;
+  candidate.executionPlan.version = 3;
+  candidate.executionPlan.modelName = model.modelName;
+  candidate.executionPlan.modelFamily = "qwen";
+  candidate.executionPlan.modelFormat = model.modelFormat;
+  candidate.executionPlan.plannerKind = "native-qwen-tensor-parallel";
+  candidate.executionPlan.executionPolicy = "DATA_DRIVEN_V2";
+  candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  projectQwenTpPlan(candidate.executionPlan, shape, units.size(), entryPrefix,
+                    egressRole, units);
+  candidate.executionPlan.roles.clear();
+  for (const auto& unit : units) candidate.executionPlan.roles.push_back(unit.roleId);
+
+  // One role per unit, each executing one rank's share: no Provider hosts a fraction of
+  // a role, so per-role degree stays one even though the plan's tensor degree is two.
+  for (const auto& unit : units) {
+    // A fragment names the recipe entry prefix this unit assembles from. Every per-role
+    // map has to cover the role set exactly, so it is filled here rather than left empty.
+    // The fragment is a digest, not a prefix string: validate requires `isDigest` on it.
+    candidate.fragmentsByRole[unit.roleId] = nativePlanningDigest(
+      entryPrefix + "|" + unit.roleId + "|" + std::to_string(unit.rank));
+    candidate.tensorDegreesByRole[unit.roleId] = 1;
+    candidate.rankArtifactDigestsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
+    candidate.artifactsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
+    candidate.requirementsByRole[unit.roleId] = requirementByUnit.at(unit.roleId);
+  }
+
+  // Source-graph ownership stays single-valued: every node belongs to the ingress unit,
+  // because node ownership identifies which role assembles that node's source slice and
+  // both units execute the same layers. The steps, not node ownership, say which unit
+  // runs which subgraph.
+  const std::string ingress = units.front().roleId;
+  for (const auto& node : graph.nodes)
+    candidate.nodeRoles[node.id] = ingress;
+  candidate.inputIngressRole = ingress;
+  candidate.resultEgressRole = egressRole;
+
+  // State contracts are per unit; the projected steps already carry their own state
+  // slots, so these declare the same tensors for every unit.
+  for (const auto& unit : units) {
+    std::vector<NativeTensorContract> stateInputs;
+    std::vector<NativeTensorContract> stateOutputs;
+    for (std::uint64_t layer = unit.layerBegin; layer < unit.layerEnd; ++layer) {
+      const auto suffix = std::to_string(layer);
+      for (const auto& kind : {"key", "value"}) {
+        stateInputs.push_back({"past_key_values." + suffix + "." + kind, "uint8",
+                               {"batch", "heads", "sequence", "head-dimension"},
+                               std::nullopt});
+        stateOutputs.push_back({"present." + suffix + "." + kind, "uint8",
+                                {"batch", "heads", "sequence", "head-dimension"},
+                                std::nullopt});
+      }
+    }
+    candidate.roleStateInputsByRole[unit.roleId] = std::move(stateInputs);
+    candidate.roleStateOutputsByRole[unit.roleId] = std::move(stateOutputs);
+  }
+
+  // No hybrid plan. The hybrid rule exists for a role whose execution is split across
+  // Providers, and no role is: each unit is one Provider's whole share, degree one. The
+  // plan's tensor degree stays two because the step template needs it, and the two
+  // degrees measure different things -- how many partials a layer has, and how many
+  // Providers host one role.
+  //
+  // A hybrid plan here would also be refused: its degree vector must equal the per-role
+  // degrees, which are one each, so a plan declaring two for one stage would contradict
+  // them.
+
+  candidate.estimatedCosts = {
+    {"role_count", std::uint64_t(units.size())},
+    {"rank_count", std::uint64_t(units.size())},
+    {"decoder_layers", std::uint64_t(shape.layers)},
+  };
+  candidate.candidateDigest = candidate.computedDigest();
+  return candidate;
+}
+
 void
 bindQwenTpGenerationState(const NativeExecutionPlan& plan,
                           NativeGenerationExecutionContractV1& contract)

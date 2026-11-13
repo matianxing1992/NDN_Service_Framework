@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -373,6 +374,35 @@ buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape
 void
 bindQwenTpGenerationState(const NativeExecutionPlan& plan,
                           NativeGenerationExecutionContractV1& contract);
+
+/** Build a placement candidate that carries a projected tensor-parallel plan.
+ *
+ * A projected plan is already in the form the template's expansion would produce: its
+ * steps name units, and its plan degree is the tensor degree. So the candidate declares
+ * those units as roles with a per-role degree of one. Nothing is sharded across
+ * Providers, so no hybrid plan is required, while the plan's own degree stays two for its
+ * step template.
+ *
+ * Every graph node is owned by one unit -- the ingress unit -- because source-graph
+ * ownership stays single-valued. That is not a limitation here: both units execute the
+ * same layers, and the steps say which unit runs which subgraph.
+ *
+ * @param graph          Planning graph the candidate must partition.
+ * @param shape          Verified shape facts.
+ * @param units          Units to project, at least two.
+ * @param entryPrefix    Artifact entry prefix.
+ * @param egressRole     Unit that owns the head; must be one of @p units.
+ * @param model          Model descriptor the candidate binds.
+ * @param artifactByUnit One recipe artifact digest per unit.
+ * @param requirementByUnit Resource requirement per unit.
+ * @throws std::invalid_argument on an inconsistent unit set or artifact cover.
+ */
+NativeSplitCandidate
+buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                     const std::vector<QwenTpUnit>& units, const std::string& entryPrefix,
+                     const std::string& egressRole, const NativeModelDescriptor& model,
+                     const std::map<std::string, std::string>& artifactByUnit,
+                     const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit);
 
 /** Geometry a rank's entry graph must be rewritten to describe.
  *
