@@ -1852,12 +1852,25 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
       [] (const auto& dependency) {
         return dependency.operationKind == "TOKEN_FEEDBACK";
       });
-    if (projection.plan.roles.size() != 1 && std::any_of(
-          projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
-          [](const auto& dependency) {
-            return dependency.operationKind == "TOKEN_FEEDBACK" &&
-              dependency.producers.size() == 1 && dependency.producers == dependency.consumers;
-          }))
+    // C6 requires one feedback edge per receiving unit, and a sharded unit feeds itself its
+    // next-epoch token -- so self feedback is legitimate whenever every role owns exactly one,
+    // not only in a single-role local plan. A partial cover would leave a unit without its
+    // next-epoch input while its peers ran, which is what this refuses.
+    const auto& roles = projection.plan.roles;
+    std::set<std::string> selfFeedback;
+    std::size_t selfFeedbackEdges = 0;
+    for (const auto& dependency : projection.plan.dependencies) {
+      if (dependency.operationKind != "TOKEN_FEEDBACK" ||
+          dependency.producers.size() != 1 ||
+          dependency.producers != dependency.consumers)
+        continue;
+      ++selfFeedbackEdges;
+      selfFeedback.insert(dependency.producers.front());
+    }
+    if (roles.size() != 1 &&
+        selfFeedbackEdges != 0 &&
+        (selfFeedbackEdges != roles.size() ||
+         std::set<std::string>(roles.begin(), roles.end()) != selfFeedback))
       throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
     const bool validSamplingMode =
       contract.samplingMode == "Greedy" ||
