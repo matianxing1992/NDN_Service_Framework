@@ -2830,22 +2830,49 @@ RepoClient::publishFile(const RepoFilePublication& input,
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
   if (input.reference.logicalName.empty() || input.reference.contentDigest.empty())
     throw std::invalid_argument("publishFile requires a logical name and content digest");
-  // A selective publication must name real targets. Without typed targets the
-  // facade cannot build the SelectedRepoSet the engine needs, and silently
-  // publishing to the default set would ignore the caller's selection.
-  if (!input.selectedTargets.empty()) {
-    throw RepoClientError("UNSUPPORTED",
-                          "publishFile with explicit targets requires typed Repo targets",
-                          "publishFile");
-  }
-  if (input.completion != RepoCompletion::DURABLE) {
-    throw RepoClientError("UNSUPPORTED",
-                          "publishFile ACCEPTED completion requires an operation handle",
-                          "publishFile");
-  }
   const auto reference = toArtifactReference(input.reference);
-  ArtifactPublishResult published =
-    m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline);
+  SelectedRepoSet selected;
+  for (const auto& target : input.selectedTargets) {
+    if (target.repoNode.empty() || target.providerIdentity.empty() ||
+        target.servicePrefix.empty())
+      throw std::invalid_argument("a selected Repo target needs node, identity and prefix");
+    SelectedRepoTarget converted;
+    converted.repoNode = target.repoNode;
+    converted.providerIdentity = ndn::Name(target.providerIdentity);
+    converted.servicePrefix = ndn::Name(target.servicePrefix);
+    selected.targets.push_back(std::move(converted));
+  }
+  selected.seedRepoId = !input.seedRepoId.empty()
+    ? input.seedRepoId
+    : (selected.targets.empty() ? std::string() : selected.targets.front().repoNode);
+  if (!selected.targets.empty()) {
+    std::string consistency = input.writeConsistency;
+    std::transform(consistency.begin(), consistency.end(), consistency.begin(),
+                   [] (unsigned char character) {
+                     return static_cast<char>(std::toupper(character));
+                   });
+    selected.consistency = consistency == "ONE" ? RepoWriteConsistency::One
+      : consistency == "QUORUM" ? RepoWriteConsistency::Quorum
+      : consistency == "ALL" ? RepoWriteConsistency::All
+      : throw std::invalid_argument("publishField requires ONE, QUORUM or ALL consistency");
+  }
+
+  if (input.completion == RepoCompletion::ACCEPTED) {
+    if (selected.targets.empty())
+      throw std::invalid_argument("ACCEPTED publication requires an explicit selection");
+    const auto operation = m_impl->file->beginPublishFile(
+      input.sourcePath, reference, selected, input.idempotencyKey,
+      remainingMs(options.deadline));
+    RepoPublishResult result;
+    result.state = RepoPublishState::ACCEPTED;
+    result.operationReference = operation.operationId;
+    return result;
+  }
+
+  ArtifactPublishResult published = selected.targets.empty()
+    ? m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline)
+    : m_impl->file->publishFile(input.sourcePath, reference, selected,
+                                remainingMs(options.deadline));
   RepoPublishResult result;
   result.reference = toFileReference(published.reference);
   result.state = published.handle ? RepoPublishState::COMMITTED : RepoPublishState::ACCEPTED;

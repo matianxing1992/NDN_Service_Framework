@@ -269,32 +269,25 @@ BOOST_AUTO_TEST_CASE(DiscoveryRejectsUnknownCapabilitiesBeforeAnyRequest) {
   BOOST_CHECK_THROW(client.discover(request, makeOptions()), std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(PublishFileRefusesShapesItCannotHonour) {
-  // CA04: a selective publication without typed targets, and an ACCEPTED
-  // completion without an operation handle, must be reported instead of being
-  // silently downgraded to the default target set or to a blocking publish.
+BOOST_AUTO_TEST_CASE(PublishFileValidatesSelectionShapes) {
+  // A selection is honoured now, so the caller errors are shape errors: an
+  // incomplete target and an ACCEPTED request without a selection.
   TemporaryDirectory temporary("publish-shapes");
   const fs::path source = temporary.path() / "source.bin";
   writeFile(source, FIXTURE_TEXT);
   auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
 
-  RepoFilePublication selective;
-  selective.sourcePath = source.string();
-  selective.reference = fixtureReference();
-  selective.selectedTargets = {"/provider/one"};
-  BOOST_CHECK_EXCEPTION(client.publishFile(selective, makeOptions()), RepoClientError,
-    [] (const RepoClientError& error) {
-      return error.code() == "UNSUPPORTED" && error.phase() == "publishFile";
-    });
+  RepoFilePublication incomplete;
+  incomplete.sourcePath = source.string();
+  incomplete.reference = fixtureReference();
+  incomplete.selectedTargets = {RepoTarget{"/repo/node", "", "/SVC/repo"}};
+  BOOST_CHECK_THROW(client.publishFile(incomplete, makeOptions()), std::invalid_argument);
 
   RepoFilePublication accepted;
   accepted.sourcePath = source.string();
   accepted.reference = fixtureReference();
   accepted.completion = RepoCompletion::ACCEPTED;
-  BOOST_CHECK_EXCEPTION(client.publishFile(accepted, makeOptions()), RepoClientError,
-    [] (const RepoClientError& error) {
-      return error.code() == "UNSUPPORTED" && error.phase() == "publishFile";
-    });
+  BOOST_CHECK_THROW(client.publishFile(accepted, makeOptions()), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {

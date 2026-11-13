@@ -157,7 +157,10 @@ struct RepoFilePublication
   std::string sourcePath;
   std::optional<StoredFileSource> storedSource;
   FileReference reference;
-  std::vector<std::string> selectedTargets;
+  /** Empty means the default target set the engine resolves; a non-empty list is
+   *  the caller's explicit selection and is honoured instead of replaced. */
+  std::vector<RepoTarget> selectedTargets;
+  std::string seedRepoId;
   std::string writeConsistency;
   uint32_t replicaCount = 1;
   std::string idempotencyKey;
