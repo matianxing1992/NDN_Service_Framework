@@ -2006,6 +2006,7 @@ struct SqliteArtifactMetadataStore::Impl
   Statement::Handle userStorageGrantLookup{nullptr, sqlite3_finalize};
   Statement::Handle userStorageFenceLookup{nullptr, sqlite3_finalize};
   Statement::Handle userStorageLiveClaimsLookup{nullptr, sqlite3_finalize};
+  Statement::Handle userStorageLiveClaimExistsLookup{nullptr, sqlite3_finalize};
   ArtifactBackendMigrationDiagnostics migration;
   bool catalogAvailable = false;
   bool userStorageCatalogAvailable = false;
@@ -4020,6 +4021,29 @@ SqliteArtifactMetadataStore::confirmUserStorageCleanup(const std::string& node,
   claim->state = RepoUserStorageClaimState::DELETED; claim->deletedAtMs = nowMs;
   transaction.commit();
   return *claim;
+}
+
+bool
+SqliteArtifactMetadataStore::hasLiveCommittedClaimForObject(
+  const std::string& node, const std::string& objectName, const std::string& wireSha256,
+  uint64_t generation, uint64_t payloadWireBytes, uint64_t manifestBytes) const
+{
+  validateUserStorageName(node); validateUserStorageName(objectName);
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false,
+                            m_impl->migration.writesEnabled);
+  static const auto sql = std::string("SELECT 1 FROM repo_user_storage_claims"
+    " WHERE repo_node=? AND object_name=? AND state='Committed'"
+    " AND wire_sha256=? AND generation=? AND payload_wire_bytes=? AND manifest_bytes=?"
+    " LIMIT 1");
+  Statement row(m_impl->database, sql.c_str(), &m_impl->userStorageLiveClaimExistsLookup);
+  bindText(m_impl->database, row.get(), 1, node);
+  bindText(m_impl->database, row.get(), 2, objectName);
+  bindText(m_impl->database, row.get(), 3, wireSha256);
+  bindUserStorageInteger(m_impl->database, row.get(), 4, generation);
+  bindUserStorageInteger(m_impl->database, row.get(), 5, payloadWireBytes);
+  bindUserStorageInteger(m_impl->database, row.get(), 6, manifestBytes);
+  return sqlite3_step(row.get()) == SQLITE_ROW;
 }
 
 std::vector<RepoUserStorageClaim>

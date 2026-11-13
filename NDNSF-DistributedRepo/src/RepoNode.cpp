@@ -1325,17 +1325,11 @@ RepoNode::isPersistentArtifactVisible(const RepoObjectManifest& manifest) const
       return false;
     }
     const auto measured = measurePersistentUserStorageObject(manifest, false);
-    for (const auto& claim : m_artifactMetadataStore->liveUserStorageClaimsForObject(
-           m_repoNode, measured.objectName)) {
-      if (claim.state == RepoUserStorageClaimState::COMMITTED &&
-          claim.object.wireSha256 == measured.wireSha256 &&
-          claim.object.generation == measured.generation &&
-          claim.object.payloadWireBytes == measured.payloadWireBytes &&
-          claim.object.manifestBytes == measured.manifestBytes) {
-        return true;
-      }
-    }
-    return false;
+    // The answer is one existence question; the per-row loop built every claim
+    // object of the object only to compare five fields.
+    return m_artifactMetadataStore->hasLiveCommittedClaimForObject(
+      m_repoNode, measured.objectName, measured.wireSha256, measured.generation,
+      measured.payloadWireBytes, measured.manifestBytes);
   }
   if (manifest.objectType != "artifact-v2-bytes" || manifest.operationId.empty()) {
     return true;

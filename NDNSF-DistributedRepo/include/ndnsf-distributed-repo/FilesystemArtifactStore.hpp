@@ -339,6 +339,16 @@ public:
   /** Trusted consistent holder snapshot before reusing a physical object.
    * Includes prepared claims until actual owner cleanup releases their charge.
    * No network endpoint or storage authority is granted by this lookup. */
+  /** Answers the one question the read path asks - whether a live committed
+   *  claim matches this object's current measurements - without materialising
+   *  every claim row for the object. */
+  bool hasLiveCommittedClaimForObject(const std::string& node,
+                                      const std::string& objectName,
+                                      const std::string& wireSha256,
+                                      uint64_t generation,
+                                      uint64_t payloadWireBytes,
+                                      uint64_t manifestBytes) const;
+
   std::vector<RepoUserStorageClaim> liveUserStorageClaimsForObject(
     const std::string& repoNode, const std::string& objectName) const;
 
