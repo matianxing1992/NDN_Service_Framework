@@ -1,6 +1,8 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/repo-client-types.hpp"
 
+#include <ndn-service-framework/ServiceUser.hpp>
+
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -15,6 +17,8 @@ namespace py = pybind11;
 namespace repo = ndnsf_distributed_repo;
 
 namespace {
+
+constexpr const char* SERVICE_USER_CAPSULE_NAME = "ndnsf.ServiceUser.v1";
 
 repo::FileReference
 fileReferenceFromDict(const py::dict& value)
@@ -56,6 +60,25 @@ makeOptions(int timeoutMs)
   options.deadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(std::max(1, timeoutMs));
   return options;
+}
+
+/** The capsule borrows a ServiceUser owned by the Python host; the facade only
+ *  needs it for the duration of one call, so a non-owning alias is correct. */
+std::shared_ptr<ndn_service_framework::ServiceUser>
+serviceUserFromOwner(const py::object& owner)
+{
+  if (owner.is_none() || !py::hasattr(owner, "_repo_service_user_capsule"))
+    throw std::invalid_argument("this operation requires an NDNSF NativeServiceUser owner");
+  const py::object value = owner.attr("_repo_service_user_capsule")();
+  if (!PyCapsule_CheckExact(value.ptr()) ||
+      !PyCapsule_IsValid(value.ptr(), SERVICE_USER_CAPSULE_NAME))
+    throw std::invalid_argument("received an invalid ServiceUser capsule");
+  auto* serviceUser = static_cast<ndn_service_framework::ServiceUser*>(
+    PyCapsule_GetPointer(value.ptr(), SERVICE_USER_CAPSULE_NAME));
+  if (serviceUser == nullptr)
+    throw std::invalid_argument("received an empty ServiceUser capsule");
+  return std::shared_ptr<ndn_service_framework::ServiceUser>(serviceUser,
+                                                            [](ndn_service_framework::ServiceUser*) {});
 }
 
 py::dict
@@ -160,4 +183,31 @@ bindUnifiedRepoClient(py::module_& m)
         },
         py::arg("durable_root"), py::arg("owner_id"), py::arg("reference"),
         py::arg("timeout_ms") = 60000);
+
+  m.def("unified_discover",
+        [](py::object serviceUserOwner, const std::string& servicePrefix,
+           const std::string& providerIdentity, int timeoutMs) {
+          auto config = repo::PersistentRepoClientConfig{};
+          config.servicePrefix = ndn::Name(servicePrefix);
+          config.providerScope = {ndn::Name(providerIdentity)};
+          config.dataOnly = true;
+          auto client = repo::RepoClient::makePersistent(
+            serviceUserFromOwner(serviceUserOwner), std::move(config));
+          repo::RepoDiscoveryRequest request;
+          request.requiredCapabilities = {"artifact-manifest-v2"};
+          request.providerScope = providerIdentity;
+          request.ackCollectionMs = 200;
+          const auto candidates = client.discover(request, makeOptions(timeoutMs));
+          py::list entries;
+          for (const auto& candidate : candidates.candidates) {
+            py::dict entry;
+            entry["target_id"] = candidate.repoNode;
+            entry["provider_identity"] = candidate.providerIdentity.toUri();
+            entry["service_prefix"] = candidate.servicePrefix.toUri();
+            entries.append(entry);
+          }
+          return entries;
+        },
+        py::arg("service_user"), py::arg("service_prefix"),
+        py::arg("provider_identity"), py::arg("timeout_ms") = 30000);
 }

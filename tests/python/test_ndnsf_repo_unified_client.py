@@ -84,6 +84,12 @@ class UnifiedRepoClientTest(unittest.TestCase):
         with open(destination, "rb") as handle:
             self.assertEqual(handle.read(), PAYLOAD)
 
+    def test_discovery_requires_a_real_service_user_owner(self) -> None:
+        # The persistent surface must not invent an identity; without the capsule
+        # it has to fail before any request is issued.
+        with self.assertRaises(ValueError):
+            native.unified_discover(None, "/SVC/repo", "/provider", 1000)
+
     def test_publish_rejects_an_empty_reference_before_side_effects(self) -> None:
         # pybind maps the native invalid_argument rejection to ValueError.
         with self.assertRaises(ValueError):
