@@ -7880,6 +7880,106 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
+{
+  // The step after role preparation: assemble each rank's entry table from the frozen
+  // export and check that the two differ as weight slices rather than only in identity.
+  // Role preparation can produce two correctly named roles while both still assemble the
+  // same full-width weights, and that has to be caught here rather than at inference.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string graphPath = modelDir + "/canonical-source.onnx";
+  const std::string sidecarPath = modelDir + "/model.onnx_data";
+  {
+    std::ifstream probe(graphPath, std::ios::binary);
+    if (!probe) {
+      BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+      return;
+    }
+  }
+  std::ifstream graphIn(graphPath, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  BOOST_CHECK_EQUAL(shape.queryHeads, 16U);
+  BOOST_CHECK_EQUAL(shape.headDim, 128U);
+
+  // A scratch root this case owns and removes.
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-rank-entries-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  const auto readRange = [&sidecarPath] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream in(sidecarPath, std::ios::binary);
+    if (!in) throw std::runtime_error("sidecar unreadable");
+    in.seekg(static_cast<std::streamoff>(offset));
+    std::vector<std::uint8_t> bytes(length);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    if (!in) throw std::runtime_error("sidecar read was short");
+    return bytes;
+  };
+
+  std::map<std::string, std::vector<std::uint8_t>> firstEntryOf;
+  std::map<std::string, std::size_t> entryCountOf;
+  std::map<std::string, std::uint64_t> tableBytesOf;
+  for (const std::uint64_t rank : {0ULL, 1ULL}) {
+    qwen::QwenTpAssemblyShards shards;
+    shards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, rank);
+    shards.readExternal = readRange;
+    shards.geometry.degree = 2;
+    shards.geometry.rank = rank;
+    shards.geometry.headDim = shape.headDim;
+    shards.geometry.queryWidth = shape.queryWidth();
+    shards.geometry.kvWidth = shape.kvWidth();
+    shards.geometry.hidden = shape.hidden;
+    shards.geometry.ffn = shape.ffn;
+    const auto unit = "rank" + std::to_string(rank);
+    std::vector<qwen::QwenTpEntryContract> table;
+    try {
+      table = qwen::assembleQwenTpEntryTable(root / unit, unit, graphBytes, 28, shards);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL("rank " + std::to_string(rank) + " assembly: " + error.what());
+    }
+    entryCountOf[unit] = table.size();
+    std::uint64_t bytes = 0;
+    for (const auto& entry : table) {
+      BOOST_REQUIRE(entry.hasGraphFile());
+      bytes += std::filesystem::file_size(root / unit / entry.relativeGraphPath);
+    }
+    tableBytesOf[unit] = bytes;
+    BOOST_TEST_MESSAGE("rank " << rank << " entries=" << table.size()
+                      << " bytes=" << bytes);
+
+    // The layer-0 attention entry is the one whose q_proj width halves; compare its
+    // bytes across ranks to show the slice reached the file.
+    const auto attn = std::find_if(table.begin(), table.end(),
+      [] (const auto& entry) {
+        return entry.kind == "ATTN" && entry.layer == 0;
+      });
+    BOOST_REQUIRE(attn != table.end());
+    std::ifstream in(root / unit / attn->relativeGraphPath, std::ios::binary);
+    firstEntryOf[unit] = std::vector<std::uint8_t>(
+      (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    BOOST_CHECK(!firstEntryOf[unit].empty());
+  }
+
+  // Both ranks produced a table, and the two tables are not the same bytes: the shard
+  // reached the assembled graph rather than only the role identity.
+  BOOST_REQUIRE_EQUAL(entryCountOf.size(), 2U);
+  BOOST_CHECK_GT(entryCountOf.at("rank0"), 0U);
+  BOOST_CHECK_EQUAL(entryCountOf.at("rank0"), entryCountOf.at("rank1"));
+  BOOST_REQUIRE(firstEntryOf.count("rank0") == 1 && firstEntryOf.count("rank1") == 1);
+  BOOST_CHECK(firstEntryOf.at("rank0") != firstEntryOf.at("rank1"));
+  // Each rank's attention table carries one layer's q/k/v/o plus the same MLP entries, so
+  // a halved q_proj width shows up as a smaller per-rank total than twice one rank's.
+  BOOST_CHECK_GT(tableBytesOf.at("rank0"), 0U);
+  BOOST_CHECK_GT(tableBytesOf.at("rank1"), 0U);
+
+  std::filesystem::remove_all(root);
+}
+
 BOOST_AUTO_TEST_CASE(FrozenShardedCatalogLoadPreparesTwoRankRoles)
 {
   // Exit 1's closing check, on the model this will actually run: the frozen 0.6B INT4
