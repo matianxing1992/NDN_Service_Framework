@@ -890,7 +890,7 @@ public:
       if (found != m_cache.end()) {
         ++m_status.hits;
         m_lru.splice(m_lru.end(), m_lru, found->second.recency);
-        return found->second.object;
+        return StoredObject{found->second.manifest, *found->second.payload};
       }
       ++m_status.misses;
       ++m_status.backingReads;
@@ -1015,11 +1015,11 @@ public:
       const auto found = m_cache.find(objectName);
       if (found != m_cache.end()) {
         if (cacheable && (found->second.validatedManifest.lock() == snapshot ||
-                         found->second.object.manifest.hasSameMetadata(manifest))) {
+                         found->second.manifest.hasSameMetadata(manifest))) {
           found->second.validatedManifest = snapshot;
           ++m_status.hits;
           m_lru.splice(m_lru.end(), m_lru, found->second.recency);
-          const auto& bytes = found->second.object.payload;
+          const auto& bytes = *found->second.payload;
           cachedBytes.emplace(bytes.begin() + range.offsetBytes,
                               bytes.begin() + range.offsetBytes + range.lengthBytes);
         }
@@ -1289,7 +1289,11 @@ private:
 
   struct CacheEntry
   {
-    StoredObject object;
+    // Payload ownership is shared so a bounded batch can pin the bytes it is
+    // serving without copying them and without holding the cache lock, even if
+    // the entry is evicted while the batch is still reading.
+    std::shared_ptr<const std::vector<uint8_t>> payload;
+    RepoObjectManifest manifest;
     std::weak_ptr<const RepoObjectManifest> validatedManifest;
     uint64_t chargeBytes = 0;
     std::list<std::string>::iterator recency;
@@ -1377,8 +1381,11 @@ private:
     m_lru.push_back(objectName);
     const auto recency = std::prev(m_lru.end());
     try {
+      auto payload = std::make_shared<const std::vector<uint8_t>>(
+        std::move(object.payload));
       m_cache.emplace(objectName,
-                      CacheEntry{std::move(object), {}, chargeBytes, recency});
+                      CacheEntry{std::move(payload), std::move(object.manifest), {},
+                                 chargeBytes, recency});
     }
     catch (...) {
       m_lru.pop_back();
