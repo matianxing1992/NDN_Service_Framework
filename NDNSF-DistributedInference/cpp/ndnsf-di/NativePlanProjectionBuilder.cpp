@@ -457,7 +457,14 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     if (transfers.empty()) {
       for (const auto& tensor : dependency.tensors) {
         RedistributionSpec transfer;
-        transfer.tensor = tensor; transfer.operation = "PIPELINE";
+        // The declared kind decides the endpoint. A tensor-parallel partial is not a
+        // pipeline activation: naming it PIPELINE makes the peer fetch a name the producer
+        // never publishes, which is exactly the missing-object failure at ROUND/0. The two
+        // activation kinds keep their historical name so a pipeline topology is unchanged.
+        transfer.tensor = tensor;
+        transfer.operation =
+          (dependency.operationKind == "ACTIVATION" || dependency.operationKind == "PIPELINE" ||
+           dependency.operationKind.empty()) ? "PIPELINE" : dependency.operationKind;
         transfer.integrityDigest = hash(dependency.tensors);
         transfer.sourceLayoutDigest = hash(NativeJson{{"scope", dependency.keyScope}, {"layout", "adapter-certified-opaque"}});
         transfer.targetLayoutDigest = transfer.sourceLayoutDigest;
