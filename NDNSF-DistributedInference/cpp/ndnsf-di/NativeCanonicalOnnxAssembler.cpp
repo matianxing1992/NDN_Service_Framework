@@ -918,6 +918,45 @@ validateNativeAssembledArtifactFiles(const NativeModelRunnerSpec& spec,
   if (error || maxBytes == 0 || graphBytes == 0 || graphBytes > maxBytes ||
       !std::filesystem::is_regular_file(graph, error) || error)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_GRAPH_INVALID");
+  // A tensor-parallel spec carries an entry table as well, and its entries live beside the
+  // model. The accounting below therefore covers them in both shapes of spec: one with a
+  // file-set schema and one without. A Provider charges one total, and a file set that
+  // named only the model pair would understate what the artifact occupies.
+  std::uint64_t entryBytes = 0;
+  const auto entries = spec.metadata.find("tensorParallelEntries");
+  if (entries != spec.metadata.end()) {
+    const auto root = spec.metadata.find("tensorParallelEntryRoot");
+    if (root == spec.metadata.end() || root->second.empty() ||
+        std::filesystem::path(root->second) != graph.parent_path())
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_ROOT_INVALID");
+    const auto table = qwen::parseQwenTpEntryTable(entries->second);
+    if (table.empty())
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_TABLE_EMPTY");
+    std::set<std::string> names;
+    for (const auto& entry : table) {
+      if (requireActive) requireActive();
+      if (!entry.hasGraphFile())
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_INVALID");
+      const std::filesystem::path relative(entry.relativeGraphPath);
+      if (relative.is_absolute() || relative.has_parent_path() ||
+          !names.insert(relative.string()).second)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_PATH_INVALID");
+      const auto path = graph.parent_path() / relative;
+      requireAssemblyDirectoryUnderCacheRoot(cacheRoot, path);
+      if (std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_INVALID");
+      const auto bytes = std::filesystem::file_size(path, error);
+      if (error || bytes == 0 || bytes > maxBytes ||
+          entryBytes > maxBytes - bytes ||
+          !std::filesystem::is_regular_file(path, error) || error)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_INVALID");
+      entryBytes += bytes;
+      if (verifyContents &&
+          sha256File(path, bytes, requireActive) != entry.graphDigest)
+        throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_ENTRY_DIGEST_MISMATCH");
+    }
+  }
+  if (requireActive) requireActive();
   const auto schema = spec.metadata.find("assembledArtifactSchema");
   if (schema == spec.metadata.end()) {
     for (const auto* key : {"assembledFileSetDigest", "externalInitializerDigest",
@@ -925,7 +964,9 @@ validateNativeAssembledArtifactFiles(const NativeModelRunnerSpec& spec,
       if (spec.metadata.count(key) != 0)
         throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_METADATA_MISSING");
     }
-    return graphBytes;
+    if (entryBytes > maxBytes - graphBytes)
+      throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_TOTAL_EXCEEDS_LIMIT");
+    return graphBytes + entryBytes;
   }
   if (schema->second != ASSEMBLED_FILE_SET_SCHEMA || graph.filename() != "model.onnx")
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_SCHEMA_MISMATCH");
@@ -967,7 +1008,9 @@ validateNativeAssembledArtifactFiles(const NativeModelRunnerSpec& spec,
                             initializerDigest)))
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_INITIALIZER_INVALID");
   if (requireActive) requireActive();
-  return graphBytes + initializerBytes;
+  if (entryBytes > maxBytes - graphBytes - initializerBytes)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_FILE_SET_TOTAL_EXCEEDS_LIMIT");
+  return graphBytes + initializerBytes + entryBytes;
 }
 
 struct NativePersistentRecipeResidencyIndex::State

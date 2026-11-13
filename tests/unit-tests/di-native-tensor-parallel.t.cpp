@@ -19,6 +19,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 
 #include <openssl/evp.h>
 
@@ -8037,6 +8038,37 @@ BOOST_AUTO_TEST_CASE(AssemblerTablesSurviveTheArtifactFileValidation)
   // The entry root is the model's own directory, which is what lets ORT resolve the
   // sidecar and what makes the whole artifact one bounded tree.
   BOOST_CHECK_EQUAL(spec.metadata.at("tensorParallelEntryRoot"), roleDir.string());
+
+  // The artifact validator is what a Provider charges and checks before announcing
+  // readiness. It must account for the entries too, or the files would be loadable but
+  // unbilled and unchecked.
+  const auto boundBytes = validateNativeAssembledArtifactFiles(spec, cacheRoot, 3392676128ULL,
+                                                               true);
+  const auto modelBytes = std::filesystem::file_size(roleDir / "model.onnx");
+  // The model and sidecar total plus every entry file: one number for the whole artifact.
+  BOOST_CHECK_EQUAL(boundBytes, modelBytes + entryBytes);
+  BOOST_TEST_MESSAGE("artifact bytes validated=" << boundBytes
+                    << " (model=" << modelBytes << " entries=" << entryBytes << ")");
+
+  // Negative: an entry file that is not where the contract says is refused, so the entry
+  // accounting cannot silently pass over a missing table.
+  {
+    auto broken = spec;
+    std::string wire = broken.metadata.at("tensorParallelEntries");
+    const auto first = wire.find("\"relativeGraphPath\":\"");
+    BOOST_REQUIRE(first != std::string::npos);
+    const auto valueStart = wire.find('\"', first + 20) + 1;
+    const auto valueEnd = wire.find('"', valueStart);
+    BOOST_REQUIRE(valueEnd != std::string::npos && valueEnd > valueStart);
+    wire.replace(valueStart, valueEnd - valueStart, "absent-entry.onnx");
+    broken.metadata["tensorParallelEntries"] = wire;
+    // The edited wire must still parse as a table, or the refusal would come from the JSON
+    // reader rather than from the file check this asserts.
+    BOOST_REQUIRE_NO_THROW(qwen::parseQwenTpEntryTable(wire));
+    BOOST_CHECK_THROW(
+      validateNativeAssembledArtifactFiles(broken, cacheRoot, 3392676128ULL, true),
+      std::runtime_error);
+  }
 
   std::filesystem::remove_all(cacheRoot, cleanupError);
 }
