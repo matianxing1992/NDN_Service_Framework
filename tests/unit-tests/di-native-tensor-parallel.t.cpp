@@ -8497,9 +8497,9 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
   // argmax the coordinator's own Greedy rule should pick.
   BOOST_CHECK_GE(token, 0);
   BOOST_CHECK_LT(token, static_cast<std::int64_t>(shape.vocab));
-  // Greedy sampling with no repetition penalty takes the first maximum, so re-sampling the
-  // published logits must give the same index. The published logits are read back from the
-  // head slot the worker surfaced.
+  // This case cannot compare against the two-rank number: its peer contribution is a constant,
+  // so the logits are a different forward pass. What it establishes is that the production
+  // sampler produced a valid token through its own path from real logits.
   BOOST_TEST_MESSAGE("token is a valid vocabulary index");
 
   std::filesystem::remove_all(root, cleanupError);
@@ -8595,7 +8595,7 @@ private:
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
+BOOST_AUTO_TEST_CASE(TwoCoordinatorsRunTheFullStackAndOneSamples)
 {
   // The smallest bidirectional exchange under the coordinator: one layer's attention and MLP,
   // each unit publishing its own partial and awaiting the peer's at the reduction that needs
@@ -8688,13 +8688,15 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
       if (step.unitId != unit) continue;
       const auto& id = step.stepId;
       if (id.find("/INIT") != std::string::npos) { steps.push_back(step); continue; }
-      // Layer 0 only: the trailing id component decides, so "/1" cannot match "/10".
-      const auto slash = id.rfind('/');
-      const auto tail = id.substr(slash + 1);
-      if (tail != "0") continue;
+      // The head runs only on the unit that owns it; the peer has no head step.
+      const bool head = id.find("/HEAD") != std::string::npos;
+      if (head && std::string(unit) != "S0R0") continue;
       steps.push_back(step);
     }
-    BOOST_REQUIRE_EQUAL(steps.size(), 5U);
+    // INIT plus four steps per layer, and the head on the egress unit.
+    const std::size_t expected =
+      1U + 4U * 28U + (std::string(unit) == "S0R0" ? 1U : 0U);
+    BOOST_REQUIRE_EQUAL(steps.size(), expected);
 
     NativeModelRunnerSpec spec;
     spec.role = unit;
@@ -8713,12 +8715,13 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
     side.plan.steps = steps;
     side.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
     side.plan.tensorDegree = 2;
-    // The peer's two contributions for this layer, and this unit's own two for the peer.
+    // Every layer's two peer contributions, and this unit's own two for the peer.
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
     for (const auto* kind : {"attn", "mlp"}) {
       NativeDependencySpec in;
       in.producers = {side.peer};
       in.consumers = {unit};
-      in.keyScope = std::string(kind) + "-0-from-" + side.peer;
+      in.keyScope = std::string(kind) + "-" + std::to_string(layer) + "-from-" + side.peer;
       in.topicPrefix = "/peer";
       in.objectNameTemplate =
         "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
@@ -8726,13 +8729,16 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
       in.operationKind = "TENSOR_PARTIAL";
       in.useNdnsfDataV1 = true;
       in.producerStepId = side.peer + (std::string(kind) == "attn"
-        ? std::string("/ATTN/") : std::string("/MLP/")) + "0";
+        ? std::string("/ATTN/") : std::string("/MLP/")) + std::to_string(layer);
       in.producerSlotId = "partial";
       for (const auto& step : steps) {
         if (step.operation != "SUM") continue;
-        if (step.stepId.find(std::string("/SUM_") +
-              (std::string(kind) == "attn" ? "ATTN/0" : "MLP/0")) == std::string::npos)
-          continue;
+        const auto marker = std::string("/SUM_") +
+          (std::string(kind) == "attn" ? "ATTN/" : "MLP/") + std::to_string(layer);
+        if (step.stepId.find(marker) == std::string::npos) continue;
+        // Exact layer, so "/1" cannot match "/10".
+        const auto slash = step.stepId.rfind('/');
+        if (step.stepId.substr(slash + 1) != std::to_string(layer)) continue;
         for (const auto& slot : step.inputSlots) {
           if (slot.source != "REMOTE_STEP") continue;
           in.consumerStepId = step.stepId;
@@ -8745,7 +8751,7 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
       NativeDependencySpec out;
       out.producers = {unit};
       out.consumers = {side.peer};
-      out.keyScope = std::string(kind) + "-0-from-" + unit;
+      out.keyScope = std::string(kind) + "-" + std::to_string(layer) + "-from-" + unit;
       out.topicPrefix = "/peer";
       out.objectNameTemplate =
         "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
@@ -8753,9 +8759,10 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
       out.operationKind = "TENSOR_PARTIAL";
       out.useNdnsfDataV1 = true;
       out.producerStepId = std::string(unit) + (std::string(kind) == "attn"
-        ? std::string("/ATTN/") : std::string("/MLP/")) + "0";
+        ? std::string("/ATTN/") : std::string("/MLP/")) + std::to_string(layer);
       out.producerSlotId = "partial";
       side.plan.dependencies.push_back(std::move(out));
+    }
     }
     NativeDependencySpec feedback;
     feedback.producers = {unit};
@@ -8790,6 +8797,7 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
   // is constructed in place inside the task that runs it.
   std::map<std::string, std::unique_ptr<NativeProviderRuntime>> runtimes;
   std::map<std::string, std::future<NativeEpochCoordinatorResult>> futures;
+  auto events = std::make_shared<std::vector<std::string>>();
   for (auto& item : sides) {
     runtimes[item.first] = std::make_unique<NativeProviderRuntime>(1);
     auto io = std::make_shared<ExchangeIo>(bus);
@@ -8799,7 +8807,8 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
     const auto unit = item.first;
     futures[item.first] = std::async(
       std::launch::async,
-      [runtime, io, plan = std::move(plan), runner, unit, &assignment, &makeToken]() mutable {
+      [runtime, io, plan = std::move(plan), runner, unit, &assignment, &makeToken,
+       events]() mutable {
         const auto identity = tpStateIdentity(unit, 28, 0);
         NativeEpochCoordinatorConfig config{*runtime, std::move(plan), assignment, io};
         config.sessionId = "exchange-" + unit;
@@ -8818,8 +8827,16 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
         config.positionPolicyDigest = identity.positionDigest;
         config.samplingDigest = std::string("sha256:") + std::string(64, 'e');
         config.prepareRunner = [runner] { return runner; };
-        // Neither unit owns a head in this block, so neither is terminal.
-        config.terminalRole = false;
+        // The egress unit owns the head, so it is the terminal role and samples; the peer is
+        // not, and publishing an event from it would be a contract violation.
+        config.terminalRole = unit == "S0R0";
+        if (unit == "S0R0") {
+          auto sink = events;
+          config.eventSink = [sink] (const std::vector<std::uint8_t>& payload) {
+            sink->emplace_back(payload.begin(), payload.end());
+            return true;
+          };
+        }
         config.initialInputs = {
           {"input_ids", makeEncodedTensorBundle("input_ids",
             {makeToken("input_ids", 7)})},
@@ -8849,11 +8866,24 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
       BOOST_FAIL("coordinator " + item.first + ": " + error.what());
     }
   }
+  // 112 partials -- two per layer per unit -- plus the egress unit's own feedback packet, which
+  // travels on the same bus because that is how this fixture wires every edge.
   BOOST_TEST_MESSAGE("bus published " << bus->publishedCount());
-  BOOST_CHECK_EQUAL(bus->publishedCount(), 4U);
+  BOOST_CHECK_EQUAL(bus->publishedCount(), 113U);
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
   for (const auto& item : results)
     BOOST_CHECK_EQUAL(item.second.epochsExecuted, 1U);
+  // The egress event carries the token its head produced, sampled by the coordinator itself.
+  BOOST_REQUIRE_EQUAL(events->size(), 1U);
+  const auto& event = events->front();
+  const auto position = event.find("\"tokenId\":");
+  BOOST_REQUIRE(position != std::string::npos);
+  const auto digits = event.substr(position + 10);
+  const auto token = std::stoll(digits.substr(0, digits.find_first_not_of("0123456789")));
+  BOOST_TEST_MESSAGE("two-coordinator token=" << token
+                    << " bus=" << bus->publishedCount());
+  BOOST_CHECK_GE(token, 0);
+  BOOST_CHECK_LT(token, static_cast<std::int64_t>(shape.vocab));
 
   std::filesystem::remove_all(root, cleanupError);
 }
