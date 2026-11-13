@@ -12,10 +12,13 @@ import sys
 import tempfile
 import unittest
 
-# Run this module against the built extension directory (PYTHONPATH pointing at
-# the spec201-repo-python build output). Importing the installed package copy in
-# the same process registers the same pybind types twice and must not be mixed.
-import _py_repoclient as native
+# Prefer the installed package layout; fall back to the build tree, where the
+# extension is a top-level module. Loading both copies in one process registers the
+# same pybind types twice, so this module deliberately picks exactly one.
+try:
+    from py_repoclient import _py_repoclient as native
+except ImportError:
+    import _py_repoclient as native
 
 PAYLOAD = b"spec240 unified client facade v1"
 OWNER = "/example/spec240/owner"
@@ -68,7 +71,10 @@ class UnifiedRepoClientTest(unittest.TestCase):
         destination = os.path.join(self.root, "second-process.bin")
         script = (
             "import json, sys\n"
-            "import _py_repoclient as native\n"
+            "try:\n"
+            "    from py_repoclient import _py_repoclient as native\n"
+            "except ImportError:\n"
+            "    import _py_repoclient as native\n"
             "root, owner, reference, destination = json.loads(sys.argv[1])\n"
             "result = native.unified_fetch_file(root, owner, reference, destination, 30000)\n"
             "print(json.dumps(result))\n"
