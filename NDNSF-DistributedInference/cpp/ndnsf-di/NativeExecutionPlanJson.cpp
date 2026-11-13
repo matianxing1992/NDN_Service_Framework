@@ -2748,6 +2748,14 @@ void bindFixedTemplateSteps(NativeExecutionPlan& plan,
   plan.steps = fixed.steps;
   plan.stepPlanVersion = fixed.stepPlanVersion;
   plan.tensorDegree = fixed.tensorDegree;
+  // The units named by a sealed template are the plan's roles, and the validation below
+  // checks every step against that list. A template whose edges are all self feedback lists
+  // no role through dependencies, so the roles must come from the steps before this check
+  // rather than after it.
+  for (const auto& step : plan.steps) {
+    if (std::find(plan.roles.begin(), plan.roles.end(), step.unitId) == plan.roles.end())
+      plan.roles.push_back(step.unitId);
+  }
   // Validate the assembled plan, not just the template metadata. The template
   // was normalized when it was sealed, but the invocation's plan binds it to a
   // concrete role and dependency set, and that combination is what the Provider
