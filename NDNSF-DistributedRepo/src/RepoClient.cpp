@@ -3103,13 +3103,17 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   request.expiresAtMs = input.expiresAtMs;
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.target);
+  auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
     std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), {}, {});
+    remainingMs(options.deadline), emitted, options.requireCurrent);
   const auto reply = RepoUserStorageGrantReply::fromJson(
     std::string(wire.begin(), wire.end()));
+  reply.validateExpected(target,
+                         m_impl->user->getName().toUri(ndn::name::UriFormat::ALTERNATE),
+                         request);
   RepoWriteGrant grant;
   grant.ownerIdentity = reply.grant.ownerIdentity;
   grant.writerIdentity = reply.grant.writerIdentity;
@@ -3188,13 +3192,17 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   request.limit = input.limit;
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.target);
+  auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
     std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), {}, {});
+    remainingMs(options.deadline), emitted, options.requireCurrent);
   const auto reply = RepoUserStorageListReply::fromJson(
     std::string(wire.begin(), wire.end()));
+  reply.validateExpected(target,
+                         m_impl->user->getName().toUri(ndn::name::UriFormat::ALTERNATE),
+                         request);
   RepoPage page;
   page.nextCursor = reply.nextAfterObjectName;
   for (const auto& claim : reply.objects) {
@@ -3232,11 +3240,12 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
     ? 0 : static_cast<uint64_t>(std::stoull(input.expectedEpoch));
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.targets.front());
+  auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
     std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), {}, {});
+    remainingMs(options.deadline), emitted, options.requireCurrent);
   const auto reply = RepoUserStorageDeleteReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target, m_impl->user->getName().toUri(ndn::name::UriFormat::ALTERNATE),
@@ -3261,8 +3270,18 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
   if (!m_impl || !m_impl->file)
     throw RepoClientError("CLOSED", "RepoClient is closed", "discover");
   ArtifactCapabilityRequirements requirements;
-  for (const auto& capability : input.requiredCapabilities)
-    requirements.artifact.formatVersion = capability;
+  for (const auto& capability : input.requiredCapabilities) {
+    if (capability == "artifact-manifest-v2" || capability == "raw-file-v1")
+      requirements.artifact.formatVersion = capability;
+    else if (capability == "require-resume")
+      requirements.requireResume = true;
+    else if (capability == "require-replica-receipts")
+      requirements.requireReplicaReceipts = true;
+    else
+      throw std::invalid_argument("discover received an unknown capability: " + capability);
+  }
+  if (requirements.artifact.formatVersion.empty())
+    requirements.artifact.formatVersion = "artifact-manifest-v2";
   return m_impl->file->discoverRepoCandidates(requirements,
                                              remainingMs(options.deadline));
 }

@@ -186,6 +186,17 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(DiscoveryRejectsUnknownCapabilitiesBeforeAnyRequest) {
+  TemporaryDirectory temporary("discovery");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoDiscoveryRequest request;
+  request.requiredCapabilities = {"not-a-real-capability"};
+  request.ackCollectionMs = 10;
+  // The mapping must reject an unknown capability instead of writing it into a
+  // typed requirement field and issuing a request.
+  BOOST_CHECK_THROW(client.discover(request, makeOptions()), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(PublishFileRefusesShapesItCannotHonour) {
   // CA04: a selective publication without typed targets, and an ACCEPTED
   // completion without an operation handle, must be reported instead of being
