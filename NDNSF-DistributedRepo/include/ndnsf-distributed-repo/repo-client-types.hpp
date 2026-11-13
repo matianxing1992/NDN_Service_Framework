@@ -186,15 +186,24 @@ struct ProducerObjectSource
   std::string payloadDigest;
 };
 
-/** Requested original-Data publication. */
+/** Requested original-Data publication. The wire verifier is caller-owned; the
+ *  Repo never invents producer trust, so a publication that needs verification
+ *  must supply it (the vector is the exact original wire). */
 struct RepoDataPublication
 {
   std::optional<PacketSource> packets;
   std::optional<ProducerObjectSource> object;
   std::string producerIdentity;
   std::string targetId;
+  /** Owner authorization the writer was given; empty means self-owned. */
+  std::string ownerIdentity;
   std::string grantId;
+  uint64_t ownerEpoch = 0;
+  uint64_t generation = 0;
+  /** Immutable object name; required when the packet source is empty. */
+  std::string objectName;
   std::string idempotencyKey;
+  std::function<bool(const std::vector<uint8_t>&)> verifyWire;
 };
 
 /** Requested original-Data retrieval. */
