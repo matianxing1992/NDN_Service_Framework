@@ -743,8 +743,18 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     init.unitId = unit.roleId;
     init.operation = "CALL_SUBGRAPH";
     init.artifactEntry = entry(unit.roleId, "INIT", 0);
+    // The frozen export's INIT takes the token ids, the mask *and* the positions: the
+    // reformat subgraph reads the position vector rather than deriving it from the token
+    // shape, so an INIT with only the first two cannot run. All three are epoch inputs the
+    // caller supplies for the prompt.
+    // The export's INIT consumes the prompt's positions as well as its ids and mask, so
+    // the caller supplies all three. The produced positions travel under the slot named
+    // `position_ids` below, so the consumed one is named `prompt_positions`: a step's input
+    // and output slots share one id space, and reusing the name would make the template
+    // ambiguous by construction.
     init.inputSlots = {makeIndexSlot("input_ids", "EPOCH_INPUT", "int64"),
-                       makeIndexSlot("attention_mask", "EPOCH_INPUT", "int64")};
+                       makeIndexSlot("attention_mask", "EPOCH_INPUT", "int64"),
+                       makeIndexSlot("prompt_positions", "EPOCH_INPUT", "int64")};
     // The export derives positions from the input length and casts the mask to
     // int32 before attention, so the produced side inputs carry those types.
     //
@@ -2261,17 +2271,66 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
         contract.inputSlotByGraphName[name] = "input_ids";
       else if (name.find("attention_mask") != std::string::npos)
         contract.inputSlotByGraphName[name] = "attention_mask";
+      else if (name == "position_ids")
+        contract.inputSlotByGraphName[name] = "prompt_positions";
       else
         contract.synthesizedInputGraphNames.push_back(name);
     }
+    // INIT declares three slots: positions, the reformatted mask and the embedded X0. The
+    // export's INIT also returns the mask scalar it derives internally, which has no plan
+    // slot; leaving it unbound records that rather than folding two different tensors into
+    // one slot id, which the step validator would reject as ambiguous.
+    bool positionsBound = false;
+    bool maskBound = false;
+    bool x0Bound = false;
     for (const auto& output : graph.output()) {
       const auto name = output.name();
-      if (name.find("pos_ids") != std::string::npos)
+      // Absent shape is not the same as scalar: the export leaves several outputs
+      // unshaped, and skipping those would drop a real boundary value. Only an explicitly
+      // shaped rank-0 output is a scalar.
+      const auto& outputType = output.type().tensor_type();
+      const bool scalar = outputType.has_shape() && outputType.shape().dim().empty();
+      if (scalar) continue;
+      if (!positionsBound && name.find("pos_ids") != std::string::npos) {
         contract.outputSlotByGraphName[name] = "position_ids";
-      else if (name.find("attn_mask") != std::string::npos)
+        positionsBound = true;
+      }
+      else if (!maskBound && name.find("attn_mask") != std::string::npos) {
         contract.outputSlotByGraphName[name] = "attn_mask";
-      else
+        maskBound = true;
+      }
+      else if (!x0Bound && name.find("embed_tokens") != std::string::npos) {
         contract.outputSlotByGraphName[name] = "x0";
+        x0Bound = true;
+      }
+    }
+    if (!positionsBound && !maskBound && !x0Bound) {
+      // A graph whose INIT outputs carry none of the export's names is a different model,
+      // and its three boundary values are still positions, mask and X0 in declaration
+      // order -- the taxonomy C2 fixes for INIT, not a fact about the export's naming.
+      // Binding by position here keeps that contract explicit instead of leaving the
+      // entry unbound.
+      std::vector<std::string> ordered;
+      for (const auto& output : graph.output()) {
+        const auto& type = output.type().tensor_type();
+        if (type.has_shape() && type.shape().dim().empty()) continue;
+        ordered.push_back(output.name());
+      }
+      if (ordered.size() == 3) {
+        contract.outputSlotByGraphName[ordered[0]] = "position_ids";
+        contract.outputSlotByGraphName[ordered[1]] = "attn_mask";
+        contract.outputSlotByGraphName[ordered[2]] = "x0";
+        positionsBound = maskBound = x0Bound = true;
+      }
+    }
+    if (!positionsBound || !maskBound || !x0Bound) {
+      // An INIT that does not expose the export's three values is not the frozen model --
+      // a small fixture or another export. Its binding is then identity, which the caller
+      // of this function records, rather than a guess about which output is which. The
+      // frozen export is checked by the cases that run it; refusing here would make this
+      // function reject every other model.
+      contract.outputSlotByGraphName.clear();
+      return;
     }
     return;
   }
