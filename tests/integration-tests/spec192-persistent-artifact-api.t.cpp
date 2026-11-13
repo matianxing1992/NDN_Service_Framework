@@ -5911,4 +5911,81 @@ BOOST_AUTO_TEST_CASE(PersistentApiFetchHealthStateSerializesConcurrentCalls)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(Spec240UnifiedFacade)
+
+BOOST_AUTO_TEST_CASE(PublishDataRejectsAMissingVerifierBeforeAnySideEffect)
+{
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec240/facade/group";
+  profile.syncPrefix = "/ndnsf/spec240/facade/sync";
+  profile.userIdentity = "/test/user/spec240/facade";
+  profile.providerIdentity = "/test/provider/spec240/facade";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec240/facade";
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 1, servicePrefix, operations);
+  const repo::RepoArtifactTarget target{
+    "/logical/spec240/facade", environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+  repo::StorageCapability capability;
+  capability.repoNode = target.repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 1024 * 1024;
+  auto node = std::make_shared<repo::RepoNode>(
+    servicePrefix, capability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      (temporary.path() / "objects").string(), 1024 * 1024, 4096, "spec240-facade"),
+    target.repoNode, target.providerIdentity, (temporary.path() / "facade.sqlite").string());
+  node->registerServices(environment.provider(1), publisher, 5000, 10000);
+
+  auto config = repo::PersistentRepoClientConfig{};
+  config.servicePrefix = servicePrefix;
+  config.providerScope = {ndn::Name(target.providerIdentity)};
+  config.dataOnly = true;
+  auto client = repo::RepoClient::makePersistent(publisher, std::move(config));
+
+  // CA01: a missing verifier must fail closed before the source is pulled or the
+  // Repo is asked to store anything.
+  std::atomic<int> pulled{0};
+  const auto objectName = ndn::Name(publisher->getName()).append("packet").appendSegment(0);
+  repo::RepoDataPublication publication;
+  repo::PacketSource source;
+  source.packetNames = {objectName.toUri(ndn::name::UriFormat::ALTERNATE)};
+  source.packetOffsets = {0, 8};
+  source.expectedWireBytes = 8;
+  source.expectedDigest = "sha256:" + std::string(64, '0');
+  source.next = [&pulled](std::vector<uint8_t>& wire) {
+    pulled.fetch_add(1);
+    wire.assign(8, 0x5a);
+    return true;
+  };
+  publication.packets = std::move(source);
+  publication.targetId = target.providerIdentity;
+  publication.repoNode = target.repoNode;
+  publication.producerIdentity = publisher->getName().toUri();
+  publication.ownerIdentity = publisher->getName().toUri();
+  publication.generation = 1;
+  repo::RepoOperationOptions options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  BOOST_CHECK_EXCEPTION(client.publishData(publication, options), repo::RepoClientError,
+    [] (const repo::RepoClientError& error) {
+      return error.code() == "VERIFIER_REQUIRED" && error.phase() == "publishData";
+    });
+  BOOST_CHECK_EQUAL(pulled.load(), 0);
+  BOOST_CHECK_EQUAL(node->core().list().size(), 0U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 } // namespace ndn_service_framework::test
