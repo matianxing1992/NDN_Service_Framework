@@ -3847,6 +3847,25 @@ validateNativeSelectionProjectionSetV3(
     }
   }
 
+  // A tensor-parallel plan legitimately has a cyclic role graph: two units exchange partials
+  // in both directions while the token-local step DAG stays acyclic. The role-level check is
+  // still right for a pipeline, so it is applied only when no projection carries a step
+  // template -- and when one does, the step DAG is what decides executability, which
+  // validateSteps already enforced per projection.
+  const bool tensorParallel = std::any_of(
+    projections.begin(), projections.end(),
+    [] (const auto& projection) { return !projection.plan.steps.empty(); });
+  if (tensorParallel) {
+    for (const auto& projection : projections) {
+      if (projection.plan.steps.empty()) {
+        throw std::invalid_argument(
+          "V3 projection set mixes a step template with a pipeline plan");
+      }
+      projection.plan.validateSteps();
+    }
+    return;
+  }
+
   std::vector<std::string> ready;
   for (const auto& item : incoming) {
     if (item.second == 0) {
@@ -4103,6 +4122,23 @@ roleSpecFromSelectionProjectionV3Impl(
   spec.inputs.reserve(dataflow.mustFetch.size());
   for (const auto& endpoint : dataflow.mustFetch) {
     if (atSequence(endpoint)) spec.inputs.push_back(makeEdge(endpoint, false));
+  }
+  // The sealed template has to travel with the role. Without it the Provider receives the
+  // dependency edges but not the step DAG those edges bind to, so a tensor-parallel role
+  // would arrive at the worker with no steps to run and its inputs naming producer slots the
+  // role never declares. Degree and version travel for the same reason.
+  if (!projection.plan.steps.empty()) {
+    spec.stepPlanVersion = projection.plan.stepPlanVersion;
+    spec.tensorDegree = projection.plan.tensorDegree;
+    std::vector<NativeExecutionStepSpec> owned;
+    for (const auto& step : projection.plan.steps)
+      if (step.unitId == spec.role) owned.push_back(step);
+    if (owned.empty()) {
+      throw std::invalid_argument(
+        "V3 projection role owns no step of its sealed template: " + spec.role);
+    }
+    spec.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+      std::move(owned));
   }
   return spec;
 }

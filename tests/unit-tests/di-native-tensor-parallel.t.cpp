@@ -8172,6 +8172,76 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(RoleSpecCarriesTheSealedTemplateForAShardedUnit)
+{
+  // The runtime projection is what a Provider actually receives. It used to fill only the
+  // role identity and its edges, so a tensor-parallel role arrived with no steps to run --
+  // the fixture-built specs elsewhere in this suite supplied them by hand and hid that.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 2; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = 2;
+    units.push_back(std::move(unit));
+  }
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0", units);
+  BOOST_REQUIRE(!plan.steps.empty());
+
+  for (const auto& unit : units) {
+    // The projection's own step set for this unit.
+    std::vector<NativeExecutionStepSpec> expected;
+    for (const auto& step : plan.steps)
+      if (step.unitId == unit.roleId) expected.push_back(step);
+    BOOST_REQUIRE(!expected.empty());
+
+    // Through the runtime role spec, which is the path a Provider takes.
+    NativeSelectionProjectionV3 projection;
+    projection.plan = plan;
+    projection.dataflow.role = unit.roleId;
+    projection.dataflow.terminalResponseOwner = unit.roleId == "S0R0";
+    projection.attempt = 1;
+    projection.requestId = "/request/role-spec";
+    // The runtime projection checks its own consistency before doing anything, so the fields
+    // it compares have to agree. These are the minimum it reads.
+    projection.provider = "/provider/0";
+    projection.executionRole.roleId = unit.roleId;
+    projection.planDigest = "sha256:" + std::string(64, 'a');
+    projection.dataflow.requestId = projection.requestId;
+    projection.dataflow.attempt = projection.attempt;
+    projection.dataflow.planDigest = projection.planDigest;
+    NativeSelectionRoleV3 selected;
+    selected.role = unit.roleId;
+    selected.selectedRole = unit.roleId;
+    selected.rank = unit.rank;
+    projection.selectedRole = selected;
+
+    RoleSpec spec;
+    try {
+      spec = roleSpecFromSelectionProjectionV3(projection, "/provider/0");
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("roleSpecFromSelectionProjectionV3: ") + error.what());
+    }
+    BOOST_REQUIRE_MESSAGE(spec.steps != nullptr,
+      "the runtime spec carries no step template for " + unit.roleId);
+    BOOST_CHECK_EQUAL(spec.steps->size(), expected.size());
+    BOOST_CHECK_EQUAL(spec.stepPlanVersion, plan.stepPlanVersion);
+    BOOST_CHECK_EQUAL(spec.tensorDegree, plan.tensorDegree);
+    // Every step belongs to this role, which is what lets the worker reject a foreign one.
+    for (const auto& step : *spec.steps)
+      BOOST_CHECK_EQUAL(step.unitId, unit.roleId);
+    BOOST_TEST_MESSAGE("role " << unit.roleId << " steps=" << spec.steps->size()
+                      << " degree=" << spec.tensorDegree);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
 {
   // The distributed step: two workers, each running its own unit's 28 layers, handing each
