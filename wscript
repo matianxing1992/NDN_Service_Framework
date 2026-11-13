@@ -1095,6 +1095,13 @@ def build(bld):
     bld.install_files('${INCLUDEDIR}/ndn-service-framework',
                       bld.path.find_resource('config.hpp'))
 
+    # nac-abe-config.hpp is generated during the build, so the configure-time header
+    # glob never sees it. Installed consumers need it because common.hpp reaches
+    # nac-abe/consumer.hpp, which includes it.
+    nacAbeConfig = bld.path.find_resource('ndn-service-framework/nac-abe-config.hpp')
+    if nacAbeConfig is not None:
+        bld.install_files('${INCLUDEDIR}', [nacAbeConfig])
+
     if 'di' in bld.env.NDNSF_COMPONENTS:
         # Preserve the pre-existing Native* compatibility installation until the
         # T011 caller matrix proves which entries can be retired.  The three new
