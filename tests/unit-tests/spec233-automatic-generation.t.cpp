@@ -3737,7 +3737,13 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
     return;
   }
   const std::string row(rowEnv);
-  BOOST_REQUIRE_MESSAGE(row == "Q06-I4", "unsupported frozen row: " + row);
+  BOOST_REQUIRE_MESSAGE(row == "Q06-I4" || row == "Q06-I8" || row == "Q06-F16" ||
+    row == "Q06-F32", "unsupported frozen row: " + row);
+  const auto expectedCache = row == "Q06-F16" ? TensorElementType::Float16 :
+    TensorElementType::Float32;
+  // Explicit half-precision bound: two independent F16 executions do not
+  // share bit patterns, so the tolerance is stated per element width.
+  const auto tolerance = row == "Q06-F16" ? 5.0e-2 : 1.0e-5;
   const auto* pathEnv = std::getenv("NDNSF_SPEC233_REAL_MODEL");
   BOOST_REQUIRE_MESSAGE(pathEnv != nullptr && *pathEnv != '\0',
     "NDNSF_SPEC233_REAL_MODEL is required for frozen row " + row);
@@ -3759,7 +3765,7 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(30);
   const ndnsf::di::NativeAssemblyControl control{deadline, [] {}, 4ULL << 30, 4ULL << 30};
-  const auto model = inspectAutomaticOnnxModel({modelPath}, control);
+  auto model = inspectAutomaticOnnxModel({modelPath}, control);
   BOOST_REQUIRE_MESSAGE(model.contract.generation.has_value(),
     "source generation proof unavailable: " + model.generationDiagnostic);
   const auto& generation = *model.contract.generation;
@@ -3792,7 +3798,7 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
   for (const auto& state : generation.states) {
     BOOST_CHECK_EQUAL(state.heads, kKvHeads);
     BOOST_CHECK_EQUAL(state.headSize, kHeadSize);
-    BOOST_CHECK(state.elementType == TensorElementType::Float32);
+    BOOST_CHECK(state.elementType == expectedCache);
     BOOST_CHECK(state.inputAxes == (std::array<std::uint64_t, 4>{0, 1, 2, 3}));
     BOOST_CHECK(state.outputAxes == (std::array<std::uint64_t, 4>{0, 1, 2, 3}));
   }
@@ -3811,7 +3817,7 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
     const std::vector<std::int64_t> emptyState{
       1, static_cast<std::int64_t>(kKvHeads), 0, static_cast<std::int64_t>(kHeadSize)};
     for (const auto& state : generation.states)
-      inputs.push_back(generationFloat(strip(state.input), emptyState));
+      inputs.push_back(NamedTensor{strip(state.input), expectedCache, emptyState, {}});
     return inputs;
   };
 
@@ -3826,22 +3832,48 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
   // The Provider executes an assembled artifact named model.onnx, not the
   // source filename. Hard-link the frozen bytes so the identity digest is
   // unchanged and the reference must execute the same physical artifact.
-  const auto assembledPath = std::filesystem::path(scratchRoot) / "model.onnx";
-  if (!std::filesystem::exists(assembledPath)) {
+  // Provider validation requires the file name model.onnx, so each model
+  // digest gets its own directory; a shared scratch path would silently reuse
+  // another row's artifact.
+  const auto assembledDir = std::filesystem::path(scratchRoot) /
+    model.opened.modelDigest.substr(7, 16);
+  std::filesystem::create_directories(assembledDir);
+  const auto assembledPath = assembledDir / "model.onnx";
+  const auto stageFile = [&] (const std::filesystem::path& source,
+                              const std::filesystem::path& target) {
+    std::filesystem::create_directories(target.parent_path());
+    if (std::filesystem::exists(target)) return;
     std::error_code linkError;
-    std::filesystem::create_hard_link(modelPath, assembledPath, linkError);
+    std::filesystem::create_hard_link(source, target, linkError);
     if (linkError) {
-      std::filesystem::copy_file(modelPath, assembledPath,
+      std::filesystem::copy_file(source, target,
         std::filesystem::copy_options::overwrite_existing, linkError);
       BOOST_REQUIRE_MESSAGE(!linkError,
         "cannot stage the assembled source: " + linkError.message());
     }
+  };
+  stageFile(modelPath, assembledPath);
+  for (const auto& file : model.opened.externalFiles) {
+    const auto relative = std::filesystem::path(file.location);
+    BOOST_REQUIRE(!relative.is_absolute());
+    for (const auto& part : relative) BOOST_REQUIRE(part != "..");
+    stageFile(std::filesystem::path(modelPath).parent_path() / relative,
+              assembledDir / relative);
   }
   const auto assembledSource = assembledPath.string();
+  auto externalInventory = NativeJson::array();
+  std::uint64_t externalBytes = 0;
+  for (const auto& file : model.opened.externalFiles) {
+    externalInventory.push_back({{"location", file.location}, {"bytes", file.bytes},
+                                 {"digest", file.digest}});
+    externalBytes += file.bytes;
+  }
   const auto sourceBinding = AutomaticOnnxSourceBinding::fromSourceMetadata(
     NativeJson{{"contract", nativeParseJson(model.contract.canonicalJson(control))},
-               {"externalFiles", NativeJson::array()}},
-    model.opened.modelDigest, 0, "", control);
+               {"externalFiles", std::move(externalInventory)}},
+    model.opened.modelDigest, externalBytes,
+    externalBytes == 0 ? std::string{} : model.inspection.canonicalIdentity.initializerDigest,
+    control);
   const auto prepare = [&] (std::int64_t length, const std::string& requestId) {
     RealRequest request;
     request.initial = makeInitial(length);
@@ -3907,7 +3939,9 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
     Ort::SessionOptions options;
     options.SetIntraOpNumThreads(1);
     options.SetInterOpNumThreads(1);
-    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    // Match the production CPU session policy; a different optimization level
+    // changes F16 accumulation order and would not be a numeric oracle.
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
     Ort::Session session(environment, modelPath.c_str(), options);
     const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     // The contract keeps canonical "graph/" names; the physical ORT model uses
@@ -3939,9 +3973,9 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
         for (const auto& state : generation.states) {
           const auto inputName = strip(state.input);
           if (round == 0) {
-            named.emplace(inputName, generationFloat(inputName, {1,
+            named.emplace(inputName, NamedTensor{inputName, expectedCache, {1,
               static_cast<std::int64_t>(kKvHeads), 0,
-              static_cast<std::int64_t>(kHeadSize)}));
+              static_cast<std::int64_t>(kHeadSize)}, {}});
             continue;
           }
           auto previous = past.at(strip(state.output));
@@ -3983,11 +4017,10 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
         const auto& logits = epoch.front();
         const auto vocabulary = static_cast<std::size_t>(logits.shape.back());
         const auto rows = static_cast<std::size_t>(logits.shape.at(1));
-        const auto* valuesAt = reinterpret_cast<const float*>(logits.payload.data());
         std::int64_t selected = 0;
         float best = -std::numeric_limits<float>::infinity();
         for (std::size_t index = 0; index < vocabulary; ++index) {
-          const auto value = valuesAt[(rows - 1) * vocabulary + index];
+          const auto value = referenceGenerationValue(logits, (rows - 1) * vocabulary + index);
           if (value > best) { best = value; selected = static_cast<std::int64_t>(index); }
         }
         nextToken.assign(1, selected);
@@ -4005,67 +4038,107 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
     return references;
   };
 
-  const auto raw = rawReferences();
   {
-    // Whole-candidate budget: one full decode round's 56 targets exceed a cap
-    // that still admits the contract and the shape envelope. The rejection must
-    // be the aggregate cap, not one member or the envelope value.
+    // The same source must yield a state-preserving two-stage cut and one
+    // checked projection; this is structural and does not execute a stage.
+    auto splitSource = std::make_shared<AutomaticOnnxModel>(model);
+    AutomaticOnnxSplitStrategy splitStrategy(splitSource);
+    NativeCandidateBudget splitBudget;
+    splitBudget.maxCandidates = 4;
+    const auto splitCandidates = splitStrategy.enumerate(model.descriptor,
+      model.inspection.graph, splitBudget);
+    BOOST_REQUIRE_MESSAGE(!splitCandidates.empty(), "real source has no legal split");
+    const auto stageBindings = deriveAutomaticOnnxStageBindings(*splitSource,
+      splitCandidates.front());
+    BOOST_REQUIRE_EQUAL(stageBindings.size(), 2U);
+    BOOST_CHECK(stageBindings.back().terminal);
+    BOOST_CHECK(!stageBindings.front().terminal);
+    BOOST_TEST_MESSAGE("real split cuts=" << splitCandidates.front().crossPartitionTensors.size() <<
+      " prefixStates=" << stageBindings.front().stateOutputs.size() <<
+      " suffixStates=" << stageBindings.back().stateOutputs.size());
+  }
+  const auto raw = rawReferences();
+  // The aggregate-budget face is exercised on rows whose state set exceeds
+  // the minimum executable cap; the F16 row keeps the same guard but its
+  // 56-state target set is smaller than the contract plus envelope bound.
+  if (row != "Q06-F16") {
+    // A cap above the contract/envelope but below the whole state set; a row
+    // with a larger intermediate state charge may reject during binding, which
+    // is still a definite pre-allocation budget rejection.
     const auto contractBytes = model.contract.canonicalJson(control).size();
-    const auto tightBudget = static_cast<std::uint64_t>(contractBytes * 2);
-    const NativeAssemblyControl tightControl{deadline, [] {}, 4ULL << 30, tightBudget};
-    auto tightProjection = fixture::automaticSourceProjection(model,
-      automaticOnnxShapeSeed(bindAutomaticOnnxShapes(model.contract, makeInitial(8),
-                                                    kMaxNewTokens + 1, 32, tightControl)));
-    tightProjection.requestId = "/source-request-q06-i4-budget";
-    tightProjection.dataflow.requestId = tightProjection.requestId;
-    tightProjection.assembly.maxSourceBytes = 4ULL << 30;
-    tightProjection.assembly.maxAssembledBytes = tightBudget;
-    tightProjection.assembly.maxNodes = 4096;
-    tightProjection.assembly.recipeDigest = nativePlanningDigest(
-      canonicalNativeOnnxRecipeJson(tightProjection.assembly));
-    tightProjection.selectedRole = tightProjection.assembly;
-    tightProjection.planDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
-      {"fixture", "real-generation-q06-i4-budget"},
-      {"recipe", tightProjection.assembly.recipeDigest},
-      {"provider", tightProjection.provider}}));
-    tightProjection.dataflow.planDigest = tightProjection.planDigest;
-    auto& tightGeneration = tightProjection.generationContract;
-    tightGeneration.enabled = true;
-    tightGeneration.mode = "TOKEN_STREAMING";
-    tightGeneration.maxGeneratedTokens = kMaxNewTokens + 1;
-    tightGeneration.streamingOperationStride = 1;
-    tightGeneration.tokenInputName = strip(generation.tokenInput);
-    tightGeneration.attentionMaskInputName = strip(generation.maskInput);
-    tightGeneration.positionIdsInputName = strip(generation.positionInput);
-    for (const auto& state : generation.states) {
-      tightGeneration.stateInputNames.push_back(strip(state.input));
-      tightGeneration.stateOutputNames.push_back(strip(state.output));
-    }
-    tightGeneration.eosTokenIds.clear();
-    NativeRequestControl tightRequest;
-    tightRequest.requestId = tightProjection.requestId;
-    tightRequest.attempt = tightProjection.attempt;
-    tightRequest.deadline = deadline;
-    BOOST_TEST_MESSAGE("aggregate budget contractBytes=" << contractBytes <<
-      " tightBytes=" << tightBudget << " firstTargetBytes=" <<
-      (static_cast<std::uint64_t>(kKvHeads) * 16 * kHeadSize * 4));
-    const auto tightBinding = AutomaticOnnxRequestBinding::admit(sourceBinding,
-      tightProjection, tightRequest);
-    RoleExecutionContext tightContext;
-    tightContext.requestId = tightProjection.requestId;
-    tightContext.attemptEpoch = tightProjection.attempt;
-    tightContext.role = tightProjection.executionRole.roleId;
-    tightContext.inferenceEpoch = kRounds - 1;
-    std::vector<NamedTensorView> tightRaw;
     const auto& finalEpoch = raw.first->at(kRounds - 1);
+    std::uint64_t tightStateBytes = 0;
     for (std::size_t index = 1; index < finalEpoch.size(); ++index)
-      tightRaw.push_back({finalEpoch[index].name, finalEpoch[index].elementType,
-        finalEpoch[index].shape, ndn::span<const std::uint8_t>(
-          finalEpoch[index].payload.data(), finalEpoch[index].payload.size())});
-    BOOST_CHECK_EXCEPTION(tightBinding->normalizeStateFeedback(tightRaw, tightContext),
-      std::invalid_argument, [] (const auto& error) {
-        return std::string(error.what()) == "AUTOMATIC_STATE_FEEDBACK_BUDGET";
-      });
+      tightStateBytes += finalEpoch[index].payload.size();
+    const auto tightBudget = std::max<std::uint64_t>(
+      static_cast<std::uint64_t>(contractBytes) + (1ULL << 20),
+      tightStateBytes * 3 / 4);
+    const NativeAssemblyControl tightControl{deadline, [] {}, 4ULL << 30, tightBudget};
+    std::string budgetError;
+    std::optional<NativeSelectionProjectionV3> tightProjection;
+    try {
+      tightProjection = fixture::automaticSourceProjection(model,
+        automaticOnnxShapeSeed(bindAutomaticOnnxShapes(model.contract, makeInitial(8),
+                                                      kMaxNewTokens + 1, 32, tightControl)));
+    }
+    catch (const std::invalid_argument& error) {
+      budgetError = error.what();
+    }
+    if (tightProjection) {
+      tightProjection->requestId = "/source-request-q06-i4-budget";
+      tightProjection->dataflow.requestId = tightProjection->requestId;
+      tightProjection->assembly.maxSourceBytes = 4ULL << 30;
+      tightProjection->assembly.maxAssembledBytes = tightBudget;
+      tightProjection->assembly.maxNodes = 4096;
+      tightProjection->assembly.recipeDigest = nativePlanningDigest(
+        canonicalNativeOnnxRecipeJson(tightProjection->assembly));
+      tightProjection->selectedRole = tightProjection->assembly;
+      tightProjection->planDigest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+        {"fixture", "real-generation-q06-i4-budget"},
+        {"recipe", tightProjection->assembly.recipeDigest},
+        {"provider", tightProjection->provider}}));
+      tightProjection->dataflow.planDigest = tightProjection->planDigest;
+      auto& tightGeneration = tightProjection->generationContract;
+      tightGeneration.enabled = true;
+      tightGeneration.mode = "TOKEN_STREAMING";
+      tightGeneration.maxGeneratedTokens = kMaxNewTokens + 1;
+      tightGeneration.streamingOperationStride = 1;
+      tightGeneration.tokenInputName = strip(generation.tokenInput);
+      tightGeneration.attentionMaskInputName = strip(generation.maskInput);
+      tightGeneration.positionIdsInputName = strip(generation.positionInput);
+      for (const auto& state : generation.states) {
+        tightGeneration.stateInputNames.push_back(strip(state.input));
+        tightGeneration.stateOutputNames.push_back(strip(state.output));
+      }
+      tightGeneration.eosTokenIds.clear();
+      NativeRequestControl tightRequest;
+      tightRequest.requestId = tightProjection->requestId;
+      tightRequest.attempt = tightProjection->attempt;
+      tightRequest.deadline = deadline;
+      BOOST_TEST_MESSAGE("aggregate budget contractBytes=" << contractBytes <<
+        " tightBytes=" << tightBudget << " stateBytes=" << tightStateBytes);
+      RoleExecutionContext tightContext;
+      tightContext.requestId = tightProjection->requestId;
+      tightContext.attemptEpoch = tightProjection->attempt;
+      tightContext.role = tightProjection->executionRole.roleId;
+      tightContext.inferenceEpoch = kRounds - 1;
+      std::vector<NamedTensorView> tightRaw;
+      for (std::size_t index = 1; index < finalEpoch.size(); ++index)
+        tightRaw.push_back({finalEpoch[index].name, finalEpoch[index].elementType,
+          finalEpoch[index].shape, ndn::span<const std::uint8_t>(
+            finalEpoch[index].payload.data(), finalEpoch[index].payload.size())});
+      try {
+        const auto tightBinding = AutomaticOnnxRequestBinding::admit(sourceBinding,
+          *tightProjection, tightRequest);
+        tightBinding->normalizeStateFeedback(tightRaw, tightContext);
+      }
+      catch (const std::invalid_argument& error) {
+        budgetError = error.what();
+      }
+    }
+    BOOST_TEST_MESSAGE("tight budget rejection=" << budgetError);
+    BOOST_CHECK(budgetError == "AUTOMATIC_STATE_FEEDBACK_BUDGET" ||
+                budgetError == "AUTOMATIC_STATE_LIMIT");
   }
   auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
   for (const auto& [length, requestId, reference] : {
@@ -4076,7 +4149,7 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
     const auto started = std::chrono::steady_clock::now();
     const auto request = prepare(length, requestId);
     checkNativeGenerationEpochs(request.spec, request.projection, request.initial,
-                                reference, sessionCache, 0, 1.0e-5, 1.0e-5, deadline);
+                                reference, sessionCache, 0, tolerance, tolerance, deadline);
     BOOST_TEST_MESSAGE("real native generation complete requestLength=" << length <<
       " wallMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count());
@@ -4510,6 +4583,27 @@ BOOST_AUTO_TEST_CASE(TwoStageFragmentsMatchTheUncutGenerationReference)
     malformed[0].payload.assign(2 * 3 * sizeof(std::int64_t), 0);
     BOOST_CHECK_THROW(prefixRunner->run(stageContext(std::move(malformed), 0)),
                       std::exception);
+  }
+  {
+    // A late upstream result must not be merged after the invocation is
+    // cancelled; the coordinator owns this commit fence.
+    bool invocationActive = true;
+    std::map<std::string, NamedTensor> merged;
+    const auto accept = [&] (std::map<std::string, NamedTensor> result) {
+      if (!invocationActive) return false;
+      for (auto& [name, tensor] : result) merged.emplace(name, std::move(tensor));
+      return true;
+    };
+    std::map<std::string, NamedTensor> late;
+    late.emplace("attended", NamedTensor{"attended", TensorElementType::Float32,
+                                         {1, 3, 8}, std::vector<std::uint8_t>(3 * 8 * 4)});
+    invocationActive = false;
+    BOOST_CHECK(!accept(std::move(late)));
+    BOOST_CHECK(merged.empty());
+    invocationActive = true;
+    BOOST_CHECK(accept({{"attended", NamedTensor{"attended", TensorElementType::Float32,
+                                                {1, 3, 8}, std::vector<std::uint8_t>(3 * 8 * 4)}}}));
+    BOOST_CHECK_EQUAL(merged.size(), 1U);
   }
   auto wrongContract = suffixContract;
   wrongContract.inputs.push_back("past_key_values.99.key");
