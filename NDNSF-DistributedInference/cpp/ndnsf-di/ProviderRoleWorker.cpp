@@ -572,6 +572,16 @@ ProviderRoleWorker::executeAsyncImpl(
            {"attemptEpoch", std::to_string(item.role.attemptEpoch)}});
         continue;
       }
+      // A step-carrying unit must not sign an Interest for a peer partial before the step
+      // that consumes it runs. Deferring only the wait is not enough: the Interest is
+      // issued when the prefetch is submitted, so two ranks each request a partial the
+      // other has not computed yet and neither ever starts. The step loop starts this
+      // fetch itself, at the moment it needs the value.
+      if (item.role.steps && !item.role.steps->empty() && !edge.consumerStepId.empty()) {
+        item.deferredInputsByScope.emplace(edge.scope, edge);
+        item.inputTimings.push_back(std::move(timing));
+        continue;
+      }
       pendingInputs.push_back(PendingInput{
         edge,
         item.io->prefetchInput(item.sessionId, edge),
@@ -1177,6 +1187,18 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       if (edge.consumerStepId != step.stepId) continue;
       auto admitted = ctx.inputsByScope.find(edge.scope);
       if (admitted == ctx.inputsByScope.end()) {
+        // A deferred edge is started here, on the step that needs it. This is the only
+        // place the Interest is signed for a peer partial, so the producing rank has
+        // already had its chance to run the step that publishes it.
+        if (item.deferredInputsByScope.erase(edge.scope) != 0) {
+          auto started = item.io->prefetchInput(item.sessionId, edge);
+          const auto inserted = item.pendingInputsByScope.emplace(
+            edge.scope, std::shared_future<TensorBundle>(std::move(started)));
+          if (!inserted.second) {
+            throw std::runtime_error(
+              "sealed step remote input started twice: " + edge.scope);
+          }
+        }
         const auto pending = item.pendingInputsByScope.find(edge.scope);
         if (pending == item.pendingInputsByScope.end()) {
           throw std::runtime_error(

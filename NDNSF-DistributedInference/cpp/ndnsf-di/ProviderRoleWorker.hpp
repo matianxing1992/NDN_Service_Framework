@@ -288,6 +288,9 @@ private:
     // Shared so a const work item can await them: std::future::get is non-const,
     // and the item travels through the queue by value but is read as const.
     std::map<std::string, std::shared_future<TensorBundle>> pendingInputsByScope;
+    // Step-bound edges whose fetch has not been signed yet. The step that consumes one
+    // starts it, so no Interest is issued before the producing rank has run.
+    std::map<std::string, DependencyEdge> deferredInputsByScope;
     // Scopes whose output edge was already published by their producing step, so
     // the unit's final pass does not publish the same object twice.
     std::set<std::string> publishedScopes;
