@@ -1873,10 +1873,13 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
       ++selfFeedbackEdges;
       selfFeedback.insert(dependency.producers.front());
     }
-    if (roles.size() != 1 &&
-        selfFeedbackEdges != 0 &&
-        (selfFeedbackEdges != roles.size() ||
-         std::set<std::string>(roles.begin(), roles.end()) != selfFeedback))
+    // Each projection describes one role, so the cover is checked per projection: every
+    // self feedback edge must name a role this projection declares. Requiring the projection
+    // to list every unit would demand the whole plan in each of its per-role views.
+    const std::set<std::string> roleSet(roles.begin(), roles.end());
+    if (roles.size() != 1 && selfFeedbackEdges != 0 &&
+        !std::includes(roleSet.begin(), roleSet.end(),
+                       selfFeedback.begin(), selfFeedback.end()))
       throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
     const bool validSamplingMode =
       contract.samplingMode == "Greedy" ||
