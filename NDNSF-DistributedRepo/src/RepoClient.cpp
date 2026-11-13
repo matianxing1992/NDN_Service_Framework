@@ -2674,16 +2674,6 @@ toRepoHandle(const ArtifactHandle& input)
   return handle;
 }
 
-RepoArtifactTarget
-toTarget(const std::string& targetId)
-{
-  RepoArtifactTarget target;
-  target.providerIdentity = targetId;
-  target.repoNode = ndn::Name(targetId)[-1].toUri();
-  target.servicePrefix = RepoClient::DEFAULT_SERVICE_NAME;
-  return target;
-}
-
 ArtifactHandle
 toArtifactHandle(const RepoHandle& input)
 {
@@ -2709,8 +2699,21 @@ toArtifactHandle(const RepoHandle& input)
 
 struct RepoClient::Impl
 {
+  RepoArtifactTarget
+  target(const std::string& providerIdentity) const
+  {
+    RepoArtifactTarget resolved;
+    resolved.providerIdentity = providerIdentity;
+    resolved.repoNode = providerIdentity.empty()
+      ? std::string() : ndn::Name(providerIdentity)[-1].toUri();
+    resolved.servicePrefix = servicePrefix.empty()
+      ? std::string(DEFAULT_SERVICE_NAME) : servicePrefix;
+    return resolved;
+  }
+
   std::shared_ptr<ndn_service_framework::ServiceUser> user;
   std::optional<ArtifactRepositoryApi> file;
+  std::string servicePrefix;
 };
 
 RepoClient
@@ -2728,6 +2731,7 @@ RepoClient::makePersistent(std::shared_ptr<ndn_service_framework::ServiceUser> u
   if (!user)
     throw std::invalid_argument("persistent RepoClient requires a ServiceUser");
   auto impl = std::make_unique<Impl>();
+  impl->servicePrefix = config.servicePrefix.toUri();
   impl->file = ArtifactRepositoryApi::makePersistent(*user, std::move(config));
   impl->user = std::move(user);
   return RepoClient(std::move(impl));
@@ -2854,7 +2858,7 @@ RepoClient::publishData(const RepoDataPublication& input,
     const auto& wire = packet.wireEncode();
     return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
-  const auto target = toTarget(input.targetId);
+  const auto target = m_impl->target(input.targetId);
   const auto manifest = RepoClient::commitUserStorageOriginalPackets(
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
@@ -2958,7 +2962,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   auto wires = RepoClient::fetchOriginalDataPackets(
-    m_impl->user, toTarget(input.targetId), names, wireBudget,
+    m_impl->user, m_impl->target(input.targetId), names, wireBudget,
     verifyPacket, remainingMs(options.deadline), options.requireCurrent);
   RepoDataFetchResult result;
   result.wireBytes = 0;
@@ -2998,7 +3002,7 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   request.objectName = input.objectName;
   request.expiresAtMs = input.expiresAtMs;
   const auto encoded = request.toJson();
-  const auto target = toTarget(input.targetId);
+  const auto target = m_impl->target(input.targetId);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
@@ -3083,7 +3087,7 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   request.afterObjectName = input.cursor;
   request.limit = input.limit;
   const auto encoded = request.toJson();
-  const auto target = toTarget(input.targetId);
+  const auto target = m_impl->target(input.targetId);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
@@ -3126,7 +3130,7 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
   request.ownerEpoch = input.expectedEpoch.empty()
     ? 0 : static_cast<uint64_t>(std::stoull(input.expectedEpoch));
   const auto encoded = request.toJson();
-  const auto target = toTarget(input.targets.front());
+  const auto target = m_impl->target(input.targets.front());
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),

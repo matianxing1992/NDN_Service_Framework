@@ -83,8 +83,7 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   const repo::RepoArtifactTarget& target, PacketGroup& group,
   const std::function<bool(const ndn::Data&)>& verifyPacket,
   const std::function<int()>& budget, const std::function<void()>& current,
-  std::uint32_t schemaVersion, const std::string& digest,
-  const std::shared_ptr<repo::RepoClient>& facade = nullptr)
+  std::uint32_t schemaVersion, const std::string& digest)
 {
   auto& reference = group.reference;
   reference.expectedSha256 = reference.packetSetMetadata->sha256 = digest;
@@ -130,55 +129,13 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   insert.storageBinding = {1, reply.grant.ownerIdentity, reply.grant.grantId,
                            reply.grant.ownerEpoch};
   std::size_t next = 0;
-  repo::RepoObjectManifest committed;
-  if (facade) {
-    // The generic segmented publication belongs to Repo; DI only supplies the
-    // geometry it already built, the owner binding and its packet verifier.
-    repo::RepoDataPublication publication;
-    repo::PacketSource source;
-    source.packetNames = reference.packetSetMetadata->packetNames;
-    source.packetOffsets = reference.packetSetMetadata->packetOffsets;
-    source.expectedWireBytes = reference.expectedSize;
-    source.expectedPacketCount = source.packetNames.size();
-    source.expectedDigest = "sha256:" + digest;
-    source.next = [&](std::vector<std::uint8_t>& wire) {
+  const auto committed = repo::RepoClient::commitUserStorageOriginalPackets(writer,
+    target, insert, [&]() -> std::optional<std::vector<std::uint8_t>> {
       current();
-      if (next == group.wires.size())
-        return false;
-      wire = std::move(group.wires[next++]);
-      return true;
-    };
-    publication.packets = std::move(source);
-    publication.producerIdentity = writer.getName().toUri();
-    publication.targetId = target.providerIdentity;
-    publication.ownerIdentity = reply.grant.ownerIdentity;
-    publication.grantId = reply.grant.grantId;
-    publication.ownerEpoch = reply.grant.ownerEpoch;
-    publication.generation = 1;
-    publication.verifyWire = [verifyPacket](const std::vector<std::uint8_t>& wire) {
-      const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size()))};
-      return verifyPacket(packet);
-    };
-    repo::RepoOperationOptions options;
-    options.deadline = std::chrono::steady_clock::now() +
-      std::chrono::milliseconds(std::max(1, budget()));
-    options.requireCurrent = [current] { current(); };
-    const auto published = facade->publishData(publication, options);
-    const auto* file = std::get_if<repo::FileReference>(&published.reference);
-    require(file != nullptr, "MODEL_REPO_STORE_COMMIT_MISMATCH");
-    committed.objectName = file->logicalName;
-    committed.sha256 = file->contentDigest;
-    committed.size = file->sizeBytes;
-  }
-  else {
-    committed = repo::RepoClient::commitUserStorageOriginalPackets(writer,
-      target, insert, [&]() -> std::optional<std::vector<std::uint8_t>> {
-        current();
-        if (next == group.wires.size()) return std::nullopt;
-        return std::move(group.wires[next++]);
-      }, verifyPacket, std::min(MAX_ACK_COLLECTION_MS, std::max(1, budget() / 2)),
-      budget(), current);
-  }
+      if (next == group.wires.size()) return std::nullopt;
+      return std::move(group.wires[next++]);
+    }, verifyPacket, std::min(MAX_ACK_COLLECTION_MS, std::max(1, budget() / 2)),
+    budget(), current);
   require(committed.sha256 == digest && committed.size == reference.expectedSize,
           "MODEL_REPO_STORE_COMMIT_MISMATCH");
 }
@@ -236,33 +193,12 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       require(!user->isOnIoThread(), "MODEL_REPO_STORE_ON_FACE_THREAD");
     };
   }
-  // The generic segmented fetch belongs to Repo; DI only states the ordered
-  // names and its own per-packet verifier. Creating the persistent client once
-  // keeps the mode, limits and identity frozen for the lifetime of this io.
-  auto facadeConfig = repo::PersistentRepoClientConfig{};
-  facadeConfig.servicePrefix = ndn::Name(target.servicePrefix);
-  facadeConfig.providerScope = {ndn::Name(target.providerIdentity)};
-  auto facade = std::make_shared<repo::RepoClient>(
-    repo::RepoClient::makePersistent(user, std::move(facadeConfig)));
-  io.fetch = [user, target, budget, current, verify, acquireOperationLifetime,
-              facade] (const std::vector<ndn::Name>& names) mutable {
+  io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
+    const std::vector<ndn::Name>& names) {
     auto operationLifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;
-    (void)operationLifetime;
-    repo::RepoDataFetch request;
-    request.packetNames.reserve(names.size());
-    for (const auto& name : names)
-      request.packetNames.push_back(name.toUri());
-    request.maxWireBytes = NATIVE_STORED_MODEL_UPLOAD_WIRE;
-    request.targetId = target.providerIdentity;
-    request.verifyWire = [verify](const std::vector<uint8_t>& wire) {
-      const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
-      return verify(packet);
-    };
-    repo::RepoOperationOptions options;
-    options.deadline = std::chrono::steady_clock::now() +
-      std::chrono::milliseconds(budget());
-    options.requireCurrent = [current] { current(); };
-    return facade->fetchData(request, options).packets;
+    return repo::RepoClient::fetchOriginalDataPackets(user, target, names,
+      NATIVE_STORED_MODEL_UPLOAD_WIRE,
+      verify, budget(), current, std::move(operationLifetime));
   };
   if (allowPublication) {
     io.requireCommitted = [user, target, budget, current](const ndn::Name& name,
@@ -292,7 +228,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         "MODEL_REPO_RECOVERY_COMMIT_MISMATCH");
       current();
     };
-    const auto commit = [user, target, deadline, current, verify, acquireOperationLifetime, facade](
+    const auto commit = [user, target, deadline, current, verify, acquireOperationLifetime](
       NativeStoredModelPacketIo::PacketWires wires, const std::string& expectedDigest,
       const std::function<void()>& additionalCurrent) {
       const auto callCurrent = [current, additionalCurrent] {
@@ -343,7 +279,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       // before installing the Producer filter or emitting INSERT. An authorized
       // GRANT may precede rejection; unchecked packets never become available.
       commitPacketGroup(*user, target, group, verify, callBudget, callCurrent, 2,
-                        expectedDigest.substr(7), facade);
+                        expectedDigest.substr(7));
       callCurrent();
     };
     io.commitConcurrent = commit;
