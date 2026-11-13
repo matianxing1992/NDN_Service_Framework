@@ -1309,8 +1309,16 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     for (const auto& slot : step.outputSlots) {
       const auto found = outputs.find(slot.slotId);
       if (found == outputs.end()) {
+        // Name the step and everything the adapter did return. Without them the message
+        // points at a slot id with no way to tell which entry lost the binding.
+        std::string returned;
+        for (const auto& item : outputs) {
+          if (!returned.empty()) returned += ',';
+          returned += item.first;
+        }
         throw std::runtime_error(
-          "sealed step did not produce its declared output: " + slot.slotId);
+          "sealed step did not produce its declared output: " + slot.slotId +
+          " step=" + step.stepId + " returned={" + returned + "}");
       }
       produced.emplace(step.stepId + "\n" + slot.slotId, found->second);
     }
