@@ -8,6 +8,7 @@ def build(bld):
     # their consumers have moved to the unified client (Spec 240 T004).
     public_headers = [
         'ArtifactManifest.hpp',
+        'artifact-client-types.hpp',
         'ArtifactRepositoryApi.hpp',
         'ArtifactTransfer.hpp',
         'ArtifactTypes.hpp',

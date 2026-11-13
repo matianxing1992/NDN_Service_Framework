@@ -1,7 +1,7 @@
 #ifndef NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_HPP
 #define NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_HPP
 
-#include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
+#include "ndnsf-distributed-repo/artifact-client-types.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/repo-client-types.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"

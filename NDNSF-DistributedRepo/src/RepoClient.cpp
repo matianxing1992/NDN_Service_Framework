@@ -1,4 +1,6 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+
+#include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "face-data-reference-fetcher.hpp"
 #include "owned-manifest-query.hpp"
