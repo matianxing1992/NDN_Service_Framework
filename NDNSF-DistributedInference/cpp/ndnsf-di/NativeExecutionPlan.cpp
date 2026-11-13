@@ -558,14 +558,26 @@ NativeExecutionPlan::validateSteps() const
     throw std::invalid_argument("execution plan step template requires tensor degree >= 2");
   }
   if (roleSet.size() != roles.size()) {
-    throw std::invalid_argument("execution plan declares duplicate units");
+    std::string detail;
+    for (const auto& role : roles) {
+      if (!detail.empty()) detail += ',';
+      detail += role;
+    }
+    throw std::invalid_argument("execution plan declares duplicate units: " + detail);
   }
 
   std::map<std::string, const NativeExecutionStepSpec*> byId;
   for (const auto& step : steps) {
     step.validate();
     if (roleSet.count(step.unitId) == 0) {
-      throw std::invalid_argument("execution step belongs to an undeclared unit");
+      std::string detail = "execution step belongs to an undeclared unit: " + step.unitId +
+        " declared={";
+      std::size_t index = 0;
+      for (const auto& role : roles) {
+        if (index++) detail += ',';
+        detail += role;
+      }
+      throw std::invalid_argument(detail + "}");
     }
     if (!byId.emplace(step.stepId, &step).second) {
       throw std::invalid_argument("execution plan declares duplicate step ids");

@@ -1782,6 +1782,12 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     }
   }
 
+  // A sealed template names its units, and those units are the plan's roles. Deriving roles
+  // only from dependencies leaves a template whose edges are all self feedback with an empty
+  // role list -- every step then belongs to an "undeclared unit", which is exactly what
+  // validateSteps reported for a degree-two plan.
+  for (const auto& step : projection.plan.steps) appendRole(step.unitId);
+
   if (const auto generation = root.get_child_optional("generation_contract")) {
     auto& contract = projection.generationContract;
     if (fixedAssignment) {
