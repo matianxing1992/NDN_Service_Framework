@@ -2481,7 +2481,11 @@ BOOST_AUTO_TEST_CASE(ExactTensorDataUsesSignedConsumerPullAndSameNameRetry)
           std::string_view name,
           std::uint64_t value) {
         auto state = std::static_pointer_cast<ExactFetchObservation>(owner);
-        state->deferredCallbacks += value;
+        // The observer reports several named counters through one hook, so summing them all
+        // would make this field a total rather than a deferred-callback count. Only the
+        // deferred-validation counter belongs here; the rest still reach the statistics.
+        if (name == "core.exact-data.deferred-validation-callbacks")
+          state->deferredCallbacks += value;
         state->statistics->addCount(name, value);
       };
   const auto localWorkObserver = transferMetrics.localWorkObserver;

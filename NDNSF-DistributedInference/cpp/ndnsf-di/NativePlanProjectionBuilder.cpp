@@ -595,7 +595,17 @@ void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjec
     else value.selectedRole = core.roleContracts().at(item.first);
     value.executionRole = item.second.executionRole;
     value.generationContract = core.generationContract;
-    value.dataflow = dataflow; validation.push_back(std::move(value));
+    value.dataflow = dataflow;
+    // The sealed template travels with the projection this builder submits for certification.
+    // Without it the validator sees a degree-two plan with no steps, applies the role-level
+    // acyclicity check, and refuses the bidirectional partial exchange that is legitimate --
+    // so the certified contract would describe a topology the plan can never be.
+    // Only a step template needs to travel. A pipeline projection keeps the plan empty, which
+    // is the contract the rest of this path already relies on; attaching a plan to it changed
+    // what downstream role derivation saw and stopped the second pipeline role from starting.
+    if (!sealed.core.executionPlan.steps.empty())
+      value.plan = sealed.core.executionPlan;
+    validation.push_back(std::move(value));
   }
   if (statistics) {
     std::uint64_t records = 0, slots = 0, future = 0;

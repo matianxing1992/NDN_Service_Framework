@@ -4084,6 +4084,15 @@ roleSpecFromSelectionProjectionV3Impl(
                     endpoint.consumerRole) == dependency.consumers.end()) {
         continue;
       }
+      // The step binding travels with the edge. A tensor-parallel coordinator decides which
+      // inputs its worker fetches per step by looking at `consumerStepId`; an edge that lost
+      // it is awaited at the head of the epoch instead, which is the mutual wait between two
+      // ranks that each produce what the other consumes. The producer and consumer slot ids
+      // travel for the same reason: the worker admits the value into that exact slot.
+      edge.producerStepId = dependency.producerStepId;
+      edge.producerSlotId = dependency.producerSlotId;
+      edge.consumerStepId = dependency.consumerStepId;
+      edge.consumerSlotId = dependency.consumerSlotId;
       edge.redistributions = dependency.redistributions;
       if (!edge.redistributions.empty()) {
         const auto& redistribution = edge.redistributions.front();
