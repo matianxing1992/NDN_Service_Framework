@@ -186,6 +186,19 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(ReceiptInspectionRequiresTheObjectBinding) {
+  // CA05: a receipt id alone is history, not proof of current availability.
+  TemporaryDirectory temporary("receipt");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoInspectionRequest request;
+  request.kind = RepoInspectionRequest::Kind::RECEIPT;
+  request.receiptId = "receipt-1";
+  BOOST_CHECK_EXCEPTION(client.inspect(request, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "inspect";
+    });
+}
+
 BOOST_AUTO_TEST_CASE(DiscoveryRejectsUnknownCapabilitiesBeforeAnyRequest) {
   TemporaryDirectory temporary("discovery");
   auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));

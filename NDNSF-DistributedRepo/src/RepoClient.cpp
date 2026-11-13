@@ -3149,15 +3149,28 @@ RepoClient::inspect(const RepoInspectionRequest& input,
   if (input.kind == RepoInspectionRequest::Kind::OBJECT && input.object) {
     const auto report = m_impl->file->checkAvailability(
       toArtifactHandle(*input.object), "metadata", remainingMs(options.deadline));
+    // Availability is a statement about the object, not about the node: a reachable
+    // Repo that does not hold the object, or whose presence probe is unknown, must not
+    // be reported as available. Integrity, when checked, decides against it.
     inspection.availability = RepoInspection::Availability::UNKNOWN;
+    bool sawAbsent = false;
     for (const auto& location : report.locations) {
-      if (location.reachability == "REACHABLE") {
-        inspection.availability = RepoInspection::Availability::AVAILABLE;
+      if (location.integrity == "FAILED") {
+        inspection.availability = RepoInspection::Availability::UNAVAILABLE;
+        sawAbsent = false;
         break;
       }
-      if (location.reachability == "UNREACHABLE")
-        inspection.availability = RepoInspection::Availability::UNAVAILABLE;
+      if (location.objectPresence == "PRESENT" &&
+          location.integrity != "FAILED") {
+        inspection.availability = RepoInspection::Availability::AVAILABLE;
+        sawAbsent = false;
+        break;
+      }
+      if (location.objectPresence == "ABSENT" || location.objectPresence == "PARTIAL")
+        sawAbsent = true;
     }
+    if (sawAbsent && inspection.availability == RepoInspection::Availability::UNKNOWN)
+      inspection.availability = RepoInspection::Availability::UNAVAILABLE;
     inspection.handle = input.object;
     inspection.storedBytes = input.object->reference.index() == 0
       ? std::optional<uint64_t>(std::get<FileReference>(input.object->reference).sizeBytes)
@@ -3165,10 +3178,22 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     return inspection;
   }
   if (input.kind == RepoInspectionRequest::Kind::RECEIPT) {
-    const auto receipt = m_impl->file->getReceipt(input.receiptId, std::nullopt,
+    if (!input.object) {
+      // A receipt id alone cannot be bound to an object or a target, so the result is
+      // a history record at best; do not claim the object is currently available.
+      inspection.availability = RepoInspection::Availability::UNKNOWN;
+      throw RepoClientError("UNSUPPORTED",
+                            "receipt inspection requires the committed object handle",
+                            "inspect");
+    }
+    const auto receipt = m_impl->file->getReceipt(input.receiptId, toArtifactHandle(*input.object),
                                                  remainingMs(options.deadline));
-    inspection.availability = RepoInspection::Availability::AVAILABLE;
+    // A receipt records that a commit happened; it does not prove the payload is still
+    // there, so availability stays unknown and the claim is not reported current.
+    inspection.availability = RepoInspection::Availability::UNKNOWN;
     inspection.lifecycleState = receipt.state;
+    inspection.claimStillCurrent = false;
+    inspection.handle = input.object;
     return inspection;
   }
   throw unsupported("inspect(target)");
