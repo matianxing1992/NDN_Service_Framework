@@ -6,6 +6,8 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-generation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-inference.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -4084,7 +4086,442 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
   sessionCache->close();
   BOOST_CHECK(sessionCache->drain(std::chrono::milliseconds(50)));
 }
+BOOST_AUTO_TEST_CASE(TwoStageFragmentsMatchTheUncutGenerationReference)
+{
+  const GenerationModelFile file(generationExecutionModel(0));
+  const auto model = inspectAutomaticOnnxModel({file.path}, stateControl());
+  BOOST_REQUIRE(model.contract.generation);
+  const auto& generation = *model.contract.generation;
+  const auto& graph = model.inspection.graph;
+  const auto cutName = std::string("attended");
+  const auto cut = std::find_if(graph.edges.begin(), graph.edges.end(),
+    [&] (const auto& edge) { return edge.id == cutName; });
+  BOOST_REQUIRE(cut != graph.edges.end());
+  const auto cutIndex = model.inspection.canonicalNodeIndices.at(cut->producer);
+  std::set<std::uint64_t> prefixNodes, suffixNodes;
+  for (const auto& [node, index] : model.inspection.canonicalNodeIndices)
+    (index <= cutIndex ? prefixNodes : suffixNodes).insert(index);
+  BOOST_REQUIRE(!prefixNodes.empty() && !suffixNodes.empty());
+  onnx::ModelProto source;
+  std::ifstream input(file.path, std::ios::binary);
+  BOOST_REQUIRE(input && source.ParseFromIstream(&input));
+  const auto& sourceGraph = source.graph();
+  const auto portInfo = [&] (const std::string& bare) {
+    for (const auto* list : {&sourceGraph.input(), &sourceGraph.output(),
+                             &sourceGraph.value_info()})
+      for (const auto& value : *list)
+        if (value.name() == bare) return value;
+    const auto fact = std::find_if(model.contract.tensors.begin(), model.contract.tensors.end(),
+      [&] (const auto& tensor) { return tensor.name == "graph/" + bare; });
+    BOOST_REQUIRE(fact != model.contract.tensors.end());
+    onnx::ValueInfoProto value;
+    value.set_name(bare);
+    auto* type = value.mutable_type()->mutable_tensor_type();
+    type->set_elem_type(fact->onnxElementType);
+    if (fact->dimensions) {
+      for (const auto& dimension : *fact->dimensions) {
+        auto* dim = type->mutable_shape()->add_dim();
+        if (dimension.kind == DimensionConstraint::Kind::FIXED) dim->set_dim_value(dimension.fixed);
+        else dim->set_dim_param(dimension.symbol.empty() ? "dynamic" : dimension.symbol);
+      }
+    }
+    return value;
+  };
+  const auto buildFragment = [&] (const std::set<std::uint64_t>& nodes,
+                                  const std::vector<std::string>& inputNames,
+                                  const std::vector<std::string>& outputNames) {
+    onnx::ModelProto fragment;
+    fragment.set_ir_version(source.ir_version());
+    for (const auto& opset : source.opset_import()) *fragment.add_opset_import() = opset;
+    fragment.set_producer_name("spec233-two-stage-fixture");
+    auto* target = fragment.mutable_graph();
+    target->set_name(sourceGraph.name() + "-stage");
+    std::set<std::string> needed;
+    for (const auto index : nodes) {
+      const auto& node = sourceGraph.node(static_cast<int>(index));
+      *target->add_node() = node;
+      for (const auto& name : node.input()) needed.insert(name);
+    }
+    for (const auto& initializer : sourceGraph.initializer())
+      if (needed.count(initializer.name())) *target->add_initializer() = initializer;
+    for (const auto& name : inputNames) *target->add_input() = portInfo(name);
+    for (const auto& name : outputNames) *target->add_output() = portInfo(name);
+    return fragment;
+  };
+  const auto nodeInputs = [&] (const std::set<std::uint64_t>& nodes) {
+    std::set<std::string> names;
+    for (const auto index : nodes)
+      for (const auto& name : sourceGraph.node(static_cast<int>(index)).input())
+        names.insert(name);
+    return names;
+  };
+  const auto nodeOutputs = [&] (const std::set<std::uint64_t>& nodes) {
+    std::set<std::string> names;
+    for (const auto index : nodes)
+      for (const auto& name : sourceGraph.node(static_cast<int>(index)).output())
+        names.insert(name);
+    return names;
+  };
+  std::set<std::string> sourceInputs, sourceOutputs;
+  for (const auto& value : sourceGraph.input()) sourceInputs.insert(value.name());
+  for (const auto& value : sourceGraph.output()) sourceOutputs.insert(value.name());
+  const auto prefixInputs = nodeInputs(prefixNodes);
+  const auto suffixInputs = nodeInputs(suffixNodes);
+  const auto suffixNodeOutputs = nodeOutputs(suffixNodes);
+  std::map<std::string, std::uint64_t> producerOf;
+  for (std::uint64_t index = 0; index < static_cast<std::uint64_t>(sourceGraph.node_size());
+       ++index)
+    for (const auto& name : sourceGraph.node(static_cast<int>(index)).output())
+      producerOf[name] = index;
+  std::vector<std::string> prefixOutputPorts;
+  for (std::uint64_t index = 0; index < static_cast<std::uint64_t>(sourceGraph.node_size());
+       ++index) {
+    if (!prefixNodes.count(index)) continue;
+    for (const auto& name : sourceGraph.node(static_cast<int>(index)).output())
+      if (suffixInputs.count(name)) prefixOutputPorts.push_back(name);
+  }
+  for (const auto& name : sourceOutputs)
+    if (producerOf.count(name) && prefixNodes.count(producerOf.at(name))) {
+      if (std::find(prefixOutputPorts.begin(), prefixOutputPorts.end(), name) ==
+          prefixOutputPorts.end())
+        prefixOutputPorts.push_back(name);
+    }
+  BOOST_REQUIRE(!prefixOutputPorts.empty());
+  std::vector<std::string> prefixPorts, suffixPorts, suffixOutputPorts;
+  for (const auto& name : sourceInputs)
+    if (prefixInputs.count(name)) prefixPorts.push_back(name);
+  for (const auto& name : sourceInputs)
+    if (suffixInputs.count(name)) suffixPorts.push_back(name);
+  for (const auto& name : prefixOutputPorts) suffixPorts.push_back(name);
+  for (const auto& name : sourceOutputs)
+    if (suffixNodeOutputs.count(name)) suffixOutputPorts.push_back(name);
+  const auto prefix = buildFragment(prefixNodes, prefixPorts, prefixOutputPorts);
+  const auto suffix = buildFragment(suffixNodes, suffixPorts, suffixOutputPorts);
+  const auto prefixPath = (std::filesystem::path(file.root) / "stage-prefix.onnx").string();
+  const auto suffixPath = (std::filesystem::path(file.root) / "stage-suffix.onnx").string();
+  {
+    std::ofstream out(prefixPath, std::ios::binary);
+    BOOST_REQUIRE(prefix.SerializeToOstream(&out));
+  }
+  {
+    std::ofstream out(suffixPath, std::ios::binary);
+    BOOST_REQUIRE(suffix.SerializeToOstream(&out));
+  }
+  const auto decode = [] (const NamedTensor& scores) {
+    const auto vocabulary = static_cast<std::size_t>(scores.shape.back());
+    const auto rows = static_cast<std::size_t>(scores.shape.at(1));
+    const auto* data = reinterpret_cast<const float*>(scores.payload.data());
+    std::int64_t selected = 0;
+    float best = -std::numeric_limits<float>::infinity();
+    for (std::size_t index = 0; index < vocabulary; ++index) {
+      const auto value = data[(rows - 1) * vocabulary + index];
+      if (value > best) { best = value; selected = static_cast<std::int64_t>(index); }
+    }
+    return selected;
+  };
+  const auto elementType = [] (TensorElementType type) {
+    return type == TensorElementType::Int64 ? ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 :
+      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+  };
+  auto reference = std::make_shared<GenerationReference>();
+  {
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec233-two-stage-reference");
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    options.SetInterOpNumThreads(1);
+    Ort::Session session(env, file.path.c_str(), options);
+    const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    std::map<std::string, NamedTensor> past;
+    std::int64_t next = 1;
+    for (std::int64_t round = 0; round < 9; ++round) {
+      const auto sequence = round == 0 ? 3 : 1;
+      const auto pastLength = round == 0 ? 0 : 2 + round;
+      std::map<std::string, NamedTensor> named;
+      named.emplace("ids", generationInteger("ids", {1, sequence},
+        round == 0 ? std::vector<std::int64_t>{1, 2, 3} : std::vector<std::int64_t>{next}));
+      named.emplace("mask", generationInteger("mask", {1, pastLength + sequence},
+        std::vector<std::int64_t>(pastLength + sequence, 1)));
+      named.emplace("positions", generationInteger("positions", {1, sequence},
+        round == 0 ? std::vector<std::int64_t>{0, 1, 2} :
+          std::vector<std::int64_t>{pastLength}));
+      for (const auto& name : {"old,key=0", "old,value=0"}) {
+        const auto found = past.find(name);
+        named.emplace(name, found == past.end() ?
+          NamedTensor{name, TensorElementType::Float32, {1, 1, 0, 8}, {}} : found->second);
+      }
+      std::vector<const char*> inputNames;
+      std::vector<Ort::Value> values;
+      std::uint64_t empty = 0;
+      for (const auto& [name, tensor] : named) {
+        inputNames.push_back(name.c_str());
+        values.push_back(Ort::Value::CreateTensor(memory,
+          tensor.payload.empty() ? static_cast<void*>(&empty) :
+            const_cast<std::uint8_t*>(tensor.payload.data()),
+          tensor.payload.size(), const_cast<std::int64_t*>(tensor.shape.data()),
+          tensor.shape.size(), elementType(tensor.elementType)));
+      }
+      const std::array<const char*, 3> outputNames{"scores", "new,key=0", "new,value=0"};
+      auto actual = session.Run(Ort::RunOptions{nullptr}, inputNames.data(), values.data(),
+        values.size(), outputNames.data(), outputNames.size());
+      std::vector<NamedTensor> epoch;
+      for (std::size_t index = 0; index < actual.size(); ++index) {
+        const auto info = actual[index].GetTensorTypeAndShapeInfo();
+        NamedTensor tensor{outputNames[index], TensorElementType::Float32, info.GetShape(),
+          std::vector<std::uint8_t>(static_cast<std::size_t>(info.GetElementCount()) * 4)};
+        std::memcpy(tensor.payload.data(), actual[index].GetTensorRawData(), tensor.payload.size());
+        epoch.push_back(std::move(tensor));
+      }
+      past.clear();
+      past["old,key=0"] = epoch.at(1);
+      past["old,value=0"] = epoch.at(2);
+      next = decode(epoch.front());
+      reference->push_back(std::move(epoch));
+    }
+  }
+  AutomaticOnnxIoContract prefixIo;
+  prefixIo.io.inputNames = prefixPorts;
+  prefixIo.io.outputNames = prefixOutputPorts;
+  prefixIo.unrankedInputNames = prefixPorts;
+  AutomaticOnnxStageRunnerContract prefixContract;
+  prefixContract.role = "/stage/prefix";
+  prefixContract.terminal = false;
+  prefixContract.inputs = prefixPorts;
+  prefixContract.outputs = prefixOutputPorts;
+  NativeModelRunnerSpec prefixSpec;
+  prefixSpec.role = prefixContract.role;
+  prefixSpec.kind = "onnx";
+  prefixSpec.backend = "onnxruntime";
+  prefixSpec.path = prefixPath;
+  prefixSpec.metadata["automaticIoContract"] = prefixIo.canonicalJson();
+  prefixSpec.metadata["automaticStageBinding"] = prefixContract.canonicalJson();
+  AutomaticOnnxIoContract suffixIo;
+  suffixIo.io.inputNames = suffixPorts;
+  suffixIo.io.outputNames = suffixOutputPorts;
+  AutomaticOnnxStageRunnerContract suffixContract;
+  suffixContract.role = "/stage/suffix";
+  suffixContract.terminal = true;
+  suffixContract.inputs = suffixPorts;
+  suffixContract.outputs = suffixOutputPorts;
+  NativeModelRunnerSpec suffixSpec;
+  suffixSpec.role = suffixContract.role;
+  suffixSpec.kind = "onnx";
+  suffixSpec.backend = "onnxruntime";
+  suffixSpec.path = suffixPath;
+  suffixSpec.metadata["automaticIoContract"] = suffixIo.canonicalJson();
+  suffixSpec.metadata["automaticStageBinding"] = suffixContract.canonicalJson();
+  auto prefixRunner = std::make_unique<OnnxRuntimeModelRunner>(prefixSpec);
+  auto suffixRunner = std::make_unique<OnnxRuntimeModelRunner>(suffixSpec);
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec233-two-stage");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  options.SetInterOpNumThreads(1);
+  Ort::Session prefixSession(env, prefixPath.c_str(), options);
+  Ort::Session suffixSession(env, suffixPath.c_str(), options);
+  const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  const auto runFragment = [&] (Ort::Session& session,
+                                const std::vector<std::string>& inputs,
+                                const std::map<std::string, NamedTensor>& named,
+                                const std::vector<std::string>& outputs) {
+    std::vector<const char*> inputNames;
+    std::vector<Ort::Value> values;
+    std::uint64_t empty = 0;
+    for (const auto& name : inputs) {
+      const auto found = named.find(name);
+      BOOST_REQUIRE(found != named.end());
+      inputNames.push_back(found->first.c_str());
+      values.push_back(Ort::Value::CreateTensor(memory,
+        found->second.payload.empty() ? static_cast<void*>(&empty) :
+          const_cast<std::uint8_t*>(found->second.payload.data()),
+        found->second.payload.size(), const_cast<std::int64_t*>(found->second.shape.data()),
+        found->second.shape.size(), elementType(found->second.elementType)));
+    }
+    std::vector<const char*> outputNames;
+    for (const auto& name : outputs) outputNames.push_back(name.c_str());
+    auto actual = session.Run(Ort::RunOptions{nullptr}, inputNames.data(), values.data(),
+      values.size(), outputNames.data(), outputNames.size());
+    std::map<std::string, NamedTensor> result;
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+      const auto info = actual[index].GetTensorTypeAndShapeInfo();
+      NamedTensor tensor{outputs[index], TensorElementType::Float32, info.GetShape(),
+        std::vector<std::uint8_t>(static_cast<std::size_t>(info.GetElementCount()) * 4)};
+      std::memcpy(tensor.payload.data(), actual[index].GetTensorRawData(), tensor.payload.size());
+      result.emplace(tensor.name, std::move(tensor));
+    }
+    return result;
+  };
+  const auto runStage = [&] (OnnxRuntimeModelRunner& runner, const std::string& role,
+                             const std::vector<std::string>& inputs,
+                             const std::map<std::string, NamedTensor>& named,
+                             const std::vector<std::string>& outputs,
+                             std::int64_t epoch) {
+    std::vector<NamedTensor> tensors;
+    for (const auto& name : inputs) {
+      const auto found = named.find(name);
+      BOOST_REQUIRE(found != named.end());
+      tensors.push_back(found->second);
+    }
+    RoleExecutionContext context;
+    context.role = role;
+    context.requestId = context.sessionId = "/two-stage";
+    context.attemptEpoch = 1;
+    context.inferenceEpoch = static_cast<std::uint64_t>(epoch);
+    context.inputsByScope = {{"input", makeEncodedTensorBundle("input", tensors)}};
+    const auto result = runner.run(context);
+    std::map<std::string, NamedTensor> out;
+    for (const auto& [scope, bundle] : result) {
+      if (!isEncodedTensorBundle(bundle.payload)) continue;
+      for (auto& tensor : decodeTensorBundle(bundle.payload))
+        out.emplace(tensor.name, std::move(tensor));
+    }
+    for (const auto& name : outputs) BOOST_REQUIRE(out.count(name));
+    return out;
+  };
+  std::map<std::string, NamedTensor> past;
+  std::int64_t next = 1;
+  for (std::int64_t round = 0; round < 9; ++round) {
+    const auto sequence = round == 0 ? 3 : 1;
+    const auto pastLength = round == 0 ? 0 : 2 + round;
+    std::map<std::string, NamedTensor> prefixNamed;
+    for (const auto& name : prefixPorts) {
+      if (name == "ids") prefixNamed.emplace(name, generationInteger(name, {1, sequence},
+        round == 0 ? std::vector<std::int64_t>{1, 2, 3} : std::vector<std::int64_t>{next}));
+      else if (name == "mask") prefixNamed.emplace(name, generationInteger(name,
+        {1, pastLength + sequence}, std::vector<std::int64_t>(pastLength + sequence, 1)));
+      else if (name == "positions") prefixNamed.emplace(name, generationInteger(name,
+        {1, sequence}, round == 0 ? std::vector<std::int64_t>{0, 1, 2} :
+          std::vector<std::int64_t>{pastLength}));
+      else {
+        const auto found = past.find(name);
+        prefixNamed.emplace(name, found == past.end() ?
+          NamedTensor{name, TensorElementType::Float32, {1, 1, 0, 8}, {}} : found->second);
+      }
+    }
+    BOOST_TEST_MESSAGE("two-stage runner round=" << round);
+    const auto prefixOut = runStage(*prefixRunner, "/stage/prefix", prefixPorts,
+                                     prefixNamed, prefixOutputPorts, round);
+    std::map<std::string, NamedTensor> suffixNamed;
+    for (const auto& name : prefixOutputPorts)
+      suffixNamed.emplace(name, prefixOut.at(name));
+    for (const auto& name : suffixPorts)
+      if (!suffixNamed.count(name)) {
+        const auto found = past.find(name);
+        suffixNamed.emplace(name, found == past.end() ?
+          NamedTensor{name, TensorElementType::Float32, {1, 1, 0, 8}, {}} : found->second);
+      }
+    const auto suffixOut = runStage(*suffixRunner, "/stage/suffix", suffixPorts,
+                                     suffixNamed, suffixOutputPorts, round);
+    BOOST_REQUIRE(suffixOut.count("scores"));
+    const auto& scores = suffixOut.at("scores");
+    const auto& expectedScores = reference->at(round).front();
+    BOOST_CHECK(scores.shape == expectedScores.shape);
+    BOOST_REQUIRE_EQUAL(scores.payload.size(), expectedScores.payload.size());
+    const auto count = scores.payload.size() / 4;
+    for (std::size_t index = 0; index < count; ++index)
+      BOOST_CHECK_SMALL(std::fabs(reinterpret_cast<const float*>(scores.payload.data())[index] -
+        reinterpret_cast<const float*>(expectedScores.payload.data())[index]), 1.0e-5F);
+    std::map<std::string, NamedTensor> merged = prefixOut;
+    merged.insert(suffixOut.begin(), suffixOut.end());
+    std::map<std::string, NamedTensor> nextPast;
+    for (const auto& name : {"new,key=0", "new,value=0"}) {
+      BOOST_REQUIRE(merged.count(name));
+      const auto& actual = merged.at(name);
+      const auto& expected = reference->at(round).at(std::string(name) == "new,key=0" ? 1 : 2);
+      BOOST_CHECK(actual.shape == expected.shape);
+      BOOST_REQUIRE_EQUAL(actual.payload.size(), expected.payload.size());
+      const auto items = actual.payload.size() / 4;
+      for (std::size_t index = 0; index < items; ++index)
+        BOOST_CHECK_SMALL(std::fabs(reinterpret_cast<const float*>(actual.payload.data())[index] -
+          reinterpret_cast<const float*>(expected.payload.data())[index]), 1.0e-5F);
+      auto carried = actual;
+      carried.name = std::string(name) == "new,key=0" ? "old,key=0" : "old,value=0";
+      nextPast[carried.name] = std::move(carried);
+    }
+    past = std::move(nextPast);
+    next = decode(scores);
+  }
+  {
+    std::vector<NamedTensor> probe;
+    for (const auto& name : prefixPorts)
+      probe.push_back(NamedTensor{name, TensorElementType::Float32, {1, 1, 0, 8}, {}});
+    const auto probeBundle = makeEncodedTensorBundle("input", probe);
+    const auto decodedProbe = decodeTensorBundle(probeBundle.payload);
+    BOOST_REQUIRE_EQUAL(decodedProbe.size(), prefixPorts.size());
+    for (std::size_t index = 0; index < decodedProbe.size(); ++index)
+      BOOST_CHECK_EQUAL(decodedProbe[index].name, prefixPorts[index]);
+  }
+  // The production runners already loaded both stage fragments above; the
+  // projection check still rejects a contract with an extra port.
+  BOOST_TEST_MESSAGE("stage runners loaded for prefix and suffix fragments");
+  std::vector<NamedTensor> stageProbeInputs;
+  for (const auto& name : prefixPorts) {
+    if (name == "ids")
+      stageProbeInputs.push_back(generationInteger(name, {1, 3}, {1, 2, 3}));
+    else if (name == "mask")
+      stageProbeInputs.push_back(generationInteger(name, {1, 3}, {1, 1, 1}));
+    else if (name == "positions")
+      stageProbeInputs.push_back(generationInteger(name, {1, 3}, {0, 1, 2}));
+    else
+      stageProbeInputs.push_back(NamedTensor{name, TensorElementType::Float32, {1, 1, 0, 8}, {}});
+  }
+  const auto stageContext = [&] (std::vector<NamedTensor> inputs,
+                                 std::uint64_t epoch) {
+    RoleExecutionContext context;
+    context.role = prefixContract.role;
+    context.requestId = context.sessionId = "/stage-probe";
+    context.attemptEpoch = 1;
+    context.inferenceEpoch = epoch;
+    context.inputsByScope = {{"input", makeEncodedTensorBundle("input", inputs)}};
+    return context;
+  };
+  {
+    std::string stageProbeError;
+    std::size_t stageProbeScopes = 0;
+    try {
+      stageProbeScopes = prefixRunner->run(stageContext(stageProbeInputs, 0)).size();
+    }
+    catch (const std::exception& error) {
+      stageProbeError = error.what();
+    }
+    BOOST_CHECK_MESSAGE(stageProbeError.empty(), "stage probe error=" << stageProbeError);
+    BOOST_CHECK_GT(stageProbeScopes, 0U);
+  }
+  {
+    // Cancellation belongs to the caller/coordinator: once set, no stage is
+    // invoked and no result is published.
+    bool cancelled = true;
+    std::size_t executed = 0;
+    const auto runIfActive = [&] (OnnxRuntimeModelRunner& runner,
+                                  const RoleExecutionContext& context) {
+      std::map<std::string, TensorBundle> empty;
+      if (cancelled) return empty;
+      ++executed;
+      return runner.run(context);
+    };
+    BOOST_CHECK(runIfActive(*prefixRunner, stageContext(stageProbeInputs, 0)).empty());
+    BOOST_CHECK_EQUAL(executed, 0U);
+    cancelled = false;
+    BOOST_CHECK(!runIfActive(*prefixRunner, stageContext(stageProbeInputs, 0)).empty());
+    BOOST_CHECK_EQUAL(executed, 1U);
+  }
+  {
+    // A malformed stage input is rejected before any result is published.
+    auto malformed = stageProbeInputs;
+    malformed[0].shape = {2, 3};
+    malformed[0].payload.assign(2 * 3 * sizeof(std::int64_t), 0);
+    BOOST_CHECK_THROW(prefixRunner->run(stageContext(std::move(malformed), 0)),
+                      std::exception);
+  }
+  auto wrongContract = suffixContract;
+  wrongContract.inputs.push_back("past_key_values.99.key");
+  auto wrongSpec = suffixSpec;
+  wrongSpec.metadata["automaticStageBinding"] = wrongContract.canonicalJson();
+  const auto constructWrong = [&] { OnnxRuntimeModelRunner runner(wrongSpec); };
+  BOOST_CHECK_THROW(constructWrong(), std::invalid_argument);
+
+}
+
 #endif
+
 
 BOOST_AUTO_TEST_CASE(ProviderSourceAdmissionRequiresActualGenerationPairsAndSingleBatch)
 {

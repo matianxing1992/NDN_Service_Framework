@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeSessionCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/CudaDeviceIdentity.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-runtime-graph-metadata.hpp"
@@ -1496,6 +1497,26 @@ public:
   }
 };
 
+namespace {
+
+void
+validateAutomaticStagePorts(const NativeModelRunnerSpec& spec,
+                            const StatefulOnnxIoContractV1* io)
+{
+  const auto stage = spec.metadata.find("automaticStageBinding");
+  if (stage == spec.metadata.end()) return;
+  if (!io)
+    throw std::invalid_argument("AUTOMATIC_STAGE_RUNNER_IO_MISSING");
+  const auto contract = AutomaticOnnxStageRunnerContract::fromJson(stage->second);
+  const std::set<std::string> inputs(io->inputNames.begin(), io->inputNames.end());
+  const std::set<std::string> outputs(io->outputNames.begin(), io->outputNames.end());
+  if (inputs != std::set<std::string>(contract.inputs.begin(), contract.inputs.end()) ||
+      outputs != std::set<std::string>(contract.outputs.begin(), contract.outputs.end()))
+    throw std::invalid_argument("AUTOMATIC_STAGE_RUNNER_MODEL_PORTS");
+}
+
+} // namespace
+
 OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   NativeModelRunnerSpec spec,
   std::shared_ptr<SharedSession> sharedSession,
@@ -1509,6 +1530,9 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
     ? std::make_unique<Impl>(m_spec, std::move(sharedSession),
                              OnnxRuntimeSessionCache::Lease{})
     : std::make_unique<Impl>(m_spec);
+  const auto* stageIo = m_impl->statefulIo ? m_impl->statefulIo.get() :
+    (m_impl->sharedSession->automaticIo ? &m_impl->sharedSession->automaticIo->io : nullptr);
+  validateAutomaticStagePorts(m_spec, stageIo);
   initializeEvidence();
   if (runWarmup) {
     warmup();
@@ -1559,6 +1583,9 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   const auto identity = sessionEligible ? sessionIdentity(m_spec, selection) : std::string{};
   if (!sessionCache || identity.empty()) {
     m_impl = std::make_unique<Impl>(m_spec);
+    const auto* stageIo = m_impl->statefulIo ? m_impl->statefulIo.get() :
+    (m_impl->sharedSession->automaticIo ? &m_impl->sharedSession->automaticIo->io : nullptr);
+  validateAutomaticStagePorts(m_spec, stageIo);
     m_impl->stateObserver = std::move(stateObserver);
     initializeEvidence();
     warmup();
@@ -1580,6 +1607,9 @@ OnnxRuntimeModelRunner::OnnxRuntimeModelRunner(
   const bool cacheHit = lease.cacheHit();
   m_impl = std::make_unique<Impl>(m_spec, std::move(sharedSession),
                                   std::move(lease));
+  const auto* stageIo = m_impl->statefulIo ? m_impl->statefulIo.get() :
+    (m_impl->sharedSession->automaticIo ? &m_impl->sharedSession->automaticIo->io : nullptr);
+  validateAutomaticStagePorts(m_spec, stageIo);
   m_impl->stateObserver = std::move(stateObserver);
   initializeEvidence();
   if (m_evidence) {
