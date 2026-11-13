@@ -765,12 +765,15 @@ def build(bld):
 
     # Spec192 T003/T004 drives the public Persistent API through authenticated
     # in-process ServiceUser/Provider transport and independent disk/SQLite oracles.
-    for suffix in ('', '-asan'):
+    for suffix in ('', '-asan', '-tsan'):
         flags = ['-fPIC', '-O0', '-g0', '-fno-inline']
         links = ['-Wl,--no-relax']
-        if suffix:
+        if suffix == '-asan':
             flags += ['-g1', '-fno-omit-frame-pointer', '-fsanitize=address,undefined']
             links += ['-fsanitize=address,undefined']
+        elif suffix == '-tsan':
+            flags += ['-g1', '-fno-omit-frame-pointer', '-fsanitize=thread']
+            links += ['-fsanitize=thread']
         bld.program(target='../spec192-repo-persistent-api' + suffix,
                 name='spec192-repo-persistent-api' + suffix,
                 source=[bld.path.parent.find_node('tests/main.cpp'),
