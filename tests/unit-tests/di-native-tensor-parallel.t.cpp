@@ -8084,6 +8084,339 @@ public:
 
 } // namespace
 
+namespace {
+
+/** A scope bus two workers use to hand each other their own partials.
+ *
+ * Each side publishes as soon as it has computed a contribution and awaits the peer's only
+ * at the step that needs it, which is the exchange the coordinator is supposed to enable.
+ * A promise per waiter means a late publisher still satisfies an early waiter.
+ */
+class PartialBus
+{
+public:
+  std::future<TensorBundle>
+  subscribe(std::string scope)
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto published = m_published.find(scope);
+    std::promise<TensorBundle> promise;
+    auto future = promise.get_future();
+    if (published != m_published.end()) {
+      promise.set_value(published->second);
+    }
+    else {
+      m_waiters[std::move(scope)].push_back(std::move(promise));
+    }
+    return future;
+  }
+
+  void
+  publish(const std::string& scope, const TensorBundle& bundle)
+  {
+    std::vector<std::promise<TensorBundle>> waiters;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      m_published[scope] = bundle;
+      const auto found = m_waiters.find(scope);
+      if (found != m_waiters.end()) {
+        waiters = std::move(found->second);
+        m_waiters.erase(found);
+      }
+    }
+    for (auto& waiter : waiters) waiter.set_value(bundle);
+  }
+
+  std::size_t publishedCount() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_published.size();
+  }
+
+private:
+  mutable std::mutex m_mutex;
+  std::map<std::string, TensorBundle> m_published;
+  std::map<std::string, std::vector<std::promise<TensorBundle>>> m_waiters;
+};
+
+/** DependencyIo that moves contributions over a shared bus instead of a network. */
+class BusDependencyIo final : public DependencyIo
+{
+public:
+  explicit BusDependencyIo(std::shared_ptr<PartialBus> bus)
+    : m_bus(std::move(bus))
+  {
+  }
+
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge& edge) override
+  {
+    ++prefetchCalls;
+    return m_bus->subscribe(edge.scope);
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge& edge,
+                const TensorBundle& bundle) override
+  {
+    ++publishCalls;
+    m_bus->publish(edge.scope, bundle);
+  }
+
+  std::atomic<std::size_t> prefetchCalls{0};
+  std::atomic<std::size_t> publishCalls{0};
+
+private:
+  std::shared_ptr<PartialBus> m_bus;
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirOwnPartialsAcrossAllTwentyEightLayers)
+{
+  // The distributed step: two workers, each running its own unit's 28 layers, handing each
+  // other the partials they actually computed. Every earlier execution in this suite either
+  // ran one rank or fed the peer a seeded value, so none of them could fail if the exchange
+  // were broken.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-two-workers-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    std::filesystem::create_directories(root / unit, cleanupError);
+    std::filesystem::copy_file(source, root / unit / "model.onnx",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+    std::filesystem::create_hard_link(sidecar, root / unit / "model.onnx_data",
+                                      cleanupError);
+    if (cleanupError)
+      std::filesystem::copy_file(sidecar, root / unit / "model.onnx_data",
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 cleanupError);
+  }
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // The layer number is the trailing id component; matching it as a substring would also
+  // match "/10" and bind a peer contribution to the wrong reduction.
+  const auto layerOfStep = [] (const std::string& stepId) -> std::optional<std::uint64_t> {
+    const auto slash = stepId.rfind('/');
+    if (slash == std::string::npos || slash + 1 >= stepId.size()) return std::nullopt;
+    const auto tail = stepId.substr(slash + 1);
+    if (tail.empty() ||
+        !std::all_of(tail.begin(), tail.end(),
+                     [] (unsigned char ch) { return ch >= '0' && ch <= '9'; }))
+      return std::nullopt;
+    return static_cast<std::uint64_t>(std::stoull(tail));
+  };
+
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+
+  // Build each unit's spec, runner and role from the sealed template.
+  struct Side
+  {
+    std::string unit;
+    std::string peer;
+    std::shared_ptr<NativeModelRunner> runner;
+    RoleSpec role;
+  };
+  std::map<std::string, Side> sides;
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    Side side;
+    side.unit = unit;
+    side.peer = std::string(unit) == "S0R0" ? "S0R1" : "S0R0";
+    std::vector<NativeExecutionStepSpec> steps;
+    for (const auto& step : candidate.executionPlan.steps) {
+      if (step.unitId != unit) continue;
+      if (step.stepId.find("/HEAD") != std::string::npos) continue;
+      steps.push_back(step);
+    }
+    BOOST_REQUIRE_EQUAL(steps.size(), 1U + 4U * 28U);
+    NativeModelRunnerSpec spec;
+    spec.role = unit;
+    spec.kind = "onnx";
+    spec.path = (root / unit / "model.onnx").string();
+    spec.backend = "onnxruntime";
+    qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2,
+                                  unit == std::string("S0R0") ? 0 : 1,
+                                  std::string("S0R0"));
+    spec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    side.runner = factory.create(spec);
+    BOOST_REQUIRE(side.runner != nullptr);
+
+    side.role.role = unit;
+    side.role.requestId = "/request/two-workers";
+    side.role.attemptEpoch = 1;
+    side.role.tensorDegree = 2;
+    side.role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+    side.role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    // Two contributions from the peer per layer, each bound to the reduction that needs it.
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"attn", "mlp"}) {
+        DependencyEdge edge;
+        edge.scope = std::string(kind) + "-" + std::to_string(layer) + "-from-" + side.peer;
+        edge.producerRole = side.peer;
+        edge.consumerRole = unit;
+        edge.plannedDataName = "/peer/" + std::string(kind) + "/" + std::to_string(layer);
+        edge.tensors = {"partial"};
+        edge.useNdnsfDataV1 = true;
+        edge.operationKind = "TENSOR_PARTIAL";
+        // Publish side: the peer's own subgraph step for this layer.
+        edge.producerStepId = side.peer + (std::string(kind) == "attn"
+          ? std::string("/ATTN/") : std::string("/MLP/")) + std::to_string(layer);
+        edge.producerSlotId = "partial";
+        // Consume side: this unit's reduction for the same kind and layer.
+        const auto kindMarker = std::string("/SUM_") +
+          (std::string(kind) == "attn" ? "ATTN/" : "MLP/");
+        for (const auto& step : steps) {
+          if (step.operation != "SUM") continue;
+          if (step.stepId.find(kindMarker) == std::string::npos) continue;
+          const auto stepLayer = layerOfStep(step.stepId);
+          if (!stepLayer || *stepLayer != layer) continue;
+          for (const auto& slot : step.inputSlots) {
+            if (slot.source != "REMOTE_STEP") continue;
+            edge.consumerStepId = step.stepId;
+            edge.consumerSlotId = slot.slotId;
+          }
+        }
+        BOOST_REQUIRE(!edge.consumerStepId.empty());
+        side.role.inputs.push_back(std::move(edge));
+        // And the mirror: this unit publishes its own contribution to that same step.
+        DependencyEdge out;
+        out.scope = std::string(kind) + "-" + std::to_string(layer) + "-from-" + unit;
+        out.producerRole = unit;
+        out.consumerRole = side.peer;
+        out.plannedDataName = "/peer/" + std::string(kind) + "/" + std::to_string(layer);
+        out.tensors = {"partial"};
+        out.useNdnsfDataV1 = true;
+        out.operationKind = "TENSOR_PARTIAL";
+        out.producerStepId = std::string(unit) + (std::string(kind) == "attn"
+          ? std::string("/ATTN/") : std::string("/MLP/")) + std::to_string(layer);
+        out.producerSlotId = "partial";
+        side.role.outputs.push_back(std::move(out));
+      }
+    }
+    sides[unit] = std::move(side);
+  }
+
+  // Both workers run at once over one bus, so neither waits for the other to finish.
+  auto bus = std::make_shared<PartialBus>();
+  const auto promptToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(60));
+  std::map<std::string, std::future<ProviderRoleResult>> futures;
+  for (auto& item : sides) {
+    auto io = std::make_shared<BusDependencyIo>(bus);
+    // The INIT entry's graph input is named `position_ids`; the scope carrying it is keyed by
+    // the slot id `prompt_positions`, because the produced positions occupy the other id.
+    std::map<std::string, TensorBundle> initial{
+      {"input_ids", makeEncodedTensorBundle("input_ids", {promptToken("input_ids", 7)})},
+      {"attention_mask", makeEncodedTensorBundle("attention_mask",
+        {promptToken("attention_mask", 1)})},
+      {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+        {promptToken("position_ids", 0)})},
+    };
+    auto runner = item.second.runner;
+    futures[item.first] = worker.executePreparedAsync(
+      "spec224-two-workers", std::move(item.second.role), io,
+      [runner] { return runner; }, initial);
+  }
+  std::map<std::string, ProviderRoleResult> results;
+  for (auto& item : futures) {
+    try {
+      results[item.first] = item.second.get();
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL("unit " + item.first + ": " + error.what());
+    }
+  }
+
+  // Both units published all 56 contributions -- two per layer for 28 layers -- so the bus
+  // carried 112 partials and neither side could have run on a seeded value.
+  BOOST_CHECK_EQUAL(bus->publishedCount(), 112U);
+  BOOST_TEST_MESSAGE("bus published " << bus->publishedCount() << " partials");
+  BOOST_REQUIRE_EQUAL(results.size(), 2U);
+  for (const auto& item : results) {
+    // 56 contributions of its own reached the bus. Receiving is proven differently: each
+    // unit's reductions are admitted only when every declared contribution is present, so a
+    // stack that reached layer 27 consumed all 56 of the peer's. A missing one would have
+    // ended that unit at its reduction rather than at the end.
+    std::size_t published = 0;
+    for (const auto& scope : item.second.outputsByScope)
+      if (scope.first.find("from-" + item.first) != std::string::npos) ++published;
+    BOOST_CHECK_EQUAL(published, 56U);
+    // Its own layer-27 MLP partial was published, which means its stack reached the last
+    // layer -- and therefore consumed every peer contribution on the way, because a
+    // reduction is admitted only when all of its declared contributions are present.
+    bool ownFinal = false;
+    for (const auto& scope : item.second.outputsByScope)
+      if (scope.first.find("mlp-27-from-" + std::string(item.first)) != std::string::npos)
+        ownFinal = true;
+    BOOST_CHECK_MESSAGE(ownFinal, "unit " + item.first + " did not reach its last layer");
+    BOOST_TEST_MESSAGE("unit " << item.first << " published=" << published);
+  }
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
 {
   // The execution the whole exit-1 chain was for: a runner created from a real assembled
