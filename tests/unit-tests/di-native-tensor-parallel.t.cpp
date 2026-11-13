@@ -7921,6 +7921,134 @@ sha256HexOfBytes(const std::vector<std::uint8_t>& bytes)
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ProviderCreatesTheParentRunnerFromARealAssembledTable)
+{
+  // The last technical step of exit 1: the runner a Provider gets back from the registry
+  // when it loads one of these specs. Until now every runner in this suite was built from a
+  // table a test assembled by hand; here the table comes from the assembler's own entry
+  // point and the runner's consistency check is the sealed template's.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-provider-load-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data",
+                                    cleanupError);
+  if (cleanupError)
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : candidate.executionPlan.steps)
+    if (step.unitId == "S0R0") steps.push_back(step);
+  BOOST_REQUIRE(!steps.empty());
+
+  // The spec the assembler hands the Provider, built by the assembler's own entry point.
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  spec.backend = "onnxruntime";
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string("S0R0"));
+  BOOST_REQUIRE_EQUAL(spec.backend, std::string("native-qwen-tensor"));
+  // The children's readiness probe: the entries have boundary inputs whose contract carries
+  // no shape, so production records them as unranked and the CPU warm-up is skipped rather
+  // than fed a rank-0 placeholder that a structural consumer rejects. The assembler derives
+  // this from the assembly contract; a spec built here must declare the same fact.
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+
+  // The registry returns the parent runner, and its constructor validates the table
+  // against the sealed steps the spec declares -- so a table that only looked complete
+  // would fail here rather than at the first step.
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  std::shared_ptr<NativeModelRunner> runner;
+  try {
+    runner = factory.create(spec);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("factory.create: ") + error.what());
+  }
+  BOOST_REQUIRE(runner != nullptr);
+  auto* parent = dynamic_cast<qwen::NativeQwenTensorRunner*>(runner.get());
+  BOOST_REQUIRE_MESSAGE(parent != nullptr,
+    "the tensor-parallel backend did not produce a parent runner");
+  // It holds exactly the entries the plan references, and it was built from the whole
+  // table rather than a subset.
+  BOOST_CHECK_EQUAL(parent->entries().size(), 58U);
+  // The template it was validated against is the same one the worker will drive.
+  const auto declared = spec.metadata.at("tensorParallelSteps");
+  BOOST_CHECK(!declared.empty());
+  // A runner whose declared template names an entry it does not hold is refused at
+  // construction, so this is not a check that only ever passes.
+  {
+    auto broken = spec;
+    broken.metadata["tensorParallelSteps"] =
+      R"([{"stepId":"S0R0/ATTN/0","unitId":"S0R0","operation":"CALL_SUBGRAPH",)"
+      R"("artifactEntry":"S0R0/ATTN/999"}])";
+    BOOST_CHECK_THROW(factory.create(broken), std::invalid_argument);
+  }
+  BOOST_TEST_MESSAGE("provider load: entries=" << parent->entries().size()
+                    << " declaredSteps=" << declared.size());
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
 {
   // The Provider's own gate before it creates a runner. A tensor-parallel spec re-targets
