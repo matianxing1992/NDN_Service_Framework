@@ -5985,6 +5985,90 @@ BOOST_AUTO_TEST_CASE(PublishDataRejectsAMissingVerifierBeforeAnySideEffect)
   BOOST_CHECK_EQUAL(node->core().list().size(), 0U);
 }
 
+
+BOOST_AUTO_TEST_CASE(CloseWhileAnOperationWaitsReportsTheTruth)
+{
+  // CA08: close must report the drain it observed, and a close racing a live
+  // operation must not free state under it. The operation runs on the fixture's
+  // worker while the caller keeps pumping, which is the only supported pattern here.
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec240/close/group";
+  profile.syncPrefix = "/ndnsf/spec240/close/sync";
+  profile.userIdentity = "/test/user/spec240/close";
+  profile.providerIdentity = "/test/provider/spec240/close";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec240/close";
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 1, servicePrefix, operations);
+  const repo::RepoArtifactTarget target{
+    "/logical/spec240/close",
+    environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+
+  auto config = repo::PersistentRepoClientConfig{};
+  config.servicePrefix = servicePrefix;
+  config.providerScope = {ndn::Name(target.providerIdentity)};
+  config.dataOnly = true;
+  auto client = repo::RepoClient::makePersistent(publisher, std::move(config));
+
+  bool drained = true;
+  BOOST_REQUIRE(runWithFacePump(environment, [&] {
+    std::atomic<bool> started{false};
+    std::thread worker([&] {
+      try {
+        repo::RepoDataFetch fetch;
+        repo::ExactPacketSetReference commitment;
+        commitment.objectName = "/test/provider/spec240/close/never/0";
+        commitment.packetNames = {commitment.objectName};
+        commitment.wireBytes = 64;
+        fetch.packets = commitment;
+        fetch.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
+        fetch.verifyWire =
+          std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
+            [] (const std::vector<std::uint8_t>&) { return true; });
+        repo::RepoOperationOptions options;
+        options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        started.store(true);
+        client.fetchData(fetch, options);
+      }
+      catch (const std::exception&) {
+        // A timeout is the expected outcome for a provider that never answers.
+      }
+    });
+    while (!started.load())
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // The operation is still waiting, so this close cannot have drained it.
+    drained = client.close(std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(50));
+    worker.join();
+    return true;
+  }));
+  BOOST_CHECK(!drained);
+
+  // New work is refused instead of running on closing state.
+  repo::RepoDeleteRequest deleteRequest;
+  deleteRequest.targets = {repo::RepoTarget{target.repoNode, target.providerIdentity,
+                                            target.servicePrefix}};
+  deleteRequest.generation = "cleanup-after-close";
+  repo::FileReference reference;
+  reference.logicalName = "/test/provider/spec240/close/never/0";
+  deleteRequest.reference = reference;
+  repo::RepoOperationOptions afterOptions;
+  afterOptions.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  BOOST_CHECK_THROW(client.remove(deleteRequest, afterOptions), repo::RepoClientError);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test
