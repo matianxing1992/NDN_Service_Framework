@@ -1768,7 +1768,12 @@ NativePlannedRequest planNativeRequestImpl(
       std::uint64_t feedbackIndex = transferCount;
       for (const auto& consumer : feedbackConsumers) {
         NativeDependencySpec feedback;
-        feedback.producers = {feedbackOwner};
+        // A sharded unit feeds itself its next-epoch token: the owner produces, and the
+        // unit that consumes it is the same unit. Naming a distinct producer here made
+        // every degree-two plan look like cross-role feedback, which the projection
+        // builders refuse because the producing rank would have to publish control Data
+        // it never owns.
+        feedback.producers = {tensorParallel ? consumer : feedbackOwner};
         feedback.consumers = {consumer};
         feedback.keyScope = "token-feedback-" + hash({{"request", control.requestId},
           {"attempt", control.attempt}, {"producer", feedback.producers.front()},
