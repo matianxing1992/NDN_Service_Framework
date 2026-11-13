@@ -8505,6 +8505,359 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
   std::filesystem::remove_all(root, cleanupError);
 }
 
+namespace {
+
+/** A bus two coordinators use to hand each other their units' partials. */
+class ExchangeBus
+{
+public:
+  std::future<TensorBundle>
+  subscribe(const std::string& scope)
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::promise<TensorBundle> promise;
+    auto future = promise.get_future();
+    const auto published = m_published.find(scope);
+    if (published != m_published.end()) promise.set_value(published->second);
+    else m_waiters[scope].push_back(std::move(promise));
+    return future;
+  }
+
+  void
+  publish(const std::string& scope, const TensorBundle& bundle)
+  {
+    std::vector<std::promise<TensorBundle>> waiters;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      m_published[scope] = bundle;
+      const auto found = m_waiters.find(scope);
+      if (found != m_waiters.end()) {
+        waiters = std::move(found->second);
+        m_waiters.erase(found);
+      }
+    }
+    for (auto& waiter : waiters) waiter.set_value(bundle);
+  }
+
+  std::size_t publishedCount() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_published.size();
+  }
+
+private:
+  mutable std::mutex m_mutex;
+  std::map<std::string, TensorBundle> m_published;
+  std::map<std::string, std::vector<std::promise<TensorBundle>>> m_waiters;
+};
+
+class ExchangeIo final : public DependencyIo
+{
+public:
+  explicit ExchangeIo(std::shared_ptr<ExchangeBus> bus) : m_bus(std::move(bus)) {}
+
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge& edge) override
+  {
+    // A feedback edge is this role's own next-epoch control packet, not a peer object, and
+    // nothing publishes one in a single-epoch case. Answering it immediately keeps the
+    // coordinator from waiting for a packet that will never exist; the exchange under test is
+    // the partials, which do come from the peer.
+    if (edge.operationKind == "TOKEN_FEEDBACK") {
+      std::promise<TensorBundle> promise;
+      NamedTensor token;
+      token.name = "input_ids";
+      token.elementType = TensorElementType::Int64;
+      token.shape = {1, 1};
+      token.payload.resize(sizeof(std::int64_t), 0);
+      NamedTensor marker;
+      marker.name = "__ndnsf_token_feedback_terminal";
+      marker.elementType = TensorElementType::Bool;
+      marker.shape = {1};
+      marker.payload = {1};
+      promise.set_value(makeEncodedTensorBundle("feedback",
+                                                {std::move(token), std::move(marker)}));
+      return promise.get_future();
+    }
+    return m_bus->subscribe(edge.scope);
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge& edge,
+                const TensorBundle& bundle) override
+  {
+    m_bus->publish(edge.scope, bundle);
+  }
+
+private:
+  std::shared_ptr<ExchangeBus> m_bus;
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(TwoCoordinatorsExchangeOneLayersPartials)
+{
+  // The smallest bidirectional exchange under the coordinator: one layer's attention and MLP,
+  // each unit publishing its own partial and awaiting the peer's at the reduction that needs
+  // it. Last round's all-28-layers version hung; this one is small enough that completing
+  // means the wait-all gate is gone rather than that the machine was fast.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-exchange-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    std::filesystem::create_directories(root / unit, cleanupError);
+    std::filesystem::copy_file(source, root / unit / "model.onnx",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+    std::filesystem::create_hard_link(sidecar, root / unit / "model.onnx_data",
+                                      cleanupError);
+    if (cleanupError)
+      std::filesystem::copy_file(sidecar, root / unit / "model.onnx_data",
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 cleanupError);
+  }
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // One layer: INIT, ATTN/0, SUM_ATTN/0, MLP/0, SUM_MLP/0 per unit.
+  struct Side
+  {
+    std::string unit;
+    std::string peer;
+    std::shared_ptr<NativeModelRunner> runner;
+    NativeExecutionPlan plan;
+  };
+  std::map<std::string, Side> sides;
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    Side side;
+    side.unit = unit;
+    side.peer = std::string(unit) == "S0R0" ? "S0R1" : "S0R0";
+    std::vector<NativeExecutionStepSpec> steps;
+    for (const auto& step : candidate.executionPlan.steps) {
+      if (step.unitId != unit) continue;
+      const auto& id = step.stepId;
+      if (id.find("/INIT") != std::string::npos) { steps.push_back(step); continue; }
+      // Layer 0 only: the trailing id component decides, so "/1" cannot match "/10".
+      const auto slash = id.rfind('/');
+      const auto tail = id.substr(slash + 1);
+      if (tail != "0") continue;
+      steps.push_back(step);
+    }
+    BOOST_REQUIRE_EQUAL(steps.size(), 5U);
+
+    NativeModelRunnerSpec spec;
+    spec.role = unit;
+    spec.kind = "onnx";
+    spec.path = (root / unit / "model.onnx").string();
+    spec.backend = "onnxruntime";
+    qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2,
+                                  std::string(unit) == "S0R0" ? 0 : 1);
+    spec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    side.runner = factory.create(spec);
+    BOOST_REQUIRE(side.runner != nullptr);
+
+    side.plan.roles = {unit};
+    side.plan.steps = steps;
+    side.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+    side.plan.tensorDegree = 2;
+    // The peer's two contributions for this layer, and this unit's own two for the peer.
+    for (const auto* kind : {"attn", "mlp"}) {
+      NativeDependencySpec in;
+      in.producers = {side.peer};
+      in.consumers = {unit};
+      in.keyScope = std::string(kind) + "-0-from-" + side.peer;
+      in.topicPrefix = "/peer";
+      in.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+      in.tensors = {"partial"};
+      in.operationKind = "TENSOR_PARTIAL";
+      in.useNdnsfDataV1 = true;
+      in.producerStepId = side.peer + (std::string(kind) == "attn"
+        ? std::string("/ATTN/") : std::string("/MLP/")) + "0";
+      in.producerSlotId = "partial";
+      for (const auto& step : steps) {
+        if (step.operation != "SUM") continue;
+        if (step.stepId.find(std::string("/SUM_") +
+              (std::string(kind) == "attn" ? "ATTN/0" : "MLP/0")) == std::string::npos)
+          continue;
+        for (const auto& slot : step.inputSlots) {
+          if (slot.source != "REMOTE_STEP") continue;
+          in.consumerStepId = step.stepId;
+          in.consumerSlotId = slot.slotId;
+        }
+      }
+      BOOST_REQUIRE(!in.consumerStepId.empty());
+      side.plan.dependencies.push_back(std::move(in));
+
+      NativeDependencySpec out;
+      out.producers = {unit};
+      out.consumers = {side.peer};
+      out.keyScope = std::string(kind) + "-0-from-" + unit;
+      out.topicPrefix = "/peer";
+      out.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+      out.tensors = {"partial"};
+      out.operationKind = "TENSOR_PARTIAL";
+      out.useNdnsfDataV1 = true;
+      out.producerStepId = std::string(unit) + (std::string(kind) == "attn"
+        ? std::string("/ATTN/") : std::string("/MLP/")) + "0";
+      out.producerSlotId = "partial";
+      side.plan.dependencies.push_back(std::move(out));
+    }
+    NativeDependencySpec feedback;
+    feedback.producers = {unit};
+    feedback.consumers = {unit};
+    feedback.keyScope = "token-feedback-" + std::string(unit);
+    feedback.topicPrefix = "/token-feedback";
+    feedback.objectNameTemplate =
+      "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+    feedback.tensors = {"input_ids"};
+    feedback.operationKind = "TOKEN_FEEDBACK";
+    feedback.useNdnsfDataV1 = true;
+    side.plan.dependencies.push_back(std::move(feedback));
+    side.plan.streamingOperationStride = side.plan.dependencies.size();
+    sides[unit] = std::move(side);
+  }
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto bus = std::make_shared<ExchangeBus>();
+  const auto makeToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+
+  // Both coordinators run at once, each with its own runtime so neither shares a worker pool.
+  // The config holds a runtime reference, so it cannot be default-built or assigned: each one
+  // is constructed in place inside the task that runs it.
+  std::map<std::string, std::unique_ptr<NativeProviderRuntime>> runtimes;
+  std::map<std::string, std::future<NativeEpochCoordinatorResult>> futures;
+  for (auto& item : sides) {
+    runtimes[item.first] = std::make_unique<NativeProviderRuntime>(1);
+    auto io = std::make_shared<ExchangeIo>(bus);
+    auto* runtime = runtimes[item.first].get();
+    auto plan = item.second.plan;
+    auto runner = item.second.runner;
+    const auto unit = item.first;
+    futures[item.first] = std::async(
+      std::launch::async,
+      [runtime, io, plan = std::move(plan), runner, unit, &assignment, &makeToken]() mutable {
+        const auto identity = tpStateIdentity(unit, 28, 0);
+        NativeEpochCoordinatorConfig config{*runtime, std::move(plan), assignment, io};
+        config.sessionId = "exchange-" + unit;
+        config.requestId = "/request/exchange";
+        config.attemptEpoch = 1;
+        config.lineagePlanDigest = std::string("sha256:") + std::string(64, 'd');
+        config.localProvider = assignment.providerByRole.at(unit);
+        config.role = unit;
+        // One epoch of work. The coordinator's loop runs `epoch <= maxEpochs`, so a value of
+        // one asks for two epochs; the exchange happens in epoch zero, and the second epoch of
+        // a non-terminal role would look for a feedback input nothing publishes here. That is a
+        // decode-path concern, not the exchange this case measures.
+        config.maxEpochs = 1;
+        config.stopCheck = [] { return std::nullopt; };
+        config.stateIdentityTemplate = identity;
+        config.positionPolicyDigest = identity.positionDigest;
+        config.samplingDigest = std::string("sha256:") + std::string(64, 'e');
+        config.prepareRunner = [runner] { return runner; };
+        // Neither unit owns a head in this block, so neither is terminal.
+        config.terminalRole = false;
+        config.initialInputs = {
+          {"input_ids", makeEncodedTensorBundle("input_ids",
+            {makeToken("input_ids", 7)})},
+          {"attention_mask", makeEncodedTensorBundle("attention_mask",
+            {makeToken("attention_mask", 1)})},
+          {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+            {makeToken("position_ids", 0)})},
+        };
+        try {
+          return runNativeEpochCoordinator(std::move(config));
+        }
+        catch (const std::exception& error) {
+          std::cerr << "EXCHANGE_ERROR " << error.what() << "\n";
+          throw;
+        }
+      });
+  }
+
+  // Each unit published its attention and MLP partial, and each reduction consumed the peer's,
+  // so all four objects crossed and both epochs completed.
+  std::map<std::string, NativeEpochCoordinatorResult> results;
+  for (auto& item : futures) {
+    try {
+      results[item.first] = item.second.get();
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL("coordinator " + item.first + ": " + error.what());
+    }
+  }
+  BOOST_TEST_MESSAGE("bus published " << bus->publishedCount());
+  BOOST_CHECK_EQUAL(bus->publishedCount(), 4U);
+  BOOST_REQUIRE_EQUAL(results.size(), 2U);
+  for (const auto& item : results)
+    BOOST_CHECK_EQUAL(item.second.epochsExecuted, 1U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorFetchesOnlyTheInputsItsWorkerWillNot)
 {
   // The gate the two-coordinator case timed out on. A step-carrying role leaves its remote
