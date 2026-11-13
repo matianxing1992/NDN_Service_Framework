@@ -2136,6 +2136,38 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     }
     bindNativeRunnerOutputScopes(projection, spec);
     bindNativeRunnerUnrankedInputs(projection, spec);
+    // A cached rank file is the same artifact the cold path writes, so it needs the same
+    // per-entry table. Returning the cached spec without it handed the Provider an ordinary
+    // whole-role runner whose backend is the assembled one: the steps then executed against a
+    // single ONNX graph, which is why a tensor-parallel INIT produced the ONNX runner's own
+    // bundle instead of the step's declared slots.
+    if (!projection.plan.steps.empty()) {
+      const auto& contract = projection.assemblyContract();
+      const auto rankRole = contract.selectedRole;
+      const std::uint64_t layers = contract.layerEnd > contract.layerBegin
+        ? contract.layerEnd : 0;
+      if (layers == 0) {
+        throw std::runtime_error(
+          "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_LAYERS_UNKNOWN: the role does not "
+          "declare a layer range, so the entry taxonomy cannot be built");
+      }
+      std::vector<NativeExecutionStepSpec> ownedSteps;
+      for (const auto& step : projection.plan.steps)
+        if (step.unitId == rankRole) ownedSteps.push_back(step);
+      if (ownedSteps.empty()) {
+        throw std::runtime_error(
+          "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_NO_STEPS: the role has no steps to bind");
+      }
+      const std::string egressRole = projection.dataflow.terminalResponseOwner
+        ? rankRole : std::string{};
+      qwen::configureQwenTpRankSpec(spec, layers, ownedSteps,
+                                    contract.maxAssembledBytes,
+                                    contract.tensorParallelDegree,
+                                    contract.tensorParallelRank,
+                                    egressRole);
+      if (options.reportProgress)
+        options.reportProgress("ENTRY_TABLE_READY", 0.95);
+    }
     if (options.reportProgress)
       options.reportProgress("CACHE_HIT", 0.90);
     return spec;
