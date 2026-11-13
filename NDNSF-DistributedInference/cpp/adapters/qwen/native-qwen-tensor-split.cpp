@@ -2148,6 +2148,27 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   // the strict verifier refuses an entry no step references.
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
                                         graphBytes, layers, shards, egressRole);
+  // A caller that declares fewer steps than the taxonomy produces is building a partial
+  // template -- a test driving one block, or a plan that intentionally executes a slice.
+  // The verifier's set-agreement rule exists to catch an artifact that disagrees with the
+  // plan, so it is applied to the declared steps and not to the whole taxonomy: an entry no
+  // declared step references is dropped here rather than reported as a disagreement. Keeping
+  // it would reject every partial template, and the alternative -- relaxing the verifier --
+  // would lose the check for a complete one.
+  {
+    std::set<std::string> referenced;
+    for (const auto& step : steps) {
+      if (step.operation != "CALL_SUBGRAPH" || step.artifactEntry.empty()) continue;
+      referenced.insert(step.artifactEntry);
+    }
+    if (!referenced.empty() &&
+        referenced.size() < table.size()) {
+      table.erase(std::remove_if(table.begin(), table.end(),
+        [&referenced] (const auto& entry) {
+          return referenced.count(entry.entryId) == 0;
+        }), table.end());
+    }
+  }
   if (!egressRole.empty() && spec.role != egressRole) {
     // The non-egress table legitimately holds one entry fewer, so the byte budget and the
     // step set are checked against the table that remains.

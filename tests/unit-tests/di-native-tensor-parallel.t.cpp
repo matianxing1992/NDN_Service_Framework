@@ -8049,6 +8049,219 @@ BOOST_AUTO_TEST_CASE(ProviderCreatesTheParentRunnerFromARealAssembledTable)
   std::filesystem::remove_all(root, cleanupError);
 }
 
+namespace {
+
+/** IO that answers a step's remote contribution from a seeded bundle. */
+class StepPartialIo final : public DependencyIo
+{
+public:
+  std::future<TensorBundle>
+  prefetchInput(const std::string&, const DependencyEdge& edge) override
+  {
+    std::promise<TensorBundle> promise;
+    const auto found = byScope.find(edge.scope);
+    if (found == byScope.end()) {
+      promise.set_exception(std::make_exception_ptr(
+        std::runtime_error("no seeded contribution for " + edge.scope)));
+    }
+    else {
+      promise.set_value(found->second);
+    }
+    return promise.get_future();
+  }
+
+  void
+  publishOutput(const std::string&, const DependencyEdge& edge,
+                const TensorBundle& bundle) override
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    published.emplace(edge.scope, bundle);
+  }
+
+  std::map<std::string, TensorBundle> byScope;
+  std::map<std::string, TensorBundle> published;
+  std::mutex mutex;
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(WorkerDrivesTheAssembledRunnerThroughItsInitEntry)
+{
+  // The execution the whole exit-1 chain was for: a runner created from a real assembled
+  // table, driven by the production worker over the sealed template, with the reduction the
+  // worker performs itself. Only one layer's attention block runs -- INIT, ATTN, SUM_ATTN --
+  // because the case proves the wiring, not the 28-layer numerics.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-worker-exec-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data",
+                                    cleanupError);
+  if (cleanupError)
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // INIT alone. It is the one entry that reads only the request's own inputs, so this
+  // proves the worker-to-runner path end to end without also claiming the decode-state
+  // handoff works -- that needs the state contract wired, which is the next step and not
+  // something to fake with a zero-dimension slot.
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : candidate.executionPlan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.stepId.find("/INIT") == std::string::npos) continue;
+    steps.push_back(step);
+  }
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  spec.backend = "onnxruntime";
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string("S0R0"));
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  const auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  // The role spec the worker drives: the same steps, with no remote input because INIT
+  // consumes only the request's own values.
+  RoleSpec role;
+  role.role = "S0R0";
+  role.requestId = "/request/worker-exec";
+  role.attemptEpoch = 1;
+  role.tensorDegree = 2;
+  role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+  auto io = std::make_shared<StepPartialIo>();
+
+  // The prompt: one token, position zero, mask all ones.
+  const auto promptToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  // The INIT entry's graph inputs are named `input_ids`, `attention_mask` and
+  // `position_ids` -- the export's own names. EPOCH_INPUT slots are resolved by slot id from
+  // the admitted scopes, so each scope carries the tensor under the graph name while the
+  // scope is keyed by the slot id.
+  NamedTensor positionsTensor = promptToken("position_ids", 0);
+  std::map<std::string, TensorBundle> initial{
+    {"input_ids", makeEncodedTensorBundle("input_ids",
+      {promptToken("input_ids", 7)})},
+    {"attention_mask", makeEncodedTensorBundle("attention_mask",
+      {promptToken("attention_mask", 1)})},
+    {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+      {std::move(positionsTensor)})},
+  };
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(30));
+  ProviderRoleResult result;
+  try {
+    result = worker.executePreparedAsync("spec224-worker-exec", std::move(role), io,
+                                         [runner] { return runner; }, initial).get();
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("worker execution: ") + error.what());
+  }
+
+  // INIT's three outputs reached the worker under the slots the sealed template declares,
+  // which is what a later attention step binds to. Their presence is the proof that the
+  // worker called the runner, the runner resolved the entry from its assembled table, and
+  // the graph-output-to-slot binding carried the result back.
+  BOOST_TEST_MESSAGE("worker produced " << result.outputsByScope.size() << " scopes");
+  for (const auto& item : result.outputsByScope) {
+    BOOST_TEST_MESSAGE("  scope=" << item.first);
+  }
+  BOOST_CHECK(!result.outputsByScope.empty());
+  // The entry's x0 is the embedded prompt; it must be the model's real width and non-zero,
+  // so an empty placeholder cannot pass as a successful INIT.
+  const auto embedded = std::find_if(result.outputsByScope.begin(),
+                                     result.outputsByScope.end(),
+    [] (const auto& item) {
+      return item.first == "x0" || item.first.find("x0") != std::string::npos;
+    });
+  BOOST_REQUIRE_MESSAGE(embedded != result.outputsByScope.end(),
+    "INIT did not surface its embedded value");
+  const auto tensors = decodeTensorBundle(embedded->second.payload);
+  BOOST_REQUIRE(!tensors.empty());
+  double energy = 0.0;
+  for (const auto& tensor : tensors) {
+    if (tensor.elementType != TensorElementType::Float32) continue;
+    const auto* values = reinterpret_cast<const float*>(tensor.payload.data());
+    const auto count = tensor.payload.size() / sizeof(float);
+    for (std::size_t index = 0; index < count; ++index)
+      energy += std::fabs(double(values[index]));
+  }
+  BOOST_TEST_MESSAGE("embedded x0 energy=" << energy);
+  BOOST_CHECK_GT(energy, 0.0);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
 {
   // The Provider's own gate before it creates a runner. A tensor-parallel spec re-targets
