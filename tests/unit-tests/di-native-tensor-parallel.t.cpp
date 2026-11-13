@@ -17,6 +17,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 
 #include <onnx/onnx_pb.h>
 #include <onnxruntime_cxx_api.h>
@@ -7877,6 +7879,183 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
   BOOST_CHECK_CLOSE(arrived[1], -2.25f, 1e-6);
 }
 
+
+BOOST_AUTO_TEST_CASE(FrozenShardedCatalogLoadPreparesTwoRankRoles)
+{
+  // Exit 1's closing check, on the model this will actually run: the frozen 0.6B INT4
+  // export, the catalog configuration that has already been used for it, and the real
+  // NativeRequestCatalog::load. Nothing here is synthetic except the two rank artifacts,
+  // whose digests identify recipes this test does not build.
+  //
+  // The configuration is the one at
+  // specs/220-warm-path-reuse/evidence/b220-05-q4-catalog-r3/catalog.json with its
+  // splitter replaced by one global tensor-parallel stage of degree two. A sharded plan
+  // is one global stage -- every unit executes every layer with a different weight slice
+  // -- so the layer-parallel two-stage topology cannot also be tensor-parallel.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string configPath = "specs/220-warm-path-reuse/evidence/"
+    "b220-05-q4-catalog-r3/catalog.json";
+  {
+    std::ifstream probe(configPath);
+    if (!probe) {
+      BOOST_TEST_MESSAGE("catalog configuration is absent; skipping");
+      return;
+    }
+    std::ifstream graph(modelDir + "/canonical-source.onnx", std::ios::binary);
+    if (!graph) {
+      BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+      return;
+    }
+  }
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  std::ifstream configIn(configPath);
+  auto configuration = nativeParseJson(std::string(
+    (std::istreambuf_iterator<char>(configIn)), std::istreambuf_iterator<char>()));
+  BOOST_REQUIRE_EQUAL(configuration.at("schema").get<std::string>(),
+                      "ndnsf-di-native-request-catalog-v1");
+
+  // One global stage of degree two. The per-stage KV contracts stay as they are; the
+  // catalog re-keys them to the units, because both units execute every layer.
+  auto& split = configuration["splitter"];
+  const auto stageRole = std::string("/LLM/Pipeline/Stage/0");
+  const auto sharedArtifact =
+    split.at("artifact_digests_by_role").at(stageRole).get<std::string>();
+  split["roles"] = NativeJson{stageRole};
+  split["layer_ranges"] = NativeJson::array({NativeJson::array({0, 28})});
+  split["tensor_degrees"] = NativeJson{2};
+  split["artifact_digests_by_role"] = NativeJson{{stageRole, sharedArtifact}};
+  split["rank_artifact_digests_by_role"] =
+    NativeJson{{stageRole, NativeJson{sharedArtifact, sha('e')}}};
+  split["weight_bytes_by_role"] = NativeJson{{stageRole, 1562116272ULL}};
+  auto stageResources = split.at("resources_by_role").at(stageRole);
+  stageResources["weight_bytes"] = 1562116272ULL;
+  split["resources_by_role"] = NativeJson{{stageRole, stageResources}};
+  split["input_ingress_role"] = stageRole;
+  split["result_egress_role"] = stageRole;
+
+  // The planning graph identity is a digest over the layer ranges, so collapsing two
+  // stages into one global stage changes it. Recompute exactly the way the splitter does
+  // rather than keeping the old two-stage digest, which would make the loaded graph fail
+  // its own identity check.
+  {
+    std::vector<std::string> order{"embedding"};
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      order.push_back("layer-" + std::string(layer < 10 ? "0" : "") +
+                      std::to_string(layer));
+    }
+    order.push_back("final-norm-head");
+    std::vector<std::string> edges;
+    for (std::size_t index = 1; index < order.size(); ++index) {
+      edges.push_back(index == 1
+        ? "hidden-embedding-to-layer-00"
+        : index == order.size() - 1
+          ? "hidden-layer-27-to-final"
+          : "hidden-layer-" + std::to_string(index - 2) + "-to-" +
+            std::to_string(index - 1));
+    }
+    const auto& modelJson = configuration.at("model");
+    const auto digest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
+      {"model", modelJson.at("model_name")},
+      {"revision", modelJson.at("source_revision")},
+      {"precision", modelJson.at("precision")},
+      {"decode_mode", "single-token-autoregressive"},
+      {"modality", "text-only"},
+      {"mtp_enabled", false},
+      {"thinking_mode", "disabled"},
+      {"layer_ranges", NativeJson::array({NativeJson::array({0, 28})})},
+      {"nodes", order}, {"edges", edges}, {"legal_cuts", edges}}));
+    // Only the model's planning graph digest changes. `source.canonical_graph_digest`
+    // is the canonical identity of the ONNX bytes themselves and does not depend on how
+    // layers are partitioned, so overwriting it would make the inspected source disagree
+    // with the model it was loaded for.
+    configuration["model"]["graph_digest"] = digest;
+  }
+  // Both units execute every layer, so each carries the full per-stage KV set. The
+  // catalog re-keys the single declared entry onto both units.
+  configuration["state_inputs"] = NativeJson{{stageRole,
+    configuration.at("state_inputs").at(stageRole)}};
+  configuration["state_outputs"] = NativeJson{{stageRole,
+    configuration.at("state_outputs").at(stageRole)}};
+
+  NativeCanonicalSource source;
+  {
+    std::ifstream graph(modelDir + "/canonical-source.onnx", std::ios::binary);
+    source.modelBytes.assign(std::istreambuf_iterator<char>(graph),
+                             std::istreambuf_iterator<char>());
+  }
+  // The initializer must be supplied as bytes rather than only as a pinned digest: the
+  // catalog refuses a declared object it was not given, and a loose file path is not an
+  // authenticated source.
+  {
+    std::ifstream initializer(modelDir + "/model.onnx_data", std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(initializer));
+    initializer.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(initializer.tellg());
+    initializer.seekg(0, std::ios::beg);
+    source.initializerBytes.emplace(size);
+    initializer.read(reinterpret_cast<char*>(source.initializerBytes->data()),
+                     static_cast<std::streamsize>(size));
+    BOOST_REQUIRE_EQUAL(static_cast<std::size_t>(initializer.gcount()), size);
+  }
+
+  NativeAssemblyControl control{std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(600),
+                                [] {}, 985894912ULL, 3392676128ULL};
+  std::shared_ptr<const NativeRequestCatalog> loaded;
+  try {
+    loaded = std::make_shared<const NativeRequestCatalog>(
+      NativeRequestCatalog::load(configuration.dump(), std::move(source), control));
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("NativeRequestCatalog::load: ") + error.what());
+  }
+
+  // A sharded candidate was produced, not a pipeline one.
+  BOOST_REQUIRE(loaded->planningCache);
+  BOOST_REQUIRE_EQUAL(loaded->planningCache->candidates.size(), 1U);
+  const auto& candidate = loaded->planningCache->candidates.front();
+  BOOST_CHECK_EQUAL(candidate.candidate.executionPlan.tensorDegree, 2U);
+  BOOST_CHECK(!candidate.candidate.executionPlan.steps.empty());
+  BOOST_CHECK_EQUAL(candidate.candidate.executionPlan.stepPlanVersion,
+                    std::string(NATIVE_STEP_PLAN_VERSION_V1));
+
+  // Two prepared roles, one per rank, each with its own artifact, its own QB rank and a
+  // full node cover. This is what exit 1 needed: the production path producing two rank
+  // roles, not a helper producing a candidate shape.
+  BOOST_REQUIRE_EQUAL(candidate.roles.size(), 2U);
+  std::set<std::string> selected;
+  std::set<std::string> artifacts;
+  for (const auto& role : candidate.roles) {
+    selected.insert(role.selectedRole);
+    artifacts.insert(role.artifactDigest);
+    BOOST_CHECK(!role.nodeIndices.empty());
+    BOOST_CHECK_EQUAL(role.tensorParallelDegree, 2U);
+    BOOST_CHECK_GT(role.layerEnd, role.layerBegin);
+    BOOST_TEST_MESSAGE("prepared role=" << role.selectedRole
+                      << " rank=" << role.rank
+                      << " tpRank=" << role.tensorParallelRank
+                      << " layers=" << role.layerBegin << "-" << role.layerEnd
+                      << " nodes=" << role.nodeIndices.size());
+  }
+  BOOST_CHECK_EQUAL(selected.size(), 2U);
+  BOOST_CHECK_EQUAL(artifacts.size(), 2U);
+  // The names carry their stage and rank, because the prepared role's kind -- and
+  // therefore whether it is given a layer range at all -- is derived from the name.
+  for (const auto& role : candidate.roles) {
+    BOOST_CHECK(role.selectedRole.find("/Tensor/Rank/") != std::string::npos);
+    BOOST_CHECK_EQUAL(role.roleKind, std::string("TENSOR_RANK"));
+  }
+  // Rank identity reaches the prepared roles; without it both ranks would carry the same
+  // recipe digest and the assembler would produce one artifact twice.
+  std::set<std::uint64_t> tpRanks;
+  for (const auto& role : candidate.roles)
+    tpRanks.insert(role.tensorParallelRank);
+  BOOST_CHECK_EQUAL(tpRanks.size(), 2U);
+}
 
 BOOST_AUTO_TEST_CASE(ShardedQwenCatalogProducesAProjectedCandidateNotAPipeline)
 {

@@ -1350,6 +1350,11 @@ buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
     candidate.fragmentsByRole[unit.roleId] = nativePlanningDigest(
       entryPrefix + "|" + unit.roleId + "|" + std::to_string(unit.rank));
     candidate.tensorDegreesByRole[unit.roleId] = 1;
+    // Placement degree one, shard geometry separate: one Provider hosts this unit, while
+    // its recipe must still know it is rank r of a degree-N split. Without this both ranks
+    // derive the same recipe digest and assemble identical weights.
+    candidate.tensorIdentityByRole[unit.roleId] = {
+      static_cast<std::uint64_t>(units.size()), unit.rank};
     candidate.rankArtifactDigestsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
     candidate.artifactsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
     candidate.requirementsByRole[unit.roleId] = requirementByUnit.at(unit.roleId);

@@ -312,6 +312,17 @@ struct NativeSplitCandidate
   // the relation from role to node is one-to-many and cannot be read back out of a
   // single-valued map. Empty keeps the `nodeRoles` inverse for every ordinary candidate.
   std::map<std::string, std::vector<std::string>> roleNodeIdsByRole;
+  // Tensor-parallel identity per role, for a plan whose units are already expanded. Empty
+  // for every ordinary candidate, where per-role degree is the whole story. A sharded
+  // unit reports degree one -- one Provider hosts it -- while it still is rank r of a
+  // degree-N shard, and the recipe must carry that or both ranks assemble the same
+  // weights.
+  struct RoleTensorIdentity
+  {
+    std::uint64_t degree = 0;
+    std::uint64_t rank = 0;
+  };
+  std::map<std::string, RoleTensorIdentity> tensorIdentityByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
 

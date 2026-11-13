@@ -308,6 +308,16 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto degreeEntry = candidate.tensorDegreesByRole.find(name);
     const auto degree = degreeEntry == candidate.tensorDegreesByRole.end() ? 1 : degreeEntry->second;
     if (!degree || degree > 1024) throw std::invalid_argument("native role degree is invalid");
+    // An already-expanded shard: this role is one rank of a wider split, so its placement
+    // degree stays one while its recipe still carries the split geometry. Without this the
+    // recipe digest is identical for every rank and both assemble the same weights.
+    const auto tensorIdentity = candidate.tensorIdentityByRole.find(name);
+    const auto shardDegree = tensorIdentity == candidate.tensorIdentityByRole.end()
+      ? 0 : tensorIdentity->second.degree;
+    const auto shardRank = tensorIdentity == candidate.tensorIdentityByRole.end()
+      ? 0 : tensorIdentity->second.rank;
+    if (shardDegree != 0 && (shardRank >= shardDegree || shardDegree < 2))
+      throw std::invalid_argument("native role tensor identity is out of range");
     const auto& requirement = candidate.requirementsByRole.at(name);
     // This is a source-derived lower bound, not backend peak memory. Rank
     // sharding and native postprocessing do not load this full ONNX weight set.
@@ -375,7 +385,15 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
         // therefore the same node set, so the plain recipe JSON would derive one
         // digest for both. Bind the rank identity; a pipeline role leaves the
         // fields at zero and keeps its legacy digest bytes.
-        if (degree > 1) {
+        //
+        // An expanded shard reports its geometry through tensorIdentityByRole rather than
+        // through placement degree, because one Provider hosts the whole unit: without the
+        // separate field its degree is one and the rank would never reach the recipe.
+        if (shardDegree != 0) {
+          role.tensorParallelDegree = shardDegree;
+          role.tensorParallelRank = shardRank;
+        }
+        else if (degree > 1) {
           role.tensorParallelDegree = degree;
           role.tensorParallelRank = rank;
         }

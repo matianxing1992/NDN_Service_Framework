@@ -483,6 +483,14 @@ std::string NativeSplitCandidate::canonicalJson() const
   // unchanged and its digest does not move.
   if (!roleNodeIdsByRole.empty())
     executionPlanJson["role_node_ids"] = roleNodeIdsByRole;
+  if (!tensorIdentityByRole.empty()) {
+    auto identities = NativeJson::object();
+    for (const auto& item : tensorIdentityByRole) {
+      identities[item.first] = NativeJson{{"degree", item.second.degree},
+                                          {"rank", item.second.rank}};
+    }
+    executionPlanJson["tensor_identity"] = identities;
+  }
   if (!executionPlan.steps.empty()) {
     auto steps = NativeJson::array();
     for (const auto& step : executionPlan.steps) {

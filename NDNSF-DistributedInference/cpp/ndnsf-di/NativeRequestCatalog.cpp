@@ -608,15 +608,24 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
                   [] (const auto& degree) {
                     return degree.template get<std::uint64_t>() > 1;
                   })) {
-    const auto shape = qwen::deriveQwenTpShape(planningGraphBytes, split.at("layer_ranges")
-      .back().at(1).get<std::uint64_t>());
-    std::vector<qwen::QwenTpUnit> units;
-    std::map<std::string, std::string> artifactByUnit;
-    const auto& layerRanges = split.at("layer_ranges");
+    // A sharded Qwen plan is one global tensor-parallel stage: every unit executes every
+    // layer with a different weight slice. The projection enforces that -- each unit must
+    // cover layers 0..N -- so a catalog that declares a sharded stage alongside a layer
+    // partition is a topology the projection cannot express, and it is refused here
+    // rather than silently projected into a shape the caller did not ask for.
     const auto& degrees = split.at("tensor_degrees");
+    const auto& layerRanges = split.at("layer_ranges");
     const auto& stageRoles = split.at("roles");
-    // The per-rank artifact map was parsed inside the splitter branch above, which has
-    // closed by here. Read it again from the catalog rather than widening that scope.
+    if (stageRoles.size() != 1 || layerRanges.size() != 1 || degrees.size() != 1) {
+      throw std::invalid_argument(
+        "sharded Qwen catalog must be a single global stage; layer-parallel and "
+        "tensor-parallel cannot be combined in one plan");
+    }
+    const auto layers = layerRanges.at(0).at(1).get<std::uint64_t>();
+    const auto degree = degrees.at(0).get<std::uint64_t>();
+    const auto stageRole = stageRoles.at(0).get<std::string>();
+    const auto shape = qwen::deriveQwenTpShape(planningGraphBytes, layers);
+
     std::map<std::string, std::vector<std::string>> rankArtifacts;
     if (split.contains("rank_artifact_digests_by_role")) {
       for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
@@ -624,38 +633,41 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
           item.value().get<std::vector<std::string>>());
       }
     }
-    std::uint64_t stage = 0;
-    std::uint64_t rank = 0;
-    for (std::size_t index = 0; index < stageRoles.size(); ++index) {
-      const auto degree = degrees.at(index).get<std::uint64_t>();
-      const auto begin = layerRanges.at(index).at(0).get<std::uint64_t>();
-      const auto end = layerRanges.at(index).at(1).get<std::uint64_t>();
-      const auto ranked = rankArtifacts.find(stageRoles.at(index).get<std::string>());
-      for (std::uint64_t item = 0; item < degree; ++item) {
-        qwen::QwenTpUnit unit;
-        unit.roleId = "S" + std::to_string(stage) + "R" + std::to_string(item);
-        unit.rank = rank++;
-        unit.layerBegin = begin;
-        unit.layerEnd = end;
-        if (ranked != rankArtifacts.end()) {
-          if (ranked->second.size() != degree)
-            throw std::invalid_argument("rank artifact cover differs from the declared degree");
-          artifactByUnit[unit.roleId] = ranked->second.at(item);
-        }
-        units.push_back(std::move(unit));
-      }
-      ++stage;
+    const auto ranked = rankArtifacts.find(stageRole);
+    if (ranked == rankArtifacts.end() || ranked->second.size() != degree) {
+      throw std::invalid_argument(
+        "sharded Qwen catalog needs one artifact digest per rank");
     }
+    const auto profile = resourceProfiles.find(stageRole);
+    if (profile == resourceProfiles.end()) {
+      throw std::invalid_argument(
+        "sharded Qwen catalog has no resource profile for its stage");
+    }
+
+    std::vector<qwen::QwenTpUnit> units;
+    std::map<std::string, std::string> artifactByUnit;
     std::map<std::string, NativeRoleResourceRequirement> requirementByUnit;
-    for (const auto& unit : units) requirementByUnit[unit.roleId] = resourceProfiles.at(
-      units.size() == 0 ? std::string{} : stageRoles.front().get<std::string>());
+    for (std::uint64_t rank = 0; rank < degree; ++rank) {
+      qwen::QwenTpUnit unit;
+      // The role name decides the prepared role's kind: a name with no stage or rank
+      // component is treated as a component set, and a component set is not given a layer
+      // range. A sharded unit does cover a layer range, so the name says so.
+      unit.roleId = stageRole + "/Tensor/Rank/" + std::to_string(rank);
+      unit.rank = rank;
+      // Every unit covers every layer: a shard is a weight slice, not a layer slice.
+      unit.layerBegin = 0;
+      unit.layerEnd = layers;
+      artifactByUnit[unit.roleId] = ranked->second.at(rank);
+      requirementByUnit[unit.roleId] = profile->second;
+      units.push_back(std::move(unit));
+    }
+    // The head lives on one unit. The catalog names it by stage, so the rank that owns it
+    // is the one whose artifact the stage egress role was configured with; absent that
+    // distinction the last rank owns it, which is what the projection expects.
     const auto egress = split.value("result_egress_role", std::string{});
     if (egress.empty())
       throw std::invalid_argument("sharded Qwen catalog has no result egress role");
-    // The egress unit of the last stage owns the head.
-    const auto egressDegree = degrees.at(degrees.size() - 1).get<std::uint64_t>();
-    const auto egressUnit = "S" + std::to_string(stageRoles.size() - 1) + "R" +
-      std::to_string(egressDegree == 0 ? 0 : egressDegree - 1);
+    const auto egressUnit = units.back().roleId;
     projectedCandidate = qwen::buildQwenTpCandidate(
       result.model.graph, shape, units, "entry", egressUnit, result.model.descriptor,
       artifactByUnit, requirementByUnit);
@@ -678,6 +690,28 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   }
   if (projectedCandidate) {
     auto candidate = std::move(*projectedCandidate);
+    // The state mapping is keyed by the catalog's stage roles, but this candidate's roles
+    // are unit names. Re-key it to the units, because the source-bound state binding
+    // requires a non-empty contract for every role the candidate declares. Each unit
+    // executes every layer, so each takes the full per-stage KV set.
+    {
+      const auto& stageRole = split.at("roles").at(0).get<std::string>();
+      // Read the roles from the candidate that now owns them. The optional was moved
+      // from a few lines above, so reading through it here would iterate an empty list
+      // and produce an empty cover -- which is exactly the failure this re-key exists to
+      // prevent.
+      const auto rekey = [&candidate, &stageRole] (
+                           const NativeStateTensorMapping::Roles& source) {
+        NativeStateTensorMapping::Roles keyed;
+        const auto found = source.find(stageRole);
+        if (found == source.end()) return keyed;
+        for (const auto& unit : candidate.executionPlan.roles)
+          keyed[unit] = found->second;
+        return keyed;
+      };
+      result.stateMapping.inputs = rekey(result.stateMapping.inputs);
+      result.stateMapping.outputs = rekey(result.stateMapping.outputs);
+    }
     // No resource override here. `resourceProfiles` is keyed by the catalog's stage
     // roles, while this candidate's roles are the expanded unit names, so assigning it
     // would replace a complete per-unit cover with a per-stage one and the candidate
