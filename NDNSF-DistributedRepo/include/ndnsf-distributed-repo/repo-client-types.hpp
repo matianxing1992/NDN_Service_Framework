@@ -390,6 +390,8 @@ struct RepoDeleteResult
   std::vector<RepoReplicaResult> targets;
   uint32_t removedCount = 0;
   bool confirmed = false;
+  /** Validated reply JSON, for callers that must reproduce the wire form. */
+  std::string replyWire;
 };
 
 /** Results reuse the maintained candidate type so discovery keeps one shape;

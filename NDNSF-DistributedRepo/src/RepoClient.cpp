@@ -3209,7 +3209,10 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
     remainingMs(options.deadline), {}, {});
   const auto reply = RepoUserStorageDeleteReply::fromJson(
     std::string(wire.begin(), wire.end()));
+  reply.validateExpected(target, m_impl->user->getName().toUri(ndn::name::UriFormat::ALTERNATE),
+                         request);
   RepoDeleteResult result;
+  result.replyWire = reply.toJson();
   RepoReplicaResult replica;
   replica.targetId = target.repoNode;
   replica.state = reply.state == "DELETED" ? RepoTargetState::COMMITTED
