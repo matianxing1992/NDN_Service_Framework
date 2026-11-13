@@ -669,7 +669,8 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,
                         std::uint64_t rankedByteBudget,
                         std::uint64_t tensorDegree = 1,
-                        std::uint64_t tensorRank = 0);
+                        std::uint64_t tensorRank = 0,
+                        const std::string& egressRole = {});
 
 /** Serialize the step descriptors a spec carries for consistency checking.
  *

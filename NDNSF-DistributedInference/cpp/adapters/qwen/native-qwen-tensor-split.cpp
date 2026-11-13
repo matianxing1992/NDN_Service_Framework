@@ -2087,7 +2087,8 @@ void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,
                         std::uint64_t rankedByteBudget,
-                        std::uint64_t tensorDegree, std::uint64_t tensorRank)
+                        std::uint64_t tensorDegree, std::uint64_t tensorRank,
+                        const std::string& egressRole)
 {
   if (spec.path.empty() || layers == 0 || spec.role.empty()) {
     throw std::invalid_argument(
@@ -2142,8 +2143,19 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
       return bytes;
     };
   }
+  // The egress role decides whether this unit's table keeps the head: classification is
+  // per rank, but only one unit runs the head step, so a non-egress table must drop it or
+  // the strict verifier refuses an entry no step references.
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
-                                        graphBytes, layers, shards);
+                                        graphBytes, layers, shards, egressRole);
+  if (!egressRole.empty() && spec.role != egressRole) {
+    // The non-egress table legitimately holds one entry fewer, so the byte budget and the
+    // step set are checked against the table that remains.
+    if (table.empty()) {
+      throw std::runtime_error(
+        "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_EMPTY: the non-egress unit kept no entries");
+    }
+  }
   // Verify the finished set before the spec can leave the assembler. Checking
   // here means a rank whose entries are incomplete, mis-digested or over budget
   // never becomes a loadable spec, so the Provider cannot publish READY for it.

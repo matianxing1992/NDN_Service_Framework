@@ -3736,10 +3736,20 @@ prepareNativeCanonicalOnnxRole(
       // The sealed contract is the only authority on this rank's TP identity, so
       // pass it through: a degree above one narrows every entry to this rank's
       // shard, and a pipeline role keeps full width.
+      // The head belongs to the terminal response owner, and the assembler knows which
+      // projection that is from the authenticated dataflow. Passing it is what keeps a
+      // non-egress table from holding an entry its own steps never reference.
+      // Only the unit that owns the terminal response keeps the head. Every other rank
+      // drops it, so its table holds exactly the entries its own steps reference. A
+      // projection that marks no owner has no head to drop, and passing the rank itself
+      // would demand one -- so an empty value is passed through.
+      const std::string egressRole = projection.dataflow.terminalResponseOwner
+        ? rankRole : std::string{};
       qwen::configureQwenTpRankSpec(spec, layers, ownedSteps,
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
-                                    contract.tensorParallelRank);
+                                    contract.tensorParallelRank,
+                                    egressRole);
       logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
                               static_cast<std::uint64_t>(layers), "entries");
     }
