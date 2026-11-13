@@ -7695,7 +7695,7 @@ makeSpec224CoordinatorOptions()
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
+BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
 {
   // The composition the two halves were built for: two Providers, each running its own unit's
   // layer through the production worker, handing each other the partials they compute over
@@ -7801,12 +7801,16 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
 
   // Four signed operations: each unit's attention and MLP contribution.
   std::vector<GroupOperationV1> operations;
-  for (std::uint64_t index = 0; index < 4; ++index) {
+  // Two contributions per layer per direction: 28 layers × 2 kinds × 2 producers.
+  for (std::uint64_t index = 0; index < 112; ++index) {
     GroupOperationV1 operation;
     operation.operationIndex = static_cast<std::uint32_t>(index);
-    operation.kind = index % 2 == 0 ? "TP_PARTIAL_ATTN" : "TP_PARTIAL_MLP";
-    operation.producerRanks = {index < 2 ? "0" : "1"};
-    operation.consumerRanks = {index < 2 ? "1" : "0"};
+    // Layout of this block: rank 0's attn/mlp for layer L, then rank 1's, per layer.
+    const auto layer = index / 4;
+    const auto within = index % 4;
+    operation.kind = within % 2 == 0 ? "TP_PARTIAL_ATTN" : "TP_PARTIAL_MLP";
+    operation.producerRanks = {within < 2 ? "0" : "1"};
+    operation.consumerRanks = {within < 2 ? "1" : "0"};
     operation.tensorLayoutDigest = layout;
     // A hidden-width partial is 4096 bytes of floats plus the bundle header, so the signed
     // budget must cover that rather than a small placeholder.
@@ -7843,18 +7847,16 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
     side.unit = unit;
     side.peer = std::string(unit) == "S0R0" ? "S0R1" : "S0R0";
     side.providerIndex = std::string(unit) == "S0R0" ? 0 : 1;
+    // Every layer, and the head on the unit that owns it.
     std::vector<NativeExecutionStepSpec> steps;
     for (const auto& step : candidate.executionPlan.steps) {
       if (step.unitId != unit) continue;
-      if (step.stepId.find("/INIT") != std::string::npos) {
-        steps.push_back(step);
-        continue;
-      }
-      const auto slash = step.stepId.rfind('/');
-      if (step.stepId.substr(slash + 1) != "0") continue;
+      const bool head = step.stepId.find("/HEAD") != std::string::npos;
+      if (head && std::string(unit) != "S0R0") continue;
       steps.push_back(step);
     }
-    BOOST_REQUIRE_EQUAL(steps.size(), 5U);
+    BOOST_REQUIRE_EQUAL(steps.size(),
+                        1U + 4U * 28U + (std::string(unit) == "S0R0" ? 1U : 0U));
     NativeModelRunnerSpec spec;
     spec.role = unit;
     spec.kind = "onnx";
@@ -7875,11 +7877,12 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
     side.role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
     side.role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
     const bool first = std::string(unit) == "S0R0";
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
     for (const auto* kind : {"attn", "mlp"}) {
-      // The operation that produced this inbound partial is the peer's: index 2/3 when this
-      // unit is the first (its peer is rank 1) and 0/1 otherwise.
+      // The operation that produced this inbound partial is the peer's: within a layer, rank 0
+      // owns indices 0/1 and rank 1 owns 2/3, so this side reads the peer's pair.
       const auto index = static_cast<std::uint32_t>(
-        (std::string(kind) == "attn" ? 0 : 1) + (first ? 2 : 0));
+        layer * 4 + (std::string(kind) == "attn" ? 0 : 1) + (first ? 2 : 0));
       const auto& operation = operations.at(index);
       NativeTensorEndpointV3 endpoint;
       endpoint.producerNamespace =
@@ -7898,7 +7901,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       endpoint.producerRank = first ? 1 : 0;
       endpoint.consumerRole = unit;
       endpoint.consumerRoles = {unit};
-      endpoint.tensorId = std::string(kind) + "-0-" + side.peer;
+      endpoint.tensorId = std::string(kind) + "-" + std::to_string(layer) + "-" + side.peer;
       endpoint.tensorDigest = tensorDigest;
       endpoint.layoutDigest = layout;
       endpoint.targetLayoutDigest = layout;
@@ -7914,7 +7917,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
 
       DependencyEdge in;
-      in.scope = std::string(kind) + "-0-from-" + side.peer;
+      in.scope = std::string(kind) + "-" + std::to_string(layer) + "-from-" + side.peer;
       in.producerRole = endpoint.producerRole;
       in.consumerRole = endpoint.consumerRole;
       in.consumerRoles = endpoint.consumerRoles;
@@ -7948,10 +7951,13 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       in.tensors = {endpoint.tensorId};
       // The reduction on this side that consumes it.
       const auto marker = std::string("/SUM_") +
-        (std::string(kind) == "attn" ? "ATTN/0" : "MLP/0");
+        (std::string(kind) == "attn" ? "ATTN/" : "MLP/") + std::to_string(layer);
       for (const auto& step : steps) {
         if (step.operation != "SUM") continue;
         if (step.stepId.find(marker) == std::string::npos) continue;
+        // Exact layer, so "/1" cannot match "/10".
+        const auto slash = step.stepId.rfind('/');
+        if (step.stepId.substr(slash + 1) != std::to_string(layer)) continue;
         for (const auto& slot : step.inputSlots) {
           if (slot.source != "REMOTE_STEP") continue;
           in.consumerStepId = step.stepId;
@@ -7967,7 +7973,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       // And the operation this unit publishes under is its own: 0/1 for the first Provider,
       // 2/3 for the second.
       const auto outIndex = static_cast<std::uint32_t>(
-        (std::string(kind) == "attn" ? 0 : 1) + (first ? 0 : 2));
+        layer * 4 + (std::string(kind) == "attn" ? 0 : 1) + (first ? 0 : 2));
       const auto& outOperation = operations.at(outIndex);
       NativeTensorEndpointV3 outEndpoint;
       outEndpoint.producerNamespace = (first ? firstProvider : secondProvider).getName().toUri();
@@ -7984,7 +7990,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       outEndpoint.producerRank = first ? 0 : 1;
       outEndpoint.consumerRole = side.peer;
       outEndpoint.consumerRoles = {side.peer};
-      outEndpoint.tensorId = std::string(kind) + "-0-" + unit;
+      outEndpoint.tensorId = std::string(kind) + "-" + std::to_string(layer) + "-" + unit;
       outEndpoint.tensorDigest = tensorDigest;
       outEndpoint.layoutDigest = layout;
       outEndpoint.targetLayoutDigest = layout;
@@ -8000,7 +8006,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       outEndpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(outIdentity));
 
       DependencyEdge out;
-      out.scope = std::string(kind) + "-0-from-" + unit;
+      out.scope = std::string(kind) + "-" + std::to_string(layer) + "-from-" + unit;
       out.producerRole = unit;
       out.consumerRole = side.peer;
       out.consumerRoles = {side.peer};
@@ -8031,9 +8037,10 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
       out.tensors = {outEndpoint.tensorId};
       // The step on this side that produces it.
       out.producerStepId = std::string(unit) + (std::string(kind) == "attn"
-        ? std::string("/ATTN/") : std::string("/MLP/")) + "0";
+        ? std::string("/ATTN/") : std::string("/MLP/")) + std::to_string(layer);
       out.producerSlotId = "partial";
       side.role.outputs.push_back(std::move(out));
+    }
     }
     sides[unit] = std::move(side);
   }
@@ -8112,10 +8119,37 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
     for (const auto& scope : item.second.outputsByScope)
       if (scope.first.find("merged") != std::string::npos) ++merged;
   BOOST_TEST_MESSAGE("units=" << results.size() << " merged scopes=" << merged);
-  // One merged value per unit: the MLP reduction's output is consumed by nothing in this
-  // one-layer block, so it is surfaced; the attention reduction's feeds the MLP and stays
-  // internal. Two units, two surfaced values.
-  BOOST_CHECK_EQUAL(merged, 2U);
+  // The egress unit's head produced vocabulary-wide logits from the peer's contributions, so the
+  // whole stack ran across two Providers and reached a prediction.
+  const auto logits = results.at("S0R0").outputsByScope.find("logits");
+  BOOST_REQUIRE_MESSAGE(logits != results.at("S0R0").outputsByScope.end(),
+    "the egress unit produced no logits over the network");
+  std::vector<float> values;
+  if (isEncodedTensorBundle(logits->second.payload)) {
+    const auto tensors = decodeTensorBundle(logits->second.payload);
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [] (const auto& t) { return t.name == "logits"; });
+    BOOST_REQUIRE(found != tensors.end());
+    const auto* data = reinterpret_cast<const float*>(found->payload.data());
+    values.assign(data, data + found->payload.size() / sizeof(float));
+  }
+  else {
+    const auto* data = reinterpret_cast<const float*>(logits->second.payload.data());
+    values.assign(data, data + logits->second.payload.size() / sizeof(float));
+  }
+  BOOST_REQUIRE_EQUAL(values.size(), static_cast<std::size_t>(shape.vocab));
+  std::size_t best = 0;
+  for (std::size_t index = 1; index < values.size(); ++index)
+    if (values[index] > values[best]) best = index;
+  BOOST_TEST_MESSAGE("network stack argmax=" << best << " logit=" << values[best]);
+  // The in-process runs produced 25 from this prompt and the split was shown faithful to the
+  // export, so the networked stack must agree.
+  BOOST_CHECK_EQUAL(best, 25U);
+  // With the full stack each unit's last MLP sum feeds the head, so only the egress unit has an
+  // unconsumed merged value. The peer's last sum is consumed by nothing either, so both surface
+  // one -- but the egress unit's feeds its head, leaving only the peer's. One is therefore the
+  // right count for a full stack where the head consumes the final merged value.
+  BOOST_CHECK_EQUAL(merged, 1U);
 
   std::filesystem::remove_all(root, cleanupError);
 }
