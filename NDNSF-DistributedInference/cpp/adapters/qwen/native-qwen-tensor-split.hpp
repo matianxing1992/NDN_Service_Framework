@@ -536,6 +536,24 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards);
 
+/** Assemble a unit's table with a known head owner.
+ *
+ * Classification is per rank but the head belongs to one unit only. Without knowing which
+ * unit owns it, every rank assembles a HEAD entry -- so a non-egress rank's table holds one
+ * entry no step of its own references, and the strict verifier rejects the artifact for
+ * exactly that reason. This overload drops the head from a non-egress unit's table so the
+ * table matches the steps that will run.
+ *
+ * @param egressRole The unit that owns the head; other units omit it.
+ * @throws std::invalid_argument when the egress role owns no head entry, which would mean
+ *         the taxonomy and the caller disagree about the model.
+ */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const std::string& egressRole);
+
 /** Rewrite an extracted entry's sharded weights to this rank's slice.
  *
  * An extracted entry still carries the source graph's full-width projections.

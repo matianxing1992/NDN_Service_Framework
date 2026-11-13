@@ -7892,6 +7892,156 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(ProjectedEntryIdsMatchWhatTheAssemblerWrites)
+{
+  // The identity mismatch the reviewer named: a projected step named
+  // `entry/<unit>/<kind>/<layer>` while the assembler writes `<unit>/<kind>/<layer>`, so
+  // a plan referenced entries no artifact contains and the mismatch only surfaced inside
+  // the worker. This checks the two names agree by comparing them, not by reading either
+  // one's construction.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string graphPath = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(graphPath)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(graphPath, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // Assemble one unit's real table and compare every projected id against it.
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-entry-identity-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+  const auto sidecar = modelDir + "/model.onnx_data";
+  std::error_code linkError;
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data", linkError);
+  qwen::QwenTpAssemblyShards shards;
+  shards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, 0);
+  shards.readExternal = [&sidecar] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream in(sidecar, std::ios::binary);
+    if (!in) throw std::runtime_error("sidecar unreadable");
+    in.seekg(static_cast<std::streamoff>(offset));
+    std::vector<std::uint8_t> bytes(length);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    return bytes;
+  };
+  shards.geometry.degree = 2;
+  shards.geometry.rank = 0;
+  shards.geometry.headDim = shape.headDim;
+  shards.geometry.queryWidth = shape.queryWidth();
+  shards.geometry.kvWidth = shape.kvWidth();
+  shards.geometry.hidden = shape.hidden;
+  shards.geometry.ffn = shape.ffn;
+  const auto table = qwen::assembleQwenTpEntryTable(root / "S0R0", "S0R0",
+                                                    graphBytes, 28, shards);
+  std::set<std::string> assembled;
+  for (const auto& entry : table) assembled.insert(entry.entryId);
+  BOOST_REQUIRE(!assembled.empty());
+
+  // Every projected CALL_SUBGRAPH step for this unit must name an assembled entry.
+  std::size_t checked = 0;
+  for (const auto& step : candidate.executionPlan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    ++checked;
+    BOOST_CHECK_MESSAGE(assembled.count(step.artifactEntry) == 1,
+      "projected entry id is not one the assembler writes: " + step.artifactEntry);
+  }
+  BOOST_CHECK_GT(checked, 0U);
+  // Both directions: every assembled entry is referenced, and nothing is referenced that
+  // was not assembled. The peer is the interesting side -- the assembler classifies the
+  // same node set for both ranks, so a non-egress unit assembles a HEAD entry no step of
+  // its own asks for. That is the count mismatch the reviewer named, and it is a real
+  // disagreement between the taxonomy and the template rather than a test artefact.
+  std::set<std::string> referenced;
+  for (const auto& step : candidate.executionPlan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    referenced.insert(step.artifactEntry);
+  }
+  BOOST_CHECK_EQUAL(referenced.size(), assembled.size());
+  BOOST_TEST_MESSAGE("unit S0R0: assembled=" << assembled.size()
+                    << " referenced=" << referenced.size());
+
+  // The egress unit owns the head. Without knowing that, every rank assembled one -- so a
+  // non-egress rank held an entry no step of its own referenced and the strict verifier
+  // rejected the artifact. With the owner supplied, the peer's table drops it and the
+  // counts agree in both directions.
+  std::error_code peerLinkError;
+  std::filesystem::create_directories(root / "S0R1", peerLinkError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R1" / "model.onnx_data",
+                                    peerLinkError);
+  auto peerShards = shards;
+  peerShards.geometry.rank = 1;
+  peerShards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, 1);
+  const auto peerTable = qwen::assembleQwenTpEntryTable(
+    root / "S0R1", "S0R1", graphBytes, 28, peerShards, std::string("S0R0"));
+  std::set<std::string> peerAssembled;
+  for (const auto& entry : peerTable) peerAssembled.insert(entry.entryId);
+
+  std::set<std::string> peerReferenced;
+  for (const auto& step : candidate.executionPlan.steps) {
+    if (step.unitId != "S0R1") continue;
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    peerReferenced.insert(step.artifactEntry);
+  }
+  BOOST_CHECK_EQUAL(peerReferenced.size() + 1U, assembled.size());
+  BOOST_CHECK_EQUAL(peerAssembled.size(), assembled.size() - 1U);
+  for (const auto& id : peerReferenced)
+    BOOST_CHECK_MESSAGE(peerAssembled.count(id) == 1,
+      "peer step names an entry its table does not hold: " + id);
+  BOOST_TEST_MESSAGE("unit S0R1: referenced=" << peerReferenced.size()
+                    << " assembled=" << peerAssembled.size());
+
+  // The egress unit's own table still has the head, so dropping it for the peer is not a
+  // silent loss.
+  BOOST_CHECK_EQUAL(assembled.size(), 58U);
+  BOOST_CHECK_EQUAL(peerAssembled.size(), 57U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ConsecutiveLayersCarryResidualAndKvAcrossTheStepChain)
 {
   // The cross-layer question: layer 1's attention consumes the previous layer's MLP sum,

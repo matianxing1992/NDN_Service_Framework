@@ -718,8 +718,14 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
   // produced, which only fails much later inside the worker.
   const auto entry = [&] (const std::string& unit, const char* kind,
                           std::uint64_t layer) {
-    if (verified == nullptr)
-      return entryPrefix + "/" + unit + "/" + kind + "/" + std::to_string(layer);
+    if (verified == nullptr) {
+      // The assembler names an entry `<unit>/<kind>/<layer>` and the prefix is the artifact
+      // root, which is a directory rather than part of the id. The projected id is
+      // therefore the same shape, and a caller-supplied prefix is not prepended: doing that
+      // produced ids no assembled entry answers to, and the mismatch appeared only inside
+      // the worker.
+      return unit + "/" + kind + "/" + std::to_string(layer);
+    }
     const auto matched = std::find_if(verified->begin(), verified->end(),
       [&] (const auto& contract) {
         return contract.unitId == unit && contract.kind == kind &&
@@ -1223,6 +1229,32 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
       throw std::logic_error("tensor-parallel entry assembly repeated an entry id");
     }
   }
+  return table;
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const std::string& egressRole)
+{
+  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards);
+  if (egressRole.empty()) return table;
+  if (unitId == egressRole) {
+    // The egress unit must have the head; its absence means the caller and the taxonomy
+    // disagree about this model rather than that the entry is optional.
+    const auto hasHead = std::any_of(table.begin(), table.end(),
+      [] (const auto& entry) { return entry.kind == "HEAD"; });
+    if (!hasHead) {
+      throw std::invalid_argument(
+        "tensor-parallel egress unit assembled no head entry");
+    }
+    return table;
+  }
+  // A non-egress unit runs no head step, so holding a head entry would make its table
+  // disagree with its own steps.
+  table.erase(std::remove_if(table.begin(), table.end(),
+    [] (const auto& entry) { return entry.kind == "HEAD"; }), table.end());
   return table;
 }
 
