@@ -269,6 +269,26 @@ BOOST_AUTO_TEST_CASE(DiscoveryRejectsUnknownCapabilitiesBeforeAnyRequest) {
   BOOST_CHECK_THROW(client.discover(request, makeOptions()), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
+  // The engine already decides this; the facade must surface it rather than hide it,
+  // because a caller that cannot tell a replay from a fresh commit cannot recover.
+  TemporaryDirectory temporary("replay");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+
+  const auto first = client.publishFile(publication, makeOptions());
+  BOOST_CHECK(first.state == RepoPublishState::COMMITTED);
+  BOOST_CHECK(!first.deduplicated);
+
+  const auto replay = client.publishFile(publication, makeOptions());
+  BOOST_CHECK(replay.state == RepoPublishState::COMMITTED);
+  BOOST_CHECK(replay.deduplicated);
+}
+
 BOOST_AUTO_TEST_CASE(PublishFileValidatesSelectionShapes) {
   // A selection is honoured now, so the caller errors are shape errors: an
   // incomplete target and an ACCEPTED request without a selection.
