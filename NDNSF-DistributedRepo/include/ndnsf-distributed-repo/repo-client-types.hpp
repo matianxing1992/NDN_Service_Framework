@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -210,7 +211,8 @@ struct RepoDataPublication
   /** Immutable object name; required when the packet source is empty. */
   std::string objectName;
   std::string idempotencyKey;
-  std::function<bool(const std::vector<uint8_t>&)> verifyWire;
+  /** Shared so copying a publication never deep-copies the verifier. */
+  std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
 };
 
 /** Requested original-Data retrieval. */
@@ -228,7 +230,7 @@ struct RepoDataFetch
   uint64_t rangeOffsetBytes = 0;
   uint64_t rangeLengthBytes = 0;
   bool hasRange = false;
-  std::function<bool(const std::vector<uint8_t>&)> verifyWire;
+  std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
 };
 
 /** Result of an original-Data retrieval. */

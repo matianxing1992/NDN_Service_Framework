@@ -2858,11 +2858,12 @@ RepoClient::publishData(const RepoDataPublication& input,
       return std::nullopt;
     return wire;
   };
-  const auto verifySignature = [verifier = input.verifyWire](const ndn::Data& packet) {
-    if (!verifier)
+  const auto verifier = input.verifyWire;
+  const auto verifySignature = [verifier](const ndn::Data& packet) {
+    if (!verifier || !*verifier)
       return true;
     const auto& wire = packet.wireEncode();
-    return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
+    return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   const auto target = m_impl->target(input.targetId, input.repoNode);
   const auto manifest = RepoClient::commitUserStorageOriginalPackets(
@@ -2962,10 +2963,10 @@ RepoClient::fetchData(const RepoDataFetch& input,
 
   const auto verifier = input.verifyWire;
   const auto verifyPacket = [verifier](const ndn::Data& packet) {
-    if (!verifier)
+    if (!verifier || !*verifier)
       return true;
     const auto& wire = packet.wireEncode();
-    return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
+    return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   auto wires = RepoClient::fetchOriginalDataPackets(
     m_impl->user, m_impl->target(input.targetId, input.repoNode), names, wireBudget,

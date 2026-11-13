@@ -83,7 +83,8 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   const repo::RepoArtifactTarget& target, PacketGroup& group,
   const std::function<bool(const ndn::Data&)>& verifyPacket,
   const std::function<int()>& budget, const std::function<void()>& current,
-  std::uint32_t schemaVersion, const std::string& digest)
+  std::uint32_t schemaVersion, const std::string& digest,
+  const std::shared_ptr<repo::RepoClient>& facade = nullptr)
 {
   auto& reference = group.reference;
   reference.expectedSha256 = reference.packetSetMetadata->sha256 = digest;
@@ -129,13 +130,56 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   insert.storageBinding = {1, reply.grant.ownerIdentity, reply.grant.grantId,
                            reply.grant.ownerEpoch};
   std::size_t next = 0;
-  const auto committed = repo::RepoClient::commitUserStorageOriginalPackets(writer,
-    target, insert, [&]() -> std::optional<std::vector<std::uint8_t>> {
+  repo::RepoObjectManifest committed;
+  if (facade) {
+    repo::RepoDataPublication publication;
+    repo::PacketSource source;
+    source.packetNames = reference.packetSetMetadata->packetNames;
+    source.packetOffsets = reference.packetSetMetadata->packetOffsets;
+    source.expectedWireBytes = reference.expectedSize;
+    source.expectedPacketCount = source.packetNames.size();
+    source.expectedDigest = "sha256:" + digest;
+    source.next = [&](std::vector<std::uint8_t>& wire) {
       current();
-      if (next == group.wires.size()) return std::nullopt;
-      return std::move(group.wires[next++]);
-    }, verifyPacket, std::min(MAX_ACK_COLLECTION_MS, std::max(1, budget() / 2)),
-    budget(), current);
+      if (next == group.wires.size())
+        return false;
+      wire = std::move(group.wires[next++]);
+      return true;
+    };
+    publication.packets = std::move(source);
+    publication.producerIdentity = writer.getName().toUri();
+    publication.targetId = target.providerIdentity;
+    publication.repoNode = target.repoNode;
+    publication.ownerIdentity = reply.grant.ownerIdentity;
+    publication.grantId = reply.grant.grantId;
+    publication.ownerEpoch = reply.grant.ownerEpoch;
+    publication.generation = 1;
+    publication.idempotencyKey = request.grantId;
+    publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
+      [verifyPacket](const std::vector<std::uint8_t>& wire) {
+        const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size()))};
+        return verifyPacket(packet);
+      });
+    repo::RepoOperationOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::max(1, budget()));
+    options.requireCurrent = [current] { current(); };
+    const auto published = facade->publishData(publication, options);
+    const auto* file = std::get_if<repo::FileReference>(&published.reference);
+    require(file != nullptr, "MODEL_REPO_STORE_COMMIT_MISMATCH");
+    committed.objectName = file->logicalName;
+    committed.sha256 = file->contentDigest;
+    committed.size = file->sizeBytes;
+  }
+  else {
+    committed = repo::RepoClient::commitUserStorageOriginalPackets(writer,
+      target, insert, [&]() -> std::optional<std::vector<std::uint8_t>> {
+        current();
+        if (next == group.wires.size()) return std::nullopt;
+        return std::move(group.wires[next++]);
+      }, verifyPacket, std::min(MAX_ACK_COLLECTION_MS, std::max(1, budget() / 2)),
+      budget(), current);
+  }
   require(committed.sha256 == digest && committed.size == reference.expectedSize,
           "MODEL_REPO_STORE_COMMIT_MISMATCH");
 }
@@ -209,10 +253,11 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       request.packetNames.push_back(name.toUri());
     request.maxWireBytes = NATIVE_STORED_MODEL_UPLOAD_WIRE;
     request.targetId = target.providerIdentity;
-    request.verifyWire = [verify](const std::vector<uint8_t>& wire) {
-      const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
-      return verify(packet);
-    };
+    request.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+      [verify](const std::vector<uint8_t>& wire) {
+        const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
+        return verify(packet);
+      });
     repo::RepoOperationOptions options;
     options.deadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::max(1, budget()));
@@ -297,8 +342,14 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       // RepoClient validates every signature and the supplied aggregate digest
       // before installing the Producer filter or emitting INSERT. An authorized
       // GRANT may precede rejection; unchecked packets never become available.
+      auto commitConfig = repo::PersistentRepoClientConfig{};
+      commitConfig.servicePrefix = ndn::Name(target.servicePrefix);
+      commitConfig.providerScope = {ndn::Name(target.providerIdentity)};
+      commitConfig.dataOnly = true;
+      auto commitFacade = std::make_shared<repo::RepoClient>(
+        repo::RepoClient::makePersistent(user, std::move(commitConfig)));
       commitPacketGroup(*user, target, group, verify, callBudget, callCurrent, 2,
-                        expectedDigest.substr(7));
+                        expectedDigest.substr(7), commitFacade);
       callCurrent();
     };
     io.commitConcurrent = commit;
