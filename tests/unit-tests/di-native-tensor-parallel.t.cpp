@@ -8172,6 +8172,239 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(CoordinatorDrivesOneEpochWithARealAssembledStepTemplate)
+{
+  // The coordinator has never driven a tensor-parallel role: every earlier run either had no
+  // steps or was fed a hand-built runner. This one hands it a spec whose table came out of the
+  // assembler and whose template came out of the runtime projection, which is what a Provider
+  // actually receives.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-coordinator-tp-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data",
+                                    cleanupError);
+  if (cleanupError)
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // INIT alone plus the head, so the epoch has a sampled token to publish without needing the
+  // peer's partials. That keeps this case about the coordinator driving a TP role, not about
+  // the exchange -- which the two-worker case already covers.
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : candidate.executionPlan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.stepId.find("/INIT") != std::string::npos ||
+        step.stepId.find("/HEAD") != std::string::npos) {
+      steps.push_back(step);
+    }
+  }
+  // The head reads the last layer's sums, so it cannot run without the stack. Driving INIT
+  // alone is what the coordinator can do here; the sampled-token path is exercised by the
+  // process-level cases.
+  steps.erase(std::remove_if(steps.begin(), steps.end(),
+    [] (const auto& step) { return step.stepId.find("/HEAD") != std::string::npos; }),
+    steps.end());
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  spec.backend = "onnxruntime";
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string("S0R0"));
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  const auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  // The plan the coordinator receives: one unit, the step template, and the feedback edge the
+  // coordinator needs to know which role may publish.
+  NativeExecutionPlan plan;
+  plan.roles = {"S0R0"};
+  plan.steps = steps;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+  plan.tensorDegree = 2;
+  NativeDependencySpec feedback;
+  feedback.producers = {"S0R0"};
+  feedback.consumers = {"S0R0"};
+  feedback.keyScope = "token-feedback";
+  feedback.topicPrefix = "/token-feedback";
+  feedback.objectNameTemplate =
+    "{producerProvider}/NDNSF/DI/DATA/{sessionId}/{keyScope}/{producerRole}/{sequence}";
+  feedback.tensors = {"input_ids"};
+  feedback.operationKind = "TOKEN_FEEDBACK";
+  feedback.useNdnsfDataV1 = true;
+  plan.dependencies.push_back(std::move(feedback));
+  plan.streamingOperationStride = plan.dependencies.size();
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto identity = tpStateIdentity("S0R0", 28, 0);
+  auto role = roleSpecFor(plan, "S0R0", "/session/coordinator-tp", assignment, "/provider/0");
+  BOOST_REQUIRE(role.steps && !role.steps->empty());
+  BOOST_CHECK_EQUAL(role.steps->size(), 1U);
+
+  // A counting IO never satisfies a fetch, so the epoch's own inputs must be pre-bound. They
+  // are: initialInputs carries the prompt. The feedback edge is published, not fetched, so a
+  // counting IO is enough -- but its prefetch would hang, which is the broken-promise symptom
+  // an unsatisfied fetch produces. Bind the feedback input too so nothing is awaited.
+  class EpochInputIo final : public DependencyIo
+  {
+  public:
+    std::future<TensorBundle>
+    prefetchInput(const std::string&, const DependencyEdge& edge) override
+    {
+      std::promise<TensorBundle> promise;
+      if (edge.operationKind == "TOKEN_FEEDBACK") {
+        // A feedback bundle carries the sampled token and the terminal marker. Without the
+        // marker the coordinator refuses it: it cannot tell a mid-stream packet from the one
+        // that ends the request.
+        NamedTensor token;
+        token.name = "input_ids";
+        token.elementType = TensorElementType::Int64;
+        token.shape = {1, 1};
+        const std::int64_t value = 25;
+        token.payload.resize(sizeof(value));
+        std::memcpy(token.payload.data(), &value, sizeof(value));
+        NamedTensor marker;
+        marker.name = "__ndnsf_token_feedback_terminal";
+        marker.elementType = TensorElementType::Bool;
+        marker.shape = {1};
+        marker.payload = {1};
+        promise.set_value(makeEncodedTensorBundle("feedback",
+                                                  {std::move(token), std::move(marker)}));
+      }
+      else {
+        promise.set_exception(std::make_exception_ptr(
+          std::runtime_error("unexpected fetch for " + edge.scope)));
+      }
+      return promise.get_future();
+    }
+
+    void
+    publishOutput(const std::string&, const DependencyEdge&,
+                  const TensorBundle&) override
+    {
+      ++publishCalls;
+    }
+
+    std::atomic<std::size_t> publishCalls{0};
+  };
+
+  auto io = std::make_shared<EpochInputIo>();
+  NativeProviderRuntime runtime(1);
+  NativeEpochCoordinatorConfig config{runtime, plan, assignment, io};
+  config.sessionId = "coordinator-tp";
+  config.requestId = "/request/coordinator-tp";
+  config.attemptEpoch = 1;
+  config.lineagePlanDigest = sha('d');
+  config.localProvider = "/provider/0";
+  config.role = "S0R0";
+  // Real int64 values, not byte patterns: an all-ones buffer is the integer
+  // 0x0101010101010101, which the embedding lookup rejects as out of range.
+  const auto makeToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  config.initialInputs = {
+    {"input_ids", makeEncodedTensorBundle("input_ids", {makeToken("input_ids", 7)})},
+    {"attention_mask", makeEncodedTensorBundle("attention_mask",
+      {makeToken("attention_mask", 1)})},
+    {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+      {makeToken("position_ids", 0)})},
+  };
+  config.maxEpochs = 1;
+  config.stateIdentityTemplate = identity;
+  config.positionPolicyDigest = identity.positionDigest;
+  config.samplingDigest = sha('e');
+  config.prepareRunner = [runner] { return runner; };
+  // This role produces no logits, so it is not the terminal role. Saying so is what lets the
+  // coordinator run the epoch without sampling -- otherwise it demands logits from a unit whose
+  // template stops at INIT. The sampled-token path is driven by the process-level cases.
+  config.terminalRole = false;
+  // A non-terminal role still needs a feedback edge to hand the next epoch to; the plan
+  // declares one, and the coordinator publishes it after the epoch. Without a consumer for the
+  // published object the IO's publish call is a no-op, which is what a counting IO does.
+
+  NativeEpochCoordinatorResult result;
+  try {
+    result = runNativeEpochCoordinator(std::move(config));
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("coordinator with a TP role: ") + error.what());
+  }
+  // The epoch ran and the INIT entry's slots came back through the coordinator, which is the
+  // first time a TP template went through this path at all.
+  BOOST_CHECK_EQUAL(result.epochsExecuted, 1U);
+  BOOST_TEST_MESSAGE("coordinator epochs=" << result.epochsExecuted);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorDoesNotWaitForStepBoundInputsBeforeTheFirstStep)
 {
   // The gate above the worker. `fetchInputs` used to await every declared input, including a
