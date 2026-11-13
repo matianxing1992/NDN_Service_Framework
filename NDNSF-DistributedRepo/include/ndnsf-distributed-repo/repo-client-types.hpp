@@ -171,6 +171,10 @@ struct RepoFetchResult
 struct PacketSource
 {
   std::function<bool(std::vector<uint8_t>&)> next;  // false when exhausted
+  /** Ordered names and their wire offsets (size = names + 1). The caller owns
+   *  the geometry; the facade never infers a packet set from pulled bytes. */
+  std::vector<std::string> packetNames;
+  std::vector<uint64_t> packetOffsets;
   uint64_t expectedWireBytes = 0;
   uint64_t expectedPacketCount = 0;
   std::string expectedDigest;

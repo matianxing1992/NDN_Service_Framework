@@ -2791,9 +2791,79 @@ RepoClient::publishFile(const RepoFilePublication& input,
 }
 
 RepoPublishResult
-RepoClient::publishData(const RepoDataPublication&, const RepoOperationOptions&)
+RepoClient::publishData(const RepoDataPublication& input,
+                        const RepoOperationOptions& options)
 {
-  throw unsupported("publishData");
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "publishData");
+  if (!m_impl->user)
+    throw RepoClientError("UNSUPPORTED",
+                          "original-Data publication requires a persistent client",
+                          "publishData");
+  if (!input.packets || !input.packets->next)
+    throw std::invalid_argument("publishData requires a packet source");
+  const auto& source = *input.packets;
+  if (source.packetNames.empty() ||
+      source.packetOffsets.size() != source.packetNames.size() + 1 ||
+      source.packetOffsets.front() != 0 ||
+      source.packetOffsets.back() != source.expectedWireBytes)
+    throw std::invalid_argument("publishData requires complete packet geometry");
+
+  static const std::string digestPrefix = "sha256:";
+  const auto& digest = source.expectedDigest;
+  if (digest.size() <= digestPrefix.size() ||
+      digest.compare(0, digestPrefix.size(), digestPrefix) != 0)
+    throw std::invalid_argument("publishData requires a sha256 wire digest");
+
+  RepoUserStorageInsertRequest request;
+  request.operationId = input.idempotencyKey.empty()
+    ? ("publish-" + source.packetNames.front()) : input.idempotencyKey;
+  request.generation = input.generation;
+  request.reference.objectName = source.packetNames.front();
+  request.reference.dataPrefix = ndn::Name(source.packetNames.front()).getPrefix(-1).toUri();
+  request.reference.expectedSize = source.expectedWireBytes;
+  request.reference.expectedSha256 = digest.substr(digestPrefix.size());
+  request.reference.objectType = "original-packet-set";
+  RepoObjectManifest packetSet;
+  packetSet.objectName = source.packetNames.front();
+  packetSet.objectType = "original-packet-set";
+  packetSet.sha256 = digest.substr(digestPrefix.size());
+  packetSet.size = source.expectedWireBytes;
+  packetSet.segmentCount = static_cast<uint32_t>(source.packetNames.size());
+  packetSet.packetNames = source.packetNames;
+  packetSet.packetOffsets = source.packetOffsets;
+  packetSet.generation = input.generation;
+  packetSet.operationId = request.operationId;
+  packetSet.lifecycleState = "COMMITTED";
+  packetSet.dataPrefix = request.reference.dataPrefix;
+  request.reference.packetSetMetadata = std::move(packetSet);
+  request.storageBinding.ownerIdentity = input.ownerIdentity;
+  request.storageBinding.grantId = input.grantId;
+  request.storageBinding.ownerEpoch = input.ownerEpoch;
+
+  auto remaining = *input.packets;
+  const auto nextPacket = [remaining]() mutable -> std::optional<std::vector<uint8_t>> {
+    std::vector<uint8_t> wire;
+    if (!remaining.next(wire))
+      return std::nullopt;
+    return wire;
+  };
+  const auto verifySignature = [verifier = input.verifyWire](const ndn::Data& packet) {
+    if (!verifier)
+      return true;
+    const auto& wire = packet.wireEncode();
+    return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
+  };
+  const auto target = toTarget(input.targetId);
+  const auto manifest = RepoClient::commitUserStorageOriginalPackets(
+    *m_impl->user, target, request, nextPacket, verifySignature, 200,
+    remainingMs(options.deadline), options.requireCurrent);
+  RepoPublishResult result;
+  result.reference = FileReference{manifest.objectName, "sha256", manifest.sha256,
+                                   manifest.size, "raw-file-v1", "", input.producerIdentity,
+                                   manifest.policyEpoch};
+  result.state = RepoPublishState::COMMITTED;
+  return result;
 }
 
 RepoFetchResult
@@ -2851,9 +2921,44 @@ RepoClient::fetchFile(const RepoFileFetch& input,
 }
 
 RepoDataFetchResult
-RepoClient::fetchData(const RepoDataFetch&, const RepoOperationOptions&) const
+RepoClient::fetchData(const RepoDataFetch& input,
+                      const RepoOperationOptions& options) const
 {
-  throw unsupported("fetchData");
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "fetchData");
+  if (!m_impl->user)
+    throw RepoClientError("UNSUPPORTED",
+                          "original-Data retrieval requires a persistent client",
+                          "fetchData");
+  if (!input.packets)
+    throw std::invalid_argument("fetchData requires a packet set reference");
+  const auto& reference = *input.packets;
+  std::vector<ndn::Name> names;
+  names.reserve(reference.packetNames.size());
+  for (const auto& name : reference.packetNames)
+    names.emplace_back(name);
+  if (names.empty() || reference.wireBytes == 0)
+    throw std::invalid_argument("fetchData requires a complete packet set");
+
+  const auto verifyPacket = [](const ndn::Data&) { return true; };
+  auto wires = RepoClient::fetchOriginalDataPackets(
+    m_impl->user, toTarget(input.targetId), names, reference.wireBytes,
+    verifyPacket, remainingMs(options.deadline), options.requireCurrent);
+  RepoDataFetchResult result;
+  result.wireBytes = 0;
+  ndn::util::Sha256 digest;
+  for (auto& wire : wires) {
+    digest.update(wire);
+    result.wireBytes += wire.size();
+    result.packets.push_back(std::move(wire));
+  }
+  result.wireDigest = "sha256:" + digest.toString();
+  result.digestVerified = result.wireDigest == reference.wireDigest;
+  if (!result.digestVerified)
+    throw RepoClientError("DIGEST_MISMATCH",
+                          "retrieved wires do not match the packet set digest",
+                          "fetchData");
+  return result;
 }
 
 RepoWriteGrant
