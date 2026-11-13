@@ -530,6 +530,18 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
 QwenTpShape
 deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t layers);
 
+/** Derive the same geometry from the prepared graph metadata.
+ *
+ * A complete preparation-cache hit restores bounded graph facts instead of the serialized
+ * graph, so the byte-based derivation cannot run there. The metadata carries what the
+ * derivation reads -- node op types and integer attributes, tensor shapes, and the
+ * initializer table -- so the geometry is recovered from recorded facts rather than
+ * guessed, which is what the tensor-parallel contract requires.
+ */
+QwenTpShape
+deriveQwenTpShapeFromGraphMetadata(const std::string& graphMetadataJson,
+                                   std::uint64_t layers);
+
 /** Assemble a rank's entry table with its own weight shards. */
 std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,

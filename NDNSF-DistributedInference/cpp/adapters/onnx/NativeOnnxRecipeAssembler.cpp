@@ -3953,8 +3953,15 @@ inspectNativeOnnxSourceGraph(const NativeCanonicalSource& source,
     for (const auto& value : node.output()) if (!value.empty()) {
       out.push_back(value); producers[value] = index;
     }
+    // Integer node attributes travel with the node. A tensor-parallel plan needs the
+    // attention op's head counts, which exist only as attributes; recording them here is
+    // what lets a reference-only restore derive that geometry without the serialized graph.
+    auto attributes = NativeJson::object();
+    for (const auto& attribute : node.attribute())
+      if (attribute.has_i()) attributes[attribute.name()] = attribute.i();
     nodes.push_back(NativeJson{{"index", index}, {"name", name}, {"opType", node.op_type()},
-                               {"inputs", in}, {"outputs", out}});
+                               {"inputs", in}, {"outputs", out},
+                               {"integerAttributes", std::move(attributes)}});
     result.graph.nodes.push_back({id, node.op_type(), std::uint64_t(index)});
     result.graph.topologicalOrder.push_back(id);
     result.nodeNames.push_back(name);

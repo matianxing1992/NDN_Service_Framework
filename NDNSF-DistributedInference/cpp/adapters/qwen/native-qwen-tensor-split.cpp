@@ -1360,6 +1360,92 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   return shape;
 }
 
+QwenTpShape
+deriveQwenTpShapeFromGraphMetadata(const std::string& graphMetadataJson,
+                                   std::uint64_t layers)
+{
+  if (graphMetadataJson.empty() || layers == 0)
+    throw std::invalid_argument(
+      "tensor-parallel shape derivation needs graph metadata and layers");
+  const auto metadata = nativeParseJson(graphMetadataJson);
+  const auto& nodesJson = metadata.at("nodes");
+  const auto& tensors = metadata.at("tensors");
+
+  // Head counts live only as attributes on the attention op. The recorded integer
+  // attributes are the export's own values, so this reads them rather than inferring.
+  std::uint64_t queryHeads = 0;
+  std::uint64_t kvHeads = 0;
+  for (const auto& node : nodesJson) {
+    if (node.value("opType", std::string{}) != "GroupQueryAttention") continue;
+    const auto& attributes = node.at("integerAttributes");
+    const auto heads = attributes.find("num_heads");
+    const auto kv = attributes.find("kv_num_heads");
+    if (heads == attributes.end() || kv == attributes.end()) continue;
+    const auto headsValue = heads->get<std::int64_t>();
+    const auto kvValue = kv->get<std::int64_t>();
+    if (headsValue <= 0 || kvValue <= 0) continue;
+    queryHeads = static_cast<std::uint64_t>(headsValue);
+    kvHeads = static_cast<std::uint64_t>(kvValue);
+    break;
+  }
+  if (queryHeads == 0)
+    throw std::invalid_argument(
+      "tensor-parallel metadata derivation found no attention head counts");
+
+  // The projection widths are the last axis of each projection's output tensor. The
+  // tensor table records them, and the names match the ones the byte path reads.
+  const auto widthOf = [&tensors] (const std::string& marker) -> std::uint64_t {
+    for (const auto& item : tensors.items()) {
+      const auto& value = item.value();
+      if (item.key().find(marker) == std::string::npos) continue;
+      const auto& shape = value.at("shape");
+      if (shape.empty()) continue;
+      const auto& last = shape.back();
+      if (!last.is_number_integer()) continue;
+      const auto width = last.get<std::int64_t>();
+      if (width <= 0) continue;
+      return static_cast<std::uint64_t>(width);
+    }
+    return 0;
+  };
+  const auto queryWidth = widthOf("q_proj");
+  const auto outputWidth = widthOf("o_proj");
+  const auto gateWidth = widthOf("gate_proj");
+  if (queryWidth == 0 || outputWidth == 0 || gateWidth == 0)
+    throw std::invalid_argument(
+      "tensor-parallel metadata derivation found no sharded projection widths");
+  if (queryWidth % queryHeads != 0)
+    throw std::invalid_argument(
+      "tensor-parallel metadata q_proj width does not divide by its head count");
+  const auto headDim = queryWidth / queryHeads;
+
+  // The tied embedding table gives the vocabulary; its first axis is the row count.
+  std::uint64_t vocab = 0;
+  for (const auto& item : tensors.items()) {
+    if (item.key().find("embed_tokens.weight") == std::string::npos) continue;
+    const auto& shape = item.value().at("shape");
+    if (shape.empty() || !shape.front().is_number_integer()) continue;
+    const auto rows = shape.front().get<std::int64_t>();
+    if (rows <= 0) continue;
+    vocab = static_cast<std::uint64_t>(rows);
+    break;
+  }
+  if (vocab == 0)
+    throw std::invalid_argument(
+      "tensor-parallel metadata derivation found no embedding table");
+
+  QwenTpShape shape;
+  shape.hidden = outputWidth;
+  shape.layers = layers;
+  shape.queryHeads = queryHeads;
+  shape.kvHeads = kvHeads;
+  shape.headDim = headDim;
+  shape.ffn = gateWidth;
+  shape.vocab = vocab;
+  shape.validate();
+  return shape;
+}
+
 NativeSplitCandidate
 buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
                      const std::vector<QwenTpUnit>& units, const std::string& entryPrefix,

@@ -583,6 +583,12 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
   // the serialized graph, which only exists before the move.
   const std::vector<std::uint8_t> planningGraphBytes = source.modelBytes;
+  // The same holds for the recorded graph facts: the sharded branch runs after the entry
+  // has moved into the preparation catalog, so a reference-only restore could not reach
+  // them there.
+  const std::string planningGraphMetadata =
+    entry.sourceGraphInspection ? entry.sourceGraphInspection->graphMetadataJson
+                                : std::string{};
   entry.source = std::move(source);
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
@@ -624,7 +630,14 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     const auto layers = layerRanges.at(0).at(1).get<std::uint64_t>();
     const auto degree = degrees.at(0).get<std::uint64_t>();
     const auto stageRole = stageRoles.at(0).get<std::string>();
-    const auto shape = qwen::deriveQwenTpShape(planningGraphBytes, layers);
+    // A complete preparation-cache hit restores bounded graph facts instead of the
+    // serialized graph, so the byte-based derivation has nothing to parse there. The
+    // recorded metadata carries the same facts -- attention attributes, projection widths
+    // and the embedding table -- and deriving from those is what the tensor-parallel
+    // contract asks for: read recorded facts instead of guessing dimensions.
+    const auto shape = planningGraphBytes.empty()
+      ? qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, layers)
+      : qwen::deriveQwenTpShape(planningGraphBytes, layers);
 
     std::map<std::string, std::vector<std::string>> rankArtifacts;
     if (split.contains("rank_artifact_digests_by_role")) {

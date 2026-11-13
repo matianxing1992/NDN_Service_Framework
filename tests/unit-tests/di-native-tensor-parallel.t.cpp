@@ -9287,6 +9287,102 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(MetadataDerivationAgreesWithTheGraphDerivation)
+{
+  // The conflict this closes: a complete preparation-cache hit restores graph facts instead
+  // of the serialized graph, and the tensor-parallel shape derivation used to require the
+  // bytes. The metadata route must therefore produce exactly the geometry the byte route
+  // produces -- a difference would silently slice the wrong weights.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto fromBytes = qwen::deriveQwenTpShape(graphBytes, 28);
+  BOOST_TEST_MESSAGE("bytes hidden=" << fromBytes.hidden << " ffn=" << fromBytes.ffn
+                    << " vocab=" << fromBytes.vocab << " q=" << fromBytes.queryHeads
+                    << " kv=" << fromBytes.kvHeads << " headDim=" << fromBytes.headDim);
+
+  // Inspect the real source exactly as preparation does, which is where the metadata is
+  // recorded -- not a hand-built object, or this would compare the fixture to itself.
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  NativeModelDescriptor descriptor;
+  descriptor.modelName = "qwen3-0.6b";
+  descriptor.contentDigest = sha('1');
+  descriptor.semanticsDigest = sha('2');
+  descriptor.graphDigest = sha('3');
+  descriptor.modelFormat = "onnx";
+  descriptor.adapterId = "qwen";
+  descriptor.adapterVersion = "1";
+  descriptor.precision = "float32";
+  descriptor.adapter.name = "qwen";
+  descriptor.adapter.version = "1";
+  descriptor.adapter.abi = "onnxruntime-1.26-cpu";
+  descriptor.adapter.modelFormats = {"onnx"};
+  descriptor.adapter.tasks = {"text-generation"};
+  descriptor.adapter.backends = {"onnxruntime"};
+  descriptor.adapter.precisions = {"float32"};
+  descriptor.adapter.stateDigest = sha('4');
+  descriptor.adapter.inputSchemaDigest = sha('5');
+  descriptor.adapter.optionsSchemaDigest = sha('6');
+  descriptor.adapter.resultSchemaDigest = sha('7');
+  descriptor.adapter.graphSchemaDigest = sha('8');
+  descriptor.adapter.splitSchemaDigest = sha('9');
+  descriptor.adapter.stateSchemaDigest = sha('a');
+
+  NativeCanonicalSource canonical;
+  canonical.modelBytes = graphBytes;
+  {
+    std::ifstream initializer(sidecar, std::ios::binary);
+    BOOST_REQUIRE(static_cast<bool>(initializer));
+    initializer.seekg(0, std::ios::end);
+    const auto size = static_cast<std::size_t>(initializer.tellg());
+    initializer.seekg(0, std::ios::beg);
+    canonical.initializerBytes.emplace(size);
+    initializer.read(reinterpret_cast<char*>(canonical.initializerBytes->data()),
+                     static_cast<std::streamsize>(size));
+    BOOST_REQUIRE_EQUAL(static_cast<std::size_t>(initializer.gcount()), size);
+  }
+  NativeAssemblyControl control{std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(600),
+                                [] {}, 985894912ULL, 3392676128ULL};
+  std::string metadata;
+  try {
+    const auto inspection = inspectNativeOnnxSourceGraph(canonical, descriptor, control);
+    metadata = inspection.graphMetadataJson;
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("source inspection: ") + error.what());
+  }
+  BOOST_REQUIRE(!metadata.empty());
+
+  const auto fromMetadata = qwen::deriveQwenTpShapeFromGraphMetadata(metadata, 28);
+  // Every field the slicing depends on, compared rather than just the totals.
+  BOOST_CHECK_EQUAL(fromMetadata.hidden, fromBytes.hidden);
+  BOOST_CHECK_EQUAL(fromMetadata.layers, fromBytes.layers);
+  BOOST_CHECK_EQUAL(fromMetadata.queryHeads, fromBytes.queryHeads);
+  BOOST_CHECK_EQUAL(fromMetadata.kvHeads, fromBytes.kvHeads);
+  BOOST_CHECK_EQUAL(fromMetadata.headDim, fromBytes.headDim);
+  BOOST_CHECK_EQUAL(fromMetadata.ffn, fromBytes.ffn);
+  BOOST_CHECK_EQUAL(fromMetadata.vocab, fromBytes.vocab);
+  // And the frozen export's own values, so both routes are anchored to the model rather
+  // than to each other alone.
+  BOOST_CHECK_EQUAL(fromMetadata.hidden, 1024U);
+  BOOST_CHECK_EQUAL(fromMetadata.ffn, 3072U);
+  BOOST_CHECK_EQUAL(fromMetadata.vocab, 151936U);
+  BOOST_CHECK_EQUAL(fromMetadata.queryHeads, 16U);
+  BOOST_CHECK_EQUAL(fromMetadata.kvHeads, 8U);
+  BOOST_CHECK_EQUAL(fromMetadata.headDim, 128U);
+}
+
 BOOST_AUTO_TEST_CASE(UnsplitReferenceSamplesThroughTheProductionRunner)
 {
   // The correctness check, using the production ONNX runner on the unsplit export rather than a
