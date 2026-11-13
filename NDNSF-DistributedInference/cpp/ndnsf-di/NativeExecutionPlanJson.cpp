@@ -4027,16 +4027,23 @@ roleSpecFromSelectionProjectionV3Impl(
         endpoint.producerRole + "\x1f" + endpoint.tensorId);
     }
   }
-  const auto hasRedistribution = [&projection] (const std::string& groupId) {
+  // Keyed by the sealed dependency, not by the security group: every dependency of one
+  // provider pair shares a groupId, and a tensor-parallel plan names all 56 contributions
+  // `partial`. The dependency identity is what distinguishes them.
+  const auto hasRedistribution = [&projection] (const NativeTensorEndpointV3& endpoint) {
     return std::any_of(
       projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
-      [&groupId] (const NativeDependencySpec& dependency) {
-        return dependency.keyScope == groupId &&
-               !dependency.redistributions.empty();
+      [&endpoint] (const NativeDependencySpec& dependency) {
+        if (!endpoint.dependencyId.empty() &&
+            (dependency.dependencyId.empty() ? dependency.keyScope
+                                             : dependency.dependencyId) !=
+              endpoint.dependencyId)
+          return false;
+        return !dependency.redistributions.empty();
       });
   };
   const auto runtimeScopeFor = [&] (const NativeTensorEndpointV3& endpoint) {
-    if (hasRedistribution(endpoint.groupId)) {
+    if (hasRedistribution(endpoint)) {
       if (endpointKeysByGroup[endpoint.groupId].size() > 1) {
         auto producerRole = endpoint.producerRole;
         while (!producerRole.empty() && producerRole.front() == '/') {
@@ -4045,6 +4052,12 @@ roleSpecFromSelectionProjectionV3Impl(
         return endpoint.groupId + "/from/" + producerRole;
       }
       return endpoint.groupId;
+    }
+    // One local storage scope per dependency. Two contributions that share a group, a
+    // producer and a tensor name -- every layer's partial of one peer -- must not share a
+    // scope, or a later layer reads the first layer's value.
+    if (!endpoint.dependencyId.empty()) {
+      return endpoint.groupId + "/dep/" + endpoint.dependencyId;
     }
     if (endpointKeysByGroup[endpoint.groupId].size() <= 1) {
       return endpoint.groupId;
