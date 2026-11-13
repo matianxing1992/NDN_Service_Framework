@@ -2995,7 +2995,7 @@ RepoWriteGrant
 RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
                            const RepoOperationOptions& options)
 {
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "authorizeWrite");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
@@ -3080,7 +3080,7 @@ RepoClient::inspect(const RepoInspectionRequest& input,
 RepoPage
 RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& options) const
 {
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "list");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
@@ -3124,7 +3124,7 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
 RepoDeleteResult
 RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& options)
 {
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "remove");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
