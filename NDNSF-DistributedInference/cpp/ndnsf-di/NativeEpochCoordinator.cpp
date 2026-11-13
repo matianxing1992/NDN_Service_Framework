@@ -356,8 +356,19 @@ fetchInputs(const NativeEpochCoordinatorConfig& config,
             const RoleSpec& role,
             std::map<std::string, TensorBundle> inputs)
 {
+  // A step-carrying role admits each remote input at the step that needs it, which the
+  // worker does. Awaiting the whole set here would reinstate the gate that path removes:
+  // with two tensor-parallel units each waits for a partial the other has not computed, so
+  // neither reaches its first step. Epoch inputs and feedback are still fetched here,
+  // because the first step genuinely needs them and they cannot come from the peer.
+  const bool stepsAwaitTheirOwnInputs = role.steps && !role.steps->empty();
   for (const auto& edge : role.inputs) {
     if (inputs.find(edge.scope) != inputs.end()) {
+      continue;
+    }
+    if (stepsAwaitTheirOwnInputs && !edge.consumerStepId.empty()) {
+      // The worker starts this fetch and awaits it per step. Skipping it here is what lets
+      // the unit begin computing.
       continue;
     }
     const auto started = transferNowNs();

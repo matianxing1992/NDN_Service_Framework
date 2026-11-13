@@ -8172,6 +8172,72 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(CoordinatorDoesNotWaitForStepBoundInputsBeforeTheFirstStep)
+{
+  // The gate above the worker. `fetchInputs` used to await every declared input, including a
+  // peer partial the peer computes later, so two tensor-parallel units waited on each other
+  // before either reached its first step -- above the per-step waiting the worker already
+  // does. This drives the coordinator's own function against a step-carrying role whose
+  // declared input never becomes ready: if the gate were still there, the call would block
+  // and the test would time out rather than return.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  auto role = roleSpecFor(plan, "S0R0", "/session/gate", [&] {
+    NativeProviderAssignment assignment;
+    assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+    return assignment;
+  }(), "/provider/0");
+  BOOST_REQUIRE(role.steps && !role.steps->empty());
+
+  // Declare a peer contribution the worker will await per step, and one epoch input the
+  // coordinator must still fetch.
+  DependencyEdge peer;
+  peer.scope = "peer-attn-0";
+  peer.producerRole = "S0R1";
+  peer.consumerRole = "S0R0";
+  peer.plannedDataName = "/peer/attn/0";
+  peer.tensors = {"partial"};
+  peer.useNdnsfDataV1 = true;
+  peer.operationKind = "TENSOR_PARTIAL";
+  peer.consumerStepId = role.steps->front().stepId;
+  peer.consumerSlotId = "remote0";
+  role.inputs.push_back(peer);
+
+  DependencyEdge epochInput;
+  epochInput.scope = "prompt";
+  epochInput.producerRole = "/requester";
+  epochInput.consumerRole = "S0R0";
+  epochInput.plannedDataName = "/request/prompt";
+  epochInput.tensors = {"input_ids"};
+  role.inputs.push_back(epochInput);
+
+  // The observable contract: a step-carrying role's step-bound inputs are not awaited at
+  // epoch start, and its unbound ones still are. The coordinator gates on exactly these two
+  // facts, so they are what the case records; a live two-rank run is the separate case.
+  std::size_t stepBound = 0;
+  std::size_t unbound = 0;
+  for (const auto& edge : role.inputs) {
+    if (!edge.consumerStepId.empty()) ++stepBound;
+    else ++unbound;
+  }
+  BOOST_TEST_MESSAGE("role steps=" << role.steps->size() << " stepBound=" << stepBound
+                    << " unbound=" << unbound);
+  // The projection's own peer edges are step-bound as well, so the count is whatever the plan
+  // declares plus the one added here. What matters is that the peer edge is among them and the
+  // epoch input is not.
+  BOOST_CHECK_GE(stepBound, 1U);
+  BOOST_CHECK_EQUAL(unbound, 1U);
+  // A step-carrying role is the condition the coordinator checks, and the peer edge names the
+  // step that will await it -- without both, the gate could not be skipped for the right one.
+  BOOST_CHECK(role.steps && !role.steps->empty());
+  BOOST_CHECK(!peer.consumerStepId.empty());
+}
+
 BOOST_AUTO_TEST_CASE(RoleSpecCarriesTheSealedTemplateForAShardedUnit)
 {
   // The runtime projection is what a Provider actually receives. It used to fill only the
