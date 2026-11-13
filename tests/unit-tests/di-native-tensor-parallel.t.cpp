@@ -8085,7 +8085,7 @@ public:
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(WorkerDrivesTheAssembledRunnerThroughItsInitEntry)
+BOOST_AUTO_TEST_CASE(WorkerDrivesInitThenAttentionWithSeededKvState)
 {
   // The execution the whole exit-1 chain was for: a runner created from a real assembled
   // table, driven by the production worker over the sealed template, with the reduction the
@@ -8155,17 +8155,17 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTheAssembledRunnerThroughItsInitEntry)
     {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
      {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
 
-  // INIT alone. It is the one entry that reads only the request's own inputs, so this
-  // proves the worker-to-runner path end to end without also claiming the decode-state
-  // handoff works -- that needs the state contract wired, which is the next step and not
-  // something to fake with a zero-dimension slot.
+  // INIT and the first attention entry. Attention is the step that reads KV state, so this
+  // is where the decode-state contract has to be right: the child seeds a zero past for a
+  // fresh request and returns its successors.
   std::vector<NativeExecutionStepSpec> steps;
   for (const auto& step : candidate.executionPlan.steps) {
     if (step.unitId != "S0R0") continue;
-    if (step.stepId.find("/INIT") == std::string::npos) continue;
-    steps.push_back(step);
+    const bool init = step.stepId.find("/INIT") != std::string::npos;
+    const bool attention = step.stepId.find("/ATTN/0") != std::string::npos;
+    if (init || attention) steps.push_back(step);
   }
-  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+  BOOST_REQUIRE_EQUAL(steps.size(), 2U);
 
   NativeModelRunnerSpec spec;
   spec.role = "S0R0";
@@ -8228,36 +8228,45 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTheAssembledRunnerThroughItsInitEntry)
     BOOST_FAIL(std::string("worker execution: ") + error.what());
   }
 
-  // INIT's three outputs reached the worker under the slots the sealed template declares,
-  // which is what a later attention step binds to. Their presence is the proof that the
-  // worker called the runner, the runner resolved the entry from its assembled table, and
-  // the graph-output-to-slot binding carried the result back.
+  // The attention entry produced both of its declared slots, which means the chain ran
+  // through INIT into attention with the KV state a fresh request needs -- a zero past
+  // seeded by the child, not a slot this template invented.
   BOOST_TEST_MESSAGE("worker produced " << result.outputsByScope.size() << " scopes");
   for (const auto& item : result.outputsByScope) {
     BOOST_TEST_MESSAGE("  scope=" << item.first);
   }
-  BOOST_CHECK(!result.outputsByScope.empty());
-  // The entry's x0 is the embedded prompt; it must be the model's real width and non-zero,
-  // so an empty placeholder cannot pass as a successful INIT.
-  const auto embedded = std::find_if(result.outputsByScope.begin(),
-                                     result.outputsByScope.end(),
-    [] (const auto& item) {
-      return item.first == "x0" || item.first.find("x0") != std::string::npos;
-    });
-  BOOST_REQUIRE_MESSAGE(embedded != result.outputsByScope.end(),
-    "INIT did not surface its embedded value");
-  const auto tensors = decodeTensorBundle(embedded->second.payload);
-  BOOST_REQUIRE(!tensors.empty());
-  double energy = 0.0;
-  for (const auto& tensor : tensors) {
-    if (tensor.elementType != TensorElementType::Float32) continue;
-    const auto* values = reinterpret_cast<const float*>(tensor.payload.data());
-    const auto count = tensor.payload.size() / sizeof(float);
-    for (std::size_t index = 0; index < count; ++index)
-      energy += std::fabs(double(values[index]));
+  BOOST_CHECK(result.outputsByScope.count("partial") == 1);
+  BOOST_CHECK(result.outputsByScope.count("residual") == 1);
+  // Both must carry real values: an empty placeholder would prove only that the call
+  // returned, not that the graph executed.
+  for (const auto* scope : {"partial", "residual"}) {
+    const auto found = result.outputsByScope.find(scope);
+    BOOST_REQUIRE(found != result.outputsByScope.end());
+    const auto tensors = decodeTensorBundle(found->second.payload);
+    BOOST_REQUIRE(!tensors.empty());
+    double energy = 0.0;
+    std::size_t floatCount = 0;
+    for (const auto& tensor : tensors) {
+      if (tensor.elementType != TensorElementType::Float32) continue;
+      const auto* values = reinterpret_cast<const float*>(tensor.payload.data());
+      const auto count = tensor.payload.size() / sizeof(float);
+      floatCount += count;
+      for (std::size_t index = 0; index < count; ++index)
+        energy += std::fabs(double(values[index]));
+    }
+    BOOST_TEST_MESSAGE("attn " << scope << " count=" << floatCount
+                      << " energy=" << energy);
+    // The hidden width, so the value is the model's real attention output rather than a
+    // narrowed placeholder.
+    BOOST_CHECK_EQUAL(floatCount, static_cast<std::size_t>(shape.hidden));
+    BOOST_CHECK_GT(energy, 0.0);
   }
-  BOOST_TEST_MESSAGE("embedded x0 energy=" << energy);
-  BOOST_CHECK_GT(energy, 0.0);
+  // The KV successors are the runner's own decode state. The worker only packs it into
+  // `providerDecodeState` for a role marked `streamingStateExecution`, which a coordinator
+  // sets when the generation contract declares state names; this role spec declares none,
+  // so the value stays with the runner. Recording that distinction is the point -- asserting
+  // a packed bundle here would be asserting a path this fixture does not take.
+  BOOST_CHECK(!result.providerDecodeState.has_value());
 
   std::filesystem::remove_all(root, cleanupError);
 }

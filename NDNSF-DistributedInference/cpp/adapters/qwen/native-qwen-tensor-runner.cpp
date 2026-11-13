@@ -530,6 +530,45 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
     child.metadata["inputScope." + std::to_string(index)] = entry.inputNames[index];
   for (std::size_t index = 0; index < entry.outputNames.size(); ++index)
     child.metadata["outputScope." + std::to_string(index)] = entry.outputNames[index];
+  // A KV successor is an output the child returns; a past tensor is an input it consumes.
+  // Declaring them makes the child a stateful session, which is what lets it seed a
+  // zero-state first round instead of failing on a missing input -- and that is the only
+  // way a fresh request reaches an attention entry at all.
+  std::vector<std::string> stateInputs;
+  std::vector<std::string> stateOutputs;
+  for (const auto& name : entry.inputNames)
+    if (name.rfind("past_key_values.", 0) == 0) stateInputs.push_back(name);
+  for (const auto& name : entry.outputNames)
+    if (name.rfind("present.", 0) == 0) stateOutputs.push_back(name);
+  if (stateInputs.size() == stateOutputs.size() && !stateInputs.empty()) {
+    const auto join = [] (const std::vector<std::string>& values) {
+      std::string result;
+      for (const auto& value : values) {
+        if (!result.empty()) result += ',';
+        result += value;
+      }
+      return result;
+    };
+    child.metadata["statefulModel"] = "true";
+    child.metadata["stateInputNames"] = join(stateInputs);
+    child.metadata["stateOutputNames"] = join(stateOutputs);
+    // The successor map pairs each past tensor with its own `present` output, which is how
+    // the child knows the two are one lineage rather than unrelated tensors.
+    std::string successor;
+    for (const auto& name : stateInputs) {
+      const auto suffix = name.substr(std::string("past_key_values.").size());
+      if (!successor.empty()) successor += ',';
+      successor += name + "=present." + suffix;
+    }
+    child.metadata["stateSuccessorMap"] = successor;
+    // The entry reads positions and a mask the plan supplies as tensors, so the child takes
+    // them from its input bundles rather than materializing them from a token lineage.
+    // Declaring the policy would make the child demand an authenticated lineage this
+    // request-level path does not carry.
+    child.metadata["positionInputPolicy"] = "";
+    child.metadata["attentionMaskInputName"] = "";
+    child.metadata["positionIdsInputName"] = "";
+  }
   return child;
 }
 
