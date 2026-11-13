@@ -1785,7 +1785,8 @@ NativePlannedRequest planNativeRequestImpl(
         // Each edge owns a distinct operation index, so two consumers cannot
         // collide on one signed operation.
         feedback.collectiveOperationIndex = feedbackIndex++;
-        const auto producerProvider = proposal.providerByRole.at(feedbackOwner);
+        // The rank is the producing role's own, which for a sharded unit is the consumer.
+        const auto producerProvider = proposal.providerByRole.at(feedback.producers.front());
         feedback.collectiveProducerRank = std::to_string(
           std::distance(providers.begin(), providers.find(producerProvider)));
         feedback.collectiveSourceLayoutDigest = feedbackLayout;
