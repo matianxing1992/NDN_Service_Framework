@@ -7695,6 +7695,431 @@ makeSpec224CoordinatorOptions()
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirPartialsOverNamedData)
+{
+  // The composition the two halves were built for: two Providers, each running its own unit's
+  // layer through the production worker, handing each other the partials they compute over
+  // Named Data. Every earlier case either used the real transport with no compute or computed
+  // with an in-process bus; this is the first where both are true.
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = 2;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() ==
+                ndn_service_framework::test::EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+
+  auto& firstFace = environment.providerFace(0);
+  auto& secondFace = environment.providerFace(1);
+  auto& firstProvider = environment.provider(0);
+  auto& secondProvider = environment.provider(1);
+  // Both directions: each unit publishes to, and fetches from, the other.
+  auto firstToSecond = firstFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) { secondFace.receive(interest); });
+  auto secondToFirst = secondFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) { firstFace.receive(interest); });
+  auto firstData = firstFace.onSendData.connect(
+      [&] (const ndn::Data& data) { secondFace.receive(data); });
+  auto secondData = secondFace.onSendData.connect(
+      [&] (const ndn::Data& data) { firstFace.receive(data); });
+
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-net-workers-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    std::filesystem::create_directories(root / unit, cleanupError);
+    std::filesystem::copy_file(source, root / unit / "model.onnx",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+    std::filesystem::create_hard_link(sidecar, root / unit / "model.onnx_data",
+                                      cleanupError);
+    if (cleanupError)
+      std::filesystem::copy_file(sidecar, root / unit / "model.onnx_data",
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 cleanupError);
+  }
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('b')}, {"S0R1", sha('c')}},
+    {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+
+  // One layer: INIT, ATTN, SUM_ATTN, MLP, SUM_MLP per unit. Two partials cross per direction.
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  const ndn::Name requestId("/request/spec224-net-workers");
+  const std::string planDigest = sha('d');
+  const std::string groupId = "spec224-net-workers";
+  const std::string layout = sha('e');
+  const std::string tensorDigest = sha('f');
+
+  // Four signed operations: each unit's attention and MLP contribution.
+  std::vector<GroupOperationV1> operations;
+  for (std::uint64_t index = 0; index < 4; ++index) {
+    GroupOperationV1 operation;
+    operation.operationIndex = static_cast<std::uint32_t>(index);
+    operation.kind = index % 2 == 0 ? "TP_PARTIAL_ATTN" : "TP_PARTIAL_MLP";
+    operation.producerRanks = {index < 2 ? "0" : "1"};
+    operation.consumerRanks = {index < 2 ? "1" : "0"};
+    operation.tensorLayoutDigest = layout;
+    // A hidden-width partial is 4096 bytes of floats plus the bundle header, so the signed
+    // budget must cover that rather than a small placeholder.
+    operation.maxBytes = 64 * 1024;
+    operation.maxSegments = 8;
+    operations.push_back(std::move(operation));
+  }
+  auto firstCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  const auto capability = firstCoordinator->createCapability(
+    requestId.toUri(), "attempt-1", planDigest, groupId, 3,
+    {{firstProvider.getName().toUri(), 0, "offer-first", firstProvider.getName().toUri()},
+     {secondProvider.getName().toUri(), 1, "offer-second", secondProvider.getName().toUri()}},
+    operations, 4096 * 1024, 4000, 120000);
+  auto secondCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  secondCoordinator->installCapability(
+    capability, firstCoordinator->epochKeyForProvider(firstProvider.getName().toUri()),
+    true);
+
+  // Each unit's role with its local steps and the peer's two contributions declared as
+  // dependencies bound to the reduction that consumes them, plus the mirror outputs.
+  struct Side
+  {
+    std::string unit;
+    std::string peer;
+    std::shared_ptr<NativeModelRunner> runner;
+    RoleSpec role;
+    std::size_t providerIndex = 0;
+  };
+  std::map<std::string, Side> sides;
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    Side side;
+    side.unit = unit;
+    side.peer = std::string(unit) == "S0R0" ? "S0R1" : "S0R0";
+    side.providerIndex = std::string(unit) == "S0R0" ? 0 : 1;
+    std::vector<NativeExecutionStepSpec> steps;
+    for (const auto& step : candidate.executionPlan.steps) {
+      if (step.unitId != unit) continue;
+      if (step.stepId.find("/INIT") != std::string::npos) {
+        steps.push_back(step);
+        continue;
+      }
+      const auto slash = step.stepId.rfind('/');
+      if (step.stepId.substr(slash + 1) != "0") continue;
+      steps.push_back(step);
+    }
+    BOOST_REQUIRE_EQUAL(steps.size(), 5U);
+    NativeModelRunnerSpec spec;
+    spec.role = unit;
+    spec.kind = "onnx";
+    spec.path = (root / unit / "model.onnx").string();
+    spec.backend = "onnxruntime";
+    qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2,
+                                  std::string(unit) == "S0R0" ? 0 : 1);
+    spec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    side.runner = factory.create(spec);
+    BOOST_REQUIRE(side.runner != nullptr);
+
+    side.role.role = unit;
+    side.role.requestId = requestId.toUri();
+    side.role.attemptEpoch = 1;
+    side.role.tensorDegree = 2;
+    side.role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
+    side.role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    const bool first = std::string(unit) == "S0R0";
+    for (const auto* kind : {"attn", "mlp"}) {
+      // The operation that produced this inbound partial is the peer's: index 2/3 when this
+      // unit is the first (its peer is rank 1) and 0/1 otherwise.
+      const auto index = static_cast<std::uint32_t>(
+        (std::string(kind) == "attn" ? 0 : 1) + (first ? 2 : 0));
+      const auto& operation = operations.at(index);
+      NativeTensorEndpointV3 endpoint;
+      endpoint.producerNamespace =
+        (first ? secondProvider : firstProvider).getName().toUri();
+      endpoint.requester = profile.userIdentity.toUri();
+      endpoint.requestId = requestId.toUri();
+      endpoint.attempt = 1;
+      endpoint.planDigest = planDigest;
+      endpoint.groupId = groupId;
+      endpoint.groupEpoch = "3";
+      endpoint.operation = operation.kind;
+      endpoint.round = operation.operationIndex;
+      endpoint.sourceKind = "ROLE";
+      // This side fetches, so the producer is its peer.
+      endpoint.producerRole = side.peer;
+      endpoint.producerRank = first ? 1 : 0;
+      endpoint.consumerRole = unit;
+      endpoint.consumerRoles = {unit};
+      endpoint.tensorId = std::string(kind) + "-0-" + side.peer;
+      endpoint.tensorDigest = tensorDigest;
+      endpoint.layoutDigest = layout;
+      endpoint.targetLayoutDigest = layout;
+      endpoint.microbatch = 0;
+      endpoint.segmentCount = 8;
+      endpoint.manifestDigest = sha('1');
+      endpoint.securityProfile = "NDNSF_DATA_V1";
+      endpoint.noProgressDeadlineMs = capability.noProgressMs;
+      endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+      auto identity = nativeEndpointJson(endpoint);
+      identity.erase("endpoint_digest");
+      identity.erase("consumer_role");
+      endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+
+      DependencyEdge in;
+      in.scope = std::string(kind) + "-0-from-" + side.peer;
+      in.producerRole = endpoint.producerRole;
+      in.consumerRole = endpoint.consumerRole;
+      in.consumerRoles = endpoint.consumerRoles;
+      in.useNdnsfDataV1 = true;
+      in.collectiveOperationIndex = operation.operationIndex;
+      in.round = operation.operationIndex;
+      // The producer's rank follows from its namespace, which the capability binds to member 0
+      // for the first Provider and 1 for the second -- so the rank is whichever member owns the
+      // namespace, not the endpoint's own numbering.
+      in.collectiveProducerRank = first ? "1" : "0";
+      in.collectiveSourceLayoutDigest = layout;
+      in.collectiveTargetLayoutDigest = layout;
+      in.collectiveTensorDigest = tensorDigest;
+      in.producerProvider = endpoint.producerNamespace;
+      in.declaredByV3 = true;
+      in.plannedDataName = tensorObjectNamePrefix(endpoint);
+      in.manifestDataName = tensorObjectManifestName(endpoint);
+      in.maxSegments = endpoint.segmentCount;
+      in.endpointDigest = endpoint.endpointDigest;
+      in.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+      in.namingOperationStride = endpoint.namingOperationStride;
+      in.planDigest = planDigest;
+      in.manifestContractDigest = endpoint.manifestDigest;
+      in.tensorDigest = tensorDigest;
+      in.securityProfile = endpoint.securityProfile;
+      in.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
+      in.hardDeadlineMs = endpoint.hardDeadlineMs;
+      in.operationKind = operation.kind;
+      in.requestId = endpoint.requestId;
+      in.attemptEpoch = 1;
+      in.tensors = {endpoint.tensorId};
+      // The reduction on this side that consumes it.
+      const auto marker = std::string("/SUM_") +
+        (std::string(kind) == "attn" ? "ATTN/0" : "MLP/0");
+      for (const auto& step : steps) {
+        if (step.operation != "SUM") continue;
+        if (step.stepId.find(marker) == std::string::npos) continue;
+        for (const auto& slot : step.inputSlots) {
+          if (slot.source != "REMOTE_STEP") continue;
+          in.consumerStepId = step.stepId;
+          in.consumerSlotId = slot.slotId;
+        }
+      }
+      BOOST_REQUIRE(!in.consumerStepId.empty());
+      side.role.inputs.push_back(std::move(in));
+
+      // And the mirror: this unit publishes its own contribution to the peer. Without an output
+      // edge the worker computes the partial and nothing sends it, so the peer's fetch times out
+      // -- which is how this was found.
+      // And the operation this unit publishes under is its own: 0/1 for the first Provider,
+      // 2/3 for the second.
+      const auto outIndex = static_cast<std::uint32_t>(
+        (std::string(kind) == "attn" ? 0 : 1) + (first ? 0 : 2));
+      const auto& outOperation = operations.at(outIndex);
+      NativeTensorEndpointV3 outEndpoint;
+      outEndpoint.producerNamespace = (first ? firstProvider : secondProvider).getName().toUri();
+      outEndpoint.requester = profile.userIdentity.toUri();
+      outEndpoint.requestId = requestId.toUri();
+      outEndpoint.attempt = 1;
+      outEndpoint.planDigest = planDigest;
+      outEndpoint.groupId = groupId;
+      outEndpoint.groupEpoch = "3";
+      outEndpoint.operation = outOperation.kind;
+      outEndpoint.round = outOperation.operationIndex;
+      outEndpoint.sourceKind = "ROLE";
+      outEndpoint.producerRole = unit;
+      outEndpoint.producerRank = first ? 0 : 1;
+      outEndpoint.consumerRole = side.peer;
+      outEndpoint.consumerRoles = {side.peer};
+      outEndpoint.tensorId = std::string(kind) + "-0-" + unit;
+      outEndpoint.tensorDigest = tensorDigest;
+      outEndpoint.layoutDigest = layout;
+      outEndpoint.targetLayoutDigest = layout;
+      outEndpoint.microbatch = 0;
+      outEndpoint.segmentCount = 8;
+      outEndpoint.manifestDigest = sha('1');
+      outEndpoint.securityProfile = "NDNSF_DATA_V1";
+      outEndpoint.noProgressDeadlineMs = capability.noProgressMs;
+      outEndpoint.hardDeadlineMs = capability.hardDeadlineMs;
+      auto outIdentity = nativeEndpointJson(outEndpoint);
+      outIdentity.erase("endpoint_digest");
+      outIdentity.erase("consumer_role");
+      outEndpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(outIdentity));
+
+      DependencyEdge out;
+      out.scope = std::string(kind) + "-0-from-" + unit;
+      out.producerRole = unit;
+      out.consumerRole = side.peer;
+      out.consumerRoles = {side.peer};
+      out.useNdnsfDataV1 = true;
+      out.collectiveOperationIndex = outOperation.operationIndex;
+      out.round = outOperation.operationIndex;
+      out.collectiveProducerRank = first ? "0" : "1";
+      out.collectiveSourceLayoutDigest = layout;
+      out.collectiveTargetLayoutDigest = layout;
+      out.collectiveTensorDigest = tensorDigest;
+      out.producerProvider = outEndpoint.producerNamespace;
+      out.declaredByV3 = true;
+      out.plannedDataName = tensorObjectNamePrefix(outEndpoint);
+      out.manifestDataName = tensorObjectManifestName(outEndpoint);
+      out.maxSegments = outEndpoint.segmentCount;
+      out.endpointDigest = outEndpoint.endpointDigest;
+      out.executionObjectDigest = computeTensorExecutionObjectDigest(outEndpoint);
+      out.namingOperationStride = outEndpoint.namingOperationStride;
+      out.planDigest = planDigest;
+      out.manifestContractDigest = outEndpoint.manifestDigest;
+      out.tensorDigest = tensorDigest;
+      out.securityProfile = outEndpoint.securityProfile;
+      out.noProgressDeadlineMs = outEndpoint.noProgressDeadlineMs;
+      out.hardDeadlineMs = outEndpoint.hardDeadlineMs;
+      out.operationKind = outOperation.kind;
+      out.requestId = outEndpoint.requestId;
+      out.attemptEpoch = 1;
+      out.tensors = {outEndpoint.tensorId};
+      // The step on this side that produces it.
+      out.producerStepId = std::string(unit) + (std::string(kind) == "attn"
+        ? std::string("/ATTN/") : std::string("/MLP/")) + "0";
+      out.producerSlotId = "partial";
+      side.role.outputs.push_back(std::move(out));
+    }
+    sides[unit] = std::move(side);
+  }
+
+  // Two workers, each on its own Provider's transport, driven concurrently. The environment's
+  // pump runs on this thread while they work, because Named Data delivery needs it.
+  ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(120));
+  const auto makeToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  std::map<std::string, std::future<ProviderRoleResult>> futures;
+  std::vector<std::shared_ptr<NdnsfCollaborationDependencyIo>> ios;
+  std::vector<std::shared_ptr<ndn_service_framework::ServiceProvider::CollaborationContext>>
+    contexts;
+  for (auto& item : sides) {
+    auto& self = item.second.providerIndex == 0 ? firstProvider : secondProvider;
+    auto coordinator = item.second.providerIndex == 0 ? firstCoordinator : secondCoordinator;
+    auto assignment = std::make_shared<
+      ndn_service_framework::ServiceProvider::CollaborationAssignment>();
+    assignment->role = item.first;
+    assignment->service = profile.serviceName;
+    assignment->workDeadline = std::chrono::steady_clock::now() +
+      std::chrono::seconds(120);
+    assignment->workCurrent = [] { return true; };
+    contexts.push_back(std::make_shared<
+      ndn_service_framework::ServiceProvider::CollaborationContext>(
+        self, profile.userIdentity, requestId,
+        ndn_service_framework::RequestMessage(), *assignment));
+    // A partial is 4096 bytes of floats plus framing, so the segment size must be above it --
+    // a smaller segment would split one bundle across more segments than the operation permits.
+    auto io = std::make_shared<NdnsfCollaborationDependencyIo>(
+      *contexts.back(), 4000, 8 * 1024, 60000, coordinator);
+    ios.push_back(io);
+    std::map<std::string, TensorBundle> initial{
+      {"input_ids", makeEncodedTensorBundle("input_ids", {makeToken("input_ids", 7)})},
+      {"attention_mask", makeEncodedTensorBundle("attention_mask",
+        {makeToken("attention_mask", 1)})},
+      {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+        {makeToken("position_ids", 0)})},
+    };
+    auto role = item.second.role;
+    auto runner = item.second.runner;
+    futures[item.first] = worker.executePreparedAsync(
+      "spec224-net-workers", std::move(role), io,
+      [runner] { return runner; }, initial);
+  }
+
+  // Pump until both units finish; the workers need the pump to receive each other's Data.
+  environment.pumpUntil([&] {
+    return std::all_of(futures.begin(), futures.end(), [] (const auto& item) {
+      return item.second.wait_for(std::chrono::milliseconds(0)) ==
+             std::future_status::ready;
+    });
+  });
+
+  std::map<std::string, ProviderRoleResult> results;
+  for (auto& item : futures) {
+    try {
+      results[item.first] = item.second.get();
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL("unit " + item.first + ": " + error.what());
+    }
+  }
+  BOOST_REQUIRE_EQUAL(results.size(), 2U);
+  // Both units reduced their peer's contributions, so both stacks produced the layer's merged
+  // value. A missing partial would have ended that unit at its reduction.
+  std::size_t merged = 0;
+  for (const auto& item : results)
+    for (const auto& scope : item.second.outputsByScope)
+      if (scope.first.find("merged") != std::string::npos) ++merged;
+  BOOST_TEST_MESSAGE("units=" << results.size() << " merged scopes=" << merged);
+  // One merged value per unit: the MLP reduction's output is consumed by nothing in this
+  // one-layer block, so it is surfaced; the attention reduction's feeds the MLP and stays
+  // internal. Two units, two surfaced values.
+  BOOST_CHECK_EQUAL(merged, 2U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(TwoProvidersExchangeTwentyEightLayersOfPartials)
 {
   // The same production transport as the single-partial case, driven 28 times per unit: every
