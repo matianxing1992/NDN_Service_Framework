@@ -2729,16 +2729,23 @@ BOOST_AUTO_TEST_CASE(InitProducesTheEmbeddedResidualThatLayerZeroReads)
     BOOST_CHECK_EQUAL(fed->producerStepId, init->stepId);
     BOOST_CHECK_EQUAL(fed->producerSlotId, std::string("x0"));
 
-    // Later layers read the previous MLP sum, which already carries both
-    // residuals, so they must not read EPOCH_INPUT either.
+    // Later layers read two separate values from the previous layer -- its
+    // post-attention residual and its MLP output -- because the export's skip
+    // normalization adds the MLP output itself. Feeding their pre-computed sum would make
+    // the addition happen twice, so neither input may be the combined value alone.
     if (shape.layers > 1) {
       const auto* attn1 = find(std::string(unit) + "/ATTN/1");
       BOOST_REQUIRE(attn1 != nullptr);
-      const auto* fed1 = slotOf(*attn1, "x", false);
-      BOOST_REQUIRE(fed1 != nullptr);
-      BOOST_CHECK_EQUAL(fed1->producerStepId,
+      const auto* postAttn = slotOf(*attn1, "post_attention", false);
+      BOOST_REQUIRE(postAttn != nullptr);
+      BOOST_CHECK_EQUAL(postAttn->producerStepId,
+                        std::string(unit) + "/SUM_ATTN/0");
+      BOOST_CHECK_EQUAL(postAttn->producerSlotId, std::string("merged"));
+      const auto* previousMlp = slotOf(*attn1, "previous_mlp", false);
+      BOOST_REQUIRE(previousMlp != nullptr);
+      BOOST_CHECK_EQUAL(previousMlp->producerStepId,
                         std::string(unit) + "/SUM_MLP/0");
-      BOOST_CHECK_EQUAL(fed1->producerSlotId, std::string("merged"));
+      BOOST_CHECK_EQUAL(previousMlp->producerSlotId, std::string("merged"));
     }
   }
 
@@ -2746,13 +2753,16 @@ BOOST_AUTO_TEST_CASE(InitProducesTheEmbeddedResidualThatLayerZeroReads)
   // producer output that agrees on type, shape and layout.
   BOOST_CHECK_NO_THROW(plan.validateSteps());
 
-  // No attention residual may be an EPOCH_INPUT, which would reintroduce the
-  // skipped embedding.
+  // No hidden input of any attention step may be an EPOCH_INPUT, which would reintroduce
+  // the skipped embedding. Layer 0's is named "x"; later layers carry the two separate
+  // values, so the check is on every float slot rather than on one name.
   for (const auto& step : plan.steps) {
     if (step.stepId.find("/ATTN/") == std::string::npos) continue;
-    const auto& x = *std::find_if(step.inputSlots.begin(), step.inputSlots.end(),
-      [] (const auto& slot) { return slot.slotId == "x"; });
-    BOOST_CHECK_EQUAL(x.source, std::string("LOCAL_STEP"));
+    for (const auto& slot : step.inputSlots) {
+      if (slot.dtype != "float32") continue;
+      BOOST_CHECK_EQUAL(slot.source, std::string("LOCAL_STEP"));
+      BOOST_CHECK(!slot.producerStepId.empty());
+    }
   }
 }
 
@@ -7879,6 +7889,165 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
   BOOST_CHECK_CLOSE(arrived[1], -2.25f, 1e-6);
 }
 
+
+BOOST_AUTO_TEST_CASE(ConsecutiveLayersCarryResidualAndKvAcrossTheStepChain)
+{
+  // The cross-layer question: layer 1's attention consumes the previous layer's MLP sum,
+  // and the reference for that layer is a contraction of two hidden inputs rather than
+  // one. This checks what the step template wires against what the assembled entry
+  // actually declares, so a missing residual shows up as a named input nobody feeds
+  // instead of as a wrong number.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string graphPath = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(graphPath)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(graphPath, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-layer-chain-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+
+  qwen::QwenTpUnit unit0;
+  unit0.roleId = "S0R0"; unit0.rank = 0; unit0.layerBegin = 0; unit0.layerEnd = 28;
+  qwen::QwenTpUnit unit1;
+  unit1.roleId = "S0R1"; unit1.rank = 1; unit1.layerBegin = 0; unit1.layerEnd = 28;
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  NativeModelDescriptor model;
+  model.modelName = "qwen3-0.6b";
+  model.contentDigest = sha('1');
+  model.semanticsDigest = sha('2');
+  model.graphDigest = sha('3');
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int8";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime-1.26-cpu";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int8"};
+  model.adapter.stateDigest = sha('4');
+  model.adapter.inputSchemaDigest = sha('5');
+  model.adapter.optionsSchemaDigest = sha('6');
+  model.adapter.resultSchemaDigest = sha('7');
+  model.adapter.graphSchemaDigest = sha('8');
+  model.adapter.splitSchemaDigest = sha('9');
+  model.adapter.stateSchemaDigest = sha('a');
+  const auto candidate = qwen::buildQwenTpCandidate(
+    NativeGraphSnapshot{}, shape, {unit0, unit1}, "entry", "S0R0", model,
+    {{"S0R0", sha('a')}, {"S0R1", sha('b')}},
+    {{"S0R0", NativeRoleResourceRequirement{
+       {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
+     {"S0R1", NativeRoleResourceRequirement{
+       {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
+  const auto& steps = candidate.executionPlan.steps;
+  BOOST_REQUIRE(!steps.empty());
+
+  // Each layer has ATTN, SUM(attn), MLP, SUM(mlp) on each unit, plus INIT and HEAD.
+  const auto findStep = [&steps] (const std::string& id) {
+    return std::find_if(steps.begin(), steps.end(),
+      [&id] (const auto& step) { return step.stepId == id; });
+  };
+  // Layer 0's attention reads the INIT output.
+  const auto attn0 = std::find_if(steps.begin(), steps.end(),
+    [] (const auto& step) {
+      return step.stepId.find("/ATTN/0") != std::string::npos;
+    });
+  BOOST_REQUIRE(attn0 != steps.end());
+  BOOST_REQUIRE(!attn0->inputSlots.empty());
+  BOOST_CHECK(attn0->inputSlots.front().producerStepId.find("/INIT") != std::string::npos);
+
+  // Layer 1's attention reads the previous layer's MLP sum, not its own.
+  const auto attn1 = std::find_if(steps.begin(), steps.end(),
+    [] (const auto& step) {
+      return step.stepId.find("/ATTN/1") != std::string::npos;
+    });
+  BOOST_REQUIRE(attn1 != steps.end());
+  BOOST_REQUIRE(!attn1->inputSlots.empty());
+  // Two hidden inputs, bound to the two steps that produced them: the post-attention
+  // residual from the attention SUM and the MLP output from the MLP SUM. Pre-adding them
+  // would make the export's own skip normalization add the MLP output twice.
+  // Four inputs: two hidden values plus the position and mask side inputs every layer
+  // reads from its own INIT.
+  BOOST_REQUIRE_EQUAL(attn1->inputSlots.size(), 4U);
+  BOOST_CHECK_EQUAL(attn1->inputSlots[0].slotId, std::string("post_attention"));
+  BOOST_CHECK_EQUAL(attn1->inputSlots[0].producerStepId,
+                    std::string("S0R0/SUM_ATTN/0"));
+  BOOST_CHECK_EQUAL(attn1->inputSlots[1].slotId, std::string("previous_mlp"));
+  BOOST_CHECK_EQUAL(attn1->inputSlots[1].producerStepId,
+                    std::string("S0R0/SUM_MLP/0"));
+  BOOST_TEST_MESSAGE("ATTN/1 hidden feeds: " << attn1->inputSlots[0].producerStepId
+                    << " | " << attn1->inputSlots[1].producerStepId);
+
+  // Now check the assembled entry's declared boundary against that claim: ATTN/1 must
+  // expose exactly the inputs the template feeds, no unfed hidden input.
+  const std::string sidecarPath = modelDir + "/model.onnx_data";
+  const auto readRange = [&sidecarPath] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream in(sidecarPath, std::ios::binary);
+    if (!in) throw std::runtime_error("sidecar unreadable");
+    in.seekg(static_cast<std::streamoff>(offset));
+    std::vector<std::uint8_t> bytes(length);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    if (!in) throw std::runtime_error("sidecar read was short");
+    return bytes;
+  };
+  qwen::QwenTpAssemblyShards shards;
+  shards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, 0);
+  shards.readExternal = readRange;
+  shards.geometry.degree = 2;
+  shards.geometry.rank = 0;
+  shards.geometry.headDim = shape.headDim;
+  shards.geometry.queryWidth = shape.queryWidth();
+  shards.geometry.kvWidth = shape.kvWidth();
+  shards.geometry.hidden = shape.hidden;
+  shards.geometry.ffn = shape.ffn;
+  const auto table = qwen::assembleQwenTpEntryTable(root, "S0R0", graphBytes, 28, shards);
+  const auto attnEntry = std::find_if(table.begin(), table.end(),
+    [] (const auto& entry) { return entry.kind == "ATTN" && entry.layer == 1; });
+  BOOST_REQUIRE(attnEntry != table.end());
+  std::size_t hiddenInputs = 0;
+  for (const auto& value : [&] {
+         std::ifstream in(root / attnEntry->relativeGraphPath, std::ios::binary);
+         onnx::ModelProto model;
+         std::string wire((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+         BOOST_REQUIRE(model.ParseFromString(wire));
+         return model.graph().input();
+       }()) {
+    if (value.type().tensor_type().elem_type() == onnx::TensorProto::FLOAT &&
+        value.type().tensor_type().shape().dim_size() == 3) {
+      ++hiddenInputs;
+    }
+  }
+  // The assembled entry declares two hidden inputs, which is exactly what the corrected
+  // template now feeds: the previous layer's post-attention residual and its MLP output.
+  // Before the fix the template fed one and the entry wanted two, so a real run could not
+  // have supplied both -- which is the defect this case is named for.
+  BOOST_TEST_MESSAGE("LAYER1_ATTN_HIDDEN_INPUTS " << hiddenInputs);
+  BOOST_CHECK_EQUAL(hiddenInputs, 2U);
+  BOOST_CHECK_EQUAL(hiddenInputs,
+                    static_cast<std::size_t>(std::count_if(
+                      attn1->inputSlots.begin(), attn1->inputSlots.end(),
+                      [] (const auto& slot) {
+                        return slot.slotId == "post_attention" ||
+                               slot.slotId == "previous_mlp";
+                      })));
+
+  std::filesystem::remove_all(root, cleanupError);
+}
 
 BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheReference)
 {

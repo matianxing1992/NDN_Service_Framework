@@ -304,6 +304,24 @@ struct QwenTpEntryContract
   // Content identity of that file, so a cached entry can be checked rather than
   // trusted by name.
   std::string graphDigest;
+  // Explicit bidirectional binding between the entry's own graph tensors and the
+  // template's slot ids. A graph name is a fact about the export; a slot id is a fact
+  // about the sealed plan, and nothing in either one implies the other. Without this map
+  // the parent would have to guess from tensor names, which is exactly the kind of
+  // inference C4 forbids.
+  //
+  // Frozen at assembly, where both the graph and the entry's kind are known.
+  std::map<std::string, std::string> slotByInputGraphName;
+  std::map<std::string, std::string> slotByOutputGraphName;
+  // Output slots the entry does not recompute. The frozen export's attention subgraph
+  // returns the projected result and the KV successors, but the template also needs the
+  // pre-MLP residual X -- the value the attention left in the stream. That value is the
+  // entry's own hidden input, so the parent passes it through under the declared slot
+  // name rather than asking the child to produce a tensor it does not have.
+  std::map<std::string, std::string> passthroughSlotByInputGraphName;
+  // Graph outputs that are decode state rather than step values. They travel under their
+  // declared state names and are never folded into a SUM contribution.
+  std::vector<std::string> stateOutputNames;
 
   void validate() const;
 

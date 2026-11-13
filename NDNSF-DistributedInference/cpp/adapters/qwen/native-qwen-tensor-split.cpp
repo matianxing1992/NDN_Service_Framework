@@ -765,12 +765,23 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       attn.unitId = unit.roleId;
       attn.operation = "CALL_SUBGRAPH";
       attn.artifactEntry = entry(unit.roleId, "ATTN", layer);
-      // Layer 0 reads the embedded X0 from INIT; every later layer reads the
-      // previous layer's MLP sum, which already includes both residuals. Neither
-      // comes from the peer, so no network edge is created for it.
+      // Layer 0 reads the embedded X0 from INIT.
+      //
+      // Every later layer's input normalization is a skip normalization over *two*
+      // separate values: the previous layer's post-attention residual X' and that
+      // layer's MLP output. Feeding only their sum is wrong -- the export adds the MLP
+      // output to X' inside the normalization, so a single pre-added tensor would be
+      // added twice. The two contributions therefore stay separate slots, each bound to
+      // the step that produced it on this unit; neither comes from the peer.
       attn.inputSlots = {layer == 0
         ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
-        : makeFedSlot("x", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1), "merged", shape.hidden)};
+        : makeFedSlot("post_attention", "LOCAL_STEP", sumAttnStep(unit.roleId, layer - 1),
+                      "merged", shape.hidden)};
+      if (layer > 0) {
+        attn.inputSlots.push_back(
+          makeFedSlot("previous_mlp", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1),
+                      "merged", shape.hidden));
+      }
       // Both side inputs come from this unit's INIT, never from the peer: every
       // rank owns the same positions and mask, so fetching them would be a
       // pointless network dependency.
