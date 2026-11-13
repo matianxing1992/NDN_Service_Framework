@@ -327,6 +327,22 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     certifyEndpoint(e); result.at(e.consumerRole).dataflow.mustFetch.push_back(std::move(e));
   }
   std::set<std::string> outgoing;
+  // Self feedback is per receiving unit, so a sharded plan has one per role. Precompute the
+  // cover once: a partial cover would leave a unit without its next-epoch input while its
+  // peers ran, which is the condition to refuse.
+  std::set<std::string> selfFeedbackRoles;
+  for (const auto& dependency : core.executionPlan.dependencies)
+    if (dependency.operationKind == "TOKEN_FEEDBACK" &&
+        dependency.producers.size() == 1 &&
+        dependency.producers == dependency.consumers)
+      selfFeedbackRoles.insert(dependency.producers.front());
+  const bool completeSelfFeedbackCover =
+    !selfFeedbackRoles.empty() &&
+    selfFeedbackRoles.size() == core.executionPlan.roles.size() &&
+    std::all_of(core.executionPlan.roles.begin(), core.executionPlan.roles.end(),
+                [&selfFeedbackRoles] (const auto& role) {
+                  return selfFeedbackRoles.count(role) != 0;
+                });
   std::set<std::size_t> consumedBindings;
   for (std::size_t index = 0; index < core.executionPlan.dependencies.size(); ++index) {
     const auto& dependency = core.executionPlan.dependencies[index];
@@ -335,7 +351,11 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     // no published Data and stays outside the network endpoint lists.
     if (feedback && dependency.producers.size() == 1 &&
         dependency.producers == dependency.consumers) {
-      if (!core.generationContract.enabled || core.executionPlan.roles.size() != 1)
+      // A sharded unit feeds itself its next-epoch token, so self feedback is the normal
+      // shape whenever every role owns one. What must hold is that the role it names is a
+      // role of this plan; a self edge naming a foreign role would bind control the plan
+      // never declared.
+      if (!core.generationContract.enabled || !completeSelfFeedbackCover)
         throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
       continue;
     }

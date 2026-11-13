@@ -98,6 +98,19 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
       group.rank.emplace(provider, group.rank.size()); groupByProvider.emplace(provider, id);
     }
   }
+  std::set<std::string> selfFeedbackRoles;
+  for (const auto& dependency : core.executionPlan.dependencies)
+    if (dependency.operationKind == "TOKEN_FEEDBACK" &&
+        dependency.producers.size() == 1 &&
+        dependency.producers == dependency.consumers)
+      selfFeedbackRoles.insert(dependency.producers.front());
+  const bool completeSelfFeedbackCover =
+    !selfFeedbackRoles.empty() &&
+    selfFeedbackRoles.size() == core.executionPlan.roles.size() &&
+    std::all_of(core.executionPlan.roles.begin(), core.executionPlan.roles.end(),
+                [&selfFeedbackRoles] (const auto& role) {
+                  return selfFeedbackRoles.count(role) != 0;
+                });
   for (std::size_t i = 0; i < core.executionPlan.dependencies.size(); ++i) {
     const auto& dependency = core.executionPlan.dependencies[i];
     // Self feedback stays inside LocalDependencyIo. Cross-role feedback owns
@@ -105,7 +118,10 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
     const bool feedback = dependency.operationKind == "TOKEN_FEEDBACK";
     if (feedback && dependency.producers.size() == 1 &&
         dependency.producers == dependency.consumers) {
-      if (!core.generationContract.enabled || core.executionPlan.roles.size() != 1)
+      // Per-role self feedback is how a sharded unit receives its next-epoch token. Require
+      // the edge to name a role of this plan rather than a single-role plan, which a
+      // degree-two template can never be.
+      if (!core.generationContract.enabled || !completeSelfFeedbackCover)
         throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
       continue;
     }
