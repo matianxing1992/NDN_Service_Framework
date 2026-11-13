@@ -684,6 +684,12 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     projectedCandidate = qwen::buildQwenTpCandidate(
       result.model.graph, shape, units, "entry", egressUnit, result.model.descriptor,
       artifactByUnit, requirementByUnit);
+    // The candidate belongs to the strategy that built it, and the planner compares that
+    // identity against the registered strategy before it places anything. A projected
+    // candidate carries its own builder name, which is not the registered strategy, so the
+    // request was refused at ACK_CLOSED as a foreign identity. Adopt the catalog's identity
+    // here, where the candidate is produced under that strategy.
+    projectedCandidate->splitter = result.cooperativeSplitter->identity();
   }
   const auto enumerated = projectedCandidate
     ? std::vector<NativeSplitCandidate>{}

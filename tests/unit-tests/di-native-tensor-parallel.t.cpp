@@ -12087,6 +12087,16 @@ BOOST_AUTO_TEST_CASE(FrozenShardedCatalogLoadPreparesTwoRankRoles)
   BOOST_REQUIRE(loaded->planningCache);
   BOOST_REQUIRE_EQUAL(loaded->planningCache->candidates.size(), 1U);
   const auto& candidate = loaded->planningCache->candidates.front();
+  // The projected candidate must carry the identity of the strategy that produced it, which
+  // is the catalog's own splitter -- that is what the request planner compares against the
+  // registered strategy before it will place anything. A projected candidate that named a
+  // different strategy was refused at ACK_CLOSED as a "foreign strategy identity".
+  BOOST_CHECK_EQUAL(candidate.candidate.splitter.name,
+                    loaded->planningCache->splitter.name);
+  BOOST_CHECK_EQUAL(candidate.candidate.splitter.version,
+                    loaded->planningCache->splitter.version);
+  BOOST_CHECK_EQUAL(candidate.candidate.splitter.configurationDigest,
+                    loaded->planningCache->splitter.configurationDigest);
   BOOST_CHECK_EQUAL(candidate.candidate.executionPlan.tensorDegree, 2U);
   BOOST_CHECK(!candidate.candidate.executionPlan.steps.empty());
   BOOST_CHECK_EQUAL(candidate.candidate.executionPlan.stepPlanVersion,

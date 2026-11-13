@@ -2413,18 +2413,11 @@ prepareNativeCanonicalOnnxRole(
   if (options.workerLocation.path.empty()) {
     throw std::runtime_error("DI_PROVIDER_ASSEMBLY_WORKER_LOCATION_MISSING");
   }
-  // A sealed tensor-parallel template names one entry per subgraph call, and the
-  // parent runner resolves each entry to its own model file. This assembler
-  // produces exactly one file per role, so it cannot serve a template. Refusing
-  // here is deliberate: handing back a single-file spec would let the Provider
-  // run an ordinary whole-role runner that ignores the step fields entirely and
-  // returns its own graph outputs, which reads as a successful unit while being
-  // the wrong computation on a peer-incomplete shard.
-  if (!projection.plan.steps.empty()) {
-    throw std::runtime_error(
-      "DI_NATIVE_ASSEMBLY_ENTRY_TABLE_UNWIRED: a sealed step template needs "
-      "per-entry assembly, which this assembler does not produce");
-  }
+  // A sealed tensor-parallel template is served below, after the rank file is final:
+  // the entry table is built per rank there and `configureQwenTpRankSpec` refuses a
+  // role that owns no step. This used to be a blanket refusal written before that
+  // code existed, and it made the real assembly path unreachable -- a template could
+  // never be assembled even though the subgraph splitting was implemented.
   // The recipe-addressed cache is immutable and each miss writes through the
   // existing atomic staging path.  Do not serialize independent Provider
   // assemblies with a machine-wide process lock.
