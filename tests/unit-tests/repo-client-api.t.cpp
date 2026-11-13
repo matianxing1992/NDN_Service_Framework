@@ -248,14 +248,14 @@ BOOST_AUTO_TEST_CASE(DataOperationsNeverPullTheSourceBeforeRejecting) {
     return true;
   };
   publication.packets = std::move(source);
-  publication.targetId = "/provider";
+  publication.target = {"/repo/node", "/provider", "/SVC/repo"};
   BOOST_CHECK_THROW(client.publishData(publication, makeOptions()), RepoClientError);
   BOOST_CHECK_EQUAL(pulled, 0);
 
   RepoDataFetch fetch;
   fetch.packetNames = {"/example/spec240/owner/object/0"};
   fetch.maxWireBytes = 8;
-  fetch.targetId = "/provider";
+  fetch.target = {"/repo/node", "/provider", "/SVC/repo"};
   BOOST_CHECK_THROW(client.fetchData(fetch, makeOptions()), RepoClientError);
   BOOST_CHECK_EQUAL(pulled, 0);
 }

@@ -148,8 +148,7 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
     };
     publication.packets = std::move(source);
     publication.producerIdentity = writer.getName().toUri();
-    publication.targetId = target.providerIdentity;
-    publication.repoNode = target.repoNode;
+    publication.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
     publication.ownerIdentity = reply.grant.ownerIdentity;
     publication.grantId = reply.grant.grantId;
     publication.ownerEpoch = reply.grant.ownerEpoch;
@@ -252,7 +251,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
     for (const auto& name : names)
       request.packetNames.push_back(name.toUri());
     request.maxWireBytes = NATIVE_STORED_MODEL_UPLOAD_WIRE;
-    request.targetId = target.providerIdentity;
+    request.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
     request.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
       [verify](const std::vector<uint8_t>& wire) {
         const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};

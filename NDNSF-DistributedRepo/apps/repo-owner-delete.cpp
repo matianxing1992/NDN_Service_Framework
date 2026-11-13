@@ -168,7 +168,8 @@ main(int argc, char** argv)
       deleteRequest.reference = deleteReference;
       deleteRequest.generation = request.cleanupId;
       deleteRequest.expectedEpoch = std::to_string(request.ownerEpoch);
-      deleteRequest.targets = {target.providerIdentity};
+      deleteRequest.targets = {repo::RepoTarget{target.repoNode, target.providerIdentity,
+                                                target.servicePrefix}};
       repo::RepoOperationOptions deleteOptions;
       deleteOptions.deadline = deadline;
       deleteOptions.requireCurrent = [&signalled] {

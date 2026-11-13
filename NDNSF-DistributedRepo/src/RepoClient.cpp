@@ -2716,16 +2716,14 @@ toArtifactHandle(const RepoHandle& input)
 struct RepoClient::Impl
 {
   RepoArtifactTarget
-  target(const std::string& providerIdentity, const std::string& node = {}) const
+  target(const RepoTarget& declared) const
   {
     RepoArtifactTarget resolved;
-    resolved.providerIdentity = providerIdentity;
-    resolved.repoNode = !node.empty()
-      ? node
-      : (providerIdentity.empty() ? std::string()
-                                  : ndn::Name(providerIdentity)[-1].toUri());
-    resolved.servicePrefix = servicePrefix.empty()
-      ? std::string(DEFAULT_SERVICE_NAME) : servicePrefix;
+    resolved.providerIdentity = declared.providerIdentity;
+    resolved.repoNode = declared.repoNode;
+    resolved.servicePrefix = !declared.servicePrefix.empty()
+      ? declared.servicePrefix
+      : (servicePrefix.empty() ? std::string(DEFAULT_SERVICE_NAME) : servicePrefix);
     return resolved;
   }
 
@@ -2898,7 +2896,7 @@ RepoClient::publishData(const RepoDataPublication& input,
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
-  const auto target = m_impl->target(input.targetId, input.repoNode);
+  const auto target = m_impl->target(input.target);
   const auto manifest = RepoClient::commitUserStorageOriginalPackets(
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
@@ -2989,7 +2987,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
       return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
     };
     auto verified = RepoClient::fetchOriginalDataPacketSetFromUserStorage(
-      *m_impl->user, m_impl->target(claim.targetId, claim.repoNode), claim.objectName,
+      *m_impl->user, m_impl->target(claim.target), claim.objectName,
       verifyPacket, remainingMs(options.deadline), limits);
     RepoDataFetchResult result;
     result.wireBytes = 0;
@@ -3061,7 +3059,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   auto wires = RepoClient::fetchOriginalDataPackets(
-    m_impl->user, m_impl->target(input.targetId, input.repoNode), names, wireBudget,
+    m_impl->user, m_impl->target(input.target), names, wireBudget,
     verifyPacket, remainingMs(options.deadline), options.requireCurrent);
   RepoDataFetchResult result;
   result.wireBytes = 0;
@@ -3095,7 +3093,8 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
     throw RepoClientError("UNSUPPORTED",
                           "write authorization requires a persistent client",
                           "authorizeWrite");
-  if (input.objectName.empty() || input.writerIdentity.empty() || input.targetId.empty())
+  if (input.objectName.empty() || input.writerIdentity.empty() ||
+      input.target.providerIdentity.empty())
     throw std::invalid_argument("authorizeWrite requires target, writer and object");
   RepoUserStorageGrantRequest request;
   request.grantId = input.grantId.empty() ? ("grant-" + input.objectName) : input.grantId;
@@ -3103,7 +3102,7 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   request.objectName = input.objectName;
   request.expiresAtMs = input.expiresAtMs;
   const auto encoded = request.toJson();
-  const auto target = m_impl->target(input.targetId, input.repoNode);
+  const auto target = m_impl->target(input.target);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
@@ -3115,7 +3114,7 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   grant.ownerIdentity = reply.grant.ownerIdentity;
   grant.writerIdentity = reply.grant.writerIdentity;
   grant.objectName = reply.grant.objectName;
-  grant.targetId = target.repoNode;
+  grant.target = input.target;
   grant.grantId = reply.grant.grantId;
   grant.ownerEpoch = reply.grant.ownerEpoch;
   grant.expiresAtMs = reply.grant.expiresAtMs;
@@ -3182,13 +3181,13 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   if (input.scope != RepoListScope::OWNER_OBJECTS)
     throw RepoClientError("UNSUPPORTED",
                           "Repo inventory listing is not implemented yet", "list");
-  if (input.targetId.empty())
+  if (input.target.providerIdentity.empty())
     throw std::invalid_argument("list requires a target");
   RepoUserStorageListRequest request;
   request.afterObjectName = input.cursor;
   request.limit = input.limit;
   const auto encoded = request.toJson();
-  const auto target = m_impl->target(input.targetId, input.repoNode);
+  const auto target = m_impl->target(input.target);
   const auto wire = RepoClient::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
@@ -3223,7 +3222,8 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
                           "removal requires a persistent client", "remove");
-  if (input.targets.size() != 1 || input.targets.front().empty())
+  if (input.targets.size() != 1 ||
+      input.targets.front().providerIdentity.empty())
     throw std::invalid_argument("remove requires exactly one target");
   RepoUserStorageDeleteRequest request;
   request.cleanupId = input.generation.empty() ? std::string("remove") : input.generation;

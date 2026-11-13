@@ -45,6 +45,22 @@ enum class RepoTargetState
   UNKNOWN
 };
 
+/** One Repo target as the deployment states it. A Repo node name is not derivable
+ *  from the provider identity, so all three parts travel together. */
+struct RepoTarget
+{
+  std::string repoNode;
+  std::string providerIdentity;
+  std::string servicePrefix;
+
+  bool
+  operator==(const RepoTarget& other) const
+  {
+    return repoNode == other.repoNode && providerIdentity == other.providerIdentity &&
+           servicePrefix == other.servicePrefix;
+  }
+};
+
 /** Optional per-target result; an unconfirmed target is never reported as
  *  committed. */
 struct RepoReplicaResult
@@ -205,10 +221,7 @@ struct RepoDataPublication
   std::optional<PacketSource> packets;
   std::optional<ProducerObjectSource> object;
   std::string producerIdentity;
-  std::string targetId;
-  /** Node name of the target; derived only when the deployment does not give
-   *  one, because a Repo node name is not always the provider's last component. */
-  std::string repoNode;
+  RepoTarget target;
   /** Owner authorization the writer was given; empty means self-owned. */
   std::string ownerIdentity;
   std::string grantId;
@@ -248,8 +261,7 @@ struct RepoManifestBoundFetch
 struct RepoOwnerClaimFetch
 {
   std::string objectName;
-  std::string targetId;
-  std::string repoNode;
+  RepoTarget target;
   uint32_t ackCollectionTimeMs = 1000;
   uint64_t maxPacketCount = 65536;
   uint64_t maxPacketWireBytes = 256ULL * 1024 * 1024;
@@ -266,8 +278,7 @@ struct RepoDataFetch
    *  fetcher contract). Never treated as a verified packet set. */
   std::vector<std::string> packetNames;
   uint64_t maxWireBytes = 0;
-  std::string targetId;
-  std::string repoNode;
+  RepoTarget target;
   /** When set, the retrieval verifies and returns an Owner-claimed packet set
    *  instead of an unproven wire list. */
   std::optional<RepoOwnerClaimFetch> ownerClaim;
@@ -302,8 +313,7 @@ enum class RepoListScope
 struct RepoListRequest
 {
   RepoListScope scope = RepoListScope::OWNER_OBJECTS;
-  std::string targetId;
-  std::string repoNode;
+  RepoTarget target;
   std::string cursor;
   uint32_t limit = 100;
   std::string catalogRevision;
@@ -334,7 +344,7 @@ struct RepoOwnerScope
 /** Read-only, copyable claim reference; it carries no payload bytes. */
 struct RepoClaimReference
 {
-  std::string targetId;
+  RepoTarget target;
   std::string ownerIdentity;
   std::string objectName;
   uint64_t ownerEpoch = 0;
@@ -388,7 +398,7 @@ struct RepoDeleteRequest
   RepoReference reference;
   std::string generation;
   std::string expectedEpoch;
-  std::vector<std::string> targets;
+  std::vector<RepoTarget> targets;
 };
 
 struct RepoDeleteResult
@@ -411,8 +421,7 @@ struct RepoDiscoveryRequest
 
 struct RepoWriteAuthorization
 {
-  std::string targetId;
-  std::string repoNode;
+  RepoTarget target;
   std::string writerIdentity;
   std::string objectName;
   std::string grantId;
@@ -424,7 +433,7 @@ struct RepoWriteGrant
   std::string ownerIdentity;
   std::string writerIdentity;
   std::string objectName;
-  std::string targetId;
+  RepoTarget target;
   std::string grantId;
   uint64_t ownerEpoch = 0;
   uint64_t expiresAtMs = 0;

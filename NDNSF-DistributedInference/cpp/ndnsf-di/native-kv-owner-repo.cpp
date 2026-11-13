@@ -201,10 +201,14 @@ NativeKvHandoffOwner::verifyAndPromote(std::shared_ptr<User> user,
     ownerConfig.dataOnly = true;
     auto ownerClient = repo::RepoClient::makePersistent(context->user, std::move(ownerConfig));
     repo::RepoDataFetch ownerRequest;
-    ownerRequest.ownerClaim = repo::RepoOwnerClaimFetch{
-      role.rootName.toUri(), target.providerIdentity, target.repoNode,
-      limits.ackCollectionTimeMs, limits.maxPacketCount, limits.maxPacketWireBytes,
-      limits.maxManifestWireBytes};
+    repo::RepoOwnerClaimFetch claim;
+    claim.objectName = role.rootName.toUri();
+    claim.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
+    claim.ackCollectionTimeMs = static_cast<uint32_t>(limits.ackCollectionTimeMs);
+    claim.maxPacketCount = limits.maxPacketCount;
+    claim.maxPacketWireBytes = limits.maxPacketWireBytes;
+    claim.maxManifestWireBytes = limits.maxManifestWireBytes;
+    ownerRequest.ownerClaim = std::move(claim);
     ownerRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
       [verifier](const std::vector<uint8_t>& wire) {
         const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};

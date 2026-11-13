@@ -156,8 +156,8 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   };
   publication.packets = std::move(source);
   publication.producerIdentity = producerName.toUri();
-  publication.targetId = owner.repoTarget.providerIdentity;
-  publication.repoNode = owner.repoTarget.repoNode;
+  publication.target = {owner.repoTarget.repoNode, owner.repoTarget.providerIdentity,
+                        owner.repoTarget.servicePrefix};
   publication.ownerIdentity = insert.storageBinding.ownerIdentity;
   publication.grantId = insert.storageBinding.grantId;
   publication.ownerEpoch = insert.storageBinding.ownerEpoch;

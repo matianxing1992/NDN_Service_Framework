@@ -173,7 +173,7 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
     bound.maxManifestWireBytes = limits.maxManifestWireBytes;
     bound.ackCollectionTimeMs = limits.ackCollectionTimeMs;
     restoreRequest.manifestBound = std::move(bound);
-    restoreRequest.targetId = policy.repoProvider;
+    restoreRequest.target = {"", policy.repoProvider, policy.repoServicePrefix};
     restoreRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
       [verifier](const std::vector<std::uint8_t>& wire) {
         const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size()))};
