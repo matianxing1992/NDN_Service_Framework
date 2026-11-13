@@ -215,10 +215,16 @@ struct RepoDataFetch
 {
   std::optional<ExactPacketSetReference> packets;
   std::optional<SegmentedObjectReference> object;
+  /** Ordered names with a byte budget but no whole-set digest commitment: the
+   *  shape a caller uses when it verifies each packet itself (an established
+   *  fetcher contract). Never treated as a verified packet set. */
+  std::vector<std::string> packetNames;
+  uint64_t maxWireBytes = 0;
   std::string targetId;
   uint64_t rangeOffsetBytes = 0;
   uint64_t rangeLengthBytes = 0;
   bool hasRange = false;
+  std::function<bool(const std::vector<uint8_t>&)> verifyWire;
 };
 
 /** Result of an original-Data retrieval. */

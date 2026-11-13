@@ -2930,19 +2930,35 @@ RepoClient::fetchData(const RepoDataFetch& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data retrieval requires a persistent client",
                           "fetchData");
-  if (!input.packets)
-    throw std::invalid_argument("fetchData requires a packet set reference");
-  const auto& reference = *input.packets;
+  std::vector<std::string> orderedNames;
+  uint64_t wireBudget = 0;
+  std::string expectedDigest;
+  if (input.packets) {
+    orderedNames = input.packets->packetNames;
+    wireBudget = input.packets->wireBytes;
+    expectedDigest = input.packets->wireDigest;
+  }
+  else {
+    orderedNames = input.packetNames;
+    wireBudget = input.maxWireBytes;
+  }
+  if (orderedNames.empty() || wireBudget == 0)
+    throw std::invalid_argument("fetchData requires names and a wire budget");
   std::vector<ndn::Name> names;
-  names.reserve(reference.packetNames.size());
-  for (const auto& name : reference.packetNames)
+  names.reserve(orderedNames.size());
+  for (const auto& name : orderedNames)
     names.emplace_back(name);
-  if (names.empty() || reference.wireBytes == 0)
-    throw std::invalid_argument("fetchData requires a complete packet set");
+  const auto& reference = input.packets;
 
-  const auto verifyPacket = [](const ndn::Data&) { return true; };
+  const auto verifier = input.verifyWire;
+  const auto verifyPacket = [verifier](const ndn::Data& packet) {
+    if (!verifier)
+      return true;
+    const auto& wire = packet.wireEncode();
+    return verifier(std::vector<uint8_t>(wire.begin(), wire.end()));
+  };
   auto wires = RepoClient::fetchOriginalDataPackets(
-    m_impl->user, toTarget(input.targetId), names, reference.wireBytes,
+    m_impl->user, toTarget(input.targetId), names, wireBudget,
     verifyPacket, remainingMs(options.deadline), options.requireCurrent);
   RepoDataFetchResult result;
   result.wireBytes = 0;
@@ -2953,11 +2969,14 @@ RepoClient::fetchData(const RepoDataFetch& input,
     result.packets.push_back(std::move(wire));
   }
   result.wireDigest = "sha256:" + digest.toString();
-  result.digestVerified = result.wireDigest == reference.wireDigest;
-  if (!result.digestVerified)
-    throw RepoClientError("DIGEST_MISMATCH",
-                          "retrieved wires do not match the packet set digest",
-                          "fetchData");
+  if (reference && !reference->wireDigest.empty()) {
+    // A digest commitment is only reported as verified when it was checked.
+    result.digestVerified = result.wireDigest == reference->wireDigest;
+    if (!result.digestVerified)
+      throw RepoClientError("DIGEST_MISMATCH",
+                            "retrieved wires do not match the packet set digest",
+                            "fetchData");
+  }
   return result;
 }
 

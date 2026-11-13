@@ -193,12 +193,33 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       require(!user->isOnIoThread(), "MODEL_REPO_STORE_ON_FACE_THREAD");
     };
   }
-  io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
-    const std::vector<ndn::Name>& names) {
+  // The generic segmented fetch belongs to Repo; DI only states the ordered
+  // names and its own per-packet verifier. Creating the persistent client once
+  // keeps the mode, limits and identity frozen for the lifetime of this io.
+  auto facadeConfig = repo::PersistentRepoClientConfig{};
+  facadeConfig.servicePrefix = ndn::Name(target.servicePrefix);
+  facadeConfig.providerScope = {ndn::Name(target.providerIdentity)};
+  auto facade = std::make_shared<repo::RepoClient>(
+    repo::RepoClient::makePersistent(user, std::move(facadeConfig)));
+  io.fetch = [user, target, budget, current, verify, acquireOperationLifetime,
+              facade = std::move(facade)] (const std::vector<ndn::Name>& names) mutable {
     auto operationLifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;
-    return repo::RepoClient::fetchOriginalDataPackets(user, target, names,
-      NATIVE_STORED_MODEL_UPLOAD_WIRE,
-      verify, budget(), current, std::move(operationLifetime));
+    (void)operationLifetime;
+    repo::RepoDataFetch request;
+    request.packetNames.reserve(names.size());
+    for (const auto& name : names)
+      request.packetNames.push_back(name.toUri());
+    request.maxWireBytes = NATIVE_STORED_MODEL_UPLOAD_WIRE;
+    request.targetId = target.providerIdentity;
+    request.verifyWire = [verify](const std::vector<uint8_t>& wire) {
+      const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
+      return verify(packet);
+    };
+    repo::RepoOperationOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(budget());
+    options.requireCurrent = [current] { current(); };
+    return facade->fetchData(request, options).packets;
   };
   if (allowPublication) {
     io.requireCommitted = [user, target, budget, current](const ndn::Name& name,
