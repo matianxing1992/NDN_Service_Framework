@@ -32,6 +32,10 @@ fileReferenceFromDict(const py::dict& value)
     reference.sizeBytes = py::cast<uint64_t>(value["size_bytes"]);
   if (value.contains("format_version"))
     reference.formatVersion = py::cast<std::string>(value["format_version"]);
+  if (value.contains("root_manifest_name"))
+    reference.rootManifestName = py::cast<std::string>(value["root_manifest_name"]);
+  if (value.contains("digest_algorithm"))
+    reference.digestAlgorithm = py::cast<std::string>(value["digest_algorithm"]);
   if (value.contains("publisher_identity"))
     reference.publisherIdentity = py::cast<std::string>(value["publisher_identity"]);
   if (value.contains("policy_epoch"))
@@ -48,6 +52,7 @@ fileReferenceToDict(const repo::FileReference& reference)
   value["content_digest"] = reference.contentDigest;
   value["size_bytes"] = reference.sizeBytes;
   value["format_version"] = reference.formatVersion;
+  value["root_manifest_name"] = reference.rootManifestName;
   value["publisher_identity"] = reference.publisherIdentity;
   value["policy_epoch"] = reference.policyEpoch;
   return value;

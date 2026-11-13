@@ -16,7 +16,11 @@ class _FakeNative:
         self.calls.append(("publish", root, owner, source, dict(reference), timeout_ms))
         return {
             "state": "COMMITTED",
-            "reference": dict(reference),
+            "reference": {
+                **reference,
+                "digest_algorithm": "sha256",
+                "root_manifest_name": "",
+            },
             "receipt_ids": ["r1"],
             "deduplicated": True,
             "resumed": False,
@@ -49,9 +53,17 @@ class UnifiedClientHelperTest(unittest.TestCase):
         self.assertEqual(result.receipt_ids, ("r1",))
         self.assertTrue(result.deduplicated)
         self.assertEqual(result.reference.size_bytes, 7)
+        self.assertEqual(result.reference.digest_algorithm, "sha256")
+        self.assertEqual(result.reference.root_manifest_name, "")
         kind, root, owner, source, reference, timeout = self.fake.calls[0]
         self.assertEqual((kind, root, owner, source, timeout), ("publish", "/root", "/owner", "/src", 1234))
         self.assertEqual(reference["logical_name"], "/owner/object")
+        # CA11: every native field survives the round trip, including the ones the
+        # dataclass did not have before.
+        for field in ("digest_algorithm", "root_manifest_name", "format_version",
+                      "publisher_identity", "policy_epoch"):
+            self.assertIn(field, reference)
+        self.assertEqual(reference["digest_algorithm"], "sha256")
 
     def test_fetch_and_inspect_expose_the_native_decisions_unchanged(self):
         fetched = unified_client.fetch_file("/root", "/owner", self.reference, "/dst", 9)

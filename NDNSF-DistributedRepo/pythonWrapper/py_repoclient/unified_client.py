@@ -27,6 +27,8 @@ class RepoReference:
     content_digest: str
     size_bytes: int
     format_version: str = "artifact-manifest-v2"
+    digest_algorithm: str = "sha256"
+    root_manifest_name: str = ""
     publisher_identity: str = ""
     policy_epoch: str = ""
 
@@ -36,6 +38,8 @@ class RepoReference:
             "content_digest": self.content_digest,
             "size_bytes": self.size_bytes,
             "format_version": self.format_version,
+            "digest_algorithm": self.digest_algorithm,
+            "root_manifest_name": self.root_manifest_name,
             "publisher_identity": self.publisher_identity,
             "policy_epoch": self.policy_epoch,
         }
@@ -92,7 +96,16 @@ def publish_file(
     native_reference = result.get("reference")
     return RepoPublishResult(
         state=result["state"],
-        reference=RepoReference(**native_reference) if native_reference else None,
+        reference=(RepoReference(
+            logical_name=native_reference["logical_name"],
+            content_digest=native_reference["content_digest"],
+            size_bytes=int(native_reference["size_bytes"]),
+            format_version=native_reference.get("format_version", "artifact-manifest-v2"),
+            digest_algorithm=native_reference.get("digest_algorithm", "sha256"),
+            root_manifest_name=native_reference.get("root_manifest_name", ""),
+            publisher_identity=native_reference.get("publisher_identity", ""),
+            policy_epoch=native_reference.get("policy_epoch", ""),
+        ) if native_reference else None),
         receipt_ids=tuple(result.get("receipt_ids", ())),
         operation_reference=result.get("operation_reference"),
         deduplicated=bool(result.get("deduplicated")),
