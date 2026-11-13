@@ -196,9 +196,28 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
   io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
     const std::vector<ndn::Name>& names) {
     auto operationLifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;
-    return repo::RepoClient::fetchOriginalDataPackets(user, target, names,
-      NATIVE_STORED_MODEL_UPLOAD_WIRE,
-      verify, budget(), current, std::move(operationLifetime));
+    (void)operationLifetime;
+    // The facade is created for this call only: it borrows the caller's Face and
+    // ServiceUser, so holding one across the io lifetime outlives them.
+    auto config = repo::PersistentRepoClientConfig{};
+    config.servicePrefix = ndn::Name(target.servicePrefix);
+    config.providerScope = {ndn::Name(target.providerIdentity)};
+    auto client = repo::RepoClient::makePersistent(user, std::move(config));
+    repo::RepoDataFetch request;
+    request.packetNames.reserve(names.size());
+    for (const auto& name : names)
+      request.packetNames.push_back(name.toUri());
+    request.maxWireBytes = NATIVE_STORED_MODEL_UPLOAD_WIRE;
+    request.targetId = target.providerIdentity;
+    request.verifyWire = [verify](const std::vector<uint8_t>& wire) {
+      const ndn::Data packet{ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size()))};
+      return verify(packet);
+    };
+    repo::RepoOperationOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::max(1, budget()));
+    options.requireCurrent = [current] { current(); };
+    return client.fetchData(request, options).packets;
   };
   if (allowPublication) {
     io.requireCommitted = [user, target, budget, current](const ndn::Name& name,
