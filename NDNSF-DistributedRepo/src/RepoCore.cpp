@@ -1376,13 +1376,18 @@ RepoCore::tryGetDataPacketBatch(const std::vector<ndn::Interest>& interests,
   // From this point failures are authoritative. A caller must discard the
   // entire prepared batch rather than downgrade to individually admitted reads.
   (void)requireSameManifest();
+  // One bounded read context for the batch; each range is still read on its own
+  // so the caller's cancellation and the wire-length check can stop the batch
+  // between packets, and the object is re-validated once at the boundary.
+  const auto batch = m_store->beginRangeBatch(manifest->objectName);
   std::vector<ndn::Data> packets;
+  packets.reserve(indices.size());
   for (std::size_t i = 0; i < indices.size(); ++i) {
     requireActive();
     const auto index = indices[i];
     const auto offset = manifest->packetOffsets[index];
     const auto length = manifest->packetOffsets[index + 1] - offset;
-    const auto wire = m_store->getRange(manifest->objectName, {offset, length});
+    const auto wire = batch->read({offset, length});
     if (wire.size() != length)
       throw std::runtime_error("repo-original-packet-batch-truncated");
     ndn::Data packet(ndn::Block(ndn::span<const uint8_t>(wire.data(), wire.size())));

@@ -1075,6 +1075,63 @@ public:
     return m_authoritativeStore->getRange(objectName, range);
   }
 
+  /** Serves a prepared batch from one pinned payload copy: the authoritative
+   *  snapshot, the admission probe and the cache hit are resolved once when the
+   *  context is created, and each read only slices the pinned bytes. The caller
+   *  still re-validates the object at the batch boundary. */
+  class CachedRangeBatch final : public RangeReadBatch
+  {
+  public:
+    CachedRangeBatch(std::shared_ptr<const std::vector<uint8_t>> payload, uint64_t size)
+      : m_payload(std::move(payload)), m_size(size)
+    {
+    }
+
+    std::vector<uint8_t>
+    read(RepoByteRange range) override
+    {
+      if (range.offsetBytes > m_size || range.lengthBytes > m_size - range.offsetBytes)
+        throw std::out_of_range("repo-range-read-out-of-bounds");
+      const auto& bytes = *m_payload;
+      return std::vector<uint8_t>(
+        bytes.begin() + static_cast<std::ptrdiff_t>(range.offsetBytes),
+        bytes.begin() + static_cast<std::ptrdiff_t>(range.offsetBytes + range.lengthBytes));
+    }
+
+  private:
+    std::shared_ptr<const std::vector<uint8_t>> m_payload;
+    uint64_t m_size = 0;
+  };
+
+  std::shared_ptr<RangeReadBatch>
+  beginRangeBatch(const std::string& objectName) const override
+  {
+    std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
+    if (!supportsConcurrentCommittedReads())
+      authorityLock.lock();
+    const auto snapshot = detail::readManifestSnapshot(*m_authoritativeStore, objectName);
+    const auto& manifest = *snapshot;
+    const bool cacheable = manifest.size != 0 && m_status.budgetBytes != 0 &&
+      manifest.size <= m_largeObjectThreshold && manifest.size <= m_status.budgetBytes &&
+      m_authoritativeStore->hasCommittedPayload(manifest);
+    if (cacheable) {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const auto found = m_cache.find(objectName);
+      if (found != m_cache.end() &&
+          (found->second.validatedManifest.lock() == snapshot ||
+           found->second.manifest.hasSameMetadata(manifest))) {
+        found->second.validatedManifest = snapshot;
+        ++m_status.hits;
+        m_lru.splice(m_lru.end(), m_lru, found->second.recency);
+        return std::make_shared<CachedRangeBatch>(found->second.payload, manifest.size);
+      }
+      ++m_status.misses;
+    }
+    // A miss keeps the per-range path so the prefetch and its admission rules
+    // stay single-sourced.
+    return RepoStoreBackend::beginRangeBatch(objectName);
+  }
+
   RepoObjectManifest getManifest(const std::string& objectName) const override
   {
     std::unique_lock<std::mutex> authorityLock(m_authorityMutex, std::defer_lock);
@@ -2761,6 +2818,35 @@ void
 RepoStoreBackend::commitRanges(const RepoObjectManifest&)
 {
   throw std::runtime_error("repo-range-commit-not-supported");
+}
+
+namespace {
+/** Default context: one ordinary range call per read, so every backend and test
+ *  double observes the same sequence the single-range path produced. */
+class PerRangeReadBatch final : public RepoStoreBackend::RangeReadBatch
+{
+public:
+  PerRangeReadBatch(const RepoStoreBackend& store, std::string objectName)
+    : m_store(store), m_objectName(std::move(objectName))
+  {
+  }
+
+  std::vector<uint8_t>
+  read(RepoByteRange range) override
+  {
+    return m_store.getRange(m_objectName, range);
+  }
+
+private:
+  const RepoStoreBackend& m_store;
+  std::string m_objectName;
+};
+} // namespace
+
+std::shared_ptr<RepoStoreBackend::RangeReadBatch>
+RepoStoreBackend::beginRangeBatch(const std::string& objectName) const
+{
+  return std::make_shared<PerRangeReadBatch>(*this, objectName);
 }
 
 std::vector<uint8_t>

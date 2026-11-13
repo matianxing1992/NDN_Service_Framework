@@ -652,6 +652,20 @@ public:
   virtual std::vector<uint8_t>
   getRange(const std::string& objectName, RepoByteRange range) const;
 
+  /** One bounded read context for a prepared batch of ranges of one object.
+   *  `read` serves exactly one range per call so the caller keeps its
+   *  cancellation and length checks between ranges; a cache may pin what it
+   *  needs when the context is created and re-validate at the batch boundary. */
+  class RangeReadBatch
+  {
+  public:
+    virtual ~RangeReadBatch() = default;
+    virtual std::vector<uint8_t> read(RepoByteRange range) = 0;
+  };
+
+  virtual std::shared_ptr<RangeReadBatch>
+  beginRangeBatch(const std::string& objectName) const;
+
   virtual RepoObjectManifest
   getManifest(const std::string& objectName) const;
 
