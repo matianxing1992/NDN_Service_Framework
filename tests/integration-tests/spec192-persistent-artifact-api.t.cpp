@@ -443,7 +443,7 @@ currentLocationVersion(const fs::path& databasePath,
                        const std::string& repoNode,
                        const std::string& providerIdentity)
 {
-  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, 15);
+  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto location = catalog.lookupPersistentLocation(
     reference, repoNode, providerIdentity, 0);
   if (!location) {
@@ -458,7 +458,7 @@ currentLocationRecord(const fs::path& databasePath,
                       const std::string& repoNode,
                       const std::string& providerIdentity)
 {
-  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, 15);
+  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto location = catalog.lookupPersistentLocation(
     reference, repoNode, providerIdentity, 0);
   if (!location) {
@@ -720,7 +720,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
     auto committedSeed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
       repoService(servicePrefix, "STORE"), write.toWire(), "owner-seed-store-" + suffix);
     BOOST_REQUIRE_MESSAGE(committedSeed.getStatus(), committedSeed.getErrorInfo());
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     seedCatalog.updatePublishOperationTarget(write.operationId,
       {target, "IN_FLIGHT", 1, 1, std::nullopt, {}}, 1);
     auto acceptedOperation = seedCatalog.lookupPublishOperation(
@@ -937,7 +937,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     const auto seedReceipt = repo::RepoArtifactCommitReceipt::fromJson(
       std::string(receiptWire.begin(), receiptWire.end()), limits).toJson();
     {
-      repo::SqliteArtifactMetadataStore catalog(database.string(), true, 15);
+      repo::SqliteArtifactMetadataStore catalog(database.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
       const auto operation = catalog.lookupPublishOperation(operationId, principal);
       BOOST_REQUIRE(operation);
       const auto interruptedAt = static_cast<uint64_t>(std::chrono::duration_cast<
@@ -956,7 +956,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     else BOOST_REQUIRE(fs::remove(payload));
     node = openNode();
     node->registerServices(environment.provider(0), publisher, 5000, 20000);
-    repo::SqliteArtifactMetadataStore catalog(database.string(), false, 15);
+    repo::SqliteArtifactMetadataStore catalog(database.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     environment.pumpUntilWithAttributeAuthority([&] {
       const auto operation = catalog.lookupPublishOperation(operationId, principal);
       return operation && operation->status.state == "FAILED";
@@ -1260,7 +1260,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
-  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
+  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
   BOOST_REQUIRE(lossAggregate);
   const auto aggregate = repo::ArtifactCommitReceipt::fromJson(*lossAggregate);
@@ -1432,7 +1432,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     BOOST_CHECK_EQUAL(repoManifestCount(seedObjects), 0U);
     BOOST_CHECK_EQUAL(persistentReceiptRows(
       seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), unacceptedReference), 0);
-    repo::SqliteArtifactMetadataStore catalog(seedDatabase.string(), false, 15);
+    repo::SqliteArtifactMetadataStore catalog(seedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     BOOST_CHECK(!catalog.lookupPersistentLocation(
       unacceptedReference, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), 0));
   };
@@ -1868,7 +1868,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                            "seed-receipt-committed");
 
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto accepted = seedCatalog.lookupPublishOperation(
       operationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -1942,7 +1942,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 0);
   {
-    repo::SqliteArtifactMetadataStore catalog(unselectedDatabase.string(), false, 15);
+    repo::SqliteArtifactMetadataStore catalog(unselectedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     BOOST_CHECK(!catalog.lookupPersistentLocation(
       reference, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), 0));
   }
@@ -2014,7 +2014,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                         lateCommitSeedStoreResponse.getErrorInfo());
   repo::PublishOperationTargetStatus lateCommitInFlight;
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto accepted = seedCatalog.lookupPublishOperation(
       lateCommitOperationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -2054,7 +2054,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     seedCatalog.updatePublishOperationTarget(
       lateCommitOperationId, lateCommitInFlight, lateCommitInFlight.updatedAtMs);
   }
@@ -2219,7 +2219,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_REQUIRE_MESSAGE(exhaustedSeedStoreResponse.getStatus(),
                         exhaustedSeedStoreResponse.getErrorInfo());
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto accepted = seedCatalog.lookupPublishOperation(
       exhaustedReplayOperationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -2674,7 +2674,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
-  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
+  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
   BOOST_REQUIRE(lossAggregate);
   const auto aggregate = repo::ArtifactCommitReceipt::fromJson(*lossAggregate);
