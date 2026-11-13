@@ -2726,11 +2726,19 @@ struct RepoClient::Impl
     explicit Ticket(Impl* value, const char* phase)
       : owner(value)
     {
-      if (owner->closing.load())
+      // Registering against the closing flag and close() observing the count must be
+      // one decision: otherwise a call can pass the check, close can read zero and
+      // report a drain, and then the call registers and runs anyway.
+      std::lock_guard<std::mutex> guard(owner->gate);
+      if (owner->closing)
         throw RepoClientError("CLOSED", "RepoClient is closing", phase);
-      owner->active.fetch_add(1);
+      ++owner->active;
     }
-    ~Ticket() { owner->active.fetch_sub(1); }
+    ~Ticket()
+    {
+      std::lock_guard<std::mutex> guard(owner->gate);
+      --owner->active;
+    }
     Ticket(const Ticket&) = delete;
     Ticket& operator=(const Ticket&) = delete;
   };
@@ -2751,8 +2759,9 @@ struct RepoClient::Impl
   std::optional<ArtifactRepositoryApi> file;
   std::string servicePrefix;
   bool dataOnly = false;
-  std::atomic<int> active{0};
-  std::atomic<bool> closing{false};
+  std::mutex gate;
+  int active = 0;
+  bool closing = false;
 };
 
 RepoClient
@@ -2796,13 +2805,20 @@ RepoClient::close(std::chrono::steady_clock::time_point deadline)
   // Refuse new work first, then report whether the in-flight ones actually drained.
   // Releasing the engine here would free state under a running call, so the release
   // stays with the destructor and the return value states the truth about draining.
-  m_impl->closing.store(true);
-  while (m_impl->active.load() > 0) {
+  {
+    std::lock_guard<std::mutex> guard(m_impl->gate);
+    m_impl->closing = true;
+  }
+  while (true) {
+    {
+      std::lock_guard<std::mutex> guard(m_impl->gate);
+      if (m_impl->active == 0)
+        return true;
+    }
     if (std::chrono::steady_clock::now() >= deadline)
       return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
-  return true;
 }
 
 RepoPublishResult
@@ -3191,24 +3207,25 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     // Availability is a statement about the object, not about the node: a reachable
     // Repo that does not hold the object, or whose presence probe is unknown, must not
     // be reported as available. Integrity, when checked, decides against it.
-    inspection.availability = RepoInspection::Availability::UNKNOWN;
-    bool sawAbsent = false;
+    // Aggregate over every replica before deciding: stopping at the first location
+    // makes the answer depend on the order the Repo listed them in.
+    bool anyPresent = false;
+    bool anyAbsent = false;
+    bool anyFailed = false;
     for (const auto& location : report.locations) {
-      if (location.integrity == "FAILED") {
-        inspection.availability = RepoInspection::Availability::UNAVAILABLE;
-        sawAbsent = false;
-        break;
-      }
-      if (location.objectPresence == "PRESENT" &&
-          location.integrity != "FAILED") {
-        inspection.availability = RepoInspection::Availability::AVAILABLE;
-        sawAbsent = false;
-        break;
-      }
+      if (location.integrity == "FAILED")
+        anyFailed = true;
+      if (location.objectPresence == "PRESENT")
+        anyPresent = true;
       if (location.objectPresence == "ABSENT" || location.objectPresence == "PARTIAL")
-        sawAbsent = true;
+        anyAbsent = true;
     }
-    if (sawAbsent && inspection.availability == RepoInspection::Availability::UNKNOWN)
+    inspection.availability = RepoInspection::Availability::UNKNOWN;
+    if (anyFailed)
+      inspection.availability = RepoInspection::Availability::UNAVAILABLE;
+    else if (anyPresent)
+      inspection.availability = RepoInspection::Availability::AVAILABLE;
+    else if (anyAbsent)
       inspection.availability = RepoInspection::Availability::UNAVAILABLE;
     inspection.handle = input.object;
     inspection.storedBytes = input.object->reference.index() == 0
