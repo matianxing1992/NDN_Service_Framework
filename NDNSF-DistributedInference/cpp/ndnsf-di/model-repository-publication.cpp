@@ -164,11 +164,10 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
       std::chrono::milliseconds(std::max(1, budget()));
     options.requireCurrent = [current] { current(); };
     const auto published = facade->publishData(publication, options);
-    const auto* file = std::get_if<repo::FileReference>(&published.reference);
-    require(file != nullptr, "MODEL_REPO_STORE_COMMIT_MISMATCH");
-    committed.objectName = file->logicalName;
-    committed.sha256 = file->contentDigest;
-    committed.size = file->sizeBytes;
+    require(published.packetSet.has_value(), "MODEL_REPO_STORE_COMMIT_MISMATCH");
+    committed.objectName = published.packetSet->objectName;
+    committed.sha256 = published.packetSet->wireDigest.substr(7);
+    committed.size = published.packetSet->wireBytes;
   }
   else {
     committed = repo::RepoClient::commitUserStorageOriginalPackets(writer,

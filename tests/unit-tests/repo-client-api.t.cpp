@@ -194,6 +194,22 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(FilePublicationReturnsAFileReferenceNotAPacketSet) {
+  // CA09: the two result shapes must stay distinguishable, so a packet set can never
+  // be mistaken for a file object.
+  TemporaryDirectory temporary("result-shape");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  const auto published = client.publishFile(publication, makeOptions());
+  BOOST_REQUIRE(published.reference.has_value());
+  BOOST_CHECK(!published.packetSet.has_value());
+  BOOST_CHECK(std::holds_alternative<FileReference>(*published.reference));
+}
+
 BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   // CA08: close must not claim a drain it did not observe, and an operation started
   // after close must be refused instead of running on released state.

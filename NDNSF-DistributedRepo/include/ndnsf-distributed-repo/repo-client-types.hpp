@@ -164,10 +164,26 @@ struct RepoFilePublication
   RepoCompletion completion = RepoCompletion::DURABLE;
 };
 
+/** The committed tuple of an original packet set. It is not a file reference: the
+ *  wire digest, geometry and generation belong to the packet set, and no content
+ *  digest or file format can stand in for them. */
+struct RepoPacketSetResult
+{
+  std::string objectName;
+  std::vector<std::string> packetNames;
+  uint64_t wireBytes = 0;
+  std::string wireDigest;
+  uint64_t generation = 0;
+  std::string operationId;
+  std::string lifecycleState = "COMMITTED";
+};
+
 /** Result of a publication or write authorization. */
 struct RepoPublishResult
 {
-  RepoReference reference;
+  /** File publications only; a packet-set publication fills packetSet instead. */
+  std::optional<RepoReference> reference;
+  std::optional<RepoPacketSetResult> packetSet;
   RepoPublishState state = RepoPublishState::COMMITTED;
   std::optional<RepoHandle> committedHandle;
   std::vector<std::string> receiptIds;

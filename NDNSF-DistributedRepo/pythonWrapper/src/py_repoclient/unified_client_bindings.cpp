@@ -85,9 +85,20 @@ py::dict
 publishResultToDict(const repo::RepoPublishResult& result)
 {
   py::dict value;
-  const auto* file = std::get_if<repo::FileReference>(&result.reference);
-  if (file != nullptr)
-    value["reference"] = fileReferenceToDict(*file);
+  if (result.reference) {
+    const auto* file = std::get_if<repo::FileReference>(&*result.reference);
+    if (file != nullptr)
+      value["reference"] = fileReferenceToDict(*file);
+  }
+  if (result.packetSet) {
+    py::dict packetSet;
+    packetSet["object_name"] = result.packetSet->objectName;
+    packetSet["packet_names"] = result.packetSet->packetNames;
+    packetSet["wire_bytes"] = result.packetSet->wireBytes;
+    packetSet["wire_digest"] = result.packetSet->wireDigest;
+    packetSet["generation"] = result.packetSet->generation;
+    value["packet_set"] = packetSet;
+  }
   value["state"] = result.state == repo::RepoPublishState::COMMITTED
     ? "COMMITTED" : "ACCEPTED";
   value["deduplicated"] = result.deduplicated;

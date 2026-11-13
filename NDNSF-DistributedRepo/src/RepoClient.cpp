@@ -2928,9 +2928,15 @@ RepoClient::publishData(const RepoDataPublication& input,
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
   RepoPublishResult result;
-  result.reference = FileReference{manifest.objectName, "sha256", manifest.sha256,
-                                   manifest.size, "raw-file-v1", "", input.producerIdentity,
-                                   manifest.policyEpoch};
+  RepoPacketSetResult committedSet;
+  committedSet.objectName = manifest.objectName;
+  committedSet.packetNames = manifest.packetNames;
+  committedSet.wireBytes = manifest.size;
+  committedSet.wireDigest = canonicalSha256Digest("sha256:" + manifest.sha256);
+  committedSet.generation = manifest.generation;
+  committedSet.operationId = manifest.operationId;
+  committedSet.lifecycleState = manifest.lifecycleState;
+  result.packetSet = std::move(committedSet);
   result.state = RepoPublishState::COMMITTED;
   return result;
 }

@@ -175,12 +175,11 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   const auto committed = [&] {
     try {
       const auto published = facade.publishData(publication, publicationOptions);
-      const auto* file = std::get_if<ndnsf_distributed_repo::FileReference>(&published.reference);
-      require(file != nullptr, "HANDOFF_REPO_PUBLICATION_SHAPE");
+      require(published.packetSet.has_value(), "HANDOFF_REPO_PUBLICATION_SHAPE");
       ndnsf_distributed_repo::RepoObjectManifest result;
-      result.objectName = file->logicalName;
-      result.sha256 = file->contentDigest;
-      result.size = file->sizeBytes;
+      result.objectName = published.packetSet->objectName;
+      result.sha256 = published.packetSet->wireDigest.substr(7);
+      result.size = published.packetSet->wireBytes;
       return result;
     }
     catch (const std::exception& error) {
