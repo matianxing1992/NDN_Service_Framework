@@ -165,7 +165,15 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_THROW(client.publishData(RepoDataPublication{}, makeOptions()), RepoClientError);
   BOOST_CHECK_THROW(client.fetchData(RepoDataFetch{}, makeOptions()), RepoClientError);
   BOOST_CHECK_THROW(client.list(RepoListRequest{}, makeOptions()), RepoClientError);
-  BOOST_CHECK_THROW(client.remove(RepoDeleteRequest{}, makeOptions()), RepoClientError);
+  // A well-formed delete is needed here: malformed shapes are rejected as caller
+  // errors before the mode check (see RemoveRequiresATypedTargetAndCleanupId).
+  RepoDeleteRequest deleteRequest;
+  deleteRequest.targets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  deleteRequest.generation = "cleanup-1";
+  FileReference deleteReference;
+  deleteReference.logicalName = "/example/spec240/owner/object";
+  deleteRequest.reference = deleteReference;
+  BOOST_CHECK_THROW(client.remove(deleteRequest, makeOptions()), RepoClientError);
   BOOST_CHECK_THROW(client.authorizeWrite(RepoWriteAuthorization{}, makeOptions()), RepoClientError);
 
   int unsupported = 0;
@@ -181,9 +189,27 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   expectUnsupported([&] { client.publishData(RepoDataPublication{}, makeOptions()); });
   expectUnsupported([&] { client.fetchData(RepoDataFetch{}, makeOptions()); });
   expectUnsupported([&] { client.list(RepoListRequest{}, makeOptions()); });
-  expectUnsupported([&] { client.remove(RepoDeleteRequest{}, makeOptions()); });
+  expectUnsupported([&] { client.remove(deleteRequest, makeOptions()); });
   expectUnsupported([&] { client.authorizeWrite(RepoWriteAuthorization{}, makeOptions()); });
   BOOST_CHECK_EQUAL(unsupported, 5);
+}
+
+BOOST_AUTO_TEST_CASE(RemoveRequiresATypedTargetAndCleanupId) {
+  // CA07: a delete without a target, a cleanup id or any object binding must be a
+  // caller error, not a silent default to epoch zero or a constant cleanup id.
+  TemporaryDirectory temporary("remove");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoDeleteRequest noTarget;
+  BOOST_CHECK_THROW(client.remove(noTarget, makeOptions()), std::invalid_argument);
+
+  RepoDeleteRequest noCleanup;
+  noCleanup.targets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  BOOST_CHECK_THROW(client.remove(noCleanup, makeOptions()), std::invalid_argument);
+
+  RepoDeleteRequest noObject;
+  noObject.targets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  noObject.generation = "cleanup-1";
+  BOOST_CHECK_THROW(client.remove(noObject, makeOptions()), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ReceiptInspectionRequiresTheObjectBinding) {

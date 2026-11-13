@@ -61,6 +61,16 @@ struct RepoTarget
   }
 };
 
+/** Read-only, copyable claim reference; it carries no payload bytes. */
+struct RepoClaimReference
+{
+  RepoTarget target;
+  std::string ownerIdentity;
+  std::string objectName;
+  uint64_t ownerEpoch = 0;
+  uint64_t generation = 0;
+};
+
 /** Optional per-target result; an unconfirmed target is never reported as
  *  committed. */
 struct RepoReplicaResult
@@ -322,6 +332,9 @@ struct RepoListRequest
 struct RepoListItem
 {
   RepoReference reference;
+  /** The claim the entry actually came from: owner, epoch, generation and target.
+   *  A list entry is not a FileReference, and deleting needs these exact values. */
+  RepoClaimReference claim;
   uint64_t storedBytes = 0;
   std::string generation;
   std::string lifecycleState;
@@ -339,16 +352,6 @@ struct RepoOwnerScope
 {
   std::string ownerIdentity;
   std::string objectName;
-};
-
-/** Read-only, copyable claim reference; it carries no payload bytes. */
-struct RepoClaimReference
-{
-  RepoTarget target;
-  std::string ownerIdentity;
-  std::string objectName;
-  uint64_t ownerEpoch = 0;
-  uint64_t generation = 0;
 };
 
 struct RepoInspectionRequest
@@ -395,6 +398,8 @@ struct RepoInspection
 
 struct RepoDeleteRequest
 {
+  /** A claim taken from a list entry; preferred when present. */
+  std::optional<RepoClaimReference> claim;
   RepoReference reference;
   std::string generation;
   std::string expectedEpoch;

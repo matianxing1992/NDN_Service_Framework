@@ -3232,12 +3232,13 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   page.nextCursor = reply.nextAfterObjectName;
   for (const auto& claim : reply.objects) {
     RepoListItem item;
-    FileReference reference;
-    reference.logicalName = claim.object.objectName;
-    reference.contentDigest = claim.object.wireSha256;
-    reference.sizeBytes = claim.object.payloadWireBytes;
-    reference.publisherIdentity = claim.ownerIdentity;
-    item.reference = std::move(reference);
+    item.claim.target = input.target;
+    item.claim.ownerIdentity = claim.ownerIdentity;
+    item.claim.objectName = claim.object.objectName;
+    item.claim.ownerEpoch = claim.ownerEpoch;
+    item.claim.generation = claim.object.generation;
+    // The claim carries the wire identity; it is not a file reference and must not be
+    // reported as one.
     item.storedBytes = claim.object.payloadWireBytes;
     item.generation = std::to_string(claim.object.generation);
     item.lifecycleState = claim.state == RepoUserStorageClaimState::COMMITTED
@@ -3252,17 +3253,37 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
 {
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "remove");
-  if (!m_impl->user)
-    throw RepoClientError("UNSUPPORTED",
-                          "removal requires a persistent client", "remove");
+  // Shape errors are caller mistakes: report them before the mode check, otherwise an
+  // in-app client would mask an invalid request as merely unsupported.
   if (input.targets.size() != 1 ||
       input.targets.front().providerIdentity.empty())
     throw std::invalid_argument("remove requires exactly one target");
+  if (input.generation.empty())
+    throw std::invalid_argument("remove requires an explicit cleanup id");
+  if (!input.claim) {
+    const auto* file = std::get_if<FileReference>(&input.reference);
+    if (file == nullptr || file->logicalName.empty())
+      throw std::invalid_argument("remove requires an Owner claim or a file reference");
+  }
+  if (!m_impl->user)
+    throw RepoClientError("UNSUPPORTED",
+                          "removal requires a persistent client", "remove");
   RepoUserStorageDeleteRequest request;
-  request.cleanupId = input.generation.empty() ? std::string("remove") : input.generation;
-  request.objectName = std::get<FileReference>(input.reference).logicalName;
-  request.ownerEpoch = input.expectedEpoch.empty()
-    ? 0 : static_cast<uint64_t>(std::stoull(input.expectedEpoch));
+  request.cleanupId = input.generation;
+  if (input.claim) {
+    // A claim carries the owner epoch and generation the delete has to match; deriving
+    // them from a reference or defaulting the epoch to zero would delete the wrong row.
+    request.objectName = input.claim->objectName;
+    request.ownerEpoch = input.claim->ownerEpoch;
+  }
+  else {
+    const auto* file = std::get_if<FileReference>(&input.reference);
+    if (file == nullptr)
+      throw std::invalid_argument("remove requires an Owner claim or a file reference");
+    request.objectName = file->logicalName;
+    request.ownerEpoch = input.expectedEpoch.empty()
+      ? 0 : static_cast<uint64_t>(std::stoull(input.expectedEpoch));
+  }
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.targets.front());
   auto emitted = std::make_shared<std::atomic<bool>>(false);
