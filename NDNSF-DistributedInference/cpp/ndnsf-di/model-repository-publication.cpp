@@ -84,7 +84,7 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   const std::function<bool(const ndn::Data&)>& verifyPacket,
   const std::function<int()>& budget, const std::function<void()>& current,
   std::uint32_t schemaVersion, const std::string& digest,
-  const std::shared_ptr<repo::RepoClient>& facade = nullptr)
+  const std::shared_ptr<repo::RepoClient>& facade)
 {
   auto& reference = group.reference;
   reference.expectedSha256 = reference.packetSetMetadata->sha256 = digest;
@@ -122,16 +122,9 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
   catch (...) {
     // A diagnostic observation cannot grant or reject storage authority.
   }
-  repo::RepoUserStorageInsertRequest insert;
-  insert.schemaVersion = schemaVersion;
-  insert.operationId = request.grantId;
-  insert.generation = 1;
-  insert.reference = reference;
-  insert.storageBinding = {1, reply.grant.ownerIdentity, reply.grant.grantId,
-                           reply.grant.ownerEpoch};
   std::size_t next = 0;
   repo::RepoObjectManifest committed;
-  if (facade) {
+  {
     repo::RepoDataPublication publication;
     repo::PacketSource source;
     source.packetNames = reference.packetSetMetadata->packetNames;
@@ -169,15 +162,7 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
     committed.sha256 = published.packetSet->wireDigest.substr(7);
     committed.size = published.packetSet->wireBytes;
   }
-  else {
-    committed = repo::RepoClient::commitUserStorageOriginalPackets(writer,
-      target, insert, [&]() -> std::optional<std::vector<std::uint8_t>> {
-        current();
-        if (next == group.wires.size()) return std::nullopt;
-        return std::move(group.wires[next++]);
-      }, verifyPacket, std::min(MAX_ACK_COLLECTION_MS, std::max(1, budget() / 2)),
-      budget(), current);
-  }
+
   require(committed.sha256 == digest && committed.size == reference.expectedSize,
           "MODEL_REPO_STORE_COMMIT_MISMATCH");
 }
@@ -441,12 +426,22 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
         const auto budget = [deadline, callCurrent] {
           return remainingRepoBudget(deadline, callCurrent);
         };
+        // The recovery commit uses the same facade path as the live one; the writer
+        // outlives this call, so a non-owning alias is correct here.
+        auto restoreConfig = repo::PersistentRepoClientConfig{};
+        restoreConfig.servicePrefix = ndn::Name(target.servicePrefix);
+        restoreConfig.providerScope = {ndn::Name(target.providerIdentity)};
+        restoreConfig.dataOnly = true;
+        auto restoreFacade = std::make_shared<repo::RepoClient>(repo::RepoClient::makePersistent(
+          std::shared_ptr<ndn_service_framework::ServiceUser>(&writer,
+            [] (ndn_service_framework::ServiceUser*) {}),
+          std::move(restoreConfig)));
         commitPacketGroup(writer, target, *pending, [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
           return writer.validateProducerPacketWireUntil(
             {wire.begin(), wire.end()}, producer,
             std::min(deadline, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
-        }, budget, callCurrent, 1, packetDigest(pending->wires));
+        }, budget, callCurrent, 1, packetDigest(pending->wires), restoreFacade);
       }, [&receipt, bytes] {
         receipt.wireBytes += bytes;
         ++receipt.packetGroups;
