@@ -340,6 +340,8 @@ def options(opt):
                       help='Native component closure: all, core, repo or di (default: all)')
     optgrp.add_option('--with-tests', action='store_true', default=False,
                       help='Build unit tests')
+    optgrp.add_option('--with-repo-python', action='store_true', default=False,
+                      help='Build and install the Repo Python binding')
     optgrp.add_option('--install-experiment-fixtures', action='store_true', default=False,
                       help='Install explicitly selected native experiment fixtures')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
@@ -459,6 +461,7 @@ def configure(conf):
 
     conf.env.WITH_EXAMPLES = conf.options.with_examples
     conf.env.WITH_TESTS = conf.options.with_tests
+    conf.env.WITH_REPO_PYTHON = conf.options.with_repo_python
     conf.env.INSTALL_EXPERIMENT_FIXTURES = conf.options.install_experiment_fixtures
     if conf.env.INSTALL_EXPERIMENT_FIXTURES and not (
             conf.env.WITH_TESTS and conf.env.WITH_EXAMPLES):
