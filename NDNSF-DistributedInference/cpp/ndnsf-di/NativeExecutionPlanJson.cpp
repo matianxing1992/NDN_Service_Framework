@@ -1853,6 +1853,11 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
       throw std::invalid_argument(
         "V3 Selection generation successor map is incomplete");
     }
+    const auto planUnitCount = [&projection] {
+      std::set<std::string> units;
+      for (const auto& step : projection.plan.steps) units.insert(step.unitId);
+      return units.empty() ? projection.plan.roles.size() : units.size();
+    };
     const auto feedbackCount = std::count_if(
       projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
       [] (const auto& dependency) {
@@ -1931,8 +1936,12 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
         // per role. A pipeline plan keeps the single edge it always had. Any other
         // count is still refused: two edges for three roles would leave a unit without
         // its next-epoch input while the others ran.
+        // The expected count is the number of units this plan executes. A projection lists
+        // one role, but a sealed template names every unit in its steps, so the unit count
+        // comes from there when the plan is a template.
         (feedbackCount != 1 &&
-         feedbackCount != projection.plan.roles.size())) {
+         feedbackCount != (projection.plan.steps.empty()
+           ? projection.plan.roles.size() : planUnitCount()))) {
       throw std::invalid_argument(
         "V3 Selection generation contract is incomplete");
     }
