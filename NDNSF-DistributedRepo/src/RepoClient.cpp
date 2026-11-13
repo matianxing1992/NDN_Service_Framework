@@ -2971,6 +2971,40 @@ RepoClient::fetchData(const RepoDataFetch& input,
     return result;
   }
 
+  if (input.manifestBound) {
+    const auto& bound = *input.manifestBound;
+    if (!bound.manifest)
+      throw std::invalid_argument("manifestBound requires the committed manifest");
+    // The caller owns the committed manifest; Repo only transfers those packets.
+    RepoDataReference reference;
+    reference.objectName = bound.objectName;
+    reference.dataPrefix = bound.dataPrefix;
+    reference.expectedSize = bound.expectedWireBytes;
+    reference.expectedSha256 = bound.expectedSha256;
+    reference.forwardingHint = bound.producerIdentity;
+    reference.packetSetMetadata = *bound.manifest;
+    RepoUserStoragePacketSetFetchLimits limits;
+    limits.ackCollectionTimeMs = bound.ackCollectionTimeMs;
+    limits.maxPacketCount = bound.maxPacketCount;
+    limits.maxPacketWireBytes = bound.maxPacketWireBytes;
+    limits.maxManifestWireBytes = bound.maxManifestWireBytes;
+    const auto verifier = input.verifyWire;
+    const auto verifyPacket = [verifier](const ndn::Data& packet) {
+      if (!verifier || !*verifier)
+        return true;
+      const auto& wire = packet.wireEncode();
+      return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
+    };
+    auto wires = RepoClient::fetchOriginalDataPacketSet(
+      *m_impl->user, reference, verifyPacket, remainingMs(options.deadline), limits,
+      options.requireCurrent);
+    RepoDataFetchResult result;
+    result.packets = std::move(wires);
+    for (const auto& wire : result.packets)
+      result.wireBytes += wire.size();
+    return result;
+  }
+
   std::vector<std::string> orderedNames;
   uint64_t wireBudget = 0;
   std::string expectedDigest;

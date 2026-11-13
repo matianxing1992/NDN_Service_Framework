@@ -216,6 +216,25 @@ struct RepoDataPublication
 };
 
 class VerifiedRepoUserStoragePacketSetV1;
+struct RepoObjectManifest;
+
+/** Manifest-bound retrieval: the caller already holds a committed manifest for
+ *  the object (for example from an Owner commitment) and asks Repo for exactly
+ *  those packets. This is not a current Owner claim and confers no authority. */
+struct RepoManifestBoundFetch
+{
+  /** Committed manifest the caller holds; Repo transfers exactly its packets. */
+  std::shared_ptr<const RepoObjectManifest> manifest;
+  std::string objectName;
+  std::string dataPrefix;
+  std::string expectedSha256;
+  uint64_t expectedWireBytes = 0;
+  std::string producerIdentity;
+  uint64_t maxPacketCount = 65536;
+  uint64_t maxPacketWireBytes = 256ULL * 1024 * 1024;
+  uint64_t maxManifestWireBytes = 4ULL * 1024 * 1024;
+  uint32_t ackCollectionTimeMs = 1000;
+};
 
 /** Owner-claim retrieval: the same fetch operation in its verified Owner mode.
  *  The result carries the transport proof RepoClient mints, never an execution
@@ -246,6 +265,8 @@ struct RepoDataFetch
   /** When set, the retrieval verifies and returns an Owner-claimed packet set
    *  instead of an unproven wire list. */
   std::optional<RepoOwnerClaimFetch> ownerClaim;
+  /** When set, the retrieval is bound to the caller's committed manifest. */
+  std::optional<RepoManifestBoundFetch> manifestBound;
   uint64_t rangeOffsetBytes = 0;
   uint64_t rangeLengthBytes = 0;
   bool hasRange = false;

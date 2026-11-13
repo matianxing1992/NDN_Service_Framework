@@ -154,8 +154,36 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
       return writer->validateProducerPacketWireUntil(ndn::Buffer(wire.begin(), wire.end()),
         producer, deadline);
     };
-    const auto packets = repo::RepoClient::fetchOriginalDataPacketSet(*policy.storageWriter,
-      reference, verifier, remaining(), limits, current);
+    auto restoreConfig = repo::PersistentRepoClientConfig{};
+    restoreConfig.servicePrefix = ndn::Name(policy.repoServicePrefix);
+    restoreConfig.providerScope = {ndn::Name(policy.repoProvider)};
+    restoreConfig.dataOnly = true;
+    auto restoreClient = repo::RepoClient::makePersistent(policy.storageWriter,
+                                                          std::move(restoreConfig));
+    repo::RepoDataFetch restoreRequest;
+    repo::RepoManifestBoundFetch bound;
+    bound.manifest = std::make_shared<const repo::RepoObjectManifest>(manifest);
+    bound.objectName = reference.objectName;
+    bound.dataPrefix = reference.dataPrefix;
+    bound.expectedSha256 = reference.expectedSha256;
+    bound.expectedWireBytes = reference.expectedSize;
+    bound.producerIdentity = reference.forwardingHint;
+    bound.maxPacketCount = limits.maxPacketCount;
+    bound.maxPacketWireBytes = limits.maxPacketWireBytes;
+    bound.maxManifestWireBytes = limits.maxManifestWireBytes;
+    bound.ackCollectionTimeMs = limits.ackCollectionTimeMs;
+    restoreRequest.manifestBound = std::move(bound);
+    restoreRequest.targetId = policy.repoProvider;
+    restoreRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
+      [verifier](const std::vector<std::uint8_t>& wire) {
+        const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size()))};
+        return verifier(packet);
+      });
+    repo::RepoOperationOptions restoreOptions;
+    restoreOptions.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::max(1, remaining()));
+    restoreOptions.requireCurrent = [current] { current(); };
+    const auto packets = restoreClient.fetchData(restoreRequest, restoreOptions).packets;
     std::vector<ndn::Buffer> wires;
     for (const auto& wire : packets) wires.emplace_back(wire.begin(), wire.end());
     NativeProtectedKvPacketLimits packetLimits;
