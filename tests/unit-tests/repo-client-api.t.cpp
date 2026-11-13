@@ -186,6 +186,34 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(PublishFileRefusesShapesItCannotHonour) {
+  // CA04: a selective publication without typed targets, and an ACCEPTED
+  // completion without an operation handle, must be reported instead of being
+  // silently downgraded to the default target set or to a blocking publish.
+  TemporaryDirectory temporary("publish-shapes");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+
+  RepoFilePublication selective;
+  selective.sourcePath = source.string();
+  selective.reference = fixtureReference();
+  selective.selectedTargets = {"/provider/one"};
+  BOOST_CHECK_EXCEPTION(client.publishFile(selective, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "publishFile";
+    });
+
+  RepoFilePublication accepted;
+  accepted.sourcePath = source.string();
+  accepted.reference = fixtureReference();
+  accepted.completion = RepoCompletion::ACCEPTED;
+  BOOST_CHECK_EXCEPTION(client.publishFile(accepted, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "publishFile";
+    });
+}
+
 BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
   // CA03: hex case is a rendering detail. A correct set committed in lowercase must
   // verify, and anything that is not a full sha256 commitment stays untouched.

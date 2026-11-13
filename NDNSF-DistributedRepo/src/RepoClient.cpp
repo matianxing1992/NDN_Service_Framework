@@ -2788,11 +2788,22 @@ RepoClient::publishFile(const RepoFilePublication& input,
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
   if (input.reference.logicalName.empty() || input.reference.contentDigest.empty())
     throw std::invalid_argument("publishFile requires a logical name and content digest");
+  // A selective publication must name real targets. Without typed targets the
+  // facade cannot build the SelectedRepoSet the engine needs, and silently
+  // publishing to the default set would ignore the caller's selection.
+  if (!input.selectedTargets.empty()) {
+    throw RepoClientError("UNSUPPORTED",
+                          "publishFile with explicit targets requires typed Repo targets",
+                          "publishFile");
+  }
+  if (input.completion != RepoCompletion::DURABLE) {
+    throw RepoClientError("UNSUPPORTED",
+                          "publishFile ACCEPTED completion requires an operation handle",
+                          "publishFile");
+  }
   const auto reference = toArtifactReference(input.reference);
-  ArtifactPublishResult published = input.selectedTargets.empty()
-    ? m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline)
-    : m_impl->file->publishFile(input.sourcePath, reference,
-                                SelectedRepoSet{}, remainingMs(options.deadline));
+  ArtifactPublishResult published =
+    m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline);
   RepoPublishResult result;
   result.reference = toFileReference(published.reference);
   result.state = published.handle ? RepoPublishState::COMMITTED : RepoPublishState::ACCEPTED;
@@ -2809,9 +2820,10 @@ RepoClient::publishFile(const RepoFilePublication& input,
                                                  : RepoTargetState::FAILED;
     mapped.receiptId = replica.receiptId;
     mapped.message = replica.errorCode;
-    result.replicas.push_back(std::move(mapped));
+    // Collect the receipt before the copy is moved into the result.
     if (!mapped.receiptId.empty())
       result.receiptIds.push_back(mapped.receiptId);
+    result.replicas.push_back(std::move(mapped));
   }
   return result;
 }
