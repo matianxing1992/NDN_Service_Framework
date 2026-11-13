@@ -17,6 +17,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 #include <system_error>
 #include <utility>
 #include <sys/stat.h>
@@ -3271,6 +3272,16 @@ requireUserStorageProfile(bool available, bool writing, bool writesEnabled)
 void
 validateUserStorageName(const std::string& value)
 {
+  // The check is a pure predicate over the string - a normalized alternate name
+  // is always a normalized alternate name - so a bounded memo removes the
+  // parse-and-reemit cost that the read path paid once per visibility probe.
+  static std::mutex memoMutex;
+  static std::unordered_set<std::string> memo;
+  {
+    std::lock_guard<std::mutex> lock(memoMutex);
+    if (memo.count(value) != 0)
+      return;
+  }
   try {
     if (value.empty() || value.size() > 4096 || value.front() != '/')
       throw std::invalid_argument("name");
@@ -3280,6 +3291,12 @@ validateUserStorageName(const std::string& value)
   }
   catch (const std::exception&) {
     throw std::invalid_argument("repo-user-storage-invalid: normalized alternate name required");
+  }
+  {
+    std::lock_guard<std::mutex> lock(memoMutex);
+    if (memo.size() >= 256)
+      memo.clear();
+    memo.insert(value);
   }
 }
 
