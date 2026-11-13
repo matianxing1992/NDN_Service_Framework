@@ -2753,12 +2753,14 @@ BOOST_AUTO_TEST_CASE(InitProducesTheEmbeddedResidualThatLayerZeroReads)
   // producer output that agrees on type, shape and layout.
   BOOST_CHECK_NO_THROW(plan.validateSteps());
 
-  // No hidden input of any attention step may be an EPOCH_INPUT, which would reintroduce
-  // the skipped embedding. Layer 0's is named "x"; later layers carry the two separate
-  // values, so the check is on every float slot rather than on one name.
+  // No hidden activation of any attention step may be an EPOCH_INPUT, which would
+  // reintroduce the skipped embedding. Layer 0's is named "x"; later layers carry the two
+  // separate values. The past KV slots are LOCAL_STATE rather than activations, so the
+  // check excludes that source instead of demanding a producer for decode state.
   for (const auto& step : plan.steps) {
     if (step.stepId.find("/ATTN/") == std::string::npos) continue;
     for (const auto& slot : step.inputSlots) {
+      if (slot.source == "LOCAL_STATE") continue;
       if (slot.dtype != "float32") continue;
       BOOST_CHECK_EQUAL(slot.source, std::string("LOCAL_STEP"));
       BOOST_CHECK(!slot.producerStepId.empty());
@@ -7980,9 +7982,11 @@ BOOST_AUTO_TEST_CASE(ConsecutiveLayersCarryResidualAndKvAcrossTheStepChain)
   // Two hidden inputs, bound to the two steps that produced them: the post-attention
   // residual from the attention SUM and the MLP output from the MLP SUM. Pre-adding them
   // would make the export's own skip normalization add the MLP output twice.
-  // Four inputs: two hidden values plus the position and mask side inputs every layer
-  // reads from its own INIT.
-  BOOST_REQUIRE_EQUAL(attn1->inputSlots.size(), 4U);
+  // Five inputs: two hidden values plus the three index inputs every layer reads from its
+  // own INIT -- positions, the additive mask, and the scalar total length. The last two are
+  // the export's two separate mask-derived values, which the attention op consumes
+  // differently, so they cannot share one slot.
+  BOOST_REQUIRE_EQUAL(attn1->inputSlots.size(), 5U);
   BOOST_CHECK_EQUAL(attn1->inputSlots[0].slotId, std::string("post_attention"));
   BOOST_CHECK_EQUAL(attn1->inputSlots[0].producerStepId,
                     std::string("S0R0/SUM_ATTN/0"));

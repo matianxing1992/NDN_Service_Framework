@@ -762,8 +762,14 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     // residual X0 that some step actually produced, not the request input.
     // Reading EPOCH_INPUT there would skip the embedding lookup entirely, which
     // the frozen export performs as a Gather over the shared table.
+    // Three index outputs, not two. The export's reformat subgraph produces two mask
+    // tensors that attention consumes separately: the additive mask it applies (rank 2)
+    // and the scalar total length it reads. Both cross the INIT boundary, so both need a
+    // slot -- declaring one of them `attn_mask` and leaving the other unbound is what made
+    // the attention entry look like it needed a tensor nobody produced.
     init.outputSlots = {makeIndexSlot("position_ids", "LOCAL_STEP", "int64"),
                         makeIndexSlot("attn_mask", "LOCAL_STEP", "int32"),
+                        makeIndexSlot("total_sequence_length", "LOCAL_STEP", "int32"),
                         makeSlot("x0", "LOCAL_STEP", {}, shape.hidden)};
     plan.steps.push_back(std::move(init));
 
@@ -799,6 +805,9 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
         makeFedIndexSlot("position_ids", "LOCAL_STEP", "int64", initStep(unit.roleId), "position_ids"));
       attn.inputSlots.push_back(
         makeFedIndexSlot("attn_mask", "LOCAL_STEP", "int32", initStep(unit.roleId), "attn_mask"));
+      attn.inputSlots.push_back(
+        makeFedIndexSlot("total_sequence_length", "LOCAL_STEP", "int32",
+                         initStep(unit.roleId), "total_sequence_length"));
       // Two outputs with different roles. `partial` is this rank's reduction
       // contribution and travels to both SUM steps. `residual` is the local X
       // the MLP entry still needs: it is deliberately a named slot so the
@@ -2282,26 +2291,34 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
     // one slot id, which the step validator would reject as ambiguous.
     bool positionsBound = false;
     bool maskBound = false;
+    bool lengthBound = false;
     bool x0Bound = false;
     for (const auto& output : graph.output()) {
       const auto name = output.name();
-      // Absent shape is not the same as scalar: the export leaves several outputs
-      // unshaped, and skipping those would drop a real boundary value. Only an explicitly
-      // shaped rank-0 output is a scalar.
-      const auto& outputType = output.type().tensor_type();
-      const bool scalar = outputType.has_shape() && outputType.shape().dim().empty();
-      if (scalar) continue;
       if (!positionsBound && name.find("pos_ids") != std::string::npos) {
         contract.outputSlotByGraphName[name] = "position_ids";
         positionsBound = true;
       }
-      else if (!maskBound && name.find("attn_mask") != std::string::npos) {
-        contract.outputSlotByGraphName[name] = "attn_mask";
-        maskBound = true;
-      }
       else if (!x0Bound && name.find("embed_tokens") != std::string::npos) {
         contract.outputSlotByGraphName[name] = "x0";
         x0Bound = true;
+      }
+      else if (name.find("attn_mask") != std::string::npos) {
+        // Two mask-derived values cross this boundary: the additive mask, which has rank 2,
+        // and the total length, which has none. Rank is the difference the attention op
+        // itself makes when it consumes them as separate inputs, so it is a structural
+        // distinction rather than a naming guess. An unshaped output belongs to the length,
+        // because the export leaves that derived scalar unshaped.
+        const auto& outputType = output.type().tensor_type();
+        const bool additiveMask = outputType.has_shape() && outputType.shape().dim_size() >= 2;
+        if (additiveMask && !maskBound) {
+          contract.outputSlotByGraphName[name] = "attn_mask";
+          maskBound = true;
+        }
+        else if (!additiveMask && !lengthBound) {
+          contract.outputSlotByGraphName[name] = "total_sequence_length";
+          lengthBound = true;
+        }
       }
     }
     if (!positionsBound && !maskBound && !x0Bound) {
@@ -2323,7 +2340,7 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
         positionsBound = maskBound = x0Bound = true;
       }
     }
-    if (!positionsBound || !maskBound || !x0Bound) {
+    if (!positionsBound || !maskBound || !lengthBound || !x0Bound) {
       // An INIT that does not expose the export's three values is not the frozen model --
       // a small fixture or another export. Its binding is then identity, which the caller
       // of this function records, rather than a guess about which output is which. The
@@ -2390,17 +2407,29 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
   // synthesized. Mapping both to one slot would make the parent hand the same bundle to
   // two inputs that expect different ranks.
   bool maskSlotTaken = false;
+  bool lengthSlotTaken = false;
   for (const auto& input : graph.input()) {
     const auto name = input.name();
     if (contract.inputSlotByGraphName.count(name) != 0) continue;
     if (isPastTensorName(name)) continue;
     const auto& type = input.type().tensor_type();
-    const bool scalar = type.shape().dim_size() == 0;
-    if (!scalar && name.find("attn_mask") != std::string::npos && !maskSlotTaken) {
-      contract.inputSlotByGraphName[name] = "attn_mask";
-      maskSlotTaken = true;
+    const bool additiveMask = type.has_shape() && type.shape().dim_size() >= 2;
+    if (name.find("attn_mask") != std::string::npos) {
+      // The same two mask-derived values INIT produces: the additive mask and the scalar
+      // length, told apart by rank. Both are plan slots, because INIT produces both.
+      if (additiveMask && !maskSlotTaken) {
+        contract.inputSlotByGraphName[name] = "attn_mask";
+        maskSlotTaken = true;
+      }
+      else if (!additiveMask && !lengthSlotTaken) {
+        contract.inputSlotByGraphName[name] = "total_sequence_length";
+        lengthSlotTaken = true;
+      }
+      else {
+        contract.synthesizedInputGraphNames.push_back(name);
+      }
     }
-    else if (!scalar && name.find("pos_ids") != std::string::npos) {
+    else if (!additiveMask && name.find("pos_ids") != std::string::npos) {
       contract.inputSlotByGraphName[name] = "position_ids";
     }
     else {
