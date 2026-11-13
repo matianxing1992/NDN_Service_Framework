@@ -579,6 +579,10 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     if (splitterKind == "QWEN" || splitterKind == "LLAMA")
       source.preparedMetadataJson = preparedMetadataJson(model, *entry.sourceGraphInspection);
   }
+  // The projected-plan branch runs after the source is moved into the catalog entry, so
+  // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
+  // the serialized graph, which only exists before the move.
+  const std::vector<std::uint8_t> planningGraphBytes = source.modelBytes;
   entry.source = std::move(source);
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
@@ -604,7 +608,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
                   [] (const auto& degree) {
                     return degree.template get<std::uint64_t>() > 1;
                   })) {
-    const auto shape = qwen::deriveQwenTpShape(source.modelBytes, split.at("layer_ranges")
+    const auto shape = qwen::deriveQwenTpShape(planningGraphBytes, split.at("layer_ranges")
       .back().at(1).get<std::uint64_t>());
     std::vector<qwen::QwenTpUnit> units;
     std::map<std::string, std::string> artifactByUnit;
@@ -674,7 +678,11 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   }
   if (projectedCandidate) {
     auto candidate = std::move(*projectedCandidate);
-    candidate.requirementsByRole = resourceProfiles;
+    // No resource override here. `resourceProfiles` is keyed by the catalog's stage
+    // roles, while this candidate's roles are the expanded unit names, so assigning it
+    // would replace a complete per-unit cover with a per-stage one and the candidate
+    // would be refused for an incomplete role cover. The unit requirements were derived
+    // from each stage's profile when the units were built.
     candidate.candidateDigest = candidate.computedDigest();
     auto bound = result.preparation->bindStateContracts(
       result.model, candidate, result.stateMapping, planningControl,
