@@ -8595,6 +8595,178 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(UnsplitReferenceSamplesThroughTheProductionRunner)
+{
+  // The correctness check, using the production ONNX runner on the unsplit export rather than a
+  // hand-built Ort::Value set. That runner already knows how to seed a stateful graph's first
+  // round: it derives each KV input's shape from the graph, keeps a dynamic sequence axis at
+  // zero for a prefill, and fills the buffer. Reimplementing that is what crashed a hand-rolled
+  // attempt, so the reference reuses it instead.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  const auto  root = std::filesystem::temp_directory_path() /
+    ("spec224-unsplit-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "ref", cleanupError);
+  std::filesystem::copy_file(source, root / "ref" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "ref" / "model.onnx_data", cleanupError);
+  if (cleanupError)
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "ref" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  NativeModelRunnerSpec spec;
+  spec.role = "REF";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "ref" / "model.onnx").string();
+  // Declaring the state makes the runner a stateful session, which is what lets it seed a zero
+  // past for epoch zero instead of demanding one.
+  {
+    std::string stateInputs;
+    std::string stateOutputs;
+    std::string successor;
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto past = "past_key_values." + std::to_string(layer) + "." + kind;
+        const auto present = "present." + std::to_string(layer) + "." + kind;
+        if (!stateInputs.empty()) {
+          stateInputs += ',';
+          stateOutputs += ',';
+          successor += ',';
+        }
+        stateInputs += past;
+        stateOutputs += present;
+        successor += past + "=" + present;
+      }
+    }
+    // Nothing is declared stateful. The export's KV inputs are ordinary graph inputs here, and
+    // this case supplies them directly: a zero-length past is exactly what "no history" is, and
+    // an explicit value avoids the lineage the strict stateful path requires.
+    spec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    spec.metadata["outputScope"] = "logits";
+  }
+
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  std::shared_ptr<NativeModelRunner> runner;
+  try {
+    runner = factory.create(spec);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("unsplit runner: ") + error.what());
+  }
+  BOOST_REQUIRE(runner != nullptr);
+
+  RoleSpec role;
+  role.role = "REF";
+  role.requestId = "/request/unsplit";
+  role.attemptEpoch = 1;
+
+  const auto makeToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  std::map<std::string, TensorBundle> initial{
+    {"input_ids", makeEncodedTensorBundle("input_ids", {makeToken("input_ids", 7)})},
+    {"attention_mask", makeEncodedTensorBundle("attention_mask",
+      {makeToken("attention_mask", 1)})},
+    {"position_ids", makeEncodedTensorBundle("position_ids",
+      {makeToken("position_ids", 0)})},
+  };
+  // Empty past for all 28 layers, at the export's own width: eight KV heads of 128.
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"key", "value"}) {
+      const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+      NamedTensor past;
+      past.name = name;
+      past.elementType = TensorElementType::Float32;
+      past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+      initial.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+    }
+  }
+  // The two mask-derived scalars, read as an additive mask and a total length of one.
+  {
+    NamedTensor mask;
+    mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+    mask.elementType = TensorElementType::Int32;
+    mask.shape = {1, 1};
+    mask.payload.assign(sizeof(std::int32_t), 0);
+    initial.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+    NamedTensor length;
+    length.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+    length.elementType = TensorElementType::Int32;
+    length.shape = {};
+    const std::int32_t one = 1;
+    length.payload.resize(sizeof(one));
+    std::memcpy(length.payload.data(), &one, sizeof(one));
+    initial.emplace(length.name, makeEncodedTensorBundle(length.name, {std::move(length)}));
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(120));
+  auto io = std::make_shared<CountingDependencyIo>();
+  ProviderRoleResult result;
+  try {
+    result = worker.executePreparedAsync("/request/unsplit", std::move(role), io,
+                                         [runner] { return runner; }, initial).get();
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("unsplit execution: ") + error.what());
+  }
+
+  // The unsplit graph's logits are its own; nothing is summed.
+  const auto logits = result.outputsByScope.find("logits");
+  BOOST_REQUIRE_MESSAGE(logits != result.outputsByScope.end(),
+    "the unsplit run produced no logits");
+  std::vector<float> values;
+  if (isEncodedTensorBundle(logits->second.payload)) {
+    // The bundle holds the logits and all 56 KV successors, because the whole graph ran. Find
+    // the one named `logits` rather than assuming it is first or alone.
+    const auto tensors = decodeTensorBundle(logits->second.payload);
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [] (const auto& tensor) { return tensor.name == "logits"; });
+    BOOST_REQUIRE_MESSAGE(found != tensors.end(),
+      "the unsplit bundle carries no tensor named logits");
+    const auto* data = reinterpret_cast<const float*>(found->payload.data());
+    values.assign(data, data + found->payload.size() / sizeof(float));
+  }
+  else {
+    const auto* data = reinterpret_cast<const float*>(logits->second.payload.data());
+    values.assign(data, data + logits->second.payload.size() / sizeof(float));
+  }
+  BOOST_REQUIRE_EQUAL(values.size(), static_cast<std::size_t>(151936));
+  std::size_t best = 0;
+  for (std::size_t index = 1; index < values.size(); ++index)
+    if (values[index] > values[best]) best = index;
+  BOOST_TEST_MESSAGE("unsplit logits: count=" << values.size()
+                    << " argmax=" << best << " logit=" << values[best]);
+  // The distributed runs produced token 25 from this prompt. If the split is faithful the
+  // unsplit export must agree; a difference is the finding, not something to adjust.
+  BOOST_CHECK_EQUAL(best, 25U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(TwoCoordinatorsRunTheFullStackAndOneSamples)
 {
   // The smallest bidirectional exchange under the coordinator: one layer's attention and MLP,
