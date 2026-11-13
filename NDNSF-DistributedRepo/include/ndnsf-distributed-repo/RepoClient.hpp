@@ -1,7 +1,9 @@
 #ifndef NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_HPP
 #define NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_HPP
 
+#include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
+#include "ndnsf-distributed-repo/repo-client-types.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -90,6 +92,46 @@ struct StoreOptions
 
 class RepoClient
 {
+public:
+  /* Unified client facade (Spec 240). The static helpers below remain during
+   * migration; the facade is the only entry that will be installed later. */
+  static RepoClient makeInApp(InAppRepoConfig config);
+  static RepoClient makePersistent(std::shared_ptr<ndn_service_framework::ServiceUser> user,
+                                   PersistentRepoClientConfig config = {});
+
+  RepoClient(RepoClient&&) noexcept;
+  RepoClient& operator=(RepoClient&&) noexcept;
+  ~RepoClient();
+
+  RepoClient(const RepoClient&) = delete;
+  RepoClient& operator=(const RepoClient&) = delete;
+
+  RepoPublishResult publishFile(const RepoFilePublication& input,
+                                const RepoOperationOptions& options);
+  RepoPublishResult publishData(const RepoDataPublication& input,
+                                const RepoOperationOptions& options);
+  RepoFetchResult fetchFile(const RepoFileFetch& input,
+                            const RepoOperationOptions& options) const;
+  RepoDataFetchResult fetchData(const RepoDataFetch& input,
+                                const RepoOperationOptions& options) const;
+  RepoWriteGrant authorizeWrite(const RepoWriteAuthorization& input,
+                                const RepoOperationOptions& options);
+  RepoInspection inspect(const RepoInspectionRequest& input,
+                         const RepoOperationOptions& options) const;
+  RepoPage list(const RepoListRequest& input,
+                const RepoOperationOptions& options) const;
+  RepoDeleteResult remove(const RepoDeleteRequest& input,
+                          const RepoOperationOptions& options);
+  RepoCandidateSet discover(const RepoDiscoveryRequest& input,
+                            const RepoOperationOptions& options) const;
+
+  bool close(std::chrono::steady_clock::time_point deadline);
+
+private:
+  struct Impl;
+  explicit RepoClient(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> m_impl;
+
 public:
   static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo/Object/v1";
 

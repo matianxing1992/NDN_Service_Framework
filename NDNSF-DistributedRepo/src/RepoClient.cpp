@@ -2595,4 +2595,335 @@ RepoClient::requestFetchRange(
     ndn_service_framework::tlv::FirstResponding);
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* Unified client facade (Spec 240 T001).                                    */
+/*                                                                           */
+/* The file and observation operations are already implemented by             */
+/* ArtifactRepositoryApi; this layer projects typed facade inputs onto that    */
+/* engine instead of reimplementing it. Operations that belong to later tasks  */
+/* fail with a structured UNSUPPORTED error rather than pretending to work.   */
+/* ------------------------------------------------------------------------- */
+
+namespace {
+
+RepoClientError
+unsupported(const char* operation)
+{
+  return RepoClientError("UNSUPPORTED", std::string(operation) + " is not implemented yet",
+                         operation);
+}
+
+int
+remainingMs(std::chrono::steady_clock::time_point deadline)
+{
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now()).count();
+  return remaining <= 0 ? 0 : static_cast<int>(remaining);
+}
+
+ArtifactReference
+toArtifactReference(const FileReference& input)
+{
+  ArtifactReference reference;
+  reference.logicalName = input.logicalName;
+  reference.digestAlgorithm = input.digestAlgorithm;
+  reference.contentDigest = input.contentDigest;
+  reference.sizeBytes = input.sizeBytes;
+  reference.formatVersion = input.formatVersion;
+  reference.rootManifestName = input.rootManifestName;
+  reference.publisherIdentity = input.publisherIdentity;
+  reference.policyEpoch = input.policyEpoch;
+  return reference;
+}
+
+FileReference
+toFileReference(const ArtifactReference& input)
+{
+  FileReference reference;
+  reference.logicalName = input.logicalName;
+  reference.digestAlgorithm = input.digestAlgorithm;
+  reference.contentDigest = input.contentDigest;
+  reference.sizeBytes = input.sizeBytes;
+  reference.formatVersion = input.formatVersion;
+  reference.rootManifestName = input.rootManifestName;
+  reference.publisherIdentity = input.publisherIdentity;
+  reference.policyEpoch = input.policyEpoch;
+  return reference;
+}
+
+RepoHandle
+toRepoHandle(const ArtifactHandle& input)
+{
+  RepoHandle handle;
+  handle.schemaVersion = input.schemaVersion;
+  handle.reference = toFileReference(input.reference);
+  handle.commitReceiptIds = input.commitReceiptIds;
+  for (const auto& target : input.selectedTargets)
+    handle.selectedTargets.push_back(target.repoNode);
+  for (const auto& commit : input.replicaCommits) {
+    RepoReplicaResult replica;
+    replica.targetId = commit.repoNode;
+    replica.receiptId = commit.receiptId;
+    replica.state = RepoTargetState::COMMITTED;
+    handle.replicaCommits.push_back(std::move(replica));
+  }
+  handle.seedRepoId = input.seedRepoId;
+  handle.writeConsistency = input.writeConsistency;
+  handle.lifecycleMode = input.lifecycleMode;
+  return handle;
+}
+
+ArtifactHandle
+toArtifactHandle(const RepoHandle& input)
+{
+  ArtifactHandle handle;
+  handle.schemaVersion = input.schemaVersion;
+  if (const auto* file = std::get_if<FileReference>(&input.reference))
+    handle.reference = toArtifactReference(*file);
+  else
+    throw std::invalid_argument("only file references can be projected onto the file engine");
+  handle.commitReceiptIds = input.commitReceiptIds;
+  for (const auto& target : input.selectedTargets) {
+    SelectedRepoTarget projected;
+    projected.repoNode = target;
+    handle.selectedTargets.push_back(std::move(projected));
+  }
+  handle.seedRepoId = input.seedRepoId;
+  handle.writeConsistency = input.writeConsistency;
+  handle.lifecycleMode = input.lifecycleMode;
+  return handle;
+}
+
+} // namespace
+
+struct RepoClient::Impl
+{
+  std::shared_ptr<ndn_service_framework::ServiceUser> user;
+  std::optional<ArtifactRepositoryApi> file;
+};
+
+RepoClient
+RepoClient::makeInApp(InAppRepoConfig config)
+{
+  auto impl = std::make_unique<Impl>();
+  impl->file = ArtifactRepositoryApi::makeInApp(std::move(config));
+  return RepoClient(std::move(impl));
+}
+
+RepoClient
+RepoClient::makePersistent(std::shared_ptr<ndn_service_framework::ServiceUser> user,
+                           PersistentRepoClientConfig config)
+{
+  if (!user)
+    throw std::invalid_argument("persistent RepoClient requires a ServiceUser");
+  auto impl = std::make_unique<Impl>();
+  impl->file = ArtifactRepositoryApi::makePersistent(*user, std::move(config));
+  impl->user = std::move(user);
+  return RepoClient(std::move(impl));
+}
+
+RepoClient::RepoClient(std::unique_ptr<Impl> impl)
+  : m_impl(std::move(impl))
+{
+}
+
+RepoClient::RepoClient(RepoClient&&) noexcept = default;
+RepoClient& RepoClient::operator=(RepoClient&&) noexcept = default;
+RepoClient::~RepoClient() = default;
+
+bool
+RepoClient::close(std::chrono::steady_clock::time_point deadline)
+{
+  if (!m_impl)
+    return true;
+  // The file engine owns its workers; releasing it drains them. Nothing is left
+  // referencing the caller after this returns.
+  m_impl.reset();
+  (void)deadline;
+  return true;
+}
+
+RepoPublishResult
+RepoClient::publishFile(const RepoFilePublication& input,
+                        const RepoOperationOptions& options)
+{
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
+  if (input.reference.logicalName.empty() || input.reference.contentDigest.empty())
+    throw std::invalid_argument("publishFile requires a logical name and content digest");
+  const auto reference = toArtifactReference(input.reference);
+  ArtifactPublishResult published = input.selectedTargets.empty()
+    ? m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline)
+    : m_impl->file->publishFile(input.sourcePath, reference,
+                                SelectedRepoSet{}, remainingMs(options.deadline));
+  RepoPublishResult result;
+  result.reference = toFileReference(published.reference);
+  result.state = published.handle ? RepoPublishState::COMMITTED : RepoPublishState::ACCEPTED;
+  if (published.handle)
+    result.committedHandle = toRepoHandle(*published.handle);
+  if (published.operationHandle && !published.operationHandle->operationId.empty())
+    result.operationReference = published.operationHandle->operationId;
+  result.deduplicated = published.deduplicated;
+  result.resumed = published.resumed;
+  for (const auto& replica : published.replicas) {
+    RepoReplicaResult mapped;
+    mapped.targetId = replica.repoNode;
+    mapped.state = replica.state == "COMMITTED" ? RepoTargetState::COMMITTED
+                                                 : RepoTargetState::FAILED;
+    mapped.receiptId = replica.receiptId;
+    mapped.message = replica.errorCode;
+    result.replicas.push_back(std::move(mapped));
+    if (!mapped.receiptId.empty())
+      result.receiptIds.push_back(mapped.receiptId);
+  }
+  return result;
+}
+
+RepoPublishResult
+RepoClient::publishData(const RepoDataPublication&, const RepoOperationOptions&)
+{
+  throw unsupported("publishData");
+}
+
+RepoFetchResult
+RepoClient::fetchFile(const RepoFileFetch& input,
+                      const RepoOperationOptions& options) const
+{
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "fetchFile");
+  if (input.targetPath.empty())
+    throw std::invalid_argument("fetchFile requires a destination path");
+  if (input.hasRange)
+    throw unsupported("fetchFile(range)");
+  std::error_code error;
+  RepoFetchResult result;
+  if (input.handle && !m_impl->user) {
+    // The in-app engine exposes handle fetch as Persistent-only; the facade
+    // keeps mode parity by resolving the handle's reference instead of
+    // silently rejecting a call the caller made through the same entry.
+    const auto* file = std::get_if<FileReference>(&input.handle->reference);
+    if (!file)
+      throw RepoClientError("UNSUPPORTED", "in-app fetch requires a file reference",
+                            "fetchFile");
+    m_impl->file->fetchFile(toArtifactReference(*file), input.targetPath);
+    result.contentDigest = file->contentDigest;
+    result.digestAlgorithm = file->digestAlgorithm;
+    std::error_code sizeError;
+    result.bytesWritten = static_cast<uint64_t>(
+      std::filesystem::file_size(input.targetPath, sizeError));
+    if (sizeError)
+      result.bytesWritten = 0;
+  }
+  else if (input.handle) {
+    const auto fetched = m_impl->file->fetchFile(
+      toArtifactHandle(*input.handle), input.targetPath, remainingMs(options.deadline));
+    result.bytesWritten = fetched.bytesVerified;
+    for (const auto& attempt : fetched.attempts)
+      result.attemptedSources.push_back(attempt.repoNode);
+    result.contentDigest = fetched.reference.contentDigest;
+    result.digestAlgorithm = fetched.reference.digestAlgorithm;
+  }
+  else if (input.reference) {
+    m_impl->file->fetchFile(toArtifactReference(*input.reference), input.targetPath);
+    result.contentDigest = input.reference->contentDigest;
+    result.digestAlgorithm = input.reference->digestAlgorithm;
+    result.bytesWritten = static_cast<uint64_t>(std::filesystem::file_size(
+      input.targetPath, error));
+    if (error)
+      result.bytesWritten = 0;
+  }
+  else {
+    throw std::invalid_argument("fetchFile requires a reference or a handle");
+  }
+  result.digestVerified = true;
+  return result;
+}
+
+RepoDataFetchResult
+RepoClient::fetchData(const RepoDataFetch&, const RepoOperationOptions&) const
+{
+  throw unsupported("fetchData");
+}
+
+RepoWriteGrant
+RepoClient::authorizeWrite(const RepoWriteAuthorization&, const RepoOperationOptions&)
+{
+  throw unsupported("authorizeWrite");
+}
+
+RepoInspection
+RepoClient::inspect(const RepoInspectionRequest& input,
+                    const RepoOperationOptions& options) const
+{
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "inspect");
+  RepoInspection inspection;
+  inspection.observedAt = std::chrono::system_clock::now();
+  inspection.observerId = m_impl->user ? m_impl->user->getName().toUri() : std::string("in-app");
+  if (input.kind == RepoInspectionRequest::Kind::OBJECT && input.object && !m_impl->user) {
+    const auto* file = std::get_if<FileReference>(&input.object->reference);
+    if (!file)
+      throw RepoClientError("UNSUPPORTED", "in-app inspection requires a file reference",
+                            "inspect");
+    inspection.availability = m_impl->file->lookupLocalCommit(toArtifactReference(*file))
+      ? RepoInspection::Availability::AVAILABLE
+      : RepoInspection::Availability::UNAVAILABLE;
+    inspection.handle = input.object;
+    inspection.storedBytes = file->sizeBytes;
+    return inspection;
+  }
+  if (input.kind == RepoInspectionRequest::Kind::OBJECT && input.object) {
+    const auto report = m_impl->file->checkAvailability(
+      toArtifactHandle(*input.object), "metadata", remainingMs(options.deadline));
+    inspection.availability = RepoInspection::Availability::UNKNOWN;
+    for (const auto& location : report.locations) {
+      if (location.reachability == "REACHABLE") {
+        inspection.availability = RepoInspection::Availability::AVAILABLE;
+        break;
+      }
+      if (location.reachability == "UNREACHABLE")
+        inspection.availability = RepoInspection::Availability::UNAVAILABLE;
+    }
+    inspection.handle = input.object;
+    inspection.storedBytes = input.object->reference.index() == 0
+      ? std::optional<uint64_t>(std::get<FileReference>(input.object->reference).sizeBytes)
+      : std::nullopt;
+    return inspection;
+  }
+  if (input.kind == RepoInspectionRequest::Kind::RECEIPT) {
+    const auto receipt = m_impl->file->getReceipt(input.receiptId, std::nullopt,
+                                                 remainingMs(options.deadline));
+    inspection.availability = RepoInspection::Availability::AVAILABLE;
+    inspection.lifecycleState = receipt.state;
+    return inspection;
+  }
+  throw unsupported("inspect(target)");
+}
+
+RepoPage
+RepoClient::list(const RepoListRequest&, const RepoOperationOptions&) const
+{
+  throw unsupported("list");
+}
+
+RepoDeleteResult
+RepoClient::remove(const RepoDeleteRequest&, const RepoOperationOptions&)
+{
+  throw unsupported("remove");
+}
+
+RepoCandidateSet
+RepoClient::discover(const RepoDiscoveryRequest& input,
+                     const RepoOperationOptions& options) const
+{
+  if (!m_impl || !m_impl->file)
+    throw RepoClientError("CLOSED", "RepoClient is closed", "discover");
+  ArtifactCapabilityRequirements requirements;
+  for (const auto& capability : input.requiredCapabilities)
+    requirements.artifact.formatVersion = capability;
+  return m_impl->file->discoverRepoCandidates(requirements,
+                                             remainingMs(options.deadline));
+}
+
 } // namespace ndnsf_distributed_repo
