@@ -2436,12 +2436,36 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
       contract.inputSlotByGraphName[hiddenInputs[0]] = "merged";
       contract.inputSlotByGraphName[hiddenInputs[1]] = "post_residual";
     }
+    // The head returns the vocabulary projection and, in the frozen export, the final
+    // normalization's own output as well. Only the projection is a plan slot; binding both
+    // would give two graph tensors the same slot id and the step validator rejects that as
+    // ambiguous, so the extra one is recorded as unbound rather than guessed at.
+    bool logitsBound = false;
     for (const auto& output : graph.output()) {
       if (isStateTensorName(output.name())) {
         contract.stateOutputGraphNames.push_back(output.name());
         continue;
       }
-      contract.outputSlotByGraphName[output.name()] = "logits";
+      // The projection is the one declared with the vocabulary width, which is the only
+      // output that wide.
+      const auto& type = output.type().tensor_type();
+      const bool vocabularyWide = type.has_shape() && type.shape().dim_size() >= 2 &&
+        type.shape().dim(type.shape().dim_size() - 1).has_dim_value() &&
+        static_cast<std::uint64_t>(
+          type.shape().dim(type.shape().dim_size() - 1).dim_value()) > 4096;
+      if (!logitsBound && (vocabularyWide || output.name() == "logits")) {
+        contract.outputSlotByGraphName[output.name()] = "logits";
+        logitsBound = true;
+      }
+    }
+    if (!logitsBound) {
+      // A head whose projection is not vocabulary-wide is not this model's head; fall back to
+      // the first non-state output so a smaller fixture still binds something.
+      for (const auto& output : graph.output()) {
+        if (isStateTensorName(output.name())) continue;
+        contract.outputSlotByGraphName[output.name()] = "logits";
+        break;
+      }
     }
     return;
   }

@@ -8172,7 +8172,7 @@ private:
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirOwnPartialsAcrossAllTwentyEightLayers)
+BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
 {
   // The distributed step: two workers, each running its own unit's 28 layers, handing each
   // other the partials they actually computed. Every earlier execution in this suite either
@@ -8277,10 +8277,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirOwnPartialsAcrossAllTwentyEightLayer
     std::vector<NativeExecutionStepSpec> steps;
     for (const auto& step : candidate.executionPlan.steps) {
       if (step.unitId != unit) continue;
-      if (step.stepId.find("/HEAD") != std::string::npos) continue;
       steps.push_back(step);
     }
-    BOOST_REQUIRE_EQUAL(steps.size(), 1U + 4U * 28U);
+    // INIT plus four steps per layer, and the head on the egress unit only.
+    const bool egress = std::string(unit) == "S0R0";
+    BOOST_REQUIRE_EQUAL(steps.size(), 1U + 4U * 28U + (egress ? 1U : 0U));
     NativeModelRunnerSpec spec;
     spec.role = unit;
     spec.kind = "onnx";
@@ -8411,6 +8412,52 @@ BOOST_AUTO_TEST_CASE(TwoWorkersExchangeTheirOwnPartialsAcrossAllTwentyEightLayer
       if (scope.first.find("mlp-27-from-" + std::string(item.first)) != std::string::npos)
         ownFinal = true;
     BOOST_CHECK_MESSAGE(ownFinal, "unit " + item.first + " did not reach its last layer");
+    // The egress unit's head produced vocabulary-wide logits; the peer has no head step.
+    const auto logits = item.second.outputsByScope.find("logits");
+    if (item.first == "S0R0") {
+      BOOST_REQUIRE_MESSAGE(logits != item.second.outputsByScope.end(),
+        "the egress unit produced no logits");
+      // The single-output path returns the tensor's bytes directly rather than a bundle,
+      // because the ordinary runner keys a lone output by its scope. Both shapes are
+      // legitimate, so the value is read whichever it is.
+      std::vector<float> values;
+      if (isEncodedTensorBundle(logits->second.payload)) {
+        const auto tensors = decodeTensorBundle(logits->second.payload);
+        BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+        BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
+        const auto* data = reinterpret_cast<const float*>(tensors.front().payload.data());
+        values.assign(data, data + tensors.front().payload.size() / sizeof(float));
+      }
+      else {
+        BOOST_TEST_MESSAGE("logits payload bytes=" << logits->second.payload.size());
+        BOOST_REQUIRE_EQUAL(logits->second.payload.size() % sizeof(float), 0U);
+        const auto* data = reinterpret_cast<const float*>(logits->second.payload.data());
+        values.assign(data, data + logits->second.payload.size() / sizeof(float));
+      }
+      // Vocabulary-wide, not hidden-wide: a narrowed head would still "produce logits".
+      BOOST_TEST_MESSAGE("logits count=" << values.size());
+      BOOST_CHECK_EQUAL(values.size(), static_cast<std::size_t>(shape.vocab));
+      // And they are real numbers, so the head actually executed.
+      double energy = 0.0;
+      for (const auto value : values) energy += std::fabs(double(value));
+      BOOST_TEST_MESSAGE("logits energy=" << energy);
+      BOOST_CHECK_GT(energy, 0.0);
+      // Greedy sampling over the real logits: the argmax is a token this model produced from
+      // a real forward pass, not a value the case invented. Distributed TP has now reached a
+      // sampled token in-process.
+      std::size_t best = 0;
+      for (std::size_t index = 1; index < values.size(); ++index)
+        if (values[index] > values[best]) best = index;
+      BOOST_TEST_MESSAGE("sampled token=" << best << " logit=" << values[best]);
+      BOOST_CHECK_LT(best, values.size());
+      // Not the zero index by accident: every logit is finite and the winner is the maximum.
+      BOOST_CHECK(std::isfinite(values[best]));
+      BOOST_CHECK_GE(values[best], values.front());
+    }
+    else {
+      BOOST_CHECK_MESSAGE(logits == item.second.outputsByScope.end(),
+        "the non-egress unit produced logits it has no head for");
+    }
     BOOST_TEST_MESSAGE("unit " << item.first << " published=" << published);
   }
 
