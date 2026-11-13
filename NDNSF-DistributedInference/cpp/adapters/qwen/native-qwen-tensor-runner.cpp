@@ -360,13 +360,24 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
   child.activeStep.reset();
   child.roleSteps.reset();
   child.stepInputsBySlot.clear();
+  // The contract owns the binding, so the parent translates rather than guesses. A slot
+  // whose id happens to equal the graph name still works, because the binding for such an
+  // entry says so; what the parent must not do is assume it.
   for (const auto& graphInput : entry->inputNames) {
-    // The step names its own slots; the contract lists graph names. A slot whose
-    // id equals the graph input is the direct case, and the caller can also
-    // provide an explicit mapping through the child spec's inputScope metadata.
-    const auto direct = ctx.stepInputsBySlot.find(graphInput);
-    if (direct != ctx.stepInputsBySlot.end())
-      child.inputsByScope.emplace(graphInput, direct->second);
+    const auto bound = entry->inputSlotByGraphName.find(graphInput);
+    if (bound == entry->inputSlotByGraphName.end()) {
+      // A synthesized input has no slot by construction: the frozen export derives it
+      // from a value the plan does carry, so the caller supplies it under the graph name
+      // directly. Naming it in the contract is what keeps this from looking like an
+      // omission.
+      const auto direct = ctx.stepInputsBySlot.find(graphInput);
+      if (direct != ctx.stepInputsBySlot.end())
+        child.inputsByScope.emplace(graphInput, direct->second);
+      continue;
+    }
+    const auto value = ctx.stepInputsBySlot.find(bound->second);
+    if (value == ctx.stepInputsBySlot.end()) continue;
+    child.inputsByScope.emplace(graphInput, value->second);
   }
   if (child.inputsByScope.empty())
     throw std::invalid_argument(
@@ -403,14 +414,39 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
     }
     byName.emplace(item.first, bundle);
   }
+  // Translate graph outputs onto the step's declared slots, and carry the pre-MLP
+  // residual through from the input side when the entry does not return it. Both
+  // translations come from the contract, so a slot the contract does not name never
+  // appears in the result and a graph output the child omitted is an error.
   std::map<std::string, TensorBundle> outputs;
   for (const auto& graphOutput : entry->outputNames) {
+    const auto bound = entry->outputSlotByGraphName.find(graphOutput);
+    if (bound == entry->outputSlotByGraphName.end()) continue;
     const auto found = byName.find(graphOutput);
     if (found == byName.end())
       throw std::runtime_error(
         "entry did not produce a declared output: " + graphOutput);
-    outputs.emplace(graphOutput, found->second);
+    outputs.emplace(bound->second, found->second);
   }
+  for (const auto& item : entry->passthroughSlotByInputGraphName) {
+    const auto source = ctx.stepInputsBySlot.find(
+      entry->inputSlotByGraphName.at(item.first));
+    if (source == ctx.stepInputsBySlot.end()) {
+      throw std::invalid_argument(
+        "entry needs a passthrough slot it was not given: " + item.second);
+    }
+    outputs.emplace(item.second, source->second);
+  }
+  // Decode state travels under its own declared names, never under a step slot.
+  for (const auto& stateName : entry->stateOutputGraphNames) {
+    const auto found = byName.find(stateName);
+    if (found == byName.end())
+      throw std::runtime_error(
+        "entry did not produce its declared state: " + stateName);
+    outputs.emplace(stateName, found->second);
+  }
+  if (outputs.empty())
+    throw std::runtime_error("entry produced no bound output");
   return outputs;
 }
 

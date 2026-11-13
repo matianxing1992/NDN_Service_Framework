@@ -8194,7 +8194,19 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     step.unitId = unit;
     step.operation = "CALL_SUBGRAPH";
     step.artifactEntry = entry->entryId;
+    // The step names the contract's slot ids, not the graph names. Assigning graph names
+    // as slot ids would satisfy the runner by coincidence and would never exercise the
+    // translation this case exists to check.
     for (const auto& name : entry->inputNames) {
+      NativeStepSlotSpec slot;
+      const auto bound = entry->inputSlotByGraphName.find(name);
+      if (bound == entry->inputSlotByGraphName.end()) continue;
+      slot.slotId = bound->second;
+      slot.source = "LOCAL_STEP";
+      step.inputSlots.push_back(slot);
+    }
+    // Synthesized inputs have no slot; the step carries them under their graph name.
+    for (const auto& name : entry->synthesizedInputGraphNames) {
       NativeStepSlotSpec slot;
       slot.slotId = name;
       slot.source = "LOCAL_STEP";
@@ -8206,6 +8218,14 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
       std::vector<NativeExecutionStepSpec>{step});
     for (const auto& item : feeds) context.stepInputsBySlot.emplace(item.first, item.second);
+    // The feeds are keyed by graph name; re-key them onto the slots the step declares.
+    context.stepInputsBySlot.clear();
+    for (const auto& item : feeds) {
+      const auto bound = entry->inputSlotByGraphName.find(item.first);
+      context.stepInputsBySlot.emplace(
+        bound == entry->inputSlotByGraphName.end() ? item.first : bound->second,
+        item.second);
+    }
     return parent->run(context);
   };
 
@@ -8230,6 +8250,9 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     std::map<std::string, TensorBundle> feeds;
     for (const auto& value : model.graph().input()) {
       const auto& name = value.name();
+      // Now that the entry contract declares its binding, the step supplies slot ids
+      // rather than graph names. Feed under both so the test exercises the translation
+      // instead of assuming a slot happens to equal a tensor name.
       const auto elementType = value.type().tensor_type().elem_type();
       std::vector<std::int64_t> dims;
       for (const auto& dim : value.type().tensor_type().shape().dim()) {
@@ -8277,6 +8300,8 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
       bundle.name = name;
       bundle.payload = encodeTensorBundle({tensor});
       bundle.expectedBytes = bundle.payload.size();
+      // Feed under the graph name; the runner's binding maps slot to graph, so a slot id
+      // equal to the graph name is only correct for an entry whose contract says so.
       feeds.emplace(name, std::move(bundle));
     }
     return feeds;

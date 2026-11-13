@@ -304,24 +304,27 @@ struct QwenTpEntryContract
   // Content identity of that file, so a cached entry can be checked rather than
   // trusted by name.
   std::string graphDigest;
-  // Explicit bidirectional binding between the entry's own graph tensors and the
-  // template's slot ids. A graph name is a fact about the export; a slot id is a fact
-  // about the sealed plan, and nothing in either one implies the other. Without this map
-  // the parent would have to guess from tensor names, which is exactly the kind of
-  // inference C4 forbids.
+  // Explicit binding between the entry's own graph tensors and the template's slot ids.
+  // A graph name is a fact about the export; a slot id is a fact about the sealed plan,
+  // and neither implies the other. Frozen at assembly, where the entry's kind and the
+  // frozen export's node structure are both in hand, so the parent never has to guess
+  // from a tensor name -- which is the inference C4 forbids.
   //
-  // Frozen at assembly, where both the graph and the entry's kind are known.
-  std::map<std::string, std::string> slotByInputGraphName;
-  std::map<std::string, std::string> slotByOutputGraphName;
-  // Output slots the entry does not recompute. The frozen export's attention subgraph
-  // returns the projected result and the KV successors, but the template also needs the
-  // pre-MLP residual X -- the value the attention left in the stream. That value is the
-  // entry's own hidden input, so the parent passes it through under the declared slot
-  // name rather than asking the child to produce a tensor it does not have.
+  // An output slot the entry does not compute itself is listed in
+  // `passthroughSlotByInputGraphName` instead: the attention entry leaves the pre-MLP
+  // residual in its hidden input rather than returning it, so that value is passed
+  // through rather than asked for.
+  std::map<std::string, std::string> inputSlotByGraphName;
+  std::map<std::string, std::string> outputSlotByGraphName;
   std::map<std::string, std::string> passthroughSlotByInputGraphName;
-  // Graph outputs that are decode state rather than step values. They travel under their
-  // declared state names and are never folded into a SUM contribution.
-  std::vector<std::string> stateOutputNames;
+  // Graph outputs that are decode state. They travel under their declared state names and
+  // are never folded into a reduction contribution.
+  std::vector<std::string> stateOutputGraphNames;
+  // Graph inputs the entry reads that no template slot produces. The frozen export
+  // derives its mask scalars from the accepted mask, so a caller must synthesize them
+  // rather than look them up; naming them here keeps that gap visible instead of letting
+  // an omission look like a complete binding.
+  std::vector<std::string> synthesizedInputGraphNames;
 
   void validate() const;
 

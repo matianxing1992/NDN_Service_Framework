@@ -2140,6 +2140,12 @@ qwenTpEntryTableJson(const std::vector<QwenTpEntryContract>& entries)
     item["graphDigest"] = entry.graphDigest;
     item["inputNames"] = NativeJson(entry.inputNames);
     item["outputNames"] = NativeJson(entry.outputNames);
+    // The binding travels with the table so a Provider reads it rather than deriving it.
+    item["inputSlotByGraphName"] = entry.inputSlotByGraphName;
+    item["outputSlotByGraphName"] = entry.outputSlotByGraphName;
+    item["passthroughSlotByInputGraphName"] = entry.passthroughSlotByInputGraphName;
+    item["stateOutputGraphNames"] = NativeJson(entry.stateOutputGraphNames);
+    item["synthesizedInputGraphNames"] = NativeJson(entry.synthesizedInputGraphNames);
     table.push_back(std::move(item));
   }
   return table.dump();
@@ -2172,6 +2178,24 @@ parseQwenTpEntryTable(const std::string& json)
       entry.inputNames.push_back(name.get<std::string>());
     for (const auto& name : item.at("outputNames"))
       entry.outputNames.push_back(name.get<std::string>());
+    // A table written before the binding existed has no mapping, and defaulting it to
+    // "the slot id equals the graph name" would reintroduce exactly the guess the binding
+    // removes. Absent means absent.
+    if (item.contains("inputSlotByGraphName"))
+      entry.inputSlotByGraphName =
+        item.at("inputSlotByGraphName").get<std::map<std::string, std::string>>();
+    if (item.contains("outputSlotByGraphName"))
+      entry.outputSlotByGraphName =
+        item.at("outputSlotByGraphName").get<std::map<std::string, std::string>>();
+    if (item.contains("passthroughSlotByInputGraphName"))
+      entry.passthroughSlotByInputGraphName =
+        item.at("passthroughSlotByInputGraphName").get<std::map<std::string, std::string>>();
+    if (item.contains("stateOutputGraphNames"))
+      entry.stateOutputGraphNames =
+        item.at("stateOutputGraphNames").get<std::vector<std::string>>();
+    if (item.contains("synthesizedInputGraphNames"))
+      entry.synthesizedInputGraphNames =
+        item.at("synthesizedInputGraphNames").get<std::vector<std::string>>();
     entry.validate();
     if (!ids.insert(entry.entryId).second) {
       throw std::invalid_argument(
@@ -2180,6 +2204,195 @@ parseQwenTpEntryTable(const std::string& json)
     entries.push_back(std::move(entry));
   }
   return entries;
+}
+
+namespace {
+
+/** Whether a graph tensor name looks like a decode-state successor. */
+bool
+isStateTensorName(const std::string& name)
+{
+  return name.rfind("present.", 0) == 0;
+}
+
+/** Whether a graph tensor name is a past KV input. */
+bool
+isPastTensorName(const std::string& name)
+{
+  return name.rfind("past_key_values.", 0) == 0;
+}
+
+} // namespace
+
+/** Freeze the graph-to-slot binding for one assembled entry.
+ *
+ * The structure of the frozen export decides the binding, not a name pattern where the
+ * structure is available:
+ *
+ *  - The attention entry returns the projected result and both KV successors, and it
+ *    *consumes* the pre-MLP residual it does not return. Its hidden input for layer 0 is
+ *    the embedding output; for later layers the input normalization is a skip
+ *    normalization whose two inputs are the previous layer's post-attention residual and
+ *    its MLP output.
+ *  - The MLP entry consumes those same two values and returns the MLP partial plus the
+ *    post-MLP residual.
+ *  - INIT returns the positions, the reformatted mask and the embedded X0.
+ *
+ * The mask scalars the export derives internally have no template slot; they are recorded
+ * as synthesized rather than silently omitted.
+ */
+void
+bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contract)
+{
+  const auto& graph = model.graph();
+  // Hidden inputs, in graph declaration order, are the float tensors with rank 3.
+  std::vector<std::string> hiddenInputs;
+  for (const auto& input : graph.input()) {
+    const auto& type = input.type().tensor_type();
+    if (type.elem_type() == onnx::TensorProto::FLOAT && type.shape().dim_size() == 3)
+      hiddenInputs.push_back(input.name());
+  }
+
+  if (contract.kind == "INIT") {
+    // input_ids and attention_mask are the epoch inputs the template declares.
+    for (const auto& input : graph.input()) {
+      const auto name = input.name();
+      if (name.find("input_ids") != std::string::npos)
+        contract.inputSlotByGraphName[name] = "input_ids";
+      else if (name.find("attention_mask") != std::string::npos)
+        contract.inputSlotByGraphName[name] = "attention_mask";
+      else
+        contract.synthesizedInputGraphNames.push_back(name);
+    }
+    for (const auto& output : graph.output()) {
+      const auto name = output.name();
+      if (name.find("pos_ids") != std::string::npos)
+        contract.outputSlotByGraphName[name] = "position_ids";
+      else if (name.find("attn_mask") != std::string::npos)
+        contract.outputSlotByGraphName[name] = "attn_mask";
+      else
+        contract.outputSlotByGraphName[name] = "x0";
+    }
+    return;
+  }
+
+  if (contract.kind == "HEAD") {
+    for (const auto& input : graph.input()) {
+      if (!hiddenInputs.empty() && input.name() == hiddenInputs.front()) continue;
+      contract.synthesizedInputGraphNames.push_back(input.name());
+    }
+    // Two hidden inputs carry the merged attention value and the post-MLP residual.
+    if (hiddenInputs.size() == 2) {
+      contract.inputSlotByGraphName[hiddenInputs[0]] = "merged";
+      contract.inputSlotByGraphName[hiddenInputs[1]] = "post_residual";
+    }
+    for (const auto& output : graph.output()) {
+      if (isStateTensorName(output.name())) {
+        contract.stateOutputGraphNames.push_back(output.name());
+        continue;
+      }
+      contract.outputSlotByGraphName[output.name()] = "logits";
+    }
+    return;
+  }
+
+  // ATTN and MLP share the output shape: one reduction contribution, one residual the
+  // next step needs, and the KV successors. Which is which is structural: the residual
+  // is the hidden value the entry carries forward, and for attention that value is an
+  // input rather than an output, so it is a passthrough.
+  const auto hiddenCount = hiddenInputs.size();
+  for (std::size_t index = 0; index < hiddenCount; ++index) {
+    const auto& name = hiddenInputs[index];
+    if (contract.kind == "ATTN") {
+      if (hiddenCount == 1) {
+        // Layer 0: the single hidden input is both the attention input and the residual
+        // the MLP entry will consume after the peer reductions are added.
+        contract.inputSlotByGraphName[name] = "x";
+        contract.passthroughSlotByInputGraphName[name] = "residual";
+      }
+      else {
+        // Later layers: declaration order follows the skip normalization's inputs, so
+        // the first is the previous layer's post-attention residual and the second is its
+        // MLP output.
+        contract.inputSlotByGraphName[name] =
+          index == 0 ? "post_attention" : "previous_mlp";
+        if (index == 0) contract.passthroughSlotByInputGraphName[name] = "residual";
+      }
+      continue;
+    }
+    // MLP: the merged attention value and the residual it adds to.
+    contract.inputSlotByGraphName[name] = hiddenCount == 1
+      ? "merged" : (index == 0 ? "merged" : "residual");
+  }
+
+  // Two mask tensors reach attention: the reformatted mask the template carries as
+  // `attn_mask`, and the scalar the op reads as total_sequence_length. Only the first is a
+  // plan slot; the scalar is derived from the mask's own shape and has no slot, so it is
+  // synthesized. Mapping both to one slot would make the parent hand the same bundle to
+  // two inputs that expect different ranks.
+  bool maskSlotTaken = false;
+  for (const auto& input : graph.input()) {
+    const auto name = input.name();
+    if (contract.inputSlotByGraphName.count(name) != 0) continue;
+    if (isPastTensorName(name)) continue;
+    const auto& type = input.type().tensor_type();
+    const bool scalar = type.shape().dim_size() == 0;
+    if (!scalar && name.find("attn_mask") != std::string::npos && !maskSlotTaken) {
+      contract.inputSlotByGraphName[name] = "attn_mask";
+      maskSlotTaken = true;
+    }
+    else if (!scalar && name.find("pos_ids") != std::string::npos) {
+      contract.inputSlotByGraphName[name] = "position_ids";
+    }
+    else {
+      contract.synthesizedInputGraphNames.push_back(name);
+    }
+  }
+
+  for (const auto& output : graph.output()) {
+    const auto name = output.name();
+    if (isStateTensorName(name)) {
+      contract.stateOutputGraphNames.push_back(name);
+      continue;
+    }
+    if (contract.kind == "ATTN" && name.find("o_proj") != std::string::npos)
+      contract.outputSlotByGraphName[name] = "partial";
+    else if (contract.kind == "MLP" && name.find("down_proj") != std::string::npos)
+      contract.outputSlotByGraphName[name] = "partial";
+    // An attention entry also returns its post-attention normalization; that value is the
+    // residual slot, and the MLP entry returns its own post-MLP residual. Both are the
+    // float output that is not the projection.
+    else
+      contract.outputSlotByGraphName[name] =
+        contract.kind == "ATTN" ? "residual" : "post_residual";
+  }
+}
+
+/** Fall back to an identity binding for a graph whose structure names no slot.
+ *
+ * The frozen export's structure decides its binding, so most entries are recognised.
+ * A graph assembled from a different model -- a small fixture, another export -- keeps
+ * its own tensor names as slot ids. That is a recorded contract rather than a runtime
+ * guess: the binding is frozen into the table, so the parent still reads a declaration
+ * instead of inferring one from a name it just saw.
+ */
+void
+bindIdentitySlots(QwenTpEntryContract& contract)
+{
+  for (const auto& name : contract.inputNames)
+    if (contract.inputSlotByGraphName.count(name) == 0 &&
+        std::find(contract.synthesizedInputGraphNames.begin(),
+                  contract.synthesizedInputGraphNames.end(), name) ==
+          contract.synthesizedInputGraphNames.end())
+      contract.inputSlotByGraphName[name] = name;
+  for (const auto& name : contract.outputNames) {
+    if (contract.outputSlotByGraphName.count(name) != 0) continue;
+    if (std::find(contract.stateOutputGraphNames.begin(),
+                  contract.stateOutputGraphNames.end(), name) !=
+        contract.stateOutputGraphNames.end())
+      continue;
+    contract.outputSlotByGraphName[name] = name;
+  }
 }
 
 QwenTpEntryContract
@@ -2237,6 +2450,8 @@ writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
   contract.layer = entry.layer;
   for (const auto& input : model.graph().input()) contract.inputNames.push_back(input.name());
   for (const auto& output : model.graph().output()) contract.outputNames.push_back(output.name());
+  bindQwenTpEntrySlots(model, contract);
+  bindIdentitySlots(contract);
 
   std::string wire;
   if (!model.SerializeToString(&wire) || wire.empty()) {
