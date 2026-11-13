@@ -378,13 +378,35 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
 
   const auto produced = childRunner->second->run(child);
 
-  // Resolve the child's outputs back onto the step's declared output slots. The
-  // contract's output order is the binding: a name mismatch is a contract
-  // violation, not something to paper over.
+  // Resolve the child's outputs back onto the entry's declared boundary names.
+  //
+  // An entry with one graph output comes back keyed by its own scope. An entry with
+  // several -- an attention subgraph produces the projected attention output and both KV
+  // successors -- comes back as one encoded bundle, because the ordinary runner packs
+  // multiple outputs rather than inventing a key per tensor. Both shapes are legitimate,
+  // so the lookup is by declared name inside whatever the child returned, and a missing
+  // name is a contract violation rather than something to paper over.
+  std::map<std::string, TensorBundle> byName;
+  for (const auto& item : produced) {
+    const auto& bundle = item.second;
+    if (isEncodedTensorBundle(bundle.payload)) {
+      for (auto& tensor : decodeTensorBundle(bundle.payload)) {
+        TensorBundle single;
+        single.name = tensor.name;
+        single.payload = encodeTensorBundle({std::move(tensor)});
+        single.expectedBytes = single.payload.size();
+        byName.emplace(single.name, std::move(single));
+      }
+      // A single-output entry whose scope is the graph name is already covered by the
+      // fallback below; a bundle that decoded to nothing would hide a producer defect.
+      continue;
+    }
+    byName.emplace(item.first, bundle);
+  }
   std::map<std::string, TensorBundle> outputs;
   for (const auto& graphOutput : entry->outputNames) {
-    const auto found = produced.find(graphOutput);
-    if (found == produced.end())
+    const auto found = byName.find(graphOutput);
+    if (found == byName.end())
       throw std::runtime_error(
         "entry did not produce a declared output: " + graphOutput);
     outputs.emplace(graphOutput, found->second);

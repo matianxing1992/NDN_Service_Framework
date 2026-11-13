@@ -7880,6 +7880,322 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheReference)
+{
+  // The seam exit 1 stopped at: entry tables produced from the frozen export, loaded by
+  // the real parent runner through the registry, executed on real ORT sessions, and their
+  // partials summed against the unsplit entry.
+  //
+  // This is where a table that is structurally right but numerically wrong shows up. The
+  // earlier numeric cases built entries directly from the source graph; this one uses the
+  // files the assembler wrote, through the spec the assembler produces.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string graphPath = modelDir + "/canonical-source.onnx";
+  const std::string sidecarPath = modelDir + "/model.onnx.data";
+  const std::string sidecarFrozen = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(graphPath)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  const auto sidecar = std::filesystem::exists(sidecarPath) ? sidecarPath : sidecarFrozen;
+
+  std::ifstream graphIn(graphPath, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  const auto readRange = [&sidecar] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream in(sidecar, std::ios::binary);
+    if (!in) throw std::runtime_error("sidecar unreadable");
+    in.seekg(static_cast<std::streamoff>(offset));
+    std::vector<std::uint8_t> bytes(length);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    if (!in) throw std::runtime_error("sidecar read was short");
+    return bytes;
+  };
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-run-assembled-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root);
+
+  // One shared factory: the children are created through the registry, as a Provider
+  // does, so this cannot pass with a hand-wired runner.
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+
+  const auto assembleUnit = [&] (std::uint64_t rank, const std::string& unit) {
+    qwen::QwenTpAssemblyShards shards;
+    shards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, rank);
+    shards.readExternal = readRange;
+    shards.geometry.degree = 2;
+    shards.geometry.rank = rank;
+    shards.geometry.headDim = shape.headDim;
+    shards.geometry.queryWidth = shape.queryWidth();
+    shards.geometry.kvWidth = shape.kvWidth();
+    shards.geometry.hidden = shape.hidden;
+    shards.geometry.ffn = shape.ffn;
+    return qwen::assembleQwenTpEntryTable(root / unit, unit, graphBytes, 28, shards);
+  };
+
+  // ORT refuses a sidecar outside the model's own directory, so each unit's entry
+  // directory needs one. A hard link shares the 918 MB object rather than copying it three
+  // times; a symlink is rejected by the same path check that produced this requirement.
+  const auto linkSidecar = [&sidecar] (const std::filesystem::path& unitRoot) {
+    std::filesystem::create_directories(unitRoot);
+    std::error_code linkError;
+    if (std::filesystem::exists(unitRoot / "model.onnx_data", linkError)) return;
+    std::filesystem::create_hard_link(sidecar, unitRoot / "model.onnx_data", linkError);
+    if (linkError) {
+      std::filesystem::copy_file(sidecar, unitRoot / "model.onnx_data", linkError);
+    }
+  };
+  linkSidecar(root / "S0R0");
+  linkSidecar(root / "S0R1");
+  linkSidecar(root / "ref");
+
+  const auto rank0Table = assembleUnit(0, "S0R0");
+  const auto rank1Table = assembleUnit(1, "S0R1");
+  BOOST_REQUIRE(!rank0Table.empty());
+  BOOST_REQUIRE_EQUAL(rank0Table.size(), rank1Table.size());
+  for (const auto& entry : rank0Table) {
+    if (entry.kind != "ATTN" || entry.layer != 0) continue;
+    std::string joined;
+    for (const auto& name : entry.inputNames) {
+      if (!joined.empty()) joined += " | ";
+      joined += name;
+    }
+    BOOST_TEST_MESSAGE("ATTN/0 inputs: " << joined);
+    std::string outputs;
+    for (const auto& name : entry.outputNames) {
+      if (!outputs.empty()) outputs += " | ";
+      outputs += name;
+    }
+    BOOST_TEST_MESSAGE("ATTN/0 outputs: " << outputs);
+  }
+
+  const auto makeRunner = [&] (const std::string& unit) {
+    NativeModelRunnerSpec spec;
+    spec.role = unit;
+    spec.kind = "onnx";
+    spec.path = graphPath;
+    spec.metadata["tensorParallelEntries"] =
+      qwen::qwenTpEntryTableJson(unit == "S0R0" ? rank0Table : rank1Table);
+    spec.metadata["tensorParallelEntryRoot"] = (root / unit).string();
+    // These entries have boundary inputs whose contract carries no shape -- the mask
+    // scalar and the position vector. Production records them as unranked so the CPU
+    // readiness warm-up is skipped rather than fed a rank-0 placeholder that a structural
+    // consumer rejects; `bindNativeRunnerUnrankedInputs` derives exactly this from the
+    // assembly contract. This fixture builds the spec by hand, so it declares the same
+    // fact, and the first real request is then the session's readiness evidence.
+    spec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    spec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+    return factory.create(spec);
+  };
+  const auto runner0 = makeRunner("S0R0");
+  const auto runner1 = makeRunner("S0R1");
+  BOOST_REQUIRE(runner0 != nullptr);
+  BOOST_REQUIRE(runner1 != nullptr);
+
+  // The unsplit reference for the same layer, assembled with no slices.
+  const auto referenceTable = qwen::assembleQwenTpEntryTable(root / "ref", "ref",
+                                                            graphBytes, 28);
+  const auto referenceAttn = std::find_if(referenceTable.begin(), referenceTable.end(),
+    [] (const auto& entry) { return entry.kind == "ATTN" && entry.layer == 0; });
+  BOOST_REQUIRE(referenceAttn != referenceTable.end());
+
+  // Build the step for one entry and run it. The step's input slots take the entry's own
+  // boundary names, which is what the runner maps onto the child session.
+  const auto runEntry = [&] (const std::shared_ptr<qwen::NativeQwenTensorRunner>& parent,
+                             const std::vector<qwen::QwenTpEntryContract>& table,
+                             const std::string& unit, std::uint64_t layer,
+                             const std::map<std::string, TensorBundle>& feeds)
+                             -> std::map<std::string, TensorBundle> {
+    const auto entry = std::find_if(table.begin(), table.end(),
+      [layer] (const auto& item) {
+        return item.kind == "ATTN" && item.layer == layer;
+      });
+    BOOST_REQUIRE(entry != table.end());
+    NativeExecutionStepSpec step;
+    step.stepId = unit + "/ATTN/" + std::to_string(layer);
+    step.unitId = unit;
+    step.operation = "CALL_SUBGRAPH";
+    step.artifactEntry = entry->entryId;
+    for (const auto& name : entry->inputNames) {
+      NativeStepSlotSpec slot;
+      slot.slotId = name;
+      slot.source = "LOCAL_STEP";
+      step.inputSlots.push_back(slot);
+    }
+    RoleExecutionContext context;
+    context.role = unit;
+    context.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
+    context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+      std::vector<NativeExecutionStepSpec>{step});
+    for (const auto& item : feeds) context.stepInputsBySlot.emplace(item.first, item.second);
+    return parent->run(context);
+  };
+
+  // Feed the attention entry. The boundary names are the entry's own, read from its
+  // contract, so this does not assume a naming convention.
+  const auto referenceAttnEntry = *referenceAttn;
+  // Read the entry's own graph to learn each boundary input's declared type and shape.
+  // Guessing from names produced an Int32 hidden state and an Int32 gather output, and the
+  // runtime refused the first with a dtype mismatch -- which is the correct behaviour for
+  // a caller that did not read the contract.
+  const auto entryGraph = [&] (const qwen::QwenTpEntryContract& entry) {
+    std::ifstream in(std::filesystem::path((root / entry.unitId) / entry.relativeGraphPath),
+                     std::ios::binary);
+    onnx::ModelProto model;
+    BOOST_REQUIRE(static_cast<bool>(in));
+    std::string wire((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    BOOST_REQUIRE(model.ParseFromString(wire));
+    return model;
+  };
+  const auto buildFeeds = [&] (const qwen::QwenTpEntryContract& entry) {
+    const auto model = entryGraph(entry);
+    std::map<std::string, TensorBundle> feeds;
+    for (const auto& value : model.graph().input()) {
+      const auto& name = value.name();
+      const auto elementType = value.type().tensor_type().elem_type();
+      std::vector<std::int64_t> dims;
+      for (const auto& dim : value.type().tensor_type().shape().dim()) {
+        // A symbolic axis is one token: the smallest decode step.
+        dims.push_back(dim.has_dim_value() ? dim.dim_value() : 1);
+      }
+      NamedTensor tensor;
+      tensor.name = name;
+      if (elementType == onnx::TensorProto::FLOAT) {
+        tensor.elementType = TensorElementType::Float32;
+        tensor.shape = dims;
+        std::size_t count = 1;
+        for (const auto axis : dims) count *= static_cast<std::size_t>(axis);
+        tensor.payload.assign(count * sizeof(float), 0);
+        // A non-zero pattern, so an all-zero reference cannot pass by construction.
+        float* values = reinterpret_cast<float*>(tensor.payload.data());
+        for (std::size_t index = 0; index < count; ++index)
+          values[index] = 0.01f * float(static_cast<int>(index % 31) - 15);
+      }
+      else if (elementType == onnx::TensorProto::INT64) {
+        tensor.elementType = TensorElementType::Int64;
+        tensor.shape = dims;
+        std::size_t count = 1;
+        for (const auto axis : dims) count *= static_cast<std::size_t>(axis);
+        tensor.payload.assign(count * sizeof(std::int64_t), 0);
+      }
+      else if (elementType == onnx::TensorProto::INT32) {
+        tensor.elementType = TensorElementType::Int32;
+        tensor.shape = dims;
+        std::size_t count = 1;
+        for (const auto axis : dims) count *= static_cast<std::size_t>(axis);
+        // The total length must be one, and every other index input is a zero token.
+        const bool lengthInput = name.find("Gather/Cast") != std::string::npos &&
+                                 dims.empty();
+        tensor.payload.assign(count * sizeof(std::int32_t), 0);
+        if (lengthInput) {
+          std::int32_t total = 1;
+          std::memcpy(tensor.payload.data(), &total, sizeof(total));
+        }
+      }
+      else {
+        BOOST_FAIL("unhandled boundary element type on " + name);
+      }
+      TensorBundle bundle;
+      bundle.name = name;
+      bundle.payload = encodeTensorBundle({tensor});
+      bundle.expectedBytes = bundle.payload.size();
+      feeds.emplace(name, std::move(bundle));
+    }
+    return feeds;
+  };
+
+  // The reference is a separate runner over the unsplit table, so the comparison goes
+  // through the same execution path rather than a second hand-rolled ORT call.
+  NativeModelRunnerSpec referenceSpec;
+  referenceSpec.role = "ref";
+  referenceSpec.kind = "onnx";
+  referenceSpec.path = graphPath;
+  referenceSpec.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson(referenceTable);
+  referenceSpec.metadata["tensorParallelEntryRoot"] = (root / "ref").string();
+  // Same declaration as the rank specs: the unsplit entries have the same unshaped
+  // boundary inputs, and a rank-0 warm-up would be rejected by the same structural
+  // consumer.
+  referenceSpec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  referenceSpec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+  const auto referenceRunner = factory.create(referenceSpec);
+  BOOST_REQUIRE(referenceRunner != nullptr);
+  BOOST_TEST_MESSAGE("reference ATTN entry inputs: " <<
+    [&referenceAttnEntry] {
+      std::string joined;
+      for (const auto& name : referenceAttnEntry.inputNames) {
+        if (!joined.empty()) joined += ", ";
+        joined += name;
+      }
+      return joined;
+    }());
+  const auto referenceOutputs = runEntry(
+    std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(referenceRunner),
+    referenceTable, "ref", 0, buildFeeds(referenceAttnEntry));
+  BOOST_REQUIRE(!referenceOutputs.empty());
+
+  const auto runRank = [&] (const std::shared_ptr<NativeModelRunner>& runner,
+                            const std::vector<qwen::QwenTpEntryContract>& table,
+                            const std::string& unit) {
+    const auto entry = std::find_if(table.begin(), table.end(),
+      [] (const auto& item) { return item.kind == "ATTN" && item.layer == 0; });
+    BOOST_REQUIRE(entry != table.end());
+    return runEntry(std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(runner),
+                    table, unit, 0, buildFeeds(*entry));
+  };
+  const auto rank0Outputs = runRank(runner0, rank0Table, "S0R0");
+  const auto rank1Outputs = runRank(runner1, rank1Table, "S0R1");
+  BOOST_REQUIRE(!rank0Outputs.empty());
+  BOOST_REQUIRE(!rank1Outputs.empty());
+
+  // Sum the two ranks' attention partials and compare against the unsplit entry. The
+  // entry's output names decide which tensors to add, so no convention is assumed.
+  const auto decode = [] (const TensorBundle& bundle) {
+    const auto tensors = decodeTensorBundle(bundle.payload);
+    BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+    const auto& tensor = tensors.front();
+    BOOST_REQUIRE(tensor.elementType == TensorElementType::Float32);
+    std::vector<float> values(tensor.payload.size() / sizeof(float));
+    std::memcpy(values.data(), tensor.payload.data(), tensor.payload.size());
+    return values;
+  };
+  const auto& expectedBundle = referenceOutputs.begin()->second;
+  const auto expected = decode(expectedBundle);
+  BOOST_REQUIRE(!expected.empty());
+
+  // Match by output position rather than name: the rank entries expose the same boundary
+  // tensors in the same order, which the contract's outputNames fixes.
+  const auto& rank0Bundle = rank0Outputs.begin()->second;
+  const auto& rank1Bundle = rank1Outputs.begin()->second;
+  const auto rank0Values = decode(rank0Bundle);
+  const auto rank1Values = decode(rank1Bundle);
+  BOOST_REQUIRE_EQUAL(rank0Values.size(), expected.size());
+  BOOST_REQUIRE_EQUAL(rank1Values.size(), expected.size());
+
+  double magnitude = 0.0;
+  for (const auto value : expected) magnitude = std::max(magnitude, std::fabs(double(value)));
+  BOOST_REQUIRE_MESSAGE(magnitude > 0.0, "the unsplit attention output is all zeros");
+  double worst = 0.0;
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    const double combined = double(rank0Values[index]) + double(rank1Values[index]);
+    worst = std::max(worst, std::fabs(combined - double(expected[index])));
+  }
+  BOOST_TEST_MESSAGE("assembled ranks: worst=" << worst << " magnitude=" << magnitude);
+  BOOST_CHECK_LT(worst, 1e-4 * magnitude);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
 {
   // The step after role preparation: assemble each rank's entry table from the frozen
