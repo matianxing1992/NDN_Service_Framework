@@ -9,7 +9,6 @@ def build(bld):
     public_headers = [
         'ArtifactManifest.hpp',
         'artifact-client-types.hpp',
-        'ArtifactRepositoryApi.hpp',
         'ArtifactTransfer.hpp',
         'ArtifactTypes.hpp',
         'FilesystemArtifactStore.hpp',
