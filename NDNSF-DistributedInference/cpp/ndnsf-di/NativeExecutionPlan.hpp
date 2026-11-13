@@ -199,6 +199,12 @@ struct NativeTensorEndpointV3
   std::string planDigest;
   std::string groupId;
   std::string groupEpoch;
+  // The sealed dependency this endpoint carries material for. `groupId` is the transport
+  // security group shared by every dependency of a provider pair, so it cannot identify one;
+  // and for a tensor-parallel plan the tensor name is `partial` on all 56 contributions. This
+  // identity is what binds the runtime edge back to its dependency, and with it to the step
+  // slots that dependency names.
+  std::string dependencyId;
   std::string operation;
   std::uint64_t round = 0;
   std::string sourceKind;

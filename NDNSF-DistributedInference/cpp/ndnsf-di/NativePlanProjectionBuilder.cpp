@@ -392,6 +392,8 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       e.hardDeadlineMs = core.expiresAtMs - context.nowMs;
       e.producerNamespace = binding.producerNamespaces.at(provider);
       e.groupId = binding.groupId; e.groupEpoch = binding.groupEpoch; e.round = binding.operationIndex;
+      e.dependencyId = dependency.dependencyId.empty()
+        ? dependency.keyScope : dependency.dependencyId;
       e.segmentCount = context.maxSegments; e.inlineFirstSegment = context.inlineFirstSegment;
       e.prefetchBundleBytes = e.prefetchSegmentBytes = 0;
       const auto chunk = context.tensorSegmentBytesByProvider.find(provider);
@@ -508,6 +510,8 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
         }
         auto e = endpointBase(); e.producerNamespace = prefix->second;
         e.groupId = binding.groupId; e.groupEpoch = binding.groupEpoch; e.round = binding.operationIndex;
+        e.dependencyId = dependency.dependencyId.empty()
+          ? dependency.keyScope : dependency.dependencyId;
         e.operation = transfer.operation; e.sourceKind = "ROLE"; e.producerRole = producer;
         e.producerRank = core.roleContracts().at(producer).rank; e.consumerRoles = std::move(consumers);
         e.tensorId = transfer.tensor; e.tensorDigest = transfer.integrityDigest;

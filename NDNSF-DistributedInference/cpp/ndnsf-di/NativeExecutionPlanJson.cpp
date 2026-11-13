@@ -242,6 +242,7 @@ NativeJson jsonValue(const NativeTensorEndpointV3& value)
   result["plan_digest"] = value.planDigest;
   result["group_id"] = value.groupId;
   result["group_epoch"] = value.groupEpoch;
+  if (!value.dependencyId.empty()) result["dependency_id"] = value.dependencyId;
   result["operation"] = value.operation;
   result["round"] = value.round;
   result["naming_operation_stride"] = value.namingOperationStride;
@@ -896,6 +897,7 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
   endpoint.groupEpoch = node.get<std::string>("group_epoch", "");
   endpoint.operation = node.get<std::string>("operation", "");
   endpoint.round = node.get<std::uint64_t>("round", 0);
+  endpoint.dependencyId = node.get<std::string>("dependency_id", "");
   endpoint.namingOperationStride = node.get<std::uint64_t>("naming_operation_stride");
   endpoint.sourceKind = node.get<std::string>("source_kind", "");
   endpoint.producerRole = node.get<std::string>("producer_role", "");
@@ -4115,12 +4117,32 @@ roleSpecFromSelectionProjectionV3Impl(
     edge.microbatch = endpoint.microbatch;
     edge.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
     edge.hardDeadlineMs = endpoint.hardDeadlineMs;
-    for (const auto& dependency : projection.plan.dependencies) {
-      if (dependency.keyScope != endpoint.groupId ||
-          std::find(dependency.producers.begin(), dependency.producers.end(),
+    // The endpoint names the sealed dependency it carries material for. Comparing that
+    // identity is the only usable match: `groupId` is the shared transport security group,
+    // not the dependency's keyScope, and a tensor-parallel plan names all 56 contributions
+    // `partial`. Producers, consumers and the tensor are still checked so a stale identity
+    // cannot bind the wrong contract.
+    const auto& dependencies = projection.plan.dependencies;
+    const auto matchesEndpoint = [&endpoint] (const NativeDependencySpec& dependency) {
+      if (std::find(dependency.producers.begin(), dependency.producers.end(),
                     endpoint.producerRole) == dependency.producers.end() ||
           std::find(dependency.consumers.begin(), dependency.consumers.end(),
-                    endpoint.consumerRole) == dependency.consumers.end()) {
+                    endpoint.consumerRole) == dependency.consumers.end() ||
+          std::find(dependency.tensors.begin(), dependency.tensors.end(),
+                    endpoint.tensorId) == dependency.tensors.end()) {
+        return false;
+      }
+      if (!endpoint.dependencyId.empty()) {
+        return (dependency.dependencyId.empty() ? dependency.keyScope
+                                                : dependency.dependencyId) ==
+               endpoint.dependencyId;
+      }
+      // A pipeline endpoint from an older projection carries no dependency id. Keep its
+      // historical keyScope match so that topology is unchanged.
+      return dependency.keyScope == endpoint.groupId;
+    };
+    for (const auto& dependency : dependencies) {
+      if (!matchesEndpoint(dependency)) {
         continue;
       }
       // The step binding travels with the edge. A tensor-parallel coordinator decides which
