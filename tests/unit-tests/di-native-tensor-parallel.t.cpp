@@ -8084,7 +8084,7 @@ public:
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
+BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
 {
   // The execution the whole exit-1 chain was for: a runner created from a real assembled
   // table, driven by the production worker over the sealed template, with the reduction the
@@ -8154,9 +8154,9 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
     {{"S0R0", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}},
      {"S0R1", NativeRoleResourceRequirement{{"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}}});
 
-  // Two layers, so the cross-layer edge is exercised: layer 1's attention reads layer 0's
-  // MLP sum, which the template declares and the worker has to resolve from a step it
-  // already ran. Ten steps -- INIT plus five per layer -- and nothing from layer 2.
+  // Every layer. The cross-layer edge is the same at layer 27 as at layer 1, so running the
+  // whole stack is what shows no cumulative mistake hides in it -- and it is the shape the
+  // real template has.
   // The layer number is the trailing id component, so it is parsed rather than matched as a
   // substring: "/1" also matches "/10".
   const auto layerOfStep = [] (const std::string& stepId) -> std::optional<std::uint64_t> {
@@ -8172,16 +8172,13 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
   std::vector<NativeExecutionStepSpec> steps;
   for (const auto& step : candidate.executionPlan.steps) {
     if (step.unitId != "S0R0") continue;
-    if (step.stepId.find("/INIT") != std::string::npos) {
-      steps.push_back(step);
-      continue;
-    }
-    const auto layer = layerOfStep(step.stepId);
-    if (!layer || *layer > 1) continue;
+    // INIT and every layer's four steps; the head is excluded because this measures the
+    // decoder stack, not the vocabulary projection.
+    if (step.stepId.find("/HEAD") != std::string::npos) continue;
     steps.push_back(step);
   }
-  // INIT plus four steps per layer: ATTN, SUM_ATTN, MLP, SUM_MLP.
-  BOOST_REQUIRE_EQUAL(steps.size(), 9U);
+  // INIT plus four steps per layer, 28 layers.
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U + 4U * 28U);
 
   NativeModelRunnerSpec spec;
   spec.role = "S0R0";
@@ -8212,7 +8209,8 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
   // as a dependency on the step that consumes it, which is how the worker knows when to
   // await it instead of waiting for both up front.
   auto io = std::make_shared<StepPartialIo>();
-  for (const auto* layerOf : {"0", "1"}) {
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+  const auto layerOf = std::to_string(layer);
   for (const auto* kind : {"attn", "mlp"}) {
     const auto scope = std::string("peer-") + kind + "-" + layerOf;
     DependencyEdge peer;
@@ -8239,11 +8237,15 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
     }
     BOOST_REQUIRE_MESSAGE(!graphTensorName.empty(),
       "the assembled table names no partial output for " + std::string(kind));
-    const auto marker = std::string("/SUM_") + (std::string(kind) == "attn"
-      ? "ATTN/" : "MLP/") + layerOf;
+    // Match the layer exactly: a substring test on "/1" also matches "/10", which silently
+    // bound every peer contribution to the last matching reduction.
+    const auto kindMarker = std::string("/SUM_") +
+      (std::string(kind) == "attn" ? "ATTN/" : "MLP/");
     for (const auto& step : steps) {
       if (step.operation != "SUM") continue;
-      if (step.stepId.find(marker) == std::string::npos) continue;
+      if (step.stepId.find(kindMarker) == std::string::npos) continue;
+      const auto stepLayer = layerOfStep(step.stepId);
+      if (!stepLayer || *stepLayer != layer) continue;
       for (const auto& slot : step.inputSlots) {
         if (slot.source != "REMOTE_STEP") continue;
         peer.consumerStepId = step.stepId;
@@ -8329,8 +8331,9 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesTwoLayersThroughTheCrossLayerEdge)
     BOOST_TEST_MESSAGE("scope=" << item.first << " floats=" << floats
                       << " energy=" << energy);
   }
-  // The MLP reduction is the block's last step, so its presence means every earlier step
-  // ran and was consumed.
+  // The last layer's MLP reduction, so every earlier step ran and was consumed. Its energy
+  // grows with depth because each layer adds to the residual stream, and a layer that
+  // silently dropped its contribution would show as a smaller total.
   const auto mlpMerged = std::find_if(result.outputsByScope.begin(),
                                       result.outputsByScope.end(),
     [] (const auto& item) { return item.first.find("merged") != std::string::npos; });
