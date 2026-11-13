@@ -773,9 +773,14 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     // and the scalar total length it reads. Both cross the INIT boundary, so both need a
     // slot -- declaring one of them `attn_mask` and leaving the other unbound is what made
     // the attention entry look like it needed a tensor nobody produced.
+    // The total length is a rank-0 scalar in the export, not an index vector: declaring it
+    // with the {1, sequence} index shape made its one element resolve against a symbolic
+    // sequence axis, and the attention op then read the length as 0.
+    auto totalLength = makeIndexSlot("total_sequence_length", "LOCAL_STEP", "int32");
+    totalLength.shape.clear();
     init.outputSlots = {makeIndexSlot("position_ids", "LOCAL_STEP", "int64"),
                         makeIndexSlot("attn_mask", "LOCAL_STEP", "int32"),
-                        makeIndexSlot("total_sequence_length", "LOCAL_STEP", "int32"),
+                        std::move(totalLength),
                         makeSlot("x0", "LOCAL_STEP", {}, shape.hidden)};
     plan.steps.push_back(std::move(init));
 
@@ -816,9 +821,12 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
         makeFedIndexSlot("position_ids", "LOCAL_STEP", "int64", initStep(unit.roleId), "position_ids"));
       attn.inputSlots.push_back(
         makeFedIndexSlot("attn_mask", "LOCAL_STEP", "int32", initStep(unit.roleId), "attn_mask"));
-      attn.inputSlots.push_back(
-        makeFedIndexSlot("total_sequence_length", "LOCAL_STEP", "int32",
-                         initStep(unit.roleId), "total_sequence_length"));
+      {
+        auto totalLength = makeFedIndexSlot("total_sequence_length", "LOCAL_STEP", "int32",
+                                            initStep(unit.roleId), "total_sequence_length");
+        totalLength.shape.clear();
+        attn.inputSlots.push_back(std::move(totalLength));
+      }
       // Two outputs with different roles. `partial` is this rank's reduction
       // contribution and travels to both SUM steps. `residual` is the local X
       // the MLP entry still needs: it is deliberately a named slot so the
