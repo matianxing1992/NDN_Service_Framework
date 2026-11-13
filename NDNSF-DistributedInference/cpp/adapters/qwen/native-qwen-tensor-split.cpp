@@ -1359,9 +1359,20 @@ buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
   // because node ownership identifies which role assembles that node's source slice and
   // both units execute the same layers. The steps, not node ownership, say which unit
   // runs which subgraph.
+  // Source-slice ownership stays single-valued and goes to the ingress unit, while the
+  // execution relation is declared separately: every unit executes every node, because a
+  // sharded rank runs the same layers with a different weight slice. Without the second
+  // map the peer would own no node and role preparation would refuse it for an empty
+  // source boundary.
   const std::string ingress = units.front().roleId;
-  for (const auto& node : graph.nodes)
+  std::vector<std::string> allNodes;
+  allNodes.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) {
     candidate.nodeRoles[node.id] = ingress;
+    allNodes.push_back(node.id);
+  }
+  for (const auto& unit : units)
+    candidate.roleNodeIdsByRole[unit.roleId] = allNodes;
   candidate.inputIngressRole = ingress;
   candidate.resultEgressRole = egressRole;
 

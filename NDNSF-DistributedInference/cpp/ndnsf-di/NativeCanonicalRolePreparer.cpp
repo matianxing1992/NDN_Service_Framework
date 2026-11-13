@@ -238,10 +238,24 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
   for (const auto& name : candidate.executionPlan.roles) {
     control.requireActive();
     std::set<std::uint64_t> owned, layers;
+    // A role whose nodes are declared explicitly -- two tensor-parallel ranks sharing a
+    // layer interval -- owns every node in that list. `nodeRoles` remains the
+    // single-valued source-slice owner and cannot express that relation, so reading its
+    // inverse here would give a rank nothing and the role preparation would refuse it for
+    // an empty source boundary.
+    const auto explicitNodes = candidate.roleNodeIdsByRole.find(name);
+    std::set<std::string> declaredNodes;
+    if (explicitNodes != candidate.roleNodeIdsByRole.end())
+      declaredNodes.insert(explicitNodes->second.begin(), explicitNodes->second.end());
     std::vector<std::uint64_t> planningIndices;
     for (std::size_t i = 0; i < m_model.graph.topologicalOrder.size(); ++i) {
       const auto& id = m_model.graph.topologicalOrder[i];
-      if (candidate.nodeRoles.at(id) != name) continue;
+      if (declaredNodes.empty()) {
+        if (candidate.nodeRoles.at(id) != name) continue;
+      }
+      else if (declaredNodes.count(id) == 0) {
+        continue;
+      }
       planningIndices.push_back(i);
       const auto& indices = m_mapping.at(id); owned.insert(indices.begin(), indices.end());
       std::smatch match;

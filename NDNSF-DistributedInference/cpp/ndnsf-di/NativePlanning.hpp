@@ -306,6 +306,12 @@ struct NativeSplitCandidate
   // Planning node IDs, not canonical ONNX assembly indices. The adapter owns
   // the conversion between these two graph identity spaces.
   std::map<std::string, std::string> nodeRoles;
+  // Per-role owned node ids, for a plan whose units share a node set. `nodeRoles` stays
+  // single-valued because it identifies which role owns a node's source slice; two
+  // tensor-parallel ranks both execute the same layers with different weight slices, so
+  // the relation from role to node is one-to-many and cannot be read back out of a
+  // single-valued map. Empty keeps the `nodeRoles` inverse for every ordinary candidate.
+  std::map<std::string, std::vector<std::string>> roleNodeIdsByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
 

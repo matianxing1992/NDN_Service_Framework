@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
@@ -515,6 +516,11 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     }
   }
   NativeRequestCatalog result;
+  // Candidates built from a projected plan skip the splitter's per-stage enumeration, so
+  // they are collected separately and prepared through the same state binding and role
+  // preparation as an enumerated candidate. A projected candidate with empty prepared
+  // roles would fail role binding later, which is why it is not pushed alone.
+  std::optional<NativeSplitCandidate> projectedCandidate;
   if (splitterKind == "QWEN" || splitterKind == "LLAMA") {
     const auto modelFamily = splitterKind == "LLAMA" ? "llama" : "qwen";
     // A sharded stage needs one artifact per rank. The catalog accepts the
@@ -589,8 +595,71 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   ExtensionControl extensionControl{
     control.deadline, [&control] { control.requireActive(); return false; }};
   std::vector<NativePreparedPlanningCandidate> preparedCandidates;
-  const auto enumerated = result.cooperativeSplitter->enumerate(
-    result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
+  // A sharded Qwen catalog produces a projected plan rather than a pipeline candidate.
+  // The stage list still describes the topology, but each stage's ranks are separate
+  // units with their own plan, so the candidate is built from the projection instead of
+  // from the splitter's per-stage enumeration.
+  if (sourceDefined && splitterKind == "QWEN" &&
+      std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
+                  [] (const auto& degree) {
+                    return degree.template get<std::uint64_t>() > 1;
+                  })) {
+    const auto shape = qwen::deriveQwenTpShape(source.modelBytes, split.at("layer_ranges")
+      .back().at(1).get<std::uint64_t>());
+    std::vector<qwen::QwenTpUnit> units;
+    std::map<std::string, std::string> artifactByUnit;
+    const auto& layerRanges = split.at("layer_ranges");
+    const auto& degrees = split.at("tensor_degrees");
+    const auto& stageRoles = split.at("roles");
+    // The per-rank artifact map was parsed inside the splitter branch above, which has
+    // closed by here. Read it again from the catalog rather than widening that scope.
+    std::map<std::string, std::vector<std::string>> rankArtifacts;
+    if (split.contains("rank_artifact_digests_by_role")) {
+      for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
+        rankArtifacts.emplace(item.key(),
+          item.value().get<std::vector<std::string>>());
+      }
+    }
+    std::uint64_t stage = 0;
+    std::uint64_t rank = 0;
+    for (std::size_t index = 0; index < stageRoles.size(); ++index) {
+      const auto degree = degrees.at(index).get<std::uint64_t>();
+      const auto begin = layerRanges.at(index).at(0).get<std::uint64_t>();
+      const auto end = layerRanges.at(index).at(1).get<std::uint64_t>();
+      const auto ranked = rankArtifacts.find(stageRoles.at(index).get<std::string>());
+      for (std::uint64_t item = 0; item < degree; ++item) {
+        qwen::QwenTpUnit unit;
+        unit.roleId = "S" + std::to_string(stage) + "R" + std::to_string(item);
+        unit.rank = rank++;
+        unit.layerBegin = begin;
+        unit.layerEnd = end;
+        if (ranked != rankArtifacts.end()) {
+          if (ranked->second.size() != degree)
+            throw std::invalid_argument("rank artifact cover differs from the declared degree");
+          artifactByUnit[unit.roleId] = ranked->second.at(item);
+        }
+        units.push_back(std::move(unit));
+      }
+      ++stage;
+    }
+    std::map<std::string, NativeRoleResourceRequirement> requirementByUnit;
+    for (const auto& unit : units) requirementByUnit[unit.roleId] = resourceProfiles.at(
+      units.size() == 0 ? std::string{} : stageRoles.front().get<std::string>());
+    const auto egress = split.value("result_egress_role", std::string{});
+    if (egress.empty())
+      throw std::invalid_argument("sharded Qwen catalog has no result egress role");
+    // The egress unit of the last stage owns the head.
+    const auto egressDegree = degrees.at(degrees.size() - 1).get<std::uint64_t>();
+    const auto egressUnit = "S" + std::to_string(stageRoles.size() - 1) + "R" +
+      std::to_string(egressDegree == 0 ? 0 : egressDegree - 1);
+    projectedCandidate = qwen::buildQwenTpCandidate(
+      result.model.graph, shape, units, "entry", egressUnit, result.model.descriptor,
+      artifactByUnit, requirementByUnit);
+  }
+  const auto enumerated = projectedCandidate
+    ? std::vector<NativeSplitCandidate>{}
+    : result.cooperativeSplitter->enumerate(
+        result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
   preparedCandidates.reserve(enumerated.size());
   for (auto candidate : enumerated) {
     if (sourceDefined) {
@@ -600,6 +669,16 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     auto bound = result.preparation->bindStateContracts(
       result.model, candidate, result.stateMapping, planningControl,
       sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
+    auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
+    preparedCandidates.push_back({std::move(bound), std::move(roles)});
+  }
+  if (projectedCandidate) {
+    auto candidate = std::move(*projectedCandidate);
+    candidate.requirementsByRole = resourceProfiles;
+    candidate.candidateDigest = candidate.computedDigest();
+    auto bound = result.preparation->bindStateContracts(
+      result.model, candidate, result.stateMapping, planningControl,
+      NativeStateContractBinding::SOURCE);
     auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
     preparedCandidates.push_back({std::move(bound), std::move(roles)});
   }

@@ -479,6 +479,10 @@ std::string NativeSplitCandidate::canonicalJson() const
   auto executionPlanJson = NativeJson{{"roles", executionPlan.roles},
                                       {"dependencies", dependencies},
                                       {"node_roles", nodeRoles}};
+  // Only present when declared, so every existing candidate's canonical bytes are
+  // unchanged and its digest does not move.
+  if (!roleNodeIdsByRole.empty())
+    executionPlanJson["role_node_ids"] = roleNodeIdsByRole;
   if (!executionPlan.steps.empty()) {
     auto steps = NativeJson::array();
     for (const auto& step : executionPlan.steps) {

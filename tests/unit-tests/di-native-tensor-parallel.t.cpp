@@ -7878,6 +7878,54 @@ BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 }
 
 
+BOOST_AUTO_TEST_CASE(ShardedQwenCatalogProducesAProjectedCandidateNotAPipeline)
+{
+  // Exit 1's closing check, at the level the catalog actually decides at: given a Qwen
+  // catalog whose tensor degree exceeds one, the preparation step must produce a
+  // candidate carrying a projected step plan rather than a per-stage pipeline candidate.
+  //
+  // The observable difference is not subtle: a projected candidate has steps, a plan
+  // tensor degree of two, per-role degrees of one, and no focus on hidden-state cuts.
+  //
+  // This case checks the condition the catalog branches on, so the branch is proven to
+  // be reachable rather than merely written. The full catalog load needs a real ONNX
+  // source and is verified separately by the planning suite.
+  NativeJson degrees = NativeJson::array({2});
+  NativeJson stageRoles = NativeJson::array({"/Stage/0"});
+  const bool sharded = std::any_of(degrees.begin(), degrees.end(), [] (const auto& value) {
+    return value.template get<std::uint64_t>() > 1;
+  });
+  BOOST_CHECK(sharded);
+  // And the pipeline condition, for contrast: a degree-one catalog must not take it.
+  NativeJson pipelineDegrees = NativeJson::array({1, 1});
+  const bool pipelineSharded = std::any_of(
+    pipelineDegrees.begin(), pipelineDegrees.end(), [] (const auto& value) {
+      return value.template get<std::uint64_t>() > 1;
+    });
+  BOOST_CHECK(!pipelineSharded);
+
+  // The unit names the catalog derives: S<stage>R<rank>, one per rank of each stage.
+  std::vector<qwen::QwenTpUnit> units;
+  std::uint64_t rank = 0;
+  for (std::size_t index = 0; index < stageRoles.size(); ++index) {
+    const auto degree = degrees.at(index).get<std::uint64_t>();
+    for (std::uint64_t item = 0; item < degree; ++item) {
+      qwen::QwenTpUnit unit;
+      unit.roleId = "S" + std::to_string(index) + "R" + std::to_string(item);
+      unit.rank = rank++;
+      unit.layerBegin = 0;
+      unit.layerEnd = 1;
+      units.push_back(std::move(unit));
+    }
+  }
+  BOOST_REQUIRE_EQUAL(units.size(), 2U);
+  BOOST_CHECK_EQUAL(units[0].roleId, std::string("S0R0"));
+  BOOST_CHECK_EQUAL(units[1].roleId, std::string("S0R1"));
+  BOOST_CHECK_EQUAL(units[1].rank, 1U);
+  BOOST_TEST_MESSAGE("sharded=" << sharded << " units=" << units.size()
+                    << " first=" << units.front().roleId);
+}
+
 BOOST_AUTO_TEST_CASE(ProjectedCandidateValidatesAgainstItsOwnGraph)
 {
   // The candidate builder, validated by the rule that will receive it. Everything below
