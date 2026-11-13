@@ -429,6 +429,20 @@ struct PendingInputPrefetch
   }
 };
 
+/** Whether this role leaves the edge for its worker to fetch per step.
+ *
+ * A step-carrying role admits each remote input at the step that needs it, so the
+ * coordinator must neither await it here nor start a prefetch whose future it would then
+ * have to drain. Doing either reinstates the wait-all gate above the worker: with two
+ * tensor-parallel units each waits for a partial the other has not computed, and neither
+ * reaches its first step.
+ */
+bool
+workerFetchesPerStep(const RoleSpec& role, const DependencyEdge& edge)
+{
+  return role.steps && !role.steps->empty() && !edge.consumerStepId.empty();
+}
+
 void
 beginInputPrefetch(const NativeEpochCoordinatorConfig& config,
                    PendingInputPrefetch& result)
@@ -440,6 +454,11 @@ beginInputPrefetch(const NativeEpochCoordinatorConfig& config,
   result.firstReadStarted.reserve(result.role.inputs.size());
   for (const auto& edge : result.role.inputs) {
     if (result.inputs.find(edge.scope) != result.inputs.end()) {
+      continue;
+    }
+    if (workerFetchesPerStep(result.role, edge)) {
+      // The worker starts this fetch itself. Starting one here would create a future this
+      // caller must drain, which is the gate being removed.
       continue;
     }
     if (!result.cancellation ||
@@ -502,6 +521,9 @@ startRemainingInputPrefetch(const NativeEpochCoordinatorConfig& config,
                     })) {
       continue;
     }
+    if (workerFetchesPerStep(pending.role, edge)) {
+      continue;
+    }
     try {
       pending.pending.push_back({edge, {}, 0});
     }
@@ -552,6 +574,7 @@ completeInputPrefetch(const NativeEpochCoordinatorConfig& config, PendingInputPr
     std::rethrow_exception(pending.deferredStartFailure);
   }
   for (auto& item : pending.pending) {
+    if (workerFetchesPerStep(pending.role, item.edge)) continue;
     NativeWorkScope wait(config.workStatistics, "epoch-input-wait", NativeWorkKind::WAIT);
     auto bundle = item.result.get();
     const auto finished = transferNowNs();

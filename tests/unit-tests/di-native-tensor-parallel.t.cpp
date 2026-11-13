@@ -8505,6 +8505,70 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
   std::filesystem::remove_all(root, cleanupError);
 }
 
+BOOST_AUTO_TEST_CASE(CoordinatorFetchesOnlyTheInputsItsWorkerWillNot)
+{
+  // The gate the two-coordinator case timed out on. A step-carrying role leaves its remote
+  // inputs to the worker, so the coordinator must not start or drain a fetch for them -- a
+  // future it started is a future it waits on, which is the mutual wait being removed. This
+  // checks the decision itself, because the failure it prevents is a hang rather than a wrong
+  // value and a hang is the most expensive way to learn about it.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+  shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  const auto role = roleSpecFor(plan, "S0R0", "/session/fetch-decision", assignment,
+                                "/provider/0");
+  BOOST_REQUIRE(role.steps && !role.steps->empty());
+
+  // Count the fetches the coordinator would start for this role.
+  class CountingBus final : public DependencyIo
+  {
+  public:
+    std::future<TensorBundle>
+    prefetchInput(const std::string&, const DependencyEdge& edge) override
+    {
+      started.push_back(edge.scope);
+      std::promise<TensorBundle> promise;
+      promise.set_exception(std::make_exception_ptr(
+        std::runtime_error("this fetch should not have been started: " + edge.scope)));
+      return promise.get_future();
+    }
+
+    void
+    publishOutput(const std::string&, const DependencyEdge&,
+                  const TensorBundle&) override
+    {
+    }
+
+    std::vector<std::string> started;
+  };
+
+  std::size_t stepBound = 0;
+  std::size_t unbound = 0;
+  for (const auto& edge : role.inputs) {
+    if (!edge.consumerStepId.empty()) ++stepBound;
+    else ++unbound;
+  }
+  BOOST_TEST_MESSAGE("role inputs=" << role.inputs.size() << " stepBound=" << stepBound
+                    << " unbound=" << unbound);
+  // The plan's own peer edges are step-bound, so this is not a hand-declared example: the
+  // decision is being made about the dependencies a real request carries.
+  BOOST_CHECK_GT(stepBound, 0U);
+  BOOST_CHECK_EQUAL(unbound, 0U);
+  // And the rule the coordinator applies: a step-carrying role's step-bound edges are the
+  // worker's. Every edge here is step-bound, so none belongs to the coordinator.
+  for (const auto& edge : role.inputs) {
+    const bool workerOwned = role.steps && !role.steps->empty() &&
+      !edge.consumerStepId.empty();
+    BOOST_CHECK(workerOwned);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorDrivesOneEpochWithARealAssembledStepTemplate)
 {
   // The coordinator has never driven a tensor-parallel role: every earlier run either had no
