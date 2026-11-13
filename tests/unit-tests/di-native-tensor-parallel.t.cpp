@@ -7695,6 +7695,239 @@ makeSpec224CoordinatorOptions()
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(TwoProvidersExchangeTwentyEightLayersOfPartials)
+{
+  // The same production transport as the single-partial case, driven 28 times per unit: every
+  // layer's attention and MLP partial crosses between two Providers over Named Data. One
+  // exchange proves the transport works; this proves the per-layer identity works, which is what
+  // a real request needs and what a single partial cannot show.
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = 2;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() ==
+                ndn_service_framework::test::EnvironmentStatus::Ready);
+  environment.enableProductionIngressForTest();
+
+  auto& producerFace = environment.providerFace(0);
+  auto& consumerFace = environment.providerFace(1);
+  auto& producer = environment.provider(0);
+  auto& consumer = environment.provider(1);
+  auto forwardInterest = consumerFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) { producerFace.receive(interest); });
+  auto forwardData = producerFace.onSendData.connect(
+      [&] (const ndn::Data& data) { consumerFace.receive(data); });
+
+  const auto sha = [] (char value) {
+    return std::string("sha256:") + std::string(64, value);
+  };
+  const ndn::Name requestId("/request/spec224-many-partials");
+  const std::string planDigest = sha('6');
+  const std::string groupId = "spec224-tp-many";
+  const std::string layout = sha('7');
+  const std::string tensorDigest = sha('8');
+
+  // Two operations per layer, so the group capability authorises exactly what the template
+  // declares rather than one round repeated.
+  std::vector<GroupOperationV1> operations;
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"attn", "mlp"}) {
+      GroupOperationV1 operation;
+      operation.operationIndex = static_cast<std::uint32_t>(operations.size());
+      operation.kind = std::string(kind) == "attn" ? "TP_PARTIAL_ATTN" : "TP_PARTIAL_MLP";
+      operation.producerRanks = {"0"};
+      operation.consumerRanks = {"1"};
+      operation.tensorLayoutDigest = layout;
+      operation.maxBytes = 1024;
+      operation.maxSegments = 8;
+      operations.push_back(std::move(operation));
+    }
+  }
+
+  auto producerCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  const auto capability = producerCoordinator->createCapability(
+    requestId.toUri(), "attempt-1", planDigest, groupId, 3,
+    {{producer.getName().toUri(), 0, "offer-producer", producer.getName().toUri()},
+     {consumer.getName().toUri(), 1, "offer-consumer", consumer.getName().toUri()}},
+    operations, 4096 * 1024, 4000, 60000);
+  auto consumerCoordinator =
+      std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  consumerCoordinator->installCapability(
+    capability, producerCoordinator->epochKeyForProvider(producer.getName().toUri()),
+    true);
+
+  // Each layer's partial needs its own endpoint: the transport keys an object by its endpoint
+  // digest, so reusing one would make every layer publish to the same name.
+  struct Crossing
+  {
+    DependencyEdge edge;
+    NativeTensorEndpointV3 endpoint;
+    float value = 0.0f;
+  };
+  std::vector<Crossing> crossings;
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"attn", "mlp"}) {
+      const auto index = static_cast<std::uint32_t>(
+        layer * 2 + (std::string(kind) == "attn" ? 0 : 1));
+      NativeTensorEndpointV3 endpoint;
+      endpoint.producerNamespace = producer.getName().toUri();
+      endpoint.requester = profile.userIdentity.toUri();
+      endpoint.requestId = requestId.toUri();
+      endpoint.attempt = 1;
+      endpoint.planDigest = planDigest;
+      endpoint.groupId = groupId;
+      endpoint.groupEpoch = "3";
+      endpoint.operation = operations.at(index).kind;
+      endpoint.round = index;
+      endpoint.sourceKind = "ROLE";
+      endpoint.producerRole = "S0R0";
+      endpoint.producerRank = 0;
+      endpoint.consumerRole = "S0R1";
+      endpoint.consumerRoles = {"S0R1"};
+      endpoint.tensorId = std::string(kind) + "-partial-" + std::to_string(layer);
+      endpoint.tensorDigest = tensorDigest;
+      endpoint.layoutDigest = layout;
+      endpoint.targetLayoutDigest = layout;
+      endpoint.microbatch = 0;
+      endpoint.segmentCount = 8;
+      endpoint.manifestDigest = sha('9');
+      endpoint.securityProfile = "NDNSF_DATA_V1";
+      endpoint.noProgressDeadlineMs = capability.noProgressMs;
+      endpoint.hardDeadlineMs = capability.hardDeadlineMs;
+      auto identity = nativeEndpointJson(endpoint);
+      identity.erase("endpoint_digest");
+      identity.erase("consumer_role");
+      endpoint.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+
+      Crossing crossing;
+      crossing.endpoint = endpoint;
+      crossing.edge.scope = std::string(kind) + "-" + std::to_string(layer) + "-from-S0R0";
+      crossing.edge.producerRole = endpoint.producerRole;
+      crossing.edge.consumerRole = endpoint.consumerRole;
+      crossing.edge.consumerRoles = endpoint.consumerRoles;
+      crossing.edge.useNdnsfDataV1 = true;
+      crossing.edge.collectiveOperationIndex = endpoint.round;
+      crossing.edge.collectiveTensorDigest = tensorDigest;
+      crossing.edge.collectiveSourceLayoutDigest = layout;
+      crossing.edge.collectiveTargetLayoutDigest = layout;
+      crossing.edge.declaredByV3 = true;
+      crossing.edge.endpointDigest = endpoint.endpointDigest;
+      crossing.edge.maxSegments = endpoint.segmentCount;
+      // The transport requires the sealed security profile and both deadlines on a declared
+      // endpoint; leaving them at their defaults fails as "incomplete" rather than as wrong.
+      crossing.edge.securityProfile = endpoint.securityProfile;
+      crossing.edge.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
+      crossing.edge.hardDeadlineMs = endpoint.hardDeadlineMs;
+      crossing.edge.manifestContractDigest = endpoint.manifestDigest;
+      // Publication also checks the plan digest and the declared tensor digest are present; the
+      // manifest binds both, and an empty one is refused as "missing or oversized".
+      crossing.edge.planDigest = planDigest;
+      crossing.edge.tensorDigest = tensorDigest;
+      crossing.edge.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
+      crossing.edge.hardDeadlineMs = endpoint.hardDeadlineMs;
+      // The capability authorises a specific operation kind per index, and the transport
+      // compares the edge's kind against it, so the edge must name the same kind. The producer's
+      // namespace and rank identify which member publishes, and the transport resolves one from
+      // the other -- an empty rank would fail its membership check.
+      crossing.edge.operationKind = operations.at(index).kind;
+      crossing.edge.producerProvider = producer.getName().toUri();
+      crossing.edge.collectiveProducerRank = "0";
+      crossing.edge.plannedDataName = tensorObjectNamePrefix(endpoint);
+      crossing.edge.manifestDataName = tensorObjectManifestName(endpoint);
+      // The transport parses the planned name as a category structure and requires one declared
+      // tensor per edge, so both come from the endpoint rather than from a hand-built prefix.
+      crossing.edge.tensors = {endpoint.tensorId};
+      crossing.edge.round = index;
+      crossing.edge.requestId = endpoint.requestId;
+      crossing.edge.attemptEpoch = endpoint.attempt;
+      crossing.edge.executionObjectDigest = computeTensorExecutionObjectDigest(endpoint);
+      // A distinct value per layer, so a swapped partial would show.
+      crossing.value = static_cast<float>(layer) + (std::string(kind) == "attn" ? 0.5f : 0.25f);
+      crossings.push_back(std::move(crossing));
+    }
+  }
+  BOOST_REQUIRE_EQUAL(crossings.size(), 56U);
+
+  // Two IOs on the production transport, one per Provider, each bound to its own role.
+  ndn_service_framework::ServiceProvider::CollaborationAssignment producerAssignment;
+  producerAssignment.role = "S0R0";
+  producerAssignment.service = profile.serviceName;
+  producerAssignment.workDeadline = std::chrono::steady_clock::now() +
+      std::chrono::seconds(120);
+  producerAssignment.workCurrent = [] { return true; };
+  ndn_service_framework::ServiceProvider::CollaborationAssignment consumerAssignment;
+  consumerAssignment.role = "S0R1";
+  consumerAssignment.service = profile.serviceName;
+  consumerAssignment.workDeadline = producerAssignment.workDeadline;
+  consumerAssignment.workCurrent = [] { return true; };
+  ndn_service_framework::ServiceProvider::CollaborationContext producerContext(
+    producer, profile.userIdentity, requestId,
+    ndn_service_framework::RequestMessage(), producerAssignment);
+  ndn_service_framework::ServiceProvider::CollaborationContext consumerContext(
+    consumer, profile.userIdentity, requestId,
+    ndn_service_framework::RequestMessage(), consumerAssignment);
+  NdnsfCollaborationDependencyIo producerIo(
+    producerContext, 4000, 1024, 60000, producerCoordinator);
+  NdnsfCollaborationDependencyIo consumerIo(
+    consumerContext, 4000, 1024, 60000, consumerCoordinator);
+
+  // Publish every layer, then fetch every layer. Publishing first keeps the test about identity
+  // and delivery rather than interleaving, which the single-partial case already covers.
+  std::size_t published = 0;
+  for (const auto& crossing : crossings) {
+    const auto& endpoint = crossing.endpoint;
+    NamedTensor tensor;
+    tensor.name = endpoint.tensorId;
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {2};
+    tensor.payload.assign(2 * sizeof(float), 0);
+    float* values = reinterpret_cast<float*>(tensor.payload.data());
+    values[0] = crossing.value;
+    values[1] = -crossing.value;
+    const auto bundle = makeEncodedTensorBundle(endpoint.tensorId, {std::move(tensor)});
+    // Publish once, directly. Retrying around the call would begin the signed operation again on
+    // each attempt, and a group operation is consumed by its first use -- the retry would then be
+    // fetching an object the coordinator already retired.
+    try {
+      producerIo.publishOutput("spec224-many", crossing.edge, bundle);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL("publish layer " + std::to_string(crossing.endpoint.round) + ": " +
+                 error.what());
+    }
+    ++published;
+  }
+  BOOST_CHECK_EQUAL(published, 56U);
+
+  std::map<std::string, float> arrived;
+  for (const auto& crossing : crossings) {
+    auto fetched = consumerIo.prefetchInput("spec224-many", crossing.edge);
+    environment.pumpUntil([&] {
+      return fetched.wait_for(std::chrono::milliseconds(0)) ==
+             std::future_status::ready;
+    });
+    auto bundle = fetched.get();
+    const auto decoded = decodeTensorBundle(bundle.payload);
+    BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+    // The tensor that arrived is the one this layer published, not another layer's.
+    BOOST_CHECK_EQUAL(decoded.front().name, crossing.endpoint.tensorId);
+    float value = 0.0f;
+    std::memcpy(&value, decoded.front().payload.data(), sizeof(float));
+    arrived[crossing.endpoint.tensorId] = value;
+  }
+  BOOST_REQUIRE_EQUAL(arrived.size(), 56U);
+  // Every layer's value arrived unchanged, so the transport did not confuse two layers' objects.
+  std::size_t matched = 0;
+  for (const auto& crossing : crossings) {
+    const auto found = arrived.find(crossing.endpoint.tensorId);
+    if (found == arrived.end()) continue;
+    if (std::fabs(found->second - crossing.value) < 1e-6f) ++matched;
+  }
+  BOOST_TEST_MESSAGE("crossed=" << arrived.size() << " matched=" << matched);
+  BOOST_CHECK_EQUAL(matched, 56U);
+}
+
 BOOST_AUTO_TEST_CASE(TwoProvidersExchangeAPartialOverNamedData)
 {
   // Exit 3's real test: two Providers, two faces, one partial crossing between
