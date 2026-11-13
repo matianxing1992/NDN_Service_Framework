@@ -2827,6 +2827,8 @@ RepoClient::publishData(const RepoDataPublication& input,
                           "original-Data publication requires a persistent client",
                           "publishData");
   requireWireVerifier(input.verifyWire, "publishData");
+  if (input.producerIdentity.empty())
+    throw std::invalid_argument("publishData requires the Producer namespace");
   if (!input.packets || !input.packets->next)
     throw std::invalid_argument("publishData requires a packet source");
   const auto& source = *input.packets;
@@ -2847,14 +2849,18 @@ RepoClient::publishData(const RepoDataPublication& input,
     ? ("publish-" + source.packetNames.front()) : input.idempotencyKey;
   request.generation = input.generation;
   request.reference.objectName = source.packetNames.front();
-  request.reference.dataPrefix = ndn::Name(source.packetNames.front()).getPrefix(-1).toUri();
+  // The packet set belongs to the Producer namespace the caller declares. The
+  // common parent of the first name is not a substitute: a certificate carried as
+  // the final packet lives under the Producer key name, not under the payload's
+  // parent, and a multi-object stream shares the Producer prefix, not a parent.
+  request.reference.dataPrefix = input.producerIdentity;
   request.reference.expectedSize = source.expectedWireBytes;
-  request.reference.expectedSha256 = digest.substr(digestPrefix.size());
+  request.reference.expectedSha256 = canonicalSha256Digest(digest).substr(digestPrefix.size());
   request.reference.objectType = "original-packet-set";
   RepoObjectManifest packetSet;
   packetSet.objectName = source.packetNames.front();
   packetSet.objectType = "original-packet-set";
-  packetSet.sha256 = digest.substr(digestPrefix.size());
+  packetSet.sha256 = canonicalSha256Digest(digest).substr(digestPrefix.size());
   packetSet.size = source.expectedWireBytes;
   packetSet.segmentCount = static_cast<uint32_t>(source.packetNames.size());
   packetSet.packetNames = source.packetNames;
@@ -3053,10 +3059,12 @@ RepoClient::fetchData(const RepoDataFetch& input,
     result.wireBytes += wire.size();
     result.packets.push_back(std::move(wire));
   }
-  result.wireDigest = "sha256:" + digest.toString();
+  result.wireDigest = canonicalSha256Digest("sha256:" + digest.toString());
   if (reference && !reference->wireDigest.empty()) {
-    // A digest commitment is only reported as verified when it was checked.
-    result.digestVerified = result.wireDigest == reference->wireDigest;
+    // Hex case is a rendering detail, not a different digest: compare canonical
+    // forms so a correct packet set with a lowercase commitment still verifies.
+    result.digestVerified =
+      result.wireDigest == canonicalSha256Digest(reference->wireDigest);
     if (!result.digestVerified)
       throw RepoClientError("DIGEST_MISMATCH",
                             "retrieved wires do not match the packet set digest",
@@ -3245,6 +3253,21 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
     requirements.artifact.formatVersion = capability;
   return m_impl->file->discoverRepoCandidates(requirements,
                                              remainingMs(options.deadline));
+}
+
+std::string
+canonicalSha256Digest(std::string digest)
+{
+  static const std::string prefix = "sha256:";
+  if (digest.size() != prefix.size() + 64 ||
+      digest.compare(0, prefix.size(), prefix) != 0)
+    return digest;
+  for (auto index = prefix.size(); index < digest.size(); ++index) {
+    const auto character = static_cast<unsigned char>(digest[index]);
+    if (character >= 'A' && character <= 'F')
+      digest[index] = static_cast<char>(character - 'A' + 'a');
+  }
+  return digest;
 }
 
 } // namespace ndnsf_distributed_repo

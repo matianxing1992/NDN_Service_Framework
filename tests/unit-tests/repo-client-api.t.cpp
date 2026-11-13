@@ -186,6 +186,20 @@ BOOST_AUTO_TEST_CASE(UnimplementedOperationsFailHonestly)
   BOOST_CHECK_EQUAL(unsupported, 5);
 }
 
+BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
+  // CA03: hex case is a rendering detail. A correct set committed in lowercase must
+  // verify, and anything that is not a full sha256 commitment stays untouched.
+  const std::string lower =
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const std::string upper =
+    "sha256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+  BOOST_CHECK_EQUAL(canonicalSha256Digest(upper), lower);
+  BOOST_CHECK_EQUAL(canonicalSha256Digest(lower), lower);
+  BOOST_CHECK_EQUAL(canonicalSha256Digest("sha256:ABC"), "sha256:ABC");
+  BOOST_CHECK_EQUAL(canonicalSha256Digest("sha512:" + std::string(64, 'A')),
+                    "sha512:" + std::string(64, 'A'));
+}
+
 BOOST_AUTO_TEST_CASE(DataOperationsNeverPullTheSourceBeforeRejecting) {
   TemporaryDirectory temporary("no-side-effects");
   auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));

@@ -17,6 +17,12 @@ namespace ndnsf_distributed_repo {
 /** Completion strength requested by a publication. DURABLE only reports
  *  success once the requested consistency is confirmed; ACCEPTED only reports
  *  that a persistent operation was accepted. */
+/** Normalise a sha256 commitment to lowercase so hex case never decides whether
+ *  data is accepted. Any other string (wrong prefix or length) is returned
+ *  unchanged, because silently repairing an invalid commitment would hide it. */
+std::string
+canonicalSha256Digest(std::string digest);
+
 enum class RepoCompletion
 {
   DURABLE,
