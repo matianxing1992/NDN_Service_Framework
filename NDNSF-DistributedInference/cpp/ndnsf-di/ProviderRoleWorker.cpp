@@ -1250,12 +1250,36 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
           edge.consumerSlotId);
       }
     }
-    // EPOCH_INPUT slots are the request's own inputs, already admitted by scope.
+    // EPOCH_INPUT slots are the request's own inputs. A request carries one bundle under
+    // its ingress scope, and the bundle names its tensors -- `input_ids` for a prompt --
+    // not one entry per step slot. So the slot is resolved by tensor name inside every
+    // admitted bundle first, and only then by scope, which is what a whole-role runner
+    // already does. Looking up the slot id as a scope found nothing, and the step then
+    // reported a missing input it had actually been given.
     for (const auto& slot : step.inputSlots) {
       if (slot.source != "EPOCH_INPUT") continue;
-      const auto admitted = ctx.inputsByScope.find(slot.slotId);
-      if (admitted != ctx.inputsByScope.end())
-        inputs.emplace(slot.slotId, admitted->second);
+      if (const auto direct = ctx.inputsByScope.find(slot.slotId);
+          direct != ctx.inputsByScope.end()) {
+        inputs.emplace(slot.slotId, direct->second);
+        continue;
+      }
+      for (const auto& admitted : ctx.inputsByScope) {
+        if (!isEncodedTensorBundle(admitted.second.payload)) {
+          if (admitted.second.name == slot.slotId)
+            inputs.emplace(slot.slotId, admitted.second);
+          continue;
+        }
+        auto tensors = decodeTensorBundle(admitted.second.payload,
+                                          ctx.workStatistics);
+        try {
+          auto tensor = findTensor(std::move(tensors), slot.slotId);
+          inputs.emplace(slot.slotId,
+                         makeEncodedTensorBundle(slot.slotId, {std::move(tensor)}));
+          break;
+        }
+        catch (const std::out_of_range&) {
+        }
+      }
     }
 
     if (step.operation == "SUM") {

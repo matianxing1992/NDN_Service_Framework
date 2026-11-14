@@ -414,6 +414,32 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
     }
     const auto value = ctx.stepInputsBySlot.find(bound->second);
     if (value == ctx.stepInputsBySlot.end()) continue;
+    // A slot may carry several named tensors, and the child resolves its graph inputs by
+    // name inside each bundle. Handing it a bundle that holds only another tensor would
+    // make the child report that input as missing even though the step supplied it, so the
+    // bundle is narrowed to the one tensor this graph input needs. A slot whose bundle
+    // already names the tensor, or a raw payload, is passed through untouched.
+    if (isEncodedTensorBundle(value->second.payload)) {
+      // The bundle names its tensor after the slot only when the slot carries exactly one
+      // value; a vector-valued slot names each member. So both the graph input name and the
+      // slot id are legitimate keys, and the graph input name is preferred because that is
+      // what a multi-member bundle uses.
+      for (const auto& key : {graphInput, bound->second}) {
+        auto tensors = decodeTensorBundle(value->second.payload);
+        try {
+          auto tensor = findTensor(std::move(tensors), key);
+          TensorBundle narrowed;
+          narrowed.name = graphInput;
+          narrowed.payload = encodeTensorBundle({std::move(tensor)});
+          narrowed.expectedBytes = narrowed.payload.size();
+          child.inputsByScope.emplace(graphInput, std::move(narrowed));
+          break;
+        }
+        catch (const std::out_of_range&) {
+        }
+      }
+      if (child.inputsByScope.count(graphInput) != 0) continue;
+    }
     child.inputsByScope.emplace(graphInput, value->second);
   }
   if (child.inputsByScope.empty())
