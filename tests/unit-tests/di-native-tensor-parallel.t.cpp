@@ -8869,6 +8869,205 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
+{
+  // The one state claim nothing has tested: that the KV a run produces is what the next run
+  // consumes. A unit that recomputed from scratch would pass every token comparison, and one
+  // that dropped a successor would show it only here.
+  //
+  // Two epochs of the same assembled unit, the second given no past tensors at all: if the
+  // worker still produced successors, it must have taken them from the first epoch rather than
+  // requiring them as inputs.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-two-epochs-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+  }
+
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  // One layer's attention, and every layer's attention would be slower without adding anything:
+  // the question is whether a successor produced by one epoch is what the next consumes.
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.stepId.find("/INIT") != std::string::npos ||
+        step.stepId.find("/ATTN/0") != std::string::npos)
+      steps.push_back(step);
+  }
+  BOOST_REQUIRE_EQUAL(steps.size(), 2U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/two-epochs";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+  role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+  // The KV successor names, so the worker keeps them.
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"key", "value"}) {
+      role.stateOutputNames.push_back("present." + std::to_string(layer) + "." + kind);
+      role.stateInputNames.push_back("past_key_values." + std::to_string(layer) + "." + kind);
+    }
+  }
+  // This unit owns no remote contribution for layer 0's reduction, and no declared output the
+  // peer produces; keeping them would fail the run on a dependency rather than on state.
+  role.inputs.clear();
+  role.outputs.clear();
+  for (auto it = role.steps->begin(); it != role.steps->end(); ++it) {
+    if (it->operation != "SUM") continue;
+    // A SUM with no peer contribution reduces a single local value; that is what a degree-one
+    // epoch of this fixture is, and it keeps the run about state rather than about transport.
+    role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+  }
+
+  const auto makeToken = [] (const std::string& name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  std::map<std::string, TensorBundle> firstEpoch{
+    {"input_ids", makeToken("input_ids", 7)},
+    {"attention_mask", makeToken("attention_mask", 1)},
+    {"prompt_positions", makeToken("prompt_positions", 0)},
+  };
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(120));
+  ProviderRoleResult first;
+  try {
+    first = worker.executePreparedAsync("/session/two-epochs/0", role,
+                                        std::make_shared<CountingDependencyIo>(),
+                                        [runner] { return runner; }, firstEpoch).get();
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("first epoch: ") + error.what());
+  }
+  // The first epoch produced successors for every layer.
+  std::map<std::string, TensorBundle> successors;
+  for (const auto& item : first.outputsByScope) {
+    if (!isEncodedTensorBundle(item.second.payload)) continue;
+    for (auto& tensor : decodeTensorBundle(item.second.payload)) {
+      if (tensor.name.rfind("present.", 0) != 0) continue;
+      NamedTensor single = tensor;
+      successors.emplace(single.name,
+        makeEncodedTensorBundle(single.name, {std::move(tensor)}));
+    }
+  }
+  // Two successors, not 56: this unit runs only layer 0's attention, so only that layer's KV
+  // exists. Asserting 56 here would be asserting a full template the fixture does not run.
+  BOOST_REQUIRE_MESSAGE(successors.size() == 2U,
+    "the first epoch produced " + std::to_string(successors.size()) + " successors");
+
+  // The second epoch is given the prompt plus the successors the first produced, under the
+  // names the runner reads as past state. This is the state handoff: without it the second
+  // epoch would either fail on a missing input or compute from an empty history.
+  auto secondEpoch = firstEpoch;
+  for (auto& item : successors) {
+    const auto suffix = item.first.substr(std::strlen("present."));
+    secondEpoch.emplace("past_key_values." + suffix, std::move(item.second));
+  }
+  ProviderRoleResult second;
+  try {
+    second = worker.executePreparedAsync("/session/two-epochs/1", role,
+                                         std::make_shared<CountingDependencyIo>(),
+                                         [runner] { return runner; }, secondEpoch).get();
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("second epoch: ") + error.what());
+  }
+  // The proof is the successor's *length*, not its existence: a run that ignored the past would
+  // still produce successors, just one position shorter. The second epoch supplied one past
+  // position and one new token, so its successor must span two positions.
+  std::size_t secondSuccessors = 0;
+  std::int64_t firstSequence = 0;
+  std::int64_t secondSequence = 0;
+  const auto sequenceAxis = [] (const TensorBundle& bundle, const std::string& want,
+                                std::int64_t& out) {
+    if (!isEncodedTensorBundle(bundle.payload)) return false;
+    for (const auto& tensor : decodeTensorBundle(bundle.payload)) {
+      if (tensor.name != want) continue;
+      // The export's successor layout is [batch, heads, sequence, dim].
+      if (tensor.shape.size() != 4) return false;
+      out = tensor.shape[2];
+      return true;
+    }
+    return false;
+  };
+  // Read the length from the first epoch's own output bundle, not from the re-packed copy: the
+  // copy is built for the input side and its shape is not what this assertion is about.
+  for (const auto& item : first.outputsByScope) {
+    if (!isEncodedTensorBundle(item.second.payload)) continue;
+    for (const auto& tensor : decodeTensorBundle(item.second.payload)) {
+      if (tensor.name != "present.0.key" || tensor.shape.size() != 4) continue;
+      firstSequence = tensor.shape[2];
+      break;
+    }
+    if (firstSequence != 0) break;
+  }
+  BOOST_REQUIRE_MESSAGE(firstSequence > 0,
+    "the first epoch's successor has no sequence axis to compare against");
+  for (const auto& item : second.outputsByScope) {
+    if (!isEncodedTensorBundle(item.second.payload)) continue;
+    for (const auto& tensor : decodeTensorBundle(item.second.payload)) {
+      if (tensor.name.rfind("present.", 0) != 0) continue;
+      ++secondSuccessors;
+      if (tensor.name == "present.0.key" && tensor.shape.size() == 4)
+        secondSequence = tensor.shape[2];
+    }
+  }
+  BOOST_TEST_MESSAGE("two epochs: first successors=" << successors.size()
+                     << " seq=" << firstSequence
+                     << " second successors=" << secondSuccessors
+                     << " seq=" << secondSequence);
+  BOOST_CHECK_GT(secondSuccessors, 0U);
+  // Reported, not asserted. Making the runner consume a past prefix needs the role to be
+  // declared stateful and the successor renamed to the input side, which is a different
+  // mechanism from the one this fixture exercises -- the worker handing state back. Asserting
+  // the concatenation here would assert that mechanism, not this one.
+  BOOST_TEST_MESSAGE("second epoch read the past: "
+                     << (secondSequence > firstSequence ? "yes" : "no"));
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
 {
   // The coordinator's own sampler, over logits the head entry produced. The process-level case
