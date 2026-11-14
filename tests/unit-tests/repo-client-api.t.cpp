@@ -654,6 +654,23 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   BOOST_CHECK(replay.deduplicated);
 }
 
+BOOST_AUTO_TEST_CASE(AcceptedPublicationFailsWithAClientErrorInApp) {
+  // An ACCEPTED publication needs the persistent engine. The in-app client must say so with a
+  // RepoClientError rather than letting the engine's own logic_error escape.
+  TemporaryDirectory temporary("publish-accepted");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  publication.completion = RepoCompletion::ACCEPTED;
+  publication.selectedTargets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  publication.idempotencyKey = "spec240-accepted-1";
+  BOOST_CHECK_EXCEPTION(client.publishFile(publication, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) { return !error.code().empty(); });
+}
+
 BOOST_AUTO_TEST_CASE(PublishFileValidatesSelectionShapes) {
   // A selection is honoured now, so the caller errors are shape errors: an
   // incomplete target and an ACCEPTED request without a selection.

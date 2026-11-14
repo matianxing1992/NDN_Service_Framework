@@ -3014,9 +3014,11 @@ RepoClient::publishFile(const RepoFilePublication& input,
       throw std::invalid_argument(
         "ACCEPTED publication requires an idempotency key so a retry can recover");
     requireLiveDeadline(options.deadline, "publishFile");
-    const auto operation = m_impl->file->beginPublishFile(
-      input.sourcePath, reference, selected, input.idempotencyKey,
-      std::max(1, remainingMs(options.deadline)));
+    const auto operation = withEngineErrorTranslation("publishFile", [&] {
+      return m_impl->file->beginPublishFile(
+        input.sourcePath, reference, selected, input.idempotencyKey,
+        std::max(1, remainingMs(options.deadline)));
+    });
     RepoPublishResult result;
     result.state = RepoPublishState::ACCEPTED;
     result.operationReference = operation.operationId;
