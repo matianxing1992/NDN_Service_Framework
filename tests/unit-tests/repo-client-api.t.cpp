@@ -245,6 +245,24 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(InspectionKindsWithoutAnAnswerAreRefused) {
+  // The request declares node, owner and claim kinds; none of them has an answer in this
+  // facade. An empty RepoInspection would look like "nothing is known", which is a
+  // different statement from "this facade cannot ask that question".
+  TemporaryDirectory temporary("inspect-kinds");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  for (const auto kind : {RepoInspectionRequest::Kind::NODE,
+                          RepoInspectionRequest::Kind::OWNER,
+                          RepoInspectionRequest::Kind::CLAIM}) {
+    RepoInspectionRequest request;
+    request.kind = kind;
+    BOOST_CHECK_EXCEPTION(client.inspect(request, makeOptions()), RepoClientError,
+      [] (const RepoClientError& error) {
+        return error.code() == "UNSUPPORTED" && error.phase() == "inspect(target)";
+      });
+  }
+}
+
 BOOST_AUTO_TEST_CASE(OperationsThatCannotBeCancelledSaySo) {
   // Three engine entry points take no cancellation check. Accepting options.requireCurrent
   // there would let a caller believe a long transfer can be stopped.
