@@ -2949,17 +2949,29 @@ RepoClient::publishData(const RepoDataPublication& input,
   request.reference.expectedSha256 = canonicalSha256Digest(digest).substr(digestPrefix.size());
   request.reference.objectType = "original-packet-set";
   RepoObjectManifest packetSet;
-  packetSet.objectName = source.packetNames.front();
-  packetSet.objectType = "original-packet-set";
-  packetSet.sha256 = canonicalSha256Digest(digest).substr(digestPrefix.size());
-  packetSet.size = source.expectedWireBytes;
-  packetSet.segmentCount = static_cast<uint32_t>(source.packetNames.size());
-  packetSet.packetNames = source.packetNames;
-  packetSet.packetOffsets = source.packetOffsets;
-  packetSet.generation = input.generation;
-  packetSet.operationId = request.operationId;
-  packetSet.lifecycleState = "COMMITTED";
-  packetSet.dataPrefix = request.reference.dataPrefix;
+  if (input.packetSetManifest) {
+    // Preserve the caller's manifest: it carries protection, codec and root fields that
+    // a geometry-only reconstruction would drop.
+    packetSet = *input.packetSetManifest;
+    if (packetSet.objectName != source.packetNames.front() ||
+        packetSet.size != source.expectedWireBytes ||
+        canonicalSha256Digest("sha256:" + packetSet.sha256) != canonicalSha256Digest(digest))
+      throw std::invalid_argument(
+        "publishData received a manifest that does not match the packet source");
+  }
+  else {
+    packetSet.objectName = source.packetNames.front();
+    packetSet.objectType = "original-packet-set";
+    packetSet.sha256 = canonicalSha256Digest(digest).substr(digestPrefix.size());
+    packetSet.size = source.expectedWireBytes;
+    packetSet.segmentCount = static_cast<uint32_t>(source.packetNames.size());
+    packetSet.packetNames = source.packetNames;
+    packetSet.packetOffsets = source.packetOffsets;
+    packetSet.generation = input.generation;
+    packetSet.operationId = request.operationId;
+    packetSet.lifecycleState = "COMMITTED";
+    packetSet.dataPrefix = request.reference.dataPrefix;
+  }
   request.reference.packetSetMetadata = std::move(packetSet);
   request.storageBinding.ownerIdentity = input.ownerIdentity;
   request.storageBinding.grantId = input.grantId;

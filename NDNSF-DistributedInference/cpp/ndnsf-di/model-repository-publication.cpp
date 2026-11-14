@@ -140,6 +140,11 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
       return true;
     };
     publication.packets = std::move(source);
+    // Hand the facade the manifest DI already built: it carries the protection and root
+    // fields that a geometry-only reconstruction would lose.
+    if (reference.packetSetMetadata)
+      publication.packetSetManifest =
+        std::make_shared<const repo::RepoObjectManifest>(*reference.packetSetMetadata);
     publication.producerIdentity = writer.getName().toUri();
     publication.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
     publication.ownerIdentity = reply.grant.ownerIdentity;

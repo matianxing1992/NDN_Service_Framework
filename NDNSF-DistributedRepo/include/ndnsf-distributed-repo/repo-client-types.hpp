@@ -258,6 +258,10 @@ struct RepoDataPublication
   uint64_t generation = 0;
   /** Immutable object name; required when the packet source is empty. */
   std::string objectName;
+  /** The caller's own committed manifest for this packet set. Publication must not
+   *  synthesise a replacement: the manifest carries protection, codec and root
+   *  fields that a geometry-only reconstruction loses. */
+  std::shared_ptr<const RepoObjectManifest> packetSetManifest;
   std::string idempotencyKey;
   /** Shared so copying a publication never deep-copies the verifier. */
   std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
