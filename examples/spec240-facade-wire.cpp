@@ -297,6 +297,128 @@ main(int argc, char** argv)
                  result.receipt ? result.receipt->receiptId.c_str() : "");
     return result.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
   }
+  if (mode == "concurrency") {
+    // Four publications at once against one client: close() must report the truth while they
+    // run and after they finish.
+    const auto source = arg(options, "source");
+    const auto bytes = readBytes(source);
+    const auto alternate = [] (const std::string& value) {
+      return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
+    };
+    const auto target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
+                                         alternate(servicePrefix.toUri())};
+    const auto runTag = static_cast<uint64_t>(std::chrono::duration_cast<
+      std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    std::atomic<int> finished{0};
+    std::atomic<int> failed{0};
+    const auto worker = [&] (int index) {
+      try {
+        repo::RepoDataPublication publication;
+        publication.target = target;
+        publication.producerIdentity = identity.toUri();
+        // Run-unique names: a reused object name collides with earlier grants and claims.
+        ndn::Name objectName = ndn::Name(identity).append("object");
+        objectName.appendSegment(static_cast<uint64_t>(runTag));
+        objectName.appendSegment(static_cast<uint64_t>(index));
+        publication.objectName = objectName.toUri();
+        repo::PacketSource packets;
+        std::vector<std::vector<uint8_t>> wires;
+        uint64_t offsets = 0;
+        uint64_t segment = 0;
+        const uint64_t chunk = 8000;
+        const uint64_t total = bytes.empty() ? 1 : (bytes.size() + chunk - 1) / chunk;
+        do {
+          const uint64_t begin = segment * chunk;
+          const uint64_t end = std::min<uint64_t>(bytes.size(), begin + chunk);
+          ndn::Name name = objectName;
+          name.appendSegment(segment);
+          ndn::Data packet(name);
+          packet.setContent(ndn::span<const uint8_t>(bytes.data() + begin, end - begin));
+          packet.setFreshnessPeriod(ndn::time::seconds(3600));
+          packet.setFinalBlock(ndn::name::Component::fromSegment(total - 1));
+          keyChain.sign(packet, ndn::security::signingByCertificate(certificate));
+          const auto wire = packet.wireEncode();
+          wires.emplace_back(wire.begin(), wire.end());
+          packets.packetNames.push_back(name.toUri());
+          packets.packetOffsets.push_back(offsets);
+          offsets += wires.back().size();
+          ++segment;
+        } while (segment * chunk < bytes.size());
+        packets.packetOffsets.push_back(offsets);
+        packets.expectedWireBytes = offsets;
+        packets.expectedPacketCount = wires.size();
+        ndn::util::Sha256 sha;
+        for (const auto& wire : wires)
+          sha.update(wire);
+        packets.expectedDigest = "sha256:" + sha.toString();
+        std::size_t cursor = 0;
+        packets.next = [&wires, cursor] (std::vector<uint8_t>& out) mutable {
+          if (cursor >= wires.size())
+            return false;
+          out = wires[cursor++];
+          return true;
+        };
+        publication.packets = packets;
+        publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+          [] (const std::vector<uint8_t>& wire) {
+            try {
+              const ndn::Block block(wire);
+              const ndn::Data packet(block);
+              return packet.wireEncode().size() == wire.size();
+            }
+            catch (const std::exception&) {
+              return false;
+            }
+          });
+        publication.generation = 1;
+        publication.idempotencyKey = "spec240-concurrency-" + std::to_string(runTag) +
+          "-" + std::to_string(index);
+
+        repo::RepoWriteAuthorization authorization;
+        authorization.target = target;
+        authorization.writerIdentity = identity.toUri();
+        authorization.objectName = packets.packetNames.front();
+        authorization.grantId = "spec240-concurrency-grant-" + std::to_string(runTag) +
+          "-" + std::to_string(index);
+        authorization.expiresAtMs = static_cast<uint64_t>(std::chrono::duration_cast<
+          std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + 600000;
+        const auto grant = client.authorizeWrite(authorization, operation);
+        publication.ownerIdentity = grant.ownerIdentity;
+        publication.grantId = grant.grantId;
+        publication.ownerEpoch = grant.ownerEpoch;
+        const auto result = client.publishData(publication, operation);
+        if (result.state != repo::RepoPublishState::COMMITTED)
+          ++failed;
+      }
+      catch (const std::exception& error) {
+        std::fprintf(stderr, "CONCURRENCY_WORKER_%d failed: %s\n", index, error.what());
+        ++failed;
+      }
+      ++finished;
+    };
+
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 4; ++index)
+      workers.emplace_back(worker, index);
+    const auto closeAfter = options.count("close-after-ms") != 0
+      ? std::chrono::milliseconds(std::stoll(options.at("close-after-ms")))
+      : std::chrono::milliseconds(150);
+    const bool skipClose = options.count("no-close") != 0;
+    if (!skipClose)
+      std::this_thread::sleep_for(closeAfter);
+    const auto drainedWhileRunning = skipClose
+      ? true
+      : client.close(std::chrono::steady_clock::now() + std::chrono::milliseconds(50));
+    std::fprintf(stderr, "CONCURRENCY close_while_running=%d finished=%d failed=%d\n",
+                 drainedWhileRunning ? 1 : 0, finished.load(), failed.load());
+    for (auto& thread : workers)
+      thread.join();
+    const auto drainedAfter = client.close(std::chrono::steady_clock::now() +
+                                           std::chrono::seconds(5));
+    std::fprintf(stderr, "CONCURRENCY close_after=%d finished=%d failed=%d\n",
+                 drainedAfter ? 1 : 0, finished.load(), failed.load());
+    return drainedWhileRunning ? 1 : 0;
+  }
   if (mode == "claim-fetch") {
     // Owner-claim retrieval: the Repo mints the proof only after matching the manifest, every
     // indexed packet and the ordered wire digest.
