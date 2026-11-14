@@ -9531,6 +9531,100 @@ BOOST_AUTO_TEST_CASE(UnsplitReferenceAgreesWithTheDistributedFirstToken)
   // A difference is the finding, not something to adjust: the split must compute the same model.
   BOOST_CHECK_EQUAL(best, static_cast<std::size_t>(kDistributedFirstToken));
 
+  // One agreeing position is not the sequence. Continue greedily in the same runner and compare
+  // every step with what the deployment produced. Each step re-runs the graph over the whole
+  // prefix with an empty past rather than carrying KV state: that is slower, but it is the
+  // reference the split has to match, and it needs no state protocol to be trusted itself.
+  const std::vector<std::int64_t> expected = {
+    15810, 2885, 59463, 320, 8065, 45, 8, 374, 264, 28030, 11507, 6188, 311,
+    7283, 10535, 1948, 7611, 429, 4332, 264, 4185, 738, 315, 6941, 821, 14389,
+    13, 4220, 14389, 525, 11136, 1483};
+  std::vector<std::int64_t> prefix = prompt;
+  std::size_t differences = 0;
+  for (std::size_t step = 0; step < expected.size(); ++step) {
+    const auto length = static_cast<std::int64_t>(prefix.size());
+    std::vector<std::int64_t> ones(prefix.size(), 1);
+    std::vector<std::int64_t> positions(prefix.size());
+    for (std::int64_t index = 0; index < length; ++index) positions[index] = index;
+    std::map<std::string, TensorBundle> stepInputs{
+      {"input_ids", makeInt64("input_ids", {1, length}, prefix)},
+      {"attention_mask", makeInt64("attention_mask", {1, length}, ones)},
+      {"position_ids", makeInt64("position_ids", {1, length}, positions)},
+    };
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+        stepInputs.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    {
+      NamedTensor mask;
+      mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+      mask.elementType = TensorElementType::Int32;
+      mask.shape = {1, 1};
+      mask.payload.assign(sizeof(std::int32_t), 0);
+      stepInputs.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+      NamedTensor total;
+      total.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+      total.elementType = TensorElementType::Int32;
+      total.shape = {};
+      const auto value = static_cast<std::int32_t>(length);
+      total.payload.resize(sizeof(value));
+      std::memcpy(total.payload.data(), &value, sizeof(value));
+      stepInputs.emplace(total.name, makeEncodedTensorBundle(total.name, {std::move(total)}));
+    }
+    RoleSpec stepRole;
+    stepRole.role = "REF";
+    stepRole.requestId = "/request/oracle/" + std::to_string(step);
+    stepRole.attemptEpoch = 1;
+    ProviderRoleResult stepResult;
+    try {
+      stepResult = worker.executePreparedAsync(
+        "/request/oracle/step/" + std::to_string(step), std::move(stepRole),
+        std::make_shared<CountingDependencyIo>(),
+        [runner] { return runner; }, stepInputs).get();
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("unsplit oracle step ") + std::to_string(step) + ": " +
+                 error.what());
+    }
+    const auto rowLogits = stepResult.outputsByScope.find("logits");
+    BOOST_REQUIRE(rowLogits != stepResult.outputsByScope.end());
+    std::vector<float> row;
+    if (isEncodedTensorBundle(rowLogits->second.payload)) {
+      const auto tensors = decodeTensorBundle(rowLogits->second.payload);
+      const auto found = std::find_if(tensors.begin(), tensors.end(),
+        [] (const auto& tensor) { return tensor.name == "logits"; });
+      BOOST_REQUIRE(found != tensors.end());
+      const auto* data = reinterpret_cast<const float*>(found->payload.data());
+      row.assign(data, data + found->payload.size() / sizeof(float));
+    }
+    else {
+      const auto* data = reinterpret_cast<const float*>(rowLogits->second.payload.data());
+      row.assign(data, data + rowLogits->second.payload.size() / sizeof(float));
+    }
+    BOOST_REQUIRE_EQUAL(row.size() % kVocab, 0U);
+    const auto rowCount = row.size() / kVocab;
+    const auto* tail = row.data() + (rowCount - 1) * kVocab;
+    std::size_t pick = 0;
+    for (std::size_t index = 1; index < kVocab; ++index)
+      if (tail[index] > tail[pick]) pick = index;
+    if (static_cast<std::int64_t>(pick) != expected[step]) {
+      ++differences;
+      BOOST_TEST_MESSAGE("unsplit oracle step " << step << " differs: expected "
+                         << expected[step] << " got " << pick);
+    }
+    prefix.push_back(static_cast<std::int64_t>(pick));
+  }
+  BOOST_TEST_MESSAGE("unsplit oracle compared " << expected.size() << " steps, "
+                     << differences << " differ");
+  // Every step, not just the first: a split that starts right and drifts passes the first check.
+  BOOST_CHECK_EQUAL(differences, 0U);
+
   std::filesystem::remove_all(root, cleanupError);
 }
 
