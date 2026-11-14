@@ -245,6 +245,41 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(DeclaredOptionsThatCannotBeHonouredAreRefused) {
+  // Declaring a field the facade then ignores is how a caller ends up believing in a
+  // capability that does not exist. Each of these is refused with its own phase.
+  TemporaryDirectory temporary("unsupported");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  const auto refused = [&] (RepoClientError error, const std::string& phase) {
+    return error.code() == "UNSUPPORTED" && error.phase() == phase;
+  };
+
+  RepoFilePublication stored;
+  stored.storedSource = StoredFileSource{};
+  BOOST_CHECK_EXCEPTION(client.publishFile(stored, makeOptions()), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "publishFile"); });
+
+  RepoDataPublication object;
+  object.object = ProducerObjectSource{};
+  BOOST_CHECK_EXCEPTION(client.publishData(object, makeOptions()), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "publishData"); });
+
+  RepoInspectionRequest liveness;
+  liveness.probeLiveness = true;
+  BOOST_CHECK_EXCEPTION(client.inspect(liveness, makeOptions()), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "inspect"); });
+
+  RepoInspectionRequest noMetadata;
+  noMetadata.probeMetadata = false;
+  BOOST_CHECK_EXCEPTION(client.inspect(noMetadata, makeOptions()), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "inspect"); });
+
+  RepoListRequest pinned;
+  pinned.catalogRevision = "rev-1";
+  BOOST_CHECK_EXCEPTION(client.list(pinned, makeOptions()), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "list"); });
+}
+
 BOOST_AUTO_TEST_CASE(DiscoveryHonoursTheRequestedProviderScope) {
   // A declared scope must constrain the answer: being handed a Repo the caller excluded is
   // a silent security-relevant substitution.

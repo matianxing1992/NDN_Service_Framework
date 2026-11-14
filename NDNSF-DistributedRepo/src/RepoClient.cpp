@@ -2876,6 +2876,11 @@ RepoClient::publishFile(const RepoFilePublication& input,
     throw RepoClientError("UNSUPPORTED",
                           "publishFile requires a file client; this client was opened data-only",
                           "publishFile");
+  if (input.storedSource)
+    throw RepoClientError(
+      "UNSUPPORTED",
+      "publishFile publishes from a path; registering an existing Repo handle is not supported",
+      "publishFile");
   if (input.reference.logicalName.empty() || input.reference.contentDigest.empty())
     throw std::invalid_argument("publishFile requires a logical name and content digest");
   const auto reference = toArtifactReference(input.reference);
@@ -3001,6 +3006,11 @@ RepoClient::publishData(const RepoDataPublication& input,
   requireWireVerifier(input.verifyWire, "publishData");
   if (input.producerIdentity.empty())
     throw std::invalid_argument("publishData requires the Producer namespace");
+  if (input.object)
+    throw RepoClientError(
+      "UNSUPPORTED",
+      "publishData transfers caller packets; an opaque producer-object source is not a "
+      "publication path", "publishData");
   if (!input.packets || !input.packets->next)
     throw std::invalid_argument("publishData requires a packet source");
   const auto& source = *input.packets;
@@ -3451,6 +3461,13 @@ RepoClient::inspect(const RepoInspectionRequest& input,
       : std::nullopt;
     return inspection;
   }
+  // Inspection options the facade cannot honour are refused rather than ignored: a caller
+  // that asked for a liveness probe must not receive a metadata answer that looks live.
+  if (!input.nodeId.empty() || input.probeLiveness || !input.probeMetadata)
+    throw RepoClientError(
+      "UNSUPPORTED",
+      "inspection takes no node id, no liveness probe and always probes metadata",
+      "inspect");
   if (input.kind == RepoInspectionRequest::Kind::OPERATION) {
     if (!m_impl->user)
       throw RepoClientError("UNSUPPORTED",
@@ -3503,6 +3520,11 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   if (input.scope != RepoListScope::OWNER_OBJECTS)
     throw RepoClientError("UNSUPPORTED",
                           "Repo inventory listing is not implemented yet", "list");
+  // A caller that pins a catalog revision is asking for a consistent page; the listing
+  // path has no revision input, so the answer could silently come from a different one.
+  if (!input.catalogRevision.empty())
+    throw RepoClientError("UNSUPPORTED",
+                          "list does not page by catalog revision", "list");
   if (input.target.providerIdentity.empty())
     throw std::invalid_argument("list requires a target");
   RepoUserStorageListRequest request;
