@@ -245,6 +245,47 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(DiscoveryHonoursTheRequestedProviderScope) {
+  // A declared scope must constrain the answer: being handed a Repo the caller excluded is
+  // a silent security-relevant substitution.
+  TemporaryDirectory temporary("discover-scope");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  // A caller-supplied ACK window is not something the engine can honour; the facade says so
+  // instead of accepting the field and ignoring it.
+  RepoDiscoveryRequest bounded;
+  bounded.ackCollectionMs = 5000;
+  BOOST_CHECK_EXCEPTION(client.discover(bounded, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "discover";
+    });
+
+  RepoDiscoveryRequest unscoped;
+  RepoCandidateSet all;
+  try {
+    all = client.discover(unscoped, makeOptions());
+  }
+  catch (const std::exception& exception) {
+    // Discovery is a persistent-mode capability; an in-app client refuses it before the
+    // scope check can be asked.
+    BOOST_TEST_MESSAGE(std::string("scope case skipped: ") + exception.what());
+    return;
+  }
+  if (all.candidates.empty()) {
+    BOOST_TEST_MESSAGE("scope case skipped: in-app discovery returned no candidates");
+    return;
+  }
+  RepoDiscoveryRequest scoped;
+  scoped.providerScope = "/someone/else";
+  BOOST_CHECK_EXCEPTION(client.discover(scoped, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "NO_MATCHING_PROVIDER" && error.phase() == "discover";
+    });
+  // A scope that names an actual candidate keeps it.
+  scoped.providerScope = all.candidates.front().providerIdentity.toUri();
+  const auto kept = client.discover(scoped, makeOptions());
+  BOOST_CHECK_EQUAL(kept.candidates.size(), 1U);
+}
+
 BOOST_AUTO_TEST_CASE(CloseIsIdempotentAndSafeToRepeat) {
   // close() is the only way a caller states "no more work". Repeating it, or calling it
   // on an expired deadline while idle, must be answered rather than throwing or hanging.

@@ -3626,10 +3626,30 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
     else
       throw std::invalid_argument("discover received an unknown capability: " + capability);
   }
+  // The engine's discovery has no ACK-window input. Reject a caller-supplied bound rather
+  // than accepting a field that would never be honoured.
+  if (input.ackCollectionMs != RepoDiscoveryRequest{}.ackCollectionMs)
+    throw RepoClientError("UNSUPPORTED",
+                          "discovery cannot honour a caller-supplied ACK window", "discover");
   if (requirements.artifact.formatVersion.empty())
     requirements.artifact.formatVersion = "artifact-manifest-v2";
-  return m_impl->file->discoverRepoCandidates(requirements,
-                                             remainingMs(options.deadline));
+  // A declared scope is a constraint, not a comment: a caller that names a Provider must
+  // not be handed candidates from another one.
+  auto candidates = m_impl->file->discoverRepoCandidates(
+    requirements, std::max(1, remainingMs(options.deadline)));
+  if (input.providerScope.empty())
+    return candidates;
+  const auto scope = ndn::Name(input.providerScope);
+  RepoCandidateSet scoped;
+  for (auto& candidate : candidates.candidates) {
+    if (candidate.providerIdentity == scope)
+      scoped.candidates.push_back(std::move(candidate));
+  }
+  if (scoped.candidates.empty() && !candidates.candidates.empty())
+    throw RepoClientError("NO_MATCHING_PROVIDER",
+                          "discover found Repos, but none under the requested provider scope",
+                          "discover");
+  return scoped;
 }
 
 std::string
