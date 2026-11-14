@@ -3160,7 +3160,8 @@ RepoClient::publishData(const RepoDataPublication& input,
     packetSet.generation = input.generation;
     packetSet.operationId = request.operationId;
     packetSet.lifecycleState = "COMMITTED";
-    packetSet.dataPrefix = request.reference.dataPrefix;
+    // Deliberately no dataPrefix here: the Repo reads a non-empty prefix on the metadata as
+    // "the first packet's content is an encrypted envelope" and would try to decode it.
   }
   request.reference.packetSetMetadata = std::move(packetSet);
   request.storageBinding.ownerIdentity = input.ownerIdentity;

@@ -167,7 +167,7 @@ main(int argc, char** argv)
     // Alternate spellings are produced once, from a Name; re-parsing an alternate string
     // yields literal "8=" components and mangles the name.
     publication.producerIdentity = identity.toUri();
-    publication.objectName = objectName.toUri(ndn::name::UriFormat::ALTERNATE);
+    publication.objectName = objectName.toUri();
 
     repo::PacketSource packets;
     std::vector<std::vector<uint8_t>> wires;
@@ -189,7 +189,7 @@ main(int argc, char** argv)
       keyChain.sign(packet, ndn::security::signingByCertificate(certificate));
       const auto wire = packet.wireEncode();
       wires.emplace_back(wire.begin(), wire.end());
-      packets.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
+      packets.packetNames.push_back(name.toUri());
       packets.packetOffsets.push_back(offsets);
       offsets += wires.back().size();
       ++segment;
@@ -221,7 +221,6 @@ main(int argc, char** argv)
     manifest->packetOffsets = packets.packetOffsets;
     manifest->generation = 1;
     manifest->lifecycleState = "COMMITTED";
-    manifest->dataPrefix = publication.producerIdentity;
     publication.packetSetManifest = manifest;
     publication.packets = packets;
     // The verifier has to do what a Producer check means: the packet must be signed by the
@@ -265,6 +264,11 @@ main(int argc, char** argv)
     publication.ownerEpoch = grant.ownerEpoch;
 
     const auto result = client.publishData(publication, operation);
+    if (options.count("names-out") != 0) {
+      std::ofstream names(options.at("names-out"), std::ios::trunc);
+      for (const auto& name : packets.packetNames)
+        names << name << "\n";
+    }
     std::fprintf(stderr, "FACADE_PUBLISH state=%s receipt=%s\n",
                  result.state == repo::RepoPublishState::COMMITTED ? "COMMITTED" : "ACCEPTED",
                  result.receipt ? result.receipt->receiptId.c_str() : "");
