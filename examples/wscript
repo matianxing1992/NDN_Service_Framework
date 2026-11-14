@@ -349,6 +349,14 @@ def build(bld):
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
+        bld.program(name='spec240-seed-store',
+                    target='spec240-seed-store',
+                    source=['spec240-seed-store.cpp'],
+                    rpath=[runtime_libdir],
+                    includes=['..', '../NDNSF-DistributedRepo/include', '../ndn-service-framework'],
+                    use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL sqlite3',
+                    install_path=None)
+
         bld.program(name='spec240-facade-overhead',
                     target='spec240-facade-overhead',
                     source=['spec240-facade-overhead.cpp'],
