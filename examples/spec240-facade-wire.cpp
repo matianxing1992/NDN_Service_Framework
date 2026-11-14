@@ -201,7 +201,9 @@ main(int argc, char** argv)
     // rejected as unauthorized, which is the contract working.
     repo::RepoWriteAuthorization authorization;
     authorization.target = publication.target;
-    authorization.writerIdentity = ndn::Name(identity).toUri(ndn::name::UriFormat::ALTERNATE);
+    // The Repo compares this against the identity it derives from the signature, which is
+    // the canonical form, even though the storage binding itself carries alternate names.
+    authorization.writerIdentity = identity.toUri();
     authorization.objectName = publication.objectName;
     authorization.grantId = "spec240-facade-grant-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
