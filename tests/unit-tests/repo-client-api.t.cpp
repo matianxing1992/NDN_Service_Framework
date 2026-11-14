@@ -245,6 +245,17 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(CloseIsIdempotentAndSafeToRepeat) {
+  // close() is the only way a caller states "no more work". Repeating it, or calling it
+  // on an expired deadline while idle, must be answered rather than throwing or hanging.
+  TemporaryDirectory temporary("close-repeat");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  BOOST_CHECK(client.close(std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+  BOOST_CHECK(client.close(std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+  // An exhausted deadline with nothing in flight is still a drained client.
+  BOOST_CHECK(client.close(std::chrono::steady_clock::now() - std::chrono::milliseconds(1)));
+}
+
 BOOST_AUTO_TEST_CASE(CloseDoesNotClaimADrainWhileAPublicationIsInFlight) {
   // CA08 asks for a drain that was observed, not assumed. The idle case only proves the
   // trivial answer, so this one stalls a real publication on a FIFO source and closes while
