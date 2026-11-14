@@ -2928,7 +2928,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return ndn::security::verifySignature(data, producer);
   };
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
       [] { return std::optional<std::vector<uint8_t>>{}; }, verify, ACK_COLLECTION_MS, 15000);
   }), std::invalid_argument);
   BOOST_CHECK(node->list().empty());
@@ -2938,7 +2938,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return expectedWires[position++];
   };
   const auto inserted = runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
       nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_REQUIRE_EQUAL(inserted.lifecycleState, "COMMITTED");
@@ -3019,7 +3019,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   renewedInsert.storageBinding.ownerEpoch = renewedGrant.grant.ownerEpoch;
   position = 0;
   const auto renewed = runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, renewedInsert,
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, renewedInsert,
       nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_CHECK_EQUAL(renewed.operationId, inserted.operationId);
@@ -3038,7 +3038,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     otherGranted.grant.ownerEpoch};
   position = 0;
   const auto shared = runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, sharedInsert,
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, sharedInsert,
       nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_CHECK_EQUAL(shared.operationId, inserted.operationId);

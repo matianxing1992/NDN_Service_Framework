@@ -63,6 +63,13 @@ public:
     const RepoUserStorageClaim& expectedClaim,
     int timeoutMs,
     RepoUserStoragePacketSetFetchLimits limits = {});
+  static RepoObjectManifest commitUserStorageOriginalPackets(
+    ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
+    const RepoUserStorageInsertRequest& request,
+    const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    int ackCollectionTimeMs, int timeoutMs,
+    const std::function<void()>& requireCurrent = {});
 };
 
 } // namespace ndnsf_distributed_repo

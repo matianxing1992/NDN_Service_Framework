@@ -881,7 +881,7 @@ RepoClientCompat::revalidateCurrentUserStorageClaim(
 }
 
 RepoObjectManifest
-RepoClient::commitUserStorageOriginalPackets(
+RepoClientCompat::commitUserStorageOriginalPackets(
   ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
   const RepoUserStorageInsertRequest& request,
   const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
@@ -1093,7 +1093,7 @@ RepoClient::commitUserStorageOriginalPackets(
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   noteStage("prepare-producer");
-  const auto status = parseOperationStatusJson(toString(requestSelectedService(writer, provider,
+  const auto status = parseOperationStatusJson(toString(RepoClient::requestSelectedService(writer, provider,
     makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining(),
     {}, current)));
   noteStage("insert");
@@ -1105,7 +1105,7 @@ RepoClient::commitUserStorageOriginalPackets(
   const auto encodedManifestQuery = detail::encodeOwnedManifestQuery(manifestQuery);
   const auto readManifest = [&] {
     current();
-    const auto wire = requestSelectedService(writer, provider,
+    const auto wire = RepoClient::requestSelectedService(writer, provider,
       makeRepoServiceName(servicePrefix, "MANIFEST"), encodedManifestQuery,
       ackCollectionTimeMs, remaining(),
       {}, current);
@@ -3069,7 +3069,7 @@ RepoClient::publishData(const RepoDataPublication& input,
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   const auto target = m_impl->target(input.target);
-  const auto manifest = RepoClient::commitUserStorageOriginalPackets(
+  const auto manifest = RepoClientCompat::commitUserStorageOriginalPackets(
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
   RepoPublishResult result;

@@ -195,13 +195,6 @@ public:
    * The caller keeps writer and its running Face alive; never call on that Face.
    * On ambiguous failure the Owner retains cleanup/reconciliation responsibility.
    */
-  static RepoObjectManifest commitUserStorageOriginalPackets(
-    ndn_service_framework::ServiceUser& writer, const RepoArtifactTarget& target,
-    const RepoUserStorageInsertRequest& request,
-    const std::function<std::optional<std::vector<uint8_t>>()>& nextOriginalPacket,
-    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
-    int ackCollectionTimeMs, int timeoutMs,
-    const std::function<void()>& requireCurrent = {});
 
   static RepoObjectManifest put(RepoNode& node,
                                 const std::string& objectName,

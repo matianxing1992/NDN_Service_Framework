@@ -4226,7 +4226,7 @@ BOOST_AUTO_TEST_CASE(SourcePublicationAdmissionPrecedesPacketGenerationAndSpooli
   }
   const RepoArtifactTarget target{"/repo/a", "/repo/provider", "/SERVICE/repo"};
   size_t produced = 0;
-  BOOST_CHECK_EXCEPTION(RepoClient::commitUserStorageOriginalPackets(writer, target,
+  BOOST_CHECK_EXCEPTION(RepoClientCompat::commitUserStorageOriginalPackets(writer, target,
     fixture.request, [&]() -> std::optional<std::vector<uint8_t>> {
       if (produced == fixture.packets.size()) return std::nullopt;
       return fixture.packets[produced++];
