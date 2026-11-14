@@ -119,6 +119,9 @@ main(int argc, char** argv)
   repo::PersistentRepoClientConfig config;
   config.servicePrefix = servicePrefix;
   config.providerScope = {provider};
+  // SVS propagates on a one-second periodic interval with 200 ms suppression, so the
+  // default collection window is shorter than the ACK path it is waiting for.
+  config.ackCollectionTimeMs = 4000;
   auto client = repo::RepoClient::makePersistent(user, config);
 
   repo::RepoOperationOptions operation;
