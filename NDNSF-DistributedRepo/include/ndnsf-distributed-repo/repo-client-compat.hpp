@@ -32,6 +32,12 @@ public:
     const RepoUserStorageDeleteRequest& request, int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static std::vector<std::vector<uint8_t>> fetchOriginalDataPackets(
+    std::shared_ptr<ndn_service_framework::ServiceUser> user, const RepoArtifactTarget& target,
+    const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
+    const std::function<bool(const ndn::Data&)>& verifyPacket, int timeoutMs,
+    const std::function<void()>& requireCurrent = {},
+    std::shared_ptr<void> operationLifetime = {});
 };
 
 } // namespace ndnsf_distributed_repo

@@ -5,6 +5,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
@@ -2500,17 +2501,17 @@ BOOST_AUTO_TEST_CASE(OriginalPacketSetVerifiesReplicaCertificateBeforeContentWit
   const RepoArtifactTarget target{"/repo/node", "/replica/storage", "/repo/service"};
   const std::vector<ndn::Name> names{root.getName(), segment.getName()};
   const auto named = finish(std::async(std::launch::async, [&] {
-    return RepoClient::fetchOriginalDataPackets(userOwner, target, names, 8U << 20,
+    return RepoClientCompat::fetchOriginalDataPackets(userOwner, target, names, 8U << 20,
                                                verifier, 3000);
   }));
   BOOST_REQUIRE_EQUAL(named.size(), 2);
   BOOST_CHECK(named[0] == expected[0]);
   BOOST_CHECK(named[1] == expected[1]);
   BOOST_CHECK_THROW(finish(std::async(std::launch::async, [&] {
-    return RepoClient::fetchOriginalDataPackets(userOwner, target, names, 8U << 20,
+    return RepoClientCompat::fetchOriginalDataPackets(userOwner, target, names, 8U << 20,
       [] (const ndn::Data&) { return false; }, 3000);
   })), std::runtime_error);
-  BOOST_CHECK_THROW(RepoClient::fetchOriginalDataPackets(userOwner, target, names, 1,
+  BOOST_CHECK_THROW(RepoClientCompat::fetchOriginalDataPackets(userOwner, target, names, 1,
                                                        verifier, 3000), std::invalid_argument);
   BOOST_CHECK_MESSAGE(unexpectedInterests == 0U, unexpectedInterestNames.str());
   verified.clear();

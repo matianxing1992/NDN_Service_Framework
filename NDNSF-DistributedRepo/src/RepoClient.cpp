@@ -649,7 +649,7 @@ RepoClient::fetchOriginalDataPacketSet(
 }
 
 std::vector<std::vector<uint8_t>>
-RepoClient::fetchOriginalDataPackets(
+RepoClientCompat::fetchOriginalDataPackets(
   std::shared_ptr<ndn_service_framework::ServiceUser> user, const RepoArtifactTarget& target,
   const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
   const std::function<bool(const ndn::Data&)>& verifyPacket, int timeoutMs,
@@ -3301,7 +3301,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
-  auto wires = RepoClient::fetchOriginalDataPackets(
+  auto wires = RepoClientCompat::fetchOriginalDataPackets(
     m_impl->user, m_impl->target(input.target), names, wireBudget,
     verifyPacket, remainingMs(options.deadline), options.requireCurrent);
   RepoDataFetchResult result;

@@ -185,12 +185,6 @@ public:
    * the operation retains the User and its Face lease while callbacks remain pending, and can
    * retain an additional operation owner through that same callback drain.
    */
-  static std::vector<std::vector<uint8_t>> fetchOriginalDataPackets(
-    std::shared_ptr<ndn_service_framework::ServiceUser> user, const RepoArtifactTarget& target,
-    const std::vector<ndn::Name>& names, uint64_t maxWireBytes,
-    const std::function<bool(const ndn::Data&)>& verifyPacket, int timeoutMs,
-    const std::function<void()>& requireCurrent = {},
-    std::shared_ptr<void> operationLifetime = {});
 
   /**
    * Page the authenticated Owner listing for one exact claim, fetch its Repo
