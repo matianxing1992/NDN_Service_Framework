@@ -1274,7 +1274,13 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // Every remote slot arrives here through the admitted role inputs, which the
     // worker has already validated; matching is by the sealed producer step and
     // slot, never by tensor name.
-    std::map<std::string, TensorBundle> inputs;
+    //
+    // The map outlives one suspension. A step with two remote contributions suspends on the
+    // first missing one and resumes on another thread, so anything collected before that
+    // suspension has to live on the item: a local map would die with the frame and the earlier
+    // contribution would be neither admitted nor pending, which is reported as "never started".
+    // Only one step's inputs are ever stored, and they are erased when the step completes.
+    auto& inputs = item.stepCollectedInputs[step.stepId];
     for (const auto& slot : step.inputSlots) {
       // A LOCAL_STEP is produced by an earlier step of this same unit. A
       // REMOTE_STEP names a producer in the peer unit, which this worker never
@@ -1324,6 +1330,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         }
         const auto pending = item.pendingInputsByScope.find(edge.scope);
         if (pending == item.pendingInputsByScope.end()) {
+          // A contribution collected by an earlier turn is already in `inputs`; anything else
+          // missing here was never started, which is a template or transport defect rather than
+          // a resumed one.
+          if (inputs.count(edge.consumerSlotId) != 0) continue;
           throw std::runtime_error(
             "sealed step remote input was never started: " + edge.scope);
         }
@@ -1331,6 +1341,8 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         // it waits: on a Provider hosting more than one unit, the contribution it needs may be
         // publishable only by the unit that is queued behind it. Hand the wait to the scheduler
         // and leave; the completion re-enqueues this item, which resumes at this step.
+        // `inputs` already lives on the item, so everything gathered before this wait survives
+        // the suspension and is still there when the unit resumes at this same step.
         borrowAndSuspendOnEdge(item, edge, pending->second);
         return std::nullopt;
       }
@@ -1436,6 +1448,9 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       produced.emplace(step.stepId + "\n" + outputSlot,
                        sumTensorBundleViews(outputSlot, contributions));
+      // The step is done: its collected inputs are released so a long template does not retain
+      // every contribution it ever read, and so a retry of this step cannot see a stale value.
+      item.stepCollectedInputs.erase(step.stepId);
       continue;
     }
 
@@ -1474,6 +1489,9 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       produced.emplace(step.stepId + "\n" + slot.slotId, found->second);
     }
+    // This step is complete, so its collected inputs are released now rather than at the end of
+    // the template: a 28-layer unit should not retain every contribution it ever read.
+    item.stepCollectedInputs.erase(step.stepId);
     // Keep the decode-state successors the adapter returned. They are not step slots
     // -- the runtime packs state from the result by tensor name -- so dropping them
     // here would make every epoch report a missing state output even though the

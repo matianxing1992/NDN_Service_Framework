@@ -14356,6 +14356,138 @@ BOOST_AUTO_TEST_CASE(AUnitHandsLocalValuesBetweenItsOwnStepsWithoutEncodingThem)
   std::filesystem::remove_all(root, cleanupError);
 }
 
+BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)
+{
+  // A SUM with two remote contributions suspends once per missing contribution. The frame that
+  // held the first one is gone by the time the unit resumes, so an implementation that keeps
+  // collected inputs in a local loses it -- and then reports the first scope as never started,
+  // which points at the transport rather than at the frame that dropped the value. TP=2 has one
+  // remote contribution per reduction, so nothing in the deployed shape could show this.
+  // Degree three needs a shape that divides by three on every split axis, with each quotient
+  // keeping INT4 block alignment: 48 query heads at width 128 gives a 2048-wide O reduction and
+  // 192 per block-aligned part; 12 KV heads and 3072 FFN split as 4 and 1024. The deployed
+  // export's 16/8 cannot be split three ways, so the fixture states its own shape rather than
+  // pretending the deployed one can.
+  qwen::QwenTpShape shape;
+  shape.hidden = 2048; shape.layers = 1; shape.queryHeads = 48;
+  shape.kvHeads = 12; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  // Degree three, not two with hand-added edges: the template itself decides how many remote
+  // contributions a reduction has, so the fixture uses the template the plan would really get.
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 3, "entry", "S0R0");
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/three-contributions";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"},
+                               {"S0R2", "/provider/2"}};
+
+  // A runner that answers whatever its step declares, so the unit reaches its reduction.
+  const auto makeRunner = [] {
+    return makeNativeModelRunner([] (const RoleExecutionContext& context) {
+      std::map<std::string, TensorBundle> result;
+      if (!context.activeStep) return result;
+      for (const auto& slot : context.activeStep->outputSlots) {
+        NamedTensor tensor;
+        tensor.name = slot.slotId;
+        tensor.elementType = TensorElementType::Float32;
+        tensor.shape = {1, 1, 4};
+        tensor.payload.assign(4 * sizeof(float), 0);
+        auto* values = reinterpret_cast<float*>(tensor.payload.data());
+        for (std::size_t index = 0; index < 4; ++index) values[index] = 0.5f;
+        result.emplace(slot.slotId,
+                       makeEncodedTensorBundle(slot.slotId, {std::move(tensor)}));
+      }
+      return result;
+    });
+  };
+
+  auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+  // The plan's own template must give this unit's reductions two remote contributions. If it
+  // ever stops doing that, this case would silently test the degree-two shape again.
+  {
+    std::size_t remoteSlots = 0;
+    for (const auto& step : *role.steps) {
+      if (step.operation != "SUM") continue;
+      for (const auto& slot : step.inputSlots)
+        if (slot.source == "REMOTE_STEP") ++remoteSlots;
+    }
+    BOOST_TEST_MESSAGE("degree-3 remote slots: " << remoteSlots);
+    BOOST_CHECK_GE(remoteSlots, 2U);
+  }
+
+  // Each contribution is delivered only when asked for, and the first one is delivered
+  // immediately while the second arrives after a delay -- so the unit must suspend between them
+  // and resume with the first still in hand.
+  class SplitDeliveryIo final : public DependencyIo
+  {
+  public:
+    explicit SplitDeliveryIo(std::shared_ptr<std::atomic<int>> published)
+      : m_published(std::move(published))
+    {
+    }
+
+    std::future<TensorBundle>
+    prefetchInput(const std::string&, const DependencyEdge& edge) override
+    {
+      std::promise<TensorBundle> promise;
+      NamedTensor tensor;
+      tensor.name = "partial";
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = {1, 1, 4};
+      tensor.payload.assign(4 * sizeof(float), 0);
+      auto* values = reinterpret_cast<float*>(tensor.payload.data());
+      for (std::size_t index = 0; index < 4; ++index) values[index] = 1.0f;
+      promise.set_value(makeEncodedTensorBundle(edge.scope, {std::move(tensor)}));
+      return promise.get_future();
+    }
+
+    void
+    publishOutput(const std::string&, const DependencyEdge& edge,
+                  const TensorBundle&) override
+    {
+      ++*m_published;
+      (void)edge;
+    }
+
+  private:
+    std::shared_ptr<std::atomic<int>> m_published;
+  };
+
+  auto published = std::make_shared<std::atomic<int>>(0);
+  ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(60));
+  const auto promptToken = [] (const std::string& name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  const std::map<std::string, TensorBundle> initial{
+    {"input_ids", makeEncodedTensorBundle("input_ids", {promptToken("input_ids", 7)})},
+    {"attention_mask", makeEncodedTensorBundle("attention_mask",
+      {promptToken("attention_mask", 1)})},
+    {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+      {promptToken("position_ids", 0)})},
+  };
+  auto runner = makeRunner();
+  try {
+    const auto result = worker.executePreparedAsync(
+      "/session/three-contributions", std::move(role),
+      std::make_shared<SplitDeliveryIo>(published),
+      [runner] { return runner; }, initial).get();
+    // Both remote contributions were read and the unit finished: the merged value exists.
+    BOOST_CHECK_GT(result.outputsByScope.size(), 0U);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("two contributions across two waits: ") + error.what());
+  }
+}
+
 BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
 {
   // A Provider may host more than one unit. A unit that waits for a peer contribution in its

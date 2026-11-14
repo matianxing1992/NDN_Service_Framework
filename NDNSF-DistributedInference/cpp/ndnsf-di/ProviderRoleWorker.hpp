@@ -303,6 +303,12 @@ private:
     // Remote contributions already fetched, keyed by scope. Populated by the wait that ended
     // this unit's turn.
     std::map<std::string, TensorBundle> stepRemoteInputs;
+    // Inputs already collected for the step that is running now, keyed by step id then slot.
+    // A step may need several remote contributions and can suspend once per contribution; two
+    // locals would lose every contribution gathered before the last suspension, because the
+    // frame that held them is gone. Only the current step's entry exists, and it is erased as
+    // soon as that step finishes.
+    std::map<std::string, std::map<std::string, TensorBundle>> stepCollectedInputs;
     std::size_t resumeStepIndex = 0;
   };
 
