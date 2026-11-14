@@ -2663,6 +2663,23 @@ rethrowAsClientError(const std::exception& failure, const char* phase)
   throw RepoClientError(std::move(code), message, phase);
 }
 
+/** Runs an engine call and lets only this facade's own errors through untranslated. */
+template <typename Fn>
+auto
+withEngineErrorTranslation(const char* phase, Fn&& call) -> decltype(call())
+{
+  try {
+    return call();
+  }
+  catch (const RepoClientError&) {
+    throw;
+  }
+  catch (const std::exception& failure) {
+    rethrowAsClientError(failure, phase);
+  }
+}
+
+
 /** The caller's deadline is the operation's whole budget. An expired deadline must be
  *  reported, never silently replaced by an engine default: passing 0 to the engine means
  *  "use the configured wait", which would grant a fresh budget after the caller gave up. */
@@ -3185,7 +3202,9 @@ RepoClient::fetchFile(const RepoFileFetch& input,
     if (!file)
       throw RepoClientError("UNSUPPORTED", "in-app fetch requires a file reference",
                             "fetchFile");
-    m_impl->file->fetchFile(toArtifactReference(*file), input.targetPath);
+    withEngineErrorTranslation("fetchFile", [&] {
+      m_impl->file->fetchFile(toArtifactReference(*file), input.targetPath);
+    });
     result.contentDigest = file->contentDigest;
     result.digestAlgorithm = file->digestAlgorithm;
     std::error_code sizeError;
@@ -3198,8 +3217,11 @@ RepoClient::fetchFile(const RepoFileFetch& input,
     result.bytesVerified = result.bytesWritten;
   }
   else if (input.handle) {
-    const auto fetched = m_impl->file->fetchFile(
-      toArtifactHandle(*input.handle), input.targetPath, remainingMs(options.deadline));
+    const auto fetched = withEngineErrorTranslation("fetchFile", [&] {
+      return m_impl->file->fetchFile(
+        toArtifactHandle(*input.handle), input.targetPath,
+        std::max(1, remainingMs(options.deadline)));
+    });
     result.bytesWritten = fetched.bytesTransferred;
     result.bytesVerified = fetched.bytesVerified;
     result.totalElapsedMs = fetched.totalElapsedMs;
@@ -3219,7 +3241,9 @@ RepoClient::fetchFile(const RepoFileFetch& input,
     result.digestVerified = fetched.bytesVerified == fetched.reference.sizeBytes;
   }
   else if (input.reference) {
-    m_impl->file->fetchFile(toArtifactReference(*input.reference), input.targetPath);
+    withEngineErrorTranslation("fetchFile", [&] {
+      m_impl->file->fetchFile(toArtifactReference(*input.reference), input.targetPath);
+    });
     result.contentDigest = input.reference->contentDigest;
     result.digestAlgorithm = input.reference->digestAlgorithm;
     result.bytesWritten = static_cast<uint64_t>(std::filesystem::file_size(
@@ -3451,8 +3475,11 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     return inspection;
   }
   if (input.kind == RepoInspectionRequest::Kind::OBJECT && input.object) {
-    const auto report = m_impl->file->checkAvailability(
-      toArtifactHandle(*input.object), "metadata", remainingMs(options.deadline));
+    const auto report = withEngineErrorTranslation("inspect", [&] {
+      return m_impl->file->checkAvailability(
+        toArtifactHandle(*input.object), "metadata",
+        std::max(1, remainingMs(options.deadline)));
+    });
     // Availability is a statement about the object, not about the node: a reachable
     // Repo that does not hold the object, or whose presence probe is unknown, must not
     // be reported as available. Integrity, when checked, decides against it.
@@ -3506,8 +3533,10 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     PublishOperationHandle handle;
     handle.operationId = input.operationReference;
     handle.seed = m_impl->target(*input.operationSeed);
-    const auto status = m_impl->file->getPublishStatus(handle,
-                                                      remainingMs(options.deadline));
+    const auto status = withEngineErrorTranslation("inspect", [&] {
+      return m_impl->file->getPublishStatus(handle,
+                                            std::max(1, remainingMs(options.deadline)));
+    });
     // A status answers how the operation is doing, not whether the object is available.
     inspection.availability = RepoInspection::Availability::UNKNOWN;
     inspection.lifecycleState = status.state;
@@ -3523,8 +3552,10 @@ RepoClient::inspect(const RepoInspectionRequest& input,
                             "receipt inspection requires the committed object handle",
                             "inspect");
     }
-    const auto receipt = m_impl->file->getReceipt(input.receiptId, toArtifactHandle(*input.object),
-                                                 remainingMs(options.deadline));
+    const auto receipt = withEngineErrorTranslation("inspect", [&] {
+      return m_impl->file->getReceipt(input.receiptId, toArtifactHandle(*input.object),
+                                      std::max(1, remainingMs(options.deadline)));
+    });
     // A receipt records that a commit happened; it does not prove the payload is still
     // there, so availability stays unknown and the claim is not reported current.
     inspection.availability = RepoInspection::Availability::UNKNOWN;
@@ -3561,11 +3592,13 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.target);
   auto emitted = std::make_shared<std::atomic<bool>>(false);
-  const auto wire = RepoClient::requestSelectedService(
-    *m_impl->user, ndn::Name(target.providerIdentity),
-    makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
-    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), emitted, options.requireCurrent);
+  const auto wire = withEngineErrorTranslation("list", [&] {
+    return RepoClient::requestSelectedService(
+      *m_impl->user, ndn::Name(target.providerIdentity),
+      makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
+      std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
+      std::max(1, remainingMs(options.deadline)), emitted, options.requireCurrent);
+  });
   const auto reply = RepoUserStorageListReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target,
@@ -3685,8 +3718,10 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
     requirements.artifact.formatVersion = "artifact-manifest-v2";
   // A declared scope is a constraint, not a comment: a caller that names a Provider must
   // not be handed candidates from another one.
-  auto candidates = m_impl->file->discoverRepoCandidates(
-    requirements, std::max(1, remainingMs(options.deadline)));
+  auto candidates = withEngineErrorTranslation("discover", [&] {
+    return m_impl->file->discoverRepoCandidates(
+      requirements, std::max(1, remainingMs(options.deadline)));
+  });
   if (input.providerScope.empty())
     return candidates;
   const auto scope = ndn::Name(input.providerScope);
