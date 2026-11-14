@@ -3293,6 +3293,9 @@ RepoClient::inspect(const RepoInspectionRequest& input,
                           "inspect");
   RepoInspection inspection;
   inspection.observedAt = std::chrono::system_clock::now();
+  inspection.observedAtMs = static_cast<uint64_t>(std::chrono::duration_cast<
+    std::chrono::milliseconds>(inspection.observedAt.time_since_epoch()).count());
+  inspection.probeKind = "local-payload";
   inspection.observerId = m_impl->user ? m_impl->user->getName().toUri() : std::string("in-app");
   if (input.kind == RepoInspectionRequest::Kind::OBJECT && input.object && !m_impl->user) {
     const auto* file = std::get_if<FileReference>(&input.object->reference);
@@ -3326,6 +3329,13 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     // be reported as available. Integrity, when checked, decides against it.
     // Aggregate over every replica before deciding: stopping at the first location
     // makes the answer depend on the order the Repo listed them in.
+    // Carry the engine's own freshness: a reachable answer that is already stale must not
+    // look like a current one.
+    if (!report.locations.empty()) {
+      inspection.observedAtMs = report.locations.front().observedAtMs;
+      inspection.validUntilMs = report.locations.front().validUntilMs;
+      inspection.probeKind = report.locations.front().probeKind;
+    }
     bool anyPresent = false;
     bool anyAbsent = false;
     bool anyFailed = false;

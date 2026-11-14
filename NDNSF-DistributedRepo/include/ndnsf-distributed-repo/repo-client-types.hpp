@@ -430,6 +430,11 @@ struct RepoInspection
   Availability availability = Availability::UNKNOWN;
   std::chrono::system_clock::time_point observedAt{};
   std::string observerId;
+  /** When the observation was made and until when the answer is considered fresh, plus
+   *  which probe produced it. A caller must not treat a stale AVAILABLE as current. */
+  uint64_t observedAtMs = 0;
+  uint64_t validUntilMs = 0;
+  std::string probeKind;
   std::optional<RepoHandle> handle;
   std::optional<uint64_t> storedBytes;
   std::string lifecycleState;

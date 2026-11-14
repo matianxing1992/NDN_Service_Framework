@@ -392,8 +392,12 @@ BOOST_AUTO_TEST_CASE(AvailabilityIsFalseWhenTheCommittedPayloadIsGone) {
   RepoHandle handle;
   handle.reference = fixtureReference();
   inspection.object = handle;
-  BOOST_CHECK(client.inspect(inspection, makeOptions()).availability ==
-              RepoInspection::Availability::AVAILABLE);
+  const auto present = client.inspect(inspection, makeOptions());
+  BOOST_CHECK(present.availability == RepoInspection::Availability::AVAILABLE);
+  // The answer says when it was observed and which probe produced it, so a caller can
+  // tell a current observation from a stale one.
+  BOOST_CHECK_GT(present.observedAtMs, 0U);
+  BOOST_CHECK_EQUAL(present.probeKind, "local-payload");
 
   // The payload lives under payloads/<algorithm>/<first two hex>/<digest>.
   const auto digest = fixtureReference().contentDigest;
