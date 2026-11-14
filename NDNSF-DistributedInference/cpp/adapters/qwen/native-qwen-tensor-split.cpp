@@ -849,14 +849,20 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       sumAttn.stepId = sumAttnStep(unit.roleId, layer);
       sumAttn.unitId = unit.roleId;
       sumAttn.operation = "SUM";
-      sumAttn.inputSlots.push_back(
-        makeFedSlot("local", "LOCAL_STEP", attnStep(unit.roleId, layer), "partial", shape.hidden));
-      std::size_t peerIndex = 0;
+      // Contributions are listed in global rank order, not "local first". Floating-point
+      // addition is not associative, so a per-rank order would make two units compute
+      // different sums of the same contributions: with three ranks, unit 2 would add
+      // (r2 + r0) + r1 while unit 0 adds (r0 + r1) + r2. Two terms commute, so a pair is
+      // safe either way -- which is why this only shows up from degree three on.
       for (const auto& peer : tp.units) {
-        if (peer.rank == unit.rank) continue;
-        sumAttn.inputSlots.push_back(
-          makeFedSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
-                      attnStep(peer.roleId, layer), "partial", shape.hidden));
+        if (peer.rank == unit.rank) {
+          sumAttn.inputSlots.push_back(makeFedSlot(
+            "local", "LOCAL_STEP", attnStep(unit.roleId, layer), "partial", shape.hidden));
+          continue;
+        }
+        sumAttn.inputSlots.push_back(makeFedSlot(
+          "remote" + std::to_string(peer.rank), "REMOTE_STEP",
+          attnStep(peer.roleId, layer), "partial", shape.hidden));
       }
       sumAttn.outputSlots = {makeSlot("merged", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(sumAttn));
@@ -885,14 +891,15 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       sumMlp.stepId = sumMlpStep(unit.roleId, layer);
       sumMlp.unitId = unit.roleId;
       sumMlp.operation = "SUM";
-      sumMlp.inputSlots.push_back(
-        makeFedSlot("local", "LOCAL_STEP", mlpStep(unit.roleId, layer), "partial", shape.hidden));
-      peerIndex = 0;
       for (const auto& peer : tp.units) {
-        if (peer.rank == unit.rank) continue;
-        sumMlp.inputSlots.push_back(
-          makeFedSlot("remote" + std::to_string(peerIndex++), "REMOTE_STEP",
-                      mlpStep(peer.roleId, layer), "partial", shape.hidden));
+        if (peer.rank == unit.rank) {
+          sumMlp.inputSlots.push_back(makeFedSlot(
+            "local", "LOCAL_STEP", mlpStep(unit.roleId, layer), "partial", shape.hidden));
+          continue;
+        }
+        sumMlp.inputSlots.push_back(makeFedSlot(
+          "remote" + std::to_string(peer.rank), "REMOTE_STEP",
+          mlpStep(peer.roleId, layer), "partial", shape.hidden));
       }
       sumMlp.outputSlots = {makeSlot("merged", "LOCAL_STEP", {}, shape.hidden)};
       plan.steps.push_back(std::move(sumMlp));
@@ -931,16 +938,9 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                                     std::to_string(layer);
           const auto consumerStep = std::string(unit.roleId) + "/SUM_" + kind + "/" +
                                     std::to_string(layer);
-          std::string consumerSlot;
-          std::size_t peerIndex = 0;
-          for (const auto& candidate : tp.units) {
-            if (candidate.rank == unit.rank) continue;
-            if (candidate.rank == peer.rank) {
-              consumerSlot = "remote" + std::to_string(peerIndex);
-              break;
-            }
-            ++peerIndex;
-          }
+          // The slot is named by the producer's own rank, which every unit derives the same
+          // way, so the slot a dependency targets does not depend on which unit is asking.
+          const std::string consumerSlot = "remote" + std::to_string(peer.rank);
           const bool attn = std::string(kind) == "ATTN";
           ndnsf::di::NativeDependencySpec dependency;
           dependency.producers = {peer.roleId};

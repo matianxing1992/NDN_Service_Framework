@@ -14051,6 +14051,58 @@ BOOST_AUTO_TEST_CASE(SumStepsReferenceEveryPeerContribution)
   }
 }
 
+BOOST_AUTO_TEST_CASE(SumStepsListContributionsInGlobalRankOrder)
+{
+  // Floating-point addition is not associative. If each unit put its own contribution first,
+  // two units of the same three-rank plan would add the same three tensors in different orders
+  // and could differ in the last bits -- which reads as a split defect and is not one. Two
+  // terms commute, so a pair hides the problem entirely; it appears from degree three on.
+  // A degree-three plan needs a shape whose query heads, KV heads and FFN all divide by three;
+  // the frozen export's 16/8 does not, so this uses a 24/12 arrangement with the same 2:1 GQA
+  // grouping. The order question is about the template, not about this model's numbers.
+  qwen::QwenTpShape shape;
+  shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 24;
+  shape.kvHeads = 12; shape.headDim = 128; shape.ffn = 3072;
+
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 3, "entry", "S0R0");
+  // The contributor order each unit's SUM declares, as producer step ids.
+  std::map<std::string, std::vector<std::string>> orders;
+  for (const auto& step : plan.steps) {
+    if (step.operation != "SUM") continue;
+    if (step.stepId.find("/SUM_ATTN/") == std::string::npos) continue;
+    std::vector<std::string> producers;
+    for (const auto& slot : step.inputSlots) producers.push_back(slot.producerStepId);
+    orders.emplace(step.unitId, std::move(producers));
+  }
+  BOOST_REQUIRE_EQUAL(orders.size(), 3U);
+  // Every unit must agree on the order. Comparing the sequences rather than the sets is the
+  // whole point: the sets agree even when the orders do not.
+  const auto first = orders.begin()->second;
+  for (const auto& item : orders)
+    BOOST_CHECK_MESSAGE(item.second == first,
+      "unit " << item.first << " reduces in a different order than " <<
+      orders.begin()->first);
+  // And the order is the contributor's rank order, which is the one order every unit can
+  // derive without knowing who is asking. Comparing against each contributor's own attention
+  // step, in rank order, is what distinguishes "globally ordered" from "ordered per unit".
+  std::vector<std::string> byRank;
+  for (std::uint64_t rank = 0; rank < 3; ++rank) {
+    std::string attn;
+    for (const auto& step : plan.steps) {
+      if (step.operation != "CALL_SUBGRAPH") continue;
+      if (step.stepId.find("/ATTN/") == std::string::npos) continue;
+      // The projection names units `S0R<rank>`; it never contained a `/Tensor/Rank/` segment.
+      if (step.unitId != "S0R" + std::to_string(rank)) continue;
+      attn = step.stepId;
+      break;
+    }
+    BOOST_REQUIRE_MESSAGE(!attn.empty(), "no attention step for rank " + std::to_string(rank));
+    byRank.push_back(attn);
+  }
+  BOOST_CHECK_EQUAL_COLLECTIONS(first.begin(), first.end(), byRank.begin(), byRank.end());
+}
+
 BOOST_AUTO_TEST_CASE(DependencyBindingsMatchTheStepsTheyCarry)
 {
   qwen::QwenTpShape shape;
