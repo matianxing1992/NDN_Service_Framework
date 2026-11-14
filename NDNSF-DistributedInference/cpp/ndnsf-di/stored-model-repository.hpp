@@ -2,6 +2,7 @@
 #define NDNSF_DI_STORED_MODEL_REPOSITORY_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
+#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
 
@@ -58,41 +59,10 @@ struct NativeStoredModelPacketIo
  * Three in-flight groups consume at most 96 MiB of wires. A caller preparing a
  * fourth group can retain another 32 MiB; this is not a total RSS bound.
  */
-class NativeModelCommitPipeline
-{
-public:
-  using CurrentCheck = std::function<void()>;
-  using Commit = std::function<void(const CurrentCheck&)>;
-  static constexpr std::size_t MAX_ACTIVE_COMMITS = 3;
+/** The batching scheduler now belongs to Repo; DI keeps using it under its old
+ *  name so model code reads unchanged. */
+using NativeModelCommitPipeline = ndnsf_distributed_repo::RepoCommitPipeline;
 
-  explicit NativeModelCommitPipeline(CurrentCheck requireCurrent);
-  ~NativeModelCommitPipeline() noexcept;
-  NativeModelCommitPipeline(const NativeModelCommitPipeline&) = delete;
-  NativeModelCommitPipeline& operator=(const NativeModelCommitPipeline&) = delete;
-
-  void submit(std::uint64_t wireBytes, Commit commit, std::function<void()> observe = {});
-  /** Confirm outstanding groups before submitting a dependent object. */
-  void drain();
-  void finish();
-
-private:
-  struct Pending
-  {
-    std::future<void> completion;
-    std::function<void()> observe;
-  };
-
-  void requireOwner() const;
-  void completeFirst();
-  void cancelAndDrain() noexcept;
-  [[noreturn]] void fail(std::exception_ptr error);
-
-  CurrentCheck m_requireCurrent;
-  std::thread::id m_owner;
-  std::shared_ptr<std::atomic<bool>> m_cancelled;
-  std::deque<Pending> m_pending;
-  bool m_closed = false;
-};
 
 struct NativeStoredModelIndexedObject
 {

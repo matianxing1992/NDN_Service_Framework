@@ -1050,6 +1050,7 @@ def build(bld):
                       source=[],
                       use=di_object_use + ' ' + di_shlib_use,
                       includes=['.', 'ndn-service-framework',
+                                'NDNSF-DistributedRepo/include',
                                 'NDNSF-DistributedInference/cpp/adapters/onnx'],
                       export_includes=['.', 'ndn-service-framework',
                                        'NDNSF-DistributedInference/cpp'],

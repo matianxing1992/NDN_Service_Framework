@@ -40,6 +40,7 @@ def build(bld):
         'src/backends/FilesystemArtifactStore.cpp',
         'src/backends/FilesystemRepoStoreBackend.cpp',
         'src/RepoClient.cpp',
+        'src/RepoCommitPipeline.cpp',
         'src/RepoCore.cpp',
         'src/RepoNode.cpp',
         'src/RepoPacketServer.cpp',

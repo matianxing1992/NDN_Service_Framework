@@ -242,7 +242,7 @@ BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
   std::atomic<bool> release{false}, extraAttempt{false};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   auto owner = std::async(std::launch::async, [&] {
-    NativeModelCommitPipeline pipeline([] {});
+    NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
     for (unsigned i = 0; i <= capacity; ++i) {
       if (i == capacity) extraAttempt = true;
       pipeline.submit(1, [&](const auto& current) {
@@ -283,7 +283,7 @@ BOOST_AUTO_TEST_CASE(CommitPipelineBoundsWorkersAndObservesInSubmissionOrder)
       std::this_thread::yield();
     }
   };
-  NativeModelCommitPipeline pipeline([] {});
+  NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
   for (unsigned i = 0; i != 2; ++i) {
     pipeline.submit(1, [&, i](const auto& current) {
       const auto count = ++active;
@@ -318,7 +318,7 @@ BOOST_AUTO_TEST_CASE(CommitPipelineFailureCancelsAndDrainsAllPeers)
   constexpr auto peers = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS - 1;
   std::atomic<unsigned> started{0}, stopped{0};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-  NativeModelCommitPipeline pipeline([] {});
+  NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
   pipeline.submit(1, [&](const auto& current) {
     while (started < peers) {
       current();
@@ -352,7 +352,7 @@ BOOST_AUTO_TEST_CASE(CommitPipelineRetainsLaterDurableReceiptAfterEarlierFailure
   std::atomic<bool> laterDurable{false};
   bool receipt = false;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-  NativeModelCommitPipeline pipeline([] {});
+  NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
   pipeline.submit(1, [&](const auto& current) {
     while (!laterDurable) {
       current();
@@ -383,7 +383,7 @@ BOOST_AUTO_TEST_CASE(CommitPipelineObserverFailureDrainsAndDestructorCancels)
     catch (...) { stopped = true; throw; }
   };
   {
-    NativeModelCommitPipeline pipeline([] {});
+    NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
     pipeline.submit(1, [](const auto&) {}, [] { throw std::runtime_error("OBSERVER_FAILED"); });
     pipeline.submit(1, blocked);
     BOOST_CHECK_EXCEPTION(pipeline.finish(), std::runtime_error,
@@ -392,7 +392,7 @@ BOOST_AUTO_TEST_CASE(CommitPipelineObserverFailureDrainsAndDestructorCancels)
   // A worker can be cancelled before entering its callback; finish still drains it.
   stopped = false;
   BOOST_CHECK_EXCEPTION(([&] {
-    NativeModelCommitPipeline pipeline([] {});
+    NativeModelCommitPipeline pipeline([] {}, 1ULL << 20);
     pipeline.submit(1, blocked);
     throw std::runtime_error("PREPARATION_FAILED");
   }()), std::runtime_error,

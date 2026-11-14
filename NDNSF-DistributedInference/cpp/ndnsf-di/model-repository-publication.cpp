@@ -406,7 +406,7 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
   receipt.metadataName = ndn::Name(publication.preparedMetadataDataName);
   receipt.rootDigest = publication.manifestDigest;
   receipt.metadataDigest = publication.preparedMetadataDigest;
-  NativeModelCommitPipeline pipeline(current);
+  NativeModelCommitPipeline pipeline(current, NATIVE_STORED_MODEL_UPLOAD_WIRE);
   std::uint64_t submittedGroups = 0;
   std::uint64_t submittedBytes = 0;
   PacketGroup group;

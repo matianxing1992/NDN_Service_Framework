@@ -33,6 +33,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+constexpr std::uint64_t NDNSF_DI_WIRE_LIMIT = 256ULL * 1024 * 1024;
+
 namespace {
 namespace di = ndnsf::di;
 namespace repo = ndnsf_distributed_repo;
@@ -201,7 +203,7 @@ run(int argc, char** argv)
         return row;
       };
       const Measurement publicationTime;
-      di::NativeModelCommitPipeline pipeline(current);
+      di::NativeModelCommitPipeline pipeline(current, NDNSF_DI_WIRE_LIMIT);
       while (payloadBytes < FILE_BYTES) {
         const Measurement groupTime;
         Group group;
