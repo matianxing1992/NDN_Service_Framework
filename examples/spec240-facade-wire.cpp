@@ -309,6 +309,36 @@ main(int argc, char** argv)
                  result.receipt ? result.receipt->receiptId.c_str() : "");
     return result.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
   }
+  if (mode == "artifact") {
+    // Probe for the artifact (MANIFEST) path. Kept behind its own mode until the discovery
+    // boundary is resolved.
+    const auto content = readBytes(arg(options, "source"));
+    ndn::util::Sha256 sha;
+    sha.update(content);
+    repo::FileReference reference;
+    reference.logicalName = ndn::Name(identity).append("artifact")
+      .appendSegment(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count())).toUri();
+    reference.contentDigest = sha.toString();
+    for (auto& character : reference.contentDigest)
+      character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    reference.sizeBytes = content.size();
+    reference.rootManifestName = reference.logicalName + "/manifest";
+    reference.policyEpoch = "1";
+    reference.publisherIdentity = identity.toUri();
+    repo::RepoFilePublication publication;
+    publication.reference = reference;
+    publication.sourcePath = arg(options, "source");
+    publication.selectedTargets.push_back(
+      repo::RepoTarget{repository, provider.toUri(), servicePrefix.toUri()});
+    publication.idempotencyKey = "spec240-artifact-" + std::to_string(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    const auto published = client.publishFile(publication, operation);
+    std::fprintf(stderr, "FACADE_ARTIFACT_PUBLISH state=%d handle=%d\n",
+                 static_cast<int>(published.state), published.committedHandle ? 1 : 0);
+    return published.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
+  }
   if (mode == "concurrency") {
     // Four publications at once against one client: close() must report the truth while they
     // run and after they finish.
