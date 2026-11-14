@@ -12800,6 +12800,29 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     }
   }
 
+  // The unit reports the metrics a Coordinator records per epoch. It has to answer with the
+  // latest backend call as well as the counters: the qualification oracle refuses an epoch
+  // whose observation carries no call, and it binds that call to the unit's own role. This
+  // case has already run every entry, so the answer must exist and name this unit.
+  {
+    const auto metrics = runner0->runtimeMetricsSnapshot();
+    BOOST_REQUIRE_MESSAGE(metrics.has_value(),
+      "the unit answered no runtime metrics after running 28 entries");
+    BOOST_REQUIRE_MESSAGE(metrics->lastBackendExecution.has_value(),
+      "the unit reported counters but no backend call, so a Coordinator cannot bind the epoch");
+    BOOST_REQUIRE(metrics->lastBackendExecution->identity != nullptr);
+    BOOST_TEST_MESSAGE("unit metrics: role=" << metrics->lastBackendExecution->identity->role
+                       << " epoch=" << metrics->lastBackendExecution->inferenceEpoch
+                       << " completed=" << metrics->lastBackendExecution->completed
+                       << " activationBytes=" << metrics->activationOutputBytes);
+    BOOST_CHECK_EQUAL(metrics->lastBackendExecution->identity->role, std::string("S0R0"));
+    BOOST_CHECK(metrics->lastBackendExecution->completed);
+    BOOST_CHECK_GT(metrics->lastBackendExecution->finishedSteadyNs,
+                   metrics->lastBackendExecution->startedSteadyNs);
+    // Counters from every child, not one: 28 entries each contribute their activation bytes.
+    BOOST_CHECK_GT(metrics->activationOutputBytes, 0U);
+  }
+
   std::filesystem::remove_all(root, cleanupError);
 }
 

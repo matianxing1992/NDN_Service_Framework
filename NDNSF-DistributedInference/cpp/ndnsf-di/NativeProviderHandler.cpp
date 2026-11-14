@@ -4937,6 +4937,18 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         logRuntimePhase("di-provider", "finalResponsePublishBegin", stageRequestId,
           stageAttemptEpoch, completionTimingFields);
+        // Report the request as finished at the moment the response leaves, not when the
+        // handler's scope unwinds. A provider's interval is checked against the requester's,
+        // and unwinding runs after the requester has already seen the response and written its
+        // own interval -- so a correct run looked like a provider that finished after the
+        // request it answered. The scope exit still stamps a value; this makes it the publish
+        // boundary rather than the teardown boundary.
+        if (requestStatistics) {
+          requestStatistics->finishedSteadyNs =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          requestStatistics->finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+        }
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
         if (kvRestore) kvRestore->retain = true;
         logRuntimePhase("di-provider", "finalResponsePublishEnd", stageRequestId,
