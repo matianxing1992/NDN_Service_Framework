@@ -116,16 +116,6 @@ main(int argc, char** argv)
     face, group, certificate, authorityCertificate, trustSchema);
   user->init();
   user->fetchPermissionsFromController(controller);
-  // The facade blocks while it waits for ACKs, so the face has to be pumped on its own
-  // thread; without this every admission waits out its deadline.
-  std::atomic<bool> stopping{false};
-  std::thread faceThread([&] {
-    while (!stopping.load()) {
-      face.processEvents(ndn::time::milliseconds(10));
-      face.getIoContext().restart();
-    }
-  });
-
   repo::PersistentRepoClientConfig config;
   config.servicePrefix = servicePrefix;
   config.providerScope = {provider};
@@ -137,12 +127,13 @@ main(int argc, char** argv)
   if (!waitReady(face, *user, service, provider, 60000))
     throw std::runtime_error("bootstrap did not become ready");
 
-  struct ThreadGuard {
-    std::atomic<bool>& stopping;
-    std::thread& thread;
-    ~ThreadGuard() { stopping.store(true); if (thread.joinable()) thread.join(); }
-  } threadGuard{stopping, faceThread};
-
+  if (mode == "idle") {
+    // Bisect mode: bootstrap only, no facade call. Separates the face-thread setup from
+    // the publication path when something crashes.
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::printf("FACADE_IDLE ok\n");
+    return 0;
+  }
   if (mode == "publish") {
     const auto source = arg(options, "source");
     const auto bytes = readBytes(source);
@@ -206,12 +197,57 @@ main(int argc, char** argv)
         }
       });
     publication.generation = 1;
-    publication.ownerEpoch = 1;
-    publication.ownerIdentity = ndn::Name(identity).toUri(ndn::name::UriFormat::ALTERNATE);
-    publication.grantId = "spec240-facade-grant";
+    // Ask the Repo to authorize this writer before publishing: a self-invented grant id is
+    // rejected as unauthorized, which is the contract working.
+    repo::RepoWriteAuthorization authorization;
+    authorization.target = publication.target;
+    authorization.writerIdentity = ndn::Name(identity).toUri(ndn::name::UriFormat::ALTERNATE);
+    authorization.objectName = publication.objectName;
+    authorization.grantId = "spec240-facade-grant-" + std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+    authorization.expiresAtMs = static_cast<uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + 600000;
+    std::optional<repo::RepoWriteGrant> grant;
+    std::exception_ptr grantFailure;
+    std::thread grantWorker([&] {
+      try {
+        grant = client.authorizeWrite(authorization, operation);
+      }
+      catch (...) {
+        grantFailure = std::current_exception();
+      }
+    });
+    while (!grant && !grantFailure)
+      face.processEvents(ndn::time::milliseconds(10));
+    grantWorker.join();
+    if (grantFailure)
+      std::rethrow_exception(grantFailure);
+    publication.ownerIdentity = grant->ownerIdentity;
+    publication.grantId = grant->grantId;
+    publication.ownerEpoch = grant->ownerEpoch;
+    std::printf("FACADE_GRANT grant=%s owner=%s epoch=%llu\n", grant->grantId.c_str(),
+                grant->ownerIdentity.c_str(),
+                static_cast<unsigned long long>(grant->ownerEpoch));
     publication.idempotencyKey = "spec240-facade-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
-    const auto result = client.publishData(publication, operation);
+    // The facade blocks while it waits for ACKs, so the call runs on a worker and the
+    // main thread keeps pumping the face. Pumping from two threads corrupts the io_context.
+    std::optional<repo::RepoPublishResult> published;
+    std::exception_ptr failure;
+    std::thread worker([&] {
+      try {
+        published = client.publishData(publication, operation);
+      }
+      catch (...) {
+        failure = std::current_exception();
+      }
+    });
+    while (!published && !failure)
+      face.processEvents(ndn::time::milliseconds(10));
+    worker.join();
+    if (failure)
+      std::rethrow_exception(failure);
+    const auto& result = *published;
     std::printf("FACADE_PUBLISH state=%s receipt=%s bytes=%llu\n",
                 result.state == repo::RepoPublishState::COMMITTED ? "COMMITTED" : "ACCEPTED",
                 result.receipt ? result.receipt->receiptId.c_str() : "",
@@ -236,7 +272,22 @@ main(int argc, char** argv)
                                       alternate(servicePrefix.toUri())};
     request.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
       [] (const std::vector<uint8_t>&) { return true; });
-    const auto result = client.fetchData(request, operation);
+    std::optional<repo::RepoDataFetchResult> fetched;
+    std::exception_ptr failure;
+    std::thread worker([&] {
+      try {
+        fetched = client.fetchData(request, operation);
+      }
+      catch (...) {
+        failure = std::current_exception();
+      }
+    });
+    while (!fetched && !failure)
+      face.processEvents(ndn::time::milliseconds(10));
+    worker.join();
+    if (failure)
+      std::rethrow_exception(failure);
+    const auto& result = *fetched;
     std::ofstream output(destination, std::ios::binary);
     for (const auto& wire : result.packets) {
       const ndn::Block block(wire);
