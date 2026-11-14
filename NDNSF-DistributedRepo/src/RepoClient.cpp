@@ -294,7 +294,7 @@ RepoClientCompat::requestUserStorageUsage(ndn_service_framework::ServiceUser& us
 }
 
 std::vector<uint8_t>
-RepoClient::fetchOriginalDataPacket(
+RepoClientCompat::fetchOriginalDataPacket(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& dataName,
   const std::string& expectedWireSha256,
@@ -330,7 +330,7 @@ RepoClient::fetchOriginalDataPacket(
     try {
       const int probeBudget = static_cast<int>(candidateBudget / 3);
       const int ackBudget = std::max(1, std::min(250, probeBudget / 4));
-      const auto receiptWire = requestSelectedService(
+      const auto receiptWire = RepoClient::requestSelectedService(
         user, replica.providerIdentity,
         makeRepoServiceName(replica.servicePrefix, "DATA_RECEIPT"),
         request, ackBudget, probeBudget);
@@ -341,7 +341,7 @@ RepoClient::fetchOriginalDataPacket(
           receipt.providerIdentity != replica.providerIdentity.toUri()) {
         throw std::runtime_error("repo-original-data-receipt-mismatch");
       }
-      const auto locationWire = requestSelectedService(
+      const auto locationWire = RepoClient::requestSelectedService(
         user, replica.providerIdentity,
         makeRepoServiceName(replica.servicePrefix, "DATA_LOCATION"),
         request, ackBudget, probeBudget);
@@ -421,7 +421,7 @@ RepoClient::fetchOriginalDataPacket(
         if (remaining > 1500) {
           try {
             const int recheckBudget = static_cast<int>(std::min<int64_t>(3000, remaining / 3));
-            (void)RepoDataPacketLocation::fromJson(toString(requestSelectedService(
+            (void)RepoDataPacketLocation::fromJson(toString(RepoClient::requestSelectedService(
               user, replica.providerIdentity,
               makeRepoServiceName(replica.servicePrefix, "DATA_LOCATION"),
               request, std::min(250, recheckBudget / 4), recheckBudget)));

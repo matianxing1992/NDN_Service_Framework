@@ -143,13 +143,6 @@ public:
   /** Query each Repo's stored Data receipt and current location before an
    * original-name Interest. Producer trust is mandatory and caller-owned.
    */
-  static std::vector<uint8_t> fetchOriginalDataPacket(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& dataName,
-    const std::string& expectedWireSha256,
-    const std::vector<OriginalDataReplica>& replicas,
-    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
-    int timeoutMs);
 
   /** Fetch one exact packet from a current user-storage packet set.
    * The caller must bind the complete set to the Owner listing and verify its

@@ -3,6 +3,7 @@
 #include "ndn-service-framework/utils.hpp"
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <ndn-cxx/face.hpp>
@@ -1999,7 +2000,7 @@ run(const Options& options)
     if (options.count("no-candidates")) {
       replicas.clear();
       try {
-        (void)repo::RepoClient::fetchOriginalDataPacket(
+        (void)repo::RepoClientCompat::fetchOriginalDataPacket(
           context.user(), ndn::Name(dataName), sha256(expectedWire), replicas,
           [&certificate] (const ndn::Data& data) {
             return ndn::security::verifySignature(data, certificate);
@@ -2014,7 +2015,7 @@ run(const Options& options)
       }
       throw std::runtime_error("original Data fetch accepted an empty candidate set");
     }
-    const auto fetched = repo::RepoClient::fetchOriginalDataPacket(
+    const auto fetched = repo::RepoClientCompat::fetchOriginalDataPacket(
       context.user(), ndn::Name(dataName), sha256(expectedWire), replicas,
       [&certificate] (const ndn::Data& data) {
         return ndn::security::verifySignature(data, certificate);
