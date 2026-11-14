@@ -1098,49 +1098,55 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   // Ask the named Provider directly, the way the engine's own publication does and the way
   // this framework's targeted invocation works; the collaboration-ACK path never reaches a
   // Repo that does not publish those messages.
-  std::mutex insertMutex;
-  std::condition_variable insertArrived;
-  bool insertDone = false;
-  std::vector<uint8_t> insertReply;
-  std::string insertFailure;
+  // Same rule as the grant: the handlers may outlive this frame, so their state is heap
+  // owned and captured by value.
+  struct InsertState {
+    std::mutex mutex;
+    std::condition_variable arrived;
+    bool done = false;
+    std::vector<uint8_t> payload;
+    std::string failure;
+  };
+  auto insertState = std::make_shared<InsertState>();
   writer.RequestService(
     std::vector<ndn::Name>{provider},
     makeRepoServiceName(servicePrefix, "INSERT"),
     RepoClientCompat::makeRequest(encoded), std::max(1, remaining()),
-    [&] (const ndn::Name&) {
-      std::lock_guard<std::mutex> guard(insertMutex);
-      insertFailure = "repo-original-publication-insert-timeout";
-      insertDone = true;
-      insertArrived.notify_all();
+    [insertState] (const ndn::Name&) {
+      std::lock_guard<std::mutex> guard(insertState->mutex);
+      insertState->failure = "repo-original-publication-insert-timeout";
+      insertState->done = true;
+      insertState->arrived.notify_all();
     },
-    [&] (const ndn_service_framework::ResponseMessage& response) {
-      std::lock_guard<std::mutex> guard(insertMutex);
+    [insertState] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> guard(insertState->mutex);
       if (response.getStatus()) {
         const auto& payload = response.getPayload();
-        insertReply.assign(payload.begin(), payload.end());
+        insertState->payload.assign(payload.begin(), payload.end());
       }
       else {
-        insertFailure = response.getErrorInfo();
+        insertState->failure = response.getErrorInfo();
       }
-      insertDone = true;
-      insertArrived.notify_all();
+      insertState->done = true;
+      insertState->arrived.notify_all();
     },
     ndn_service_framework::tlv::FirstResponding);
   {
-    std::unique_lock<std::mutex> lock(insertMutex);
-    while (!insertDone) {
+    std::unique_lock<std::mutex> lock(insertState->mutex);
+    while (!insertState->done) {
       current();
-      if (insertArrived.wait_for(lock, std::chrono::milliseconds(20),
-                                 [&] { return insertDone; })) {
+      if (insertState->arrived.wait_for(lock, std::chrono::milliseconds(20),
+                                        [&] { return insertState->done; })) {
         break;
       }
       if (std::chrono::steady_clock::now() >= deadline)
         throw std::runtime_error("repo-original-publication-insert-timeout");
     }
   }
-  if (!insertFailure.empty())
-    throw std::runtime_error("repo-original-publication-insert-not-confirmed: " + insertFailure);
-  const auto status = parseOperationStatusJson(toString(insertReply));
+  if (!insertState->failure.empty())
+    throw std::runtime_error("repo-original-publication-insert-not-confirmed: " +
+                             insertState->failure);
+  const auto status = parseOperationStatusJson(toString(insertState->payload));
   noteStage("insert");
   if (status.operationId != request.operationId || status.operation != "INSERT" ||
       status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
@@ -3490,42 +3496,47 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   const auto target = m_impl->target(input.target);
   // Targeted request to the named Provider: the same shape the grant helper uses and the
   // only one that reaches a Repo which does not publish collaboration ACKs.
-  std::mutex grantMutex;
-  std::condition_variable grantArrived;
-  bool grantDone = false;
-  std::vector<uint8_t> grantReply;
-  std::string grantFailure;
+  // The callbacks may run after this call returns (cancellation, late reply), so their
+  // state lives on the heap and outlives the stack frame.
+  struct GrantState {
+    std::mutex mutex;
+    std::condition_variable arrived;
+    bool done = false;
+    std::vector<uint8_t> payload;
+    std::string failure;
+  };
+  auto grantState = std::make_shared<GrantState>();
   m_impl->user->RequestService(
     std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
     RepoClientCompat::makeRequest(std::vector<uint8_t>(encoded.begin(), encoded.end())),
     std::max(1, remainingMs(options.deadline)),
-    [&] (const ndn::Name&) {
-      std::lock_guard<std::mutex> guard(grantMutex);
-      grantFailure = "repo-request-timeout: grant response was not delivered";
-      grantDone = true;
-      grantArrived.notify_all();
+    [grantState] (const ndn::Name&) {
+      std::lock_guard<std::mutex> guard(grantState->mutex);
+      grantState->failure = "repo-request-timeout: grant response was not delivered";
+      grantState->done = true;
+      grantState->arrived.notify_all();
     },
-    [&] (const ndn_service_framework::ResponseMessage& response) {
-      std::lock_guard<std::mutex> guard(grantMutex);
+    [grantState] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> guard(grantState->mutex);
       if (response.getStatus()) {
         const auto& payload = response.getPayload();
-        grantReply.assign(payload.begin(), payload.end());
+        grantState->payload.assign(payload.begin(), payload.end());
       }
       else {
-        grantFailure = response.getErrorInfo();
+        grantState->failure = response.getErrorInfo();
       }
-      grantDone = true;
-      grantArrived.notify_all();
+      grantState->done = true;
+      grantState->arrived.notify_all();
     },
     ndn_service_framework::tlv::FirstResponding);
   {
-    std::unique_lock<std::mutex> lock(grantMutex);
-    while (!grantDone) {
+    std::unique_lock<std::mutex> lock(grantState->mutex);
+    while (!grantState->done) {
       if (options.requireCurrent)
         options.requireCurrent();
-      if (grantArrived.wait_for(lock, std::chrono::milliseconds(20),
-                                [&] { return grantDone; })) {
+      if (grantState->arrived.wait_for(lock, std::chrono::milliseconds(20),
+                                       [&] { return grantState->done; })) {
         break;
       }
       if (std::chrono::steady_clock::now() >= options.deadline)
@@ -3533,9 +3544,9 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
                               "authorizeWrite");
     }
   }
-  if (!grantFailure.empty())
-    throw RepoClientError("GRANT_FAILED", grantFailure, "authorizeWrite");
-  const std::vector<uint8_t>& wire = grantReply;
+  if (!grantState->failure.empty())
+    throw RepoClientError("GRANT_FAILED", grantState->failure, "authorizeWrite");
+  const std::vector<uint8_t>& wire = grantState->payload;
   const auto reply = RepoUserStorageGrantReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target,

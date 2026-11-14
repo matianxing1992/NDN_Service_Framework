@@ -5,6 +5,7 @@
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-service-framework/CertificatePublisher.hpp>
 #include <ndn-cxx/util/sha256.hpp>
@@ -172,6 +173,7 @@ main(int argc, char** argv)
     std::vector<std::vector<uint8_t>> wires;
     uint64_t offsets = 0;
     const uint64_t chunk = 8000;
+    const uint64_t segmentsTotal = bytes.empty() ? 1 : (bytes.size() + chunk - 1) / chunk;
     uint64_t segment = 0;
     do {
       const uint64_t begin = segment * chunk;
@@ -181,6 +183,9 @@ main(int argc, char** argv)
       ndn::Data packet(name);
       packet.setContent(ndn::span<const uint8_t>(bytes.data() + begin, end - begin));
       packet.setFreshnessPeriod(ndn::time::seconds(3600));
+      // The Repo's spool fetcher requires a FinalBlock that names the last segment, and the
+      // packet name must end in a segment component.
+      packet.setFinalBlock(ndn::name::Component::fromSegment(segmentsTotal - 1));
       keyChain.sign(packet, ndn::security::signingByCertificate(certificate));
       const auto wire = packet.wireEncode();
       wires.emplace_back(wire.begin(), wire.end());
@@ -219,11 +224,23 @@ main(int argc, char** argv)
     manifest->dataPrefix = publication.producerIdentity;
     publication.packetSetManifest = manifest;
     publication.packets = packets;
+    // The verifier has to do what a Producer check means: the packet must be signed by the
+    // expected certificate and live under the Producer's namespace. Parsing TLV alone would
+    // accept anything.
+    const auto expectedCertificate = certificate;
+    const auto producerIdentity = identity;
     publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-      [] (const std::vector<uint8_t>& wire) {
-        const ndn::Block block(wire);
-        const ndn::Data packet(block);
-        return packet.wireEncode().size() == wire.size();
+      [expectedCertificate, producerIdentity] (const std::vector<uint8_t>& wire) {
+        try {
+          const ndn::Block block(wire);
+          const ndn::Data packet(block);
+          return packet.wireEncode().size() == wire.size() &&
+            producerIdentity.isPrefixOf(packet.getName()) &&
+            ndn::security::verifySignature(packet, expectedCertificate);
+        }
+        catch (const std::exception&) {
+          return false;
+        }
       });
     publication.generation = 1;
     publication.idempotencyKey = "spec240-facade-" + std::to_string(
