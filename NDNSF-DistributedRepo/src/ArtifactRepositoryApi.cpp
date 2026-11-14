@@ -3139,6 +3139,8 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
     throw std::invalid_argument(
       "repo-request-timeout-invalid: publish wait budget cannot be negative");
   }
+  // timeoutMs is the whole operation's budget: the begin phase and the status wait spend
+  // from the same allowance instead of each taking a fresh one.
   const int waitBudget = timeoutMs == 0
     ? config.operationWaitTimeoutMs : timeoutMs;
   reference.validate(config.limits);
@@ -3174,17 +3176,19 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
     throw std::invalid_argument(
       "repo-request-timeout-invalid: synchronous begin budget exceeds supported range");
   }
-  const int beginTimeout = static_cast<int>(
-    static_cast<int64_t>(requestWindows) * requestWindowMs +
-    statusRecoveryReserveMs);
+  // The begin phase spends from the same allowance as the status wait, but it is not
+  // shrunk by the recovery reserve: a caller with a 3 s budget still gets a begin window
+  // bounded by 3 s, and the status wait then has whatever the begin left.
+  const int beginTimeout = static_cast<int>(std::min<int64_t>(
+    static_cast<int64_t>(requestWindows) * requestWindowMs + statusRecoveryReserveMs,
+    static_cast<int64_t>(waitBudget)));
   PublishOperationStatus status;
   const auto beginDeadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(beginTimeout);
   const auto handle = beginPublishFileImpl(
     sourcePath, reference, selected, makeFreshPublishIdempotencyKey(),
     beginDeadline, &status);
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(waitBudget);
+  const auto deadline = started + std::chrono::milliseconds(waitBudget);
   while (!isTerminalPublishStatus(status)) {
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       deadline - std::chrono::steady_clock::now()).count();
