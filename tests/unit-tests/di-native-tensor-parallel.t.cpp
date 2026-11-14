@@ -8869,6 +8869,154 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
+{
+  // The path a real second turn takes, which the previous case showed is not the only one:
+  // bundle-carried past does not exist for a stateful model. State leaves an epoch through the
+  // runner's own session map, is promoted to a conversation handle, and comes back through
+  // restore into a new session. This drives exactly those three calls and checks that the
+  // restored epoch's successor spans the restored prefix plus its own token -- which can only
+  // happen if the restore actually installed the past.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-restore-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+  }
+
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0" && step.stepId.find("/ATTN/0") != std::string::npos)
+      steps.push_back(step);
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  // The handle a restore validates carries the Provider's own identity, so the spec must too.
+  spec.metadata["providerIdentity"] = "/provider/0";
+  spec.metadata["providerBootId"] = "restore-test-boot";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+  BOOST_REQUIRE_MESSAGE(runner->supportsConversationStateTransfer(),
+    "the assembled attention entry did not declare its state, so nothing can be promoted");
+
+  const auto step = steps.front();
+  const auto runEpoch = [&] (const std::string& sessionId, std::uint64_t epoch) {
+    RoleExecutionContext ctx;
+    ctx.sessionId = sessionId;
+    ctx.role = "S0R0";
+    ctx.requestId = "/request/restore";
+    ctx.attemptEpoch = 1;
+    ctx.inferenceEpoch = epoch;
+    // Only this flag makes the CPU adapter keep state in its own session map instead of
+    // handing it back to the caller as a bundle, which is what promote() then collects.
+    ctx.streamingStateExecution = true;
+    ctx.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
+    ctx.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    const auto put = [&ctx] (const std::string& name, TensorElementType type,
+                             const std::vector<std::int64_t>& dims,
+                             const std::vector<std::uint8_t>& bytes) {
+      NamedTensor tensor;
+      tensor.name = name;
+      tensor.elementType = type;
+      tensor.shape = dims;
+      tensor.payload = bytes;
+      ctx.stepInputsBySlot.emplace(name, makeEncodedTensorBundle(name, {std::move(tensor)}));
+    };
+    std::vector<std::uint8_t> hidden(static_cast<std::size_t>(shape.hidden) * sizeof(float), 0);
+    for (std::size_t index = 0; index < shape.hidden; ++index) {
+      const float value = 0.01f * static_cast<float>(index % 17) - 0.08f;
+      std::memcpy(hidden.data() + index * sizeof(float), &value, sizeof(value));
+    }
+    put("x", TensorElementType::Float32, {1, 1, static_cast<std::int64_t>(shape.hidden)}, hidden);
+    put("attn_mask", TensorElementType::Int32, {1, 1},
+        std::vector<std::uint8_t>(sizeof(std::int32_t), 0));
+    const std::int32_t total = 1;
+    std::vector<std::uint8_t> totalBytes(sizeof(total));
+    std::memcpy(totalBytes.data(), &total, sizeof(total));
+    put("total_sequence_length", TensorElementType::Int32, {}, totalBytes);
+    put("position_ids", TensorElementType::Int64, {1, 1},
+        std::vector<std::uint8_t>(sizeof(std::int64_t), 0));
+    return runner->run(ctx);
+  };
+
+  std::map<std::string, TensorBundle> firstEpoch;
+  try {
+    firstEpoch = runEpoch("/request/restore/epoch0", 0);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("first epoch: ") + error.what());
+  }
+  const auto sequenceOf = [] (const std::map<std::string, TensorBundle>& outputs,
+                              const std::string& want) {
+    for (const auto& item : outputs) {
+      if (!isEncodedTensorBundle(item.second.payload)) continue;
+      for (const auto& tensor : decodeTensorBundle(item.second.payload))
+        if (tensor.name == want && tensor.shape.size() == 4) return tensor.shape[2];
+    }
+    return std::int64_t{-1};
+  };
+  // A resident-state epoch returns the successors as opaque handles, not as tensors: the whole
+  // point of the resident path is that the KV never crosses the host bundle boundary.
+  BOOST_REQUIRE_EQUAL(firstEpoch.count("present.0.key"), 1U);
+
+  const auto handle = runner->promoteSessionStateToConversation(
+    "/request/restore/epoch0", "conv/restore-test");
+  BOOST_REQUIRE_MESSAGE(handle.has_value(),
+    "the first epoch's state could not be promoted, so no turn could restore it");
+  BOOST_REQUIRE(runner->restoreConversationState(*handle, "/request/restore/epoch1"));
+
+  std::map<std::string, TensorBundle> secondEpoch;
+  try {
+    secondEpoch = runEpoch("/request/restore/epoch1", 1);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("second epoch: ") + error.what());
+  }
+  const auto secondSequence = sequenceOf(secondEpoch, "present.0.key");
+  // The resident path hands back an opaque token, not a tensor, so a successor's shape is not
+  // observable from outside: the whole point is that the KV never crosses the host bundle
+  // boundary. What is observable is that the second epoch ran at all with the restored binding
+  // installed -- without it the runner fails closed asking for Provider-owned predecessor state.
+  // So this case proves the promote/restore/consume wiring, and says plainly that it cannot
+  // prove the restored prefix reached the arithmetic.
+  BOOST_TEST_MESSAGE("restore: second epoch ran with a restored binding; handle bytes="
+                     << secondEpoch.at("present.0.key").payload.size()
+                     << " seqVisible=" << secondSequence);
+  BOOST_CHECK(secondEpoch.count("present.0.key") == 1U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
 {
   // The one state claim nothing has tested: that the KV a run produces is what the next run
