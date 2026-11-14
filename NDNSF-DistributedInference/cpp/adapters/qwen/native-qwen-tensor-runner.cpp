@@ -428,6 +428,11 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
         auto tensors = decodeTensorBundle(value->second.payload);
         try {
           auto tensor = findTensor(std::move(tensors), key);
+          // The child resolves a bundle member by the *inner* tensor name, so renaming
+          // only the envelope would rename nothing the lookup reads. Both names become the
+          // graph input this entry declares -- an alias the entry contract owns, not a
+          // guess: the slot was bound to this graph input above.
+          tensor.name = graphInput;
           TensorBundle narrowed;
           narrowed.name = graphInput;
           narrowed.payload = encodeTensorBundle({std::move(tensor)});
