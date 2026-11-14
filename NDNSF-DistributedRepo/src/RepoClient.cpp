@@ -3153,6 +3153,10 @@ RepoClient::fetchFile(const RepoFileFetch& input,
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchFile");
   requireLiveDeadline(options.deadline, "fetchFile");
+  if (options.requireCurrent)
+    throw RepoClientError("UNSUPPORTED",
+                          "fetchFile cannot propagate a cancellation check: "
+                          "the file transfer entry point takes no cancellation check", "fetchFile");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "fetchFile requires a file client; this client was opened data-only",
@@ -3446,6 +3450,10 @@ RepoClient::inspect(const RepoInspectionRequest& input,
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "inspect");
   requireLiveDeadline(options.deadline, "inspect");
+  if (options.requireCurrent)
+    throw RepoClientError("UNSUPPORTED",
+                          "inspect cannot propagate a cancellation check: "
+                          "inspection takes no cancellation check", "inspect");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "inspect requires a file client; this client was opened data-only",
@@ -3703,6 +3711,10 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "discover");
   requireLiveDeadline(options.deadline, "discover");
+  if (options.requireCurrent)
+    throw RepoClientError("UNSUPPORTED",
+                          "discover cannot propagate a cancellation check: "
+                          "discovery takes no cancellation check", "discover");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "discover requires a file client; this client was opened data-only",

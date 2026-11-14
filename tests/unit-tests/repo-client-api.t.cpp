@@ -245,6 +245,30 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(OperationsThatCannotBeCancelledSaySo) {
+  // Three engine entry points take no cancellation check. Accepting options.requireCurrent
+  // there would let a caller believe a long transfer can be stopped.
+  TemporaryDirectory temporary("cancel");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoOperationOptions cancellable = makeOptions();
+  cancellable.requireCurrent = [] {};
+  const auto refused = [&] (const RepoClientError& error, const std::string& phase) {
+    return error.code() == "UNSUPPORTED" && error.phase() == phase;
+  };
+
+  RepoFileFetch fetch;
+  BOOST_CHECK_EXCEPTION(client.fetchFile(fetch, cancellable), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "fetchFile"); });
+
+  RepoInspectionRequest inspection;
+  BOOST_CHECK_EXCEPTION(client.inspect(inspection, cancellable), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "inspect"); });
+
+  RepoDiscoveryRequest discovery;
+  BOOST_CHECK_EXCEPTION(client.discover(discovery, cancellable), RepoClientError,
+    [&] (const RepoClientError& error) { return refused(error, "discover"); });
+}
+
 BOOST_AUTO_TEST_CASE(EveryOperationReportsAnExpiredDeadline) {
   // The caller's deadline is the whole operation's budget everywhere, not only where a
   // request is about to be issued.
