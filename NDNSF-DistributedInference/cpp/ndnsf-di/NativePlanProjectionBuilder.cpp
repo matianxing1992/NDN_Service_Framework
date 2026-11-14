@@ -183,6 +183,12 @@ void certifyEndpointImpl(NativeTensorEndpointV3& endpoint)
       {"tensorDigest", endpoint.tensorDigest}});
   auto value = nativeEndpointJson(endpoint);
   value.erase("endpoint_digest"); value.erase("consumer_role");
+  // The dependency identity says which sealed dependency this endpoint carries, which is how
+  // the runtime edge is bound back to its step slots. It is not part of the wire contract the
+  // digest certifies, and a compact transport that reconstructs an endpoint without it would
+  // otherwise produce a different digest for the same object. The remaining fields already
+  // distinguish every endpoint: an operation index is unique within its group.
+  value.erase("dependency_id");
   endpoint.endpointDigest = hash(value);
 }
 }
@@ -643,7 +649,14 @@ void NativePlanProjectionBuilder::certify(std::map<std::string, NativeRoleProjec
       }
       if (!wait.endpointDigests.empty()) dataflow.waitFor.push_back(std::move(wait));
     }
-    auto json = nativeDataflowJson(dataflow); json.erase("dataflow_digest"); dataflow.dataflowDigest = hash(json);
+    auto json = nativeDataflowJson(dataflow);
+    json.erase("dataflow_digest");
+    // `dependency_id` is a local binding key, not part of the contract the digest certifies;
+    // the compact transport does not carry it and the reader strips it too.
+    for (const auto* list : {"may_publish", "must_fetch"}) {
+      for (auto& endpoint : json.at(list)) endpoint.erase("dependency_id");
+    }
+    dataflow.dataflowDigest = hash(json);
     NativeSelectionProjectionV3 value;
     value.provider = core.assignment.providerByRole.at(item.first); value.requestId = core.requestId;
     value.attempt = core.attempt; value.planDigest = sealed.planDigest;

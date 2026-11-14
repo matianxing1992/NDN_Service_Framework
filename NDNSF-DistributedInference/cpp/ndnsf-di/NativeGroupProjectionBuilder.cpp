@@ -271,9 +271,22 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
       const auto& operation = group.operations.at(operationKey);
       endpoint.producerRank = group.rank.at(core.assignment.providerByRole.at(endpoint.producerRole));
       endpoint.round = operation.index;
+      // The rank and the operation index are part of the endpoint's certified identity, so
+      // they must be certified again here. Leaving the pre-remap digests in place makes the
+      // compact transport reconstruct an endpoint whose digest no longer describes it, and
+      // the Requester then rejects the Replay at ACK_CLOSED with a digest mismatch.
+      NativePlanProjectionBuilder::certifyEndpoint(endpoint);
     };
     for (auto& endpoint : projection.second.dataflow.mayPublish) remap(endpoint);
     for (auto& endpoint : projection.second.dataflow.mustFetch) remap(endpoint);
+    {
+      // The dataflow digest covers its endpoints, and the remap just changed their rank and
+      // operation index. Recomputing here is what keeps the digest describing the contract it
+      // travels with; the compact transport recomputes it too and refuses a mismatch.
+      auto recipe = nativeDataflowJson(projection.second.dataflow);
+      recipe.erase("dataflow_digest");
+      projection.second.dataflow.dataflowDigest = hash(recipe);
+    }
     if (core.generationContract.enabled) {
       const auto epochs = core.generationContract.maxGeneratedTokens + 1;
       const auto stride = core.generationContract.streamingOperationStride;

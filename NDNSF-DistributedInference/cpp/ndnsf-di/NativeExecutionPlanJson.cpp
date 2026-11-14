@@ -1007,14 +1007,49 @@ validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflo
         const auto certified = NativePlanProjectionBuilder::deriveGenerationEndpoint(
           endpoint, range, 0);
         if (certified.endpointDigest != endpoint.endpointDigest ||
-            certified.manifestDigest != endpoint.manifestDigest)
-          throw std::invalid_argument("generation base endpoint digest mismatch");
+            certified.manifestDigest != endpoint.manifestDigest) {
+          std::string diff;
+          const auto original = nativeEndpointJson(endpoint);
+          const auto derived = nativeEndpointJson(certified);
+          for (auto it = original.begin(); it != original.end(); ++it)
+            if (!derived.contains(it.key()) || derived.at(it.key()) != it.value())
+              diff += it.key() + ";";
+          for (auto it = derived.begin(); it != derived.end(); ++it)
+            if (!original.contains(it.key())) diff += "+" + it.key() + ";";
+          throw std::invalid_argument(
+            "generation base endpoint digest mismatch: round=" +
+            std::to_string(endpoint.round) +
+            " stride=" + std::to_string(endpoint.namingOperationStride) +
+            " rangeStride=" + std::to_string(range.operationStride) +
+            " epochs=" + std::to_string(range.epochCount) +
+            " source=" + endpoint.sourceKind + " op=" + endpoint.operation +
+            " digestEqual=" + (certified.endpointDigest == endpoint.endpointDigest ? "1" : "0") +
+            " manifestEqual=" + (certified.manifestDigest == endpoint.manifestDigest ? "1" : "0") +
+            " diff=" + diff);
+        }
       }
     }
     auto recipe = jsonValue(dataflow);
     recipe.erase("dataflow_digest");
-    if (nativePlanningDigest(nativeCanonicalJson(recipe)) != dataflow.dataflowDigest)
-      throw std::invalid_argument("compact generation dataflow digest mismatch");
+    // `dependency_id` is a local binding key the compact transport does not carry, so it
+    // cannot be part of the contract digest either: the two sides would describe the same
+    // contract with different bytes. Both computations strip it, which keeps one definition.
+    for (const auto* list : {"may_publish", "must_fetch"}) {
+      for (auto& endpoint : recipe.at(list)) endpoint.erase("dependency_id");
+    }
+    if (nativePlanningDigest(nativeCanonicalJson(recipe)) != dataflow.dataflowDigest) {
+      // Report where the two views differ, so a mismatch names the endpoint instead of the
+      // whole contract.
+      std::string diff;
+      for (const auto* list : {"may_publish", "must_fetch"}) {
+        const auto& endpoints = recipe.at(list);
+        diff += std::string(list) + "=" + std::to_string(endpoints.size()) + ";";
+      }
+      diff += "range=" + std::to_string(dataflow.endpointRange->epochCount) + "/" +
+              std::to_string(dataflow.endpointRange->operationStride) + ";";
+      diff += "wait=" + std::to_string(dataflow.waitFor.size()) + ";";
+      throw std::invalid_argument("compact generation dataflow digest mismatch: " + diff);
+    }
   }
 
   std::set<std::string> endpointDigests;
@@ -1351,6 +1386,12 @@ void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpo
   auto identity = jsonValue(endpoint);
   identity.erase("endpoint_digest");
   identity.erase("consumer_role");
+  // `dependency_id` is a local binding key, not part of the certified wire contract: the
+  // digest must describe the same object on both sides of a compact transport that does not
+  // carry it. The remaining fields already separate every endpoint, because an operation
+  // index is unique within its group. Both this check and the certifier therefore exclude it
+  // -- one definition of the digest, used by producer and consumer alike.
+  identity.erase("dependency_id");
   if (endpoint.endpointDigest != nativePlanningDigest(nativeCanonicalJson(identity)))
     throw std::invalid_argument("tensor endpoint binding digest mismatch");
 }
