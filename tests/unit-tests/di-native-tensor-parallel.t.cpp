@@ -11954,7 +11954,12 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     BOOST_REQUIRE(model.ParseFromString(wire));
     return model;
   };
-  const auto buildFeeds = [&] (const qwen::QwenTpEntryContract& entry) {
+  // `sequence` is the number of new positions in this call. A prefill carries several; a decode
+  // step carries one. The axis name decides which symbolic dimension means what, because
+  // treating every symbol as one token made a multi-token prefill unrepresentable -- and the
+  // accumulated KV a second turn depends on only differs from a decode step at length > 1.
+  const auto buildFeeds = [&] (const qwen::QwenTpEntryContract& entry,
+                               std::int64_t sequence = 1) {
     const auto model = entryGraph(entry);
     std::map<std::string, TensorBundle> feeds;
     for (const auto& value : model.graph().input()) {
@@ -11965,8 +11970,18 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
       const auto elementType = value.type().tensor_type().elem_type();
       std::vector<std::int64_t> dims;
       for (const auto& dim : value.type().tensor_type().shape().dim()) {
-        // A symbolic axis is one token: the smallest decode step.
-        dims.push_back(dim.has_dim_value() ? dim.dim_value() : 1);
+        if (dim.has_dim_value()) {
+          dims.push_back(dim.dim_value());
+          continue;
+        }
+        const auto symbol = dim.dim_param();
+        if (symbol.find("past") != std::string::npos)
+          dims.push_back(0);  // no history on this call
+        else if (symbol.find("sequence") != std::string::npos ||
+                 symbol.find("total") != std::string::npos)
+          dims.push_back(sequence);
+        else
+          dims.push_back(1);
       }
       NamedTensor tensor;
       tensor.name = name;
@@ -11987,19 +12002,36 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
         std::size_t count = 1;
         for (const auto axis : dims) count *= static_cast<std::size_t>(axis);
         tensor.payload.assign(count * sizeof(std::int64_t), 0);
+        // A prefill's positions are 0..N-1, not N zeros. With every position zero the rotary
+        // embedding applies the same rotation to all of them, so a multi-position call would
+        // compute a different problem than the one it is meant to pose.
+        if (name.find("pos_ids") != std::string::npos &&
+            count == static_cast<std::size_t>(sequence)) {
+          auto* values = reinterpret_cast<std::int64_t*>(tensor.payload.data());
+          for (std::int64_t index = 0; index < sequence; ++index) values[index] = index;
+        }
       }
       else if (elementType == onnx::TensorProto::INT32) {
         tensor.elementType = TensorElementType::Int32;
         tensor.shape = dims;
         std::size_t count = 1;
         for (const auto axis : dims) count *= static_cast<std::size_t>(axis);
-        // The total length must be one, and every other index input is a zero token.
+        // The total length is the whole prefix this call covers; every other index input is
+        // a zero token.
         const bool lengthInput = name.find("Gather/Cast") != std::string::npos &&
                                  dims.empty();
         tensor.payload.assign(count * sizeof(std::int32_t), 0);
         if (lengthInput) {
-          std::int32_t total = 1;
+          const auto total = static_cast<std::int32_t>(sequence);
           std::memcpy(tensor.payload.data(), &total, sizeof(total));
+        }
+        else if (name.find("Sub/Cast") != std::string::npos && count == 1) {
+          // `seqlens_k` is the number of keys each query may attend to, minus one, so a
+          // prefill of N positions that can see all of them is N-1. Leaving it at zero made
+          // the op attend to a single key regardless of the positions supplied, which is a
+          // different problem from the one a longer prefill is supposed to pose.
+          const auto keys = static_cast<std::int32_t>(sequence - 1);
+          std::memcpy(tensor.payload.data(), &keys, sizeof(keys));
         }
       }
       else {
