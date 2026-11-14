@@ -801,7 +801,9 @@ readSegments(const ndn::Name& prefix, std::uint64_t size, std::uint32_t segmentB
 void
 commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
                const NativeStoredModelPacketIo& io, NativeStoredModelPublication& publication,
-               unsigned version = 2)
+               unsigned version = 2,
+               std::function<void(const ndn::Name&, const std::string&, std::uint64_t)>
+                 observe = {})
 {
   require(version == 1 || version == 2);
   const auto maxPackets = version == 1 ? MAX_GROUP_PACKETS : NATIVE_STORED_MODEL_UPLOAD_PACKETS;
@@ -810,15 +812,39 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
   NativeStoredModelPacketIo::PacketWires group;
   std::size_t nameBytes = 0;
   Bytes digestInput;
+  // Take the io's Repo-owned bound when it reports one; the DI constant is only the
+  // fallback for generic io without a Repo behind it. A scope-owned pipeline keeps the
+  // three-commit cap for the whole publication instead of per call.
+  auto localPipeline = std::shared_ptr<NativeModelCommitPipeline>();
+  if (!io.commitPipeline) {
+    localPipeline = std::make_shared<NativeModelCommitPipeline>(io.requireCurrent,
+      io.publicationGroupWireBytes != 0 ? io.publicationGroupWireBytes
+                                       : NATIVE_STORED_MODEL_UPLOAD_WIRE);
+  }
+  auto& pipeline = io.commitPipeline ? *io.commitPipeline : *localPipeline;
   const auto flush = [&] {
     if (group.empty())
       return;
     io.requireCurrent();
     const auto expected = digest(digestInput.data(), digestInput.size());
-    publication.wireBytes += digestInput.size();
-    io.commit(std::move(group), expected);
-    io.requireCurrent();
-    ++publication.packetGroups;
+    const auto bytes = static_cast<std::uint64_t>(digestInput.size());
+    const auto name = decodeOriginal(group.front()).getName();
+    const auto committed = [&, observe, bytes, name, expected] {
+      publication.wireBytes += bytes;
+      ++publication.packetGroups;
+      if (observe) observe(name, expected, bytes);
+    };
+    if (io.commitConcurrent) {
+      pipeline.submit(bytes, [commit = io.commitConcurrent, wires = std::move(group), expected]
+        (const NativeModelCommitPipeline::CurrentCheck& current) mutable {
+          commit(std::move(wires), expected, current);
+        }, committed);
+    }
+    else {
+      io.commit(std::move(group), expected);
+      io.requireCurrent();
+      committed();
+    }
     group.clear();
     digestInput.clear();
     nameBytes = 0;
@@ -837,6 +863,14 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
     group.emplace_back(wire.begin(), wire.end());
   }
   flush();
+  // A scope pipeline outlives this call, so it drains but stays open for the next one;
+  // a local pipeline is finished (drained and closed) as before. Either way the groups
+  // submitted here are complete before this function returns, which is what keeps
+  // publication ordering independent of who owns the scheduler.
+  if (io.commitPipeline)
+    pipeline.drain();
+  else
+    pipeline.finish();
 }
 
 } // namespace
@@ -961,18 +995,10 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   if (bindPrefix) bindPrefix(prefix);
   io.requireCurrent();
   const auto recording = [&](NativeJson& groups) {
-    auto port = io;
-    port.commit = [&groups, original = io.commit](NativeStoredModelPacketIo::PacketWires wires,
-                                            const std::string& expected) {
-      require(!wires.empty());
-      const auto name = decodeOriginal(wires.front()).getName();
-      std::uint64_t bytes = 0;
-      for (const auto& wire : wires) bytes += wire.size();
-      original(std::move(wires), expected);
+    return [&groups](const ndn::Name& name, const std::string& expected, std::uint64_t bytes) {
       groups.push_back(NativeJson{{"name", name.toUri(ndn::name::UriFormat::CANONICAL)},
                                  {"digest", expected}, {"bytes", bytes}});
     };
-    return port;
   };
   NativeStoredModelCatalog catalog;
   catalog.m_modelDigest = modelDigest;
@@ -1022,7 +1048,7 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
                                            ndn::time::milliseconds::zero());
     if (journal) {
       auto groups = NativeJson::array();
-      commitPackets(packets, recording(groups), publication, journal->currentGroupingVersion());
+      commitPackets(packets, io, publication, journal->currentGroupingVersion(), recording(groups));
       journal->complete(input->id, entry, groups);
     }
     else {
@@ -1040,10 +1066,12 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const auto indexSegmentBytes = segmentPayload(indexName);
   const Bytes indexBytes(index.begin(), index.end());
   auto tailGroups = NativeJson::array();
-  const auto tailIo = journal ? recording(tailGroups) : io;
+  std::function<void(const ndn::Name&, const std::string&, std::uint64_t)> tailObserver;
+  if (journal) tailObserver = recording(tailGroups);
   const auto tailVersion = journal ? journal->tailGroupingVersion() : 2;
   commitPackets(segmenter.segment(indexBytes, indexName, indexSegmentBytes,
-                                   ndn::time::milliseconds::zero()), tailIo, publication, tailVersion);
+                                   ndn::time::milliseconds::zero()), io, publication, tailVersion,
+                tailObserver);
   auto root = std::make_shared<ndn::Data>(handle.rootName);
   const auto rootJson = storedRootJson(modelDigest, indexName,
     digest(indexBytes.data(), indexBytes.size()), index.size(), indexSegmentBytes);
@@ -1053,7 +1081,7 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   handle.rootWireDigest = digest(rootWire.data(), rootWire.size());
   handle.validate();
   (void)nativeAdmitStoredModelRoot(handle, *root);
-  commitPackets({root}, tailIo, publication, tailVersion);
+  commitPackets({root}, io, publication, tailVersion, tailObserver);
   io.requireCurrent();
   if (journal) journal->finish(handle.rootWireDigest, tailGroups);
   return publication;

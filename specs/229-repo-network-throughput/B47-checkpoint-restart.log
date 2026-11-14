@@ -1,0 +1,11 @@
+Running 1 test case...
+NDNSF_INTEGRATION_BOOTSTRAP_READY sha256:61A1C5E8AF83F73D363EE758DBF283643D194DE4A912E5107B41CD07E72032A6
+unknown location(0): [4;31;49mfatal error: in "DistributedRepoPersistentArtifactApi/OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices": std::runtime_error: repo-ack-authentication-failed: selected Provider ACK was absent, duplicated, or untrusted (matching=0, observed=0)[0;39;49m
+../tests/integration-tests/spec192-persistent-artifact-api.t.cpp(2929): [1;36;49mlast checkpoint[0;39;49m
+
+Test module "ndn_rpc_framework" has failed with:
+  1 test case out of 1 failed
+  1 test case out of 1 aborted
+  55 assertions out of 56 passed
+  1 assertion out of 56 failed
+

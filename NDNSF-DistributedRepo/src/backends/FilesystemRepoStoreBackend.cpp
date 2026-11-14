@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
+#include "../packet-store-lookup.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp"
 
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
@@ -8,6 +9,7 @@
 #include <array>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -38,6 +40,14 @@ manifestStamp(const fs::path& path)
     static_cast<uint64_t>(info.st_size), static_cast<uint64_t>(info.st_mtim.tv_sec),
     static_cast<uint64_t>(info.st_mtim.tv_nsec), static_cast<uint64_t>(info.st_ctim.tv_sec),
     static_cast<uint64_t>(info.st_ctim.tv_nsec)};
+}
+
+bool
+isStableManifestStamp(const ManifestStamp& stamp)
+{
+  const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  return now > 1 && stamp[5] < static_cast<uint64_t>(now - 1);
 }
 
 bool
@@ -463,38 +473,36 @@ FilesystemRepoStoreBackend::putManifest(const RepoObjectManifest& manifest)
 StoredObject
 FilesystemRepoStoreBackend::get(const std::string& objectName) const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
   const auto manifest = readManifestUnlocked(objectName);
-  if (isMetadataOnly(manifest)) {
+  if (isMetadataOnly(*manifest)) {
     throw std::runtime_error("repo-metadata-only-payload-not-materialized");
   }
-  if (manifest.size > m_vectorCompatibilityThreshold) {
+  if (manifest->size > m_vectorCompatibilityThreshold) {
     ++m_fullCopyFallbacks;
     throw std::runtime_error("repo-large-object-vector-path-disabled");
   }
   std::vector<uint8_t> payload;
-  if (manifest.size != 0) {
-    const auto reference = artifactReference(manifest);
-    payload = m_payloadStore.readRange(reference, manifest.generation,
-                                       ArtifactByteRange{0, manifest.size});
+  if (manifest->size != 0) {
+    const auto reference = artifactReference(*manifest);
+    payload = m_payloadStore.readCommittedRange(reference, manifest->generation,
+                                       ArtifactByteRange{0, manifest->size});
   }
-  if (sha256Hex(payload) != manifest.sha256) {
+  if (sha256Hex(payload) != manifest->sha256) {
     throw std::runtime_error("repo-file-vector-payload-corrupt: stored bytes differ from manifest");
   }
-  return StoredObject{manifest, std::move(payload)};
+  return StoredObject{*manifest, std::move(payload)};
 }
 
 bool
 FilesystemRepoStoreBackend::has(const std::string& objectName) const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
   try {
     const auto manifest = readManifestUnlocked(objectName);
-    if (isMetadataOnly(manifest) || manifest.size == 0) {
+    if (isMetadataOnly(*manifest) || manifest->size == 0) {
       return true;
     }
-    return m_payloadStore.isCommitted(artifactReference(manifest),
-                                      manifest.generation);
+    return m_payloadStore.isCommitted(artifactReference(*manifest),
+                                      manifest->generation);
   }
   catch (const std::out_of_range&) {
     return false;
@@ -507,7 +515,7 @@ FilesystemRepoStoreBackend::erase(const std::string& objectName)
   std::lock_guard<std::mutex> lock(m_mutex);
   RepoObjectManifest manifest;
   try {
-    manifest = readManifestUnlocked(objectName);
+    manifest = *readManifestUnlocked(objectName);
   }
   catch (const std::out_of_range&) {
     return false;
@@ -667,12 +675,13 @@ FilesystemRepoStoreBackend::listManifests() const
     }
     const auto key = entry.path().filename().string();
     present.insert(key);
-    if (const auto cached = cachedManifestUnlocked(entry.path())) {
+    if (auto cached = cachedManifestUnlocked(entry.path())) {
       manifests.push_back(*cached);
       continue;
     }
-    manifests.push_back(parseManifestCachedUnlocked(key, readText(entry.path()), &entry.path()));
+    manifests.push_back(*parseManifestCachedUnlocked(key, readText(entry.path()), &entry.path()));
   }
+  std::lock_guard<std::mutex> parseLock(m_catalogParseMutex);
   for (auto cached = m_catalogParseCache.begin(); cached != m_catalogParseCache.end();) {
     if (!present.count(cached->first)) {
       m_catalogEncodedBytes -= cached->second.encoded.size();
@@ -687,6 +696,31 @@ FilesystemRepoStoreBackend::listManifests() const
               return lhs.objectName < rhs.objectName;
             });
   return manifests;
+}
+
+std::vector<RepoObjectManifest>
+FilesystemRepoStoreBackend::findPacketManifests(const std::string& canonical,
+                                               const std::string& alternate,
+                                               bool prefixMatch) const
+{
+  std::vector<RepoObjectManifest> result;
+  const fs::path directory = fs::path(m_rootPath) / "manifests";
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".json")
+      continue;
+    const auto& path = entry.path();
+    auto cached = cachedManifestUnlocked(path);
+    if (!cached) {
+      cached = loadManifestUnlocked(path);
+    }
+    if (detail::matchesPacketLookup(*cached, canonical, alternate, prefixMatch)) {
+      result.push_back(*cached);
+    }
+  }
+  std::sort(result.begin(), result.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.objectName < rhs.objectName;
+  });
+  return result;
 }
 
 uint64_t
@@ -761,7 +795,6 @@ FilesystemRepoStoreBackend::hasCommittedPayload(
   if (isMetadataOnly(manifest) || manifest.size == 0) {
     return false;
   }
-  std::lock_guard<std::mutex> lock(m_mutex);
   return m_payloadStore.inspectCommitted(artifactReference(manifest)).exists;
 }
 
@@ -811,14 +844,15 @@ FilesystemRepoStoreBackend::putRange(const RepoObjectManifest& manifest,
   const auto reservation = m_reservations.find(manifest.objectName);
   auto canonicalManifest = manifest;
   canonicalManifest.generation = generation;
+  const auto canonicalIdentity = canonicalManifest.toJson();
   if (reservation != m_reservations.end() &&
       (reservation->second.digest != manifest.sha256 ||
        reservation->second.size != manifest.size ||
        reservation->second.generation != generation ||
-       reservation->second.canonicalIdentity != canonicalManifest.toJson())) {
+       reservation->second.canonicalIdentity != canonicalIdentity)) {
     throw std::runtime_error("repo-generation-conflict: range reservation identity mismatch");
   }
-  reserveDiskUnlocked(manifest);
+  reserveDiskUnlocked(canonicalManifest, canonicalIdentity);
   try {
     m_payloadStore.begin(reference, generation);
     m_payloadStore.writeRange(
@@ -958,22 +992,25 @@ std::vector<uint8_t>
 FilesystemRepoStoreBackend::getRange(const std::string& objectName,
                                      RepoByteRange range) const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
   const auto manifest = readManifestUnlocked(objectName);
-  if (isMetadataOnly(manifest)) {
+  if (isMetadataOnly(*manifest)) {
     throw std::runtime_error("repo-metadata-only-payload-not-materialized");
   }
-  if (range.offsetBytes > manifest.size ||
-      range.lengthBytes > manifest.size - range.offsetBytes) {
+  if (range.offsetBytes > manifest->size ||
+      range.lengthBytes > manifest->size - range.offsetBytes) {
     throw std::out_of_range("repo-file-range-read-out-of-bounds");
   }
   if (range.lengthBytes == 0) {
     return {};
   }
-  return m_payloadStore.readRange(artifactReference(manifest),
-                                  manifest.generation,
+  auto bytes = m_payloadStore.readCommittedRange(artifactReference(*manifest),
+                                  manifest->generation,
                                   ArtifactByteRange{range.offsetBytes,
                                                     range.lengthBytes});
+  const auto current = readManifestUnlocked(objectName);
+  if (current != manifest && !current->hasSameMetadata(*manifest))
+    throw std::runtime_error("repo-publication-identity-mismatch");
+  return bytes;
 }
 
 RepoRangeReadFunction
@@ -984,8 +1021,8 @@ FilesystemRepoStoreBackend::bindCurrentRangeReader(
   const auto path = manifestPath(expected->objectName);
   auto stamp = manifestStamp(path);
   const auto current = readManifestUnlocked(expected->objectName);
-  if (stamp != manifestStamp(path) || !current.hasSameMetadata(*expected) ||
-      isMetadataOnly(current))
+  if (stamp != manifestStamp(path) || !current->hasSameMetadata(*expected) ||
+      isMetadataOnly(*current))
     throw std::runtime_error("repo-publication-identity-mismatch");
   const auto reference = artifactReference(*expected);
   return [this, expected = std::move(expected), path, stamp, reference](RepoByteRange range) mutable {
@@ -993,7 +1030,7 @@ FilesystemRepoStoreBackend::bindCurrentRangeReader(
     const auto observed = manifestStamp(path);
     if (observed != stamp) {
       const auto current = readManifestUnlocked(expected->objectName);
-      if (observed != manifestStamp(path) || !current.hasSameMetadata(*expected))
+      if (observed != manifestStamp(path) || !current->hasSameMetadata(*expected))
         throw std::runtime_error("repo-publication-identity-mismatch");
       stamp = observed;
     }
@@ -1013,15 +1050,36 @@ FilesystemRepoStoreBackend::getManifest(const std::string& objectName) const
   return readManifest(objectName);
 }
 
+std::shared_ptr<const RepoObjectManifest>
+FilesystemRepoStoreBackend::getManifestSnapshot(const std::string& objectName) const
+{
+  return readManifestUnlocked(objectName);
+}
+
 RepoObjectMetadataProbe
 FilesystemRepoStoreBackend::probeObjectMetadata(
   const std::string& objectName) const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto snapshot = probeObjectMetadataSnapshot(objectName);
   RepoObjectMetadataProbe result;
+  result.manifestPresent = static_cast<bool>(snapshot.manifest);
+  if (snapshot.manifest)
+    result.manifest = *snapshot.manifest;
+  result.payloadMetadataAvailable = snapshot.payloadMetadataAvailable;
+  result.payloadPresent = snapshot.payloadPresent;
+  result.payloadRepresentationValid = snapshot.payloadRepresentationValid;
+  result.payloadSize = snapshot.payloadSize;
+  result.manifestMeasurementAvailable = snapshot.manifestMeasurementAvailable;
+  result.manifestWireBytes = snapshot.manifestWireBytes;
+  return result;
+}
+
+RepoObjectMetadataSnapshot
+FilesystemRepoStoreBackend::probeObjectMetadataSnapshot(const std::string& objectName) const
+{
+  RepoObjectMetadataSnapshot result;
   try {
     result.manifest = readManifestUnlocked(objectName);
-    result.manifestPresent = true;
     const auto path = manifestPath(objectName);
     if (!fs::is_regular_file(path))
       throw std::runtime_error("repo-file-manifest-measurement-unavailable");
@@ -1031,13 +1089,13 @@ FilesystemRepoStoreBackend::probeObjectMetadata(
   catch (const std::out_of_range&) {
     return result;
   }
-  if (isMetadataOnly(result.manifest)) {
+  if (isMetadataOnly(*result.manifest)) {
     result.payloadMetadataAvailable = true;
     result.payloadRepresentationValid = true;
     return result;
   }
   const auto payload = m_payloadStore.inspectCommitted(
-    artifactReference(result.manifest));
+    artifactReference(*result.manifest));
   result.payloadMetadataAvailable = true;
   result.payloadPresent = payload.exists;
   result.payloadRepresentationValid = payload.regularFile;
@@ -1081,8 +1139,8 @@ FilesystemRepoStoreBackend::attachImportedDataReceipt(
   withoutReceipt.dataReceiptRepoNode.clear();
   withoutReceipt.dataReceiptProviderIdentity.clear();
   withoutReceipt.dataReceiptCommittedAtMs = 0;
-  if (current.toJson() != expected.toJson() ||
-      !current.dataReceiptId.empty() ||
+  if (current->toJson() != expected.toJson() ||
+      !current->dataReceiptId.empty() ||
       withoutReceipt.toJson() != expected.toJson() ||
       updated.objectType != "ndn-data-wire" ||
       updated.dataReceiptId.empty() || updated.dataReceiptRepoNode.empty() ||
@@ -1200,7 +1258,7 @@ FilesystemRepoStoreBackend::abortFailedRangesIfOwnedUnlocked(const RepoObjectMan
     if (fs::exists(metadata)) {
       if (!fs::is_regular_file(metadata)) return false;
       const auto current = readManifestUnlocked(expected.objectName);
-      if (current.operationId == expected.operationId && current.generation == expected.generation)
+      if (current->operationId == expected.operationId && current->generation == expected.generation)
         return false;
     }
     // Inspect every readable catalog row; conservative uncertainty is not sharing proof.
@@ -1423,66 +1481,87 @@ FilesystemRepoStoreBackend::receiptDirectory(
 RepoObjectManifest
 FilesystemRepoStoreBackend::readManifest(const std::string& objectName) const
 {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  return readManifestUnlocked(objectName);
+  return *readManifestUnlocked(objectName);
 }
 
-RepoObjectManifest
+std::shared_ptr<const RepoObjectManifest>
 FilesystemRepoStoreBackend::readManifestUnlocked(const std::string& objectName) const
 {
   const auto path = manifestPath(objectName);
   if (!fs::exists(path)) {
     throw std::out_of_range("repo-object-not-found: " + objectName);
   }
-  auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path), &path);
-  if (manifest.objectName != objectName) {
+  if (auto cached = cachedManifestUnlocked(path)) {
+    if (cached->objectName != objectName) {
+      throw std::runtime_error("repo-file-metadata-key-mismatch");
+    }
+    return cached;
+  }
+  auto manifest = loadManifestUnlocked(path);
+  if (manifest->objectName != objectName) {
     throw std::runtime_error("repo-file-metadata-key-mismatch");
   }
   return manifest;
 }
 
-std::optional<RepoObjectManifest>
+std::shared_ptr<const RepoObjectManifest>
+FilesystemRepoStoreBackend::loadManifestUnlocked(const fs::path& path) const
+{
+  const auto stamp = manifestStamp(path);
+  auto manifest = parseManifestCachedUnlocked(path.filename().string(), readText(path), &path);
+  if (stamp != manifestStamp(path)) {
+    std::lock_guard<std::mutex> lock(m_catalogParseMutex);
+    const auto found = m_catalogParseCache.find(path.filename().string());
+    if (found != m_catalogParseCache.end()) {
+      m_catalogEncodedBytes -= found->second.encoded.size();
+      m_catalogParseCache.erase(found);
+    }
+    throw std::runtime_error("repo-file-metadata-changed-during-read");
+  }
+  return manifest;
+}
+
+std::shared_ptr<const RepoObjectManifest>
 FilesystemRepoStoreBackend::cachedManifestUnlocked(const fs::path& path) const
 {
+  std::lock_guard<std::mutex> lock(m_catalogParseMutex);
   const auto found = m_catalogParseCache.find(path.filename().string());
   if (found == m_catalogParseCache.end())
-    return std::nullopt;
-  struct stat status{};
-  if (::stat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode))
-    return std::nullopt;
-  const auto mtime = static_cast<std::int64_t>(status.st_mtim.tv_sec) * 1000000000LL +
-                     static_cast<std::int64_t>(status.st_mtim.tv_nsec);
-  if (static_cast<std::uint64_t>(status.st_size) != found->second.fileSize ||
-      mtime != found->second.mtimeNanoseconds ||
-      static_cast<std::uint64_t>(status.st_ino) != found->second.inode)
-    return std::nullopt;
+    return {};
+  const auto identity = manifestStamp(path);
+  if (identity != found->second.identity)
+    return {};
+  // Filesystem ctime can repeat for writes in the same clock tick, even when
+  // nanoseconds are exposed. Read current bytes until that tick is safely old;
+  // this is a cache bypass for recent files, not a stale-data grace period.
+  if (!isStableManifestStamp(identity))
+    return {};
   return found->second.parsed;
 }
 
-RepoObjectManifest
+std::shared_ptr<const RepoObjectManifest>
 FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
                                                         std::string encoded,
                                                         const fs::path* source) const
 {
+  std::lock_guard<std::mutex> lock(m_catalogParseMutex);
   constexpr size_t maxEncodedBytes = 64U * 1024U * 1024U;
   constexpr size_t maxEntries = 4096;
   const auto identity = [source] {
     CachedManifest value;
-    struct stat status{};
-    if (source != nullptr && ::stat(source->c_str(), &status) == 0 && S_ISREG(status.st_mode)) {
-      value.fileSize = static_cast<std::uint64_t>(status.st_size);
-      value.mtimeNanoseconds = static_cast<std::int64_t>(status.st_mtim.tv_sec) * 1000000000LL +
-                               static_cast<std::int64_t>(status.st_mtim.tv_nsec);
-      value.inode = static_cast<std::uint64_t>(status.st_ino);
+    if (source != nullptr) {
+      const auto stamp = manifestStamp(*source);
+      // A young parse cannot become a stat-only hit just by aging: bytes must
+      // be read once after the timestamp tick is stable. Zero means unvalidated.
+      if (isStableManifestStamp(stamp))
+        value.identity = stamp;
     }
     return value;
   }();
   auto found = m_catalogParseCache.find(key);
   if (found != m_catalogParseCache.end() && found->second.encoded == encoded) {
     // Content is unchanged; keep the entry usable for later stat-validated hits.
-    found->second.fileSize = identity.fileSize;
-    found->second.mtimeNanoseconds = identity.mtimeNanoseconds;
-    found->second.inode = identity.inode;
+    found->second.identity = identity.identity;
     return found->second.parsed;
   }
   if (found != m_catalogParseCache.end()) {
@@ -1493,7 +1572,7 @@ FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
     std::lock_guard<std::mutex> hooksLock(g_ioHooksMutex);
     if (g_ioHooks.catalogParse) g_ioHooks.catalogParse();
   }
-  auto parsed = parseManifestJson(encoded);
+  auto parsed = std::make_shared<const RepoObjectManifest>(parseManifestJson(encoded));
   while (!m_catalogParseCache.empty() &&
          (m_catalogParseCache.size() >= maxEntries ||
           encoded.size() > maxEncodedBytes - m_catalogEncodedBytes)) {
@@ -1504,9 +1583,7 @@ FilesystemRepoStoreBackend::parseManifestCachedUnlocked(const std::string& key,
   if (encoded.size() <= maxEncodedBytes) {
     const auto bytes = encoded.size();
     CachedManifest entry{std::move(encoded), parsed};
-    entry.fileSize = identity.fileSize;
-    entry.mtimeNanoseconds = identity.mtimeNanoseconds;
-    entry.inode = identity.inode;
+    entry.identity = identity.identity;
     m_catalogParseCache.emplace(key, std::move(entry));
     m_catalogEncodedBytes += bytes;
   }
@@ -1558,17 +1635,15 @@ FilesystemRepoStoreBackend::isMetadataOnly(
 
 void
 FilesystemRepoStoreBackend::reserveDiskUnlocked(
-  const RepoObjectManifest& manifest)
+  const RepoObjectManifest& manifest, const std::string& identity)
 {
-  const auto generation = effectiveGeneration(manifest);
+  const auto generation = manifest.generation;
   const auto found = m_reservations.find(manifest.objectName);
   if (found != m_reservations.end()) {
-    auto canonicalManifest = manifest;
-    canonicalManifest.generation = generation;
     if (found->second.digest != manifest.sha256 ||
         found->second.size != manifest.size ||
         found->second.generation != generation ||
-        found->second.canonicalIdentity != canonicalManifest.toJson()) {
+        found->second.canonicalIdentity != identity) {
       throw std::runtime_error("repo-generation-conflict: reservation identity mismatch");
     }
     return;
@@ -1583,10 +1658,8 @@ FilesystemRepoStoreBackend::reserveDiskUnlocked(
       m_reservedBytes + manifest.size > available) {
     throw std::runtime_error("repo-file-disk-reservation-failed: insufficient space");
   }
-  auto canonicalManifest = manifest;
-  canonicalManifest.generation = generation;
   m_reservations.emplace(manifest.objectName,
-                         Reservation{canonicalManifest.toJson(), manifest.sha256,
+                         Reservation{identity, manifest.sha256,
                                      manifest.size, generation});
   m_reservedBytes += manifest.size;
 }

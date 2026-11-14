@@ -344,6 +344,8 @@ def options(opt):
                       help='Instrument the NDNSF-DI objects with address and undefined-behaviour '
                            'sanitizers. Diagnostic only: the library it produces is slower and '
                            'must not be installed as a release candidate.')
+    optgrp.add_option('--with-repo-python', action='store_true', default=False,
+                      help='Build and install the Repo Python binding')
     optgrp.add_option('--install-experiment-fixtures', action='store_true', default=False,
                       help='Install explicitly selected native experiment fixtures')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
@@ -464,6 +466,7 @@ def configure(conf):
 
     conf.env.WITH_EXAMPLES = conf.options.with_examples
     conf.env.WITH_TESTS = conf.options.with_tests
+    conf.env.WITH_REPO_PYTHON = conf.options.with_repo_python
     conf.env.INSTALL_EXPERIMENT_FIXTURES = conf.options.install_experiment_fixtures
     if conf.env.INSTALL_EXPERIMENT_FIXTURES and not (
             conf.env.WITH_TESTS and conf.env.WITH_EXAMPLES):
@@ -1059,6 +1062,7 @@ def build(bld):
                       source=[],
                       use=di_object_use + ' ' + di_shlib_use,
                       includes=['.', 'ndn-service-framework',
+                                'NDNSF-DistributedRepo/include',
                                 'NDNSF-DistributedInference/cpp/adapters/onnx'],
                       export_includes=['.', 'ndn-service-framework',
                                        'NDNSF-DistributedInference/cpp'],
@@ -1103,6 +1107,13 @@ def build(bld):
 
     bld.install_files('${INCLUDEDIR}/ndn-service-framework',
                       bld.path.find_resource('config.hpp'))
+
+    # nac-abe-config.hpp is generated during the build, so the configure-time header
+    # glob never sees it. Installed consumers need it because common.hpp reaches
+    # nac-abe/consumer.hpp, which includes it.
+    nacAbeConfig = bld.path.find_resource('ndn-service-framework/nac-abe-config.hpp')
+    if nacAbeConfig is not None:
+        bld.install_files('${INCLUDEDIR}', [nacAbeConfig])
 
     if 'di' in bld.env.NDNSF_COMPONENTS:
         # Preserve the pre-existing Native* compatibility installation until the

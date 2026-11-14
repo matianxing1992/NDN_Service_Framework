@@ -2,12 +2,19 @@
 #define NDNSF_DI_STORED_MODEL_REPOSITORY_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
+#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
 
+#include <atomic>
+#include <deque>
+#include <exception>
 #include <functional>
+#include <future>
 #include <map>
+#include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 
 namespace ndnsf::di {
@@ -20,8 +27,8 @@ inline constexpr std::size_t NATIVE_STORED_MODEL_UPLOAD_NAMES = 512U << 10;
 inline constexpr std::uint64_t NATIVE_STORED_MODEL_UPLOAD_WIRE = 32U << 20;
 
 /** Existing Repo adapters own transport, current storage authorization and cancellation.
- * Calls are synchronous, off the Face thread. Each bounded commit must confirm durable original
- * wire readback against expectedDigest before returning. Fetch returns the exact requested order.
+ * Calls are synchronous, off the Face thread. Each bounded commit confirms durable original
+ * wire storage against expectedDigest before returning. Fetch returns the exact requested order.
  * The owner supplies a deadline/close check; no new worker or authorization state lives here.
  */
 struct NativeStoredModelPacketIo
@@ -34,7 +41,35 @@ struct NativeStoredModelPacketIo
    * metadata, without uploading/downloading its model payload again. Throw if missing/mismatched.
    */
   std::function<void(const ndn::Name&, const std::string&, std::uint64_t)> requireCommitted;
+  /** Explicit native capability: synchronous durable commit may run concurrently.
+   * Both the original current check and this additional cancellation check must
+   * be honored. The original check must be thread-safe. Generic IO omits this
+   * capability and retains caller-thread serial commit behavior.
+   */
+  std::function<void(PacketWires, const std::string&, const std::function<void()>&)>
+    commitConcurrent;
+  /** Per-group wire bound the transport behind this io accepts, taken from Repo's own
+   *  configuration. Zero means the io has no Repo behind it and the caller's default
+   *  applies. */
+  std::uint64_t publicationGroupWireBytes = 0;
+  /** One scheduler for the whole publication scope. When present, every commit in the
+   *  scope shares its three-commit cap and its drain instead of each call owning a copy. */
+  std::shared_ptr<ndnsf_distributed_repo::RepoCommitPipeline> commitPipeline;
 };
+
+/** Own at most three asynchronous original-packet commits on one caller thread.
+ * Tasks must honor their supplied cancellation check. Observers record verified
+ * durable successes on the owner thread in submission order, including during
+ * failure drain; they must not advance an object/journal or publish a root.
+ * All referenced observer inputs must outlive this scope. Destruction cancels
+ * and drains without throwing; normal callers explicitly finish before use.
+ * Three in-flight groups consume at most 96 MiB of wires. A caller preparing a
+ * fourth group can retain another 32 MiB; this is not a total RSS bound.
+ */
+/** The batching scheduler now belongs to Repo; DI keeps using it under its old
+ *  name so model code reads unchanged. */
+using NativeModelCommitPipeline = ndnsf_distributed_repo::RepoCommitPipeline;
+
 
 struct NativeStoredModelIndexedObject
 {

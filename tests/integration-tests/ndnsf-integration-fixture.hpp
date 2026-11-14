@@ -12,6 +12,7 @@
 #include <ndn-svs/security-options.hpp>
 #include <ndn-svs/svspubsub.hpp>
 
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 
 #include <atomic>
@@ -284,6 +285,8 @@ private:
   std::unique_ptr<ndn::svs::SVSPubSub> m_userPubSub;
   std::unique_ptr<ndn::svs::SVSPubSub> m_providerPubSub;
   std::vector<std::unique_ptr<boost::asio::io_context>> m_extraProviderIoContexts;
+  std::vector<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>
+      m_faceWorkGuards;
   std::vector<std::unique_ptr<ndn::DummyClientFace>> m_extraProviderFaces;
   std::vector<std::unique_ptr<ndn::svs::SVSPubSub>> m_extraProviderPubSubs;
   std::vector<std::unique_ptr<ServiceProvider>> m_extraProviders;

@@ -4,6 +4,7 @@
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -49,6 +50,10 @@ public:
   bool erase(const std::string& objectName) override;
   size_t size() const override;
   std::vector<RepoObjectManifest> listManifests() const override;
+  /** Internal locator integration: copy matching metadata under the existing lock. */
+  std::vector<RepoObjectManifest>
+  findPacketManifests(const std::string& canonical, const std::string& alternate,
+                      bool prefixMatch) const;
   uint64_t usedBytes() const override;
   bool hasCommittedPayload(const RepoObjectManifest& manifest) const override;
 
@@ -59,8 +64,15 @@ public:
   std::vector<uint8_t> getRange(const std::string& objectName,
                                 RepoByteRange range) const override;
   RepoObjectManifest getManifest(const std::string& objectName) const override;
+  /** Internal read integration: pin current parsed metadata without copying its index. */
+  std::shared_ptr<const RepoObjectManifest>
+  getManifestSnapshot(const std::string& objectName) const;
+  bool supportsConcurrentCommittedReads() const noexcept override { return true; }
   RepoObjectMetadataProbe
   probeObjectMetadata(const std::string& objectName) const override;
+  /** Pin current parsed metadata while measuring the authoritative physical files. */
+  RepoObjectMetadataSnapshot
+  probeObjectMetadataSnapshot(const std::string& objectName) const;
   std::optional<RepoObjectManifest>
   findRetainedDataReceipt(const std::string& dataName,
                           const std::string& wireSha256) const override;
@@ -96,10 +108,8 @@ private:
   struct CachedManifest
   {
     std::string encoded;
-    RepoObjectManifest parsed;
-    std::uint64_t fileSize = 0;
-    std::int64_t mtimeNanoseconds = 0;
-    std::uint64_t inode = 0;
+    std::shared_ptr<const RepoObjectManifest> parsed;
+    std::array<uint64_t, 7> identity{};
   };
 
   ArtifactReference artifactReference(const RepoObjectManifest& manifest) const;
@@ -107,18 +117,22 @@ private:
   std::filesystem::path receiptDirectory(const std::string& dataName,
                                          const std::string& wireSha256) const;
   RepoObjectManifest readManifest(const std::string& objectName) const;
-  RepoObjectManifest readManifestUnlocked(const std::string& objectName) const;
-  /** Return the cached parse when the file identity (inode, size, mtime) is unchanged.
-   * Listing every manifest must not re-read unchanged files on each status query. */
-  std::optional<RepoObjectManifest>
+  std::shared_ptr<const RepoObjectManifest>
+  readManifestUnlocked(const std::string& objectName) const;
+  std::shared_ptr<const RepoObjectManifest>
+  loadManifestUnlocked(const std::filesystem::path& path) const;
+  /** Pin an immutable parse while the complete current filesystem identity matches. */
+  std::shared_ptr<const RepoObjectManifest>
   cachedManifestUnlocked(const std::filesystem::path& path) const;
-  RepoObjectManifest parseManifestCachedUnlocked(const std::string& key, std::string encoded,
-                                                 const std::filesystem::path* source = nullptr) const;
+  std::shared_ptr<const RepoObjectManifest>
+  parseManifestCachedUnlocked(const std::string& key, std::string encoded,
+                              const std::filesystem::path* source = nullptr) const;
   void writeManifest(const RepoObjectManifest& manifest) const;
   bool isDigestReferencedUnlocked(const std::string& digest,
                                   const std::string& exceptObjectName) const;
   static bool isMetadataOnly(const RepoObjectManifest& manifest) noexcept;
-  void reserveDiskUnlocked(const RepoObjectManifest& manifest);
+  /** Reserve an already generation-normalized manifest with its exact canonical identity. */
+  void reserveDiskUnlocked(const RepoObjectManifest& manifest, const std::string& identity);
   void releaseReservationUnlocked(const std::string& objectName);
   bool canRemoveUserStorageObjectUnlocked(const RepoUserStorageObject& expected) const;
   bool abortUserStorageRangesIfOwnedUnlocked(const RepoObjectManifest& expected);
@@ -137,8 +151,9 @@ private:
   mutable std::unordered_map<std::string, Reservation> m_reservations;
   mutable uint64_t m_reservedBytes = 0;
   mutable std::atomic<uint64_t> m_fullCopyFallbacks{0};
-  // Cache parsing only; every metadata lookup still reads current sidecar bytes.
+  // Reuse only while the complete current filesystem identity remains unchanged.
   mutable std::unordered_map<std::string, CachedManifest> m_catalogParseCache;
+  mutable std::mutex m_catalogParseMutex;
   mutable size_t m_catalogEncodedBytes = 0;
 };
 

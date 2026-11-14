@@ -3701,6 +3701,13 @@ serve an external native client without putting Repo identity under Requester pr
 Keep the exact persistent Node spelling unchanged between jobs; it is separate from the actual
 Repo Provider's Producer identity.
 
+Managed Requester, Repo, Provider and ArtifactAuthority actors may set
+`parameters: {"core-svs-periodic-sync-ms": 1000}`. The integer range is 1..3600000 ms;
+the launcher passes it to the existing native `NDNSF_SVS_PERIODIC_SYNC_MS` option before
+SVSPubSub construction. Omission keeps the native default. Choose the periodic announcement
+interval together with the RPC ACK window so a missed announcement can be advertised again
+while that window remains open. Controller and external actors do not accept this parameter.
+
 An exact-model request sets one candidate with `exact_semantics=True`; an
 alternative-model request supplies an operator-authorized bounded candidate
 set to `ModelVariantPolicy`. Applications construct one process-local

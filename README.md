@@ -63,7 +63,7 @@ service also needs application-specific configuration:
 
 ```bash
 sudo -v
-./install_ndnsf_stack.sh --python /usr/bin/python3 --jobs 2
+./install_ndnsf_stack.sh --python /usr/bin/python3 --jobs 6
 nfd-start
 nfdc status
 ```
@@ -105,7 +105,7 @@ Additional optional package groups can be enabled when needed:
 the package manager. Use `--no-system-packages` to skip apt entirely. The default
 packages include Protobuf and gtkmm, which the current Waf configuration
 requires even when optional NFD/NLSR package installation is not requested.
-`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to two.
+`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to six.
 
 By default, dependency source trees are reused or cloned under `dependencies/` next to `install_ndnsf_stack.sh`. The directory is created automatically if it does not
 exist. Use `--deps-dir` to choose a different source directory:
@@ -196,6 +196,16 @@ related tool earlier in `PATH` from being combined with system GTK/UAV
 libraries. For an intentional alternate toolchain, set `CXX` explicitly and
 pass its common root with `--toolchain-root`; do not mix roots.
 
+The host C++ toolchain on the current development machine is GCC 10:
+`/usr/bin/gcc-10` and `/usr/bin/g++-10`. `install_ndnsf_stack.sh` pins that pair
+for the Waf graph and for the CMake-built NAC-ABE dependency, so do not bypass
+it with the Ubuntu 20.04 default GCC 9.4. GCC 9.4 raises non-deterministic
+internal compiler errors on this tree (`ggc_set_mark, at ggc-page.c:1547` and
+`instantiate_decl, at cp/pt.c:24765`) on large translation units and even on
+small ndn-cxx/Boost probes, at one job as well as at six. Moving to another
+compiler changes artifact identity, so re-baseline any measurement that is
+compared across the switch.
+
 All NDNSF C++ libraries, Repo/DI subprojects, examples and native tests are
 configured and built through the repository-root `waf`/`wscript` graph, as in
 the NDN-CXX projects. NAC-ABE and the other external dependencies remain
@@ -208,8 +218,11 @@ installed same-SONAME libraries; `readelf -d`/`ldd` must confirm that the tested
 binary loads the just-built NDNSF targets. Installed bindings and production
 runtime candidates use the separately declared global/container runtime paths.
 
-On the current development host (6 logical CPUs, 12 GB RAM), use
-`./waf build -j4` for routine native builds. Keep one build process per Waf tree and do not
+On the current development host (6 vCPUs, 9.7 GB RAM) use `./waf build -j4` for
+routine native builds: six jobs push this tree into swap (measured 7.0 GB across
+six `cc1plus`, 199 MB free, 4.3 GB swap), while four jobs stay at about 4.4 GB
+and 1.7 GB swap. The general six-job default applies only to trees whose
+individual units fit; see `docs/native-build-parallelism.md`. Keep one build process per Waf tree and do not
 stack independent native builds. Observe available memory and `vmstat 1`; if
 sustained swap-in/out or desktop stalls appear, let the current invocation
 finish or stop safely and use `-j2` for the next invocation. This is a host
@@ -1189,7 +1202,8 @@ non-hierarchical name exception to its configured group and still verifies the
 Data signature; it does not relax validation for other names. The example trust
 schema includes the corresponding `/example/.../group/...` rule.
 
-Verified software stack for the 100 RPS latency-floor run:
+Verified software stack for the historical 100 RPS latency-floor run (recorded
+before the host moved to GCC 10; see the toolchain note in section 2):
 
 ```text
 OS: Ubuntu 20.04.3 LTS

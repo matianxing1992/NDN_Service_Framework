@@ -525,7 +525,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   std::size_t packets = 0;
   std::map<ndn::Name, ndn::Buffer> uniquePackets;
   std::size_t largestPacket = 0;
-  auto observe = producerFace.onSendData.connect([&] (const ndn::Data& data) {
+  ndn::signal::ScopedConnection observe = producerFace.onSendData.connect([&] (const ndn::Data& data) {
     bool tensorPacket = false;
     {
       std::lock_guard<std::mutex> lock(manifestNameMutex);
@@ -1112,6 +1112,18 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         auto stopped = consumerIo.prefetchInputWithFirstReadBarrier("session-v3", edge);
         BOOST_CHECK_THROW(stopped.result.get(), std::runtime_error);
         BOOST_CHECK_THROW(stopped.firstReadStarted.get(), std::runtime_error);
+        // Worker drain precedes Face-dispatched cancellation, whose handle
+        // posts PIT removal. Observe both executor turns before injecting Data.
+        const auto executor = consumerFace.getIoContext().get_executor();
+        auto fence = std::make_shared<std::promise<void>>();
+        auto ready = fence->get_future();
+        boost::asio::post(executor, [executor, fence] {
+          boost::asio::post(executor, [fence] { fence->set_value(); });
+        });
+        environment.pumpUntil([&] {
+          return ready.wait_for(0ms) == std::future_status::ready;
+        });
+        BOOST_REQUIRE(ready.wait_for(0ms) == std::future_status::ready);
         probeCancelledSourcePending(consumerFace, environment.keyChain(),
                                     producer.getName(), issuedSourceInterests);
       }

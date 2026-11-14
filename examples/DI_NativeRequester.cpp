@@ -13,7 +13,8 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-owned-initializer-file.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
-#include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
+#include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-types.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
 
@@ -594,7 +595,7 @@ public:
     : m_root(std::move(root)), m_base(std::move(base)), m_producer(std::move(producer)),
       m_preparedOwner(std::move(preparedOwner)),
       m_protectedIndex(std::move(preparedIndexRoot), m_producer),
-      m_api(ndnsf_distributed_repo::ArtifactRepositoryApi::makeInApp(
+      m_api(ndnsf_distributed_repo::RepoClient::makeInApp(
         {m_root, m_producer.toUri(ndn::name::UriFormat::CANONICAL)}))
   {
     if (m_producer.empty())
@@ -623,7 +624,7 @@ public:
           size == 0 || size > request.maxSourceBytes)
         throw RepositorySourceError(RepositorySourceError::Kind::Unavailable,
                                     "native Repo source identity or size is invalid");
-      ndnsf_distributed_repo::ArtifactReference reference;
+      ndnsf_distributed_repo::FileReference reference;
       const auto modelName = catalog.at("model").at("model_name").get<std::string>();
       const auto modelDigest = source.at("model_manifest_digest").get<std::string>();
       if (modelDigest.size() != 71 || modelDigest.rfind("sha256:", 0) != 0)
@@ -646,10 +647,21 @@ public:
       ndn_service_framework::checkNamingNameSize(name);
       reference.formatVersion = "raw-file-v1";
       reference.policyEpoch = "plaintext-v1";
-      const auto existing = m_api.lookupLocalCommitUntil(reference, request.deadline);
-      if (!existing) {
-        const auto published = m_api.publishFileUntil(path.string(), reference, request.deadline);
-        if (!published.handle || !published.receipt)
+      ndnsf_distributed_repo::RepoOperationOptions options;
+      options.deadline = request.deadline;
+      ndnsf_distributed_repo::RepoHandle handle;
+      handle.reference = reference;
+      ndnsf_distributed_repo::RepoInspectionRequest inspection;
+      inspection.kind = ndnsf_distributed_repo::RepoInspectionRequest::Kind::OBJECT;
+      inspection.object = handle;
+      const auto existing = m_api.inspect(inspection, options);
+      if (existing.availability != ndnsf_distributed_repo::RepoInspection::Availability::AVAILABLE) {
+        ndnsf_distributed_repo::RepoFilePublication publication;
+        publication.sourcePath = path.string();
+        publication.reference = reference;
+        const auto published = m_api.publishFile(publication, options);
+        if (published.state != ndnsf_distributed_repo::RepoPublishState::COMMITTED ||
+            !published.committedHandle)
           throw std::runtime_error("native Repo source publication has no receipt");
       }
       checkDeadline();
@@ -673,13 +685,19 @@ public:
       if (closeStatus != 0)
         throw std::runtime_error("native Repo source materialization reservation could not close");
       const std::filesystem::path output(outputPattern.data());
-      m_api.fetchFileUntil(reference, output.string(), request.deadline);
+      ndnsf_distributed_repo::RepoFileFetch fetch;
+      fetch.reference = reference;
+      fetch.targetPath = output.string();
+      m_api.fetchFile(fetch, options);
       checkDeadline();
       auto value = consume(output, size, digest);
       checkDeadline();
       if (diagnosticOutputEnabled())
         std::cout << "NATIVE_REPO_SOURCE_API label=" << label << " bytes=" << size
-                  << " deduplicated=" << existing.has_value() << std::endl;
+                  << " deduplicated="
+                  << (existing.availability ==
+                      ndnsf_distributed_repo::RepoInspection::Availability::AVAILABLE)
+                  << std::endl;
       return value;
     };
     NativeCanonicalSource result;
@@ -725,7 +743,7 @@ private:
   ndn::Name m_producer;
   std::shared_ptr<ndnsf_distributed_repo::RepoSourceProvider> m_preparedOwner;
   ProtectedPreparationIndex m_protectedIndex;
-  mutable ndnsf_distributed_repo::ArtifactRepositoryApi m_api;
+  mutable ndnsf_distributed_repo::RepoClient m_api;
 };
 
 int

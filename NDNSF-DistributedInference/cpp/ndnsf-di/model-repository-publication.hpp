@@ -23,6 +23,7 @@ nativeValidateModelRepositoryTarget(const ndnsf_distributed_repo::RepoArtifactTa
 /** Bind bounded original-packet transport to an owned User and its running Face.
  * Read-only by default. Publication explicitly enables the existing storage-grant/INSERT path.
  * The caller must keep the User's I/O loop running until outstanding callbacks drain.
+ * requireCurrent must support concurrent invocation when publication is enabled.
  */
 NativeStoredModelPacketIo
 nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser> user,
@@ -32,8 +33,8 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
   std::function<std::shared_ptr<void>()> acquireOperationLifetime = {});
 
 /** Original-packet storage receipt, not permission to consume a model.
- * A successful return confirms independent Repo commit and original-wire
- * readback. Key custody and consumer authorization are separate operations.
+ * A successful return confirms durable independent Repo commit and its exact
+ * manifest. Key custody and consumer authorization are separate operations.
  */
 struct NativeModelRepositoryReceipt
 {

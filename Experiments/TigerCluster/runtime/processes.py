@@ -148,9 +148,14 @@ def process_identity(pid):
                   'start_ticks': int(fields[19]), 'state': fields[0]}
         if fields[0] == 'Z':
             return dict(result, exe='', bindings={})
-        values = dict(pair.split(b'=', 1) for pair in (root / 'environ').read_bytes().split(b'\0')
-                      if b'=' in pair)
-        exe = os.readlink(root / 'exe')
+        try:
+            values = dict(pair.split(b'=', 1) for pair in
+                          (root / 'environ').read_bytes().split(b'\0') if b'=' in pair)
+            exe = os.readlink(root / 'exe')
+        except FileNotFoundError:
+            # The process exited between reading `stat` and its detail files; a
+            # sampler must observe that as absent, not as a failed operation.
+            return None
         if exe.endswith(' (deleted)'):
             exe = exe[:-10]
         return dict(result, exe=exe,

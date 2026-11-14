@@ -17,6 +17,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 #include <system_error>
 #include <utility>
 #include <sys/stat.h>
@@ -441,18 +442,35 @@ removeIfExists(const std::string& path)
 class Statement
 {
 public:
-  Statement(sqlite3* database, const char* sql)
+  using Handle = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+
+  Statement(sqlite3* database, const char* sql, Handle* retained = nullptr)
+    : m_retained(retained != nullptr)
   {
-    if (sqlite3_prepare_v2(database, sql, -1, &m_value, nullptr) != SQLITE_OK) {
+    if (retained) m_value = retained->get();
+    if (m_value == nullptr &&
+        sqlite3_prepare_v2(database, sql, -1, &m_value, nullptr) != SQLITE_OK) {
       throw std::runtime_error(
         std::string("repo-metadata-sql-failed: prepare: ") +
         sqlite3_errmsg(database));
     }
+    if (retained && !*retained) retained->reset(m_value);
   }
+
+  Statement(const Statement&) = delete;
+  Statement& operator=(const Statement&) = delete;
 
   ~Statement()
   {
-    sqlite3_finalize(m_value);
+    if (m_retained) {
+      // Release the read snapshot and all bound values on success or exception.
+      // The connection owns the prepared handle until its own destruction.
+      sqlite3_reset(m_value);
+      sqlite3_clear_bindings(m_value);
+    }
+    else {
+      sqlite3_finalize(m_value);
+    }
   }
 
   sqlite3_stmt* get() const
@@ -462,6 +480,7 @@ public:
 
 private:
   sqlite3_stmt* m_value = nullptr;
+  bool m_retained = false;
 };
 
 void
@@ -675,24 +694,50 @@ FilesystemArtifactPayloadStore::readRange(const ArtifactReference& artifact,
                                           uint64_t generation,
                                           ArtifactByteRange range) const
 {
-  std::lock_guard<std::mutex> guard(m_mutex);
+  return readRangeImpl(artifact, generation, range, false);
+}
+
+std::vector<uint8_t>
+FilesystemArtifactPayloadStore::readCommittedRange(const ArtifactReference& artifact,
+  uint64_t generation, ArtifactByteRange range) const
+{
+  return readRangeImpl(artifact, generation, range, true);
+}
+
+std::vector<uint8_t>
+FilesystemArtifactPayloadStore::readRangeImpl(const ArtifactReference& artifact,
+  uint64_t generation, ArtifactByteRange range, bool committedOnly) const
+{
+  // Staging remains mutable. Committed content is read through its own descriptor.
+  std::unique_lock<std::mutex> guard(m_mutex, std::defer_lock);
+  if (!committedOnly)
+    guard.lock();
   artifact.validate();
   validateRange(artifact, range, 0, false, m_maxRangeBytes);
   const auto committed = committedPath(artifact);
-  std::error_code committedError;
-  const auto committedStatus = fs::symlink_status(committed, committedError);
-  if (committedError && committedError != std::errc::no_such_file_or_directory) {
-    throw std::runtime_error("repo-artifact-committed-stat-failed: " +
-                             committedError.message());
-  }
-  if (fs::is_symlink(committedStatus)) {
-    throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
-                             committed);
-  }
-  const auto path = fs::exists(committedStatus) ? committed : stagingPath(artifact, generation);
-  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  // One open decides what the stat pair used to: O_NOFOLLOW rejects a symlink,
+  // ENOENT means the committed payload is absent, and a successful open proves
+  // the descriptor itself is the checked inode. The read path runs once per
+  // original packet, so this removes two metadata syscalls from every packet.
+  std::string path = committed;
+  int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) {
-    throwSystem("repo-artifact-read-failed", "open", path);
+    const int openError = errno;
+    if (openError == ELOOP) {
+      throw std::runtime_error("repo-artifact-committed-symlink-forbidden: " +
+                               committed);
+    }
+    if (committedOnly) {
+      if (openError == ENOENT)
+        throw std::runtime_error("repo-artifact-committed-payload-unavailable");
+      errno = openError;
+      throwSystem("repo-artifact-committed-stat-failed", "open", committed);
+    }
+    path = stagingPath(artifact, generation);
+    fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) {
+      throwSystem("repo-artifact-read-failed", "open", path);
+    }
   }
   std::vector<uint8_t> bytes(static_cast<size_t>(range.lengthBytes));
   try {
@@ -843,7 +888,6 @@ bool
 FilesystemArtifactPayloadStore::isCommitted(const ArtifactReference& artifact,
                                             uint64_t generation) const
 {
-  std::lock_guard<std::mutex> guard(m_mutex);
   validateGeneration(generation);
   const auto committed = committedPath(artifact);
   std::error_code statusError;
@@ -863,7 +907,6 @@ CommittedPayloadMetadata
 FilesystemArtifactPayloadStore::inspectCommitted(
   const ArtifactReference& artifact) const
 {
-  std::lock_guard<std::mutex> guard(m_mutex);
   const auto committed = committedPath(artifact);
   std::error_code error;
   const auto status = fs::symlink_status(committed, error);
@@ -1959,6 +2002,12 @@ struct SqliteArtifactMetadataStore::Impl
   std::unique_ptr<sqlite3, decltype(&sqlite3_close)> databaseOwner{nullptr, sqlite3_close};
   sqlite3* database = nullptr;
   mutable std::mutex mutex;
+  // Bounded read handles, used only while mutex is held. Declaration after
+  // databaseOwner ensures finalization before the connection closes.
+  Statement::Handle userStorageGrantLookup{nullptr, sqlite3_finalize};
+  Statement::Handle userStorageFenceLookup{nullptr, sqlite3_finalize};
+  Statement::Handle userStorageLiveClaimsLookup{nullptr, sqlite3_finalize};
+  Statement::Handle userStorageLiveClaimExistsLookup{nullptr, sqlite3_finalize};
   ArtifactBackendMigrationDiagnostics migration;
   bool catalogAvailable = false;
   bool userStorageCatalogAvailable = false;
@@ -3223,6 +3272,16 @@ requireUserStorageProfile(bool available, bool writing, bool writesEnabled)
 void
 validateUserStorageName(const std::string& value)
 {
+  // The check is a pure predicate over the string - a normalized alternate name
+  // is always a normalized alternate name - so a bounded memo removes the
+  // parse-and-reemit cost that the read path paid once per visibility probe.
+  static std::mutex memoMutex;
+  static std::unordered_set<std::string> memo;
+  {
+    std::lock_guard<std::mutex> lock(memoMutex);
+    if (memo.count(value) != 0)
+      return;
+  }
   try {
     if (value.empty() || value.size() > 4096 || value.front() != '/')
       throw std::invalid_argument("name");
@@ -3232,6 +3291,12 @@ validateUserStorageName(const std::string& value)
   }
   catch (const std::exception&) {
     throw std::invalid_argument("repo-user-storage-invalid: normalized alternate name required");
+  }
+  {
+    std::lock_guard<std::mutex> lock(memoMutex);
+    if (memo.size() >= 256)
+      memo.clear();
+    memo.insert(value);
   }
 }
 
@@ -3336,11 +3401,12 @@ userStorageGrantFromColumns(sqlite3_stmt* s, int index = 0)
 
 std::optional<RepoUserStorageGrant>
 loadUserStorageGrant(sqlite3* db, const std::string& node,
-                     const std::string& owner, const std::string& grantId)
+                     const std::string& owner, const std::string& grantId,
+                     Statement::Handle* retained = nullptr)
 {
   Statement s(db, "SELECT grant_id,repo_node,owner_identity,writer_identity,object_name,"
     "owner_epoch,expires_at_ms,created_at_ms FROM repo_user_storage_grants "
-    "WHERE repo_node=? AND owner_identity=? AND grant_id=?");
+    "WHERE repo_node=? AND owner_identity=? AND grant_id=?", retained);
   bindUserStorageAccount(db, s.get(), node, owner);
   bindText(db, s.get(), 3, grantId);
   if (!userStorageRow(db, s.get()))
@@ -3375,13 +3441,13 @@ userStorageClaimFromColumns(sqlite3_stmt* s)
 std::optional<RepoUserStorageClaim>
 loadUserStorageClaim(sqlite3* db, const std::string& node,
                      const std::string& owner, const std::string& objectName,
-                     uint64_t epoch = 0)
+                     uint64_t epoch = 0, Statement::Handle* retained = nullptr)
 {
   const auto sql = std::string("SELECT ") + USER_STORAGE_CLAIM_COLUMNS +
     " FROM repo_user_storage_claims WHERE repo_node=? AND owner_identity=? "
     "AND object_name=?" + (epoch ? " AND owner_epoch=?" : "") +
     " ORDER BY owner_epoch DESC LIMIT 1";
-  Statement s(db, sql.c_str());
+  Statement s(db, sql.c_str(), retained);
   bindUserStorageAccount(db, s.get(), node, owner);
   bindText(db, s.get(), 3, objectName);
   if (epoch) bindUserStorageInteger(db, s.get(), 4, epoch);
@@ -3485,9 +3551,11 @@ readUserStorageReconciliation(sqlite3* db, const std::string& node)
 }
 
 void
-rejectUserStorageFence(sqlite3* db, const RepoUserStorageGrant& grant)
+rejectUserStorageFence(sqlite3* db, const RepoUserStorageGrant& grant,
+                       Statement::Handle* retained = nullptr)
 {
-  const auto latest = loadUserStorageClaim(db, grant.repoNode, grant.ownerIdentity, grant.objectName);
+  const auto latest = loadUserStorageClaim(db, grant.repoNode, grant.ownerIdentity,
+                                          grant.objectName, 0, retained);
   if (latest && (latest->state == RepoUserStorageClaimState::CLEANUP_PREPARED ||
       latest->ownerEpoch > grant.ownerEpoch ||
       (latest->ownerEpoch == grant.ownerEpoch && latest->state == RepoUserStorageClaimState::DELETED)))
@@ -3556,11 +3624,12 @@ SqliteArtifactMetadataStore::validateUserStorageGrant(
   checkedUserStorageInteger(ownerEpoch, true); checkedUserStorageInteger(nowMs, true);
   std::lock_guard<std::mutex> guard(m_impl->mutex);
   requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false, m_impl->migration.writesEnabled);
-  const auto grant = loadUserStorageGrant(m_impl->database, node, owner, grantId);
+  const auto grant = loadUserStorageGrant(m_impl->database, node, owner, grantId,
+                                         &m_impl->userStorageGrantLookup);
   if (!grant || grant->writerIdentity != writer || grant->objectName != objectName ||
       grant->ownerEpoch != ownerEpoch)
     throw std::runtime_error("repo-user-storage-unauthorized");
-  rejectUserStorageFence(m_impl->database, *grant);
+  rejectUserStorageFence(m_impl->database, *grant, &m_impl->userStorageFenceLookup);
   if (nowMs < grant->createdAtMs || nowMs >= grant->expiresAtMs)
     throw std::runtime_error("repo-user-storage-grant-expired");
   return *grant;
@@ -3971,6 +4040,29 @@ SqliteArtifactMetadataStore::confirmUserStorageCleanup(const std::string& node,
   return *claim;
 }
 
+bool
+SqliteArtifactMetadataStore::hasLiveCommittedClaimForObject(
+  const std::string& node, const std::string& objectName, const std::string& wireSha256,
+  uint64_t generation, uint64_t payloadWireBytes, uint64_t manifestBytes) const
+{
+  validateUserStorageName(node); validateUserStorageName(objectName);
+  std::lock_guard<std::mutex> guard(m_impl->mutex);
+  requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false,
+                            m_impl->migration.writesEnabled);
+  static const auto sql = std::string("SELECT 1 FROM repo_user_storage_claims"
+    " WHERE repo_node=? AND object_name=? AND state='Committed'"
+    " AND wire_sha256=? AND generation=? AND payload_wire_bytes=? AND manifest_bytes=?"
+    " LIMIT 1");
+  Statement row(m_impl->database, sql.c_str(), &m_impl->userStorageLiveClaimExistsLookup);
+  bindText(m_impl->database, row.get(), 1, node);
+  bindText(m_impl->database, row.get(), 2, objectName);
+  bindText(m_impl->database, row.get(), 3, wireSha256);
+  bindUserStorageInteger(m_impl->database, row.get(), 4, generation);
+  bindUserStorageInteger(m_impl->database, row.get(), 5, payloadWireBytes);
+  bindUserStorageInteger(m_impl->database, row.get(), 6, manifestBytes);
+  return sqlite3_step(row.get()) == SQLITE_ROW;
+}
+
 std::vector<RepoUserStorageClaim>
 SqliteArtifactMetadataStore::liveUserStorageClaimsForObject(
   const std::string& node, const std::string& objectName) const
@@ -3978,17 +4070,17 @@ SqliteArtifactMetadataStore::liveUserStorageClaimsForObject(
   validateUserStorageName(node); validateUserStorageName(objectName);
   std::lock_guard<std::mutex> guard(m_impl->mutex);
   requireUserStorageProfile(m_impl->userStorageCatalogAvailable, false, m_impl->migration.writesEnabled);
-  UserStorageTransaction transaction(m_impl->database, false);
-  const auto sql = std::string("SELECT ") + USER_STORAGE_CLAIM_COLUMNS +
+  static const auto sql = std::string("SELECT ") + USER_STORAGE_CLAIM_COLUMNS +
     " FROM repo_user_storage_claims WHERE repo_node=? AND object_name=? AND state<>'Deleted'"
     " ORDER BY owner_identity,owner_epoch";
-  Statement rows(m_impl->database, sql.c_str());
+  // One SELECT owns its read snapshot until reset. Re-execute on every call;
+  // retaining the prepared statement must never retain an admission result.
+  Statement rows(m_impl->database, sql.c_str(), &m_impl->userStorageLiveClaimsLookup);
   bindText(m_impl->database, rows.get(), 1, node);
   bindText(m_impl->database, rows.get(), 2, objectName);
   std::vector<RepoUserStorageClaim> result;
   while (userStorageRow(m_impl->database, rows.get()))
     result.push_back(userStorageClaimFromColumns(rows.get()));
-  transaction.commit();
   return result;
 }
 

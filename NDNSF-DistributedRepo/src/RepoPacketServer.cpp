@@ -61,11 +61,19 @@ RepoPacketServer::servePrefix(const ndn::Name& prefix,
         state->face.put(data);
         return true;
       };
+      // Serve straight from the lookup that produces the wire. The previous
+      // `hasDataPacket` probe resolved the same packet a second time before
+      // every send, doubling the per-packet index work on the hot path.
+      bool served = false;
       try {
-        if (state->store->hasDataPacket(name.toUri(ndn::name::UriFormat::CANONICAL))) {
-          sendOriginal(name);
-          return;
-        }
+        served = sendOriginal(name);
+      }
+      catch (const std::exception&) {
+        served = false;
+      }
+      if (served)
+        return;
+      try {
         if (!interest.getCanBePrefix())
           return;
         for (const auto& record : state->store->list()) {

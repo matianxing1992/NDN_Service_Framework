@@ -201,7 +201,9 @@ def build(bld):
                             bld.path.find_node('unit-tests/stored-model-capability.t.cpp'),
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.cpp'),
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.cpp')],
-                    includes=['..'], use='NDN_CXX BOOST OPENSSL DL',
+                    includes=['..', '../NDNSF-DistributedRepo/include',
+                              '../ndn-service-framework'],
+                    use='ndnsf-distributed-repo NDN_CXX BOOST OPENSSL DL',
                     cxxflags=flags, linkflags=links, install_path=None)
     # Revalidate the restored Controller baseline without linking the inference backend.
     bld.program(target='../spec222-controller-baseline', name='spec222-controller-baseline',
@@ -855,6 +857,19 @@ def build(bld):
     # Spec192 T001 native In-App API and durable local catalog selector.  It
     # links the production Repo library and keeps broad regression suites out
     # of this focused lifecycle gate.
+    # Spec240 T001 focused facade selector: file publish/fetch, inspection and
+    # the honest UNSUPPORTED paths, against the production Repo library.
+    bld.program(target='../spec240-repo-client-api',
+                name='spec240-repo-client-api',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/repo-client-api.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
+                    'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
+                linkflags=['-Wl,--no-relax'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     bld.program(target='../spec192-repo-inapp-api',
                 name='spec192-repo-inapp-api',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
@@ -873,6 +888,7 @@ def build(bld):
                 name='spec192-repo-persistent-service',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-persistent-service.t.cpp'),
+                        bld.path.find_node('unit-tests/spec229-repo-ack-window.t.cpp'),
                         bld.path.find_node('unit-tests/face-data-reference-fetcher.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-artifact-receipt.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-filesystem-artifact-store.t.cpp')],
@@ -884,15 +900,29 @@ def build(bld):
 
     # Spec192 T003/T004 drives the public Persistent API through authenticated
     # in-process ServiceUser/Provider transport and independent disk/SQLite oracles.
-    bld.program(target='../spec192-repo-persistent-api',
-                name='spec192-repo-persistent-api',
+    for suffix in ('', '-asan', '-tsan'):
+        flags = ['-fPIC', '-O0', '-g0', '-fno-inline']
+        links = ['-Wl,--no-relax']
+        if suffix == '-asan':
+            flags += ['-g1', '-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+            links += ['-fsanitize=address,undefined']
+        elif suffix == '-tsan':
+            flags += ['-g1', '-fno-omit-frame-pointer', '-fsanitize=thread']
+            links += ['-fsanitize=thread']
+        bld.program(target='../spec192-repo-persistent-api' + suffix,
+                name='spec192-repo-persistent-api' + suffix,
+                # T011: the REPO-side registration referenced
+                # integration-tests/controller-bootstrap-lifetime.t.cpp, which
+                # exists in no branch of this repository. Keep the target and
+                # its real sources; the dangling reference would make
+                # configure fail before any target builds.
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/spec192-persistent-artifact-api.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX ONNXRUNTIME NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
+                cxxflags=flags,
+                linkflags=links,
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec192 T007 offline legacy import: the unit target validates source
@@ -2013,7 +2043,8 @@ def build(bld):
 
     # Faults are scoped to a test-owned destination and never enter production targets.
     for name in ('unit-tests', 'spec202-repo-conformance', 'spec192-repo-inapp-api',
-                 'spec192-repo-persistent-api', 'spec192-repo-legacy-import-unit'):
+                 'spec192-repo-persistent-api', 'spec192-repo-persistent-api-asan',
+                 'spec192-repo-legacy-import-unit'):
         bld.get_tgen_by_name(name).linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',
             '-Wl,--wrap=flock']

@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/portable-kv-checkpoint.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <ndn-cxx/util/scope.hpp>
@@ -128,7 +129,7 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
     limits.maxPacketCount = 65536;
     limits.maxPacketWireBytes = 256ULL * 1024 * 1024;
     const auto root = restore.saved.rootName.toUri(ndn::name::UriFormat::ALTERNATE);
-    const auto manifestBytes = repo::RepoClient::requestSelectedService(*policy.storageWriter,
+    const auto manifestBytes = repo::RepoClientCompat::requestSelectedService(*policy.storageWriter,
       ndn::Name(policy.repoProvider), repo::makeRepoServiceName(ndn::Name(policy.repoServicePrefix),
         "MANIFEST"), std::vector<std::uint8_t>(root.begin(), root.end()),
       limits.ackCollectionTimeMs, remaining());
@@ -154,8 +155,36 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
       return writer->validateProducerPacketWireUntil(ndn::Buffer(wire.begin(), wire.end()),
         producer, deadline);
     };
-    const auto packets = repo::RepoClient::fetchOriginalDataPacketSet(*policy.storageWriter,
-      reference, verifier, remaining(), limits, current);
+    auto restoreConfig = repo::PersistentRepoClientConfig{};
+    restoreConfig.servicePrefix = ndn::Name(policy.repoServicePrefix);
+    restoreConfig.providerScope = {ndn::Name(policy.repoProvider)};
+    restoreConfig.dataOnly = true;
+    auto restoreClient = repo::RepoClient::makePersistent(policy.storageWriter,
+                                                          std::move(restoreConfig));
+    repo::RepoDataFetch restoreRequest;
+    repo::RepoManifestBoundFetch bound;
+    bound.manifest = std::make_shared<const repo::RepoObjectManifest>(manifest);
+    bound.objectName = reference.objectName;
+    bound.dataPrefix = reference.dataPrefix;
+    bound.expectedSha256 = reference.expectedSha256;
+    bound.expectedWireBytes = reference.expectedSize;
+    bound.producerIdentity = reference.forwardingHint;
+    bound.maxPacketCount = limits.maxPacketCount;
+    bound.maxPacketWireBytes = limits.maxPacketWireBytes;
+    bound.maxManifestWireBytes = limits.maxManifestWireBytes;
+    bound.ackCollectionTimeMs = limits.ackCollectionTimeMs;
+    restoreRequest.manifestBound = std::move(bound);
+    restoreRequest.target = {"", policy.repoProvider, policy.repoServicePrefix};
+    restoreRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
+      [verifier](const std::vector<std::uint8_t>& wire) {
+        const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size()))};
+        return verifier(packet);
+      });
+    repo::RepoOperationOptions restoreOptions;
+    restoreOptions.deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(std::max(1, remaining()));
+    restoreOptions.requireCurrent = [current] { current(); };
+    const auto packets = restoreClient.fetchData(restoreRequest, restoreOptions).packets;
     std::vector<ndn::Buffer> wires;
     for (const auto& wire : packets) wires.emplace_back(wire.begin(), wire.end());
     NativeProtectedKvPacketLimits packetLimits;

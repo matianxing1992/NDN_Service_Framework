@@ -1,0 +1,15 @@
+Waf: Entering directory `/home/tianxing/NDN/ndn-service-framework/build-spec229'
+[ 45/183] Compiling NDNSF-DistributedRepo/src/RepoNode.cpp
+[ 93/183] Compiling NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.cpp
+[173/183] Linking build-spec229/NDNSF-DistributedRepo/libndnsf-distributed-repo.a
+[174/183] Linking build-spec229/libndnsf-distributed-inference.so
+[175/183] Linking build-spec229/spec192-repo-persistent-service
+[176/183] Linking build-spec229/NDNSF-DistributedRepo/DistributedRepoServer
+[177/183] Linking build-spec229/spec192-repo-persistent-api
+[178/183] Linking build-spec229/examples/DI_NativeRequester
+[179/183] Linking build-spec229/examples/ndnsf-repo-file-benchmark
+[180/183] Linking build-spec229/examples/DI_NativeArtifactAuthority
+[181/183] Linking build-spec229/examples/di-native-provider
+[182/183] Linking build-spec229/examples/spec190-multiturn-oracle
+Waf: Leaving directory `/home/tianxing/NDN/ndn-service-framework/build-spec229'
+'build' finished successfully (1m6.657s)

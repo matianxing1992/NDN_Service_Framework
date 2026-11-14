@@ -1,5 +1,7 @@
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
+
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
@@ -1357,7 +1359,7 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
     throw RepoRequestTimeoutError(
       "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
   }
-  return RepoClient::requestSelectedService(
+  return RepoClientCompat::requestSelectedService(
     serviceUser, target.providerIdentity, serviceName, requestBytes,
     config.ackCollectionTimeMs, timeoutMs);
 }
@@ -3139,6 +3141,8 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
     throw std::invalid_argument(
       "repo-request-timeout-invalid: publish wait budget cannot be negative");
   }
+  // timeoutMs is the whole operation's budget: the begin phase and the status wait spend
+  // from the same allowance instead of each taking a fresh one.
   const int waitBudget = timeoutMs == 0
     ? config.operationWaitTimeoutMs : timeoutMs;
   reference.validate(config.limits);
@@ -3174,17 +3178,19 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
     throw std::invalid_argument(
       "repo-request-timeout-invalid: synchronous begin budget exceeds supported range");
   }
-  const int beginTimeout = static_cast<int>(
-    static_cast<int64_t>(requestWindows) * requestWindowMs +
-    statusRecoveryReserveMs);
+  // The begin phase spends from the same allowance as the status wait, but it is not
+  // shrunk by the recovery reserve: a caller with a 3 s budget still gets a begin window
+  // bounded by 3 s, and the status wait then has whatever the begin left.
+  const int beginTimeout = static_cast<int>(std::min<int64_t>(
+    static_cast<int64_t>(requestWindows) * requestWindowMs + statusRecoveryReserveMs,
+    static_cast<int64_t>(waitBudget)));
   PublishOperationStatus status;
   const auto beginDeadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(beginTimeout);
   const auto handle = beginPublishFileImpl(
     sourcePath, reference, selected, makeFreshPublishIdempotencyKey(),
     beginDeadline, &status);
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(waitBudget);
+  const auto deadline = started + std::chrono::milliseconds(waitBudget);
   while (!isTerminalPublishStatus(status)) {
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
       deadline - std::chrono::steady_clock::now()).count();
@@ -3253,6 +3259,44 @@ ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
 {
   fetchFileUntil(reference, destinationPath,
                  std::chrono::steady_clock::time_point::max());
+}
+
+std::vector<uint8_t>
+ArtifactRepositoryApi::readCommittedFileRange(
+  const ArtifactReference& inputReference, uint64_t offsetBytes, uint64_t lengthBytes,
+  std::chrono::steady_clock::time_point deadline) const
+{
+  auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
+  if (!m_impl) {
+    throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
+  }
+  if (!m_impl->inApp) {
+    throw std::logic_error("repo-artifact-lifecycle-mismatch: readCommittedFileRange is In-App only");
+  }
+  auto operationGuard = lockOperationUntil(
+    m_impl->operationMutex, deadline, "In-App range read");
+  auto& owner = *m_impl->inApp;
+  reference.validate(owner.limits);
+  if (lengthBytes == 0)
+    throw std::invalid_argument("repo-artifact-range-invalid: length must be non-zero");
+  const auto localCommit = owner.metadataStore.lookupLocalCommit(reference);
+  if (!localCommit) {
+    throw std::runtime_error(
+      "repo-artifact-not-found: no durable local commit matches the full reference");
+  }
+  const auto payloadRef = payloadReference(reference);
+  if (!owner.payloadStore.isCommitted(payloadRef, LOCAL_GENERATION)) {
+    throw std::runtime_error(
+      "repo-artifact-payload-missing: committed local payload is unavailable");
+  }
+  if (deadline != std::chrono::steady_clock::time_point::max() &&
+      std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: fetch deadline expired before the range read");
+  }
+  return owner.payloadStore.readCommittedRange(
+    payloadRef, LOCAL_GENERATION, ArtifactByteRange{offsetBytes, lengthBytes});
 }
 
 void
@@ -3613,7 +3657,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
         (auto onTimeout, auto onResponse) {
           const auto requestTimeout = boundedRequestTimeoutMs(
             deadline, requestTimeoutMs);
-          return RepoClient::requestLocation(
+          return RepoClientCompat::requestLocation(
             *serviceUser, providerIdentity, servicePrefix,
             locationRequest, requestTimeout,
             std::move(onTimeout), std::move(onResponse));
@@ -3720,7 +3764,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
             (auto onTimeout, auto onResponse) {
               const auto requestTimeout = boundedRequestTimeoutMs(
                 deadline, requestTimeoutMs);
-              return RepoClient::requestFetchRange(
+              return RepoClientCompat::requestFetchRange(
                 *serviceUser, providerIdentity, servicePrefix,
                 artifactObjectName, RepoByteRange{offset, length}, requestTimeout,
                 std::move(onTimeout), std::move(onResponse));
@@ -3946,7 +3990,7 @@ ArtifactRepositoryApi::getReceipt(
      providerIdentity = seed->providerIdentity,
      servicePrefix = seed->servicePrefix, query, effectiveTimeout]
     (auto onTimeout, auto onResponse) {
-      return RepoClient::requestReceipt(*serviceUser,
+      return RepoClientCompat::requestReceipt(*serviceUser,
         providerIdentity, servicePrefix, query, effectiveTimeout,
         std::move(onTimeout), std::move(onResponse));
     }, receiptWaitDeadline);
@@ -4186,7 +4230,7 @@ ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
          servicePrefix = target.servicePrefix, locationRequest,
          locationTimeoutMs]
         (auto onTimeout, auto onResponse) {
-          return RepoClient::requestLocation(*serviceUser,
+          return RepoClientCompat::requestLocation(*serviceUser,
             providerIdentity, servicePrefix, locationRequest,
             locationTimeoutMs, std::move(onTimeout), std::move(onResponse));
         }, locationWaitDeadline);
@@ -4319,7 +4363,7 @@ ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
          servicePrefix = target.servicePrefix, probe,
          availabilityTimeoutMs]
         (auto onTimeout, auto onResponse) {
-          return RepoClient::requestAvailability(*serviceUser,
+          return RepoClientCompat::requestAvailability(*serviceUser,
             providerIdentity, servicePrefix, probe,
             availabilityTimeoutMs, std::move(onTimeout), std::move(onResponse));
         }, probeWaitDeadline);

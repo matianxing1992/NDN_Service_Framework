@@ -250,6 +250,18 @@ struct RepoObjectMetadataProbe
   uint64_t manifestWireBytes = 0;
 };
 
+/** Current physical measurements with pinned immutable metadata; no admission decision. */
+struct RepoObjectMetadataSnapshot
+{
+  std::shared_ptr<const RepoObjectManifest> manifest;
+  bool payloadMetadataAvailable = false;
+  bool payloadPresent = false;
+  bool payloadRepresentationValid = false;
+  uint64_t payloadSize = 0;
+  bool manifestMeasurementAvailable = false;
+  uint64_t manifestWireBytes = 0;
+};
+
 struct RepoWriteIntent
 {
   std::string operationId;
@@ -625,6 +637,9 @@ public:
 
   virtual RepoCacheStatus cacheStatus() const;
 
+  /** Committed reads and metadata probes do not require Core's write fence. */
+  virtual bool supportsConcurrentCommittedReads() const noexcept { return false; }
+
   // Large-object path.  Legacy vector backends keep the compatibility
   // defaults below; concrete file-backed authorities override these methods
   // so Core/Node/Client can transfer bounded ranges without full assembly.
@@ -636,6 +651,20 @@ public:
 
   virtual std::vector<uint8_t>
   getRange(const std::string& objectName, RepoByteRange range) const;
+
+  /** One bounded read context for a prepared batch of ranges of one object.
+   *  `read` serves exactly one range per call so the caller keeps its
+   *  cancellation and length checks between ranges; a cache may pin what it
+   *  needs when the context is created and re-validate at the batch boundary. */
+  class RangeReadBatch
+  {
+  public:
+    virtual ~RangeReadBatch() = default;
+    virtual std::vector<uint8_t> read(RepoByteRange range) = 0;
+  };
+
+  virtual std::shared_ptr<RangeReadBatch>
+  beginRangeBatch(const std::string& objectName) const;
 
   virtual RepoObjectManifest
   getManifest(const std::string& objectName) const;

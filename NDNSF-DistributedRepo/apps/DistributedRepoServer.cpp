@@ -111,9 +111,20 @@ main(int argc, char* argv[])
       config.databasePath.string() + ".artifact-v2.sqlite",
       ndnsf_distributed_repo::ArtifactLimits{},
       config.availabilityFreshnessMs);
-    repo->setDataReferenceSpoolFetcher(ndnsf_distributed_repo::detail::FaceDataReferenceFetcher(
-      face, std::chrono::milliseconds(config.requestTimeoutMs),
-      std::chrono::milliseconds(config.requestTimeoutMs)));
+    repo->setDataReferenceSpoolFetcher(
+      [&face, weakRepo = std::weak_ptr<ndnsf_distributed_repo::RepoNode>(repo),
+       timeout = std::chrono::milliseconds(config.requestTimeoutMs)](
+        const ndnsf_distributed_repo::RepoDataReference& reference) {
+        // The bounded Provider handler pool owns each independent fetch operation.
+        const auto requireCurrent = [weakRepo] {
+          const auto owner = weakRepo.lock();
+          if (!owner || owner->isStoppingOriginalPacketOperations()) {
+            throw std::runtime_error("repo-original-packet-insert-shutting-down");
+          }
+        };
+        ndnsf_distributed_repo::detail::FaceDataReferenceFetcher fetcher(face, timeout, timeout);
+        return fetcher(reference, requireCurrent);
+      });
     ndn_service_framework::ServiceProvider provider(
       face,
       config.groupPrefix,
@@ -163,7 +174,7 @@ main(int argc, char* argv[])
 
     std::cout << "Persistent Repo serving " << repo->servicePrefix()
               << " as " << config.repoNode << " using "
-              << repoStoreRoot << std::endl;
+              << repoStoreRoot << " handlers=" << provider.getHandlerThreads() << std::endl;
     if (std::getenv("NDNSF_DEPLOYMENT_BOOT_ID") != nullptr) {
       // The manager's fresh owned log binds this marker to its PID/launch.
       // Construction alone does not prove Controller permission or NAC readiness.
@@ -188,6 +199,7 @@ main(int argc, char* argv[])
     }
     if (!stopping)
       face.processEvents();
+    std::cout << "NDNSF_REPO_CACHE_STATUS " << repo->cacheStatus().toJson() << std::endl;
     return 0;
   }
   catch (const std::exception& error) {

@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
@@ -94,20 +95,20 @@ main()
   for (const auto& replica : replicas) {
     options.replicaNodes.push_back(replica.repoNode);
   }
-  const auto manifest = RepoClient::put(node,
+  const auto manifest = RepoStoreApi::put(node,
                                         "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
                                         "NDNSF-DI/ARTIFACT/demo/object",
                                         payload,
                                         options);
-  const auto fetched = RepoClient::get(node, manifest.objectName);
+  const auto fetched = RepoStoreApi::get(node, manifest.objectName);
   const auto manifestResponse = node.handleManifest(toBytes(manifest.objectName));
   const auto capabilityResponse = node.handleCapability();
-  const auto listed = RepoClient::list(node);
-  const auto catalogStatus = RepoClient::catalogStatus(node);
-  const auto catalogSnapshot = RepoClient::catalogSnapshot(node);
-  const auto catalogLookup = RepoClient::catalogLookup(node, manifest.objectName);
-  const bool removed = RepoClient::remove(node, manifest.objectName);
-  const auto catalogDeltaAfterDelete = RepoClient::catalogDelta(node,
+  const auto listed = RepoStoreApi::list(node);
+  const auto catalogStatus = RepoStoreApi::catalogStatus(node);
+  const auto catalogSnapshot = RepoStoreApi::catalogSnapshot(node);
+  const auto catalogLookup = RepoStoreApi::catalogLookup(node, manifest.objectName);
+  const bool removed = RepoStoreApi::remove(node, manifest.objectName);
+  const auto catalogDeltaAfterDelete = RepoStoreApi::catalogDelta(node,
                                                                 catalogStatus.catalogEpoch);
 
   if (fetched != payload) {
@@ -149,15 +150,15 @@ main()
   segmentedOptions.replicationFactor = 1;
   segmentedOptions.replicaNodes = {"/repo/A"};
   segmentedOptions.policyEpoch = "/Policy/demo/v1";
-  const auto segmentedManifest = RepoClient::putSegmented(
+  const auto segmentedManifest = RepoStoreApi::putSegmented(
     node,
     "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/large/direct-object",
     largePayload,
     segmentedOptions,
     8);
   if (segmentedManifest.segmentCount <= 1 ||
-      RepoClient::getSegmented(node, segmentedManifest) != largePayload ||
-      RepoClient::getObject(node, segmentedManifest) != largePayload ||
+      RepoStoreApi::getSegmented(node, segmentedManifest) != largePayload ||
+      RepoStoreApi::getObject(node, segmentedManifest) != largePayload ||
       node.getManifest(segmentedManifest.objectName).segmentCount !=
         segmentedManifest.segmentCount) {
     std::cerr << "direct segmented repo object mismatch\n";
@@ -172,7 +173,7 @@ main()
   insertPrefix.append(makeNamingDigestComponent(sha256Hex(largePayload))).append("REPRESENTATION")
     .append(makeNamingDigestComponent(computeNamingDigest("ndnsf-naming/representation",
       {{1, 5, std::vector<uint8_t>(representation.begin(), representation.end())}}))).append("DATA");
-  const auto insertPayloadStatus = RepoClient::insertPayload(
+  const auto insertPayloadStatus = RepoStoreApi::insertPayload(
     node,
     insertPrefix.toUri(ndn::name::UriFormat::CANONICAL),
     largePayload,
@@ -197,7 +198,7 @@ main()
     "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/no-fetcher";
   noFetcherReference.hasFinalSegment = true;
   noFetcherReference.finalSegment = 1;
-  const auto noFetcherStatus = RepoClient::insert(node, noFetcherReference);
+  const auto noFetcherStatus = RepoStoreApi::insert(node, noFetcherReference);
   if (noFetcherStatus.state != "FAILED" ||
       noFetcherStatus.message.find("SegmentFetcher") == std::string::npos) {
     std::cerr << "repo store-from-reference missing fetcher did not fail visibly\n";
@@ -229,8 +230,8 @@ main()
   reference.expectedSize = fakeConcatenated.size();
   reference.expectedSha256 = sha256Hex(fakeConcatenated);
   reference.objectType = "app-owned-segmented-data";
-  const auto referenceStatus = RepoClient::insert(node, reference);
-  const auto queriedReferenceStatus = RepoClient::status(node, referenceStatus.operationId);
+  const auto referenceStatus = RepoStoreApi::insert(node, reference);
+  const auto queriedReferenceStatus = RepoStoreApi::status(node, referenceStatus.operationId);
   const auto referenceManifest = node.getManifest(reference.objectName);
   if (referenceStatus.state != "DONE" ||
       queriedReferenceStatus.state != "DONE" ||

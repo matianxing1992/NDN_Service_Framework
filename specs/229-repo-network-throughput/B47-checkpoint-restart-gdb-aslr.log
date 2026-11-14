@@ -1,0 +1,10 @@
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+Running 1 test case...
+NDNSF_INTEGRATION_BOOTSTRAP_READY sha256:FFCB8D12F5604C0C9AF7C7037B284B77B94910EFBE0D41C096B9E0A1B9221D17
+
+Test module "ndn_rpc_framework" has passed with:
+  1 test case out of 1 passed
+  166 assertions out of 166 passed
+
+[Inferior 1 (process 2358676) exited normally]

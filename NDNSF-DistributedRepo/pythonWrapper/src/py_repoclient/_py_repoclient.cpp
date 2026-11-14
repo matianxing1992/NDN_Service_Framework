@@ -16,6 +16,7 @@ namespace py = pybind11;
 namespace repo = ndnsf_distributed_repo;
 
 void bindArtifactRepositoryApi(py::module_& m);
+void bindUnifiedRepoClient(py::module_& m);
 
 namespace {
 
@@ -1159,4 +1160,5 @@ PYBIND11_MODULE(_py_repoclient, m)
         py::arg("object_size"));
 
   bindArtifactRepositoryApi(m);
+  bindUnifiedRepoClient(m);
 }

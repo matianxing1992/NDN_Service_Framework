@@ -15,8 +15,8 @@
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
-#include <common.hpp>
-#include <NDNSFMessages.hpp>
+#include "common.hpp"
+#include "NDNSFMessages.hpp"
 
 namespace ndn_service_framework
 {

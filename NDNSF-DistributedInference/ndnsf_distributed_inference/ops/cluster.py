@@ -187,6 +187,13 @@ def _environment(home, socket, actor_id, state):
                NDNSF_DEPLOYMENT_ACTOR_ID=actor_id,
                NDNSF_DEPLOYMENT_BOOT_ID=state['boot_id'],
                NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256'])
+    if state.get('diagnostic_logging'):
+        # Explicit diagnostic mode may narrow logs to the boundary under study.
+        mask = os.environ.get('NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
+        if mask is not None:
+            if not mask or len(mask) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in mask):
+                raise ClusterError('invalid NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
+            env['NDN_LOG'] = mask
     if 'release_sha256' in state:
         env['NDNSF_DEPLOYMENT_RELEASE_SHA256'] = state['release_sha256']
     if state.get('runtime_timing'):
@@ -212,7 +219,7 @@ def _valid_intent(row, state):
         return False
 
 
-def _native_launch(config, actor, directory, state, *, visible_devices=None):
+def _native_launch(config, actor, directory, state, *, visible_devices=None, repo_benchmark=None):
     """Translate only maintained native CLI/config inputs, never model task placement."""
     prefix = Path(config['release']['prefix']) / 'bin'
     network, security = config['network'], config['security']
@@ -226,6 +233,10 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
                CUDA_VISIBLE_DEVICES=(','.join(actor['resources']['gpu_devices'])
                                      if visible_devices is None else visible_devices))
     kind = actor['kind']
+    params = dict(actor.get('parameters', {}))
+    periodic = params.pop('core-svs-periodic-sync-ms', None)
+    if periodic is not None:
+        env['NDNSF_SVS_PERIODIC_SYNC_MS'] = str(periodic)
     if kind == 'controller':
         env['NDNSF_CONTROLLER_GENERATION_STATE'] = str(
             Path(actor['credential_home']) / '.ndn' / 'controller-generation.state')
@@ -279,8 +290,10 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
                 '--service-prefix', network['repo_service']]
         if 'request-timeout-ms' in actor.get('parameters', {}):
             argv += ['--request-timeout-ms', str(actor['parameters']['request-timeout-ms'])]
+        for option in ('cache-bytes', 'large-object-threshold-bytes'):
+            if option in actor.get('parameters', {}):
+                argv += ['--' + option, str(actor['parameters'][option])]
     else:
-        params = dict(actor['parameters'])
         if 'core-work-timeout-ms' in params:
             env['NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS'] = str(params.pop('core-work-timeout-ms'))
         if not {'grant-authority-public-key', 'recipient-key-map'} <= params.keys():
@@ -310,6 +323,19 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None):
         # The native V3 offer and runner contract uses this local namespace.
         for index in range(len(actor['resources']['gpu_devices'])):
             argv += ['--offer-device', 'cuda:' + str(index)]
+    if kind == 'requester' and repo_benchmark is not None:
+        target = config['requester']['model_input']['repo_target']
+        argv = [str(prefix / 'ndnsf-repo-file-benchmark'),
+                '--group-prefix', network['group'], '--user-identity', actor['identity'],
+                '--controller-identity', controller,
+                '--controller-certificate', security['controller_certificate'],
+                '--trust-schema', security['trust_schema'],
+                '--repo-node', target['repo_node'],
+                '--provider-identity', target['provider_identity'],
+                '--service-prefix', target['service_prefix'],
+                '--source', repo_benchmark['source'],
+                '--expected-sha256', repo_benchmark['sha256'],
+                '--report', str(directory / 'repo-file-statistics.jsonl')]
     return argv, env
 
 
@@ -765,7 +791,8 @@ def _host_preflight(config):
             raise ClusterError('insufficient free capacity for the declared storage budget')
 
 
-def _start_forwarder(config, node, state, root, directory, children, deadline, guard, spawn):
+def _start_forwarder(config, node, state, root, directory, children, deadline, guard, spawn,
+                     disable_cs=False):
     nfd = node['nfd']
     home = root / ('nfd-' + node['id'])
     _private_directory(home)
@@ -800,13 +827,70 @@ def _start_forwarder(config, node, state, root, directory, children, deadline, g
                 write_json(root / 'state.json', state)
             break
         time.sleep(0.1)
+    if disable_cs:
+        configured = subprocess.run([nfdc, 'cs', 'config', 'capacity', '0'], env=nfdc_env,
+                                    capture_output=True, timeout=5, check=True)
+        info = subprocess.run([nfdc, 'cs', 'info'], env=nfdc_env,
+                              capture_output=True, timeout=5, check=True)
+        if b'capacity=0' not in info.stdout or b'nEntries=0' not in info.stdout:
+            raise ClusterError('REPO_BENCHMARK_CS_NOT_ZERO:' + node['id'])
+        (directory / 'benchmark-cs-zero.txt').write_bytes(configured.stdout + info.stdout)
     _configure_group_strategy(nfdc, nfdc_env, config, directory, deadline, guard, node=node)
 
 
-def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
+def _sample_repo_benchmark(directory, children, boundary):
+    """Observe only this owner's live native actors; counters include protocol traffic."""
+    sample = dict(monotonicNs=time.monotonic_ns(), boundary=boundary, actors={})
+    for actor, child, row in children:
+        if actor['kind'] not in ('repo', 'requester') or child.poll() is not None:
+            continue
+        try:
+            proof = row['proof']
+            actual = process_identity(proof['pid'])
+            if not actual or any(actual[key] != proof[key]
+                                 for key in ('pid', 'uid', 'start_ticks', 'exe')):
+                if child.poll() is not None:
+                    continue
+                raise ClusterError('benchmark actor identity changed')
+            process = Path('/proc') / str(proof['pid'])
+            fields = (process / 'stat').read_text().rsplit(')', 1)[1].split()
+            result = dict(pid=proof['pid'], processCpuNs=(int(fields[11]) + int(fields[12])) *
+                          1000000000 // os.sysconf('SC_CLK_TCK'), interfaces={})
+            for line in (process / 'status').read_text().splitlines():
+                if line.startswith(('VmRSS:', 'VmHWM:')):
+                    result[line.split(':')[0] + 'Bytes'] = int(line.split()[1]) * 1024
+            result['io'] = {key: int(value) for key, value in
+                            (line.split(':', 1) for line in (process / 'io').read_text().splitlines())}
+            for line in (process / 'net/dev').read_text().splitlines()[2:]:
+                name, values = line.split(':', 1)
+                if name.strip() != 'lo':
+                    values = values.split()
+                    result['interfaces'][name.strip()] = dict(rxBytes=int(values[0]),
+                                                              txBytes=int(values[8]))
+            sample['actors'][actor['kind']] = result
+        except (FileNotFoundError, ProcessLookupError):
+            # Exit may race any procfs read, including identity capture. Only
+            # the owned child's terminal status makes a missing sample normal.
+            if child.poll() is None:
+                raise
+    with (directory / 'repo-file-process-statistics.jsonl').open('a') as output:
+        output.write(json.dumps(sample, sort_keys=True) + '\n')
+
+
+def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, repo_benchmark=None):
     config = (load_deployment(source, prepare_only=True) if prepare_only
               else load_deployment(source))
     prepare_only = config.get('operation') == 'prepare'
+    if repo_benchmark is not None:
+        if not prepare_only or config['platform']['kind'] != 'minindn':
+            raise ClusterError('Repo file benchmark requires the local MiniNDN prepare owner')
+        binary = Path(config['release']['prefix']) / 'bin/ndnsf-repo-file-benchmark'
+        manifest = _read_json(Path(config['release']['manifest']))['files']
+        expected = manifest.get(str(binary), {}).get('installed', {})
+        if (expected.get('kind') != 'file' or not binary.is_file() or binary.is_symlink() or
+                expected.get('sha256') != hashlib.sha256(binary.read_bytes()).hexdigest() or
+                not os.access(binary, os.X_OK)):
+            raise ClusterError('Repo file benchmark must match the installed release manifest')
     if config['platform']['kind'] == 'slurm-apptainer':
         from .slurm import up
         return up(config, source, root, timeout, debug, timing)
@@ -815,7 +899,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
     _private_directory(root)
     with _lock(root):
         old = _read_state(root)
-        digest = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        identity = config if repo_benchmark is None else dict(config, repo_benchmark=repo_benchmark)
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         if old and (old['status'] != 'STOPPED' or old.get('needs_closeout')):
             if old['configuration_sha256'] != digest:
                 raise ClusterError('active deployment configuration differs; close it before a new up')
@@ -835,6 +920,9 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
                  'runtime_timing': timing,
                  'operation': 'prepare' if prepare_only else 'run',
                  'status': 'STARTING', 'launches': [], 'source': str(source)}
+        if repo_benchmark is not None:
+            state['operation'] = 'repo-benchmark'
+            state['repo_benchmark'] = dict(repo_benchmark)
         state['external_references'] = [dict(id=a['id'], kind=a['kind'], identity=a['identity'],
                                               verification='NOT_PROBED')
                                         for a in config['actors'] if a['external']]
@@ -881,7 +969,11 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
                 if actor['external']:
                     continue
                 guard()
-                argv, env = _native_launch(config, actor, directory, state)
+                if repo_benchmark is None:
+                    argv, env = _native_launch(config, actor, directory, state)
+                else:
+                    argv, env = _native_launch(config, actor, directory, state,
+                                               repo_benchmark=repo_benchmark)
                 checked = subprocess.run([str(Path(config['release']['prefix']) / 'bin/ndnsf-identity-check'),
                                           actor['credential_home'], actor['identity']],
                                          env=env, stdin=subprocess.DEVNULL, capture_output=True,
@@ -894,8 +986,12 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
             for node in config['nodes']:
                 node_directory = directory if facility is None else directory / ('nfd-' + node['id'])
                 node_directory.mkdir(exist_ok=True)
-                _start_forwarder(config, node, state, root, node_directory, children,
-                                 deadline, guard, spawn)
+                if repo_benchmark is None:
+                    _start_forwarder(config, node, state, root, node_directory, children,
+                                     deadline, guard, spawn)
+                else:
+                    _start_forwarder(config, node, state, root, node_directory, children,
+                                     deadline, guard, spawn, disable_cs=True)
             if facility is not None:
                 facility.routes(directory, guard)
             # Controller.start() proves its own PUBPARAMS path; NAC clients depend on it.
@@ -928,6 +1024,9 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
                 if actor['kind'] != 'requester':
                     continue
                 guard()
+                if repo_benchmark is not None:
+                    _sample_repo_benchmark(directory, children, 'before-requester')
+                last_sample = time.monotonic()
                 request_start = time.monotonic()
                 request_actor = actor['id']
                 state['requester'] = {'exit_code': None, 'completion': 'RUNNING',
@@ -940,9 +1039,14 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
                 while child.poll() is None:
                     guard()
                     _check_running(children)
+                    if repo_benchmark is not None and time.monotonic() - last_sample >= 1:
+                        _sample_repo_benchmark(directory, children, 'running')
+                        last_sample = time.monotonic()
                     if time.monotonic() >= deadline:
                         raise ClusterError('REQUESTER_TIMEOUT')
                     time.sleep(0.1)
+                if repo_benchmark is not None:
+                    _sample_repo_benchmark(directory, children, 'after-requester')
                 state['requester'].update(exit_code=child.returncode, completion='EXITED',
                                           wall_seconds=time.monotonic() - request_start)
                 if child.returncode:
@@ -953,6 +1057,7 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False):
                     raise ClusterError('REQUESTER_GROUP_CLEANUP:' + terminal['status'])
             state['status'] = ('EXTERNAL_UNVERIFIED' if any(
                 r['verification'] == 'NOT_PROBED' for r in state['external_references']) else
+                'REPO_BENCHMARK_COMPLETE' if repo_benchmark is not None else
                 'PREPARED' if prepare_only else 'COMPLETE')
             state['storage_bytes'] = _check_budget(config)
             state['wall_seconds'] = time.monotonic() - started
@@ -1044,23 +1149,39 @@ def _stop_provider(root, state, actor_id, timeout):
             raise ClusterError('Provider process changed during stop')
 
 
-def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None):
+def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None,
+                repo_benchmark=None):
     """Run the host operation or inspect/close its persisted owned processes."""
     maximum = 86400 if action in ('up', 'prepare') else 3600
     if type(timeout) not in (int, float) or not 0 < timeout <= maximum:
         raise ClusterError('timeout must be in (0,%d] seconds' % maximum)
-    if type(debug) is not bool or (debug and action not in ('up', 'prepare')):
+    if type(debug) is not bool or (debug and action not in ('up', 'prepare', 'benchmark-repo')):
         raise ClusterError('debug must be a boolean and only applies to up')
-    if type(timing) is not bool or (timing and action not in ('up', 'prepare')):
+    if type(timing) is not bool or (timing and action not in ('up', 'prepare', 'benchmark-repo')):
         raise ClusterError('timing must be a boolean and only applies to up')
     if actor_id is not None and action != 'down':
         raise ClusterError('actor selection only applies to down')
+    if action == 'benchmark-repo':
+        if not isinstance(repo_benchmark, dict) or set(repo_benchmark) != {'source', 'sha256'}:
+            raise ClusterError('Repo benchmark needs source and SHA-256')
+        input_path = Path(repo_benchmark['source'])
+        digest = repo_benchmark['sha256']
+        if (not input_path.is_absolute() or input_path.is_symlink() or
+                not input_path.is_file() or input_path.stat().st_size != 500000000 or
+                not isinstance(digest, str) or len(digest) != 64 or
+                any(c not in '0123456789abcdef' for c in digest)):
+            raise ClusterError('Repo benchmark requires a regular 500000000-byte input and SHA-256')
+    elif repo_benchmark is not None:
+        raise ClusterError('Repo benchmark inputs apply only to benchmark-repo')
     source, root = _locator(path)
-    if action in ('up', 'prepare'):
+    if action in ('up', 'prepare', 'benchmark-repo'):
         def terminate(signum, frame):
             raise KeyboardInterrupt('SIGTERM')
         handler = signal.signal(signal.SIGTERM, terminate)
         try:
+            if action == 'benchmark-repo':
+                return _up(source, root, timeout, debug, timing, prepare_only=True,
+                           repo_benchmark=repo_benchmark)
             if action == 'prepare':
                 return _up(source, root, timeout, debug, timing, prepare_only=True)
             return _up(source, root, timeout, debug, timing)

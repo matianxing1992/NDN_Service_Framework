@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <deque>
 #include <map>
 #include <memory>
@@ -128,12 +129,17 @@ public:
 
   std::vector<uint8_t> getDataPacket(const std::string& dataName) const;
   std::vector<uint8_t> getDataPacket(const ndn::Interest& interest) const;
+  /** Validated Data from the same lookup, so the serving worker can send it
+   *  without parsing the wire a second time. */
+  ndn::Data getDataPacketObject(const ndn::Interest& interest) const;
 
   bool hasDataPacket(const std::string& dataName) const;
 
+  /** Configure while quiescent; fetch callbacks must support concurrent requests. */
   void setDataReferenceFetcher(DataReferenceFetcher fetcher);
   void setDataReferenceSpoolFetcher(DataReferenceSpoolFetcher fetcher);
   void stopOriginalPacketOperations() noexcept;
+  bool isStoppingOriginalPacketOperations() const noexcept;
 
   RepoOperationStatus insertWirePackets(
     const RepoDataReference& reference,
@@ -201,8 +207,13 @@ public:
 
 private:
   friend struct RepoNodeTestAccess;
+  void executeStorageWrite(uint64_t bytes, std::function<void()> write,
+                           const std::function<void()>& requireActive = {});
+  void runStorageWriteWorker() noexcept;
+  void requestStorageWriteWorkerStop() noexcept;
+  void stopStorageWriteWorker() noexcept;
   ArtifactCapability artifactCapability() const;
-  void enqueueOriginalDataInterest(const ndn::Interest& interest);
+  bool enqueueOriginalDataInterest(const ndn::Interest& interest);
   void runOriginalDataWorker(ndn::Face& face);
   void requestOriginalDataWorkerStop() noexcept;
   void stopOriginalDataWorker() noexcept;
@@ -219,7 +230,6 @@ private:
     const std::string& operationId, uint64_t generation,
     const std::string& authenticatedWriter,
     const std::optional<RepoUserStorageBinding>& storageBinding,
-    const std::optional<std::string>& validatedWireSha256 = std::nullopt,
     const std::function<void()>& requireActive = {});
   std::vector<uint8_t> handleInsert(const std::vector<uint8_t>& request,
                                    const std::string& requesterIdentity, bool networkRequest);
@@ -288,11 +298,21 @@ private:
   // Keeps legacy Repo mutations from interleaving a persistent artifact byte
   // commit and its immutable receipt publication.
   mutable std::mutex m_storeWriteMutex;
+  struct StorageWriteJob
+  {
+    uint64_t bytes;
+    std::function<void()> write;
+    std::shared_ptr<std::promise<void>> completion;
+  };
+  static constexpr uint64_t STORAGE_WRITE_BYTE_LIMIT = 64U << 20;
+  std::mutex m_storageWriteQueueMutex;
+  std::condition_variable m_storageWriteCondition;
+  std::deque<StorageWriteJob> m_storageWrites;
+  uint64_t m_storageWriteBytes = 0;
+  bool m_storageWriteStopping = false;
+  std::thread m_storageWriteWorker;
   DataReferenceFetcher m_dataReferenceFetcher;
   DataReferenceSpoolFetcher m_dataReferenceSpoolFetcher;
-  std::function<bool(const std::vector<uint8_t>&, const ndn::Name&,
-                     std::chrono::steady_clock::time_point)> m_ownedPacketValidator;
-  std::mutex m_dataReferenceFetchMutex;
   std::atomic<bool> m_ownedInsertStopping{false};
   bool m_originalDataServingRegistered = false;
   std::atomic<bool> m_originalDataRouteReady{false};
@@ -302,12 +322,19 @@ private:
   {
     ndn::Interest interest;
     std::chrono::steady_clock::time_point deadline;
+    std::size_t byteCharge;
   };
+  static constexpr std::size_t ORIGINAL_DATA_PENDING_BYTE_LIMIT = 64U << 20;
   std::mutex m_originalDataMutex;
   std::condition_variable m_originalDataWake;
   std::deque<OriginalDataJob> m_originalDataQueue;
   std::shared_ptr<std::atomic<std::size_t>> m_originalDataPending =
     std::make_shared<std::atomic<std::size_t>>(0);
+  std::shared_ptr<std::atomic<std::size_t>> m_originalDataPendingBytes =
+    std::make_shared<std::atomic<std::size_t>>(0);
+  std::size_t m_originalDataAdmissionDrops = 0;
+  std::size_t m_originalDataPeakPending = 0;
+  std::size_t m_originalDataPeakPendingBytes = 0;
   bool m_stopOriginalDataWorker = false;
   std::mutex m_originalDataJoinMutex;
   std::thread m_originalDataWorker;

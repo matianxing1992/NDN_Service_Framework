@@ -138,66 +138,60 @@ main(int argc, char** argv)
     const auto controllerCertificate = ndn_service_framework::loadControllerCertificate(
       keyChain, controller, options.at("--controller-certificate").c_str());
     ndn_service_framework::CertificatePublisher certificates(face, keyChain, certificate.getName());
-    ndn_service_framework::ServiceUser user(face, group,
+    auto user = std::make_shared<ndn_service_framework::ServiceUser>(face, group,
       certificate, controllerCertificate, options.at("--trust-schema"));
-    user.init();
-    user.fetchPermissionsFromController(controller);
+    user->init();
+    user->fetchPermissionsFromController(controller);
 
     bool interrupted = false;
-    bool completed = false;
     int result = 1;
     std::string failure;
     std::string replyWire;
-    const auto alive = std::make_shared<bool>(true);
-    boost::asio::signal_set signals(face.getIoContext(), SIGINT, SIGTERM);
-    const auto invalidateCallbacks = ndn::make_scope_exit([alive] { *alive = false; });
-    signals.async_wait([&, alive](const boost::system::error_code& error, int) {
-      if (!error && *alive) interrupted = true;
-    });
+    // A signal only stops waiting; it must never be reported as a remote cancel.
+    static volatile std::sig_atomic_t signalled = 0;
+    const auto onSignal = [](int) { signalled = 1; };
+    std::signal(SIGINT, onSignal);
+    std::signal(SIGTERM, onSignal);
     const auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
-    while (!interrupted && !user.isRequestBootstrapReady(service, providers) &&
+    while (!signalled && !user->isRequestBootstrapReady(service, providers) &&
            Clock::now() < deadline)
       face.processEvents(ndn::time::milliseconds(10));
-    if (!interrupted && user.isRequestBootstrapReady(service, providers) &&
+    if (!signalled && user->isRequestBootstrapReady(service, providers) &&
         Clock::now() < deadline) {
-      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - Clock::now()).count();
-      if (remaining > 0) {
-        repo::RepoClient::requestUserStorageDelete(user, target, request,
-          static_cast<int>(remaining),
-          [&, alive](const ndn::Name&) {
-            if (!*alive || completed) return;
-            failure = "Owner delete request timed out; outcome unconfirmed";
-            completed = true;
-          },
-          [&, alive](const ndn_service_framework::ResponseMessage& response) {
-            if (!*alive || completed) return;
-            try {
-              if (!response.getStatus()) throw std::runtime_error(response.getErrorInfo());
-              const auto payload = response.getPayload();
-              if (payload.size() > MAX_REPLY_BYTES)
-                throw std::runtime_error("Owner delete reply byte bound exceeded");
-              const std::string wire(payload.begin(), payload.end());
-              const auto reply = repo::RepoUserStorageDeleteReply::fromJson(wire);
-              reply.validateExpected(target, owner.toUri(ndn::name::UriFormat::ALTERNATE), request);
-              replyWire = reply.toJson();
-              result = reply.state == "DELETED" ? 0 : 2;
-            }
-            catch (const std::exception& error) {
-              failure = error.what();
-            }
-            completed = true;
-          });
-        // Ordinary RequestService has no collaboration-cancel contract. Drain its bounded
-        // response/timeout even after a signal instead of claiming remote cancellation.
-        while (!completed && Clock::now() < deadline + std::chrono::seconds(1))
-          face.processEvents(ndn::time::milliseconds(10));
+      auto config = repo::PersistentRepoClientConfig{};
+      config.servicePrefix = ndn::Name(target.servicePrefix);
+      config.providerScope = {ndn::Name(target.providerIdentity)};
+      auto client = repo::RepoClient::makePersistent(user, std::move(config));
+      repo::RepoDeleteRequest deleteRequest;
+      repo::FileReference deleteReference;
+      deleteReference.logicalName = request.objectName;
+      deleteRequest.reference = deleteReference;
+      deleteRequest.generation = request.cleanupId;
+      deleteRequest.expectedEpoch = std::to_string(request.ownerEpoch);
+      deleteRequest.targets = {repo::RepoTarget{target.repoNode, target.providerIdentity,
+                                                target.servicePrefix}};
+      repo::RepoOperationOptions deleteOptions;
+      deleteOptions.deadline = deadline;
+      deleteOptions.requireCurrent = [&signalled] {
+        if (signalled)
+          throw std::runtime_error("interrupted");
+      };
+      try {
+        const auto removed = client.remove(deleteRequest, deleteOptions);
+        replyWire = removed.replyWire;
+        result = removed.confirmed ? 0 : 2;
+      }
+      catch (const std::exception& error) {
+        // A signalled stop is a local outcome, never a claimed remote cancel.
+        if (signalled)
+          interrupted = true;
+        else
+          failure = error.what();
       }
     }
-    if (!completed && !interrupted)
+    if (!interrupted && failure.empty() && replyWire.empty())
       failure = "Owner delete bootstrap or request drain deadline; outcome unconfirmed";
-    *alive = false;
-    user.stopProducerPacketValidation();
+    user->stopProducerPacketValidation();
     face.shutdown();
     face.getIoContext().stop();
     if (!replyWire.empty()) std::cout << replyWire << '\n';

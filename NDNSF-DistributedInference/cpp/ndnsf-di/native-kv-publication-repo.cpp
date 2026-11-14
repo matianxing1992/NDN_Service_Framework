@@ -134,14 +134,53 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   const ndnsf_distributed_repo::RepoArtifactTarget target{
     owner.repoTarget.repoNode, owner.repoTarget.providerIdentity, owner.repoTarget.servicePrefix};
   std::size_t next = 0;
+  // The generic segmented publication belongs to Repo; this call only states the
+  // geometry, the owner binding and the packet verifier it already owns.
+  auto publicationConfig = ndnsf_distributed_repo::PersistentRepoClientConfig{};
+  publicationConfig.servicePrefix = ndn::Name(owner.repoTarget.servicePrefix);
+  publicationConfig.providerScope = {ndn::Name(owner.repoTarget.providerIdentity)};
+  publicationConfig.dataOnly = true;
+  auto facade = ndnsf_distributed_repo::RepoClient::makePersistent(
+    owner.publication.storageWriter, std::move(publicationConfig));
+  ndnsf_distributed_repo::RepoDataPublication publication;
+  ndnsf_distributed_repo::PacketSource source;
+  source.packetNames = object.packetSetMetadata->packetNames;
+  source.packetOffsets = object.packetSetMetadata->packetOffsets;
+  source.expectedWireBytes = object.expectedSize;
+  source.expectedPacketCount = source.packetNames.size();
+  source.expectedDigest = "sha256:" + object.expectedSha256;
+  source.next = [&](std::vector<std::uint8_t>& wire) {
+    if (next == packets.packetWires.size()) return false;
+    wire = packets.packetWires[next++];
+    return true;
+  };
+  publication.packets = std::move(source);
+  publication.producerIdentity = producerName.toUri();
+  publication.target = {owner.repoTarget.repoNode, owner.repoTarget.providerIdentity,
+                        owner.repoTarget.servicePrefix};
+  publication.ownerIdentity = insert.storageBinding.ownerIdentity;
+  publication.grantId = insert.storageBinding.grantId;
+  publication.ownerEpoch = insert.storageBinding.ownerEpoch;
+  publication.generation = insert.generation;
+  publication.idempotencyKey = insert.operationId;
+  publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
+    [verify](const std::vector<std::uint8_t>& wire) {
+      const ndn::Data packet{ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size()))};
+      return verify(packet);
+    });
+  ndnsf_distributed_repo::RepoOperationOptions publicationOptions;
+  publicationOptions.deadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(std::max(1, budget));
+  publicationOptions.requireCurrent = [current] { current(); };
   const auto committed = [&] {
     try {
-      return ndnsf_distributed_repo::RepoClient::commitUserStorageOriginalPackets(
-        *owner.publication.storageWriter, target, insert,
-        [&]() -> std::optional<std::vector<std::uint8_t>> {
-          if (next == packets.packetWires.size()) return std::nullopt;
-          return packets.packetWires[next++];
-        }, verify, std::min(1000, std::max(1, budget / 2)), budget, current);
+      const auto published = facade.publishData(publication, publicationOptions);
+      require(published.packetSet.has_value(), "HANDOFF_REPO_PUBLICATION_SHAPE");
+      ndnsf_distributed_repo::RepoObjectManifest result;
+      result.objectName = published.packetSet->objectName;
+      result.sha256 = published.packetSet->wireDigest.substr(7);
+      result.size = published.packetSet->wireBytes;
+      return result;
     }
     catch (const std::exception& error) {
       // Retain only an internal error code, never packet contents or exception detail.

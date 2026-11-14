@@ -12,6 +12,7 @@
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
@@ -282,6 +283,9 @@ releaseRepoNodeServiceHandlersForRestart(
     "CAPABILITY", "CACHE_STATUS", "STATUS", "CATALOG_STATUS",
     "CATALOG_SNAPSHOT", "CATALOG_DELTA", "CATALOG_LOOKUP", "DELETE",
     "DATA_RECEIPT", "DATA_LOCATION",
+    // The node registers these too, and each handler holds a strong self-reference,
+    // so leaving them in place keeps the node (and its backend lease) alive.
+    "USER_STORAGE_GRANT", "USER_STORAGE_LIST", "USER_STORAGE_DELETE", "USER_STORAGE_USAGE",
   };
   for (const auto& operation : operations) {
     provider.addService(repo::makeRepoServiceName(servicePrefix, operation),
@@ -443,7 +447,7 @@ currentLocationVersion(const fs::path& databasePath,
                        const std::string& repoNode,
                        const std::string& providerIdentity)
 {
-  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, 15);
+  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto location = catalog.lookupPersistentLocation(
     reference, repoNode, providerIdentity, 0);
   if (!location) {
@@ -458,7 +462,7 @@ currentLocationRecord(const fs::path& databasePath,
                       const std::string& repoNode,
                       const std::string& providerIdentity)
 {
-  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, 15);
+  repo::SqliteArtifactMetadataStore catalog(databasePath.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto location = catalog.lookupPersistentLocation(
     reference, repoNode, providerIdentity, 0);
   if (!location) {
@@ -720,7 +724,7 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
     auto committedSeed = dispatchRepoRequest(environment.provider(0), environment.user().getName(),
       repoService(servicePrefix, "STORE"), write.toWire(), "owner-seed-store-" + suffix);
     BOOST_REQUIRE_MESSAGE(committedSeed.getStatus(), committedSeed.getErrorInfo());
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     seedCatalog.updatePublishOperationTarget(write.operationId,
       {target, "IN_FLIGHT", 1, 1, std::nullopt, {}}, 1);
     auto acceptedOperation = seedCatalog.lookupPublishOperation(
@@ -937,7 +941,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     const auto seedReceipt = repo::RepoArtifactCommitReceipt::fromJson(
       std::string(receiptWire.begin(), receiptWire.end()), limits).toJson();
     {
-      repo::SqliteArtifactMetadataStore catalog(database.string(), true, 15);
+      repo::SqliteArtifactMetadataStore catalog(database.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
       const auto operation = catalog.lookupPublishOperation(operationId, principal);
       BOOST_REQUIRE(operation);
       const auto interruptedAt = static_cast<uint64_t>(std::chrono::duration_cast<
@@ -956,7 +960,7 @@ BOOST_AUTO_TEST_CASE(RecoveredSeedFailurePreservesPendingAttemptFacts)
     else BOOST_REQUIRE(fs::remove(payload));
     node = openNode();
     node->registerServices(environment.provider(0), publisher, 5000, 20000);
-    repo::SqliteArtifactMetadataStore catalog(database.string(), false, 15);
+    repo::SqliteArtifactMetadataStore catalog(database.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     environment.pumpUntilWithAttributeAuthority([&] {
       const auto operation = catalog.lookupPublishOperation(operationId, principal);
       return operation && operation->status.state == "FAILED";
@@ -1260,7 +1264,7 @@ BOOST_AUTO_TEST_CASE(IsolatedSourceLossAfterReplicaStorePreservesLedger)
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
-  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
+  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
   BOOST_REQUIRE(lossAggregate);
   const auto aggregate = repo::ArtifactCommitReceipt::fromJson(*lossAggregate);
@@ -1432,7 +1436,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     BOOST_CHECK_EQUAL(repoManifestCount(seedObjects), 0U);
     BOOST_CHECK_EQUAL(persistentReceiptRows(
       seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), unacceptedReference), 0);
-    repo::SqliteArtifactMetadataStore catalog(seedDatabase.string(), false, 15);
+    repo::SqliteArtifactMetadataStore catalog(seedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     BOOST_CHECK(!catalog.lookupPersistentLocation(
       unacceptedReference, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), 0));
   };
@@ -1868,7 +1872,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                            "seed-receipt-committed");
 
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto accepted = seedCatalog.lookupPublishOperation(
       operationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -1942,7 +1946,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), reference), 0);
   {
-    repo::SqliteArtifactMetadataStore catalog(unselectedDatabase.string(), false, 15);
+    repo::SqliteArtifactMetadataStore catalog(unselectedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     BOOST_CHECK(!catalog.lookupPersistentLocation(
       reference, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), 0));
   }
@@ -2014,7 +2018,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
                         lateCommitSeedStoreResponse.getErrorInfo());
   repo::PublishOperationTargetStatus lateCommitInFlight;
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto accepted = seedCatalog.lookupPublishOperation(
       lateCommitOperationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -2054,7 +2058,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     seedCatalog.updatePublishOperationTarget(
       lateCommitOperationId, lateCommitInFlight, lateCommitInFlight.updatedAtMs);
   }
@@ -2219,7 +2223,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_REQUIRE_MESSAGE(exhaustedSeedStoreResponse.getStatus(),
                         exhaustedSeedStoreResponse.getErrorInfo());
   {
-    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, 15);
+    repo::SqliteArtifactMetadataStore seedCatalog(seedDatabase.string(), true, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
     const auto accepted = seedCatalog.lookupPublishOperation(
       exhaustedReplayOperationId, submittingPrincipal);
     BOOST_REQUIRE(accepted);
@@ -2674,7 +2678,7 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
     unselectedDatabase, unselectedRepo, unselectedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 0);
   BOOST_CHECK_EQUAL(persistentReceiptRows(
     seedDatabase, seedRepo, seedProvider.toUri(ndn::name::UriFormat::ALTERNATE), lossReference), 1);
-  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, 15);
+  repo::SqliteArtifactMetadataStore lossCatalog(seedDatabase.string(), false, repo::REPO_ARTIFACT_SCHEMA_GENERATION);
   const auto lossAggregate = lossCatalog.lookupAggregateReceipt(lossStatus.receiptId);
   BOOST_REQUIRE(lossAggregate);
   const auto aggregate = repo::ArtifactCommitReceipt::fromJson(*lossAggregate);
@@ -2699,9 +2703,17 @@ BOOST_AUTO_TEST_CASE(RecoveredPendingPublishTargetGetsOneDurableReceipt)
   BOOST_CHECK(lossCatalog.lookupAggregateReceipt(lossStatus.receiptId) == lossAggregate);
 }
 
-BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices)
+struct OwnerClientRestartExpectation
 {
-  TempRoot temporary;
+  repo::StorageCapability capability;
+  std::string name;
+  std::vector<uint8_t> wire;
+};
+
+OwnerClientRestartExpectation
+runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
+{
+  constexpr int ACK_COLLECTION_MS = 3000;
   std::vector<std::pair<const char*, std::optional<std::string>>> previousEnvironment;
   auto restoreEnvironment = ndn::make_scope_exit([&] {
     for (const auto& [name, value] : previousEnvironment) {
@@ -2789,8 +2801,13 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     target.repoNode, target.providerIdentity, (temporary.path() / "metadata.sqlite3").string());
   node->registerServices(environment.provider(1));
   node->registerOriginalDataServing(environment.providerFace(1));
-  node->setDataReferenceSpoolFetcher(repo::detail::FaceDataReferenceFetcher(
-    environment.providerFace(1), 1s, 10s));
+  const auto originalInsertFetches = std::make_shared<std::atomic<unsigned>>(0);
+  node->setDataReferenceSpoolFetcher(
+    [originalInsertFetches, fetch = repo::detail::FaceDataReferenceFetcher(
+       environment.providerFace(1), 1s, 10s)](const repo::RepoDataReference& value) {
+      ++*originalInsertFetches;
+      return fetch(value);
+    });
   environment.enableProductionIngressForTest();
   environment.pumpUntilWithAttributeAuthority([&] {
     return node->isOriginalDataServingReady();
@@ -2893,7 +2910,7 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     return std::string(payload.begin(), payload.end());
   };
   auto response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(environment.user(), target, grant, 15000,
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target, grant, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -2902,7 +2919,7 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   auto wrongTarget = target;
   wrongTarget.repoNode += "/wrong";
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(environment.user(), wrongTarget,
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), wrongTarget,
       grant, 15000, std::move(timeout), std::move(complete));
   });
   BOOST_CHECK(!response.getStatus());
@@ -2911,8 +2928,8 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     return ndn::security::verifySignature(data, producer);
   };
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
-      [] { return std::optional<std::vector<uint8_t>>{}; }, verify, 250, 15000);
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+      [] { return std::optional<std::vector<uint8_t>>{}; }, verify, ACK_COLLECTION_MS, 15000);
   }), std::invalid_argument);
   BOOST_CHECK(node->list().empty());
   size_t position = 0;
@@ -2921,8 +2938,8 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     return expectedWires[position++];
   };
   const auto inserted = runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
-      nextPacket, verify, 250, 15000);
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, insert,
+      nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_REQUIRE_EQUAL(inserted.lifecycleState, "COMMITTED");
   // commitUserStorageOriginalPackets has stopped its Source filter.
@@ -2931,19 +2948,19 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   BOOST_REQUIRE(fs::remove(cipher));
   // Owner is permitted to invoke MANIFEST, but is not the delegated Source writer.
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::requestSelectedService(environment.user(),
+    return repo::RepoClientCompat::requestSelectedService(environment.user(),
       environment.provider(1).getName(), repoService(servicePrefix, "MANIFEST"),
-      repo::encodeUserStorageInsertRequest(insert), 250, 15000);
+      repo::encodeUserStorageInsertRequest(insert), ACK_COLLECTION_MS, 15000);
   }), std::runtime_error);
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageUsage(environment.user(), target, {}, 15000,
+    return repo::RepoClientCompat::requestUserStorageUsage(environment.user(), target, {}, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK(repo::RepoUserStorageUsageReply::fromJson(responseString(response))
     .usage.committedBytes > aggregate.size());
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageList(environment.user(), target, {}, 15000,
+    return repo::RepoClientCompat::requestUserStorageList(environment.user(), target, {}, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -2991,7 +3008,7 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   auto renewal = grant;
   renewal.grantId = "renewed-source-grant";
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(environment.user(), target, renewal, 15000,
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target, renewal, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3002,14 +3019,14 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   renewedInsert.storageBinding.ownerEpoch = renewedGrant.grant.ownerEpoch;
   position = 0;
   const auto renewed = runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, renewedInsert,
-      nextPacket, verify, 250, 15000);
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, renewedInsert,
+      nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_CHECK_EQUAL(renewed.operationId, inserted.operationId);
   auto otherGrant = grant;
   otherGrant.grantId = "second-owner-grant";
   response = ownerCall(*secondOwner, [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(*secondOwner, target, otherGrant, 15000,
+    return repo::RepoClientCompat::requestUserStorageGrant(*secondOwner, target, otherGrant, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3021,8 +3038,8 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     otherGranted.grant.ownerEpoch};
   position = 0;
   const auto shared = runWithFacePump(environment, [&] {
-    return repo::RepoClient::commitUserStorageOriginalPackets(*sourceWriter, target, sharedInsert,
-      nextPacket, verify, 250, 15000);
+    return repo::RepoClientCompat::commitUserStorageOriginalPackets(*sourceWriter, target, sharedInsert,
+      nextPacket, verify, ACK_COLLECTION_MS, 15000);
   });
   BOOST_CHECK_EQUAL(shared.operationId, inserted.operationId);
   BOOST_CHECK_NE(shared.operationId, sharedInsert.operationId);
@@ -3035,7 +3052,7 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   auto changed = verified.claim();
   ++changed.object.generation;
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::revalidateCurrentUserStorageClaim(
+    return repo::RepoClientCompat::revalidateCurrentUserStorageClaim(
       environment.user(), target, changed, 15000, handoffLimits);
   }), std::runtime_error);
   auto limits = handoffLimits;
@@ -3047,14 +3064,14 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   const repo::RepoUserStorageDeleteRequest cleanup{1, "client-cleanup", reference.objectName,
     granted.grant.ownerEpoch};
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageDelete(environment.user(), target, cleanup, 15000,
+    return repo::RepoClientCompat::requestUserStorageDelete(environment.user(), target, cleanup, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
     "DELETED");
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::revalidateCurrentUserStorageClaim(
+    return repo::RepoClientCompat::revalidateCurrentUserStorageClaim(
       environment.user(), target, verified.claim(), 15000, handoffLimits);
   }), std::runtime_error);
   BOOST_CHECK(node->core().has(reference.objectName));
@@ -3062,7 +3079,7 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
     auto otherCleanup = cleanup;
     otherCleanup.cleanupId = "second-owner-cleanup";
     otherCleanup.ownerEpoch = otherGranted.grant.ownerEpoch;
-    return repo::RepoClient::requestUserStorageDelete(*secondOwner, target, otherCleanup, 15000,
+    return repo::RepoClientCompat::requestUserStorageDelete(*secondOwner, target, otherCleanup, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3137,7 +3154,10 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   })), std::runtime_error);
   BOOST_CHECK(node->core().list().empty());
   BOOST_CHECK_THROW(storeModel(publication, std::function<void()>([&] {
-    if (node->core().has(metadataObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)))
+    // Sibling commits may complete in either order. Cancel at the same
+    // dependency barrier as the original serial fixture, before the root.
+    if (node->core().has(sourceObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)) &&
+        node->core().has(metadataObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)))
       throw std::runtime_error("cancelled before model root");
   })), std::runtime_error);
   BOOST_CHECK(node->core().has(sourceObject.manifestName.toUri(ndn::name::UriFormat::CANONICAL)));
@@ -3169,6 +3189,64 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   // Exercise the actual DI packet port, not an in-memory substitute for Repo.
   ndn::KeyChain digestKeys("pib-memory:stored-model", "tpm-memory:stored-model");
   const auto storedDeadline = std::chrono::steady_clock::now() + 90s;
+  const auto rejectNativePackets = [&](const std::string& label, bool invalidSignature,
+                                        const std::string& suppliedDigest) {
+    const auto name = ndn::Name(sourceIdentity).append("native-rejected").append(label)
+      .appendSegment(0);
+    ndn::Data packet(name);
+    const std::vector<uint8_t> content{1, 2, 3};
+    packet.setContent(ndn::span<const uint8_t>(content));
+    digestKeys.sign(packet, ndn::security::signingWithSha256());
+    const auto& encoded = packet.wireEncode();
+    std::vector<uint8_t> wire(encoded.begin(), encoded.end());
+    if (invalidSignature) wire.back() ^= 1;
+    const auto expected = suppliedDigest.empty() ? "sha256:" + sha256(wire) : suppliedDigest;
+    const auto fetches = originalInsertFetches->load();
+    const auto objects = node->core().list().size();
+    const auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    const std::string error = label == "syntax" ? "MODEL_REPO_STORE_DIGEST_INVALID" :
+      label == "cancel" ? "native-factory-cancelled" : invalidSignature ?
+      "repo-original-publication-packet-invalid" :
+      "repo-original-publication-digest-or-size-mismatch";
+    BOOST_CHECK_EXCEPTION(runWithFacePump(environment, [&] {
+      const auto transport = di::nativeStoredModelRepositoryIo(sourceWriter, target,
+        storedDeadline, [active, cancelled] {
+          active();
+          if (cancelled->load()) throw std::runtime_error("native-factory-cancelled");
+        }, true);
+      if (label == "cancel") cancelled->store(true);
+      transport.commit({wire}, expected);
+      return true;
+    }), std::exception, [&](const std::exception& failure) { return failure.what() == error; });
+    BOOST_CHECK_EQUAL(originalInsertFetches->load(), fetches);
+    BOOST_CHECK_EQUAL(node->core().list().size(), objects);
+    BOOST_CHECK(!node->core().has(name.toUri(ndn::name::UriFormat::ALTERNATE)));
+    // Read-only SQLite is independent of the writer's in-memory admission state.
+    sqlite3* raw = nullptr;
+    BOOST_REQUIRE_EQUAL(sqlite3_open_v2((temporary.path() / "metadata.sqlite3").c_str(),
+      &raw, SQLITE_OPEN_READONLY, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+    sqlite3_stmt* statementRaw = nullptr;
+    BOOST_REQUIRE_EQUAL(sqlite3_prepare_v2(database.get(),
+      "SELECT (SELECT COUNT(*) FROM repo_user_storage_grants WHERE object_name=?1),"
+      "(SELECT COUNT(*) FROM repo_user_storage_writes WHERE object_name=?1),"
+      "(SELECT COUNT(*) FROM repo_user_storage_claims WHERE object_name=?1)",
+      -1, &statementRaw, nullptr), SQLITE_OK);
+    std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(
+      statementRaw, sqlite3_finalize);
+    const auto text = name.toUri(ndn::name::UriFormat::ALTERNATE);
+    BOOST_REQUIRE_EQUAL(sqlite3_bind_text(statement.get(), 1, text.c_str(), -1,
+      SQLITE_TRANSIENT), SQLITE_OK);
+    BOOST_REQUIRE_EQUAL(sqlite3_step(statement.get()), SQLITE_ROW);
+    BOOST_CHECK_EQUAL(sqlite3_column_int64(statement.get(), 1), 0);
+    BOOST_CHECK_EQUAL(sqlite3_column_int64(statement.get(), 2), 0);
+    if (label == "syntax" || label == "cancel")
+      BOOST_CHECK_EQUAL(sqlite3_column_int64(statement.get(), 0), 0);
+  };
+  rejectNativePackets("syntax", false, "sha256:invalid");
+  rejectNativePackets("digest", false, "sha256:" + std::string(64, '0'));
+  rejectNativePackets("signature", true, {});
+  rejectNativePackets("cancel", false, {});
   const auto modelPrefix = ndn::Name(sourceIdentity).append("stored-model").appendVersion(1);
   const std::vector<uint8_t> expectedLayer(9000, 0x5a);
   std::vector<di::NativeStoredModelInput> modelInputs{
@@ -3230,6 +3308,20 @@ BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticat
   BOOST_CHECK_EQUAL(sourceModelReplies, 0U);
   BOOST_CHECK_EQUAL(node->core().list().size(), objectCount);
   node->stopOriginalPacketOperations();
+  return {capability,
+    storedPublication.handle.rootName.toUri(ndn::name::UriFormat::CANONICAL), storedRootWire};
+}
+
+BOOST_AUTO_TEST_CASE(OwnerClientCommitsAndReadsOriginalPacketsThroughAuthenticatedRepoServices)
+{
+  TempRoot temporary;
+  const auto expected = runOwnerClientOriginalPacketRoundTrip(temporary);
+  // All writer/Provider instances and the filesystem owner are gone before reopen.
+  auto store = std::make_shared<repo::FilesystemRepoStoreBackend>(
+    (temporary.path() / "objects").string(), 4 * 1024 * 1024, 1024, "owner-client",
+    repo::FilesystemRecoveryPolicy::KEEP_UNCONFIRMED);
+  repo::RepoCore restarted(expected.capability, std::move(store));
+  BOOST_CHECK(restarted.getDataPacket(expected.name) == expected.wire);
 }
 
 BOOST_AUTO_TEST_CASE(PersistentApiSelectsProvidersAndCountsOnlyDurableReceipts)
@@ -5823,4 +5915,209 @@ BOOST_AUTO_TEST_CASE(PersistentApiFetchHealthStateSerializesConcurrentCalls)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(Spec240UnifiedFacade)
+
+BOOST_AUTO_TEST_CASE(PublishDataRejectsAMissingVerifierBeforeAnySideEffect)
+{
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec240/facade/group";
+  profile.syncPrefix = "/ndnsf/spec240/facade/sync";
+  profile.userIdentity = "/test/user/spec240/facade";
+  profile.providerIdentity = "/test/provider/spec240/facade";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec240/facade";
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 1, servicePrefix, operations);
+  const repo::RepoArtifactTarget target{
+    "/logical/spec240/facade", environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+  repo::StorageCapability capability;
+  capability.repoNode = target.repoNode;
+  capability.repoMode = "persistent";
+  capability.freeBytes = 1024 * 1024;
+  auto node = std::make_shared<repo::RepoNode>(
+    servicePrefix, capability,
+    std::make_shared<repo::FilesystemRepoStoreBackend>(
+      (temporary.path() / "objects").string(), 1024 * 1024, 4096, "spec240-facade"),
+    target.repoNode, target.providerIdentity, (temporary.path() / "facade.sqlite").string());
+  node->registerServices(environment.provider(1), publisher, 5000, 10000);
+
+  auto config = repo::PersistentRepoClientConfig{};
+  config.servicePrefix = servicePrefix;
+  config.providerScope = {ndn::Name(target.providerIdentity)};
+  config.dataOnly = true;
+  auto client = repo::RepoClient::makePersistent(publisher, std::move(config));
+
+  // CA01: a missing verifier must fail closed before the source is pulled or the
+  // Repo is asked to store anything.
+  std::atomic<int> pulled{0};
+  const auto objectName = ndn::Name(publisher->getName()).append("packet").appendSegment(0);
+  repo::RepoDataPublication publication;
+  repo::PacketSource source;
+  source.packetNames = {objectName.toUri(ndn::name::UriFormat::ALTERNATE)};
+  source.packetOffsets = {0, 8};
+  source.expectedWireBytes = 8;
+  source.expectedDigest = "sha256:" + std::string(64, '0');
+  source.next = [&pulled](std::vector<uint8_t>& wire) {
+    pulled.fetch_add(1);
+    wire.assign(8, 0x5a);
+    return true;
+  };
+  publication.packets = std::move(source);
+  publication.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
+  publication.producerIdentity = publisher->getName().toUri();
+  publication.ownerIdentity = publisher->getName().toUri();
+  publication.generation = 1;
+  repo::RepoOperationOptions options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  BOOST_CHECK_EXCEPTION(client.publishData(publication, options), repo::RepoClientError,
+    [] (const repo::RepoClientError& error) {
+      return error.code() == "VERIFIER_REQUIRED" && error.phase() == "publishData";
+    });
+  BOOST_CHECK_EQUAL(pulled.load(), 0);
+  BOOST_CHECK_EQUAL(node->core().list().size(), 0U);
+}
+
+
+BOOST_AUTO_TEST_CASE(CloseWhileAnOperationWaitsReportsTheTruth)
+{
+  // CA08: close must report the drain it observed, and a close racing a live
+  // operation must not free state under it. The operation runs on the fixture's
+  // worker while the caller keeps pumping, which is the only supported pattern here.
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec240/close/group";
+  profile.syncPrefix = "/ndnsf/spec240/close/sync";
+  profile.userIdentity = "/test/user/spec240/close";
+  profile.providerIdentity = "/test/provider/spec240/close";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec240/close";
+  profile.providerCount = 2;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 1, servicePrefix, operations);
+  const repo::RepoArtifactTarget target{
+    "/logical/spec240/close",
+    environment.provider(1).getName().toUri(ndn::name::UriFormat::ALTERNATE),
+    servicePrefix.toUri(ndn::name::UriFormat::ALTERNATE)};
+
+  auto config = repo::PersistentRepoClientConfig{};
+  config.servicePrefix = servicePrefix;
+  config.providerScope = {ndn::Name(target.providerIdentity)};
+  config.dataOnly = true;
+  auto client = repo::RepoClient::makePersistent(publisher, std::move(config));
+
+  bool drained = true;
+  BOOST_REQUIRE(runWithFacePump(environment, [&] {
+    std::atomic<bool> started{false};
+    std::thread worker([&] {
+      try {
+        repo::RepoDataFetch fetch;
+        repo::ExactPacketSetReference commitment;
+        commitment.objectName = "/test/provider/spec240/close/never/0";
+        commitment.packetNames = {commitment.objectName};
+        commitment.wireBytes = 64;
+        fetch.packets = commitment;
+        fetch.target = {target.repoNode, target.providerIdentity, target.servicePrefix};
+        fetch.verifyWire =
+          std::make_shared<const std::function<bool(const std::vector<std::uint8_t>&)>>(
+            [] (const std::vector<std::uint8_t>&) { return true; });
+        repo::RepoOperationOptions options;
+        options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        started.store(true);
+        client.fetchData(fetch, options);
+      }
+      catch (const std::exception&) {
+        // A timeout is the expected outcome for a provider that never answers.
+      }
+    });
+    while (!started.load())
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // The operation is still waiting, so this close cannot have drained it.
+    drained = client.close(std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(50));
+    worker.join();
+    return true;
+  }));
+  BOOST_CHECK(!drained);
+
+  // New work is refused instead of running on closing state.
+  repo::RepoDeleteRequest deleteRequest;
+  deleteRequest.targets = {repo::RepoTarget{target.repoNode, target.providerIdentity,
+                                            target.servicePrefix}};
+  deleteRequest.generation = "cleanup-after-close";
+  repo::FileReference reference;
+  reference.logicalName = "/test/provider/spec240/close/never/0";
+  deleteRequest.reference = reference;
+  repo::RepoOperationOptions afterOptions;
+  afterOptions.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  BOOST_CHECK_THROW(client.remove(deleteRequest, afterOptions), repo::RepoClientError);
+}
+
+
+BOOST_AUTO_TEST_CASE(DataOnlyClientReportsMissingFileCapabilitiesAsUnsupported)
+{
+  // CA12: a data-only client has no file engine. Its file operations must say so
+  // (UNSUPPORTED) rather than pretending the client is closed.
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec240/dataonly/group";
+  profile.syncPrefix = "/ndnsf/spec240/dataonly/sync";
+  profile.userIdentity = "/test/user/spec240/dataonly";
+  profile.providerIdentity = "/test/provider/spec240/dataonly";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec240/dataonly";
+  profile.providerCount = 1;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 0, servicePrefix, operations);
+
+  auto config = repo::PersistentRepoClientConfig{};
+  config.servicePrefix = servicePrefix;
+  config.providerScope = {environment.provider(0).getName()};
+  config.dataOnly = true;
+  auto client = repo::RepoClient::makePersistent(publisher, std::move(config));
+
+  repo::RepoHandle handle;
+  handle.reference = repo::FileReference{"/test/user/spec240/dataonly/object", "sha256",
+                                         std::string(64, 'a'), 1, "raw-file-v1", "", "", ""};
+  repo::RepoInspectionRequest inspection;
+  inspection.kind = repo::RepoInspectionRequest::Kind::OBJECT;
+  inspection.object = handle;
+  repo::RepoOperationOptions options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  BOOST_CHECK_EXCEPTION(client.inspect(inspection, options), repo::RepoClientError,
+    [] (const repo::RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "inspect";
+    });
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 } // namespace ndn_service_framework::test

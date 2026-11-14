@@ -27,6 +27,114 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize('boundary', ['identity', 'counters'])
+@pytest.mark.parametrize('exited', [False, True])
+def test_repo_benchmark_sampling_handles_exit_race_only_after_child_exit(
+        ops, monkeypatch, tmp_path, boundary, exited):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    proof = dict(pid=12345, uid=os.getuid(), start_ticks=7, exe='/native/requester')
+    polls = []
+
+    def poll():
+        polls.append(True)
+        return 0 if exited and len(polls) > 1 else None
+
+    def identity(pid):
+        if boundary == 'identity':
+            raise FileNotFoundError('process exited while reading identity')
+        return proof
+
+    class VanishedProc:
+        def __truediv__(self, unused):
+            return self
+
+        def read_text(self):
+            raise FileNotFoundError('process exited while reading counters')
+
+    monkeypatch.setattr(cluster, 'process_identity', identity)
+    monkeypatch.setattr(cluster, 'Path', lambda unused: VanishedProc())
+    children = [(dict(kind='requester'), SimpleNamespace(poll=poll), dict(proof=proof))]
+    if exited:
+        cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
+        sample = json.loads((tmp_path / 'repo-file-process-statistics.jsonl').read_text())
+        assert sample['actors'] == {}
+    else:
+        with pytest.raises(FileNotFoundError):
+            cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
+
+
+def test_repo_benchmark_sampling_keeps_identity_mismatch_failure(ops, monkeypatch, tmp_path):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    proof = dict(pid=12345, uid=os.getuid(), start_ticks=7, exe='/native/requester')
+    monkeypatch.setattr(cluster, 'process_identity', lambda pid: dict(proof, start_ticks=8))
+    children = [(dict(kind='requester'), SimpleNamespace(poll=lambda: None), dict(proof=proof))]
+    with pytest.raises(cluster.ClusterError, match='identity changed'):
+        cluster._sample_repo_benchmark(tmp_path, children, 'periodic')
+
+
+def test_repo_file_benchmark_delegates_to_owned_cluster(ops, monkeypatch):
+    _, cli = ops
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    received = []
+    def launch(*args, **kwargs):
+        received.append((args, kwargs))
+        return dict(status='STOPPED', execution='REPO_BENCHMARK_COMPLETE', failure=None,
+                    cleanup=[dict(status='ZERO', forced=False)])
+    monkeypatch.setattr(cluster, 'run_cluster', launch)
+    with contextlib.redirect_stdout(io.StringIO()):
+        status = cli.main(['cluster', 'benchmark-repo', '--config', '/deployment.json',
+                           '--source', '/input.bin', '--expected-sha256', 'a' * 64, '--timing'])
+    assert status == 0
+    assert received[0][1]['repo_benchmark'] == dict(source='/input.bin', sha256='a' * 64)
+    assert received[0][1]['timing']
+
+
+def test_repo_file_benchmark_rejects_small_input_before_launch(ops, tmp_path):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    source = tmp_path / 'small.bin'
+    source.write_bytes(b'bad')
+    with pytest.raises(cluster.ClusterError, match='500000000-byte'):
+        cluster.run_cluster('benchmark-repo', tmp_path / 'absent.json',
+                            repo_benchmark=dict(source=str(source), sha256='a' * 64))
+
+
+@pytest.mark.parametrize('cleanup', [[], [dict(status='ZERO', forced=True)],
+    [dict(status='UNKNOWN', forced=False)], [dict(status='ZERO')]])
+def test_repo_file_benchmark_rejects_unqualified_cleanup(ops, monkeypatch, cleanup):
+    _, cli = ops
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    monkeypatch.setattr(cluster, 'run_cluster', lambda *args, **kwargs: dict(
+        status='STOPPED', execution='REPO_BENCHMARK_COMPLETE', failure=None, cleanup=cleanup))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert cli.main(['cluster', 'benchmark-repo', '--config', '/deployment.json',
+                         '--source', '/input.bin', '--expected-sha256', 'a' * 64]) == 1
+
+
+@pytest.mark.parametrize('matches', [True, False])
+def test_repo_file_benchmark_reads_installed_manifest_before_launch(ops, tmp_path,
+                                                                  monkeypatch, matches):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    binary = tmp_path / 'bin/ndnsf-repo-file-benchmark'
+    binary.parent.mkdir()
+    binary.write_bytes(b'benchmark fixture')
+    binary.chmod(0o700)
+    manifest = tmp_path / 'installed.json'
+    manifest.write_text(json.dumps(dict(files={str(binary): dict(installed=dict(
+        kind='file', sha256=hashlib.sha256(binary.read_bytes()).hexdigest() if matches
+        else 'a' * 64))})))
+    config = dict(operation='prepare', platform=dict(kind='minindn'),
+                  release=dict(prefix=str(tmp_path), manifest=str(manifest)))
+    monkeypatch.setattr(cluster, 'load_deployment', lambda *args, **kwargs: config)
+    def stop_before_mutation(unused):
+        raise RuntimeError('manifest passed before mutation')
+    monkeypatch.setattr(cluster, '_private_directory', stop_before_mutation)
+    reason = 'manifest passed before mutation' if matches else 'installed release manifest'
+    with pytest.raises(RuntimeError, match=reason):
+        cluster._up(tmp_path / 'deployment.json', tmp_path / 'state', 30,
+                    repo_benchmark=dict(source='/input.bin', sha256='a' * 64))
+    assert not (tmp_path / 'state').exists()
+
+
 @pytest.mark.parametrize('timeout', [21600, 86400])
 def test_slurm_up_preserves_long_finite_deadline(ops, tmp_path, monkeypatch, timeout):
     cluster = importlib.import_module('_spec217_ops.cluster')
@@ -954,6 +1062,109 @@ def test_repo_operation_budget_rejects_invalid_before_launch(ops, deployment, pa
         module.load_deployment(write_config(root, config))
     assert not (root / 'state_root').exists()
     assert not (root / 'evidence_root').exists()
+
+
+@pytest.mark.parametrize('kind', ['requester', 'repo', 'provider', 'artifact-authority'])
+@pytest.mark.parametrize('period', [None, 1, 1000, 3600000])
+def test_periodic_sync_setting_reaches_native_before_role_launch(
+        ops, deployment, monkeypatch, kind, period):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = deployment
+    actor = next(row for row in config['actors'] if row['kind'] == kind)
+    params = actor.setdefault('parameters', {})
+    if period is not None:
+        params['core-svs-periodic-sync-ms'] = period
+    if kind == 'provider':
+        (root / 'trust-root-registry-v1.json').write_text('{}')
+        (root / 'recipients.json').write_text(json.dumps({actor['identity']: 'key.pem'}))
+        params.update({'grant-authority-public-key': 'key.pem',
+                       'recipient-key-map': 'recipients.json'})
+    path = write_config(root, config)
+    frozen = module.load_deployment(path)
+    identity = module.check_deployment(path)['configuration_digest']
+    normalized = next(row for row in frozen['actors'] if row['id'] == actor['id'])
+    before = copy.deepcopy(frozen)
+    monkeypatch.setenv('NDNSF_SVS_PERIODIC_SYNC_MS', 'untrusted-shell-value')
+    state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
+    argv, env = cluster._native_launch(frozen, normalized, root, state)
+    assert env.get('NDNSF_SVS_PERIODIC_SYNC_MS') == (str(period) if period is not None else None)
+    assert '--core-svs-periodic-sync-ms' not in argv
+    assert frozen == before
+    if period is not None:
+        assert normalized['parameters']['core-svs-periodic-sync-ms'] == period
+        params['core-svs-periodic-sync-ms'] = period + 1 if period < 3600000 else 999
+        assert module.check_deployment(write_config(root, config))['configuration_digest'] != identity
+
+
+@pytest.mark.parametrize('value', [0, -1, True, 1.0, '1000', 3600001])
+def test_periodic_sync_setting_rejects_invalid_values(ops, deployment, value):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = deployment
+    actor = next(row for row in config['actors'] if row['kind'] == 'repo')
+    actor.setdefault('parameters', {})['core-svs-periodic-sync-ms'] = value
+    with pytest.raises(ValueError, match='core-svs-periodic-sync-ms'):
+        module.load_deployment(write_config(root, config))
+
+
+@pytest.mark.parametrize('external', [False, True])
+def test_periodic_sync_setting_rejects_nonconsumer_actors(ops, deployment, external):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = deployment
+    actor = next(row for row in config['actors'] if row['kind'] == ('repo' if external else 'controller'))
+    if external:
+        for field in ('node', 'credential_home', 'resources'):
+            actor.pop(field)
+        actor['external'] = True
+    actor['parameters'] = {'core-svs-periodic-sync-ms': 1000}
+    with pytest.raises(ValueError, match='external references|core-svs-periodic-sync-ms'):
+        module.load_deployment(write_config(root, config))
+
+
+def test_periodic_sync_setting_survives_file_benchmark_requester(ops, deployment, monkeypatch):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = _stored_deployment(deployment, prepare=True)
+    actor = next(row for row in config['actors'] if row['kind'] == 'requester')
+    actor['parameters'] = {'core-svs-periodic-sync-ms': 1000}
+    frozen = module.load_deployment(write_config(root, config))
+    actor = next(row for row in frozen['actors'] if row['kind'] == 'requester')
+    before = copy.deepcopy(frozen)
+    monkeypatch.setenv('NDNSF_SVS_PERIODIC_SYNC_MS', '30000')
+    argv, env = cluster._native_launch(frozen, actor, root,
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64),
+        repo_benchmark=dict(source='/input.bin', sha256='a' * 64))
+    assert Path(argv[0]).name == 'ndnsf-repo-file-benchmark'
+    assert env['NDNSF_SVS_PERIODIC_SYNC_MS'] == '1000'
+    assert '--core-svs-periodic-sync-ms' not in argv
+    assert frozen == before
+
+
+def test_repo_cache_limits_reach_installed_native_actor(ops, deployment):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = _stored_deployment(deployment, prepare=True)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['parameters'] = {'cache-bytes': 1 << 30, 'large-object-threshold-bytes': 32 << 20}
+    frozen = module.load_deployment(write_config(root, config))
+    actor = next(actor for actor in frozen['actors'] if actor['kind'] == 'repo')
+    argv, _ = cluster._native_launch(frozen, actor, root,
+        dict(boot_id='a' * 32, configuration_sha256='b' * 64))
+    for key, value in repo['parameters'].items():
+        assert argv.count('--' + key) == 1
+        assert argv[argv.index('--' + key) + 1] == str(value)
+
+
+@pytest.mark.parametrize('option', ['cache-bytes', 'large-object-threshold-bytes'])
+@pytest.mark.parametrize('value', [0, -1, True, '1073741824', 1 << 64])
+def test_repo_cache_limits_reject_invalid_before_launch(ops, deployment, option, value):
+    module = importlib.import_module('_spec217_ops.deployment_config')
+    root, config = _stored_deployment(deployment, prepare=True)
+    repo = next(actor for actor in config['actors'] if actor['kind'] == 'repo')
+    repo['parameters'] = {option: value}
+    with pytest.raises(ValueError, match='repo.parameters'):
+        module.load_deployment(write_config(root, config))
+    assert not (root / 'state_root').exists()
 
 
 @pytest.mark.parametrize('value', [1, 'true', None])
@@ -1986,6 +2197,33 @@ def test_cluster_ready_record_is_bound_to_the_real_child_boot_and_name(ops, depl
                            ('config_sha256', '0' * 64), ('identity', '/other/p1')]:
             Path(row['log']).write_text(json.dumps(dict(record, **{key: value})) + '\n')
             assert not cluster._ready(row, actor, state)
+
+
+@pytest.mark.parametrize('debug', (False, True))
+@pytest.mark.parametrize('timing', (False, True))
+def test_diagnostic_log_filter_requires_explicit_diagnostic_mode(
+        ops, tmp_path, monkeypatch, debug, timing):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    mask = '*=NONE:ndn_svs.SVSPubSub=TRACE:ndn_service_framework.TimelineTrace=WARN'
+    monkeypatch.setenv('NDNSF_DI_DIAGNOSTIC_LOG_FILTER', mask)
+    state = {'boot_id': uuid.uuid4().hex, 'configuration_sha256': 'a' * 64,
+             'diagnostic_logging': debug, 'runtime_timing': timing}
+    env = cluster._environment(tmp_path, tmp_path/'nfd.sock', 'repo', state)
+    if debug:
+        assert env['NDN_LOG'] == mask
+    else:
+        assert 'TRACE' not in env['NDN_LOG']
+    assert 'NDNSF_DI_DIAGNOSTIC_LOG_FILTER' not in env
+
+
+@pytest.mark.parametrize('mask', ('', 'a b', 'a\nb', 'x' * 4097))
+def test_diagnostic_log_filter_rejects_invalid_values(ops, tmp_path, monkeypatch, mask):
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    monkeypatch.setenv('NDNSF_DI_DIAGNOSTIC_LOG_FILTER', mask)
+    state = {'boot_id': uuid.uuid4().hex, 'configuration_sha256': 'a' * 64,
+             'diagnostic_logging': True}
+    with pytest.raises(cluster.ClusterError, match='invalid NDNSF_DI_DIAGNOSTIC_LOG_FILTER'):
+        cluster._environment(tmp_path, tmp_path/'nfd.sock', 'repo', state)
 
 
 @pytest.mark.parametrize('debug', (False, True))

@@ -1,0 +1,542 @@
+{
+  "publicationSeconds": 57.38660614,
+  "payloadBytes": 500000000,
+  "clientCpuSeconds": 37.824542,
+  "publicationMode": "bounded-pipeline",
+  "publicationMaxActiveCommits": 3,
+  "partitionTimestampSeconds": 57.386606821,
+  "endSamplingSkewSeconds": 6.810000030554875e-07,
+  "additiveWallStateSeconds": {
+    "preparing_0_committing_0": 0.002138073,
+    "preparing_1_committing_0": 0.406737992,
+    "preparing_1_committing_1": 1.187936111,
+    "preparing_0_committing_1": 1.381442555,
+    "preparing_1_committing_2": 3.3128631719999997,
+    "preparing_0_committing_2": 0.210267001,
+    "preparing_1_committing_3": 3.585282098,
+    "preparing_0_committing_3": 47.299939818999995
+  },
+  "overlappingClientStageSeconds": {
+    "grant": 5.268541711,
+    "prepare-producer": 11.195891059000001,
+    "insert": 107.88191779199998,
+    "withdraw-producer": 0.012277417,
+    "manifest-confirmation": 34.998524822
+  },
+  "overlappingCoreStageSeconds": {
+    "validate-and-lock": 1.569317446,
+    "existing-object": 0.005483835,
+    "catalog": 0.417467743,
+    "packet-validation": 5.537559408000001,
+    "range-write": 6.50554933,
+    "catalog-recheck": 0.134399017,
+    "publish": 4.903105988
+  },
+  "groups": [
+    {
+      "group": 0,
+      "operationIds": [
+        "model-bcab07fce67ca23b7aff1ad5737d4bc1e3b30acdba35a8342b90cacb0593e645-15479202143672035170"
+      ],
+      "preparationSeconds": 0.406656339,
+      "commitSeconds": 8.568934214,
+      "ownerObservedSeconds": 8.977954788,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.156565918,
+        "prepare-producer": 0.674173079,
+        "insert": 5.212867164,
+        "withdraw-producer": 0.000303242,
+        "manifest-confirmation": 2.328589255
+      },
+      "unmeasuredCommitSeconds": 0.19643555599999907,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.071769899,
+        "existing-object": 0.000458733,
+        "catalog": 0.004940729,
+        "packet-validation": 0.27266514,
+        "range-write": 0.335061532,
+        "catalog-recheck": 0.000308635,
+        "publish": 0.246132708
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 1,
+      "operationIds": [
+        "model-25eced7c53b96cacd39dfb36f25a58aa1fdc7b347178a3c3f87b7e01f31da0c3-11579877554266248452"
+      ],
+      "preparationSeconds": 0.455605872,
+      "commitSeconds": 8.157329884,
+      "ownerObservedSeconds": 9.009038971,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.068696366,
+        "prepare-producer": 0.664490156,
+        "insert": 6.404751318,
+        "withdraw-producer": 0.000259403,
+        "manifest-confirmation": 0.795840948
+      },
+      "unmeasuredCommitSeconds": 0.2232916929999993,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.106349695,
+        "existing-object": 0.000368994,
+        "catalog": 0.005758393,
+        "packet-validation": 0.321642759,
+        "range-write": 0.427745401,
+        "catalog-recheck": 0.00250349,
+        "publish": 0.31067755
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 2,
+      "operationIds": [
+        "model-45137f85a7068078cd3674604a1a45214bac538b29d58220f57db43797208335-1666141759641958495"
+      ],
+      "preparationSeconds": 0.457572499,
+      "commitSeconds": 15.402267717,
+      "ownerObservedSeconds": 15.86169259,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.205909133,
+        "prepare-producer": 0.757222259,
+        "insert": 8.635622963,
+        "withdraw-producer": 0.000526668,
+        "manifest-confirmation": 5.511986721
+      },
+      "unmeasuredCommitSeconds": 0.2909999730000017,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.083256362,
+        "existing-object": 0.000277629,
+        "catalog": 0.007601677,
+        "packet-validation": 0.324502087,
+        "range-write": 0.330284326,
+        "catalog-recheck": 0.002472969,
+        "publish": 0.302399587
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 3,
+      "operationIds": [
+        "model-2858d509b75eb696384a1c30324159d784445b6a6904f48166b068e5e168ab8d-12182733381600216072"
+      ],
+      "preparationSeconds": 0.447469098,
+      "commitSeconds": 7.811347092,
+      "ownerObservedSeconds": 15.824580839,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.138234236,
+        "prepare-producer": 0.650985218,
+        "insert": 4.665426457,
+        "withdraw-producer": 0.000156619,
+        "manifest-confirmation": 2.170785773
+      },
+      "unmeasuredCommitSeconds": 0.18575878899999942,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.074714522,
+        "existing-object": 0.000213037,
+        "catalog": 0.007386057,
+        "packet-validation": 0.320156518,
+        "range-write": 0.31119112,
+        "catalog-recheck": 0.00169657,
+        "publish": 0.247886333
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 4,
+      "operationIds": [
+        "model-39703867e1eb66d65774836cf805990c9082e5c5707397d0d2490a8d2806b926-17707651203302767045"
+      ],
+      "preparationSeconds": 0.437069399,
+      "commitSeconds": 7.402652223,
+      "ownerObservedSeconds": 8.627645932,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.086183857,
+        "prepare-producer": 0.576549237,
+        "insert": 5.720503311,
+        "withdraw-producer": 0.000207173,
+        "manifest-confirmation": 0.893221733
+      },
+      "unmeasuredCommitSeconds": 0.12598691200000012,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.082775716,
+        "existing-object": 0.000151164,
+        "catalog": 0.013998825,
+        "packet-validation": 0.272349681,
+        "range-write": 0.321012363,
+        "catalog-recheck": 0.002710128,
+        "publish": 0.251950131
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 5,
+      "operationIds": [
+        "model-a906f033042f310b468a879b144e0acb9494736ed1baba57effbf20eea993813-2104052973068395412"
+      ],
+      "preparationSeconds": 0.485924737,
+      "commitSeconds": 7.954081058,
+      "ownerObservedSeconds": 15.264589182,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.066750052,
+        "prepare-producer": 0.496535763,
+        "insert": 4.845817234,
+        "withdraw-producer": 0.000267687,
+        "manifest-confirmation": 2.408251936
+      },
+      "unmeasuredCommitSeconds": 0.13645838599999927,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.065873244,
+        "existing-object": 0.000314234,
+        "catalog": 0.012914229,
+        "packet-validation": 0.273649033,
+        "range-write": 0.323086385,
+        "catalog-recheck": 0.003627601,
+        "publish": 0.254363081
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 6,
+      "operationIds": [
+        "model-1485d927235f157f995a7df60f6b9669f3ff278ee18422a15297939ef8036cbc-6408835164181669197"
+      ],
+      "preparationSeconds": 0.419561724,
+      "commitSeconds": 7.605532493,
+      "ownerObservedSeconds": 8.611374248,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.07546309,
+        "prepare-producer": 0.622925572,
+        "insert": 5.954818939,
+        "withdraw-producer": 0.000912525,
+        "manifest-confirmation": 0.809509466
+      },
+      "unmeasuredCommitSeconds": 0.14190290099999991,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.097369176,
+        "existing-object": 0.00036391,
+        "catalog": 0.015138415,
+        "packet-validation": 0.308950029,
+        "range-write": 0.391130153,
+        "catalog-recheck": 0.005017326,
+        "publish": 0.35008601
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 7,
+      "operationIds": [
+        "model-276d081e15384d364b3cab82056ea5e6989ae61b4c4a21c2b47c56176dd971ab-11897785478482091624"
+      ],
+      "preparationSeconds": 0.459773923,
+      "commitSeconds": 15.698126974,
+      "ownerObservedSeconds": 16.160998317,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.092371659,
+        "prepare-producer": 0.546384433,
+        "insert": 9.71167445,
+        "withdraw-producer": 0.001669598,
+        "manifest-confirmation": 5.221212689
+      },
+      "unmeasuredCommitSeconds": 0.12481414500000021,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.115868776,
+        "existing-object": 0.000382333,
+        "catalog": 0.023363613,
+        "packet-validation": 0.470038088,
+        "range-write": 0.477862219,
+        "catalog-recheck": 0.008414269,
+        "publish": 0.365206629
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 8,
+      "operationIds": [
+        "model-bed07112e1895310fc2fe9921d7e846ef060d71dd69912b1394e197f3e6b0415-10766733937604898022"
+      ],
+      "preparationSeconds": 0.495205074,
+      "commitSeconds": 8.635942977,
+      "ownerObservedSeconds": 16.117588756,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.181711919,
+        "prepare-producer": 0.965011517,
+        "insert": 5.141979076,
+        "withdraw-producer": 0.0003471,
+        "manifest-confirmation": 2.124557649
+      },
+      "unmeasuredCommitSeconds": 0.22233571599999813,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.176725961,
+        "existing-object": 0.000375207,
+        "catalog": 0.017039362,
+        "packet-validation": 0.405411956,
+        "range-write": 0.410346185,
+        "catalog-recheck": 0.005986614,
+        "publish": 0.252392787
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 9,
+      "operationIds": [
+        "model-108dff6199444ca71cea8d173bb89b0bc998dfbb06b9f8cc8d9cac9e0d922342-12812049086465221162"
+      ],
+      "preparationSeconds": 0.654341998,
+      "commitSeconds": 7.969957285,
+      "ownerObservedSeconds": 9.497976127,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.107587531,
+        "prepare-producer": 0.769885397,
+        "insert": 5.991434744,
+        "withdraw-producer": 0.000311367,
+        "manifest-confirmation": 0.848902231
+      },
+      "unmeasuredCommitSeconds": 0.2518360149999985,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.075049002,
+        "existing-object": 0.000406766,
+        "catalog": 0.012592213,
+        "packet-validation": 0.251465823,
+        "range-write": 0.32083687,
+        "catalog-recheck": 0.006099277,
+        "publish": 0.226938925
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 10,
+      "operationIds": [
+        "model-970a360e868c4d15b028e47133bc57a7a050767fdb2b93a3370675135caaa490-12672426091152731919"
+      ],
+      "preparationSeconds": 0.693398231,
+      "commitSeconds": 8.381704943,
+      "ownerObservedSeconds": 16.357962128,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.070179521,
+        "prepare-producer": 0.530950077,
+        "insert": 6.737873197,
+        "withdraw-producer": 0.000160219,
+        "manifest-confirmation": 0.885527189
+      },
+      "unmeasuredCommitSeconds": 0.15701474000000104,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.087000729,
+        "existing-object": 0.000129148,
+        "catalog": 0.028112057,
+        "packet-validation": 0.292435674,
+        "range-write": 0.415751402,
+        "catalog-recheck": 0.009849585,
+        "publish": 0.327159222
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 11,
+      "operationIds": [
+        "model-2f7c456e10ad31eac6efc57c7580ccdadc1b504d7e017b9a0a4cdbea973132d7-3182645681298627742"
+      ],
+      "preparationSeconds": 0.41586815,
+      "commitSeconds": 7.788193114,
+      "ownerObservedSeconds": 8.861097367,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.074385467,
+        "prepare-producer": 0.584370112,
+        "insert": 4.697769598,
+        "withdraw-producer": 0.001802169,
+        "manifest-confirmation": 2.310909045
+      },
+      "unmeasuredCommitSeconds": 0.11895672300000015,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.069199967,
+        "existing-object": 0.000344791,
+        "catalog": 0.03322005,
+        "packet-validation": 0.273452234,
+        "range-write": 0.327034772,
+        "catalog-recheck": 0.00603561,
+        "publish": 0.248564005
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 12,
+      "operationIds": [
+        "model-5c860f7ef67518c9a7942a2c6b3f66edfad790b049733e33134d4b14c59fb708-14952440961743517283"
+      ],
+      "preparationSeconds": 0.453962812,
+      "commitSeconds": 13.538188071,
+      "ownerObservedSeconds": 13.994954961,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.1591095,
+        "prepare-producer": 0.724281984,
+        "insert": 8.750920392,
+        "withdraw-producer": 0.000172851,
+        "manifest-confirmation": 3.789164329
+      },
+      "unmeasuredCommitSeconds": 0.11453901500000008,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.117560742,
+        "existing-object": 0.000167984,
+        "catalog": 0.037877488,
+        "packet-validation": 0.366086357,
+        "range-write": 0.361716229,
+        "catalog-recheck": 0.010097894,
+        "publish": 0.303254281
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 13,
+      "operationIds": [
+        "model-f9de1a36d0d549541464ff104416fc1e99e5b3aee57b0d0b5c1df8dfd85cb64c-3306592159312530027"
+      ],
+      "preparationSeconds": 0.463877886,
+      "commitSeconds": 6.024485787,
+      "ownerObservedSeconds": 13.993181012,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.128228298,
+        "prepare-producer": 0.567817781,
+        "insert": 4.476888401,
+        "withdraw-producer": 0.000206303,
+        "manifest-confirmation": 0.704124792
+      },
+      "unmeasuredCommitSeconds": 0.14722021199999968,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.08438193,
+        "existing-object": 0.000505305,
+        "catalog": 0.030446617,
+        "packet-validation": 0.337536214,
+        "range-write": 0.494419424,
+        "catalog-recheck": 0.013202912,
+        "publish": 0.293008388
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 14,
+      "operationIds": [
+        "model-8028471dc56b0d5bd1777e1631c8eaa4f73bdcc4806628f6dee51c38dd0001f9-3383357006226960891"
+      ],
+      "preparationSeconds": 0.471373354,
+      "commitSeconds": 8.147916998,
+      "ownerObservedSeconds": 8.623938919,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.100848028,
+        "prepare-producer": 0.603317643,
+        "insert": 6.484075424,
+        "withdraw-producer": 0.000293739,
+        "manifest-confirmation": 0.807836649
+      },
+      "unmeasuredCommitSeconds": 0.1515455149999987,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.078727211,
+        "existing-object": 0.000470544,
+        "catalog": 0.051361547,
+        "packet-validation": 0.340131338,
+        "range-write": 0.402892761,
+        "catalog-recheck": 0.011294738,
+        "publish": 0.306972272
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 15,
+      "operationIds": [
+        "model-0f7298aa5dbdf560a69e3059ed4467bc2cff2d5bca0c8b0c611b3b78e20d7620-1816926985220209182"
+      ],
+      "preparationSeconds": 0.531505972,
+      "commitSeconds": 8.285695645,
+      "ownerObservedSeconds": 13.838199311,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.102917413,
+        "prepare-producer": 0.608432584,
+        "insert": 5.127073676,
+        "withdraw-producer": 0.000221646,
+        "manifest-confirmation": 2.296454092
+      },
+      "unmeasuredCommitSeconds": 0.150596234,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.073487499,
+        "existing-object": 0.000297403,
+        "catalog": 0.037123215,
+        "packet-validation": 0.278240312,
+        "range-write": 0.35507478,
+        "catalog-recheck": 0.01692339,
+        "publish": 0.25149314
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 16,
+      "operationIds": [
+        "model-b0a6a3ca0d34e0f436e27d67fddaeb45a8ae57312be855982b0e534a3b03aa42-11072391006924693056"
+      ],
+      "preparationSeconds": 0.452328643,
+      "commitSeconds": 7.838075344,
+      "ownerObservedSeconds": 8.293074706,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 0.097130498,
+        "prepare-producer": 0.636751214,
+        "insert": 6.141183085,
+        "withdraw-producer": 0.004218314,
+        "manifest-confirmation": 0.832623786
+      },
+      "unmeasuredCommitSeconds": 0.1261684470000004,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.078503732,
+        "existing-object": 0.00013393,
+        "catalog": 0.052206748,
+        "packet-validation": 0.307846434,
+        "range-write": 0.366602708,
+        "catalog-recheck": 0.015230507,
+        "publish": 0.250782761
+      },
+      "coreCommitStageEvents": 7
+    },
+    {
+      "group": 17,
+      "operationIds": [
+        "model-67bb1ed65386fb12a4fd023924610d2c81996866bfa183d8b47064871dd0caeb-9944439161911495083"
+      ],
+      "preparationSeconds": 0.291323662,
+      "commitSeconds": 7.060872944,
+      "ownerObservedSeconds": 9.209397273,
+      "clientStagesComplete": true,
+      "clientStagesSeconds": {
+        "grant": 3.356269225,
+        "prepare-producer": 0.215807033,
+        "insert": 3.181238363,
+        "withdraw-producer": 0.000240794,
+        "manifest-confirmation": 0.259026539
+      },
+      "unmeasuredCommitSeconds": 0.04829099000000081,
+      "coreCommitStagesSeconds": {
+        "validate-and-lock": 0.030703283,
+        "existing-object": 0.000122723,
+        "catalog": 0.026386508,
+        "packet-validation": 0.120999731,
+        "range-write": 0.1335007,
+        "catalog-recheck": 0.012927502,
+        "publish": 0.113838178
+      },
+      "coreCommitStageEvents": 7
+    }
+  ],
+  "limits": "Only wall-state bins are additive. Group walls, process CPU intervals, client stages and Core stages overlap and must not be summed into wall time. Timestamp partition uses recorded start/end; wallSeconds was sampled separately, with endSamplingSkewSeconds reporting that difference. Commit intervals include native preparation/validation, grant, INSERT, withdrawal and one manifest; no original readback. Idle includes backpressure and owner work, not measured network time."
+}
