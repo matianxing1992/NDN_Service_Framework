@@ -199,6 +199,21 @@ main(int argc, char** argv)
       out = wires[index++];
       return true;
     };
+    // Supply the manifest ourselves rather than letting the facade synthesise one: this is
+    // the shape the DI publication path sends, and it keeps the request free of a
+    // reconstruction step.
+    auto manifest = std::make_shared<repo::RepoObjectManifest>();
+    manifest->objectName = packets.packetNames.front();
+    manifest->objectType = "original-packet-set";
+    manifest->sha256 = sha.toString();
+    manifest->size = packets.expectedWireBytes;
+    manifest->segmentCount = static_cast<uint32_t>(packets.packetNames.size());
+    manifest->packetNames = packets.packetNames;
+    manifest->packetOffsets = packets.packetOffsets;
+    manifest->generation = 1;
+    manifest->lifecycleState = "COMMITTED";
+    manifest->dataPrefix = publication.producerIdentity;
+    publication.packetSetManifest = manifest;
     publication.packets = packets;
     publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
       [] (const std::vector<uint8_t>& wire) {
