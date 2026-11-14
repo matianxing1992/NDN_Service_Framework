@@ -11371,7 +11371,7 @@ BOOST_AUTO_TEST_CASE(RankSpecEntryIdentityFollowsTheEgressOwner)
   const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
 
   const auto root = std::filesystem::temp_directory_path() /
-    ("spec224-rank-spec-" + std::to_string(getpid()));
+    ("spec224-rank-spec-table-" + std::to_string(getpid()));
   std::error_code cleanupError;
   std::filesystem::remove_all(root, cleanupError);
   std::filesystem::create_directories(root);
