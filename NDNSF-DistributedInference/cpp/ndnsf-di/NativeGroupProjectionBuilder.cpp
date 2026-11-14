@@ -98,19 +98,27 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
       group.rank.emplace(provider, group.rank.size()); groupByProvider.emplace(provider, id);
     }
   }
-  std::set<std::string> selfFeedbackRoles;
-  for (const auto& dependency : core.executionPlan.dependencies)
-    if (dependency.operationKind == "TOKEN_FEEDBACK" &&
-        dependency.producers.size() == 1 &&
-        dependency.producers == dependency.consumers)
-      selfFeedbackRoles.insert(dependency.producers.front());
-  const bool completeSelfFeedbackCover =
-    !selfFeedbackRoles.empty() &&
-    selfFeedbackRoles.size() == core.executionPlan.roles.size() &&
-    std::all_of(core.executionPlan.roles.begin(), core.executionPlan.roles.end(),
-                [&selfFeedbackRoles] (const auto& role) {
-                  return selfFeedbackRoles.count(role) != 0;
-                });
+  // C6 makes the terminal response owner the only sampler, so only that role may feed itself
+  // the next-epoch token; every other unit consumes the owner's token as a signed cross-role
+  // edge. A self edge anywhere else would claim a token its role never sampled, which is
+  // exactly the shape this refuses. A single-role plan has no other role to be the sampler,
+  // so its own role is trivially the owner.
+  const std::string samplerRole = [&] {
+    if (core.executionPlan.roles.size() == 1)
+      return core.executionPlan.roles.front();
+    if (!candidate.resultEgressRole.empty()) {
+      for (const auto& item : core.roleContracts())
+        if (item.second.role == candidate.resultEgressRole && item.second.rank == 0)
+          return item.first;
+      return std::string{};
+    }
+    std::set<std::string> consumed;
+    for (const auto& dependency : core.executionPlan.dependencies)
+      for (const auto& consumer : dependency.consumers) consumed.insert(consumer);
+    for (const auto& role : core.executionPlan.roles)
+      if (consumed.count(role) == 0) return role;
+    return std::string{};
+  }();
   for (std::size_t i = 0; i < core.executionPlan.dependencies.size(); ++i) {
     const auto& dependency = core.executionPlan.dependencies[i];
     // Self feedback stays inside LocalDependencyIo. Cross-role feedback owns
@@ -118,10 +126,8 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
     const bool feedback = dependency.operationKind == "TOKEN_FEEDBACK";
     if (feedback && dependency.producers.size() == 1 &&
         dependency.producers == dependency.consumers) {
-      // Per-role self feedback is how a sharded unit receives its next-epoch token. Require
-      // the edge to name a role of this plan rather than a single-role plan, which a
-      // degree-two template can never be.
-      if (!core.generationContract.enabled || !completeSelfFeedbackCover)
+      if (!core.generationContract.enabled ||
+          dependency.producers.front() != samplerRole)
         throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
       continue;
     }

@@ -1768,12 +1768,11 @@ NativePlannedRequest planNativeRequestImpl(
       std::uint64_t feedbackIndex = transferCount;
       for (const auto& consumer : feedbackConsumers) {
         NativeDependencySpec feedback;
-        // A sharded unit feeds itself its next-epoch token: the owner produces, and the
-        // unit that consumes it is the same unit. Naming a distinct producer here made
-        // every degree-two plan look like cross-role feedback, which the projection
-        // builders refuse because the producing rank would have to publish control Data
-        // it never owns.
-        feedback.producers = {tensorParallel ? consumer : feedbackOwner};
+        // C6: the HEAD owner is the only sampler, so it is the producer of every feedback
+        // edge. The owner's own edge is a local control loop; a peer consumes the same token
+        // as a signed cross-role edge. Naming the consumer as its own producer made a rank
+        // that never sampled claim the next token.
+        feedback.producers = {feedbackOwner};
         feedback.consumers = {consumer};
         feedback.keyScope = "token-feedback-" + hash({{"request", control.requestId},
           {"attempt", control.attempt}, {"producer", feedback.producers.front()},
@@ -1785,7 +1784,6 @@ NativePlannedRequest planNativeRequestImpl(
         // Each edge owns a distinct operation index, so two consumers cannot
         // collide on one signed operation.
         feedback.collectiveOperationIndex = feedbackIndex++;
-        // The rank is the producing role's own, which for a sharded unit is the consumer.
         const auto producerProvider = proposal.providerByRole.at(feedback.producers.front());
         feedback.collectiveProducerRank = std::to_string(
           std::distance(providers.begin(), providers.find(producerProvider)));

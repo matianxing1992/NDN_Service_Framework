@@ -352,22 +352,26 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     }
   }
   std::set<std::string> outgoing;
-  // Self feedback is per receiving unit, so a sharded plan has one per role. Precompute the
-  // cover once: a partial cover would leave a unit without its next-epoch input while its
-  // peers ran, which is the condition to refuse.
-  std::set<std::string> selfFeedbackRoles;
-  for (const auto& dependency : core.executionPlan.dependencies)
-    if (dependency.operationKind == "TOKEN_FEEDBACK" &&
-        dependency.producers.size() == 1 &&
-        dependency.producers == dependency.consumers)
-      selfFeedbackRoles.insert(dependency.producers.front());
-  const bool completeSelfFeedbackCover =
-    !selfFeedbackRoles.empty() &&
-    selfFeedbackRoles.size() == core.executionPlan.roles.size() &&
-    std::all_of(core.executionPlan.roles.begin(), core.executionPlan.roles.end(),
-                [&selfFeedbackRoles] (const auto& role) {
-                  return selfFeedbackRoles.count(role) != 0;
-                });
+  // C6 makes the terminal response owner the only sampler, so it is the only role that may
+  // feed itself a next-epoch token. Every other unit receives that same token as a signed
+  // cross-role edge, which the loop below binds and publishes like any other endpoint. A
+  // self edge on any other role would claim a token that role never sampled, so it is the
+  // shape refused here -- not the number of roles. The owner is read from the sealed
+  // candidate, which is the same field the terminal owner is recorded from below.
+  // C6 makes the terminal response owner the only sampler, so only that role may feed itself
+  // the next-epoch token. A self edge on any other role would claim a token its role never
+  // sampled. A single-role plan has no other candidate, so its own role is the owner.
+  const std::string samplerRole = [&] {
+    if (core.executionPlan.roles.size() == 1)
+      return core.executionPlan.roles.front();
+    if (!candidate.resultEgressRole.empty()) return selected(candidate.resultEgressRole);
+    std::set<std::string> consumed;
+    for (const auto& dependency : core.executionPlan.dependencies)
+      for (const auto& consumer : dependency.consumers) consumed.insert(consumer);
+    for (const auto& role : core.executionPlan.roles)
+      if (consumed.count(role) == 0) return role;
+    return std::string{};
+  }();
   std::set<std::size_t> consumedBindings;
   for (std::size_t index = 0; index < core.executionPlan.dependencies.size(); ++index) {
     const auto& dependency = core.executionPlan.dependencies[index];
@@ -376,11 +380,8 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     // no published Data and stays outside the network endpoint lists.
     if (feedback && dependency.producers.size() == 1 &&
         dependency.producers == dependency.consumers) {
-      // A sharded unit feeds itself its next-epoch token, so self feedback is the normal
-      // shape whenever every role owns one. What must hold is that the role it names is a
-      // role of this plan; a self edge naming a foreign role would bind control the plan
-      // never declared.
-      if (!core.generationContract.enabled || !completeSelfFeedbackCover)
+      if (!core.generationContract.enabled ||
+          dependency.producers.front() != samplerRole)
         throw std::invalid_argument("self feedback requires the authenticated single-role local plan");
       continue;
     }
