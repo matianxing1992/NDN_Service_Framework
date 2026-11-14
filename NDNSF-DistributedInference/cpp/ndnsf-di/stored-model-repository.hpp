@@ -48,9 +48,6 @@ struct NativeStoredModelPacketIo
    */
   std::function<void(PacketWires, const std::string&, const std::function<void()>&)>
     commitConcurrent;
-  /** Per-group wire bound enforced by the client behind this io. A scheduler built on
-   *  this io must use it instead of carrying its own constant; zero means unsupported. */
-  std::uint64_t publicationGroupWireBytes = 0;
 };
 
 /** Own at most three asynchronous original-packet commits on one caller thread.

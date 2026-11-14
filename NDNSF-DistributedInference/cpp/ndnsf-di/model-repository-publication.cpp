@@ -216,13 +216,6 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
   };
   current();
   NativeStoredModelPacketIo io;
-  auto ioConfig = repo::PersistentRepoClientConfig{};
-  ioConfig.servicePrefix = ndn::Name(target.servicePrefix);
-  ioConfig.providerScope = {ndn::Name(target.providerIdentity)};
-  ioConfig.dataOnly = true;
-  auto ioClient = std::make_shared<repo::RepoClient>(repo::RepoClient::makePersistent(user,
-    std::move(ioConfig)));
-  io.publicationGroupWireBytes = ioClient->publicationLimits().maxGroupWireBytes;
   io.requireCurrent = current;
   if (allowPublication) {
     io.requireCurrent = [user, current] {
@@ -287,8 +280,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         "MODEL_REPO_RECOVERY_COMMIT_MISMATCH");
       current();
     };
-    const auto commit = [user, target, deadline, current, verify, acquireOperationLifetime,
-                         ioClient](
+    const auto commit = [user, target, deadline, current, verify, acquireOperationLifetime](
       NativeStoredModelPacketIo::PacketWires wires, const std::string& expectedDigest,
       const std::function<void()>& additionalCurrent) {
       const auto callCurrent = [current, additionalCurrent] {
@@ -338,8 +330,14 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       // RepoClient validates every signature and the supplied aggregate digest
       // before installing the Producer filter or emitting INSERT. An authorized
       // GRANT may precede rejection; unchecked packets never become available.
+      auto commitConfig = repo::PersistentRepoClientConfig{};
+      commitConfig.servicePrefix = ndn::Name(target.servicePrefix);
+      commitConfig.providerScope = {ndn::Name(target.providerIdentity)};
+      commitConfig.dataOnly = true;
+      auto commitFacade = std::make_shared<repo::RepoClient>(
+        repo::RepoClient::makePersistent(user, std::move(commitConfig)));
       commitPacketGroup(*user, target, group, verify, callBudget, callCurrent, 2,
-                        expectedDigest.substr(7), ioClient);
+                        expectedDigest.substr(7), commitFacade);
       callCurrent();
     };
     io.commitConcurrent = commit;

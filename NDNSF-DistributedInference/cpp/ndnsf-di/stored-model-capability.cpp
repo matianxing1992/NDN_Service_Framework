@@ -812,11 +812,7 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
   NativeStoredModelPacketIo::PacketWires group;
   std::size_t nameBytes = 0;
   Bytes digestInput;
-  // Take the bound from the client behind the io when it reports one, so the scheduler
-  // cannot demand groups that client would refuse.
-  NativeModelCommitPipeline pipeline(io.requireCurrent,
-    io.publicationGroupWireBytes != 0 ? io.publicationGroupWireBytes
-                                     : NATIVE_STORED_MODEL_UPLOAD_WIRE);
+  NativeModelCommitPipeline pipeline(io.requireCurrent, NATIVE_STORED_MODEL_UPLOAD_WIRE);
   const auto flush = [&] {
     if (group.empty())
       return;
