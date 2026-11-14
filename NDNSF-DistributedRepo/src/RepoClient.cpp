@@ -146,7 +146,7 @@ findCurrentUserStorageClaim(ndn_service_framework::ServiceUser& owner,
     RepoUserStorageListRequest request;
     request.afterObjectName = cursor;
     request.limit = limits.listingPageSize;
-    const auto response = RepoClient::requestSelectedService(owner, provider, listService,
+    const auto response = RepoClientCompat::requestSelectedService(owner, provider, listService,
       toBytes(request.toJson()), limits.ackCollectionTimeMs,
       remainingTimeoutMs());
     if (response.size() > limits.maxListingWireBytes - listingWireBytes)
@@ -332,7 +332,7 @@ RepoClientCompat::fetchOriginalDataPacket(
     try {
       const int probeBudget = static_cast<int>(candidateBudget / 3);
       const int ackBudget = std::max(1, std::min(250, probeBudget / 4));
-      const auto receiptWire = RepoClient::requestSelectedService(
+      const auto receiptWire = RepoClientCompat::requestSelectedService(
         user, replica.providerIdentity,
         makeRepoServiceName(replica.servicePrefix, "DATA_RECEIPT"),
         request, ackBudget, probeBudget);
@@ -343,7 +343,7 @@ RepoClientCompat::fetchOriginalDataPacket(
           receipt.providerIdentity != replica.providerIdentity.toUri()) {
         throw std::runtime_error("repo-original-data-receipt-mismatch");
       }
-      const auto locationWire = RepoClient::requestSelectedService(
+      const auto locationWire = RepoClientCompat::requestSelectedService(
         user, replica.providerIdentity,
         makeRepoServiceName(replica.servicePrefix, "DATA_LOCATION"),
         request, ackBudget, probeBudget);
@@ -423,7 +423,7 @@ RepoClientCompat::fetchOriginalDataPacket(
         if (remaining > 1500) {
           try {
             const int recheckBudget = static_cast<int>(std::min<int64_t>(3000, remaining / 3));
-            (void)RepoDataPacketLocation::fromJson(toString(RepoClient::requestSelectedService(
+            (void)RepoDataPacketLocation::fromJson(toString(RepoClientCompat::requestSelectedService(
               user, replica.providerIdentity,
               makeRepoServiceName(replica.servicePrefix, "DATA_LOCATION"),
               request, std::min(250, recheckBudget / 4), recheckBudget)));
@@ -758,7 +758,7 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   };
 
   const auto initialClaim = listClaim();
-  const auto manifestResponse = requestSelectedService(owner, provider, manifestService,
+  const auto manifestResponse = RepoClientCompat::requestSelectedService(owner, provider, manifestService,
     toBytes(objectName), limits.ackCollectionTimeMs, remainingTimeoutMs());
   if (manifestResponse.empty() || manifestResponse.size() > limits.maxManifestWireBytes ||
       manifestResponse.size() != initialClaim.object.manifestBytes) {
@@ -1095,7 +1095,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   noteStage("prepare-producer");
-  const auto status = parseOperationStatusJson(toString(RepoClient::requestSelectedService(writer, provider,
+  const auto status = parseOperationStatusJson(toString(RepoClientCompat::requestSelectedService(writer, provider,
     makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining(),
     {}, current)));
   noteStage("insert");
@@ -1107,7 +1107,7 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto encodedManifestQuery = detail::encodeOwnedManifestQuery(manifestQuery);
   const auto readManifest = [&] {
     current();
-    const auto wire = RepoClient::requestSelectedService(writer, provider,
+    const auto wire = RepoClientCompat::requestSelectedService(writer, provider,
       makeRepoServiceName(servicePrefix, "MANIFEST"), encodedManifestQuery,
       ackCollectionTimeMs, remaining(),
       {}, current);
@@ -1979,7 +1979,7 @@ RepoClientCompat::requestArtifactCommitRanges(
 }
 
 std::vector<uint8_t>
-RepoClient::requestSelectedService(
+RepoClientCompat::requestSelectedService(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& providerIdentity,
   const ndn::Name& serviceName,
@@ -1988,12 +1988,12 @@ RepoClient::requestSelectedService(
   int timeoutMs,
   std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted)
 {
-  return requestSelectedService(user, providerIdentity, serviceName, payload,
+  return RepoClientCompat::requestSelectedService(user, providerIdentity, serviceName, payload,
     ackCollectionTimeMs, timeoutMs, std::move(requestMayHaveBeenEmitted), {});
 }
 
 std::vector<uint8_t>
-RepoClient::requestSelectedService(
+RepoClientCompat::requestSelectedService(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& providerIdentity,
   const ndn::Name& serviceName,
@@ -2484,7 +2484,7 @@ RepoClientCompat::requestAvailability(
 }
 
 ndn::Name
-RepoClient::requestFetchRange(
+RepoClientCompat::requestFetchRange(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const std::string& objectName,
@@ -2584,7 +2584,7 @@ RepoClientCompat::requestLocation(
 }
 
 ndn::Name
-RepoClient::requestFetchRange(
+RepoClientCompat::requestFetchRange(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& provider,
   const ndn::Name& repoServicePrefix,
@@ -3443,7 +3443,7 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.target);
   auto emitted = std::make_shared<std::atomic<bool>>(false);
-  const auto wire = RepoClient::requestSelectedService(
+  const auto wire = RepoClientCompat::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
     std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
@@ -3630,7 +3630,7 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   const auto target = m_impl->target(input.target);
   auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto wire = withEngineErrorTranslation("list", [&] {
-    return RepoClient::requestSelectedService(
+    return RepoClientCompat::requestSelectedService(
       *m_impl->user, ndn::Name(target.providerIdentity),
       makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
       std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
@@ -3702,7 +3702,7 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.targets.front());
   auto emitted = std::make_shared<std::atomic<bool>>(false);
-  const auto wire = RepoClient::requestSelectedService(
+  const auto wire = RepoClientCompat::requestSelectedService(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
     std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,

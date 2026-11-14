@@ -2948,7 +2948,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_REQUIRE(fs::remove(cipher));
   // Owner is permitted to invoke MANIFEST, but is not the delegated Source writer.
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::requestSelectedService(environment.user(),
+    return repo::RepoClientCompat::requestSelectedService(environment.user(),
       environment.provider(1).getName(), repoService(servicePrefix, "MANIFEST"),
       repo::encodeUserStorageInsertRequest(insert), ACK_COLLECTION_MS, 15000);
   }), std::runtime_error);

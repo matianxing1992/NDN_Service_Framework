@@ -1319,7 +1319,7 @@ run(const Options& options)
         std::vector<uint8_t> input;
         if (operation == "CATALOG_DELTA") input = repo::encodeCatalogDeltaRequest(0);
         if (operation == "CATALOG_LOOKUP") input = repo::encodeCatalogLookupRequest(object + "/range");
-        const auto bytes = repo::RepoClient::requestSelectedService(context.user(), provider,
+        const auto bytes = repo::RepoClientCompat::requestSelectedService(context.user(), provider,
           repo::makeRepoServiceName(prefix, operation), input, 1000, 30000);
         (void)record(operation, {{}, bytes, true, {}});
       }
@@ -1354,7 +1354,7 @@ run(const Options& options)
       required(options, "object-name"), "application/octet-stream", payload,
       1, {required(options, "repo-a")}, "spec193-persistent-boundary");
     try {
-      (void)repo::RepoClient::requestSelectedService(
+      (void)repo::RepoClientCompat::requestSelectedService(
         context.user(), ndn::Name(required(options, "provider-a")),
         repo::makeRepoServiceName(
           ndn::Name(required(options, "service-prefix")), "STORE"),
@@ -1382,7 +1382,7 @@ run(const Options& options)
       {required(options, "repo-a")}, "spec193-object-baseline");
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1436,7 +1436,7 @@ run(const Options& options)
     const auto expectedSize = std::stoull(required(options, "expected-size"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1472,7 +1472,7 @@ run(const Options& options)
     const auto expected = readBytes(required(options, "source"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1516,7 +1516,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1567,7 +1567,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1630,7 +1630,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1687,7 +1687,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1766,7 +1766,7 @@ run(const Options& options)
     const auto original = existed ? readBytes(destination) : std::vector<uint8_t>{};
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -1865,7 +1865,7 @@ run(const Options& options)
     const auto request = repo::toBytes(query.toJson());
     for (const std::string operation : {"DATA_RECEIPT", "DATA_LOCATION"}) {
       try {
-        (void)repo::RepoClient::requestSelectedService(
+        (void)repo::RepoClientCompat::requestSelectedService(
           context.user(), provider,
           repo::makeRepoServiceName(servicePrefix, operation),
           request, 1000, 15000);
@@ -1888,7 +1888,7 @@ run(const Options& options)
     const auto request = repo::toBytes(query.toJson());
     for (const std::string operation : {"DATA_RECEIPT", "DATA_LOCATION"}) {
       try {
-        (void)repo::RepoClient::requestSelectedService(
+        (void)repo::RepoClientCompat::requestSelectedService(
           context.user(), provider,
           repo::makeRepoServiceName(servicePrefix, operation),
           request, 1000, 15000);
@@ -1913,7 +1913,7 @@ run(const Options& options)
     const auto repoNode = required(options, "repo-a");
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 1000, 30000);
@@ -2056,7 +2056,7 @@ run(const Options& options)
     const ndn::security::Certificate certificate(certBlock);
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2109,7 +2109,7 @@ run(const Options& options)
     const auto original = existed ? readBytes(destination) : std::vector<uint8_t>{};
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2188,7 +2188,7 @@ run(const Options& options)
     const auto expectedWire = readBytes(required(options, "wire-source"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2271,7 +2271,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2397,7 +2397,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2481,7 +2481,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2541,7 +2541,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);
@@ -2595,7 +2595,7 @@ run(const Options& options)
     }
     auto selected = [&] (const std::string& operation,
                          const std::vector<uint8_t>& request) {
-      return repo::RepoClient::requestSelectedService(
+      return repo::RepoClientCompat::requestSelectedService(
         context.user(), provider,
         repo::makeRepoServiceName(servicePrefix, operation),
         request, 15000, 120000);

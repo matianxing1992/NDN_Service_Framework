@@ -1,4 +1,6 @@
 #include "ndnsf-distributed-repo/RepoNode.hpp"
+
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
@@ -1081,7 +1083,7 @@ RepoNode::runPublishOperationPass(const std::string& operationId)
           write.reference = status.reference;
           write.operationOwner = status.seed;
           write.bytes = std::move(bytes);
-          response = RepoClient::requestSelectedService(
+          response = RepoClientCompat::requestSelectedService(
             *m_publishUser, providerIdentity, serviceName,
             write.toWire(m_artifactLimits), m_publishAckCollectionTimeMs,
             m_publishRequestTimeoutMs, requestMayHaveBeenEmitted);
@@ -1108,7 +1110,7 @@ RepoNode::runPublishOperationPass(const std::string& operationId)
             write.lengthBytes = length;
             write.bytes = std::move(bytes);
             const auto rangeService = makeRepoServiceName(servicePrefix, "STORE_RANGE");
-            const auto staged = RepoClient::requestSelectedService(
+            const auto staged = RepoClientCompat::requestSelectedService(
               *m_publishUser, providerIdentity, rangeService,
               write.toWire(m_artifactLimits), m_publishAckCollectionTimeMs,
               m_publishRequestTimeoutMs, requestMayHaveBeenEmitted);
@@ -1130,7 +1132,7 @@ RepoNode::runPublishOperationPass(const std::string& operationId)
           commit.reference = status.reference;
           commit.operationOwner = status.seed;
           const auto commitService = makeRepoServiceName(servicePrefix, "COMMIT_RANGES");
-          response = RepoClient::requestSelectedService(
+          response = RepoClientCompat::requestSelectedService(
             *m_publishUser, providerIdentity, commitService,
             commit.toWire(m_artifactLimits), m_publishAckCollectionTimeMs,
             m_publishRequestTimeoutMs, requestMayHaveBeenEmitted);
@@ -2481,7 +2483,7 @@ RepoNode::validatePersistentWriteIdentity(const ArtifactReference& reference,
     query.target = localTarget;
     const auto queryJson = query.toJson();
     const std::vector<uint8_t> queryWire(queryJson.begin(), queryJson.end());
-    const auto response = RepoClient::requestSelectedService(
+    const auto response = RepoClientCompat::requestSelectedService(
       *verifier, ndn::Name(operationOwner->providerIdentity),
       makeRepoServiceName(ndn::Name(operationOwner->servicePrefix), "STATUS"),
       queryWire, ackCollectionMs, timeoutMs);

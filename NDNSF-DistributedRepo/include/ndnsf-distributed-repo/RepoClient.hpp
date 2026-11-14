@@ -348,28 +348,13 @@ public:
    * The optional emission latch is caller-owned: clear it once before a
    * multi-request target attempt; this helper only sets it.
    */
-  static std::vector<uint8_t> requestSelectedService(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& providerIdentity,
-    const ndn::Name& serviceName,
-    const std::vector<uint8_t>& payload,
-    int ackCollectionTimeMs,
-    int timeoutMs,
-    std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted = {});
+
 
   /** Check caller-owned cancellation before dispatch and while waiting.
    * A thrown probe abandons the local request; an emitted operation may still
    * have committed remotely and must not be treated as rolled back.
    */
-  static std::vector<uint8_t> requestSelectedService(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& providerIdentity,
-    const ndn::Name& serviceName,
-    const std::vector<uint8_t>& payload,
-    int ackCollectionTimeMs,
-    int timeoutMs,
-    std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
-    const std::function<void()>& requireCurrent);
+
 
   
 
@@ -381,14 +366,7 @@ public:
 
   
 
-  static ndn::Name requestFetchRange(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& repoServicePrefix,
-    const std::string& objectName,
-    RepoByteRange range,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
 
   
 
@@ -404,15 +382,7 @@ public:
 
   
 
-  static ndn::Name requestFetchRange(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& provider,
-    const ndn::Name& repoServicePrefix,
-    const std::string& objectName,
-    RepoByteRange range,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+
 };
 
 } // namespace ndnsf_distributed_repo

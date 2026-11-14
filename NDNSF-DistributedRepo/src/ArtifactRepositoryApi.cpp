@@ -1359,7 +1359,7 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
     throw RepoRequestTimeoutError(
       "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
   }
-  return RepoClient::requestSelectedService(
+  return RepoClientCompat::requestSelectedService(
     serviceUser, target.providerIdentity, serviceName, requestBytes,
     config.ackCollectionTimeMs, timeoutMs);
 }
@@ -3764,7 +3764,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
             (auto onTimeout, auto onResponse) {
               const auto requestTimeout = boundedRequestTimeoutMs(
                 deadline, requestTimeoutMs);
-              return RepoClient::requestFetchRange(
+              return RepoClientCompat::requestFetchRange(
                 *serviceUser, providerIdentity, servicePrefix,
                 artifactObjectName, RepoByteRange{offset, length}, requestTimeout,
                 std::move(onTimeout), std::move(onResponse));

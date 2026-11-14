@@ -5,6 +5,7 @@
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/TimelineTrace.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
@@ -101,7 +102,7 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
     static_cast<std::uint64_t>(timeout);
   const auto grantStarted = std::chrono::steady_clock::now();
   const auto encoded = request.toJson();
-  const auto replyWire = repo::RepoClient::requestSelectedService(writer,
+  const auto replyWire = repo::RepoClientCompat::requestSelectedService(writer,
     ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
       ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
     std::vector<std::uint8_t>(encoded.begin(), encoded.end()),
@@ -275,7 +276,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
         }), "MODEL_REPO_RECOVERY_REFERENCE_INVALID");
       const auto objectName = name.toUri(ndn::name::UriFormat::ALTERNATE);
       const auto timeout = budget();
-      const auto wire = repo::RepoClient::requestSelectedService(*user,
+      const auto wire = repo::RepoClientCompat::requestSelectedService(*user,
         ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
           ndn::Name(target.servicePrefix), "MANIFEST"), repo::toBytes(objectName),
         std::min(MAX_ACK_COLLECTION_MS, std::max(1, timeout / 2)), timeout, {}, current);

@@ -1,6 +1,7 @@
 #include "tests/integration-tests/isolated-test-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 
 #include <chrono>
 #include <future>
@@ -65,7 +66,7 @@ struct RepoAckFixture
       publishedAt = std::chrono::steady_clock::now();
     });
     auto future = std::async(std::launch::async, [&] {
-      return ndnsf_distributed_repo::RepoClient::requestSelectedService(
+      return ndnsf_distributed_repo::RepoClientCompat::requestSelectedService(
         user, provider, service, {0x01}, collectionMs, 6000);
     });
     bool delivered = false;

@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/portable-kv-checkpoint.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <ndn-cxx/util/scope.hpp>
@@ -128,7 +129,7 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
     limits.maxPacketCount = 65536;
     limits.maxPacketWireBytes = 256ULL * 1024 * 1024;
     const auto root = restore.saved.rootName.toUri(ndn::name::UriFormat::ALTERNATE);
-    const auto manifestBytes = repo::RepoClient::requestSelectedService(*policy.storageWriter,
+    const auto manifestBytes = repo::RepoClientCompat::requestSelectedService(*policy.storageWriter,
       ndn::Name(policy.repoProvider), repo::makeRepoServiceName(ndn::Name(policy.repoServicePrefix),
         "MANIFEST"), std::vector<std::uint8_t>(root.begin(), root.end()),
       limits.ackCollectionTimeMs, remaining());

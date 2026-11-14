@@ -4026,7 +4026,7 @@ BOOST_AUTO_TEST_CASE(UnbootstrappedSelectedRepoRequestWaitsUntilTimeoutOrCancell
     std::atomic<bool> closed{false};
     const auto emitted = std::make_shared<std::atomic<bool>>(false);
     auto result = std::async(std::launch::async, [&] {
-      return RepoClient::requestSelectedService(user, ndn::Name("/repo/provider"),
+      return RepoClientCompat::requestSelectedService(user, ndn::Name("/repo/provider"),
         ndn::Name("/SERVICE/repo/INSERT"), {1}, 10, cancel ? 1000 : 100, emitted, [&] {
           ++probes;
           if (closed.load())
@@ -4071,7 +4071,7 @@ BOOST_AUTO_TEST_CASE(SelectedRepoRequestCancellationAbandonsQueuedDispatchBefore
   const auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto began = std::chrono::steady_clock::now();
   auto result = std::async(std::launch::async, [&] {
-    return RepoClient::requestSelectedService(user, ndn::Name("/repo/provider"),
+    return RepoClientCompat::requestSelectedService(user, ndn::Name("/repo/provider"),
       ndn::Name("/SERVICE/repo/INSERT"), {1}, 10, 5000, emitted, [&] {
         ++probes;
         if (closed.load())

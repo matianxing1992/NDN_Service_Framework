@@ -287,6 +287,40 @@ public:
     int timeoutMs,
     ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static ndn::Name requestFetchRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static ndn::Name requestFetchRange(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& provider,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range,
+    int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static std::vector<uint8_t> requestSelectedService(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& providerIdentity,
+    const ndn::Name& serviceName,
+    const std::vector<uint8_t>& payload,
+    int ackCollectionTimeMs,
+    int timeoutMs,
+    std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted = {});
+  static std::vector<uint8_t> requestSelectedService(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& providerIdentity,
+    const ndn::Name& serviceName,
+    const std::vector<uint8_t>& payload,
+    int ackCollectionTimeMs,
+    int timeoutMs,
+    std::shared_ptr<std::atomic<bool>> requestMayHaveBeenEmitted,
+    const std::function<void()>& requireCurrent);
 };
 
 } // namespace ndnsf_distributed_repo
