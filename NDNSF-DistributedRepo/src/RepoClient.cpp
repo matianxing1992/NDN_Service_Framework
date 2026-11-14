@@ -3296,6 +3296,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
     limits.ackCollectionTimeMs = claim.ackCollectionTimeMs;
     limits.maxPacketCount = claim.maxPacketCount;
     limits.maxPacketWireBytes = claim.maxPacketWireBytes;
+    limits.maxManifestWireBytes = claim.maxManifestWireBytes;
     const auto verifier = input.verifyWire;
     const auto verifyPacket = [verifier](const ndn::Data& packet) {
       const auto& wire = packet.wireEncode();
@@ -3342,9 +3343,27 @@ RepoClient::fetchData(const RepoDataFetch& input,
       *m_impl->user, reference, verifyPacket, remainingMs(options.deadline), limits,
       options.requireCurrent);
     RepoDataFetchResult result;
-    result.packets = std::move(wires);
-    for (const auto& wire : result.packets)
+    // The caller's own manifest is a commitment, so report what was checked instead of
+    // handing back bytes with no verdict: the ordered-wire digest and the declared size.
+    ndn::util::Sha256 digest;
+    for (auto& wire : wires) {
+      digest.update(wire);
       result.wireBytes += wire.size();
+      result.packets.push_back(std::move(wire));
+    }
+    result.wireDigest = canonicalSha256Digest("sha256:" + digest.toString());
+    if (bound.expectedWireBytes != 0 && result.wireBytes != bound.expectedWireBytes)
+      throw RepoClientError("SIZE_MISMATCH",
+                            "fetched packet set does not have the declared wire size",
+                            "fetchData");
+    if (!bound.expectedSha256.empty()) {
+      result.digestVerified =
+        result.wireDigest == canonicalSha256Digest(bound.expectedSha256);
+      if (!result.digestVerified)
+        throw RepoClientError("DIGEST_MISMATCH",
+                              "fetched wires do not match the committed manifest digest",
+                              "fetchData");
+    }
     return result;
   }
 
@@ -3385,6 +3404,9 @@ RepoClient::fetchData(const RepoDataFetch& input,
     result.packets.push_back(std::move(wire));
   }
   result.wireDigest = canonicalSha256Digest("sha256:" + digest.toString());
+  if (reference && reference->wireBytes != 0 && result.wireBytes != reference->wireBytes)
+    throw RepoClientError("SIZE_MISMATCH",
+                          "retrieved wires do not have the exact declared size", "fetchData");
   if (reference && !reference->wireDigest.empty()) {
     // Hex case is a rendering detail, not a different digest: compare canonical
     // forms so a correct packet set with a lowercase commitment still verifies.
