@@ -2,6 +2,8 @@
 
 #include "ndnsf-distributed-repo/repo-client-compat.hpp"
 
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
+
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "face-data-reference-fetcher.hpp"
@@ -1533,7 +1535,7 @@ RepoClient::catalogDelta(const RepoNode& node, uint64_t sinceEpoch)
 }
 
 RepoCatalogEntry
-RepoClient::catalogLookup(const RepoNode& node,
+RepoStoreApi::catalogLookup(const RepoNode& node,
                           const std::string& objectName)
 {
   return parseCatalogEntryJson(toString(

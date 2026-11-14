@@ -273,8 +273,7 @@ public:
 
   static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
 
-  static RepoCatalogEntry catalogLookup(const RepoNode& node,
-                                        const std::string& objectName);
+  
 
   /**
    * Legacy opaque-byte helper: store a large object as object-level chunks named
