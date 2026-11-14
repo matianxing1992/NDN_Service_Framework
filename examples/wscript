@@ -349,13 +349,16 @@ def build(bld):
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
+        # Installed: the acceptance driver is meant to be run from the prefix against the
+        # installed stack, not only from the build tree.
         bld.program(name='spec240-facade-wire',
                     target='spec240-facade-wire',
                     source=['spec240-facade-wire.cpp'],
                     rpath=[runtime_libdir],
                     includes=['..', '../NDNSF-DistributedRepo/include', '../ndn-service-framework'],
                     use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL sqlite3',
-                    install_path=None)
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                    install_path='${BINDIR}')
 
         bld.program(name='spec240-seed-store',
                     target='spec240-seed-store',
