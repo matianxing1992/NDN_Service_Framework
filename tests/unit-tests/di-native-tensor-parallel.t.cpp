@@ -7,6 +7,7 @@
  * Provider (that is T003).
  */
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRunnerReuseCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -14059,6 +14060,104 @@ BOOST_AUTO_TEST_CASE(ASecondTurnReusesThePreparedUnitAndItsChildSessions)
   // later failure with no clue in it; this pins the answer at the source.
   BOOST_CHECK(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu ||
               evidence->runnerKind == RunnerKind::OnnxRuntimeCuda);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(ASecondTurnFindsThePublishedRunnerAndReusesEveryChildSession)
+{
+  // The case T004's first sentence actually asks for, driven through the cache the Provider
+  // uses. A runner is published for one projection, then looked up again for a second
+  // projection that differs only in request identity: same artifact, same rank, same plan. The
+  // cache must hand the same runner back, because that is what keeps the children's sessions
+  // resident and stops a second turn from loading 58 ONNX sessions again.
+  //
+  // The runner is the real tensor-parallel parent over one assembled unit, not a stub: a stub
+  // would prove the cache stores pointers, not that a reusable unit exists.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-reuse-cache-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0") steps.push_back(step);
+  BOOST_REQUIRE(!steps.empty());
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  // A projection whose only variable part is the request identity: the cache key is built from
+  // the artifact and role, so a second turn of the same conversation must hit it.
+  const auto projectionFor = [&] (const std::string& requestId) {
+    NativeSelectionProjectionV3 projection;
+    projection.provider = "/ndnsf/di/spec217/minindn/provider-0";
+    projection.requestId = requestId;
+    projection.attempt = 1;
+    projection.canonicalArtifactName = "/model/reuse-cache-test";
+    projection.executionRole.roleId = "S0R0";
+    auto& role = projection.assembly;
+    role.role = role.selectedRole = "S0R0";
+    role.rank = 0;
+    role.layerBegin = 0;
+    role.layerEnd = 28;
+    role.backend = "onnxruntime-cpu";
+    role.artifactDigest = std::string("sha256:") + std::string(64, 'a');
+    role.recipeDigest = std::string("sha256:") + std::string(64, 'b');
+    projection.selectedRole = role;
+    projection.dataflow.role = role.role;
+    projection.dataflow.requestId = requestId;
+    projection.dataflow.attempt = 1;
+    return projection;
+  };
+  const auto provider = std::string("/ndnsf/di/spec217/minindn/provider-0");
+  const auto bootId = std::string("reuse-cache-boot");
+  ndnsf::di::NativeProviderRunnerReuseCache cache(4);
+  cache.publish(projectionFor("/request/turn/0"), provider, bootId, nullptr, runner);
+  const auto reused = cache.lookup(projectionFor("/request/turn/1"), provider, bootId, nullptr);
+  BOOST_REQUIRE_MESSAGE(reused != nullptr,
+    "a second turn of the same artifact found no published runner");
+  BOOST_CHECK(reused.get() == runner.get());
+  // A different artifact must not reuse it: the unit was assembled from this rank's tables, and
+  // another artifact has different ones.
+  auto otherProjection = projectionFor("/request/turn/1");
+  otherProjection.assembly.artifactDigest = std::string("sha256:") + std::string(64, 'd');
+  BOOST_CHECK(cache.lookup(otherProjection, provider, bootId, nullptr) == nullptr);
 
   std::filesystem::remove_all(root, cleanupError);
 }
