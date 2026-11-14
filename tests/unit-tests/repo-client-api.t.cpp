@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp"
+#include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "tests/boost-test.hpp"
 
 #include <atomic>
@@ -434,6 +435,32 @@ BOOST_AUTO_TEST_CASE(DiscoveryHonoursTheRequestedProviderScope) {
   scoped.providerScope = all.candidates.front().providerIdentity.toUri();
   const auto kept = client.discover(scoped, makeOptions());
   BOOST_CHECK_EQUAL(kept.candidates.size(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(TheCommitSchedulerNeverRunsMoreThanThreeAtOnce) {
+  // The audit asked for the three-commit cap to be observable rather than assumed. Submit more
+  // than the cap and record how many commits overlap.
+  RepoCommitPipeline pipeline([] {}, 1U << 20);
+  std::atomic<int> active{0};
+  std::atomic<int> peak{0};
+  std::atomic<int> completed{0};
+  constexpr int total = 9;
+  for (int index = 0; index < total; ++index) {
+    pipeline.submit(1024, [&] (const RepoCommitPipeline::CurrentCheck& current) {
+      current();
+      const auto now = ++active;
+      auto previous = peak.load();
+      while (previous < now && !peak.compare_exchange_weak(previous, now)) {
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(40));
+      --active;
+      ++completed;
+    });
+  }
+  pipeline.finish();
+  BOOST_CHECK_EQUAL(completed.load(), total);
+  BOOST_CHECK_LE(peak.load(), 3);
+  BOOST_CHECK_GE(peak.load(), 1);
 }
 
 BOOST_AUTO_TEST_CASE(CloseIsIdempotentAndSafeToRepeat) {
