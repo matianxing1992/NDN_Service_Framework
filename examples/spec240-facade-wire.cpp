@@ -263,13 +263,25 @@ main(int argc, char** argv)
       std::chrono::steady_clock::now().time_since_epoch().count());
     authorization.expiresAtMs = static_cast<uint64_t>(std::chrono::duration_cast<
       std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + 600000;
-    const auto grant = client.authorizeWrite(authorization, operation);
+    if (options.count("expired-grant") != 0) {
+      // A grant that expired before it was requested must be refused by the Repo.
+      authorization.expiresAtMs = static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) - 60000;
+    }
+    std::optional<repo::RepoWriteGrant> grant;
+    try {
+      grant = client.authorizeWrite(authorization, operation);
+    }
+    catch (const std::exception& error) {
+      std::fprintf(stderr, "FACADE_GRANT_REJECTED what=%s\n", error.what());
+      return options.count("expect-rejection") != 0 ? 0 : 1;
+    }
     std::fprintf(stderr, "FACADE_GRANT grant=%s owner=%s epoch=%llu object=%s\n",
-                 grant.grantId.c_str(), grant.ownerIdentity.c_str(),
-                 static_cast<unsigned long long>(grant.ownerEpoch), grant.objectName.c_str());
-    publication.ownerIdentity = grant.ownerIdentity;
-    publication.grantId = grant.grantId;
-    publication.ownerEpoch = grant.ownerEpoch;
+                 grant->grantId.c_str(), grant->ownerIdentity.c_str(),
+                 static_cast<unsigned long long>(grant->ownerEpoch), grant->objectName.c_str());
+    publication.ownerIdentity = grant->ownerIdentity;
+    publication.grantId = grant->grantId;
+    publication.ownerEpoch = grant->ownerEpoch;
 
     const auto result = client.publishData(publication, operation);
     if (options.count("manifest-out") != 0) {
