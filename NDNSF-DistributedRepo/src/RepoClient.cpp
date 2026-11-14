@@ -2826,8 +2826,12 @@ RepoClient::publishFile(const RepoFilePublication& input,
                         const RepoOperationOptions& options)
 {
   Impl::Ticket ticket(m_impl.get(), __func__);
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
+  if (!m_impl->file)
+    throw RepoClientError("UNSUPPORTED",
+                          "publishFile requires a file client; this client was opened data-only",
+                          "publishFile");
   if (input.reference.logicalName.empty() || input.reference.contentDigest.empty())
     throw std::invalid_argument("publishFile requires a logical name and content digest");
   const auto reference = toArtifactReference(input.reference);
@@ -2996,8 +3000,12 @@ RepoClient::fetchFile(const RepoFileFetch& input,
                       const RepoOperationOptions& options) const
 {
   Impl::Ticket ticket(m_impl.get(), __func__);
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchFile");
+  if (!m_impl->file)
+    throw RepoClientError("UNSUPPORTED",
+                          "fetchFile requires a file client; this client was opened data-only",
+                          "fetchFile");
   if (input.targetPath.empty())
     throw std::invalid_argument("fetchFile requires a destination path");
   if (input.hasRange) {
@@ -3250,8 +3258,12 @@ RepoClient::inspect(const RepoInspectionRequest& input,
                     const RepoOperationOptions& options) const
 {
   Impl::Ticket ticket(m_impl.get(), __func__);
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "inspect");
+  if (!m_impl->file)
+    throw RepoClientError("UNSUPPORTED",
+                          "inspect requires a file client; this client was opened data-only",
+                          "inspect");
   RepoInspection inspection;
   inspection.observedAt = std::chrono::system_clock::now();
   inspection.observerId = m_impl->user ? m_impl->user->getName().toUri() : std::string("in-app");
@@ -3438,8 +3450,12 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
                      const RepoOperationOptions& options) const
 {
   Impl::Ticket ticket(m_impl.get(), __func__);
-  if (!m_impl || !m_impl->file)
+  if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "discover");
+  if (!m_impl->file)
+    throw RepoClientError("UNSUPPORTED",
+                          "discover requires a file client; this client was opened data-only",
+                          "discover");
   ArtifactCapabilityRequirements requirements;
   for (const auto& capability : input.requiredCapabilities) {
     if (capability == "artifact-manifest-v2" || capability == "raw-file-v1")

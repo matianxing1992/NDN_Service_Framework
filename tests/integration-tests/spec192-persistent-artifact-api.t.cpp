@@ -6069,6 +6069,51 @@ BOOST_AUTO_TEST_CASE(CloseWhileAnOperationWaitsReportsTheTruth)
   BOOST_CHECK_THROW(client.remove(deleteRequest, afterOptions), repo::RepoClientError);
 }
 
+
+BOOST_AUTO_TEST_CASE(DataOnlyClientReportsMissingFileCapabilitiesAsUnsupported)
+{
+  // CA12: a data-only client has no file engine. Its file operations must say so
+  // (UNSUPPORTED) rather than pretending the client is closed.
+  TempRoot temporary;
+  const ndn::Name servicePrefix(repo::RepoClient::DEFAULT_SERVICE_NAME);
+  const std::vector<std::string> operations{"STATUS", "STORE"};
+  BootstrapProfile profile;
+  profile.groupPrefix = "/ndnsf/spec240/dataonly/group";
+  profile.syncPrefix = "/ndnsf/spec240/dataonly/sync";
+  profile.userIdentity = "/test/user/spec240/dataonly";
+  profile.providerIdentity = "/test/provider/spec240/dataonly";
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
+  profile.attributeAuthority = "/test/aa/spec240/dataonly";
+  profile.providerCount = 1;
+  profile.providerCanActAsUser = true;
+  profile.serviceName = repoService(servicePrefix, "STATUS");
+  profile.additionalServices.push_back(repoService(servicePrefix, "STORE"));
+  NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  BOOST_REQUIRE(environment.status() == EnvironmentStatus::Ready);
+  auto publisher = makeRepoPublisherUser(environment, 0, servicePrefix, operations);
+
+  auto config = repo::PersistentRepoClientConfig{};
+  config.servicePrefix = servicePrefix;
+  config.providerScope = {environment.provider(0).getName()};
+  config.dataOnly = true;
+  auto client = repo::RepoClient::makePersistent(publisher, std::move(config));
+
+  repo::RepoHandle handle;
+  handle.reference = repo::FileReference{"/test/user/spec240/dataonly/object", "sha256",
+                                         std::string(64, 'a'), 1, "raw-file-v1", "", "", ""};
+  repo::RepoInspectionRequest inspection;
+  inspection.kind = repo::RepoInspectionRequest::Kind::OBJECT;
+  inspection.object = handle;
+  repo::RepoOperationOptions options;
+  options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  BOOST_CHECK_EXCEPTION(client.inspect(inspection, options), repo::RepoClientError,
+    [] (const repo::RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "inspect";
+    });
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test
