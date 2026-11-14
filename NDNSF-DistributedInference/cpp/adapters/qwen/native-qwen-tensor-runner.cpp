@@ -313,16 +313,19 @@ NativeQwenTensorRunner::restoreConversationState(
   const NativeConversationStateHandleV1& state, const std::string& sessionId)
 {
   if (sessionId.empty() || state.conversationKey.empty()) return false;
-  // Restore is all-or-nothing. A child that fails leaves the ones already restored holding
-  // state from a different checkpoint, so exactly those are released before this returns
-  // false. Releasing by session id would do nothing: the ONNX adapter treats an empty session
-  // as a no-op, and the state was restored as a conversation, not as a session.
-  std::vector<std::pair<std::shared_ptr<NativeModelRunner>,
-                        NativeConversationStateHandleV1>> restored;
-  const auto rollback = [&restored] {
-    for (auto& item : restored) {
+  // Restore is all-or-nothing, and undoing it must not destroy the checkpoint being restored.
+  //
+  // The ONNX adapter's restore only records a binding from this session to an existing
+  // conversation; the conversation itself is the committed state. Releasing that conversation
+  // on a partial failure would delete the very checkpoint the caller could still use, so a
+  // retry after a failed restore would find nothing -- a worse outcome than the failure. What
+  // restore creates is the session binding, and `releaseSessionState` is what removes exactly
+  // that while leaving the conversation intact.
+  std::vector<std::shared_ptr<NativeModelRunner>> restored;
+  const auto rollback = [&restored, &sessionId] {
+    for (auto& child : restored) {
       try {
-        item.first->releaseConversationState(item.second);
+        child->releaseSessionState(sessionId);
       }
       catch (...) {
         // A rollback failure must not replace the original restore failure.
@@ -350,7 +353,7 @@ NativeQwenTensorRunner::restoreConversationState(
       rollback();
       return false;
     }
-    restored.emplace_back(child->second, childState);
+    restored.push_back(child->second);
   }
   return !restored.empty();
 }

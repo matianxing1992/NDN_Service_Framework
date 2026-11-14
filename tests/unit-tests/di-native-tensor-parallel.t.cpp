@@ -13907,15 +13907,23 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
     children["S0R0/ATTN/1"]->failRestore = true;
     BOOST_CHECK(!runner.restoreConversationState(*handle, "restore-session"));
     BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->restoreCalls, 1U);
-    // The child that did restore must be released through its own conversation handle. An
-    // earlier rollback released by session with an empty id, which the ONNX adapter treats as
-    // a no-op, so a failed restore left the first child holding state from a mixed checkpoint.
+    // The child that did restore must be detached from this session -- by session id, not by
+    // releasing its conversation. Restore only records a session-to-conversation binding, so
+    // releasing the conversation would delete the very checkpoint the caller might retry, and
+    // a retry would then find nothing.
     auto& first = children.at("S0R0/ATTN/0");
-    BOOST_CHECK_EQUAL(first->releaseConversationCalls, 1U);
-    BOOST_CHECK_EQUAL(first->releaseCalls, 0U);
-    BOOST_CHECK_EQUAL(first->lastReleasedConversationKey,
-                      std::string("conv/restore") + "/S0R0/ATTN/0");
-    BOOST_CHECK_EQUAL(first->lastReleasedRole, std::string("S0R0/ATTN/0"));
+    BOOST_CHECK_EQUAL(first->releaseCalls, 1U);
+    BOOST_CHECK_EQUAL(first->lastReleasedSession, std::string("restore-session"));
+    BOOST_CHECK_EQUAL(first->releaseConversationCalls, 0U);
+    // And the checkpoint survives the failed attempt: with the failing child repaired, the
+    // same handle restores on a fresh session. This is the property that matters -- a rollback
+    // that deleted the conversation would make the caller's only copy disappear after a
+    // transient failure, and nothing short of a full re-run could recover it.
+    children["S0R0/ATTN/1"]->failRestore = false;
+    BOOST_CHECK_MESSAGE(runner.restoreConversationState(*handle, "retry-session"),
+                        "a failed restore destroyed the checkpoint it was restoring");
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->restoreCalls, 2U);
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->releaseConversationCalls, 0U);
   }
 
   // Release reaches every KV child and reports success only when all of them agree.
