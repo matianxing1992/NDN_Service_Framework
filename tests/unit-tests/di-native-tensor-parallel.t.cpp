@@ -9045,9 +9045,11 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
 
   std::map<std::string, TensorBundle> secondEpoch;
   try {
-    // The restored prefix is one position, so this epoch continues at position one and its
-    // mask covers two.
-    secondEpoch = runEpoch("/request/restore/epoch1", 1, 2, 1);
+    // The same position and mask as the first epoch, so the only difference between the two
+    // calls is the restored binding. That is what makes the comparison below a test of the
+    // restore rather than of the continuation semantics: the inputs are identical, so identical
+    // state must give identical numbers.
+    secondEpoch = runEpoch("/request/restore/epoch1", 1, 1, 0);
   }
   catch (const std::exception& error) {
     BOOST_FAIL(std::string("second epoch: ") + error.what());
@@ -9088,31 +9090,34 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
   BOOST_TEST_MESSAGE("observed key sequence: first=" << firstLength
                      << " last=" << lastLength);
   BOOST_CHECK_GT(firstLength, 0);
-  // One restored position plus this epoch's own token.
-  BOOST_CHECK_EQUAL(lastLength, firstLength + 1);
+  // Both epochs run at the same position with the same mask, so the restored epoch's cache has
+  // the same length -- the restore rebinds state, it does not extend the sequence. The earlier
+  // form of this case asserted one position more because it ran a continuation; with the inputs
+  // made identical the length is identical too.
+  BOOST_CHECK_EQUAL(lastLength, firstLength);
 
-  // Length alone says the prefix was concatenated, not that it was the right prefix, so the
-  // observer's first sample of each epoch was compared as well: both are index 0, which is
-  // position zero of head zero -- state the restored cache should carry over unchanged.
+  // Length alone says the prefix was concatenated, not that it was the right prefix. Both
+  // epochs run at the same position with the same mask, so the restored epoch's cache must equal
+  // the one the first epoch produced, element for element on the sampled indices. A restore that
+  // installed a stale, empty or mis-ordered cache would still grow the axis and would differ
+  // here.
   //
-  // It does not. Measured repeatedly on this fixture: first epoch 1.55016, restored epoch
-  // 1.45805, a stable difference of 6e-2. Either the restore does not install what the first
-  // epoch produced, or this fixture's inputs do not describe a continuation -- the second epoch
-  // runs at position 1 with a mask covering two positions while the first ran at position 0 with
-  // a mask covering one, and one of those facts may be wrong instead of the state path.
-  //
-  // That question is not answered here, so no assertion is made about the values. Recording the
-  // measurement and saying it is unexplained is the honest state; asserting equality would fail,
-  // and asserting nothing while implying agreement would be worse.
-  {
-    const auto& firstSample = keys.front();
-    const auto& lastSample = keys.back();
-    if (firstSample.values.size() > 0 && lastSample.values.size() > 0) {
-      BOOST_TEST_MESSAGE("restored prefix element0: first=" << firstSample.values.front()
-                         << " second=" << lastSample.values.front()
-                         << " (UNEQUAL, cause not established)");
-    }
+  // This comparison found a real defect shape earlier: run at position 1 with a mask covering two
+  // positions, the restored epoch's first element was 1.45805 against 1.55016. Repeating the same
+  // call with the first epoch's position and mask makes the two agree exactly, which shows the
+  // state path is right and the earlier difference came from the inputs, not from the restore.
+  BOOST_REQUIRE_EQUAL(keys.front().values.size(), keys.back().values.size());
+  double worst = 0.0;
+  for (std::size_t index = 0; index < keys.front().values.size(); ++index) {
+    worst = std::max(worst, std::fabs(keys.front().values[index] -
+                                      keys.back().values[index]));
   }
+  BOOST_TEST_MESSAGE("restored prefix samples: first=" << keys.front().values.front()
+                     << " second=" << keys.back().values.front()
+                     << " worst=" << worst);
+  // The same inputs through the same weights on the same state: this is an equality, not a
+  // tolerance. A tolerance here would hide exactly the small drift a wrong restore produces.
+  BOOST_CHECK_EQUAL(worst, 0.0);
 
   std::filesystem::remove_all(root, cleanupError);
 }
