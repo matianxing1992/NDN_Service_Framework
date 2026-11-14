@@ -726,16 +726,6 @@ def build(bld):
     # of this focused lifecycle gate.
     # Spec240 T001 focused facade selector: file publish/fetch, inspection and
     # the honest UNSUPPORTED paths, against the production Repo library.
-    bld.program(target='../spec240-wire-probe',
-                name='spec240-wire-probe',
-                source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec240-wire-probe.t.cpp')],
-                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
-                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
-                rpath=[bld.bldnode.abspath()], install_path=None)
-
     bld.program(target='../spec240-repo-client-api',
                 name='spec240-repo-client-api',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
