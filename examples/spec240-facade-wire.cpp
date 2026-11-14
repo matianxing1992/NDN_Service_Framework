@@ -231,9 +231,12 @@ main(int argc, char** argv)
     publication.ownerIdentity = grant.ownerIdentity;
     publication.grantId = grant.grantId;
     publication.ownerEpoch = grant.ownerEpoch;
-    std::printf("FACADE_GRANT grant=%s owner=%s epoch=%llu\n", grant.grantId.c_str(),
-                grant.ownerIdentity.c_str(),
-                static_cast<unsigned long long>(grant.ownerEpoch));
+    std::fprintf(stderr, "FACADE_GRANT grant=%s owner=%s epoch=%llu object=%s writer=%s\n",
+                grant.grantId.c_str(), grant.ownerIdentity.c_str(),
+                static_cast<unsigned long long>(grant.ownerEpoch),
+                grant.objectName.c_str(), grant.writerIdentity.c_str());
+    std::fprintf(stderr, "FACADE_PUB object=%s writer=%s\n", publication.objectName.c_str(),
+                authorization.writerIdentity.c_str());
     publication.idempotencyKey = "spec240-facade-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
     // The facade blocks while it waits for ACKs, so the call runs on a worker and the
