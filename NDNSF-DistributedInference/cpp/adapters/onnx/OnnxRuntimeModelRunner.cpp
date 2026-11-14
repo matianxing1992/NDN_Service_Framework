@@ -2562,10 +2562,23 @@ OnnxRuntimeModelRunner::runStreamedImpl(const RoleExecutionContext& ctx)
       throw std::invalid_argument("streaming ONNX logits shape is invalid");
     }
     const auto sequence = logits.payload.size() / (vocabulary * sizeof(float));
-    const auto* values = reinterpret_cast<const float*>(logits.payload.data());
-    const auto* begin = values + (sequence - 1) * vocabulary;
-    const auto* best = std::max_element(begin, begin + vocabulary);
-    const auto tokenId = static_cast<std::int64_t>(std::distance(begin, best));
+    // Argmax over the last row, read value by value through memcpy. The payload is a byte vector
+    // and only byte-aligned, so casting it to float* is unaligned access; the same defect was
+    // reported by UBSan in the tensor codec's sum helper.
+    const auto rowOffset = (sequence - 1) * vocabulary * sizeof(float);
+    std::size_t bestIndex = 0;
+    float bestValue = 0.0f;
+    std::memcpy(&bestValue, logits.payload.data() + rowOffset, sizeof(float));
+    for (std::size_t index = 1; index < vocabulary; ++index) {
+      float value = 0.0f;
+      std::memcpy(&value, logits.payload.data() + rowOffset + index * sizeof(float),
+                  sizeof(float));
+      if (value > bestValue) {
+        bestValue = value;
+        bestIndex = index;
+      }
+    }
+    const auto tokenId = static_cast<std::int64_t>(bestIndex);
     generated.push_back(tokenId);
 
     std::ostringstream prefix;

@@ -1134,10 +1134,23 @@ sumTensorBundleViews(const std::string& outputScope,
         throw std::invalid_argument(
           "tensor sum contributions disagree on " + first[member].name);
       }
-      auto* into = reinterpret_cast<float*>(totals[member].payload.data());
-      const auto* from = reinterpret_cast<const float*>(tensor.payload.data());
+      // Float32 values must be read at four-byte alignment. A view borrows whatever storage its
+      // producer owns, and that storage is only byte-aligned in general: an encoded bundle's
+      // payload is a vector of bytes, and a tensor inside it starts at a framing offset. Casting
+      // such a pointer to float* is unaligned access, which is undefined behaviour and on some
+      // targets a fault. The bytes are copied into a float first, so the arithmetic never
+      // depends on how the payload happened to be allocated.
+      auto* into = totals[member].payload.data();
+      const auto* from = tensor.payload.data();
       const auto count = totals[member].payload.size() / sizeof(float);
-      for (std::size_t value = 0; value < count; ++value) into[value] += from[value];
+      for (std::size_t value = 0; value < count; ++value) {
+        float addend = 0.0f;
+        std::memcpy(&addend, from + value * sizeof(float), sizeof(float));
+        float sum = 0.0f;
+        std::memcpy(&sum, into + value * sizeof(float), sizeof(float));
+        sum += addend;
+        std::memcpy(into + value * sizeof(float), &sum, sizeof(float));
+      }
     }
   }
   // The result owns its bytes, and the views point into that owner through a
@@ -1707,10 +1720,21 @@ accumulateTensorBundle(std::map<std::string, TensorBundle>& accumulator,
     throw std::invalid_argument(
       "step SUM contributions disagree on tensor identity or payload size");
   }
+  // Read and write through memcpy: a payload is a byte vector, so its storage is only
+  // byte-aligned and casting it to float* is unaligned access. AddressSanitizer's companion
+  // UBSan check reported exactly this in the sibling sum helper.
   const auto elements = target.payload.size() / sizeof(float);
-  auto* sum = reinterpret_cast<float*>(target.payload.data());
-  const auto* addend = reinterpret_cast<const float*>(contribution.payload.data());
-  for (std::size_t index = 0; index < elements; ++index) sum[index] += addend[index];
+  auto* sum = target.payload.data();
+  const auto* addend = contribution.payload.data();
+  for (std::size_t index = 0; index < elements; ++index) {
+    const auto offset = index * sizeof(float);
+    float addendValue = 0.0f;
+    std::memcpy(&addendValue, addend + offset, sizeof(float));
+    float sumValue = 0.0f;
+    std::memcpy(&sumValue, sum + offset, sizeof(float));
+    sumValue += addendValue;
+    std::memcpy(sum + offset, &sumValue, sizeof(float));
+  }
 }
 
 void
@@ -1771,9 +1795,17 @@ accumulateDecodedTensorBundle(std::map<std::string, TensorBundle>& accumulator,
   }
   const auto elements = tensor.payload.size() / sizeof(float);
   std::vector<std::uint8_t> sum(decoded.front().payload);
-  auto* target = reinterpret_cast<float*>(sum.data());
-  const auto* addend = reinterpret_cast<const float*>(tensor.payload.data());
-  for (std::size_t index = 0; index < elements; ++index) target[index] += addend[index];
+  auto* target = sum.data();
+  const auto* addend = tensor.payload.data();
+  for (std::size_t index = 0; index < elements; ++index) {
+    const auto offset = index * sizeof(float);
+    float addendValue = 0.0f;
+    std::memcpy(&addendValue, addend + offset, sizeof(float));
+    float sumValue = 0.0f;
+    std::memcpy(&sumValue, target + offset, sizeof(float));
+    sumValue += addendValue;
+    std::memcpy(target + offset, &sumValue, sizeof(float));
+  }
 
   auto replaced = decoded.front();
   replaced.payload = std::move(sum);

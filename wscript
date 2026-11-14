@@ -340,6 +340,10 @@ def options(opt):
                       help='Native component closure: all, core, repo or di (default: all)')
     optgrp.add_option('--with-tests', action='store_true', default=False,
                       help='Build unit tests')
+    optgrp.add_option('--sanitize-di', action='store_true', default=False,
+                      help='Instrument the NDNSF-DI objects with address and undefined-behaviour '
+                           'sanitizers. Diagnostic only: the library it produces is slower and '
+                           'must not be installed as a release candidate.')
     optgrp.add_option('--install-experiment-fixtures', action='store_true', default=False,
                       help='Install explicitly selected native experiment fixtures')
     optgrp.add_option('--toolchain-root', default='/usr/bin',
@@ -421,6 +425,7 @@ def configure(conf):
     else:
         conf.end_msg('no', color='YELLOW')
     conf.env.enable_shared = conf.options.enable_shared
+    conf.env.sanitize_di = conf.options.sanitize_di
 
     if not conf.options.enable_shared and not conf.options.enable_static:
         conf.fatal('Either static library or shared library must be enabled')
@@ -1030,11 +1035,18 @@ def build(bld):
             di_source_groups.append((
                 'ndnsf-di-adapter-' + adapter + '-objects',
                 bld.path.ant_glob('NDNSF-DistributedInference/cpp/adapters/' + adapter + '/*.cpp')))
+        # Instrumenting DI has to include its objects, not only the executable that links them:
+        # a test binary built with -fsanitize adds no checks to code already compiled into a
+        # shared library, so a defect inside the worker or the codec would stay invisible.
+        di_sanitize_cxxflags = ['-fno-omit-frame-pointer', '-fsanitize=address,undefined'] \
+            if bld.env.sanitize_di else []
+        di_sanitize_linkflags = ['-fsanitize=address,undefined'] \
+            if bld.env.sanitize_di else []
         di_objects = [bld.objects(
             target=name, source=sources, use=di_compile_use,
             includes=['.', 'ndn-service-framework',
                       'NDNSF-DistributedInference/cpp/adapters/onnx'],
-            cxxflags=['-fPIC']) for name, sources in di_source_groups]
+            cxxflags=['-fPIC'] + di_sanitize_cxxflags) for name, sources in di_source_groups]
         di_object_use = ' '.join(name for name, _ in di_source_groups)
         di_compile_owner = None
         if bld.env.enable_shared:
@@ -1051,7 +1063,7 @@ def build(bld):
                       export_includes=['.', 'ndn-service-framework',
                                        'NDNSF-DistributedInference/cpp'],
                       install_path='${LIBDIR}',
-                      linkflags=['-Wl,-rpath,$ORIGIN'])
+                      linkflags=['-Wl,-rpath,$ORIGIN'] + di_sanitize_linkflags)
         if bld.env.enable_static:
             di_static = bld.stlib(features='cxx cxxstlib',
                       name='ndnsf-distributed-inference-static'
