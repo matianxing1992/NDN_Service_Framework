@@ -317,14 +317,39 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
   if (!candidate.inputIngressRole.empty()) {
     if (!digest(context.logicalInputDigest) || !digest(context.inputLayoutDigest))
       throw std::invalid_argument("projection application input identity is missing");
-    auto e = endpointBase(); e.producerNamespace = core.requesterIdentity;
-    e.namingOperationStride = 0;
-    e.groupId = "application-input"; e.groupEpoch = "attempt-" + std::to_string(core.attempt);
-    e.operation = "APPLICATION_INPUT"; e.sourceKind = "APPLICATION_INPUT";
-    e.consumerRole = selected(candidate.inputIngressRole); e.consumerRoles = {e.consumerRole};
-    e.tensorId = "application-input"; e.tensorDigest = e.manifestDigest = context.logicalInputDigest;
-    e.layoutDigest = e.targetLayoutDigest = context.inputLayoutDigest; e.segmentCount = 1;
-    certifyEndpoint(e); result.at(e.consumerRole).dataflow.mustFetch.push_back(std::move(e));
+    // Every unit whose template reads an epoch input needs the request itself, and a sharded
+    // unit embeds its own table shard, so each one reads the tokens rather than receiving a
+    // peer's activation. A pipeline unit after the first consumes the previous stage's
+    // activations and declares no epoch input, so it is not admitted here and the historical
+    // single-ingress topology is preserved for a step-less plan.
+    std::vector<std::string> ingressRoles;
+    if (core.executionPlan.steps.empty()) {
+      ingressRoles.push_back(selected(candidate.inputIngressRole));
+    }
+    else {
+      for (const auto& role : core.executionPlan.roles) {
+        const auto readsEpochInput = std::any_of(
+          core.executionPlan.steps.begin(), core.executionPlan.steps.end(),
+          [&role] (const NativeExecutionStepSpec& step) {
+            return step.unitId == role &&
+                   std::any_of(step.inputSlots.begin(), step.inputSlots.end(),
+                     [] (const NativeStepSlotSpec& slot) {
+                       return slot.source == "EPOCH_INPUT";
+                     });
+          });
+        if (readsEpochInput) ingressRoles.push_back(role);
+      }
+    }
+    for (const auto& ingressRole : ingressRoles) {
+      auto e = endpointBase(); e.producerNamespace = core.requesterIdentity;
+      e.namingOperationStride = 0;
+      e.groupId = "application-input"; e.groupEpoch = "attempt-" + std::to_string(core.attempt);
+      e.operation = "APPLICATION_INPUT"; e.sourceKind = "APPLICATION_INPUT";
+      e.consumerRole = ingressRole; e.consumerRoles = {e.consumerRole};
+      e.tensorId = "application-input"; e.tensorDigest = e.manifestDigest = context.logicalInputDigest;
+      e.layoutDigest = e.targetLayoutDigest = context.inputLayoutDigest; e.segmentCount = 1;
+      certifyEndpoint(e); result.at(e.consumerRole).dataflow.mustFetch.push_back(std::move(e));
+    }
   }
   std::set<std::string> outgoing;
   // Self feedback is per receiving unit, so a sharded plan has one per role. Precompute the
