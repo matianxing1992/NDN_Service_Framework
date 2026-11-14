@@ -1393,18 +1393,20 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       // Fixed rank order, not arrival order: C5 requires the same sum regardless
       // of which partial arrived first. The sealed template lists the local slot
       // first and the peers in rank order, so following it is deterministic.
-      std::map<std::string, TensorBundle> accumulator;
+      //
+      // The contributions are read as views, whether a peer sent bytes or a local step
+      // handed over a typed value, and one bounded accumulator is built from them. Adding
+      // in place over views avoids decoding then re-encoding each contribution, and the
+      // inputs stay untouched because a published partial may still have readers.
+      const auto outputSlot = step.outputSlots.front().slotId;
+      std::vector<std::vector<NamedTensorView>> contributions;
+      contributions.reserve(step.inputSlots.size());
       for (const auto& slot : step.inputSlots) {
         const auto input = inputs.find(slot.slotId);
-        accumulateDecodedTensorBundle(accumulator, step.outputSlots.front().slotId,
-          decodeTensorBundle(input->second.payload), input->second.name);
+        contributions.push_back(decodeTensorBundleViews(input->second));
       }
-      const auto merged = accumulator.find(step.outputSlots.front().slotId);
-      if (merged == accumulator.end()) {
-        throw std::runtime_error("sealed SUM step produced no value");
-      }
-      produced.emplace(step.stepId + "\n" + step.outputSlots.front().slotId,
-                       merged->second);
+      produced.emplace(step.stepId + "\n" + outputSlot,
+                       sumTensorBundleViews(outputSlot, contributions));
       continue;
     }
 

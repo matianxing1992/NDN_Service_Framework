@@ -930,6 +930,21 @@ tensorForInput(const TensorBundle& bundle,
                const std::string& inputName,
                const std::vector<int64_t>& fallbackShape)
 {
+  if (bundle.localTensors) {
+    // A local value is read through the same view entry as an encoded one, so a bundle that
+    // arrived by either route is handled identically here. ORT binds its own input buffer, so
+    // this is a copy of the values, not a re-encoding of a bundle: no framing, no decode.
+    for (const auto& view : decodeTensorBundleViews(bundle)) {
+      if (view.name != inputName) continue;
+      NamedTensor tensor;
+      tensor.name = view.name;
+      tensor.elementType = view.elementType;
+      tensor.shape = view.shape;
+      tensor.payload.assign(view.payload.begin(), view.payload.end());
+      return tensor;
+    }
+    throw std::out_of_range("tensor bundle has no tensor: " + inputName);
+  }
   if (isEncodedTensorBundle(bundle.payload)) {
     return takeOwnedInputTensor(decodeTensorBundle(bundle.payload), inputName);
   }
@@ -2039,6 +2054,15 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
   const auto delayDone = std::chrono::steady_clock::now();
 
   NativeWorkScope outputWork(ctx.workStatistics, "onnx-output-convert", NativeWorkKind::LOCAL);
+  // Backing storage for a local result. `namedOutputs` borrows from these buffers (and from
+  // `auxiliaryOutputs` for passthrough values), so a LocalTensorBundle must keep all of them
+  // alive for exactly as long as it exposes views -- the whole reason a local value carries an
+  // owner instead of borrowing a frame.
+  struct LocalOutputOwner
+  {
+    std::vector<std::vector<std::uint8_t>> hostBuffers;
+    std::vector<NamedTensor> ownedTensors;
+  };
   std::vector<NamedTensorView> namedOutputs;
   namedOutputs.reserve(outputs.size());
   std::vector<NamedTensor> auxiliaryOutputs;
@@ -2157,13 +2181,58 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     }
   }
 
+  // A CPU caller that asked for local values gets typed views instead of one encoded buffer per
+  // call. The bytes are the same ones the wire path would have produced -- this only skips
+  // encoding them for a hop that is about to decode them again. Anything that is not a plain
+  // CPU typed output keeps the wire path: resident state is opaque to the caller, and CUDA,
+  // legacy PP and standalone reference runs never set the preference.
+  const bool localOutputs = effectiveContext.preferLocalTensorOutputs &&
+    !deviceResidentState && !effectiveContext.streamingStateExecution &&
+    !namedOutputs.empty();
+  std::shared_ptr<LocalOutputOwner> localOwner;
+  if (localOutputs) {
+    localOwner = std::make_shared<LocalOutputOwner>(LocalOutputOwner{
+      std::move(outputHostBuffers), std::move(auxiliaryOutputs)});
+  }
+
   std::map<std::string, TensorBundle> result;
   const bool forceEncodedOutput =
     effectiveContext.streamingStateExecution ||
+    !localOutputs ||
     !metadataValue(m_spec, {"output_tensor", "outputTensor", "forceOutputBundle",
                             "force_output_bundle"}).empty() ||
     metadataValue(m_spec, {"final", "is_final"}) == "true";
-  if (namedOutputs.size() == 1 && !forceEncodedOutput) {
+  if (localOutputs && !forceEncodedOutput) {
+    const auto localScope = [&] (const std::string& single) {
+      return namedOutputs.size() == 1 ? outputScopeFor(m_spec, single, 0)
+                                      : metadataValue(m_spec,
+                                          {"outputBundleScope", "output_bundle_scope",
+                                           "outputScope", "output_scope"});
+    };
+    TensorBundle bundle;
+    bundle.name = namedOutputs.size() == 1 ? namedOutputs.front().name
+                                           : std::string("onnx-output-bundle");
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->tensors = namedOutputs;
+    local->owner = localOwner;
+    bundle.localTensors = std::move(local);
+    // The wire size is what this value would cost if it crossed a boundary, so a budget that
+    // reads it plans for the real object rather than for zero.
+    std::vector<TensorBundleEncodingMember> members;
+    members.reserve(namedOutputs.size());
+    for (const auto& tensor : namedOutputs) {
+      TensorBundleEncodingMember member;
+      member.nameBytes = tensor.name.size();
+      member.rank = tensor.shape.size();
+      member.payloadBytes = tensor.payload.size();
+      members.push_back(member);
+    }
+    bundle.expectedBytes = tensorBundleEncodedSize(members);
+    auto scope = localScope(bundle.name);
+    if (scope.empty()) scope = "onnx-output-bundle";
+    result.emplace(std::move(scope), std::move(bundle));
+  }
+  else if (namedOutputs.size() == 1 && !forceEncodedOutput) {
     const auto scope = outputScopeFor(m_spec, namedOutputs.front().name, 0);
     TensorBundle bundle;
     bundle.name = namedOutputs.front().name;

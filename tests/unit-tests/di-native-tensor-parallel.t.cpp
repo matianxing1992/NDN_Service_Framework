@@ -11494,7 +11494,10 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
   // produce something, so the assertion is on the shape and on the fact that the MLP
   // consumed it rather than on a number this fixture cannot predict.
   for (const auto& item : result.outputsByScope) {
-    const auto tensors = decodeTensorBundle(item.second.payload);
+    // Read through the bundle view entry, not the raw payload: a reduction now hands back a
+    // typed local value, and reading `payload` directly would report "not a bundle" for the
+    // very result this case exists to check.
+    const auto tensors = decodeTensorBundleViews(item.second);
     BOOST_REQUIRE(!tensors.empty());
     std::size_t floats = 0;
     double energy = 0.0;
@@ -11533,7 +11536,7 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
     std::size_t keySuccessors = 0;
     std::size_t valueSuccessors = 0;
     for (const auto& item : result.outputsByScope) {
-      const auto tensors = decodeTensorBundle(item.second.payload);
+      const auto tensors = decodeTensorBundleViews(item.second);
       for (const auto& tensor : tensors) {
         if (tensor.name.rfind("present.", 0) != 0) continue;
         if (tensor.name.find(".key") != std::string::npos) ++keySuccessors;
@@ -12387,6 +12390,10 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     }
     RoleExecutionContext context;
     context.role = unit;
+    // Ask for local values here, the way the parent runner does for a validated child step.
+    // Without it this fixture would keep exercising only the wire path and could not see a
+    // local-output defect at all.
+    context.preferLocalTensorOutputs = true;
     context.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
     context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
       std::vector<NativeExecutionStepSpec>{step});

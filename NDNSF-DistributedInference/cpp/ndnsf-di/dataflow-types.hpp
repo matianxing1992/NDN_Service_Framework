@@ -236,12 +236,6 @@ struct RoleSpec
   // their own device bindings and expose only an opaque Provider-local handle;
   // CPU adapters continue to use the ordinary host-tensor representation.
   bool streamingStateExecution = false;
-  // Ask the adapter for typed host outputs instead of encoded bytes. This is a
-  // representation preference only: it grants nothing, changes no session
-  // option or identity, and is never read from configuration. The Qwen parent
-  // sets it on a child whose step it has already validated; CUDA, legacy PP and
-  // standalone reference runs leave it false and keep the wire path.
-  bool preferLocalTensorOutputs = false;
   // Sealed token-local step template this role must execute. Empty keeps the
   // legacy whole-role path, which is why every existing role is unaffected.
   // A role that carries steps cannot be executed by a runner that only knows
@@ -292,6 +286,12 @@ struct RoleExecutionContext
   // after the stream has reached a terminal token so Provider state
   // bookkeeping can commit the request atomically.
   bool streamingStateExecution = false;
+  // Ask the adapter for typed host outputs instead of encoded bytes. This is a
+  // representation preference only: it grants nothing, changes no session
+  // option or identity, and is never read from configuration. The Qwen parent
+  // sets it on a child whose step it has already validated; CUDA, legacy PP and
+  // standalone reference runs leave it false and keep the wire path.
+  bool preferLocalTensorOutputs = false;
   // Authenticated logical token lineage for this exact role/epoch.  Adapter
   // runners use it only to materialize graph-declared positional inputs; it
   // is copied from the sealed RoleSpec and never inferred from activation

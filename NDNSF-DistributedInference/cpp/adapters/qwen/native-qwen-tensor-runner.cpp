@@ -529,19 +529,51 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
   if (childRunner == m_children.end())
     throw std::logic_error("tensor-parallel runner lost a prepared child");
 
+  // Ask the child for typed host values. This runner is about to read individual tensors out
+  // of its result and hand them on unchanged, so an encoded bundle would be encoded here and
+  // decoded immediately here. The preference is stated on the child context rather than read
+  // from the child's activeStep, which this call deliberately clears.
+  child.preferLocalTensorOutputs = true;
   const auto produced = childRunner->second->run(child);
 
   // Resolve the child's outputs back onto the entry's declared boundary names.
   //
   // An entry with one graph output comes back keyed by its own scope. An entry with
   // several -- an attention subgraph produces the projected attention output and both KV
-  // successors -- comes back as one encoded bundle, because the ordinary runner packs
-  // multiple outputs rather than inventing a key per tensor. Both shapes are legitimate,
-  // so the lookup is by declared name inside whatever the child returned, and a missing
-  // name is a contract violation rather than something to paper over.
+  // successors -- comes back as one bundle, because the ordinary runner packs multiple
+  // outputs rather than inventing a key per tensor. Both shapes are legitimate, so the lookup
+  // is by declared name inside whatever the child returned, and a missing name is a contract
+  // violation rather than something to paper over.
+  //
+  // Selecting one tensor out of a local bundle moves view metadata and keeps the same storage
+  // owner: the bytes are the child's, and re-encoding them here would copy every activation on
+  // its way through the unit.
   std::map<std::string, TensorBundle> byName;
   for (const auto& item : produced) {
     const auto& bundle = item.second;
+    if (bundle.localTensors) {
+      std::vector<NamedTensorView> views;
+      try {
+        views = decodeTensorBundleViews(bundle);
+      }
+      catch (const std::invalid_argument&) {
+        // A single-output entry need not be a pack; the fallback below covers it by scope.
+        byName.emplace(item.first, bundle);
+        continue;
+      }
+      for (auto& view : views) {
+        TensorBundle single;
+        single.name = view.name;
+        auto local = std::make_shared<LocalTensorBundle>();
+        local->tensors.push_back(view);
+        local->owner = bundle.localTensors->owner;
+        single.localTensors = std::move(local);
+        single.expectedBytes = view.payload.size();
+        single.transferObservation = bundle.transferObservation;
+        byName.emplace(single.name, std::move(single));
+      }
+      continue;
+    }
     if (isEncodedTensorBundle(bundle.payload)) {
       for (auto& tensor : decodeTensorBundle(bundle.payload)) {
         TensorBundle single;
