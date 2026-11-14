@@ -3410,8 +3410,10 @@ RepoClient::fetchData(const RepoDataFetch& input,
                             "fetched packet set does not have the declared wire size",
                             "fetchData");
     if (!bound.expectedSha256.empty()) {
+      // The manifest carries a bare hex digest; wireDigest is prefixed, so compare the two
+      // in the same spelling.
       result.digestVerified =
-        result.wireDigest == canonicalSha256Digest(bound.expectedSha256);
+        result.wireDigest == canonicalSha256Digest("sha256:" + bound.expectedSha256);
       if (!result.digestVerified)
         throw RepoClientError("DIGEST_MISMATCH",
                               "fetched wires do not match the committed manifest digest",

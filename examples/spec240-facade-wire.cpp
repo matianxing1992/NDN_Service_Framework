@@ -160,7 +160,11 @@ main(int argc, char** argv)
       return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
     };
 
-    const ndn::Name objectName = ndn::Name(identity).append("object");
+    // A fresh object per run: the same name published twice would hold the first packet's
+    // signature, and a later fetch would compare against wires this run never produced.
+    ndn::Name objectName = ndn::Name(identity).append("object");
+    objectName.appendSegment(static_cast<uint64_t>(std::chrono::duration_cast<
+      std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()));
     repo::RepoDataPublication publication;
     publication.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
                                          alternate(servicePrefix.toUri())};
@@ -264,6 +268,21 @@ main(int argc, char** argv)
     publication.ownerEpoch = grant.ownerEpoch;
 
     const auto result = client.publishData(publication, operation);
+    if (options.count("manifest-out") != 0) {
+      // A three-line record the fetch side can rebuild the manifest from without needing a
+      // JSON parser for the internal manifest type.
+      std::ofstream manifestFile(options.at("manifest-out"), std::ios::trunc);
+      std::string lower = manifest->sha256;
+      for (auto& character : lower)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+      manifestFile << manifest->objectName << "\n" << lower << "\n"
+                   << manifest->size << "\n" << packets.packetNames.size() << "\n";
+      for (std::size_t index = 0; index < packets.packetOffsets.size(); ++index)
+        manifestFile << (index > 0 ? "," : "") << packets.packetOffsets[index];
+      manifestFile << "\n";
+      for (const auto& name : packets.packetNames)
+        manifestFile << name << "\n";
+    }
     if (options.count("names-out") != 0) {
       std::ofstream names(options.at("names-out"), std::ios::trunc);
       for (const auto& name : packets.packetNames)
@@ -278,11 +297,63 @@ main(int argc, char** argv)
     const auto destination = arg(options, "destination");
     repo::RepoDataFetch request;
     request.packetNames = {};
-    std::ifstream names(arg(options, "names"));
-    std::string line;
-    while (std::getline(names, line)) {
-      if (!line.empty())
-        request.packetNames.push_back(line);
+    if (options.count("manifest") != 0) {
+      // Manifest-bound retrieval: the caller already holds the committed manifest and asks
+      // the Repo for exactly its packets.
+      std::ifstream manifestInput(options.at("manifest"));
+      std::string objectNameText;
+      std::string sha256Text;
+      std::string sizeText;
+      std::string countText;
+      std::getline(manifestInput, objectNameText);
+      std::getline(manifestInput, sha256Text);
+      std::getline(manifestInput, sizeText);
+      std::getline(manifestInput, countText);
+      auto boundManifest = std::make_shared<repo::RepoObjectManifest>();
+      boundManifest->objectName = objectNameText;
+      boundManifest->objectType = "original-packet-set";
+      boundManifest->sha256 = sha256Text;
+      boundManifest->size = std::stoull(sizeText);
+      boundManifest->segmentCount = static_cast<uint32_t>(std::stoul(countText));
+      std::string offsetsText;
+      std::getline(manifestInput, offsetsText);
+      std::size_t cursor = 0;
+      while (cursor <= offsetsText.size()) {
+        const auto comma = offsetsText.find(',', cursor);
+        const auto token = offsetsText.substr(cursor, comma == std::string::npos
+          ? std::string::npos : comma - cursor);
+        if (!token.empty())
+          boundManifest->packetOffsets.push_back(std::stoull(token));
+        if (comma == std::string::npos)
+          break;
+        cursor = comma + 1;
+      }
+      std::string name;
+      while (std::getline(manifestInput, name)) {
+        if (!name.empty())
+          boundManifest->packetNames.push_back(name);
+      }
+      repo::RepoManifestBoundFetch bound;
+      bound.manifest = boundManifest;
+      bound.objectName = boundManifest->objectName;
+      // The Repo compares reference digests case-sensitively against a canonical spelling.
+      auto canonicalSha = sha256Text;
+      for (auto& character : canonicalSha)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+      bound.expectedSha256 = canonicalSha;
+      boundManifest->sha256 = canonicalSha;
+      bound.dataPrefix = identity.toUri();
+      bound.expectedWireBytes = boundManifest->size;
+      bound.producerIdentity = identity.toUri();
+      request.manifestBound = std::move(bound);
+    }
+    if (options.count("manifest") == 0) {
+      std::ifstream names(arg(options, "names"));
+      std::string line;
+      while (std::getline(names, line)) {
+        if (!line.empty())
+          request.packetNames.push_back(line);
+      }
     }
     request.maxWireBytes = 8U << 20;
     const auto alternate = [] (const std::string& value) {
