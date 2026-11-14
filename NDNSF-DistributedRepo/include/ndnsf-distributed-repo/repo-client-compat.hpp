@@ -161,6 +161,86 @@ public:
     ndn_service_framework::ServiceUser::ResponseHandler onResponse);
   static ndn_service_framework::RequestMessage makeRequest(
     const std::vector<uint8_t>& payload);
+  static RepoObjectManifest localPut(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    StoreOptions options = {});
+  static std::vector<uint8_t> localGet(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+  static void localPutRange(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest,
+    RepoByteRange range,
+    const std::vector<uint8_t>& bytes);
+  static RepoObjectManifest localCommitRanges(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
+  static void localAbortRanges(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+  static std::vector<uint8_t> localGetRange(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    RepoByteRange range);
+  static RepoObjectManifest localGetManifest(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+  static std::vector<RepoObjectManifest> localList(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+  static bool localRemove(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+  static RepoOperationStatus localInsert(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoDataReference& reference);
+  static RepoOperationStatus localStatus(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& operationId);
+  static RepoCatalogStatus localCatalogStatus(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+  static RepoCacheStatus localCacheStatus(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+  static RepoCatalogDelta localCatalogSnapshot(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix);
+  static RepoCatalogDelta localCatalogDelta(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    uint64_t sinceEpoch);
+  static RepoCatalogEntry localCatalogLookup(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName);
+  static RepoObjectManifest localPutSegmented(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    StoreOptions options = {},
+    size_t maxSegmentPayload = 6000);
+  static std::vector<uint8_t> localGetSegmented(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
+  static std::vector<uint8_t> localGetObject(
+    ndn_service_framework::LocalServiceRegistry& registry,
+    const ndn::Name& repoServicePrefix,
+    const RepoObjectManifest& manifest);
 };
 
 } // namespace ndnsf_distributed_repo

@@ -2,6 +2,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/repo-store-api.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
@@ -120,7 +121,7 @@ main(int argc, char* argv[])
         ndn_service_framework::LocalServiceRegistry registry;
         repo->registerLocalServices(registry);
         const auto& prefix = config.servicePrefix;
-        const auto initial = repo_api::RepoClient::localCatalogStatus(registry, prefix);
+        const auto initial = repo_api::RepoClientCompat::localCatalogStatus(registry, prefix);
         if (initial.objectCount != 0) throw std::runtime_error("L03 local store was not empty");
         ndn::security::KeyChain keyChain;
         const auto identity = keyChain.getPib().getIdentity(config.providerIdentity);
@@ -155,18 +156,18 @@ main(int argc, char* argv[])
           if (requested.dataPrefix != packetName) throw std::runtime_error("local-fetch-denied");
           return std::vector<std::vector<uint8_t>>{wire};
         });
-        const auto inserted = repo_api::RepoClient::localInsert(registry, prefix, reference);
-        const auto completed = repo_api::RepoClient::localStatus(registry, prefix, inserted.operationId);
+        const auto inserted = repo_api::RepoClientCompat::localInsert(registry, prefix, reference);
+        const auto completed = repo_api::RepoClientCompat::localStatus(registry, prefix, inserted.operationId);
         if (inserted.state != "DONE" || completed.toJson() != inserted.toJson() ||
             inserted.completedSegments != 1 || inserted.totalSegments != 1) {
           throw std::runtime_error("L03 local INSERT/STATUS did not complete exact packet");
         }
-        const auto parent = repo_api::RepoClient::localGetManifest(registry, prefix, reference.objectName);
-        const auto packet = repo_api::RepoClient::localGetManifest(registry, prefix, packetName);
-        const auto catalog = repo_api::RepoClient::localCatalogStatus(registry, prefix);
-        const auto snapshot = repo_api::RepoClient::localCatalogSnapshot(registry, prefix);
-        const auto delta = repo_api::RepoClient::localCatalogDelta(registry, prefix, initial.catalogEpoch);
-        const auto lookup = repo_api::RepoClient::localCatalogLookup(registry, prefix, reference.objectName);
+        const auto parent = repo_api::RepoClientCompat::localGetManifest(registry, prefix, reference.objectName);
+        const auto packet = repo_api::RepoClientCompat::localGetManifest(registry, prefix, packetName);
+        const auto catalog = repo_api::RepoClientCompat::localCatalogStatus(registry, prefix);
+        const auto snapshot = repo_api::RepoClientCompat::localCatalogSnapshot(registry, prefix);
+        const auto delta = repo_api::RepoClientCompat::localCatalogDelta(registry, prefix, initial.catalogEpoch);
+        const auto lookup = repo_api::RepoClientCompat::localCatalogLookup(registry, prefix, reference.objectName);
         auto catalogParent = parent;
         if (catalogParent.replicaNodes.empty()) catalogParent.replicaNodes.push_back(config.repoNode);
         if (catalog.objectCount != 2 || snapshot.entries.size() != 2 || delta.entries.size() != 2 ||
@@ -176,41 +177,41 @@ main(int argc, char* argv[])
             parent.sha256 != reference.expectedSha256 || packet.sha256 != parent.sha256) {
           throw std::runtime_error("L03 local catalog disagrees with original packet");
         }
-        const auto cacheBefore = repo_api::RepoClient::localCacheStatus(registry, prefix);
-        if (repo_api::RepoClient::localGet(registry, prefix, packetName) != wire ||
-            repo_api::RepoClient::localGet(registry, prefix, packetName) != wire) {
+        const auto cacheBefore = repo_api::RepoClientCompat::localCacheStatus(registry, prefix);
+        if (repo_api::RepoClientCompat::localGet(registry, prefix, packetName) != wire ||
+            repo_api::RepoClientCompat::localGet(registry, prefix, packetName) != wire) {
           throw std::runtime_error("L03 cached reads changed original Data wire");
         }
-        const auto cacheAfter = repo_api::RepoClient::localCacheStatus(registry, prefix);
+        const auto cacheAfter = repo_api::RepoClientCompat::localCacheStatus(registry, prefix);
         if (cacheAfter.hits < cacheBefore.hits + 2) {
           throw std::runtime_error("L03 cache status did not observe repeated reads");
         }
         bool missingLookup = false;
-        try { (void)repo_api::RepoClient::localCatalogLookup(registry, prefix, localObject + "/missing"); }
+        try { (void)repo_api::RepoClientCompat::localCatalogLookup(registry, prefix, localObject + "/missing"); }
         catch (const std::exception& error) {
           missingLookup = std::string(error.what()).find("not-found") != std::string::npos;
         }
         auto denied = reference;
         denied.objectName = localObject + "/denied";
         denied.dataPrefix = localObject + "/unavailable";
-        const auto failed = repo_api::RepoClient::localInsert(registry, prefix, denied);
-        const auto failedQuery = repo_api::RepoClient::localStatus(registry, prefix, failed.operationId);
+        const auto failed = repo_api::RepoClientCompat::localInsert(registry, prefix, denied);
+        const auto failedQuery = repo_api::RepoClientCompat::localStatus(registry, prefix, failed.operationId);
         if (!missingLookup || failed.state != "FAILED" || failed.completedSegments != 0 ||
             failed.message.find("local-fetch-denied") == std::string::npos ||
             failedQuery.toJson() != failed.toJson() ||
-            repo_api::RepoClient::localCatalogStatus(registry, prefix).objectCount != 2) {
+            repo_api::RepoClientCompat::localCatalogStatus(registry, prefix).objectCount != 2) {
           throw std::runtime_error("L03 failed INSERT or missing lookup changed durable catalog");
         }
-        const auto segmented = repo_api::RepoClient::localPutSegmented(
+        const auto segmented = repo_api::RepoClientCompat::localPutSegmented(
           registry, prefix, localObject + "/segmented", payload, {}, segmentBytes);
         const std::vector<uint8_t> small(payload.begin(), payload.begin() + 23);
-        const auto plain = repo_api::RepoClient::localPutSegmented(
+        const auto plain = repo_api::RepoClientCompat::localPutSegmented(
           registry, prefix, localObject + "/plain", small, {}, segmentBytes);
         if (segmented.segmentCount < 4 || plain.segmentCount != 1 ||
-            repo_api::RepoClient::localGetSegmented(registry, prefix, segmented) != payload ||
-            repo_api::RepoClient::localGetObject(registry, prefix, segmented) != payload ||
-            repo_api::RepoClient::localGetSegmented(registry, prefix, plain) != small ||
-            repo_api::RepoClient::localGetObject(registry, prefix, plain) != small) {
+            repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented) != payload ||
+            repo_api::RepoClientCompat::localGetObject(registry, prefix, segmented) != payload ||
+            repo_api::RepoClientCompat::localGetSegmented(registry, prefix, plain) != small ||
+            repo_api::RepoClientCompat::localGetObject(registry, prefix, plain) != small) {
           throw std::runtime_error("L04 local segmented/plain reads disagree with source");
         }
         const auto segmentName = segmented.objectName + "/seg/1";
@@ -220,8 +221,8 @@ main(int argc, char* argv[])
           for (const bool object : {false, true}) {
             bool rejected = false;
             try {
-              if (object) (void)repo_api::RepoClient::localGetObject(registry, prefix, segmented);
-              else (void)repo_api::RepoClient::localGetSegmented(registry, prefix, segmented);
+              if (object) (void)repo_api::RepoClientCompat::localGetObject(registry, prefix, segmented);
+              else (void)repo_api::RepoClientCompat::localGetSegmented(registry, prefix, segmented);
             }
             catch (const std::exception& error) {
               rejected = std::string(error.what()).find(reason) != std::string::npos;
@@ -229,19 +230,19 @@ main(int argc, char* argv[])
             if (!rejected) throw std::runtime_error("L04 incomplete/corrupt object was returned");
           }
         };
-        if (!repo_api::RepoClient::localRemove(registry, prefix, segmentName)) {
+        if (!repo_api::RepoClientCompat::localRemove(registry, prefix, segmentName)) {
           throw std::runtime_error("L04 could not remove middle segment");
         }
         rejectReads("not-found");
         repo_api::StoreOptions segmentOptions;
         segmentOptions.objectType = segmented.objectType + ".segment";
-        repo_api::RepoClient::localPut(registry, prefix, segmentName, segment, segmentOptions);
+        repo_api::RepoClientCompat::localPut(registry, prefix, segmentName, segment, segmentOptions);
         auto corrupt = segment;
         corrupt.front() ^= 1;
-        repo_api::RepoClient::localPut(registry, prefix, segmentName, corrupt, segmentOptions);
+        repo_api::RepoClientCompat::localPut(registry, prefix, segmentName, corrupt, segmentOptions);
         rejectReads("sha256");
-        repo_api::RepoClient::localPut(registry, prefix, segmentName, segment, segmentOptions);
-        const auto rebuilt = repo_api::RepoClient::localGetObject(registry, prefix, segmented);
+        repo_api::RepoClientCompat::localPut(registry, prefix, segmentName, segment, segmentOptions);
+        const auto rebuilt = repo_api::RepoClientCompat::localGetObject(registry, prefix, segmented);
         if (rebuilt != payload) throw std::runtime_error("L04 restoration did not recover original bytes");
         save("l04-rebuilt.bin", rebuilt);
         std::ofstream report(localManifest, std::ios::binary | std::ios::trunc);
@@ -283,7 +284,7 @@ main(int argc, char* argv[])
           return count;
         };
         const auto absent = [&] (const std::string& name) {
-          const auto listed = repo_api::RepoClient::localList(registry, prefix);
+          const auto listed = repo_api::RepoClientCompat::localList(registry, prefix);
           return std::none_of(listed.begin(), listed.end(),
             [&] (const auto& item) { return item.objectName == name; });
         };
@@ -291,7 +292,7 @@ main(int argc, char* argv[])
           return std::vector<uint8_t>(payload.begin() + begin, payload.begin() + end);
         };
         const auto committed = make("committed", payload);
-        repo_api::RepoClient::localPutRange(
+        repo_api::RepoClientCompat::localPutRange(
           registry, prefix, committed, {0, 137}, slice(0, 137));
         const auto stagedFiles = countStaging();
         if (stagedFiles == 0 || !absent(committed.objectName)) {
@@ -299,7 +300,7 @@ main(int argc, char* argv[])
         }
         bool incompleteRejected = false;
         try {
-          (void)repo_api::RepoClient::localCommitRanges(registry, prefix, committed);
+          (void)repo_api::RepoClientCompat::localCommitRanges(registry, prefix, committed);
         }
         catch (const std::exception& error) {
           incompleteRejected = std::string(error.what()).find(
@@ -309,28 +310,28 @@ main(int argc, char* argv[])
             countStaging() != 0) {
           throw std::runtime_error("L02 incomplete commit left a half object");
         }
-        repo_api::RepoClient::localPutRange(
+        repo_api::RepoClientCompat::localPutRange(
           registry, prefix, committed, {137, payload.size() - 137},
           slice(137, payload.size()));
-        repo_api::RepoClient::localPutRange(
+        repo_api::RepoClientCompat::localPutRange(
           registry, prefix, committed, {0, 137}, slice(0, 137));
-        const auto durable = repo_api::RepoClient::localCommitRanges(
+        const auto durable = repo_api::RepoClientCompat::localCommitRanges(
           registry, prefix, committed);
         if (durable.sha256 != committed.sha256 ||
-            repo_api::RepoClient::localGet(registry, prefix, committed.objectName) !=
+            repo_api::RepoClientCompat::localGet(registry, prefix, committed.objectName) !=
               payload || countStaging() != 0) {
           throw std::runtime_error("L02 committed range bytes or cleanup differ");
         }
         auto abortPayload = payload;
         abortPayload.front() ^= 0x31;
         const auto aborted = make("aborted", abortPayload);
-        repo_api::RepoClient::localPutRange(
+        repo_api::RepoClientCompat::localPutRange(
           registry, prefix, aborted, {0, 137},
           std::vector<uint8_t>(abortPayload.begin(), abortPayload.begin() + 137));
         if (countStaging() == 0 || !absent(aborted.objectName)) {
           throw std::runtime_error("L02 abort candidate was not staged");
         }
-        repo_api::RepoClient::localAbortRanges(registry, prefix, aborted.objectName);
+        repo_api::RepoClientCompat::localAbortRanges(registry, prefix, aborted.objectName);
         if (countStaging() != 0 || !absent(aborted.objectName)) {
           throw std::runtime_error("L02 abort left staged or visible bytes");
         }
@@ -339,7 +340,7 @@ main(int argc, char* argv[])
         const auto bounds = make("bounds", boundsPayload);
         bool boundsRejected = false;
         try {
-          repo_api::RepoClient::localPutRange(
+          repo_api::RepoClientCompat::localPutRange(
             registry, prefix, bounds, {payload.size() - 10, 30},
             std::vector<uint8_t>(30, 0x55));
         }
@@ -352,7 +353,7 @@ main(int argc, char* argv[])
         const auto mismatch = make("mismatch", mismatchPayload);
         bool lengthRejected = false;
         try {
-          repo_api::RepoClient::localPutRange(
+          repo_api::RepoClientCompat::localPutRange(
             registry, prefix, mismatch, {0, 30}, std::vector<uint8_t>(29, 0x55));
         }
         catch (const std::exception& error) {
@@ -363,7 +364,7 @@ main(int argc, char* argv[])
         const auto finalStaging = countStaging();
         const auto boundsAbsent = absent(bounds.objectName);
         const auto mismatchAbsent = absent(mismatch.objectName);
-        const auto finalListSize = repo_api::RepoClient::localList(registry, prefix).size();
+        const auto finalListSize = repo_api::RepoClientCompat::localList(registry, prefix).size();
         if (!boundsRejected || !lengthRejected || finalStaging != 0 ||
             !boundsAbsent || !mismatchAbsent || finalListSize != 1) {
           throw std::runtime_error(
@@ -393,39 +394,39 @@ main(int argc, char* argv[])
         repo->registerLocalServices(registry);
         const auto& prefix = config.servicePrefix;
         const std::string witnessName = localObject + "/witness";
-        if (!repo_api::RepoClient::localList(registry, prefix).empty() ||
-            repo_api::RepoClient::localRemove(registry, prefix, localObject)) {
+        if (!repo_api::RepoClientCompat::localList(registry, prefix).empty() ||
+            repo_api::RepoClientCompat::localRemove(registry, prefix, localObject)) {
           throw std::runtime_error("L01 isolated local store was not empty");
         }
         repo_api::StoreOptions options;
         options.objectType = "application/octet-stream";
-        const auto stored = repo_api::RepoClient::localPut(
+        const auto stored = repo_api::RepoClientCompat::localPut(
           registry, prefix, localObject, payload, options);
-        if (repo_api::RepoClient::localGet(registry, prefix, localObject) != payload ||
-            repo_api::RepoClient::localGetManifest(registry, prefix, localObject).toJson() !=
+        if (repo_api::RepoClientCompat::localGet(registry, prefix, localObject) != payload ||
+            repo_api::RepoClientCompat::localGetManifest(registry, prefix, localObject).toJson() !=
               stored.toJson()) {
           throw std::runtime_error("L01 local read differs from stored object");
         }
-        const auto afterPut = repo_api::RepoClient::localList(registry, prefix);
+        const auto afterPut = repo_api::RepoClientCompat::localList(registry, prefix);
         if (afterPut.size() != 1 || afterPut.front().toJson() != stored.toJson()) {
           throw std::runtime_error("L01 local list did not expose stored object");
         }
-        if (!repo_api::RepoClient::localRemove(registry, prefix, localObject) ||
-            repo_api::RepoClient::localRemove(registry, prefix, localObject) ||
-            !repo_api::RepoClient::localList(registry, prefix).empty()) {
+        if (!repo_api::RepoClientCompat::localRemove(registry, prefix, localObject) ||
+            repo_api::RepoClientCompat::localRemove(registry, prefix, localObject) ||
+            !repo_api::RepoClientCompat::localList(registry, prefix).empty()) {
           throw std::runtime_error("L01 local remove or final list was incorrect");
         }
         bool missingGet = false;
         bool missingManifest = false;
         try {
-          (void)repo_api::RepoClient::localGet(registry, prefix, localObject);
+          (void)repo_api::RepoClientCompat::localGet(registry, prefix, localObject);
         }
         catch (const std::exception& error) {
           missingGet = std::string(error.what()).find("repo-object-not-found") !=
                        std::string::npos;
         }
         try {
-          (void)repo_api::RepoClient::localGetManifest(registry, prefix, localObject);
+          (void)repo_api::RepoClientCompat::localGetManifest(registry, prefix, localObject);
         }
         catch (const std::exception& error) {
           missingManifest = std::string(error.what()).find("repo-object-not-found") !=
@@ -434,9 +435,9 @@ main(int argc, char* argv[])
         if (!missingGet || !missingManifest) {
           throw std::runtime_error("L01 removed object remained readable");
         }
-        const auto witness = repo_api::RepoClient::localPut(
+        const auto witness = repo_api::RepoClientCompat::localPut(
           registry, prefix, witnessName, payload, options);
-        const auto finalList = repo_api::RepoClient::localList(registry, prefix);
+        const auto finalList = repo_api::RepoClientCompat::localList(registry, prefix);
         if (finalList.size() != 1 || finalList.front().toJson() != witness.toJson()) {
           throw std::runtime_error("L01 durable local witness is absent");
         }

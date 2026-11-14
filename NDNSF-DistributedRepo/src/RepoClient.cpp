@@ -1596,13 +1596,13 @@ RepoStoreApi::getObject(const RepoNode& node, const RepoObjectManifest& manifest
 }
 
 RepoObjectManifest
-RepoClient::localPut(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localPut(ndn_service_framework::LocalServiceRegistry& registry,
                      const ndn::Name& repoServicePrefix,
                      const std::string& objectName,
                      const std::vector<uint8_t>& payload,
                      StoreOptions options)
 {
-  auto manifest = makeManifest(objectName,
+  auto manifest = RepoClient::makeManifest(objectName,
                                options.objectType,
                                payload,
                                options.replicationFactor,
@@ -1613,7 +1613,7 @@ RepoClient::localPut(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 std::vector<uint8_t>
-RepoClient::localGet(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localGet(ndn_service_framework::LocalServiceRegistry& registry,
                      const ndn::Name& repoServicePrefix,
                      const std::string& objectName)
 {
@@ -1621,7 +1621,7 @@ RepoClient::localGet(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 void
-RepoClient::localPutRange(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localPutRange(ndn_service_framework::LocalServiceRegistry& registry,
                           const ndn::Name& repoServicePrefix,
                           const RepoObjectManifest& manifest,
                           RepoByteRange range,
@@ -1636,7 +1636,7 @@ RepoClient::localPutRange(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 RepoObjectManifest
-RepoClient::localCommitRanges(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localCommitRanges(ndn_service_framework::LocalServiceRegistry& registry,
                               const ndn::Name& repoServicePrefix,
                               const RepoObjectManifest& manifest)
 {
@@ -1645,7 +1645,7 @@ RepoClient::localCommitRanges(ndn_service_framework::LocalServiceRegistry& regis
 }
 
 void
-RepoClient::localAbortRanges(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localAbortRanges(ndn_service_framework::LocalServiceRegistry& registry,
                              const ndn::Name& repoServicePrefix,
                              const std::string& objectName)
 {
@@ -1658,7 +1658,7 @@ RepoClient::localAbortRanges(ndn_service_framework::LocalServiceRegistry& regist
 }
 
 std::vector<uint8_t>
-RepoClient::localGetRange(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localGetRange(ndn_service_framework::LocalServiceRegistry& registry,
                           const ndn::Name& repoServicePrefix,
                           const std::string& objectName,
                           RepoByteRange range)
@@ -1668,7 +1668,7 @@ RepoClient::localGetRange(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 RepoObjectManifest
-RepoClient::localGetManifest(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localGetManifest(ndn_service_framework::LocalServiceRegistry& registry,
                              const ndn::Name& repoServicePrefix,
                              const std::string& objectName)
 {
@@ -1677,7 +1677,7 @@ RepoClient::localGetManifest(ndn_service_framework::LocalServiceRegistry& regist
 }
 
 std::vector<RepoObjectManifest>
-RepoClient::localList(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localList(ndn_service_framework::LocalServiceRegistry& registry,
                       const ndn::Name& repoServicePrefix)
 {
   return parseInventoryJson(toString(localRequest(
@@ -1685,7 +1685,7 @@ RepoClient::localList(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 bool
-RepoClient::localRemove(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localRemove(ndn_service_framework::LocalServiceRegistry& registry,
                         const ndn::Name& repoServicePrefix,
                         const std::string& objectName)
 {
@@ -1694,7 +1694,7 @@ RepoClient::localRemove(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 RepoOperationStatus
-RepoClient::localInsert(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localInsert(ndn_service_framework::LocalServiceRegistry& registry,
                                        const ndn::Name& repoServicePrefix,
                                        const RepoDataReference& reference)
 {
@@ -1704,7 +1704,7 @@ RepoClient::localInsert(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 RepoOperationStatus
-RepoClient::localStatus(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localStatus(ndn_service_framework::LocalServiceRegistry& registry,
                         const ndn::Name& repoServicePrefix,
                         const std::string& operationId)
 {
@@ -1713,7 +1713,7 @@ RepoClient::localStatus(ndn_service_framework::LocalServiceRegistry& registry,
 }
 
 RepoCatalogStatus
-RepoClient::localCatalogStatus(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localCatalogStatus(ndn_service_framework::LocalServiceRegistry& registry,
                                const ndn::Name& repoServicePrefix)
 {
   return parseCatalogStatusJson(toString(localRequest(
@@ -1721,7 +1721,7 @@ RepoClient::localCatalogStatus(ndn_service_framework::LocalServiceRegistry& regi
 }
 
 RepoCacheStatus
-RepoClient::localCacheStatus(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localCacheStatus(ndn_service_framework::LocalServiceRegistry& registry,
                              const ndn::Name& repoServicePrefix)
 {
   return parseCacheStatusJson(toString(localRequest(
@@ -1729,7 +1729,7 @@ RepoClient::localCacheStatus(ndn_service_framework::LocalServiceRegistry& regist
 }
 
 RepoCatalogDelta
-RepoClient::localCatalogSnapshot(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localCatalogSnapshot(ndn_service_framework::LocalServiceRegistry& registry,
                                  const ndn::Name& repoServicePrefix)
 {
   return parseCatalogDeltaJson(toString(localRequest(
@@ -1737,7 +1737,7 @@ RepoClient::localCatalogSnapshot(ndn_service_framework::LocalServiceRegistry& re
 }
 
 RepoCatalogDelta
-RepoClient::localCatalogDelta(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localCatalogDelta(ndn_service_framework::LocalServiceRegistry& registry,
                               const ndn::Name& repoServicePrefix,
                               uint64_t sinceEpoch)
 {
@@ -1747,7 +1747,7 @@ RepoClient::localCatalogDelta(ndn_service_framework::LocalServiceRegistry& regis
 }
 
 RepoCatalogEntry
-RepoClient::localCatalogLookup(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localCatalogLookup(ndn_service_framework::LocalServiceRegistry& registry,
                                const ndn::Name& repoServicePrefix,
                                const std::string& objectName)
 {
@@ -1757,7 +1757,7 @@ RepoClient::localCatalogLookup(ndn_service_framework::LocalServiceRegistry& regi
 }
 
 RepoObjectManifest
-RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localPutSegmented(ndn_service_framework::LocalServiceRegistry& registry,
                               const ndn::Name& repoServicePrefix,
                               const std::string& objectName,
                               const std::vector<uint8_t>& payload,
@@ -1766,7 +1766,7 @@ RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& regis
 {
   maxSegmentPayload = std::max<size_t>(1, maxSegmentPayload);
   if (payload.size() <= maxSegmentPayload) {
-    return localPut(registry, repoServicePrefix, objectName, payload,
+    return RepoClientCompat::localPut(registry, repoServicePrefix, objectName, payload,
                     std::move(options));
   }
 
@@ -1779,7 +1779,7 @@ RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& regis
     const auto end = std::min(payload.size(), start + maxSegmentPayload);
     const std::vector<uint8_t> segmentPayload(payload.begin() + start,
                                               payload.begin() + end);
-    localPut(registry, repoServicePrefix, segmentObjectName(objectName, i),
+    RepoClientCompat::localPut(registry, repoServicePrefix, segmentObjectName(objectName, i),
              segmentPayload, segmentOptions);
   }
 
@@ -1789,12 +1789,12 @@ RepoClient::localPutSegmented(ndn_service_framework::LocalServiceRegistry& regis
 }
 
 std::vector<uint8_t>
-RepoClient::localGetSegmented(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localGetSegmented(ndn_service_framework::LocalServiceRegistry& registry,
                               const ndn::Name& repoServicePrefix,
                               const RepoObjectManifest& manifest)
 {
   if (manifest.segmentCount <= 1) {
-    auto payload = localGet(registry, repoServicePrefix, manifest.objectName);
+    auto payload = RepoClientCompat::localGet(registry, repoServicePrefix, manifest.objectName);
     verifySegmentedPayload(manifest, payload);
     return payload;
   }
@@ -1802,7 +1802,7 @@ RepoClient::localGetSegmented(ndn_service_framework::LocalServiceRegistry& regis
   std::vector<uint8_t> payload;
   payload.reserve(static_cast<size_t>(manifest.size));
   for (uint32_t i = 0; i < manifest.segmentCount; ++i) {
-    auto segment = localGet(registry, repoServicePrefix,
+    auto segment = RepoClientCompat::localGet(registry, repoServicePrefix,
                             segmentObjectName(manifest.objectName, i));
     payload.insert(payload.end(), segment.begin(), segment.end());
   }
@@ -1811,11 +1811,11 @@ RepoClient::localGetSegmented(ndn_service_framework::LocalServiceRegistry& regis
 }
 
 std::vector<uint8_t>
-RepoClient::localGetObject(ndn_service_framework::LocalServiceRegistry& registry,
+RepoClientCompat::localGetObject(ndn_service_framework::LocalServiceRegistry& registry,
                            const ndn::Name& repoServicePrefix,
                            const RepoObjectManifest& manifest)
 {
-  return localGetSegmented(registry, repoServicePrefix, manifest);
+  return RepoClientCompat::localGetSegmented(registry, repoServicePrefix, manifest);
 }
 
 RepoObjectManifest
