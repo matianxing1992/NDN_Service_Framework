@@ -411,7 +411,19 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
   receipt.metadataName = ndn::Name(publication.preparedMetadataDataName);
   receipt.rootDigest = publication.manifestDigest;
   receipt.metadataDigest = publication.preparedMetadataDigest;
-  NativeModelCommitPipeline pipeline(current, NATIVE_STORED_MODEL_UPLOAD_WIRE);
+  // One client for the whole publication scope: the scheduler takes its budget from the
+  // client that performs the transfers, so the two cannot disagree.
+  auto publicationConfig = repo::PersistentRepoClientConfig{};
+  publicationConfig.servicePrefix = ndn::Name(repository.servicePrefix);
+  publicationConfig.providerScope = {ndn::Name(repository.providerIdentity)};
+  publicationConfig.dataOnly = true;
+  auto publicationClient = std::make_shared<repo::RepoClient>(repo::RepoClient::makePersistent(
+    std::shared_ptr<ndn_service_framework::ServiceUser>(&writer,
+      [] (ndn_service_framework::ServiceUser*) {}),
+    std::move(publicationConfig)));
+  const auto publicationBudget = publicationClient->publicationLimits().maxGroupWireBytes;
+  NativeModelCommitPipeline pipeline(current, publicationBudget != 0
+    ? publicationBudget : NATIVE_STORED_MODEL_UPLOAD_WIRE);
   std::uint64_t submittedGroups = 0;
   std::uint64_t submittedBytes = 0;
   PacketGroup group;
@@ -431,22 +443,14 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
         const auto budget = [deadline, callCurrent] {
           return remainingRepoBudget(deadline, callCurrent);
         };
-        // The recovery commit uses the same facade path as the live one; the writer
-        // outlives this call, so a non-owning alias is correct here.
-        auto restoreConfig = repo::PersistentRepoClientConfig{};
-        restoreConfig.servicePrefix = ndn::Name(target.servicePrefix);
-        restoreConfig.providerScope = {ndn::Name(target.providerIdentity)};
-        restoreConfig.dataOnly = true;
-        auto restoreFacade = std::make_shared<repo::RepoClient>(repo::RepoClient::makePersistent(
-          std::shared_ptr<ndn_service_framework::ServiceUser>(&writer,
-            [] (ndn_service_framework::ServiceUser*) {}),
-          std::move(restoreConfig)));
+        // The recovery commit uses the scope's client - the same one the scheduler was
+        // built from.
         commitPacketGroup(writer, target, *pending, [&](const ndn::Data& packet) {
           const auto& wire = packet.wireEncode();
           return writer.validateProducerPacketWireUntil(
             {wire.begin(), wire.end()}, producer,
             std::min(deadline, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
-        }, budget, callCurrent, 1, packetDigest(pending->wires), restoreFacade);
+        }, budget, callCurrent, 1, packetDigest(pending->wires), publicationClient);
       }, [&receipt, bytes] {
         receipt.wireBytes += bytes;
         ++receipt.packetGroups;

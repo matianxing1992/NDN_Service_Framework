@@ -125,6 +125,10 @@ public:
   RepoCandidateSet discover(const RepoDiscoveryRequest& input,
                             const RepoOperationOptions& options) const;
 
+  /** Bounds this client enforces on one publication group. */
+  RepoPublicationLimits
+  publicationLimits() const;
+
   bool close(std::chrono::steady_clock::time_point deadline);
 
 private:

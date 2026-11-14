@@ -2744,6 +2744,7 @@ toArtifactHandle(const RepoHandle& input)
 
 struct RepoClient::Impl
 {
+  ArtifactLimits persistentLimits;
   /** Counts operations that are still running so close() can report the truth
    *  instead of claiming a drain it did not observe. */
   struct Ticket
@@ -2805,6 +2806,7 @@ RepoClient::makePersistent(std::shared_ptr<ndn_service_framework::ServiceUser> u
   if (!user)
     throw std::invalid_argument("persistent RepoClient requires a ServiceUser");
   auto impl = std::make_unique<Impl>();
+  impl->persistentLimits = config.limits;
   impl->servicePrefix = config.servicePrefix.toUri();
   const bool dataOnly = config.dataOnly;
   if (!dataOnly)
@@ -2822,6 +2824,18 @@ RepoClient::RepoClient(std::unique_ptr<Impl> impl)
 RepoClient::RepoClient(RepoClient&&) noexcept = default;
 RepoClient& RepoClient::operator=(RepoClient&&) noexcept = default;
 RepoClient::~RepoClient() = default;
+
+RepoPublicationLimits
+RepoClient::publicationLimits() const
+{
+  RepoPublicationLimits limits;
+  if (!m_impl)
+    return limits;
+  // The engine's chunk bound is the per-group wire bound it will accept; report it so a
+  // scheduler built on this client cannot outrun the client itself.
+  limits.maxGroupWireBytes = m_impl->persistentLimits.maxChunkBytes;
+  return limits;
+}
 
 bool
 RepoClient::close(std::chrono::steady_clock::time_point deadline)

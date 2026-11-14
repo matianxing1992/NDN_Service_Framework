@@ -26,6 +26,14 @@ class VerifiedRepoUserStoragePacketSetV1;
 std::string
 canonicalSha256Digest(std::string digest);
 
+/** The bounds this client enforces on one publication group. A scheduler must not
+ *  demand groups the client would refuse, so it takes its budget from here instead of
+ *  carrying its own constant. */
+struct RepoPublicationLimits
+{
+  uint64_t maxGroupWireBytes = 0;
+};
+
 enum class RepoCompletion
 {
   DURABLE,
