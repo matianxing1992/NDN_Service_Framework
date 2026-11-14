@@ -2044,3 +2044,20 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()],
                 install_path=None)
+    # C10 asks for one bounded asan-ubsan card over the real C++ selector once the local tensor
+    # representation exists. Only the local-handoff cases run there: the card is about ownership
+    # and lifetime, so a whole-suite run under instrumentation would cost hours to cover paths
+    # that never touch a local value. The library it links is the same one the product uses, so a
+    # defect in the codec or the adapter's owner is visible here.
+    bld.program(target='../spec224-tp-tests-asan', name='spec224-tp-tests-asan',
+                source=[bld.path.find_node('main.cpp'),
+                        bld.path.find_node('unit-tests/di-native-tensor-parallel.t.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+                includes=framework_includes,
+                use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' +
+                    framework_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-omit-frame-pointer',
+                          '-fsanitize=address,undefined'],
+                linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
