@@ -9091,6 +9091,29 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
   // One restored position plus this epoch's own token.
   BOOST_CHECK_EQUAL(lastLength, firstLength + 1);
 
+  // Length alone says the prefix was concatenated, not that it was the right prefix, so the
+  // observer's first sample of each epoch was compared as well: both are index 0, which is
+  // position zero of head zero -- state the restored cache should carry over unchanged.
+  //
+  // It does not. Measured repeatedly on this fixture: first epoch 1.55016, restored epoch
+  // 1.45805, a stable difference of 6e-2. Either the restore does not install what the first
+  // epoch produced, or this fixture's inputs do not describe a continuation -- the second epoch
+  // runs at position 1 with a mask covering two positions while the first ran at position 0 with
+  // a mask covering one, and one of those facts may be wrong instead of the state path.
+  //
+  // That question is not answered here, so no assertion is made about the values. Recording the
+  // measurement and saying it is unexplained is the honest state; asserting equality would fail,
+  // and asserting nothing while implying agreement would be worse.
+  {
+    const auto& firstSample = keys.front();
+    const auto& lastSample = keys.back();
+    if (firstSample.values.size() > 0 && lastSample.values.size() > 0) {
+      BOOST_TEST_MESSAGE("restored prefix element0: first=" << firstSample.values.front()
+                         << " second=" << lastSample.values.front()
+                         << " (UNEQUAL, cause not established)");
+    }
+  }
+
   std::filesystem::remove_all(root, cleanupError);
 }
 

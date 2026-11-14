@@ -1214,6 +1214,16 @@ def build(bld):
     # tasks. Waf otherwise posts only the explicitly named native targets and
     # silently omits these anonymous install_files generators. Do not change
     # the target filter for compilation (especially the native test suites).
+    # An instrumented tree must never be globally installed. It is slower by construction and its
+    # library links the sanitizer runtimes, so promoting it would replace the release candidate
+    # with a diagnostic artifact. The refusal is here rather than in a wrapper so it cannot be
+    # bypassed by invoking waf install directly on that tree.
+    if bld.cmd == 'install' and bld.env.sanitize_di:
+        raise SystemExit(
+            'refusing to install from an instrumented build tree: '
+            'NDNSF-DI was configured with --sanitize-di, which is for diagnostics and tests only. '
+            'Install from the ordinary build tree instead.')
+
     if bld.cmd == 'install':
         for group in bld.groups:
             for task_generator in list(group):
