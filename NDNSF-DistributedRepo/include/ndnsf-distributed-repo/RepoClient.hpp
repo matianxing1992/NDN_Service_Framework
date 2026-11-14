@@ -172,11 +172,6 @@ public:
    * wire bytes are unchanged. Call off Face and retain its owner until callbacks drain.
    * The original deadline bounds an in-progress fetch; current-work checks gate
    * admission, packet validation and return. No Owner claim is minted by this API. */
-  static std::vector<std::vector<uint8_t>> fetchOriginalDataPacketSet(
-    ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
-    const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
-    RepoUserStoragePacketSetFetchLimits limits = {},
-    const std::function<void()>& requireCurrent = {});
 
   /** Fetch explicitly named original packets with a byte upper bound, without an Owner listing.
    * The caller pins application commitments separately and supplies packet verification.

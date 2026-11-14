@@ -2490,7 +2490,7 @@ BOOST_AUTO_TEST_CASE(OriginalPacketSetVerifiesReplicaCertificateBeforeContentWit
   };
   const auto run = [&](const RepoDataReference& selected) {
     return finish(std::async(std::launch::async, [&] {
-      return RepoClient::fetchOriginalDataPacketSet(user, selected, verifier, 3000);
+      return RepoClientCompat::fetchOriginalDataPacketSet(user, selected, verifier, 3000);
     }));
   };
   BOOST_CHECK(run(reference) == expected);
@@ -2526,7 +2526,7 @@ BOOST_AUTO_TEST_CASE(OriginalPacketSetVerifiesReplicaCertificateBeforeContentWit
   bool rejected = false;
   boost::asio::post(face.getIoContext(), [&] {
     executed = true;
-    try { (void)RepoClient::fetchOriginalDataPacketSet(user, reference, verifier, 100); }
+    try { (void)RepoClientCompat::fetchOriginalDataPacketSet(user, reference, verifier, 100); }
     catch (const std::logic_error&) { rejected = true; }
   });
   face.getIoContext().restart();

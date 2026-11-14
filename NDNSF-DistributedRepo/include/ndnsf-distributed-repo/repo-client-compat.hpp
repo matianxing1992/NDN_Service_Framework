@@ -38,6 +38,11 @@ public:
     const std::function<bool(const ndn::Data&)>& verifyPacket, int timeoutMs,
     const std::function<void()>& requireCurrent = {},
     std::shared_ptr<void> operationLifetime = {});
+  static std::vector<std::vector<uint8_t>> fetchOriginalDataPacketSet(
+    ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
+    RepoUserStoragePacketSetFetchLimits limits = {},
+    const std::function<void()>& requireCurrent = {});
 };
 
 } // namespace ndnsf_distributed_repo

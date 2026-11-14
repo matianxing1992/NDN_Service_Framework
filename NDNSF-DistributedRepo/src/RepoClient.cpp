@@ -576,7 +576,7 @@ RepoClient::fetchOriginalDataPacketFromUserStorage(
 }
 
 std::vector<std::vector<uint8_t>>
-RepoClient::fetchOriginalDataPacketSet(
+RepoClientCompat::fetchOriginalDataPacketSet(
   ndn_service_framework::ServiceUser& user, const RepoDataReference& reference,
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature, int timeoutMs,
   RepoUserStoragePacketSetFetchLimits limits, const std::function<void()>& requireCurrent)
@@ -825,8 +825,8 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   original.expectedSha256 = manifest.sha256;
   original.forwardingHint = provider.toUri();
   original.packetSetMetadata = manifest;
-  auto packetWires = fetchOriginalDataPacketSet(owner, original, verifyProducerSignature,
-                                              remainingTimeoutMs(), limits);
+  auto packetWires = RepoClientCompat::fetchOriginalDataPacketSet(
+    owner, original, verifyProducerSignature, remainingTimeoutMs(), limits);
 
   const auto currentClaim = listClaim();
   if (!sameUserStorageClaim(initialClaim, currentClaim))
@@ -3266,7 +3266,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
       const auto& wire = packet.wireEncode();
       return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
     };
-    auto wires = RepoClient::fetchOriginalDataPacketSet(
+    auto wires = RepoClientCompat::fetchOriginalDataPacketSet(
       *m_impl->user, reference, verifyPacket, remainingMs(options.deadline), limits,
       options.requireCurrent);
     RepoDataFetchResult result;
