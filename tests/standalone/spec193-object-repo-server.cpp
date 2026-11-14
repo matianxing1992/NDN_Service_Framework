@@ -2,6 +2,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
 
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/LocalServiceRegistry.hpp"
@@ -634,7 +635,7 @@ main(int argc, char* argv[])
         bool missingRejected = false;
         std::string missingReason;
         try {
-          (void)repo_api::RepoClient::commitRanges(*repo, incomplete);
+          (void)repo_api::RepoStoreApi::commitRanges(*repo, incomplete);
         }
         catch (const std::exception& error) {
           missingReason = error.what();
@@ -650,14 +651,14 @@ main(int argc, char* argv[])
 
         repo_api::RepoClient::putRange(*repo, aborted, {0, 101},
                                       slice(abortedPayload, 0, 101));
-        repo_api::RepoClient::abortRanges(*repo, aborted.objectName);
+        repo_api::RepoStoreApi::abortRanges(*repo, aborted.objectName);
         if (!absent(aborted.objectName)) {
           throw std::runtime_error("O03 abort left a visible object");
         }
         // A different reservation must fit after abort releases the 509-byte charge.
         repo_api::RepoClient::putRange(*repo, incomplete, {0, 101},
                                       slice(incompletePayload, 0, 101));
-        repo_api::RepoClient::abortRanges(*repo, incomplete.objectName);
+        repo_api::RepoStoreApi::abortRanges(*repo, incomplete.objectName);
         if (!absent(incomplete.objectName)) {
           throw std::runtime_error("O03 post-abort reservation remained visible");
         }
@@ -721,7 +722,7 @@ main(int argc, char* argv[])
         write(0, firstEnd);
         if (!invisible()) throw std::runtime_error("O02 staged ranges became visible");
         write(firstEnd, middleEnd);
-        const auto committed = repo_api::RepoClient::commitRanges(*repo, manifest);
+        const auto committed = repo_api::RepoStoreApi::commitRanges(*repo, manifest);
         const auto subrange = repo_api::RepoClient::getRange(
           *repo, localObject, repo_api::RepoByteRange{73, 281});
         if (committed.objectName != localObject || committed.generation != 1 ||
@@ -813,7 +814,7 @@ main(int argc, char* argv[])
           *repo, localObject, payload, keyChain,
           ndn::security::signingByIdentity(config.providerIdentity),
           options, segmentBytes);
-        const auto queried = repo_api::RepoClient::status(*repo, status.operationId);
+        const auto queried = repo_api::RepoStoreApi::status(*repo, status.operationId);
         if (status.state != "DONE" || queried.state != "DONE" ||
             status.completedSegments < 3 ||
             queried.completedSegments != status.completedSegments) {
@@ -872,7 +873,7 @@ main(int argc, char* argv[])
         const auto expectRejected = [&] (const char* label,
                                          const repo_api::RepoOperationStatus& status,
                                          const std::string& error) {
-          const auto queried = repo_api::RepoClient::status(*repo, status.operationId);
+          const auto queried = repo_api::RepoStoreApi::status(*repo, status.operationId);
           if (status.state != "FAILED" || queried.state != "FAILED" ||
               status.completedSegments != 0 ||
               status.message.find(error) == std::string::npos || !unchanged()) {
@@ -930,14 +931,14 @@ main(int argc, char* argv[])
         if (localManifest.empty() || payload.size() != 257) {
           throw std::invalid_argument("O13 cache seed needs a 257-byte source and report");
         }
-        const auto before = repo_api::RepoClient::cacheStatus(*repo);
+        const auto before = repo_api::RepoStoreApi::cacheStatus(*repo);
         repo_api::StoreOptions options;
         options.objectType = "o13-cache-object";
         const auto manifest = repo_api::RepoClient::put(*repo, localObject, payload, options);
-        const auto afterPut = repo_api::RepoClient::cacheStatus(*repo);
+        const auto afterPut = repo_api::RepoStoreApi::cacheStatus(*repo);
         const auto first = repo_api::RepoClient::get(*repo, localObject);
         const auto second = repo_api::RepoClient::get(*repo, localObject);
-        const auto afterReads = repo_api::RepoClient::cacheStatus(*repo);
+        const auto afterReads = repo_api::RepoStoreApi::cacheStatus(*repo);
         const auto charge = payload.size() + localObject.size() + manifest.toJson().size();
         if (manifest.size != payload.size() || first != payload || second != payload ||
             before.entryCount != 0 || before.usedBytes != 0 ||
@@ -1078,7 +1079,7 @@ main(int argc, char* argv[])
             manifest.packetNames != std::vector<std::string>{localObject} ||
             manifest.size != wire.size() ||
             (localCommand == "data-legacy-seed" && !manifest.dataReceiptId.empty()) ||
-            repo_api::RepoClient::getDataPacket(*repo, localObject) != wire) {
+            repo_api::RepoStoreApi::getDataPacket(*repo, localObject) != wire) {
           throw std::runtime_error("signed Data wire did not round-trip through RepoClient");
         }
         std::ofstream wireOutput(localManifest, std::ios::binary | std::ios::trunc);
@@ -1119,7 +1120,7 @@ main(int argc, char* argv[])
         const auto manifest = repo_api::RepoClient::putDataPacket(*repo, payload);
         if (manifest.objectName != localObject ||
             manifest.objectType != "ndn-data-wire" ||
-            repo_api::RepoClient::getDataPacket(*repo, localObject) != payload) {
+            repo_api::RepoStoreApi::getDataPacket(*repo, localObject) != payload) {
           throw std::runtime_error("original signed Data wire copy differs");
         }
         std::cout << "SPEC193_DATA_WIRE_REPLICA_SEEDED name=" << localObject
@@ -1134,7 +1135,7 @@ main(int argc, char* argv[])
       const auto end = std::min(payload.size(), start + segmentBytes);
       const std::vector<uint8_t> segment(payload.begin() + start, payload.begin() + end);
       if (localCommand == "seed") {
-        auto manifest = repo_api::RepoClient::putSegmented(
+        auto manifest = repo_api::RepoStoreApi::putSegmented(
           *repo, localObject, payload, {}, segmentBytes);
         if (manifest.segmentCount < 3 ||
             repo_api::RepoClient::getObject(*repo, manifest) != payload ||

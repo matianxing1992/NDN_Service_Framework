@@ -17,6 +17,23 @@ public:
   static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
   static std::vector<uint8_t> getSegmented(const RepoNode& node,
                                            const RepoObjectManifest& manifest);
+  static RepoObjectManifest commitRanges(RepoNode& node,
+                                         const RepoObjectManifest& manifest);
+  static void abortRanges(RepoNode& node, const std::string& objectName);
+  static RepoOperationStatus insert(
+    RepoNode& node,
+    const RepoDataReference& reference);
+  static RepoObjectManifest putSegmented(
+    RepoNode& node,
+    const std::string& objectName,
+    const std::vector<uint8_t>& payload,
+    StoreOptions options = {},
+    size_t maxSegmentPayload = 6000);
+  static std::vector<uint8_t> getDataPacket(const RepoNode& node,
+                                            const std::string& dataName);
+  static RepoOperationStatus status(const RepoNode& node,
+                                    const std::string& operationId);
+  static RepoCacheStatus cacheStatus(const RepoNode& node);
 };
 
 } // namespace ndnsf_distributed_repo

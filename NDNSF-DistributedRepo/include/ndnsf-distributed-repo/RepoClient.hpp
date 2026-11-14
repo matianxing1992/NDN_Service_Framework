@@ -209,10 +209,9 @@ public:
                        RepoByteRange range,
                        const std::vector<uint8_t>& bytes);
 
-  static RepoObjectManifest commitRanges(RepoNode& node,
-                                         const RepoObjectManifest& manifest);
+  
 
-  static void abortRanges(RepoNode& node, const std::string& objectName);
+  
 
   static std::vector<uint8_t> getRange(const RepoNode& node,
                                        const std::string& objectName,
@@ -231,8 +230,7 @@ public:
                                           const std::vector<uint8_t>& wire);
 
   /** Retrieve the original packet wire by its complete NDN Data name. */
-  static std::vector<uint8_t> getDataPacket(const RepoNode& node,
-                                            const std::string& dataName);
+  
 
   /**
    * Retrieve an application-produced packet set by the manifest's ordered exact
@@ -243,9 +241,7 @@ public:
     const RepoNode& node,
     const RepoObjectManifest& manifest);
 
-  static RepoOperationStatus insert(
-    RepoNode& node,
-    const RepoDataReference& reference);
+  
 
   /**
    * Convenience INSERT adapter for callers that have payload bytes instead of
@@ -262,12 +258,11 @@ public:
     StoreOptions options = {},
     size_t maxSegmentPayload = 6000);
 
-  static RepoOperationStatus status(const RepoNode& node,
-                                    const std::string& operationId);
+  
 
   
 
-  static RepoCacheStatus cacheStatus(const RepoNode& node);
+  
 
   
 
@@ -284,12 +279,7 @@ public:
    * hash verification while storing. Use getSegmented() on the APP side to
    * reassemble and verify size/hash against the returned manifest.
    */
-  static RepoObjectManifest putSegmented(
-    RepoNode& node,
-    const std::string& objectName,
-    const std::vector<uint8_t>& payload,
-    StoreOptions options = {},
-    size_t maxSegmentPayload = 6000);
+  
 
   /**
    * Fetch chunks described by manifest, reassemble them, and verify APP-side

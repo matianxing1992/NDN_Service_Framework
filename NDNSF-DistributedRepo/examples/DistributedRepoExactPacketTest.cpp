@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
@@ -262,7 +263,7 @@ main(int argc, char** argv)
     for (const auto& name : storedManifest.packetNames) {
       require(ndn::Name(name).getPrefix(-1) == prefix && ndn::Name(name)[-1].isSegment(),
               "Repo changed original versioned Data name: " + name);
-      auto wire = RepoClient::getDataPacket(node, name);
+      auto wire = RepoStoreApi::getDataPacket(node, name);
       require(packetName(wire) == name, "stored wire name differs from exact key");
       originalWires.push_back(std::move(wire));
     }

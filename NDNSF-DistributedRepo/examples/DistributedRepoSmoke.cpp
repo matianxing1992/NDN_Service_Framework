@@ -150,7 +150,7 @@ main()
   segmentedOptions.replicationFactor = 1;
   segmentedOptions.replicaNodes = {"/repo/A"};
   segmentedOptions.policyEpoch = "/Policy/demo/v1";
-  const auto segmentedManifest = RepoClient::putSegmented(
+  const auto segmentedManifest = RepoStoreApi::putSegmented(
     node,
     "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/large/direct-object",
     largePayload,
@@ -198,7 +198,7 @@ main()
     "/example/repo/user/NDNSF-DISTRIBUTED-REPO/UPLOAD/DATA/no-fetcher";
   noFetcherReference.hasFinalSegment = true;
   noFetcherReference.finalSegment = 1;
-  const auto noFetcherStatus = RepoClient::insert(node, noFetcherReference);
+  const auto noFetcherStatus = RepoStoreApi::insert(node, noFetcherReference);
   if (noFetcherStatus.state != "FAILED" ||
       noFetcherStatus.message.find("SegmentFetcher") == std::string::npos) {
     std::cerr << "repo store-from-reference missing fetcher did not fail visibly\n";
@@ -230,8 +230,8 @@ main()
   reference.expectedSize = fakeConcatenated.size();
   reference.expectedSha256 = sha256Hex(fakeConcatenated);
   reference.objectType = "app-owned-segmented-data";
-  const auto referenceStatus = RepoClient::insert(node, reference);
-  const auto queriedReferenceStatus = RepoClient::status(node, referenceStatus.operationId);
+  const auto referenceStatus = RepoStoreApi::insert(node, reference);
+  const auto queriedReferenceStatus = RepoStoreApi::status(node, referenceStatus.operationId);
   const auto referenceManifest = node.getManifest(reference.objectName);
   if (referenceStatus.state != "DONE" ||
       queriedReferenceStatus.state != "DONE" ||

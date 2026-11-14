@@ -1328,13 +1328,13 @@ RepoClient::putRange(RepoNode& node,
 }
 
 RepoObjectManifest
-RepoClient::commitRanges(RepoNode& node, const RepoObjectManifest& manifest)
+RepoStoreApi::commitRanges(RepoNode& node, const RepoObjectManifest& manifest)
 {
   return node.commitRanges(manifest);
 }
 
 void
-RepoClient::abortRanges(RepoNode& node, const std::string& objectName)
+RepoStoreApi::abortRanges(RepoNode& node, const std::string& objectName)
 {
   node.abortRanges(objectName);
 }
@@ -1375,7 +1375,7 @@ RepoClient::putDataPacket(RepoNode& node, const std::vector<uint8_t>& wire)
 }
 
 std::vector<uint8_t>
-RepoClient::getDataPacket(const RepoNode& node, const std::string& dataName)
+RepoStoreApi::getDataPacket(const RepoNode& node, const std::string& dataName)
 {
   return node.getDataPacket(dataName);
 }
@@ -1406,7 +1406,7 @@ RepoClient::getDataPackets(const RepoNode& node,
   std::vector<std::vector<uint8_t>> wires;
   wires.reserve(manifest.packetNames.size());
   for (const auto& expectedName : manifest.packetNames) {
-    auto wire = getDataPacket(node, expectedName);
+    auto wire = RepoStoreApi::getDataPacket(node, expectedName);
     ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
     block.parse();
     const ndn::Data data(block);
@@ -1422,7 +1422,7 @@ RepoClient::getDataPackets(const RepoNode& node,
 }
 
 RepoOperationStatus
-RepoClient::insert(RepoNode& node,
+RepoStoreApi::insert(RepoNode& node,
                    const RepoDataReference& reference)
 {
   return parseOperationStatusJson(toString(
@@ -1504,7 +1504,7 @@ RepoClient::insertPayload(RepoNode& node,
 }
 
 RepoOperationStatus
-RepoClient::status(const RepoNode& node, const std::string& operationId)
+RepoStoreApi::status(const RepoNode& node, const std::string& operationId)
 {
   return parseOperationStatusJson(toString(node.handleStatus(encodeStatusRequest(operationId))));
 }
@@ -1516,7 +1516,7 @@ RepoStoreApi::catalogStatus(const RepoNode& node)
 }
 
 RepoCacheStatus
-RepoClient::cacheStatus(const RepoNode& node)
+RepoStoreApi::cacheStatus(const RepoNode& node)
 {
   return parseCacheStatusJson(toString(node.handleCacheStatus()));
 }
@@ -1543,7 +1543,7 @@ RepoStoreApi::catalogLookup(const RepoNode& node,
 }
 
 RepoObjectManifest
-RepoClient::putSegmented(RepoNode& node,
+RepoStoreApi::putSegmented(RepoNode& node,
                          const std::string& objectName,
                          const std::vector<uint8_t>& payload,
                          StoreOptions options,
@@ -1551,7 +1551,7 @@ RepoClient::putSegmented(RepoNode& node,
 {
   maxSegmentPayload = std::max<size_t>(1, maxSegmentPayload);
   if (payload.size() <= maxSegmentPayload) {
-    return put(node, objectName, payload, std::move(options));
+    return RepoClient::put(node, objectName, payload, std::move(options));
   }
 
   const size_t segmentCount =
@@ -1563,7 +1563,7 @@ RepoClient::putSegmented(RepoNode& node,
     const auto end = std::min(payload.size(), start + maxSegmentPayload);
     const std::vector<uint8_t> segmentPayload(payload.begin() + start,
                                               payload.begin() + end);
-    put(node, segmentObjectName(objectName, i), segmentPayload, segmentOptions);
+    RepoClient::put(node, segmentObjectName(objectName, i), segmentPayload, segmentOptions);
   }
 
   auto manifest = makeParentManifest(objectName, payload, options, segmentCount);
