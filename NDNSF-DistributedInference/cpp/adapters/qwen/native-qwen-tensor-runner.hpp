@@ -146,6 +146,19 @@ public:
   std::optional<ExecutionEvidence>
   executionEvidenceSnapshot() const override;
 
+  /** The unit's adapter metrics, summed over its children.
+   *
+   * A Coordinator records one metrics observation per executed epoch and refuses a run whose
+   * observation count disagrees with its epoch count, so a unit that answered with nothing made
+   * a correct run look uninstrumented. Each field is a byte or event counter that belongs to one
+   * child's own session, so the unit's value is their sum; `lastBackendExecution` describes one
+   * backend call and is deliberately dropped, because it cannot describe forty.
+   *
+   * @returns Nothing when no child reports metrics; otherwise the summed counters.
+   */
+  std::optional<NativeRuntimeMetrics>
+  runtimeMetricsSnapshot() const override;
+
 private:
   const QwenTpEntryContract* findEntry(const std::string& entryId) const;
 

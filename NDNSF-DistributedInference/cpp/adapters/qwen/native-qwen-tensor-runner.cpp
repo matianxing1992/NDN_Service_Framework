@@ -196,6 +196,52 @@ NativeQwenTensorRunner::executionEvidenceSnapshot() const
   return unit;
 }
 
+std::optional<NativeRuntimeMetrics>
+NativeQwenTensorRunner::runtimeMetricsSnapshot() const
+{
+  std::optional<NativeRuntimeMetrics> unit;
+  std::optional<NativeBackendExecutionTiming> latest;
+  for (const auto& entry : m_entries) {
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) continue;
+    const auto metrics = child->second->runtimeMetricsSnapshot();
+    if (!metrics) continue;
+    // The unit ran one backend call per step, so the latest of them is the unit's latest. Which
+    // entry made it is an internal detail of this runner; a caller asking the unit what it last
+    // did wants the call, not the entry id.
+    if (metrics->lastBackendExecution &&
+        (!latest || metrics->lastBackendExecution->finishedSteadyNs >=
+                      latest->finishedSteadyNs))
+      latest = metrics->lastBackendExecution;
+    if (!unit) {
+      unit = *metrics;
+      unit->lastBackendExecution.reset();
+      continue;
+    }
+    unit->stateDeviceToHostBytes += metrics->stateDeviceToHostBytes;
+    unit->stateHostToDeviceBytes += metrics->stateHostToDeviceBytes;
+    unit->activationInputBytes += metrics->activationInputBytes;
+    unit->activationOutputBytes += metrics->activationOutputBytes;
+    unit->activationHostToDeviceBytes += metrics->activationHostToDeviceBytes;
+    unit->activationDeviceToHostBytes += metrics->activationDeviceToHostBytes;
+    unit->controlBytes += metrics->controlBytes;
+    unit->stateInputHits += metrics->stateInputHits;
+    unit->stateInputMisses += metrics->stateInputMisses;
+    unit->stateRecomputes += metrics->stateRecomputes;
+    unit->stateReleases += metrics->stateReleases;
+  }
+  if (!unit) return std::nullopt;
+  if (latest && latest->identity) {
+    // Report it under the unit's own role. The child's identity names the entry, and the caller
+    // asked this runner, which is the unit; the timing itself is the child's real call.
+    auto identity = std::make_shared<NativeBackendExecutionIdentity>(*latest->identity);
+    identity->role = m_entries.front().unitId;
+    latest->identity = std::move(identity);
+    unit->lastBackendExecution = std::move(latest);
+  }
+  return unit;
+}
+
 bool
 NativeQwenTensorRunner::supportsConversationStateTransfer() const
 {
