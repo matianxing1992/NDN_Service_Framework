@@ -2905,6 +2905,35 @@ RepoClient::publishFile(const RepoFilePublication& input,
     result.operationReference = published.operationHandle->operationId;
   result.deduplicated = published.deduplicated;
   result.resumed = published.resumed;
+  if (published.receipt) {
+    RepoCommitReceipt receipt;
+    receipt.receiptId = published.receipt->receiptId;
+    receipt.operationId = published.receipt->operationId;
+    receipt.generation = published.receipt->generation;
+    receipt.lifecycleMode = published.receipt->lifecycleMode;
+    receipt.placementState = published.receipt->placementState;
+    receipt.requestedReplicas = published.receipt->requestedReplicas;
+    receipt.requiredAcks = published.receipt->requiredAcks;
+    receipt.achievedReplicas = published.receipt->achievedReplicas;
+    receipt.writeConsistency = published.receipt->writeConsistency;
+    receipt.state = published.receipt->state;
+    receipt.completedAtMs = published.receipt->completedAtMs;
+    for (const auto& commit : published.receipt->replicaCommits) {
+      RepoReplicaCommit mapped;
+      mapped.target.repoNode = commit.repoNode;
+      mapped.target.providerIdentity = commit.providerIdentity;
+      mapped.receiptId = commit.receiptId;
+      mapped.operationId = commit.operationId;
+      mapped.generation = commit.generation;
+      mapped.contentDigest = commit.contentDigest;
+      mapped.persistedBytes = commit.persistedBytes;
+      mapped.completedAtMs = commit.completedAtMs;
+      mapped.locationVersion = commit.locationVersion;
+      mapped.routeState = commit.routeState;
+      receipt.replicaCommits.push_back(std::move(mapped));
+    }
+    result.receipt = std::move(receipt);
+  }
   result.totalDurationMs = published.totalDurationMs;
   for (const auto& phase : published.phaseDurationsMs)
     result.phaseDurationsMs.emplace_back(phase.first, phase.second);

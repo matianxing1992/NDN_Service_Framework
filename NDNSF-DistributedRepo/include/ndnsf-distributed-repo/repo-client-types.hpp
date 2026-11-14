@@ -198,6 +198,24 @@ struct RepoPacketSetResult
   std::string lifecycleState = "COMMITTED";
 };
 
+/** What the Repo committed for a publication: the identity, the achievement counts and
+ *  the per-replica commits. It records what happened; it is not an authorization. */
+struct RepoCommitReceipt
+{
+  std::string receiptId;
+  std::string operationId;
+  uint64_t generation = 0;
+  std::string lifecycleMode;
+  std::string placementState;
+  uint32_t requestedReplicas = 0;
+  uint32_t requiredAcks = 0;
+  uint32_t achievedReplicas = 0;
+  std::string writeConsistency;
+  std::string state;
+  uint64_t completedAtMs = 0;
+  std::vector<RepoReplicaCommit> replicaCommits;
+};
+
 /** Result of a publication or write authorization. */
 struct RepoPublishResult
 {
@@ -209,6 +227,8 @@ struct RepoPublishResult
   std::vector<std::string> receiptIds;
   std::optional<std::string> operationReference;
   std::vector<RepoReplicaResult> replicas;
+  /** Present when the Repo issued a commit receipt. */
+  std::optional<RepoCommitReceipt> receipt;
   bool deduplicated = false;
   bool resumed = false;
   /** Engine-side timing, kept so a caller can see where a publication spent its time

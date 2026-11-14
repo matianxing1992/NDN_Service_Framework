@@ -327,6 +327,11 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   const auto first = client.publishFile(publication, makeOptions());
   BOOST_CHECK(first.state == RepoPublishState::COMMITTED);
   BOOST_CHECK(!first.deduplicated);
+  // The Repo's commit receipt survives the facade: identity, counts and state.
+  BOOST_REQUIRE(first.receipt.has_value());
+  BOOST_CHECK(!first.receipt->receiptId.empty());
+  BOOST_CHECK_EQUAL(first.receipt->state, "COMMITTED");
+  BOOST_CHECK_EQUAL(first.receipt->generation, 1U);
   // The engine's total timing survives the facade, so a slow publication can be attributed.
   // In-app publication reports no phase split; phases come from the persistent engine.
   BOOST_CHECK_GT(first.totalDurationMs, 0.0);
