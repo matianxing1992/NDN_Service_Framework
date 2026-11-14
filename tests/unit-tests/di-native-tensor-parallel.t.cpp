@@ -9383,6 +9383,157 @@ BOOST_AUTO_TEST_CASE(MetadataDerivationAgreesWithTheGraphDerivation)
   BOOST_CHECK_EQUAL(fromMetadata.headDim, 128U);
 }
 
+BOOST_AUTO_TEST_CASE(UnsplitReferenceAgreesWithTheDistributedFirstToken)
+{
+  // The check the distributed run cannot make for itself. A fluent two-turn continuation proves
+  // the pipeline advances; it does not prove the shards compute the same model. So the same
+  // 25-token prompt the deployment sent is run through the production unsplit runner, and its
+  // argmax is compared with the token the distributed run actually produced.
+  //
+  // The expected token is not invented here: it is the first element of the recorded
+  // `tokenIds` from the distributed run, which is the only reason the two are comparable at all.
+  constexpr std::int64_t kDistributedFirstToken = 15810;
+  const std::vector<std::int64_t> prompt = {
+    151644, 872, 198, 840, 20772, 1246, 40459, 2885, 59463, 646, 1824, 4237,
+    29728, 3922, 44378, 13, 151645, 198, 151644, 77091, 198, 151667, 271,
+    151668, 271};
+
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-oracle-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "ref", cleanupError);
+  std::filesystem::copy_file(source, root / "ref" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "ref" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "ref" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  NativeModelRunnerSpec spec;
+  spec.role = "REF";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "ref" / "model.onnx").string();
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  spec.metadata["outputScope"] = "logits";
+
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  RoleSpec role;
+  role.role = "REF";
+  role.requestId = "/request/oracle";
+  role.attemptEpoch = 1;
+
+  const auto makeInt64 = [] (const std::string& name,
+                             const std::vector<std::int64_t>& shape,
+                             const std::vector<std::int64_t>& values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = shape;
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  const auto count = static_cast<std::int64_t>(prompt.size());
+  std::vector<std::int64_t> ones(prompt.size(), 1);
+  std::vector<std::int64_t> positions(prompt.size());
+  for (std::int64_t index = 0; index < count; ++index) positions[index] = index;
+  std::map<std::string, TensorBundle> initial{
+    {"input_ids", makeInt64("input_ids", {1, count}, prompt)},
+    {"attention_mask", makeInt64("attention_mask", {1, count}, ones)},
+    {"position_ids", makeInt64("position_ids", {1, count}, positions)},
+  };
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"key", "value"}) {
+      const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+      NamedTensor past;
+      past.name = name;
+      past.elementType = TensorElementType::Float32;
+      past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+      initial.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+    }
+  }
+  {
+    NamedTensor mask;
+    mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+    mask.elementType = TensorElementType::Int32;
+    mask.shape = {1, 1};
+    mask.payload.assign(sizeof(std::int32_t), 0);
+    initial.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+    NamedTensor length;
+    length.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+    length.elementType = TensorElementType::Int32;
+    length.shape = {};
+    const auto total = static_cast<std::int32_t>(count);
+    length.payload.resize(sizeof(total));
+    std::memcpy(length.payload.data(), &total, sizeof(total));
+    initial.emplace(length.name, makeEncodedTensorBundle(length.name, {std::move(length)}));
+  }
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(600));
+  auto io = std::make_shared<CountingDependencyIo>();
+  ProviderRoleResult result;
+  try {
+    result = worker.executePreparedAsync("/request/oracle", std::move(role), io,
+                                         [runner] { return runner; }, initial).get();
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("unsplit oracle: ") + error.what());
+  }
+
+  const auto logits = result.outputsByScope.find("logits");
+  BOOST_REQUIRE_MESSAGE(logits != result.outputsByScope.end(),
+    "the unsplit oracle produced no logits");
+  std::vector<float> values;
+  if (isEncodedTensorBundle(logits->second.payload)) {
+    const auto tensors = decodeTensorBundle(logits->second.payload);
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [] (const auto& tensor) { return tensor.name == "logits"; });
+    BOOST_REQUIRE(found != tensors.end());
+    const auto* data = reinterpret_cast<const float*>(found->payload.data());
+    values.assign(data, data + found->payload.size() / sizeof(float));
+  }
+  else {
+    const auto* data = reinterpret_cast<const float*>(logits->second.payload.data());
+    values.assign(data, data + logits->second.payload.size() / sizeof(float));
+  }
+  // The graph returns one row per input position; the next token is read from the last one.
+  constexpr std::size_t kVocab = 151936;
+  BOOST_REQUIRE_EQUAL(values.size() % kVocab, 0U);
+  const auto rows = values.size() / kVocab;
+  BOOST_REQUIRE_EQUAL(rows, static_cast<std::size_t>(count));
+  const auto* last = values.data() + (rows - 1) * kVocab;
+  std::size_t best = 0;
+  for (std::size_t index = 1; index < kVocab; ++index)
+    if (last[index] > last[best]) best = index;
+  BOOST_TEST_MESSAGE("unsplit oracle on the deployment prompt: argmax=" << best
+                     << " logit=" << last[best]);
+  // A difference is the finding, not something to adjust: the split must compute the same model.
+  BOOST_CHECK_EQUAL(best, static_cast<std::size_t>(kDistributedFirstToken));
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(UnsplitReferenceSamplesThroughTheProductionRunner)
 {
   // The correctness check, using the production ONNX runner on the unsplit export rather than a
