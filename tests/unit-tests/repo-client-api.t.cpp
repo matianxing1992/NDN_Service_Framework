@@ -356,6 +356,38 @@ BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
                     "sha512:" + std::string(64, 'A'));
 }
 
+BOOST_AUTO_TEST_CASE(AvailabilityIsFalseWhenTheCommittedPayloadIsGone) {
+  // CA05: a catalog entry is not proof of a payload. Removing the stored bytes must turn
+  // AVAILABLE into UNAVAILABLE.
+  TemporaryDirectory temporary("payload-gone");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  const fs::path root = temporary.path() / "repo";
+  auto client = RepoClient::makeInApp(makeConfig(root));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  BOOST_REQUIRE(client.publishFile(publication, makeOptions()).committedHandle.has_value());
+
+  RepoInspectionRequest inspection;
+  inspection.kind = RepoInspectionRequest::Kind::OBJECT;
+  RepoHandle handle;
+  handle.reference = fixtureReference();
+  inspection.object = handle;
+  BOOST_CHECK(client.inspect(inspection, makeOptions()).availability ==
+              RepoInspection::Availability::AVAILABLE);
+
+  // The payload lives under payloads/<algorithm>/<first two hex>/<digest>.
+  const auto digest = fixtureReference().contentDigest;
+  const auto payload = root / "payloads" / "sha256" / digest.substr(0, 2) / digest;
+  std::error_code error;
+  BOOST_REQUIRE(fs::exists(payload));
+  fs::remove(payload, error);
+  BOOST_REQUIRE(!error);
+  BOOST_CHECK(client.inspect(inspection, makeOptions()).availability ==
+              RepoInspection::Availability::UNAVAILABLE);
+}
+
 BOOST_AUTO_TEST_CASE(DataOperationsNeverPullTheSourceBeforeRejecting) {
   TemporaryDirectory temporary("no-side-effects");
   auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));

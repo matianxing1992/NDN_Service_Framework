@@ -3284,9 +3284,21 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     if (!file)
       throw RepoClientError("UNSUPPORTED", "in-app inspection requires a file reference",
                             "inspect");
-    inspection.availability = m_impl->file->lookupLocalCommit(toArtifactReference(*file))
-      ? RepoInspection::Availability::AVAILABLE
-      : RepoInspection::Availability::UNAVAILABLE;
+    // A local commit record is a catalog entry, not proof that the payload is still
+    // there: probe one byte of the committed range to answer for the object.
+    if (!m_impl->file->lookupLocalCommit(toArtifactReference(*file))) {
+      inspection.availability = RepoInspection::Availability::UNAVAILABLE;
+    }
+    else {
+      try {
+        m_impl->file->readCommittedFileRange(toArtifactReference(*file), 0, 1,
+                                             options.deadline);
+        inspection.availability = RepoInspection::Availability::AVAILABLE;
+      }
+      catch (const std::exception&) {
+        inspection.availability = RepoInspection::Availability::UNAVAILABLE;
+      }
+    }
     inspection.handle = input.object;
     inspection.storedBytes = file->sizeBytes;
     return inspection;
