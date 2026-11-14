@@ -159,11 +159,14 @@ main(int argc, char** argv)
       return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
     };
 
+    const ndn::Name objectName = ndn::Name(identity).append("object");
     repo::RepoDataPublication publication;
     publication.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
                                          alternate(servicePrefix.toUri())};
-    publication.producerIdentity = alternate(identity.toUri());
-    publication.objectName = alternate(ndn::Name(identity).append("object").toUri());
+    // Alternate spellings are produced once, from a Name; re-parsing an alternate string
+    // yields literal "8=" components and mangles the name.
+    publication.producerIdentity = identity.toUri();
+    publication.objectName = objectName.toUri(ndn::name::UriFormat::ALTERNATE);
 
     repo::PacketSource packets;
     std::vector<std::vector<uint8_t>> wires;
@@ -173,7 +176,8 @@ main(int argc, char** argv)
     do {
       const uint64_t begin = segment * chunk;
       const uint64_t end = std::min<uint64_t>(bytes.size(), begin + chunk);
-      const auto name = ndn::Name(publication.objectName).appendSegment(segment);
+      ndn::Name name = objectName;
+      name.appendSegment(segment);
       ndn::Data packet(name);
       packet.setContent(ndn::span<const uint8_t>(bytes.data() + begin, end - begin));
       packet.setFreshnessPeriod(ndn::time::seconds(3600));
