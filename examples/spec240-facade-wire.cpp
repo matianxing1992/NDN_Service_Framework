@@ -6,6 +6,7 @@
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/util/io.hpp>
+#include <ndn-service-framework/CertificatePublisher.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <chrono>
@@ -107,10 +108,23 @@ main(int argc, char** argv)
 
   ndn::Face face;
   ndn::security::KeyChain keyChain;
+  keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(identity));
+  // Publish our certificate so the Repo can fetch it while validating our request.
+  auto certificatePublisher = std::make_unique<ndn_service_framework::CertificatePublisher>(
+    face, keyChain, certificate.getName());
   auto user = std::make_shared<ndn_service_framework::ServiceUser>(
-    face, group, certificate, certificate, authorityCertificate, trustSchema, keyChain);
+    face, group, certificate, authorityCertificate, trustSchema);
   user->init();
   user->fetchPermissionsFromController(controller);
+  // The facade blocks while it waits for ACKs, so the face has to be pumped on its own
+  // thread; without this every admission waits out its deadline.
+  std::atomic<bool> stopping{false};
+  std::thread faceThread([&] {
+    while (!stopping.load()) {
+      face.processEvents(ndn::time::milliseconds(10));
+      face.getIoContext().restart();
+    }
+  });
 
   repo::PersistentRepoClientConfig config;
   config.servicePrefix = servicePrefix;
@@ -122,6 +136,12 @@ main(int argc, char** argv)
   const auto service = repo::makeRepoServiceName(servicePrefix, "STORE");
   if (!waitReady(face, *user, service, provider, 60000))
     throw std::runtime_error("bootstrap did not become ready");
+
+  struct ThreadGuard {
+    std::atomic<bool>& stopping;
+    std::thread& thread;
+    ~ThreadGuard() { stopping.store(true); if (thread.joinable()) thread.join(); }
+  } threadGuard{stopping, faceThread};
 
   if (mode == "publish") {
     const auto source = arg(options, "source");
