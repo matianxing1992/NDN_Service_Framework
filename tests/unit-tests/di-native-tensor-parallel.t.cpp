@@ -12091,6 +12091,60 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   BOOST_TEST_MESSAGE("assembled ranks: worst=" << worst << " magnitude=" << magnitude);
   BOOST_CHECK_LT(worst, 1e-4 * magnitude);
 
+  // The KV successors must agree as well as the attention projection. A rank whose O
+  // projection sums correctly but whose key/value tensors are the wrong heads would produce
+  // this token sequence and then drift on the next turn, which is served entirely from that
+  // state -- so the partial agreeing is not enough.
+  //
+  // Each rank holds its own KV heads of the same present tensors, so the rank's slice is
+  // compared with the corresponding window of the unsplit tensor. The window follows from
+  // the head layout: rank r holds KV heads [r * kvHeads/degree, (r+1) * kvHeads/degree).
+  {
+    const auto kvValues = [&] (const std::map<std::string, TensorBundle>& outputs,
+                               const std::string& name) {
+      const auto found = outputs.find(name);
+      BOOST_REQUIRE_MESSAGE(found != outputs.end(), "no output named " + name);
+      const auto tensors = decodeTensorBundle(found->second.payload);
+      BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+      BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
+      std::vector<float> values(tensors.front().payload.size() / sizeof(float));
+      std::memcpy(values.data(), tensors.front().payload.data(),
+                  tensors.front().payload.size());
+      return values;
+    };
+    constexpr std::uint64_t unsplitKvHeads = 8;
+    constexpr std::uint64_t degree = 2;
+    constexpr std::uint64_t headDim = 128;
+    constexpr std::uint64_t headsPerRank = unsplitKvHeads / degree;
+    // The entry ran one token, so the present tensors carry one position.
+    const auto tokens = std::uint64_t{1};
+    for (const auto* name : {"present.0.key", "present.0.value"}) {
+      const auto unsplit = kvValues(referenceOutputs, name);
+      BOOST_REQUIRE_EQUAL(unsplit.size(),
+        static_cast<std::size_t>(tokens * unsplitKvHeads * headDim));
+      for (std::uint64_t rank = 0; rank < degree; ++rank) {
+        const auto& rankOutputs = rank == 0 ? rank0Outputs : rank1Outputs;
+        const auto shard = kvValues(rankOutputs, name);
+        BOOST_REQUIRE_EQUAL(shard.size(),
+          static_cast<std::size_t>(tokens * headsPerRank * headDim));
+        double worstKv = 0.0;
+        for (std::uint64_t token = 0; token < tokens; ++token) {
+          for (std::uint64_t head = 0; head < headsPerRank; ++head) {
+            const auto shardBase = (token * headsPerRank + head) * headDim;
+            const auto unsplitBase =
+              (token * unsplitKvHeads + rank * headsPerRank + head) * headDim;
+            for (std::uint64_t channel = 0; channel < headDim; ++channel) {
+              worstKv = std::max(worstKv, std::fabs(
+                double(shard[shardBase + channel]) - double(unsplit[unsplitBase + channel])));
+            }
+          }
+        }
+        BOOST_TEST_MESSAGE("rank" << rank << " " << name << " worst=" << worstKv);
+        BOOST_CHECK_LT(worstKv, 1e-5);
+      }
+    }
+  }
+
   std::filesystem::remove_all(root, cleanupError);
 }
 
