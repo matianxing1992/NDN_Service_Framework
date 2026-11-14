@@ -34,6 +34,11 @@ public:
   static RepoOperationStatus status(const RepoNode& node,
                                     const std::string& operationId);
   static RepoCacheStatus cacheStatus(const RepoNode& node);
+  static RepoObjectManifest put(RepoNode& node,
+                                const std::string& objectName,
+                                const std::vector<uint8_t>& payload,
+                                StoreOptions options = {});
+  static std::vector<RepoObjectManifest> list(const RepoNode& node);
 };
 
 } // namespace ndnsf_distributed_repo

@@ -196,10 +196,7 @@ public:
    * On ambiguous failure the Owner retains cleanup/reconciliation responsibility.
    */
 
-  static RepoObjectManifest put(RepoNode& node,
-                                const std::string& objectName,
-                                const std::vector<uint8_t>& payload,
-                                StoreOptions options = {});
+  
 
   static std::vector<uint8_t> get(const RepoNode& node,
                                   const std::string& objectName);
@@ -220,7 +217,7 @@ public:
   static RepoObjectManifest getManifest(const RepoNode& node,
                                         const std::string& objectName);
 
-  static std::vector<RepoObjectManifest> list(const RepoNode& node);
+  
 
   static bool remove(RepoNode& node,
                      const std::string& objectName);

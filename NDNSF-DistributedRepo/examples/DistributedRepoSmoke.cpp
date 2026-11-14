@@ -95,7 +95,7 @@ main()
   for (const auto& replica : replicas) {
     options.replicaNodes.push_back(replica.repoNode);
   }
-  const auto manifest = RepoClient::put(node,
+  const auto manifest = RepoStoreApi::put(node,
                                         "/example/repo/user/NDNSF-DISTRIBUTED-REPO/OBJECT/"
                                         "NDNSF-DI/ARTIFACT/demo/object",
                                         payload,
@@ -103,7 +103,7 @@ main()
   const auto fetched = RepoClient::get(node, manifest.objectName);
   const auto manifestResponse = node.handleManifest(toBytes(manifest.objectName));
   const auto capabilityResponse = node.handleCapability();
-  const auto listed = RepoClient::list(node);
+  const auto listed = RepoStoreApi::list(node);
   const auto catalogStatus = RepoStoreApi::catalogStatus(node);
   const auto catalogSnapshot = RepoStoreApi::catalogSnapshot(node);
   const auto catalogLookup = RepoStoreApi::catalogLookup(node, manifest.objectName);

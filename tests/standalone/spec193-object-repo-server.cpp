@@ -473,7 +473,7 @@ main(int argc, char* argv[])
         }
         repo_api::StoreOptions options;
         options.objectType = "application/octet-stream";
-        const auto manifest = repo_api::RepoClient::put(*repo, localObject, payload, options);
+        const auto manifest = repo_api::RepoStoreApi::put(*repo, localObject, payload, options);
         if (repo_api::RepoClient::get(*repo, localObject) != payload ||
             repo_api::RepoClient::getManifest(*repo, localObject).toJson() !=
               manifest.toJson()) {
@@ -499,7 +499,7 @@ main(int argc, char* argv[])
         }
         repo_api::StoreOptions options;
         options.objectType = "application/octet-stream";
-        const auto stored = repo_api::RepoClient::put(
+        const auto stored = repo_api::RepoStoreApi::put(
           *repo, localObject, payload, options);
         const auto afterPut = repo->core().catalogStatus();
         if (stored.generation != 1 ||
@@ -525,7 +525,7 @@ main(int argc, char* argv[])
             repo->core().catalogStatus().catalogEpoch != afterDelete.catalogEpoch) {
           throw std::runtime_error("O04 repeated remove was not idempotent");
         }
-        const auto inventory = repo_api::RepoClient::list(*repo);
+        const auto inventory = repo_api::RepoStoreApi::list(*repo);
         if (std::any_of(inventory.begin(), inventory.end(),
                         [&] (const auto& item) {
                           return item.objectName == localObject;
@@ -582,7 +582,7 @@ main(int argc, char* argv[])
         };
         const auto absent = [&] (const std::string& name) {
           if (repo->core().has(name)) return false;
-          const auto inventory = repo_api::RepoClient::list(*repo);
+          const auto inventory = repo_api::RepoStoreApi::list(*repo);
           return std::none_of(inventory.begin(), inventory.end(),
             [&] (const auto& item) { return item.objectName == name; });
         };
@@ -705,7 +705,7 @@ main(int argc, char* argv[])
                                         repo_api::RepoByteRange{start, bytes.size()}, bytes);
         };
         const auto invisible = [&] {
-          const auto inventory = repo_api::RepoClient::list(*repo);
+          const auto inventory = repo_api::RepoStoreApi::list(*repo);
           if (std::any_of(inventory.begin(), inventory.end(),
                           [&] (const auto& item) { return item.objectName == localObject; })) {
             return false;
@@ -734,7 +734,7 @@ main(int argc, char* argv[])
                                              payload.begin() + 354)) {
           throw std::runtime_error("O02 committed range bytes or manifest differ");
         }
-        const auto inventory = repo_api::RepoClient::list(*repo);
+        const auto inventory = repo_api::RepoStoreApi::list(*repo);
         if (std::count_if(inventory.begin(), inventory.end(),
                           [&] (const auto& item) {
                             return item.objectName == localObject;
@@ -764,26 +764,26 @@ main(int argc, char* argv[])
           throw std::invalid_argument("O01 needs two distinct nonempty payloads");
         }
         const auto count = [&] {
-          const auto inventory = repo_api::RepoClient::list(*repo);
+          const auto inventory = repo_api::RepoStoreApi::list(*repo);
           return std::count_if(inventory.begin(), inventory.end(),
             [&] (const auto& item) { return item.objectName == localObject; });
         };
         if (count() != 0) throw std::runtime_error("O01 target already exists");
         repo_api::StoreOptions options;
         options.objectType = "application/octet-stream";
-        const auto first = repo_api::RepoClient::put(*repo, localObject, payload, options);
+        const auto first = repo_api::RepoStoreApi::put(*repo, localObject, payload, options);
         if (first.generation != 1 || count() != 1 ||
             repo_api::RepoClient::get(*repo, localObject) != payload ||
             repo_api::RepoClient::getManifest(*repo, localObject).toJson() != first.toJson()) {
           throw std::runtime_error("O01 first put/get/manifest/list disagree");
         }
-        const auto duplicate = repo_api::RepoClient::put(*repo, localObject, payload, options);
+        const auto duplicate = repo_api::RepoStoreApi::put(*repo, localObject, payload, options);
         if (duplicate.generation != 2 || count() != 1 ||
             repo_api::RepoClient::get(*repo, localObject) != payload ||
             repo_api::RepoClient::getManifest(*repo, localObject).toJson() != duplicate.toJson()) {
           throw std::runtime_error("O01 identical put changed bytes or inventory");
         }
-        const auto final = repo_api::RepoClient::put(*repo, localObject, replacement, options);
+        const auto final = repo_api::RepoStoreApi::put(*repo, localObject, replacement, options);
         if (final.generation != 3 || count() != 1 ||
             repo_api::RepoClient::get(*repo, localObject) != replacement ||
             repo_api::RepoClient::getManifest(*repo, localObject).toJson() != final.toJson() ||
@@ -934,7 +934,7 @@ main(int argc, char* argv[])
         const auto before = repo_api::RepoStoreApi::cacheStatus(*repo);
         repo_api::StoreOptions options;
         options.objectType = "o13-cache-object";
-        const auto manifest = repo_api::RepoClient::put(*repo, localObject, payload, options);
+        const auto manifest = repo_api::RepoStoreApi::put(*repo, localObject, payload, options);
         const auto afterPut = repo_api::RepoStoreApi::cacheStatus(*repo);
         const auto first = repo_api::RepoClient::get(*repo, localObject);
         const auto second = repo_api::RepoClient::get(*repo, localObject);
@@ -1150,9 +1150,9 @@ main(int argc, char* argv[])
       }
       else if (localCommand == "duplicate") {
         const auto manifest = repo_api::RepoClient::getManifest(*repo, localObject);
-        const auto before = repo_api::RepoClient::list(*repo).size();
-        (void)repo_api::RepoClient::put(*repo, segmentName, segment);
-        if (repo_api::RepoClient::list(*repo).size() != before ||
+        const auto before = repo_api::RepoStoreApi::list(*repo).size();
+        (void)repo_api::RepoStoreApi::put(*repo, segmentName, segment);
+        if (repo_api::RepoStoreApi::list(*repo).size() != before ||
             repo_api::RepoClient::getObject(*repo, manifest) != payload) {
           throw std::runtime_error("identical duplicate segment changed object inventory or bytes");
         }
@@ -1160,7 +1160,7 @@ main(int argc, char* argv[])
       }
       else if (localCommand == "restore") {
         const auto manifest = repo_api::RepoClient::getManifest(*repo, localObject);
-        (void)repo_api::RepoClient::put(*repo, segmentName, segment);
+        (void)repo_api::RepoStoreApi::put(*repo, segmentName, segment);
         if (repo_api::RepoClient::getObject(*repo, manifest) != payload) {
           throw std::runtime_error("restored segment did not recover original object");
         }
@@ -1176,7 +1176,7 @@ main(int argc, char* argv[])
         else {
           auto corrupt = segment;
           corrupt.front() ^= 0xff;
-          (void)repo_api::RepoClient::put(*repo, segmentName, corrupt);
+          (void)repo_api::RepoStoreApi::put(*repo, segmentName, corrupt);
         }
         try {
           (void)repo_api::RepoClient::getObject(*repo, manifest);

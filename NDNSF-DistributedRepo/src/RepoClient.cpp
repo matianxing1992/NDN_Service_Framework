@@ -1299,7 +1299,7 @@ verifySegmentedPayload(const RepoObjectManifest& manifest,
 } // namespace
 
 RepoObjectManifest
-RepoClient::put(RepoNode& node,
+RepoStoreApi::put(RepoNode& node,
                 const std::string& objectName,
                 const std::vector<uint8_t>& payload,
                 StoreOptions options)
@@ -1354,7 +1354,7 @@ RepoClient::getManifest(const RepoNode& node, const std::string& objectName)
 }
 
 std::vector<RepoObjectManifest>
-RepoClient::list(const RepoNode& node)
+RepoStoreApi::list(const RepoNode& node)
 {
   return node.list();
 }
@@ -1551,7 +1551,7 @@ RepoStoreApi::putSegmented(RepoNode& node,
 {
   maxSegmentPayload = std::max<size_t>(1, maxSegmentPayload);
   if (payload.size() <= maxSegmentPayload) {
-    return RepoClient::put(node, objectName, payload, std::move(options));
+    return RepoStoreApi::put(node, objectName, payload, std::move(options));
   }
 
   const size_t segmentCount =
@@ -1563,7 +1563,7 @@ RepoStoreApi::putSegmented(RepoNode& node,
     const auto end = std::min(payload.size(), start + maxSegmentPayload);
     const std::vector<uint8_t> segmentPayload(payload.begin() + start,
                                               payload.begin() + end);
-    RepoClient::put(node, segmentObjectName(objectName, i), segmentPayload, segmentOptions);
+    RepoStoreApi::put(node, segmentObjectName(objectName, i), segmentPayload, segmentOptions);
   }
 
   auto manifest = makeParentManifest(objectName, payload, options, segmentCount);
