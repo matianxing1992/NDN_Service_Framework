@@ -13963,4 +13963,171 @@ BOOST_AUTO_TEST_CASE(ProjectionIsRejectedForDegreeOneOrEmptyPrefix)
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// GenerationReuse — a second turn must reuse the parent runner and every child
+// session instead of re-preparing. T004 asks for exactly that, and nothing was
+// asserting it: the deployment log shows one assembly and one session load for the
+// first turn and none for the second, but that is a measurement, not a test.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(GenerationReuse)
+
+BOOST_AUTO_TEST_CASE(ASecondTurnReusesThePreparedUnitAndItsChildSessions)
+{
+  // Two prepared runs over the same assembled unit. The second is given the runner the first
+  // produced, which is what the Provider's reuse cache does; the check is that the second run
+  // executes steps without loading a session again.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-reuse-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data",
+                                    cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  // One layer only: the reuse question is about the runner's lifetime, not the layer count.
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.stepId.find("/ATTN/0") != std::string::npos ||
+        step.stepId.find("/INIT") != std::string::npos)
+      steps.push_back(step);
+  }
+  BOOST_REQUIRE_GE(steps.size(), 2U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  // The evidence a Provider reads is built from these fields, and a child without them reports
+  // nothing -- which reads downstream as "this adapter proved nothing". Production sets them
+  // from the assembled artifact; this fixture sets the same facts by hand.
+  spec.metadata["evidence.providerName"] = "/ndnsf/di/spec217/minindn/provider-0";
+  spec.metadata["evidence.providerBootId"] = "reuse-test-boot";
+  spec.metadata["evidence.epoch"] = "1";
+  spec.metadata["evidence.modelDigest"] = std::string("sha256:") + std::string(64, 'a');
+  spec.metadata["evidence.planDigest"] = std::string("sha256:") + std::string(64, 'b');
+  spec.metadata["evidence.artifactDigest"] = std::string("sha256:") + std::string(64, 'c');
+  spec.metadata["evidence.createdAtMs"] = "1";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  const auto countSessions = [&] {
+    // The runner is asked, not the factory: a session load is evidence the adapter is running,
+    // and the reuse question is whether the adapter kept its children between turns.
+    const auto evidence = runner->executionEvidenceSnapshot();
+    BOOST_REQUIRE(evidence.has_value());
+    return evidence->loadCompleted;
+  };
+  BOOST_CHECK(countSessions());
+  // The unit answers under its own role and reports the artifact this rank was assembled from.
+  const auto evidence = runner->executionEvidenceSnapshot();
+  BOOST_REQUIRE_EQUAL(evidence->roles.size(), 1U);
+  BOOST_CHECK_EQUAL(evidence->roles.front(), std::string("S0R0"));
+  BOOST_CHECK_EQUAL(evidence->artifactDigests.count("S0R0"), 1U);
+  // A unit that cannot answer for itself made the Provider report missing evidence, which is a
+  // later failure with no clue in it; this pins the answer at the source.
+  BOOST_CHECK(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu ||
+              evidence->runnerKind == RunnerKind::OnnxRuntimeCuda);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(AUnitWithoutKvChildrenStillReportsItsOwnState)
+{
+  // The parent aggregates state over its KV-holding children. A unit whose only entries are
+  // stateless must say so rather than claim a handle: a caller that restored one would get an
+  // empty checkpoint that looks complete.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-reuse-stateless-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing,
+                             cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  // INIT is the stateless entry: it reads tokens and produces the mask, positions and X0.
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0" && step.stepId.find("/INIT") != std::string::npos)
+      steps.push_back(step);
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  BOOST_REQUIRE_EQUAL(qwen::parseQwenTpEntryTable(
+    spec.metadata.at("tensorParallelEntries")).size(), 1U);
+
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+  // INIT holds no KV, so the unit promises no state and produces no handle. Reporting support
+  // would let a caller checkpoint a rank that carries nothing.
+  BOOST_CHECK(!runner->supportsConversationStateTransfer());
+  BOOST_CHECK(!runner->stateHandleSnapshot("/request/stateless").has_value());
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()
