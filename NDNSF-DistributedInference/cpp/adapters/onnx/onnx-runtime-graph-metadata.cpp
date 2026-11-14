@@ -265,19 +265,24 @@ attentionWarmupLengthInputs(const onnx::ModelProto& model)
     }
   }
   if (imports != 1) return {};
-  std::set<std::string> scalarInputs;
-  for (const auto& input : model.graph().input()) {
-    if (!input.has_type() || !input.type().has_tensor_type()) continue;
-    const auto& type = input.type().tensor_type();
-    if (type.elem_type() == onnx::TensorProto::INT32 && type.has_shape() &&
-        type.shape().dim_size() == 0)
-      scalarInputs.insert(input.name());
-  }
+  std::map<std::string, const onnx::ValueInfoProto*> graphInputs;
+  for (const auto& input : model.graph().input()) graphInputs.emplace(input.name(), &input);
   std::set<std::string> result;
   for (const auto& node : model.graph().node()) {
-    if (node.domain() == "com.microsoft" && node.op_type() == "GroupQueryAttention" &&
-        node.input_size() > 6 && scalarInputs.count(node.input(6)))
-      result.insert(node.input(6));
+    if (node.domain() != "com.microsoft" || node.op_type() != "GroupQueryAttention" ||
+        node.input_size() <= 6)
+      continue;
+    // Slot six is the total sequence length, which GroupQueryAttention rejects unless it is
+    // positive. It is an Int32 scalar, but "scalar" must be read as "not a vector": the
+    // export leaves the shape field off entirely on this input, so requiring a present and
+    // empty shape missed it and the warmup then fed the zero payload that fails the op.
+    const auto found = graphInputs.find(node.input(6));
+    if (found == graphInputs.end()) continue;
+    if (!found->second->has_type() || !found->second->type().has_tensor_type()) continue;
+    const auto& type = found->second->type().tensor_type();
+    if (type.elem_type() != onnx::TensorProto::INT32) continue;
+    if (type.has_shape() && type.shape().dim_size() != 0) continue;
+    result.insert(node.input(6));
   }
   return result;
 }

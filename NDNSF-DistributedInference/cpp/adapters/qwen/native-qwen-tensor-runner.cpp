@@ -159,6 +159,43 @@ NativeQwenTensorRunner::releaseSessionState(const std::string& sessionId)
   }
 }
 
+std::optional<ExecutionEvidence>
+NativeQwenTensorRunner::executionEvidenceSnapshot() const
+{
+  std::optional<ExecutionEvidence> unit;
+  std::string artifactDigest;
+  for (const auto& entry : m_entries) {
+    const auto child = m_children.find(entry.entryId);
+    if (child == m_children.end() || !child->second) continue;
+    const auto evidence = child->second->executionEvidenceSnapshot();
+    if (!evidence) continue;
+    const auto artifact = evidence->artifactDigests.find(entry.entryId);
+    if (!unit) {
+      unit = *evidence;
+      artifactDigest = artifact == evidence->artifactDigests.end()
+        ? std::string{} : artifact->second;
+      continue;
+    }
+    // Load and warmup are the conjunction over the entries: a unit whose INIT ran but whose
+    // attention entry did not load is not ready, and reporting the first child's answer
+    // would let one successful entry speak for the whole rank.
+    unit->loadCompleted = unit->loadCompleted && evidence->loadCompleted;
+    unit->warmupCompleted = unit->warmupCompleted && evidence->warmupCompleted;
+    unit->warmupSkippedUnrankedInput =
+      unit->warmupSkippedUnrankedInput || evidence->warmupSkippedUnrankedInput;
+    if (artifactDigest.empty() && artifact != evidence->artifactDigests.end())
+      artifactDigest = artifact->second;
+  }
+  if (!unit) return std::nullopt;
+  // The Provider assigned a unit role, not an entry id, so the aggregate answers under the
+  // unit's name with the artifact this rank was assembled from.
+  unit->roles = {m_entries.front().unitId};
+  unit->artifactDigests.clear();
+  if (!artifactDigest.empty())
+    unit->artifactDigests.emplace(m_entries.front().unitId, artifactDigest);
+  return unit;
+}
+
 bool
 NativeQwenTensorRunner::supportsConversationStateTransfer() const
 {
@@ -525,6 +562,22 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   // path never has to be re-derived from an id.
   child.path = root->second + "/" + entry.relativeGraphPath;
   child.metadata = parent.metadata;
+  // The parent's passthrough list describes the whole role's boundary: values its role
+  // publishes by carrying an input through. A single entry publishes only what its own
+  // contract says, and the parent already handles an entry-level passthrough through
+  // `passthroughSlotByInputGraphName`. Inheriting the role-level list made INIT try to pass
+  // `attention_mask` through, which it never declares, so the child failed before running.
+  child.metadata.erase("passthroughTensors");
+  child.metadata.erase("passthrough_tensors");
+  // The causal-position policy names the assembled role graph's own inputs. An entry has a
+  // different signature -- INIT's mask arrives as `attention_mask`, an attention entry's as
+  // the reformat subgraph's output name -- and the parent already routes every one of them
+  // from the step slots. Carrying the role-level names down made each child demand an input
+  // its graph does not have.
+  child.metadata.erase("positionInputPolicy");
+  child.metadata.erase("attentionMaskInputName");
+  child.metadata.erase("positionIdsInputName");
+  child.metadata.erase("cachePositionInputName");
   // Always ask for an encoded bundle. The ordinary runner returns a single output's raw bytes
   // keyed by its scope, and a multi-output entry as one encoded bundle; the parent decodes what
   // it gets to find tensors by name. A raw payload cannot be decoded, so a single-output entry
@@ -540,6 +593,13 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   // Declaring them makes the child a stateful session, which is what lets it seed a
   // zero-state first round instead of failing on a missing input -- and that is the only
   // way a fresh request reaches an attention entry at all.
+  // The entry decides whether it is stateful, not the role. An INIT entry carries no KV
+  // pair, and inheriting `statefulModel` from the parent made it look like a causal graph
+  // that owes the runtime a position policy, so it failed before running.
+  child.metadata.erase("statefulModel");
+  child.metadata.erase("stateInputNames");
+  child.metadata.erase("stateOutputNames");
+  child.metadata.erase("stateSuccessorMap");
   std::vector<std::string> stateInputs;
   std::vector<std::string> stateOutputs;
   for (const auto& name : entry.inputNames)

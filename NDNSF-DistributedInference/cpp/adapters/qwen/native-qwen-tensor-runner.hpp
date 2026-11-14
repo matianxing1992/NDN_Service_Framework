@@ -132,6 +132,20 @@ public:
   bool
   releaseConversationState(const NativeConversationStateHandleV1& state) override;
 
+  /** The unit's execution evidence, aggregated from its children.
+   *
+   * A tensor-parallel unit executes many entries, and the Provider's readiness gate asks
+   * the runner it created. The base class answers with nothing, which read as "this
+   * adapter cannot prove it ran anything" -- true of a single child, not of the unit. The
+   * aggregate is the conjunction over the children: load and warmup are reported complete
+   * only when every child that could answer reported them, and the role is the unit's,
+   * because that is the role the Provider assigned.
+   *
+   * @returns Nothing when no child can produce evidence; otherwise the unit's evidence.
+   */
+  std::optional<ExecutionEvidence>
+  executionEvidenceSnapshot() const override;
+
 private:
   const QwenTpEntryContract* findEntry(const std::string& entryId) const;
 
