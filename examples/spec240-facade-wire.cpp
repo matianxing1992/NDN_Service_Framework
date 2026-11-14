@@ -127,9 +127,14 @@ main(int argc, char** argv)
     const auto source = arg(options, "source");
     const auto bytes = readBytes(source);
     repo::RepoDataPublication publication;
-    publication.target = repo::RepoTarget{repository, provider.toUri(), servicePrefix.toUri()};
-    publication.producerIdentity = identity.toUri();
-    publication.objectName = ndn::Name(identity).append("object").appendSegment(0).toUri();
+    const auto alternate = [] (const std::string& value) {
+      return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
+    };
+    publication.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
+                                         alternate(servicePrefix.toUri())};
+    publication.producerIdentity = identity.toUri(ndn::name::UriFormat::ALTERNATE);
+    publication.objectName = ndn::Name(identity).append("object").appendSegment(0)
+      .toUri(ndn::name::UriFormat::ALTERNATE);
 
     repo::PacketSource packets;
     packets.expectedWireBytes = 0;
@@ -149,7 +154,7 @@ main(int argc, char** argv)
       keyChain.sign(packet, ndn::security::signingByCertificate(certificate));
       const auto wire = packet.wireEncode();
       wires.emplace_back(wire.begin(), wire.end());
-      packets.packetNames.push_back(name.toUri());
+      packets.packetNames.push_back(name.toUri(ndn::name::UriFormat::ALTERNATE));
       packets.packetOffsets.push_back(offsets);
       offsets += wires.back().size();
       ++segment;
@@ -180,6 +185,10 @@ main(int argc, char** argv)
           return false;
         }
       });
+    publication.generation = 1;
+    publication.ownerEpoch = 1;
+    publication.ownerIdentity = ndn::Name(identity).toUri(ndn::name::UriFormat::ALTERNATE);
+    publication.grantId = "spec240-facade-grant";
     publication.idempotencyKey = "spec240-facade-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
     const auto result = client.publishData(publication, operation);
@@ -200,7 +209,11 @@ main(int argc, char** argv)
         request.packetNames.push_back(line);
     }
     request.maxWireBytes = 8U << 20;
-    request.target = repo::RepoTarget{repository, provider.toUri(), servicePrefix.toUri()};
+    const auto alternate = [] (const std::string& value) {
+      return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
+    };
+    request.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
+                                      alternate(servicePrefix.toUri())};
     request.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
       [] (const std::vector<uint8_t>&) { return true; });
     const auto result = client.fetchData(request, operation);
