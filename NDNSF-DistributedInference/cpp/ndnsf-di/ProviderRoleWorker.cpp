@@ -654,6 +654,75 @@ ProviderRoleWorker::executeAsyncImpl(
   return future;
 }
 
+/** Register one bounded wait for a step's remote contribution and leave the compute thread.
+ *
+ * The wait owns the future and the edge; when it completes, the item is re-enqueued and the step
+ * loop resumes at the step that needed the value. The fetch is moved out of the item so the
+ * resumed unit does not await a future another turn already consumed.
+ */
+void
+ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge& edge,
+                                           std::shared_future<TensorBundle> pending)
+{
+  const auto scope = edge.scope;
+  item.pendingInputsByScope.erase(scope);
+  auto state = std::make_shared<SuspendedStepWait>(SuspendedStepWait{
+    std::move(item), edge, std::move(pending),
+  });
+  item = {};
+
+  const auto waitId = state->item.sessionId + "|" + state->item.role.role + "|step|" +
+                      std::to_string(m_nextDependencyWaitId.fetch_add(1));
+  const auto deadline = state->item.queuedAt + m_dependencyWaitTimeout;
+  const auto submitted = m_dependencyWaitScheduler->submit(
+    waitId,
+    deadline,
+    [state] (const DependencyWaitControl& control) {
+      NativeWorkScope waitScope(state->item.role.workStatistics,
+                                "role-step-dependency-wait", NativeWorkKind::WAIT);
+      while (state->pending.wait_for(std::chrono::milliseconds(2)) !=
+             std::future_status::ready) {
+        if (control.isCancelled()) return DependencyWaitStatus::Cancelled;
+        if (control.deadlineExpired()) return DependencyWaitStatus::DeadlineExpired;
+      }
+      return DependencyWaitStatus::Completed;
+    },
+    [this, state] (const DependencyWaitResult& result) mutable {
+      if (result.status != DependencyWaitStatus::Completed) {
+        const auto reason = result.reason.empty() ? toString(result.status) : result.reason;
+        std::ostringstream record;
+        record << "NDNSF_DI_PROVIDER_WAIT_TERMINAL"
+               << " session=" << state->item.sessionId
+               << " role=" << state->item.role.role
+               << " status=" << toString(result.status)
+               << " reason=" << reason
+               << " scope=" << state->edge.scope;
+        logRuntimeWarn(record.str());
+        failPromise(state->item.promise,
+                    std::make_exception_ptr(std::runtime_error(
+                      std::string("dependency wait failed: ") + toString(result.status) +
+                      " for " + state->edge.scope)));
+        return;
+      }
+      try {
+        auto bundle = state->pending.get();
+        validateTensorBundleForEdge(state->edge, bundle);
+        state->item.stepRemoteInputs[state->edge.scope] = std::move(bundle);
+      }
+      catch (...) {
+        failPromise(state->item.promise, std::current_exception());
+        return;
+      }
+      enqueueReady(std::move(state->item));
+    });
+  if (submitted != DependencyWaitSubmitResult::Accepted) {
+    failPromise(state->item.promise,
+                std::make_exception_ptr(std::runtime_error(
+                  std::string("dependency wait admission failed: ") +
+                  toString(submitted))));
+  }
+}
+
 void
 ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
                                             std::vector<PendingInput> pendingInputs)
@@ -1115,7 +1184,12 @@ ProviderRoleWorker::execute(WorkItem& item)
       watchdog.join();
       watchdogJoin.finish();
     }
-    item.promise->set_value(std::move(result));
+    if (!result) {
+      // The unit suspended to wait for a peer; its completion owns the promise now, and the
+      // wait completion re-enqueues it.
+      return;
+    }
+    item.promise->set_value(std::move(*result));
   }
   catch (...) {
     watchdogDone.store(true, std::memory_order_release);
@@ -1137,7 +1211,7 @@ ProviderRoleWorker::execute(WorkItem& item)
   }
 }
 
-ProviderRoleResult
+std::optional<ProviderRoleResult>
 ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& item)
 {
   if (!item.role.steps || item.role.steps->empty()) {
@@ -1149,14 +1223,19 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   // One token, one unit, one template. Ordering follows the template, which the
   // plan validated as a DAG, so a single pass in template order reaches a
   // fixpoint: every producer is visited before its consumers.
-  std::map<std::string, TensorBundle> produced;
-  // State successors collected from the adapter, keyed by their declared names.
-  std::map<std::string, TensorBundle> stateScopes;
+  //
+  // Progress lives on the item, not in locals: a unit that has to wait for a peer leaves the
+  // compute thread and resumes elsewhere, and it must continue from the step it stopped at.
+  auto& produced = item.producedSteps;
+  auto& stateScopes = item.stepStateScopes;
   ProviderRoleResult result;
   result.runner = item.runner;
 
   const auto& steps = *item.role.steps;
-  for (const auto& step : steps) {
+  for (auto stepIt = steps.begin() + static_cast<std::ptrdiff_t>(item.resumeStepIndex);
+       stepIt != steps.end(); ++stepIt) {
+    const auto& step = *stepIt;
+    item.resumeStepIndex = static_cast<std::size_t>(std::distance(steps.begin(), stepIt));
     if (step.unitId != item.role.role) {
       throw std::invalid_argument(
         "sealed step belongs to another unit than the executing role");
@@ -1187,6 +1266,20 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     for (const auto& edge : item.role.inputs) {
       if (edge.consumerStepId != step.stepId) continue;
       auto admitted = ctx.inputsByScope.find(edge.scope);
+      // A contribution this unit suspended on arrives here, already validated, when the unit
+      // resumes. It is consumed once: the entry is removed so a later step cannot see it twice.
+      if (admitted == ctx.inputsByScope.end()) {
+        const auto resumed = item.stepRemoteInputs.find(edge.scope);
+        if (resumed != item.stepRemoteInputs.end()) {
+          if (!inputs.emplace(edge.consumerSlotId, std::move(resumed->second)).second) {
+            throw std::runtime_error(
+              "sealed step has duplicate contributions for one slot: " +
+              edge.consumerSlotId);
+          }
+          item.stepRemoteInputs.erase(resumed);
+          continue;
+        }
+      }
       if (admitted == ctx.inputsByScope.end()) {
         // A deferred edge is started here, on the step that needs it. This is the only
         // place the Interest is signed for a peer partial, so the producing rank has
@@ -1205,41 +1298,12 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
           throw std::runtime_error(
             "sealed step remote input was never started: " + edge.scope);
         }
-        // Wait only for this step's own contribution, and never without a bound:
-        // a peer that never publishes still has to end the unit rather than hold
-        // a compute worker hostage. The deadline is the whole unit's, measured
-        // from admission, so a template cannot buy more time by having more steps.
-        const auto deadline = item.queuedAt + m_dependencyWaitTimeout;
-        // Poll rather than block once, so a destroyed worker releases its compute
-        // thread promptly. Without this the destructor's cancellation would not be
-        // observed here and the unit would only end at its deadline.
-        while (true) {
-          {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            if (m_stopping) {
-              throw std::runtime_error(
-                "dependency wait failed: CANCELLED for " + edge.scope);
-            }
-          }
-          if (pending->second.wait_for(std::chrono::milliseconds(2)) ==
-              std::future_status::ready) {
-            break;
-          }
-          if (std::chrono::steady_clock::now() >= deadline) {
-            throw std::runtime_error(
-              "dependency wait failed: DEADLINE_EXPIRED for " + edge.scope);
-          }
-        }
-        auto bundle = pending->second.get();
-        validateTensorBundleForEdge(edge, bundle);
-        // The admitted map belongs to the caller's context, which is const here;
-        // the value is bound directly below instead.
-        if (!inputs.emplace(edge.consumerSlotId, std::move(bundle)).second) {
-          throw std::runtime_error(
-            "sealed step has duplicate contributions for one slot: " +
-            edge.consumerSlotId);
-        }
-        continue;
+        // The contribution is not here yet. This unit must not hold the compute thread while
+        // it waits: on a Provider hosting more than one unit, the contribution it needs may be
+        // publishable only by the unit that is queued behind it. Hand the wait to the scheduler
+        // and leave; the completion re-enqueues this item, which resumes at this step.
+        borrowAndSuspendOnEdge(item, edge, pending->second);
+        return std::nullopt;
       }
       // Two edges feeding one slot would let a contribution be counted twice,
       // which inflates the reduction without looking wrong. The sealed template
@@ -1491,7 +1555,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   return result;
 }
 
-ProviderRoleResult
+std::optional<ProviderRoleResult>
 ProviderRoleWorker::runReadyRole(WorkItem& item)
 {
   NativeWorkScope roleWork(item.role.workStatistics, "role-worker",
@@ -1693,7 +1757,8 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     const bool sealedSteps = item.role.steps && !item.role.steps->empty();
     if (sealedSteps) {
       auto stepped = runSealedSteps(ctx, item);
-      result.outputsByScope = std::move(stepped.outputsByScope);
+      if (!stepped) return std::nullopt;
+      result.outputsByScope = std::move(stepped->outputsByScope);
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_steps role=" + item.role.role);
       }

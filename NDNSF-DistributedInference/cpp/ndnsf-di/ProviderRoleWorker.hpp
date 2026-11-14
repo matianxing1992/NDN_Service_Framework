@@ -294,6 +294,24 @@ private:
     // Scopes whose output edge was already published by their producing step, so
     // the unit's final pass does not publish the same object twice.
     std::set<std::string> publishedScopes;
+    // Step-by-step progress, kept here rather than in a local so a unit can leave the compute
+    // thread while it waits for a peer and resume on whichever thread picks it up next. A step
+    // that blocks in place holds the thread, and two units on one worker then hold each other:
+    // the one that got the thread waits for a contribution only the other can publish.
+    std::map<std::string, TensorBundle> producedSteps;
+    std::map<std::string, TensorBundle> stepStateScopes;
+    // Remote contributions already fetched, keyed by scope. Populated by the wait that ended
+    // this unit's turn.
+    std::map<std::string, TensorBundle> stepRemoteInputs;
+    std::size_t resumeStepIndex = 0;
+  };
+
+  /** One suspended step, waiting for the single contribution it needs. */
+  struct SuspendedStepWait
+  {
+    WorkItem item;
+    DependencyEdge edge;
+    std::shared_future<TensorBundle> pending;
   };
 
   struct PendingInput
@@ -331,6 +349,10 @@ private:
   executePreparation(const PreparationItem& item);
 
   void
+  borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge& edge,
+                         std::shared_future<TensorBundle> pending);
+
+  void
   scheduleWhenInputsReady(WorkItem item, std::vector<PendingInput> pendingInputs);
 
   void
@@ -346,7 +368,14 @@ private:
   failPromise(const std::shared_ptr<std::promise<ProviderRoleResult>>& promise,
               std::exception_ptr failure);
 
-  ProviderRoleResult
+  /** Run the role to completion, or return nothing when it yielded to wait for a peer.
+   *
+   * A tensor-parallel step may need a contribution that does not exist yet. Rather than hold the
+   * compute thread while it waits, the unit registers a bounded wait with the dependency wait
+   * scheduler and leaves; the completion re-enqueues it, and the next turn resumes at the step
+   * it stopped at.
+   */
+  std::optional<ProviderRoleResult>
   runReadyRole(WorkItem& item);
 
   /** Run one unit's sealed step template to completion.
@@ -365,7 +394,12 @@ private:
    * completes. `item` is non-const because it records which scopes were already
    * published, so the final pass does not send the same object twice.
    */
-  ProviderRoleResult
+  /** Run the unit's sealed template from its recorded position.
+   *
+   * @returns The role result when the whole template ran, nothing when the unit suspended to
+   *          wait for a peer contribution.
+   */
+  std::optional<ProviderRoleResult>
   runSealedSteps(const RoleExecutionContext& ctx, WorkItem& item);
 
   std::map<std::string, TensorBundle>

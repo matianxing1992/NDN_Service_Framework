@@ -14082,12 +14082,14 @@ BOOST_AUTO_TEST_CASE(ASecondTurnRunsOnThePreparedRunnerWithoutPreparingAgain)
 
 BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
 {
-  // A Provider may host more than one unit. Each waiting unit used to hold a compute thread in
-  // its step loop, so two units on one compute worker could hold each other: the one that got
-  // the thread waited for a partial only the other could publish, and the other never ran.
+  // A Provider may host more than one unit. A unit that waits for a peer contribution in its
+  // step loop used to hold the compute thread, so two units on one compute worker could hold
+  // each other: the one that got the thread waited for a partial only the other could publish,
+  // and the other never ran.
   //
-  // One compute worker, two units, each needing the other's partial. If the wait still occupied
-  // the compute thread this cannot finish; with the wait handed to the scheduler both do.
+  // One compute worker, two units, a bus that really delivers each contribution. Both must
+  // finish, and finish through their reductions -- not by timing out. A version that waits in
+  // place cannot pass this: the unit holding the only thread blocks until its deadline.
   qwen::QwenTpShape shape;
   shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
   shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072;
@@ -14101,52 +14103,7 @@ BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
   NativeProviderAssignment assignment;
   assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/0"}};
 
-  // The two units exchange both directions, so neither can finish alone. The promises are kept
-  // alive in the IO rather than returned from a temporary, so the wait is ended by its deadline
-  // and not by a broken future: a broken promise would make this pass without ever exercising
-  // the wait.
-  class HeldDependencyIo final : public DependencyIo
-  {
-  public:
-    std::future<TensorBundle>
-    prefetchInput(const std::string&, const DependencyEdge&) override
-    {
-      ++prefetchCalls;
-      std::lock_guard<std::mutex> lock(mutex);
-      promises.emplace_back();
-      return promises.back().get_future();
-    }
-    void
-    publishOutput(const std::string&, const DependencyEdge& edge,
-                  const TensorBundle&) override
-    {
-      ++publishCalls;
-      std::lock_guard<std::mutex> lock(mutex);
-      published.push_back(edge.scope);
-    }
-    std::size_t prefetchCount()
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      return prefetchCalls;
-    }
-    std::vector<std::string> publishedScopes()
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      return published;
-    }
-  private:
-    std::mutex mutex;
-    std::vector<std::promise<TensorBundle>> promises;
-    std::vector<std::string> published;
-    std::size_t prefetchCalls = 0;
-    std::size_t publishCalls = 0;
-  };
-  auto io = std::make_shared<HeldDependencyIo>();
-
-  ProviderRoleWorker worker(1, 2, 16, std::chrono::milliseconds(400));
-  // A runner that answers exactly what its step declares, so the unit proceeds through INIT and
-  // its attention step and then blocks at the reduction -- which is the wait this case is about.
-  // A runner that answered with a fixed name would fail at INIT and never reach it.
+  // The runner answers whatever its step declares, so each unit reaches its reduction.
   auto makeRunner = [] (const char* unit) {
     return makeNativeModelRunner([unit] (const RoleExecutionContext& context) {
       std::map<std::string, TensorBundle> result;
@@ -14157,14 +14114,18 @@ BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
         tensor.elementType = slot.dtype == "int64" ? TensorElementType::Int64
           : slot.dtype == "int32" ? TensorElementType::Int32
                                   : TensorElementType::Float32;
-        tensor.shape = {1, 1};
-        const auto width = tensor.elementType == TensorElementType::Int64 ? sizeof(std::int64_t)
-          : tensor.elementType == TensorElementType::Int32 ? sizeof(std::int32_t)
-                                                           : sizeof(float);
-        tensor.payload.assign(width, 0);
+        // The payload must match the declared element count, so the shape is sized from the
+        // element type rather than shared between float and integer outputs.
+        tensor.shape = {1, 1, 4};
+        tensor.payload.assign(
+          static_cast<std::size_t>(4) *
+            (tensor.elementType == TensorElementType::Float32 ? sizeof(float)
+             : tensor.elementType == TensorElementType::Int64 ? sizeof(std::int64_t)
+                                                              : sizeof(std::int32_t)),
+          0);
         if (tensor.elementType == TensorElementType::Float32) {
-          const float value = 0.25f;
-          std::memcpy(tensor.payload.data(), &value, sizeof(value));
+          auto* values = reinterpret_cast<float*>(tensor.payload.data());
+          for (std::size_t index = 0; index < 4; ++index) values[index] = 0.25f;
         }
         result.emplace(slot.slotId,
                        makeEncodedTensorBundle(std::string(unit) + "-" + slot.slotId,
@@ -14173,37 +14134,50 @@ BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
       return result;
     });
   };
-  auto role0 = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
-  auto role1 = roleSpecFor(plan, "S0R1", key, assignment, "/provider/0");
-  auto first = worker.executeAsync("/session/shared-worker", std::move(role0), io,
-                                   makeRunner("S0R0"));
-  auto second = worker.executeAsync("/session/shared-worker", std::move(role1), io,
-                                    makeRunner("S0R1"));
-  // Both must at least reach their wait rather than one starving the other out of the single
-  // compute thread. The deadline then ends them, which is the honest outcome for a transport
-  // that never delivers: what must not happen is one of them never being scheduled.
+
+  auto bus = std::make_shared<PartialBus>();
+  ProviderRoleWorker worker(1, 2, 16, std::chrono::seconds(30));
+  const auto promptToken = [] (const char* name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return tensor;
+  };
+  const std::map<std::string, TensorBundle> initial{
+    {"input_ids", makeEncodedTensorBundle("input_ids", {promptToken("input_ids", 7)})},
+    {"attention_mask", makeEncodedTensorBundle("attention_mask",
+      {promptToken("attention_mask", 1)})},
+    {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+      {promptToken("position_ids", 0)})},
+  };
+  std::map<std::string, std::future<ProviderRoleResult>> futures;
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    auto role = roleSpecFor(plan, unit, key, assignment, "/provider/0");
+    auto runner = makeRunner(unit);
+    futures.emplace(unit, worker.executePreparedAsync(
+      "/session/shared-worker/" + std::string(unit), std::move(role),
+      std::make_shared<BusDependencyIo>(bus),
+      [runner] { return runner; }, initial));
+  }
   std::size_t completed = 0;
-  for (auto* future : {&first, &second}) {
+  for (auto& item : futures) {
     try {
-      (void)future->get();
+      (void)item.second.get();
       ++completed;
     }
     catch (const std::exception& error) {
-      const std::string message = error.what();
-      BOOST_TEST_MESSAGE("shared-worker unit ended: " << message);
+      BOOST_TEST_MESSAGE("shared-worker unit " << item.first << " failed: " << error.what());
     }
   }
-  // Both had to be admitted. A single compute thread that never released its role would leave
-  // the second future unready forever, and this would hang rather than report.
-  BOOST_CHECK_EQUAL(completed, 0U);
-  // Each unit reached its reduction and published its own attention partial before waiting:
-  // that is what a peer would consume, and it can only happen if both got a turn on the one
-  // compute thread instead of one holding it while blocked.
-  const auto publishedScopes = io->publishedScopes();
-  BOOST_TEST_MESSAGE("shared-worker publishes=" << publishedScopes.size()
-                     << " prefetches=" << io->prefetchCount());
-  BOOST_CHECK_GE(publishedScopes.size(), 2U);
-  BOOST_CHECK_GE(io->prefetchCount(), 2U);
+  // Both units finished. One compute thread means one of them must have yielded while the
+  // other published, which is exactly the property this case exists to protect.
+  BOOST_CHECK_EQUAL(completed, 2U);
+  // And the bus really carried both directions, so neither could have completed on a seeded
+  // value: two attention partials and two MLP partials.
+  BOOST_CHECK_GE(bus->publishedCount(), 4U);
 }
 
 BOOST_AUTO_TEST_CASE(OnlyTheEgressUnitPublishesTokenEventsInAShardedPlan)
