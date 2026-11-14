@@ -1393,6 +1393,51 @@ private:
   std::map<std::string, std::vector<std::shared_ptr<std::promise<TensorBundle>>>> m_waiters;
 };
 
+/** Serve one Provider's own self-feedback locally, everything else over the network.
+ *
+ * The sampler's next-epoch token is its own control loop: the same process produces and
+ * consumes it, so it must not become a published object. A sharded plan also has real remote
+ * dependencies, so replacing the whole IO object with the local one would break them -- the
+ * two kinds of edge have to coexist inside one DependencyIo. Every other method is forwarded
+ * to the network implementation unchanged.
+ */
+class SelfFeedbackDependencyIo final : public DependencyIo
+{
+public:
+  SelfFeedbackDependencyIo(std::shared_ptr<DependencyIo> network,
+                           std::shared_ptr<DependencyIo> local)
+    : m_network(std::move(network)), m_local(std::move(local))
+  {
+  }
+
+  static bool
+  isSelfFeedback(const DependencyEdge& edge)
+  {
+    return edge.operationKind == "TOKEN_FEEDBACK" &&
+           !edge.producerRole.empty() && edge.producerRole == edge.consumerRole;
+  }
+
+  std::future<TensorBundle>
+  prefetchInput(const std::string& sessionId, const DependencyEdge& edge) final
+  {
+    if (isSelfFeedback(edge)) return m_local->prefetchInput(sessionId, edge);
+    return m_network->prefetchInput(sessionId, edge);
+  }
+
+  void
+  publishOutput(const std::string& sessionId,
+                const DependencyEdge& edge,
+                const TensorBundle& bundle) final
+  {
+    if (isSelfFeedback(edge)) m_local->publishOutput(sessionId, edge, bundle);
+    else m_network->publishOutput(sessionId, edge, bundle);
+  }
+
+private:
+  std::shared_ptr<DependencyIo> m_network;
+  std::shared_ptr<DependencyIo> m_local;
+};
+
 bool
 allPlanRolesAssignedToLocal(const NativeExecutionPlan& plan,
                             const NativeProviderAssignment& assignment,
@@ -3968,8 +4013,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       std::optional<std::vector<uint8_t>> finalPayload;
       std::atomic<std::size_t> streamedEventsPublished{0};
       RoleExecutionContext::StreamEventSink eventSink;
-      const bool terminalRole = roleSpec.outputs.empty() ||
-        nativeRoleHasOnlyInternalFeedbackOutputs(roleSpec);
+      // The sealed terminal response owner is the authority both here and in the
+      // coordinator. Inferring it from the shape of this role's outputs excluded a sharded
+      // sampler, whose HEAD publishes partials as well as the token: it then sampled and
+      // published feedback internally while never installing a sink, so no token reached
+      // the Requester. A projection carries the owner explicitly; the older inference stays
+      // for a plan that has none.
+      const bool terminalRole = selectionProjection
+        ? selectionProjection->dataflow.terminalResponseOwner
+        : roleSpec.outputs.empty() ||
+          nativeRoleHasOnlyInternalFeedbackOutputs(roleSpec);
       if (ctx.isStreamed() && terminalRole) {
         eventSink = [&ctx, &streamedEventsPublished, executionCommitMutex, executionGuard] (
                       const std::vector<std::uint8_t>& payload) {
@@ -4033,6 +4086,24 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           // blocked input needs a worker to register its first real read.
           io = makeNetworkIo(roleSpec.inputs.size());
         }
+        // The sampler's own next-epoch token is local control; this rank's peer partials are
+        // not. Composing the two keeps both inside the coordinator's single IO, instead of
+        // either publishing a loopback object or breaking the remote edges by taking the
+        // whole role local.
+        // Read the sealed plan, not this epoch's projected role: epoch zero deliberately
+        // drops the feedback edge from the executable inputs, so asking the role would answer
+        // "no local loop" exactly when the loop about to run is the local one.
+        const auto selfFeedbackInput = std::any_of(
+          executionPlan.dependencies.begin(), executionPlan.dependencies.end(),
+          [] (const NativeDependencySpec& dependency) {
+            return dependency.operationKind == "TOKEN_FEEDBACK" &&
+                   dependency.producers.size() == 1 &&
+                   dependency.producers == dependency.consumers;
+          });
+        if (authenticatedGeneration.enabled && selfFeedbackInput) {
+          io = std::make_shared<SelfFeedbackDependencyIo>(
+            io, std::make_shared<LocalDependencyIo>());
+        }
         NativeEpochCoordinatorConfig coordinatorConfig{
           state->runtime, executionPlan, assignment, io};
         coordinatorConfig.sessionId = executionSessionId;
@@ -4066,16 +4137,27 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             [projection, assignmentForCoordinator, roleFactory, workStatistics]
             (std::size_t sequence) {
               auto projected = (*roleFactory)(sequence, workStatistics);
-              // Cross-role feedback is a signed C04 endpoint in the role
-              // factory. Only an exact same-role loop remains local control
-              // carried by the sealed plan and served by LocalDependencyIo.
-              if (!projection.generationContract.enabled || projection.plan.roles.size() != 1) {
+              // Cross-role feedback is a signed C04 endpoint in the role factory; only an
+              // exact same-role loop remains local control served by LocalDependencyIo. The
+              // loop belongs to the sampler, so it is restored exactly when this role is the
+              // terminal response owner -- not when the whole plan happens to have one role.
+              // Requiring one role dropped the sampler's own loop in a sharded plan, and the
+              // next epoch then had no lineage because nothing could carry the token back.
+              if (!projection.generationContract.enabled) {
                 return projected;
               }
               const auto control = roleSpecFor(
                 projection.plan, projection.executionRole.roleId,
                 projection.requestId, assignmentForCoordinator, "",
                 sequence);
+              const bool isSampler = std::any_of(
+                control.outputs.begin(), control.outputs.end(),
+                [&projected] (const DependencyEdge& edge) {
+                  return edge.operationKind == "TOKEN_FEEDBACK" &&
+                         edge.producerRole == edge.consumerRole &&
+                         edge.producerRole == projected.role;
+                });
+              if (!isSampler) return projected;
               for (const auto& edge : control.inputs) {
                 if (edge.operationKind == "TOKEN_FEEDBACK" &&
                     edge.producerRole == edge.consumerRole)
@@ -4623,6 +4705,28 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           });
         if (!io) {
           io = makeNetworkIo(0);
+        }
+        // The sampler's self-feedback loop stays in this process while its shard's remote
+        // partials still travel over Named Data, so the two kinds of edge are served by one
+        // composed IO rather than by choosing one implementation for the whole role.
+        const auto hasSelfFeedback = [&localRoleSpecs] {
+          for (const auto& spec : localRoleSpecs)
+            for (const auto& edge : spec.inputs)
+              if (SelfFeedbackDependencyIo::isSelfFeedback(edge) ||
+                  (edge.operationKind == "TOKEN_FEEDBACK" &&
+                   edge.producerRole == edge.consumerRole))
+                return true;
+          return false;
+        }();
+        if (!authenticatedGeneration.enabled || !hasSelfFeedback) {
+          // Nothing to serve locally.
+        }
+        else if (localFullPlan) {
+          io = std::make_shared<LocalDependencyIo>();
+        }
+        else {
+          io = std::make_shared<SelfFeedbackDependencyIo>(
+            io, std::make_shared<LocalDependencyIo>());
         }
         std::vector<std::pair<RoleSpec, std::future<ProviderRoleResult>>> localRoles;
         for (auto& localRoleSpec : localRoleSpecs) {
