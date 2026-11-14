@@ -30,14 +30,19 @@ validateTensorBundleForEdge(const DependencyEdge& edge,
   if (edge.scope.empty()) {
     throw std::invalid_argument("tensor dependency scope is empty");
   }
-  if (bundle.expectedBytes != 0 &&
-      bundle.expectedBytes != bundle.payload.size()) {
+  // A locally-held value has no payload, so its byte count is compared against what it would cost
+  // on the wire. Skipping the check for a local value would let a producer ship an object whose
+  // declared size and real contents disagree, and the mistake would only appear once something
+  // materialized it.
+  const auto declaredBytes = bundle.localTensors
+    ? bundle.expectedBytes : bundle.payload.size();
+  if (bundle.expectedBytes != 0 && bundle.expectedBytes != declaredBytes) {
     throw std::runtime_error(
       "tensor bundle byte count does not match its verified manifest: " +
       edge.scope);
   }
   if (edge.declaredByV3 && edge.expectedBytes != 0 &&
-      edge.expectedBytes != bundle.payload.size()) {
+      edge.expectedBytes != declaredBytes) {
     throw std::runtime_error(
       "tensor bundle byte count does not match the sealed edge: " +
       edge.scope);

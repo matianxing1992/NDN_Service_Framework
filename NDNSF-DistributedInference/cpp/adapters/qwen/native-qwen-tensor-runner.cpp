@@ -715,11 +715,16 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   child.metadata.erase("attentionMaskInputName");
   child.metadata.erase("positionIdsInputName");
   child.metadata.erase("cachePositionInputName");
-  // Always ask for an encoded bundle. The ordinary runner returns a single output's raw bytes
-  // keyed by its scope, and a multi-output entry as one encoded bundle; the parent decodes what
-  // it gets to find tensors by name. A raw payload cannot be decoded, so a single-output entry
-  // -- the head is one -- would arrive unreadable, and the failure surfaces as "no encoded
-  // logits" far from its cause. Declaring the bundle makes every entry uniform.
+  // Ask for an encoded bundle on the wire path. The ordinary runner returns a single output's raw
+  // bytes keyed by its scope, and a multi-output entry as one encoded bundle; a raw payload cannot
+  // be decoded, so a single-output entry -- the head is one -- would arrive unreadable and the
+  // failure would surface as "no logits" far from its cause. Declaring the bundle makes every
+  // entry uniform for a caller that only reads bytes.
+  //
+  // A local value is always one bundle keyed by name, so the preference on the child context takes
+  // precedence over this and the local path stays reachable. Without that precedence the child
+  // would encode, the parent would decode, and every value would take the round trip this change
+  // exists to remove.
   child.metadata["forceOutputBundle"] = "true";
   // The entry's own graph names are the IO contract; the runner maps scopes.
   for (std::size_t index = 0; index < entry.inputNames.size(); ++index)

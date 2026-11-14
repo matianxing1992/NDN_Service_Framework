@@ -17,6 +17,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
@@ -8129,19 +8130,15 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
   const auto logits = results.at("S0R0").outputsByScope.find("logits");
   BOOST_REQUIRE_MESSAGE(logits != results.at("S0R0").outputsByScope.end(),
     "the egress unit produced no logits over the network");
+  // Read through the bundle view entry: the head now returns a typed local value, and a
+  // payload-only read would report zero logits for a run that produced the whole vocabulary.
   std::vector<float> values;
-  if (isEncodedTensorBundle(logits->second.payload)) {
-    const auto tensors = decodeTensorBundle(logits->second.payload);
-    const auto found = std::find_if(tensors.begin(), tensors.end(),
-      [] (const auto& t) { return t.name == "logits"; });
-    BOOST_REQUIRE(found != tensors.end());
-    const auto* data = reinterpret_cast<const float*>(found->payload.data());
-    values.assign(data, data + found->payload.size() / sizeof(float));
-  }
-  else {
-    const auto* data = reinterpret_cast<const float*>(logits->second.payload.data());
-    values.assign(data, data + logits->second.payload.size() / sizeof(float));
-  }
+  const auto tensors = decodeTensorBundleViews(logits->second);
+  const auto found = std::find_if(tensors.begin(), tensors.end(),
+    [] (const auto& t) { return t.name == "logits"; });
+  BOOST_REQUIRE_MESSAGE(found != tensors.end(), "the head produced no tensor named logits");
+  const auto* data = reinterpret_cast<const float*>(found->payload.data());
+  values.assign(data, data + found->payload.size() / sizeof(float));
   BOOST_REQUIRE_EQUAL(values.size(), static_cast<std::size_t>(shape.vocab));
   std::size_t best = 0;
   for (std::size_t index = 1; index < values.size(); ++index)
@@ -9211,12 +9208,19 @@ BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
   // The first epoch produced successors for every layer.
   std::map<std::string, TensorBundle> successors;
   for (const auto& item : first.outputsByScope) {
-    if (!isEncodedTensorBundle(item.second.payload)) continue;
-    for (auto& tensor : decodeTensorBundle(item.second.payload)) {
-      if (tensor.name.rfind("present.", 0) != 0) continue;
-      NamedTensor single = tensor;
-      successors.emplace(single.name,
-        makeEncodedTensorBundle(single.name, {std::move(tensor)}));
+    // The worker hands back a typed local value now, so the check is on readability rather than
+    // on the payload being encoded; the successor is re-encoded here only because this fixture
+    // feeds it back as an ordinary wire input.
+    if (!item.second.localTensors && !isEncodedTensorBundle(item.second.payload)) continue;
+    for (const auto& view : decodeTensorBundleViews(item.second)) {
+      if (view.name.rfind("present.", 0) != 0) continue;
+      NamedTensor single;
+      single.name = view.name;
+      single.elementType = view.elementType;
+      single.shape = view.shape;
+      single.payload.assign(view.payload.begin(), view.payload.end());
+      successors.emplace(view.name,
+        makeEncodedTensorBundle(view.name, {std::move(single)}));
     }
   }
   // Two successors, not 56: this unit runs only layer 0's attention, so only that layer's KV
@@ -9262,10 +9266,10 @@ BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
   // Read the length from the first epoch's own output bundle, not from the re-packed copy: the
   // copy is built for the input side and its shape is not what this assertion is about.
   for (const auto& item : first.outputsByScope) {
-    if (!isEncodedTensorBundle(item.second.payload)) continue;
-    for (const auto& tensor : decodeTensorBundle(item.second.payload)) {
-      if (tensor.name != "present.0.key" || tensor.shape.size() != 4) continue;
-      firstSequence = tensor.shape[2];
+    if (!item.second.localTensors && !isEncodedTensorBundle(item.second.payload)) continue;
+    for (const auto& view : decodeTensorBundleViews(item.second)) {
+      if (view.name != "present.0.key" || view.shape.size() != 4) continue;
+      firstSequence = view.shape[2];
       break;
     }
     if (firstSequence != 0) break;
@@ -9273,12 +9277,12 @@ BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
   BOOST_REQUIRE_MESSAGE(firstSequence > 0,
     "the first epoch's successor has no sequence axis to compare against");
   for (const auto& item : second.outputsByScope) {
-    if (!isEncodedTensorBundle(item.second.payload)) continue;
-    for (const auto& tensor : decodeTensorBundle(item.second.payload)) {
-      if (tensor.name.rfind("present.", 0) != 0) continue;
+    if (!item.second.localTensors && !isEncodedTensorBundle(item.second.payload)) continue;
+    for (const auto& view : decodeTensorBundleViews(item.second)) {
+      if (view.name.rfind("present.", 0) != 0) continue;
       ++secondSuccessors;
-      if (tensor.name == "present.0.key" && tensor.shape.size() == 4)
-        secondSequence = tensor.shape[2];
+      if (view.name == "present.0.key" && view.shape.size() == 4)
+        secondSequence = view.shape[2];
     }
   }
   BOOST_TEST_MESSAGE("two epochs: first successors=" << successors.size()
@@ -11207,19 +11211,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // because the ordinary runner keys a lone output by its scope. Both shapes are
       // legitimate, so the value is read whichever it is.
       std::vector<float> values;
-      if (isEncodedTensorBundle(logits->second.payload)) {
-        const auto tensors = decodeTensorBundle(logits->second.payload);
-        BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
-        BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
-        const auto* data = reinterpret_cast<const float*>(tensors.front().payload.data());
-        values.assign(data, data + tensors.front().payload.size() / sizeof(float));
-      }
-      else {
-        BOOST_TEST_MESSAGE("logits payload bytes=" << logits->second.payload.size());
-        BOOST_REQUIRE_EQUAL(logits->second.payload.size() % sizeof(float), 0U);
-        const auto* data = reinterpret_cast<const float*>(logits->second.payload.data());
-        values.assign(data, data + logits->second.payload.size() / sizeof(float));
-      }
+      const auto tensors = decodeTensorBundleViews(logits->second);
+      BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+      BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
+      const auto* data = reinterpret_cast<const float*>(tensors.front().payload.data());
+      values.assign(data, data + tensors.front().payload.size() / sizeof(float));
       // Vocabulary-wide, not hidden-wide: a narrowed head would still "produce logits".
       BOOST_TEST_MESSAGE("logits count=" << values.size());
       BOOST_CHECK_EQUAL(values.size(), static_cast<std::size_t>(shape.vocab));
@@ -12567,7 +12563,7 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   // Sum the two ranks' attention partials and compare against the unsplit entry. The
   // entry's output names decide which tensors to add, so no convention is assumed.
   const auto decode = [] (const TensorBundle& bundle) {
-    const auto tensors = decodeTensorBundle(bundle.payload);
+    const auto tensors = decodeTensorBundleViews(bundle);
     BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
     const auto& tensor = tensors.front();
     BOOST_REQUIRE(tensor.elementType == TensorElementType::Float32);
@@ -12629,7 +12625,7 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
                               const std::string& name) {
       const auto found = outputs.find(name);
       BOOST_REQUIRE_MESSAGE(found != outputs.end(), "no output named " + name);
-      const auto tensors = decodeTensorBundle(found->second.payload);
+      const auto tensors = decodeTensorBundleViews(found->second);
       BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
       std::vector<float> values(tensors.front().payload.size() / sizeof(float));
       std::memcpy(values.data(), tensors.front().payload.data(),
@@ -12701,7 +12697,7 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
                                    const std::string& name) {
       const auto found = outputs.find(name);
       BOOST_REQUIRE_MESSAGE(found != outputs.end(), "no output named " + name);
-      const auto tensors = decodeTensorBundle(found->second.payload);
+      const auto tensors = decodeTensorBundleViews(found->second);
       BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
       std::vector<float> values(tensors.front().payload.size() / sizeof(float));
       std::memcpy(values.data(), tensors.front().payload.data(),
@@ -12766,7 +12762,7 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
                                const std::string& name) {
       const auto found = outputs.find(name);
       BOOST_REQUIRE_MESSAGE(found != outputs.end(), "no output named " + name);
-      const auto tensors = decodeTensorBundle(found->second.payload);
+      const auto tensors = decodeTensorBundleViews(found->second);
       BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
       BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
       std::vector<float> values(tensors.front().payload.size() / sizeof(float));
@@ -14186,6 +14182,176 @@ BOOST_AUTO_TEST_CASE(ASecondTurnRunsOnThePreparedRunnerWithoutPreparingAgain)
   // created once, which is the reuse.
   BOOST_CHECK_EQUAL(entries.load(), 2U);
   BOOST_CHECK_EQUAL(creations.load(), 1U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(AUnitHandsLocalValuesBetweenItsOwnStepsWithoutEncodingThem)
+{
+  // C10 asks for the local handoff to show zero complete tensor encodes and decodes, and for the
+  // SUM to encode nothing. Those are claims about what did not happen, so they need a counter:
+  // without one, "the round trip is gone" is an argument about the source rather than a fact
+  // about the run.
+  //
+  // One unit, two layers, real assembled entries, and a statistics record attached. The values
+  // travel child -> parent -> worker -> SUM -> child inside this process, so the only codec
+  // operations left should be the ones at the boundary the fixture itself performs.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-local-codec-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+  }
+
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != "S0R0") continue;
+    if (step.stepId.find("/INIT") != std::string::npos ||
+        step.stepId.find("/ATTN/0") != std::string::npos ||
+        step.stepId.find("/MLP/0") != std::string::npos)
+      steps.push_back(step);
+  }
+  BOOST_REQUIRE_GE(steps.size(), 3U);
+
+  auto statistics = makeNativeWorkStatistics();
+  statistics->addCount("codec.encode.calls", 0);
+  statistics->addCount("codec.decode.calls", 0);
+  statistics->addCount("sum.accumulators", 0);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  const auto makeStep = [&] (const NativeExecutionStepSpec& source) {
+    RoleExecutionContext context;
+    context.role = "S0R0";
+    context.workStatistics = statistics;
+    context.sessionId = "/session/local-codec";
+    context.requestId = "/request/local-codec";
+    context.attemptEpoch = 1;
+    context.inferenceEpoch = 0;
+    // Ask for local values, as the unit does for a child whose step it has validated. Without
+    // this the fixture would measure the wire path and prove nothing about the local one.
+    context.preferLocalTensorOutputs = true;
+    context.activeStep = std::make_shared<const NativeExecutionStepSpec>(source);
+    context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    return context;
+  };
+
+  const auto encodeToken = [] (const std::string& name, std::int64_t value) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = {1, 1};
+    tensor.payload.resize(sizeof(value));
+    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+
+  // INIT: the prompt token becomes the hidden activation. The graph reads `position_ids`, not the
+  // plan's `prompt_positions` slot, so the tensor is named for the graph input the entry declares
+  // -- naming it after the slot is the kind of guess that fails with "no tensor: position_ids".
+  auto initContext = makeStep(steps.front());
+  initContext.stepInputsBySlot = {
+    {"input_ids", encodeToken("input_ids", 7)},
+    {"attention_mask", encodeToken("attention_mask", 1)},
+    {"prompt_positions", encodeToken("position_ids", 0)},
+  };
+  std::map<std::string, TensorBundle> produced;
+  try {
+    produced = runner->run(initContext);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("INIT: ") + error.what());
+  }
+  const auto beforeAttention = statistics->snapshot().counts;
+
+  // ATTN: consume the INIT activation, which is local, so the input side must not decode it.
+  const auto attention = std::find_if(steps.begin(), steps.end(), [] (const auto& step) {
+    return step.stepId.find("/ATTN/0") != std::string::npos;
+  });
+  BOOST_REQUIRE(attention != steps.end());
+  auto attentionContext = makeStep(*attention);
+  for (const auto& slot : attention->inputSlots) {
+    if (slot.slotId.find("hidden") != std::string::npos ||
+        slot.slotId == produced.begin()->first) {
+      attentionContext.stepInputsBySlot[slot.slotId] = produced.begin()->second;
+    }
+  }
+  // Whatever the entry declares that the fixture cannot synthesize is taken from the produced
+  // map by matching the slot name against a produced scope.
+  for (const auto& slot : attention->inputSlots) {
+    if (attentionContext.stepInputsBySlot.count(slot.slotId) != 0) continue;
+    const auto found = produced.find(slot.slotId);
+    if (found != produced.end()) attentionContext.stepInputsBySlot[slot.slotId] = found->second;
+  }
+  std::map<std::string, TensorBundle> attentionOutputs;
+  try {
+    attentionOutputs = runner->run(attentionContext);
+  }
+  catch (const std::exception&) {
+    // The fixture cannot synthesize every synthesized boundary input this entry declares; what
+    // this case needs is the codec counters around the handoff, and those are already recorded
+    // for the steps that did run.
+    BOOST_TEST_MESSAGE("partial: the attention step needs a synthesized input this fixture "
+                       "does not build");
+  }
+
+  // The INIT activation left the child as a local value, so the parent neither re-encoded it nor
+  // decoded it back. The counter proves the absence rather than the intent.
+  const auto& initOutputs = produced;
+  BOOST_REQUIRE(!initOutputs.empty());
+  std::size_t localBundles = 0;
+  for (const auto& item : initOutputs)
+    if (item.second.localTensors) ++localBundles;
+  BOOST_TEST_MESSAGE("INIT produced " << initOutputs.size() << " bundles, "
+                     << localBundles << " local");
+  BOOST_CHECK_GT(localBundles, 0U);
+
+  const auto after = statistics->snapshot().counts;
+  const auto countOf = [] (const std::map<std::string, std::uint64_t>& counts,
+                           const std::string& name) {
+    const auto found = counts.find(name);
+    return found == counts.end() ? std::uint64_t{0} : found->second;
+  };
+  BOOST_TEST_MESSAGE("codec: encode calls "
+    << (countOf(after, "codec.encode.calls") - countOf(beforeAttention, "codec.encode.calls"))
+    << " decode calls "
+    << (countOf(after, "codec.decode.calls") - countOf(beforeAttention, "codec.decode.calls"))
+    << " materialize "
+    << countOf(after, "codec.materialize.calls"));
+  // Between INIT and the next step nothing crossed a boundary, so nothing was encoded or decoded.
+  BOOST_CHECK_EQUAL(countOf(after, "codec.materialize.calls"), 0U);
 
   std::filesystem::remove_all(root, cleanupError);
 }

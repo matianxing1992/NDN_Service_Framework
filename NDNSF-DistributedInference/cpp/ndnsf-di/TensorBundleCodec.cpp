@@ -896,11 +896,47 @@ encodeTensorBundleImpl(const std::vector<Tensor>& tensors)
 
 } // namespace
 
+namespace {
+
+/** Count one codec operation and the tensor bytes it moved.
+ *
+ * C10 asks for the local handoff to show zero complete encodes and decodes, and the tensor codec
+ * is the only place either can happen, so the count belongs here rather than at each caller.
+ * These are counters on the existing statistics record; no new profiler is introduced.
+ */
+void
+countCodecOperation(const std::shared_ptr<NativeWorkStatistics>& workStatistics,
+                    const char* operation, std::uint64_t tensorBytes)
+{
+  if (!workStatistics) return;
+  workStatistics->addCount(std::string("codec.") + operation + ".calls", 1);
+  workStatistics->addCount(std::string("codec.") + operation + ".bytes", tensorBytes);
+}
+
+std::uint64_t
+tensorBytesOf(const std::vector<NamedTensor>& tensors)
+{
+  std::uint64_t total = 0;
+  for (const auto& tensor : tensors) total += tensor.payload.size();
+  return total;
+}
+
+std::uint64_t
+tensorBytesOf(const std::vector<NamedTensorView>& tensors)
+{
+  std::uint64_t total = 0;
+  for (const auto& tensor : tensors) total += tensor.payload.size();
+  return total;
+}
+
+} // namespace
+
 std::vector<std::uint8_t>
 encodeTensorBundle(const std::vector<NamedTensor>& tensors,
                    const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   NativeWorkScope work(workStatistics, "tensor-bundle-encode", NativeWorkKind::LOCAL);
+  countCodecOperation(workStatistics, "encode", tensorBytesOf(tensors));
   return encodeTensorBundleImpl(tensors);
 }
 
@@ -909,6 +945,7 @@ encodeTensorBundleViews(const std::vector<NamedTensorView>& tensors,
                         const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   NativeWorkScope work(workStatistics, "tensor-bundle-encode", NativeWorkKind::LOCAL);
+  countCodecOperation(workStatistics, "encode", tensorBytesOf(tensors));
   return encodeTensorBundleImpl(tensors);
 }
 
@@ -979,6 +1016,7 @@ decodeTensorBundle(const std::vector<std::uint8_t>& payload,
                    const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   NativeWorkScope work(workStatistics, "tensor-bundle-decode", NativeWorkKind::LOCAL);
+  countCodecOperation(workStatistics, "decode", payload.size());
   return decodeTensorBundleImpl<NamedTensor>(payload);
 }
 
@@ -987,6 +1025,7 @@ decodeTensorBundleViews(const std::vector<std::uint8_t>& payload,
                         const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   NativeWorkScope work(workStatistics, "tensor-bundle-decode", NativeWorkKind::LOCAL);
+  countCodecOperation(workStatistics, "decode", payload.size());
   return decodeTensorBundleImpl<NamedTensorView>(payload);
 }
 
@@ -1028,6 +1067,11 @@ materializeTensorBundleWire(const TensorBundle& bundle,
     return bundle;
   }
   NativeWorkScope work(workStatistics, "tensor-bundle-materialize", NativeWorkKind::LOCAL);
+  // The one place a local value is allowed to become bytes. Counting it separately from ordinary
+  // encoding is what lets a report distinguish "the network boundary materialized once" from
+  // "the hops kept re-encoding".
+  if (workStatistics)
+    workStatistics->addCount("codec.materialize.calls", 1);
   const auto views = decodeTensorBundleViews(bundle, workStatistics);
   TensorBundle wire;
   wire.name = bundle.name;
@@ -1044,6 +1088,10 @@ sumTensorBundleViews(const std::string& outputScope,
                      const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
   NativeWorkScope work(workStatistics, "tensor-bundle-sum", NativeWorkKind::LOCAL);
+  // A SUM writes one accumulator and encodes nothing: the result is handed on as a local value.
+  // Counting both the sum and its resulting bytes lets a report separate the arithmetic from any
+  // encoding a later hop might still do.
+  if (workStatistics) workStatistics->addCount("sum.accumulators", 1);
   if (contributions.empty()) {
     throw std::invalid_argument("tensor sum has no contributions");
   }
@@ -1113,7 +1161,15 @@ sumTensorBundleViews(const std::string& outputScope,
   }
   TensorBundle result;
   result.name = outputScope;
-  result.expectedBytes = local->tensors.size();
+  std::uint64_t summedBytes = 0;
+  for (const auto& tensor : local->tensors) summedBytes += tensor.payload.size();
+  if (workStatistics) {
+    workStatistics->addCount("sum.tensors", local->tensors.size());
+    workStatistics->addCount("sum.bytes", summedBytes);
+  }
+  // The wire size is what this value would cost if it crossed a boundary, so a budget that reads
+  // it plans for the real object rather than for zero.
+  result.expectedBytes = summedBytes;
   result.localTensors = std::move(local);
   return result;
 }

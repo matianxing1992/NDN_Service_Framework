@@ -2191,17 +2191,48 @@ OnnxRuntimeModelRunner::run(const RoleExecutionContext& ctx)
     !namedOutputs.empty();
   std::shared_ptr<LocalOutputOwner> localOwner;
   if (localOutputs) {
-    localOwner = std::make_shared<LocalOutputOwner>(LocalOutputOwner{
-      std::move(outputHostBuffers), std::move(auxiliaryOutputs)});
+    // Take ownership of every output's bytes before returning. The views above borrow ORT's
+    // output values (or the transient host buffers), and `outputs` dies when this function
+    // returns -- so a local value that kept those spans would read freed memory after the call.
+    // One copy into an owned record is what makes the local representation safe, and it is still
+    // an order of magnitude less work than encoding a bundle and decoding it again.
+    auto owner = std::make_shared<LocalOutputOwner>();
+    owner->ownedTensors.reserve(namedOutputs.size());
+    for (const auto& view : namedOutputs) {
+      NamedTensor copy;
+      copy.name = view.name;
+      copy.elementType = view.elementType;
+      copy.shape = view.shape;
+      copy.payload.assign(view.payload.begin(), view.payload.end());
+      owner->ownedTensors.push_back(std::move(copy));
+    }
+    // Rebuild the views only after the record stops growing, so each span points at storage that
+    // will not move again.
+    std::vector<NamedTensorView> ownedViews;
+    ownedViews.reserve(owner->ownedTensors.size());
+    for (const auto& tensor : owner->ownedTensors) {
+      NamedTensorView view;
+      view.name = tensor.name;
+      view.elementType = tensor.elementType;
+      view.shape = tensor.shape;
+      view.payload = ndn::span<const std::uint8_t>(tensor.payload.data(),
+                                                   tensor.payload.size());
+      ownedViews.push_back(std::move(view));
+    }
+    namedOutputs = std::move(ownedViews);
+    localOwner = owner;
   }
 
   std::map<std::string, TensorBundle> result;
-  const bool forceEncodedOutput =
-    effectiveContext.streamingStateExecution ||
-    !localOutputs ||
-    !metadataValue(m_spec, {"output_tensor", "outputTensor", "forceOutputBundle",
-                            "force_output_bundle"}).empty() ||
-    metadataValue(m_spec, {"final", "is_final"}) == "true";
+  // A local value is always one named bundle, so a spec that asks for a bundle gets one either
+  // way; only the representation differs. That is why the bundle request must not override the
+  // preference -- it did, and the local path was unreachable through the parent runner even
+  // though every reader understood it.
+  const bool forceEncodedOutput = localOutputs ? false :
+    (effectiveContext.streamingStateExecution ||
+     !metadataValue(m_spec, {"output_tensor", "outputTensor", "forceOutputBundle",
+                             "force_output_bundle"}).empty() ||
+     metadataValue(m_spec, {"final", "is_final"}) == "true");
   if (localOutputs && !forceEncodedOutput) {
     const auto localScope = [&] (const std::string& single) {
       return namedOutputs.size() == 1 ? outputScopeFor(m_spec, single, 0)
