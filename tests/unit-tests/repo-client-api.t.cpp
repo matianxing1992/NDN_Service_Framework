@@ -437,6 +437,20 @@ BOOST_AUTO_TEST_CASE(DiscoveryHonoursTheRequestedProviderScope) {
   BOOST_CHECK_EQUAL(kept.candidates.size(), 1U);
 }
 
+BOOST_AUTO_TEST_CASE(FetchFileNeedsExactlyOneTargetDescription) {
+  TemporaryDirectory directory("fetch-file-target");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  const auto options = makeOptions();
+  RepoFileFetch neither;
+  neither.targetPath = (directory.path() / "out.bin").string();
+  BOOST_CHECK_THROW(client.fetchFile(neither, options), std::invalid_argument);
+  RepoFileFetch both;
+  both.targetPath = neither.targetPath;
+  both.reference = FileReference{};
+  both.handle = RepoHandle{};
+  BOOST_CHECK_THROW(client.fetchFile(both, options), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(TheCommitSchedulerNeverRunsMoreThanThreeAtOnce) {
   // The audit asked for the three-commit cap to be observable rather than assumed. Submit more
   // than the cap and record how many commits overlap.

@@ -3216,6 +3216,11 @@ RepoClient::fetchFile(const RepoFileFetch& input,
                           "fetchFile");
   if (input.targetPath.empty())
     throw std::invalid_argument("fetchFile requires a destination path");
+  // A handle and a reference describe the same object from different states; accepting both or
+  // neither would leave the target ambiguous.
+  if (input.handle.has_value() == input.reference.has_value())
+    throw std::invalid_argument(
+      "fetchFile requires exactly one of a committed handle or a file reference");
   if (input.hasRange) {
     if (input.hasRange && input.rangeLengthBytes == 0)
       throw std::invalid_argument("fetchFile requires a non-zero range length");
