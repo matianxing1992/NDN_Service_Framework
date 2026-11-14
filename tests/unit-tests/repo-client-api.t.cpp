@@ -381,6 +381,25 @@ BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
                     "sha512:" + std::string(64, 'A'));
 }
 
+BOOST_AUTO_TEST_CASE(AnExpiredDeadlineIsReportedNotReplaced) {
+  // Passing an exhausted deadline must not let the engine fall back to its configured
+  // wait: the caller's budget is the whole operation's budget.
+  TemporaryDirectory temporary("deadline");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  publication.selectedTargets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  RepoOperationOptions expired;
+  expired.deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+  BOOST_CHECK_EXCEPTION(client.publishFile(publication, expired), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "DEADLINE_EXPIRED" && error.phase() == "publishFile";
+    });
+}
+
 BOOST_AUTO_TEST_CASE(OperationInspectionValidatesItsBinding) {
   // An operation status is only meaningful with the operation id and the seed it belongs
   // to; without them the facade must refuse rather than guess.

@@ -2641,6 +2641,18 @@ remainingMs(std::chrono::steady_clock::time_point deadline)
   return remaining <= 0 ? 0 : static_cast<int>(remaining);
 }
 
+/** The caller's deadline is the operation's whole budget. An expired deadline must be
+ *  reported, never silently replaced by an engine default: passing 0 to the engine means
+ *  "use the configured wait", which would grant a fresh budget after the caller gave up. */
+void
+requireLiveDeadline(std::chrono::steady_clock::time_point deadline, const char* phase)
+{
+  if (std::chrono::steady_clock::now() >= deadline) {
+    throw RepoClientError("DEADLINE_EXPIRED",
+                          std::string(phase) + " was called with an expired deadline", phase);
+  }
+}
+
 ArtifactReference
 toArtifactReference(const FileReference& input)
 {
@@ -2869,9 +2881,12 @@ RepoClient::publishFile(const RepoFilePublication& input,
                    [] (unsigned char character) {
                      return static_cast<char>(std::toupper(character));
                    });
-    selected.consistency = consistency == "ONE" ? RepoWriteConsistency::One
+    // An unset consistency takes the engine's own default (ALL) instead of being an
+    // error; only a word that means something else is rejected.
+    selected.consistency = consistency.empty() || consistency == "ALL"
+      ? RepoWriteConsistency::All
+      : consistency == "ONE" ? RepoWriteConsistency::One
       : consistency == "QUORUM" ? RepoWriteConsistency::Quorum
-      : consistency == "ALL" ? RepoWriteConsistency::All
       : throw std::invalid_argument("publishField requires ONE, QUORUM or ALL consistency");
   }
 
@@ -2883,9 +2898,10 @@ RepoClient::publishFile(const RepoFilePublication& input,
     if (input.idempotencyKey.empty())
       throw std::invalid_argument(
         "ACCEPTED publication requires an idempotency key so a retry can recover");
+    requireLiveDeadline(options.deadline, "publishFile");
     const auto operation = m_impl->file->beginPublishFile(
       input.sourcePath, reference, selected, input.idempotencyKey,
-      remainingMs(options.deadline));
+      std::max(1, remainingMs(options.deadline)));
     RepoPublishResult result;
     result.state = RepoPublishState::ACCEPTED;
     result.operationReference = operation.operationId;
@@ -2894,8 +2910,9 @@ RepoClient::publishFile(const RepoFilePublication& input,
 
   ArtifactPublishResult published = selected.targets.empty()
     ? m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline)
-    : m_impl->file->publishFile(input.sourcePath, reference, selected,
-                                remainingMs(options.deadline));
+    : (requireLiveDeadline(options.deadline, "publishFile"),
+       m_impl->file->publishFile(input.sourcePath, reference, selected,
+                                 std::max(1, remainingMs(options.deadline))));
   RepoPublishResult result;
   result.reference = toFileReference(published.reference);
   result.state = published.handle ? RepoPublishState::COMMITTED : RepoPublishState::ACCEPTED;
