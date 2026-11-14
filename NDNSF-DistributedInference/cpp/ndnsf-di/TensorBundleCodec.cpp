@@ -1222,6 +1222,44 @@ TensorBundle
 attachGenerationEpochLineage(const TensorBundle& bundle,
                              const GenerationEpochLineageV1& lineage)
 {
+  if (bundle.localTensors) {
+    // Attaching adds one small lineage tensor to a value whose tensors stay where they are.
+    // Re-encoding the payload would copy every activation just to carry a few bytes of
+    // metadata, so the lineage gets its own backing and the resulting views point at both:
+    // the original owner for the value, the new one for the lineage.
+    const auto& reserved = generationEpochLineageTensorName();
+    const auto views = decodeTensorBundleViews(bundle);
+    if (std::any_of(views.begin(), views.end(), [&] (const auto& tensor) {
+          return tensor.name == reserved;
+        })) {
+      throw std::invalid_argument("generation lineage tensor is duplicated");
+    }
+    auto wire = encodeGenerationEpochLineage(lineage);
+    auto lineageOwner = std::make_shared<const std::vector<std::uint8_t>>(std::move(wire));
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->tensors = views;
+    NamedTensorView lineageView;
+    lineageView.name = reserved;
+    lineageView.elementType = TensorElementType::UInt8;
+    lineageView.shape = {static_cast<std::int64_t>(lineageOwner->size())};
+    lineageView.payload = ndn::span<const std::uint8_t>(lineageOwner->data(),
+                                                        lineageOwner->size());
+    local->tensors.push_back(lineageView);
+    // One owner record holds both backings, so no single reader can keep half the value alive.
+    struct CombinedOwner
+    {
+      std::shared_ptr<const LocalTensorBundle> value;
+      std::shared_ptr<const std::vector<std::uint8_t>> lineage;
+    };
+    local->owner = std::make_shared<const CombinedOwner>(
+      CombinedOwner{bundle.localTensors, std::move(lineageOwner)});
+    TensorBundle result;
+    result.name = bundle.name;
+    result.localTensors = std::move(local);
+    result.expectedBytes = bundle.expectedBytes + lineageView.payload.size();
+    result.transferObservation = bundle.transferObservation;
+    return result;
+  }
   if (!isEncodedTensorBundle(bundle.payload)) {
     throw std::invalid_argument(
       "generation lineage requires an encoded tensor bundle");
@@ -1245,6 +1283,23 @@ attachGenerationEpochLineage(const TensorBundle& bundle,
 std::optional<GenerationEpochLineageV1>
 extractGenerationEpochLineage(const TensorBundle& bundle)
 {
+  if (bundle.localTensors) {
+    const auto& reserved = generationEpochLineageTensorName();
+    const auto views = decodeTensorBundleViews(bundle);
+    const auto found = std::find_if(views.begin(), views.end(), [&] (const auto& tensor) {
+      return tensor.name == reserved;
+    });
+    if (found == views.end()) return std::nullopt;
+    if (std::find_if(std::next(found), views.end(), [&] (const auto& tensor) {
+          return tensor.name == reserved;
+        }) != views.end() || found->elementType != TensorElementType::UInt8 ||
+        found->shape.size() != 1 ||
+        static_cast<std::uint64_t>(found->shape.front()) != found->payload.size()) {
+      throw std::invalid_argument("generation lineage tensor is malformed");
+    }
+    return decodeGenerationEpochLineage(
+      std::vector<std::uint8_t>(found->payload.begin(), found->payload.end()));
+  }
   if (!isEncodedTensorBundle(bundle.payload)) {
     return std::nullopt;
   }
@@ -1269,6 +1324,27 @@ extractGenerationEpochLineage(const TensorBundle& bundle)
 TensorBundle
 stripGenerationEpochLineage(const TensorBundle& bundle)
 {
+  if (bundle.localTensors) {
+    // Removing one name is metadata work: the remaining views keep the same owner.
+    const auto& reserved = generationEpochLineageTensorName();
+    const auto views = decodeTensorBundleViews(bundle);
+    auto local = std::make_shared<LocalTensorBundle>();
+    for (const auto& view : views) {
+      if (view.name == reserved) continue;
+      local->tensors.push_back(view);
+    }
+    if (local->tensors.size() == views.size()) return bundle;
+    if (local->tensors.empty()) {
+      throw std::invalid_argument("generation lineage cannot be the only tensor");
+    }
+    local->owner = bundle.localTensors->owner;
+    TensorBundle result;
+    result.name = bundle.name;
+    result.localTensors = std::move(local);
+    result.expectedBytes = bundle.expectedBytes;
+    result.transferObservation = bundle.transferObservation;
+    return result;
+  }
   if (!isEncodedTensorBundle(bundle.payload)) {
     return bundle;
   }

@@ -1445,11 +1445,22 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
 {
   NativeWorkScope publicationWork(m_workStatistics, "tensor-output-publication",
                                  NativeWorkKind::LOCAL, publicationInferenceEpochForEdge(edge));
+  // This is a network boundary: whatever the local hops did, the bytes that leave must be the
+  // original wire form. A value produced locally is materialized here, exactly once, into its
+  // own immutable buffer -- and the local owner stays alive for any other reader that still
+  // holds it. Publishing happens before packing so the immutability rule holds: what is quoted
+  // and signed below never aliases memory another step may still be writing.
+  const TensorBundle wire = bundle.localTensors
+    ? materializeTensorBundleWire(bundle, m_workStatistics) : bundle;
+  if (wire.localTensors) {
+    throw std::logic_error("tensor publication still carries a local value");
+  }
+  const TensorBundle& bundleForWire = wire;
   if (m_workStatistics && m_workStatistics->epochProfilingEnabled()) {
     NativeWorkScope layoutWork(m_workStatistics, "profile-tensor-layout", NativeWorkKind::LOCAL);
     try {
-      if (isEncodedTensorBundle(bundle.payload)) {
-        const auto views = decodeTensorBundleViews(bundle.payload);
+      if (isEncodedTensorBundle(bundleForWire.payload)) {
+        const auto views = decodeTensorBundleViews(bundleForWire.payload);
         auto members = NativeJson::array();
         for (std::size_t i = 0; i < std::min<std::size_t>(views.size(), 32); ++i) {
           const auto& tensor = views[i];
@@ -1465,7 +1476,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           {"inferenceEpoch", inferenceEpochForEdge(edge)},
           {"producerInferenceEpoch", publicationInferenceEpochForEdge(edge)},
           {"operation", edge.operationKind}, {"dataName", edge.plannedDataName},
-          {"bundleBytes", bundle.payload.size()}, {"tensorCount", views.size()},
+          {"bundleBytes", bundleForWire.payload.size()}, {"tensorCount", views.size()},
           {"members", std::move(members)}}));
       }
     }
@@ -1500,17 +1511,17 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
         "NDNSF_DATA_V1 group cannot begin publication operation");
     }
     constexpr std::size_t MAX_ORIGINAL_BYTES = 64U * 1024U * 1024U;
-    if (edge.declaredByV3 && bundle.payload.size() > MAX_ORIGINAL_BYTES)
+    if (edge.declaredByV3 && bundleForWire.payload.size() > MAX_ORIGINAL_BYTES)
       throw std::length_error("tensor publication exceeds original cache capacity");
-    if (bundle.payload.size() > operation.maxBytes ||
-        bundle.payload.size() > capability.maxInflightBytes) {
+    if (bundleForWire.payload.size() > operation.maxBytes ||
+        bundleForWire.payload.size() > capability.maxInflightBytes) {
       throw std::length_error("tensor publication exceeds signed raw byte budget");
     }
     NativeWorkScope packWork(m_workStatistics, "tensor-transport-pack", NativeWorkKind::LOCAL);
-    const auto packed = tryPackTensorBundleForTransport(bundle.payload);
+    const auto packed = tryPackTensorBundleForTransport(bundleForWire.payload);
     packWork.finish();
-    const auto& packedPayload = packed ? *packed : bundle.payload;
-    const auto unpackedBytes = packed ? bundle.payload.size() : 0;
+    const auto& packedPayload = packed ? *packed : bundleForWire.payload;
+    const auto unpackedBytes = packed ? bundleForWire.payload.size() : 0;
     NativeWorkScope chunksWork(m_workStatistics, "tensor-segment-build", NativeWorkKind::LOCAL);
     const auto chunkSize = std::max<std::size_t>(1, m_maxSegmentSize);
     std::vector<std::vector<std::uint8_t>> chunks;
@@ -1538,7 +1549,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           "V3 mayPublish endpoint is not owned by the local Provider");
       }
       constexpr std::size_t MAX_ORIGINAL_OBJECTS = 8192;
-      if (bundle.payload.size() > MAX_ORIGINAL_BYTES)
+      if (bundleForWire.payload.size() > MAX_ORIGINAL_BYTES)
         throw std::length_error("tensor publication exceeds original cache capacity");
       NativeWorkScope fingerprintWork(m_workStatistics, "tensor-publication-fingerprint",
                                       NativeWorkKind::LOCAL);
@@ -1563,7 +1574,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           std::vector<std::string>{edge.consumerRole} : edge.consumerRoles}, {"tensors", edge.tensors},
         {"bundle_tensor_names", edge.bundleTensorNames},
         {"no_progress_ms", edge.noProgressDeadlineMs}, {"hard_deadline_ms", edge.hardDeadlineMs},
-        {"bundle_name", bundle.name}, {"payload_digest", sha256TensorBytes(bundle.payload)},
+        {"bundle_name", bundle.name}, {"payload_digest", sha256TensorBytes(bundleForWire.payload)},
         {"unpacked_bytes", unpackedBytes},
         {"expected_bytes", bundle.expectedBytes}, {"expected_segments", bundle.expectedSegments}});
       fingerprintWork.finish();
@@ -1746,7 +1757,7 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
             {"inferenceEpoch", inferenceEpochForEdge(edge)},
             {"producerInferenceEpoch", publicationInferenceEpochForEdge(edge)},
             {"operation", edge.operationKind}, {"dataName", edge.plannedDataName},
-            {"bundleBytes", bundle.payload.size()}, {"cryptoSegmentBytes", cryptoBytes},
+            {"bundleBytes", bundleForWire.payload.size()}, {"cryptoSegmentBytes", cryptoBytes},
             {"manifestBytes", manifestWire.size()}, {"segments", encodedSegments.size()},
             {"publishedDataPackets", cachedPublication.originals.size()},
             {"inlineFirstSegment", cachedPublication.originals.size() == encodedSegments.size()}}));
@@ -1761,13 +1772,13 @@ NdnsfCollaborationDependencyIo::publishOutput(const std::string& sessionId,
           "NDNSF_DATA_V1 group deadline or cancellation after publication");
       }
       logDependencyObject(sessionId, edge, "publish-exact-ndn",
-                          bundle.payload.size(), "ok", packedPayload.size());
+                          bundleForWire.payload.size(), "ok", packedPayload.size());
       return;
     }
     throw std::invalid_argument("C04 tensor endpoint is required for network publication");
   }
-  const ndn::Buffer payload(bundle.payload.data(), bundle.payload.size());
-  logDependencyObject(sessionId, edge, "publish", bundle.payload.size(), "ok");
+  const ndn::Buffer payload(bundleForWire.payload.data(), bundleForWire.payload.size());
+  logDependencyObject(sessionId, edge, "publish", bundleForWire.payload.size(), "ok");
   if (edge.plannedDataName.empty()) {
     CollaborationTransferMetrics transportMetrics;
     const auto publishedName = m_ctx.publishLarge(

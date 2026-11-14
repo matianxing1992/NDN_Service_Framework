@@ -295,19 +295,30 @@ stateBundleFromResult(const ProviderRoleResult& result, const RoleSpec& role)
   for (std::size_t index = 0; index < role.stateOutputNames.size(); ++index) {
     bool found = false;
     for (const auto& output : result.outputsByScope) {
-      if (!isEncodedTensorBundle(output.second.payload)) {
-        continue;
-      }
+      // The successor may have been produced as a local value or as encoded bytes; the state
+      // transaction reads it by name either way. This is an original serialization boundary, so
+      // the selected tensor is copied out of its owner here -- the local owner is not retained
+      // past the commit.
+      const bool readable = output.second.localTensors ||
+        isEncodedTensorBundle(output.second.payload);
+      if (!readable) continue;
       try {
-        auto tensor = findTensor(
-          decodeTensorBundle(output.second.payload, role.workStatistics),
-          role.stateOutputNames[index]);
+        const auto views = decodeTensorBundleViews(output.second, role.workStatistics);
+        const auto view = std::find_if(views.begin(), views.end(),
+          [&] (const NamedTensorView& tensor) {
+            return tensor.name == role.stateOutputNames[index];
+          });
+        if (view == views.end()) continue;
+        NamedTensor tensor;
         tensor.name = role.stateInputNames[index];
+        tensor.elementType = view->elementType;
+        tensor.shape = view->shape;
+        tensor.payload.assign(view->payload.begin(), view->payload.end());
         nextState.push_back(std::move(tensor));
         found = true;
         break;
       }
-      catch (const std::out_of_range&) {
+      catch (const std::invalid_argument&) {
       }
     }
     if (!found) {

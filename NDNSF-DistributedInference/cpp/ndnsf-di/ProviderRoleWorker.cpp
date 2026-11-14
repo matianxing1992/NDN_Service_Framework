@@ -178,7 +178,36 @@ withoutProviderLocalState(const TensorBundle& bundle,
                           const std::vector<std::string>& stateOutputNames,
                           const std::shared_ptr<NativeWorkStatistics>& workStatistics)
 {
-  if (stateOutputNames.empty() || !isEncodedTensorBundle(bundle.payload)) {
+  if (stateOutputNames.empty()) {
+    return bundle;
+  }
+  if (bundle.localTensors) {
+    // A local result can carry the same successors. Selecting metadata is enough here: the views
+    // share the caller's owner, so nothing is re-encoded just to filter names out.
+    const auto views = decodeTensorBundleViews(bundle);
+    const auto isState = [&] (const NamedTensorView& tensor) {
+      return std::find(stateOutputNames.begin(), stateOutputNames.end(),
+                       tensor.name) != stateOutputNames.end();
+    };
+    if (std::none_of(views.begin(), views.end(), isState)) return bundle;
+    auto local = std::make_shared<LocalTensorBundle>();
+    for (const auto& view : views) {
+      if (isState(view)) continue;
+      local->tensors.push_back(view);
+    }
+    if (local->tensors.empty()) {
+      throw std::logic_error(
+        "planned dependency output contains only Provider-local decode state");
+    }
+    local->owner = bundle.localTensors->owner;
+    TensorBundle stripped;
+    stripped.name = bundle.name;
+    stripped.localTensors = std::move(local);
+    stripped.expectedBytes = bundle.expectedBytes;
+    stripped.transferObservation = bundle.transferObservation;
+    return stripped;
+  }
+  if (!isEncodedTensorBundle(bundle.payload)) {
     return bundle;
   }
   // Resident runners already keep KV outputs outside the activation bundle.

@@ -913,25 +913,34 @@ lastLogitsView(
   // the activation bundle.  Do not select the first encoded scope by map
   // order: the state scope sorts before ordinary response scopes and does not
   // contain logits.  The logits tensor is the stable content contract here.
+  // The selected views borrow from `outputs`, which the caller keeps alive for the duration of
+  // this function, so the returned view stays valid without copying the unused prefill rows.
   std::vector<NamedTensorView> tensors;
   const NamedTensorView* logits = nullptr;
   for (const auto& item : outputs) {
-    if (!isEncodedTensorBundle(item.second.payload)) {
+    // A local value is read through the same entry as an encoded one: the sampler does not care
+    // which hop produced the logits, and a local producer would otherwise look like "no
+    // logits" -- an empty payload misread as absent output, which C10 names explicitly.
+    const bool readable = item.second.localTensors ||
+      isEncodedTensorBundle(item.second.payload);
+    if (!readable) continue;
+    try {
+      tensors = decodeTensorBundleViews(item.second, workStatistics);
+    }
+    catch (const std::invalid_argument&) {
+      // A non-bundle scope in the same result is not an error here; it simply has no logits.
       continue;
     }
-    tensors = decodeTensorBundleViews(item.second.payload, workStatistics);
     const auto found = std::find_if(tensors.begin(), tensors.end(), [] (const auto& tensor) {
       return tensor.name == "logits";
     });
     if (found != tensors.end()) {
-      // outputs owns the immutable bytes throughout this call. Keep view
-      // metadata alive, without copying the unused prefill payload rows.
       logits = &*found;
       break;
     }
   }
   if (!logits) {
-    throw std::runtime_error("native epoch coordinator received no encoded logits");
+    throw std::runtime_error("native epoch coordinator received no logits value");
   }
   if ((logits->elementType != TensorElementType::Float32 &&
        logits->elementType != TensorElementType::Float16) ||

@@ -14453,6 +14453,83 @@ BOOST_AUTO_TEST_CASE(ALocalTensorValueAndAnEncodedPayloadCannotBothBeCurrent)
   BOOST_CHECK_THROW(decodeTensorBundleViews(neither), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(LineageTravelsWithALocalValueWithoutReencodingIt)
+{
+  // Attaching lineage to a locally-held value must not copy the value. The lineage is a few
+  // bytes of metadata, and re-encoding the payload to carry them would undo the whole point of
+  // the local representation.
+  struct Owner
+  {
+    std::vector<float> values;
+  };
+  auto owner = std::make_shared<const Owner>(Owner{{1.5f, -2.5f}});
+  NamedTensorView activation;
+  activation.name = "activation";
+  activation.elementType = TensorElementType::Float32;
+  activation.shape = {1, 2};
+  activation.payload = ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+    owner->values.size() * sizeof(float));
+  auto local = std::make_shared<LocalTensorBundle>();
+  local->tensors.push_back(activation);
+  local->owner = owner;
+  TensorBundle bundle;
+  bundle.name = "activation";
+  bundle.localTensors = local;
+  const auto payloadBefore = activation.payload.data();
+
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "/request/lineage";
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.inferenceEpoch = 2;
+  lineage.transitionKind = "DECODE";
+  lineage.positionDigest = "sha256:" + std::string(64, 'a');
+  lineage.planDigest = "sha256:" + std::string(64, 'b');
+  lineage.attemptEpoch = 1;
+  lineage.logicalPrefixTokenCount = 1;
+  lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
+  lineage.producerRole = "S0R0";
+  lineage.consumerRole = "S0R1";
+  lineage.operationIndex = 3;
+
+  const auto attached = attachGenerationEpochLineage(bundle, lineage);
+  BOOST_REQUIRE(attached.localTensors != nullptr);
+  // The value itself was not re-encoded: the same storage is still behind the same view.
+  const auto attachedViews = decodeTensorBundleViews(attached);
+  BOOST_REQUIRE_EQUAL(attachedViews.size(), 2U);
+  const auto movedActivation = std::find_if(attachedViews.begin(), attachedViews.end(),
+    [] (const auto& tensor) { return tensor.name == "activation"; });
+  BOOST_REQUIRE(movedActivation != attachedViews.end());
+  BOOST_CHECK_EQUAL(movedActivation->payload.data(), payloadBefore);
+
+  // The lineage is readable, and stripping it leaves the value alone.
+  const auto extracted = extractGenerationEpochLineage(attached);
+  BOOST_REQUIRE(extracted.has_value());
+  BOOST_CHECK_EQUAL(extracted->inferenceEpoch, 2U);
+  BOOST_CHECK_EQUAL(extracted->operationIndex, 3U);
+  const auto stripped = stripGenerationEpochLineage(attached);
+  BOOST_REQUIRE(stripped.localTensors != nullptr);
+  const auto strippedViews = decodeTensorBundleViews(stripped);
+  BOOST_REQUIRE_EQUAL(strippedViews.size(), 1U);
+  BOOST_CHECK_EQUAL(strippedViews.front().name, std::string("activation"));
+  BOOST_CHECK_EQUAL(strippedViews.front().payload.data(), payloadBefore);
+  // A value carrying no lineage reports none rather than throwing.
+  BOOST_CHECK(!extractGenerationEpochLineage(bundle).has_value());
+
+  // Attaching twice is refused: two lineage records on one value would be ambiguous.
+  BOOST_CHECK_THROW(attachGenerationEpochLineage(attached, lineage), std::invalid_argument);
+
+  // And the whole local value still materializes to the bytes the codec would have produced for
+  // its tensors, in the order it holds them.
+  const auto wire = materializeTensorBundleWire(stripped);
+  const auto wireTensors = decodeTensorBundle(wire.payload);
+  BOOST_REQUIRE_EQUAL(wireTensors.size(), 1U);
+  const auto numbers = reinterpret_cast<const float*>(wireTensors.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 1.5f);
+  BOOST_CHECK_EQUAL(numbers[1], -2.5f);
+}
+
 BOOST_AUTO_TEST_CASE(ALocalValueBecomesWireOnlyWhereTheBoundaryNeedsBytes)
 {
   struct Owner
