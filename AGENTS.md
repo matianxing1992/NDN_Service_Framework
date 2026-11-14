@@ -502,10 +502,23 @@ approval again or hide an exception in a special-case branch.
   configuration; do not set MemorySwap/MemorySwapMax or change system settings.
 - The helper may be local-only. If absent, use Waf with `--jobs=6` and equivalent
   process ownership/cleanup. Reading or editing source needs no build launcher.
-- Use this checkout's `build/` as the single reusable host NDNSF build output for
-  global installation. Preserve its configured Waf state and incrementally build
-  only the required targets. Do not create per-Spec build/install trees under
-  `build/` or repeated `/var/tmp/ndnsf-build.*` trees. Legacy installer code may
+- Keep exactly two reusable host NDNSF build trees in this checkout: `build/`
+  for ordinary builds, release candidates and global installation, and
+  `build-ASAN-UBSAN/` for ASAN/UBSAN diagnostics and tests. Reuse one tree per
+  mode across Specs and retries; do not switch `build/` into sanitizer mode or
+  create per-Spec, timestamped or repeated temporary build/install copies.
+  Each tree must own separate Waf configuration/signature state, object files
+  and generated headers; diagnostic executables must resolve the instrumented
+  libraries from their own tree. Select the intended tree explicitly through
+  maintained Waf configuration, preserving its corresponding `WAFLOCK`; never
+  manually edit Waf cache files to switch modes. If configure/output selection
+  is broken, repair that path before the affected build instead of bypassing it.
+  Only ordinary `build/` artifacts may be globally installed or promoted as
+  release candidates; reject global installation from `build-ASAN-UBSAN/`.
+  Preserve both trees' configured state and incrementally build only required
+  targets. Keep generated outputs untracked, check available disk capacity, and
+  remove idle obsolete outputs through an explicit allowlist without deleting
+  active artifacts or the reusable configuration. Legacy installer code may
   still default to temporary output or reject in-checkout output; do not invoke
   that legacy path blindly. Use the maintained configured Waf/target-install
   path with explicit `build/`, or repair the installer within the authorized
