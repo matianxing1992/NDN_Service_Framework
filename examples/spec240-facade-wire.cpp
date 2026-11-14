@@ -24,6 +24,13 @@ namespace repo = ndnsf_distributed_repo;
 
 namespace {
 
+/** Alternate spelling of a name string, produced once from a parsed Name. */
+std::string
+alternateName(const std::string& value)
+{
+  return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
+}
+
 std::string
 arg(const std::map<std::string, std::string>& options, const std::string& name)
 {
@@ -156,9 +163,6 @@ main(int argc, char** argv)
   if (mode == "publish") {
     const auto source = arg(options, "source");
     const auto bytes = readBytes(source);
-    const auto alternate = [] (const std::string& value) {
-      return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
-    };
 
     // A fresh object per run: the same name published twice would hold the first packet's
     // signature, and a later fetch would compare against wires this run never produced.
@@ -166,8 +170,8 @@ main(int argc, char** argv)
     objectName.appendSegment(static_cast<uint64_t>(std::chrono::duration_cast<
       std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()));
     repo::RepoDataPublication publication;
-    publication.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
-                                         alternate(servicePrefix.toUri())};
+    publication.target = repo::RepoTarget{alternateName(repository), alternateName(provider.toUri()),
+                                         alternateName(servicePrefix.toUri())};
     // Alternate spellings are produced once, from a Name; re-parsing an alternate string
     // yields literal "8=" components and mangles the name.
     publication.producerIdentity = identity.toUri();
@@ -292,6 +296,46 @@ main(int argc, char** argv)
                  result.state == repo::RepoPublishState::COMMITTED ? "COMMITTED" : "ACCEPTED",
                  result.receipt ? result.receipt->receiptId.c_str() : "");
     return result.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
+  }
+  if (mode == "claim-fetch") {
+    // Owner-claim retrieval: the Repo mints the proof only after matching the manifest, every
+    // indexed packet and the ordered wire digest.
+    repo::RepoDataFetch claimRequest;
+    repo::RepoOwnerClaimFetch claim;
+    claim.objectName = arg(options, "object-name");
+    claim.target = repo::RepoTarget{alternateName(repository), alternateName(provider.toUri()),
+                                    alternateName(servicePrefix.toUri())};
+    claimRequest.ownerClaim = claim;
+    claimRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+      [certificate, identity] (const std::vector<uint8_t>& wire) {
+        try {
+          const ndn::Block block(wire);
+          const ndn::Data packet(block);
+          return identity.isPrefixOf(packet.getName()) &&
+            ndn::security::verifySignature(packet, certificate);
+        }
+        catch (const std::exception&) {
+          return false;
+        }
+      });
+    try {
+      const auto result = client.fetchData(claimRequest, operation);
+      std::ofstream output(arg(options, "destination"), std::ios::binary);
+      for (const auto& wire : result.packets) {
+        const ndn::Block block(wire);
+        const ndn::Data packet(block);
+        const auto& content = packet.getContent();
+        output.write(reinterpret_cast<const char*>(content.value()), content.value_size());
+      }
+      std::fprintf(stderr, "FACADE_CLAIM packets=%zu wireBytes=%llu digestVerified=%d proof=%d\n",
+                   result.packets.size(), static_cast<unsigned long long>(result.wireBytes),
+                   result.digestVerified ? 1 : 0, result.ownerPacketSet ? 1 : 0);
+      return 0;
+    }
+    catch (const std::exception& error) {
+      std::fprintf(stderr, "FACADE_CLAIM_REJECTED what=%s\n", error.what());
+      return options.count("expect-rejection") != 0 ? 0 : 1;
+    }
   }
   if (mode == "fetch") {
     const auto destination = arg(options, "destination");
