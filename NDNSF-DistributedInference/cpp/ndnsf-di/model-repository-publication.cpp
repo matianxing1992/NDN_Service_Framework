@@ -229,6 +229,12 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       require(!user->isOnIoThread(), "MODEL_REPO_STORE_ON_FACE_THREAD");
     };
   }
+  // One scheduler for the whole publication scope: its three-commit cap and its drain
+  // belong to the scope, not to each commitPackets call. Created here, on the thread that
+  // will submit, because the pipeline rejects a different owner thread.
+  io.commitPipeline = std::make_shared<ndnsf_distributed_repo::RepoCommitPipeline>(
+    io.requireCurrent, io.publicationGroupWireBytes != 0
+      ? io.publicationGroupWireBytes : NATIVE_STORED_MODEL_UPLOAD_WIRE);
   io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
     const std::vector<ndn::Name>& names) {
     auto operationLifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;

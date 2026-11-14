@@ -813,10 +813,15 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
   std::size_t nameBytes = 0;
   Bytes digestInput;
   // Take the io's Repo-owned bound when it reports one; the DI constant is only the
-  // fallback for generic io without a Repo behind it.
-  NativeModelCommitPipeline pipeline(io.requireCurrent,
-    io.publicationGroupWireBytes != 0 ? io.publicationGroupWireBytes
-                                     : NATIVE_STORED_MODEL_UPLOAD_WIRE);
+  // fallback for generic io without a Repo behind it. A scope-owned pipeline keeps the
+  // three-commit cap for the whole publication instead of per call.
+  auto localPipeline = std::shared_ptr<NativeModelCommitPipeline>();
+  if (!io.commitPipeline) {
+    localPipeline = std::make_shared<NativeModelCommitPipeline>(io.requireCurrent,
+      io.publicationGroupWireBytes != 0 ? io.publicationGroupWireBytes
+                                       : NATIVE_STORED_MODEL_UPLOAD_WIRE);
+  }
+  auto& pipeline = io.commitPipeline ? *io.commitPipeline : *localPipeline;
   const auto flush = [&] {
     if (group.empty())
       return;
@@ -858,7 +863,14 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
     group.emplace_back(wire.begin(), wire.end());
   }
   flush();
-  pipeline.finish();
+  // A scope pipeline outlives this call, so it drains but stays open for the next one;
+  // a local pipeline is finished (drained and closed) as before. Either way the groups
+  // submitted here are complete before this function returns, which is what keeps
+  // publication ordering independent of who owns the scheduler.
+  if (io.commitPipeline)
+    pipeline.drain();
+  else
+    pipeline.finish();
 }
 
 } // namespace

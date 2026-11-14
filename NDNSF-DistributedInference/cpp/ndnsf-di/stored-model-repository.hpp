@@ -52,6 +52,9 @@ struct NativeStoredModelPacketIo
    *  configuration. Zero means the io has no Repo behind it and the caller's default
    *  applies. */
   std::uint64_t publicationGroupWireBytes = 0;
+  /** One scheduler for the whole publication scope. When present, every commit in the
+   *  scope shares its three-commit cap and its drain instead of each call owning a copy. */
+  std::shared_ptr<ndnsf_distributed_repo::RepoCommitPipeline> commitPipeline;
 };
 
 /** Own at most three asynchronous original-packet commits on one caller thread.
