@@ -237,7 +237,7 @@ RepoClientCompat::requestUserStorageGrant(ndn_service_framework::ServiceUser& us
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClientCompat::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
@@ -255,7 +255,7 @@ RepoClientCompat::requestUserStorageList(ndn_service_framework::ServiceUser& use
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
-    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClientCompat::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
@@ -273,7 +273,7 @@ RepoClientCompat::requestUserStorageDelete(ndn_service_framework::ServiceUser& u
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
-    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClientCompat::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
@@ -291,7 +291,7 @@ RepoClientCompat::requestUserStorageUsage(ndn_service_framework::ServiceUser& us
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_USAGE"),
-    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClientCompat::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
@@ -1244,7 +1244,7 @@ localRequest(ndn_service_framework::LocalServiceRegistry& registry,
              const std::string& operation,
              const std::vector<uint8_t>& payload)
 {
-  auto request = RepoClient::makeRequest(payload);
+  auto request = RepoClientCompat::makeRequest(payload);
   ndn_service_framework::ResponseMessage response;
   registry.localInvokeRawInto(
     makeRepoServiceName(repoServicePrefix, operation),
@@ -1839,7 +1839,7 @@ RepoClient::makeManifest(std::string objectName,
 }
 
 ndn_service_framework::RequestMessage
-RepoClient::makeRequest(const std::vector<uint8_t>& payload)
+RepoClientCompat::makeRequest(const std::vector<uint8_t>& payload)
 {
   ndn::Buffer buffer;
   if (!payload.empty()) {
@@ -1851,7 +1851,7 @@ RepoClient::makeRequest(const std::vector<uint8_t>& payload)
 }
 
 ndn::Name
-RepoClient::requestCapability(
+RepoClientCompat::requestCapability(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   int timeoutMs,
@@ -1859,14 +1859,14 @@ RepoClient::requestCapability(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "CAPABILITY"),
-                             makeRequest({}),
+                             RepoClientCompat::makeRequest({}),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestCacheStatus(
+RepoClientCompat::requestCacheStatus(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   int timeoutMs,
@@ -1874,14 +1874,14 @@ RepoClient::requestCacheStatus(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "CACHE_STATUS"),
-                             makeRequest({}),
+                             RepoClientCompat::makeRequest({}),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestStore(
+RepoClientCompat::requestStore(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const RepoObjectManifest& manifest,
@@ -1891,7 +1891,7 @@ RepoClient::requestStore(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "STORE"),
-                             makeRequest(encodeStoreRequest(manifest, payload)),
+                             RepoClientCompat::makeRequest(encodeStoreRequest(manifest, payload)),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
@@ -1910,14 +1910,14 @@ RepoClient::requestStoreRange(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "STORE_RANGE"),
-    makeRequest(encodeRangeWriteRequest(manifest, range, bytes)),
+    RepoClientCompat::makeRequest(encodeRangeWriteRequest(manifest, range, bytes)),
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestArtifactStoreRange(
+RepoClientCompat::requestArtifactStoreRange(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const ArtifactRangeWriteRequest& request,
@@ -1927,12 +1927,12 @@ RepoClient::requestArtifactStoreRange(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "STORE_RANGE"),
-    makeRequest(request.toWire()), timeoutMs,
+    RepoClientCompat::makeRequest(request.toWire()), timeoutMs,
     std::move(onTimeout), std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestArtifactStore(
+RepoClientCompat::requestArtifactStore(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const ArtifactStoreRequest& request,
@@ -1942,12 +1942,12 @@ RepoClient::requestArtifactStore(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "STORE"),
-    makeRequest(request.toWire()), timeoutMs,
+    RepoClientCompat::makeRequest(request.toWire()), timeoutMs,
     std::move(onTimeout), std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestCommitRanges(
+RepoClientCompat::requestCommitRanges(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const RepoObjectManifest& manifest,
@@ -1957,14 +1957,14 @@ RepoClient::requestCommitRanges(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "COMMIT_RANGES"),
-    makeRequest(encodeManifestRequest(manifest)),
+    RepoClientCompat::makeRequest(encodeManifestRequest(manifest)),
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestArtifactCommitRanges(
+RepoClientCompat::requestArtifactCommitRanges(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const ArtifactRangeCommitRequest& request,
@@ -1974,7 +1974,7 @@ RepoClient::requestArtifactCommitRanges(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "COMMIT_RANGES"),
-    makeRequest(request.toWire()), timeoutMs,
+    RepoClientCompat::makeRequest(request.toWire()), timeoutMs,
     std::move(onTimeout), std::move(onResponse));
 }
 
@@ -2368,7 +2368,7 @@ RepoClient::requestSelectedService(
 }
 
 ndn::Name
-RepoClient::requestAbortRanges(
+RepoClientCompat::requestAbortRanges(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const std::string& objectName,
@@ -2378,14 +2378,14 @@ RepoClient::requestAbortRanges(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "ABORT_RANGES"),
-    makeRequest(encodeRangeAbortRequest(objectName)),
+    RepoClientCompat::makeRequest(encodeRangeAbortRequest(objectName)),
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestInsert(
+RepoClientCompat::requestInsert(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const RepoDataReference& reference,
@@ -2395,7 +2395,7 @@ RepoClient::requestInsert(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "INSERT"),
-    makeRequest(encodeDataReferenceRequest(reference)),
+    RepoClientCompat::makeRequest(encodeDataReferenceRequest(reference)),
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
@@ -2411,7 +2411,7 @@ RepoClient::requestFetch(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "FETCH"),
-                             makeRequest(toBytes(objectName)),
+                             RepoClientCompat::makeRequest(toBytes(objectName)),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
@@ -2435,7 +2435,7 @@ RepoClient::requestReceipt(
   if (!traceEnabled) {
     return user.RequestService(
       std::vector<ndn::Name>{provider},
-      makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+      makeRepoServiceName(repoServicePrefix, "STATUS"), RepoClientCompat::makeRequest(payload),
       timeoutMs, std::move(onTimeout), std::move(onResponse),
       ndn_service_framework::tlv::FirstResponding);
   }
@@ -2458,7 +2458,7 @@ RepoClient::requestReceipt(
   };
   auto requestId = user.RequestService(
     std::vector<ndn::Name>{provider},
-    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    makeRepoServiceName(repoServicePrefix, "STATUS"), RepoClientCompat::makeRequest(payload),
     timeoutMs, std::move(tracedOnTimeout), std::move(tracedOnResponse),
     ndn_service_framework::tlv::FirstResponding);
   traceStage("request-service-returned");
@@ -2478,7 +2478,7 @@ RepoClient::requestAvailability(
   const auto payload = toBytes(request.toJson());
   return user.RequestService(
     std::vector<ndn::Name>{provider},
-    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    makeRepoServiceName(repoServicePrefix, "STATUS"), RepoClientCompat::makeRequest(payload),
     timeoutMs, std::move(onTimeout), std::move(onResponse),
     ndn_service_framework::tlv::FirstResponding);
 }
@@ -2495,14 +2495,14 @@ RepoClient::requestFetchRange(
 {
   return user.RequestService(
     makeRepoServiceName(repoServicePrefix, "FETCH_RANGE"),
-    makeRequest(encodeRangeReadRequest(objectName, range)),
+    RepoClientCompat::makeRequest(encodeRangeReadRequest(objectName, range)),
     timeoutMs,
     std::move(onTimeout),
     std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestManifest(
+RepoClientCompat::requestManifest(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const std::string& objectName,
@@ -2511,14 +2511,14 @@ RepoClient::requestManifest(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "MANIFEST"),
-                             makeRequest(toBytes(objectName)),
+                             RepoClientCompat::makeRequest(toBytes(objectName)),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestInventory(
+RepoClientCompat::requestInventory(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   int timeoutMs,
@@ -2526,14 +2526,14 @@ RepoClient::requestInventory(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "INVENTORY"),
-                             makeRequest({}),
+                             RepoClientCompat::makeRequest({}),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestDelete(
+RepoClientCompat::requestDelete(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const std::string& objectName,
@@ -2542,14 +2542,14 @@ RepoClient::requestDelete(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "DELETE"),
-                             makeRequest(toBytes(objectName)),
+                             RepoClientCompat::makeRequest(toBytes(objectName)),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
 }
 
 ndn::Name
-RepoClient::requestStatus(
+RepoClientCompat::requestStatus(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const std::string& operationId,
@@ -2558,7 +2558,7 @@ RepoClient::requestStatus(
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
 {
   return user.RequestService(makeRepoServiceName(repoServicePrefix, "STATUS"),
-                             makeRequest(encodeStatusRequest(operationId)),
+                             RepoClientCompat::makeRequest(encodeStatusRequest(operationId)),
                              timeoutMs,
                              std::move(onTimeout),
                              std::move(onResponse));
@@ -2578,7 +2578,7 @@ RepoClient::requestLocation(
   const auto payload = toBytes(wire);
   return user.RequestService(
     std::vector<ndn::Name>{provider},
-    makeRepoServiceName(repoServicePrefix, "STATUS"), makeRequest(payload),
+    makeRepoServiceName(repoServicePrefix, "STATUS"), RepoClientCompat::makeRequest(payload),
     timeoutMs, std::move(onTimeout), std::move(onResponse),
     ndn_service_framework::tlv::FirstResponding);
 }
@@ -2597,7 +2597,7 @@ RepoClient::requestFetchRange(
   return user.RequestService(
     std::vector<ndn::Name>{provider},
     makeRepoServiceName(repoServicePrefix, "FETCH_RANGE"),
-    makeRequest(encodeRangeReadRequest(objectName, range)), timeoutMs,
+    RepoClientCompat::makeRequest(encodeRangeReadRequest(objectName, range)), timeoutMs,
     std::move(onTimeout), std::move(onResponse),
     ndn_service_framework::tlv::FirstResponding);
 }

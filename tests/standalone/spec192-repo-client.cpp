@@ -630,7 +630,7 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
   size_t selectedCount = 0;
   const auto requestId = context.user().RequestService(
     std::vector<ndn::Name>{provider}, serviceName,
-    repo::RepoClient::makeRequest({}), 15000,
+    repo::RepoClientCompat::makeRequest({}), 15000,
     [&] (const std::vector<nsf::AckSelectionCandidate>& candidates) {
       std::vector<nsf::AckSelectionCandidate> selected;
       for (const auto& candidate : candidates) {
@@ -1074,7 +1074,7 @@ run(const Options& options)
       else throw std::invalid_argument("unknown Persistent rejection operation");
       const auto reply = awaitWrapper(context, [&context, provider, prefix, operation, input] (auto t, auto r) {
         return context.user().RequestService(std::vector<ndn::Name>{provider},
-          repo::makeRepoServiceName(prefix, operation), repo::RepoClient::makeRequest(input), 30000, t, r);
+          repo::makeRepoServiceName(prefix, operation), repo::RepoClientCompat::makeRequest(input), 30000, t, r);
       }, true);
       if (reply.status || reply.error != expected || repo::toString(reply.payload) != expected)
         throw std::runtime_error("Persistent legacy boundary response is not the expected rejection: " + reply.error);
@@ -1082,13 +1082,13 @@ run(const Options& options)
     }
     else if (phase == "object") {
       const auto capability = repo::toString(call("CAPABILITY",
-        [&context, prefix] (auto t, auto r) { return repo::RepoClient::requestCapability(context.user(), prefix, 30000, t, r); }));
+        [&context, prefix] (auto t, auto r) { return repo::RepoClientCompat::requestCapability(context.user(), prefix, 30000, t, r); }));
       if (capability.find("\"repoNode\":\"" + required(options, "repo-a") + "\"") == std::string::npos) throw std::runtime_error("wrapper capability owner mismatch");
       (void)repo::parseCacheStatusJson(repo::toString(call("CACHE_STATUS",
-        [&context, prefix] (auto t, auto r) { return repo::RepoClient::requestCacheStatus(context.user(), prefix, 30000, t, r); })));
+        [&context, prefix] (auto t, auto r) { return repo::RepoClientCompat::requestCacheStatus(context.user(), prefix, 30000, t, r); })));
       const auto manifest = repo::RepoClient::makeManifest(object + "/primary", "object", source, 1, {}, "spec193-nw");
       const auto stored = repo::parseManifestJson(repo::toString(call("STORE",
-        [&context, prefix, manifest, source] (auto t, auto r) { return repo::RepoClient::requestStore(context.user(), prefix, manifest, source, 30000, t, r); })));
+        [&context, prefix, manifest, source] (auto t, auto r) { return repo::RepoClientCompat::requestStore(context.user(), prefix, manifest, source, 30000, t, r); })));
       if (stored.sha256 != sha256(source)) throw std::runtime_error("wrapper STORE digest mismatch");
       auto ranged = manifest;
       ranged.objectName = object + "/range";
@@ -1103,7 +1103,7 @@ run(const Options& options)
         })) != "accepted") throw std::runtime_error("wrapper range was not accepted");
       }
       const auto committed = repo::parseManifestJson(repo::toString(call("COMMIT_RANGES",
-        [&context, prefix, ranged] (auto t, auto r) { return repo::RepoClient::requestCommitRanges(context.user(), prefix, ranged, 30000, t, r); })));
+        [&context, prefix, ranged] (auto t, auto r) { return repo::RepoClientCompat::requestCommitRanges(context.user(), prefix, ranged, 30000, t, r); })));
       if (committed.sha256 != sha256(source)) throw std::runtime_error("wrapper range commit digest mismatch");
       auto aborted = ranged;
       aborted.objectName = object + "/aborted";
@@ -1111,7 +1111,7 @@ run(const Options& options)
         return repo::RepoClient::requestStoreRange(context.user(), prefix, aborted, {0, first.size()}, first, 30000, t, r);
       });
       if (repo::toString(call("ABORT_RANGES", [&context, prefix, aborted] (auto t, auto r) {
-        return repo::RepoClient::requestAbortRanges(context.user(), prefix, aborted.objectName, 30000, t, r);
+        return repo::RepoClientCompat::requestAbortRanges(context.user(), prefix, aborted.objectName, 30000, t, r);
       })) != "aborted") throw std::runtime_error("wrapper abort did not finish");
       if (call("FETCH", [&context, prefix, manifest] (auto t, auto r) {
         return repo::RepoClient::requestFetch(context.user(), prefix, manifest.objectName, 30000, t, r);
@@ -1124,7 +1124,7 @@ run(const Options& options)
         return repo::RepoClient::requestFetchRange(context.user(), provider, prefix, ranged.objectName, {37, 113}, 30000, t, r);
       }) != window) throw std::runtime_error("direct wrapper range differs from source window");
       const auto found = repo::parseManifestJson(repo::toString(call("MANIFEST",
-        [&context, prefix, ranged] (auto t, auto r) { return repo::RepoClient::requestManifest(context.user(), prefix, ranged.objectName, 30000, t, r); })));
+        [&context, prefix, ranged] (auto t, auto r) { return repo::RepoClientCompat::requestManifest(context.user(), prefix, ranged.objectName, 30000, t, r); })));
       if (found.sha256 != committed.sha256) throw std::runtime_error("wrapper MANIFEST mismatch");
       const auto wire = readBytes(required(options, "wire-source"));
       repo::RepoDataReference reference;
@@ -1135,18 +1135,18 @@ run(const Options& options)
       reference.expectedSize = wire.size();
       reference.expectedSha256 = sha256(wire);
       const auto inserted = repo::parseOperationStatusJson(repo::toString(call("INSERT",
-        [&context, prefix, reference] (auto t, auto r) { return repo::RepoClient::requestInsert(context.user(), prefix, reference, 30000, t, r); })));
+        [&context, prefix, reference] (auto t, auto r) { return repo::RepoClientCompat::requestInsert(context.user(), prefix, reference, 30000, t, r); })));
       const auto status = repo::parseOperationStatusJson(repo::toString(call("STATUS",
-        [&context, prefix, inserted] (auto t, auto r) { return repo::RepoClient::requestStatus(context.user(), prefix, inserted.operationId, 30000, t, r); })));
+        [&context, prefix, inserted] (auto t, auto r) { return repo::RepoClientCompat::requestStatus(context.user(), prefix, inserted.operationId, 30000, t, r); })));
       if (inserted.state != "DONE" || status.state != "DONE" || status.completedSegments != 1) throw std::runtime_error("wrapper INSERT/STATUS incomplete");
       const auto packetName = ndn::Name(reference.dataPrefix).appendSegment(0).toUri();
       if (call("FETCH_DATA", [&context, prefix, packetName] (auto t, auto r) {
         return repo::RepoClient::requestFetch(context.user(), prefix, packetName, 30000, t, r);
       }) != wire) throw std::runtime_error("wrapper FETCH changed original signed Data");
       if (repo::parseInventoryJson(repo::toString(call("INVENTORY",
-        [&context, prefix] (auto t, auto r) { return repo::RepoClient::requestInventory(context.user(), prefix, 30000, t, r); }))).size() != 4) throw std::runtime_error("wrapper inventory count mismatch");
+        [&context, prefix] (auto t, auto r) { return repo::RepoClientCompat::requestInventory(context.user(), prefix, 30000, t, r); }))).size() != 4) throw std::runtime_error("wrapper inventory count mismatch");
       if (repo::toString(call("DELETE", [&context, prefix, manifest] (auto t, auto r) {
-        return repo::RepoClient::requestDelete(context.user(), prefix, manifest.objectName, 30000, t, r);
+        return repo::RepoClientCompat::requestDelete(context.user(), prefix, manifest.objectName, 30000, t, r);
       })) != "deleted") throw std::runtime_error("wrapper DELETE failed");
     }
     else if (phase == "artifact") {
@@ -1167,7 +1167,7 @@ run(const Options& options)
         const auto operationId = repo::makePublishOperationId(required(options, "user"), target, intent.idempotencyKeyDigest);
         auto admitted = awaitWrapper(context, [&context, provider, prefix, intent] (auto t, auto r) {
           return context.user().RequestService(std::vector<ndn::Name>{provider},
-            repo::makeRepoServiceName(prefix, "STORE"), repo::RepoClient::makeRequest(repo::toBytes(intent.toJson())),
+            repo::makeRepoServiceName(prefix, "STORE"), repo::RepoClientCompat::makeRequest(repo::toBytes(intent.toJson())),
             30000, t, r);
         });
         if (repo::toString(record("PUBLISH_INTENT", admitted)) != operationId)
@@ -1180,7 +1180,7 @@ run(const Options& options)
           request.reference = reference;
           request.bytes = source;
           receiptWire = call("ARTIFACT_STORE", [&context, prefix, request] (auto t, auto r) {
-            return repo::RepoClient::requestArtifactStore(context.user(), prefix, request, 30000, t, r);
+            return repo::RepoClientCompat::requestArtifactStore(context.user(), prefix, request, 30000, t, r);
           });
         }
         else {
@@ -1194,7 +1194,7 @@ run(const Options& options)
             request.bytes.assign(source.begin() + request.offsetBytes,
                                  source.begin() + request.offsetBytes + request.lengthBytes);
             if (repo::toString(call("ARTIFACT_STORE_RANGE", [&context, prefix, request] (auto t, auto r) {
-              return repo::RepoClient::requestArtifactStoreRange(context.user(), prefix, request, 30000, t, r);
+              return repo::RepoClientCompat::requestArtifactStoreRange(context.user(), prefix, request, 30000, t, r);
             })) != "staged") throw std::runtime_error("artifact wrapper range not staged");
           }
           repo::ArtifactRangeCommitRequest request;
@@ -1202,7 +1202,7 @@ run(const Options& options)
           request.generation = 1;
           request.reference = reference;
           receiptWire = call("ARTIFACT_COMMIT_RANGES", [&context, prefix, request] (auto t, auto r) {
-            return repo::RepoClient::requestArtifactCommitRanges(context.user(), prefix, request, 30000, t, r);
+            return repo::RepoClientCompat::requestArtifactCommitRanges(context.user(), prefix, request, 30000, t, r);
           });
         }
         const auto receipt = repo::RepoArtifactCommitReceipt::fromJson(repo::toString(receiptWire));
@@ -1219,7 +1219,7 @@ run(const Options& options)
             [&context, provider, prefix, statusRequest] (auto t, auto r) {
               return context.user().RequestService(std::vector<ndn::Name>{provider},
                 repo::makeRepoServiceName(prefix, "STATUS"),
-                repo::RepoClient::makeRequest(repo::toBytes(statusRequest.toJson())), 30000, t, r);
+                repo::RepoClientCompat::makeRequest(repo::toBytes(statusRequest.toJson())), 30000, t, r);
             })));
           if (publishStatus.state == "COMMITTED") break;
           if (publishStatus.state == "FAILED" || publishStatus.state == "PARTIAL")
@@ -1834,7 +1834,7 @@ run(const Options& options)
     const ndn::Name requester(required(options, "user"));
     for (const std::string operation : {"DATA_RECEIPT", "DATA_LOCATION"}) {
       const auto service = repo::makeRepoServiceName(servicePrefix, operation);
-      auto request = repo::RepoClient::makeRequest(repo::toBytes(query.toJson()));
+      auto request = repo::RepoClientCompat::makeRequest(repo::toBytes(query.toJson()));
       request.setControllerVersion(*controllerVersion);
       request.setPolicyEpoch(policyEpoch);
       // Bypass the public client's admission check. The server must reject
