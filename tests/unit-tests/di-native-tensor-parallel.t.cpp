@@ -8869,6 +8869,50 @@ private:
 
 } // namespace
 
+/** Records the bounded scalar samples the adapter produces for real resident KV. */
+class RecordingKvObserver final : public OnnxKvStateObserver
+{
+public:
+  bool
+  wants(const RoleExecutionContext& context) const override
+  {
+    // Only session-backed epochs keep resident state. The adapter's own warm-up runs a
+    // streaming-shaped probe whose outputs are not retained, and asking for samples there would
+    // demand state the probe never keeps.
+    return context.sessionId != "native-runtime-warmup";
+  }
+
+  void
+  record(const RoleExecutionContext& context, std::vector<OnnxKvStateSample> samples) override
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_epochs.push_back(context.inferenceEpoch);
+    for (auto& sample : samples) m_samples.push_back(std::move(sample));
+  }
+
+  std::vector<OnnxKvStateSample>
+  samplesNamed(const std::string& name) const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<OnnxKvStateSample> result;
+    for (const auto& sample : m_samples)
+      if (sample.inputName == name) result.push_back(sample);
+    return result;
+  }
+
+  std::vector<std::uint64_t>
+  observedEpochs() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_epochs;
+  }
+
+private:
+  mutable std::mutex m_mutex;
+  std::vector<std::uint64_t> m_epochs;
+  std::vector<OnnxKvStateSample> m_samples;
+};
+
 BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
 {
   // The path a real second turn takes, which the previous case showed is not the only one:
@@ -8921,8 +8965,9 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
   // The handle a restore validates carries the Provider's own identity, so the spec must too.
   spec.metadata["providerIdentity"] = "/provider/0";
   spec.metadata["providerBootId"] = "restore-test-boot";
+  auto observer = std::make_shared<RecordingKvObserver>();
   RegistryNativeModelRunnerFactory factory;
-  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::registerOnnxRuntimeBackend(factory, nullptr, observer);
   ndnsf::di::qwen::registerQwenTensorBackend(factory);
   auto runner = factory.create(spec);
   BOOST_REQUIRE(runner != nullptr);
@@ -8930,7 +8975,13 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
     "the assembled attention entry did not declare its state, so nothing can be promoted");
 
   const auto step = steps.front();
-  const auto runEpoch = [&] (const std::string& sessionId, std::uint64_t epoch) {
+  // `position` and `total` follow the production causal rule: the next epoch continues at the
+  // restored prefix's length and its mask covers the whole prefix. Pinning them to zero and one
+  // -- which an earlier version of this fixture did -- describes a fresh start, so the graph
+  // attends to one position no matter what past it was handed, and the restored prefix is
+  // invisible in the result.
+  const auto runEpoch = [&] (const std::string& sessionId, std::uint64_t epoch,
+                             std::int32_t total, std::int64_t position) {
     RoleExecutionContext ctx;
     ctx.sessionId = sessionId;
     ctx.role = "S0R0";
@@ -8960,18 +9011,18 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
     put("x", TensorElementType::Float32, {1, 1, static_cast<std::int64_t>(shape.hidden)}, hidden);
     put("attn_mask", TensorElementType::Int32, {1, 1},
         std::vector<std::uint8_t>(sizeof(std::int32_t), 0));
-    const std::int32_t total = 1;
     std::vector<std::uint8_t> totalBytes(sizeof(total));
     std::memcpy(totalBytes.data(), &total, sizeof(total));
     put("total_sequence_length", TensorElementType::Int32, {}, totalBytes);
-    put("position_ids", TensorElementType::Int64, {1, 1},
-        std::vector<std::uint8_t>(sizeof(std::int64_t), 0));
+    std::vector<std::uint8_t> positionBytes(sizeof(position));
+    std::memcpy(positionBytes.data(), &position, sizeof(position));
+    put("position_ids", TensorElementType::Int64, {1, 1}, positionBytes);
     return runner->run(ctx);
   };
 
   std::map<std::string, TensorBundle> firstEpoch;
   try {
-    firstEpoch = runEpoch("/request/restore/epoch0", 0);
+    firstEpoch = runEpoch("/request/restore/epoch0", 0, 1, 0);
   }
   catch (const std::exception& error) {
     BOOST_FAIL(std::string("first epoch: ") + error.what());
@@ -8997,7 +9048,9 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
 
   std::map<std::string, TensorBundle> secondEpoch;
   try {
-    secondEpoch = runEpoch("/request/restore/epoch1", 1);
+    // The restored prefix is one position, so this epoch continues at position one and its
+    // mask covers two.
+    secondEpoch = runEpoch("/request/restore/epoch1", 1, 2, 1);
   }
   catch (const std::exception& error) {
     BOOST_FAIL(std::string("second epoch: ") + error.what());
@@ -9013,6 +9066,33 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
                      << secondEpoch.at("present.0.key").payload.size()
                      << " seqVisible=" << secondSequence);
   BOOST_CHECK(secondEpoch.count("present.0.key") == 1U);
+
+  // The adapter's own observer sees the real resident KV, shapes included. That is what makes
+  // the restored prefix observable at all: the handle is opaque, but the tensor around it is
+  // not. Both epochs must have been observed, and the second epoch's key must span the restored
+  // position plus its own -- a run that ignored the restored state would span one.
+  const auto epochs = observer->observedEpochs();
+  BOOST_REQUIRE_MESSAGE(!epochs.empty(), "the observer saw no epoch at all");
+  const auto keys = observer->samplesNamed("past_key_values.0.key");
+  BOOST_REQUIRE_MESSAGE(!keys.empty(),
+    "the observer recorded no sample for layer 0's key, so the resident state was not reachable");
+  std::string shapes;
+  for (const auto& sample : keys) {
+    if (!shapes.empty()) shapes += " | ";
+    shapes += "epoch";
+    for (const auto dim : sample.shape) shapes += "x" + std::to_string(dim);
+    shapes += " values=" + std::to_string(sample.values.size());
+  }
+  BOOST_TEST_MESSAGE("observed KV samples: " << shapes);
+  // The last observation belongs to the restored epoch and must be longer than the first.
+  BOOST_REQUIRE_GE(keys.size(), 2U);
+  const auto firstLength = keys.front().shape.empty() ? 0 : keys.front().shape[2];
+  const auto lastLength = keys.back().shape.empty() ? 0 : keys.back().shape[2];
+  BOOST_TEST_MESSAGE("observed key sequence: first=" << firstLength
+                     << " last=" << lastLength);
+  BOOST_CHECK_GT(firstLength, 0);
+  // One restored position plus this epoch's own token.
+  BOOST_CHECK_EQUAL(lastLength, firstLength + 1);
 
   std::filesystem::remove_all(root, cleanupError);
 }
