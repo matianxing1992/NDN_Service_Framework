@@ -317,9 +317,16 @@ NativeQwenTensorRunner::restoreConversationState(
       rollback();
       return false;
     }
+    // Each child was promoted under its own key and under its own role, because the ONNX
+    // adapter refuses a handle whose role is not the graph it holds. Restoring the unit
+    // handle verbatim asked every child for the unit's key, which no child owns, so a
+    // committed checkpoint could never be restored on the next turn.
+    auto childState = state;
+    childState.conversationKey = state.conversationKey + "/" + entry.entryId;
+    childState.opaque.role = entry.entryId;
     bool ok = false;
     try {
-      ok = child->second->restoreConversationState(state, sessionId);
+      ok = child->second->restoreConversationState(childState, sessionId);
     }
     catch (...) {
       rollback();

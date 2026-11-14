@@ -3086,9 +3086,17 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         readyUse.reset();
       }
       else {
-        if (!m_conversationStateStore->prefetchToGpu(
-              requested, role.conversationStateLookupNowMs).get()) {
-          throw std::runtime_error("PROVIDER_CONVERSATION_STATE_MISSING");
+        const auto prefetched = m_conversationStateStore->prefetchToGpu(
+          requested, role.conversationStateLookupNowMs).get();
+        if (!prefetched) {
+          std::ostringstream detail;
+          detail << "PROVIDER_CONVERSATION_STATE_MISSING"
+                 << " conversationId=" << requested.conversationId
+                 << " contextEpoch=" << requested.contextEpoch
+                 << " role=" << requested.identity.roleName
+                 << " serviceName=" << requested.serviceName
+                 << " roleMapDigest=" << requested.planRoleMapDigest.substr(0, 19);
+          throw std::runtime_error(detail.str());
         }
         conversationUse = m_conversationStateStore->acquireConversationUse(
           requested, role.conversationStateLookupNowMs);
