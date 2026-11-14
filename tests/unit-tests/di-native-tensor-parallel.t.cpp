@@ -12245,6 +12245,88 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
       }
     }
   }
+  // Every layer, not only layer zero. The single-layer comparison cannot show that a layer's
+  // slice boundaries stay right deeper in the stack, where the residual has been shaped by every
+  // preceding layer: a wrong slice at layer 20 would still produce a plausible tensor and would
+  // only surface as drift in a later turn.
+  {
+    constexpr std::int64_t prefill = 3;
+    const auto runEntryAtLayer = [&] (
+        const std::shared_ptr<NativeModelRunner>& runner,
+        const std::vector<qwen::QwenTpEntryContract>& table,
+        const std::string& unit, std::uint64_t layer) {
+      const auto entry = std::find_if(table.begin(), table.end(),
+        [layer] (const auto& item) {
+          return item.kind == "ATTN" && item.layer == layer;
+        });
+      BOOST_REQUIRE(entry != table.end());
+      return runEntry(std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(runner),
+                      table, unit, layer, buildFeeds(*entry, prefill));
+    };
+    const auto floatsOfLayer = [] (const std::map<std::string, TensorBundle>& outputs,
+                                   const std::string& name) {
+      const auto found = outputs.find(name);
+      BOOST_REQUIRE_MESSAGE(found != outputs.end(), "no output named " + name);
+      const auto tensors = decodeTensorBundle(found->second.payload);
+      BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+      std::vector<float> values(tensors.front().payload.size() / sizeof(float));
+      std::memcpy(values.data(), tensors.front().payload.data(),
+                  tensors.front().payload.size());
+      return values;
+    };
+    constexpr std::uint64_t kvHeads = 8;
+    constexpr std::uint64_t degree = 2;
+    constexpr std::uint64_t headDim = 128;
+    constexpr std::uint64_t headsPerRank = kvHeads / degree;
+    double worstAnyLayer = 0.0;
+    std::size_t layersCompared = 0;
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      const auto reference = runEntryAtLayer(referenceRunner, referenceTable, "ref", layer);
+      const auto rank0 = runEntryAtLayer(runner0, rank0Table, "S0R0", layer);
+      const auto rank1 = runEntryAtLayer(runner1, rank1Table, "S0R1", layer);
+      double worstLayer = 0.0;
+      for (const auto& source : {std::pair<std::uint64_t, const std::map<std::string, TensorBundle>*>{0, &rank0},
+                                 {1, &rank1}}) {
+        const auto keyName = "present." + std::to_string(layer) + ".key";
+        const auto valueName = "present." + std::to_string(layer) + ".value";
+        for (const auto& name : {keyName, valueName}) {
+          const auto unsplit = floatsOfLayer(reference, name);
+          const auto shard = floatsOfLayer(*source.second, name);
+          BOOST_REQUIRE_EQUAL(unsplit.size(),
+            static_cast<std::size_t>(prefill * kvHeads * headDim));
+          BOOST_REQUIRE_EQUAL(shard.size(),
+            static_cast<std::size_t>(prefill * headsPerRank * headDim));
+          for (std::int64_t position = 0; position < prefill; ++position) {
+            for (std::uint64_t head = 0; head < headsPerRank; ++head) {
+              // [batch, heads, sequence, dim]: a position's block is
+              // (head * sequence + position) * headDim.
+              const auto shardBase =
+                (head * static_cast<std::uint64_t>(prefill) +
+                 static_cast<std::uint64_t>(position)) * headDim;
+              const auto unsplitBase =
+                ((source.first * headsPerRank + head) *
+                   static_cast<std::uint64_t>(prefill) +
+                 static_cast<std::uint64_t>(position)) * headDim;
+              for (std::uint64_t channel = 0; channel < headDim; ++channel) {
+                worstLayer = std::max(worstLayer, std::fabs(
+                  double(shard[shardBase + channel]) -
+                  double(unsplit[unsplitBase + channel])));
+              }
+            }
+          }
+        }
+      }
+      ++layersCompared;
+      worstAnyLayer = std::max(worstAnyLayer, worstLayer);
+      if (worstLayer > 1e-5)
+        BOOST_TEST_MESSAGE("layer " << layer << " worst=" << worstLayer);
+    }
+    BOOST_TEST_MESSAGE("all layers compared: " << layersCompared
+                       << " worst=" << worstAnyLayer);
+    // Every layer must agree, not the best of them.
+    BOOST_CHECK_LT(worstAnyLayer, 1e-5);
+    BOOST_CHECK_EQUAL(layersCompared, shape.layers);
+  }
   {
     const auto kvValues = [&] (const std::map<std::string, TensorBundle>& outputs,
                                const std::string& name) {
