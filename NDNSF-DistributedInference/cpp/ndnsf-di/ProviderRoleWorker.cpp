@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DiTimelineTrace.hpp"
 #include "request-work-statistics.hpp"
@@ -1278,6 +1279,38 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
           break;
         }
         catch (const std::out_of_range&) {
+        }
+      }
+    }
+    // The mask and the positions are functions of the token prefix, not members of the
+    // request: a prompt carries `input_ids` and nothing else. They are materialized from the
+    // authenticated lineage -- the same source the streaming path uses, so a prefill epoch and
+    // a decode epoch derive them identically -- rather than looked up by name among the
+    // admitted bundles, which could only ever find a value the request did not send.
+    //
+    // A unit with no lineage is an ordinary caller supplying every input itself; it keeps
+    // exactly what it was given and this branch does not run.
+    if (ctx.generationLineage && ctx.generationInputTokenCount != 0) {
+      CausalPositionInputContractV1 contract;
+      contract.policy = "qwen-causal-position-v1";
+      for (const auto& slot : step.inputSlots) {
+        if (slot.source != "EPOCH_INPUT" || inputs.count(slot.slotId) != 0) continue;
+        if (slot.slotId == "attention_mask")
+          contract.attentionMaskInputName = slot.slotId;
+        else if (slot.slotId == "prompt_positions" || slot.slotId == "position_ids")
+          contract.positionIdsInputName = slot.slotId;
+      }
+      if (!contract.attentionMaskInputName.empty() ||
+          !contract.positionIdsInputName.empty()) {
+        // The materializer checks its names against a graph signature; here that signature
+        // is the sealed step itself, whose slots the names were taken from.
+        StatefulOnnxIoContractV1 io;
+        for (const auto& stepInput : step.inputSlots)
+          io.inputNames.push_back(stepInput.slotId);
+        for (auto& item : materializeCausalPositionInputsV1(
+               contract, io, *ctx.generationLineage, ctx.generationInputTokenCount)) {
+          if (inputs.count(item.first) == 0)
+            inputs.emplace(item.first, std::move(item.second));
         }
       }
     }
