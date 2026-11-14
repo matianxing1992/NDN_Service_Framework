@@ -2,6 +2,7 @@
 #include "tests/boost-test.hpp"
 
 #include <atomic>
+#include <thread>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -242,6 +243,59 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   publication.sourcePath = (temporary.path() / "missing.bin").string();
   publication.reference = fixtureReference();
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
+}
+
+BOOST_AUTO_TEST_CASE(CloseDoesNotClaimADrainWhileAPublicationIsInFlight) {
+  // CA08 asks for a drain that was observed, not assumed. The idle case only proves the
+  // trivial answer, so this one stalls a real publication on a FIFO source and closes while
+  // it is still running.
+  TemporaryDirectory temporary("close-inflight");
+  const fs::path fifo = temporary.path() / "stalled.fifo";
+  BOOST_REQUIRE_EQUAL(::mkfifo(fifo.string().c_str(), 0600), 0);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+
+  RepoFilePublication publication;
+  publication.sourcePath = fifo.string();
+  publication.reference = fixtureReference();
+
+  std::atomic<bool> started{false};
+  std::atomic<bool> finished{false};
+  std::string failure;
+  std::thread worker([&] {
+    started.store(true);
+    try {
+      client.publishFile(publication, makeOptions());
+    }
+    catch (const std::exception& exception) {
+      failure = exception.what();
+    }
+    finished.store(true);
+  });
+  while (!started.load())
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  if (finished.load()) {
+    // The engine refused the non-regular source before blocking; the drain question
+    // cannot be asked with this fixture, and saying so beats asserting on nothing.
+    BOOST_TEST_MESSAGE("in-flight close skipped: engine rejected the FIFO (" + failure + ")");
+    worker.join();
+  }
+  else {
+    const auto drained = client.close(std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(50));
+    BOOST_CHECK_MESSAGE(!drained, "close must not report a drain while work is running");
+
+    // Unblock the reader so the worker can finish and the test can join it.
+    std::ofstream writer(fifo, std::ios::binary);
+    writer << FIXTURE_TEXT;
+    writer.close();
+    worker.join();
+    BOOST_CHECK(finished.load());
+    RepoInspectionRequest inspection;
+    inspection.kind = RepoInspectionRequest::Kind::NODE;
+    BOOST_CHECK_THROW(client.inspect(inspection, makeOptions()), RepoClientError);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(RemoveRequiresATypedTargetAndCleanupId) {
