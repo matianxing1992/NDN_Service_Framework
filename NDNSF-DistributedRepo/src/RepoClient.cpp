@@ -3185,11 +3185,21 @@ RepoClient::fetchData(const RepoDataFetch& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchData");
+  // Inputs this mode cannot honour are refused instead of being ignored: a caller that
+  // asked for a range or a segmented object must not receive the whole set silently.
+  if (input.hasRange)
+    throw RepoClientError("UNSUPPORTED",
+                          "original-Data retrieval has no ranged mode", "fetchData");
+  if (input.object)
+    throw RepoClientError("UNSUPPORTED",
+                          "original-Data retrieval does not resolve segmented object references",
+                          "fetchData");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
                           "original-Data retrieval requires a persistent client",
                           "fetchData");
   requireWireVerifier(input.verifyWire, "fetchData");
+  requireLiveDeadline(options.deadline, "fetchData");
   if (input.ownerClaim) {
     // Owner-claim mode: RepoClient mints the proof only after matching the
     // manifest, every indexed packet and the ordered wire digest.
@@ -3205,14 +3215,14 @@ RepoClient::fetchData(const RepoDataFetch& input,
     };
     auto verified = RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       *m_impl->user, m_impl->target(claim.target), claim.objectName,
-      verifyPacket, remainingMs(options.deadline), limits);
+      verifyPacket, std::max(1, remainingMs(options.deadline)), limits);
     RepoDataFetchResult result;
     result.wireBytes = 0;
     for (const auto& wire : verified.packetWires())
       result.wireBytes += wire.size();
     result.packets = verified.packetWires();
     result.digestVerified = true;
-    result.wireDigest = "sha256:" + verified.manifest().sha256;
+    result.wireDigest = canonicalSha256Digest("sha256:" + verified.manifest().sha256);
     result.ownerPacketSet = std::shared_ptr<const VerifiedRepoUserStoragePacketSetV1>(
       new VerifiedRepoUserStoragePacketSetV1(std::move(verified)));
     return result;

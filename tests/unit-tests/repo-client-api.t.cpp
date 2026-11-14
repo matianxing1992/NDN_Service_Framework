@@ -381,6 +381,30 @@ BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
                     "sha512:" + std::string(64, 'A'));
 }
 
+BOOST_AUTO_TEST_CASE(FetchDataRefusesInputsItCannotHonour) {
+  // A ranged or segmented retrieval must be refused, not silently answered with the whole
+  // packet set.
+  TemporaryDirectory temporary("fetch-shapes");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoDataFetch ranged;
+  ranged.packetNames = {"/example/spec240/owner/object/0"};
+  ranged.maxWireBytes = 64;
+  ranged.hasRange = true;
+  ranged.rangeOffsetBytes = 0;
+  ranged.rangeLengthBytes = 8;
+  BOOST_CHECK_EXCEPTION(client.fetchData(ranged, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "fetchData";
+    });
+
+  RepoDataFetch segmented;
+  segmented.object = SegmentedObjectReference{"/producer", "/prefix", 128, "d", 64, 1};
+  BOOST_CHECK_EXCEPTION(client.fetchData(segmented, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "fetchData";
+    });
+}
+
 BOOST_AUTO_TEST_CASE(AnExpiredDeadlineIsReportedNotReplaced) {
   // Passing an exhausted deadline must not let the engine fall back to its configured
   // wait: the caller's budget is the whole operation's budget.
