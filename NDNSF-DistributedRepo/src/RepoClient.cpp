@@ -1,5 +1,7 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
+
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "face-data-reference-fetcher.hpp"
@@ -220,7 +222,7 @@ checkedUserStorageResponse(Validator validate,
 } // namespace
 
 ndn::Name
-RepoClient::requestUserStorageGrant(ndn_service_framework::ServiceUser& user,
+RepoClientCompat::requestUserStorageGrant(ndn_service_framework::ServiceUser& user,
   const RepoArtifactTarget& target, const RepoUserStorageGrantRequest& request,
   int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
@@ -233,12 +235,12 @@ RepoClient::requestUserStorageGrant(ndn_service_framework::ServiceUser& user,
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
 ndn::Name
-RepoClient::requestUserStorageList(ndn_service_framework::ServiceUser& user,
+RepoClientCompat::requestUserStorageList(ndn_service_framework::ServiceUser& user,
   const RepoArtifactTarget& target, const RepoUserStorageListRequest& request,
   int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
@@ -251,12 +253,12 @@ RepoClient::requestUserStorageList(ndn_service_framework::ServiceUser& user,
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
-    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
 ndn::Name
-RepoClient::requestUserStorageDelete(ndn_service_framework::ServiceUser& user,
+RepoClientCompat::requestUserStorageDelete(ndn_service_framework::ServiceUser& user,
   const RepoArtifactTarget& target, const RepoUserStorageDeleteRequest& request,
   int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
@@ -269,12 +271,12 @@ RepoClient::requestUserStorageDelete(ndn_service_framework::ServiceUser& user,
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
-    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 
 ndn::Name
-RepoClient::requestUserStorageUsage(ndn_service_framework::ServiceUser& user,
+RepoClientCompat::requestUserStorageUsage(ndn_service_framework::ServiceUser& user,
   const RepoArtifactTarget& target, const RepoUserStorageUsageRequest& request,
   int timeoutMs, ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
   ndn_service_framework::ServiceUser::ResponseHandler onResponse)
@@ -287,7 +289,7 @@ RepoClient::requestUserStorageUsage(ndn_service_framework::ServiceUser& user,
   }, std::move(onResponse));
   return user.RequestService(std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_USAGE"),
-    makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
+    RepoClient::makeRequest(payload), timeoutMs, std::move(onTimeout), std::move(checked),
     ndn_service_framework::tlv::FirstResponding);
 }
 

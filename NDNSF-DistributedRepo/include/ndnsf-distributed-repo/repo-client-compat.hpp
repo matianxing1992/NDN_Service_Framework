@@ -1,0 +1,39 @@
+#ifndef NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_COMPAT_HPP
+#define NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_COMPAT_HPP
+
+#include "ndnsf-distributed-repo/RepoClient.hpp"
+
+namespace ndnsf_distributed_repo {
+
+/** Compatibility entry points kept while their consumers migrate to the unified
+ *  client. This header is deliberately not installed: nothing new should be built on
+ *  it, and each family leaves it once its callers use the facade. */
+class RepoClientCompat
+{
+public:
+  static ndn::Name requestUserStorageGrant(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageGrantRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static ndn::Name requestUserStorageList(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageListRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  static ndn::Name requestUserStorageUsage(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageUsageRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  /** PENDING retains charge; only a bound DELETED reply confirms cleanup. */
+  static ndn::Name requestUserStorageDelete(
+    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
+    const RepoUserStorageDeleteRequest& request, int timeoutMs,
+    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
+    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+};
+
+} // namespace ndnsf_distributed_repo
+
+#endif // NDNSF_DISTRIBUTED_REPO_REPO_CLIENT_COMPAT_HPP

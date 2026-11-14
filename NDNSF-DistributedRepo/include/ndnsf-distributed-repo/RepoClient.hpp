@@ -140,29 +140,6 @@ public:
   static constexpr const char* DEFAULT_SERVICE_NAME = "/NDNSF/DistributedRepo/Object/v1";
 
   /** Target tuple is frozen by selection; user supplies the authenticated owner. */
-  static ndn::Name requestUserStorageGrant(
-    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
-    const RepoUserStorageGrantRequest& request, int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
-  static ndn::Name requestUserStorageList(
-    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
-    const RepoUserStorageListRequest& request, int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
-  static ndn::Name requestUserStorageUsage(
-    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
-    const RepoUserStorageUsageRequest& request, int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
-
-  /** PENDING retains charge; only a bound DELETED reply confirms cleanup. */
-  static ndn::Name requestUserStorageDelete(
-    ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
-    const RepoUserStorageDeleteRequest& request, int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
-
   /** Query each Repo's stored Data receipt and current location before an
    * original-name Interest. Producer trust is mandatory and caller-owned.
    */

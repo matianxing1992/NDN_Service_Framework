@@ -12,6 +12,7 @@
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
@@ -2909,7 +2910,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     return std::string(payload.begin(), payload.end());
   };
   auto response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(environment.user(), target, grant, 15000,
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target, grant, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -2918,7 +2919,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   auto wrongTarget = target;
   wrongTarget.repoNode += "/wrong";
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(environment.user(), wrongTarget,
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), wrongTarget,
       grant, 15000, std::move(timeout), std::move(complete));
   });
   BOOST_CHECK(!response.getStatus());
@@ -2952,14 +2953,14 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
       repo::encodeUserStorageInsertRequest(insert), ACK_COLLECTION_MS, 15000);
   }), std::runtime_error);
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageUsage(environment.user(), target, {}, 15000,
+    return repo::RepoClientCompat::requestUserStorageUsage(environment.user(), target, {}, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK(repo::RepoUserStorageUsageReply::fromJson(responseString(response))
     .usage.committedBytes > aggregate.size());
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageList(environment.user(), target, {}, 15000,
+    return repo::RepoClientCompat::requestUserStorageList(environment.user(), target, {}, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3007,7 +3008,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   auto renewal = grant;
   renewal.grantId = "renewed-source-grant";
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(environment.user(), target, renewal, 15000,
+    return repo::RepoClientCompat::requestUserStorageGrant(environment.user(), target, renewal, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3025,7 +3026,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   auto otherGrant = grant;
   otherGrant.grantId = "second-owner-grant";
   response = ownerCall(*secondOwner, [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageGrant(*secondOwner, target, otherGrant, 15000,
+    return repo::RepoClientCompat::requestUserStorageGrant(*secondOwner, target, otherGrant, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3063,7 +3064,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   const repo::RepoUserStorageDeleteRequest cleanup{1, "client-cleanup", reference.objectName,
     granted.grant.ownerEpoch};
   response = ownerCall(environment.user(), [&](auto timeout, auto complete) {
-    return repo::RepoClient::requestUserStorageDelete(environment.user(), target, cleanup, 15000,
+    return repo::RepoClientCompat::requestUserStorageDelete(environment.user(), target, cleanup, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
@@ -3078,7 +3079,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
     auto otherCleanup = cleanup;
     otherCleanup.cleanupId = "second-owner-cleanup";
     otherCleanup.ownerEpoch = otherGranted.grant.ownerEpoch;
-    return repo::RepoClient::requestUserStorageDelete(*secondOwner, target, otherCleanup, 15000,
+    return repo::RepoClientCompat::requestUserStorageDelete(*secondOwner, target, otherCleanup, 15000,
       std::move(timeout), std::move(complete));
   });
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
