@@ -291,21 +291,41 @@ NativeQwenTensorRunner::promoteSessionStateToConversation(
   return unit;
 }
 
+/** The handle one child owns for a unit handle.
+ *
+ * Promotion, restore and release must agree on this mapping or the three operations address
+ * different states. Promotion gives each KV child its own key -- the unit key plus the entry
+ * id -- and its own role, because the ONNX adapter refuses a handle whose role is not the graph
+ * it holds. Every operation that reaches a child goes through this one function.
+ */
+NativeConversationStateHandleV1
+childConversationHandle(const NativeConversationStateHandleV1& unit,
+                        const std::string& entryId)
+{
+  auto child = unit;
+  child.conversationKey = unit.conversationKey + "/" + entryId;
+  child.opaque.role = entryId;
+  return child;
+}
+
 bool
 NativeQwenTensorRunner::restoreConversationState(
   const NativeConversationStateHandleV1& state, const std::string& sessionId)
 {
   if (sessionId.empty() || state.conversationKey.empty()) return false;
-  // Restore is all-or-nothing. A child that fails leaves the ones already restored
-  // holding state from a different checkpoint, so those are rolled back before this
-  // returns false.
-  std::vector<std::shared_ptr<NativeModelRunner>> restored;
+  // Restore is all-or-nothing. A child that fails leaves the ones already restored holding
+  // state from a different checkpoint, so exactly those are released before this returns
+  // false. Releasing by session id would do nothing: the ONNX adapter treats an empty session
+  // as a no-op, and the state was restored as a conversation, not as a session.
+  std::vector<std::pair<std::shared_ptr<NativeModelRunner>,
+                        NativeConversationStateHandleV1>> restored;
   const auto rollback = [&restored] {
-    for (auto& child : restored) {
+    for (auto& item : restored) {
       try {
-        child->releaseSessionState("");  // per-session release is a no-op for ""
+        item.first->releaseConversationState(item.second);
       }
       catch (...) {
+        // A rollback failure must not replace the original restore failure.
       }
     }
     restored.clear();
@@ -317,13 +337,7 @@ NativeQwenTensorRunner::restoreConversationState(
       rollback();
       return false;
     }
-    // Each child was promoted under its own key and under its own role, because the ONNX
-    // adapter refuses a handle whose role is not the graph it holds. Restoring the unit
-    // handle verbatim asked every child for the unit's key, which no child owns, so a
-    // committed checkpoint could never be restored on the next turn.
-    auto childState = state;
-    childState.conversationKey = state.conversationKey + "/" + entry.entryId;
-    childState.opaque.role = entry.entryId;
+    const auto childState = childConversationHandle(state, entry.entryId);
     bool ok = false;
     try {
       ok = child->second->restoreConversationState(childState, sessionId);
@@ -336,7 +350,7 @@ NativeQwenTensorRunner::restoreConversationState(
       rollback();
       return false;
     }
-    restored.push_back(child->second);
+    restored.emplace_back(child->second, childState);
   }
   return !restored.empty();
 }
@@ -358,8 +372,12 @@ NativeQwenTensorRunner::releaseConversationState(
       continue;
     }
     ++attempts;
+    // The child owns a key derived from the unit's, so releasing the unit handle verbatim
+    // would ask it to free a state it never held and would report success while the child
+    // kept its buffers.
+    const auto childState = childConversationHandle(state, entry.entryId);
     try {
-      if (!child->second->releaseConversationState(state)) allReleased = false;
+      if (!child->second->releaseConversationState(childState)) allReleased = false;
     }
     catch (...) {
       allReleased = false;

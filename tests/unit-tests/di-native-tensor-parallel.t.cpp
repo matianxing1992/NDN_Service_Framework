@@ -5145,12 +5145,16 @@ public:
   }
 
   bool
-  releaseConversationState(const NativeConversationStateHandleV1&) override
+  releaseConversationState(const NativeConversationStateHandleV1& handle) override
   {
     ++releaseConversationCalls;
+    lastReleasedConversationKey = handle.conversationKey;
+    lastReleasedRole = handle.opaque.role;
     return m_stateful;
   }
 
+  mutable std::string lastReleasedConversationKey;
+  mutable std::string lastReleasedRole;
   mutable std::size_t promoteCalls = 0;
   mutable std::size_t restoreCalls = 0;
   mutable std::size_t releaseConversationCalls = 0;
@@ -13333,6 +13337,15 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
     children["S0R0/ATTN/1"]->failRestore = true;
     BOOST_CHECK(!runner.restoreConversationState(*handle, "restore-session"));
     BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->restoreCalls, 1U);
+    // The child that did restore must be released through its own conversation handle. An
+    // earlier rollback released by session with an empty id, which the ONNX adapter treats as
+    // a no-op, so a failed restore left the first child holding state from a mixed checkpoint.
+    auto& first = children.at("S0R0/ATTN/0");
+    BOOST_CHECK_EQUAL(first->releaseConversationCalls, 1U);
+    BOOST_CHECK_EQUAL(first->releaseCalls, 0U);
+    BOOST_CHECK_EQUAL(first->lastReleasedConversationKey,
+                      std::string("conv/restore") + "/S0R0/ATTN/0");
+    BOOST_CHECK_EQUAL(first->lastReleasedRole, std::string("S0R0/ATTN/0"));
   }
 
   // Release reaches every KV child and reports success only when all of them agree.
@@ -13345,6 +13358,12 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
     BOOST_CHECK(runner.releaseConversationState(*handle));
     BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->releaseConversationCalls, 1U);
     BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->releaseConversationCalls, 1U);
+    // Released under the key each child was promoted with, not the unit's: a release address
+    // that does not match the promote address frees nothing and still reports success.
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/0")->lastReleasedConversationKey,
+                      std::string("conv/release") + "/S0R0/ATTN/0");
+    BOOST_CHECK_EQUAL(children.at("S0R0/ATTN/1")->lastReleasedConversationKey,
+                      std::string("conv/release") + "/S0R0/ATTN/1");
   }
 
   // An empty session or conversation key is refused rather than promoted.
