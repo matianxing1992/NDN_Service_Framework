@@ -155,28 +155,25 @@ main(int argc, char** argv)
   if (mode == "publish") {
     const auto source = arg(options, "source");
     const auto bytes = readBytes(source);
-    repo::RepoDataPublication publication;
     const auto alternate = [] (const std::string& value) {
       return ndn::Name(value).toUri(ndn::name::UriFormat::ALTERNATE);
     };
+
+    repo::RepoDataPublication publication;
     publication.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
                                          alternate(servicePrefix.toUri())};
-    publication.producerIdentity = identity.toUri(ndn::name::UriFormat::ALTERNATE);
-    publication.objectName = ndn::Name(identity).append("object").appendSegment(0)
-      .toUri(ndn::name::UriFormat::ALTERNATE);
+    publication.producerIdentity = alternate(identity.toUri());
+    publication.objectName = alternate(ndn::Name(identity).append("object").toUri());
 
     repo::PacketSource packets;
-    packets.expectedWireBytes = 0;
-    // One Data packet per segment, built by the caller and verified by the caller's own
-    // verifier: the Repo must not invent Producer trust.
     std::vector<std::vector<uint8_t>> wires;
     uint64_t offsets = 0;
-    uint64_t segment = 0;
     const uint64_t chunk = 8000;
-    while (segment * chunk < bytes.size() || segment == 0) {
+    uint64_t segment = 0;
+    do {
       const uint64_t begin = segment * chunk;
       const uint64_t end = std::min<uint64_t>(bytes.size(), begin + chunk);
-      const ndn::Name name = ndn::Name(publication.objectName).appendSegment(segment);
+      const auto name = ndn::Name(publication.objectName).appendSegment(segment);
       ndn::Data packet(name);
       packet.setContent(ndn::span<const uint8_t>(bytes.data() + begin, end - begin));
       packet.setFreshnessPeriod(ndn::time::seconds(3600));
@@ -187,9 +184,14 @@ main(int argc, char** argv)
       packets.packetOffsets.push_back(offsets);
       offsets += wires.back().size();
       ++segment;
-    }
+    } while (segment * chunk < bytes.size());
     packets.packetOffsets.push_back(offsets);
     packets.expectedWireBytes = offsets;
+    packets.expectedPacketCount = wires.size();
+    ndn::util::Sha256 sha;
+    for (const auto& wire : wires)
+      sha.update(wire);
+    packets.expectedDigest = "sha256:" + sha.toString();
     std::size_t index = 0;
     packets.next = [&wires, index] (std::vector<uint8_t>& out) mutable {
       if (index >= wires.size())
@@ -197,56 +199,40 @@ main(int argc, char** argv)
       out = wires[index++];
       return true;
     };
-    packets.expectedPacketCount = wires.size();
-    ndn::util::Sha256 digest;
-    for (const auto& wire : wires)
-      digest.update(wire);
-    packets.expectedDigest = "sha256:" + digest.toString();
     publication.packets = packets;
     publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
       [] (const std::vector<uint8_t>& wire) {
-        try {
-          const ndn::Block block(wire);
-          const ndn::Data packet(block);
-          return packet.wireEncode().size() == wire.size();
-        }
-        catch (const std::exception&) {
-          return false;
-        }
+        const ndn::Block block(wire);
+        const ndn::Data packet(block);
+        return packet.wireEncode().size() == wire.size();
       });
     publication.generation = 1;
-    // Ask the Repo to authorize this writer before publishing: a self-invented grant id is
-    // rejected as unauthorized, which is the contract working.
+    publication.idempotencyKey = "spec240-facade-" + std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+
+    // The Repo names an original packet set by its first packet name, so the grant has to
+    // ask for exactly that name - not for the prefix the packets extend.
     repo::RepoWriteAuthorization authorization;
     authorization.target = publication.target;
-    // The Repo compares this against the identity it derives from the signature, which is
-    // the canonical form, even though the storage binding itself carries alternate names.
     authorization.writerIdentity = identity.toUri();
-    authorization.objectName = publication.objectName;
+    authorization.objectName = packets.packetNames.front();
     authorization.grantId = "spec240-facade-grant-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
     authorization.expiresAtMs = static_cast<uint64_t>(std::chrono::duration_cast<
       std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) + 600000;
     const auto grant = client.authorizeWrite(authorization, operation);
+    std::fprintf(stderr, "FACADE_GRANT grant=%s owner=%s epoch=%llu object=%s\n",
+                 grant.grantId.c_str(), grant.ownerIdentity.c_str(),
+                 static_cast<unsigned long long>(grant.ownerEpoch), grant.objectName.c_str());
     publication.ownerIdentity = grant.ownerIdentity;
     publication.grantId = grant.grantId;
     publication.ownerEpoch = grant.ownerEpoch;
-    std::fprintf(stderr, "FACADE_GRANT grant=%s owner=%s epoch=%llu object=%s writer=%s\n",
-                grant.grantId.c_str(), grant.ownerIdentity.c_str(),
-                static_cast<unsigned long long>(grant.ownerEpoch),
-                grant.objectName.c_str(), grant.writerIdentity.c_str());
-    std::fprintf(stderr, "FACADE_PUB object=%s writer=%s\n", publication.objectName.c_str(),
-                authorization.writerIdentity.c_str());
-    publication.idempotencyKey = "spec240-facade-" + std::to_string(
-      std::chrono::steady_clock::now().time_since_epoch().count());
-    // The facade blocks while it waits for ACKs, so the call runs on a worker and the
-    // main thread keeps pumping the face. Pumping from two threads corrupts the io_context.
+
     const auto result = client.publishData(publication, operation);
-    std::printf("FACADE_PUBLISH state=%s receipt=%s bytes=%llu\n",
-                result.state == repo::RepoPublishState::COMMITTED ? "COMMITTED" : "ACCEPTED",
-                result.receipt ? result.receipt->receiptId.c_str() : "",
-                static_cast<unsigned long long>(result.packetSet ? result.packetSet->wireBytes : 0));
-    return 0;
+    std::fprintf(stderr, "FACADE_PUBLISH state=%s receipt=%s\n",
+                 result.state == repo::RepoPublishState::COMMITTED ? "COMMITTED" : "ACCEPTED",
+                 result.receipt ? result.receipt->receiptId.c_str() : "");
+    return result.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
   }
   if (mode == "fetch") {
     const auto destination = arg(options, "destination");
