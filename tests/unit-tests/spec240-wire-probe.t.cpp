@@ -7,6 +7,9 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 
@@ -15,6 +18,36 @@ namespace ndn_service_framework::test {
 namespace {
 
 const ndn::Name SERVICE("/Spec240Wire/probe");
+
+/** Anchor the schema at the probe's own certificate so validation is a real check
+ *  instead of the `type any` shortcut the framework refuses outside mock mode. */
+std::string
+writeSelfAnchoredSchema(const ndn::security::Certificate& certificate)
+{
+  const auto& wire = certificate.wireEncode();
+  static const char alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string encoded;
+  const std::vector<uint8_t> bytes(wire.begin(), wire.end());
+  for (std::size_t index = 0; index < bytes.size(); index += 3) {
+    const auto remaining = bytes.size() - index;
+    const uint32_t chunk = (static_cast<uint32_t>(bytes[index]) << 16) |
+      ((remaining > 1 ? static_cast<uint32_t>(bytes[index + 1]) : 0) << 8) |
+      (remaining > 2 ? static_cast<uint32_t>(bytes[index + 2]) : 0);
+    encoded.push_back(alphabet[(chunk >> 18) & 0x3f]);
+    encoded.push_back(alphabet[(chunk >> 12) & 0x3f]);
+    encoded.push_back(remaining > 1 ? alphabet[(chunk >> 6) & 0x3f] : '=');
+    encoded.push_back(remaining > 2 ? alphabet[chunk & 0x3f] : '=');
+  }
+  const auto path = std::filesystem::temp_directory_path() /
+    "spec240-wire-trust.conf";
+  std::ofstream output(path, std::ios::trunc);
+  output << "rule\n{\n  id \"Wire probe\"\n  for data\n"
+            "  checker\n  {\n    type hierarchical\n    sig-type rsa-sha256\n  }\n}\n"
+            "trust-anchor\n{\n  type base64\n  base64-string \"" << encoded << "\"\n}\n";
+  output.close();
+  return path.string();
+}
 
 std::string
 trustSchemaPath()
@@ -51,15 +84,22 @@ BOOST_AUTO_TEST_CASE(RequestTravelsThroughTheForwarder)
                                      "tpm-memory:spec240-wire");
     const ndn::Name requesterName("/test/user/spec240-wire");
     const ndn::Name providerName("/test/provider/spec240-wire");
-    auto userCert = makeRsaIdentity(keyChain, requesterName);
-    auto providerCert = makeRsaIdentity(keyChain, providerName);
-    auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa/spec240-wire"));
+    // One self-signed identity anchors the probe; hierarchical validation then accepts
+    // data published under it by either side.
+    const auto identity = keyChain.createIdentity(ndn::Name("/spec240/wire"),
+                                                  ndn::RsaKeyParams(2048));
+    const auto certificate = identity.getDefaultKey().getDefaultCertificate();
+    const std::string schemaPath = (trustSchema != nullptr && *trustSchema != '\0')
+      ? std::string(trustSchema) : writeSelfAnchoredSchema(certificate);
+    const auto userCert = certificate;
+    const auto providerCert = certificate;
+    const auto aaCert = certificate;
 
     LocalServiceUser user(userFace, ndn::Name("/test/group"), userCert, aaCert,
-                          trustSchema);
+                          schemaPath);
     ServiceProvider provider(ServiceProvider::LocalMockTag{}, providerFace,
                              ndn::Name("/test/group"), providerCert, aaCert,
-                             trustSchema);
+                             schemaPath);
     installPermissions(user, provider, requesterName, SERVICE);
 
     bool called = false;
