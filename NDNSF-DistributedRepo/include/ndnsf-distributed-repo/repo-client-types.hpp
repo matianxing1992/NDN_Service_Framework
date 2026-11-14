@@ -540,6 +540,10 @@ struct RepoWriteGrant
 
 /** Confirmed progress retained by a structured failure. It never contains
  *  secrets or a claim proof that could be reused as authorization. */
+/** Confirmed progress attached to a failure. Every member is empty when the failing
+ *  path cannot report progress: a Repo that never confirmed a group, or an in-app engine
+ *  that fails before committing anything, has nothing to report and must not be given
+ *  invented entries. A caller should treat an empty value as "unknown", not "none". */
 struct RepoPartialProgress
 {
   std::vector<std::string> confirmedGroups;

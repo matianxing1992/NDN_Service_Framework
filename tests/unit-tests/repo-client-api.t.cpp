@@ -245,6 +245,29 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(FailureCarriesNoInventedProgress) {
+  // A failing path that cannot report progress must hand back an empty value rather than
+  // plausible-looking entries; "unknown" and "none" are different answers.
+  TemporaryDirectory temporary("partial");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = (temporary.path() / "missing.bin").string();
+  publication.reference = fixtureReference();
+  try {
+    client.publishFile(publication, makeOptions());
+    BOOST_FAIL("a missing source must fail");
+  }
+  catch (const RepoClientError& error) {
+    BOOST_CHECK(!error.code().empty());
+    BOOST_CHECK(!error.phase().empty());
+    const auto& partial = error.partial();
+    BOOST_CHECK(partial.confirmedGroups.empty());
+    BOOST_CHECK(partial.replicaReceipts.empty());
+    BOOST_CHECK(partial.unconfirmedTargets.empty());
+    BOOST_CHECK(partial.failedAttempts.empty());
+  }
+}
+
 BOOST_AUTO_TEST_CASE(DeclaredOptionsThatCannotBeHonouredAreRefused) {
   // Declaring a field the facade then ignores is how a caller ends up believing in a
   // capability that does not exist. Each of these is refused with its own phase.

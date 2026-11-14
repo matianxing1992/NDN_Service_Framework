@@ -2645,6 +2645,24 @@ remainingMs(std::chrono::steady_clock::time_point deadline)
   return remaining <= 0 ? 0 : static_cast<int>(remaining);
 }
 
+/** Engine failures are part of this facade's contract, so they leave it as RepoClientError
+ *  with a stable code and the phase. The engine's own code prefix is kept when the message
+ *  starts with one, because it is more specific than a generic wrapper. */
+[[noreturn]] void
+rethrowAsClientError(const std::exception& failure, const char* phase)
+{
+  const std::string message = failure.what();
+  std::string code = "FAILED";
+  const auto colon = message.find(':');
+  if (colon != std::string::npos && colon > 0 && colon < 64 &&
+      std::all_of(message.begin(), message.begin() + colon, [] (unsigned char character) {
+        return std::isalnum(character) != 0 || character == '-' || character == '_';
+      })) {
+    code = message.substr(0, colon);
+  }
+  throw RepoClientError(std::move(code), message, phase);
+}
+
 /** The caller's deadline is the operation's whole budget. An expired deadline must be
  *  reported, never silently replaced by an engine default: passing 0 to the engine means
  *  "use the configured wait", which would grant a fresh budget after the caller gave up. */
@@ -2931,11 +2949,21 @@ RepoClient::publishFile(const RepoFilePublication& input,
     return result;
   }
 
-  ArtifactPublishResult published = selected.targets.empty()
-    ? m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline)
-    : (requireLiveDeadline(options.deadline, "publishFile"),
-       m_impl->file->publishFile(input.sourcePath, reference, selected,
-                                 std::max(1, remainingMs(options.deadline))));
+  ArtifactPublishResult published = [&] {
+    try {
+      return selected.targets.empty()
+        ? m_impl->file->publishFileUntil(input.sourcePath, reference, options.deadline)
+        : (requireLiveDeadline(options.deadline, "publishFile"),
+           m_impl->file->publishFile(input.sourcePath, reference, selected,
+                                     std::max(1, remainingMs(options.deadline))));
+    }
+    catch (const RepoClientError&) {
+      throw;
+    }
+    catch (const std::exception& failure) {
+      rethrowAsClientError(failure, "publishFile");
+    }
+  }();
   RepoPublishResult result;
   result.reference = toFileReference(published.reference);
   result.state = published.handle ? RepoPublishState::COMMITTED : RepoPublishState::ACCEPTED;
