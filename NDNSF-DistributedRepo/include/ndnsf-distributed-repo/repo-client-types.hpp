@@ -14,6 +14,9 @@
 
 namespace ndnsf_distributed_repo {
 
+struct RepoObjectManifest;
+class VerifiedRepoUserStoragePacketSetV1;
+
 /** Completion strength requested by a publication. DURABLE only reports
  *  success once the requested consistency is confirmed; ACCEPTED only reports
  *  that a persistent operation was accepted. */
@@ -208,13 +211,28 @@ struct RepoFileFetch
   uint64_t rangeLengthBytes = 0;
 };
 
-/** Result of a file retrieval. */
+/** One retrieval attempt, for callers that need to see why a source was dropped. */
+struct RepoFetchAttempt
+{
+  std::string sourceId;
+  std::string outcome;
+  std::string failureClass;
+  uint64_t elapsedMs = 0;
+  uint64_t bytesTransferred = 0;
+  uint64_t bytesVerified = 0;
+};
+
+/** Result of a file retrieval. Written and verified bytes are reported separately,
+ *  because a transport can move bytes that were never checked. */
 struct RepoFetchResult
 {
   uint64_t bytesWritten = 0;
+  uint64_t bytesVerified = 0;
   bool digestVerified = false;
   std::string digestAlgorithm = "sha256";
   std::string contentDigest;
+  uint64_t totalElapsedMs = 0;
+  std::vector<RepoFetchAttempt> attempts;
   std::vector<std::string> attemptedSources;
 };
 
@@ -267,8 +285,6 @@ struct RepoDataPublication
   std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
 };
 
-class VerifiedRepoUserStoragePacketSetV1;
-struct RepoObjectManifest;
 
 /** Manifest-bound retrieval: the caller already holds a committed manifest for
  *  the object (for example from an Owner commitment) and asks Repo for exactly
@@ -436,6 +452,7 @@ struct RepoDeleteResult
 {
   std::vector<RepoReplicaResult> targets;
   uint32_t removedCount = 0;
+  uint64_t releasedBytes = 0;
   bool confirmed = false;
   /** Validated reply JSON, for callers that must reproduce the wire form. */
   std::string replyWire;

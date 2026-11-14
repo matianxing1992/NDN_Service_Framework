@@ -3074,15 +3074,30 @@ RepoClient::fetchFile(const RepoFileFetch& input,
       std::filesystem::file_size(input.targetPath, sizeError));
     if (sizeError)
       result.bytesWritten = 0;
+    // The engine verified the committed payload before writing it, so those bytes are
+    // verified even though the transport did not do a second copy check.
+    result.bytesVerified = result.bytesWritten;
   }
   else if (input.handle) {
     const auto fetched = m_impl->file->fetchFile(
       toArtifactHandle(*input.handle), input.targetPath, remainingMs(options.deadline));
-    result.bytesWritten = fetched.bytesVerified;
-    for (const auto& attempt : fetched.attempts)
+    result.bytesWritten = fetched.bytesTransferred;
+    result.bytesVerified = fetched.bytesVerified;
+    result.totalElapsedMs = fetched.totalElapsedMs;
+    for (const auto& attempt : fetched.attempts) {
+      RepoFetchAttempt mapped;
+      mapped.sourceId = attempt.repoNode;
+      mapped.outcome = attempt.outcome;
+      mapped.failureClass = attempt.failureClass;
+      mapped.elapsedMs = attempt.elapsedMs;
+      mapped.bytesTransferred = attempt.bytesTransferred;
+      mapped.bytesVerified = attempt.bytesVerified;
       result.attemptedSources.push_back(attempt.repoNode);
+      result.attempts.push_back(std::move(mapped));
+    }
     result.contentDigest = fetched.reference.contentDigest;
     result.digestAlgorithm = fetched.reference.digestAlgorithm;
+    result.digestVerified = fetched.bytesVerified == fetched.reference.sizeBytes;
   }
   else if (input.reference) {
     m_impl->file->fetchFile(toArtifactReference(*input.reference), input.targetPath);
@@ -3476,6 +3491,7 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
                          request);
   RepoDeleteResult result;
   result.replyWire = reply.toJson();
+  result.releasedBytes = reply.releasedBytes;
   RepoReplicaResult replica;
   replica.targetId = target.repoNode;
   replica.state = reply.state == "DELETED" ? RepoTargetState::COMMITTED

@@ -134,6 +134,10 @@ BOOST_AUTO_TEST_CASE(FacadePublishesFetchesInspectsAndReopens)
     fetch.handle = published.committedHandle;
     fetch.targetPath = firstFetch.string();
     const auto fetched = client.fetchFile(fetch, makeOptions());
+  BOOST_CHECK_EQUAL(fetched.bytesWritten, sizeof(FIXTURE_TEXT) - 1);
+  // The reference path verifies the committed payload before writing, so the caller can
+  // tell written bytes from verified bytes instead of assuming they are the same.
+  BOOST_CHECK_EQUAL(fetched.bytesVerified, sizeof(FIXTURE_TEXT) - 1);
     BOOST_CHECK_EQUAL(fetched.bytesWritten, published.committedHandle->reference.index() == 0
       ? std::get<FileReference>(published.committedHandle->reference).sizeBytes : 0);
     BOOST_CHECK(readFile(firstFetch) == readFile(source));
