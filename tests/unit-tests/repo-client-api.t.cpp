@@ -437,6 +437,22 @@ BOOST_AUTO_TEST_CASE(DiscoveryHonoursTheRequestedProviderScope) {
   BOOST_CHECK_EQUAL(kept.candidates.size(), 1U);
 }
 
+BOOST_AUTO_TEST_CASE(PublishFileRefusesACancellationItCannotPropagate) {
+  TemporaryDirectory directory("publish-file-cancel");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  RepoFilePublication publication;
+  publication.reference = fixtureReference();
+  publication.sourcePath = (directory.path() / "input.bin").string();
+  writeFile(publication.sourcePath, "spec240");
+  auto options = makeOptions();
+  options.requireCurrent = [] {};
+  BOOST_CHECK_EXCEPTION(client.publishFile(publication, options), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" &&
+        std::string(error.what()).find("cancellation") != std::string::npos;
+    });
+}
+
 BOOST_AUTO_TEST_CASE(FetchFileNeedsExactlyOneTargetDescription) {
   TemporaryDirectory directory("fetch-file-target");
   auto client = RepoClient::makeInApp(makeConfig(directory.path()));

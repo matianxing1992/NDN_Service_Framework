@@ -2957,6 +2957,13 @@ RepoClient::publishFile(const RepoFilePublication& input,
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
   requireLiveDeadline(options.deadline, "publishFile");
+  // The file publication entry points take no cancellation check, so a caller's cancellation
+  // would be silently ignored - refuse it the way fetchFile does.
+  if (options.requireCurrent)
+    throw RepoClientError("UNSUPPORTED",
+                          "publishFile cannot propagate a cancellation check: "
+                          "the file publication entry points take no cancellation check",
+                          "publishFile");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "publishFile requires a file client; this client was opened data-only",
@@ -2995,7 +3002,7 @@ RepoClient::publishFile(const RepoFilePublication& input,
       ? RepoWriteConsistency::All
       : consistency == "ONE" ? RepoWriteConsistency::One
       : consistency == "QUORUM" ? RepoWriteConsistency::Quorum
-      : throw std::invalid_argument("publishField requires ONE, QUORUM or ALL consistency");
+      : throw std::invalid_argument("publishFile requires ONE, QUORUM or ALL consistency");
   }
 
   if (input.completion == RepoCompletion::ACCEPTED) {
