@@ -10925,6 +10925,16 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
   spec.path = (root / "S0R0" / "model.onnx").string();
   spec.backend = "onnxruntime";
   qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string("S0R0"));
+  // The export's KV successor names, the same fact production records on the role.
+  std::vector<std::string> stateOutputs;
+  std::vector<std::string> stateInputs;
+  for (std::uint64_t layer = 0; layer < 28; ++layer) {
+    for (const auto* kind : {"key", "value"}) {
+      const auto present = "present." + std::to_string(layer) + "." + kind;
+      stateOutputs.push_back(present);
+      stateInputs.push_back("past_key_values." + std::to_string(layer) + "." + kind);
+    }
+  }
   spec.metadata["unrankedInputNames"] =
     "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
     "/model/pos_ids_reformat/Reshape/output_0";
@@ -10944,6 +10954,8 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
   role.tensorDegree = 2;
   role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
   role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+  role.stateOutputNames = stateOutputs;
+  role.stateInputNames = stateInputs;
   // Two peer reductions: the peer's attention partial and its MLP partial. Each is declared
   // as a dependency on the step that consumes it, which is how the worker knows when to
   // await it instead of waiting for both up front.
@@ -11081,6 +11093,31 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
   // Its successors stayed with the runner: the worker packs decode state only for a role
   // marked streaming, which this spec is not.
   BOOST_CHECK(!result.providerDecodeState.has_value());
+
+  // Every layer's KV successor must be present, one per layer and per kind. A run that
+  // completed the token but dropped a layer's state would succeed here and fail on the second
+  // turn, which is served from that state -- so the count is the check that the whole stack
+  // produced state rather than only the layers that happened to be exercised.
+  // Every layer's KV successor was produced and packed. The role declares the export's state
+  // names, so the worker collects them by name; a run that completed the token but dropped a
+  // layer's state would pass every earlier check here and fail on the second turn, which is
+  // served entirely from that state.
+  {
+    std::size_t keySuccessors = 0;
+    std::size_t valueSuccessors = 0;
+    for (const auto& item : result.outputsByScope) {
+      const auto tensors = decodeTensorBundle(item.second.payload);
+      for (const auto& tensor : tensors) {
+        if (tensor.name.rfind("present.", 0) != 0) continue;
+        if (tensor.name.find(".key") != std::string::npos) ++keySuccessors;
+        if (tensor.name.find(".value") != std::string::npos) ++valueSuccessors;
+      }
+    }
+    BOOST_TEST_MESSAGE("state successors: key=" << keySuccessors
+                       << " value=" << valueSuccessors);
+    BOOST_CHECK_EQUAL(keySuccessors, 28U);
+    BOOST_CHECK_EQUAL(valueSuccessors, 28U);
+  }
 
   std::filesystem::remove_all(root, cleanupError);
 }
