@@ -256,7 +256,7 @@ main(int argc, char** argv)
       node, versionedName, payload, keyChain, signingInfo, {}, 4096);
     require(status.state == "DONE", "exact packet insertion failed: " + status.message);
 
-    storedManifest = RepoClient::getManifest(node, rootName);
+    storedManifest = RepoStoreApi::getManifest(node, rootName);
     require(storedManifest.segmentCount > 1, "test payload was not segmented");
     require(storedManifest.packetNames.size() == storedManifest.segmentCount,
             "manifest does not index every exact Data name");
@@ -344,7 +344,7 @@ main(int argc, char** argv)
   {
     RepoNode restarted(ndn::Name("/NDNSF/DistributedRepo"), capability,
                        openStore());
-    const auto manifest = RepoClient::getManifest(restarted, rootName);
+    const auto manifest = RepoStoreApi::getManifest(restarted, rootName);
     require(manifest.packetNames == storedManifest.packetNames,
             "packet-name index did not survive restart");
     require(RepoClient::getDataPackets(restarted, manifest) == originalWires,

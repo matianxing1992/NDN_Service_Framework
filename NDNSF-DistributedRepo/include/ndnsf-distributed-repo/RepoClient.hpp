@@ -198,8 +198,7 @@ public:
 
   
 
-  static std::vector<uint8_t> get(const RepoNode& node,
-                                  const std::string& objectName);
+  
 
   static void putRange(RepoNode& node,
                        const RepoObjectManifest& manifest,
@@ -214,13 +213,11 @@ public:
                                        const std::string& objectName,
                                        RepoByteRange range);
 
-  static RepoObjectManifest getManifest(const RepoNode& node,
-                                        const std::string& objectName);
+  
 
   
 
-  static bool remove(RepoNode& node,
-                     const std::string& objectName);
+  
 
   /** Store one signed Data packet under the exact name encoded in its wire. */
   static RepoObjectManifest putDataPacket(RepoNode& node,

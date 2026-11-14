@@ -39,6 +39,12 @@ public:
                                 const std::vector<uint8_t>& payload,
                                 StoreOptions options = {});
   static std::vector<RepoObjectManifest> list(const RepoNode& node);
+  static std::vector<uint8_t> get(const RepoNode& node,
+                                  const std::string& objectName);
+  static RepoObjectManifest getManifest(const RepoNode& node,
+                                        const std::string& objectName);
+  static bool remove(RepoNode& node,
+                     const std::string& objectName);
 };
 
 } // namespace ndnsf_distributed_repo

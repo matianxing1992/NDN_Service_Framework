@@ -1313,7 +1313,7 @@ RepoStoreApi::put(RepoNode& node,
 }
 
 std::vector<uint8_t>
-RepoClient::get(const RepoNode& node, const std::string& objectName)
+RepoStoreApi::get(const RepoNode& node, const std::string& objectName)
 {
   return node.get(objectName);
 }
@@ -1348,7 +1348,7 @@ RepoClient::getRange(const RepoNode& node,
 }
 
 RepoObjectManifest
-RepoClient::getManifest(const RepoNode& node, const std::string& objectName)
+RepoStoreApi::getManifest(const RepoNode& node, const std::string& objectName)
 {
   return node.getManifest(objectName);
 }
@@ -1360,7 +1360,7 @@ RepoStoreApi::list(const RepoNode& node)
 }
 
 bool
-RepoClient::remove(RepoNode& node, const std::string& objectName)
+RepoStoreApi::remove(RepoNode& node, const std::string& objectName)
 {
   return node.remove(objectName);
 }
@@ -1574,7 +1574,7 @@ std::vector<uint8_t>
 RepoStoreApi::getSegmented(const RepoNode& node, const RepoObjectManifest& manifest)
 {
   if (manifest.segmentCount <= 1) {
-    auto payload = RepoClient::get(node, manifest.objectName);
+    auto payload = RepoStoreApi::get(node, manifest.objectName);
     verifySegmentedPayload(manifest, payload);
     return payload;
   }
@@ -1582,7 +1582,7 @@ RepoStoreApi::getSegmented(const RepoNode& node, const RepoObjectManifest& manif
   std::vector<uint8_t> payload;
   payload.reserve(static_cast<size_t>(manifest.size));
   for (uint32_t i = 0; i < manifest.segmentCount; ++i) {
-    auto segment = RepoClient::get(node, segmentObjectName(manifest.objectName, i));
+    auto segment = RepoStoreApi::get(node, segmentObjectName(manifest.objectName, i));
     payload.insert(payload.end(), segment.begin(), segment.end());
   }
   verifySegmentedPayload(manifest, payload);

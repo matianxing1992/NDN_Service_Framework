@@ -100,14 +100,14 @@ main()
                                         "NDNSF-DI/ARTIFACT/demo/object",
                                         payload,
                                         options);
-  const auto fetched = RepoClient::get(node, manifest.objectName);
+  const auto fetched = RepoStoreApi::get(node, manifest.objectName);
   const auto manifestResponse = node.handleManifest(toBytes(manifest.objectName));
   const auto capabilityResponse = node.handleCapability();
   const auto listed = RepoStoreApi::list(node);
   const auto catalogStatus = RepoStoreApi::catalogStatus(node);
   const auto catalogSnapshot = RepoStoreApi::catalogSnapshot(node);
   const auto catalogLookup = RepoStoreApi::catalogLookup(node, manifest.objectName);
-  const bool removed = RepoClient::remove(node, manifest.objectName);
+  const bool removed = RepoStoreApi::remove(node, manifest.objectName);
   const auto catalogDeltaAfterDelete = RepoStoreApi::catalogDelta(node,
                                                                 catalogStatus.catalogEpoch);
 
