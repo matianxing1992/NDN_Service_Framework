@@ -13479,6 +13479,133 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
   }
 }
 
+BOOST_AUTO_TEST_CASE(ASecondTurnRunsOnThePreparedRunnerWithoutPreparingAgain)
+{
+  // The half of T004's reuse claim that the cache lookup alone cannot make: the second turn has
+  // to run on the first turn's runner, with the preparation closure never invoked again. A
+  // Provider that published the runner but still called the closure would load every session
+  // twice, and a lookup assertion would not see it.
+  //
+  // The runner is a real tensor-parallel parent over one assembled unit, and both turns run the
+  // same sealed template. The counters are the evidence: preparations must stay at one,
+  // executions must reach two.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-two-turns-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+  }
+
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  // INIT only: the reuse question is about the runner's lifetime, and a unit that runs its whole
+  // template twice would make the case slow without adding anything.
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0" && step.stepId.find("/INIT") != std::string::npos)
+      steps.push_back(step);
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+
+  // The shape the Provider uses: the preparation closure is entered on every turn, and its
+  // first act is to ask the reuse cache. A hit returns the existing runner, so the expensive
+  // step -- creating the runner and loading its sessions -- happens once. Counting entries
+  // would prove nothing, because production enters the closure every time.
+  std::atomic<std::size_t> entries{0};
+  std::atomic<std::size_t> creations{0};
+  auto prepared = std::shared_ptr<NativeModelRunner>{};
+  const auto prepare = [&] {
+    ++entries;
+    if (!prepared) {
+      ++creations;
+      prepared = factory.create(spec);
+    }
+    return prepared;
+  };
+
+  ExecutionAttemptKey key;
+  key.requestId = "/session/two-turns";
+  key.attemptEpoch = 1;
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+
+  // The prompt every turn of this session is the same shape: one token position.
+  const auto initialInputs = [] {
+    std::map<std::string, TensorBundle> inputs;
+    const auto token = [] (const std::string& name, std::int64_t value) {
+      NamedTensor tensor;
+      tensor.name = name;
+      tensor.elementType = TensorElementType::Int64;
+      tensor.shape = {1, 1};
+      tensor.payload.resize(sizeof(value));
+      std::memcpy(tensor.payload.data(), &value, sizeof(value));
+      return makeEncodedTensorBundle(name, {std::move(tensor)});
+    };
+    inputs.emplace("input_ids", token("input_ids", 7));
+    inputs.emplace("attention_mask", token("attention_mask", 1));
+    inputs.emplace("prompt_positions", token("prompt_positions", 0));
+    return inputs;
+  }();
+
+  ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(60));
+  for (const auto* session : {"/session/two-turns/0", "/session/two-turns/1"}) {
+    auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+    // roleSpecFor gives the whole template; this unit's slice is INIT alone.
+    role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    // The unit's declared outputs include the peer's partial, which this single unit never
+    // produces. Dropping them is what a Provider does for a rank that owns only its own steps,
+    // and keeping them would make this fixture fail on a dependency instead of on reuse.
+    role.outputs.clear();
+    role.inputs.clear();
+    try {
+      auto result = worker.executePreparedAsync(session, std::move(role),
+                                                std::make_shared<CountingDependencyIo>(),
+                                                prepare, initialInputs).get();
+      BOOST_TEST_MESSAGE("turn " << session << " produced " << result.outputsByScope.size()
+                         << " scopes");
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("turn ") + session + ": " + error.what());
+    }
+  }
+  // The closure was entered twice -- that is what a Provider does -- and the runner was
+  // created once, which is the reuse.
+  BOOST_CHECK_EQUAL(entries.load(), 2U);
+  BOOST_CHECK_EQUAL(creations.load(), 1U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(OneComputeWorkerServesTwoWaitingUnitsWithoutDeadlock)
 {
   // A Provider may host more than one unit. Each waiting unit used to hold a compute thread in
