@@ -1724,8 +1724,21 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       const auto providerInterval = *statisticsInterval(
         observation, "startedSteadyNs", "finishedSteadyNs");
       if ((!slurm || matchesHost(requesterHost, provider.host)) &&
-          (providerInterval.first < interval.first || providerInterval.second > interval.second))
-        chainFailure("deployment-provider-request-window");
+          (providerInterval.first < interval.first || providerInterval.second > interval.second)) {
+        // Say which role and by how much. A bare reason string left this failure unreadable: the
+        // interval comparison that produced it could not be reproduced from the statistics I
+        // could see, so the next occurrence has to identify itself.
+        std::ostringstream detail;
+        detail << "deployment-provider-request-window"
+               << " round=" << round
+               << " role=" << role
+               << " provider=" << provider.provider
+               << " beforeByNs=" << (interval.first > providerInterval.first
+                   ? interval.first - providerInterval.first : 0)
+               << " afterByNs=" << (providerInterval.second > interval.second
+                   ? providerInterval.second - interval.second : 0);
+        chainFailure(detail.str());
+      }
       const auto events = nonnegativeInteger(observation.at("eventsPublished"));
       if (events) {
         ++publishers;
