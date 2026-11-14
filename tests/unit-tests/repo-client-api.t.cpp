@@ -356,6 +356,20 @@ BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
                     "sha512:" + std::string(64, 'A'));
 }
 
+BOOST_AUTO_TEST_CASE(OperationInspectionValidatesItsBinding) {
+  // An operation status is only meaningful with the operation id and the seed it belongs
+  // to; without them the facade must refuse rather than guess.
+  TemporaryDirectory temporary("operation");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoInspectionRequest request;
+  request.kind = RepoInspectionRequest::Kind::OPERATION;
+  request.operationReference = "op-1";
+  BOOST_CHECK_EXCEPTION(client.inspect(request, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" && error.phase() == "inspect";
+    });
+}
+
 BOOST_AUTO_TEST_CASE(AvailabilityIsFalseWhenTheCommittedPayloadIsGone) {
   // CA05: a catalog entry is not proof of a payload. Removing the stored bytes must turn
   // AVAILABLE into UNAVAILABLE.

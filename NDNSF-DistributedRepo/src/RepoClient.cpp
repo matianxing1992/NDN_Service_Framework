@@ -3335,6 +3335,24 @@ RepoClient::inspect(const RepoInspectionRequest& input,
       : std::nullopt;
     return inspection;
   }
+  if (input.kind == RepoInspectionRequest::Kind::OPERATION) {
+    if (!m_impl->user)
+      throw RepoClientError("UNSUPPORTED",
+                            "operation inspection requires a persistent client", "inspect");
+    if (input.operationReference.empty() || !input.operationSeed)
+      throw std::invalid_argument(
+        "operation inspection requires the operation id and its seed target");
+    PublishOperationHandle handle;
+    handle.operationId = input.operationReference;
+    handle.seed = m_impl->target(*input.operationSeed);
+    const auto status = m_impl->file->getPublishStatus(handle,
+                                                      remainingMs(options.deadline));
+    // A status answers how the operation is doing, not whether the object is available.
+    inspection.availability = RepoInspection::Availability::UNKNOWN;
+    inspection.lifecycleState = status.state;
+    inspection.claimStillCurrent = false;
+    return inspection;
+  }
   if (input.kind == RepoInspectionRequest::Kind::RECEIPT) {
     if (!input.object) {
       // A receipt id alone cannot be bound to an object or a target, so the result is

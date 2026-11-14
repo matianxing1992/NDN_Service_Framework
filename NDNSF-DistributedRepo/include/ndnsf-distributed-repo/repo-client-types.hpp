@@ -392,6 +392,9 @@ struct RepoInspectionRequest
   std::optional<RepoHandle> object;
   std::string receiptId;
   std::string operationReference;
+  /** Seed of the publication operation being inspected; the Repo answers status for
+   *  that seed-owned operation. */
+  std::optional<RepoTarget> operationSeed;
   RepoOwnerScope owner;
   std::string nodeId;
   RepoClaimReference claim;
