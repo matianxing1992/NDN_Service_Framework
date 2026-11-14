@@ -314,6 +314,9 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   const auto first = client.publishFile(publication, makeOptions());
   BOOST_CHECK(first.state == RepoPublishState::COMMITTED);
   BOOST_CHECK(!first.deduplicated);
+  // The engine's total timing survives the facade, so a slow publication can be attributed.
+  // In-app publication reports no phase split; phases come from the persistent engine.
+  BOOST_CHECK_GT(first.totalDurationMs, 0.0);
 
   const auto replay = client.publishFile(publication, makeOptions());
   BOOST_CHECK(replay.state == RepoPublishState::COMMITTED);

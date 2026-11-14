@@ -197,6 +197,10 @@ struct RepoPublishResult
   std::vector<RepoReplicaResult> replicas;
   bool deduplicated = false;
   bool resumed = false;
+  /** Engine-side timing, kept so a caller can see where a publication spent its time
+   *  instead of only how long it took. */
+  double totalDurationMs = 0;
+  std::vector<std::pair<std::string, double>> phaseDurationsMs;
 };
 
 /** Requested file retrieval. Exactly one of reference or handle identifies the

@@ -2891,6 +2891,9 @@ RepoClient::publishFile(const RepoFilePublication& input,
     result.operationReference = published.operationHandle->operationId;
   result.deduplicated = published.deduplicated;
   result.resumed = published.resumed;
+  result.totalDurationMs = published.totalDurationMs;
+  for (const auto& phase : published.phaseDurationsMs)
+    result.phaseDurationsMs.emplace_back(phase.first, phase.second);
   for (const auto& replica : published.replicas) {
     RepoReplicaResult mapped;
     mapped.targetId = replica.repoNode;
