@@ -241,6 +241,54 @@ decodeTensorBundleViews(std::vector<std::uint8_t>&&) = delete;
 std::vector<NamedTensorView>
 decodeTensorBundleViews(const std::vector<std::uint8_t>&&) = delete;
 
+/** A typed value held in this process instead of an encoded bundle.
+ *
+ * `owner` keeps the storage every view points into alive. A local value without
+ * an owner would be a dangling view, so a nonempty value always has one.
+ */
+struct LocalTensorBundle
+{
+  std::vector<NamedTensorView> tensors;
+  std::shared_ptr<const void> owner;
+};
+
+/** Read one bundle's tensors as views, whether it is local or wire.
+ *
+ * Locally-held values are validated and returned without copying; an encoded one
+ * goes through the codec. Callers must keep `bundle` and its owner alive while
+ * the views are used, which is why the rvalue overloads are deleted.
+ */
+std::vector<NamedTensorView>
+decodeTensorBundleViews(const TensorBundle& bundle,
+                        const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
+
+std::vector<NamedTensorView>
+decodeTensorBundleViews(TensorBundle&&) = delete;
+
+std::vector<NamedTensorView>
+decodeTensorBundleViews(const TensorBundle&&) = delete;
+
+/** Build the wire form of a bundle that only carries local tensors.
+ *
+ * The result holds an independent encoded copy and no local value, so a receiver
+ * that only understands bytes sees exactly what the original codec would have
+ * produced. A wire bundle is returned unchanged rather than re-encoded.
+ */
+TensorBundle
+materializeTensorBundleWire(const TensorBundle& bundle,
+                            const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
+
+/** Sum typed host views into one owned local bundle.
+ *
+ * The caller owns admission: it decides that the inputs are complete, legal and
+ * of the same dtype and shape, and it fixes the order. This helper only checks
+ * the numeric contract and adds, so one order means one result everywhere.
+ */
+TensorBundle
+sumTensorBundleViews(const std::string& outputScope,
+                     const std::vector<std::vector<NamedTensorView>>& contributions,
+                     const std::shared_ptr<NativeWorkStatistics>& workStatistics = {});
+
 const NamedTensor&
 findTensor(const std::vector<NamedTensor>& tensors, const std::string& name);
 

@@ -14390,6 +14390,162 @@ BOOST_AUTO_TEST_CASE(EveryTensorParallelUnitNeedsItsOwnFeedbackEdge)
   BOOST_CHECK_EQUAL(indices.size(), consumers.size());
 }
 
+BOOST_AUTO_TEST_CASE(ALocalTensorValueAndAnEncodedPayloadCannotBothBeCurrent)
+{
+  // Two representations of one value make every reader guess which is newer. The pair is
+  // refused rather than resolved by preference, because a stale payload that silently won
+  // would be a wrong answer that looks like a working path.
+  struct Owner
+  {
+    std::vector<float> values;
+  };
+  const auto makeView = [] (const std::string& name, const std::vector<float>& values) {
+    auto owner = std::make_shared<const Owner>(Owner{values});
+    NamedTensorView view;
+    view.name = name;
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(owner->values.size())};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->tensors.push_back(view);
+    local->owner = owner;
+    return local;
+  };
+
+  TensorBundle local;
+  local.name = "local";
+  local.localTensors = makeView("x", {1.0f, 2.0f});
+  const auto views = decodeTensorBundleViews(local);
+  BOOST_REQUIRE_EQUAL(views.size(), 1U);
+  BOOST_CHECK_EQUAL(views.front().name, std::string("x"));
+  // The view points at the owner's storage, not at a copy.
+  const auto values = reinterpret_cast<const float*>(views.front().payload.data());
+  BOOST_CHECK_EQUAL(values[0], 1.0f);
+  BOOST_CHECK_EQUAL(values[1], 2.0f);
+
+  TensorBundle both;
+  both.name = "both";
+  both.localTensors = makeView("x", {1.0f});
+  both.payload = encodeTensorBundle({NamedTensor{"x", TensorElementType::Float32, {1, 1},
+    float32Payload({5.0f})}});
+  BOOST_CHECK_THROW(decodeTensorBundleViews(both), std::invalid_argument);
+
+  // A local value with no owner would be a dangling view.
+  auto orphanLocal = std::make_shared<LocalTensorBundle>();
+  orphanLocal->tensors = makeView("x", {1.0f})->tensors;
+  TensorBundle orphan;
+  orphan.name = "orphan";
+  orphan.localTensors = orphanLocal;
+  BOOST_CHECK_THROW(decodeTensorBundleViews(orphan), std::invalid_argument);
+
+  // A bundle with neither representation is not silently an empty tensor.
+  TensorBundle neither;
+  neither.name = "neither";
+  BOOST_CHECK_THROW(decodeTensorBundleViews(neither), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(ALocalValueBecomesWireOnlyWhereTheBoundaryNeedsBytes)
+{
+  struct Owner
+  {
+    std::vector<float> values;
+  };
+  const auto makeLocal = [] () {
+    auto owner = std::make_shared<const Owner>(Owner{{0.5f, -1.5f, 2.25f}});
+    NamedTensorView view;
+    view.name = "activation";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, 3};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->tensors.push_back(view);
+    local->owner = owner;
+    TensorBundle bundle;
+    bundle.name = "activation";
+    bundle.localTensors = local;
+    return bundle;
+  };
+
+  const auto wire = materializeTensorBundleWire(makeLocal());
+  // The result is exactly what the codec would have produced for these numbers, so a receiver
+  // that only understands bytes cannot tell the two paths apart.
+  const auto tensors = decodeTensorBundle(wire.payload);
+  BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+  BOOST_CHECK_EQUAL(tensors.front().name, std::string("activation"));
+  BOOST_REQUIRE_EQUAL(tensors.front().shape.size(), 2U);
+  BOOST_CHECK_EQUAL(tensors.front().payload.size(), 3U * sizeof(float));
+  const auto numbers = reinterpret_cast<const float*>(tensors.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 0.5f);
+  BOOST_CHECK_EQUAL(numbers[1], -1.5f);
+  BOOST_CHECK_EQUAL(numbers[2], 2.25f);
+  BOOST_CHECK(!wire.localTensors);
+  BOOST_CHECK_EQUAL(wire.expectedBytes, wire.payload.size());
+  // Re-materializing a wire bundle returns it unchanged instead of encoding again.
+  const auto again = materializeTensorBundleWire(wire);
+  BOOST_CHECK(again.payload == wire.payload);
+}
+
+BOOST_AUTO_TEST_CASE(ASumOfLocalViewsIsOneOwnedAccumulator)
+{
+  struct Owner
+  {
+    std::vector<float> values;
+  };
+  // The owner must outlive every view taken from it. A helper that returns views alone would
+  // let the storage die with the helper's frame, and the reader would then add whatever the
+  // freed memory holds -- which is exactly the kind of silent wrong number this contract exists
+  // to prevent, so the fixture keeps the owners alive explicitly.
+  std::vector<std::shared_ptr<const Owner>> keptOwners;
+  const auto contribution = [&keptOwners] (float value) {
+    auto owner = std::make_shared<const Owner>(Owner{{value, value * 2.0f}});
+    keptOwners.push_back(owner);
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, 2};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    return std::vector<NamedTensorView>{view};
+  };
+
+  const auto first = contribution(1.0f);
+  const auto second = contribution(10.0f);
+  auto sum = sumTensorBundleViews("merged", {first, second});
+  BOOST_REQUIRE(sum.localTensors != nullptr);
+  const auto views = decodeTensorBundleViews(sum);
+  BOOST_REQUIRE_EQUAL(views.size(), 1U);
+  BOOST_CHECK_EQUAL(views.front().name, std::string("partial"));
+  const auto numbers = reinterpret_cast<const float*>(views.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 11.0f);
+  BOOST_CHECK_EQUAL(numbers[1], 22.0f);
+  const auto reversed = sumTensorBundleViews("merged", {second, first});
+  const auto reversedViews = decodeTensorBundleViews(reversed);
+  BOOST_CHECK_EQUAL(reinterpret_cast<const float*>(
+    reversedViews.front().payload.data())[0], 11.0f);
+
+  // A contribution of a different shape is rejected rather than broadcast.
+  const auto wrongShape = [&keptOwners] () {
+    auto owner = std::make_shared<const Owner>(Owner{{1.0f, 2.0f, 3.0f}});
+    keptOwners.push_back(owner);
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, 3};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    return std::vector<NamedTensorView>{view};
+  }();
+  BOOST_CHECK_THROW(sumTensorBundleViews("merged", {first, wrongShape}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(sumTensorBundleViews("merged", {}), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

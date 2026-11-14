@@ -990,6 +990,134 @@ decodeTensorBundleViews(const std::vector<std::uint8_t>& payload,
   return decodeTensorBundleImpl<NamedTensorView>(payload);
 }
 
+std::vector<NamedTensorView>
+decodeTensorBundleViews(const TensorBundle& bundle,
+                        const std::shared_ptr<NativeWorkStatistics>& workStatistics)
+{
+  if (bundle.localTensors) {
+    // A local value and a wire payload cannot both be current. Guessing which is
+    // newer would let a stale payload silently win, so the pair is refused.
+    if (!bundle.payload.empty()) {
+      throw std::invalid_argument(
+        "tensor bundle carries both a local value and an encoded payload");
+    }
+    NativeWorkScope work(workStatistics, "tensor-bundle-local-view", NativeWorkKind::LOCAL);
+    const auto& local = *bundle.localTensors;
+    if (local.tensors.empty()) {
+      throw std::invalid_argument("local tensor bundle holds no tensors");
+    }
+    if (!local.owner) {
+      throw std::invalid_argument("local tensor bundle has no storage owner");
+    }
+    for (const auto& tensor : local.tensors) validateNamedTensorView(tensor);
+    return local.tensors;
+  }
+  if (bundle.payload.empty()) {
+    throw std::invalid_argument("tensor bundle carries neither a local value nor a payload");
+  }
+  return decodeTensorBundleViews(bundle.payload, workStatistics);
+}
+
+TensorBundle
+materializeTensorBundleWire(const TensorBundle& bundle,
+                            const std::shared_ptr<NativeWorkStatistics>& workStatistics)
+{
+  if (!bundle.localTensors) {
+    // Already wire: returning it as-is keeps a legitimate retransmission a reuse
+    // rather than a second encoding of the same numbers.
+    return bundle;
+  }
+  NativeWorkScope work(workStatistics, "tensor-bundle-materialize", NativeWorkKind::LOCAL);
+  const auto views = decodeTensorBundleViews(bundle, workStatistics);
+  TensorBundle wire;
+  wire.name = bundle.name;
+  wire.payload = encodeTensorBundleViews(views, workStatistics);
+  wire.expectedBytes = wire.payload.size();
+  wire.expectedSegments = bundle.expectedSegments;
+  wire.transferObservation = bundle.transferObservation;
+  return wire;
+}
+
+TensorBundle
+sumTensorBundleViews(const std::string& outputScope,
+                     const std::vector<std::vector<NamedTensorView>>& contributions,
+                     const std::shared_ptr<NativeWorkStatistics>& workStatistics)
+{
+  NativeWorkScope work(workStatistics, "tensor-bundle-sum", NativeWorkKind::LOCAL);
+  if (contributions.empty()) {
+    throw std::invalid_argument("tensor sum has no contributions");
+  }
+  const auto& first = contributions.front();
+  if (first.empty()) {
+    throw std::invalid_argument("tensor sum contribution holds no tensors");
+  }
+  for (const auto& tensor : first) {
+    if (tensor.elementType != TensorElementType::Float32) {
+      throw std::invalid_argument(
+        "tensor sum requires float32 contributions: " + tensor.name);
+    }
+    validateNamedTensorView(tensor);
+  }
+  // One accumulator, sized once from the first contribution. Every later
+  // contribution must match it exactly; a mismatch is a contract violation, not
+  // something to broadcast or truncate.
+  std::vector<NamedTensor> totals;
+  totals.reserve(first.size());
+  for (const auto& tensor : first) {
+    NamedTensor total;
+    total.name = tensor.name;
+    total.elementType = tensor.elementType;
+    total.shape = tensor.shape;
+    total.payload.assign(tensor.payload.begin(), tensor.payload.end());
+    totals.push_back(std::move(total));
+  }
+  for (std::size_t index = 1; index < contributions.size(); ++index) {
+    const auto& next = contributions[index];
+    if (next.size() != first.size()) {
+      throw std::invalid_argument(
+        "tensor sum contributions disagree on tensor count");
+    }
+    for (std::size_t member = 0; member < next.size(); ++member) {
+      const auto& tensor = next[member];
+      if (tensor.name != first[member].name ||
+          tensor.elementType != first[member].elementType ||
+          tensor.shape != first[member].shape ||
+          tensor.payload.size() != first[member].payload.size()) {
+        throw std::invalid_argument(
+          "tensor sum contributions disagree on " + first[member].name);
+      }
+      auto* into = reinterpret_cast<float*>(totals[member].payload.data());
+      const auto* from = reinterpret_cast<const float*>(tensor.payload.data());
+      const auto count = totals[member].payload.size() / sizeof(float);
+      for (std::size_t value = 0; value < count; ++value) into[value] += from[value];
+    }
+  }
+  // The result owns its bytes, and the views point into that owner through a
+  // shared record so the two cannot be separated.
+  struct OwnedTensors
+  {
+    std::vector<NamedTensor> tensors;
+  };
+  auto owner = std::make_shared<const OwnedTensors>(OwnedTensors{std::move(totals)});
+  auto local = std::make_shared<LocalTensorBundle>();
+  local->owner = owner;
+  local->tensors.reserve(owner->tensors.size());
+  for (const auto& tensor : owner->tensors) {
+    NamedTensorView view;
+    view.name = tensor.name;
+    view.elementType = tensor.elementType;
+    view.shape = tensor.shape;
+    view.payload = ndn::span<const std::uint8_t>(tensor.payload.data(),
+                                                 tensor.payload.size());
+    local->tensors.push_back(std::move(view));
+  }
+  TensorBundle result;
+  result.name = outputScope;
+  result.expectedBytes = local->tensors.size();
+  result.localTensors = std::move(local);
+  return result;
+}
+
 namespace {
 
 template<typename Tensor>

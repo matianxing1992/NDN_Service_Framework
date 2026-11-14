@@ -24,12 +24,25 @@ namespace ndnsf::di {
 // including the planner from this shared value header.
 struct NativeExecutionStepSpec;
 
+// A value held in this process as typed host tensors rather than as an encoded
+// bundle. It is defined beside the codec because it borrows `NamedTensorView`;
+// only a forward declaration is needed here, and it must never enter a wire,
+// plan or cache digest.
+struct LocalTensorBundle;
+
 struct TensorBundle
 {
   std::string name;
+  // Empty when `localTensors` carries the value. A wire bundle has one or the
+  // other, never both: two valid representations of one value would make every
+  // reader guess which is current.
   std::vector<uint8_t> payload;
   std::size_t expectedSegments = 0;
   std::size_t expectedBytes = 0;
+  // Process-local typed value. Present only between hops that both accept it;
+  // every network, checkpoint, Repo and Python boundary materializes `payload`
+  // first. See C10/D7 in the 224 design.
+  std::shared_ptr<const LocalTensorBundle> localTensors;
   // Runtime-only observation shared between the worker result and the
   // dependency transport. It is never serialized into the tensor bundle.
   mutable std::shared_ptr<StageTransferObservation> transferObservation;
@@ -223,6 +236,12 @@ struct RoleSpec
   // their own device bindings and expose only an opaque Provider-local handle;
   // CPU adapters continue to use the ordinary host-tensor representation.
   bool streamingStateExecution = false;
+  // Ask the adapter for typed host outputs instead of encoded bytes. This is a
+  // representation preference only: it grants nothing, changes no session
+  // option or identity, and is never read from configuration. The Qwen parent
+  // sets it on a child whose step it has already validated; CUDA, legacy PP and
+  // standalone reference runs leave it false and keep the wire path.
+  bool preferLocalTensorOutputs = false;
   // Sealed token-local step template this role must execute. Empty keeps the
   // legacy whole-role path, which is why every existing role is unaffected.
   // A role that carries steps cannot be executed by a runner that only knows
