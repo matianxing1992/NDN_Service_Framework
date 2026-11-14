@@ -2907,6 +2907,7 @@ RepoClient::publishFile(const RepoFilePublication& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
+  requireLiveDeadline(options.deadline, "publishFile");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "publishFile requires a file client; this client was opened data-only",
@@ -3044,6 +3045,7 @@ RepoClient::publishData(const RepoDataPublication& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishData");
+  requireLiveDeadline(options.deadline, "publishData");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
                           "original-Data publication requires a persistent client",
@@ -3150,6 +3152,7 @@ RepoClient::fetchFile(const RepoFileFetch& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchFile");
+  requireLiveDeadline(options.deadline, "fetchFile");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "fetchFile requires a file client; this client was opened data-only",
@@ -3265,6 +3268,7 @@ RepoClient::fetchData(const RepoDataFetch& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchData");
+  requireLiveDeadline(options.deadline, "fetchData");
   // Inputs this mode cannot honour are refused instead of being ignored: a caller that
   // asked for a range or a segmented object must not receive the whole set silently.
   if (input.hasRange)
@@ -3397,6 +3401,7 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "authorizeWrite");
+  requireLiveDeadline(options.deadline, "authorizeWrite");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
                           "write authorization requires a persistent client",
@@ -3440,6 +3445,7 @@ RepoClient::inspect(const RepoInspectionRequest& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "inspect");
+  requireLiveDeadline(options.deadline, "inspect");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "inspect requires a file client; this client was opened data-only",
@@ -3573,6 +3579,7 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "list");
+  requireLiveDeadline(options.deadline, "list");
   if (!m_impl->user)
     throw RepoClientError("UNSUPPORTED",
                           "owner listing requires a persistent client", "list");
@@ -3630,6 +3637,7 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "remove");
+  requireLiveDeadline(options.deadline, "remove");
   // Shape errors are caller mistakes: report them before the mode check, otherwise an
   // in-app client would mask an invalid request as merely unsupported.
   if (input.targets.size() != 1 ||
@@ -3694,6 +3702,7 @@ RepoClient::discover(const RepoDiscoveryRequest& input,
   Impl::Ticket ticket(m_impl.get(), __func__);
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "discover");
+  requireLiveDeadline(options.deadline, "discover");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "discover requires a file client; this client was opened data-only",

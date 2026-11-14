@@ -245,6 +245,56 @@ BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {
   BOOST_CHECK_THROW(client.publishFile(publication, makeOptions()), RepoClientError);
 }
 
+BOOST_AUTO_TEST_CASE(EveryOperationReportsAnExpiredDeadline) {
+  // The caller's deadline is the whole operation's budget everywhere, not only where a
+  // request is about to be issued.
+  TemporaryDirectory temporary("deadline-all");
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoOperationOptions expired;
+  expired.deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+  const auto isExpired = [&] (const RepoClientError& error, const std::string& phase) {
+    return error.code() == "DEADLINE_EXPIRED" && error.phase() == phase;
+  };
+
+  RepoFilePublication publication;
+  publication.sourcePath = "/nonexistent";
+  publication.reference = fixtureReference();
+  BOOST_CHECK_EXCEPTION(client.publishFile(publication, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "publishFile"); });
+
+  RepoDataPublication data;
+  BOOST_CHECK_EXCEPTION(client.publishData(data, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "publishData"); });
+
+  RepoFileFetch fetch;
+  BOOST_CHECK_EXCEPTION(client.fetchFile(fetch, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "fetchFile"); });
+
+  RepoDataFetch packetFetch;
+  BOOST_CHECK_EXCEPTION(client.fetchData(packetFetch, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "fetchData"); });
+
+  RepoWriteAuthorization authorization;
+  BOOST_CHECK_EXCEPTION(client.authorizeWrite(authorization, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "authorizeWrite"); });
+
+  RepoInspectionRequest inspection;
+  BOOST_CHECK_EXCEPTION(client.inspect(inspection, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "inspect"); });
+
+  RepoListRequest listRequest;
+  BOOST_CHECK_EXCEPTION(client.list(listRequest, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "list"); });
+
+  RepoDeleteRequest deleteRequest;
+  BOOST_CHECK_EXCEPTION(client.remove(deleteRequest, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "remove"); });
+
+  RepoDiscoveryRequest discovery;
+  BOOST_CHECK_EXCEPTION(client.discover(discovery, expired), RepoClientError,
+    [&] (const RepoClientError& error) { return isExpired(error, "discover"); });
+}
+
 BOOST_AUTO_TEST_CASE(FailureCarriesNoInventedProgress) {
   // A failing path that cannot report progress must hand back an empty value rather than
   // plausible-looking entries; "unknown" and "none" are different answers.
