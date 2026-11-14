@@ -212,6 +212,19 @@ BOOST_AUTO_TEST_CASE(FilePublicationReturnsAFileReferenceNotAPacketSet) {
   BOOST_REQUIRE(published.reference.has_value());
   BOOST_CHECK(!published.packetSet.has_value());
   BOOST_CHECK(std::holds_alternative<FileReference>(*published.reference));
+
+  // The handle keeps the typed target and the committed replica detail, not a flattened
+  // list of names: a restart needs the identities that were committed.
+  BOOST_REQUIRE(published.committedHandle.has_value());
+  const auto& handle = *published.committedHandle;
+  BOOST_CHECK(std::holds_alternative<FileReference>(handle.reference));
+  if (const auto* file = std::get_if<FileReference>(&handle.reference)) {
+    // The engine canonicalises the reference it stores, so compare the identity that
+    // matters rather than the literal input string.
+    BOOST_CHECK(!file->logicalName.empty());
+    BOOST_CHECK_EQUAL(file->sizeBytes, fixtureReference().sizeBytes);
+    BOOST_CHECK_EQUAL(file->contentDigest, fixtureReference().contentDigest);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(CloseRefusesNewWorkAndReportsWhetherItDrained) {

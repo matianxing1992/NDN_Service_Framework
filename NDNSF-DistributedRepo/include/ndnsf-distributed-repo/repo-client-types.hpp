@@ -133,6 +133,20 @@ struct SegmentedObjectReference
 using RepoReference =
   std::variant<FileReference, ExactPacketSetReference, SegmentedObjectReference>;
 
+/** One committed replica, with the identity and operation that produced it. */
+struct RepoReplicaCommit
+{
+  RepoTarget target;
+  std::string receiptId;
+  std::string operationId;
+  uint64_t generation = 0;
+  std::string contentDigest;
+  uint64_t persistedBytes = 0;
+  uint64_t completedAtMs = 0;
+  uint64_t locationVersion = 0;
+  std::string routeState;
+};
+
 /** Public storage reference. It is not an authorization or decryption
  *  credential, and a static receipt does not replace a current claim. */
 struct RepoHandle
@@ -140,8 +154,8 @@ struct RepoHandle
   uint32_t schemaVersion = 1;
   RepoReference reference;
   std::vector<std::string> commitReceiptIds;
-  std::vector<std::string> selectedTargets;
-  std::vector<RepoReplicaResult> replicaCommits;
+  std::vector<RepoTarget> selectedTargets;
+  std::vector<RepoReplicaCommit> replicaCommits;
   std::string seedRepoId;
   std::string writeConsistency;
   std::string lifecycleMode;

@@ -2678,13 +2678,25 @@ toRepoHandle(const ArtifactHandle& input)
   handle.schemaVersion = input.schemaVersion;
   handle.reference = toFileReference(input.reference);
   handle.commitReceiptIds = input.commitReceiptIds;
-  for (const auto& target : input.selectedTargets)
-    handle.selectedTargets.push_back(target.repoNode);
+  for (const auto& target : input.selectedTargets) {
+    RepoTarget typed;
+    typed.repoNode = target.repoNode;
+    typed.providerIdentity = target.providerIdentity.toUri();
+    typed.servicePrefix = target.servicePrefix.toUri();
+    handle.selectedTargets.push_back(std::move(typed));
+  }
   for (const auto& commit : input.replicaCommits) {
-    RepoReplicaResult replica;
-    replica.targetId = commit.repoNode;
+    RepoReplicaCommit replica;
+    replica.target.repoNode = commit.repoNode;
+    replica.target.providerIdentity = commit.providerIdentity;
     replica.receiptId = commit.receiptId;
-    replica.state = RepoTargetState::COMMITTED;
+    replica.operationId = commit.operationId;
+    replica.generation = commit.generation;
+    replica.contentDigest = commit.contentDigest;
+    replica.persistedBytes = commit.persistedBytes;
+    replica.completedAtMs = commit.completedAtMs;
+    replica.locationVersion = commit.locationVersion;
+    replica.routeState = commit.routeState;
     handle.replicaCommits.push_back(std::move(replica));
   }
   handle.seedRepoId = input.seedRepoId;
@@ -2705,7 +2717,9 @@ toArtifactHandle(const RepoHandle& input)
   handle.commitReceiptIds = input.commitReceiptIds;
   for (const auto& target : input.selectedTargets) {
     SelectedRepoTarget projected;
-    projected.repoNode = target;
+    projected.repoNode = target.repoNode;
+    projected.providerIdentity = ndn::Name(target.providerIdentity);
+    projected.servicePrefix = ndn::Name(target.servicePrefix);
     handle.selectedTargets.push_back(std::move(projected));
   }
   handle.seedRepoId = input.seedRepoId;
