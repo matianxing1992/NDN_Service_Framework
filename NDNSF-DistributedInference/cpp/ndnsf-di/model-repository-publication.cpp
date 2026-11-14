@@ -216,6 +216,10 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
   };
   current();
   NativeStoredModelPacketIo io;
+  // The scheduler's bound comes from Repo's own configuration rather than a DI constant,
+  // without holding a client across calls (that lifetime change crashed the suite).
+  auto ioLimits = repo::ArtifactLimits{};
+  io.publicationGroupWireBytes = ioLimits.maxChunkBytes;
   io.requireCurrent = current;
   if (allowPublication) {
     io.requireCurrent = [user, current] {

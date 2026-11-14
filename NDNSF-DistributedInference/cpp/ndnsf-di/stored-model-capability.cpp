@@ -812,7 +812,11 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
   NativeStoredModelPacketIo::PacketWires group;
   std::size_t nameBytes = 0;
   Bytes digestInput;
-  NativeModelCommitPipeline pipeline(io.requireCurrent, NATIVE_STORED_MODEL_UPLOAD_WIRE);
+  // Take the io's Repo-owned bound when it reports one; the DI constant is only the
+  // fallback for generic io without a Repo behind it.
+  NativeModelCommitPipeline pipeline(io.requireCurrent,
+    io.publicationGroupWireBytes != 0 ? io.publicationGroupWireBytes
+                                     : NATIVE_STORED_MODEL_UPLOAD_WIRE);
   const auto flush = [&] {
     if (group.empty())
       return;

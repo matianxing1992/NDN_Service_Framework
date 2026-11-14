@@ -48,6 +48,10 @@ struct NativeStoredModelPacketIo
    */
   std::function<void(PacketWires, const std::string&, const std::function<void()>&)>
     commitConcurrent;
+  /** Per-group wire bound the transport behind this io accepts, taken from Repo's own
+   *  configuration. Zero means the io has no Repo behind it and the caller's default
+   *  applies. */
+  std::uint64_t publicationGroupWireBytes = 0;
 };
 
 /** Own at most three asynchronous original-packet commits on one caller thread.
