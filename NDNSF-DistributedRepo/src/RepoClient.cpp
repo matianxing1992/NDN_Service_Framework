@@ -1602,7 +1602,7 @@ RepoClientCompat::localPut(ndn_service_framework::LocalServiceRegistry& registry
                      const std::vector<uint8_t>& payload,
                      StoreOptions options)
 {
-  auto manifest = RepoClient::makeManifest(objectName,
+  auto manifest = RepoClientCompat::makeManifest(objectName,
                                options.objectType,
                                payload,
                                options.replicationFactor,
@@ -1819,7 +1819,7 @@ RepoClientCompat::localGetObject(ndn_service_framework::LocalServiceRegistry& re
 }
 
 RepoObjectManifest
-RepoClient::makeManifest(std::string objectName,
+RepoClientCompat::makeManifest(std::string objectName,
                          std::string objectType,
                          const std::vector<uint8_t>& payload,
                          uint32_t replicationFactor,
@@ -1898,7 +1898,7 @@ RepoClientCompat::requestStore(
 }
 
 ndn::Name
-RepoClient::requestStoreRange(
+RepoClientCompat::requestStoreRange(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const RepoObjectManifest& manifest,
@@ -2402,7 +2402,7 @@ RepoClientCompat::requestInsert(
 }
 
 ndn::Name
-RepoClient::requestFetch(
+RepoClientCompat::requestFetch(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& repoServicePrefix,
   const std::string& objectName,
@@ -2418,7 +2418,7 @@ RepoClient::requestFetch(
 }
 
 ndn::Name
-RepoClient::requestReceipt(
+RepoClientCompat::requestReceipt(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& provider,
   const ndn::Name& repoServicePrefix,
@@ -2466,7 +2466,7 @@ RepoClient::requestReceipt(
 }
 
 ndn::Name
-RepoClient::requestAvailability(
+RepoClientCompat::requestAvailability(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& provider,
   const ndn::Name& repoServicePrefix,
@@ -2565,7 +2565,7 @@ RepoClientCompat::requestStatus(
 }
 
 ndn::Name
-RepoClient::requestLocation(
+RepoClientCompat::requestLocation(
   ndn_service_framework::ServiceUser& user,
   const ndn::Name& provider,
   const ndn::Name& repoServicePrefix,

@@ -1,5 +1,7 @@
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
+
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
 #include "ndnsf-distributed-repo/RepoStoreBackend.hpp"
@@ -3655,7 +3657,7 @@ ArtifactRepositoryApi::fetchFile(const ArtifactHandle& handle,
         (auto onTimeout, auto onResponse) {
           const auto requestTimeout = boundedRequestTimeoutMs(
             deadline, requestTimeoutMs);
-          return RepoClient::requestLocation(
+          return RepoClientCompat::requestLocation(
             *serviceUser, providerIdentity, servicePrefix,
             locationRequest, requestTimeout,
             std::move(onTimeout), std::move(onResponse));
@@ -3988,7 +3990,7 @@ ArtifactRepositoryApi::getReceipt(
      providerIdentity = seed->providerIdentity,
      servicePrefix = seed->servicePrefix, query, effectiveTimeout]
     (auto onTimeout, auto onResponse) {
-      return RepoClient::requestReceipt(*serviceUser,
+      return RepoClientCompat::requestReceipt(*serviceUser,
         providerIdentity, servicePrefix, query, effectiveTimeout,
         std::move(onTimeout), std::move(onResponse));
     }, receiptWaitDeadline);
@@ -4228,7 +4230,7 @@ ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
          servicePrefix = target.servicePrefix, locationRequest,
          locationTimeoutMs]
         (auto onTimeout, auto onResponse) {
-          return RepoClient::requestLocation(*serviceUser,
+          return RepoClientCompat::requestLocation(*serviceUser,
             providerIdentity, servicePrefix, locationRequest,
             locationTimeoutMs, std::move(onTimeout), std::move(onResponse));
         }, locationWaitDeadline);
@@ -4361,7 +4363,7 @@ ArtifactRepositoryApi::checkAvailability(const ArtifactHandle& handle,
          servicePrefix = target.servicePrefix, probe,
          availabilityTimeoutMs]
         (auto onTimeout, auto onResponse) {
-          return RepoClient::requestAvailability(*serviceUser,
+          return RepoClientCompat::requestAvailability(*serviceUser,
             providerIdentity, servicePrefix, probe,
             availabilityTimeoutMs, std::move(onTimeout), std::move(onResponse));
         }, probeWaitDeadline);

@@ -321,12 +321,7 @@ public:
    */
   
 
-  static RepoObjectManifest makeManifest(std::string objectName,
-                                         std::string objectType,
-                                         const std::vector<uint8_t>& payload,
-                                         uint32_t replicationFactor,
-                                         std::vector<std::string> replicaNodes,
-                                         std::string policyEpoch);
+  
 
   
 
@@ -336,15 +331,7 @@ public:
 
   
 
-  static ndn::Name requestStoreRange(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& repoServicePrefix,
-    const RepoObjectManifest& manifest,
-    RepoByteRange range,
-    const std::vector<uint8_t>& bytes,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  
 
   
 
@@ -392,13 +379,7 @@ public:
 
   
 
-  static ndn::Name requestFetch(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& repoServicePrefix,
-    const std::string& objectName,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  
 
   static ndn::Name requestFetchRange(
     ndn_service_framework::ServiceUser& user,
@@ -417,32 +398,11 @@ public:
 
   
 
-  static ndn::Name requestLocation(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& provider,
-    const ndn::Name& repoServicePrefix,
-    const ArtifactLocationRequest& request,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  
 
-  static ndn::Name requestReceipt(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& provider,
-    const ndn::Name& repoServicePrefix,
-    const RepoReceiptLookupRequest& request,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  
 
-  static ndn::Name requestAvailability(
-    ndn_service_framework::ServiceUser& user,
-    const ndn::Name& provider,
-    const ndn::Name& repoServicePrefix,
-    const RepoAvailabilityProbeRequest& request,
-    int timeoutMs,
-    ndn_service_framework::ServiceUser::TimeoutHandler onTimeout,
-    ndn_service_framework::ServiceUser::ResponseHandler onResponse);
+  
 
   static ndn::Name requestFetchRange(
     ndn_service_framework::ServiceUser& user,

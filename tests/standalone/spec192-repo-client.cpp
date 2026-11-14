@@ -983,7 +983,7 @@ run(const Options& options)
       query.repoNode = required(options, "repo-a");
       query.providerIdentity = provider.toUri();
       const auto reply = awaitWrapper(context, [&context, provider, prefix, query] (auto t, auto r) {
-        return repo::RepoClient::requestReceipt(context.user(), provider, prefix, query, 30000, t, r);
+        return repo::RepoClientCompat::requestReceipt(context.user(), provider, prefix, query, 30000, t, r);
       }, true);
       const std::string expected = "repo-publish-operation-unauthorized: requester is not the submitting principal";
       if (reply.status || reply.error != expected || repo::toString(reply.payload) != expected)
@@ -999,7 +999,7 @@ run(const Options& options)
       query.repoNode = required(options, "repo-a");
       query.providerIdentity = provider.toUri();
       const auto reply = awaitWrapper(context, [&context, provider, prefix, query] (auto t, auto r) {
-        return repo::RepoClient::requestReceipt(context.user(), provider, prefix, query, 6000, t, r);
+        return repo::RepoClientCompat::requestReceipt(context.user(), provider, prefix, query, 6000, t, r);
       }, false, true);
       if (reply.status || reply.error != "network-wrapper-timeout" || !reply.payload.empty())
         throw std::runtime_error("fault Response reached an application completion callback");
@@ -1022,7 +1022,7 @@ run(const Options& options)
       }
       const auto started = std::chrono::steady_clock::now();
       const auto reply = awaitWrapper(context, [&context, provider, prefix, query] (auto t, auto r) {
-        return repo::RepoClient::requestReceipt(context.user(), provider, prefix, query, 6000, t, r);
+        return repo::RepoClientCompat::requestReceipt(context.user(), provider, prefix, query, 6000, t, r);
       }, false, true);
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
@@ -1033,7 +1033,7 @@ run(const Options& options)
     }
     else if (phase == "rejected") {
       const auto operation = required(options, "operation");
-      const auto manifest = repo::RepoClient::makeManifest(object, "object", source, 1, {}, "spec193-reject");
+      const auto manifest = repo::RepoClientCompat::makeManifest(object, "object", source, 1, {}, "spec193-reject");
       std::vector<uint8_t> input;
       std::string expected = "repo-persistent-operation-required: ";
       if (operation == "STORE") {
@@ -1086,7 +1086,7 @@ run(const Options& options)
       if (capability.find("\"repoNode\":\"" + required(options, "repo-a") + "\"") == std::string::npos) throw std::runtime_error("wrapper capability owner mismatch");
       (void)repo::parseCacheStatusJson(repo::toString(call("CACHE_STATUS",
         [&context, prefix] (auto t, auto r) { return repo::RepoClientCompat::requestCacheStatus(context.user(), prefix, 30000, t, r); })));
-      const auto manifest = repo::RepoClient::makeManifest(object + "/primary", "object", source, 1, {}, "spec193-nw");
+      const auto manifest = repo::RepoClientCompat::makeManifest(object + "/primary", "object", source, 1, {}, "spec193-nw");
       const auto stored = repo::parseManifestJson(repo::toString(call("STORE",
         [&context, prefix, manifest, source] (auto t, auto r) { return repo::RepoClientCompat::requestStore(context.user(), prefix, manifest, source, 30000, t, r); })));
       if (stored.sha256 != sha256(source)) throw std::runtime_error("wrapper STORE digest mismatch");
@@ -1099,7 +1099,7 @@ run(const Options& options)
         const auto bytes = tail ? last : first;
         const repo::RepoByteRange range{tail ? 256u : 0u, bytes.size()};
         if (repo::toString(call("STORE_RANGE", [&context, prefix, ranged, range, bytes] (auto t, auto r) {
-          return repo::RepoClient::requestStoreRange(context.user(), prefix, ranged, range, bytes, 30000, t, r);
+          return repo::RepoClientCompat::requestStoreRange(context.user(), prefix, ranged, range, bytes, 30000, t, r);
         })) != "accepted") throw std::runtime_error("wrapper range was not accepted");
       }
       const auto committed = repo::parseManifestJson(repo::toString(call("COMMIT_RANGES",
@@ -1108,13 +1108,13 @@ run(const Options& options)
       auto aborted = ranged;
       aborted.objectName = object + "/aborted";
       (void)call("STORE_RANGE", [&context, prefix, aborted, first] (auto t, auto r) {
-        return repo::RepoClient::requestStoreRange(context.user(), prefix, aborted, {0, first.size()}, first, 30000, t, r);
+        return repo::RepoClientCompat::requestStoreRange(context.user(), prefix, aborted, {0, first.size()}, first, 30000, t, r);
       });
       if (repo::toString(call("ABORT_RANGES", [&context, prefix, aborted] (auto t, auto r) {
         return repo::RepoClientCompat::requestAbortRanges(context.user(), prefix, aborted.objectName, 30000, t, r);
       })) != "aborted") throw std::runtime_error("wrapper abort did not finish");
       if (call("FETCH", [&context, prefix, manifest] (auto t, auto r) {
-        return repo::RepoClient::requestFetch(context.user(), prefix, manifest.objectName, 30000, t, r);
+        return repo::RepoClientCompat::requestFetch(context.user(), prefix, manifest.objectName, 30000, t, r);
       }) != source) throw std::runtime_error("wrapper FETCH differs from source");
       const std::vector<uint8_t> window(source.begin() + 37, source.begin() + 150);
       if (call("FETCH_RANGE", [&context, prefix, ranged] (auto t, auto r) {
@@ -1141,7 +1141,7 @@ run(const Options& options)
       if (inserted.state != "DONE" || status.state != "DONE" || status.completedSegments != 1) throw std::runtime_error("wrapper INSERT/STATUS incomplete");
       const auto packetName = ndn::Name(reference.dataPrefix).appendSegment(0).toUri();
       if (call("FETCH_DATA", [&context, prefix, packetName] (auto t, auto r) {
-        return repo::RepoClient::requestFetch(context.user(), prefix, packetName, 30000, t, r);
+        return repo::RepoClientCompat::requestFetch(context.user(), prefix, packetName, 30000, t, r);
       }) != wire) throw std::runtime_error("wrapper FETCH changed original signed Data");
       if (repo::parseInventoryJson(repo::toString(call("INVENTORY",
         [&context, prefix] (auto t, auto r) { return repo::RepoClientCompat::requestInventory(context.user(), prefix, 30000, t, r); }))).size() != 4) throw std::runtime_error("wrapper inventory count mismatch");
@@ -1233,7 +1233,7 @@ run(const Options& options)
         locationRequest.reference = reference;
         const auto location = repo::ArtifactLocationRecord::fromJson(repo::toString(call("LOCATION",
           [&context, provider, prefix, locationRequest] (auto t, auto r) {
-            return repo::RepoClient::requestLocation(context.user(), provider, prefix, locationRequest, 30000, t, r);
+            return repo::RepoClientCompat::requestLocation(context.user(), provider, prefix, locationRequest, 30000, t, r);
           })));
         if (location.reference != reference || location.receiptId != receipt.receiptId ||
             location.operationId != operationId || location.providerIdentity != target.providerIdentity)
@@ -1245,7 +1245,7 @@ run(const Options& options)
         receiptRequest.providerIdentity = target.providerIdentity;
         const auto historical = repo::ArtifactCommitReceipt::fromJson(repo::toString(call("RECEIPT",
           [&context, provider, prefix, receiptRequest] (auto t, auto r) {
-            return repo::RepoClient::requestReceipt(context.user(), provider, prefix, receiptRequest, 30000, t, r);
+            return repo::RepoClientCompat::requestReceipt(context.user(), provider, prefix, receiptRequest, 30000, t, r);
           })));
         if (historical.receiptId != publishStatus.receiptId || historical.operationId != operationId ||
             historical.reference != reference || historical.state != "COMMITTED")
@@ -1257,7 +1257,7 @@ run(const Options& options)
         probe.probeKind = "verify_content";
         const auto availability = repo::RepoAvailabilityProbeResponse::fromJson(repo::toString(call("AVAILABILITY",
           [&context, provider, prefix, probe] (auto t, auto r) {
-            return repo::RepoClient::requestAvailability(context.user(), provider, prefix, probe, 30000, t, r);
+            return repo::RepoClientCompat::requestAvailability(context.user(), provider, prefix, probe, 30000, t, r);
           })));
         if (availability.reference != reference || availability.expectedLocation.toJson() != probe.expectedLocation.toJson() ||
             availability.report.repoNode != target.repoNode || availability.report.providerIdentity != target.providerIdentity ||
@@ -1286,12 +1286,12 @@ run(const Options& options)
       lookup.repoNode = originalLocation.repoNode;
       lookup.providerIdentity = originalLocation.providerIdentity;
       if (call("RECEIPT", [&context, provider, prefix, lookup] (auto t, auto r) {
-        return repo::RepoClient::requestReceipt(context.user(), provider, prefix, lookup, 30000, t, r);
+        return repo::RepoClientCompat::requestReceipt(context.user(), provider, prefix, lookup, 30000, t, r);
       }) != historicalWire) throw std::runtime_error("physical loss changed historical aggregate receipt");
       repo::ArtifactLocationRequest query;
       query.reference = reference;
       if (call("LOCATION", [&context, provider, prefix, query] (auto t, auto r) {
-        return repo::RepoClient::requestLocation(context.user(), provider, prefix, query, 30000, t, r);
+        return repo::RepoClientCompat::requestLocation(context.user(), provider, prefix, query, 30000, t, r);
       }) != locationWire) throw std::runtime_error("physical loss changed stored location tuple");
       repo::RepoAvailabilityProbeRequest probe;
       probe.reference = reference;
@@ -1300,7 +1300,7 @@ run(const Options& options)
       probe.probeKind = "verify_content";
       const auto observation = repo::RepoAvailabilityProbeResponse::fromJson(repo::toString(call("AVAILABILITY",
         [&context, provider, prefix, probe] (auto t, auto r) {
-          return repo::RepoClient::requestAvailability(context.user(), provider, prefix, probe, 30000, t, r);
+          return repo::RepoClientCompat::requestAvailability(context.user(), provider, prefix, probe, 30000, t, r);
         })));
       if (observation.reference != reference || observation.expectedLocation.toJson() != probe.expectedLocation.toJson() ||
           observation.report.repoNode != originalLocation.repoNode || observation.report.providerIdentity != provider.toUri() ||
@@ -1350,7 +1350,7 @@ run(const Options& options)
   }
   if (mode == "object-write-reject") {
     const auto payload = readBytes(required(options, "source"));
-    const auto manifest = repo::RepoClient::makeManifest(
+    const auto manifest = repo::RepoClientCompat::makeManifest(
       required(options, "object-name"), "application/octet-stream", payload,
       1, {required(options, "repo-a")}, "spec193-persistent-boundary");
     try {
@@ -1377,7 +1377,7 @@ run(const Options& options)
     const ndn::Name provider(required(options, "provider-a"));
     const auto payload = readBytes(required(options, "source"));
     const auto objectName = required(options, "object-name");
-    const auto manifest = repo::RepoClient::makeManifest(
+    const auto manifest = repo::RepoClientCompat::makeManifest(
       objectName, "application/octet-stream", payload, 1,
       {required(options, "repo-a")}, "spec193-object-baseline");
     auto selected = [&] (const std::string& operation,
@@ -2277,7 +2277,7 @@ run(const Options& options)
         request, 15000, 120000);
     };
     if (mode == "object-range-phase") {
-      const auto manifest = repo::RepoClient::makeManifest(
+      const auto manifest = repo::RepoClientCompat::makeManifest(
         rangeName, "o16-range-object", rangePayload, 1,
         {required(options, "repo-a")}, "spec193-o16");
       if (phase == "stage") {

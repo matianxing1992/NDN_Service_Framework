@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedRepo/src/face-data-reference-fetcher.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <ndn-cxx/data.hpp>
@@ -787,7 +788,7 @@ BOOST_AUTO_TEST_CASE(ExactIndexPreservesManifestSegmentsAndAuxiliaryNames)
   for (const auto& wire : expected) {
     originalWire.insert(originalWire.end(), wire.begin(), wire.end());
   }
-  reference.expectedSha256 = RepoClient::makeManifest(reference.objectName,
+  reference.expectedSha256 = RepoClientCompat::makeManifest(reference.objectName,
     "original-packet-set", originalWire, 1, {}, "").sha256;
   metadata.sha256 = reference.expectedSha256;
   metadata.publicationIdentity = "opaque-producer-publication";

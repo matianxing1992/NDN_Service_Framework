@@ -961,7 +961,7 @@ BOOST_AUTO_TEST_CASE(FilesystemVectorReadRejectsCorruptCommittedPayload)
     (temporary.path() / "objects").string(), 4096, 1024,
     "spec193-o05-vector-integrity");
   const std::vector<uint8_t> source{0x10, 0x20, 0x30, 0x40, 0x50};
-  const auto manifest = RepoClient::makeManifest(
+  const auto manifest = RepoClientCompat::makeManifest(
     "/spec193/o05/vector", "application/octet-stream", source, 1, {}, "");
   store.put(manifest, source);
   BOOST_CHECK(store.get(manifest.objectName).payload == source);

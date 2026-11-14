@@ -150,7 +150,7 @@ main(int argc, char* argv[])
         reference.dataPrefix = packetName;
         reference.objectType = "ndn-local-packet-set";
         reference.expectedSize = wire.size();
-        reference.expectedSha256 = repo_api::RepoClient::makeManifest(
+        reference.expectedSha256 = repo_api::RepoClientCompat::makeManifest(
           packetName, "ndn-data-wire", wire, 1, {}, "").sha256;
         repo->setDataReferenceFetcher([wire, packetName] (const repo_api::RepoDataReference& requested) {
           if (requested.dataPrefix != packetName) throw std::runtime_error("local-fetch-denied");
@@ -269,7 +269,7 @@ main(int argc, char* argv[])
         const auto& prefix = config.servicePrefix;
         const auto make = [&] (const std::string& suffix,
                                const std::vector<uint8_t>& bytes) {
-          auto manifest = repo_api::RepoClient::makeManifest(
+          auto manifest = repo_api::RepoClientCompat::makeManifest(
             localObject + "/" + suffix, "application/octet-stream",
             bytes, 1, {}, "spec193-l02");
           manifest.operationId = "spec193-l02-" + suffix;
@@ -570,7 +570,7 @@ main(int argc, char* argv[])
         }
         const auto make = [&] (const std::string& suffix,
                                const std::vector<uint8_t>& bytes) {
-          auto manifest = repo_api::RepoClient::makeManifest(
+          auto manifest = repo_api::RepoClientCompat::makeManifest(
             localObject + "/" + suffix, "application/octet-stream",
             bytes, 1, {}, "spec193-o03");
           manifest.operationId = "spec193-o03-" + suffix;
@@ -695,7 +695,7 @@ main(int argc, char* argv[])
         if (localManifest.empty() || payload.size() < 400) {
           throw std::invalid_argument("O02 requires report path and at least 400 source bytes");
         }
-        const auto manifest = repo_api::RepoClient::makeManifest(
+        const auto manifest = repo_api::RepoClientCompat::makeManifest(
           localObject, "application/octet-stream", payload, 1, {}, "spec193-o02");
         constexpr size_t firstEnd = 101;
         constexpr size_t middleEnd = 318;
@@ -1016,7 +1016,7 @@ main(int argc, char* argv[])
             packetNames.push_back(packetName(index));
             orderedWires.push_back(std::move(wire));
           }
-          auto manifest = repo_api::RepoClient::makeManifest(
+          auto manifest = repo_api::RepoClientCompat::makeManifest(
             localObject, "ndn-data-packet-set", concatenated, 1, {}, "");
           manifest.segmentCount = 3;
           manifest.packetNames = packetNames;
