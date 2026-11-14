@@ -150,13 +150,6 @@ public:
    * This uses the Owner's existing Face, blocks outside its I/O thread, and
    * requires the Owner Face event loop to remain active during the fetch.
    */
-  static std::vector<uint8_t> fetchOriginalDataPacketFromUserStorage(
-    ndn_service_framework::ServiceUser& user,
-    const RepoArtifactTarget& target,
-    const ndn::Name& dataName,
-    uint64_t expectedWireBytes,
-    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
-    int timeoutMs);
 
   /** Retrieve an explicitly indexed immutable set through the existing User Face.
    * Reference routing/byte commitments do not grant storage or execution authority.

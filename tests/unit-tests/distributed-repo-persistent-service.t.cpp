@@ -4144,7 +4144,7 @@ BOOST_AUTO_TEST_CASE(OwnerPacketClientUsesConfiguredFaceAndChecksWireSignerSizeA
   const auto run = [&](uint64_t size, const std::function<bool(const ndn::Data&)>& validator,
                        int timeoutMs = 1000) {
     auto result = std::async(std::launch::async, [&] {
-      return RepoClient::fetchOriginalDataPacketFromUserStorage(
+      return RepoClientCompat::fetchOriginalDataPacketFromUserStorage(
         user, target, name, size, validator, timeoutMs);
     });
     BOOST_REQUIRE(pump([&] { return result.wait_for(std::chrono::milliseconds(0)) ==
@@ -4162,7 +4162,7 @@ BOOST_AUTO_TEST_CASE(OwnerPacketClientUsesConfiguredFaceAndChecksWireSignerSizeA
 
   bool rejectedOnFace = false;
   user.postToIo([&] {
-    BOOST_CHECK_THROW(RepoClient::fetchOriginalDataPacketFromUserStorage(
+    BOOST_CHECK_THROW(RepoClientCompat::fetchOriginalDataPacketFromUserStorage(
       user, target, name, fixture.packets.front().size(), verify, 100), std::logic_error);
     rejectedOnFace = true;
   });
@@ -4181,11 +4181,11 @@ BOOST_AUTO_TEST_CASE(OwnerPacketTimeoutKeepsAdmissionUntilPausedFaceCallbacksDra
     owner, authority, writeFixedKeychainTrust(temp.path(), keys));
   const RepoArtifactTarget target{"/repo/a", "/repo/provider", "/SERVICE/repo"};
   for (size_t i = 0; i < 16; ++i) {
-    BOOST_CHECK_THROW(RepoClient::fetchOriginalDataPacketFromUserStorage(
+    BOOST_CHECK_THROW(RepoClientCompat::fetchOriginalDataPacketFromUserStorage(
       *user, target, ndn::Name("/provider/a/missing"), 100,
       [](const ndn::Data&) { return true; }, 3), std::runtime_error);
   }
-  BOOST_CHECK_EXCEPTION(RepoClient::fetchOriginalDataPacketFromUserStorage(
+  BOOST_CHECK_EXCEPTION(RepoClientCompat::fetchOriginalDataPacketFromUserStorage(
     *user, target, ndn::Name("/provider/a/missing"), 100,
     [](const ndn::Data&) { return true; }, 3), std::runtime_error,
     [](const std::runtime_error& error) {

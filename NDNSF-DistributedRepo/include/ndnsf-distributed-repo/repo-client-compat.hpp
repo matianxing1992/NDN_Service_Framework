@@ -50,6 +50,13 @@ public:
     const std::vector<OriginalDataReplica>& replicas,
     const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
     int timeoutMs);
+  static std::vector<uint8_t> fetchOriginalDataPacketFromUserStorage(
+    ndn_service_framework::ServiceUser& user,
+    const RepoArtifactTarget& target,
+    const ndn::Name& dataName,
+    uint64_t expectedWireBytes,
+    const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
+    int timeoutMs);
 };
 
 } // namespace ndnsf_distributed_repo

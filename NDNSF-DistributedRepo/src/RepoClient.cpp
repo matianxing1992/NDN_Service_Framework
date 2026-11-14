@@ -438,7 +438,7 @@ RepoClientCompat::fetchOriginalDataPacket(
 }
 
 std::vector<uint8_t>
-RepoClient::fetchOriginalDataPacketFromUserStorage(
+RepoClientCompat::fetchOriginalDataPacketFromUserStorage(
   ndn_service_framework::ServiceUser& user,
   const RepoArtifactTarget& target,
   const ndn::Name& dataName,
