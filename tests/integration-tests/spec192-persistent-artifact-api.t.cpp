@@ -3052,7 +3052,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   auto changed = verified.claim();
   ++changed.object.generation;
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::revalidateCurrentUserStorageClaim(
+    return repo::RepoClientCompat::revalidateCurrentUserStorageClaim(
       environment.user(), target, changed, 15000, handoffLimits);
   }), std::runtime_error);
   auto limits = handoffLimits;
@@ -3071,7 +3071,7 @@ runOwnerClientOriginalPacketRoundTrip(const TempRoot& temporary)
   BOOST_CHECK_EQUAL(repo::RepoUserStorageDeleteReply::fromJson(responseString(response)).state,
     "DELETED");
   BOOST_CHECK_THROW(runWithFacePump(environment, [&] {
-    return repo::RepoClient::revalidateCurrentUserStorageClaim(
+    return repo::RepoClientCompat::revalidateCurrentUserStorageClaim(
       environment.user(), target, verified.claim(), 15000, handoffLimits);
   }), std::runtime_error);
   BOOST_CHECK(node->core().has(reference.objectName));

@@ -57,6 +57,12 @@ public:
     uint64_t expectedWireBytes,
     const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
     int timeoutMs);
+  static RepoUserStorageClaim revalidateCurrentUserStorageClaim(
+    ndn_service_framework::ServiceUser& owner,
+    const RepoArtifactTarget& target,
+    const RepoUserStorageClaim& expectedClaim,
+    int timeoutMs,
+    RepoUserStoragePacketSetFetchLimits limits = {});
 };
 
 } // namespace ndnsf_distributed_repo

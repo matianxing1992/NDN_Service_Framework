@@ -187,12 +187,6 @@ public:
    * a bounded observation, not a durability lease, and must not run on the
    * ServiceUser Face I/O thread.
    */
-  static RepoUserStorageClaim revalidateCurrentUserStorageClaim(
-    ndn_service_framework::ServiceUser& owner,
-    const RepoArtifactTarget& target,
-    const RepoUserStorageClaim& expectedClaim,
-    int timeoutMs,
-    RepoUserStoragePacketSetFetchLimits limits = {});
 
   /** Commit an exact signed packet set using a current Owner grant.
    * Serves a bounded private spool only through the writer's existing route.

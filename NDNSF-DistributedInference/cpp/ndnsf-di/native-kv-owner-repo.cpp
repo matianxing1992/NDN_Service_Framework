@@ -7,6 +7,7 @@
 
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-client-compat.hpp"
 
 #include <ndn-cxx/util/scope.hpp>
 
@@ -264,7 +265,7 @@ NativeKvHandoffOwner::verifyAndPromote(std::shared_ptr<User> user,
   }
   for (const auto& item : claims) {
     context->current();
-    (void)repo::RepoClient::revalidateCurrentUserStorageClaim(*context->user, item.first,
+    (void)repo::RepoClientCompat::revalidateCurrentUserStorageClaim(*context->user, item.first,
       item.second, context->remaining(), limits);
   }
 

@@ -837,7 +837,7 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
 }
 
 RepoUserStorageClaim
-RepoClient::revalidateCurrentUserStorageClaim(
+RepoClientCompat::revalidateCurrentUserStorageClaim(
   ndn_service_framework::ServiceUser& owner,
   const RepoArtifactTarget& target,
   const RepoUserStorageClaim& expectedClaim,
