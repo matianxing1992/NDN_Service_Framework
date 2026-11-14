@@ -73,6 +73,15 @@ public:
   fetchFile(const ArtifactReference& reference,
             const std::string& destinationPath) const;
 
+  /** Read one committed byte range of an In-App artifact. The bytes are the exact
+   *  stored content for that range; this is not a whole-file verification, so callers
+   *  must not report a verified digest from it. */
+  std::vector<uint8_t>
+  readCommittedFileRange(const ArtifactReference& reference, uint64_t offsetBytes,
+                uint64_t lengthBytes,
+                std::chrono::steady_clock::time_point deadline =
+                  std::chrono::steady_clock::time_point::max()) const;
+
   ArtifactFetchResult
   fetchFile(const ArtifactHandle& handle,
             const std::string& destinationPath, int timeoutMs) const;

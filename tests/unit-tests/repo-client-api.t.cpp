@@ -269,6 +269,33 @@ BOOST_AUTO_TEST_CASE(DiscoveryRejectsUnknownCapabilitiesBeforeAnyRequest) {
   BOOST_CHECK_THROW(client.discover(request, makeOptions()), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(RangedFetchReturnsTheExactStoredBytes) {
+  // A partial read must return the stored bytes for that window and must not claim a
+  // whole-file digest verification.
+  TemporaryDirectory temporary("range");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  BOOST_REQUIRE(client.publishFile(publication, makeOptions()).committedHandle.has_value());
+
+  RepoFileFetch fetch;
+  fetch.reference = fixtureReference();
+  fetch.targetPath = (temporary.path() / "window.bin").string();
+  fetch.hasRange = true;
+  fetch.rangeOffsetBytes = 7;
+  fetch.rangeLengthBytes = 9;
+  const auto fetched = client.fetchFile(fetch, makeOptions());
+  BOOST_CHECK_EQUAL(fetched.bytesWritten, 9U);
+  BOOST_CHECK(!fetched.digestVerified);
+  const auto window = readFile(fetch.targetPath);
+  BOOST_CHECK_EQUAL(window.size(), 9U);
+  const std::string expected(FIXTURE_TEXT + 7, 9);
+  BOOST_CHECK(std::string(window.begin(), window.end()) == expected);
+}
+
 BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   // The engine already decides this; the facade must surface it rather than hide it,
   // because a caller that cannot tell a replay from a fresh commit cannot recover.

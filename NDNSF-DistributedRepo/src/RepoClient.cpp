@@ -2995,8 +2995,42 @@ RepoClient::fetchFile(const RepoFileFetch& input,
     throw RepoClientError("CLOSED", "RepoClient is closed", "fetchFile");
   if (input.targetPath.empty())
     throw std::invalid_argument("fetchFile requires a destination path");
-  if (input.hasRange)
-    throw unsupported("fetchFile(range)");
+  if (input.hasRange) {
+    if (input.hasRange && input.rangeLengthBytes == 0)
+      throw std::invalid_argument("fetchFile requires a non-zero range length");
+    const auto* file = input.reference ? &*input.reference : nullptr;
+    if (file == nullptr)
+      throw std::invalid_argument("a ranged fetch requires a file reference");
+    const auto bytes = m_impl->file->readCommittedFileRange(
+      toArtifactReference(*file), input.rangeOffsetBytes, input.rangeLengthBytes,
+      options.deadline);
+    // Write through a temporary in the same directory so a failed range read cannot
+    // leave a truncated file where the caller expects content.
+    const std::filesystem::path destination(input.targetPath);
+    const auto temporary = destination.string() + ".ndnsf-range.tmp";
+    {
+      std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+      if (!output)
+        throw std::runtime_error("fetchFile cannot open the temporary destination");
+      output.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(bytes.size()));
+      output.close();
+      if (!output)
+        throw std::runtime_error("fetchFile cannot write the temporary destination");
+    }
+    std::error_code renameError;
+    std::filesystem::rename(temporary, destination, renameError);
+    if (renameError)
+      throw std::runtime_error("fetchFile cannot install the range destination: " +
+                               renameError.message());
+    RepoFetchResult result;
+    result.bytesWritten = bytes.size();
+    // A range is not a whole-file check: never report a verified digest from it.
+    result.digestVerified = false;
+    result.contentDigest = file->contentDigest;
+    result.digestAlgorithm = file->digestAlgorithm;
+    return result;
+  }
   std::error_code error;
   RepoFetchResult result;
   if (input.handle && !m_impl->user) {

@@ -3255,6 +3255,44 @@ ArtifactRepositoryApi::fetchFile(const ArtifactReference& reference,
                  std::chrono::steady_clock::time_point::max());
 }
 
+std::vector<uint8_t>
+ArtifactRepositoryApi::readCommittedFileRange(
+  const ArtifactReference& inputReference, uint64_t offsetBytes, uint64_t lengthBytes,
+  std::chrono::steady_clock::time_point deadline) const
+{
+  auto reference = inputReference.canonicalized();
+  reference.validateProducerOwnership();
+  if (!m_impl) {
+    throw std::logic_error("repo-inapp-api-moved-from: API has no active owner");
+  }
+  if (!m_impl->inApp) {
+    throw std::logic_error("repo-artifact-lifecycle-mismatch: readCommittedFileRange is In-App only");
+  }
+  auto operationGuard = lockOperationUntil(
+    m_impl->operationMutex, deadline, "In-App range read");
+  auto& owner = *m_impl->inApp;
+  reference.validate(owner.limits);
+  if (lengthBytes == 0)
+    throw std::invalid_argument("repo-artifact-range-invalid: length must be non-zero");
+  const auto localCommit = owner.metadataStore.lookupLocalCommit(reference);
+  if (!localCommit) {
+    throw std::runtime_error(
+      "repo-artifact-not-found: no durable local commit matches the full reference");
+  }
+  const auto payloadRef = payloadReference(reference);
+  if (!owner.payloadStore.isCommitted(payloadRef, LOCAL_GENERATION)) {
+    throw std::runtime_error(
+      "repo-artifact-payload-missing: committed local payload is unavailable");
+  }
+  if (deadline != std::chrono::steady_clock::time_point::max() &&
+      std::chrono::steady_clock::now() >= deadline) {
+    throw std::runtime_error(
+      "repo-operation-timeout: fetch deadline expired before the range read");
+  }
+  return owner.payloadStore.readCommittedRange(
+    payloadRef, LOCAL_GENERATION, ArtifactByteRange{offsetBytes, lengthBytes});
+}
+
 void
 ArtifactRepositoryApi::fetchFileUntil(
   const ArtifactReference& inputReference, const std::string& destinationPath,
