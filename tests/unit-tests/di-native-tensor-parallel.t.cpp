@@ -12136,6 +12136,78 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   // Each rank holds its own KV heads of the same present tensors, so the rank's slice is
   // compared with the corresponding window of the unsplit tensor. The window follows from
   // the head layout: rank r holds KV heads [r * kvHeads/degree, (r+1) * kvHeads/degree).
+  // A multi-position prefill. At length one an accumulated KV is indistinguishable from a fresh
+  // one, so the single-token check below can only exercise the degenerate case.
+  {
+    constexpr std::int64_t prefill = 4;
+    const auto referenceLong = runEntry(
+      std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(referenceRunner),
+      referenceTable, "ref", 0, buildFeeds(referenceAttnEntry, prefill));
+    const auto runRankLong = [&] (const std::shared_ptr<NativeModelRunner>& runner,
+                                  const std::vector<qwen::QwenTpEntryContract>& table,
+                                  const std::string& unit) {
+      const auto entry = std::find_if(table.begin(), table.end(),
+        [] (const auto& item) { return item.kind == "ATTN" && item.layer == 0; });
+      BOOST_REQUIRE(entry != table.end());
+      return runEntry(std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(runner),
+                      table, unit, 0, buildFeeds(*entry, prefill));
+    };
+    const auto rank0Long = runRankLong(runner0, rank0Table, "S0R0");
+    const auto rank1Long = runRankLong(runner1, rank1Table, "S0R1");
+    const auto floatsOf = [] (const std::map<std::string, TensorBundle>& outputs,
+                              const std::string& name) {
+      const auto found = outputs.find(name);
+      BOOST_REQUIRE_MESSAGE(found != outputs.end(), "no output named " + name);
+      const auto tensors = decodeTensorBundle(found->second.payload);
+      BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+      std::vector<float> values(tensors.front().payload.size() / sizeof(float));
+      std::memcpy(values.data(), tensors.front().payload.data(),
+                  tensors.front().payload.size());
+      return values;
+    };
+    constexpr std::uint64_t longKvHeads = 8;
+    constexpr std::uint64_t longDegree = 2;
+    constexpr std::uint64_t longHeadDim = 128;
+    constexpr std::uint64_t longHeadsPerRank = longKvHeads / longDegree;
+    for (const auto* name : {"present.0.key", "present.0.value"}) {
+      const auto unsplit = floatsOf(referenceLong, name);
+      const auto rank0Shard = floatsOf(rank0Long, name);
+      BOOST_TEST_MESSAGE("prefill " << prefill << " unsplit=" << unsplit.size()
+                         << " rank0=" << rank0Shard.size());
+      BOOST_REQUIRE_EQUAL(unsplit.size(),
+        static_cast<std::size_t>(prefill * longKvHeads * longHeadDim));
+      BOOST_REQUIRE_EQUAL(rank0Shard.size(),
+        static_cast<std::size_t>(prefill * longHeadsPerRank * longHeadDim));
+      for (std::uint64_t rank = 0; rank < longDegree; ++rank) {
+        const auto& rankOutputs = rank == 0 ? rank0Long : rank1Long;
+        const auto shard = floatsOf(rankOutputs, name);
+        double worstLongKv = 0.0;
+        for (std::int64_t position = 0; position < prefill; ++position) {
+          for (std::uint64_t head = 0; head < longHeadsPerRank; ++head) {
+            // The export's KV layout is [batch, heads, sequence, dim], so a position's
+            // channel block is (head * sequence + position) * headDim -- not
+            // (position * heads + head) * headDim, which coincides with it only at length
+            // one and is what made the single-token check pass while this one disagreed.
+            const auto shardBase =
+              (head * static_cast<std::uint64_t>(prefill) +
+               static_cast<std::uint64_t>(position)) * longHeadDim;
+            const auto unsplitBase =
+              ((rank * longHeadsPerRank + head) * static_cast<std::uint64_t>(prefill) +
+               static_cast<std::uint64_t>(position)) * longHeadDim;
+            for (std::uint64_t channel = 0; channel < longHeadDim; ++channel) {
+              worstLongKv = std::max(worstLongKv, std::fabs(
+                double(shard[shardBase + channel]) - double(unsplit[unsplitBase + channel])));
+            }
+          }
+        }
+        BOOST_TEST_MESSAGE("prefill " << prefill << " rank" << rank << " " << name
+                           << " worst=" << worstLongKv);
+        // Per-position, so a difference that is confined to the positions after the first is
+        // distinguishable from one that affects every position.
+        BOOST_CHECK_LT(worstLongKv, 1e-5);
+      }
+    }
+  }
   {
     const auto kvValues = [&] (const std::map<std::string, TensorBundle>& outputs,
                                const std::string& name) {
