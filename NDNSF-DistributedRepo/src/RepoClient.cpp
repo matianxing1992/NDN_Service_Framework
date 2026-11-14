@@ -2860,6 +2860,11 @@ RepoClient::publishFile(const RepoFilePublication& input,
   if (input.completion == RepoCompletion::ACCEPTED) {
     if (selected.targets.empty())
       throw std::invalid_argument("ACCEPTED publication requires an explicit selection");
+    // The engine recovers an already accepted operation by its idempotency key; without
+    // one a retry would create a second operation that cannot be reconciled.
+    if (input.idempotencyKey.empty())
+      throw std::invalid_argument(
+        "ACCEPTED publication requires an idempotency key so a retry can recover");
     const auto operation = m_impl->file->beginPublishFile(
       input.sourcePath, reference, selected, input.idempotencyKey,
       remainingMs(options.deadline));

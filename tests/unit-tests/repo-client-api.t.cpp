@@ -335,6 +335,11 @@ BOOST_AUTO_TEST_CASE(PublishFileValidatesSelectionShapes) {
   accepted.reference = fixtureReference();
   accepted.completion = RepoCompletion::ACCEPTED;
   BOOST_CHECK_THROW(client.publishFile(accepted, makeOptions()), std::invalid_argument);
+
+  // An ACCEPTED request without an idempotency key could never be recovered on retry.
+  RepoFilePublication unrecoverable = accepted;
+  unrecoverable.selectedTargets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  BOOST_CHECK_THROW(client.publishFile(unrecoverable, makeOptions()), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(DigestCommitmentsCompareCaseInsensitivelyOnlyForSha256) {
