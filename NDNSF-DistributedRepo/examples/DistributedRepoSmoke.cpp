@@ -158,7 +158,7 @@ main()
     8);
   if (segmentedManifest.segmentCount <= 1 ||
       RepoStoreApi::getSegmented(node, segmentedManifest) != largePayload ||
-      RepoClient::getObject(node, segmentedManifest) != largePayload ||
+      RepoStoreApi::getObject(node, segmentedManifest) != largePayload ||
       node.getManifest(segmentedManifest.objectName).segmentCount !=
         segmentedManifest.segmentCount) {
     std::cerr << "direct segmented repo object mismatch\n";
@@ -173,7 +173,7 @@ main()
   insertPrefix.append(makeNamingDigestComponent(sha256Hex(largePayload))).append("REPRESENTATION")
     .append(makeNamingDigestComponent(computeNamingDigest("ndnsf-naming/representation",
       {{1, 5, std::vector<uint8_t>(representation.begin(), representation.end())}}))).append("DATA");
-  const auto insertPayloadStatus = RepoClient::insertPayload(
+  const auto insertPayloadStatus = RepoStoreApi::insertPayload(
     node,
     insertPrefix.toUri(ndn::name::UriFormat::CANONICAL),
     largePayload,

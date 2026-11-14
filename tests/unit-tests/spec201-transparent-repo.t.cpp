@@ -1,6 +1,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackendTestAccess.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoPacketServer.hpp"
 #include "ndnsf-distributed-repo/RepoEncryptedLargeDataStore.hpp"
@@ -515,7 +516,7 @@ BOOST_AUTO_TEST_CASE(PacketIdentitySurvivesUriAliasesTwoReplicasAndRestart)
     const auto firstCommit = first.putDataPacket(alternate, wire);
     BOOST_CHECK_EQUAL(firstCommit.objectName, canonical);
     BOOST_CHECK(firstCommit.dataReceiptId.empty());
-    BOOST_CHECK_EQUAL(RepoClient::putDataPacket(second, wire).objectName, canonical);
+    BOOST_CHECK_EQUAL(RepoStoreApi::putDataPacket(second, wire).objectName, canonical);
     BOOST_CHECK(first.hasDataPacket(canonical));
     BOOST_CHECK(first.hasDataPacket(alternate));
     BOOST_CHECK(first.getDataPacket(alternate) == wire);

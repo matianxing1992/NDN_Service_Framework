@@ -587,7 +587,7 @@ main(int argc, char* argv[])
             [&] (const auto& item) { return item.objectName == name; });
         };
         const auto owned = make("owned", payload);
-        repo_api::RepoClient::putRange(*repo, owned, {0, 101}, slice(payload, 0, 101));
+        repo_api::RepoStoreApi::putRange(*repo, owned, {0, 101}, slice(payload, 0, 101));
         auto foreign = owned;
         foreign.operationId = "spec193-o03-foreign";
         if (repo->core().abortRangesIfOwned(foreign)) {
@@ -604,7 +604,7 @@ main(int argc, char* argv[])
         if (!wrongCommitRejected || !absent(owned.objectName)) {
           throw std::runtime_error("O03 wrong owner altered reservation or visibility");
         }
-        repo_api::RepoClient::putRange(*repo, owned, {101, payload.size() - 101},
+        repo_api::RepoStoreApi::putRange(*repo, owned, {101, payload.size() - 101},
                                       slice(payload, 101, payload.size()));
         const auto committed = repo->core().commitRangesIfOwned(owned);
         if (committed.sha256 != owned.sha256 ||
@@ -618,11 +618,11 @@ main(int argc, char* argv[])
         auto abortedPayload = payload;
         abortedPayload.front() ^= 0x22;
         const auto aborted = make("aborted", abortedPayload);
-        repo_api::RepoClient::putRange(*repo, incomplete, {0, 101},
+        repo_api::RepoStoreApi::putRange(*repo, incomplete, {0, 101},
                                       slice(incompletePayload, 0, 101));
         bool quotaRejected = false;
         try {
-          repo_api::RepoClient::putRange(*repo, aborted, {0, 101},
+          repo_api::RepoStoreApi::putRange(*repo, aborted, {0, 101},
                                         slice(abortedPayload, 0, 101));
         }
         catch (const std::exception& error) {
@@ -649,14 +649,14 @@ main(int argc, char* argv[])
             std::to_string(incompleteAbsent) + " reason=" + missingReason);
         }
 
-        repo_api::RepoClient::putRange(*repo, aborted, {0, 101},
+        repo_api::RepoStoreApi::putRange(*repo, aborted, {0, 101},
                                       slice(abortedPayload, 0, 101));
         repo_api::RepoStoreApi::abortRanges(*repo, aborted.objectName);
         if (!absent(aborted.objectName)) {
           throw std::runtime_error("O03 abort left a visible object");
         }
         // A different reservation must fit after abort releases the 509-byte charge.
-        repo_api::RepoClient::putRange(*repo, incomplete, {0, 101},
+        repo_api::RepoStoreApi::putRange(*repo, incomplete, {0, 101},
                                       slice(incompletePayload, 0, 101));
         repo_api::RepoStoreApi::abortRanges(*repo, incomplete.objectName);
         if (!absent(incomplete.objectName)) {
@@ -668,7 +668,7 @@ main(int argc, char* argv[])
         const auto bounds = make("bounds", boundsPayload);
         bool boundsRejected = false;
         try {
-          repo_api::RepoClient::putRange(*repo, bounds,
+          repo_api::RepoStoreApi::putRange(*repo, bounds,
             {payload.size() - 10, 30}, std::vector<uint8_t>(30, 0x55));
         }
         catch (const std::out_of_range& error) {
@@ -701,7 +701,7 @@ main(int argc, char* argv[])
         const auto write = [&] (size_t start, size_t end) {
           const std::vector<uint8_t> bytes(payload.begin() + start,
                                            payload.begin() + end);
-          repo_api::RepoClient::putRange(*repo, manifest,
+          repo_api::RepoStoreApi::putRange(*repo, manifest,
                                         repo_api::RepoByteRange{start, bytes.size()}, bytes);
         };
         const auto invisible = [&] {
@@ -723,7 +723,7 @@ main(int argc, char* argv[])
         if (!invisible()) throw std::runtime_error("O02 staged ranges became visible");
         write(firstEnd, middleEnd);
         const auto committed = repo_api::RepoStoreApi::commitRanges(*repo, manifest);
-        const auto subrange = repo_api::RepoClient::getRange(
+        const auto subrange = repo_api::RepoStoreApi::getRange(
           *repo, localObject, repo_api::RepoByteRange{73, 281});
         if (committed.objectName != localObject || committed.generation != 1 ||
             committed.sha256 != manifest.sha256 || committed.size != payload.size() ||
@@ -810,7 +810,7 @@ main(int argc, char* argv[])
         const auto certificate = identity.getDefaultKey().getDefaultCertificate();
         repo_api::StoreOptions options;
         options.objectType = "ndn-auto-segmented-payload";
-        const auto status = repo_api::RepoClient::insertPayload(
+        const auto status = repo_api::RepoStoreApi::insertPayload(
           *repo, localObject, payload, keyChain,
           ndn::security::signingByIdentity(config.providerIdentity),
           options, segmentBytes);
@@ -821,7 +821,7 @@ main(int argc, char* argv[])
           throw std::runtime_error("insertPayload did not complete all signed segments");
         }
         const auto manifest = repo_api::RepoStoreApi::getManifest(*repo, localObject);
-        const auto wires = repo_api::RepoClient::getDataPackets(*repo, manifest);
+        const auto wires = repo_api::RepoStoreApi::getDataPackets(*repo, manifest);
         if (manifest.objectType != options.objectType ||
             manifest.segmentCount != wires.size() ||
             wires.size() != status.completedSegments) {
@@ -861,14 +861,14 @@ main(int argc, char* argv[])
       }
       if (localCommand == "payload-reject") {
         const auto manifest = repo_api::RepoStoreApi::getManifest(*repo, localObject);
-        const auto original = repo_api::RepoClient::getDataPackets(*repo, manifest);
+        const auto original = repo_api::RepoStoreApi::getDataPackets(*repo, manifest);
         if (original.size() < 3 || manifest.packetNames.size() != original.size()) {
           throw std::runtime_error("O12 requires an existing segmented Data object");
         }
         const auto unchanged = [&] {
           return repo_api::RepoStoreApi::getManifest(*repo, localObject).toJson() ==
                    manifest.toJson() &&
-                 repo_api::RepoClient::getDataPackets(*repo, manifest) == original;
+                 repo_api::RepoStoreApi::getDataPackets(*repo, manifest) == original;
         };
         const auto expectRejected = [&] (const char* label,
                                          const repo_api::RepoOperationStatus& status,
@@ -890,7 +890,7 @@ main(int argc, char* argv[])
         const auto identity = keyChain.getPib().getIdentity(config.providerIdentity);
         const auto certificate = identity.getDefaultKey().getDefaultCertificate();
         expectRejected("same-name-new-content",
-          repo_api::RepoClient::insertPayload(
+          repo_api::RepoStoreApi::insertPayload(
             *repo, localObject, conflictingPayload, keyChain,
             ndn::security::signingByIdentity(config.providerIdentity),
             {}, segmentBytes), "repo-data-wire-conflict");
@@ -994,7 +994,7 @@ main(int argc, char* argv[])
             keyChain.sign(data, ndn::security::signingByIdentity(config.providerIdentity));
             const auto& encoded = data.wireEncode();
             const std::vector<uint8_t> wire(encoded.begin(), encoded.end());
-            (void)repo_api::RepoClient::putDataPacket(*repo, wire);
+            (void)repo_api::RepoStoreApi::putDataPacket(*repo, wire);
             std::ofstream file(wirePath(index), std::ios::binary | std::ios::trunc);
             file.write(reinterpret_cast<const char*>(wire.data()), wire.size());
             file.close();
@@ -1021,7 +1021,7 @@ main(int argc, char* argv[])
           manifest.packetNames = packetNames;
           manifest = repo->putManifest(manifest);
           if (manifest.packetNames != packetNames ||
-              repo_api::RepoClient::getDataPackets(*repo, manifest) != orderedWires) {
+              repo_api::RepoStoreApi::getDataPackets(*repo, manifest) != orderedWires) {
             throw std::runtime_error("packet set local read changed manifest order or wire");
           }
           std::ofstream manifestFile(localManifest, std::ios::binary | std::ios::trunc);
@@ -1037,7 +1037,7 @@ main(int argc, char* argv[])
             throw std::runtime_error("packet set missing fault removed no packet");
           }
           try {
-            (void)repo_api::RepoClient::getDataPackets(*repo, manifest);
+            (void)repo_api::RepoStoreApi::getDataPackets(*repo, manifest);
           }
           catch (const std::exception& error) {
             std::cout << "SPEC193_PACKET_SET_REJECTED missing=1 reason="
@@ -1046,10 +1046,10 @@ main(int argc, char* argv[])
           }
           throw std::runtime_error("getDataPackets returned incomplete packet set");
         }
-        (void)repo_api::RepoClient::putDataPacket(*repo, readWire(1));
+        (void)repo_api::RepoStoreApi::putDataPacket(*repo, readWire(1));
         std::vector<std::vector<uint8_t>> orderedWires;
         for (int index : order) orderedWires.push_back(readWire(index));
-        if (repo_api::RepoClient::getDataPackets(*repo, manifest) != orderedWires) {
+        if (repo_api::RepoStoreApi::getDataPackets(*repo, manifest) != orderedWires) {
           throw std::runtime_error("restored packet set changed order or wire");
         }
         std::cout << "SPEC193_PACKET_SET_RESTORED missing=1" << std::endl;
@@ -1073,7 +1073,7 @@ main(int argc, char* argv[])
         const std::vector<uint8_t> wire(encoded.begin(), encoded.end());
         const auto manifest = localCommand == "data-legacy-seed" ?
           repo->core().putDataPacket(localObject, wire) :
-          repo_api::RepoClient::putDataPacket(*repo, wire);
+          repo_api::RepoStoreApi::putDataPacket(*repo, wire);
         if (manifest.objectName != localObject ||
             manifest.objectType != "ndn-data-wire" ||
             manifest.packetNames != std::vector<std::string>{localObject} ||
@@ -1117,7 +1117,7 @@ main(int argc, char* argv[])
         return 0;
       }
       if (localCommand == "data-wire-seed") {
-        const auto manifest = repo_api::RepoClient::putDataPacket(*repo, payload);
+        const auto manifest = repo_api::RepoStoreApi::putDataPacket(*repo, payload);
         if (manifest.objectName != localObject ||
             manifest.objectType != "ndn-data-wire" ||
             repo_api::RepoStoreApi::getDataPacket(*repo, localObject) != payload) {
@@ -1138,7 +1138,7 @@ main(int argc, char* argv[])
         auto manifest = repo_api::RepoStoreApi::putSegmented(
           *repo, localObject, payload, {}, segmentBytes);
         if (manifest.segmentCount < 3 ||
-            repo_api::RepoClient::getObject(*repo, manifest) != payload ||
+            repo_api::RepoStoreApi::getObject(*repo, manifest) != payload ||
             localManifest.empty()) {
           throw std::runtime_error("local segmented seed did not round-trip all bytes");
         }
@@ -1153,7 +1153,7 @@ main(int argc, char* argv[])
         const auto before = repo_api::RepoStoreApi::list(*repo).size();
         (void)repo_api::RepoStoreApi::put(*repo, segmentName, segment);
         if (repo_api::RepoStoreApi::list(*repo).size() != before ||
-            repo_api::RepoClient::getObject(*repo, manifest) != payload) {
+            repo_api::RepoStoreApi::getObject(*repo, manifest) != payload) {
           throw std::runtime_error("identical duplicate segment changed object inventory or bytes");
         }
         std::cout << "SPEC193_IDENTICAL_SEGMENT_DEDUPED index=1" << std::endl;
@@ -1161,7 +1161,7 @@ main(int argc, char* argv[])
       else if (localCommand == "restore") {
         const auto manifest = repo_api::RepoStoreApi::getManifest(*repo, localObject);
         (void)repo_api::RepoStoreApi::put(*repo, segmentName, segment);
-        if (repo_api::RepoClient::getObject(*repo, manifest) != payload) {
+        if (repo_api::RepoStoreApi::getObject(*repo, manifest) != payload) {
           throw std::runtime_error("restored segment did not recover original object");
         }
         std::cout << "SPEC193_SEGMENTED_RESTORED index=1" << std::endl;
@@ -1179,7 +1179,7 @@ main(int argc, char* argv[])
           (void)repo_api::RepoStoreApi::put(*repo, segmentName, corrupt);
         }
         try {
-          (void)repo_api::RepoClient::getObject(*repo, manifest);
+          (void)repo_api::RepoStoreApi::getObject(*repo, manifest);
         }
         catch (const std::exception& error) {
           std::cout << "SPEC193_SEGMENTED_REJECTED fault=" << localCommand

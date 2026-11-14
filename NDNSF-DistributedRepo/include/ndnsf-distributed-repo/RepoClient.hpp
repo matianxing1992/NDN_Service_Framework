@@ -200,18 +200,13 @@ public:
 
   
 
-  static void putRange(RepoNode& node,
-                       const RepoObjectManifest& manifest,
-                       RepoByteRange range,
-                       const std::vector<uint8_t>& bytes);
-
   
 
   
 
-  static std::vector<uint8_t> getRange(const RepoNode& node,
-                                       const std::string& objectName,
-                                       RepoByteRange range);
+  
+
+  
 
   
 
@@ -220,8 +215,7 @@ public:
   
 
   /** Store one signed Data packet under the exact name encoded in its wire. */
-  static RepoObjectManifest putDataPacket(RepoNode& node,
-                                          const std::vector<uint8_t>& wire);
+  
 
   /** Retrieve the original packet wire by its complete NDN Data name. */
   
@@ -231,9 +225,7 @@ public:
    * Data names. The operation validates the complete name encoded in every wire
    * and throws before returning if the packet index is incomplete or invalid.
    */
-  static std::vector<std::vector<uint8_t>> getDataPackets(
-    const RepoNode& node,
-    const RepoObjectManifest& manifest);
+  
 
   
 
@@ -243,14 +235,7 @@ public:
    * objectName using ndn-cxx Segmenter, then stores the resulting Data wire
    * packets under their exact encoded Data names through insert().
    */
-  static RepoOperationStatus insertPayload(
-    RepoNode& node,
-    const std::string& objectName,
-    const std::vector<uint8_t>& payload,
-    ndn::KeyChain& keyChain,
-    const ndn::security::SigningInfo& signingInfo,
-    StoreOptions options = {},
-    size_t maxSegmentPayload = 6000);
+  
 
   
 
@@ -286,9 +271,7 @@ public:
    * object-level API for callers that do not care whether the object was stored
    * as one payload or as object-level chunks.
    */
-  static std::vector<uint8_t> getObject(
-    const RepoNode& node,
-    const RepoObjectManifest& manifest);
+  
 
   static RepoObjectManifest localPut(
     ndn_service_framework::LocalServiceRegistry& registry,

@@ -252,7 +252,7 @@ main(int argc, char** argv)
   {
     RepoNode node(ndn::Name("/NDNSF/DistributedRepo"), capability,
                   openStore());
-    const auto status = RepoClient::insertPayload(
+    const auto status = RepoStoreApi::insertPayload(
       node, versionedName, payload, keyChain, signingInfo, {}, 4096);
     require(status.state == "DONE", "exact packet insertion failed: " + status.message);
 
@@ -267,35 +267,35 @@ main(int argc, char** argv)
       require(packetName(wire) == name, "stored wire name differs from exact key");
       originalWires.push_back(std::move(wire));
     }
-    require(RepoClient::getDataPackets(node, storedManifest) == originalWires,
+    require(RepoStoreApi::getDataPackets(node, storedManifest) == originalWires,
             "packet-set consumer changed order or wire bytes");
-    require(RepoClient::insertPayload(node, versionedName, payload, keyChain, signingInfo, {}, 4096).state == "DONE",
+    require(RepoStoreApi::insertPayload(node, versionedName, payload, keyChain, signingInfo, {}, 4096).state == "DONE",
             "Producer payload reuse failed");
-    require(RepoClient::getDataPackets(node, storedManifest) == originalWires,
+    require(RepoStoreApi::getDataPackets(node, storedManifest) == originalWires,
             "Producer payload reuse re-signed an immutable packet");
     requireThrowsContaining(
-      [&] { RepoClient::insertPayload(node, "/foreign/producer/NDNSF/BLOB/DATA", payload,
+      [&] { RepoStoreApi::insertPayload(node, "/foreign/producer/NDNSF/BLOB/DATA", payload,
                                       keyChain, signingInfo, {}, 4096); },
       "repo-publisher-prefix-mismatch", "foreign Producer prefix was accepted");
 
     auto wrongCount = storedManifest;
     ++wrongCount.segmentCount;
     requireThrowsContaining(
-      [&] { RepoClient::getDataPackets(node, wrongCount); },
+      [&] { RepoStoreApi::getDataPackets(node, wrongCount); },
       "repo-packet-index-invalid",
       "packet-set consumer accepted count mismatch");
 
     auto duplicate = storedManifest;
     duplicate.packetNames.back() = duplicate.packetNames.front();
     requireThrowsContaining(
-      [&] { RepoClient::getDataPackets(node, duplicate); },
+      [&] { RepoStoreApi::getDataPackets(node, duplicate); },
       "duplicate",
       "packet-set consumer accepted duplicate name");
 
     auto missing = storedManifest;
     missing.packetNames.back() = versionedName + "/seg=999999";
     requireThrowsContaining(
-      [&] { RepoClient::getDataPackets(node, missing); },
+      [&] { RepoStoreApi::getDataPackets(node, missing); },
       "not an exact NDN Data packet",
       "packet-set consumer accepted missing packet");
 
@@ -337,7 +337,7 @@ main(int argc, char** argv)
     require(conflict.state == "FAILED", "same-name different-wire conflict was accepted");
     require(conflict.message.find("conflict") != std::string::npos,
             "conflict failure did not explain immutable-name conflict: " + conflict.message);
-    require(RepoClient::getDataPackets(node, storedManifest) == originalWires,
+    require(RepoStoreApi::getDataPackets(node, storedManifest) == originalWires,
             "rejected corruption or name conflict changed the original packets");
   }
 
@@ -347,7 +347,7 @@ main(int argc, char** argv)
     const auto manifest = RepoStoreApi::getManifest(restarted, rootName);
     require(manifest.packetNames == storedManifest.packetNames,
             "packet-name index did not survive restart");
-    require(RepoClient::getDataPackets(restarted, manifest) == originalWires,
+    require(RepoStoreApi::getDataPackets(restarted, manifest) == originalWires,
             "packet-set consumer changed wire bytes across restart");
   }
 

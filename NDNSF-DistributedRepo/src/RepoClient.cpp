@@ -1319,7 +1319,7 @@ RepoStoreApi::get(const RepoNode& node, const std::string& objectName)
 }
 
 void
-RepoClient::putRange(RepoNode& node,
+RepoStoreApi::putRange(RepoNode& node,
                      const RepoObjectManifest& manifest,
                      RepoByteRange range,
                      const std::vector<uint8_t>& bytes)
@@ -1340,7 +1340,7 @@ RepoStoreApi::abortRanges(RepoNode& node, const std::string& objectName)
 }
 
 std::vector<uint8_t>
-RepoClient::getRange(const RepoNode& node,
+RepoStoreApi::getRange(const RepoNode& node,
                     const std::string& objectName,
                     RepoByteRange range)
 {
@@ -1366,7 +1366,7 @@ RepoStoreApi::remove(RepoNode& node, const std::string& objectName)
 }
 
 RepoObjectManifest
-RepoClient::putDataPacket(RepoNode& node, const std::vector<uint8_t>& wire)
+RepoStoreApi::putDataPacket(RepoNode& node, const std::vector<uint8_t>& wire)
 {
   ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
   block.parse();
@@ -1381,7 +1381,7 @@ RepoStoreApi::getDataPacket(const RepoNode& node, const std::string& dataName)
 }
 
 std::vector<std::vector<uint8_t>>
-RepoClient::getDataPackets(const RepoNode& node,
+RepoStoreApi::getDataPackets(const RepoNode& node,
                            const RepoObjectManifest& manifest)
 {
   if (manifest.packetNames.empty()) {
@@ -1430,7 +1430,7 @@ RepoStoreApi::insert(RepoNode& node,
 }
 
 RepoOperationStatus
-RepoClient::insertPayload(RepoNode& node,
+RepoStoreApi::insertPayload(RepoNode& node,
                           const std::string& objectName,
                           const std::vector<uint8_t>& payload,
                           ndn::KeyChain& keyChain,
@@ -1590,7 +1590,7 @@ RepoStoreApi::getSegmented(const RepoNode& node, const RepoObjectManifest& manif
 }
 
 std::vector<uint8_t>
-RepoClient::getObject(const RepoNode& node, const RepoObjectManifest& manifest)
+RepoStoreApi::getObject(const RepoNode& node, const RepoObjectManifest& manifest)
 {
   return RepoStoreApi::getSegmented(node, manifest);
 }

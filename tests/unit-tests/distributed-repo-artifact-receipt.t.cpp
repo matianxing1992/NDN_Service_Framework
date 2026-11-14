@@ -3,6 +3,7 @@
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/PersistentRepoServerConfig.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
@@ -738,7 +739,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   const auto retriedDirectReceipt = RepoArtifactCommitReceipt::fromJson(responseString(response));
   BOOST_CHECK_EQUAL(retriedDirectReceipt.receiptId, directReceipt.receiptId);
   checkPersistentReceiptRow(metadataPath, directLocation);
-  BOOST_CHECK(RepoClient::getRange(
+  BOOST_CHECK(RepoStoreApi::getRange(
     *node, artifactStorageObjectName(directReference),
     RepoByteRange{0, directBytes.size()}) == directBytes);
 
@@ -766,7 +767,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
     artifactStorageObjectName(directReference));
   BOOST_CHECK_EQUAL(preservedDirectManifest.operationId, direct.operationId);
   BOOST_CHECK_EQUAL(preservedDirectManifest.generation, direct.generation);
-  BOOST_CHECK(RepoClient::getRange(
+  BOOST_CHECK(RepoStoreApi::getRange(
     *node, artifactStorageObjectName(directReference),
     RepoByteRange{0, directBytes.size()}) == directBytes);
   ArtifactLocationRequest directQuery;
@@ -853,7 +854,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   BOOST_CHECK_EQUAL(rangedLocation.operationId, operation);
   BOOST_CHECK_EQUAL(rangedLocation.generation, 1U);
   BOOST_CHECK_EQUAL(rangedLocation.routeState, "ROUTABLE");
-  const auto localBytes = RepoClient::getRange(
+  const auto localBytes = RepoStoreApi::getRange(
     *node, artifactStorageObjectName(rangedReference), RepoByteRange{0, rangedBytes.size()});
   BOOST_CHECK(localBytes == rangedBytes);
   checkPersistentReceiptRow(metadataPath, rangedLocation);
@@ -914,7 +915,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
     artifactStorageObjectName(rangedReference));
   BOOST_CHECK_EQUAL(preservedRangedManifest.operationId, operation);
   BOOST_CHECK_EQUAL(preservedRangedManifest.generation, 1U);
-  BOOST_CHECK(RepoClient::getRange(
+  BOOST_CHECK(RepoStoreApi::getRange(
     *node, artifactStorageObjectName(rangedReference),
     RepoByteRange{0, rangedBytes.size()}) == rangedBytes);
   ArtifactLocationRequest rangedQuery;
@@ -1009,7 +1010,7 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
   response = dispatch(provider, commitService, commit.toWire(), "range-owned-commit");
   BOOST_REQUIRE_MESSAGE(response.getStatus(), response.getErrorInfo());
   BOOST_CHECK(node->core().has(artifactStorageObjectName(ownedReference)));
-  BOOST_CHECK(RepoClient::getRange(
+  BOOST_CHECK(RepoStoreApi::getRange(
     *node, artifactStorageObjectName(ownedReference), {0, ownedBytes.size()}) == ownedBytes);
 
   const std::vector<uint8_t> abortedBytes{0x51, 0x52, 0x53};
