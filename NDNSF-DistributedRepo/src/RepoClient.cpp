@@ -3139,6 +3139,9 @@ RepoClient::publishData(const RepoDataPublication& input,
         canonicalSha256Digest("sha256:" + packetSet.sha256) != canonicalSha256Digest(digest))
       throw std::invalid_argument(
         "publishData received a manifest that does not match the packet source");
+    // The comparison above is canonical, but the Repo compares the manifest's digest as a
+    // string, so send the canonical spelling rather than the caller's casing.
+    packetSet.sha256 = canonicalSha256Digest("sha256:" + packetSet.sha256).substr(7);
   }
   else {
     packetSet.objectName = source.packetNames.front();
