@@ -265,13 +265,13 @@ public:
   static RepoOperationStatus status(const RepoNode& node,
                                     const std::string& operationId);
 
-  static RepoCatalogStatus catalogStatus(const RepoNode& node);
+  
 
   static RepoCacheStatus cacheStatus(const RepoNode& node);
 
-  static RepoCatalogDelta catalogSnapshot(const RepoNode& node);
+  
 
-  static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
+  
 
   
 
@@ -295,9 +295,7 @@ public:
    * Fetch chunks described by manifest, reassemble them, and verify APP-side
    * size/hash metadata. Throws std::runtime_error on mismatch.
    */
-  static std::vector<uint8_t> getSegmented(
-    const RepoNode& node,
-    const RepoObjectManifest& manifest);
+  
 
   /**
    * Fetch one logical repo object described by manifest. This is the preferred

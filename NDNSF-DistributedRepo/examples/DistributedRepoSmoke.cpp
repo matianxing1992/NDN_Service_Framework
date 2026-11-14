@@ -1,4 +1,5 @@
 #include "ndnsf-distributed-repo/RepoClient.hpp"
+#include "ndnsf-distributed-repo/repo-store-api.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoNode.hpp"
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
@@ -103,11 +104,11 @@ main()
   const auto manifestResponse = node.handleManifest(toBytes(manifest.objectName));
   const auto capabilityResponse = node.handleCapability();
   const auto listed = RepoClient::list(node);
-  const auto catalogStatus = RepoClient::catalogStatus(node);
-  const auto catalogSnapshot = RepoClient::catalogSnapshot(node);
-  const auto catalogLookup = RepoClient::catalogLookup(node, manifest.objectName);
+  const auto catalogStatus = RepoStoreApi::catalogStatus(node);
+  const auto catalogSnapshot = RepoStoreApi::catalogSnapshot(node);
+  const auto catalogLookup = RepoStoreApi::catalogLookup(node, manifest.objectName);
   const bool removed = RepoClient::remove(node, manifest.objectName);
-  const auto catalogDeltaAfterDelete = RepoClient::catalogDelta(node,
+  const auto catalogDeltaAfterDelete = RepoStoreApi::catalogDelta(node,
                                                                 catalogStatus.catalogEpoch);
 
   if (fetched != payload) {
@@ -156,7 +157,7 @@ main()
     segmentedOptions,
     8);
   if (segmentedManifest.segmentCount <= 1 ||
-      RepoClient::getSegmented(node, segmentedManifest) != largePayload ||
+      RepoStoreApi::getSegmented(node, segmentedManifest) != largePayload ||
       RepoClient::getObject(node, segmentedManifest) != largePayload ||
       node.getManifest(segmentedManifest.objectName).segmentCount !=
         segmentedManifest.segmentCount) {

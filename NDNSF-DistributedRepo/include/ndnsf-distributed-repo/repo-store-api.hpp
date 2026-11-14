@@ -12,6 +12,11 @@ class RepoStoreApi
 public:
   static RepoCatalogEntry catalogLookup(const RepoNode& node,
                                         const std::string& objectName);
+  static RepoCatalogStatus catalogStatus(const RepoNode& node);
+  static RepoCatalogDelta catalogSnapshot(const RepoNode& node);
+  static RepoCatalogDelta catalogDelta(const RepoNode& node, uint64_t sinceEpoch);
+  static std::vector<uint8_t> getSegmented(const RepoNode& node,
+                                           const RepoObjectManifest& manifest);
 };
 
 } // namespace ndnsf_distributed_repo

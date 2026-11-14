@@ -1510,7 +1510,7 @@ RepoClient::status(const RepoNode& node, const std::string& operationId)
 }
 
 RepoCatalogStatus
-RepoClient::catalogStatus(const RepoNode& node)
+RepoStoreApi::catalogStatus(const RepoNode& node)
 {
   return parseCatalogStatusJson(toString(node.handleCatalogStatus()));
 }
@@ -1522,13 +1522,13 @@ RepoClient::cacheStatus(const RepoNode& node)
 }
 
 RepoCatalogDelta
-RepoClient::catalogSnapshot(const RepoNode& node)
+RepoStoreApi::catalogSnapshot(const RepoNode& node)
 {
   return parseCatalogDeltaJson(toString(node.handleCatalogSnapshot()));
 }
 
 RepoCatalogDelta
-RepoClient::catalogDelta(const RepoNode& node, uint64_t sinceEpoch)
+RepoStoreApi::catalogDelta(const RepoNode& node, uint64_t sinceEpoch)
 {
   return parseCatalogDeltaJson(toString(
     node.handleCatalogDelta(encodeCatalogDeltaRequest(sinceEpoch))));
@@ -1571,10 +1571,10 @@ RepoClient::putSegmented(RepoNode& node,
 }
 
 std::vector<uint8_t>
-RepoClient::getSegmented(const RepoNode& node, const RepoObjectManifest& manifest)
+RepoStoreApi::getSegmented(const RepoNode& node, const RepoObjectManifest& manifest)
 {
   if (manifest.segmentCount <= 1) {
-    auto payload = get(node, manifest.objectName);
+    auto payload = RepoClient::get(node, manifest.objectName);
     verifySegmentedPayload(manifest, payload);
     return payload;
   }
@@ -1582,7 +1582,7 @@ RepoClient::getSegmented(const RepoNode& node, const RepoObjectManifest& manifes
   std::vector<uint8_t> payload;
   payload.reserve(static_cast<size_t>(manifest.size));
   for (uint32_t i = 0; i < manifest.segmentCount; ++i) {
-    auto segment = get(node, segmentObjectName(manifest.objectName, i));
+    auto segment = RepoClient::get(node, segmentObjectName(manifest.objectName, i));
     payload.insert(payload.end(), segment.begin(), segment.end());
   }
   verifySegmentedPayload(manifest, payload);
@@ -1592,7 +1592,7 @@ RepoClient::getSegmented(const RepoNode& node, const RepoObjectManifest& manifes
 std::vector<uint8_t>
 RepoClient::getObject(const RepoNode& node, const RepoObjectManifest& manifest)
 {
-  return getSegmented(node, manifest);
+  return RepoStoreApi::getSegmented(node, manifest);
 }
 
 RepoObjectManifest
