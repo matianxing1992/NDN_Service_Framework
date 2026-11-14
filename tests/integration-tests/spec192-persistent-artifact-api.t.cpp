@@ -282,6 +282,9 @@ releaseRepoNodeServiceHandlersForRestart(
     "CAPABILITY", "CACHE_STATUS", "STATUS", "CATALOG_STATUS",
     "CATALOG_SNAPSHOT", "CATALOG_DELTA", "CATALOG_LOOKUP", "DELETE",
     "DATA_RECEIPT", "DATA_LOCATION",
+    // The node registers these too, and each handler holds a strong self-reference,
+    // so leaving them in place keeps the node (and its backend lease) alive.
+    "USER_STORAGE_GRANT", "USER_STORAGE_LIST", "USER_STORAGE_DELETE", "USER_STORAGE_USAGE",
   };
   for (const auto& operation : operations) {
     provider.addService(repo::makeRepoServiceName(servicePrefix, operation),
