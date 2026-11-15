@@ -2812,6 +2812,10 @@ toRepoHandle(const ArtifactHandle& input)
     replica.completedAtMs = commit.completedAtMs;
     replica.locationVersion = commit.locationVersion;
     replica.routeState = commit.routeState;
+    replica.state = commit.state;
+    replica.forwardingHint = commit.forwardingHint;
+    replica.reference = toFileReference(commit.reference);
+    replica.failureReason = commit.failureReason;
     handle.replicaCommits.push_back(std::move(replica));
   }
   handle.seedRepoId = input.seedRepoId;
@@ -2852,6 +2856,10 @@ toArtifactHandle(const RepoHandle& input)
     projected.completedAtMs = commit.completedAtMs;
     projected.locationVersion = commit.locationVersion;
     projected.routeState = commit.routeState;
+    projected.state = commit.state;
+    projected.forwardingHint = commit.forwardingHint;
+    projected.reference = toArtifactReference(commit.reference);
+    projected.failureReason = commit.failureReason;
   }
   handle.seedRepoId = input.seedRepoId;
   handle.writeConsistency = input.writeConsistency;

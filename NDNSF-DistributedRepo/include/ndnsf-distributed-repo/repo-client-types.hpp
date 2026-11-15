@@ -153,6 +153,16 @@ struct RepoReplicaCommit
   uint64_t completedAtMs = 0;
   uint64_t locationVersion = 0;
   std::string routeState;
+  /** Receipt outcome: COMMITTED, FAILED or SKIPPED. It is reported rather than inferred, because
+   *  a handle lists the replica attempts of one publication and the engine keeps them apart. */
+  std::string state;
+  /** Retrieval hint for a routable replica; the engine keeps it with the receipt, not in the
+   *  object's name. */
+  std::string forwardingHint;
+  /** The artifact this replica committed. A handle lists one entry per replica attempt, so each
+   *  entry carries its own reference instead of borrowing the handle's. */
+  FileReference reference;
+  std::string failureReason;
 };
 
 /** Public storage reference. It is not an authorization or decryption
