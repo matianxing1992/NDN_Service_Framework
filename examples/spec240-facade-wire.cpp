@@ -312,7 +312,24 @@ main(int argc, char** argv)
   if (mode == "remove") {
     repo::RepoDeleteRequest request;
     repo::ExactPacketSetReference reference;
-    reference.objectName = arg(options, "object-name");
+    reference.objectName = options.count("object-name") != 0
+      ? options.at("object-name") : std::string();
+    if (options.count("claim") != 0) {
+      std::ifstream record(options.at("claim"));
+      repo::RepoClaimReference claim;
+      std::string epochText, generationText;
+      std::getline(record, claim.ownerIdentity);
+      std::getline(record, claim.objectName);
+      std::getline(record, epochText);
+      std::getline(record, generationText);
+      std::getline(record, claim.target.repoNode);
+      std::getline(record, claim.target.providerIdentity);
+      std::getline(record, claim.target.servicePrefix);
+      claim.ownerEpoch = std::stoull(epochText);
+      claim.generation = std::stoull(generationText);
+      reference.objectName = claim.objectName;
+      request.claim = claim;
+    }
     // The cleanup id must be unique per removal so a retry is idempotent rather than a
     // second deletion.
     request.generation = "spec240-remove-" + std::to_string(
@@ -346,6 +363,15 @@ main(int argc, char** argv)
         std::fprintf(stderr, "FACADE_LIST_ENTRY bytes=%llu state=%s\n",
                    static_cast<unsigned long long>(entry.storedBytes),
                    entry.lifecycleState.c_str());
+      if (options.count("claim-out") != 0 && !page.items.empty()) {
+        // A deletion needs the exact claim the entry came from, so hand it to the next process.
+        const auto& claim = page.items.front().claim;
+        std::ofstream record(options.at("claim-out"), std::ios::trunc);
+        record << claim.ownerIdentity << "\n" << claim.objectName << "\n"
+               << claim.ownerEpoch << "\n" << claim.generation << "\n"
+               << claim.target.repoNode << "\n" << claim.target.providerIdentity << "\n"
+               << claim.target.servicePrefix << "\n";
+      }
       return 0;
     }
     catch (const std::exception& error) {
