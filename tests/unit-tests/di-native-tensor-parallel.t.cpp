@@ -10128,7 +10128,7 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
   // question, which is the mistake this case made in its first form (its argmax was the last
   // prompt token instead of the turn's first output).
-  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-turn0-input.bin");
+  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
   if (turn0Prompt.size() != 25U) {
     BOOST_TEST_MESSAGE("the deployment's turn-0 input copy is absent; skipping");
     return;
@@ -10143,7 +10143,7 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // property of the wrong prompt, not of the model.
   // The deployment's input directory is root-owned, so the file is read from a readable copy of
   // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
-  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-turn1-input.bin");
+  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
   if (turn1Prompt.size() != 24U) {
     BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
     return;
