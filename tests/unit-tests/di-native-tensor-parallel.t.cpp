@@ -11539,7 +11539,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     ("spec224-two-workers-" + std::to_string(getpid()));
   std::error_code cleanupError;
   std::filesystem::remove_all(root, cleanupError);
-  for (const auto* unit : {"S0R0", "S0R1"}) {
+  for (const auto* unit : {"S0R0", "S0R1", "ref"}) {
     std::filesystem::create_directories(root / unit, cleanupError);
     std::filesystem::copy_file(source, root / unit / "model.onnx",
                                std::filesystem::copy_options::overwrite_existing,
@@ -11856,6 +11856,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // the real chain are visible: the worker surfaces only the values no consumer inside the unit
   // needs. Comparing the first layer's attention partial between the two ranks and the unsplit
   // export is therefore possible without changing the worker or the graph.
+  std::vector<float> rank0Values;
+  std::vector<float> rank1Values;
   {
     const auto scopes = bus->publishedScopes();
     std::string preview;
@@ -11879,8 +11881,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
       return values;
     };
-    const auto rank0Values = valuesOf(*rank0Partial);
-    const auto rank1Values = valuesOf(*rank1Partial);
+    rank0Values = valuesOf(*rank0Partial);
+    rank1Values = valuesOf(*rank1Partial);
     BOOST_REQUIRE_EQUAL(rank0Values.size(), rank1Values.size());
     // Both ranks carry a pre-attention projection of the same width, so their sum is over
     // disjoint output channels rather than over two halves of one vector -- the assembled entry's
@@ -11908,6 +11910,164 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     }
     BOOST_TEST_MESSAGE("layer-0 partial sum magnitude=" << summedMagnitude);
     BOOST_CHECK_GT(summedMagnitude, 0.0);
+  }
+
+  // The unsplit reference on the same 24-token context, so the ranks' layer-0 partials can be
+  // compared against what the export itself produces -- the comparison the synthetic-input case
+  // makes, now on the context the chain actually carried.
+  {
+    const auto referenceTable = qwen::assembleQwenTpEntryTable(
+      root / "ref", "ref", graphBytes, 28);
+    BOOST_REQUIRE(!referenceTable.empty());
+    NativeModelRunnerSpec refSpec;
+    refSpec.role = "ref";
+    refSpec.kind = "onnx";
+    refSpec.path = (root / "ref" / "model.onnx").string();
+    refSpec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+    refSpec.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson(referenceTable);
+    refSpec.metadata["tensorParallelEntryRoot"] = (root / "ref").string();
+    refSpec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    RegistryNativeModelRunnerFactory refFactory;
+    ndnsf::di::registerOnnxRuntimeBackend(refFactory);
+    ndnsf::di::qwen::registerQwenTensorBackend(refFactory);
+    auto refRunner = refFactory.create(refSpec);
+    BOOST_REQUIRE(refRunner != nullptr);
+    const auto refParent = std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(refRunner);
+    BOOST_REQUIRE(refParent != nullptr);
+
+    // Run the unsplit INIT entry with the deployment's own prompt to obtain the embedding the
+    // first attention block consumes. Reading it from the export rather than computing it keeps
+    // both sides' layer-0 input identical by construction.
+    const auto runRefEntry = [&] (const qwen::QwenTpEntryContract& entry,
+                                  const std::map<std::string, TensorBundle>& feeds) {
+      NativeExecutionStepSpec step;
+      step.stepId = "ref/" + entry.kind + "/" + std::to_string(entry.layer);
+      step.unitId = "ref";
+      step.operation = "CALL_SUBGRAPH";
+      step.artifactEntry = entry.entryId;
+      for (const auto& name : entry.inputNames) {
+        const auto bound = entry.inputSlotByGraphName.find(name);
+        if (bound == entry.inputSlotByGraphName.end()) continue;
+        NativeStepSlotSpec slot;
+        slot.slotId = bound->second;
+        slot.source = "LOCAL_STEP";
+        step.inputSlots.push_back(slot);
+      }
+      for (const auto& name : entry.synthesizedInputGraphNames) {
+        NativeStepSlotSpec slot;
+        slot.slotId = name;
+        slot.source = "LOCAL_STEP";
+        step.inputSlots.push_back(slot);
+      }
+      RoleExecutionContext context;
+      context.role = "ref";
+      context.sessionId = "ref-session";
+      context.requestId = "/request/two-workers-ref";
+      context.attemptEpoch = 1;
+      context.inferenceEpoch = 0;
+      context.preferLocalTensorOutputs = true;
+      context.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
+      context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+        std::vector<NativeExecutionStepSpec>{step});
+      for (const auto& item : feeds) {
+        const auto bound = entry.inputSlotByGraphName.find(item.first);
+        context.stepInputsBySlot.emplace(
+          bound == entry.inputSlotByGraphName.end() ? item.first : bound->second,
+          item.second);
+      }
+      return refParent->run(context);
+    };
+
+    const auto findEntry = [&referenceTable] (const std::string& kind, std::uint64_t layer) {
+      return std::find_if(referenceTable.begin(), referenceTable.end(),
+        [&kind, layer] (const auto& item) {
+          return item.kind == kind && item.layer == layer;
+        });
+    };
+    const auto initEntry = findEntry("INIT", 0);
+    BOOST_REQUIRE(initEntry != referenceTable.end());
+    const auto attnEntry = findEntry("ATTN", 0);
+    BOOST_REQUIRE(attnEntry != referenceTable.end());
+
+    // The INIT boundary: the three epoch inputs the template declares.
+    std::vector<std::int64_t> positions(promptTokens.size());
+    for (std::size_t index = 0; index < positions.size(); ++index)
+      positions[index] = static_cast<std::int64_t>(index);
+    std::vector<std::int64_t> ones(promptTokens.size(), 1);
+    std::map<std::string, TensorBundle> initFeeds{
+      {"input_ids", makeEncodedTensorBundle("input_ids",
+        {tokenVector("input_ids", promptTokens)})},
+      {"attention_mask", makeEncodedTensorBundle("attention_mask",
+        {tokenVector("attention_mask", ones)})},
+      {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
+        {tokenVector("position_ids", positions)})},
+    };
+    std::map<std::string, TensorBundle> initOut;
+    try {
+      initOut = runRefEntry(*initEntry, initFeeds);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("unsplit INIT on the real prompt: ") + error.what());
+    }
+    // `x0` is the embedding; the mask and length the export derives internally come back too and
+    // are fed forward rather than recomputed.
+    BOOST_REQUIRE_MESSAGE(initOut.count("x0") == 1U, "the unsplit INIT produced no embedding");
+    std::map<std::string, TensorBundle> attnFeeds;
+    attnFeeds.emplace("x", initOut.at("x0"));
+    for (const auto& item : initOut) {
+      if (item.first == "x0") continue;
+      if (item.first.find("attn_mask") != std::string::npos ||
+          item.first.find("total_sequence_length") != std::string::npos ||
+          item.first.find("position_ids") != std::string::npos)
+        attnFeeds.emplace(item.first, item.second);
+    }
+    // The attention entry also reads the KV it is about to extend; on a fresh context that is empty.
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(shape.kvHeads), 0, shape.headDim};
+        attnFeeds.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    std::map<std::string, TensorBundle> refAttn;
+    try {
+      refAttn = runRefEntry(*attnEntry, attnFeeds);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("unsplit attention on the real prompt: ") + error.what());
+    }
+    const auto refPartial = refAttn.find("partial");
+    BOOST_REQUIRE_MESSAGE(refPartial != refAttn.end(),
+                          "the unsplit attention produced no partial slot");
+    const auto refValues = [&] {
+      const auto views = decodeTensorBundleViews(refPartial->second);
+      BOOST_REQUIRE(!views.empty());
+      std::vector<float> values(views.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+      return values;
+    }();
+    BOOST_REQUIRE_EQUAL(refValues.size(), rank0Values.size());
+    // C8's formula, element by element: `abs(test-ref) <= atol + rtol*abs(ref)`.
+    double worstReference = 0.0;
+    double worstReferenceExcess = std::numeric_limits<double>::lowest();
+    for (std::size_t index = 0; index < refValues.size(); ++index) {
+      const auto reference = double(refValues[index]);
+      const auto actual = double(rank0Values[index]) + double(rank1Values[index]);
+      const auto difference = std::fabs(actual - reference);
+      const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
+      worstReference = std::max(worstReference, difference);
+      worstReferenceExcess = std::max(worstReferenceExcess, difference - allowance);
+    }
+    BOOST_TEST_MESSAGE("layer-0 partial vs unsplit reference: worst=" << worstReference
+                       << " excessOverC8=" << worstReferenceExcess
+                       << " width=" << refValues.size());
+    BOOST_CHECK_LE(worstReferenceExcess, 0.0);
   }
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
   for (const auto& item : results) {
