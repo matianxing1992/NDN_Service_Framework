@@ -654,6 +654,29 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   BOOST_CHECK(replay.deduplicated);
 }
 
+BOOST_AUTO_TEST_CASE(InspectionReportsTheCommittedObjectConsistently) {
+  TemporaryDirectory temporary("inspect-fields");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  const auto published = client.publishFile(publication, makeOptions());
+  BOOST_REQUIRE(published.committedHandle);
+  RepoInspectionRequest inspection;
+  inspection.kind = RepoInspectionRequest::Kind::OBJECT;
+  inspection.object = published.committedHandle;
+  const auto observed = client.inspect(inspection, makeOptions());
+  BOOST_CHECK(observed.availability == RepoInspection::Availability::AVAILABLE);
+  BOOST_REQUIRE(observed.storedBytes);
+  BOOST_CHECK_EQUAL(*observed.storedBytes, sizeof(FIXTURE_TEXT) - 1);
+  BOOST_CHECK(observed.handle.has_value());
+  BOOST_CHECK_GT(observed.observedAtMs, 0U);
+  // An OBJECT probe reports availability, not a lifecycle; the header says so.
+  BOOST_CHECK(observed.lifecycleState.empty());
+}
+
 BOOST_AUTO_TEST_CASE(AcceptedPublicationFailsWithAClientErrorInApp) {
   // An ACCEPTED publication needs the persistent engine. The in-app client must say so with a
   // RepoClientError rather than letting the engine's own logic_error escape.

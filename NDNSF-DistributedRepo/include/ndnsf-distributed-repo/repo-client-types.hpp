@@ -483,6 +483,8 @@ struct RepoInspection
   std::string probeKind;
   std::optional<RepoHandle> handle;
   std::optional<uint64_t> storedBytes;
+  /** The object's lifecycle state when the probe can observe it. An OBJECT inspection reports
+   *  availability and stored bytes, not a lifecycle state, so this stays empty there. */
   std::string lifecycleState;
   std::optional<uint64_t> claimEpoch;
   /** True only when the same claim still validates against authority. */
