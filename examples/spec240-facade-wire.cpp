@@ -416,8 +416,10 @@ main(int argc, char** argv)
     for (auto& character : digest)
       character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
     repo::FileReference reference;
+    // A text segment keeps the name free of binary components: a NUL-bearing component becomes
+    // literal NUL bytes wherever a name is flattened to a string, and validators reject that.
     reference.logicalName = ndn::Name(identity).append("artifact")
-      .appendSegment(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      .append("t" + std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count())).toUri();
     reference.contentDigest = digest;
     reference.sizeBytes = content.size();
