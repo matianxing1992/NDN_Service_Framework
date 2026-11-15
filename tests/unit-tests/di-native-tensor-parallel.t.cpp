@@ -7734,7 +7734,9 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -8625,7 +8627,9 @@ BOOST_AUTO_TEST_CASE(ProviderCreatesTheParentRunnerFromARealAssembledTable)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -8923,7 +8927,9 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -9136,7 +9142,9 @@ BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -9339,7 +9347,9 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -9762,7 +9772,9 @@ BOOST_AUTO_TEST_CASE(MetadataDerivationAgreesWithTheGraphDerivation)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -9866,7 +9878,9 @@ BOOST_AUTO_TEST_CASE(UnsplitReferenceAgreesWithTheDistributedFirstToken)
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string source = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   const auto root = std::filesystem::temp_directory_path() /
@@ -10154,14 +10168,16 @@ BOOST_AUTO_TEST_CASE(TheWholeStackProducesTheSameKvAsTheUnsplitExportOnOneContex
   // window its KV heads occupy, for every layer.
   const auto prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
   if (prompt.size() != 24U) {
-    BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
     return;
   }
   const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string source = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -10346,13 +10362,17 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // prompt token instead of the turn's first output).
   const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
   if (turn0Prompt.size() != 25U) {
-    BOOST_TEST_MESSAGE("the deployment's turn-0 input copy is absent; skipping");
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
     return;
   }
-  const std::vector<std::int64_t> turn0Generated = {
-    15810, 2885, 59463, 320, 8065, 45, 8, 374, 264, 28030, 11507, 6188, 311,
-    7283, 10535, 1948, 7611, 429, 4332, 264, 4185, 738, 315, 6941, 821, 14389,
-    13, 4220, 14389, 525, 11136, 1483};
+  // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
+  // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
+  // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
+  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
+  if (turn0Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
+    return;
+  }
   // Read from the deployment's own input file rather than transcribed by hand. The first
   // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
   // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
@@ -10361,7 +10381,7 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
   const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
   if (turn1Prompt.size() != 24U) {
-    BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
     return;
   }
   // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
@@ -10378,7 +10398,7 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // each other, not where two computations of the model disagreed.
   const auto expected = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
   if (expected.size() < 32U) {
-    BOOST_TEST_MESSAGE("the deployment's turn-1 result is absent; skipping");
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 result is absent; skipping");
     return;
   }
 
@@ -10386,7 +10406,9 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string source = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   const auto root = std::filesystem::temp_directory_path() /
@@ -10574,7 +10596,9 @@ BOOST_AUTO_TEST_CASE(UnsplitReferenceSamplesThroughTheProductionRunner)
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string source = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   const auto  root = std::filesystem::temp_directory_path() /
@@ -10746,7 +10770,9 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsRunTheFullStackAndOneSamples)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -11103,7 +11129,9 @@ BOOST_AUTO_TEST_CASE(CoordinatorDrivesOneEpochWithARealAssembledStepTemplate)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -11472,7 +11500,9 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -11657,7 +11687,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // unsplit export's prefill state at all: it keeps one position.
   const auto promptTokens = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
   if (promptTokens.size() != 24U) {
-    BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
     return;
   }
   const auto tokenVector = [] (const std::string& name,
@@ -11998,7 +12028,9 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -12377,7 +12409,9 @@ BOOST_AUTO_TEST_CASE(AssemblerTablesSurviveTheArtifactFileValidation)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -12529,7 +12563,9 @@ BOOST_AUTO_TEST_CASE(RankSpecEntryIdentityFollowsTheEgressOwner)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -12659,7 +12695,9 @@ BOOST_AUTO_TEST_CASE(ProjectedEntryIdsMatchWhatTheAssemblerWrites)
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string graphPath = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(graphPath)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(graphPath, std::ios::binary);
@@ -12809,7 +12847,9 @@ BOOST_AUTO_TEST_CASE(ConsecutiveLayersCarryResidualAndKvAcrossTheStepChain)
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string graphPath = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(graphPath)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(graphPath, std::ios::binary);
@@ -12977,7 +13017,9 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   const std::string sidecarPath = modelDir + "/model.onnx.data";
   const std::string sidecarFrozen = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(graphPath)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   const auto sidecar = std::filesystem::exists(sidecarPath) ? sidecarPath : sidecarFrozen;
@@ -15063,7 +15105,9 @@ BOOST_AUTO_TEST_CASE(ASecondTurnRunsOnThePreparedRunnerWithoutPreparingAgain)
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string source = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -15191,7 +15235,9 @@ BOOST_AUTO_TEST_CASE(AUnitHandsLocalValuesBetweenItsOwnStepsWithoutEncodingThem)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -16491,7 +16537,9 @@ BOOST_AUTO_TEST_CASE(ASecondTurnReusesThePreparedUnitAndItsChildSessions)
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -16586,7 +16634,9 @@ BOOST_AUTO_TEST_CASE(ASecondTurnFindsThePublishedRunnerAndReusesEveryChildSessio
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
@@ -16678,7 +16728,9 @@ BOOST_AUTO_TEST_CASE(AUnitWithoutKvChildrenStillReportsItsOwnState)
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
   const std::string source = modelDir + "/canonical-source.onnx";
   if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
     return;
   }
   std::ifstream graphIn(source, std::ios::binary);
