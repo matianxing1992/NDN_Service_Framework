@@ -24,6 +24,15 @@ namespace repo = ndnsf_distributed_repo;
 
 namespace {
 
+/** Render a facade failure with its code, which is what callers match on. */
+std::string
+describeFailure(const std::exception& error)
+{
+  if (const auto* client = dynamic_cast<const repo::RepoClientError*>(&error))
+    return client->code() + ": " + client->what();
+  return error.what();
+}
+
 /** The check a Producer verification means: signed by the expected certificate, under the
  *  Producer's namespace, and a complete wire. */
 std::function<bool(const std::vector<uint8_t>&)>
@@ -179,6 +188,7 @@ main(int argc, char** argv)
     std::printf("FACADE_IDLE ok\n");
     return 0;
   }
+  try {
   if (mode == "publish") {
     const auto source = arg(options, "source");
     const auto bytes = readBytes(source);
@@ -255,9 +265,11 @@ main(int argc, char** argv)
     // accept anything.
     const auto expectedCertificate = certificate;
     const auto producerIdentity = identity;
-    publication.verifyWire =
-      std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-        makeProducerVerifier(certificate, identity));
+    if (options.count("no-verifier") == 0) {
+      publication.verifyWire =
+        std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+          makeProducerVerifier(certificate, identity));
+    }
     publication.generation = 1;
     publication.idempotencyKey = "spec240-facade-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
@@ -282,7 +294,7 @@ main(int argc, char** argv)
       grant = client.authorizeWrite(authorization, operation);
     }
     catch (const std::exception& error) {
-      std::fprintf(stderr, "FACADE_GRANT_REJECTED what=%s\n", error.what());
+      std::fprintf(stderr, "FACADE_GRANT_REJECTED what=%s\n", describeFailure(error).c_str());
       return options.count("expect-rejection") != 0 ? 0 : 1;
     }
     std::fprintf(stderr, "FACADE_GRANT grant=%s owner=%s epoch=%llu object=%s\n",
@@ -685,6 +697,11 @@ main(int argc, char** argv)
     std::printf("FACADE_FETCH packets=%zu wireBytes=%llu\n",
                 result.packets.size(), static_cast<unsigned long long>(result.wireBytes));
     return 0;
+  }
+  }
+  catch (const std::exception& error) {
+    std::fprintf(stderr, "FACADE_FAILED what=%s\n", describeFailure(error).c_str());
+    return 1;
   }
   throw std::runtime_error("unknown mode " + mode);
 }
