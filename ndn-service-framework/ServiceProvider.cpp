@@ -9861,9 +9861,21 @@ namespace ndn_service_framework
                             cursor = result->cursor;
                             return true;
                         },
-                        [this, publisher, requesterName, providerName, serviceName,
+                        // The control block is captured instead of `this`: this callback can run
+                        // after the destructor begins, so it must be able to acquire the owner
+                        // token without dereferencing the provider first. The Face outlives the
+                        // provider, so its io_context pointer is safe for the same reason.
+                        [control = m_registrationControl, io = &m_face.getIoContext(),
+                         publisher, requesterName, providerName, serviceName,
                          requestId, requestMessage, selectionDigest, registrationState]
                         (const ndn::Buffer& payload, StreamFinishReason reason) {
+                            auto* owner = control->acquireOwner();
+                            if (owner == nullptr) return false;
+                            struct EntryRelease
+                            {
+                                std::shared_ptr<RegistrationControl> control;
+                                ~EntryRelease() { control->releaseOwner(); }
+                            } entryRelease{control};
                             const auto completion = publisher->finish(
                                 payload, reason, std::chrono::steady_clock::now() +
                                                    std::chrono::seconds(30));
@@ -9873,11 +9885,8 @@ namespace ndn_service_framework
                             auto finalPayload = payload;
                             response.setPayload(finalPayload, finalPayload.size());
                             response.setStreamCompletion(*completion);
-                            // Posted from a stream completion that can run after the destructor
-                            // begins; the completion holds the owner token like the other two.
-                            if (auto* owner = m_registrationControl->acquireOwner()) {
-                                auto control = m_registrationControl;
-                                boost::asio::post(m_face.getIoContext(),
+                            {
+                                boost::asio::post(*io,
                                     [owner, control, requesterName, providerName, serviceName,
                                      requestId, requestMessage, response = std::move(response),
                                      selectionDigest, registrationState]() mutable {
@@ -9894,13 +9903,20 @@ namespace ndn_service_framework
                             }
                             return true;
                         },
-                        [this, publisher, requesterName, providerName, serviceName,
+                        [control = m_registrationControl, io = &m_face.getIoContext(),
+                         publisher, requesterName, providerName, serviceName,
                          requestId, requestMessage, selectionDigest]
-                        (StreamedInvocationErrorCode, const std::string& message) {
+                        (StreamedInvocationErrorCode, const std::string& message) -> bool {
+                            auto* owner = control->acquireOwner();
+                            if (owner == nullptr) return false;
+                            struct EntryRelease
+                            {
+                                std::shared_ptr<RegistrationControl> control;
+                                ~EntryRelease() { control->releaseOwner(); }
+                            } entryRelease{control};
                             publisher->fail(message);
-                            if (auto* owner = m_registrationControl->acquireOwner()) {
-                                auto control = m_registrationControl;
-                                boost::asio::post(m_face.getIoContext(),
+                            {
+                                boost::asio::post(*io,
                                     [owner, control, requesterName, providerName, serviceName,
                                      requestId, requestMessage, message,
                                      selectionDigest]() mutable {
