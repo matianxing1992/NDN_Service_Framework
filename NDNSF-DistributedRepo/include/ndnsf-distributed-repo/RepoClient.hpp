@@ -180,7 +180,8 @@ public:
     const std::string& objectName,
     const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
     int timeoutMs,
-    RepoUserStoragePacketSetFetchLimits limits = {});
+    RepoUserStoragePacketSetFetchLimits limits = {},
+    const std::function<void()>& requireCurrent = {});
 
   /** Re-read one exact Owner claim after caller-side semantic validation.
    * Returns only when the complete committed claim tuple is unchanged. This is

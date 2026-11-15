@@ -46,6 +46,19 @@
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+/** Send one request to a known Provider and wait for its response.
+ *
+ * Declared here and defined near the end of this file; the data path's manifest read and the
+ * owner listing both use it. */
+std::vector<uint8_t>
+requestTargetedReply(ndn_service_framework::ServiceUser& user,
+                     const ndn::Name& providerIdentity,
+                     const ndn::Name& serviceName,
+                     const std::vector<uint8_t>& payload,
+                     int timeoutMs,
+                     const std::function<void()>& requireCurrent);
+
 struct BoundUserFace
 {
   ndn::Face* face = nullptr;
@@ -713,7 +726,8 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   const std::string& objectName,
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
   int timeoutMs,
-  RepoUserStoragePacketSetFetchLimits limits)
+  RepoUserStoragePacketSetFetchLimits limits,
+  const std::function<void()>& requireCurrent)
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (owner.getName().empty() || objectName.empty() || objectName.size() > 4096 ||
@@ -1156,10 +1170,11 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto encodedManifestQuery = detail::encodeOwnedManifestQuery(manifestQuery);
   const auto readManifest = [&] {
     current();
-    const auto wire = RepoClientCompat::requestSelectedService(writer, provider,
+    // Targeted, not selected: the manifest query grows with the packet count, and a large
+    // query never gets an ACK back through the collaboration exchange.
+    const auto wire = requestTargetedReply(writer, provider,
       makeRepoServiceName(servicePrefix, "MANIFEST"), encodedManifestQuery,
-      ackCollectionTimeMs, remaining(),
-      {}, current);
+      remaining(), current);
     if (wire.empty() || wire.size() > MAX_PACKET_INDEX_BYTES)
       throw std::runtime_error("repo-original-publication-manifest-budget");
     const auto manifest = parseManifestJson(toString(wire));
@@ -3394,7 +3409,8 @@ RepoClient::fetchData(const RepoDataFetch& input,
     };
     auto verified = RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       *m_impl->user, m_impl->target(claim.target), claim.objectName,
-      verifyPacket, std::max(1, remainingMs(options.deadline)), limits);
+      verifyPacket, std::max(1, remainingMs(options.deadline)), limits,
+      options.requireCurrent);
     RepoDataFetchResult result;
     result.wireBytes = 0;
     for (const auto& wire : verified.packetWires())
@@ -3773,6 +3789,9 @@ requestTargetedReply(ndn_service_framework::ServiceUser& user,
     std::vector<uint8_t> payload;
     std::string failure;
   };
+  // A caller that has already cancelled must not put a request on the wire.
+  if (requireCurrent)
+    requireCurrent();
   auto state = std::make_shared<ReplyState>();
   user.RequestService(
     std::vector<ndn::Name>{providerIdentity}, serviceName,

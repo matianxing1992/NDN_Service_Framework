@@ -24,6 +24,25 @@ namespace repo = ndnsf_distributed_repo;
 
 namespace {
 
+/** The check a Producer verification means: signed by the expected certificate, under the
+ *  Producer's namespace, and a complete wire. */
+std::function<bool(const std::vector<uint8_t>&)>
+makeProducerVerifier(const ndn::security::Certificate& certificate, const ndn::Name& identity)
+{
+  return [certificate, identity] (const std::vector<uint8_t>& wire) {
+    try {
+      const ndn::Block block(wire);
+      const ndn::Data packet(block);
+      return packet.wireEncode().size() == wire.size() &&
+        identity.isPrefixOf(packet.getName()) &&
+        ndn::security::verifySignature(packet, certificate);
+    }
+    catch (const std::exception&) {
+      return false;
+    }
+  };
+}
+
 /** Alternate spelling of a name string, produced once from a parsed Name. */
 std::string
 alternateName(const std::string& value)
@@ -236,19 +255,9 @@ main(int argc, char** argv)
     // accept anything.
     const auto expectedCertificate = certificate;
     const auto producerIdentity = identity;
-    publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-      [expectedCertificate, producerIdentity] (const std::vector<uint8_t>& wire) {
-        try {
-          const ndn::Block block(wire);
-          const ndn::Data packet(block);
-          return packet.wireEncode().size() == wire.size() &&
-            producerIdentity.isPrefixOf(packet.getName()) &&
-            ndn::security::verifySignature(packet, expectedCertificate);
-        }
-        catch (const std::exception&) {
-          return false;
-        }
-      });
+    publication.verifyWire =
+      std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+        makeProducerVerifier(certificate, identity));
     publication.generation = 1;
     publication.idempotencyKey = "spec240-facade-" + std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
@@ -506,17 +515,9 @@ main(int argc, char** argv)
           return true;
         };
         publication.packets = packets;
-        publication.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-          [] (const std::vector<uint8_t>& wire) {
-            try {
-              const ndn::Block block(wire);
-              const ndn::Data packet(block);
-              return packet.wireEncode().size() == wire.size();
-            }
-            catch (const std::exception&) {
-              return false;
-            }
-          });
+        publication.verifyWire =
+          std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+            makeProducerVerifier(certificate, identity));
         publication.generation = 1;
         publication.idempotencyKey = "spec240-concurrency-" + std::to_string(runTag) +
           "-" + std::to_string(index);
@@ -575,18 +576,9 @@ main(int argc, char** argv)
     claim.target = repo::RepoTarget{alternateName(repository), alternateName(provider.toUri()),
                                     alternateName(servicePrefix.toUri())};
     claimRequest.ownerClaim = claim;
-    claimRequest.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-      [certificate, identity] (const std::vector<uint8_t>& wire) {
-        try {
-          const ndn::Block block(wire);
-          const ndn::Data packet(block);
-          return identity.isPrefixOf(packet.getName()) &&
-            ndn::security::verifySignature(packet, certificate);
-        }
-        catch (const std::exception&) {
-          return false;
-        }
-      });
+    claimRequest.verifyWire =
+      std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
+        makeProducerVerifier(certificate, identity));
     try {
       const auto result = client.fetchData(claimRequest, operation);
       std::ofstream output(arg(options, "destination"), std::ios::binary);
@@ -675,7 +667,7 @@ main(int argc, char** argv)
     request.target = repo::RepoTarget{alternate(repository), alternate(provider.toUri()),
                                       alternate(servicePrefix.toUri())};
     request.verifyWire = std::make_shared<const std::function<bool(const std::vector<uint8_t>&)>>(
-      [] (const std::vector<uint8_t>&) { return true; });
+      makeProducerVerifier(certificate, identity));
     const auto result = client.fetchData(request, operation);
     std::ofstream output(destination, std::ios::binary);
     for (const auto& wire : result.packets) {
