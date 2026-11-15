@@ -12292,6 +12292,14 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         carriedPost = chainMlp.at("post_residual");
         carriedMerged = chainMlp.at("partial");
       }
+      // Replaying layer 25's attention with "the inputs the unit consumed" is not possible through
+      // this bus, and the attempt is recorded here rather than kept as code: the bus carries the
+      // peer contributions a unit publishes -- `attn-N-from-S0R0` is rank 0's half of layer N's
+      // attention reduction -- not the unit's own local `post_residual`/`merged` step outputs.
+      // Feeding a partial under the `post_attention` key therefore compares two unrelated values,
+      // and the ~40 it yielded says only that. Obtaining the unit's real step input needs the value
+      // recorded where the worker assembles it, which is a different fixture from this one.
+
       BOOST_TEST_MESSAGE("reassembled chain reached " << layerKv.size() << " layers");
       double worstChain = 0.0;
       std::uint64_t worstChainLayer = 0;
