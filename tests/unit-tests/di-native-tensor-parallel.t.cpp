@@ -13985,6 +13985,12 @@ BOOST_AUTO_TEST_CASE(ProjectedCandidateValidatesAgainstItsOwnGraph)
     BOOST_CHECK_EQUAL(item.second, std::string("S0R0"));
   BOOST_CHECK_EQUAL(candidate.inputIngressRole, std::string("S0R0"));
   BOOST_CHECK_EQUAL(candidate.resultEgressRole, std::string("S0R0"));
+
+  // The catalog named the stage, and the head landed on that stage's last rank -- what the
+  // resolution is supposed to do, and also what the removed "take the last unit" behaviour
+  // produced by coincidence. That coincidence is why the explicit form and the rejection are the
+  // cases that matter; they are not covered here, and this comment says so rather than pretending
+  // the assertion proves more than it does.
   // No hybrid plan: the hybrid rule is for a role split across Providers, and no role
   // is. The plan's degree of two and the per-role degrees of one measure different
   // things -- partials per layer, and Providers per role -- so a hybrid plan declaring
