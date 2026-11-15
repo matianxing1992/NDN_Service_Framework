@@ -645,6 +645,12 @@ main(int argc, char** argv)
       auto canonicalSha = sha256Text;
       for (auto& character : canonicalSha)
         character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+      // The two corruption switches exist to exercise the facade's verdicts: a manifest that
+      // does not describe the stored wires must be reported, not returned as if it matched.
+      if (options.count("corrupt-digest") != 0)
+        canonicalSha = std::string(64, '0');
+      if (options.count("corrupt-size") != 0)
+        boundManifest->size += 1;
       bound.expectedSha256 = canonicalSha;
       boundManifest->sha256 = canonicalSha;
       bound.dataPrefix = identity.toUri();
