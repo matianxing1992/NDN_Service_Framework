@@ -12291,6 +12291,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     std::size_t comparedLayers = 0;
     std::map<std::uint64_t, double> layerWorst;
     std::map<std::uint64_t, double> layerMagnitude;
+    double layer1KeyMagnitude = 0.0;
     std::optional<std::string> firstExcess;
     for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
       for (const auto* kind : {"key", "value"}) {
@@ -12309,6 +12310,18 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             const auto shardBase = (head * positions + position) * shape.headDim;
             const auto unsplitBase =
               ((rankIndex * headsPerRank + head) * positions + position) * shape.headDim;
+            // The KV is an INT4 projection of a value both sides compute; its error is relative to
+            // the *magnitude of the pre-quantization value*, not to the KV entry itself. A small KV
+            // entry can therefore carry a large relative error from a small absolute error in what
+            // it was projected from. Recording both magnitudes separates "the KV is wrong" from
+            // "the KV is small and its source number is imprecise".
+            if (layer == 1 && std::string(kind) == "key" && position == 0) {
+              // `channel` is in scope only inside the inner loop below, so the magnitude is taken
+              // over this head's block directly.
+              for (std::size_t probe = 0; probe < shape.headDim; ++probe)
+                layer1KeyMagnitude = std::max(layer1KeyMagnitude,
+                                              std::fabs(double(unsplit[unsplitBase + probe])));
+            }
             // The window above assumes rank 0 owns heads [0,4) in the export's own order. If that
             // assumption were wrong the difference would look like a bounded mismatch rather than
             // a growing one, which is close to what is measured -- so the mapping is checked
@@ -12340,6 +12353,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
               BOOST_TEST_MESSAGE("unit " << item.first << " layer-1 key: aligned worst="
                                  << alignedWorst << " best misaligned=" << offAlignedWorst);
               BOOST_CHECK_LT(alignedWorst, 1e-3);
+              BOOST_TEST_MESSAGE("unit " << item.first << " layer-1 key magnitude="
+                                 << layer1KeyMagnitude
+                                 << " worstRelative="
+                                 << (layer1KeyMagnitude > 0.0
+                                       ? alignedWorst / layer1KeyMagnitude : 0.0));
               BOOST_CHECK_GT(offAlignedWorst, 1.0);
             }
             for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
