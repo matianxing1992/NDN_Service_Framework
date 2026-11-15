@@ -1343,8 +1343,13 @@ attachGenerationEpochLineage(const TensorBundle& bundle,
       CombinedOwner{bundle.localTensors, std::move(lineageOwner)});
     TensorBundle result;
     result.name = bundle.name;
+    // `expectedBytes` is the wire size of what this value now holds, so it is recomputed from the
+    // transformed views rather than from the previous total plus the lineage payload: the added
+    // tensor also contributes its name and framing, and the old total described a different set of
+    // tensors. My first version added only the payload length, which understated the value and made
+    // the runtime's independent size check reject it.
+    result.expectedBytes = tensorBundleWireSize(*local);
     result.localTensors = std::move(local);
-    result.expectedBytes = bundle.expectedBytes + lineageView.payload.size();
     result.transferObservation = bundle.transferObservation;
     return result;
   }
@@ -1428,8 +1433,10 @@ stripGenerationEpochLineage(const TensorBundle& bundle)
     local->owner = bundle.localTensors->owner;
     TensorBundle result;
     result.name = bundle.name;
+    // Same rule in the other direction: removing the lineage tensor changes the wire size, so the
+    // field is recomputed instead of carrying the pre-strip total forward.
+    result.expectedBytes = tensorBundleWireSize(*local);
     result.localTensors = std::move(local);
-    result.expectedBytes = bundle.expectedBytes;
     result.transferObservation = bundle.transferObservation;
     return result;
   }

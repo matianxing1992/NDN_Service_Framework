@@ -17024,6 +17024,14 @@ BOOST_AUTO_TEST_CASE(LineageTravelsWithALocalValueWithoutReencodingIt)
   // Attaching twice is refused: two lineage records on one value would be ambiguous.
   BOOST_CHECK_THROW(attachGenerationEpochLineage(attached, lineage), std::invalid_argument);
 
+  // Attaching and stripping change which tensors the value holds, so `expectedBytes` -- the wire
+  // size it would cost to cross a boundary -- must change with them. Carrying the old total forward
+  // (or adding only the lineage payload) understates it, and the runtime's independent size check
+  // then rejects a value the codec itself produced. This is the intermediate edge admission the
+  // materialize check below could not catch, because materializing recomputes the size.
+  BOOST_CHECK_EQUAL(attached.expectedBytes, tensorBundleWireSize(*attached.localTensors));
+  BOOST_CHECK_EQUAL(stripped.expectedBytes, tensorBundleWireSize(*stripped.localTensors));
+  BOOST_CHECK_GT(attached.expectedBytes, stripped.expectedBytes);
   // And the whole local value still materializes to the bytes the codec would have produced for
   // its tensors, in the order it holds them.
   const auto wire = materializeTensorBundleWire(stripped);
