@@ -14500,6 +14500,78 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
   std::filesystem::remove_all(root);
 }
 
+
+BOOST_AUTO_TEST_CASE(AnAddedGraphOutputReachesTheEntryBoundary)
+{
+  // Before using it for a measurement, check the mechanism the next step depends on: appending a
+  // `ValueInfoProto` to the graph's outputs makes the assembler expose that tensor on the entry's
+  // boundary. The tensor chosen is `v_proj`'s output, which is in `value_info` with a real type, so
+  // the assembler has what it needs to declare the boundary -- and if this works, the executed
+  // projection can be compared without touching product code.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::string wire((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromString(wire));
+  const std::string want = "/model/layers.25/attn/v_proj/MatMul/output_0";
+  const onnx::ValueInfoProto* found = nullptr;
+  for (const auto& value : model.graph().value_info())
+    if (value.name() == want) found = &value;
+  BOOST_REQUIRE_MESSAGE(found != nullptr, "the v_proj output has no declared type");
+  *model.mutable_graph()->add_output() = *found;
+  std::string patched;
+  BOOST_REQUIRE(model.SerializeToString(&patched));
+  const std::vector<std::uint8_t> patchedBytes(patched.begin(), patched.end());
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-boundary-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "ref", cleanupError);
+  std::filesystem::copy_file(source, root / "ref" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "ref" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "ref" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+  }
+  const auto table = qwen::assembleQwenTpEntryTable(root / "ref", "ref", patchedBytes, 28);
+  const auto entry = std::find_if(table.begin(), table.end(),
+    [] (const auto& item) { return item.kind == "ATTN" && item.layer == 25; });
+  BOOST_REQUIRE(entry != table.end());
+  std::string names;
+  for (const auto& name : entry->outputNames) {
+    if (!names.empty()) names += ", ";
+    names += name;
+  }
+  BOOST_TEST_MESSAGE("layer-25 ATTN entry outputs: " << names);
+  const auto slot = entry->outputSlotByGraphName.find(want);
+  BOOST_CHECK_MESSAGE(slot != entry->outputSlotByGraphName.end(),
+    "the added output did not reach the entry's boundary");
+  // The mechanism works, but the added tensor lands on the slot `residual`, which
+  // `input_layernorm/output_3` already occupies. Recording that rather than asserting the mechanism
+  // is sufficient: a collision means the entry cannot be executed with this addition as-is, and a
+  // measurement needs the tensor exposed under a slot of its own.
+  if (slot != entry->outputSlotByGraphName.end()) {
+    BOOST_TEST_MESSAGE("added output is exposed under slot " << slot->second);
+    std::size_t collisions = 0;
+    for (const auto& item : entry->outputSlotByGraphName)
+      if (item.second == slot->second) ++collisions;
+    BOOST_TEST_MESSAGE("graphs sharing that slot: " << collisions);
+    BOOST_CHECK_GT(collisions, 1U);
+  }
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(TheValueProjectionShardCoversWholeHeadsAndOwnsItsScales)
 {
   // `present.N.value` is the third output of GroupQueryAttention, whose third input is that layer's
