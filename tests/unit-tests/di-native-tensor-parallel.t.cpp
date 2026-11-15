@@ -13855,6 +13855,54 @@ BOOST_AUTO_TEST_CASE(FrozenShardedCatalogLoadPreparesTwoRankRoles)
   for (const auto& role : candidate.roles)
     tpRanks.insert(role.tensorParallelRank);
   BOOST_CHECK_EQUAL(tpRanks.size(), 2U);
+
+  // The configured egress role is the authority on which unit owns the head, and both accepted
+  // forms must resolve. The stage form lands on that stage's last rank -- which "take the last
+  // unit" also produced, so it proves nothing on its own. The explicit form naming the *first*
+  // rank is the discriminating case: a resolver that ignored the configured value would still
+  // pick the last one. A value that names nothing is an error rather than a fallback.
+  {
+    const auto reloadWith = [&] (const std::string& egress) {
+      NativeCanonicalSource copy;
+      {
+        std::ifstream graph(modelDir + "/canonical-source.onnx", std::ios::binary);
+        copy.modelBytes.assign(std::istreambuf_iterator<char>(graph),
+                               std::istreambuf_iterator<char>());
+      }
+      {
+        std::ifstream initializer(modelDir + "/model.onnx_data", std::ios::binary);
+        initializer.seekg(0, std::ios::end);
+        const auto size = static_cast<std::size_t>(initializer.tellg());
+        initializer.seekg(0, std::ios::beg);
+        copy.initializerBytes.emplace(size);
+        initializer.read(reinterpret_cast<char*>(copy.initializerBytes->data()),
+                         static_cast<std::streamsize>(size));
+      }
+      auto updated = configuration;
+      updated["splitter"]["result_egress_role"] = egress;
+      NativeAssemblyControl copyControl{std::chrono::steady_clock::now() +
+                                          std::chrono::seconds(600),
+                                        [] {}, 985894912ULL, 3392676128ULL};
+      return NativeRequestCatalog::load(updated.dump(), std::move(copy), copyControl);
+    };
+    // A rank id is not an acceptable value. The splitter validates the configured ingress and
+    // egress against its declared `roles`, which for a sharded catalog are the stages -- the rank
+    // units are derived from a stage by degree, not listed. So the "explicit unit" form I assumed
+    // the catalog accepted does not exist at this level: it is rejected during splitter
+    // construction, before any projection resolves a head owner.
+    BOOST_CHECK_THROW(reloadWith(stageRole + "/Tensor/Rank/0"), std::invalid_argument);
+    // A stage that is not declared is rejected the same way.
+    BOOST_CHECK_THROW(reloadWith("/LLM/Pipeline/NoSuchStage"), std::invalid_argument);
+    // The stage form is the supported one, and it resolves to that stage's last rank for a
+    // degree-2 stage. Re-loading with the same value must give the same owner as the first load.
+    const auto again = reloadWith(stageRole);
+    BOOST_REQUIRE(again.planningCache);
+    BOOST_REQUIRE(!again.planningCache->candidates.empty());
+    BOOST_TEST_MESSAGE("stage-form egress resolves to "
+                       << again.planningCache->candidates.front().candidate.resultEgressRole);
+    BOOST_CHECK_EQUAL(again.planningCache->candidates.front().candidate.resultEgressRole,
+                      candidate.candidate.resultEgressRole);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(ShardedQwenCatalogProducesAProjectedCandidateNotAPipeline)
