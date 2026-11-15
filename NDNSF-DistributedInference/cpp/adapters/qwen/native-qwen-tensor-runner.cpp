@@ -567,8 +567,15 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
         auto local = std::make_shared<LocalTensorBundle>();
         local->tensors.push_back(view);
         local->owner = bundle.localTensors->owner;
+        // `expectedBytes` is wire-sized (D7:161), so a local value states what it would cost to
+        // cross a boundary rather than its raw tensor bytes. The two differ by the bundle framing
+        // and this tensor's name and shape, and the field is compared against a wire bundle's, so
+        // writing the raw size made that comparison compare a value with itself.
+        //
+        // Sized before the move: computing it afterwards dereferenced a moved-from pointer, which
+        // crashed rather than returning a wrong number.
+        single.expectedBytes = tensorBundleWireSize(*local);
         single.localTensors = std::move(local);
-        single.expectedBytes = view.payload.size();
         single.transferObservation = bundle.transferObservation;
         byName.emplace(single.name, std::move(single));
       }
@@ -746,8 +753,16 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   std::vector<std::string> stateOutputs;
   for (const auto& name : entry.inputNames)
     if (name.rfind("past_key_values.", 0) == 0) stateInputs.push_back(name);
+  // The successor may be recorded either as an output bound to a slot or as a declared state
+  // name. The assembler puts `present.*` in the latter and leaves it out of `outputNames`, so
+  // reading only `outputNames` found no state at all -- which made no child stateful, so the
+  // parent never returned the KV its children computed and nothing above the worker could see it.
   for (const auto& name : entry.outputNames)
     if (name.rfind("present.", 0) == 0) stateOutputs.push_back(name);
+  for (const auto& name : entry.stateOutputGraphNames)
+    if (name.rfind("present.", 0) == 0 &&
+        std::find(stateOutputs.begin(), stateOutputs.end(), name) == stateOutputs.end())
+      stateOutputs.push_back(name);
   if (stateInputs.size() == stateOutputs.size() && !stateInputs.empty()) {
     const auto join = [] (const std::vector<std::string>& values) {
       std::string result;

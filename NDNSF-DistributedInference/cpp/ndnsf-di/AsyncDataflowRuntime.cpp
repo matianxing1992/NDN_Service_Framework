@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+
 #include <stdexcept>
 #include <utility>
 
@@ -30,19 +32,23 @@ validateTensorBundleForEdge(const DependencyEdge& edge,
   if (edge.scope.empty()) {
     throw std::invalid_argument("tensor dependency scope is empty");
   }
-  // A locally-held value has no payload, so its byte count is compared against what it would cost
-  // on the wire. Skipping the check for a local value would let a producer ship an object whose
-  // declared size and real contents disagree, and the mistake would only appear once something
-  // materialized it.
-  const auto declaredBytes = bundle.localTensors
-    ? bundle.expectedBytes : bundle.payload.size();
-  if (bundle.expectedBytes != 0 && bundle.expectedBytes != declaredBytes) {
+  // The byte count this bundle actually occupies, so the declared size is compared against
+  // something computed from the value rather than from the same field. A wire bundle occupies its
+  // payload; a local one occupies what the codec would encode it to, which is what
+  // `expectedBytes` is defined to hold (D7:161). Comparing a local value's `expectedBytes` with
+  // itself would accept any declared size at all.
+  const auto actualBytes = bundle.localTensors
+    ? tensorBundleWireSize(*bundle.localTensors) : bundle.payload.size();
+  // Both checks compare a declared number against the computed one. My first attempt kept a
+  // `declaredBytes` helper that resolved to `bundle.expectedBytes` for a local value, which made the
+  // first comparison `expectedBytes != expectedBytes` -- a check that can never fail.
+  if (bundle.expectedBytes != 0 && bundle.expectedBytes != actualBytes) {
     throw std::runtime_error(
       "tensor bundle byte count does not match its verified manifest: " +
       edge.scope);
   }
   if (edge.declaredByV3 && edge.expectedBytes != 0 &&
-      edge.expectedBytes != declaredBytes) {
+      edge.expectedBytes != actualBytes) {
     throw std::runtime_error(
       "tensor bundle byte count does not match the sealed edge: " +
       edge.scope);

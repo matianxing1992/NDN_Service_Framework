@@ -519,6 +519,9 @@ ProviderRoleWorker::executeAsyncImpl(
     {},
     promise,
     std::chrono::steady_clock::now(),
+    // firstQueuedAt: unset until enqueueReady records it, so an aggregate initializer must name it
+    // explicitly -- the field sits next to `queuedAt` because that is where it is read.
+    std::nullopt,
     std::move(collective),
     std::move(executionGuard),
   };
@@ -671,7 +674,11 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
 
   const auto waitId = state->item.sessionId + "|" + state->item.role.role + "|step|" +
                       std::to_string(m_nextDependencyWaitId.fetch_add(1));
-  const auto deadline = state->item.queuedAt + m_dependencyWaitTimeout;
+  // Anchored at admission, not at the latest resume: a resumed unit that waited once must not
+  // receive a fresh full timeout for the next step.
+  const auto deadline = (state->item.firstQueuedAt.has_value()
+                           ? *state->item.firstQueuedAt : state->item.queuedAt) +
+                        m_dependencyWaitTimeout;
   const auto submitted = m_dependencyWaitScheduler->submit(
     waitId,
     deadline,
@@ -830,6 +837,7 @@ ProviderRoleWorker::enqueueReady(WorkItem item)
     return;
   }
   item.queuedAt = std::chrono::steady_clock::now();
+  if (!item.firstQueuedAt) item.firstQueuedAt = item.queuedAt;
   logDiTimelineTrace(
     "di-provider", "role_queue_enter",
     timelineRequestId(item.role.requestId, item.sessionId),
@@ -1230,6 +1238,45 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   result.runner = item.runner;
 
   const auto& steps = *item.role.steps;
+  // When each produced value stops being needed. A 28-layer unit produces two values per layer and
+  // every one of them used to live in `produced` until the whole template finished, so a local
+  // handoff retained every activation it had ever produced -- the opposite of what D5 and C10 ask
+  // for. The last consumer is knowable up front from the sealed template, so it is computed once.
+  //
+  // A value is still needed after its last step when it carries a role output (the terminal pass
+  // reads it back to return an already-published edge) or when it is a terminal slot surfaced as a
+  // result. Both are marked `kKeepToEnd`.
+  constexpr std::size_t kKeepToEnd = std::numeric_limits<std::size_t>::max();
+  std::map<std::string, std::size_t> lastUseOf;
+  for (std::size_t index = 0; index < steps.size(); ++index) {
+    for (const auto& slot : steps[index].inputSlots) {
+      if (slot.producerStepId.empty()) continue;
+      lastUseOf[slot.producerStepId + "\n" + slot.producerSlotId] = index;
+    }
+  }
+  for (const auto& edge : item.role.outputs) {
+    if (edge.producerStepId.empty()) continue;
+    lastUseOf[edge.producerStepId + "\n" + edge.producerSlotId] = kKeepToEnd;
+  }
+  {
+    std::set<std::string> consumed;
+    for (const auto& step : steps) {
+      for (const auto& slot : step.inputSlots) {
+        if (slot.producerStepId.empty()) continue;
+        consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+      }
+    }
+    std::set<std::string> edges;
+    for (const auto& edge : item.role.outputs)
+      edges.insert(edge.producerStepId + "\n" + edge.producerSlotId);
+    for (const auto& step : steps) {
+      for (const auto& slot : step.outputSlots) {
+        const auto key = step.stepId + "\n" + slot.slotId;
+        if (consumed.count(key) != 0 || edges.count(key) != 0) continue;
+        lastUseOf[key] = kKeepToEnd;
+      }
+    }
+  }
   for (auto stepIt = steps.begin() + static_cast<std::ptrdiff_t>(item.resumeStepIndex);
        stepIt != steps.end(); ++stepIt) {
     const auto& step = *stepIt;
@@ -1438,6 +1485,18 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     stepContext.streamEventSink = {};
     if (item.executionGuard) item.executionGuard();
     const auto outputs = item.runner->run(stepContext);
+    // Carry this step's own backend call forward. Reading the runner's latest snapshot at the end
+    // of the unit only ever yields the last entry's timing, so a 28-layer unit reported one layer's
+    // ORT as its cost; the consumer needs each step.
+    if (const auto stepMetrics = item.runner->runtimeMetricsSnapshot();
+        stepMetrics && stepMetrics->lastBackendExecution) {
+      StepBackendTiming recorded;
+      recorded.stepId = step.stepId;
+      recorded.entryId = step.artifactEntry;
+      recorded.operation = step.operation;
+      recorded.execution = *stepMetrics->lastBackendExecution;
+      item.stepBackendTimings.push_back(std::move(recorded));
+    }
     if (item.executionGuard) item.executionGuard();
 
     // A step's output is keyed by its own declared slot, so the next step can
@@ -1461,6 +1520,20 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // This step is complete, so its collected inputs are released now rather than at the end of
     // the template: a 28-layer unit should not retain every contribution it ever read.
     item.stepCollectedInputs.erase(step.stepId);
+    // Anything this step was the last consumer of is released too. A value still needed stays in
+    // `produced`; one whose last use was here and that no edge or terminal slot needs is gone, so
+    // the retained set tracks the live dependency cone rather than the whole history.
+    {
+      const auto stepIndex = static_cast<std::size_t>(
+        std::distance(steps.begin(), stepIt));
+      for (auto it = produced.begin(); it != produced.end();) {
+        const auto use = lastUseOf.find(it->first);
+        if (use != lastUseOf.end() && use->second != kKeepToEnd && use->second <= stepIndex)
+          it = produced.erase(it);
+        else
+          ++it;
+      }
+    }
     // Keep the decode-state successors the adapter returned. They are not step slots
     // -- the runtime packs state from the result by tensor name -- so dropping them
     // here would make every epoch report a missing state output even though the
@@ -1504,8 +1577,29 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       // was never sent.
       completeStageTransferObservation(edge, stripped, "send");
       if (item.executionGuard) item.executionGuard();
+      const auto partialPublishStartedAt = std::chrono::steady_clock::now();
       item.io->publishOutput(item.sessionId, edge, stripped);
+      const auto partialPublishDoneAt = std::chrono::steady_clock::now();
       item.publishedScopes.insert(edge.scope);
+      // The final pass skips a scope that already went out, so an early partial that is not
+      // recorded here is absent from the timing ledger entirely -- the transport did the work and
+      // the receipt claimed nothing was sent. One record per early partial, with its own measured
+      // window rather than the unit's.
+      {
+        OutputPublishTiming partialTiming;
+        partialTiming.producerRole = edge.producerRole;
+        partialTiming.scope = edge.scope;
+        partialTiming.plannedDataName = edge.plannedDataName;
+        partialTiming.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
+        partialTiming.expectedSegments = edge.expectedSegments;
+        partialTiming.expectedBytes = edge.expectedBytes;
+        partialTiming.bytes = stripped.payload.size();
+        partialTiming.transferObservation = stripped.transferObservation;
+        partialTiming.outputReadyAt = partialPublishStartedAt;
+        partialTiming.publishStartedAt = partialPublishStartedAt;
+        partialTiming.publishDoneAt = partialPublishDoneAt;
+        item.outputTimings.push_back(std::move(partialTiming));
+      }
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=step_partial_published role=" +
                         item.role.role + " scope=" + edge.scope);
@@ -1737,8 +1831,14 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   // A generation epoch may update adapter-owned KV or depend on lineage not
   // represented in the pure-output cache key, even with equal tensor bytes.
   // Reusing a loaded runner must not suppress that state transition.
+  // A step-carrying role must not take the pure-output cache. Its key is built from the admitted
+  // input scopes and covers no part of the template, so two roles with the same inputs but different
+  // steps would collide -- and a hit would return outputs without running any step, which is the
+  // "silently skip the computation" C4 forbids. The three conditions below exclude the streaming and
+  // lineage paths; the template path is a fourth exclusion, not an exception to them.
+  const bool sealedTemplate = item.role.steps && !item.role.steps->empty();
   const bool canReuseOutputs = !ctx.automaticBinding && !hasStreamSideEffect &&
-    !item.role.streamingStateExecution && !item.role.generationLineage;
+    !item.role.streamingStateExecution && !item.role.generationLineage && !sealedTemplate;
   inputWork.finish();
   if (item.role.workStatistics) {
     const auto admitted = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1790,6 +1890,16 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       auto stepped = runSealedSteps(ctx, item);
       if (!stepped) return std::nullopt;
       result.outputsByScope = std::move(stepped->outputsByScope);
+      // The early partials were published inside the template runner, so their timing records are
+      // there rather than here. Dropping them made the ledger claim a step partial was never sent
+      // even though the transport had carried it -- my first version of this change recorded them
+      // into a result object that was then discarded.
+      // Both ledgers accumulate on the WorkItem, not on the returned result. The template runner
+      // builds a fresh local result on every resumed invocation, so a record kept there survives
+      // only if that invocation happens to be the last one -- which is why an earlier version of
+      // this change reported zero early partials.
+      result.outputTimings = item.outputTimings;
+      result.stepBackendTimings = item.stepBackendTimings;
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_steps role=" + item.role.role);
       }

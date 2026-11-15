@@ -953,6 +953,21 @@ encodeTensorBundleImpl(const std::vector<Tensor>& tensors)
 
 } // namespace
 
+std::uint64_t
+tensorBundleWireSize(const LocalTensorBundle& local)
+{
+  std::vector<TensorBundleEncodingMember> members;
+  members.reserve(local.tensors.size());
+  for (const auto& tensor : local.tensors) {
+    // The same metadata checks `encodeTensorBundle` applies, so a value that could not be encoded
+    // does not get a size as if it could.
+    validateTensorMetadata(tensor.name, tensor.elementType, tensor.shape,
+                           tensor.payload.size());
+    members.push_back({tensor.name.size(), tensor.shape.size(), tensor.payload.size()});
+  }
+  return tensorBundleEncodedSize(members);
+}
+
 namespace {
 
 /** Count one codec operation and the tensor bytes it moved.
@@ -1238,13 +1253,17 @@ sumTensorBundleViews(const std::string& outputScope,
   result.name = outputScope;
   std::uint64_t summedBytes = 0;
   for (const auto& tensor : local->tensors) summedBytes += tensor.payload.size();
+  const auto wireSizeFor = [&local] (const std::shared_ptr<LocalTensorBundle>& value) {
+    return tensorBundleWireSize(*value);
+  };
   if (workStatistics) {
     workStatistics->addCount("sum.tensors", local->tensors.size());
     workStatistics->addCount("sum.bytes", summedBytes);
   }
-  // The wire size is what this value would cost if it crossed a boundary, so a budget that reads
-  // it plans for the real object rather than for zero.
-  result.expectedBytes = summedBytes;
+  // `expectedBytes` keeps wire semantics (D7:161), so it costs what this value would take to cross
+  // a boundary -- the codec's framing and metadata, not the raw tensor bytes. The raw size is still
+  // counted above, under its own name, because that is the memory actually held.
+  result.expectedBytes = wireSizeFor(local);
   result.localTensors = std::move(local);
   return result;
 }

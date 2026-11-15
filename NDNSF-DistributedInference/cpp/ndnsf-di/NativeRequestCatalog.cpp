@@ -580,13 +580,39 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       requirementByUnit[unit.roleId] = profile->second;
       units.push_back(std::move(unit));
     }
-    // The head lives on one unit. The catalog names it by stage, so the rank that owns it
-    // is the one whose artifact the stage egress role was configured with; absent that
-    // distinction the last rank owns it, which is what the projection expects.
+    // The head lives on exactly one unit, and which one is configuration, not convention: the
+    // catalog's `result_egress_role` names the role that owns the terminal response, and the
+    // projection derives `terminalResponseOwner` from it. Picking the last unit instead made the
+    // head's owner a function of the member count, so adding a rank would silently move it --
+    // and C6, which says rank 0 samples, disagreed with both. The configured role is the one
+    // authority here; the last unit is accepted only when the configured value names a role the
+    // plan does not contain, which is a configuration error and is reported as one.
     const auto egress = split.value("result_egress_role", std::string{});
     if (egress.empty())
       throw std::invalid_argument("sharded Qwen catalog has no result egress role");
-    const auto egressUnit = units.back().roleId;
+    // The configured value may name the unit outright, or name the stage -- which is what the
+    // maintained catalogs do, and which maps to that stage's last rank because a stage's egress
+    // is the rank that owns its head. Both forms resolve here rather than one being assumed, so a
+    // catalog that names a rank explicitly is honoured and one that names a stage keeps working.
+    const auto egressMember = std::find_if(units.begin(), units.end(),
+      [&egress] (const auto& unit) { return unit.roleId == egress; });
+    const auto egressUnit = egressMember != units.end()
+      ? egressMember->roleId
+      : [&] {
+          const auto stagePrefix = egress + "/";
+          std::optional<std::string> lastOfStage;
+          std::string known;
+          for (const auto& unit : units) {
+            if (!known.empty()) known += ',';
+            known += unit.roleId;
+            if (unit.roleId.rfind(stagePrefix, 0) == 0) lastOfStage = unit.roleId;
+          }
+          if (!lastOfStage)
+            throw std::invalid_argument(
+              "sharded Qwen catalog names a result egress role the plan does not contain: " +
+              egress + " (known: " + known + ")");
+          return *lastOfStage;
+        }();
     projectedCandidate = qwen::buildQwenTpCandidate(
       result.model.graph, shape, units, "entry", egressUnit, result.model.descriptor,
       artifactByUnit, requirementByUnit);

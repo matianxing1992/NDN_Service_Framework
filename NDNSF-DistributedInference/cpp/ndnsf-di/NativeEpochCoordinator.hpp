@@ -148,6 +148,14 @@ struct NativeEpochCoordinatorResult
     std::string role;
     std::uint64_t inferenceEpoch = 0;
     NativeRuntimeMetrics metrics;
+    // Every sealed step's own backend call for this epoch, when the role ran a template. C9 asks
+    // for each entry rather than the last one, and `metrics.lastBackendExecution` holds exactly one:
+    // the last head or MLP call, which cannot stand for a 57-step token.
+    std::vector<StepBackendTiming> stepBackendTimings;
+    // One record per dependency this epoch's unit published, including the partials it sent before
+    // the template finished. The final pass skips an already-sent scope, so without these the
+    // ledger would claim nothing was sent.
+    std::vector<OutputPublishTiming> outputTimings;
   };
 
   struct CacheObservation

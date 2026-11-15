@@ -266,6 +266,16 @@ struct LocalTensorBundle
   std::shared_ptr<const void> owner;
 };
 
+/** The wire size a local value would occupy if it crossed a boundary.
+ *
+ * `expectedBytes` keeps wire semantics (data-model D7:161), so a local value needs the encoded size
+ * rather than its raw tensor bytes: the two differ by the bundle framing plus each tensor's name and
+ * shape. Computing it from the codec's own layout is what keeps the field comparable with a
+ * wire-born bundle's.
+ */
+std::uint64_t
+tensorBundleWireSize(const LocalTensorBundle& local);
+
 /** Read one bundle's tensors as views, whether it is local or wire.
  *
  * Locally-held values are validated and returned without copying; an encoded one

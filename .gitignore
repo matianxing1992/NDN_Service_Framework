@@ -5,6 +5,8 @@
 
 # Waf build system
 /build/
+# Fixed instrumented build tree: ASAN/UBSAN diagnostics only, never installed.
+/build-ASAN-UBSAN/
 /build-uav-static/
 .local-boost171/
 .waf-*-*/
@@ -90,6 +92,10 @@ tests/container/**/actual/
 /specs/
 /**/specs/
 /**/docs/
+# Portable experiment manuals are delivered with the experiment tooling.
+!/Experiments/TigerCluster/docs/
+/Experiments/TigerCluster/docs/*
+!/Experiments/TigerCluster/docs/*.md
 /.specify/
 /**/.specify/
 /.codex/

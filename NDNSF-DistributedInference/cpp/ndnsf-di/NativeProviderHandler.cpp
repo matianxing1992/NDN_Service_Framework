@@ -2588,9 +2588,16 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       if (requestStatistics) {
         try {
           auto& statistics = *requestStatistics;
-          statistics.finishedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-          statistics.finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+          // Only fill the finish in if the handler did not already record one. The handler
+          // stamps it at the end of its own work, before any wait that exists only because the
+          // requester asked for a handoff; overwriting here would make the interval end at
+          // teardown instead, which is after the requester has already finished -- exactly the
+          // false "provider was slower" this check reported.
+          if (statistics.finishedSteadyNs == 0) {
+            statistics.finishedSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+            statistics.finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+          }
           statistics.requestId = stageRequestId.empty() ? ctx.sessionId() : stageRequestId;
           statistics.planDigest = stagePlanDigest;
           statistics.provider = ctx.localProvider().toUri();
@@ -4985,6 +4992,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         const std::vector<std::pair<std::string, std::string>> completionTimingFields = {
           {"executionRole", role},
           {"providerName", ctx.localProvider().toUri()}};
+        // Report the request as finished before waiting on anything caused by the requester.
+        //
+        // A handoff turn makes the provider wait for the requester to authorize the conversation
+        // promotion, and that wait is a round trip to a party whose own interval has already
+        // ended by then -- so a provider that stamped its finish after it always looked like the
+        // slower side (measured: 5.3 ms over, exactly the promotion round trip). The interval is
+        // meant to describe the provider's own work, so it ends when that work ends.
+        if (requestStatistics && requestStatistics->finishedSteadyNs == 0) {
+          requestStatistics->finishedSteadyNs =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          requestStatistics->finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+        }
         if (waitConversationPromotion) {
           logRuntimePhase("di-provider", "conversationPromotionWaitBegin", stageRequestId,
             stageAttemptEpoch, completionTimingFields);
@@ -5013,18 +5033,6 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         }
         logRuntimePhase("di-provider", "finalResponsePublishBegin", stageRequestId,
           stageAttemptEpoch, completionTimingFields);
-        // Report the request as finished at the moment the response leaves, not when the
-        // handler's scope unwinds. A provider's interval is checked against the requester's,
-        // and unwinding runs after the requester has already seen the response and written its
-        // own interval -- so a correct run looked like a provider that finished after the
-        // request it answered. The scope exit still stamps a value; this makes it the publish
-        // boundary rather than the teardown boundary.
-        if (requestStatistics) {
-          requestStatistics->finishedSteadyNs =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now().time_since_epoch()).count();
-          requestStatistics->finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
-        }
         ctx.publishFinalResponse(ndn::Buffer(finalPayload->data(), finalPayload->size()));
         if (kvRestore) kvRestore->retain = true;
         logRuntimePhase("di-provider", "finalResponsePublishEnd", stageRequestId,
@@ -5070,6 +5078,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           // does not own the user-facing End/Response.  Release only this
           // Provider-side execution slot; terminal ownership remains with the
           // final role and the shared streamed lifecycle.
+          //
+          // The finish is stamped here for the same reason as on the terminal branch, and here it
+          // matters more: a non-terminal role has no response of its own, so without an explicit
+          // stamp its interval ended at teardown -- after the promotion round trip it was waiting
+          // on. The three moments are distinct and are now recorded as such: execution finished
+          // (this stamp), the promotion wait (measured separately), and the handler's lifetime
+          // (the scope exit, which no longer overwrites).
+          if (requestStatistics && requestStatistics->finishedSteadyNs == 0) {
+            requestStatistics->finishedSteadyNs =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            requestStatistics->finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+          }
           if (waitConversationPromotion) {
             NativeWorkScope promotionWait(workStatistics,
               "provider-conversation-promotion-wait", NativeWorkKind::WAIT);

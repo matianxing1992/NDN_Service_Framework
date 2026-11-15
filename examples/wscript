@@ -448,6 +448,10 @@ def build(bld):
     # and links the same canonical-JSON boundary as the DI production path.
     bld.program(name='spec189-two-provider-oracle',
                 target='spec189-two-provider-oracle',
+                # The selector calls spec220::oracle::validateOnnxReference, so that translation
+                # unit has to be here. It was missing, and the target only failed to link -- which
+                # nothing noticed because `waf install` stops at the first failing install task and
+                # the release was still produced by the other targets.
                 source=['Spec189TwoProviderOracle.cpp', 'spec220-onnx-reference-oracle.cpp'],
                 includes=['..', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL ONNXRUNTIME',
