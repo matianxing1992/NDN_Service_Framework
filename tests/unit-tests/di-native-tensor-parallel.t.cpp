@@ -12068,6 +12068,50 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                        << " width=" << refValues.size());
     BOOST_CHECK_LE(worstReferenceExcess, 0.0);
 
+    // The two reference paths have to agree before a difference between them can be attributed to
+    // the split. Path A is the whole model through the ordinary ONNX runner with its KV exposed;
+    // path B is the same export reassembled into unsplit entries and driven entry by entry. If A
+    // and B disagree, the slicing/assembly is already changing the answer and no comparison
+    // against a rank shard can say anything about the split.
+    {
+      const auto bKey = refAttn.find("present.0.key");
+      const auto bValue = refAttn.find("present.0.value");
+      BOOST_REQUIRE_MESSAGE(bKey != refAttn.end(),
+        "the reassembled unsplit attention returned no present.0.key");
+      BOOST_REQUIRE_MESSAGE(bValue != refAttn.end(),
+        "the reassembled unsplit attention returned no present.0.value");
+      const auto floatsOf = [] (const TensorBundle& bundle) {
+        const auto views = decodeTensorBundleViews(bundle);
+        BOOST_REQUIRE(!views.empty());
+        std::vector<float> values(views.front().payload.size() / sizeof(float));
+        if (!values.empty())
+          std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+        return values;
+      };
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = std::string("present.0.") + kind;
+        const auto fromA = kvOfResult(referenceResult, name);
+        const auto fromB = floatsOf(kind == std::string("key") ? bKey->second : bValue->second);
+        BOOST_REQUIRE_MESSAGE(!fromA.empty(), "path A returned no " + name);
+        BOOST_TEST_MESSAGE("path A " << name << " size=" << fromA.size()
+                           << " path B size=" << fromB.size());
+        BOOST_REQUIRE_EQUAL(fromA.size(), fromB.size());
+        double worstAB = 0.0;
+        double excessAB = std::numeric_limits<double>::lowest();
+        for (std::size_t index = 0; index < fromA.size(); ++index) {
+          const auto reference = double(fromA[index]);
+          const auto actual = double(fromB[index]);
+          const auto difference = std::fabs(actual - reference);
+          const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
+          worstAB = std::max(worstAB, difference);
+          excessAB = std::max(excessAB, difference - allowance);
+        }
+        BOOST_TEST_MESSAGE("layer-0 " << kind << " A vs B: worst=" << worstAB
+                           << " excessOverC8=" << excessAB);
+        BOOST_CHECK_LE(excessAB, 0.0);
+      }
+    }
+
   // Layer 1, on the same real context: the first layer whose KV differs from the export. Its
   // attention consumes two values from layer 0 -- the post-attention residual and the merged MLP
   // projection. The reference produces both by running its own layer-0 attention and MLP entries
