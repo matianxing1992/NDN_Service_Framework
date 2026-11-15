@@ -4886,6 +4886,79 @@ BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
 }
 
 
+BOOST_AUTO_TEST_CASE(StampingAndStrippingALocalPartialLeavesItsArithmeticUntouched)
+{
+  // The minimal reproduction for the partial-lineage work: one local value, one stamp, one strip.
+  // The SUM compares tensor counts, so anything the strip leaves behind changes the reduction it
+  // is handed -- and a stamp that adds a tensor without the strip removing it makes two ranks
+  // disagree about how many contributions they have.
+  struct OwnedValues
+  {
+    std::vector<float> values{1.5f, -2.25f};
+  };
+  auto owner = std::make_shared<OwnedValues>();
+  NamedTensorView view;
+  view.name = "activation";
+  view.elementType = TensorElementType::Float32;
+  view.shape = {1, static_cast<std::int64_t>(owner->values.size())};
+  view.payload = ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+    owner->values.size() * sizeof(float));
+  auto local = std::make_shared<LocalTensorBundle>();
+  local->tensors.push_back(view);
+  local->owner = owner;
+  TensorBundle bundle;
+  bundle.name = "activation";
+  bundle.localTensors = local;
+  bundle.expectedBytes = tensorBundleWireSize(*local);
+  BOOST_REQUIRE(bundle.localTensors != nullptr);
+  BOOST_CHECK_EQUAL(decodeTensorBundleViews(bundle).size(), 1U);
+
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "/request/lineage-roundtrip";
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.attemptEpoch = 1;
+  lineage.inferenceEpoch = 2;
+  lineage.transitionKind = "DECODE";
+  lineage.positionDigest = "sha256:" + std::string(64, 'a');
+  lineage.planDigest = "sha256:" + std::string(64, 'b');
+  lineage.logicalPrefixTokenCount = 1;
+  lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
+  lineage.producerRole = "S0R0";
+  lineage.consumerRole = "S0R1";
+  lineage.operationIndex = 3;
+
+  const auto stamped = attachGenerationEpochLineage(bundle, lineage);
+  // The stamp adds exactly one tensor, and its name is the reserved one.
+  const auto stampedViews = decodeTensorBundleViews(stamped);
+  BOOST_REQUIRE_EQUAL(stampedViews.size(), 2U);
+  BOOST_CHECK_EQUAL(stampedViews.back().name, generationEpochLineageTensorName());
+  // Its size follows from the views, not from the previous total plus a payload length.
+  BOOST_CHECK_EQUAL(stamped.expectedBytes, tensorBundleWireSize(*stamped.localTensors));
+  // The arithmetic is untouched: the activation view still points at the same bytes.
+  const auto stampedActivation = std::find_if(stampedViews.begin(), stampedViews.end(),
+    [] (const auto& view) { return view.name == "activation"; });
+  BOOST_REQUIRE(stampedActivation != stampedViews.end());
+  BOOST_CHECK_EQUAL(stampedActivation->payload.data(), bundle.localTensors->tensors.front().payload.data());
+
+  const auto stripped = stripGenerationEpochLineage(stamped);
+  const auto strippedViews = decodeTensorBundleViews(stripped);
+  // Back to one tensor: a strip that removed nothing would leave the SUM comparing two counts.
+  BOOST_REQUIRE_EQUAL(strippedViews.size(), 1U);
+  BOOST_CHECK_EQUAL(strippedViews.front().name, std::string("activation"));
+  BOOST_CHECK_EQUAL(strippedViews.front().payload.data(), stampedActivation->payload.data());
+  BOOST_CHECK_EQUAL(stripped.expectedBytes, tensorBundleWireSize(*stripped.localTensors));
+  BOOST_CHECK_EQUAL(stripped.expectedBytes, bundle.expectedBytes);
+  // And the values themselves are the originals.
+  const auto* numbers = reinterpret_cast<const float*>(strippedViews.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 1.5f);
+  BOOST_CHECK_EQUAL(numbers[1], -2.25f);
+  // A value with no lineage reports none and is returned unchanged.
+  BOOST_CHECK(!extractGenerationEpochLineage(bundle).has_value());
+  BOOST_CHECK_EQUAL(stripGenerationEpochLineage(bundle).expectedBytes, bundle.expectedBytes);
+}
+
 BOOST_AUTO_TEST_CASE(TheDeclaredBoundaryEqualsTheOneExtractionProduces)
 {
   // `describeQwenTpEntryBoundary` exists so the native assembly worker can be given an entry's
