@@ -12233,6 +12233,12 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       layerKv.emplace(0, std::pair<std::vector<float>, std::vector<float>>{
         floatsOfChain(refAttn.at("present.0.key")),
         floatsOfChain(refAttn.at("present.0.value"))});
+      // The rank side's own layer-25 residual and merged values, kept so the chain's layer-25 and
+      // layer-26 inputs can be compared against what the unit actually carried. This is the part of
+      // the review's replay request that IS available: the bus publishes the peer contributions,
+      // and a unit's local step outputs are not on it -- but the chain's own inputs at a given
+      // layer are, and whether they match the unit's is the question.
+      std::map<std::uint64_t, std::pair<std::vector<float>, std::vector<float>>> chainInputs;
       bool chainOk = true;
       for (std::uint64_t layer = 1; layer <= 26 && chainOk; ++layer) {
         const auto attnOf = findEntry("ATTN", layer);
@@ -12262,6 +12268,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             chainFeeds.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
           }
         }
+        chainInputs.emplace(layer, std::pair<std::vector<float>, std::vector<float>>{
+          floatsOfChain(carriedPost), floatsOfChain(carriedMerged)});
         std::map<std::string, TensorBundle> chainAttn;
         try {
           chainAttn = runRefEntry(*attnOf, chainFeeds);
@@ -12299,6 +12307,31 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // Feeding a partial under the `post_attention` key therefore compares two unrelated values,
       // and the ~40 it yielded says only that. Obtaining the unit's real step input needs the value
       // recorded where the worker assembles it, which is a different fixture from this one.
+
+      // What the chain itself consumed at the failing layers. The earlier per-layer replay could
+      // not answer this because the bus carries peer partials, not a unit's own step outputs; this
+      // does not need the unit at all. It records the chain's inputs so a later fixture that can
+      // capture the worker's assembled slots has something to compare against, and it checks that
+      // the two failing layers were fed nonzero, finite values rather than placeholders.
+      for (const auto& item : chainInputs) {
+        for (std::size_t which = 0; which < 2; ++which) {
+          const auto& values = which == 0 ? item.second.first : item.second.second;
+          double magnitude = 0.0;
+          bool finite = true;
+          for (const auto value : values) {
+            if (!std::isfinite(value)) finite = false;
+            magnitude = std::max(magnitude, std::fabs(double(value)));
+          }
+          if (item.first >= 25U || magnitude > 1000.0 || !finite)
+            BOOST_TEST_MESSAGE("chain input layer " << item.first
+                               << (which == 0 ? " post_attention" : " previous_mlp")
+                               << " size=" << values.size()
+                               << " magnitude=" << magnitude
+                               << " finite=" << (finite ? "yes" : "no"));
+          BOOST_CHECK(finite);
+          BOOST_CHECK_GT(magnitude, 0.0);
+        }
+      }
 
       BOOST_TEST_MESSAGE("reassembled chain reached " << layerKv.size() << " layers");
       double worstChain = 0.0;
