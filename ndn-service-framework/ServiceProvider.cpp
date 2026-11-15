@@ -8896,21 +8896,34 @@ namespace ndn_service_framework
                                   {"serviceName", serviceName.toUri()},
                                   {"status", decision.status ? "true" : "false"}});
 
-                boost::asio::post(m_face.getIoContext(),
-                    [this,
-                     requesterIdentity,
-                     serviceName,
-                     requestId,
-                     requestMessage,
-                     decision = std::move(decision),
-                     registrationState]() mutable {
-                        finishAckDecisionOnEventLoop(requesterIdentity,
-                                                     serviceName,
-                                                     requestId,
-                                                     std::move(requestMessage),
-                                                     std::move(decision),
-                                                     std::move(registrationState));
-                    });
+                // Same rule as the request completion: the ACK completion runs on the Face
+                // event loop and may outlive this call, so it holds the owner token and the
+                // destructor waits for it.
+                if (auto* ackOwner = m_registrationControl->acquireOwner()) {
+                    auto ackControl = m_registrationControl;
+                    boost::asio::post(m_face.getIoContext(),
+                        [ackOwner,
+                         ackControl,
+                         requesterIdentity,
+                         serviceName,
+                         requestId,
+                         requestMessage,
+                         decision = std::move(decision),
+                         registrationState]() mutable {
+                            struct OwnerRelease
+                            {
+                                std::shared_ptr<RegistrationControl> control;
+                                ~OwnerRelease() { control->releaseOwner(); }
+                            } release{ackControl};
+                            ackOwner->finishAckDecisionOnEventLoop(
+                                requesterIdentity,
+                                serviceName,
+                                requestId,
+                                std::move(requestMessage),
+                                std::move(decision),
+                                std::move(registrationState));
+                        });
+                }
                 if (m_timelineTrace) {
                     logTimelineTrace("provider", "ack_finish_posted", requestId,
                                      {{"providerName", identity.toUri()},
