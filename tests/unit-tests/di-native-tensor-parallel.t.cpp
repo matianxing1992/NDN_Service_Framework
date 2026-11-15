@@ -12362,6 +12362,16 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   }
 
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
+  // A unit that runs a sealed template must never take the pure-output cache. Its key is the set of
+  // admitted input scopes and covers no part of the template, so two roles with the same inputs and
+  // different steps would collide -- and a hit returns outputs without executing a step, which is
+  // the silent skip C4 forbids. The exclusion was added without a case; this is that case, on the
+  // run whose 58 steps the ledger above already counted.
+  for (const auto& item : results) {
+    BOOST_TEST_MESSAGE("unit " << item.first << " exactForwardCacheHit="
+                       << (item.second.exactForwardCacheHit ? "true" : "false"));
+    BOOST_CHECK(!item.second.exactForwardCacheHit);
+  }
   // C9 asks for every entry's backend call, not the latest one. A unit that ran its whole template
   // produced one record per step, and each names the step and entry that made the call -- so a
   // consumer can attribute ORT time per entry instead of reporting the last head call as the
