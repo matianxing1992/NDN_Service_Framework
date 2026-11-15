@@ -4923,7 +4923,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         // ended by then -- so a provider that stamped its finish after it always looked like the
         // slower side (measured: 5.3 ms over, exactly the promotion round trip). The interval is
         // meant to describe the provider's own work, so it ends when that work ends.
-        if (requestStatistics) {
+        if (requestStatistics && requestStatistics->finishedSteadyNs == 0) {
           requestStatistics->finishedSteadyNs =
             std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -5002,6 +5002,19 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           // does not own the user-facing End/Response.  Release only this
           // Provider-side execution slot; terminal ownership remains with the
           // final role and the shared streamed lifecycle.
+          //
+          // The finish is stamped here for the same reason as on the terminal branch, and here it
+          // matters more: a non-terminal role has no response of its own, so without an explicit
+          // stamp its interval ended at teardown -- after the promotion round trip it was waiting
+          // on. The three moments are distinct and are now recorded as such: execution finished
+          // (this stamp), the promotion wait (measured separately), and the handler's lifetime
+          // (the scope exit, which no longer overwrites).
+          if (requestStatistics && requestStatistics->finishedSteadyNs == 0) {
+            requestStatistics->finishedSteadyNs =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            requestStatistics->finishedProcessCpuNs = detail::nativeProcessCpuTimeNs();
+          }
           if (waitConversationPromotion) {
             NativeWorkScope promotionWait(workStatistics,
               "provider-conversation-promotion-wait", NativeWorkKind::WAIT);
