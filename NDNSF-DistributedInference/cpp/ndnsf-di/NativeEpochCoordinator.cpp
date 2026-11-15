@@ -1480,9 +1480,13 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
       }
       throwIfStopped(config);
       if (roleResult.runtimeMetrics) {
+        // The per-step and per-publish ledgers travel with the observation: C9 needs each entry and
+        // each send, and neither survives if only the snapshot's single `lastBackendExecution` is
+        // forwarded.
         result.runtimeMetrics.push_back(
           NativeEpochCoordinatorResult::RuntimeMetricsObservation{
-            executable.role, epoch, *roleResult.runtimeMetrics});
+            executable.role, epoch, *roleResult.runtimeMetrics,
+            roleResult.stepBackendTimings, roleResult.outputTimings});
       }
       result.cacheObservations.push_back(cacheObservation);
       ++result.epochsExecuted;

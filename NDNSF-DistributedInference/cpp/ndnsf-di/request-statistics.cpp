@@ -29,6 +29,41 @@ backendTimingValue(const std::optional<NativeBackendExecutionTiming>& timing)
     {"finishedThreadCpuNs", clockValue(timing->finishedThreadCpuNs)}};
 }
 
+NativeJson
+stepTimingsValue(const std::vector<StepBackendTiming>& timings)
+{
+  NativeJson records = NativeJson::array();
+  for (const auto& record : timings) {
+    records.push_back(NativeJson{
+      {"stepId", record.stepId}, {"entryId", record.entryId},
+      {"operation", record.operation},
+      {"startedSteadyNs", record.execution.startedSteadyNs},
+      {"finishedSteadyNs", record.execution.finishedSteadyNs},
+      {"completed", record.execution.completed},
+      {"identity", backendTimingValue(record.execution)}});
+  }
+  return records;
+}
+
+NativeJson
+publicationTimingsValue(const std::vector<OutputPublishTiming>& timings)
+{
+  NativeJson records = NativeJson::array();
+  for (const auto& record : timings) {
+    const auto started = record.publishStartedAt.time_since_epoch();
+    const auto finished = record.publishDoneAt.time_since_epoch();
+    records.push_back(NativeJson{
+      {"producerRole", record.producerRole}, {"scope", record.scope},
+      {"bytes", record.bytes}, {"expectedBytes", record.expectedBytes},
+      {"publishDeferred", record.publishDeferred},
+      {"publishStartedSteadyNs",
+       std::chrono::duration_cast<std::chrono::nanoseconds>(started).count()},
+      {"publishDoneSteadyNs",
+       std::chrono::duration_cast<std::chrono::nanoseconds>(finished).count()}});
+  }
+  return records;
+}
+
 } // namespace
 
 std::string
@@ -71,7 +106,12 @@ nativeRequestStatisticsToJson(const NativeRequestStatistics& statistics)
       {"controlBytes", metrics.controlBytes}, {"stateInputHits", metrics.stateInputHits},
       {"stateInputMisses", metrics.stateInputMisses},
       {"stateRecomputes", metrics.stateRecomputes}, {"stateReleases", metrics.stateReleases},
-      {"lastBackendExecution", backendTimingValue(metrics.lastBackendExecution)}});
+      {"lastBackendExecution", backendTimingValue(metrics.lastBackendExecution)},
+      // Every sealed step's call, so a consumer can attribute ORT time per entry. Empty for a role
+      // that ran a whole-model call instead of a template.
+      {"stepBackendExecutions", stepTimingsValue(observation.stepBackendTimings)},
+      // Each dependency this epoch's unit published, including the partials it sent early.
+      {"outputPublications", publicationTimingsValue(observation.outputTimings)}});
   }
   for (const auto& observation : statistics.cacheObservations) {
     result["cacheObservations"].push_back(NativeJson{

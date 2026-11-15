@@ -12384,6 +12384,39 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     const auto& outputTimings = results.at("S0R0").outputTimings;
     BOOST_TEST_MESSAGE("output publish records: " << outputTimings.size());
     BOOST_CHECK_GT(outputTimings.size(), 0U);
+    // The records must also survive serialization: the statistics file is how a Coordinator and an
+    // oracle see them, so a field that exists in memory but never reaches the JSON is not a
+    // measurement. Serializing the observation directly is the honest check -- the full statistics
+    // record needs a whole request context this case does not build.
+    {
+      NativeRequestStatistics statistics;
+      statistics.requestId = "/request/two-workers";
+      statistics.role = "S0R0";
+      // The counters are not what this check is about, so an empty metrics value is enough here:
+      // the template destroys its runners when it finishes, and the serialization of the two
+      // ledgers is what no earlier case covered.
+      statistics.runtimeMetrics.push_back(
+        NativeEpochCoordinatorResult::RuntimeMetricsObservation{
+          "S0R0", 0, NativeRuntimeMetrics{},
+          results.at("S0R0").stepBackendTimings,
+          results.at("S0R0").outputTimings});
+      const auto wire = nativeRequestStatisticsToJson(statistics);
+      const auto parsed = nativeParseJson(wire);
+      BOOST_REQUIRE(parsed.contains("runtimeMetrics"));
+      const auto& observation = parsed.at("runtimeMetrics").at(0);
+      BOOST_REQUIRE(observation.contains("stepBackendExecutions"));
+      BOOST_REQUIRE(observation.contains("outputPublications"));
+      BOOST_TEST_MESSAGE("serialized step executions="
+                         << observation.at("stepBackendExecutions").size()
+                         << " publications="
+                         << observation.at("outputPublications").size());
+      BOOST_CHECK_EQUAL(observation.at("stepBackendExecutions").size(),
+                        results.at("S0R0").stepBackendTimings.size());
+      BOOST_CHECK_EQUAL(observation.at("outputPublications").size(),
+                        results.at("S0R0").outputTimings.size());
+      // And the single-call field is still there, unchanged for existing consumers.
+      BOOST_CHECK(observation.contains("lastBackendExecution"));
+    }
   }
   for (const auto& item : results) {
     // 56 contributions of its own reached the bus. Receiving is proven differently: each
