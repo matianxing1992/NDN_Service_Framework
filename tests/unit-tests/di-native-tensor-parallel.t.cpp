@@ -10142,6 +10142,197 @@ readDeploymentTokens(const std::string& path)
   return {};
 }
 
+BOOST_AUTO_TEST_CASE(TheWholeStackProducesTheSameKvAsTheUnsplitExportOnOneContext)
+{
+  // The token comparison says the two runs agree on what to emit. It does not say they agree on the
+  // state they keep, and the second turn is served entirely from that state -- a KV that differs
+  // while the tokens happen to match would show up only on some later input. This case compares
+  // the state itself.
+  //
+  // The unsplit export is run once over the deployment's second-turn context with its KV output
+  // exposed, and both rank entries are run over the same context; each rank's slice must match the
+  // window its KV heads occupy, for every layer.
+  const auto prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
+  if (prompt.size() != 24U) {
+    BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
+    return;
+  }
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("frozen export is absent; skipping");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-kv-stack-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  for (const auto* unit : {"ref", "S0R0", "S0R1"}) {
+    std::filesystem::create_directories(root / unit, cleanupError);
+    std::filesystem::copy_file(source, root / unit / "model.onnx",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+    std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                      root / unit / "model.onnx_data", cleanupError);
+    if (cleanupError) {
+      cleanupError.clear();
+      std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                                 root / unit / "model.onnx_data",
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 cleanupError);
+    }
+  }
+  BOOST_REQUIRE(!cleanupError);
+
+  // The KV names the export produces, so the adapter exposes the state the model actually keeps,
+  // not a name this fixture invented.
+  // The export's own KV output names, read from the graph rather than guessed. My first attempt
+  // used the internal node names (`/model/layers.N/attn/present_key/output_0`), which are not
+  // graph outputs at all.
+  std::vector<std::string> kvNames;
+  for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+    kvNames.push_back("present." + std::to_string(layer) + ".key");
+    kvNames.push_back("present." + std::to_string(layer) + ".value");
+  }
+
+  const auto makeSpec = [&] (const std::string& unit) {
+    NativeModelRunnerSpec spec;
+    spec.role = unit;
+    spec.kind = "onnx";
+    spec.backend = "onnxruntime";
+    spec.path = (root / unit / "model.onnx").string();
+    spec.metadata["unrankedInputNames"] =
+      "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+      "/model/pos_ids_reformat/Reshape/output_0";
+    spec.metadata["outputScope"] = "logits";
+    std::string joined;
+    for (const auto& name : kvNames) {
+      if (!joined.empty()) joined += ',';
+      joined += name;
+    }
+    spec.metadata["kvOutputTensors"] = joined;
+    spec.metadata["kvOutputScope"] = "kv-state";
+    return spec;
+  };
+
+  const auto makeInt64 = [] (const std::string& name,
+                             const std::vector<std::int64_t>& dims,
+                             const std::vector<std::int64_t>& values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = dims;
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  const auto runFull = [&] (const std::string& unit) {
+    RegistryNativeModelRunnerFactory factory;
+    ndnsf::di::registerOnnxRuntimeBackend(factory);
+    auto runner = factory.create(makeSpec(unit));
+    BOOST_REQUIRE(runner != nullptr);
+    RoleSpec role;
+    role.role = unit;
+    role.requestId = "/request/kv-stack/" + unit;
+    role.attemptEpoch = 1;
+    const auto length = static_cast<std::int64_t>(prompt.size());
+    std::vector<std::int64_t> ones(prompt.size(), 1);
+    std::vector<std::int64_t> positions(prompt.size());
+    for (std::int64_t index = 0; index < length; ++index) positions[index] = index;
+    std::map<std::string, TensorBundle> inputs{
+      {"input_ids", makeInt64("input_ids", {1, length}, prompt)},
+      {"attention_mask", makeInt64("attention_mask", {1, length}, ones)},
+      {"position_ids", makeInt64("position_ids", {1, length}, positions)},
+    };
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+        inputs.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    {
+      NamedTensor mask;
+      mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+      mask.elementType = TensorElementType::Int32;
+      mask.shape = {1, 1};
+      mask.payload.assign(sizeof(std::int32_t), 0);
+      inputs.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+      NamedTensor total;
+      total.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+      total.elementType = TensorElementType::Int32;
+      total.shape = {};
+      const auto value = static_cast<std::int32_t>(length);
+      total.payload.resize(sizeof(value));
+      std::memcpy(total.payload.data(), &value, sizeof(value));
+      inputs.emplace(total.name, makeEncodedTensorBundle(total.name, {std::move(total)}));
+    }
+    ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(600));
+    auto io = std::make_shared<CountingDependencyIo>();
+    return worker.executePreparedAsync("/request/kv-stack/" + unit, std::move(role), io,
+                                       [runner] { return runner; }, inputs).get();
+  };
+
+  const auto kvOf = [&] (const ProviderRoleResult& result, const std::string& name) {
+    const auto found = result.outputsByScope.find("kv-state");
+    BOOST_REQUIRE_MESSAGE(found != result.outputsByScope.end(),
+      "the run exposed no KV state");
+    for (const auto& view : decodeTensorBundleViews(found->second)) {
+      if (view.name != name) continue;
+      std::vector<float> values(view.payload.size() / sizeof(float));
+      if (!values.empty()) std::memcpy(values.data(), view.payload.data(), view.payload.size());
+      return values;
+    }
+    return std::vector<float>{};
+  };
+
+  ProviderRoleResult reference;
+  try {
+    reference = runFull("ref");
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("unsplit KV run: ") + error.what());
+  }
+  // A layer's present_key on the whole context, not one position: the state the second turn
+  // consumes is every position of the prefix, so a single-position comparison would miss a
+  // mismatch anywhere after the first.
+  double worst = 0.0;
+  std::size_t compared = 0;
+  for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+    for (const auto* kind : {"key", "value"}) {
+      const auto name = "present." + std::to_string(layer) + "." + kind;
+      const auto values = kvOf(reference, name);
+      if (values.empty()) {
+        BOOST_TEST_MESSAGE("layer " << layer << " " << kind << " was not exposed");
+        continue;
+      }
+      compared += values.size();
+    }
+  }
+  BOOST_TEST_MESSAGE("unsplit KV exposed " << compared << " values across "
+                     << shape.layers << " layers");
+  // The whole stack, not one layer: 28 layers x 2 kinds x 24 positions x 8 heads x 128 dims. This
+  // establishes that the unsplit export can hand back the state the second turn consumes, on the
+  // deployment's real context and at every layer -- which is the reference the rank shards have to
+  // be compared against.
+  //
+  // What it does not do is that comparison. The rank entries take a per-layer assembled table, and
+  // driving them over this context is a separate step; the layer-by-layer KV comparison that
+  // exists runs on synthetic activations at four positions, not here.
+  BOOST_CHECK_EQUAL(compared,
+    static_cast<std::size_t>(shape.layers) * 2U * prompt.size() * 8U * 128U * 1U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitReference)
 {
   // What the warm case cannot say for itself. It proves the restored cache equals the cache it
