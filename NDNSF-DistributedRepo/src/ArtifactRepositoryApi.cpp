@@ -3185,15 +3185,12 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
   // budget is, and an under-sized begin window cannot be represented (the internals subtract
   // the ACK window before waiting). The caller's budget therefore bounds the **status wait**
   // below, which is the part that used to reset.
-  // The begin phase spends from the caller's allowance, not from a fresh one. It cannot be
-  // shrunk below one protocol window (its internals subtract the ACK window before waiting),
-  // so the floor is one request window: a caller whose budget is smaller than that still gets
-  // no more than one window of begin, and a caller with a large budget gets exactly their
-  // budget. The status wait below is bounded by the budget itself.
-  const int64_t beginFloorMs = requestWindowMs;
-  const int beginTimeout = static_cast<int>(std::min<int64_t>(
-    static_cast<int64_t>(requestWindows) * requestWindowMs + statusRecoveryReserveMs,
-    std::max<int64_t>(static_cast<int64_t>(waitBudget), beginFloorMs)));
+  // The begin phase is protocol-bound: it also has to cover the status-recovery reserve, which
+  // the begin path itself validates against. Clamping it to a caller budget smaller than that
+  // makes the begin unusable (repo-operation-timeout: insufficient begin budget), so it keeps
+  // its derived budget and the caller's deadline bounds the **status wait** below.
+  const int beginTimeout = static_cast<int>(
+    static_cast<int64_t>(requestWindows) * requestWindowMs + statusRecoveryReserveMs);
   PublishOperationStatus status;
   const auto beginDeadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(beginTimeout);
