@@ -2837,6 +2837,22 @@ toArtifactHandle(const RepoHandle& input)
     projected.servicePrefix = ndn::Name(target.servicePrefix);
     handle.selectedTargets.push_back(std::move(projected));
   }
+  // The engine validates that the receipt entries cover the selected targets, so dropping this
+  // list while keeping selectedTargets makes a handle that its own fetch refuses.
+  for (const auto& commit : input.replicaCommits) {
+    handle.replicaCommits.emplace_back();
+    auto& projected = handle.replicaCommits.back();
+    projected.repoNode = commit.target.repoNode;
+    projected.providerIdentity = commit.target.providerIdentity;
+    projected.receiptId = commit.receiptId;
+    projected.operationId = commit.operationId;
+    projected.generation = commit.generation;
+    projected.contentDigest = commit.contentDigest;
+    projected.persistedBytes = commit.persistedBytes;
+    projected.completedAtMs = commit.completedAtMs;
+    projected.locationVersion = commit.locationVersion;
+    projected.routeState = commit.routeState;
+  }
   handle.seedRepoId = input.seedRepoId;
   handle.writeConsistency = input.writeConsistency;
   handle.lifecycleMode = input.lifecycleMode;
