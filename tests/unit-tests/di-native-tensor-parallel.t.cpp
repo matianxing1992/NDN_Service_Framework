@@ -10105,6 +10105,31 @@ readDeploymentTokens(const std::string& path)
   if (!in) return {};
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
                                         std::istreambuf_iterator<char>());
+  // A result file is JSON with a `tokenIds` array; an input file is an encoded tensor bundle.
+  // Both are read here so a caller never transcribes either by hand, which is what produced the
+  // wrong prompt and then the wrong expected sequence.
+  if (!bytes.empty() && bytes.front() == '{') {
+    const std::string text(bytes.begin(), bytes.end());
+    const auto key = text.find("\"tokenIds\"");
+    if (key == std::string::npos) return {};
+    const auto open = text.find('[', key);
+    const auto close = text.find(']', open);
+    if (open == std::string::npos || close == std::string::npos) return {};
+    std::vector<std::int64_t> values;
+    std::size_t cursor = open + 1;
+    while (cursor < close) {
+      while (cursor < close && !std::isdigit(static_cast<unsigned char>(text[cursor])) &&
+             text[cursor] != '-')
+        ++cursor;
+      if (cursor >= close) break;
+      std::size_t end = cursor;
+      if (text[end] == '-') ++end;
+      while (end < close && std::isdigit(static_cast<unsigned char>(text[end]))) ++end;
+      values.push_back(std::stoll(text.substr(cursor, end - cursor)));
+      cursor = end;
+    }
+    return values;
+  }
   const auto tensors = decodeTensorBundle(bytes);
   for (const auto& tensor : tensors) {
     if (tensor.name != "input_ids") continue;
@@ -10155,11 +10180,16 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   BOOST_REQUIRE_EQUAL(turnContext.size(), 57U);
   turnContext.insert(turnContext.end(), turn1Prompt.begin(), turn1Prompt.end());
   BOOST_REQUIRE_EQUAL(turnContext.size(), 81U);
-  // The recorded distributed output for that turn, taken from the deployment's turn-1 result.
-  const std::vector<std::int64_t> expected = {
-    95456, 0, 5692, 594, 1267, 13089, 311, 13527, 13, 11336, 12252, 11,
-    323, 594, 1193, 764, 16289, 323, 2888, 13802, 198, 198, 5494, 1661,
-    25, 198, 2970, 264, 7164, 3714, 11, 4292};
+  // Read from the deployment's own result file. The literal that used to be here was wrong from
+  // element 4 onward -- it listed 1267, 13089, 311 where the run produced 264, 14175, 3110 -- so the
+  // reference was being compared against numbers no run had ever emitted, and its "first
+  // divergence at step 4" was the point where my transcription and the reference disagreed with
+  // each other, not where two computations of the model disagreed.
+  const auto expected = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
+  if (expected.size() < 32U) {
+    BOOST_TEST_MESSAGE("the deployment's turn-1 result is absent; skipping");
+    return;
+  }
 
   const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
     "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
@@ -10211,6 +10241,11 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
     return makeEncodedTensorBundle(name, {std::move(tensor)});
   };
   constexpr std::size_t kVocab = 151936;
+  // The five highest logits of the last row, filled by every runStep call. A disagreement between
+  // the reference and the deployment is either a near-tie that floating-point reassociation can
+  // flip, or a genuine arithmetic difference; the gap between the winner and the runner-up says
+  // which, and without it "they diverge" is not a diagnosis.
+  std::vector<std::pair<std::size_t, float>> lastTop;
   const auto runStep = [&] (const std::vector<std::int64_t>& prefix,
                             const std::string& requestId) {
     RoleSpec role;
@@ -10275,6 +10310,18 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
     std::size_t best = 0;
     for (std::size_t index = 1; index < kVocab; ++index)
       if (tail[index] > tail[best]) best = index;
+    lastTop.clear();
+    for (std::size_t rank = 0; rank < 5 && rank < kVocab; ++rank) {
+      std::size_t pick = 0;
+      float pickValue = -std::numeric_limits<float>::infinity();
+      for (std::size_t index = 0; index < kVocab; ++index) {
+        const bool taken = std::any_of(lastTop.begin(), lastTop.end(),
+          [index] (const auto& item) { return item.first == index; });
+        if (taken) continue;
+        if (tail[index] > pickValue) { pickValue = tail[index]; pick = index; }
+      }
+      lastTop.emplace_back(pick, pickValue);
+    }
     return static_cast<std::int64_t>(best);
   };
 
@@ -10293,8 +10340,13 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
     if (produced != expected[step]) {
       ++differences;
       if (!firstDifference) firstDifference = step;
+      std::string top;
+      for (const auto& entry : lastTop) {
+        if (!top.empty()) top += ", ";
+        top += std::to_string(entry.first) + "=" + std::to_string(entry.second);
+      }
       BOOST_TEST_MESSAGE("turn-1 step " << step << " differs: expected "
-                         << expected[step] << " got " << produced);
+                         << expected[step] << " got " << produced << " top5={" << top << "}");
     }
     // Feed both runs the same history by appending what the deployment recorded, not what this
     // reference produced. Appending the reference's own output makes every step after the first
@@ -10306,25 +10358,16 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
                      << " steps against the recorded history, " << differences
                      << " differ, first at step "
                      << (firstDifference ? std::to_string(*firstDifference) : "none"));
-  // What was established: with the 80-token context the deployment's first decode consumed, the
-  // unsplit reference reproduces the turn's first four tokens exactly (95456, 0, 5692, 594) and
-  // then diverges. What was not: why it diverges after that. Two candidates I did not separate --
-  // the deployment's later tokens were produced with KV state rather than by recomputing the
-  // prefix, and something in that path may differ; or my reconstruction of the 80-token context
-  // is right for the first token and wrong later, because a token the deployment generated also
-  // fed back through its own sampling.
+  // The reference recomputes the whole prefix on every step and passes an empty past, while the
+  // deployment decodes with KV state. Those are two different computations of the same model, so
+  // the interesting question is where they stop agreeing: four tokens do, the fifth does not.
   //
-  // What is asserted: the reference agrees for the first four tokens and disagrees from the
-  // fifth. Those four are the part this comparison can attribute -- the recorded history is
-  // identical up to them, so the disagreement is about the model, not about two contexts drifting
-  // apart. A pass that only required "fewer than 32 differences" would accept a reference that
-  // matched nothing, which is why the first difference is pinned instead.
-  BOOST_REQUIRE(firstDifference.has_value());
-  BOOST_CHECK_EQUAL(*firstDifference, 4U);
-  // Feeding both runs the same recorded history is what makes this true; with the reference
-  // feeding its own output, the first difference was also at step 4 but every later step compared
-  // different contexts.
-  BOOST_CHECK_EQUAL(differences, expected.size() - 4U);
+  // Every step agrees. That is the C8 comparison this case exists for: the unsplit export,
+  // recomputing the whole context each step, produces exactly the sequence the distributed run
+  // produced with KV state. The earlier 28-difference result came from a transcribed `expected`
+  // that was wrong from element 4 onward, not from the model.
+  BOOST_CHECK_EQUAL(differences, 0U);
+  BOOST_CHECK(!firstDifference.has_value());
 
   std::filesystem::remove_all(root, cleanupError);
 }
