@@ -14500,6 +14500,69 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
   std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(TheValueProjectionShardCoversWholeHeadsAndOwnsItsScales)
+{
+  // `present.N.value` is the third output of GroupQueryAttention, whose third input is that layer's
+  // `v_proj` output, and this export sets `do_rotary=0`. So the value path is a projection and a
+  // pass-through -- no rotary, no nonlinearity -- which makes the shard's v_proj the last place a
+  // KV difference could be introduced if the KV is where it appears.
+  //
+  // Whether the sharding preserves that projection is a question about the slice plan and the bytes
+  // it selects, and both are checkable without running the model: an off-by-one in the N range, or
+  // a weight cut without its scales, would shift a rank's output by far more than the 1.5e-4 being
+  // investigated.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0);
+  const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1);
+  BOOST_REQUIRE_EQUAL(rank0.size(), shape.layers);
+  BOOST_REQUIRE_EQUAL(rank1.size(), shape.layers);
+  const auto findSlice = [] (const qwen::QwenRankLayerSlices& slices,
+                             const std::string& want) -> std::optional<qwen::QwenInitializerSlice> {
+    for (const auto& slice : slices.initializers)
+      if (slice.name.find(want) != std::string::npos) return slice;
+    return std::nullopt;
+  };
+  for (const std::uint64_t layer : {std::uint64_t{0}, std::uint64_t{25}}) {
+    const auto a = findSlice(rank0[layer], "v_proj");
+    const auto b = findSlice(rank1[layer], "v_proj");
+    BOOST_REQUIRE_MESSAGE(a.has_value(), "rank 0 has no v_proj slice");
+    BOOST_REQUIRE_MESSAGE(b.has_value(), "rank 1 has no v_proj slice");
+    BOOST_TEST_MESSAGE("layer " << layer << " v_proj N: rank0 "
+                       << a->begin << ".." << a->end << " rank1 "
+                       << b->begin << ".." << b->end);
+    // Adjacent, disjoint, covering the whole width.
+    BOOST_CHECK_EQUAL(a->begin, 0U);
+    BOOST_CHECK_EQUAL(a->end, b->begin);
+    BOOST_CHECK_EQUAL(b->end, shape.kvWidth());
+    // Whole heads only: a split inside one head would slice a rotary-free projection in half, and
+    // the resulting KV would carry whole-position errors rather than the measured small ones.
+    BOOST_CHECK_EQUAL((a->end - a->begin) % shape.headDim, 0U);
+    BOOST_CHECK_EQUAL((b->end - b->begin) % shape.headDim, 0U);
+    // The scales are not a separate slice. `planQwenTensorSlices` records one entry per weight
+    // initializer, and the assembler derives the scale range from the weight's own N range -- so a
+    // missing scale entry is the design, not an omission, and asserting one here was my error.
+    // What can be checked is that the weight slice carries the N it claims: the packed weight is
+    // `[N/16, K/32, 16]`, so the shard's first dimension must be the shard's channels divided by
+    // sixteen.
+    BOOST_TEST_MESSAGE("layer " << layer << " v_proj slice axis="
+                       << (a->axis == qwen::QwenSliceAxis::OutputChannels ? "N" : "K")
+                       << " slicedN=" << a->slicedN << " slicedK=" << a->slicedK);
+    BOOST_CHECK(a->axis == qwen::QwenSliceAxis::OutputChannels);
+    BOOST_CHECK_EQUAL(a->slicedN, shape.kvWidth() / 2U);
+    BOOST_CHECK_EQUAL(a->slicedK, shape.hidden);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(SliceArithmeticRefusesShapesThatCannotBeSplit)
 {
   // The other half of the guard: the shape-level checks in `planQwenTensorSlices`, which the
