@@ -14501,6 +14501,175 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
 }
 
 
+BOOST_AUTO_TEST_CASE(TwoRanksCommitAndRestoreTheirOwnHalvesOfTheState)
+{
+  // The warm path across ranks, which the single-unit case cannot reach: a conversation is
+  // promoted from two units' sessions, then restored into fresh sessions, and the restored epoch
+  // must continue from what was committed rather than from zero.
+  //
+  // Both units hold four of the eight KV heads, so each keeps its own successor half. The point of
+  // the round trip is that both halves survive promotion and come back on restore -- a restore that
+  // rebound only one unit would still pass a single-unit test.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-two-rank-restore-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    std::filesystem::create_directories(root / unit, cleanupError);
+    std::filesystem::copy_file(source, root / unit / "model.onnx",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+    std::filesystem::create_hard_link(sidecar, root / unit / "model.onnx_data", cleanupError);
+    if (cleanupError) {
+      cleanupError.clear();
+      std::filesystem::copy_file(sidecar, root / unit / "model.onnx_data",
+                                 std::filesystem::copy_options::overwrite_existing, cleanupError);
+    }
+  }
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  // One layer of attention is enough: the question is whether the committed state survives the
+  // round trip, not how deep the stack goes.
+  std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
+  std::map<std::string, std::shared_ptr<RecordingKvObserver>> observers;
+  std::map<std::string, NativeExecutionStepSpec> stepOf;
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    std::vector<NativeExecutionStepSpec> steps;
+    for (const auto& step : plan.steps)
+      if (step.unitId == unit && step.stepId.find("/ATTN/0") != std::string::npos)
+        steps.push_back(step);
+    BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+    stepOf[unit] = steps.front();
+    NativeModelRunnerSpec spec;
+    spec.role = unit;
+    spec.kind = "onnx";
+    spec.backend = "onnxruntime";
+    spec.path = (root / unit / "model.onnx").string();
+    qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2,
+                                  std::string(unit) == "S0R0" ? 0 : 1, std::string{});
+    spec.metadata["providerIdentity"] = std::string("/provider/") +
+                                         (std::string(unit) == "S0R0" ? "0" : "1");
+    spec.metadata["providerBootId"] = "two-rank-restore-boot";
+    auto observer = std::make_shared<RecordingKvObserver>();
+    observers[unit] = observer;
+    RegistryNativeModelRunnerFactory factory;
+    ndnsf::di::registerOnnxRuntimeBackend(factory, nullptr, observer);
+    ndnsf::di::qwen::registerQwenTensorBackend(factory);
+    runners[unit] = factory.create(spec);
+    BOOST_REQUIRE(runners[unit] != nullptr);
+    BOOST_REQUIRE_MESSAGE(runners[unit]->supportsConversationStateTransfer(),
+      std::string(unit) + " did not declare its state");
+  }
+  const auto runEpoch = [&] (const std::string& unit, const std::string& sessionId,
+                             std::uint64_t epoch, std::int32_t total,
+                             std::int64_t position) {
+    const auto& step = stepOf.at(unit);
+    RoleExecutionContext ctx;
+    ctx.sessionId = sessionId;
+    ctx.role = unit;
+    ctx.requestId = "/request/two-rank-restore";
+    ctx.attemptEpoch = 1;
+    ctx.inferenceEpoch = epoch;
+    ctx.streamingStateExecution = true;
+    ctx.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
+    ctx.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+      std::vector<NativeExecutionStepSpec>{step});
+    const auto put = [&ctx] (const std::string& name, TensorElementType type,
+                             const std::vector<std::int64_t>& dims,
+                             const std::vector<std::uint8_t>& bytes) {
+      NamedTensor tensor;
+      tensor.name = name;
+      tensor.elementType = type;
+      tensor.shape = dims;
+      tensor.payload = bytes;
+      ctx.stepInputsBySlot.emplace(name, makeEncodedTensorBundle(name, {std::move(tensor)}));
+    };
+    std::vector<std::uint8_t> hidden(static_cast<std::size_t>(shape.hidden) * sizeof(float), 0);
+    for (std::size_t index = 0; index < shape.hidden; ++index) {
+      const float value = 0.01f * static_cast<float>(index % 17) - 0.08f;
+      std::memcpy(hidden.data() + index * sizeof(float), &value, sizeof(value));
+    }
+    put("x", TensorElementType::Float32,
+        {1, 1, static_cast<std::int64_t>(shape.hidden)}, hidden);
+    put("attn_mask", TensorElementType::Int32, {1, 1},
+        std::vector<std::uint8_t>(sizeof(std::int32_t), 0));
+    std::vector<std::uint8_t> totalBytes(sizeof(total));
+    std::memcpy(totalBytes.data(), &total, sizeof(total));
+    put("total_sequence_length", TensorElementType::Int32, {}, totalBytes);
+    std::vector<std::uint8_t> positionBytes(sizeof(position));
+    std::memcpy(positionBytes.data(), &position, sizeof(position));
+    put("position_ids", TensorElementType::Int64, {1, 1}, positionBytes);
+    return runners.at(unit)->run(ctx);
+  };
+  // Epoch 0 on both ranks: each commits its own successor half.
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    try {
+      runEpoch(unit, "/request/two-rank-restore", 0, 1, 0);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string(unit) + " first epoch: " + error.what());
+    }
+  }
+  // Promote both, then restore both into fresh sessions.
+  std::optional<NativeConversationStateHandleV1> handle0;
+  std::optional<NativeConversationStateHandleV1> handle1;
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    const auto promoted = runners.at(unit)->promoteSessionStateToConversation(
+      "/request/two-rank-restore", "conv/two-rank");
+    BOOST_REQUIRE_MESSAGE(promoted.has_value(),
+      std::string(unit) + " could not promote its state, so there is nothing to restore");
+    if (std::string(unit) == "S0R0") handle0 = promoted;
+    else handle1 = promoted;
+  }
+  BOOST_TEST_MESSAGE("promoted handles: rank0 logicBytes=" << handle0->logicalBytes
+                     << " rank1 logicBytes=" << handle1->logicalBytes);
+  BOOST_CHECK_GT(handle0->logicalBytes, 0U);
+  BOOST_CHECK_GT(handle1->logicalBytes, 0U);
+  // Both ranks restore, each into its own new session.
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    const auto& handle = std::string(unit) == "S0R0" ? *handle0 : *handle1;
+    BOOST_REQUIRE_MESSAGE(runners.at(unit)->restoreConversationState(
+      handle, std::string("/request/two-rank-restore/") + unit),
+      std::string(unit) + " refused the restore");
+  }
+  // Epoch 1 on both ranks, continuing at position 1 with a two-position mask.
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    try {
+      runEpoch(unit, std::string("/request/two-rank-restore/") + unit, 1, 2, 1);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string(unit) + " restored epoch: " + error.what());
+    }
+  }
+  // Each rank's restored epoch must span the committed position plus its own, and the two halves
+  // must be the same width -- four heads each, because the split is on the head axis.
+  for (const auto* unit : {"S0R0", "S0R1"}) {
+    const auto keys = observers.at(unit)->samplesNamed("past_key_values.0.key");
+    BOOST_REQUIRE_MESSAGE(keys.size() >= 2U,
+      std::string(unit) + " recorded fewer than two epochs");
+    const auto firstLength = keys.front().shape.empty() ? 0 : keys.front().shape[2];
+    const auto secondLength = keys.back().shape.empty() ? 0 : keys.back().shape[2];
+    const auto heads = keys.back().shape.size() < 4 ? 0 : keys.back().shape[1];
+    BOOST_TEST_MESSAGE(unit << " restore: first sequence=" << firstLength
+                       << " second sequence=" << secondLength << " heads=" << heads);
+    BOOST_CHECK_EQUAL(firstLength, 1);
+    BOOST_CHECK_EQUAL(secondLength, 2);
+    BOOST_CHECK_EQUAL(heads, static_cast<std::int64_t>(shape.kvHeads / 2U));
+  }
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(AnAddedGraphOutputReachesTheEntryBoundary)
 {
   // Before using it for a measurement, check the mechanism the next step depends on: appending a
