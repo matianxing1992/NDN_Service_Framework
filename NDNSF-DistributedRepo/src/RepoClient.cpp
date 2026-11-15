@@ -3719,6 +3719,71 @@ RepoClient::inspect(const RepoInspectionRequest& input,
   throw unsupported("inspect(target)");
 }
 
+namespace {
+
+/** Send one request to a known Provider and wait for its response.
+ *
+ * The maintained Repo answers targeted requests; it does not run the ACK/Selection exchange
+ * that requestSelectedService needs. Operations that talk to it directly use this. */
+std::vector<uint8_t>
+requestTargetedReply(ndn_service_framework::ServiceUser& user,
+                     const ndn::Name& providerIdentity,
+                     const ndn::Name& serviceName,
+                     const std::vector<uint8_t>& payload,
+                     int timeoutMs,
+                     const std::function<void()>& requireCurrent)
+{
+  struct ReplyState
+  {
+    std::mutex mutex;
+    std::condition_variable arrived;
+    bool done = false;
+    std::vector<uint8_t> payload;
+    std::string failure;
+  };
+  auto state = std::make_shared<ReplyState>();
+  user.RequestService(
+    std::vector<ndn::Name>{providerIdentity}, serviceName,
+    RepoClientCompat::makeRequest(payload), std::max(1, timeoutMs),
+    [state] (const ndn::Name&) {
+      std::lock_guard<std::mutex> guard(state->mutex);
+      state->failure = "repo-request-timeout: Provider request timed out";
+      state->done = true;
+      state->arrived.notify_all();
+    },
+    [state] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> guard(state->mutex);
+      if (response.getStatus()) {
+        const auto& bytes = response.getPayload();
+        state->payload.assign(bytes.begin(), bytes.end());
+      }
+      else {
+        state->failure = response.getErrorInfo();
+      }
+      state->done = true;
+      state->arrived.notify_all();
+    },
+    ndn_service_framework::tlv::FirstResponding);
+  const auto deadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(std::max(1, timeoutMs));
+  std::unique_lock<std::mutex> lock(state->mutex);
+  while (!state->done) {
+    if (requireCurrent)
+      requireCurrent();
+    if (state->arrived.wait_for(lock, std::chrono::milliseconds(20),
+                                [&] { return state->done; })) {
+      break;
+    }
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repo-request-timeout: Provider request timed out");
+  }
+  if (!state->failure.empty())
+    throw std::runtime_error(state->failure);
+  return state->payload;
+}
+
+} // namespace
+
 RepoPage
 RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& options) const
 {
@@ -3746,11 +3811,11 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   const auto target = m_impl->target(input.target);
   auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto wire = withEngineErrorTranslation("list", [&] {
-    return RepoClientCompat::requestSelectedService(
+    return requestTargetedReply(
       *m_impl->user, ndn::Name(target.providerIdentity),
       makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
-      std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-      std::max(1, remainingMs(options.deadline)), emitted, options.requireCurrent);
+      std::vector<uint8_t>(encoded.begin(), encoded.end()),
+      remainingMs(options.deadline), options.requireCurrent);
   });
   const auto reply = RepoUserStorageListReply::fromJson(
     std::string(wire.begin(), wire.end()));
@@ -3818,11 +3883,11 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.targets.front());
   auto emitted = std::make_shared<std::atomic<bool>>(false);
-  const auto wire = RepoClientCompat::requestSelectedService(
+  const auto wire = requestTargetedReply(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
-    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), emitted, options.requireCurrent);
+    std::vector<uint8_t>(encoded.begin(), encoded.end()),
+    remainingMs(options.deadline), options.requireCurrent);
   const auto reply = RepoUserStorageDeleteReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target, m_impl->user->getName().toUri(ndn::name::UriFormat::ALTERNATE),

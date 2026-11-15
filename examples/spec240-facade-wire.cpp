@@ -309,6 +309,50 @@ main(int argc, char** argv)
                  result.receipt ? result.receipt->receiptId.c_str() : "");
     return result.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
   }
+  if (mode == "remove") {
+    repo::RepoDeleteRequest request;
+    repo::ExactPacketSetReference reference;
+    reference.objectName = arg(options, "object-name");
+    // The cleanup id must be unique per removal so a retry is idempotent rather than a
+    // second deletion.
+    request.generation = "spec240-remove-" + std::to_string(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    request.reference = reference;
+    request.targets.push_back(repo::RepoTarget{alternateName(repository),
+                                               alternateName(provider.toUri()),
+                                               alternateName(servicePrefix.toUri())});
+    try {
+      const auto removed = client.remove(request, operation);
+      std::fprintf(stderr, "FACADE_REMOVE releasedBytes=%llu\n",
+                   static_cast<unsigned long long>(removed.releasedBytes));
+      return 0;
+    }
+    catch (const std::exception& error) {
+      std::fprintf(stderr, "FACADE_REMOVE_FAILED what=%s\n", error.what());
+      return 1;
+    }
+  }
+  if (mode == "list") {
+    repo::RepoListRequest request;
+    request.scope = repo::RepoListScope::OWNER_OBJECTS;
+    request.target = repo::RepoTarget{alternateName(repository), alternateName(provider.toUri()),
+                                      alternateName(servicePrefix.toUri())};
+    request.limit = 10;
+    try {
+      const auto page = client.list(request, operation);
+      std::fprintf(stderr, "FACADE_LIST entries=%zu\n", page.items.size());
+      for (const auto& entry : page.items)
+        std::fprintf(stderr, "FACADE_LIST_ENTRY bytes=%llu state=%s\n",
+                   static_cast<unsigned long long>(entry.storedBytes),
+                   entry.lifecycleState.c_str());
+      return 0;
+    }
+    catch (const std::exception& error) {
+      std::fprintf(stderr, "FACADE_LIST_FAILED what=%s\n", error.what());
+      return 1;
+    }
+  }
   if (mode == "artifact") {
     // Probe for the artifact (MANIFEST) path. Kept behind its own mode until the discovery
     // boundary is resolved.
