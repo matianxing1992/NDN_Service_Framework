@@ -1261,6 +1261,45 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
   result.runner = item.runner;
 
   const auto& steps = *item.role.steps;
+  // When each produced value stops being needed. A 28-layer unit produces two values per layer and
+  // every one of them used to live in `produced` until the whole template finished, so a local
+  // handoff retained every activation it had ever produced -- the opposite of what D5 and C10 ask
+  // for. The last consumer is knowable up front from the sealed template, so it is computed once.
+  //
+  // A value is still needed after its last step when it carries a role output (the terminal pass
+  // reads it back to return an already-published edge) or when it is a terminal slot surfaced as a
+  // result. Both are marked `kKeepToEnd`.
+  constexpr std::size_t kKeepToEnd = std::numeric_limits<std::size_t>::max();
+  std::map<std::string, std::size_t> lastUseOf;
+  for (std::size_t index = 0; index < steps.size(); ++index) {
+    for (const auto& slot : steps[index].inputSlots) {
+      if (slot.producerStepId.empty()) continue;
+      lastUseOf[slot.producerStepId + "\n" + slot.producerSlotId] = index;
+    }
+  }
+  for (const auto& edge : item.role.outputs) {
+    if (edge.producerStepId.empty()) continue;
+    lastUseOf[edge.producerStepId + "\n" + edge.producerSlotId] = kKeepToEnd;
+  }
+  {
+    std::set<std::string> consumed;
+    for (const auto& step : steps) {
+      for (const auto& slot : step.inputSlots) {
+        if (slot.producerStepId.empty()) continue;
+        consumed.insert(slot.producerStepId + "\n" + slot.producerSlotId);
+      }
+    }
+    std::set<std::string> edges;
+    for (const auto& edge : item.role.outputs)
+      edges.insert(edge.producerStepId + "\n" + edge.producerSlotId);
+    for (const auto& step : steps) {
+      for (const auto& slot : step.outputSlots) {
+        const auto key = step.stepId + "\n" + slot.slotId;
+        if (consumed.count(key) != 0 || edges.count(key) != 0) continue;
+        lastUseOf[key] = kKeepToEnd;
+      }
+    }
+  }
   for (auto stepIt = steps.begin() + static_cast<std::ptrdiff_t>(item.resumeStepIndex);
        stepIt != steps.end(); ++stepIt) {
     const auto& step = *stepIt;
@@ -1492,6 +1531,20 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // This step is complete, so its collected inputs are released now rather than at the end of
     // the template: a 28-layer unit should not retain every contribution it ever read.
     item.stepCollectedInputs.erase(step.stepId);
+    // Anything this step was the last consumer of is released too. A value still needed stays in
+    // `produced`; one whose last use was here and that no edge or terminal slot needs is gone, so
+    // the retained set tracks the live dependency cone rather than the whole history.
+    {
+      const auto stepIndex = static_cast<std::size_t>(
+        std::distance(steps.begin(), stepIt));
+      for (auto it = produced.begin(); it != produced.end();) {
+        const auto use = lastUseOf.find(it->first);
+        if (use != lastUseOf.end() && use->second != kKeepToEnd && use->second <= stepIndex)
+          it = produced.erase(it);
+        else
+          ++it;
+      }
+    }
     // Keep the decode-state successors the adapter returned. They are not step slots
     // -- the runtime packs state from the result by tensor name -- so dropping them
     // here would make every epoch report a missing state output even though the
