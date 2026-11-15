@@ -750,6 +750,9 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   BOOST_CHECK_EQUAL(persistentReceiptRows(database, target.repoNode,
     target.providerIdentity, successful.first.reference), 1);
   releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
+  // Same contract as the final teardown: the replacement does not drain the Face loop, and this
+  // intermediate restart destroys the node just as the final one does.
+  environment.pumpUntil([&] { return true; });
   node.reset();
   objects = temporary.path() / "timeout-objects";
   database = temporary.path() / "timeout-artifact-v2.sqlite";
