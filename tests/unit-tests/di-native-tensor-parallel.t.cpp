@@ -16899,6 +16899,141 @@ BOOST_AUTO_TEST_CASE(ASumOfLocalViewsIsOneOwnedAccumulator)
   BOOST_CHECK_THROW(sumTensorBundleViews("merged", {}), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(ASecondEpochConsumesTheKvTheFirstEpochCommitted)
+{
+  // The state handoff, with the flag production actually sets. The existing two-epoch case left
+  // `streamingStateExecution` false, which sends the adapter down the explicit-bundle path -- and
+  // there `past_key_values.*` has no slot binding at all, because the assembler skips it, so the
+  // successors handed back never reached the child and both epochs reported sequence 1.
+  //
+  // Production sets the flag whenever a role declares state (`NativeEpochCoordinator`), so this is
+  // the configuration the deployment runs. With it, the adapter keeps the KV in its own session map
+  // and the next epoch rebinds it, and the successor length is the evidence that the rebind
+  // happened.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream graphIn(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
+                                              std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-warm-consumes-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "S0R0", cleanupError);
+  std::filesystem::copy_file(source, root / "S0R0" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(sidecar, root / "S0R0" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(sidecar, root / "S0R0" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing, cleanupError);
+  }
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "S0R0", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0" && step.stepId.find("/ATTN/0") != std::string::npos)
+      steps.push_back(step);
+  BOOST_REQUIRE_EQUAL(steps.size(), 1U);
+  NativeModelRunnerSpec spec;
+  spec.role = "S0R0";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "S0R0" / "model.onnx").string();
+  qwen::configureQwenTpRankSpec(spec, 28, steps, 3392676128ULL, 2, 0, std::string{});
+  // The resident path returns an opaque handle, and a handle is only valid with the identity that
+  // minted it.
+  spec.metadata["providerIdentity"] = "/provider/0";
+  spec.metadata["providerBootId"] = "warm-consumes-boot";
+  auto observer = std::make_shared<RecordingKvObserver>();
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory, nullptr, observer);
+  ndnsf::di::qwen::registerQwenTensorBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+  BOOST_REQUIRE_MESSAGE(runner->supportsConversationStateTransfer(),
+    "the assembled attention entry did not declare its state");
+  const auto step = steps.front();
+  // One token per epoch, so the successor length is a direct count of the positions the adapter
+  // retained: 1 after the first, 2 after the second when the rebind worked.
+  const auto runEpoch = [&] (const std::string& sessionId, std::uint64_t epoch,
+                             std::int32_t total, std::int64_t position) {
+    RoleExecutionContext ctx;
+    ctx.sessionId = sessionId;
+    ctx.role = "S0R0";
+    ctx.requestId = "/request/warm-consumes";
+    ctx.attemptEpoch = 1;
+    ctx.inferenceEpoch = epoch;
+    // The flag that keeps state in the adapter rather than in a caller-held bundle, which is what
+    // makes `present.*` observable and the next epoch rebindable.
+    ctx.streamingStateExecution = true;
+    ctx.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
+    ctx.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    const auto put = [&ctx] (const std::string& name, TensorElementType type,
+                             const std::vector<std::int64_t>& dims,
+                             const std::vector<std::uint8_t>& bytes) {
+      NamedTensor tensor;
+      tensor.name = name;
+      tensor.elementType = type;
+      tensor.shape = dims;
+      tensor.payload = bytes;
+      ctx.stepInputsBySlot.emplace(name, makeEncodedTensorBundle(name, {std::move(tensor)}));
+    };
+    std::vector<std::uint8_t> hidden(static_cast<std::size_t>(shape.hidden) * sizeof(float), 0);
+    for (std::size_t index = 0; index < shape.hidden; ++index) {
+      const float value = 0.01f * static_cast<float>(index % 17) - 0.08f;
+      std::memcpy(hidden.data() + index * sizeof(float), &value, sizeof(value));
+    }
+    put("x", TensorElementType::Float32,
+        {1, 1, static_cast<std::int64_t>(shape.hidden)}, hidden);
+    put("attn_mask", TensorElementType::Int32, {1, 1},
+        std::vector<std::uint8_t>(sizeof(std::int32_t), 0));
+    std::vector<std::uint8_t> totalBytes(sizeof(total));
+    std::memcpy(totalBytes.data(), &total, sizeof(total));
+    put("total_sequence_length", TensorElementType::Int32, {}, totalBytes);
+    std::vector<std::uint8_t> positionBytes(sizeof(position));
+    std::memcpy(positionBytes.data(), &position, sizeof(position));
+    put("position_ids", TensorElementType::Int64, {1, 1}, positionBytes);
+    return runner->run(ctx);
+  };
+  // Both epochs share one session: the resident map is keyed by session id, so a second session
+  // would look like a fresh start no matter what the first epoch committed. Production keeps a
+  // request's epochs on one session for the same reason.
+  try {
+    runEpoch("/request/warm-consumes", 0, 1, 0);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("first epoch: ") + error.what());
+  }
+  // A continuation: position 1 with a mask covering two positions, which is what a second turn
+  // does. The first epoch ran at position 0 with a one-position mask.
+  try {
+    runEpoch("/request/warm-consumes", 1, 2, 1);
+  }
+  catch (const std::exception& error) {
+    BOOST_FAIL(std::string("second epoch: ") + error.what());
+  }
+  const auto keys = observer->samplesNamed("past_key_values.0.key");
+  BOOST_REQUIRE_MESSAGE(keys.size() >= 2U,
+    "the adapter recorded fewer than two epochs, so the rebind was never exercised");
+  const auto firstLength = keys.front().shape.empty() ? 0 : keys.front().shape[2];
+  const auto secondLength = keys.back().shape.empty() ? 0 : keys.back().shape[2];
+  BOOST_TEST_MESSAGE("warm rebind: first sequence=" << firstLength
+                     << " second sequence=" << secondLength);
+  BOOST_CHECK_EQUAL(firstLength, 1);
+  // The whole point: the second epoch continues from the state the first committed, so its cache
+  // spans both positions. A run that ignored the restored state would still report 1.
+  BOOST_CHECK_EQUAL(secondLength, 2);
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
