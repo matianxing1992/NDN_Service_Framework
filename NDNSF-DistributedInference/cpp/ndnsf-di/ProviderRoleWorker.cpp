@@ -550,6 +550,9 @@ ProviderRoleWorker::executeAsyncImpl(
     {},
     promise,
     std::chrono::steady_clock::now(),
+    // firstQueuedAt: unset until enqueueReady records it, so an aggregate initializer must name it
+    // explicitly -- the field sits next to `queuedAt` because that is where it is read.
+    std::nullopt,
     std::move(collective),
     std::move(executionGuard),
   };
@@ -702,7 +705,11 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
 
   const auto waitId = state->item.sessionId + "|" + state->item.role.role + "|step|" +
                       std::to_string(m_nextDependencyWaitId.fetch_add(1));
-  const auto deadline = state->item.queuedAt + m_dependencyWaitTimeout;
+  // Anchored at admission, not at the latest resume: a resumed unit that waited once must not
+  // receive a fresh full timeout for the next step.
+  const auto deadline = (state->item.firstQueuedAt.has_value()
+                           ? *state->item.firstQueuedAt : state->item.queuedAt) +
+                        m_dependencyWaitTimeout;
   const auto submitted = m_dependencyWaitScheduler->submit(
     waitId,
     deadline,
@@ -861,6 +868,7 @@ ProviderRoleWorker::enqueueReady(WorkItem item)
     return;
   }
   item.queuedAt = std::chrono::steady_clock::now();
+  if (!item.firstQueuedAt) item.firstQueuedAt = item.queuedAt;
   logDiTimelineTrace(
     "di-provider", "role_queue_enter",
     timelineRequestId(item.role.requestId, item.sessionId),
@@ -1841,8 +1849,14 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   // A generation epoch may update adapter-owned KV or depend on lineage not
   // represented in the pure-output cache key, even with equal tensor bytes.
   // Reusing a loaded runner must not suppress that state transition.
+  // A step-carrying role must not take the pure-output cache. Its key is built from the admitted
+  // input scopes and covers no part of the template, so two roles with the same inputs but different
+  // steps would collide -- and a hit would return outputs without running any step, which is the
+  // "silently skip the computation" C4 forbids. The three conditions below exclude the streaming and
+  // lineage paths; the template path is a fourth exclusion, not an exception to them.
+  const bool sealedTemplate = item.role.steps && !item.role.steps->empty();
   const bool canReuseOutputs = !hasStreamSideEffect &&
-    !item.role.streamingStateExecution && !item.role.generationLineage;
+    !item.role.streamingStateExecution && !item.role.generationLineage && !sealedTemplate;
   inputWork.finish();
   if (item.role.workStatistics) {
     const auto admitted = std::chrono::duration_cast<std::chrono::nanoseconds>(

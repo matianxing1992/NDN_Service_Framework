@@ -295,6 +295,12 @@ private:
     std::vector<InputFetchTiming> inputTimings;
     std::shared_ptr<std::promise<ProviderRoleResult>> promise;
     std::chrono::steady_clock::time_point queuedAt;
+    // The first time this work entered the ready queue, kept across suspensions. `queuedAt` is
+    // refreshed on every resume because it anchors queue-wait accounting, but using the refreshed
+    // value as a deadline lets each late partial extend the total: a unit suspended ten times would
+    // wait ten timeouts. The wait deadline comes from this one instead, so a unit's wait budget is
+    // fixed when it is admitted.
+    std::optional<std::chrono::steady_clock::time_point> firstQueuedAt;
     std::optional<CollectiveExecutionBinding> collective;
     std::function<void()> executionGuard;
     // For a step-carrying role: the prefetches already started, keyed by scope.
