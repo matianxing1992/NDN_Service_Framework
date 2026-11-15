@@ -23,6 +23,21 @@ namespace ndnsf::di {
 
 namespace {
 
+/** Bytes a bundle will occupy on the wire, local or already encoded.
+ *
+ * A local value carries views, not a payload, so `payload.size()` is zero and a timing record
+ * built from it claims the transfer sent nothing. The transport materializes the encoded form,
+ * so that is what the record has to describe.
+ */
+std::size_t
+stagedWireBytes(const TensorBundle& bundle)
+{
+  if (bundle.localTensors) {
+    return static_cast<std::size_t>(tensorBundleWireSize(*bundle.localTensors));
+  }
+  return bundle.payload.size();
+}
+
 void
 appendUint64(std::ostringstream& os, std::uint64_t value)
 {
@@ -589,7 +604,7 @@ ProviderRoleWorker::executeAsyncImpl(
         timing.preSatisfied = true;
         validateTensorBundleForEdge(edge, existing->second);
         timing.fetchCompletedAt = std::chrono::steady_clock::now();
-        timing.bytes = existing->second.payload.size();
+        timing.bytes = stagedWireBytes(existing->second);
         completeStageTransferObservation(edge, existing->second, "receive");
         timing.transferObservation = existing->second.transferObservation;
         item.inputTimings.push_back(std::move(timing));
@@ -658,7 +673,7 @@ ProviderRoleWorker::executeAsyncImpl(
           NativeFaultPoint::DependencyFetched, item.role.role, item.sessionId);
 #endif
         pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
-        pending.timing.bytes = bundle.payload.size();
+        pending.timing.bytes = stagedWireBytes(bundle);
         completeStageTransferObservation(pending.edge, bundle, "receive");
         pending.timing.transferObservation = bundle.transferObservation;
         item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
@@ -759,21 +774,6 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
   }
 }
 
-/** Bytes a bundle will occupy on the wire, local or already encoded.
- *
- * A local value carries views, not a payload, so `payload.size()` is zero and a timing record
- * built from it claims the transfer sent nothing. The transport materializes the encoded form,
- * so that is what the record has to describe.
- */
-std::size_t
-stagedWireBytes(const TensorBundle& bundle)
-{
-  if (bundle.localTensors) {
-    return static_cast<std::size_t>(tensorBundleWireSize(*bundle.localTensors));
-  }
-  return bundle.payload.size();
-}
-
 
 void
 ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
@@ -821,7 +821,7 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
             state->item.role.role, state->item.sessionId);
 #endif
           pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
-          pending.timing.bytes = bundle.payload.size();
+          pending.timing.bytes = stagedWireBytes(bundle);
           completeStageTransferObservation(pending.edge, bundle, "receive");
           pending.timing.transferObservation = bundle.transferObservation;
           state->item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
