@@ -567,8 +567,15 @@ NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
         auto local = std::make_shared<LocalTensorBundle>();
         local->tensors.push_back(view);
         local->owner = bundle.localTensors->owner;
+        // `expectedBytes` is wire-sized (D7:161), so a local value states what it would cost to
+        // cross a boundary rather than its raw tensor bytes. The two differ by the bundle framing
+        // and this tensor's name and shape, and the field is compared against a wire bundle's, so
+        // writing the raw size made that comparison compare a value with itself.
+        //
+        // Sized before the move: computing it afterwards dereferenced a moved-from pointer, which
+        // crashed rather than returning a wrong number.
+        single.expectedBytes = tensorBundleWireSize(*local);
         single.localTensors = std::move(local);
-        single.expectedBytes = view.payload.size();
         single.transferObservation = bundle.transferObservation;
         byName.emplace(single.name, std::move(single));
       }
