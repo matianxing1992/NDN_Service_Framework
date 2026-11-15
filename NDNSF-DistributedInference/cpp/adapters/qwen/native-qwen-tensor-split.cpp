@@ -2688,12 +2688,43 @@ bindIdentitySlots(QwenTpEntryContract& contract)
   }
 }
 
+/** Write an already-extracted entry: slice, declare, persist, digest.
+ *
+ * Declared at file scope rather than in the header because it takes the extracted model by value;
+ * the public entry point extracts first and calls it. Both the direct path and the worker-certified
+ * path must produce byte-identical entries, so they share this code instead of repeating it. My
+ * first version put the declaration in an anonymous namespace and the definition outside it, which
+ * linked against a symbol that did not exist.
+ */
+QwenTpEntryContract
+finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
+                    const QwenTpEntryNodes& entry, onnx::ModelProto model,
+                    const std::string& graphName,
+                    const QwenTpAssemblyShards* shards);
+
 QwenTpEntryContract
 writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
                  const QwenTpEntryNodes& entry, onnx::ModelProto& source,
                  const std::string& graphName,
                  const QwenTpAssemblyShards* shards)
 {
+  const auto entryId = unitId + "/" + entry.kind + "/" + std::to_string(entry.layer);
+  return finalizeQwenTpEntry(root, unitId, entry,
+                             extractQwenTpEntryModel(source, entry, entryId),
+                             graphName, shards);
+}
+
+QwenTpEntryContract
+finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
+                     const QwenTpEntryNodes& entry, onnx::ModelProto model,
+                     const std::string& graphName,
+                     const QwenTpAssemblyShards* shards)
+{
+  // Everything after extraction: narrow the weights to this rank, declare the boundary from the
+  // file itself, write it atomically and digest what landed. Split out of `writeQwenTpEntry` so a
+  // caller that obtained the extracted model elsewhere -- the native assembly worker, which
+  // extracts by node index and certifies the result -- produces an identical entry through the
+  // same code. Duplicating this would let the two paths disagree about slicing or about the digest.
   if (root.empty() || unitId.empty()) {
     throw std::invalid_argument("tensor-parallel entry write needs a root and a unit");
   }
@@ -2704,7 +2735,6 @@ writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
       "tensor-parallel entry file name must be a plain name: " + graphName);
   }
   const auto entryId = unitId + "/" + entry.kind + "/" + std::to_string(entry.layer);
-  auto model = extractQwenTpEntryModel(source, entry, entryId);
 
   // Narrow this entry's weights to the rank's own shard before the file is
   // written, so the digest covers what the rank will actually load. INIT and HEAD
