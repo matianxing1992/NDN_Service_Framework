@@ -13670,6 +13670,60 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
   std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(SliceArithmeticRefusesShapesThatCannotBeSplit)
+{
+  // The other half of the guard: the shape-level checks in `planQwenTensorSlices`, which the
+  // constructor above does not cover. These are what stop a model whose heads or FFN width cannot
+  // be cut from being planned as if it could -- a split that is off by a partial head produces a
+  // rank table the assembler would happily slice into nonsense.
+  //
+  // Like the constructor set, this needs no model: a shape is four numbers.
+  const auto shape = [&] (std::uint64_t queryHeads, std::uint64_t kvHeads,
+                          std::uint64_t ffn, std::uint64_t hidden = 1024,
+                          std::uint64_t headDim = 128) {
+    qwen::QwenTpShape value;
+    value.hidden = hidden;
+    value.layers = 1;
+    value.queryHeads = queryHeads;
+    value.kvHeads = kvHeads;
+    value.headDim = headDim;
+    value.ffn = ffn;
+    value.vocab = 151936;
+    return value;
+  };
+  // Accepted: the deployed export's own facts at degree two.
+  BOOST_CHECK_NO_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3072), 2, 0));
+  // A partial head is never acceptable, on either axis.
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(17, 8, 3072), 2, 0),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 7, 3072), 2, 0),
+                    std::invalid_argument);
+  // FFN width must divide too.
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3071), 2, 0),
+                    std::invalid_argument);
+  // Block alignment of the O reduction width. The INT4 block is 32 elements; a rank's share of the
+  // query width must be a whole number of blocks, because the projection is cut on block
+  // boundaries. Two query heads of width 48 give a 96-wide query projection, so 48 per rank --
+  // 16 short of a block, and rejected. My first two attempts at this used width 100 and then width
+  // 100 on rank 1, and neither threw: 1600/2 = 800 is a multiple of 32, and the slice-offset check
+  // is on the KV axis, not on ranks. The check that actually fires here is the width one, and it
+  // does not depend on the rank, so both ranks are refused.
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(2, 2, 3072, 1024, 48), 2, 0),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(2, 2, 3072, 1024, 48), 2, 1),
+                    std::invalid_argument);
+  // Degree zero and an out-of-range rank are rejected rather than clamped.
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3072), 0, 0),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3072), 2, 2),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3072), 1, 0),
+                    std::invalid_argument);
+  // An empty shape field is not "zero work": it is a shape the model does not have.
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(0, 0, 0), 2, 0),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(TheSplitterRefusesIncompleteOrInconsistentStages)
 {
   // The splitter's construction checks, each pinned individually. They are what stops a malformed
