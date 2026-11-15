@@ -68,6 +68,60 @@ nfd-start
 nfdc status
 ```
 
+### Fresh Ubuntu 20.04 host
+
+On a machine that has never run NDNSF, start from a clean clone of this
+repository (the branch you want to deploy) and run the installer once:
+
+```bash
+# 1. One-time host prerequisites: git, network access to GitHub, sudo.
+sudo apt-get update
+sudo apt-get install -y git curl ca-certificates
+
+# 2. Clone the branch to deploy (this repository's dependencies are cloned by
+#    the installer into ./dependencies from the pinned GitHub sources).
+git clone --branch spec233-automatic-model-precision \
+  https://github.com/matianxing1992/NDN_Service_Framework.git
+cd NDN_Service_Framework
+
+# 3. Run the installer as root (or with passwordless sudo, because it uses
+#    non-interactive sudo internally). It installs OS packages, the pinned
+#    GCC 10 toolchain, the NDN dependencies, NFD, and NDNSF itself.
+sudo ./install_ndnsf_stack.sh --python /usr/bin/python3 --jobs 6
+
+# 4. Start NFD and check the installation.
+sudo nfd-start
+nfdc status
+python3 -c "import ndnsf, py_repoclient, ndnsf_di"  # import smoke test
+```
+
+Notes for a fresh host:
+
+- The installer pins GCC 10 (`/usr/bin/gcc-10`, `/usr/bin/g++-10`); on 20.04 it
+  installs `gcc-10`/`g++-10` automatically. A host where those packages are
+  unavailable stops with `Missing canonical host tool`.
+- `sudo -n` is used for privileged steps, so either run the script as root or
+  configure `NOPASSWD` sudo for the installing user.
+- The dependency source trees are cloned from the pinned GitHub repositories on
+  first run (network access to GitHub is required); later runs reuse them.
+- Reserve at least 20 GB of free disk for the dependency builds, the NDNSF
+  build tree, and the installed stack under `/usr/local`.
+- The first run builds ndn-cxx, NFD, NDNSD, ndn-svs, OpenABE, NAC-ABE and NDNSF
+  and takes roughly 30-60 minutes on 4+ cores; rerun the same command to
+  continue after a transient network or package failure (steps are idempotent).
+
+After bootstrap, reuse two fixed NDNSF build trees: `<checkout>/build` for normal
+builds, release candidates and global installation (normally `/usr/local`), and
+`<checkout>/build-ASAN-UBSAN` for instrumented diagnostics and tests. Keep their
+Waf state, objects, generated headers and linked outputs independent; diagnostic
+tests must load instrumented libraries. Global installation accepts only `build/`;
+never install the diagnostic tree. Normal runtime and qualification checks use
+installed programs, libraries and bindings. Fix configure/`--out` selection rather
+than editing Waf caches. Retain incremental caches, remove invalidated outputs as
+needed, and do not create per-feature, timestamped or per-retry build copies.
+The bootstrap installer's required out-of-checkout scratch is temporary and must
+be retired after bootstrap, not retained as another normal build.
+
 It installs the stack in dependency order:
 
 1. Install default build/runtime OS packages needed by the NDNSF stack.

@@ -1395,7 +1395,7 @@ require_system_toolchain() {
   local tool
   select_global_boost || true
   require_global_boost
-  for tool in gcc g++ ld ar as ranlib nm strip readelf "$PKG_CONFIG_BIN"; do
+  for tool in gcc g++ gcc-10 g++-10 ld ar as ranlib nm strip readelf "$PKG_CONFIG_BIN"; do
     if [[ "$tool" == /* ]]; then
       [[ -x "$tool" ]] || { echo "Missing canonical host tool: $tool" >&2; exit 1; }
     else
@@ -2110,6 +2110,10 @@ install_common_system_packages() {
       libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev \
       liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler
     )
+    # The pinned host toolchain is GCC 10; a fresh 20.04 install ships GCC 9.
+    if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
+      packages+=(gcc-10 g++-10)
+    fi
     if (( NDNSF_INSTALL_UAV )); then
       packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev)
       if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
