@@ -1,6 +1,7 @@
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 
 #include "ndnsf-distributed-repo/repo-client-compat.hpp"
+#include "repo-targeted-request.hpp"
 
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
@@ -1359,9 +1360,26 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
     throw RepoRequestTimeoutError(
       "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
   }
-  return RepoClientCompat::requestSelectedService(
-    serviceUser, target.providerIdentity, serviceName, requestBytes,
-    config.ackCollectionTimeMs, timeoutMs);
+  try {
+    return RepoClientCompat::requestSelectedService(
+      serviceUser, target.providerIdentity, serviceName, requestBytes,
+      config.ackCollectionTimeMs, timeoutMs);
+  }
+  catch (const std::runtime_error& failure) {
+    // A Repo that does not run the ACK/Selection exchange either times out or answers the
+    // selection with "no matching ACK". Either way the same request sent to the one selected
+    // target is what it does answer. Retried once only, so a lost ACK against a provider that
+    // does speak the exchange costs at most one duplicate, and every mutating request here
+    // carries its own operation id.
+    const std::string reason = failure.what();
+    if (reason.rfind("repo-request-timeout", 0) != 0 &&
+        reason.rfind("repo-ack-authentication-failed", 0) != 0 &&
+        reason.rfind("repo-selected-request", 0) != 0) {
+      throw;
+    }
+    return detail::requestTargetedReply(
+      serviceUser, target.providerIdentity, serviceName, requestBytes, timeoutMs, {});
+  }
 }
 
 SelectedRepoTarget
