@@ -1491,10 +1491,15 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       contributions.reserve(step.inputSlots.size());
       for (const auto& slot : step.inputSlots) {
         const auto input = inputs.find(slot.slotId);
-        contributions.push_back(decodeTensorBundleViews(input->second));
+        // The statistics owner is passed so the codec records what the SUM actually moved. The
+        // helper has had that ability since it was written, but the production worker never handed
+        // it the owner, so a C10 mechanism count read zero on a run that reduced every layer.
+        contributions.push_back(
+          decodeTensorBundleViews(input->second, item.role.workStatistics));
       }
       produced.emplace(step.stepId + "\n" + outputSlot,
-                       sumTensorBundleViews(outputSlot, contributions));
+                       sumTensorBundleViews(outputSlot, contributions,
+                                            item.role.workStatistics));
       // The step is done: its collected inputs are released so a long template does not retain
       // every contribution it ever read, and so a retry of this step cannot see a stale value.
       item.stepCollectedInputs.erase(step.stepId);

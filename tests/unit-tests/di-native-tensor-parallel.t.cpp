@@ -11614,6 +11614,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     RoleSpec role;
   };
   std::map<std::string, Side> sides;
+  // One statistics owner per unit, kept so the SUM counts can be read after the run.
+  std::map<std::string, std::shared_ptr<NativeWorkStatistics>> unitStatistics;
   for (const auto* unit : {"S0R0", "S0R1"}) {
     Side side;
     side.unit = unit;
@@ -11641,6 +11643,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_REQUIRE(side.runner != nullptr);
 
     side.role.role = unit;
+    // The SUM counts reach the report through this owner. Without it the codec records nothing, and
+    // a run that reduced 56 layers reports zero -- which is what the worker did until the owner was
+    // passed through.
+    side.role.workStatistics = makeNativeWorkStatistics();
+    unitStatistics[unit] = side.role.workStatistics;
     side.role.requestId = "/request/two-workers";
     side.role.attemptEpoch = 1;
     side.role.tensorDegree = 2;
@@ -12394,6 +12401,25 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     const auto& outputTimings = results.at("S0R0").outputTimings;
     BOOST_TEST_MESSAGE("output publish records: " << outputTimings.size());
     BOOST_CHECK_GT(outputTimings.size(), 0U);
+    // The codec records SUM only when it is given the statistics owner, so these counts are the
+    // evidence that the production path reduces through the counted helper rather than around it.
+    // Before the owner was passed, a run that reduced every layer reported zero here.
+    {
+      BOOST_REQUIRE(unitStatistics.count("S0R0") == 1U);
+      const auto counts = unitStatistics.at("S0R0")->snapshot().counts;
+      const auto accumulators = counts.count("sum.accumulators") != 0
+        ? counts.at("sum.accumulators") : 0U;
+      const auto tensors = counts.count("sum.tensors") != 0
+        ? counts.at("sum.tensors") : 0U;
+      const auto bytes = counts.count("sum.bytes") != 0
+        ? counts.at("sum.bytes") : 0U;
+      BOOST_TEST_MESSAGE("SUM counts: accumulators=" << accumulators
+                         << " tensors=" << tensors << " bytes=" << bytes);
+      // 28 layers, each with one attention reduction and one MLP reduction.
+      BOOST_CHECK_EQUAL(accumulators, 56U);
+      BOOST_CHECK_GT(tensors, 0U);
+      BOOST_CHECK_GT(bytes, 0U);
+    }
     // The records must also survive serialization: the statistics file is how a Coordinator and an
     // oracle see them, so a field that exists in memory but never reaches the JSON is not a
     // measurement. Serializing the observation directly is the honest check -- the full statistics
