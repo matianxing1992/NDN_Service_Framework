@@ -12309,6 +12309,39 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             const auto shardBase = (head * positions + position) * shape.headDim;
             const auto unsplitBase =
               ((rankIndex * headsPerRank + head) * positions + position) * shape.headDim;
+            // The window above assumes rank 0 owns heads [0,4) in the export's own order. If that
+            // assumption were wrong the difference would look like a bounded mismatch rather than
+            // a growing one, which is close to what is measured -- so the mapping is checked
+            // against the alternative rather than assumed. Recorded once per tensor.
+            if (layer == 1 && std::string(kind) == "key" && position == 0 && head == 0) {
+              double alignedWorst = 0.0;
+              double offAlignedWorst = std::numeric_limits<double>::max();
+              for (std::size_t shift = 0; shift < shape.kvHeads; ++shift) {
+                double shifted = 0.0;
+                for (std::size_t probeHead = 0; probeHead < headsPerRank; ++probeHead) {
+                  const auto probeShard =
+                    (probeHead * positions + position) * shape.headDim;
+                  const auto probeUnsplit =
+                    (((rankIndex * headsPerRank + probeHead + shift) % shape.kvHeads) *
+                       positions + position) * shape.headDim;
+                  for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                    shifted = std::max(shifted,
+                      std::fabs(double(shard[probeShard + channel]) -
+                                double(unsplit[probeUnsplit + channel])));
+                  }
+                }
+                if (shift == 0) alignedWorst = shifted;
+                else offAlignedWorst = std::min(offAlignedWorst, shifted);
+              }
+              // The mapping is right if the declared window is the only one that comes close. A
+              // shift of one head would mean the ranks hold the wrong slice, and the difference
+              // would then look like a bounded mismatch -- which is what was measured, so this was
+              // a plausible explanation for the C8 failure until it was checked.
+              BOOST_TEST_MESSAGE("unit " << item.first << " layer-1 key: aligned worst="
+                                 << alignedWorst << " best misaligned=" << offAlignedWorst);
+              BOOST_CHECK_LT(alignedWorst, 1e-3);
+              BOOST_CHECK_GT(offAlignedWorst, 1.0);
+            }
             for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
               const auto reference = double(unsplit[unsplitBase + channel]);
               const auto actual = double(shard[shardBase + channel]);
