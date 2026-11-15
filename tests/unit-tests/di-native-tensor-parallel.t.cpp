@@ -12559,8 +12559,24 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       }
       BOOST_TEST_MESSAGE("output publish bytes: total=" << totalBytes
                          << " zero-sized=" << zeroBytes);
+    // The receive side must be recorded too, with its own completion time: a wait whose result never
+    // reaches the ledger is indistinguishable from a wait that did not finish. Counted, not asserted
+    // per scope -- this fixture exchanges over an in-process bus, so how many arrivals it sees is a
+    // property of the fixture rather than of the worker.
+    {
+      const auto& inputTimings = results.at("S0R0").inputTimings;
+      std::size_t zeroBytes = 0;
+      std::size_t missingTime = 0;
+      for (const auto& timing : inputTimings) {
+        if (timing.bytes == 0) ++zeroBytes;
+        if (timing.fetchCompletedAt == std::chrono::steady_clock::time_point{}) ++missingTime;
+      }
+      BOOST_TEST_MESSAGE("input fetch records: " << inputTimings.size()
+                         << " zero-sized=" << zeroBytes
+                         << " missingCompletionTime=" << missingTime);
       BOOST_CHECK_EQUAL(zeroBytes, 0U);
-      BOOST_CHECK_GT(totalBytes, 0U);
+      BOOST_CHECK_EQUAL(missingTime, 0U);
+    }
     }
     // The codec records SUM only when it is given the statistics owner, so these counts are the
     // evidence that the production path reduces through the counted helper rather than around it.

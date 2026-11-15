@@ -758,6 +758,39 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
       try {
         auto bundle = state->pending.get();
         validateTensorBundleForEdge(state->edge, bundle);
+        // This is the step-scoped fetch, and it had no ledger entry at all: the wait was started
+        // when the step asked for it, the bytes arrived here, and neither the completion time nor
+        // the transfer was recorded -- so the budget at the end of the unit never saw these
+        // receives and the timing ledger showed a wait with no result.
+        // The record for this edge was created when the fetch was deferred, so it is completed in
+        // place rather than pushed again: a second record for the same scope would count one arrival
+        // twice and leave the first as a zero-byte, never-completed placeholder.
+        {
+          completeStageTransferObservation(state->edge, bundle, "receive");
+          auto existing = std::find_if(state->item.inputTimings.begin(),
+                                       state->item.inputTimings.end(),
+            [&] (const InputFetchTiming& entry) {
+              return entry.scope == state->edge.scope && !entry.preSatisfied;
+            });
+          if (existing != state->item.inputTimings.end()) {
+            existing->fetchCompletedAt = std::chrono::steady_clock::now();
+            existing->bytes = stagedWireBytes(bundle);
+            existing->transferObservation = bundle.transferObservation;
+          }
+          else {
+            InputFetchTiming timing;
+            timing.producerRole = state->edge.producerRole;
+            timing.scope = state->edge.scope;
+            timing.plannedDataName = state->edge.plannedDataName;
+            timing.plannedSegmentNames = plannedSegmentNamesForEdge(state->edge);
+            timing.expectedSegments = state->edge.expectedSegments;
+            timing.expectedBytes = state->edge.expectedBytes;
+            timing.fetchCompletedAt = std::chrono::steady_clock::now();
+            timing.bytes = stagedWireBytes(bundle);
+            timing.transferObservation = bundle.transferObservation;
+            state->item.inputTimings.push_back(std::move(timing));
+          }
+        }
         state->item.stepRemoteInputs[state->edge.scope] = std::move(bundle);
       }
       catch (...) {
