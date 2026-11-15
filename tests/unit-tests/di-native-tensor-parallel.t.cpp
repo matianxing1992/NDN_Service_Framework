@@ -13671,8 +13671,12 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   }
 
   // The MLP is the last observable before the next layer consumes the residual. If its reduction
-  // also reproduces the unsplit export, every tensor this suite can read agrees, and the remaining
-  // span -- the residual additions and the norm -- is where the KV difference must originate.
+  // also reproduces the unsplit export, every tensor this suite can read agrees at this input.
+  //
+  // "At this input" is the limit of this whole block: `buildFeeds` feeds each entry an independent
+  // synthetic activation, so these comparisons prove the arithmetic, not the stack. The case that
+  // carries a real 24-token context -- `TwoWorkersRunAllLayersAndSampleAToken` -- is where the KV
+  // difference was measured, and the two are not the same experiment.
   {
     const auto entryAtKind = [&] (const std::vector<qwen::QwenTpEntryContract>& table,
                                   std::uint64_t layer, const std::string& kind) {
