@@ -1220,6 +1220,23 @@ nativeRoleHasOnlyInternalFeedbackOutputs(const RoleSpec& role)
     });
 }
 
+/** Whether the worker already sent this scope from its own step.
+ *
+ * A `publishDeferred` timing means the worker deliberately held the output back for the checkpoint
+ * commit, so the coordinator must send it. A timing record with `publishDeferred` false means the
+ * worker sent it itself -- the early-partial path records one per send. No record at all means the
+ * older whole-role path, which never publishes from the worker, so the coordinator still sends.
+ */
+bool
+alreadyPublishedByWorker(const ProviderRoleResult& result, const std::string& scope)
+{
+  for (const auto& timing : result.outputTimings) {
+    if (timing.scope != scope) continue;
+    return !timing.publishDeferred;
+  }
+  return false;
+}
+
 NativeEpochCoordinatorResult
 runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
 {
@@ -1511,6 +1528,13 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
           if (output == roleResult.outputsByScope.end()) {
             throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
           }
+          if (alreadyPublishedByWorker(roleResult, edge.scope)) {
+            // The worker sent this partial from its step, so publishing again would put the same
+            // name and content on the transport twice -- an idempotent replay at best and an
+            // immutable conflict if the bytes moved. The finalize pass publishes only what the
+            // worker deferred.
+            continue;
+          }
           const auto publicationStarted = std::chrono::steady_clock::now();
           config.io->publishOutput(config.sessionId, edge, output->second);
           const auto publicationFinished = std::chrono::steady_clock::now();
@@ -1560,6 +1584,7 @@ runNativeEpochCoordinator(NativeEpochCoordinatorConfig config)
             const auto output = roleResult.outputsByScope.find(edge.scope);
             if (output == roleResult.outputsByScope.end())
               throw std::runtime_error("CHECKPOINT_FINALIZE activation output is missing");
+            if (alreadyPublishedByWorker(roleResult, edge.scope)) continue;
             const auto publicationStarted = std::chrono::steady_clock::now();
             config.io->publishOutput(config.sessionId, edge, output->second);
             const auto publicationFinished = std::chrono::steady_clock::now();
