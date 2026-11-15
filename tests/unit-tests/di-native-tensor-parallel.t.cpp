@@ -4917,6 +4917,37 @@ BOOST_AUTO_TEST_CASE(AssemblyEnforcesItsDeadlineAndItsTotalByteBudget)
         return std::string(error.what()).find("assembled-byte budget") != std::string::npos;
       });
   }
+  // A budget that fits one entry but not two: this is the only shape that shows the total
+  // accumulating rather than each entry being judged alone. The sizes come from a first unbounded
+  // run, so the threshold is the graph's real size rather than a guess.
+  {
+    const auto unbounded = qwen::assembleQwenTpEntryTable(
+      root / "measure", "S0R0", bytes, layers, qwen::QwenTpAssemblyShards{});
+    BOOST_REQUIRE_GE(unbounded.size(), 2U);
+    std::vector<std::uint64_t> sizes;
+    for (const auto& entry : unbounded) {
+      std::error_code sizeError;
+      const auto written = std::filesystem::file_size(
+        root / "measure" / entry.relativeGraphPath, sizeError);
+      BOOST_REQUIRE(!sizeError);
+      sizes.push_back(static_cast<std::uint64_t>(written));
+    }
+    const auto firstOnly = sizes.front();
+    const auto firstTwo = sizes.front() + sizes[1];
+    BOOST_REQUIRE(firstTwo > firstOnly);
+    qwen::QwenTpAssemblyControl control;
+    // Room for the first entry and a little more, but not for the second.
+    control.maxAssembledBytes = firstOnly + (firstTwo - firstOnly) / 2;
+    BOOST_TEST_MESSAGE("cumulative budget: first=" << firstOnly
+                       << " firstTwo=" << firstTwo
+                       << " budget=" << control.maxAssembledBytes);
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "partial", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("assembled-byte budget") != std::string::npos;
+      });
+  }
   // A zero budget means "no limit", which is what the in-process tools rely on.
   {
     qwen::QwenTpAssemblyControl control;
