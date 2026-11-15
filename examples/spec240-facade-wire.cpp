@@ -254,7 +254,7 @@ waitReady(ndn::Face& face, ndn_service_framework::ServiceUser& user,
 } // namespace
 
 int
-main(int argc, char** argv)
+runMain(int argc, char** argv)
 {
   std::map<std::string, std::string> options;
   for (int index = 1; index + 1 < argc; index += 2) {
@@ -962,4 +962,18 @@ main(int argc, char** argv)
     return 1;
   }
   throw std::runtime_error("unknown mode " + mode);
+}
+
+int
+main(int argc, char** argv)
+{
+  // The setup before mode dispatch (keychain, face, bootstrap) can throw too, and an uncaught
+  // exception there aborts the process: an acceptance tool must report one named failure instead.
+  try {
+    return runMain(argc, argv);
+  }
+  catch (const std::exception& error) {
+    std::fprintf(stderr, "FACADE_FAILED what=%s\n", describeFailure(error).c_str());
+    return 1;
+  }
 }
