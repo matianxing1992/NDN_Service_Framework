@@ -11652,13 +11652,22 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
 
   // Both workers run at once over one bus, so neither waits for the other to finish.
   auto bus = std::make_shared<PartialBus>();
-  const auto promptToken = [] (const char* name, std::int64_t value) {
+  // The deployment's real second-turn prompt, 24 tokens, so the KV this case produces is state
+  // for a real context rather than for one token. A single-token run cannot be compared with the
+  // unsplit export's prefill state at all: it keeps one position.
+  const auto promptTokens = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
+  if (promptTokens.size() != 24U) {
+    BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
+    return;
+  }
+  const auto tokenVector = [] (const std::string& name,
+                               const std::vector<std::int64_t>& values) {
     NamedTensor tensor;
     tensor.name = name;
     tensor.elementType = TensorElementType::Int64;
-    tensor.shape = {1, 1};
-    tensor.payload.resize(sizeof(value));
-    std::memcpy(tensor.payload.data(), &value, sizeof(value));
+    tensor.shape = {1, static_cast<std::int64_t>(values.size())};
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
     return tensor;
   };
   ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(60));
@@ -11667,12 +11676,17 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     auto io = std::make_shared<BusDependencyIo>(bus);
     // The INIT entry's graph input is named `position_ids`; the scope carrying it is keyed by
     // the slot id `prompt_positions`, because the produced positions occupy the other id.
+    std::vector<std::int64_t> ones(promptTokens.size(), 1);
+    std::vector<std::int64_t> positions(promptTokens.size());
+    for (std::size_t index = 0; index < positions.size(); ++index)
+      positions[index] = static_cast<std::int64_t>(index);
     std::map<std::string, TensorBundle> initial{
-      {"input_ids", makeEncodedTensorBundle("input_ids", {promptToken("input_ids", 7)})},
+      {"input_ids", makeEncodedTensorBundle("input_ids",
+        {tokenVector("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {promptToken("attention_mask", 1)})},
+        {tokenVector("attention_mask", ones)})},
       {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
-        {promptToken("position_ids", 0)})},
+        {tokenVector("position_ids", positions)})},
     };
     auto runner = item.second.runner;
     futures[item.first] = worker.executePreparedAsync(
@@ -11719,15 +11733,23 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // The single-output path returns the tensor's bytes directly rather than a bundle,
       // because the ordinary runner keys a lone output by its scope. Both shapes are
       // legitimate, so the value is read whichever it is.
+      // A prefill returns one row per input position, so the count is positions x vocabulary and
+      // the next token comes from the last row. An earlier form of this case used one token, where
+      // the two are the same number, and asserting the vocabulary directly would now fail on a
+      // correct run.
       std::vector<float> values;
       const auto tensors = decodeTensorBundleViews(logits->second);
       BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
       BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
-      const auto* data = reinterpret_cast<const float*>(tensors.front().payload.data());
-      values.assign(data, data + tensors.front().payload.size() / sizeof(float));
+      values.resize(tensors.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), tensors.front().payload.data(), tensors.front().payload.size());
+      BOOST_REQUIRE_EQUAL(values.size() % shape.vocab, 0U);
+      const auto rows = values.size() / shape.vocab;
+      BOOST_TEST_MESSAGE("logits count=" << values.size() << " rows=" << rows);
       // Vocabulary-wide, not hidden-wide: a narrowed head would still "produce logits".
-      BOOST_TEST_MESSAGE("logits count=" << values.size());
-      BOOST_CHECK_EQUAL(values.size(), static_cast<std::size_t>(shape.vocab));
+      BOOST_CHECK_EQUAL(rows, promptTokens.size());
+      const auto* tail = values.data() + (rows - 1) * static_cast<std::size_t>(shape.vocab);
       // And they are real numbers, so the head actually executed.
       double energy = 0.0;
       for (const auto value : values) energy += std::fabs(double(value));
@@ -11737,13 +11759,20 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // a real forward pass, not a value the case invented. Distributed TP has now reached a
       // sampled token in-process.
       std::size_t best = 0;
-      for (std::size_t index = 1; index < values.size(); ++index)
-        if (values[index] > values[best]) best = index;
-      BOOST_TEST_MESSAGE("sampled token=" << best << " logit=" << values[best]);
-      BOOST_CHECK_LT(best, values.size());
+      for (std::size_t index = 1; index < static_cast<std::size_t>(shape.vocab); ++index)
+        if (tail[index] > tail[best]) best = index;
+      BOOST_TEST_MESSAGE("sampled token=" << best << " logit=" << tail[best]);
+      BOOST_CHECK_LT(best, static_cast<std::size_t>(shape.vocab));
       // Not the zero index by accident: every logit is finite and the winner is the maximum.
-      BOOST_CHECK(std::isfinite(values[best]));
-      BOOST_CHECK_GE(values[best], values.front());
+      BOOST_CHECK(std::isfinite(tail[best]));
+      BOOST_CHECK_GE(tail[best], tail[0]);
+      // The recorded first token of the deployment's second turn. This is the whole point of
+      // running the real prompt: the distributed stack, over a real 24-token prefill with KV
+      // state on two ranks, must pick the token the deployment picked.
+      const auto recorded = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
+      BOOST_REQUIRE(!recorded.empty());
+      BOOST_TEST_MESSAGE("distributed first token=" << best << " recorded=" << recorded.front());
+      BOOST_CHECK_EQUAL(static_cast<std::int64_t>(best), recorded.front());
     }
     else {
       BOOST_CHECK_MESSAGE(logits == item.second.outputsByScope.end(),
