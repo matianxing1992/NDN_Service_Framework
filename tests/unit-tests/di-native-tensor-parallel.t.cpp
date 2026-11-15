@@ -4886,6 +4886,73 @@ BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
 }
 
 
+BOOST_AUTO_TEST_CASE(AssemblyEnforcesItsDeadlineAndItsTotalByteBudget)
+{
+  // Both limits are the rank's, and neither had a negative case. A budget that is never exceeded
+  // and a deadline that never expires prove nothing: the checks could be absent entirely and every
+  // other case would still pass.
+  //
+  // The tiny graph is enough -- these are threshold checks, not arithmetic ones.
+  const std::uint64_t layers = 2;
+  auto model = makeTinyRankGraph(layers);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-assembly-limits-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root, cleanupError);
+
+  // A budget below the first entry's size: the table cannot fit, and the refusal must name the
+  // budget rather than surface later as a load failure.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.maxAssembledBytes = 1;
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "small", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("assembled-byte budget") != std::string::npos;
+      });
+  }
+  // A zero budget means "no limit", which is what the in-process tools rely on.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.maxAssembledBytes = 0;
+    BOOST_CHECK_NO_THROW(
+      qwen::assembleQwenTpEntryTable(root / "unlimited", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control));
+  }
+  // An already-expired deadline refuses before the first entry is written.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "expired", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("deadline expired") != std::string::npos;
+      });
+  }
+  // And an owner fence that reports cancellation stops the walk, so a cancelled rank does not
+  // finish writing a table nobody will load.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.requireActive = [] {
+      throw std::runtime_error("owner fence cancelled the rank");
+    };
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "cancelled", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("owner fence cancelled") != std::string::npos;
+      });
+  }
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ShardedAssemblyNarrowsEachEntryToItsRankSlice)
 {
   // Without slicing, every rank loads complete weights and the partition saves
