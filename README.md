@@ -28,12 +28,12 @@ process composition, and a common large-data reference abstraction. The UAV and
 DistributedInference applications are application layers that validate and
 stress these framework mechanisms.
 
-The current NDNSF-DI local deployment result is an evidence-backed **BLOCK**,
-not a production PASS: evidence integrity and correctness pass, while fixed
-1 RPS performance, live recovery, operations and soak do not. Physical work is
-deferred exclusively to Spec 106. See
-[`docs/NDNSF-DI-deployment-candidate.md`](docs/NDNSF-DI-deployment-candidate.md)
-for architecture, CLI, build/test, experiment and release details, and
+For installed NDNSF-DI experiments, start with the
+[Tiger and SIF guide](Experiments/TigerCluster/README.md) or
+[MiniNDN CPU guide](Experiments/guides/local-validation.md).
+[Historical results and their scope](Experiments/TigerCluster/docs/lessons-and-evidence.md)
+are recorded separately from qualification of the current source and candidate.
+See
 [`packaging/ndnsf-di-systemd/README.md`](packaging/ndnsf-di-systemd/README.md)
 for the local operator runbook.
 
@@ -105,7 +105,7 @@ Additional optional package groups can be enabled when needed:
 the package manager. Use `--no-system-packages` to skip apt entirely. The default
 packages include Protobuf and gtkmm, which the current Waf configuration
 requires even when optional NFD/NLSR package installation is not requested.
-`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to two.
+`--jobs N` (or `NDNSF_BUILD_JOBS`) controls build parallelism, defaulting to six.
 
 By default, dependency source trees are reused or cloned under `dependencies/` next to `install_ndnsf_stack.sh`. The directory is created automatically if it does not
 exist. Use `--deps-dir` to choose a different source directory:
@@ -266,11 +266,11 @@ to check a complete NDNSF runtime profile before debugging individual logs.
 For NDNSF-DI experiments, use the shorter workflow document as the single entry
 point:
 
-- [NDNSF-DI Runtime Workflow](docs/NDNSF-DI-runtime-workflow.md)
+- [NDNSF-DI local validation](Experiments/guides/local-validation.md)
+- [Tiger deployment and reusable models](Experiments/TigerCluster/docs/portable-deployment.md)
 
-The DI workflow covers profile validation, resolved config printing, doctor
-preflight, dry-runs, single NativeTracer runs, LLM campaigns, rate sweeps, and
-RPS searches.
+These guides use the installed native actors and maintained cluster owner.
+Historical profile/NativeTracer campaigns retain their own evidence scope.
 
 For the HELLO/token-bootstrap path:
 
@@ -1057,7 +1057,7 @@ The runtime-aware DI planner keeps planning user-side. It creates reusable plan
 templates, then selects per-request runtime assignments from provider ACK
 metadata, fragment residency, directed provider-to-provider metrics, and
 optional admission leases. The workflow entry point is
-`docs/NDNSF-DI-runtime-workflow.md`.
+[the deployment guide](Experiments/TigerCluster/docs/portable-deployment.md).
 
 After the Spec 084 simplification, users do not share an advisory coordinator.
 Each user plans independently from typed provider hints; provider-owned,
