@@ -9930,25 +9930,38 @@ namespace ndn_service_framework
                     response = makeErrorResponse("Request handler failed");
                 }
 
-                boost::asio::post(m_face.getIoContext(),
-                    [this,
-                     requesterName,
-                     providerName,
-                     serviceName,
-                     requestId,
-                     requestMessage,
-                     selectionDigest,
-                     response = std::move(response),
-                     registrationState]() mutable {
-                        finishRequestExecutionOnEventLoop(requesterName,
-                                                          providerName,
-                                                          serviceName,
-                                                          requestId,
-                                                          requestMessage,
-                                                          std::move(response),
-                                                          std::move(selectionDigest),
-                                                          std::move(registrationState));
-                    });
+                // The completion runs on the Face event loop, which may outlive this call by
+                // the whole queue depth. Hold the owner token across the post so the destructor
+                // waits for it instead of destroying the provider under a running lambda.
+                if (auto* completionOwner = m_registrationControl->acquireOwner()) {
+                    auto completionControl = m_registrationControl;
+                    boost::asio::post(m_face.getIoContext(),
+                        [completionOwner,
+                         completionControl,
+                         requesterName,
+                         providerName,
+                         serviceName,
+                         requestId,
+                         requestMessage,
+                         selectionDigest,
+                         response = std::move(response),
+                         registrationState]() mutable {
+                            struct OwnerRelease
+                            {
+                                std::shared_ptr<RegistrationControl> control;
+                                ~OwnerRelease() { control->releaseOwner(); }
+                            } release{completionControl};
+                            completionOwner->finishRequestExecutionOnEventLoop(
+                                requesterName,
+                                providerName,
+                                serviceName,
+                                requestId,
+                                requestMessage,
+                                std::move(response),
+                                std::move(selectionDigest),
+                                std::move(registrationState));
+                        });
+                }
             });
 
         if (!queued) {
