@@ -692,6 +692,21 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   BOOST_CHECK(replay.deduplicated);
 }
 
+BOOST_AUTO_TEST_CASE(AClosedClientReportsClosedForEveryOperation) {
+  TemporaryDirectory directory("closed-contracts");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  BOOST_CHECK(client.close(std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  const auto closed = [] (const RepoClientError& error) { return error.code() == "CLOSED"; };
+  RepoInspectionRequest inspection;
+  inspection.kind = RepoInspectionRequest::Kind::OWNER;
+  BOOST_CHECK_EXCEPTION(client.inspect(inspection, makeOptions()), RepoClientError, closed);
+  BOOST_CHECK_EXCEPTION(client.list(RepoListRequest{}, makeOptions()), RepoClientError, closed);
+  BOOST_CHECK_EXCEPTION(client.discover(RepoDiscoveryRequest{}, makeOptions()),
+                        RepoClientError, closed);
+  BOOST_CHECK_EXCEPTION(client.remove(RepoDeleteRequest{}, makeOptions()),
+                        RepoClientError, closed);
+}
+
 BOOST_AUTO_TEST_CASE(UnimplementedInspectionKindsNameThemselves) {
   TemporaryDirectory directory("inspect-kinds");
   auto client = RepoClient::makeInApp(makeConfig(directory.path()));
