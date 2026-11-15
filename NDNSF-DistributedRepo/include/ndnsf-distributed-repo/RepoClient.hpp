@@ -93,9 +93,14 @@ struct StoreOptions
 class RepoClient
 {
 public:
-  /* Unified client facade (Spec 240). The static helpers below remain during
-   * migration; the facade is the only entry that will be installed later. */
+  /* Unified Repo client facade. The nine operations below are the whole business surface;
+   * the statics in this class are factories plus the Owner proof minter, and the migration
+   * helpers live in headers that are deliberately not installed. */
+
+  /** Open a client that owns an in-process Repo (no network). */
   static RepoClient makeInApp(InAppRepoConfig config);
+
+  /** Open a client over an existing service user; most operations need this form. */
   static RepoClient makePersistent(std::shared_ptr<ndn_service_framework::ServiceUser> user,
                                    PersistentRepoClientConfig config = {});
 
@@ -106,22 +111,50 @@ public:
   RepoClient(const RepoClient&) = delete;
   RepoClient& operator=(const RepoClient&) = delete;
 
+  /** Publish a file as a chunked artifact with its manifest.
+   *
+   * Selected targets are validated against fresh authenticated discovery, so the Repo must
+   * advertise an artifact capability that satisfies the reference. **Not qualified against the
+   * maintained Repo**: its current advertisement is rejected by that check, which is why this
+   * operation has only fixture-level evidence. */
   RepoPublishResult publishFile(const RepoFilePublication& input,
                                 const RepoOperationOptions& options);
+
+  /** Publish an original packet set under an Owner grant.
+   *
+   * `grantId`, `ownerIdentity` and `ownerEpoch` must come from authorizeWrite. Multi-packet
+   * sets are supported; the Repo names the set by its first packet name. */
   RepoPublishResult publishData(const RepoDataPublication& input,
                                 const RepoOperationOptions& options);
+
+  /** Retrieve an artifact by exactly one of a committed handle or a file reference. */
   RepoFetchResult fetchFile(const RepoFileFetch& input,
                             const RepoOperationOptions& options) const;
+
+  /** Retrieve original Data in one of three modes: explicit names, a caller-held manifest bound,
+   *  or an Owner claim that returns the Repo's verified proof. */
   RepoDataFetchResult fetchData(const RepoDataFetch& input,
                                 const RepoOperationOptions& options) const;
+
+  /** Ask the Repo for an Owner write grant, which publishData then presents. */
   RepoWriteGrant authorizeWrite(const RepoWriteAuthorization& input,
                                 const RepoOperationOptions& options);
+
+  /** Observe one object, receipt, or publication operation. Owner, node and claim inspections
+   *  are refused; an OBJECT probe reports availability and size but no lifecycle state. */
   RepoInspection inspect(const RepoInspectionRequest& input,
                          const RepoOperationOptions& options) const;
+
+  /** Page the authenticated Owner listing. Each entry carries the claim that `remove` needs. */
   RepoPage list(const RepoListRequest& input,
                 const RepoOperationOptions& options) const;
+
+  /** Delete one object using the claim from a listing entry, or a file reference, plus a unique
+   *  cleanup id so a retry is idempotent rather than a second deletion. */
   RepoDeleteResult remove(const RepoDeleteRequest& input,
                           const RepoOperationOptions& options);
+
+  /** Discover Repo candidates for an operation. */
   RepoCandidateSet discover(const RepoDiscoveryRequest& input,
                             const RepoOperationOptions& options) const;
 
