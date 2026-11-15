@@ -46,6 +46,19 @@
 namespace ndnsf_distributed_repo {
 
 namespace {
+
+/** Send one request to a known Provider and wait for its response.
+ *
+ * Declared here and defined near the end of this file; the data path's manifest read and the
+ * owner listing both use it. */
+std::vector<uint8_t>
+requestTargetedReply(ndn_service_framework::ServiceUser& user,
+                     const ndn::Name& providerIdentity,
+                     const ndn::Name& serviceName,
+                     const std::vector<uint8_t>& payload,
+                     int timeoutMs,
+                     const std::function<void()>& requireCurrent);
+
 struct BoundUserFace
 {
   ndn::Face* face = nullptr;
@@ -713,7 +726,8 @@ RepoClient::fetchOriginalDataPacketSetFromUserStorage(
   const std::string& objectName,
   const std::function<bool(const ndn::Data&)>& verifyProducerSignature,
   int timeoutMs,
-  RepoUserStoragePacketSetFetchLimits limits)
+  RepoUserStoragePacketSetFetchLimits limits,
+  const std::function<void()>& requireCurrent)
 {
   validateUserStorageClientTarget(target, timeoutMs);
   if (owner.getName().empty() || objectName.empty() || objectName.size() > 4096 ||
@@ -1095,9 +1109,58 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto provider = ndn::Name(target.providerIdentity);
   const auto servicePrefix = ndn::Name(target.servicePrefix);
   noteStage("prepare-producer");
-  const auto status = parseOperationStatusJson(toString(RepoClientCompat::requestSelectedService(writer, provider,
-    makeRepoServiceName(servicePrefix, "INSERT"), encoded, ackCollectionTimeMs, remaining(),
-    {}, current)));
+  // Ask the named Provider directly, the way the engine's own publication does and the way
+  // this framework's targeted invocation works; the collaboration-ACK path never reaches a
+  // Repo that does not publish those messages.
+  // Same rule as the grant: the handlers may outlive this frame, so their state is heap
+  // owned and captured by value.
+  struct InsertState {
+    std::mutex mutex;
+    std::condition_variable arrived;
+    bool done = false;
+    std::vector<uint8_t> payload;
+    std::string failure;
+  };
+  auto insertState = std::make_shared<InsertState>();
+  writer.RequestService(
+    std::vector<ndn::Name>{provider},
+    makeRepoServiceName(servicePrefix, "INSERT"),
+    RepoClientCompat::makeRequest(encoded), std::max(1, remaining()),
+    [insertState] (const ndn::Name&) {
+      std::lock_guard<std::mutex> guard(insertState->mutex);
+      insertState->failure = "repo-original-publication-insert-timeout";
+      insertState->done = true;
+      insertState->arrived.notify_all();
+    },
+    [insertState] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> guard(insertState->mutex);
+      if (response.getStatus()) {
+        const auto& payload = response.getPayload();
+        insertState->payload.assign(payload.begin(), payload.end());
+      }
+      else {
+        insertState->failure = response.getErrorInfo();
+      }
+      insertState->done = true;
+      insertState->arrived.notify_all();
+    },
+    ndn_service_framework::tlv::FirstResponding);
+  {
+    std::unique_lock<std::mutex> lock(insertState->mutex);
+    while (!insertState->done) {
+      current();
+      if (insertState->arrived.wait_for(lock, std::chrono::milliseconds(20),
+                                        [&] { return insertState->done; })) {
+        break;
+      }
+      if (std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("repo-original-publication-insert-timeout");
+    }
+  }
+  if (!insertState->failure.empty())
+    throw std::runtime_error("repo-original-publication-insert-not-confirmed: " +
+                             insertState->failure);
+  const auto status = parseOperationStatusJson(toString(insertState->payload));
   noteStage("insert");
   if (status.operationId != request.operationId || status.operation != "INSERT" ||
       status.state != "DONE" || ndn::Name(status.objectName) != ndn::Name(request.reference.objectName))
@@ -1107,10 +1170,11 @@ RepoClientCompat::commitUserStorageOriginalPackets(
   const auto encodedManifestQuery = detail::encodeOwnedManifestQuery(manifestQuery);
   const auto readManifest = [&] {
     current();
-    const auto wire = RepoClientCompat::requestSelectedService(writer, provider,
+    // Targeted, not selected: the manifest query grows with the packet count, and a large
+    // query never gets an ACK back through the collaboration exchange.
+    const auto wire = requestTargetedReply(writer, provider,
       makeRepoServiceName(servicePrefix, "MANIFEST"), encodedManifestQuery,
-      ackCollectionTimeMs, remaining(),
-      {}, current);
+      remaining(), current);
     if (wire.empty() || wire.size() > MAX_PACKET_INDEX_BYTES)
       throw std::runtime_error("repo-original-publication-manifest-budget");
     const auto manifest = parseManifestJson(toString(wire));
@@ -2748,6 +2812,10 @@ toRepoHandle(const ArtifactHandle& input)
     replica.completedAtMs = commit.completedAtMs;
     replica.locationVersion = commit.locationVersion;
     replica.routeState = commit.routeState;
+    replica.state = commit.state;
+    replica.forwardingHint = commit.forwardingHint;
+    replica.reference = toFileReference(commit.reference);
+    replica.failureReason = commit.failureReason;
     handle.replicaCommits.push_back(std::move(replica));
   }
   handle.seedRepoId = input.seedRepoId;
@@ -2772,6 +2840,26 @@ toArtifactHandle(const RepoHandle& input)
     projected.providerIdentity = ndn::Name(target.providerIdentity);
     projected.servicePrefix = ndn::Name(target.servicePrefix);
     handle.selectedTargets.push_back(std::move(projected));
+  }
+  // The engine validates that the receipt entries cover the selected targets, so dropping this
+  // list while keeping selectedTargets makes a handle that its own fetch refuses.
+  for (const auto& commit : input.replicaCommits) {
+    handle.replicaCommits.emplace_back();
+    auto& projected = handle.replicaCommits.back();
+    projected.repoNode = commit.target.repoNode;
+    projected.providerIdentity = commit.target.providerIdentity;
+    projected.receiptId = commit.receiptId;
+    projected.operationId = commit.operationId;
+    projected.generation = commit.generation;
+    projected.contentDigest = commit.contentDigest;
+    projected.persistedBytes = commit.persistedBytes;
+    projected.completedAtMs = commit.completedAtMs;
+    projected.locationVersion = commit.locationVersion;
+    projected.routeState = commit.routeState;
+    projected.state = commit.state;
+    projected.forwardingHint = commit.forwardingHint;
+    projected.reference = toArtifactReference(commit.reference);
+    projected.failureReason = commit.failureReason;
   }
   handle.seedRepoId = input.seedRepoId;
   handle.writeConsistency = input.writeConsistency;
@@ -2908,6 +2996,13 @@ RepoClient::publishFile(const RepoFilePublication& input,
   if (!m_impl)
     throw RepoClientError("CLOSED", "RepoClient is closed", "publishFile");
   requireLiveDeadline(options.deadline, "publishFile");
+  // The file publication entry points take no cancellation check, so a caller's cancellation
+  // would be silently ignored - refuse it the way fetchFile does.
+  if (options.requireCurrent)
+    throw RepoClientError("UNSUPPORTED",
+                          "publishFile cannot propagate a cancellation check: "
+                          "the file publication entry points take no cancellation check",
+                          "publishFile");
   if (!m_impl->file)
     throw RepoClientError("UNSUPPORTED",
                           "publishFile requires a file client; this client was opened data-only",
@@ -2946,7 +3041,7 @@ RepoClient::publishFile(const RepoFilePublication& input,
       ? RepoWriteConsistency::All
       : consistency == "ONE" ? RepoWriteConsistency::One
       : consistency == "QUORUM" ? RepoWriteConsistency::Quorum
-      : throw std::invalid_argument("publishField requires ONE, QUORUM or ALL consistency");
+      : throw std::invalid_argument("publishFile requires ONE, QUORUM or ALL consistency");
   }
 
   if (input.completion == RepoCompletion::ACCEPTED) {
@@ -2958,9 +3053,11 @@ RepoClient::publishFile(const RepoFilePublication& input,
       throw std::invalid_argument(
         "ACCEPTED publication requires an idempotency key so a retry can recover");
     requireLiveDeadline(options.deadline, "publishFile");
-    const auto operation = m_impl->file->beginPublishFile(
-      input.sourcePath, reference, selected, input.idempotencyKey,
-      std::max(1, remainingMs(options.deadline)));
+    const auto operation = withEngineErrorTranslation("publishFile", [&] {
+      return m_impl->file->beginPublishFile(
+        input.sourcePath, reference, selected, input.idempotencyKey,
+        std::max(1, remainingMs(options.deadline)));
+    });
     RepoPublishResult result;
     result.state = RepoPublishState::ACCEPTED;
     result.operationReference = operation.operationId;
@@ -3074,8 +3171,28 @@ RepoClient::publishData(const RepoDataPublication& input,
     throw std::invalid_argument("publishData requires a sha256 wire digest");
 
   RepoUserStorageInsertRequest request;
-  request.operationId = input.idempotencyKey.empty()
-    ? ("publish-" + source.packetNames.front()) : input.idempotencyKey;
+  // The Repo types operation ids as sha256 digests: STATUS and operation inspection reject
+  // anything else, so an arbitrary idempotency key would publish successfully and then be
+  // unrecoverable. Derive a digest when the caller's key is not already one.
+  const auto isDigestForm = [] (const std::string& value) {
+    return value.size() == 64 &&
+      std::all_of(value.begin(), value.end(), [] (unsigned char character) {
+        return std::isxdigit(character) != 0;
+      });
+  };
+  if (isDigestForm(input.idempotencyKey)) {
+    request.operationId = input.idempotencyKey;
+  }
+  else {
+    const auto material = input.idempotencyKey.empty()
+      ? "publish-" + source.packetNames.front() : input.idempotencyKey;
+    const std::vector<uint8_t> bytes(material.begin(), material.end());
+    ndn::util::Sha256 digest;
+    digest.update(bytes);
+    request.operationId = digest.toString();
+    for (auto& character : request.operationId)
+      character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  }
   request.generation = input.generation;
   request.reference.objectName = source.packetNames.front();
   // The packet set belongs to the Producer namespace the caller declares. The
@@ -3096,6 +3213,9 @@ RepoClient::publishData(const RepoDataPublication& input,
         canonicalSha256Digest("sha256:" + packetSet.sha256) != canonicalSha256Digest(digest))
       throw std::invalid_argument(
         "publishData received a manifest that does not match the packet source");
+    // The comparison above is canonical, but the Repo compares the manifest's digest as a
+    // string, so send the canonical spelling rather than the caller's casing.
+    packetSet.sha256 = canonicalSha256Digest("sha256:" + packetSet.sha256).substr(7);
   }
   else {
     packetSet.objectName = source.packetNames.front();
@@ -3108,7 +3228,8 @@ RepoClient::publishData(const RepoDataPublication& input,
     packetSet.generation = input.generation;
     packetSet.operationId = request.operationId;
     packetSet.lifecycleState = "COMMITTED";
-    packetSet.dataPrefix = request.reference.dataPrefix;
+    // Deliberately no dataPrefix here: the Repo reads a non-empty prefix on the metadata as
+    // "the first packet's content is an encrypted envelope" and would try to decode it.
   }
   request.reference.packetSetMetadata = std::move(packetSet);
   request.storageBinding.ownerIdentity = input.ownerIdentity;
@@ -3132,6 +3253,9 @@ RepoClient::publishData(const RepoDataPublication& input,
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
   RepoPublishResult result;
+  // Deliberately no operationReference: the Repo's status service does not resolve an insert
+  // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it
+  // cannot inspect would be worse than reporting none.
   RepoPacketSetResult committedSet;
   committedSet.objectName = manifest.objectName;
   committedSet.packetNames = manifest.packetNames;
@@ -3163,6 +3287,11 @@ RepoClient::fetchFile(const RepoFileFetch& input,
                           "fetchFile");
   if (input.targetPath.empty())
     throw std::invalid_argument("fetchFile requires a destination path");
+  // A handle and a reference describe the same object from different states; accepting both or
+  // neither would leave the target ambiguous.
+  if (input.handle.has_value() == input.reference.has_value())
+    throw std::invalid_argument(
+      "fetchFile requires exactly one of a committed handle or a file reference");
   if (input.hasRange) {
     if (input.hasRange && input.rangeLengthBytes == 0)
       throw std::invalid_argument("fetchFile requires a non-zero range length");
@@ -3304,7 +3433,8 @@ RepoClient::fetchData(const RepoDataFetch& input,
     };
     auto verified = RepoClient::fetchOriginalDataPacketSetFromUserStorage(
       *m_impl->user, m_impl->target(claim.target), claim.objectName,
-      verifyPacket, std::max(1, remainingMs(options.deadline)), limits);
+      verifyPacket, std::max(1, remainingMs(options.deadline)), limits,
+      options.requireCurrent);
     RepoDataFetchResult result;
     result.wireBytes = 0;
     for (const auto& wire : verified.packetWires())
@@ -3357,8 +3487,10 @@ RepoClient::fetchData(const RepoDataFetch& input,
                             "fetched packet set does not have the declared wire size",
                             "fetchData");
     if (!bound.expectedSha256.empty()) {
+      // The manifest carries a bare hex digest; wireDigest is prefixed, so compare the two
+      // in the same spelling.
       result.digestVerified =
-        result.wireDigest == canonicalSha256Digest(bound.expectedSha256);
+        result.wireDigest == canonicalSha256Digest("sha256:" + bound.expectedSha256);
       if (!result.digestVerified)
         throw RepoClientError("DIGEST_MISMATCH",
                               "fetched wires do not match the committed manifest digest",
@@ -3442,12 +3574,59 @@ RepoClient::authorizeWrite(const RepoWriteAuthorization& input,
   request.expiresAtMs = input.expiresAtMs;
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.target);
-  auto emitted = std::make_shared<std::atomic<bool>>(false);
-  const auto wire = RepoClientCompat::requestSelectedService(
-    *m_impl->user, ndn::Name(target.providerIdentity),
+  // Targeted request to the named Provider: the same shape the grant helper uses and the
+  // only one that reaches a Repo which does not publish collaboration ACKs.
+  // The callbacks may run after this call returns (cancellation, late reply), so their
+  // state lives on the heap and outlives the stack frame.
+  struct GrantState {
+    std::mutex mutex;
+    std::condition_variable arrived;
+    bool done = false;
+    std::vector<uint8_t> payload;
+    std::string failure;
+  };
+  auto grantState = std::make_shared<GrantState>();
+  m_impl->user->RequestService(
+    std::vector<ndn::Name>{ndn::Name(target.providerIdentity)},
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), emitted, options.requireCurrent);
+    RepoClientCompat::makeRequest(std::vector<uint8_t>(encoded.begin(), encoded.end())),
+    std::max(1, remainingMs(options.deadline)),
+    [grantState] (const ndn::Name&) {
+      std::lock_guard<std::mutex> guard(grantState->mutex);
+      grantState->failure = "repo-request-timeout: grant response was not delivered";
+      grantState->done = true;
+      grantState->arrived.notify_all();
+    },
+    [grantState] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> guard(grantState->mutex);
+      if (response.getStatus()) {
+        const auto& payload = response.getPayload();
+        grantState->payload.assign(payload.begin(), payload.end());
+      }
+      else {
+        grantState->failure = response.getErrorInfo();
+      }
+      grantState->done = true;
+      grantState->arrived.notify_all();
+    },
+    ndn_service_framework::tlv::FirstResponding);
+  {
+    std::unique_lock<std::mutex> lock(grantState->mutex);
+    while (!grantState->done) {
+      if (options.requireCurrent)
+        options.requireCurrent();
+      if (grantState->arrived.wait_for(lock, std::chrono::milliseconds(20),
+                                       [&] { return grantState->done; })) {
+        break;
+      }
+      if (std::chrono::steady_clock::now() >= options.deadline)
+        throw RepoClientError("DEADLINE_EXPIRED", "write authorization deadline passed",
+                              "authorizeWrite");
+    }
+  }
+  if (!grantState->failure.empty())
+    throw RepoClientError("GRANT_FAILED", grantState->failure, "authorizeWrite");
+  const std::vector<uint8_t>& wire = grantState->payload;
   const auto reply = RepoUserStorageGrantReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target,
@@ -3600,8 +3779,85 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     inspection.handle = input.object;
     return inspection;
   }
-  throw unsupported("inspect(target)");
+  // Name the kind the caller asked for: "inspect(target)" does not tell an owner, node or
+  // claim inspection apart, and those are three different future answers.
+  const char* kindName = input.kind == RepoInspectionRequest::Kind::OWNER ? "owner"
+    : input.kind == RepoInspectionRequest::Kind::NODE ? "node"
+    : input.kind == RepoInspectionRequest::Kind::CLAIM ? "claim" : "object";
+  // The phase stays "inspect(target)" so a caller matching on it keeps working; only the
+  // message gained the kind.
+  throw RepoClientError("UNSUPPORTED",
+                        std::string("inspect cannot answer a ") + kindName + " inspection yet",
+                        "inspect(target)");
 }
+
+namespace {
+
+/** Send one request to a known Provider and wait for its response.
+ *
+ * The maintained Repo answers targeted requests; it does not run the ACK/Selection exchange
+ * that requestSelectedService needs. Operations that talk to it directly use this. */
+std::vector<uint8_t>
+requestTargetedReply(ndn_service_framework::ServiceUser& user,
+                     const ndn::Name& providerIdentity,
+                     const ndn::Name& serviceName,
+                     const std::vector<uint8_t>& payload,
+                     int timeoutMs,
+                     const std::function<void()>& requireCurrent)
+{
+  struct ReplyState
+  {
+    std::mutex mutex;
+    std::condition_variable arrived;
+    bool done = false;
+    std::vector<uint8_t> payload;
+    std::string failure;
+  };
+  // A caller that has already cancelled must not put a request on the wire.
+  if (requireCurrent)
+    requireCurrent();
+  auto state = std::make_shared<ReplyState>();
+  user.RequestService(
+    std::vector<ndn::Name>{providerIdentity}, serviceName,
+    RepoClientCompat::makeRequest(payload), std::max(1, timeoutMs),
+    [state] (const ndn::Name&) {
+      std::lock_guard<std::mutex> guard(state->mutex);
+      state->failure = "repo-request-timeout: Provider request timed out";
+      state->done = true;
+      state->arrived.notify_all();
+    },
+    [state] (const ndn_service_framework::ResponseMessage& response) {
+      std::lock_guard<std::mutex> guard(state->mutex);
+      if (response.getStatus()) {
+        const auto& bytes = response.getPayload();
+        state->payload.assign(bytes.begin(), bytes.end());
+      }
+      else {
+        state->failure = response.getErrorInfo();
+      }
+      state->done = true;
+      state->arrived.notify_all();
+    },
+    ndn_service_framework::tlv::FirstResponding);
+  const auto deadline = std::chrono::steady_clock::now() +
+    std::chrono::milliseconds(std::max(1, timeoutMs));
+  std::unique_lock<std::mutex> lock(state->mutex);
+  while (!state->done) {
+    if (requireCurrent)
+      requireCurrent();
+    if (state->arrived.wait_for(lock, std::chrono::milliseconds(20),
+                                [&] { return state->done; })) {
+      break;
+    }
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw std::runtime_error("repo-request-timeout: Provider request timed out");
+  }
+  if (!state->failure.empty())
+    throw std::runtime_error(state->failure);
+  return state->payload;
+}
+
+} // namespace
 
 RepoPage
 RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& options) const
@@ -3630,11 +3886,11 @@ RepoClient::list(const RepoListRequest& input, const RepoOperationOptions& optio
   const auto target = m_impl->target(input.target);
   auto emitted = std::make_shared<std::atomic<bool>>(false);
   const auto wire = withEngineErrorTranslation("list", [&] {
-    return RepoClientCompat::requestSelectedService(
+    return requestTargetedReply(
       *m_impl->user, ndn::Name(target.providerIdentity),
       makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_LIST"),
-      std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-      std::max(1, remainingMs(options.deadline)), emitted, options.requireCurrent);
+      std::vector<uint8_t>(encoded.begin(), encoded.end()),
+      remainingMs(options.deadline), options.requireCurrent);
   });
   const auto reply = RepoUserStorageListReply::fromJson(
     std::string(wire.begin(), wire.end()));
@@ -3702,11 +3958,11 @@ RepoClient::remove(const RepoDeleteRequest& input, const RepoOperationOptions& o
   const auto encoded = request.toJson();
   const auto target = m_impl->target(input.targets.front());
   auto emitted = std::make_shared<std::atomic<bool>>(false);
-  const auto wire = RepoClientCompat::requestSelectedService(
+  const auto wire = requestTargetedReply(
     *m_impl->user, ndn::Name(target.providerIdentity),
     makeRepoServiceName(ndn::Name(target.servicePrefix), "USER_STORAGE_DELETE"),
-    std::vector<uint8_t>(encoded.begin(), encoded.end()), 200,
-    remainingMs(options.deadline), emitted, options.requireCurrent);
+    std::vector<uint8_t>(encoded.begin(), encoded.end()),
+    remainingMs(options.deadline), options.requireCurrent);
   const auto reply = RepoUserStorageDeleteReply::fromJson(
     std::string(wire.begin(), wire.end()));
   reply.validateExpected(target, m_impl->user->getName().toUri(ndn::name::UriFormat::ALTERNATE),

@@ -22,6 +22,11 @@ namespace ndnsf_distributed_repo {
  *  failure cancels and drains the rest. The owner thread is fixed at construction so a
  *  stray thread cannot drive the scope.
  *
+ *  The bound is **per pipeline, not per client**: a caller that runs several publication
+ *  scopes at once runs that many pipelines, and their commits overlap. Nothing in this
+ *  library enforces a process-wide limit, and callers must not read MAX_ACTIVE_COMMITS as
+ *  one.
+ *
  *  This is an internal helper of the Repo library: it is not part of the installed
  *  surface, and callers outside Repo use the client facade instead.
  */

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoClient.hpp"
+#include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "tests/boost-test.hpp"
 
 #include <atomic>
@@ -436,6 +437,100 @@ BOOST_AUTO_TEST_CASE(DiscoveryHonoursTheRequestedProviderScope) {
   BOOST_CHECK_EQUAL(kept.candidates.size(), 1U);
 }
 
+BOOST_AUTO_TEST_CASE(PublishFileRefusesACancellationItCannotPropagate) {
+  TemporaryDirectory directory("publish-file-cancel");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  RepoFilePublication publication;
+  publication.reference = fixtureReference();
+  publication.sourcePath = (directory.path() / "input.bin").string();
+  writeFile(publication.sourcePath, "spec240");
+  auto options = makeOptions();
+  options.requireCurrent = [] {};
+  BOOST_CHECK_EXCEPTION(client.publishFile(publication, options), RepoClientError,
+    [] (const RepoClientError& error) {
+      return error.code() == "UNSUPPORTED" &&
+        std::string(error.what()).find("cancellation") != std::string::npos;
+    });
+}
+
+BOOST_AUTO_TEST_CASE(TheCommitCapIsPerPipelineNotPerClient) {
+  // Two scopes run two pipelines; each may hold three commits, so six overlap. The bound is
+  // per pipeline by design, and this records that rather than a global limit.
+  RepoCommitPipeline first([] {}, 1U << 20);
+  RepoCommitPipeline second([] {}, 1U << 20);
+  std::atomic<int> active{0};
+  std::atomic<int> peakPerPipeline{0};
+  std::atomic<int> peakTotal{0};
+  const auto commit = [&] (const RepoCommitPipeline::CurrentCheck& current) {
+    current();
+    const auto now = ++active;
+    auto previous = peakTotal.load();
+    while (previous < now && !peakTotal.compare_exchange_weak(previous, now)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    --active;
+  };
+  for (int index = 0; index < 3; ++index) {
+    first.submit(1024, commit);
+    second.submit(1024, commit);
+  }
+  // Track the per-pipeline peak by sampling, which is enough to show three each.
+  std::thread sampler([&] {
+    while (peakTotal.load() < 6 && peakTotal.load() > 0) {
+      peakPerPipeline.store(std::max(peakPerPipeline.load(), active.load()));
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  });
+  first.finish();
+  second.finish();
+  sampler.join();
+  // More than one pipeline's worth proves the bound is not global; six is the most two
+  // pipelines may hold at once.
+  BOOST_CHECK_GT(peakTotal.load(), static_cast<int>(RepoCommitPipeline::MAX_ACTIVE_COMMITS));
+  BOOST_CHECK_LE(peakTotal.load(), 2 * static_cast<int>(RepoCommitPipeline::MAX_ACTIVE_COMMITS));
+  BOOST_TEST_MESSAGE("peak concurrent commits across two pipelines: " << peakTotal.load());
+}
+
+BOOST_AUTO_TEST_CASE(FetchFileNeedsExactlyOneTargetDescription) {
+  TemporaryDirectory directory("fetch-file-target");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  const auto options = makeOptions();
+  RepoFileFetch neither;
+  neither.targetPath = (directory.path() / "out.bin").string();
+  BOOST_CHECK_THROW(client.fetchFile(neither, options), std::invalid_argument);
+  RepoFileFetch both;
+  both.targetPath = neither.targetPath;
+  both.reference = FileReference{};
+  both.handle = RepoHandle{};
+  BOOST_CHECK_THROW(client.fetchFile(both, options), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(TheCommitSchedulerNeverRunsMoreThanThreeAtOnce) {
+  // The audit asked for the three-commit cap to be observable rather than assumed. Submit more
+  // than the cap and record how many commits overlap.
+  RepoCommitPipeline pipeline([] {}, 1U << 20);
+  std::atomic<int> active{0};
+  std::atomic<int> peak{0};
+  std::atomic<int> completed{0};
+  constexpr int total = 9;
+  for (int index = 0; index < total; ++index) {
+    pipeline.submit(1024, [&] (const RepoCommitPipeline::CurrentCheck& current) {
+      current();
+      const auto now = ++active;
+      auto previous = peak.load();
+      while (previous < now && !peak.compare_exchange_weak(previous, now)) {
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(40));
+      --active;
+      ++completed;
+    });
+  }
+  pipeline.finish();
+  BOOST_CHECK_EQUAL(completed.load(), total);
+  BOOST_CHECK_LE(peak.load(), 3);
+  BOOST_CHECK_GE(peak.load(), 1);
+}
+
 BOOST_AUTO_TEST_CASE(CloseIsIdempotentAndSafeToRepeat) {
   // close() is the only way a caller states "no more work". Repeating it, or calling it
   // on an expired deadline while idle, must be answered rather than throwing or hanging.
@@ -595,6 +690,78 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   const auto replay = client.publishFile(publication, makeOptions());
   BOOST_CHECK(replay.state == RepoPublishState::COMMITTED);
   BOOST_CHECK(replay.deduplicated);
+}
+
+BOOST_AUTO_TEST_CASE(AClosedClientReportsClosedForEveryOperation) {
+  TemporaryDirectory directory("closed-contracts");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  BOOST_CHECK(client.close(std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  const auto closed = [] (const RepoClientError& error) { return error.code() == "CLOSED"; };
+  RepoInspectionRequest inspection;
+  inspection.kind = RepoInspectionRequest::Kind::OWNER;
+  BOOST_CHECK_EXCEPTION(client.inspect(inspection, makeOptions()), RepoClientError, closed);
+  BOOST_CHECK_EXCEPTION(client.list(RepoListRequest{}, makeOptions()), RepoClientError, closed);
+  BOOST_CHECK_EXCEPTION(client.discover(RepoDiscoveryRequest{}, makeOptions()),
+                        RepoClientError, closed);
+  BOOST_CHECK_EXCEPTION(client.remove(RepoDeleteRequest{}, makeOptions()),
+                        RepoClientError, closed);
+}
+
+BOOST_AUTO_TEST_CASE(UnimplementedInspectionKindsNameThemselves) {
+  TemporaryDirectory directory("inspect-kinds");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  const auto expectKind = [&] (RepoInspectionRequest::Kind kind, const std::string& word) {
+    RepoInspectionRequest inspection;
+    inspection.kind = kind;
+    BOOST_CHECK_EXCEPTION(client.inspect(inspection, makeOptions()), RepoClientError,
+      [&] (const RepoClientError& error) {
+        return error.code() == "UNSUPPORTED" &&
+          std::string(error.what()).find(word) != std::string::npos;
+      });
+  };
+  expectKind(RepoInspectionRequest::Kind::OWNER, "owner");
+  expectKind(RepoInspectionRequest::Kind::NODE, "node");
+  expectKind(RepoInspectionRequest::Kind::CLAIM, "claim");
+}
+
+BOOST_AUTO_TEST_CASE(InspectionReportsTheCommittedObjectConsistently) {
+  TemporaryDirectory temporary("inspect-fields");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  const auto published = client.publishFile(publication, makeOptions());
+  BOOST_REQUIRE(published.committedHandle);
+  RepoInspectionRequest inspection;
+  inspection.kind = RepoInspectionRequest::Kind::OBJECT;
+  inspection.object = published.committedHandle;
+  const auto observed = client.inspect(inspection, makeOptions());
+  BOOST_CHECK(observed.availability == RepoInspection::Availability::AVAILABLE);
+  BOOST_REQUIRE(observed.storedBytes);
+  BOOST_CHECK_EQUAL(*observed.storedBytes, sizeof(FIXTURE_TEXT) - 1);
+  BOOST_CHECK(observed.handle.has_value());
+  BOOST_CHECK_GT(observed.observedAtMs, 0U);
+  // An OBJECT probe reports availability, not a lifecycle; the header says so.
+  BOOST_CHECK(observed.lifecycleState.empty());
+}
+
+BOOST_AUTO_TEST_CASE(AcceptedPublicationFailsWithAClientErrorInApp) {
+  // An ACCEPTED publication needs the persistent engine. The in-app client must say so with a
+  // RepoClientError rather than letting the engine's own logic_error escape.
+  TemporaryDirectory temporary("publish-accepted");
+  const fs::path source = temporary.path() / "source.bin";
+  writeFile(source, FIXTURE_TEXT);
+  auto client = RepoClient::makeInApp(makeConfig(temporary.path() / "repo"));
+  RepoFilePublication publication;
+  publication.sourcePath = source.string();
+  publication.reference = fixtureReference();
+  publication.completion = RepoCompletion::ACCEPTED;
+  publication.selectedTargets = {RepoTarget{"/repo/node", "/provider", "/SVC/repo"}};
+  publication.idempotencyKey = "spec240-accepted-1";
+  BOOST_CHECK_EXCEPTION(client.publishFile(publication, makeOptions()), RepoClientError,
+    [] (const RepoClientError& error) { return !error.code().empty(); });
 }
 
 BOOST_AUTO_TEST_CASE(PublishFileValidatesSelectionShapes) {

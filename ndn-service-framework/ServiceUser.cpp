@@ -86,8 +86,11 @@ namespace ndn_service_framework
         void
         traceSpec192StatusAck(const ndn::Name& serviceName, const char* stage)
         {
-            if (!isSpec192StatusService(serviceName)) return;
-            std::cerr << "[DEBUG-spec192-ack-user] " << stage << std::endl;
+            if (!isSpec192StatusService(serviceName) ||
+                !isSpec192SelectedRequestTraceEnabled()) {
+              return;
+            }
+            std::cerr << "[SPEC192_STATUS_ACK] " << stage << std::endl;
         }
 
         void

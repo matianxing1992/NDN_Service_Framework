@@ -1,6 +1,7 @@
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 
 #include "ndnsf-distributed-repo/repo-client-compat.hpp"
+#include "repo-targeted-request.hpp"
 
 #include "ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
@@ -1359,9 +1360,41 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
     throw RepoRequestTimeoutError(
       "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
   }
-  return RepoClientCompat::requestSelectedService(
-    serviceUser, target.providerIdentity, serviceName, requestBytes,
-    config.ackCollectionTimeMs, timeoutMs);
+  try {
+    return RepoClientCompat::requestSelectedService(
+      serviceUser, target.providerIdentity, serviceName, requestBytes,
+      config.ackCollectionTimeMs, timeoutMs);
+  }
+  catch (const std::runtime_error& failure) {
+    // Only replay what cannot double-execute. A selection/ACK failure means the provider never
+    // ran the handler in that flow, so a targeted retry is safe for any service; a bare timeout
+    // does not, so it is replayed only for read-only services.
+    const auto readOnly = [] (const ndn::Name& name) {
+      if (name.empty())
+        return false;
+      const auto operation = name[-1].toUri();
+      return operation == "STATUS" || operation == "CAPABILITY" || operation == "MANIFEST" ||
+        operation == "DATA_LOCATION" || operation == "DATA_RECEIPT" ||
+        operation == "INVENTORY" || operation == "CACHE_STATUS" ||
+        operation == "CATALOG_LOOKUP" || operation == "CATALOG_STATUS" ||
+        operation == "CATALOG_SNAPSHOT" || operation == "CATALOG_DELTA";
+    };
+    // A Repo that does not run the ACK/Selection exchange either times out or answers the
+    // selection with "no matching ACK". Either way the same request sent to the one selected
+    // target is what it does answer. Retried once only, so a lost ACK against a provider that
+    // does speak the exchange costs at most one duplicate, and every mutating request here
+    // carries its own operation id.
+    // An authentication or selection failure is terminal: the exchange ran and rejected the
+    // provider, so replaying it would only repeat the same rejection. Only a transport timeout
+    // is retried, and only for a read-only operation, where a replay cannot double-execute.
+    const std::string reason = failure.what();
+    const bool timeout = reason.rfind("repo-request-timeout", 0) == 0;
+    if (!timeout || !readOnly(serviceName)) {
+      throw;
+    }
+    return detail::requestTargetedReply(
+      serviceUser, target.providerIdentity, serviceName, requestBytes, timeoutMs, {});
+  }
 }
 
 SelectedRepoTarget
@@ -2720,8 +2753,14 @@ ArtifactRepositoryApi::beginPublishFileImpl(
   };
   // A seed STORE/COMMIT response can be lost after the seed crosses the
   // acceptance barrier. Keep enough begin budget for one configured STATUS
-  // request plus an ACK margin; never extend the deadline for recovery.
-  const auto statusRecoveryReserveMs = statusRecoveryReserveTimeoutMs(config);
+  // request plus an ACK margin; never extend the deadline for recovery. The
+  // reserve cannot exceed half the caller's remaining budget: a caller who
+  // allows less than the configured reserve would otherwise be refused before
+  // the first attempt, and the reserve is meant to bound recovery, not to
+  // dictate the whole operation.
+  const auto statusRecoveryReserveMs = std::min<int64_t>(
+    statusRecoveryReserveTimeoutMs(config),
+    std::max<int64_t>(1000, static_cast<int64_t>(remaining()) / 2));
   const auto remainingForSeedWrite = [&] {
     const int timeout = remaining();
     if (timeout <= statusRecoveryReserveMs + config.ackCollectionTimeMs) {
@@ -3181,9 +3220,16 @@ ArtifactRepositoryApi::publishFile(const std::string& sourcePath,
   // The begin phase spends from the same allowance as the status wait, but it is not
   // shrunk by the recovery reserve: a caller with a 3 s budget still gets a begin window
   // bounded by 3 s, and the status wait then has whatever the begin left.
-  const int beginTimeout = static_cast<int>(std::min<int64_t>(
-    static_cast<int64_t>(requestWindows) * requestWindowMs + statusRecoveryReserveMs,
-    static_cast<int64_t>(waitBudget)));
+  // The begin phase is protocol-bound: it has to cover its ACK windows whatever the caller's
+  // budget is, and an under-sized begin window cannot be represented (the internals subtract
+  // the ACK window before waiting). The caller's budget therefore bounds the **status wait**
+  // below, which is the part that used to reset.
+  // The begin phase is protocol-bound: it also has to cover the status-recovery reserve, which
+  // the begin path itself validates against. Clamping it to a caller budget smaller than that
+  // makes the begin unusable (repo-operation-timeout: insufficient begin budget), so it keeps
+  // its derived budget and the caller's deadline bounds the **status wait** below.
+  const int beginTimeout = static_cast<int>(
+    static_cast<int64_t>(requestWindows) * requestWindowMs + statusRecoveryReserveMs);
   PublishOperationStatus status;
   const auto beginDeadline = std::chrono::steady_clock::now() +
     std::chrono::milliseconds(beginTimeout);
