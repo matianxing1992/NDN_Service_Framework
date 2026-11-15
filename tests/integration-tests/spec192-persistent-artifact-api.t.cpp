@@ -750,9 +750,9 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   BOOST_CHECK_EQUAL(persistentReceiptRows(database, target.repoNode,
     target.providerIdentity, successful.first.reference), 1);
   releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
-  // Same contract as the final teardown: the replacement does not drain the Face loop, and this
-  // intermediate restart destroys the node just as the final one does.
-  environment.pumpUntil([&] { return true; });
+  // Same contract as the final teardown, and the same correction: pump the full window, because a
+  // predicate that is already true runs no iteration at all.
+  environment.pumpUntil([&] { return false; });
   node.reset();
   objects = temporary.path() / "timeout-objects";
   database = temporary.path() / "timeout-artifact-v2.sqlite";
@@ -788,10 +788,10 @@ BOOST_AUTO_TEST_CASE(ReplicaOwnerProbeRetainsAckAndResponseBudgets)
   BOOST_REQUIRE_EQUAL(ownerState->completed.load(), ownerState->calls.load());
   releaseRepoNodeServiceHandlersForRestart(environment.provider(1), servicePrefix);
   // Replacing the handlers does not drain the Face event loop, and the queued completions of the
-  // requests that just ran still reference the node. Draining here is the test's own teardown
-  // contract: destroying the node with that work outstanding is what produced the intermittent
-  // access violation, at this line, in three different cases.
-  environment.pumpUntil([&] { return true; });
+  // requests that just ran still reference the node. Pump for the full window: `pumpFaces` loops
+  // `while (i < 200 && !done())`, so a predicate that is already true runs **no** iteration - the
+  // first version of this drain did exactly that and drained nothing.
+  environment.pumpUntil([&] { return false; });
   node.reset();
 }
 
