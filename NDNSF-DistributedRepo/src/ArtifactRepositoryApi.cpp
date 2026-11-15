@@ -2753,8 +2753,14 @@ ArtifactRepositoryApi::beginPublishFileImpl(
   };
   // A seed STORE/COMMIT response can be lost after the seed crosses the
   // acceptance barrier. Keep enough begin budget for one configured STATUS
-  // request plus an ACK margin; never extend the deadline for recovery.
-  const auto statusRecoveryReserveMs = statusRecoveryReserveTimeoutMs(config);
+  // request plus an ACK margin; never extend the deadline for recovery. The
+  // reserve cannot exceed half the caller's remaining budget: a caller who
+  // allows less than the configured reserve would otherwise be refused before
+  // the first attempt, and the reserve is meant to bound recovery, not to
+  // dictate the whole operation.
+  const auto statusRecoveryReserveMs = std::min<int64_t>(
+    statusRecoveryReserveTimeoutMs(config),
+    std::max<int64_t>(1000, static_cast<int64_t>(remaining()) / 2));
   const auto remainingForSeedWrite = [&] {
     const int timeout = remaining();
     if (timeout <= statusRecoveryReserveMs + config.ackCollectionTimeMs) {
