@@ -13670,6 +13670,112 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
   std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(TheSplitterRefusesIncompleteOrInconsistentStages)
+{
+  // The splitter's construction checks, each pinned individually. They are what stops a malformed
+  // catalog from reaching the assembler: an uncovered layer, a repeated stage, a degree with no
+  // per-rank artifacts, or two ranks sharing one artifact identity. Every one of these produces a
+  // plan that would look plausible and be wrong, which is why they are refusals rather than
+  // repairs.
+  //
+  // No model and no catalog: each case is a constructor call, so the whole set runs in
+  // milliseconds and can be added to without the frozen export.
+  const std::string stage0 = "/LLM/Pipeline/Stage/0";
+  const std::string stage1 = "/LLM/Pipeline/Stage/1";
+  const std::string digestA = "sha256:" + std::string(64, 'a');
+  const std::string digestB = "sha256:" + std::string(64, 'b');
+  const std::string digestC = "sha256:" + std::string(64, 'c');
+
+  // One declaration of the accepted shape, then variations on it.
+  const auto build = [&] (std::vector<qwen::NativeQwenLayerSplit::LayerRange> ranges,
+                          std::vector<std::string> roles,
+                          std::vector<std::uint64_t> degrees,
+                          std::map<std::string, std::string> artifacts,
+                          std::map<std::string, std::uint64_t> weights,
+                          std::map<std::string, std::vector<std::string>> rankArtifacts,
+                          std::string family = "qwen") {
+    return qwen::NativeQwenLayerSplit(ranges, artifacts, weights, roles, degrees,
+                                      roles.front(), roles.back(), family,
+                                      rankArtifacts);
+  };
+  using Ranges = std::vector<qwen::NativeQwenLayerSplit::LayerRange>;
+  const auto twoStage = [&] (Ranges ranges, std::vector<std::uint64_t> degrees,
+                             std::map<std::string, std::vector<std::string>> rankArtifacts) {
+    return build(std::move(ranges), {stage0, stage1}, std::move(degrees),
+                 {{stage0, digestA}, {stage1, digestB}},
+                 {{stage0, 100ULL}, {stage1, 100ULL}},
+                 std::move(rankArtifacts));
+  };
+  // Accepted: two stages covering 0..28 with one rank each.
+  BOOST_CHECK_NO_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{1, 1}, {}));
+
+  // A coverage gap: stages that do not meet.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 14}, {15, 28}},
+    std::vector<std::uint64_t>{1, 1}, {}), std::invalid_argument);
+  // Overlap is the same defect seen from the other side.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 15}, {14, 28}},
+    std::vector<std::uint64_t>{1, 1}, {}), std::invalid_argument);
+  // An empty range is not a stage.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 0}, {0, 28}},
+    std::vector<std::uint64_t>{1, 1}, {}), std::invalid_argument);
+  // The plan must start at layer zero.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{1, 14}, {14, 28}},
+    std::vector<std::uint64_t>{1, 1}, {}), std::invalid_argument);
+  // A repeated stage name would make the two roles indistinguishable.
+  BOOST_CHECK_THROW(build(
+    Ranges{{0, 14}, {14, 28}},
+    {stage0, stage0}, std::vector<std::uint64_t>{1, 1},
+    {{stage0, digestA}, {stage1, digestB}},
+    {{stage0, 100ULL}, {stage1, 100ULL}}, {}), std::invalid_argument);
+  // Degree zero is not a shard count.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{0, 1}, {}), std::invalid_argument);
+  // A degree above one needs exactly one distinct artifact per rank.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{2, 1}, {}), std::invalid_argument);
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{2, 1}, {{stage0, {digestA, digestA}}}),
+    std::invalid_argument);
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{2, 1}, {{stage0, {digestA}}}),
+    std::invalid_argument);
+  // A degree-one stage must not declare shards at all.
+  BOOST_CHECK_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{1, 1}, {{stage0, {digestA, digestB}}}),
+    std::invalid_argument);
+  // A zero weight budget or a malformed digest is rejected, since both would flow into the
+  // resource plan as if they were facts.
+  BOOST_CHECK_THROW(build(
+    Ranges{{0, 28}},
+    {stage0}, std::vector<std::uint64_t>{1},
+    {{stage0, digestA}}, {{stage0, 0ULL}}, {}), std::invalid_argument);
+  BOOST_CHECK_THROW(build(
+    Ranges{{0, 28}},
+    {stage0}, std::vector<std::uint64_t>{1},
+    {{stage0, "not-a-digest"}}, {{stage0, 100ULL}}, {}), std::invalid_argument);
+  // An unsupported model family would change every derived fact downstream.
+  BOOST_CHECK_THROW(build(
+    Ranges{{0, 28}},
+    {stage0}, std::vector<std::uint64_t>{1},
+    {{stage0, digestA}}, {{stage0, 100ULL}}, {}, "gpt"), std::invalid_argument);
+  // The one sharded shape that is accepted, for contrast with the two rejections above.
+  BOOST_CHECK_NO_THROW(twoStage(
+    Ranges{{0, 14}, {14, 28}},
+    std::vector<std::uint64_t>{2, 1}, {{stage0, {digestA, digestB}}}));
+  (void)digestC;
+}
+
 BOOST_AUTO_TEST_CASE(AnUndeclaredEgressRoleIsRejectedByTheSplitterItself)
 {
   // The contract says `result_egress_role` names the unit that owns the head, and the case above
