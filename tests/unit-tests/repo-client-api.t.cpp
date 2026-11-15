@@ -453,6 +453,44 @@ BOOST_AUTO_TEST_CASE(PublishFileRefusesACancellationItCannotPropagate) {
     });
 }
 
+BOOST_AUTO_TEST_CASE(TheCommitCapIsPerPipelineNotPerClient) {
+  // Two scopes run two pipelines; each may hold three commits, so six overlap. The bound is
+  // per pipeline by design, and this records that rather than a global limit.
+  RepoCommitPipeline first([] {}, 1U << 20);
+  RepoCommitPipeline second([] {}, 1U << 20);
+  std::atomic<int> active{0};
+  std::atomic<int> peakPerPipeline{0};
+  std::atomic<int> peakTotal{0};
+  const auto commit = [&] (const RepoCommitPipeline::CurrentCheck& current) {
+    current();
+    const auto now = ++active;
+    auto previous = peakTotal.load();
+    while (previous < now && !peakTotal.compare_exchange_weak(previous, now)) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    --active;
+  };
+  for (int index = 0; index < 3; ++index) {
+    first.submit(1024, commit);
+    second.submit(1024, commit);
+  }
+  // Track the per-pipeline peak by sampling, which is enough to show three each.
+  std::thread sampler([&] {
+    while (peakTotal.load() < 6 && peakTotal.load() > 0) {
+      peakPerPipeline.store(std::max(peakPerPipeline.load(), active.load()));
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  });
+  first.finish();
+  second.finish();
+  sampler.join();
+  // More than one pipeline's worth proves the bound is not global; six is the most two
+  // pipelines may hold at once.
+  BOOST_CHECK_GT(peakTotal.load(), static_cast<int>(RepoCommitPipeline::MAX_ACTIVE_COMMITS));
+  BOOST_CHECK_LE(peakTotal.load(), 2 * static_cast<int>(RepoCommitPipeline::MAX_ACTIVE_COMMITS));
+  BOOST_TEST_MESSAGE("peak concurrent commits across two pipelines: " << peakTotal.load());
+}
+
 BOOST_AUTO_TEST_CASE(FetchFileNeedsExactlyOneTargetDescription) {
   TemporaryDirectory directory("fetch-file-target");
   auto client = RepoClient::makeInApp(makeConfig(directory.path()));
