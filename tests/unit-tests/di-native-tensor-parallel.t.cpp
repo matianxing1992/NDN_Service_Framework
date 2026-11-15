@@ -12548,6 +12548,20 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     const auto& outputTimings = results.at("S0R0").outputTimings;
     BOOST_TEST_MESSAGE("output publish records: " << outputTimings.size());
     BOOST_CHECK_GT(outputTimings.size(), 0U);
+    // Every publication must claim a real size. A local value has no payload, so a record built
+    // from `payload.size()` reports zero for a transfer the transport actually carried.
+    {
+      std::size_t zeroBytes = 0;
+      std::size_t totalBytes = 0;
+      for (const auto& timing : outputTimings) {
+        if (timing.bytes == 0) ++zeroBytes;
+        totalBytes += timing.bytes;
+      }
+      BOOST_TEST_MESSAGE("output publish bytes: total=" << totalBytes
+                         << " zero-sized=" << zeroBytes);
+      BOOST_CHECK_EQUAL(zeroBytes, 0U);
+      BOOST_CHECK_GT(totalBytes, 0U);
+    }
     // The codec records SUM only when it is given the statistics owner, so these counts are the
     // evidence that the production path reduces through the counted helper rather than around it.
     // Before the owner was passed, a run that reduced every layer reported zero here.

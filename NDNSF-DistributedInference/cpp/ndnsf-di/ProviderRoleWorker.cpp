@@ -759,6 +759,22 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
   }
 }
 
+/** Bytes a bundle will occupy on the wire, local or already encoded.
+ *
+ * A local value carries views, not a payload, so `payload.size()` is zero and a timing record
+ * built from it claims the transfer sent nothing. The transport materializes the encoded form,
+ * so that is what the record has to describe.
+ */
+std::size_t
+stagedWireBytes(const TensorBundle& bundle)
+{
+  if (bundle.localTensors) {
+    return static_cast<std::size_t>(tensorBundleWireSize(*bundle.localTensors));
+  }
+  return bundle.payload.size();
+}
+
+
 void
 ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
                                             std::vector<PendingInput> pendingInputs)
@@ -1629,7 +1645,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         partialTiming.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
         partialTiming.expectedSegments = edge.expectedSegments;
         partialTiming.expectedBytes = edge.expectedBytes;
-        partialTiming.bytes = stripped.payload.size();
+        // A local value has no payload; its cost is what the transport will materialize from it,
+        // so the recorded size is the wire size rather than zero. Recording `payload.size()` here
+        // made every local partial claim it sent nothing.
+        partialTiming.bytes = stagedWireBytes(stripped);
         partialTiming.transferObservation = stripped.transferObservation;
         partialTiming.outputReadyAt = partialPublishStartedAt;
         partialTiming.publishStartedAt = partialPublishStartedAt;
@@ -2076,7 +2095,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
       timing.expectedSegments = edge.expectedSegments;
       timing.expectedBytes = edge.expectedBytes;
-      timing.bytes = bundle.payload.size();
+      timing.bytes = stagedWireBytes(bundle);
       timing.transferObservation = bundle.transferObservation;
       timing.outputReadyAt = outputReadyAt;
       timing.publishDoneAt = outputReadyAt;
@@ -2115,7 +2134,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
     timing.expectedSegments = edge.expectedSegments;
     timing.expectedBytes = edge.expectedBytes;
-    timing.bytes = bundle.payload.size();
+    timing.bytes = stagedWireBytes(bundle);
     timing.transferObservation = bundle.transferObservation;
     timing.outputReadyAt = outputReadyAt;
     timing.publishDoneAt = publishDoneAt;
