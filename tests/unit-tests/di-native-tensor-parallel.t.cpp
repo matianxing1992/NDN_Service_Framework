@@ -11915,7 +11915,6 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // The unsplit reference on the same 24-token context, so the ranks' layer-0 partials can be
   // compared against what the export itself produces -- the comparison the synthetic-input case
   // makes, now on the context the chain actually carried.
-  {
     const auto referenceTable = qwen::assembleQwenTpEntryTable(
       root / "ref", "ref", graphBytes, 28);
     BOOST_REQUIRE(!referenceTable.empty());
@@ -12068,7 +12067,110 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                        << " excessOverC8=" << worstReferenceExcess
                        << " width=" << refValues.size());
     BOOST_CHECK_LE(worstReferenceExcess, 0.0);
+
+  // Layer 1, on the same real context: the first layer whose KV differs from the export. Its
+  // attention consumes two values from layer 0 -- the post-attention residual and the merged MLP
+  // projection. The reference produces both by running its own layer-0 attention and MLP entries
+  // on the embedding the unsplit INIT returned, so the chain is the export's, not a re-derivation
+  // of the same rule.
+  {
+    const auto mlpEntry0 = findEntry("MLP", 0);
+    BOOST_REQUIRE(mlpEntry0 != referenceTable.end());
+    std::map<std::string, TensorBundle> mlpFeeds0;
+    mlpFeeds0.emplace("merged", refAttn.at("partial"));
+    mlpFeeds0.emplace("residual", refAttn.at("residual"));
+    std::map<std::string, TensorBundle> refMlp0;
+    try {
+      refMlp0 = runRefEntry(*mlpEntry0, mlpFeeds0);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("unsplit layer-0 MLP: ") + error.what());
+    }
+    BOOST_REQUIRE_MESSAGE(refMlp0.count("post_residual") == 1U,
+                          "the unsplit layer-0 MLP produced no post-residual");
+
+    // The attention entry at layer 1 reads both layer-0 outputs plus an empty KV for this layer.
+    const auto attnEntry1 = findEntry("ATTN", 1);
+    BOOST_REQUIRE(attnEntry1 != referenceTable.end());
+    std::map<std::string, TensorBundle> attnFeeds1{
+      {"post_attention", refMlp0.at("post_residual")},
+      {"previous_mlp", refMlp0.at("partial")},
+    };
+    for (const auto& item : initOut) {
+      if (item.first == "x0") continue;
+      if (item.first.find("attn_mask") != std::string::npos ||
+          item.first.find("total_sequence_length") != std::string::npos ||
+          item.first.find("position_ids") != std::string::npos)
+        attnFeeds1.emplace(item.first, item.second);
+    }
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(shape.kvHeads), 0, shape.headDim};
+        attnFeeds1.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    std::map<std::string, TensorBundle> refAttn1;
+    try {
+      refAttn1 = runRefEntry(*attnEntry1, attnFeeds1);
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL(std::string("unsplit layer-1 attention: ") + error.what());
+    }
+    const auto refPartial1 = refAttn1.find("partial");
+    BOOST_REQUIRE_MESSAGE(refPartial1 != refAttn1.end(),
+                          "the unsplit layer-1 attention produced no partial slot");
+    const auto refValues1 = [&] {
+      const auto views = decodeTensorBundleViews(refPartial1->second);
+      BOOST_REQUIRE(!views.empty());
+      std::vector<float> values(views.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+      return values;
+    }();
+    // The rank side publishes one partial per layer per rank, so the same scopes carry layer 1.
+    const auto rank0Layer1 = bus->published("attn-1-from-S0R0");
+    const auto rank1Layer1 = bus->published("attn-1-from-S0R1");
+    BOOST_REQUIRE(rank0Layer1.has_value());
+    BOOST_REQUIRE(rank1Layer1.has_value());
+    const auto valuesOf1 = [] (const TensorBundle& bundle) {
+      const auto views = decodeTensorBundleViews(bundle);
+      BOOST_REQUIRE(!views.empty());
+      std::vector<float> values(views.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+      return values;
+    };
+    const auto rank0Layer1Values = valuesOf1(*rank0Layer1);
+    const auto rank1Layer1Values = valuesOf1(*rank1Layer1);
+    BOOST_REQUIRE_EQUAL(refValues1.size(), rank0Layer1Values.size());
+    double worst1 = 0.0;
+    double excess1 = std::numeric_limits<double>::lowest();
+    for (std::size_t index = 0; index < refValues1.size(); ++index) {
+      const auto reference = double(refValues1[index]);
+      const auto actual = double(rank0Layer1Values[index]) + double(rank1Layer1Values[index]);
+      const auto difference = std::fabs(actual - reference);
+      const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
+      worst1 = std::max(worst1, difference);
+      excess1 = std::max(excess1, difference - allowance);
+    }
+    BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference: worst=" << worst1
+                       << " excessOverC8=" << excess1 << " width=" << refValues1.size());
+    // This is the locating measurement, and it says something the KV comparison could not:
+    // layer 1's attention projection agrees to 2.4e-6 while layer 1's KV differs by 1.5e-4 -- sixty
+    // times larger. Both are produced by the same attention block from the same input, so the
+    // difference is not in what the layer was given and not in the query-to-output path. It is in
+    // the key/value path: k_proj and v_proj with their rotary application.
+    //
+    // Asserted against C8 as measured rather than recorded: the projection meets the allowance, so
+    // the assertion can be the contract's. The KV assertion elsewhere still fails, and that is the
+    // correct pair of results -- one tensor of this layer is within tolerance and another is not.
+    BOOST_CHECK_LE(excess1, 0.0);
   }
+
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
   for (const auto& item : results) {
     // 56 contributions of its own reached the bus. Receiving is proven differently: each
