@@ -654,6 +654,23 @@ BOOST_AUTO_TEST_CASE(RepublishingTheSameObjectReportsDeduplication) {
   BOOST_CHECK(replay.deduplicated);
 }
 
+BOOST_AUTO_TEST_CASE(UnimplementedInspectionKindsNameThemselves) {
+  TemporaryDirectory directory("inspect-kinds");
+  auto client = RepoClient::makeInApp(makeConfig(directory.path()));
+  const auto expectKind = [&] (RepoInspectionRequest::Kind kind, const std::string& word) {
+    RepoInspectionRequest inspection;
+    inspection.kind = kind;
+    BOOST_CHECK_EXCEPTION(client.inspect(inspection, makeOptions()), RepoClientError,
+      [&] (const RepoClientError& error) {
+        return error.code() == "UNSUPPORTED" &&
+          std::string(error.what()).find(word) != std::string::npos;
+      });
+  };
+  expectKind(RepoInspectionRequest::Kind::OWNER, "owner");
+  expectKind(RepoInspectionRequest::Kind::NODE, "node");
+  expectKind(RepoInspectionRequest::Kind::CLAIM, "claim");
+}
+
 BOOST_AUTO_TEST_CASE(InspectionReportsTheCommittedObjectConsistently) {
   TemporaryDirectory temporary("inspect-fields");
   const fs::path source = temporary.path() / "source.bin";

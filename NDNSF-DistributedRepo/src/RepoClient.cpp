@@ -3739,7 +3739,16 @@ RepoClient::inspect(const RepoInspectionRequest& input,
     inspection.handle = input.object;
     return inspection;
   }
-  throw unsupported("inspect(target)");
+  // Name the kind the caller asked for: "inspect(target)" does not tell an owner, node or
+  // claim inspection apart, and those are three different future answers.
+  const char* kindName = input.kind == RepoInspectionRequest::Kind::OWNER ? "owner"
+    : input.kind == RepoInspectionRequest::Kind::NODE ? "node"
+    : input.kind == RepoInspectionRequest::Kind::CLAIM ? "claim" : "object";
+  // The phase stays "inspect(target)" so a caller matching on it keeps working; only the
+  // message gained the kind.
+  throw RepoClientError("UNSUPPORTED",
+                        std::string("inspect cannot answer a ") + kindName + " inspection yet",
+                        "inspect(target)");
 }
 
 namespace {
