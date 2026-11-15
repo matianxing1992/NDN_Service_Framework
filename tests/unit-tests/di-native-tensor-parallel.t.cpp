@@ -13710,6 +13710,41 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
       // The same bound as the projections: this is a sum of two rank partials against one unsplit
       // matmul, so it either reproduces the export at this scale or it does not.
       BOOST_CHECK_LT(relative, 1e-6);
+
+      // The MLP entry's other output is `output_3` of the post-attention SkipNorm, which is the
+      // residual stream itself rather than the normalized value (`output_0`). It is the tensor the
+      // next layer's attention consumes as `post_attention`, so this is the residual chain made
+      // observable without editing the graph.
+      //
+      // Exactly zero is the expected result here and not a defect in the comparison: this tensor
+      // is a sum of values both sides compute identically, and both ranks carry the same one -- it
+      // is not split across the ranks, so there is nothing for a parallel reduction to reorder.
+      const auto postResidual = [&] (const std::map<std::string, TensorBundle>& outputs,
+                                     const char* who) {
+        const auto found = outputs.find("post_residual");
+        BOOST_REQUIRE_MESSAGE(found != outputs.end(),
+                              std::string(who) + " MLP entry produced no post_residual");
+        return decode(found->second);
+      };
+      const auto refPost = postResidual(refMlp, "reference");
+      const auto rank0Post = postResidual(rank0Mlp, "rank0");
+      const auto rank1Post = postResidual(rank1Mlp, "rank1");
+      // The normalization is not a linear projection, so the two ranks' post-norm values are not
+      // added: each rank normalizes its own residual stream, and both must equal the unsplit one.
+      double worstPost = 0.0;
+      double magnitudePost = 0.0;
+      for (std::size_t index = 0; index < refPost.size(); ++index) {
+        worstPost = std::max(worstPost, std::fabs(double(rank0Post[index]) -
+                                                 double(refPost[index])));
+        worstPost = std::max(worstPost, std::fabs(double(rank1Post[index]) -
+                                                 double(refPost[index])));
+        magnitudePost = std::max(magnitudePost, std::fabs(double(refPost[index])));
+      }
+      const auto postRelative = magnitudePost > 0.0 ? worstPost / magnitudePost : 0.0;
+      BOOST_TEST_MESSAGE("layer " << layer << " post-attention norm: worst=" << worstPost
+                         << " magnitude=" << magnitudePost << " relative=" << postRelative
+);
+      BOOST_CHECK_LT(postRelative, 1e-6);
     }
   }
 
