@@ -10270,12 +10270,24 @@ namespace ndn_service_framework
                         if (stopping->load()) return;
                         if (!current()) {
                             if (stopping->load()) return;
-                            boost::asio::post(m_face.getIoContext(),
-                                [this, stopping, requesterName, serviceName, requestId,
-                                 requestMessage, selectionDigest] {
+                            // This lambda runs on a worker thread; the posted failure can land after
+                            // the provider's destructor begins, so it holds the owner token.
+                            auto* failureOwner = m_registrationControl->acquireOwner();
+                            if (failureOwner != nullptr) {
+                                auto failureControl = m_registrationControl;
+                                const auto failureIdentity = identity;
+                                boost::asio::post(m_face.getIoContext(),
+                                [failureOwner, failureControl, stopping, requesterName,
+                                 serviceName, requestId, requestMessage, selectionDigest,
+                                 failureIdentity] {
+                                    struct OwnerRelease
+                                    {
+                                        std::shared_ptr<RegistrationControl> control;
+                                        ~OwnerRelease() { control->releaseOwner(); }
+                                    } release{failureControl};
                                     if (stopping->load()) return;
-                                    publishExecutionFailureOnEventLoop(
-                                        requesterName, identity, serviceName, requestId,
+                                    failureOwner->publishExecutionFailureOnEventLoop(
+                                        requesterName, failureIdentity, serviceName, requestId,
                                         requestMessage,
                                         requestMessage.hasStreamRequestOptions() &&
                                             requestMessage.getStreamRequestOptions().deadlineEpochMs <= nowMilliseconds()
@@ -10283,6 +10295,7 @@ namespace ndn_service_framework
                                             : "collaboration execution authority or deadline expired",
                                         selectionDigest);
                                 });
+                            }
                             return;
                         }
                         const bool traceAssignmentFetch =
