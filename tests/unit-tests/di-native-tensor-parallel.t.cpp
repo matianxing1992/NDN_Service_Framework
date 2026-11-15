@@ -12213,6 +12213,111 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     // the assertion can be the contract's. The KV assertion elsewhere still fails, and that is the
     // correct pair of results -- one tensor of this layer is within tolerance and another is not.
     BOOST_CHECK_LE(excess1, 0.0);
+
+    // The layers whose KV actually exceeds C8. The A/B agreement above covers layer 0, which is the
+    // one layer a single entry reaches; the failing elements are at layers 25 and 26. Walking the
+    // reassembled chain to those layers decides whether the excess can be attributed to the split
+    // at all, and it reuses the layer-0 outputs already built above as its starting point.
+    {
+      TensorBundle carriedPost = refMlp0.at("post_residual");
+      TensorBundle carriedMerged = refMlp0.at("partial");
+      std::map<std::uint64_t, std::pair<std::vector<float>, std::vector<float>>> layerKv;
+      const auto floatsOfChain = [] (const TensorBundle& bundle) {
+        const auto views = decodeTensorBundleViews(bundle);
+        BOOST_REQUIRE(!views.empty());
+        std::vector<float> values(views.front().payload.size() / sizeof(float));
+        if (!values.empty())
+          std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+        return values;
+      };
+      layerKv.emplace(0, std::pair<std::vector<float>, std::vector<float>>{
+        floatsOfChain(refAttn.at("present.0.key")),
+        floatsOfChain(refAttn.at("present.0.value"))});
+      bool chainOk = true;
+      for (std::uint64_t layer = 1; layer <= 26 && chainOk; ++layer) {
+        const auto attnOf = findEntry("ATTN", layer);
+        const auto mlpOf = findEntry("MLP", layer);
+        if (attnOf == referenceTable.end() || mlpOf == referenceTable.end()) {
+          chainOk = false;
+          break;
+        }
+        std::map<std::string, TensorBundle> chainFeeds{
+          {"post_attention", carriedPost},
+          {"previous_mlp", carriedMerged},
+        };
+        for (const auto& item : initOut) {
+          if (item.first == "x0") continue;
+          if (item.first.find("attn_mask") != std::string::npos ||
+              item.first.find("total_sequence_length") != std::string::npos ||
+              item.first.find("position_ids") != std::string::npos)
+            chainFeeds.emplace(item.first, item.second);
+        }
+        for (std::uint64_t probe = 0; probe < shape.layers; ++probe) {
+          for (const auto* kvKind : {"key", "value"}) {
+            const auto name = "past_key_values." + std::to_string(probe) + "." + kvKind;
+            NamedTensor past;
+            past.name = name;
+            past.elementType = TensorElementType::Float32;
+            past.shape = {1, static_cast<std::int64_t>(shape.kvHeads), 0, shape.headDim};
+            chainFeeds.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+          }
+        }
+        std::map<std::string, TensorBundle> chainAttn;
+        try {
+          chainAttn = runRefEntry(*attnOf, chainFeeds);
+        }
+        catch (const std::exception& error) {
+          BOOST_TEST_MESSAGE("reference chain stopped at layer " << layer
+                             << " attention: " << error.what());
+          chainOk = false;
+          break;
+        }
+        std::map<std::string, TensorBundle> chainMlpFeeds{
+          {"merged", chainAttn.at("partial")},
+          {"residual", chainAttn.at("residual")},
+        };
+        std::map<std::string, TensorBundle> chainMlp;
+        try {
+          chainMlp = runRefEntry(*mlpOf, chainMlpFeeds);
+        }
+        catch (const std::exception& error) {
+          BOOST_TEST_MESSAGE("reference chain stopped at layer " << layer
+                             << " mlp: " << error.what());
+          chainOk = false;
+          break;
+        }
+        layerKv.emplace(layer, std::pair<std::vector<float>, std::vector<float>>{
+          floatsOfChain(chainAttn.at("present." + std::to_string(layer) + ".key")),
+          floatsOfChain(chainAttn.at("present." + std::to_string(layer) + ".value"))});
+        carriedPost = chainMlp.at("post_residual");
+        carriedMerged = chainMlp.at("partial");
+      }
+      BOOST_TEST_MESSAGE("reassembled chain reached " << layerKv.size() << " layers");
+      double worstChain = 0.0;
+      std::uint64_t worstChainLayer = 0;
+      for (const auto& item : layerKv) {
+        for (const auto* kvKind : {"key", "value"}) {
+          const auto fromA = kvOfResult(referenceResult,
+            "present." + std::to_string(item.first) + "." + kvKind);
+          if (fromA.empty()) continue;
+          const auto& fromB = std::string(kvKind) == "key"
+            ? item.second.first : item.second.second;
+          if (fromA.size() != fromB.size()) continue;
+          for (std::size_t index = 0; index < fromA.size(); ++index) {
+            const auto difference = std::fabs(double(fromB[index]) - double(fromA[index]));
+            if (difference > worstChain) {
+              worstChain = difference;
+              worstChainLayer = item.first;
+            }
+          }
+        }
+      }
+      BOOST_TEST_MESSAGE("A vs B over the reassembled chain: worst=" << worstChain
+                         << " at layer " << worstChainLayer
+                         << " layers=" << layerKv.size());
+      BOOST_CHECK_EQUAL(worstChain, 0.0);
+    }
+
   }
 
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
