@@ -4886,6 +4886,74 @@ BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
 }
 
 
+BOOST_AUTO_TEST_CASE(AStampedContributionCannotBeSummedWithAnUnstampedOne)
+{
+  // The failure mode the partial-lineage work kept hitting, reduced to the codec: a SUM compares
+  // contributions member by member, so one stamped contribution and one unstamped contribution do
+  // not agree -- and the message is the same one the coordinator fixtures reported. Naming the
+  // mechanism here means that message is no longer ambiguous when it appears upstream.
+  struct OwnedValues
+  {
+    std::vector<float> values{1.0f, 2.0f};
+  };
+  const auto viewOf = [] (const std::shared_ptr<OwnedValues>& owner) {
+    NamedTensorView view;
+    view.name = "activation";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(owner->values.size())};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    return view;
+  };
+  auto ownerA = std::make_shared<OwnedValues>();
+  auto ownerB = std::make_shared<OwnedValues>();
+  ownerB->values = {1.0f, 2.0f};
+  const auto bundleOf = [&viewOf] (const std::shared_ptr<OwnedValues>& owner) {
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->tensors.push_back(viewOf(owner));
+    local->owner = owner;
+    TensorBundle bundle;
+    bundle.name = "activation";
+    bundle.localTensors = local;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    return bundle;
+  };
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "/request/sum-shape";
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.inferenceEpoch = 2;
+  lineage.transitionKind = "DECODE";
+  lineage.positionDigest = "sha256:" + std::string(64, 'a');
+  lineage.planDigest = "sha256:" + std::string(64, 'b');
+  lineage.attemptEpoch = 1;
+  lineage.logicalPrefixTokenCount = 1;
+  lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
+  lineage.producerRole = "S0R0";
+  lineage.consumerRole = "S0R1";
+  lineage.operationIndex = 3;
+  const auto stamped = attachGenerationEpochLineage(bundleOf(ownerA), lineage);
+  const auto plain = bundleOf(ownerB);
+  const auto stripped = stripGenerationEpochLineage(stamped);
+  // The views borrow storage, so the bundles have to outlive them -- the rvalue overload is
+  // deleted for exactly that reason, and naming the bundles keeps the borrow visible.
+  const auto stampedViews = decodeTensorBundleViews(stamped);
+  const auto plainViews = decodeTensorBundleViews(plain);
+  const auto strippedViews = decodeTensorBundleViews(stripped);
+  // One stamped and one plain: the counts differ by exactly the lineage tensor.
+  BOOST_CHECK_THROW(
+    sumTensorBundleViews("merged", {stampedViews, plainViews}),
+    std::invalid_argument);
+  // Both stripped: the same arithmetic, and the sum succeeds.
+  const auto sum = sumTensorBundleViews("merged", {strippedViews, plainViews});
+  const auto summed = decodeTensorBundleViews(sum);
+  BOOST_REQUIRE_EQUAL(summed.size(), 1U);
+  const auto* numbers = reinterpret_cast<const float*>(summed.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 2.0f);
+  BOOST_CHECK_EQUAL(numbers[1], 4.0f);
+}
+
 BOOST_AUTO_TEST_CASE(StampingAndStrippingALocalPartialLeavesItsArithmeticUntouched)
 {
   // The minimal reproduction for the partial-lineage work: one local value, one stamp, one strip.
