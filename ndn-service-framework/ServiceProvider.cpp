@@ -8901,20 +8901,19 @@ namespace ndn_service_framework
                 // destructor waits for it.
                 if (auto* ackOwner = m_registrationControl->acquireOwner()) {
                     auto ackControl = m_registrationControl;
+                    // The token is held by the closure itself, so it is released when the closure is
+                    // destroyed - whether its body ran, threw, or the executor dropped it.
+                    std::shared_ptr<void> ackToken(nullptr,
+                        [ackControl](void*) { ackControl->releaseOwner(); });
                     boost::asio::post(m_face.getIoContext(),
                         [ackOwner,
-                         ackControl,
+                         ackToken,
                          requesterIdentity,
                          serviceName,
                          requestId,
                          requestMessage,
                          decision = std::move(decision),
                          registrationState]() mutable {
-                            struct OwnerRelease
-                            {
-                                std::shared_ptr<RegistrationControl> control;
-                                ~OwnerRelease() { control->releaseOwner(); }
-                            } release{ackControl};
                             ackOwner->finishAckDecisionOnEventLoop(
                                 requesterIdentity,
                                 serviceName,
@@ -9886,15 +9885,13 @@ namespace ndn_service_framework
                             response.setPayload(finalPayload, finalPayload.size());
                             response.setStreamCompletion(*completion);
                             {
+                                std::shared_ptr<void> finishToken(nullptr,
+                                    [control](void*) { control->releaseOwner(); });
                                 boost::asio::post(*io,
-                                    [owner, control, requesterName, providerName, serviceName,
-                                     requestId, requestMessage, response = std::move(response),
+                                    [owner, finishToken, control, requesterName, providerName,
+                                     serviceName, requestId, requestMessage,
+                                     response = std::move(response),
                                      selectionDigest, registrationState]() mutable {
-                                        struct OwnerRelease
-                                        {
-                                            std::shared_ptr<RegistrationControl> control;
-                                            ~OwnerRelease() { control->releaseOwner(); }
-                                        } release{control};
                                         owner->finishRequestExecutionOnEventLoop(
                                             requesterName, providerName, serviceName,
                                             requestId, requestMessage, std::move(response),
@@ -9916,15 +9913,12 @@ namespace ndn_service_framework
                             } entryRelease{control};
                             publisher->fail(message);
                             {
+                                std::shared_ptr<void> failureToken(nullptr,
+                                    [control](void*) { control->releaseOwner(); });
                                 boost::asio::post(*io,
-                                    [owner, control, requesterName, providerName, serviceName,
-                                     requestId, requestMessage, message,
+                                    [owner, failureToken, control, requesterName, providerName,
+                                     serviceName, requestId, requestMessage, message,
                                      selectionDigest]() mutable {
-                                        struct OwnerRelease
-                                        {
-                                            std::shared_ptr<RegistrationControl> control;
-                                            ~OwnerRelease() { control->releaseOwner(); }
-                                        } release{control};
                                         owner->publishExecutionFailureOnEventLoop(
                                             requesterName, providerName, serviceName, requestId,
                                             requestMessage, message, selectionDigest);
@@ -10292,15 +10286,14 @@ namespace ndn_service_framework
                             if (failureOwner != nullptr) {
                                 auto failureControl = m_registrationControl;
                                 const auto failureIdentity = identity;
+                                std::shared_ptr<void> failureToken(nullptr,
+                                    [failureControl](void*) {
+                                        failureControl->releaseOwner();
+                                    });
                                 boost::asio::post(m_face.getIoContext(),
-                                [failureOwner, failureControl, stopping, requesterName,
-                                 serviceName, requestId, requestMessage, selectionDigest,
-                                 failureIdentity] {
-                                    struct OwnerRelease
-                                    {
-                                        std::shared_ptr<RegistrationControl> control;
-                                        ~OwnerRelease() { control->releaseOwner(); }
-                                    } release{failureControl};
+                                [failureOwner, failureToken, failureControl, stopping,
+                                 requesterName, serviceName, requestId, requestMessage,
+                                 selectionDigest, failureIdentity] {
                                     if (stopping->load()) return;
                                     failureOwner->publishExecutionFailureOnEventLoop(
                                         requesterName, failureIdentity, serviceName, requestId,
