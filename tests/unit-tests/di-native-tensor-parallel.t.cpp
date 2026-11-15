@@ -13670,6 +13670,41 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
   std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(AnUndeclaredEgressRoleIsRejectedByTheSplitterItself)
+{
+  // The contract says `result_egress_role` names the unit that owns the head, and the case above
+  // pins what the catalog accepts. This checks the same rule one level down, where it is actually
+  // enforced: the splitter refuses an ingress or egress role it does not declare, and refuses an
+  // empty one of the pair while the other is set. A projection cannot rescue a bad value, because
+  // construction fails first.
+  //
+  // Written against the splitter directly rather than through the catalog because the splitter is
+  // the owner of this rule; going through the catalog would test the same code twice through a
+  // slower path.
+  const std::vector<std::string> stages{"/LLM/Pipeline/Stage/0"};
+  const std::map<std::string, std::string> artifacts{
+    {stages.front(), "sha256:" + std::string(64, 'a')}};
+  const std::map<std::string, std::uint64_t> weights{{stages.front(), 781056104ULL}};
+  const std::map<std::string, std::vector<std::string>> rankArtifacts{
+    {stages.front(), {"sha256:" + std::string(64, 'a'), "sha256:" + std::string(64, 'b')}}};
+  const auto build = [&] (const std::string& ingress, const std::string& egress) {
+    return qwen::NativeQwenLayerSplit(
+      {{0, 28}}, artifacts, weights, stages, {2}, ingress, egress, "qwen", rankArtifacts);
+  };
+  // The supported form: a declared stage for both ends.
+  BOOST_CHECK_NO_THROW(build(stages.front(), stages.front()));
+  // A role the splitter does not declare: rejected, whether it looks like a rank or like nothing.
+  BOOST_CHECK_THROW(build(stages.front(), stages.front() + "/Tensor/Rank/1"),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(build(stages.front(), "/LLM/Pipeline/NoSuchStage"),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(build(stages.front() + "/Tensor/Rank/0", stages.front()),
+                    std::invalid_argument);
+  // Half a pair is not a default: setting only one end is refused rather than inferred.
+  BOOST_CHECK_THROW(build(stages.front(), std::string{}), std::invalid_argument);
+  BOOST_CHECK_THROW(build(std::string{}, stages.front()), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(FrozenShardedCatalogLoadPreparesTwoRankRoles)
 {
   // Exit 1's closing check, on the model this will actually run: the frozen 0.6B INT4
