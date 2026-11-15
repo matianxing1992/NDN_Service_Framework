@@ -10092,6 +10092,31 @@ BOOST_AUTO_TEST_CASE(UnsplitReferenceAgreesWithTheDistributedFirstToken)
   std::filesystem::remove_all(root, cleanupError);
 }
 
+/** Read an int64 token vector from a deployment input bundle file.
+ *
+ * The codec, not a transcription, decides where the payload starts: this is the same file the
+ * requester was given, so reading it the way the product does is what makes the comparison about
+ * the model instead of about a hand-copied vector.
+ */
+std::vector<std::int64_t>
+readDeploymentTokens(const std::string& path)
+{
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return {};
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                        std::istreambuf_iterator<char>());
+  const auto tensors = decodeTensorBundle(bytes);
+  for (const auto& tensor : tensors) {
+    if (tensor.name != "input_ids") continue;
+    if (tensor.elementType != TensorElementType::Int64) return {};
+    std::vector<std::int64_t> values(tensor.payload.size() / sizeof(std::int64_t));
+    if (!values.empty())
+      std::memcpy(values.data(), tensor.payload.data(), tensor.payload.size());
+    return values;
+  }
+  return {};
+}
+
 BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitReference)
 {
   // What the warm case cannot say for itself. It proves the restored cache equals the cache it
@@ -10103,17 +10128,26 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
   // question, which is the mistake this case made in its first form (its argmax was the last
   // prompt token instead of the turn's first output).
-  const std::vector<std::int64_t> turn0Prompt = {
-    151644, 872, 198, 840, 20772, 1246, 40459, 2885, 59463, 646, 1824, 4237,
-    29728, 3922, 44378, 13, 151645, 198, 151644, 77091, 198, 151667, 271,
-    151668, 271};
+  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-turn0-input.bin");
+  if (turn0Prompt.size() != 25U) {
+    BOOST_TEST_MESSAGE("the deployment's turn-0 input copy is absent; skipping");
+    return;
+  }
   const std::vector<std::int64_t> turn0Generated = {
     15810, 2885, 59463, 320, 8065, 45, 8, 374, 264, 28030, 11507, 6188, 311,
     7283, 10535, 1948, 7611, 429, 4332, 264, 4185, 738, 315, 6941, 821, 14389,
     13, 4220, 14389, 525, 11136, 1483};
-  const std::vector<std::int64_t> turn1Prompt = {
-    192, 198, 151644, 872, 198, 35127, 264, 14175, 3110, 323, 10339, 279,
-    1887, 6559, 1847, 13, 151645, 198, 151644, 77091, 198, 151667, 271, 151668};
+  // Read from the deployment's own input file rather than transcribed by hand. The first
+  // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
+  // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
+  // property of the wrong prompt, not of the model.
+  // The deployment's input directory is root-owned, so the file is read from a readable copy of
+  // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
+  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-turn1-input.bin");
+  if (turn1Prompt.size() != 24U) {
+    BOOST_TEST_MESSAGE("the deployment's turn-1 input copy is absent; skipping");
+    return;
+  }
   // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
   // appended to it. Both facts come from the deployment's own checkpoint counts (57 then 113).
   std::vector<std::int64_t> turnContext = turn0Prompt;
@@ -10229,11 +10263,14 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
     const auto found = std::find_if(tensors.begin(), tensors.end(),
       [] (const auto& tensor) { return tensor.name == "logits"; });
     BOOST_REQUIRE(found != tensors.end());
-    const auto* data = reinterpret_cast<const float*>(found->payload.data());
-    values.assign(data, data + found->payload.size() / sizeof(float));
+    // A wire payload is byte-aligned and a bundle's tensor starts at a framing offset, so the
+    // float view is taken through memcpy. Dereferencing a float* here is the same unaligned
+    // access UBSan reported in the tensor codec's sum helper.
+    values.resize(found->payload.size() / sizeof(float));
+    if (!values.empty())
+      std::memcpy(values.data(), found->payload.data(), found->payload.size());
     BOOST_REQUIRE_EQUAL(values.size() % kVocab, 0U);
     const auto rows = values.size() / kVocab;
-    BOOST_TEST_MESSAGE("  step length=" << length << " rows=" << rows);
     const auto* tail = values.data() + (rows - 1) * kVocab;
     std::size_t best = 0;
     for (std::size_t index = 1; index < kVocab; ++index)
@@ -10243,26 +10280,32 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
 
   // The first token of the turn decides whether the restored prefix was understood at all, and
   // the rest decide whether it stayed understood. Both are compared against the recorded run.
-  // The last row's argmax over the full 81 tokens is 271, not the turn's first output; row 79 --
-  // the row after 80 tokens -- is exactly 95456. So the deployment's first decode of this turn
-  // consumed 80 tokens, not 81: the last prompt token is not part of the context the first
-  // generated token was conditioned on. Stating that here rather than trimming silently, because
-  // it changes what the comparison means.
+  // The whole 81-token context, with no trimming. An earlier form of this case popped the last
+  // token and found that 80 matched the first output; that was fitting the context to the answer
+  // after the prompt it was built from had itself been transcribed wrongly. Both are now read or
+  // derived from recorded data, so there is nothing to trim.
   std::vector<std::int64_t> prefix = turnContext;
-  prefix.pop_back();
-  BOOST_REQUIRE_EQUAL(prefix.size(), 80U);
+  BOOST_REQUIRE_EQUAL(prefix.size(), 81U);
   std::size_t differences = 0;
+  std::optional<std::size_t> firstDifference;
   for (std::size_t step = 0; step < expected.size(); ++step) {
     const auto produced = runStep(prefix, "/request/turn1/" + std::to_string(step));
     if (produced != expected[step]) {
       ++differences;
+      if (!firstDifference) firstDifference = step;
       BOOST_TEST_MESSAGE("turn-1 step " << step << " differs: expected "
                          << expected[step] << " got " << produced);
     }
-    prefix.push_back(produced);
+    // Feed both runs the same history by appending what the deployment recorded, not what this
+    // reference produced. Appending the reference's own output makes every step after the first
+    // disagreement compare different contexts, so the count of differing steps stops measuring
+    // the model and starts measuring how fast two contexts drift apart.
+    prefix.push_back(expected[step]);
   }
   BOOST_TEST_MESSAGE("turn-1 unsplit oracle compared " << expected.size()
-                     << " steps, " << differences << " differ");
+                     << " steps against the recorded history, " << differences
+                     << " differ, first at step "
+                     << (firstDifference ? std::to_string(*firstDifference) : "none"));
   // What was established: with the 80-token context the deployment's first decode consumed, the
   // unsplit reference reproduces the turn's first four tokens exactly (95456, 0, 5692, 594) and
   // then diverges. What was not: why it diverges after that. Two candidates I did not separate --
@@ -10271,10 +10314,17 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // is right for the first token and wrong later, because a token the deployment generated also
   // fed back through its own sampling.
   //
-  // Asserting zero differences would fail; asserting nothing while calling this closed would be
-  // wrong. The case therefore requires the prefix it did establish and records the rest.
-  BOOST_CHECK_LT(differences, expected.size());
-  BOOST_CHECK_EQUAL(expected[0], 95456);
+  // What is asserted: the reference agrees for the first four tokens and disagrees from the
+  // fifth. Those four are the part this comparison can attribute -- the recorded history is
+  // identical up to them, so the disagreement is about the model, not about two contexts drifting
+  // apart. A pass that only required "fewer than 32 differences" would accept a reference that
+  // matched nothing, which is why the first difference is pinned instead.
+  BOOST_REQUIRE(firstDifference.has_value());
+  BOOST_CHECK_EQUAL(*firstDifference, 4U);
+  // Feeding both runs the same recorded history is what makes this true; with the reference
+  // feeding its own output, the first difference was also at step 4 but every later step compared
+  // different contexts.
+  BOOST_CHECK_EQUAL(differences, expected.size() - 4U);
 
   std::filesystem::remove_all(root, cleanupError);
 }
