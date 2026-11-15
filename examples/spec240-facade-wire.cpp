@@ -434,6 +434,11 @@ main(int argc, char** argv)
     const auto published = client.publishFile(publication, operation);
     std::fprintf(stderr, "FACADE_ARTIFACT_PUBLISH state=%d handle=%d\n",
                  static_cast<int>(published.state), published.committedHandle ? 1 : 0);
+    if (published.committedHandle)
+      std::fprintf(stderr, "FACADE_ARTIFACT_HANDLE targets=%zu commits=%zu receipts=%zu\n",
+                   published.committedHandle->selectedTargets.size(),
+                   published.committedHandle->replicaCommits.size(),
+                   published.committedHandle->commitReceiptIds.size());
     if (!published.committedHandle)
       return 1;
     repo::RepoFileFetch fetch;
