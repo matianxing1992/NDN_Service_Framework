@@ -284,6 +284,12 @@ main(int argc, char** argv)
     publication.ownerEpoch = grant->ownerEpoch;
 
     const auto result = client.publishData(publication, operation);
+    if (options.count("operation-out") != 0) {
+      std::ofstream record(options.at("operation-out"), std::ios::trunc);
+      record << (result.operationReference ? *result.operationReference : std::string())
+             << "\n" << (result.receipt ? result.receipt->receiptId : std::string())
+             << "\n";
+    }
     if (options.count("manifest-out") != 0) {
       // A three-line record the fetch side can rebuild the manifest from without needing a
       // JSON parser for the internal manifest type.
@@ -308,6 +314,35 @@ main(int argc, char** argv)
                  result.state == repo::RepoPublishState::COMMITTED ? "COMMITTED" : "ACCEPTED",
                  result.receipt ? result.receipt->receiptId.c_str() : "");
     return result.state == repo::RepoPublishState::COMMITTED ? 0 : 1;
+  }
+  if (mode == "inspect-operation" || mode == "inspect-receipt") {
+    std::ifstream record(arg(options, "operation"));
+    std::string operationId, receiptId;
+    std::getline(record, operationId);
+    std::getline(record, receiptId);
+    repo::RepoInspectionRequest inspection;
+    if (mode == "inspect-operation") {
+      inspection.kind = repo::RepoInspectionRequest::Kind::OPERATION;
+      inspection.operationReference = operationId;
+      inspection.operationSeed = repo::RepoTarget{alternateName(repository),
+                                                  alternateName(provider.toUri()),
+                                                  alternateName(servicePrefix.toUri())};
+    }
+    else {
+      inspection.kind = repo::RepoInspectionRequest::Kind::RECEIPT;
+      inspection.receiptId = receiptId;
+    }
+    try {
+      const auto observed = client.inspect(inspection, operation);
+      std::fprintf(stderr, "FACADE_INSPECT availability=%d state=[%s] handle=%d\n",
+                   static_cast<int>(observed.availability), observed.lifecycleState.c_str(),
+                   observed.handle ? 1 : 0);
+      return 0;
+    }
+    catch (const std::exception& error) {
+      std::fprintf(stderr, "FACADE_INSPECT_FAILED what=%s\n", error.what());
+      return 1;
+    }
   }
   if (mode == "remove") {
     repo::RepoDeleteRequest request;

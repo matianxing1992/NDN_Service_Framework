@@ -3132,8 +3132,28 @@ RepoClient::publishData(const RepoDataPublication& input,
     throw std::invalid_argument("publishData requires a sha256 wire digest");
 
   RepoUserStorageInsertRequest request;
-  request.operationId = input.idempotencyKey.empty()
-    ? ("publish-" + source.packetNames.front()) : input.idempotencyKey;
+  // The Repo types operation ids as sha256 digests: STATUS and operation inspection reject
+  // anything else, so an arbitrary idempotency key would publish successfully and then be
+  // unrecoverable. Derive a digest when the caller's key is not already one.
+  const auto isDigestForm = [] (const std::string& value) {
+    return value.size() == 64 &&
+      std::all_of(value.begin(), value.end(), [] (unsigned char character) {
+        return std::isxdigit(character) != 0;
+      });
+  };
+  if (isDigestForm(input.idempotencyKey)) {
+    request.operationId = input.idempotencyKey;
+  }
+  else {
+    const auto material = input.idempotencyKey.empty()
+      ? "publish-" + source.packetNames.front() : input.idempotencyKey;
+    const std::vector<uint8_t> bytes(material.begin(), material.end());
+    ndn::util::Sha256 digest;
+    digest.update(bytes);
+    request.operationId = digest.toString();
+    for (auto& character : request.operationId)
+      character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+  }
   request.generation = input.generation;
   request.reference.objectName = source.packetNames.front();
   // The packet set belongs to the Producer namespace the caller declares. The
@@ -3194,6 +3214,9 @@ RepoClient::publishData(const RepoDataPublication& input,
     *m_impl->user, target, request, nextPacket, verifySignature, 200,
     remainingMs(options.deadline), options.requireCurrent);
   RepoPublishResult result;
+  // Deliberately no operationReference: the Repo's status service does not resolve an insert
+  // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it
+  // cannot inspect would be worse than reporting none.
   RepoPacketSetResult committedSet;
   committedSet.objectName = manifest.objectName;
   committedSet.packetNames = manifest.packetNames;
