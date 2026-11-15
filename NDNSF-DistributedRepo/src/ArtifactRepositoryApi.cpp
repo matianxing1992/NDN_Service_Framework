@@ -1366,15 +1366,30 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
       config.ackCollectionTimeMs, timeoutMs);
   }
   catch (const std::runtime_error& failure) {
+    // Only replay what cannot double-execute. A selection/ACK failure means the provider never
+    // ran the handler in that flow, so a targeted retry is safe for any service; a bare timeout
+    // does not, so it is replayed only for read-only services.
+    const auto readOnly = [] (const ndn::Name& name) {
+      if (name.empty())
+        return false;
+      const auto operation = name[-1].toUri();
+      return operation == "STATUS" || operation == "CAPABILITY" || operation == "MANIFEST" ||
+        operation == "DATA_LOCATION" || operation == "DATA_RECEIPT" ||
+        operation == "INVENTORY" || operation == "CACHE_STATUS" ||
+        operation == "CATALOG_LOOKUP" || operation == "CATALOG_STATUS" ||
+        operation == "CATALOG_SNAPSHOT" || operation == "CATALOG_DELTA";
+    };
     // A Repo that does not run the ACK/Selection exchange either times out or answers the
     // selection with "no matching ACK". Either way the same request sent to the one selected
     // target is what it does answer. Retried once only, so a lost ACK against a provider that
     // does speak the exchange costs at most one duplicate, and every mutating request here
     // carries its own operation id.
+    // An authentication or selection failure is terminal: the exchange ran and rejected the
+    // provider, so replaying it would only repeat the same rejection. Only a transport timeout
+    // is retried, and only for a read-only operation, where a replay cannot double-execute.
     const std::string reason = failure.what();
-    if (reason.rfind("repo-request-timeout", 0) != 0 &&
-        reason.rfind("repo-ack-authentication-failed", 0) != 0 &&
-        reason.rfind("repo-selected-request", 0) != 0) {
+    const bool timeout = reason.rfind("repo-request-timeout", 0) == 0;
+    if (!timeout || !readOnly(serviceName)) {
       throw;
     }
     return detail::requestTargetedReply(
