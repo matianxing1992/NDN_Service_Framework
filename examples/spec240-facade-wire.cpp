@@ -434,11 +434,23 @@ main(int argc, char** argv)
     const auto published = client.publishFile(publication, operation);
     std::fprintf(stderr, "FACADE_ARTIFACT_PUBLISH state=%d handle=%d\n",
                  static_cast<int>(published.state), published.committedHandle ? 1 : 0);
-    if (published.committedHandle)
+    if (published.committedHandle) {
       std::fprintf(stderr, "FACADE_ARTIFACT_HANDLE targets=%zu commits=%zu receipts=%zu\n",
                    published.committedHandle->selectedTargets.size(),
                    published.committedHandle->replicaCommits.size(),
                    published.committedHandle->commitReceiptIds.size());
+      if (const auto* file = std::get_if<repo::FileReference>(
+            &published.committedHandle->reference)) {
+        std::fprintf(stderr,
+                     "FACADE_ARTIFACT_REFERENCE logical=[%s] root=[%s] bytes=%llu digest=[%s]\n",
+                     file->logicalName.c_str(), file->rootManifestName.c_str(),
+                     static_cast<unsigned long long>(file->sizeBytes),
+                     file->contentDigest.c_str());
+      }
+      else {
+        std::fprintf(stderr, "FACADE_ARTIFACT_REFERENCE not-a-file-reference\n");
+      }
+    }
     if (!published.committedHandle)
       return 1;
     repo::RepoFileFetch fetch;
