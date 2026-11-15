@@ -406,6 +406,45 @@ main(int argc, char** argv)
       return 1;
     }
   }
+  if (mode == "artifact") {
+    // The reference must carry the epoch the Repo advertises, otherwise discovery rejects the
+    // candidate as not supporting the storage copy (repo-policy-v1 on the maintained Repo).
+    const auto content = readBytes(arg(options, "source"));
+    ndn::util::Sha256 sha;
+    sha.update(content);
+    std::string digest = sha.toString();
+    for (auto& character : digest)
+      character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    repo::FileReference reference;
+    reference.logicalName = ndn::Name(identity).append("artifact")
+      .appendSegment(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count())).toUri();
+    reference.contentDigest = digest;
+    reference.sizeBytes = content.size();
+    reference.rootManifestName = reference.logicalName + "/manifest";
+    reference.policyEpoch = options.count("policy-epoch") != 0
+      ? options.at("policy-epoch") : "repo-policy-v1";
+    reference.publisherIdentity = identity.toUri();
+    repo::RepoFilePublication publication;
+    publication.reference = reference;
+    publication.sourcePath = arg(options, "source");
+    publication.selectedTargets.push_back(
+      repo::RepoTarget{repository, provider.toUri(), servicePrefix.toUri()});
+    publication.idempotencyKey = "spec240-artifact-live";
+    const auto published = client.publishFile(publication, operation);
+    std::fprintf(stderr, "FACADE_ARTIFACT_PUBLISH state=%d handle=%d\n",
+                 static_cast<int>(published.state), published.committedHandle ? 1 : 0);
+    if (!published.committedHandle)
+      return 1;
+    repo::RepoFileFetch fetch;
+    fetch.handle = published.committedHandle;
+    fetch.targetPath = arg(options, "destination");
+    const auto fetched = client.fetchFile(fetch, operation);
+    std::fprintf(stderr, "FACADE_ARTIFACT_FETCH bytesVerified=%llu digest=%s\n",
+                 static_cast<unsigned long long>(fetched.bytesVerified),
+                 fetched.contentDigest.c_str());
+    return 0;
+  }
   if (mode == "discover") {
     repo::RepoDiscoveryRequest request;
     request.providerScope = repository;
