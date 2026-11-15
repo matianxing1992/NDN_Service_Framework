@@ -1048,6 +1048,82 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
   return entries;
 }
 
+std::pair<std::vector<onnx::ValueInfoProto>, std::vector<onnx::ValueInfoProto>>
+describeQwenTpEntryBoundary(const onnx::ModelProto& source, const QwenTpEntryNodes& entry)
+{
+  if (entry.nodeIndices.empty()) {
+    throw std::invalid_argument("tensor-parallel entry boundary needs nodes");
+  }
+  const auto& graph = source.graph();
+  const auto nodeCount = static_cast<std::uint64_t>(graph.node_size());
+  if (*std::max_element(entry.nodeIndices.begin(), entry.nodeIndices.end()) >= nodeCount) {
+    throw std::invalid_argument(
+      "tensor-parallel entry names a node outside the source graph");
+  }
+  // The same three sets `extractQwenTpEntryModel` uses, computed the same way: what the entry
+  // mentions, what it produces, and what it consumes from outside itself.
+  std::set<std::uint64_t> owned(entry.nodeIndices.begin(), entry.nodeIndices.end());
+  std::set<std::string> referenced;
+  for (const auto index : owned) {
+    const auto& node = graph.node(static_cast<int>(index));
+    for (const auto& input : node.input())
+      if (!input.empty()) referenced.insert(input);
+    for (const auto& output : node.output())
+      if (!output.empty()) referenced.insert(output);
+  }
+  std::set<std::string> initializerNames;
+  for (int i = 0; i < graph.initializer_size(); ++i)
+    initializerNames.insert(graph.initializer(i).name());
+  std::set<std::string> produced;
+  for (const auto index : owned)
+    for (const auto& output : graph.node(static_cast<int>(index)).output())
+      if (!output.empty()) produced.insert(output);
+  std::set<std::string> consumedOutside;
+  for (std::uint64_t index = 0; index < nodeCount; ++index) {
+    if (owned.count(index) != 0) continue;
+    for (const auto& input : graph.node(static_cast<int>(index)).input())
+      if (!input.empty()) consumedOutside.insert(input);
+  }
+  const auto findValue = [&graph] (const std::string& name) -> const onnx::ValueInfoProto* {
+    for (const auto& input : graph.input())
+      if (input.name() == name) return &input;
+    for (const auto& output : graph.output())
+      if (output.name() == name) return &output;
+    for (const auto& value : graph.value_info())
+      if (value.name() == name) return &value;
+    return nullptr;
+  };
+  std::vector<onnx::ValueInfoProto> inputs;
+  for (const auto& name : referenced) {
+    if (produced.count(name) != 0) continue;
+    if (initializerNames.count(name) != 0) continue;
+    const auto* value = findValue(name);
+    if (value == nullptr) {
+      throw std::invalid_argument(
+        "tensor-parallel entry input has no declared type in the source: " + name);
+    }
+    inputs.push_back(*value);
+  }
+  std::vector<onnx::ValueInfoProto> outputs;
+  for (const auto& name : referenced) {
+    if (produced.count(name) == 0) continue;
+    const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
+      [&name] (const auto& value) { return value.name() == name; });
+    if (consumedOutside.count(name) == 0 && !declaredOutput) continue;
+    const auto* value = findValue(name);
+    if (value == nullptr) {
+      throw std::invalid_argument(
+        "tensor-parallel entry output has no declared type in the source: " + name);
+    }
+    outputs.push_back(*value);
+  }
+  if (inputs.empty() || outputs.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry has no boundary, so it cannot be a separate graph");
+  }
+  return {std::move(inputs), std::move(outputs)};
+}
+
 onnx::ModelProto
 extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
                         const std::string& entryId)

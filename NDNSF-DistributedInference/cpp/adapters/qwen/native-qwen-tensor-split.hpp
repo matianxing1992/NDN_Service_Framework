@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di::qwen {
@@ -276,6 +277,21 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers);
 onnx::ModelProto
 extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
                         const std::string& entryId);
+
+/** The boundary an entry would have, computed without extracting it.
+ *
+ * Extraction consumes the source (initializers are moved, not copied), so a caller that needs the
+ * entry's inputs and outputs *before* deciding what to extract -- the native assembly worker needs
+ * them in its certified recipe -- cannot get them from an extracted model. This computes the same
+ * boundary from a read-only source and the same classification result, so the two agree by
+ * construction and a case asserts that they do.
+ *
+ * @param source Parsed source graph, left untouched.
+ * @param entry  Entry whose nodes are owned.
+ * @returns The entry's declared inputs and outputs, in the order extraction would emit them.
+ */
+std::pair<std::vector<onnx::ValueInfoProto>, std::vector<onnx::ValueInfoProto>>
+describeQwenTpEntryBoundary(const onnx::ModelProto& source, const QwenTpEntryNodes& entry);
 
 /** One verified subgraph entry a tensor-parallel unit executes.
  *

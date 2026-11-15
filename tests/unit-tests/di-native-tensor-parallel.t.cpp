@@ -4886,6 +4886,55 @@ BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
 }
 
 
+BOOST_AUTO_TEST_CASE(TheDeclaredBoundaryEqualsTheOneExtractionProduces)
+{
+  // `describeQwenTpEntryBoundary` exists so the native assembly worker can be given an entry's
+  // input and output list before extraction happens -- extraction consumes the source, and the
+  // worker needs the list in its certified recipe. Two implementations of that boundary would drift,
+  // so this asserts the declared one equals what extraction actually emits, on the frozen export.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
+                                              std::istreambuf_iterator<char>());
+  onnx::ModelProto probe;
+  BOOST_REQUIRE(probe.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+  const auto classified = qwen::classifyQwenTpEntryNodes(probe, 28);
+  BOOST_REQUIRE(!classified.empty());
+  // Every kind at the first and last layer, so the check is not one shape.
+  for (const auto* kind : {"INIT", "ATTN", "MLP", "HEAD"}) {
+    for (const std::uint64_t layer : {std::uint64_t{0}, std::uint64_t{27}}) {
+      const auto entry = std::find_if(classified.begin(), classified.end(),
+        [&] (const auto& item) { return item.kind == kind && item.layer == layer; });
+      if (entry == classified.end()) continue;
+      const auto described = qwen::describeQwenTpEntryBoundary(probe, *entry);
+      // Extraction consumes its source, so each comparison gets its own parse.
+      onnx::ModelProto copy;
+      BOOST_REQUIRE(copy.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+      const auto extracted = qwen::extractQwenTpEntryModel(
+        copy, *entry, std::string(kind) + "/" + std::to_string(layer));
+      std::vector<std::string> describedIn, describedOut, extractedIn, extractedOut;
+      for (const auto& value : described.first) describedIn.push_back(value.name());
+      for (const auto& value : described.second) describedOut.push_back(value.name());
+      for (const auto& value : extracted.graph().input()) extractedIn.push_back(value.name());
+      for (const auto& value : extracted.graph().output()) extractedOut.push_back(value.name());
+      std::sort(describedIn.begin(), describedIn.end());
+      std::sort(describedOut.begin(), describedOut.end());
+      std::sort(extractedIn.begin(), extractedIn.end());
+      std::sort(extractedOut.begin(), extractedOut.end());
+      BOOST_TEST_MESSAGE(kind << "/" << layer << " inputs=" << extractedIn.size()
+                         << " outputs=" << extractedOut.size());
+      BOOST_CHECK(describedIn == extractedIn);
+      BOOST_CHECK(describedOut == extractedOut);
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(AssemblyEnforcesItsDeadlineAndItsTotalByteBudget)
 {
   // Both limits are the rank's, and neither had a negative case. A budget that is never exceeded
