@@ -12310,11 +12310,13 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             const auto shardBase = (head * positions + position) * shape.headDim;
             const auto unsplitBase =
               ((rankIndex * headsPerRank + head) * positions + position) * shape.headDim;
-            // The KV is an INT4 projection of a value both sides compute; its error is relative to
-            // the *magnitude of the pre-quantization value*, not to the KV entry itself. A small KV
-            // entry can therefore carry a large relative error from a small absolute error in what
-            // it was projected from. Recording both magnitudes separates "the KV is wrong" from
-            // "the KV is small and its source number is imprecise".
+            // A scale for the tensor, so a difference can be read as a fraction of the values it
+            // applies to rather than only in absolute terms. This is the largest magnitude of the
+            // *output KV* at position 0 -- not, as an earlier version of this comment claimed, the
+            // magnitude of the pre-quantization input. The KV is what this loop measures, so its
+            // own scale is the honest denominator; and with no `accuracy_level` set on the
+            // MatMulNBits nodes, ORT does not quantize the activation input, so there is no
+            // pre-quantization value to point at.
             if (layer == 1 && std::string(kind) == "key" && position == 0) {
               // `channel` is in scope only inside the inner loop below, so the magnitude is taken
               // over this head's block directly.
