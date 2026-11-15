@@ -13664,10 +13664,43 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     // The projection is not where the layer-1 KV difference comes from. Measured relative error is
     // 3.3e-7 here against 4.2e-7 at layer 0 -- the same order, both far below the 1e-6 that the
     // layer-1 KV shows and the 1.2e-2 of the worst element. So the sum of two rank projections
-    // reproduces the unsplit projection at both layers, and whatever moves the KV must sit between
-    // the projection and the successor: the residual, the norm, or the MLP whose output layer 1
-    // consumes.
+    // reproduces the unsplit projection at both layers.
     BOOST_CHECK_LT(layer1Relative, 1e-6);
+
+    // The attention entry's other output slot is the post-attention normalization, whose `output_3`
+    // is the residual stream layer 1 consumes. That value is *inside* the entry, so it is the one
+    // intermediate the real chain can expose: if it agrees, everything layer 1 reads agrees, and
+    // the KV difference must be produced by layer 1's own attention rather than inherited.
+    {
+      const auto residualOf = [&decode] (const std::map<std::string, TensorBundle>& outputs,
+                                         const char* who) {
+        const auto found = outputs.find("residual");
+        BOOST_REQUIRE_MESSAGE(found != outputs.end(),
+                              std::string(who) + " attention entry produced no residual slot");
+        return decode(found->second);
+      };
+      const auto refResidual = residualOf(refLayer1, "reference");
+      const auto rank0Residual = residualOf(rank0Layer1, "rank0");
+      const auto rank1Residual = residualOf(rank1Layer1, "rank1");
+      double worstResidual = 0.0;
+      double magnitudeResidual = 0.0;
+      for (std::size_t index = 0; index < refResidual.size(); ++index) {
+        worstResidual = std::max(worstResidual,
+          std::fabs(double(rank0Residual[index]) - double(refResidual[index])));
+        worstResidual = std::max(worstResidual,
+          std::fabs(double(rank1Residual[index]) - double(refResidual[index])));
+        magnitudeResidual = std::max(magnitudeResidual, std::fabs(double(refResidual[index])));
+      }
+      const auto residualRelative = magnitudeResidual > 0.0
+        ? worstResidual / magnitudeResidual : 0.0;
+      BOOST_TEST_MESSAGE("layer 1 residual slot: worst=" << worstResidual
+                         << " magnitude=" << magnitudeResidual
+                         << " relative=" << residualRelative);
+      // The residual slot is exactly equal, and that is the expected result rather than a vacuous
+      // one: it is `input_layernorm/output_3`, the skip-connection sum, which both sides form from
+      // the same inputs. A normalization would amplify differences; a residual addition does not.
+      BOOST_CHECK_LT(residualRelative, 1e-6);
+    }
   }
 
   // The MLP is the last observable before the next layer consumes the residual. If its reduction
@@ -13901,11 +13934,23 @@ BOOST_AUTO_TEST_CASE(SliceArithmeticRefusesShapesThatCannotBeSplit)
   };
   // Accepted: the deployed export's own facts at degree two.
   BOOST_CHECK_NO_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3072), 2, 0));
-  // A partial head is never acceptable, on either axis.
-  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(17, 8, 3072), 2, 0),
-                    std::invalid_argument);
-  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 7, 3072), 2, 0),
-                    std::invalid_argument);
+  // A partial head is never acceptable, on either axis -- and the shape must keep GQA integral so
+  // the rejection comes from the split, not from the grouping check that runs first. 17/8 and 16/7
+  // fail `queryHeads % kvHeads` before any rank arithmetic, so they would pass this assertion for
+  // the wrong reason.
+  //
+  // 9/3 is GQA-integral and query heads do not divide by two; 18/9 is GQA-integral and KV heads do
+  // not. Both reach `checkedPart` and are refused there.
+  // The message is checked too: `does not split evenly` is the rank-arithmetic refusal, while a
+  // `GQA grouping` message would mean the shape never reached it.
+  BOOST_CHECK_EXCEPTION(qwen::planQwenTensorSlices(shape(9, 3, 3072), 2, 0),
+                        std::invalid_argument, [] (const std::exception& error) {
+    return std::string(error.what()).find("does not split evenly") != std::string::npos;
+  });
+  BOOST_CHECK_EXCEPTION(qwen::planQwenTensorSlices(shape(18, 9, 3072), 2, 0),
+                        std::invalid_argument, [] (const std::exception& error) {
+    return std::string(error.what()).find("does not split evenly") != std::string::npos;
+  });
   // FFN width must divide too.
   BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape(16, 8, 3071), 2, 0),
                     std::invalid_argument);
