@@ -13168,15 +13168,16 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   const auto runEntry = [&] (const std::shared_ptr<qwen::NativeQwenTensorRunner>& parent,
                              const std::vector<qwen::QwenTpEntryContract>& table,
                              const std::string& unit, std::uint64_t layer,
-                             const std::map<std::string, TensorBundle>& feeds)
+                             const std::map<std::string, TensorBundle>& feeds,
+                             const std::string& kind = "ATTN")
                              -> std::map<std::string, TensorBundle> {
     const auto entry = std::find_if(table.begin(), table.end(),
-      [layer] (const auto& item) {
-        return item.kind == "ATTN" && item.layer == layer;
+      [layer, &kind] (const auto& item) {
+        return item.kind == kind && item.layer == layer;
       });
     BOOST_REQUIRE(entry != table.end());
     NativeExecutionStepSpec step;
-    step.stepId = unit + "/ATTN/" + std::to_string(layer);
+    step.stepId = unit + "/" + kind + "/" + std::to_string(layer);
     step.unitId = unit;
     step.operation = "CALL_SUBGRAPH";
     step.artifactEntry = entry->entryId;
@@ -13667,6 +13668,49 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
     // the projection and the successor: the residual, the norm, or the MLP whose output layer 1
     // consumes.
     BOOST_CHECK_LT(layer1Relative, 1e-6);
+  }
+
+  // The MLP is the last observable before the next layer consumes the residual. If its reduction
+  // also reproduces the unsplit export, every tensor this suite can read agrees, and the remaining
+  // span -- the residual additions and the norm -- is where the KV difference must originate.
+  {
+    const auto entryAtKind = [&] (const std::vector<qwen::QwenTpEntryContract>& table,
+                                  std::uint64_t layer, const std::string& kind) {
+      return std::find_if(table.begin(), table.end(), [layer, &kind] (const auto& item) {
+        return item.kind == kind && item.layer == layer;
+      });
+    };
+    const auto runMlp = [&] (const std::shared_ptr<NativeModelRunner>& runner,
+                             const std::vector<qwen::QwenTpEntryContract>& table,
+                             const std::string& unit, std::uint64_t layer) {
+      const auto entry = entryAtKind(table, layer, "MLP");
+      BOOST_REQUIRE(entry != table.end());
+      return runEntry(std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(runner),
+                      table, unit, layer, buildFeeds(*entry), "MLP");
+    };
+    for (const std::uint64_t layer : {std::uint64_t{0}, std::uint64_t{1}}) {
+      const auto refMlp = runMlp(referenceRunner, referenceTable, "ref", layer);
+      const auto rank0Mlp = runMlp(runner0, rank0Table, "S0R0", layer);
+      const auto rank1Mlp = runMlp(runner1, rank1Table, "S0R1", layer);
+      BOOST_REQUIRE(!refMlp.empty());
+      const auto refValues = decode(refMlp.begin()->second);
+      const auto rank0Values = decode(rank0Mlp.begin()->second);
+      const auto rank1Values = decode(rank1Mlp.begin()->second);
+      BOOST_REQUIRE_EQUAL(rank0Values.size(), refValues.size());
+      double worstMlp = 0.0;
+      double magnitudeMlp = 0.0;
+      for (std::size_t index = 0; index < refValues.size(); ++index) {
+        const double combined = double(rank0Values[index]) + double(rank1Values[index]);
+        worstMlp = std::max(worstMlp, std::fabs(combined - double(refValues[index])));
+        magnitudeMlp = std::max(magnitudeMlp, std::fabs(double(refValues[index])));
+      }
+      const auto relative = magnitudeMlp > 0.0 ? worstMlp / magnitudeMlp : 0.0;
+      BOOST_TEST_MESSAGE("layer " << layer << " MLP reduction: worst=" << worstMlp
+                         << " magnitude=" << magnitudeMlp << " relative=" << relative);
+      // The same bound as the projections: this is a sum of two rank partials against one unsplit
+      // matmul, so it either reproduces the export at this scale or it does not.
+      BOOST_CHECK_LT(relative, 1e-6);
+    }
   }
 
   // The unit reports the metrics a Coordinator records per epoch. It has to answer with the
