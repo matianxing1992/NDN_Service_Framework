@@ -8,6 +8,7 @@
 
 #include <onnx/onnx_pb.h>
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <filesystem>
@@ -452,6 +453,21 @@ struct QwenTpRankGeometry
  * each rank loads complete weights. They are optional only because a caller that
  * has no verified shape cannot slice; a tensor-parallel Provider always has one.
  */
+/** Rank-scoped limits for entry assembly.
+ *
+ * The deadline and the assembled-byte budget belong to the whole rank, not to each entry: a caller
+ * that reset them per entry would accept a table larger than the rank can hold and would ignore a
+ * cancellation that arrived between entries. Mirrors the native assembly control the worker path
+ * already takes, without pulling that header into this one.
+ */
+struct QwenTpAssemblyControl
+{
+  std::chrono::steady_clock::time_point deadline =
+    std::chrono::steady_clock::time_point::max();
+  std::function<void()> requireActive;
+  std::uint64_t maxAssembledBytes = 0;
+};
+
 struct QwenTpAssemblyShards
 {
   // Per layer, the slices this rank owns. Empty means "do not slice".
@@ -548,6 +564,17 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards);
 
+/** Assemble with the rank's own deadline and byte budget.
+ *
+ * @param control Optional rank-scoped limits; null keeps the unbounded behaviour the in-process
+ *                tools rely on.
+ */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control);
+
 /** Assemble a unit's table with a known head owner.
  *
  * Classification is per rank but the head belongs to one unit only. Without knowing which
@@ -564,6 +591,14 @@ std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const std::string& egressRole);
+
+/** Assemble with the rank's limits and a known head owner. */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
                          const std::string& egressRole);
 
 /** Rewrite an extracted entry's sharded weights to this rank's slice.

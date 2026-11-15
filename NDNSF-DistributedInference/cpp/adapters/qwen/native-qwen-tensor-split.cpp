@@ -1195,6 +1195,15 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards)
 {
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, nullptr);
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control)
+{
   if (root.empty() || unitId.empty() || graphBytes.empty() || layers == 0) {
     throw std::invalid_argument("tensor-parallel entry assembly needs a root, unit, graph and layers");
   }
@@ -1216,6 +1225,22 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
       "tensor-parallel entry root is unavailable: " + directoryError.message());
   }
 
+  // The budget and the deadline are the rank's, not each entry's: a caller that let every entry
+  // reset them would accept a table far larger than the rank can hold, and a cancellation arriving
+  // between entries would be ignored until the next one. `control` is optional so the in-process
+  // tools that predate it keep working, but a Provider always supplies one.
+  std::uint64_t assembledBytes = 0;
+  const auto requireActive = [&control] {
+    if (control && control->requireActive) control->requireActive();
+  };
+  const auto checkBudget = [&] (std::uint64_t bytes) {
+    if (control == nullptr || control->maxAssembledBytes == 0) return;
+    if (bytes > control->maxAssembledBytes) {
+      throw std::runtime_error(
+        "tensor-parallel rank exceeds its assembled-byte budget: " +
+        std::to_string(bytes) + " > " + std::to_string(control->maxAssembledBytes));
+    }
+  };
   std::vector<QwenTpEntryContract> table;
   table.reserve(classified.size());
   // Extraction moves initializers out of the source, so each entry needs its own
@@ -1229,8 +1254,17 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
     }
     const auto fileName = sanitizeEntryFileName(unitId) + "-" +
       sanitizeEntryFileName(entry.kind) + "-" + std::to_string(entry.layer) + ".onnx";
-    table.push_back(writeQwenTpEntry(root, unitId, entry, source, fileName,
-                                     shards.enabled() ? &shards : nullptr));
+    requireActive();
+    if (control && control->deadline != std::chrono::steady_clock::time_point::max() &&
+        std::chrono::steady_clock::now() >= control->deadline) {
+      throw std::runtime_error("tensor-parallel rank assembly deadline expired");
+    }
+    auto contract = writeQwenTpEntry(root, unitId, entry, source, fileName,
+                                     shards.enabled() ? &shards : nullptr);
+    // The written file is what the rank will load, so the budget is charged against its size.
+    assembledBytes += readEntryFile(root / contract.relativeGraphPath).size();
+    checkBudget(assembledBytes);
+    table.push_back(std::move(contract));
   }
   if (table.empty()) {
     throw std::runtime_error("tensor-parallel entry assembly produced no entries");
@@ -1255,7 +1289,18 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const std::string& egressRole)
 {
-  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards);
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, nullptr,
+                                  egressRole);
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         const std::string& egressRole)
+{
+  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control);
   if (egressRole.empty()) return table;
   if (unitId == egressRole) {
     // The egress unit must have the head; its absence means the caller and the taxonomy
@@ -2249,8 +2294,14 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   // The egress role decides whether this unit's table keeps the head: classification is
   // per rank, but only one unit runs the head step, so a non-egress table must drop it or
   // the strict verifier refuses an entry no step references.
+  // The rank's own budget, and a deadline the caller's assembly control already carries. Before
+  // this the table was produced with neither, so a rank could assemble a table larger than its
+  // declared budget and a cancellation arriving between entries was only noticed afterwards.
+  QwenTpAssemblyControl tableControl;
+  tableControl.maxAssembledBytes = rankedByteBudget;
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
-                                        graphBytes, layers, shards, egressRole);
+                                        graphBytes, layers, shards,
+                                        &tableControl, egressRole);
   // A caller that declares fewer steps than the taxonomy produces is building a partial
   // template -- a test driving one block, or a plan that intentionally executes a slice.
   // The verifier's set-agreement rule exists to catch an artifact that disagrees with the
