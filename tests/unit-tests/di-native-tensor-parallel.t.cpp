@@ -8831,6 +8831,31 @@ public:
     return m_published.size();
   }
 
+  /** A copy of what was published under one scope.
+   *
+   * The bus already keeps the latest bundle per scope for late subscribers; returning a copy lets a
+   * test compare an intermediate a step published against the unsplit export's same intermediate,
+   * which is the only way to locate where a chain of steps first diverges from the reference.
+   */
+  std::optional<TensorBundle>
+  published(const std::string& scope) const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto found = m_published.find(scope);
+    if (found == m_published.end()) return std::nullopt;
+    return found->second;
+  }
+
+  std::vector<std::string>
+  publishedScopes() const
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<std::string> scopes;
+    scopes.reserve(m_published.size());
+    for (const auto& item : m_published) scopes.push_back(item.first);
+    return scopes;
+  }
+
 private:
   mutable std::mutex m_mutex;
   std::map<std::string, TensorBundle> m_published;
@@ -11827,6 +11852,63 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // carried 112 partials and neither side could have run on a seeded value.
   BOOST_CHECK_EQUAL(bus->publishedCount(), 112U);
   BOOST_TEST_MESSAGE("bus published " << bus->publishedCount() << " partials");
+  // The bus kept what each step published, which is the only place the intermediate activations of
+  // the real chain are visible: the worker surfaces only the values no consumer inside the unit
+  // needs. Comparing the first layer's attention partial between the two ranks and the unsplit
+  // export is therefore possible without changing the worker or the graph.
+  {
+    const auto scopes = bus->publishedScopes();
+    std::string preview;
+    for (std::size_t index = 0; index < std::min<std::size_t>(scopes.size(), 6); ++index) {
+      if (!preview.empty()) preview += ' ';
+      preview += scopes[index];
+    }
+    BOOST_TEST_MESSAGE("first published scopes: " << preview);
+    // Layer 0's attention partial from each rank. The two must sum to the unsplit export's layer-0
+    // attention projection -- the same comparison the synthetic-input case makes, now on the real
+    // 24-token context the chain actually carried.
+    const auto rank0Partial = bus->published("attn-0-from-S0R0");
+    const auto rank1Partial = bus->published("attn-0-from-S0R1");
+    BOOST_REQUIRE_MESSAGE(rank0Partial.has_value(), "rank0 published no layer-0 attention partial");
+    BOOST_REQUIRE_MESSAGE(rank1Partial.has_value(), "rank1 published no layer-0 attention partial");
+    const auto valuesOf = [] (const TensorBundle& bundle) {
+      const auto views = decodeTensorBundleViews(bundle);
+      BOOST_REQUIRE(!views.empty());
+      std::vector<float> values(views.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+      return values;
+    };
+    const auto rank0Values = valuesOf(*rank0Partial);
+    const auto rank1Values = valuesOf(*rank1Partial);
+    BOOST_REQUIRE_EQUAL(rank0Values.size(), rank1Values.size());
+    // Both ranks carry a pre-attention projection of the same width, so their sum is over
+    // disjoint output channels rather than over two halves of one vector -- the assembled entry's
+    // o_proj is sliced on the output axis, so this sum is only meaningful once the contract says
+    // which channels each rank owns. Recording the magnitudes first, without asserting a relation
+    // this case cannot yet justify.
+    double rank0Magnitude = 0.0;
+    double rank1Magnitude = 0.0;
+    for (const auto value : rank0Values) rank0Magnitude = std::max(rank0Magnitude, std::fabs(double(value)));
+    for (const auto value : rank1Values) rank1Magnitude = std::max(rank1Magnitude, std::fabs(double(value)));
+    BOOST_TEST_MESSAGE("layer-0 attention partial magnitude: rank0=" << rank0Magnitude
+                       << " rank1=" << rank1Magnitude
+                       << " width=" << rank0Values.size());
+    BOOST_CHECK_GT(rank0Magnitude, 0.0);
+    BOOST_CHECK_GT(rank1Magnitude, 0.0);
+    // The partial is [1, positions, hidden] -- 24576 values for 24 positions at hidden width 1024,
+    // not a half-width slice. So the two ranks' partials are two complete hidden-width projections
+    // that are added, not two disjoint channel ranges that are concatenated; the sum is the
+    // meaningful combination and it is what the SUM step does.
+    BOOST_CHECK_EQUAL(rank0Values.size(), promptTokens.size() * shape.hidden);
+    double summedMagnitude = 0.0;
+    for (std::size_t index = 0; index < rank0Values.size(); ++index) {
+      summedMagnitude = std::max(summedMagnitude,
+        std::fabs(double(rank0Values[index] + rank1Values[index])));
+    }
+    BOOST_TEST_MESSAGE("layer-0 partial sum magnitude=" << summedMagnitude);
+    BOOST_CHECK_GT(summedMagnitude, 0.0);
+  }
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
   for (const auto& item : results) {
     // 56 contributions of its own reached the bus. Receiving is proven differently: each
