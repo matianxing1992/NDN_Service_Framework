@@ -12109,22 +12109,24 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_TEST_MESSAGE("unit " << item.first << " first element over C8: "
                        << (firstExcess ? *firstExcess : std::string("none")));
     BOOST_CHECK_EQUAL(comparedLayers, static_cast<std::size_t>(shape.layers) * 2U);
-    // Layer 0 is the diagnosis. Its KV is bit-identical between the two paths (per-layer profile
-    // above shows 0 at layer 0), which is what the split is supposed to guarantee: the same input
-    // through the same weights on a rank's head window gives the same numbers. The difference
-    // first appears at layer 1 and then stays bounded around 1e-4 rather than growing with depth
-    // -- layer 1 through 27 range from 2.7e-5 to 2.6e-4 with no trend.
-    //
-    // That shape says the split is right and the residual chain is where the two paths part: a
-    // distributed layer sums two float32 partials in rank order, while the unsplit export
-    // computes the same projection as one GEMM, and the two round differently. Enlarging the error
-    // with depth would mean amplification; staying bounded means reassociation.
-    //
-    // So this is measured and recorded, not asserted to C8. Whether the contract should compare
-    // layered KV across a parallel reduction at all is a question about the contract, not
-    // something to settle by loosening a threshold here.
+    // Layer 0 is exact, and the behaviour after it is measured rather than assumed. The earlier
+    // version of this comment said the difference stays bounded with no trend by depth; the
+    // relative profile above disproves that -- it grows from 1e-6 at layer 1 to 6e-6 at layer 27 --
+    // so the sentence is corrected rather than left standing.
     BOOST_CHECK_EQUAL(firstLayerWorst, 0.0);
-    BOOST_CHECK_LT(deeperWorst, 1e-3);
+
+    // The contract's own acceptance, applied as the contract states it: every element must satisfy
+    // `abs(test-ref) <= atol + rtol*abs(ref)` with the frozen FP32 values. `worstExcess` is the
+    // largest amount by which any element violates that, so a correct comparison has it at or below
+    // zero.
+    //
+    // This check is expected to fail on the current implementation. It is written as a failure and
+    // not as a recorded observation because C8 is the acceptance criterion: a case that prints an
+    // excess and passes regardless is exactly the substitution the review objected to. If the
+    // excess is ever justified as reassociation, that argument belongs in the contract, and this
+    // assertion changes then, deliberately, rather than here as a threshold.
+    BOOST_TEST_MESSAGE("unit " << item.first << " C8 worst excess=" << worstExcess);
+    BOOST_CHECK_LE(worstExcess, 0.0);
   }
 
   std::filesystem::remove_all(root, cleanupError);
