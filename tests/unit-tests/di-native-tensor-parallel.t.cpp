@@ -11946,6 +11946,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     double deeperWorst = 0.0;
     std::size_t comparedLayers = 0;
     std::map<std::uint64_t, double> layerWorst;
+    std::map<std::uint64_t, double> layerMagnitude;
     std::optional<std::string> firstExcess;
     for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
       for (const auto* kind : {"key", "value"}) {
@@ -11988,6 +11989,10 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
               if (layer == 0) firstLayerWorst = std::max(firstLayerWorst, difference);
               else deeperWorst = std::max(deeperWorst, difference);
               layerWorst[layer] = std::max(layerWorst[layer], difference);
+              // The absolute difference alone cannot say whether the error grows with depth: a
+              // deeper layer's KV has a different magnitude, so 1e-4 there may be a smaller
+              // relative error than 1e-5 at layer 1. Tracking the ratio separates the two.
+              layerMagnitude[layer] = std::max(layerMagnitude[layer], std::fabs(reference));
             }
           }
         }
@@ -12009,6 +12014,15 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         profile += std::to_string(entry.first) + ":" + std::to_string(entry.second);
       }
       BOOST_TEST_MESSAGE("unit " << item.first << " per-layer worst={" << profile << "}");
+      std::string ratios;
+      for (const auto& entry : layerWorst) {
+        const auto magnitude = layerMagnitude.count(entry.first) != 0
+          ? layerMagnitude.at(entry.first) : 0.0;
+        if (!ratios.empty()) ratios += ' ';
+        ratios += std::to_string(entry.first) + ":"
+          + std::to_string(magnitude > 0.0 ? entry.second / magnitude : 0.0);
+      }
+      BOOST_TEST_MESSAGE("unit " << item.first << " relative per layer={" << ratios << "}");
     }
     BOOST_TEST_MESSAGE("unit " << item.first << " first element over C8: "
                        << (firstExcess ? *firstExcess : std::string("none")));
