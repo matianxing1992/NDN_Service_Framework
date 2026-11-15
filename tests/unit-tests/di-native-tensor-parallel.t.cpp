@@ -11946,6 +11946,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     double deeperWorst = 0.0;
     std::size_t comparedLayers = 0;
     std::map<std::uint64_t, double> layerWorst;
+    std::optional<std::string> firstExcess;
     for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
       for (const auto* kind : {"key", "value"}) {
         const auto name = "present." + std::to_string(layer) + "." + kind;
@@ -11964,10 +11965,24 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             const auto unsplitBase =
               ((rankIndex * headsPerRank + head) * positions + position) * shape.headDim;
             for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
-              const auto difference = std::fabs(
-                double(shard[shardBase + channel]) -
-                double(unsplit[unsplitBase + channel]));
-              const auto allowance = kAtol + kRtol * std::fabs(double(unsplit[unsplitBase + channel]));
+              const auto reference = double(unsplit[unsplitBase + channel]);
+              const auto actual = double(shard[shardBase + channel]);
+              const auto difference = std::fabs(actual - reference);
+              const auto allowance = kAtol + kRtol * std::fabs(reference);
+              // The first element that exceeds the allowance, named exactly. A maximum alone says
+              // how wrong the result is but not where, and locating one failing element is what
+              // turns "the KV differs" into a place to look in the two computations.
+              if (difference > allowance && !firstExcess) {
+                std::ostringstream detail;
+                detail << "layer=" << layer << " kind=" << kind
+                       << " position=" << position << " head=" << head
+                       << " channel=" << channel
+                       << " reference=" << reference
+                       << " actual=" << actual
+                       << " difference=" << difference
+                       << " allowance=" << allowance;
+                firstExcess = detail.str();
+              }
               worstExcess = std::max(worstExcess, difference - allowance);
               worstAbs = std::max(worstAbs, difference);
               if (layer == 0) firstLayerWorst = std::max(firstLayerWorst, difference);
@@ -11995,6 +12010,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       }
       BOOST_TEST_MESSAGE("unit " << item.first << " per-layer worst={" << profile << "}");
     }
+    BOOST_TEST_MESSAGE("unit " << item.first << " first element over C8: "
+                       << (firstExcess ? *firstExcess : std::string("none")));
     BOOST_CHECK_EQUAL(comparedLayers, static_cast<std::size_t>(shape.layers) * 2U);
     // Layer 0 is the diagnosis. Its KV is bit-identical between the two paths (per-layer profile
     // above shows 0 at layer 0), which is what the split is supposed to guarantee: the same input
