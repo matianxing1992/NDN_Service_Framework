@@ -1508,6 +1508,18 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     stepContext.streamEventSink = {};
     if (item.executionGuard) item.executionGuard();
     const auto outputs = item.runner->run(stepContext);
+    // Carry this step's own backend call forward. Reading the runner's latest snapshot at the end
+    // of the unit only ever yields the last entry's timing, so a 28-layer unit reported one layer's
+    // ORT as its cost; the consumer needs each step.
+    if (const auto stepMetrics = item.runner->runtimeMetricsSnapshot();
+        stepMetrics && stepMetrics->lastBackendExecution) {
+      StepBackendTiming recorded;
+      recorded.stepId = step.stepId;
+      recorded.entryId = step.artifactEntry;
+      recorded.operation = step.operation;
+      recorded.execution = *stepMetrics->lastBackendExecution;
+      item.stepBackendTimings.push_back(std::move(recorded));
+    }
     if (item.executionGuard) item.executionGuard();
 
     // A step's output is keyed by its own declared slot, so the next step can
@@ -1588,8 +1600,29 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       // was never sent.
       completeStageTransferObservation(edge, stripped, "send");
       if (item.executionGuard) item.executionGuard();
+      const auto partialPublishStartedAt = std::chrono::steady_clock::now();
       item.io->publishOutput(item.sessionId, edge, stripped);
+      const auto partialPublishDoneAt = std::chrono::steady_clock::now();
       item.publishedScopes.insert(edge.scope);
+      // The final pass skips a scope that already went out, so an early partial that is not
+      // recorded here is absent from the timing ledger entirely -- the transport did the work and
+      // the receipt claimed nothing was sent. One record per early partial, with its own measured
+      // window rather than the unit's.
+      {
+        OutputPublishTiming partialTiming;
+        partialTiming.producerRole = edge.producerRole;
+        partialTiming.scope = edge.scope;
+        partialTiming.plannedDataName = edge.plannedDataName;
+        partialTiming.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
+        partialTiming.expectedSegments = edge.expectedSegments;
+        partialTiming.expectedBytes = edge.expectedBytes;
+        partialTiming.bytes = stripped.payload.size();
+        partialTiming.transferObservation = stripped.transferObservation;
+        partialTiming.outputReadyAt = partialPublishStartedAt;
+        partialTiming.publishStartedAt = partialPublishStartedAt;
+        partialTiming.publishDoneAt = partialPublishDoneAt;
+        item.outputTimings.push_back(std::move(partialTiming));
+      }
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=step_partial_published role=" +
                         item.role.role + " scope=" + edge.scope);
@@ -1861,6 +1894,16 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       auto stepped = runSealedSteps(ctx, item);
       if (!stepped) return std::nullopt;
       result.outputsByScope = std::move(stepped->outputsByScope);
+      // The early partials were published inside the template runner, so their timing records are
+      // there rather than here. Dropping them made the ledger claim a step partial was never sent
+      // even though the transport had carried it -- my first version of this change recorded them
+      // into a result object that was then discarded.
+      // Both ledgers accumulate on the WorkItem, not on the returned result. The template runner
+      // builds a fresh local result on every resumed invocation, so a record kept there survives
+      // only if that invocation happens to be the last one -- which is why an earlier version of
+      // this change reported zero early partials.
+      result.outputTimings = item.outputTimings;
+      result.stepBackendTimings = item.stepBackendTimings;
       if (std::getenv("NDNSF_DI_RUNTIME_TIMING") != nullptr) {
         logRuntimeTrace("NDNSF_DI_WORKER event=runner_steps role=" + item.role.role);
       }

@@ -12362,6 +12362,29 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   }
 
   BOOST_REQUIRE_EQUAL(results.size(), 2U);
+  // C9 asks for every entry's backend call, not the latest one. A unit that ran its whole template
+  // produced one record per step, and each names the step and entry that made the call -- so a
+  // consumer can attribute ORT time per entry instead of reporting the last head call as the
+  // token's cost. The snapshot's single `lastBackendExecution` could never say this.
+  {
+    const auto& stepTimings = results.at("S0R0").stepBackendTimings;
+    BOOST_TEST_MESSAGE("per-step backend records: " << stepTimings.size());
+    BOOST_CHECK_GT(stepTimings.size(), 2U);
+    std::set<std::string> distinctSteps;
+    for (const auto& record : stepTimings) {
+      distinctSteps.insert(record.stepId);
+      BOOST_CHECK(!record.stepId.empty());
+      BOOST_CHECK(!record.entryId.empty());
+      BOOST_CHECK_GE(record.execution.finishedSteadyNs, record.execution.startedSteadyNs);
+    }
+    // One record per step, not a repeat of the same step's call.
+    BOOST_CHECK_EQUAL(distinctSteps.size(), stepTimings.size());
+    // The early partials were published mid-template, so their timings must be in the ledger too.
+    // A scope that went out early and left no record makes the receipt claim nothing was sent.
+    const auto& outputTimings = results.at("S0R0").outputTimings;
+    BOOST_TEST_MESSAGE("output publish records: " << outputTimings.size());
+    BOOST_CHECK_GT(outputTimings.size(), 0U);
+  }
   for (const auto& item : results) {
     // 56 contributions of its own reached the bus. Receiving is proven differently: each
     // unit's reductions are admitted only when every declared contribution is present, so a

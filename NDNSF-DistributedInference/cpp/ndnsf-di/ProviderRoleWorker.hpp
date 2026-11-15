@@ -42,6 +42,20 @@ struct InputFetchTiming
   bool preSatisfied = false;
 };
 
+/** One sealed step's backend call, kept so a unit's cost is the sum of its entries.
+ *
+ * C9 requires the per-step identity to reach the existing metrics consumer rather than letting the
+ * last entry's timing stand for the whole token. The record is bounded by the template size, which
+ * is fixed by the sealed plan.
+ */
+struct StepBackendTiming
+{
+  std::string stepId;
+  std::string entryId;
+  std::string operation;
+  NativeBackendExecutionTiming execution;
+};
+
 struct OutputPublishTiming
 {
   std::string producerRole;
@@ -80,6 +94,9 @@ struct ProviderRoleResult
   RoleTiming timing;
   std::vector<InputFetchTiming> inputTimings;
   std::vector<OutputPublishTiming> outputTimings;
+  // Every sealed step's own backend call. C9 asks for the full set, not the last one, so a consumer
+  // can attribute a unit's ORT time per entry instead of reporting one entry as the whole token.
+  std::vector<StepBackendTiming> stepBackendTimings;
   StageTransferBudget transferBudget;
   bool exactForwardCacheHit = false;
   std::string exactForwardCacheKey;
@@ -299,6 +316,13 @@ private:
     // that blocks in place holds the thread, and two units on one worker then hold each other:
     // the one that got the thread waits for a contribution only the other can publish.
     std::map<std::string, TensorBundle> producedSteps;
+    // One record per sealed step's backend call, bounded by the template. Collected here because
+    // the unit's runner snapshot only exposes the last call.
+    std::vector<StepBackendTiming> stepBackendTimings;
+    // Early partials are published inside the template runner, which returns a fresh local result
+    // on every resumed invocation -- so a record kept there survives only if that invocation was the
+    // last one. The item accumulates them instead.
+    std::vector<OutputPublishTiming> outputTimings;
     std::map<std::string, TensorBundle> stepStateScopes;
     // Remote contributions already fetched, keyed by scope. Populated by the wait that ended
     // this unit's turn.
