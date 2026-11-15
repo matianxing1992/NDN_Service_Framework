@@ -9873,28 +9873,47 @@ namespace ndn_service_framework
                             auto finalPayload = payload;
                             response.setPayload(finalPayload, finalPayload.size());
                             response.setStreamCompletion(*completion);
-                            boost::asio::post(m_face.getIoContext(),
-                                [this, requesterName, providerName, serviceName,
-                                 requestId, requestMessage, response = std::move(response),
-                                 selectionDigest, registrationState]() mutable {
-                                    finishRequestExecutionOnEventLoop(
-                                        requesterName, providerName, serviceName,
-                                        requestId, requestMessage, std::move(response),
-                                        selectionDigest, registrationState);
-                                });
+                            // Posted from a stream completion that can run after the destructor
+                            // begins; the completion holds the owner token like the other two.
+                            if (auto* owner = m_registrationControl->acquireOwner()) {
+                                auto control = m_registrationControl;
+                                boost::asio::post(m_face.getIoContext(),
+                                    [owner, control, requesterName, providerName, serviceName,
+                                     requestId, requestMessage, response = std::move(response),
+                                     selectionDigest, registrationState]() mutable {
+                                        struct OwnerRelease
+                                        {
+                                            std::shared_ptr<RegistrationControl> control;
+                                            ~OwnerRelease() { control->releaseOwner(); }
+                                        } release{control};
+                                        owner->finishRequestExecutionOnEventLoop(
+                                            requesterName, providerName, serviceName,
+                                            requestId, requestMessage, std::move(response),
+                                            selectionDigest, registrationState);
+                                    });
+                            }
                             return true;
                         },
                         [this, publisher, requesterName, providerName, serviceName,
                          requestId, requestMessage, selectionDigest]
                         (StreamedInvocationErrorCode, const std::string& message) {
                             publisher->fail(message);
-                            boost::asio::post(m_face.getIoContext(),
-                                [this, requesterName, providerName, serviceName,
-                                 requestId, requestMessage, message, selectionDigest]() mutable {
-                                    publishExecutionFailureOnEventLoop(
-                                        requesterName, providerName, serviceName, requestId,
-                                        requestMessage, message, selectionDigest);
-                                });
+                            if (auto* owner = m_registrationControl->acquireOwner()) {
+                                auto control = m_registrationControl;
+                                boost::asio::post(m_face.getIoContext(),
+                                    [owner, control, requesterName, providerName, serviceName,
+                                     requestId, requestMessage, message,
+                                     selectionDigest]() mutable {
+                                        struct OwnerRelease
+                                        {
+                                            std::shared_ptr<RegistrationControl> control;
+                                            ~OwnerRelease() { control->releaseOwner(); }
+                                        } release{control};
+                                        owner->publishExecutionFailureOnEventLoop(
+                                            requesterName, providerName, serviceName, requestId,
+                                            requestMessage, message, selectionDigest);
+                                    });
+                            }
                             return true;
                         },
                         [lifecycle] {
