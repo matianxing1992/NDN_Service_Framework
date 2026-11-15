@@ -406,6 +406,23 @@ main(int argc, char** argv)
       return 1;
     }
   }
+  if (mode == "discover") {
+    repo::RepoDiscoveryRequest request;
+    request.providerScope = repository;
+    try {
+      const auto found = client.discover(request, operation);
+      std::fprintf(stderr, "FACADE_DISCOVER candidates=%zu\n", found.candidates.size());
+      for (const auto& candidate : found.candidates)
+        std::fprintf(stderr, "FACADE_DISCOVER_CANDIDATE repo=%s provider=%s\n",
+                     candidate.repoNode.c_str(), candidate.providerIdentity.toUri().c_str());
+      return 0;
+    }
+    catch (const std::exception& error) {
+      std::fprintf(stderr, "FACADE_DISCOVER_FAILED what=%s\n",
+                   describeFailure(error).c_str());
+      return 1;
+    }
+  }
   if (mode == "list") {
     repo::RepoListRequest request;
     request.scope = repo::RepoListScope::OWNER_OBJECTS;
