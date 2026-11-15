@@ -746,8 +746,16 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   std::vector<std::string> stateOutputs;
   for (const auto& name : entry.inputNames)
     if (name.rfind("past_key_values.", 0) == 0) stateInputs.push_back(name);
+  // The successor may be recorded either as an output bound to a slot or as a declared state
+  // name. The assembler puts `present.*` in the latter and leaves it out of `outputNames`, so
+  // reading only `outputNames` found no state at all -- which made no child stateful, so the
+  // parent never returned the KV its children computed and nothing above the worker could see it.
   for (const auto& name : entry.outputNames)
     if (name.rfind("present.", 0) == 0) stateOutputs.push_back(name);
+  for (const auto& name : entry.stateOutputGraphNames)
+    if (name.rfind("present.", 0) == 0 &&
+        std::find(stateOutputs.begin(), stateOutputs.end(), name) == stateOutputs.end())
+      stateOutputs.push_back(name);
   if (stateInputs.size() == stateOutputs.size() && !stateInputs.empty()) {
     const auto join = [] (const std::vector<std::string>& values) {
       std::string result;

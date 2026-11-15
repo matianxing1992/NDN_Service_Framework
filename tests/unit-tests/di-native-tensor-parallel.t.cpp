@@ -11591,6 +11591,16 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     side.role.tensorDegree = 2;
     side.role.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V1;
     side.role.steps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(steps);
+    // The worker collects decode state by declared name; the parent runner now returns the
+    // successors its entries record, so these declarations have something to match.
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        side.role.stateOutputNames.push_back(
+          "present." + std::to_string(layer) + "." + kind);
+        side.role.stateInputNames.push_back(
+          "past_key_values." + std::to_string(layer) + "." + kind);
+      }
+    }
     // Two contributions from the peer per layer, each bound to the reduction that needs it.
     for (std::uint64_t layer = 0; layer < 28; ++layer) {
       for (const auto* kind : {"attn", "mlp"}) {
@@ -11740,6 +11750,33 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         "the non-egress unit produced logits it has no head for");
     }
     BOOST_TEST_MESSAGE("unit " << item.first << " published=" << published);
+    // The state this rank committed. A run that produced the right token but kept incomplete
+    // state would pass everything above and fail on the next turn, so the count is checked: every
+    // layer, both kinds, from the rank's own graph.
+    std::size_t keys = 0;
+    std::size_t values = 0;
+    std::int64_t heads = -1;
+    std::int64_t headDim = -1;
+    for (const auto& scope : item.second.outputsByScope) {
+      if (!scope.second.localTensors && !isEncodedTensorBundle(scope.second.payload)) continue;
+      for (const auto& view : decodeTensorBundleViews(scope.second)) {
+        if (view.name.rfind("present.", 0) != 0) continue;
+        if (view.name.find(".key") != std::string::npos) ++keys;
+        if (view.name.find(".value") != std::string::npos) ++values;
+        if (view.name == "present.0.key" && view.shape.size() == 4) {
+          heads = view.shape[1];
+          headDim = view.shape[3];
+        }
+      }
+    }
+    BOOST_TEST_MESSAGE("unit " << item.first << " state: keys=" << keys
+                       << " values=" << values << " heads=" << heads
+                       << " headDim=" << headDim);
+    BOOST_CHECK_EQUAL(keys, 28U);
+    BOOST_CHECK_EQUAL(values, 28U);
+    // A rank owns half the KV heads, and the model's head width is unchanged by the split.
+    BOOST_CHECK_EQUAL(heads, static_cast<std::int64_t>(shape.kvHeads / 2U));
+    BOOST_CHECK_EQUAL(headDim, static_cast<std::int64_t>(shape.headDim));
   }
 
   std::filesystem::remove_all(root, cleanupError);
