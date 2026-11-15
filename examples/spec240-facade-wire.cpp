@@ -24,6 +24,137 @@ namespace repo = ndnsf_distributed_repo;
 
 namespace {
 
+// The handle is data, so a second process can rebuild the same one: the restart read-back is a
+// question about the Repo's durable state, not about keeping a struct alive.
+void
+writeHandleFile(const repo::RepoHandle& handle, const std::string& path)
+{
+  std::ofstream out(path, std::ios::trunc);
+  out << "schema=" << handle.schemaVersion << "\n"
+      << "seed=" << handle.seedRepoId << "\n"
+      << "consistency=" << handle.writeConsistency << "\n"
+      << "lifecycle=" << handle.lifecycleMode << "\n";
+  if (const auto* file = std::get_if<repo::FileReference>(&handle.reference)) {
+    out << "reference.logical=" << file->logicalName << "\n"
+        << "reference.root=" << file->rootManifestName << "\n"
+        << "reference.digest=" << file->contentDigest << "\n"
+        << "reference.size=" << file->sizeBytes << "\n"
+        << "reference.format=" << file->formatVersion << "\n"
+        << "reference.epoch=" << file->policyEpoch << "\n"
+        << "reference.publisher=" << file->publisherIdentity << "\n";
+  }
+  for (const auto& id : handle.commitReceiptIds)
+    out << "receiptId=" << id << "\n";
+  for (const auto& target : handle.selectedTargets) {
+    out << "target.repoNode=" << target.repoNode << "\n"
+        << "target.provider=" << target.providerIdentity << "\n"
+        << "target.service=" << target.servicePrefix << "\n";
+  }
+  for (const auto& commit : handle.replicaCommits) {
+    out << "replica.repoNode=" << commit.target.repoNode << "\n"
+        << "replica.provider=" << commit.target.providerIdentity << "\n"
+        << "replica.service=" << commit.target.servicePrefix << "\n"
+        << "replica.receiptId=" << commit.receiptId << "\n"
+        << "replica.operationId=" << commit.operationId << "\n"
+        << "replica.generation=" << commit.generation << "\n"
+        << "replica.persistedBytes=" << commit.persistedBytes << "\n"
+        << "replica.completedAtMs=" << commit.completedAtMs << "\n"
+        << "replica.locationVersion=" << commit.locationVersion << "\n"
+        << "replica.routeState=" << commit.routeState << "\n"
+        << "replica.state=" << commit.state << "\n"
+        << "replica.forwardingHint=" << commit.forwardingHint << "\n"
+        << "replica.failureReason=" << commit.failureReason << "\n"
+        << "replica.contentDigest=" << commit.contentDigest << "\n"
+        << "replica.reference.logical=" << commit.reference.logicalName << "\n"
+        << "replica.reference.root=" << commit.reference.rootManifestName << "\n"
+        << "replica.reference.digest=" << commit.reference.contentDigest << "\n"
+        << "replica.reference.size=" << commit.reference.sizeBytes << "\n"
+        << "replica.reference.format=" << commit.reference.formatVersion << "\n"
+        << "replica.reference.epoch=" << commit.reference.policyEpoch << "\n"
+        << "replica.reference.publisher=" << commit.reference.publisherIdentity << "\n";
+  }
+}
+
+repo::RepoHandle
+readHandleFile(const std::string& path)
+{
+  std::ifstream in(path);
+  if (!in)
+    throw std::runtime_error("handle file cannot be read");
+  std::vector<std::pair<std::string, std::string>> entries;
+  for (std::string line; std::getline(in, line);) {
+    const auto equals = line.find('=');
+    if (equals != std::string::npos)
+      entries.emplace_back(line.substr(0, equals), line.substr(equals + 1));
+  }
+  const auto first = [&entries] (const std::string& key) {
+    for (const auto& entry : entries) {
+      if (entry.first == key)
+        return entry.second;
+    }
+    return std::string();
+  };
+  const auto all = [&entries] (const std::string& key) {
+    std::vector<std::string> values;
+    for (const auto& entry : entries) {
+      if (entry.first == key)
+        values.push_back(entry.second);
+    }
+    return values;
+  };
+  repo::RepoHandle handle;
+  handle.schemaVersion = static_cast<uint32_t>(std::stoul(first("schema")));
+  handle.seedRepoId = first("seed");
+  handle.writeConsistency = first("consistency");
+  handle.lifecycleMode = first("lifecycle");
+  repo::FileReference file;
+  file.logicalName = first("reference.logical");
+  file.rootManifestName = first("reference.root");
+  file.contentDigest = first("reference.digest");
+  file.sizeBytes = std::stoull(first("reference.size"));
+  file.formatVersion = first("reference.format");
+  file.policyEpoch = first("reference.epoch");
+  file.publisherIdentity = first("reference.publisher");
+  handle.reference = file;
+  for (const auto& id : all("receiptId"))
+    handle.commitReceiptIds.push_back(id);
+  for (const auto& provider : all("target.provider")) {
+    repo::RepoTarget target;
+    target.repoNode = first("target.repoNode");
+    target.providerIdentity = provider;
+    target.servicePrefix = first("target.service");
+    handle.selectedTargets.push_back(std::move(target));
+  }
+  if (!first("replica.receiptId").empty()) {
+    repo::RepoReplicaCommit commit;
+    commit.target.repoNode = first("replica.repoNode");
+    commit.target.providerIdentity = first("replica.provider");
+    commit.target.servicePrefix = first("replica.service");
+    commit.receiptId = first("replica.receiptId");
+    commit.operationId = first("replica.operationId");
+    commit.generation = std::stoull(first("replica.generation"));
+    commit.persistedBytes = std::stoull(first("replica.persistedBytes"));
+    commit.completedAtMs = std::stoull(first("replica.completedAtMs"));
+    commit.locationVersion = std::stoull(first("replica.locationVersion"));
+    commit.routeState = first("replica.routeState");
+    commit.state = first("replica.state");
+    commit.forwardingHint = first("replica.forwardingHint");
+    commit.failureReason = first("replica.failureReason");
+    commit.contentDigest = first("replica.contentDigest");
+    repo::FileReference replicaFile;
+    replicaFile.logicalName = first("replica.reference.logical");
+    replicaFile.rootManifestName = first("replica.reference.root");
+    replicaFile.contentDigest = first("replica.reference.digest");
+    replicaFile.sizeBytes = std::stoull(first("replica.reference.size"));
+    replicaFile.formatVersion = first("replica.reference.format");
+    replicaFile.policyEpoch = first("replica.reference.epoch");
+    replicaFile.publisherIdentity = first("replica.reference.publisher");
+    commit.reference = replicaFile;
+    handle.replicaCommits.push_back(std::move(commit));
+  }
+  return handle;
+}
+
 /** Render a facade failure with its code, which is what callers match on. */
 std::string
 describeFailure(const std::exception& error)
@@ -406,6 +537,44 @@ main(int argc, char** argv)
       return 1;
     }
   }
+  if (mode == "artifact-handle") {
+    // Read back a publication from another process: the handle is data written by that process.
+    const auto handle = readHandleFile(arg(options, "handle-in"));
+    repo::RepoFileFetch fetch;
+    fetch.handle = handle;
+    fetch.targetPath = arg(options, "destination");
+    const auto fetched = client.fetchFile(fetch, operation);
+    std::fprintf(stderr, "FACADE_ARTIFACT_HANDLE_FETCH bytesVerified=%llu\n",
+                 static_cast<unsigned long long>(fetched.bytesVerified));
+    return 0;
+  }
+  if (mode == "artifact-reference") {
+    // Fetch by reference, so a fresh process can read back what an earlier process published.
+    std::ifstream in(arg(options, "reference-in"));
+    if (!in)
+      throw std::runtime_error("artifact reference file cannot be read");
+    std::map<std::string, std::string> fields;
+    for (std::string line; std::getline(in, line);) {
+      const auto equals = line.find('=');
+      if (equals != std::string::npos)
+        fields[line.substr(0, equals)] = line.substr(equals + 1);
+    }
+    repo::FileReference reference;
+    reference.logicalName = fields["logical"];
+    reference.rootManifestName = fields["root"];
+    reference.contentDigest = fields["digest"];
+    reference.sizeBytes = std::stoull(fields["size"]);
+    reference.formatVersion = fields["format"];
+    reference.policyEpoch = fields["epoch"];
+    reference.publisherIdentity = fields["publisher"];
+    repo::RepoFileFetch fetch;
+    fetch.reference = reference;
+    fetch.targetPath = arg(options, "destination");
+    const auto fetched = client.fetchFile(fetch, operation);
+    std::fprintf(stderr, "FACADE_ARTIFACT_REFERENCE_FETCH bytesVerified=%llu\n",
+                 static_cast<unsigned long long>(fetched.bytesVerified));
+    return 0;
+  }
   if (mode == "artifact") {
     // The reference must carry the epoch the Repo advertises, otherwise discovery rejects the
     // candidate as not supporting the storage copy (repo-policy-v1 on the maintained Repo).
@@ -455,6 +624,20 @@ main(int argc, char** argv)
     }
     if (!published.committedHandle)
       return 1;
+    if (options.count("reference-out") != 0 && published.committedHandle &&
+        std::get_if<repo::FileReference>(&published.committedHandle->reference) != nullptr) {
+      const auto& file = std::get<repo::FileReference>(published.committedHandle->reference);
+      std::ofstream out(arg(options, "reference-out"), std::ios::trunc);
+      out << "logical=" << file.logicalName << "\n"
+          << "root=" << file.rootManifestName << "\n"
+          << "digest=" << file.contentDigest << "\n"
+          << "size=" << file.sizeBytes << "\n"
+          << "format=" << file.formatVersion << "\n"
+          << "epoch=" << file.policyEpoch << "\n"
+          << "publisher=" << file.publisherIdentity << "\n";
+    }
+    if (options.count("handle-out") != 0 && published.committedHandle)
+      writeHandleFile(*published.committedHandle, arg(options, "handle-out"));
     repo::RepoFileFetch fetch;
     fetch.handle = published.committedHandle;
     fetch.targetPath = arg(options, "destination");
