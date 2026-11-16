@@ -10662,6 +10662,252 @@ BOOST_AUTO_TEST_CASE(TheWholeStackProducesTheSameKvAsTheUnsplitExportOnOneContex
   std::filesystem::remove_all(root, cleanupError);
 }
 
+BOOST_AUTO_TEST_CASE(AThirdTurnContinuesFromTheSecondTurnsCommittedPrefix)
+{
+  // What the warm case cannot say for itself. It proves the restored cache equals the cache it
+  // came from; it does not prove that continuing from that cache reproduces the model.
+  //
+  // The deployment's second turn is a 24-token prompt appended to a 57-token committed prefix --
+  // 25 prompt tokens plus 32 generated ones from the first turn -- so the first token of the
+  // second turn is read at position 80 of an 81-token context. That whole context is what the
+  // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
+  // question, which is the mistake this case made in its first form (its argmax was the last
+  // prompt token instead of the turn's first output).
+  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
+  if (turn0Prompt.size() != 25U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
+    return;
+  }
+  // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
+  // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
+  // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
+  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
+  if (turn0Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
+    return;
+  }
+  // Read from the deployment's own input file rather than transcribed by hand. The first
+  // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
+  // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
+  // property of the wrong prompt, not of the model.
+  // The deployment's input directory is root-owned, so the file is read from a readable copy of
+  // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
+  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
+  const auto turn1Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
+  if (turn1Prompt.size() != 24U || turn1Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 copies are absent; skipping");
+    return;
+  }
+  // The third turn's prompt is the first 24 tokens the second turn generated, which is how the
+  // deployment's third turn was built. It is derived rather than transcribed, so it cannot disagree
+  // with the run it is meant to describe.
+  const std::vector<std::int64_t> turn2Prompt(turn1Generated.begin(), turn1Generated.begin() + 24);
+  const auto turn2Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-2-output.json");
+  if (turn2Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-2 result copy is absent; skipping");
+    return;
+  }
+  // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
+  // appended to it. Both facts come from the deployment's own checkpoint counts (57 then 113).
+  std::vector<std::int64_t> turnContext = turn0Prompt;
+  turnContext.insert(turnContext.end(), turn0Generated.begin(), turn0Generated.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 57U);
+  turnContext.insert(turnContext.end(), turn1Prompt.begin(), turn1Prompt.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 81U);
+  turnContext.insert(turnContext.end(), turn1Generated.begin(), turn1Generated.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 113U);
+  turnContext.insert(turnContext.end(), turn2Prompt.begin(), turn2Prompt.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 137U);
+  // Read from the deployment's own result file. The literal that used to be here was wrong from
+  // element 4 onward -- it listed 1267, 13089, 311 where the run produced 264, 14175, 3110 -- so the
+  // reference was being compared against numbers no run had ever emitted, and its "first
+  // divergence at step 4" was the point where my transcription and the reference disagreed with
+  // each other, not where two computations of the model disagreed.
+  const auto expected = turn2Generated;
+
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
+    return;
+  }
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-turn1-oracle-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "ref", cleanupError);
+  std::filesystem::copy_file(source, root / "ref" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "ref" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "ref" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  NativeModelRunnerSpec spec;
+  spec.role = "REF";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "ref" / "model.onnx").string();
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  spec.metadata["outputScope"] = "logits";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  const auto makeInt64 = [] (const std::string& name,
+                             const std::vector<std::int64_t>& shape,
+                             const std::vector<std::int64_t>& values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = shape;
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  constexpr std::size_t kVocab = 151936;
+  // The five highest logits of the last row, filled by every runStep call. A disagreement between
+  // the reference and the deployment is either a near-tie that floating-point reassociation can
+  // flip, or a genuine arithmetic difference; the gap between the winner and the runner-up says
+  // which, and without it "they diverge" is not a diagnosis.
+  std::vector<std::pair<std::size_t, float>> lastTop;
+  const auto runStep = [&] (const std::vector<std::int64_t>& prefix,
+                            const std::string& requestId) {
+    RoleSpec role;
+    role.role = "REF";
+    role.requestId = requestId;
+    role.attemptEpoch = 1;
+    const auto length = static_cast<std::int64_t>(prefix.size());
+    std::vector<std::int64_t> ones(prefix.size(), 1);
+    std::vector<std::int64_t> positions(prefix.size());
+    for (std::int64_t index = 0; index < length; ++index) positions[index] = index;
+    std::map<std::string, TensorBundle> inputs{
+      {"input_ids", makeInt64("input_ids", {1, length}, prefix)},
+      {"attention_mask", makeInt64("attention_mask", {1, length}, ones)},
+      {"position_ids", makeInt64("position_ids", {1, length}, positions)},
+    };
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+        inputs.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    {
+      NamedTensor mask;
+      mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+      mask.elementType = TensorElementType::Int32;
+      mask.shape = {1, 1};
+      mask.payload.assign(sizeof(std::int32_t), 0);
+      inputs.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+      NamedTensor total;
+      total.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+      total.elementType = TensorElementType::Int32;
+      total.shape = {};
+      const auto value = static_cast<std::int32_t>(length);
+      total.payload.resize(sizeof(value));
+      std::memcpy(total.payload.data(), &value, sizeof(value));
+      inputs.emplace(total.name, makeEncodedTensorBundle(total.name, {std::move(total)}));
+    }
+    ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(600));
+    auto io = std::make_shared<CountingDependencyIo>();
+    auto result = worker.executePreparedAsync(requestId, std::move(role), io,
+                                              [runner] { return runner; }, inputs).get();
+    const auto logits = result.outputsByScope.find("logits");
+    BOOST_REQUIRE(logits != result.outputsByScope.end());
+    std::vector<float> values;
+    const auto tensors = decodeTensorBundleViews(logits->second);
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [] (const auto& tensor) { return tensor.name == "logits"; });
+    BOOST_REQUIRE(found != tensors.end());
+    // A wire payload is byte-aligned and a bundle's tensor starts at a framing offset, so the
+    // float view is taken through memcpy. Dereferencing a float* here is the same unaligned
+    // access UBSan reported in the tensor codec's sum helper.
+    values.resize(found->payload.size() / sizeof(float));
+    if (!values.empty())
+      std::memcpy(values.data(), found->payload.data(), found->payload.size());
+    BOOST_REQUIRE_EQUAL(values.size() % kVocab, 0U);
+    const auto rows = values.size() / kVocab;
+    const auto* tail = values.data() + (rows - 1) * kVocab;
+    std::size_t best = 0;
+    for (std::size_t index = 1; index < kVocab; ++index)
+      if (tail[index] > tail[best]) best = index;
+    lastTop.clear();
+    for (std::size_t rank = 0; rank < 5 && rank < kVocab; ++rank) {
+      std::size_t pick = 0;
+      float pickValue = -std::numeric_limits<float>::infinity();
+      for (std::size_t index = 0; index < kVocab; ++index) {
+        const bool taken = std::any_of(lastTop.begin(), lastTop.end(),
+          [index] (const auto& item) { return item.first == index; });
+        if (taken) continue;
+        if (tail[index] > pickValue) { pickValue = tail[index]; pick = index; }
+      }
+      lastTop.emplace_back(pick, pickValue);
+    }
+    return static_cast<std::int64_t>(best);
+  };
+
+  // The first token of the turn decides whether the restored prefix was understood at all, and
+  // the rest decide whether it stayed understood. Both are compared against the recorded run.
+  // The whole 81-token context, with no trimming. An earlier form of this case popped the last
+  // token and found that 80 matched the first output; that was fitting the context to the answer
+  // after the prompt it was built from had itself been transcribed wrongly. Both are now read or
+  // derived from recorded data, so there is nothing to trim.
+  std::vector<std::int64_t> prefix = turnContext;
+  BOOST_REQUIRE_EQUAL(prefix.size(), 137U);
+  std::size_t differences = 0;
+  std::optional<std::size_t> firstDifference;
+  for (std::size_t step = 0; step < expected.size(); ++step) {
+    const auto produced = runStep(prefix, "/request/turn2/" + std::to_string(step));
+    if (produced != expected[step]) {
+      ++differences;
+      if (!firstDifference) firstDifference = step;
+      std::string top;
+      for (const auto& entry : lastTop) {
+        if (!top.empty()) top += ", ";
+        top += std::to_string(entry.first) + "=" + std::to_string(entry.second);
+      }
+      BOOST_TEST_MESSAGE("turn-2 step " << step << " differs: expected "
+                         << expected[step] << " got " << produced << " top5={" << top << "}");
+    }
+    // Feed both runs the same history by appending what the deployment recorded, not what this
+    // reference produced. Appending the reference's own output makes every step after the first
+    // disagreement compare different contexts, so the count of differing steps stops measuring
+    // the model and starts measuring how fast two contexts drift apart.
+    prefix.push_back(expected[step]);
+  }
+  BOOST_TEST_MESSAGE("turn-2 unsplit oracle compared " << expected.size()
+                     << " steps against the recorded history, " << differences
+                     << " differ, first at step "
+                     << (firstDifference ? std::to_string(*firstDifference) : "none"));
+  // The reference recomputes the whole prefix on every step and passes an empty past, while the
+  // deployment decodes with KV state. Those are two different computations of the same model, so
+  // the interesting question is where they stop agreeing: four tokens do, the fifth does not.
+  //
+  // Every step agrees. That is the C8 comparison this case exists for: the unsplit export,
+  // recomputing the whole context each step, produces exactly the sequence the distributed run
+  // produced with KV state. The earlier 28-difference result came from a transcribed `expected`
+  // that was wrong from element 4 onward, not from the model.
+  BOOST_CHECK_EQUAL(differences, 0U);
+  BOOST_CHECK(!firstDifference.has_value());
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
 BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitReference)
 {
   // What the warm case cannot say for itself. It proves the restored cache equals the cache it
