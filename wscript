@@ -1202,6 +1202,15 @@ def build(bld):
                 package_include_paths.append(include_path)
                 package_include_flags.extend(['-isystem', include_path])
     package_extra_includes = ' '.join(package_include_flags)
+
+    # The DI shared library links ONNX Runtime, so a consumer of it needs the same library path and
+    # name. The ORT pkg-config module already carries both; reusing it keeps one declaration instead
+    # of hard-coding a prefix that only exists on this host.
+    package_onnxruntime_libs = ''
+    if getattr(bld.env, 'HAVE_ONNXRUNTIME_CPP', False):
+        ort_parts = ['-L' + path for path in (getattr(bld.env, 'LIBPATH_ONNXRUNTIME', []) or [])]
+        ort_parts += ['-l' + name for name in (getattr(bld.env, 'LIB_ONNXRUNTIME', []) or [])]
+        package_onnxruntime_libs = ' '.join(ort_parts)
     # subst signatures track template names; bind the lowercase paths explicitly
     # instead of relying on its untracked fallback to uppercase environment keys.
     package_install_paths = dict(prefix=bld.env.PREFIX, exec_prefix=bld.env.EXEC_PREFIX,
@@ -1213,6 +1222,7 @@ def build(bld):
             target='ndnsf-distributed-inference.pc',
             install_path='${LIBDIR}/pkgconfig',
             VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes,
+            ONNXRUNTIME_LIBS=package_onnxruntime_libs,
             **package_install_paths)
 
     bld(features='subst',
@@ -1220,6 +1230,7 @@ def build(bld):
         target='libndn-service-framework.pc',
         install_path='${LIBDIR}/pkgconfig',
         VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes,
+            ONNXRUNTIME_LIBS=package_onnxruntime_libs,
         **package_install_paths)
 
     if bld._ndnsf_default_scope:

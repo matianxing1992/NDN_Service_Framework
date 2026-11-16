@@ -7,5 +7,17 @@ Name: ndnsf-distributed-inference
 Description: Native NDNSF distributed-inference runtime and adapters
 Version: @VERSION@
 Requires: libndn-service-framework libndn-cxx
-Libs: -L${libdir} -lndnsf-distributed-inference
+# The library links PROTOBUF, SQLite and boost_filesystem, and its public headers include ONNX
+# protobuf headers. These are named as plain libraries rather than as `Requires:` entries because an
+# isolated consumer sets PKG_CONFIG_LIBDIR to the install prefix alone -- which is the correct way to
+# prove it is not inheriting host packages -- and then a `Requires: protobuf` cannot be resolved even
+# though the library is present and linked by the system linker. Without these, a consumer resolved
+# every NDNSF symbol and then failed on the library's own dependencies.
+# `-ldl` and `-lcrypto` are the library's own transitive needs (it dlopens adapter backends and links
+# OpenSSL directly); the Waf target names DL and OPENSSL, and the package file has to pass them on for
+# the same reason as protobuf.
+# Order matters: the library comes first so the linker resolves its own undefined symbols from the
+# libraries that follow. `-lssl` is needed by libopenabe's OpenSSL 1.1 API, which the DI library
+# depends on transitively through NAC-ABE.
+Libs: -L${libdir} -lndnsf-distributed-inference -lprotobuf -lsqlite3 -lboost_filesystem -ldl -lcrypto -lssl @ONNXRUNTIME_LIBS@
 Cflags: -I${includedir} -I${includedir}/NDNSF-DistributedInference/cpp @EXTRA_INCLUDES@

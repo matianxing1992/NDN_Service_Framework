@@ -8,20 +8,35 @@ enabled_asan=${4:?usage: $0 <disabled-normal-prefix> <disabled-asan-prefix> <ena
 output_dir=${5:-"${TMPDIR:-/tmp}/spec185-installed-api"}
 source_file=$(cd "$(dirname "$0")" && pwd)/spec185-installed-consumer.cpp
 repo_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
-manifest_file="$repo_root/specs/185-prepared-model-runtime/contracts/api-exposure.json"
+
+# The header roster comes from the install prefix's own manifest, not from an ignored Spec file and
+# not from a fixed count. The previous form read an api-exposure.json that is Git-ignored, so this
+# check could not run from a fresh clone at all, and it asserted exactly 68 headers -- a number that
+# goes stale whenever an unrelated header is added while saying nothing about whether the installed
+# SDK is complete.
+manifest_file="${NDNSF_INSTALL_MANIFEST:-$(dirname "$disabled_normal")/../share/ndnsf/stack-install-manifest.json}"
+if [[ ! -f "$manifest_file" ]]; then
+  echo "INSTALL_MANIFEST_MISSING:$manifest_file" >&2
+  exit 6
+fi
 
 mapfile -t installed_headers < <(python3 - "$manifest_file" <<'PY'
 import json
 import sys
 
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
-paths = set(manifest["legacy_install_glob"]["enumerated_headers"])
-paths.update(entry["path"] for entry in manifest["entries"])
-for path in sorted(path for path in paths if path.endswith(".hpp")):
-    print(path)
+roots = ("NDNSF-DistributedInference/", "ndn-service-framework/", "ndn-svs/")
+for path in sorted(manifest["files"]):
+    if not path.endswith(".hpp"):
+        continue
+    if any("/include/" + root in path for root in roots):
+        print(path[path.index("/include/") + len("/include/"):])
 PY
 )
-test "${#installed_headers[@]}" -eq 68
+if [[ "${#installed_headers[@]}" -eq 0 ]]; then
+  echo "INSTALL_MANIFEST_HAS_NO_HEADERS:$manifest_file" >&2
+  exit 6
+fi
 
 mkdir -p "$output_dir"
 
@@ -55,7 +70,11 @@ run_one() {
   svs_library=$(find "$package_libdir" -maxdepth 1 -name 'libndn-svs.so*' -type f | sort | head -n 1)
   test -n "$svs_library"
   local name="${mode}-${sanitizer}"
-  local args=(-std=c++17 -Wall -Wextra -Werror)
+  # The ONNX headers the DI SDK installs are generated protobuf headers, and `onnx_pb.h` selects
+  # `onnx-ml.pb.h` only when ONNX_ML is defined. The Waf target already passes both defines
+  # (tests/installed-api/wscript: ONNX_DEFINES); without them every onnx-including installed header
+  # fails to compile against an SDK that is in fact complete.
+  local args=(-std=c++17 -Wall -Wextra -Werror -DONNX_ML=1 -DONNX_NAMESPACE=onnx)
   [[ "$mode" == enabled ]] && args+=(-DNDNSF_DI_ENABLE_ONNXRUNTIME_CPP)
   if [[ "$sanitizer" == asan ]]; then
     args+=(-fsanitize=address -fno-omit-frame-pointer)
