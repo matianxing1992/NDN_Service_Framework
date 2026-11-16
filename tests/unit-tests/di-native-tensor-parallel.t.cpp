@@ -29,6 +29,7 @@
 #include <onnxruntime_cxx_api.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -66,6 +67,29 @@
 namespace {
 
 using namespace ndnsf::di;
+
+
+/** One int64 tensor as a bundle would carry it. Four cases had their own copy of this. */
+inline NamedTensor
+tokenTensor(const std::string& name, const std::vector<std::int64_t>& values)
+{
+  NamedTensor tensor;
+  tensor.name = name;
+  tensor.elementType = TensorElementType::Int64;
+  tensor.shape = {1, static_cast<std::int64_t>(values.size())};
+  tensor.payload.resize(values.size() * sizeof(std::int64_t));
+  if (!values.empty())
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+  return tensor;
+}
+
+/** The file's ONNX Runtime environment, created once. Four cases had their own. */
+inline Ort::Env&
+testOrtEnv()
+{
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec224-test");
+  return env;
+}
 namespace qwen = ndnsf::di::qwen;
 
 const char* DIGEST_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -253,6 +277,13 @@ parsePlan(const std::string& wire)
 }
 
 } // namespace
+
+// The deployment-file reader is defined beside the cases that use it, and declared at global scope
+// so a case above its definition can call it. Declaring it inside the anonymous namespace made the
+// declaration and the definition different entities, which turned every call into an undefined
+// reference -- the failure this replaces.
+std::vector<std::int64_t>
+readDeploymentTokens(const std::string& path);
 
 BOOST_AUTO_TEST_SUITE(TensorParallel)
 BOOST_AUTO_TEST_SUITE(PlanAndPlacement)
@@ -1134,7 +1165,7 @@ BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
   constexpr std::uint64_t rowBytes = blocks * qwen::QWEN_INT4_BLOB_BYTES;
 
   // One environment for the whole case; every session below borrows it.
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-shard-math");
+  Ort::Env& ortEnv = testOrtEnv();
 
   std::mt19937 rng(7);
   std::vector<std::uint8_t> packed(N * rowBytes, 0);
@@ -1276,6 +1307,588 @@ BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
   }
 }
 
+BOOST_AUTO_TEST_CASE(TheEntryBoundaryNamesAreWhatTheProbeNeeds)
+{
+  // A read-only probe of the two entries the three-way comparison needs. Writing that comparison
+  // without knowing the exact graph input and output names produced two failed rounds: one filled
+  // token ids where an embedding was expected, another read a post-projection tensor as the GQA
+  // output. Both were interface guesses, and both would have been answered by printing this.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
+                                              std::istreambuf_iterator<char>());
+  onnx::ModelProto frozen;
+  BOOST_REQUIRE(frozen.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+  const auto classified = qwen::classifyQwenTpEntryNodes(frozen, 28);
+  const auto describeValue = [] (const onnx::ValueInfoProto& value) {
+    std::string text = value.name() + " elem=" +
+      std::to_string(value.type().has_tensor_type()
+        ? value.type().tensor_type().elem_type() : 0) + " shape=";
+    if (value.type().has_tensor_type() && value.type().tensor_type().has_shape()) {
+      bool first = true;
+      for (const auto& dim : value.type().tensor_type().shape().dim()) {
+        if (!first) text += "x";
+        first = false;
+        if (dim.has_dim_value()) text += std::to_string(dim.dim_value());
+        else if (dim.has_dim_param()) text += dim.dim_param();
+        else text += "?";
+      }
+    }
+    return text;
+  };
+  for (const auto* want : {"INIT", "ATTN"}) {
+    const auto entry = std::find_if(classified.begin(), classified.end(),
+      [want] (const auto& item) {
+        return item.kind == want && item.layer == 0;
+      });
+    BOOST_REQUIRE_MESSAGE(entry != classified.end(),
+                          std::string("the taxonomy has no layer-0 ") + want);
+    onnx::ModelProto copy;
+    BOOST_REQUIRE(copy.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+    const auto entryModel = qwen::extractQwenTpEntryModel(copy, *entry, std::string(want) + "/0");
+    for (const auto& input : entryModel.graph().input())
+      BOOST_TEST_MESSAGE(want << "/0 input  " << describeValue(input));
+    for (const auto& output : entryModel.graph().output())
+      BOOST_TEST_MESSAGE(want << "/0 output " << describeValue(output));
+    // The GQA tensor, so the next round can name it without guessing.
+    for (const auto& value : entryModel.graph().value_info())
+      if (value.name().find("GroupQueryAttention/output_0") != std::string::npos)
+        BOOST_TEST_MESSAGE(want << "/0 internal " << describeValue(value));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
+{
+  // The frozen export's own o_proj, at its own width: K=2048 (the concatenated attention channels of
+  // 16 heads x 128), N=1024 (the hidden width), INT4 with block size 32. This is the one reduction in
+  // the attention block whose two halves are summed, so it is where a split can change the arithmetic;
+  // the random-weight case at K=64 cannot speak for this width or these bytes.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source) ||
+      !std::filesystem::is_regular_file(sidecar)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export or its sidecar is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
+                                              std::istreambuf_iterator<char>());
+  onnx::ModelProto frozen;
+  BOOST_REQUIRE(frozen.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+  const auto readRange = [&sidecar] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream data(sidecar, std::ios::binary);
+    std::vector<std::uint8_t> bytes(length);
+    data.seekg(static_cast<std::streamoff>(offset));
+    data.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    return bytes;
+  };
+  // The layer-0 o_proj weight and scales, read from the sidecar at their declared offsets.
+  const auto tensorByName = [&frozen] (const std::string& name) -> const onnx::TensorProto* {
+    for (const auto& init : frozen.graph().initializer())
+      if (init.name() == name) return &init;
+    return nullptr;
+  };
+  const auto externalRange = [] (const onnx::TensorProto& tensor) {
+    std::uint64_t offset = 0, length = 0;
+    for (const auto& kv : tensor.external_data()) {
+      if (kv.key() == "offset") offset = std::stoull(kv.value());
+      if (kv.key() == "length") length = std::stoull(kv.value());
+    }
+    return std::pair<std::uint64_t, std::uint64_t>{offset, length};
+  };
+  const auto* weightTensor = tensorByName("model.layers.0.attn.o_proj.MatMul.weight_Q4");
+  const auto* scaleTensor = tensorByName("model.layers.0.attn.o_proj.MatMul.weight_scales");
+  BOOST_REQUIRE_MESSAGE(weightTensor != nullptr, "the frozen export has no layer-0 o_proj weight");
+  BOOST_REQUIRE_MESSAGE(scaleTensor != nullptr, "the frozen export has no layer-0 o_proj scales");
+  const auto weightRange = externalRange(*weightTensor);
+  const auto scaleRange = externalRange(*scaleTensor);
+  const auto packed = readRange(weightRange.first, weightRange.second);
+  const auto scaleBytes = readRange(scaleRange.first, scaleRange.second);
+  constexpr std::uint64_t K = 2048;
+  constexpr std::uint64_t N = 1024;
+  constexpr std::uint64_t seq = 24;
+  BOOST_REQUIRE_EQUAL(packed.size(), qwen::packedInt4Bytes(N, K));
+  BOOST_REQUIRE_EQUAL(scaleBytes.size(), N * (K / qwen::QWEN_INT4_BLOCK_SIZE) * sizeof(float));
+
+  // Execute INIT and ATTN together so graph inputs remain token IDs, not embeddings.
+  // Expose the internal GQA value by name only in this test model; no step-slot alias is added.
+  std::vector<float> activation;
+  std::vector<float> originalProjection;
+  std::vector<std::vector<float>> actualRankProjections;
+  std::vector<float> downActivation;
+  std::vector<float> originalDownProjection;
+  {
+    std::ifstream inputFile("/var/tmp/spec224-inputs/turn-1-input.bin", std::ios::binary);
+    BOOST_REQUIRE(inputFile.good());
+    const std::vector<std::uint8_t> inputBytes((std::istreambuf_iterator<char>(inputFile)),
+                                             std::istreambuf_iterator<char>());
+    const auto inputTensors = decodeTensorBundle(inputBytes);
+    BOOST_REQUIRE_EQUAL(inputTensors.size(), 1U);
+    BOOST_REQUIRE(inputTensors.front().elementType == TensorElementType::Int64);
+    BOOST_REQUIRE_EQUAL(inputTensors.front().payload.size(), seq * sizeof(std::int64_t));
+    std::vector<std::int64_t> prompt(seq);
+    std::memcpy(prompt.data(), inputTensors.front().payload.data(), inputTensors.front().payload.size());
+    BOOST_REQUIRE_EQUAL(prompt.size(), seq);
+    const auto classified = qwen::classifyQwenTpEntryNodes(frozen, 28);
+    qwen::QwenTpEntryNodes prefix;
+    prefix.kind = "ATTN";
+    prefix.layer = 0;
+    for (const auto& entry : classified) {
+      if (entry.kind == "INIT" || (entry.kind == "ATTN" && entry.layer == 0))
+        prefix.nodeIndices.insert(prefix.nodeIndices.end(), entry.nodeIndices.begin(),
+                                  entry.nodeIndices.end());
+    }
+    onnx::ModelProto copy = frozen;
+    auto model = qwen::extractQwenTpEntryModel(copy, prefix, "diagnostic-prefix");
+    const std::string gqaName = "/model/layers.0/attn/GroupQueryAttention/output_0";
+    const auto info = std::find_if(model.graph().value_info().begin(),
+      model.graph().value_info().end(), [&] (const auto& value) { return value.name() == gqaName; });
+    BOOST_REQUIRE(info != model.graph().value_info().end());
+    const auto gqaInfo = *info;
+    const auto root = std::filesystem::temp_directory_path() /
+      ("spec224-real-gqa-" + std::to_string(getpid()));
+    BOOST_REQUIRE(!std::filesystem::exists(root));
+    std::filesystem::create_directory(root);
+    struct Scratch
+    {
+      std::filesystem::path path;
+      ~Scratch()
+      {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+      }
+    } scratch{root};
+    std::filesystem::create_hard_link(sidecar, root / "model.onnx_data");
+    const auto runPrefix = [&] (const onnx::ModelProto& graph, std::int64_t kvHeads) {
+      const auto file = root / "prefix.onnx";
+      { std::ofstream stream(file, std::ios::binary); BOOST_REQUIRE(graph.SerializeToOstream(&stream)); }
+      Ort::SessionOptions options;
+      options.SetIntraOpNumThreads(1);
+      options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+      options.DisableMemPattern();
+      Ort::Session session(testOrtEnv(), file.c_str(), options);
+      auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+      std::vector<std::int64_t> ones(seq, 1), positions(seq);
+      for (std::size_t index = 0; index < seq; ++index) positions[index] = index;
+      const std::vector<std::int64_t> tokenShape{1, std::int64_t(seq)};
+      const std::vector<std::int64_t> pastShape{1, kvHeads, 0, 128};
+      std::vector<const char*> names;
+      std::vector<Ort::Value> values;
+      float empty = 0.0f;
+      for (const auto& input : graph.graph().input()) {
+        names.push_back(input.name().c_str());
+        if (input.name().rfind("past_key_values.", 0) == 0) {
+          values.push_back(Ort::Value::CreateTensor<float>(memory, &empty, 0,
+            pastShape.data(), pastShape.size()));
+        }
+        else {
+          BOOST_REQUIRE(input.name() == "input_ids" || input.name() == "attention_mask" ||
+                        input.name() == "position_ids");
+          const auto& data = input.name() == "input_ids" ? prompt :
+            input.name() == "attention_mask" ? ones : positions;
+          values.push_back(Ort::Value::CreateTensor<std::int64_t>(memory,
+            const_cast<std::int64_t*>(data.data()), data.size(), tokenShape.data(), tokenShape.size()));
+        }
+      }
+      std::vector<const char*> outputs;
+      for (const auto& output : graph.graph().output()) outputs.push_back(output.name().c_str());
+      auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(),
+        values.size(), outputs.data(), outputs.size());
+      std::map<std::string, std::vector<std::uint8_t>> captured;
+      for (std::size_t index = 0; index < result.size(); ++index) {
+        const auto tensorInfo = result[index].GetTensorTypeAndShapeInfo();
+        const auto type = tensorInfo.GetElementType();
+        BOOST_REQUIRE(type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ||
+                      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+        const auto width = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ? 8U : 4U;
+        const auto* data = static_cast<const std::uint8_t*>(result[index].GetTensorRawData());
+        captured.emplace(outputs[index], std::vector<std::uint8_t>(
+          data, data + tensorInfo.GetElementCount() * width));
+      }
+      return captured;
+    };
+    const auto baseline = runPrefix(model, 8);
+    const auto originalModel = model;
+    *model.mutable_graph()->add_output() = gqaInfo;
+    const auto observed = runPrefix(model, 8);
+    for (const auto& output : baseline)
+      BOOST_REQUIRE(observed.at(output.first) == output.second);
+    const auto& gqaBytes = observed.at(gqaName);
+    activation.resize(gqaBytes.size() / sizeof(float));
+    std::memcpy(activation.data(), gqaBytes.data(), gqaBytes.size());
+    for (const auto value : activation) BOOST_REQUIRE(std::isfinite(value));
+    const auto& projectionBytes = baseline.at("/model/layers.0/attn/o_proj/MatMul/output_0");
+    originalProjection.resize(projectionBytes.size() / sizeof(float));
+    std::memcpy(originalProjection.data(), projectionBytes.data(), projectionBytes.size());
+    for (const auto value : originalProjection) BOOST_REQUIRE(std::isfinite(value));
+    BOOST_REQUIRE_EQUAL(activation.size(), seq * K);
+    BOOST_TEST_MESSAGE("real GQA activation: tokens=" << seq << " elements=" << activation.size()
+                       << " original outputs unchanged=" << baseline.size());
+    const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+    for (std::uint64_t rank = 0; rank < 2; ++rank) {
+      auto rankModel = originalModel;
+      const auto slices = qwen::planQwenTensorSlices(shape, 2, rank);
+      const auto layer = std::find_if(slices.begin(), slices.end(),
+        [] (const auto& candidate) { return candidate.layer == 0; });
+      BOOST_REQUIRE(layer != slices.end());
+      (void)qwen::applyQwenTpRankSlices(rankModel, &*layer, readRange);
+      qwen::QwenTpRankGeometry geometry;
+      geometry.degree = 2;
+      geometry.rank = rank;
+      geometry.headDim = shape.headDim;
+      geometry.queryWidth = shape.queryWidth();
+      geometry.kvWidth = shape.kvWidth();
+      geometry.hidden = shape.hidden;
+      geometry.ffn = shape.ffn;
+      (void)qwen::adaptQwenTpEntryParameters(rankModel, geometry);
+      const auto rankBaseline = runPrefix(rankModel, shape.kvHeads / 2);
+      const auto rankInfo = std::find_if(rankModel.graph().value_info().begin(),
+        rankModel.graph().value_info().end(),
+        [&] (const auto& value) { return value.name() == gqaName; });
+      BOOST_REQUIRE(rankInfo != rankModel.graph().value_info().end());
+      const auto rankGqaInfo = *rankInfo;
+      *rankModel.mutable_graph()->add_output() = rankGqaInfo;
+      const auto rankObserved = runPrefix(rankModel, shape.kvHeads / 2);
+      for (const auto& output : rankBaseline)
+        BOOST_REQUIRE(rankObserved.at(output.first) == output.second);
+      const auto& bytes = rankObserved.at(gqaName);
+      BOOST_REQUIRE_EQUAL(bytes.size(), seq * (K / 2) * sizeof(float));
+      std::vector<float> rankActivation(bytes.size() / sizeof(float));
+      std::memcpy(rankActivation.data(), bytes.data(), bytes.size());
+      double worstGqa = 0.0;
+      for (std::size_t row = 0; row < seq; ++row) {
+        for (std::size_t channel = 0; channel < K / 2; ++channel) {
+          const auto value = rankActivation[row * (K / 2) + channel];
+          BOOST_REQUIRE(std::isfinite(value));
+          worstGqa = std::max(worstGqa, std::fabs(double(value) -
+            double(activation[row * K + rank * (K / 2) + channel])));
+        }
+      }
+      BOOST_TEST_MESSAGE("rank " << rank << " real GQA vs full slice: worst=" << worstGqa);
+      BOOST_CHECK_EQUAL(worstGqa, 0.0);
+      const auto& partial = rankBaseline.at("/model/layers.0/attn/o_proj/MatMul/output_0");
+      BOOST_REQUIRE_EQUAL(partial.size(), seq * N * sizeof(float));
+      std::vector<float> projection(partial.size() / sizeof(float));
+      std::memcpy(projection.data(), partial.data(), partial.size());
+      for (const auto value : projection) BOOST_REQUIRE(std::isfinite(value));
+      actualRankProjections.push_back(std::move(projection));
+    }
+    auto mlpPrefix = prefix;
+    for (const auto& entry : classified)
+      if (entry.kind == "MLP" && entry.layer == 0)
+        mlpPrefix.nodeIndices.insert(mlpPrefix.nodeIndices.end(), entry.nodeIndices.begin(),
+                                     entry.nodeIndices.end());
+    auto mlpCopy = frozen;
+    auto mlpModel = qwen::extractQwenTpEntryModel(mlpCopy, mlpPrefix, "diagnostic-down-prefix");
+    const auto down = std::find_if(mlpModel.graph().node().begin(), mlpModel.graph().node().end(),
+      [] (const auto& node) { return node.name() == "/model/layers.0/mlp/down_proj/MatMul_Q4"; });
+    BOOST_REQUIRE(down != mlpModel.graph().node().end());
+    const auto downInput = down->input(0);
+    const auto downOutput = down->output(0);
+    const auto downInfo = std::find_if(mlpModel.graph().value_info().begin(),
+      mlpModel.graph().value_info().end(),
+      [&] (const auto& value) { return value.name() == downInput; });
+    BOOST_REQUIRE(downInfo != mlpModel.graph().value_info().end());
+    const auto downValueInfo = *downInfo;
+    const auto mlpBaseline = runPrefix(mlpModel, 8);
+    *mlpModel.mutable_graph()->add_output() = downValueInfo;
+    const auto mlpObserved = runPrefix(mlpModel, 8);
+    for (const auto& output : mlpBaseline)
+      BOOST_REQUIRE(mlpObserved.at(output.first) == output.second);
+    const auto& downBytes = mlpObserved.at(downInput);
+    downActivation.resize(downBytes.size() / sizeof(float));
+    std::memcpy(downActivation.data(), downBytes.data(), downBytes.size());
+    const auto& downOutputBytes = mlpBaseline.at(downOutput);
+    originalDownProjection.resize(downOutputBytes.size() / sizeof(float));
+    std::memcpy(originalDownProjection.data(), downOutputBytes.data(), downOutputBytes.size());
+    for (const auto value : downActivation) BOOST_REQUIRE(std::isfinite(value));
+    for (const auto value : originalDownProjection) BOOST_REQUIRE(std::isfinite(value));
+  }
+  const auto scalesAsFloat = [&scaleBytes] {
+    std::vector<float> values(scaleBytes.size() / sizeof(float));
+    std::memcpy(values.data(), scaleBytes.data(), scaleBytes.size());
+    return values;
+  }();
+
+  Ort::Env& ortEnv = testOrtEnv();
+  const auto runOProjection = [&] (std::uint64_t k, std::uint64_t n,
+                                   const std::vector<std::uint8_t>& weight,
+                                   const std::vector<float>& weightScales,
+                                   const std::vector<float>& input,
+                                   std::uint64_t rows) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec224-real-o-proj");
+    auto* node = graph->add_node();
+    node->set_name("mm"); node->set_op_type("MatMulNBits");
+    node->set_domain("com.microsoft");
+    node->add_input("A"); node->add_input("B"); node->add_input("S");
+    node->add_output("Y");
+    const auto addInt = [&] (const char* name, std::int64_t value) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(name);
+      attribute->set_type(onnx::AttributeProto::INT);
+      attribute->set_i(value);
+    };
+    addInt("K", std::int64_t(k));
+    addInt("N", std::int64_t(n));
+    addInt("bits", 4);
+    addInt("block_size", std::int64_t(qwen::QWEN_INT4_BLOCK_SIZE));
+    auto* weightInit = graph->add_initializer();
+    weightInit->set_name("B");
+    weightInit->set_data_type(onnx::TensorProto_DataType_UINT8);
+    weightInit->add_dims(std::int64_t(n));
+    weightInit->add_dims(std::int64_t(k / qwen::QWEN_INT4_BLOCK_SIZE));
+    weightInit->add_dims(std::int64_t(qwen::QWEN_INT4_BLOB_BYTES));
+    weightInit->set_raw_data(weight.data(), weight.size());
+    auto* scaleInit = graph->add_initializer();
+    scaleInit->set_name("S");
+    scaleInit->set_data_type(onnx::TensorProto_DataType_FLOAT);
+    scaleInit->add_dims(std::int64_t(weightScales.size()));
+    scaleInit->set_raw_data(reinterpret_cast<const char*>(weightScales.data()),
+                            weightScales.size() * sizeof(float));
+    const auto addIO = [&] (const char* name, bool isInput) {
+      auto* value = isInput ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(rows));
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(isInput ? k : n));
+    };
+    addIO("A", true);
+    addIO("Y", false);
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+    options.DisableMemPattern();
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> shape{1, std::int64_t(rows), std::int64_t(k)};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto inputValue = Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(input.data()), input.size(), shape.data(), shape.size());
+    const char* inputNames[] = {"A"};
+    const char* outputNames[] = {"Y"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &inputValue, 1,
+                               outputNames, 1);
+    const auto* data = outputs[0].GetTensorData<float>();
+    std::vector<float> result(data, data + rows * n);
+    for (const auto value : result) BOOST_REQUIRE(std::isfinite(value));
+    return result;
+  };
+
+  const auto reference = runOProjection(K, N, packed, scalesAsFloat, activation, seq);
+  BOOST_REQUIRE_EQUAL(reference.size(), seq * N);
+  BOOST_REQUIRE_EQUAL(originalProjection.size(), reference.size());
+  double prefixControl = 0.0;
+  for (std::size_t index = 0; index < reference.size(); ++index)
+    prefixControl = std::max(prefixControl,
+      std::fabs(double(reference[index]) - double(originalProjection[index])));
+  BOOST_TEST_MESSAGE("standalone full O vs original prefix O: worst=" << prefixControl);
+  BOOST_CHECK_EQUAL(prefixControl, 0.0);
+
+  // The split the rank actually performs: o_proj reduces over its input channels, so each rank owns
+  // half of K and produces a full-width partial.
+  std::vector<std::uint8_t> rank0Weight, rank1Weight;
+  std::vector<float> rank0Scales, rank1Scales;
+  std::vector<float> rank0Input(seq * (K / 2)), rank1Input(seq * (K / 2));
+  {
+    rank0Weight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::InputChannels, 0, K / 2);
+    rank1Weight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::InputChannels, K / 2, K);
+    const auto resolve0 = qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::InputChannels, 0, K / 2);
+    const auto resolve1 = qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::InputChannels, K / 2, K);
+    rank0Scales.resize(resolve0.size() / sizeof(float));
+    rank1Scales.resize(resolve1.size() / sizeof(float));
+    std::memcpy(rank0Scales.data(), resolve0.data(), resolve0.size());
+    std::memcpy(rank1Scales.data(), resolve1.data(), resolve1.size());
+    for (std::uint64_t row = 0; row < seq; ++row) {
+      for (std::uint64_t k = 0; k < K / 2; ++k) {
+        rank0Input[row * (K / 2) + k] = activation[row * K + k];
+        rank1Input[row * (K / 2) + k] = activation[row * K + K / 2 + k];
+      }
+    }
+  }
+  const auto rank0 = runOProjection(K / 2, N, rank0Weight, rank0Scales, rank0Input, seq);
+  const auto rank1 = runOProjection(K / 2, N, rank1Weight, rank1Scales, rank1Input, seq);
+  BOOST_REQUIRE_EQUAL(rank0.size(), reference.size());
+  BOOST_REQUIRE_EQUAL(rank1.size(), reference.size());
+  BOOST_REQUIRE_EQUAL(actualRankProjections.size(), 2U);
+  BOOST_CHECK(actualRankProjections[0] == rank0);
+  BOOST_CHECK(actualRankProjections[1] == rank1);
+
+  // Through the production reducer, which is the step the sealed template runs.
+  struct Held
+  {
+    std::vector<float> values;
+  };
+  auto owner0 = std::make_shared<Held>();
+  owner0->values = rank0;
+  auto owner1 = std::make_shared<Held>();
+  owner1->values = rank1;
+  const auto bundleOf = [&] (const std::shared_ptr<Held>& owner) {
+    auto local = std::make_shared<LocalTensorBundle>();
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(seq), static_cast<std::int64_t>(N)};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    local->tensors.push_back(view);
+    local->owner = owner;
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.localTensors = local;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    return bundle;
+  };
+  const auto bundle0 = bundleOf(owner0);
+  const auto bundle1 = bundleOf(owner1);
+  const auto summed = sumTensorBundleViews("real-o-proj",
+    {decodeTensorBundleViews(bundle0), decodeTensorBundleViews(bundle1)});
+  const auto summedViews = decodeTensorBundleViews(summed);
+  BOOST_REQUIRE(!summedViews.empty());
+  std::vector<float> rankSum(summedViews.front().payload.size() / sizeof(float));
+  if (!rankSum.empty())
+    std::memcpy(rankSum.data(), summedViews.front().payload.data(),
+                summedViews.front().payload.size());
+  BOOST_REQUIRE_EQUAL(rankSum.size(), reference.size());
+
+  double worst = 0.0;
+  double magnitude = 0.0;
+  std::size_t overC8 = 0;
+  for (std::size_t index = 0; index < reference.size(); ++index) {
+    const auto difference = std::fabs(double(rankSum[index]) - double(reference[index]));
+    worst = std::max(worst, difference);
+    magnitude = std::max(magnitude, std::fabs(double(reference[index])));
+    if (difference > 1e-4 + 1e-3 * std::fabs(double(reference[index]))) ++overC8;
+  }
+  BOOST_TEST_MESSAGE("real o_proj K=2048 N=1024 seq=24: worst=" << worst
+                     << " largest=" << magnitude
+                     << " relative=" << (magnitude > 0.0 ? worst / magnitude : 0.0)
+                     << " overC8=" << overC8
+                     << " width=" << reference.size());
+  // The split must be measurable, and it must be reassociation rather than a wrong slice: a
+  // percent-level difference would read the wrong operand.
+  BOOST_CHECK_GT(worst, 0.0);
+  BOOST_CHECK_LT(worst, 1e-3 * std::max(magnitude, 1.0));
+  BOOST_TEST_MESSAGE("real o_proj elements over C8 allowance: " << overC8
+                     << " of " << reference.size());
+
+  // Isolate accumulation precision without another INT4 decoder: an identity input exposes the
+  // same operator's effective FP32 weights. This is a local conditional reference, not C8's oracle.
+  const auto compareAccumulation = [&] (const std::string& label, std::size_t k,
+                                       const std::vector<std::uint8_t>& weight,
+                                       const std::vector<float>& weightScales,
+                                       const std::vector<float>& input,
+                                       const std::vector<float>& original) {
+    BOOST_REQUIRE_EQUAL(input.size(), seq * k);
+    const auto full32 = runOProjection(k, N, weight, weightScales, input, seq);
+    BOOST_REQUIRE(full32 == original);
+    std::vector<float> identity(k * k, 0.0f);
+    for (std::size_t index = 0; index < k; ++index) identity[index * k + index] = 1.0f;
+    const auto effectiveWeights = runOProjection(k, N, weight, weightScales, identity, k);
+    std::vector<std::vector<float>> partial32;
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+      const auto bytes = qwen::slicePackedInt4(weight, N, k,
+        qwen::QwenSliceAxis::InputChannels, rank * k / 2, (rank + 1) * k / 2);
+      std::vector<std::uint8_t> scalesBytes(weightScales.size() * sizeof(float));
+      std::memcpy(scalesBytes.data(), weightScales.data(), scalesBytes.size());
+      const auto slicedScales = qwen::sliceInt4Scales(scalesBytes, N, k,
+        qwen::QwenSliceAxis::InputChannels, rank * k / 2, (rank + 1) * k / 2);
+      std::vector<float> scales(slicedScales.size() / sizeof(float));
+      std::memcpy(scales.data(), slicedScales.data(), slicedScales.size());
+      std::vector<float> rankInput(seq * k / 2);
+      for (std::size_t row = 0; row < seq; ++row)
+        std::copy_n(input.begin() + row * k + rank * k / 2, k / 2,
+                    rankInput.begin() + row * k / 2);
+      partial32.push_back(runOProjection(k / 2, N, bytes, scales, rankInput, seq));
+    }
+    struct Error
+    {
+      double worst = 0.0;
+      double squared = 0.0;
+      void
+      add(double value)
+      {
+        worst = std::max(worst, std::fabs(value));
+        squared += value * value;
+      }
+    } fullError, splitError, highWireError, highFinalError, highVsFull32;
+    double doubleReassociation = 0.0;
+    for (std::size_t row = 0; row < seq; ++row) {
+      for (std::size_t column = 0; column < N; ++column) {
+        double full64 = 0.0, rank0 = 0.0, rank1 = 0.0;
+        for (std::size_t channel = 0; channel < k; ++channel) {
+          const auto product = double(input[row * k + channel]) *
+            double(effectiveWeights[channel * N + column]);
+          full64 += product;
+          (channel < k / 2 ? rank0 : rank1) += product;
+        }
+        const auto index = row * N + column;
+        const auto split32 = float(partial32[0][index] + partial32[1][index]);
+        const auto highWire = float(float(rank0) + float(rank1));
+        const auto highFinal = float(rank0 + rank1);
+        BOOST_REQUIRE(std::isfinite(full64) && std::isfinite(highWire) && std::isfinite(highFinal));
+        fullError.add(double(full32[index]) - full64);
+        splitError.add(double(split32) - full64);
+        highWireError.add(double(highWire) - full64);
+        highFinalError.add(double(highFinal) - full64);
+        highVsFull32.add(double(highWire) - double(full32[index]));
+        doubleReassociation = std::max(doubleReassociation, std::fabs(rank0 + rank1 - full64));
+        // Promoting only the final addition does not undo the rounding inside either partial.
+        BOOST_CHECK_EQUAL(float(double(partial32[0][index]) + double(partial32[1][index])), split32);
+      }
+    }
+    const auto report = [&] (const char* route, const Error& error) {
+      BOOST_TEST_MESSAGE("accumulation control " << label << " " << route
+                         << " worst=" << error.worst
+                         << " rms=" << std::sqrt(error.squared / (seq * N)));
+    };
+    report("full32-vs-conditional64", fullError);
+    report("split32-vs-conditional64", splitError);
+    report("fp64-partials-fp32-wire-vs-conditional64", highWireError);
+    report("fp64-partials-final-fp32-vs-conditional64", highFinalError);
+    report("fp64-partials-fp32-wire-vs-original-full32", highVsFull32);
+    BOOST_TEST_MESSAGE("accumulation control " << label
+                       << " double-reassociation=" << doubleReassociation);
+    BOOST_CHECK_LT(doubleReassociation, 1e-10);
+  };
+  compareAccumulation("O0", K, packed, scalesAsFloat, activation, originalProjection);
+  const auto* downWeight = tensorByName("model.layers.0.mlp.down_proj.MatMul.weight_Q4");
+  const auto* downScale = tensorByName("model.layers.0.mlp.down_proj.MatMul.weight_scales");
+  BOOST_REQUIRE(downWeight != nullptr && downScale != nullptr);
+  const auto downWeightRange = externalRange(*downWeight);
+  const auto downScaleRange = externalRange(*downScale);
+  const auto downPacked = readRange(downWeightRange.first, downWeightRange.second);
+  const auto downScaleBytes = readRange(downScaleRange.first, downScaleRange.second);
+  std::vector<float> downScales(downScaleBytes.size() / sizeof(float));
+  std::memcpy(downScales.data(), downScaleBytes.data(), downScaleBytes.size());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  compareAccumulation("down0", shape.ffn, downPacked, downScales, downActivation,
+                      originalDownProjection);
+}
+
 BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
 {
   // The C2 claim for the MLP is
@@ -1294,7 +1907,7 @@ BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
   constexpr std::uint64_t blockSize = qwen::QWEN_INT4_BLOCK_SIZE;
   constexpr std::uint64_t blobBytes = qwen::QWEN_INT4_BLOB_BYTES;
 
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-mlp-block");
+  Ort::Env& ortEnv = testOrtEnv();
   std::mt19937 rng(11);
 
   const auto randomPacked = [&] (std::uint64_t n, std::uint64_t k) {
@@ -1499,7 +2112,7 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
   constexpr std::uint64_t blockSize = qwen::QWEN_INT4_BLOCK_SIZE;
   constexpr std::uint64_t blobBytes = qwen::QWEN_INT4_BLOB_BYTES;
 
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-attention-block");
+  Ort::Env& ortEnv = testOrtEnv();
   std::mt19937 rng(23);
 
   const auto randomPacked = [&] (std::uint64_t n, std::uint64_t k) {
@@ -1751,7 +2364,10 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
     return values;
   };
 
-  std::vector<float> reduced(hidden * seq, 0.0f);
+  // The ranks' partials are kept as bundles and reduced through the production reducer, not by
+  // adding them here. A hand-written `reduced[i] += partial[i]` is a second implementation of the
+  // reduction, so it can agree with the reference while the path the Provider runs disagrees.
+  std::vector<std::vector<float>> rankPartials;
   for (std::uint64_t rank = 0; rank < degree; ++rank) {
     const auto qPerRank = queryHeads / degree;
     const auto kvPerRank = kvHeads / degree;
@@ -1780,9 +2396,49 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
 
     const auto partial = runAttention(qPerRank, kvPerRank, rankWq, rankSq, rankWk, rankSk,
                                       rankWv, rankSv, qPerRank * headDim, rankWo, rankSo);
-    BOOST_REQUIRE_EQUAL(partial.size(), reduced.size());
-    for (std::size_t i = 0; i < partial.size(); ++i) reduced[i] += partial[i];
+    BOOST_REQUIRE_EQUAL(partial.size(), std::size_t(hidden * seq));
+    rankPartials.push_back(partial);
   }
+  BOOST_REQUIRE_EQUAL(rankPartials.size(), degree);
+  // One bundle per rank, each holding the partial under the slot name the sealed SUM consumes.
+  struct OwnedPartials
+  {
+    std::vector<float> values;
+  };
+  // One bundle per rank, each holding its partial under the slot name the sealed SUM consumes.
+  std::vector<TensorBundle> bundles;
+  std::vector<std::shared_ptr<OwnedPartials>> ownersOfValues;
+  std::vector<std::vector<NamedTensorView>> contributions;
+  for (std::size_t rank = 0; rank < degree; ++rank) {
+    auto owned = std::make_shared<OwnedPartials>();
+    owned->values = rankPartials[rank];
+    ownersOfValues.push_back(owned);
+    auto local = std::make_shared<LocalTensorBundle>();
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(seq), static_cast<std::int64_t>(hidden)};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owned->values.data()),
+      owned->values.size() * sizeof(float));
+    local->tensors.push_back(view);
+    local->owner = owned;
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.localTensors = local;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    bundles.push_back(std::move(bundle));
+  }
+  for (const auto& bundle : bundles)
+    contributions.push_back(decodeTensorBundleViews(bundle));
+  // The production reducer, which is what the sealed SUM step calls.
+  const auto summed = sumTensorBundleViews("attention-block", contributions);
+  const auto summedViews = decodeTensorBundleViews(summed);
+  BOOST_REQUIRE(!summedViews.empty());
+  std::vector<float> reduced(summedViews.front().payload.size() / sizeof(float));
+  if (!reduced.empty())
+    std::memcpy(reduced.data(), summedViews.front().payload.data(),
+                summedViews.front().payload.size());
 
   double maxAbsolute = 0.0;
   double maxReference = 0.0;
@@ -1793,7 +2449,9 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
   BOOST_TEST_MESSAGE("attention block max abs error " << maxAbsolute
     << " against max |reference| " << maxReference);
   BOOST_CHECK(maxReference > 1e-3);
-  BOOST_CHECK(maxAbsolute < 1e-4);
+  // The measured value is 1.3e-07, so 1e-4 would let a 700-fold regression pass. The bound is set
+  // just above what the arithmetic actually produces, which is what makes it able to fail.
+  BOOST_CHECK_LT(maxAbsolute, 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(ResidualChainMatchesTheUnsplitSkipNorm)
@@ -3222,6 +3880,184 @@ BOOST_AUTO_TEST_CASE(TensorBackendRegistrationMirrorsTheProductionOrder)
   }
   catch (const std::out_of_range&) {
     BOOST_FAIL("the TP backend was not registered");
+  }
+}
+
+BOOST_AUTO_TEST_CASE(GenerationBoundPeerAdmissionIsStrictOnEveryDeliveryPath)
+{
+  class PeerIo final : public DependencyIo
+  {
+  public:
+    PeerIo(unsigned route, std::map<std::string, TensorBundle> bundles)
+      : m_route(route)
+      , m_bundles(std::move(bundles))
+    {
+    }
+
+    std::future<TensorBundle>
+    prefetchInput(const std::string&, const DependencyEdge& edge) override
+    {
+      auto promise = std::make_shared<std::promise<TensorBundle>>();
+      auto future = promise->get_future();
+      if (m_route == 1) {
+        promise->set_value(m_bundles.at(edge.scope));
+      }
+      else {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_pending.emplace_back(edge.scope, std::move(promise));
+        m_changed.notify_all();
+      }
+      return future;
+    }
+
+    void
+    publishOutput(const std::string&, const DependencyEdge&, const TensorBundle&) override
+    {
+    }
+
+    void
+    awaitPending()
+    {
+      std::unique_lock<std::mutex> lock(m_mutex);
+      if (!m_changed.wait_for(lock, std::chrono::seconds(2), [&] { return !m_pending.empty(); }))
+        throw std::runtime_error("peer fixture did not request its dependency");
+    }
+
+    void
+    deliver()
+    {
+      std::pair<std::string, std::shared_ptr<std::promise<TensorBundle>>> pending;
+      {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        pending = std::move(m_pending.back());
+        m_pending.pop_back();
+      }
+      pending.second->set_value(m_bundles.at(pending.first));
+    }
+
+  private:
+    unsigned m_route;
+    std::map<std::string, TensorBundle> m_bundles;
+    std::mutex m_mutex;
+    std::condition_variable m_changed;
+    std::vector<std::pair<std::string, std::shared_ptr<std::promise<TensorBundle>>>> m_pending;
+  };
+
+  for (unsigned route = 0; route < 3; ++route) {
+    for (unsigned binding = 0; binding < 3; ++binding) {
+      BOOST_TEST_CONTEXT("delivery=" << route << " binding=" << binding) {
+        qwen::QwenTpShape shape;
+        shape.hidden = 1024; shape.layers = 1; shape.queryHeads = 16;
+        shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072; shape.vocab = 151936;
+        NativeExecutionPlan plan;
+        qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+        plan.planDigest = "sha256:" + std::string(64, 'b');
+        ExecutionAttemptKey key;
+        key.requestId = "/request/peer-admission";
+        key.attemptEpoch = 1;
+        NativeProviderAssignment assignment;
+        assignment.providerByRole = {{"S0R0", "/provider/0"}, {"S0R1", "/provider/1"}};
+        auto role = roleSpecFor(plan, "S0R0", key, assignment, "/provider/0");
+        BOOST_REQUIRE_EQUAL(role.inputs.size(), 2U);
+        GenerationEpochLineageV1 lineage;
+        lineage.requestId = key.requestId;
+        lineage.generationId = "0123456789abcdef0123456789abcdef";
+        lineage.streamEpoch = 1;
+        lineage.inferenceEpoch = 0;
+        lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+        lineage.positionDigest = "sha256:" + std::string(64, 'a');
+        lineage.planDigest = plan.planDigest;
+        lineage.attemptEpoch = 1;
+        lineage.logicalPrefixTokenCount = 1;
+        lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
+        lineage.producerRole = "S0R0";
+        lineage.consumerRole = "S0R1";
+        role.generationLineage = lineage;
+        role.workStatistics = makeNativeWorkStatistics();
+        const auto statistics = role.workStatistics;
+        const auto values = [] (const std::string& name, std::initializer_list<float> numbers) {
+          return makeEncodedTensorBundle(name, {NamedTensor{
+            name, TensorElementType::Float32, {2}, float32Payload(numbers)}});
+        };
+        std::map<std::string, TensorBundle> peers, initial;
+        for (const auto& edge : role.inputs) {
+          auto peer = values("partial", {0.5f, 0.25f});
+          if (binding != 0) {
+            auto stamp = lineage;
+            stamp.producerRole = edge.producerRole;
+            stamp.consumerRole = edge.consumerRole;
+            stamp.operationIndex = edge.collectiveOperationIndex;
+            if (binding == 1) stamp.logicalPrefixDigest = "sha256:" + std::string(64, 'd');
+            peer = attachGenerationEpochLineage(peer, stamp);
+          }
+          peers.emplace(edge.scope, peer);
+          if (route == 0) initial.emplace(edge.scope, std::move(peer));
+        }
+        for (const auto& step : *role.steps)
+          for (const auto& slot : step.inputSlots)
+            if (slot.source == "EPOCH_INPUT")
+              initial.emplace(slot.slotId, values(slot.slotId, {0.0f, 0.0f}));
+        unsigned successors = 0;
+        const auto runner = [&] (const RoleExecutionContext& context) {
+          if (context.activeStep->stepId.find("/MLP/") != std::string::npos ||
+              context.activeStep->stepId.find("/HEAD") != std::string::npos) {
+            ++successors;
+            const auto merged = context.stepInputsBySlot.find("merged");
+            if (merged != context.stepInputsBySlot.end()) {
+              const auto tensors = decodeTensorBundleViews(merged->second);
+              BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+              BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
+              std::array<float, 2> actual{};
+              BOOST_REQUIRE_EQUAL(tensors.front().payload.size(), sizeof(actual));
+              std::memcpy(actual.data(), tensors.front().payload.data(), sizeof(actual));
+              BOOST_CHECK_EQUAL(actual[0], 1.5f);
+              BOOST_CHECK_EQUAL(actual[1], 2.25f);
+            }
+          }
+          std::map<std::string, TensorBundle> outputs;
+          for (const auto& slot : context.activeStep->outputSlots)
+            outputs.emplace(slot.slotId, values(slot.slotId, {1.0f, 2.0f}));
+          return outputs;
+        };
+        auto io = std::make_shared<PeerIo>(route, peers);
+        ProviderRoleWorker worker(1, 1, 16, std::chrono::seconds(5));
+        std::vector<std::future<ProviderRoleResult>> sentinels;
+        try {
+          auto future = worker.executeAsync(key.requestId, role, io, runner, initial);
+          if (route == 2) {
+            for (unsigned delivery = 0; delivery < (binding == 2 ? 2U : 1U); ++delivery) {
+              io->awaitPending();
+              // A sentinel on the sole compute worker proves the first unit actually suspended.
+              RoleSpec sentinel;
+              sentinel.role = "sentinel";
+              auto sentinelFuture = worker.executeAsync("sentinel", sentinel,
+                std::make_shared<CountingDependencyIo>(),
+                [] (const RoleExecutionContext&) { return std::map<std::string, TensorBundle>{}; });
+              const auto released = sentinelFuture.wait_for(std::chrono::seconds(2)) ==
+                std::future_status::ready;
+              io->deliver();
+              sentinels.push_back(std::move(sentinelFuture));
+              BOOST_CHECK(released);
+            }
+          }
+          (void)future.get();
+          BOOST_REQUIRE_EQUAL(binding, 2U);
+          BOOST_CHECK_GT(successors, 0U);
+        }
+        catch (const std::runtime_error& error) {
+          BOOST_REQUIRE_NE(binding, 2U);
+          BOOST_CHECK_EQUAL(error.what(), binding == 0 ? "GENERATION_EPOCH_LINEAGE_MISSING" :
+                                                     "GENERATION_EPOCH_LINEAGE_MISMATCH");
+          BOOST_CHECK_EQUAL(successors, 0U);
+        }
+        for (auto& sentinel : sentinels) (void)sentinel.get();
+        const auto counts = statistics->snapshot().counts;
+        const auto sums = counts.count("sum.accumulators") ? counts.at("sum.accumulators") : 0U;
+        BOOST_CHECK_EQUAL(sums, binding == 2 ? 2U : 0U);
+        for (const auto& peer : peers)
+          BOOST_CHECK_EQUAL(bool(extractGenerationEpochLineage(peer.second)), binding != 0);
+      }
+    }
   }
 }
 
@@ -4886,6 +5722,363 @@ BOOST_AUTO_TEST_CASE(AssembledRankSatisfiesThePlanThatWillExecuteIt)
 }
 
 
+BOOST_AUTO_TEST_CASE(AStampedContributionCannotBeSummedWithAnUnstampedOne)
+{
+  // The failure mode the partial-lineage work kept hitting, reduced to the codec: a SUM compares
+  // contributions member by member, so one stamped contribution and one unstamped contribution do
+  // not agree -- and the message is the same one the coordinator fixtures reported. Naming the
+  // mechanism here means that message is no longer ambiguous when it appears upstream.
+  struct OwnedValues
+  {
+    std::vector<float> values{1.0f, 2.0f};
+  };
+  const auto viewOf = [] (const std::shared_ptr<OwnedValues>& owner) {
+    NamedTensorView view;
+    view.name = "activation";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(owner->values.size())};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    return view;
+  };
+  auto ownerA = std::make_shared<OwnedValues>();
+  auto ownerB = std::make_shared<OwnedValues>();
+  ownerB->values = {1.0f, 2.0f};
+  const auto bundleOf = [&viewOf] (const std::shared_ptr<OwnedValues>& owner) {
+    auto local = std::make_shared<LocalTensorBundle>();
+    local->tensors.push_back(viewOf(owner));
+    local->owner = owner;
+    TensorBundle bundle;
+    bundle.name = "activation";
+    bundle.localTensors = local;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    return bundle;
+  };
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "/request/sum-shape";
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.inferenceEpoch = 2;
+  lineage.transitionKind = "DECODE";
+  lineage.positionDigest = "sha256:" + std::string(64, 'a');
+  lineage.planDigest = "sha256:" + std::string(64, 'b');
+  lineage.attemptEpoch = 1;
+  lineage.logicalPrefixTokenCount = 1;
+  lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
+  lineage.producerRole = "S0R0";
+  lineage.consumerRole = "S0R1";
+  lineage.operationIndex = 3;
+  const auto stamped = attachGenerationEpochLineage(bundleOf(ownerA), lineage);
+  const auto plain = bundleOf(ownerB);
+  const auto stripped = stripGenerationEpochLineage(stamped);
+  // The views borrow storage, so the bundles have to outlive them -- the rvalue overload is
+  // deleted for exactly that reason, and naming the bundles keeps the borrow visible.
+  const auto stampedViews = decodeTensorBundleViews(stamped);
+  const auto plainViews = decodeTensorBundleViews(plain);
+  const auto strippedViews = decodeTensorBundleViews(stripped);
+  // One stamped and one plain: the counts differ by exactly the lineage tensor.
+  BOOST_CHECK_THROW(
+    sumTensorBundleViews("merged", {stampedViews, plainViews}),
+    std::invalid_argument);
+  // Both stripped: the same arithmetic, and the sum succeeds.
+  const auto sum = sumTensorBundleViews("merged", {strippedViews, plainViews});
+  const auto summed = decodeTensorBundleViews(sum);
+  BOOST_REQUIRE_EQUAL(summed.size(), 1U);
+  const auto* numbers = reinterpret_cast<const float*>(summed.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 2.0f);
+  BOOST_CHECK_EQUAL(numbers[1], 4.0f);
+}
+
+BOOST_AUTO_TEST_CASE(StampingAndStrippingALocalPartialLeavesItsArithmeticUntouched)
+{
+  // The minimal reproduction for the partial-lineage work: one local value, one stamp, one strip.
+  // The SUM compares tensor counts, so anything the strip leaves behind changes the reduction it
+  // is handed -- and a stamp that adds a tensor without the strip removing it makes two ranks
+  // disagree about how many contributions they have.
+  struct OwnedValues
+  {
+    std::vector<float> values{1.5f, -2.25f};
+  };
+  auto owner = std::make_shared<OwnedValues>();
+  NamedTensorView view;
+  view.name = "activation";
+  view.elementType = TensorElementType::Float32;
+  view.shape = {1, static_cast<std::int64_t>(owner->values.size())};
+  view.payload = ndn::span<const std::uint8_t>(
+    reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+    owner->values.size() * sizeof(float));
+  auto local = std::make_shared<LocalTensorBundle>();
+  local->tensors.push_back(view);
+  local->owner = owner;
+  TensorBundle bundle;
+  bundle.name = "activation";
+  bundle.localTensors = local;
+  bundle.expectedBytes = tensorBundleWireSize(*local);
+  BOOST_REQUIRE(bundle.localTensors != nullptr);
+  BOOST_CHECK_EQUAL(decodeTensorBundleViews(bundle).size(), 1U);
+
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = "/request/lineage-roundtrip";
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.attemptEpoch = 1;
+  lineage.inferenceEpoch = 2;
+  lineage.transitionKind = "DECODE";
+  lineage.positionDigest = "sha256:" + std::string(64, 'a');
+  lineage.planDigest = "sha256:" + std::string(64, 'b');
+  lineage.logicalPrefixTokenCount = 1;
+  lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
+  lineage.producerRole = "S0R0";
+  lineage.consumerRole = "S0R1";
+  lineage.operationIndex = 3;
+
+  const auto stamped = attachGenerationEpochLineage(bundle, lineage);
+  // The stamp adds exactly one tensor, and its name is the reserved one.
+  const auto stampedViews = decodeTensorBundleViews(stamped);
+  BOOST_REQUIRE_EQUAL(stampedViews.size(), 2U);
+  BOOST_CHECK_EQUAL(stampedViews.back().name, generationEpochLineageTensorName());
+  // Its size follows from the views, not from the previous total plus a payload length.
+  BOOST_CHECK_EQUAL(stamped.expectedBytes, tensorBundleWireSize(*stamped.localTensors));
+  // The arithmetic is untouched: the activation view still points at the same bytes.
+  const auto stampedActivation = std::find_if(stampedViews.begin(), stampedViews.end(),
+    [] (const auto& view) { return view.name == "activation"; });
+  BOOST_REQUIRE(stampedActivation != stampedViews.end());
+  BOOST_CHECK_EQUAL(stampedActivation->payload.data(), bundle.localTensors->tensors.front().payload.data());
+
+  const auto stripped = stripGenerationEpochLineage(stamped);
+  const auto strippedViews = decodeTensorBundleViews(stripped);
+  // Back to one tensor: a strip that removed nothing would leave the SUM comparing two counts.
+  BOOST_REQUIRE_EQUAL(strippedViews.size(), 1U);
+  BOOST_CHECK_EQUAL(strippedViews.front().name, std::string("activation"));
+  BOOST_CHECK_EQUAL(strippedViews.front().payload.data(), stampedActivation->payload.data());
+  BOOST_CHECK_EQUAL(stripped.expectedBytes, tensorBundleWireSize(*stripped.localTensors));
+  BOOST_CHECK_EQUAL(stripped.expectedBytes, bundle.expectedBytes);
+  // And the values themselves are the originals.
+  const auto* numbers = reinterpret_cast<const float*>(strippedViews.front().payload.data());
+  BOOST_CHECK_EQUAL(numbers[0], 1.5f);
+  BOOST_CHECK_EQUAL(numbers[1], -2.25f);
+  // A value with no lineage reports none and is returned unchanged.
+  BOOST_CHECK(!extractGenerationEpochLineage(bundle).has_value());
+  BOOST_CHECK_EQUAL(stripGenerationEpochLineage(bundle).expectedBytes, bundle.expectedBytes);
+}
+
+BOOST_AUTO_TEST_CASE(TheDeclaredBoundaryEqualsTheOneExtractionProduces)
+{
+  // `describeQwenTpEntryBoundary` exists so the native assembly worker can be given an entry's
+  // input and output list before extraction happens -- extraction consumes the source, and the
+  // worker needs the list in its certified recipe. Two implementations of that boundary would drift,
+  // so this asserts the declared one equals what extraction actually emits, on the frozen export.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
+                                              std::istreambuf_iterator<char>());
+  onnx::ModelProto probe;
+  BOOST_REQUIRE(probe.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+  const auto classified = qwen::classifyQwenTpEntryNodes(probe, 28);
+  BOOST_REQUIRE(!classified.empty());
+  // Every kind at the first and last layer, so the check is not one shape.
+  for (const auto* kind : {"INIT", "ATTN", "MLP", "HEAD"}) {
+    for (const std::uint64_t layer : {std::uint64_t{0}, std::uint64_t{27}}) {
+      const auto entry = std::find_if(classified.begin(), classified.end(),
+        [&] (const auto& item) { return item.kind == kind && item.layer == layer; });
+      if (entry == classified.end()) continue;
+      const auto described = qwen::describeQwenTpEntryBoundary(probe, *entry);
+      // Extraction consumes its source, so each comparison gets its own parse.
+      onnx::ModelProto copy;
+      BOOST_REQUIRE(copy.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+      const auto extracted = qwen::extractQwenTpEntryModel(
+        copy, *entry, std::string(kind) + "/" + std::to_string(layer));
+      std::vector<std::string> describedIn, describedOut, extractedIn, extractedOut;
+      for (const auto& value : described.first) describedIn.push_back(value.name());
+      for (const auto& value : described.second) describedOut.push_back(value.name());
+      for (const auto& value : extracted.graph().input()) extractedIn.push_back(value.name());
+      for (const auto& value : extracted.graph().output()) extractedOut.push_back(value.name());
+      std::sort(describedIn.begin(), describedIn.end());
+      std::sort(describedOut.begin(), describedOut.end());
+      std::sort(extractedIn.begin(), extractedIn.end());
+      std::sort(extractedOut.begin(), extractedOut.end());
+      BOOST_TEST_MESSAGE(kind << "/" << layer << " inputs=" << extractedIn.size()
+                         << " outputs=" << extractedOut.size());
+      BOOST_CHECK(describedIn == extractedIn);
+      BOOST_CHECK(describedOut == extractedOut);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(AssemblyEnforcesItsDeadlineAndItsTotalByteBudget)
+{
+  // Both limits are the rank's, and neither had a negative case. A budget that is never exceeded
+  // and a deadline that never expires prove nothing: the checks could be absent entirely and every
+  // other case would still pass.
+  //
+  // The tiny graph is enough -- these are threshold checks, not arithmetic ones.
+  const std::uint64_t layers = 2;
+  auto model = makeTinyRankGraph(layers);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-assembly-limits-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root, cleanupError);
+
+  // A budget below the first entry's size: the table cannot fit, and the refusal must name the
+  // budget rather than surface later as a load failure.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.maxAssembledBytes = 1;
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "small", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("assembled-byte budget") != std::string::npos;
+      });
+  }
+  // A budget that fits one entry but not two: this is the only shape that shows the total
+  // accumulating rather than each entry being judged alone. The sizes come from a first unbounded
+  // run, so the threshold is the graph's real size rather than a guess.
+  {
+    const auto unbounded = qwen::assembleQwenTpEntryTable(
+      root / "measure", "S0R0", bytes, layers, qwen::QwenTpAssemblyShards{});
+    BOOST_REQUIRE_GE(unbounded.size(), 2U);
+    std::vector<std::uint64_t> sizes;
+    for (const auto& entry : unbounded) {
+      std::error_code sizeError;
+      const auto written = std::filesystem::file_size(
+        root / "measure" / entry.relativeGraphPath, sizeError);
+      BOOST_REQUIRE(!sizeError);
+      sizes.push_back(static_cast<std::uint64_t>(written));
+    }
+    const auto firstOnly = sizes.front();
+    const auto firstTwo = sizes.front() + sizes[1];
+    BOOST_REQUIRE(firstTwo > firstOnly);
+    qwen::QwenTpAssemblyControl control;
+    // Room for the first entry and a little more, but not for the second.
+    control.maxAssembledBytes = firstOnly + (firstTwo - firstOnly) / 2;
+    BOOST_TEST_MESSAGE("cumulative budget: first=" << firstOnly
+                       << " firstTwo=" << firstTwo
+                       << " budget=" << control.maxAssembledBytes);
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "partial", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("assembled-byte budget") != std::string::npos;
+      });
+  }
+  // A zero budget means "no limit", which is what the in-process tools rely on.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.maxAssembledBytes = 0;
+    BOOST_CHECK_NO_THROW(
+      qwen::assembleQwenTpEntryTable(root / "unlimited", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control));
+  }
+  // An already-expired deadline refuses before the first entry is written.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "expired", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("deadline expired") != std::string::npos;
+      });
+  }
+  // And an owner fence that reports cancellation stops the walk, so a cancelled rank does not
+  // finish writing a table nobody will load.
+  {
+    qwen::QwenTpAssemblyControl control;
+    control.requireActive = [] {
+      throw std::runtime_error("owner fence cancelled the rank");
+    };
+    BOOST_CHECK_EXCEPTION(
+      qwen::assembleQwenTpEntryTable(root / "cancelled", "S0R0", bytes, layers,
+                                     qwen::QwenTpAssemblyShards{}, &control),
+      std::runtime_error, [] (const std::exception& error) {
+        return std::string(error.what()).find("owner fence cancelled") != std::string::npos;
+      });
+  }
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(RankSpecPreparationUsesTheCallersAssemblyFence)
+{
+  const std::uint64_t layers = 2;
+  const auto model = makeTinyRankGraph(layers);
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-rank-fence-" + std::to_string(getpid()));
+  BOOST_REQUIRE(!std::filesystem::exists(root));
+  struct Scratch
+  {
+    std::filesystem::path path;
+    ~Scratch()
+    {
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+    }
+  } scratch{root};
+  const auto entries = qwen::assembleQwenTpEntryTable(root / "measure", "S0R0", bytes, layers);
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& entry : entries) {
+    NativeExecutionStepSpec step;
+    step.stepId = entry.entryId;
+    step.unitId = "S0R0";
+    step.operation = "CALL_SUBGRAPH";
+    step.artifactEntry = entry.entryId;
+    steps.push_back(std::move(step));
+  }
+  for (unsigned mode = 0; mode < 4; ++mode) {
+    BOOST_TEST_CONTEXT("fence mode=" << mode) {
+      const auto directory = root / std::to_string(mode);
+      std::filesystem::create_directories(directory);
+      NativeModelRunnerSpec spec;
+      spec.role = "S0R0";
+      spec.kind = "onnx";
+      spec.backend = "onnxruntime";
+      spec.path = (directory / "model.onnx").string();
+      { std::ofstream file(spec.path, std::ios::binary); file.write(wire.data(), wire.size()); }
+      qwen::QwenTpAssemblyControl control;
+      if (mode == 0)
+        control.deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+      const auto trigger = mode == 1 ? entries.front().relativeGraphPath :
+                                       entries.back().relativeGraphPath;
+      control.requireActive = [&] {
+        if ((mode == 1 || mode == 2) && std::filesystem::exists(directory / trigger))
+          throw std::runtime_error("owner fence cancelled");
+      };
+      if (mode == 3) {
+        qwen::configureQwenTpRankSpec(spec, layers, steps, 1U << 20, 1, 0, {}, &control);
+        BOOST_CHECK_EQUAL(spec.backend, "native-qwen-tensor");
+        BOOST_CHECK_EQUAL(qwen::parseQwenTpEntryTable(
+          spec.metadata.at("tensorParallelEntries")).size(), entries.size());
+      }
+      else {
+        BOOST_CHECK_EXCEPTION(
+          qwen::configureQwenTpRankSpec(spec, layers, steps, 1U << 20, 1, 0, {}, &control),
+          std::runtime_error, [&] (const std::runtime_error& error) {
+            return mode == 0 ? std::string(error.what()).find("deadline expired") != std::string::npos
+                             : std::string(error.what()) == "owner fence cancelled";
+          });
+        BOOST_CHECK_EQUAL(spec.backend, "onnxruntime");
+        BOOST_CHECK(spec.metadata.count("tensorParallelEntries") == 0);
+        if (mode != 0) BOOST_CHECK(std::filesystem::exists(directory / trigger));
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(ShardedAssemblyNarrowsEachEntryToItsRankSlice)
 {
   // Without slicing, every rank loads complete weights and the partition saves
@@ -5804,14 +6997,27 @@ public:
     bundle.name = edge.scope;
     bundle.payload = encodeTensorBundle({tensor});
     bundle.expectedBytes = bundle.payload.size();
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (lineage) {
+        auto peer = *lineage;
+        peer.producerRole = edge.producerRole;
+        peer.consumerRole = edge.consumerRole;
+        peer.operationIndex = edge.collectiveOperationIndex;
+        bundle = attachGenerationEpochLineage(bundle, peer);
+      }
+    }
     promise.set_value(std::move(bundle));
     return promise.get_future();
   }
 
   void
   publishOutput(const std::string&, const DependencyEdge& edge,
-                const TensorBundle&) override
+                const TensorBundle& bundle) override
   {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (edge.operationKind == "TENSOR_PARTIAL")
+      lineage = extractGenerationEpochLineage(bundle);
     ++publishCalls;
     publishedScopes.push_back(edge.scope);
   }
@@ -5819,6 +7025,7 @@ public:
   std::atomic<std::size_t> prefetchCalls{0};
   std::atomic<std::size_t> publishCalls{0};
   std::mutex mutex;
+  std::optional<GenerationEpochLineageV1> lineage;
   std::vector<std::string> publishedScopes;
 };
 
@@ -7876,7 +9083,6 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
       "/model/pos_ids_reformat/Reshape/output_0";
     side.runner = factory.create(spec);
-    BOOST_REQUIRE(side.runner != nullptr);
 
     side.role.role = unit;
     side.role.requestId = requestId.toUri();
@@ -9598,7 +10804,18 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
         partial.payload.assign(static_cast<std::size_t>(hidden) * sizeof(float), 0);
         float* values = reinterpret_cast<float*>(partial.payload.data());
         for (std::size_t index = 0; index < hidden; ++index) values[index] = 0.5f;
-        promise.set_value(makeEncodedTensorBundle(edge.scope, {std::move(partial)}));
+        auto bundle = makeEncodedTensorBundle(edge.scope, {std::move(partial)});
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          if (lineage) {
+            auto peer = *lineage;
+            peer.producerRole = edge.producerRole;
+            peer.consumerRole = edge.consumerRole;
+            peer.operationIndex = edge.collectiveOperationIndex;
+            bundle = attachGenerationEpochLineage(bundle, peer);
+          }
+        }
+        promise.set_value(std::move(bundle));
       }
       else {
         promise.set_exception(std::make_exception_ptr(
@@ -9612,6 +10829,8 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
                   const TensorBundle& bundle) override
     {
       std::lock_guard<std::mutex> lock(mutex);
+      if (edge.operationKind == "TENSOR_PARTIAL")
+        lineage = extractGenerationEpochLineage(bundle);
       published.emplace(edge.scope, bundle);
     }
 
@@ -9619,6 +10838,7 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
     std::map<std::string, std::string> tensorNameByKind;
     std::int64_t hidden = 0;
     std::mutex mutex;
+    std::optional<GenerationEpochLineageV1> lineage;
   };
 
   auto io = std::make_shared<SamplingIo>(partialTensorNameByKind, static_cast<std::int64_t>(shape.hidden));
@@ -10370,6 +11590,479 @@ BOOST_AUTO_TEST_CASE(TheWholeStackProducesTheSameKvAsTheUnsplitExportOnOneContex
   // exists runs on synthetic activations at four positions, not here.
   BOOST_CHECK_EQUAL(compared,
     static_cast<std::size_t>(shape.layers) * 2U * prompt.size() * 8U * 128U * 1U);
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(TheFirstTurnContinuesFromAnEmptyPrefixInTheUnsplitReference)
+{
+  // What the warm case cannot say for itself. It proves the restored cache equals the cache it
+  // came from; it does not prove that continuing from that cache reproduces the model.
+  //
+  // The deployment's second turn is a 24-token prompt appended to a 57-token committed prefix --
+  // 25 prompt tokens plus 32 generated ones from the first turn -- so the first token of the
+  // second turn is read at position 80 of an 81-token context. That whole context is what the
+  // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
+  // question, which is the mistake this case made in its first form (its argmax was the last
+  // prompt token instead of the turn's first output).
+  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
+  if (turn0Prompt.size() != 25U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
+    return;
+  }
+  // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
+  // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
+  // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
+  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
+  if (turn0Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
+    return;
+  }
+  // Read from the deployment's own input file rather than transcribed by hand. The first
+  // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
+  // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
+  // property of the wrong prompt, not of the model.
+  // The deployment's input directory is root-owned, so the file is read from a readable copy of
+  // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
+
+  // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
+  // appended to it. Both facts come from the deployment's own checkpoint counts (57 then 113).
+  // The first turn is the cold start: its whole context is the 25-token prompt, with no prefix
+  // before it. That is what makes it a distinct case from the two that continue a committed one.
+  std::vector<std::int64_t> turnContext = turn0Prompt;
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 25U);
+  // Read from the deployment's own result file. The literal that used to be here was wrong from
+  // element 4 onward -- it listed 1267, 13089, 311 where the run produced 264, 14175, 3110 -- so the
+  // reference was being compared against numbers no run had ever emitted, and its "first
+  // divergence at step 4" was the point where my transcription and the reference disagreed with
+  // each other, not where two computations of the model disagreed.
+  const auto expected = turn0Generated;
+
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
+    return;
+  }
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-turn0-oracle-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "ref", cleanupError);
+  std::filesystem::copy_file(source, root / "ref" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "ref" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "ref" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  NativeModelRunnerSpec spec;
+  spec.role = "REF";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "ref" / "model.onnx").string();
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  spec.metadata["outputScope"] = "logits";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  const auto makeInt64 = [] (const std::string& name,
+                             const std::vector<std::int64_t>& shape,
+                             const std::vector<std::int64_t>& values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = shape;
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  constexpr std::size_t kVocab = 151936;
+  // The five highest logits of the last row, filled by every runStep call. A disagreement between
+  // the reference and the deployment is either a near-tie that floating-point reassociation can
+  // flip, or a genuine arithmetic difference; the gap between the winner and the runner-up says
+  // which, and without it "they diverge" is not a diagnosis.
+  std::vector<std::pair<std::size_t, float>> lastTop;
+  const auto runStep = [&] (const std::vector<std::int64_t>& prefix,
+                            const std::string& requestId) {
+    RoleSpec role;
+    role.role = "REF";
+    role.requestId = requestId;
+    role.attemptEpoch = 1;
+    const auto length = static_cast<std::int64_t>(prefix.size());
+    std::vector<std::int64_t> ones(prefix.size(), 1);
+    std::vector<std::int64_t> positions(prefix.size());
+    for (std::int64_t index = 0; index < length; ++index) positions[index] = index;
+    std::map<std::string, TensorBundle> inputs{
+      {"input_ids", makeInt64("input_ids", {1, length}, prefix)},
+      {"attention_mask", makeInt64("attention_mask", {1, length}, ones)},
+      {"position_ids", makeInt64("position_ids", {1, length}, positions)},
+    };
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+        inputs.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    {
+      NamedTensor mask;
+      mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+      mask.elementType = TensorElementType::Int32;
+      mask.shape = {1, 1};
+      mask.payload.assign(sizeof(std::int32_t), 0);
+      inputs.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+      NamedTensor total;
+      total.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+      total.elementType = TensorElementType::Int32;
+      total.shape = {};
+      const auto value = static_cast<std::int32_t>(length);
+      total.payload.resize(sizeof(value));
+      std::memcpy(total.payload.data(), &value, sizeof(value));
+      inputs.emplace(total.name, makeEncodedTensorBundle(total.name, {std::move(total)}));
+    }
+    ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(600));
+    auto io = std::make_shared<CountingDependencyIo>();
+    auto result = worker.executePreparedAsync(requestId, std::move(role), io,
+                                              [runner] { return runner; }, inputs).get();
+    const auto logits = result.outputsByScope.find("logits");
+    BOOST_REQUIRE(logits != result.outputsByScope.end());
+    std::vector<float> values;
+    const auto tensors = decodeTensorBundleViews(logits->second);
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [] (const auto& tensor) { return tensor.name == "logits"; });
+    BOOST_REQUIRE(found != tensors.end());
+    // A wire payload is byte-aligned and a bundle's tensor starts at a framing offset, so the
+    // float view is taken through memcpy. Dereferencing a float* here is the same unaligned
+    // access UBSan reported in the tensor codec's sum helper.
+    values.resize(found->payload.size() / sizeof(float));
+    if (!values.empty())
+      std::memcpy(values.data(), found->payload.data(), found->payload.size());
+    BOOST_REQUIRE_EQUAL(values.size() % kVocab, 0U);
+    const auto rows = values.size() / kVocab;
+    const auto* tail = values.data() + (rows - 1) * kVocab;
+    std::size_t best = 0;
+    for (std::size_t index = 1; index < kVocab; ++index)
+      if (tail[index] > tail[best]) best = index;
+    lastTop.clear();
+    for (std::size_t rank = 0; rank < 5 && rank < kVocab; ++rank) {
+      std::size_t pick = 0;
+      float pickValue = -std::numeric_limits<float>::infinity();
+      for (std::size_t index = 0; index < kVocab; ++index) {
+        const bool taken = std::any_of(lastTop.begin(), lastTop.end(),
+          [index] (const auto& item) { return item.first == index; });
+        if (taken) continue;
+        if (tail[index] > pickValue) { pickValue = tail[index]; pick = index; }
+      }
+      lastTop.emplace_back(pick, pickValue);
+    }
+    return static_cast<std::int64_t>(best);
+  };
+
+  // The first token of the turn decides whether the restored prefix was understood at all, and
+  // the rest decide whether it stayed understood. Both are compared against the recorded run.
+  // The whole 81-token context, with no trimming. An earlier form of this case popped the last
+  // token and found that 80 matched the first output; that was fitting the context to the answer
+  // after the prompt it was built from had itself been transcribed wrongly. Both are now read or
+  // derived from recorded data, so there is nothing to trim.
+  std::vector<std::int64_t> prefix = turnContext;
+  BOOST_REQUIRE_EQUAL(prefix.size(), 25U);
+  std::size_t differences = 0;
+  std::optional<std::size_t> firstDifference;
+  for (std::size_t step = 0; step < expected.size(); ++step) {
+    const auto produced = runStep(prefix, "/request/turn0/" + std::to_string(step));
+    if (produced != expected[step]) {
+      ++differences;
+      if (!firstDifference) firstDifference = step;
+      std::string top;
+      for (const auto& entry : lastTop) {
+        if (!top.empty()) top += ", ";
+        top += std::to_string(entry.first) + "=" + std::to_string(entry.second);
+      }
+      BOOST_TEST_MESSAGE("turn-0 step " << step << " differs: expected "
+                         << expected[step] << " got " << produced << " top5={" << top << "}");
+    }
+    // Feed both runs the same history by appending what the deployment recorded, not what this
+    // reference produced. Appending the reference's own output makes every step after the first
+    // disagreement compare different contexts, so the count of differing steps stops measuring
+    // the model and starts measuring how fast two contexts drift apart.
+    prefix.push_back(expected[step]);
+  }
+  BOOST_TEST_MESSAGE("turn-0 unsplit oracle compared " << expected.size()
+                     << " steps against the recorded history, " << differences
+                     << " differ, first at step "
+                     << (firstDifference ? std::to_string(*firstDifference) : "none"));
+  // The reference recomputes the whole prefix on every step and passes an empty past, while the
+  // deployment decodes with KV state. Those are two different computations of the same model, so
+  // the interesting question is where they stop agreeing: four tokens do, the fifth does not.
+  //
+  // Every step agrees. That is the C8 comparison this case exists for: the unsplit export,
+  // recomputing the whole context each step, produces exactly the sequence the distributed run
+  // produced with KV state. The earlier 28-difference result came from a transcribed `expected`
+  // that was wrong from element 4 onward, not from the model.
+  BOOST_CHECK_EQUAL(differences, 0U);
+  BOOST_CHECK(!firstDifference.has_value());
+
+  std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(AThirdTurnContinuesFromTheSecondTurnsCommittedPrefix)
+{
+  // What the warm case cannot say for itself. It proves the restored cache equals the cache it
+  // came from; it does not prove that continuing from that cache reproduces the model.
+  //
+  // The deployment's second turn is a 24-token prompt appended to a 57-token committed prefix --
+  // 25 prompt tokens plus 32 generated ones from the first turn -- so the first token of the
+  // second turn is read at position 80 of an 81-token context. That whole context is what the
+  // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
+  // question, which is the mistake this case made in its first form (its argmax was the last
+  // prompt token instead of the turn's first output).
+  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
+  if (turn0Prompt.size() != 25U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
+    return;
+  }
+  // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
+  // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
+  // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
+  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
+  if (turn0Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
+    return;
+  }
+  // Read from the deployment's own input file rather than transcribed by hand. The first
+  // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
+  // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
+  // property of the wrong prompt, not of the model.
+  // The deployment's input directory is root-owned, so the file is read from a readable copy of
+  // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
+  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
+  const auto turn1Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
+  if (turn1Prompt.size() != 24U || turn1Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 copies are absent; skipping");
+    return;
+  }
+  // The third turn's prompt is the first 24 tokens the second turn generated, which is how the
+  // deployment's third turn was built. It is derived rather than transcribed, so it cannot disagree
+  // with the run it is meant to describe.
+  const std::vector<std::int64_t> turn2Prompt(turn1Generated.begin(), turn1Generated.begin() + 24);
+  const auto turn2Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-2-output.json");
+  if (turn2Generated.size() != 32U) {
+    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-2 result copy is absent; skipping");
+    return;
+  }
+  // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
+  // appended to it. Both facts come from the deployment's own checkpoint counts (57 then 113).
+  std::vector<std::int64_t> turnContext = turn0Prompt;
+  turnContext.insert(turnContext.end(), turn0Generated.begin(), turn0Generated.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 57U);
+  turnContext.insert(turnContext.end(), turn1Prompt.begin(), turn1Prompt.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 81U);
+  turnContext.insert(turnContext.end(), turn1Generated.begin(), turn1Generated.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 113U);
+  turnContext.insert(turnContext.end(), turn2Prompt.begin(), turn2Prompt.end());
+  BOOST_REQUIRE_EQUAL(turnContext.size(), 137U);
+  // Read from the deployment's own result file. The literal that used to be here was wrong from
+  // element 4 onward -- it listed 1267, 13089, 311 where the run produced 264, 14175, 3110 -- so the
+  // reference was being compared against numbers no run had ever emitted, and its "first
+  // divergence at step 4" was the point where my transcription and the reference disagreed with
+  // each other, not where two computations of the model disagreed.
+  const auto expected = turn2Generated;
+
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    // Record that this case did not run. A skip that only prints a message looks identical to a
+    // pass in the summary line, and a qualification record must not count it as either.
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
+    return;
+  }
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec224-turn1-oracle-" + std::to_string(getpid()));
+  std::error_code cleanupError;
+  std::filesystem::remove_all(root, cleanupError);
+  std::filesystem::create_directories(root / "ref", cleanupError);
+  std::filesystem::copy_file(source, root / "ref" / "model.onnx",
+                             std::filesystem::copy_options::overwrite_existing, cleanupError);
+  std::filesystem::create_hard_link(modelDir + "/model.onnx_data",
+                                    root / "ref" / "model.onnx_data", cleanupError);
+  if (cleanupError) {
+    cleanupError.clear();
+    std::filesystem::copy_file(modelDir + "/model.onnx_data",
+                               root / "ref" / "model.onnx_data",
+                               std::filesystem::copy_options::overwrite_existing,
+                               cleanupError);
+  }
+
+  NativeModelRunnerSpec spec;
+  spec.role = "REF";
+  spec.kind = "onnx";
+  spec.backend = "onnxruntime";
+  spec.path = (root / "ref" / "model.onnx").string();
+  spec.metadata["unrankedInputNames"] =
+    "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
+    "/model/pos_ids_reformat/Reshape/output_0";
+  spec.metadata["outputScope"] = "logits";
+  RegistryNativeModelRunnerFactory factory;
+  ndnsf::di::registerOnnxRuntimeBackend(factory);
+  auto runner = factory.create(spec);
+  BOOST_REQUIRE(runner != nullptr);
+
+  const auto makeInt64 = [] (const std::string& name,
+                             const std::vector<std::int64_t>& shape,
+                             const std::vector<std::int64_t>& values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Int64;
+    tensor.shape = shape;
+    tensor.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(tensor)});
+  };
+  constexpr std::size_t kVocab = 151936;
+  // The five highest logits of the last row, filled by every runStep call. A disagreement between
+  // the reference and the deployment is either a near-tie that floating-point reassociation can
+  // flip, or a genuine arithmetic difference; the gap between the winner and the runner-up says
+  // which, and without it "they diverge" is not a diagnosis.
+  std::vector<std::pair<std::size_t, float>> lastTop;
+  const auto runStep = [&] (const std::vector<std::int64_t>& prefix,
+                            const std::string& requestId) {
+    RoleSpec role;
+    role.role = "REF";
+    role.requestId = requestId;
+    role.attemptEpoch = 1;
+    const auto length = static_cast<std::int64_t>(prefix.size());
+    std::vector<std::int64_t> ones(prefix.size(), 1);
+    std::vector<std::int64_t> positions(prefix.size());
+    for (std::int64_t index = 0; index < length; ++index) positions[index] = index;
+    std::map<std::string, TensorBundle> inputs{
+      {"input_ids", makeInt64("input_ids", {1, length}, prefix)},
+      {"attention_mask", makeInt64("attention_mask", {1, length}, ones)},
+      {"position_ids", makeInt64("position_ids", {1, length}, positions)},
+    };
+    for (std::uint64_t layer = 0; layer < 28; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto name = "past_key_values." + std::to_string(layer) + "." + kind;
+        NamedTensor past;
+        past.name = name;
+        past.elementType = TensorElementType::Float32;
+        past.shape = {1, static_cast<std::int64_t>(8), 0, 128};
+        inputs.emplace(name, makeEncodedTensorBundle(name, {std::move(past)}));
+      }
+    }
+    {
+      NamedTensor mask;
+      mask.name = "/model/attn_mask_reformat/attn_mask_subgraph/Sub/Cast/output_0";
+      mask.elementType = TensorElementType::Int32;
+      mask.shape = {1, 1};
+      mask.payload.assign(sizeof(std::int32_t), 0);
+      inputs.emplace(mask.name, makeEncodedTensorBundle(mask.name, {std::move(mask)}));
+      NamedTensor total;
+      total.name = "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0";
+      total.elementType = TensorElementType::Int32;
+      total.shape = {};
+      const auto value = static_cast<std::int32_t>(length);
+      total.payload.resize(sizeof(value));
+      std::memcpy(total.payload.data(), &value, sizeof(value));
+      inputs.emplace(total.name, makeEncodedTensorBundle(total.name, {std::move(total)}));
+    }
+    ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(600));
+    auto io = std::make_shared<CountingDependencyIo>();
+    auto result = worker.executePreparedAsync(requestId, std::move(role), io,
+                                              [runner] { return runner; }, inputs).get();
+    const auto logits = result.outputsByScope.find("logits");
+    BOOST_REQUIRE(logits != result.outputsByScope.end());
+    std::vector<float> values;
+    const auto tensors = decodeTensorBundleViews(logits->second);
+    const auto found = std::find_if(tensors.begin(), tensors.end(),
+      [] (const auto& tensor) { return tensor.name == "logits"; });
+    BOOST_REQUIRE(found != tensors.end());
+    // A wire payload is byte-aligned and a bundle's tensor starts at a framing offset, so the
+    // float view is taken through memcpy. Dereferencing a float* here is the same unaligned
+    // access UBSan reported in the tensor codec's sum helper.
+    values.resize(found->payload.size() / sizeof(float));
+    if (!values.empty())
+      std::memcpy(values.data(), found->payload.data(), found->payload.size());
+    BOOST_REQUIRE_EQUAL(values.size() % kVocab, 0U);
+    const auto rows = values.size() / kVocab;
+    const auto* tail = values.data() + (rows - 1) * kVocab;
+    std::size_t best = 0;
+    for (std::size_t index = 1; index < kVocab; ++index)
+      if (tail[index] > tail[best]) best = index;
+    lastTop.clear();
+    for (std::size_t rank = 0; rank < 5 && rank < kVocab; ++rank) {
+      std::size_t pick = 0;
+      float pickValue = -std::numeric_limits<float>::infinity();
+      for (std::size_t index = 0; index < kVocab; ++index) {
+        const bool taken = std::any_of(lastTop.begin(), lastTop.end(),
+          [index] (const auto& item) { return item.first == index; });
+        if (taken) continue;
+        if (tail[index] > pickValue) { pickValue = tail[index]; pick = index; }
+      }
+      lastTop.emplace_back(pick, pickValue);
+    }
+    return static_cast<std::int64_t>(best);
+  };
+
+  // The first token of the turn decides whether the restored prefix was understood at all, and
+  // the rest decide whether it stayed understood. Both are compared against the recorded run.
+  // The whole 81-token context, with no trimming. An earlier form of this case popped the last
+  // token and found that 80 matched the first output; that was fitting the context to the answer
+  // after the prompt it was built from had itself been transcribed wrongly. Both are now read or
+  // derived from recorded data, so there is nothing to trim.
+  std::vector<std::int64_t> prefix = turnContext;
+  BOOST_REQUIRE_EQUAL(prefix.size(), 137U);
+  std::size_t differences = 0;
+  std::optional<std::size_t> firstDifference;
+  for (std::size_t step = 0; step < expected.size(); ++step) {
+    const auto produced = runStep(prefix, "/request/turn2/" + std::to_string(step));
+    if (produced != expected[step]) {
+      ++differences;
+      if (!firstDifference) firstDifference = step;
+      std::string top;
+      for (const auto& entry : lastTop) {
+        if (!top.empty()) top += ", ";
+        top += std::to_string(entry.first) + "=" + std::to_string(entry.second);
+      }
+      BOOST_TEST_MESSAGE("turn-2 step " << step << " differs: expected "
+                         << expected[step] << " got " << produced << " top5={" << top << "}");
+    }
+    // Feed both runs the same history by appending what the deployment recorded, not what this
+    // reference produced. Appending the reference's own output makes every step after the first
+    // disagreement compare different contexts, so the count of differing steps stops measuring
+    // the model and starts measuring how fast two contexts drift apart.
+    prefix.push_back(expected[step]);
+  }
+  BOOST_TEST_MESSAGE("turn-2 unsplit oracle compared " << expected.size()
+                     << " steps against the recorded history, " << differences
+                     << " differ, first at step "
+                     << (firstDifference ? std::to_string(*firstDifference) : "none"));
+  // The reference recomputes the whole prefix on every step and passes an empty past, while the
+  // deployment decodes with KV state. Those are two different computations of the same model, so
+  // the interesting question is where they stop agreeing: four tokens do, the fifth does not.
+  //
+  // Every step agrees. That is the C8 comparison this case exists for: the unsplit export,
+  // recomputing the whole context each step, produces exactly the sequence the distributed run
+  // produced with KV state. The earlier 28-difference result came from a transcribed `expected`
+  // that was wrong from element 4 onward, not from the model.
+  BOOST_CHECK_EQUAL(differences, 0U);
+  BOOST_CHECK(!firstDifference.has_value());
 
   std::filesystem::remove_all(root, cleanupError);
 }
@@ -11613,7 +13306,77 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     std::shared_ptr<NativeModelRunner> runner;
     RoleSpec role;
   };
+  // A pass-through that records each step's slot values, keyed by the rank's own step id so a
+  // replay can find the exact inputs one step consumed.
+  class CapturingRunner final : public NativeModelRunner
+  {
+  public:
+    CapturingRunner(std::shared_ptr<NativeModelRunner> inner,
+                    std::map<std::string, std::map<std::string, TensorBundle>>& capture,
+                    std::mutex& mutex)
+      : m_inner(std::move(inner))
+      , m_capture(capture)
+      , m_mutex(mutex)
+    {
+    }
+
+    std::map<std::string, TensorBundle>
+    run(const RoleExecutionContext& context) override
+    {
+      if (context.activeStep) {
+        // Two ranks run concurrently on the worker pool, so the capture is shared mutable state.
+        // Keyed by step id the entries do not collide, but `std::map` is not safe to mutate from
+        // two threads, and the run would then fail for a reason unrelated to the measurement.
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_capture[context.activeStep->stepId] = context.stepInputsBySlot;
+      }
+      return m_inner->run(context);
+    }
+
+    std::uint64_t
+    cacheIdentity() const
+    {
+      return m_inner->cacheIdentity();
+    }
+
+    // Forward the rest of the adapter surface. A decorator that swallowed these would hide the
+    // per-step backend timing and the opaque-state handle the worker relies on, and the run would
+    // look different for a reason that has nothing to do with the measurement.
+    std::optional<NativeRuntimeMetrics>
+    runtimeMetricsSnapshot() const override
+    {
+      return m_inner->runtimeMetricsSnapshot();
+    }
+
+    const std::optional<ExecutionEvidence>&
+    executionEvidence() const override
+    {
+      return m_inner->executionEvidence();
+    }
+
+    bool
+    supportsOpaqueStateHandles() const override
+    {
+      return m_inner->supportsOpaqueStateHandles();
+    }
+
+    std::optional<NativeOpaqueStateHandleV1>
+    stateHandleSnapshot(const std::string& sessionId) const override
+    {
+      return m_inner->stateHandleSnapshot(sessionId);
+    }
+
+  private:
+    std::shared_ptr<NativeModelRunner> m_inner;
+    std::map<std::string, std::map<std::string, TensorBundle>>& m_capture;
+    std::mutex& m_mutex;
+  };
+
+  std::map<std::string, std::map<std::string, TensorBundle>> capturedStepInputs;
+  std::mutex captureMutex;
   std::map<std::string, Side> sides;
+  // One statistics owner per unit, kept so the SUM counts can be read after the run.
+  std::map<std::string, std::shared_ptr<NativeWorkStatistics>> unitStatistics;
   for (const auto* unit : {"S0R0", "S0R1"}) {
     Side side;
     side.unit = unit;
@@ -11637,10 +13400,20 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     spec.metadata["unrankedInputNames"] =
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
       "/model/pos_ids_reformat/Reshape/output_0";
-    side.runner = factory.create(spec);
-    BOOST_REQUIRE(side.runner != nullptr);
+    auto innerRunner = factory.create(spec);
+    BOOST_REQUIRE(innerRunner != nullptr);
+    // Capture what each rank step actually consumed. The worker releases a step's collected
+    // inputs right after it runs, so the runner boundary is the only place they still exist -- and
+    // it is the boundary that matters: the values handed to the runner, not what a bus published.
+    side.runner = std::make_shared<CapturingRunner>(innerRunner, capturedStepInputs,
+                                                    captureMutex);
 
     side.role.role = unit;
+    // The SUM counts reach the report through this owner. Without it the codec records nothing, and
+    // a run that reduced 56 layers reports zero -- which is what the worker did until the owner was
+    // passed through.
+    side.role.workStatistics = makeNativeWorkStatistics();
+    unitStatistics[unit] = side.role.workStatistics;
     side.role.requestId = "/request/two-workers";
     side.role.attemptEpoch = 1;
     side.role.tensorDegree = 2;
@@ -11715,16 +13488,6 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
     return;
   }
-  const auto tokenVector = [] (const std::string& name,
-                               const std::vector<std::int64_t>& values) {
-    NamedTensor tensor;
-    tensor.name = name;
-    tensor.elementType = TensorElementType::Int64;
-    tensor.shape = {1, static_cast<std::int64_t>(values.size())};
-    tensor.payload.resize(values.size() * sizeof(std::int64_t));
-    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
-    return tensor;
-  };
   // The reference the KV is compared against: the unsplit export over the same 24-token context,
   // with its 28-layer state exposed. Built here rather than in a separate case so the two sides
   // cannot drift apart -- they share the prompt, the graph and the shape facts.
@@ -11771,11 +13534,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     refRole.attemptEpoch = 1;
     std::map<std::string, TensorBundle> refInputs{
       {"input_ids", makeEncodedTensorBundle("input_ids",
-        {tokenVector("input_ids", promptTokens)})},
+        {tokenTensor("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {tokenVector("attention_mask", ones)})},
+        {tokenTensor("attention_mask", ones)})},
       {"position_ids", makeEncodedTensorBundle("position_ids",
-        {tokenVector("position_ids", positions)})},
+        {tokenTensor("position_ids", positions)})},
     };
     for (std::uint64_t layer = 0; layer < 28; ++layer) {
       for (const auto* kind : {"key", "value"}) {
@@ -11827,11 +13590,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       positions[index] = static_cast<std::int64_t>(index);
     std::map<std::string, TensorBundle> initial{
       {"input_ids", makeEncodedTensorBundle("input_ids",
-        {tokenVector("input_ids", promptTokens)})},
+        {tokenTensor("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {tokenVector("attention_mask", ones)})},
+        {tokenTensor("attention_mask", ones)})},
       {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
-        {tokenVector("position_ids", positions)})},
+        {tokenTensor("position_ids", positions)})},
     };
     auto runner = item.second.runner;
     futures[item.first] = worker.executePreparedAsync(
@@ -11858,6 +13621,10 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // export is therefore possible without changing the worker or the graph.
   std::vector<float> rank0Values;
   std::vector<float> rank1Values;
+  // The published bundles as well as their values: the production reducer takes bundles, and the
+  // block below needs the same bytes the values came from.
+  std::optional<TensorBundle> rank0Partial;
+  std::optional<TensorBundle> rank1Partial;
   {
     const auto scopes = bus->publishedScopes();
     std::string preview;
@@ -11869,8 +13636,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     // Layer 0's attention partial from each rank. The two must sum to the unsplit export's layer-0
     // attention projection -- the same comparison the synthetic-input case makes, now on the real
     // 24-token context the chain actually carried.
-    const auto rank0Partial = bus->published("attn-0-from-S0R0");
-    const auto rank1Partial = bus->published("attn-0-from-S0R1");
+    rank0Partial = bus->published("attn-0-from-S0R0");
+    rank1Partial = bus->published("attn-0-from-S0R1");
     BOOST_REQUIRE_MESSAGE(rank0Partial.has_value(), "rank0 published no layer-0 attention partial");
     BOOST_REQUIRE_MESSAGE(rank1Partial.has_value(), "rank1 published no layer-0 attention partial");
     const auto valuesOf = [] (const TensorBundle& bundle) {
@@ -11935,6 +13702,15 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_REQUIRE(refRunner != nullptr);
     const auto refParent = std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(refRunner);
     BOOST_REQUIRE(refParent != nullptr);
+    // The inputs each step actually consumed, captured at the runner boundary. This is the only
+    // place they exist once the worker releases a step's collected inputs, and it is the boundary the
+    // audit names: the values the runner is handed, not the values the bus published. Comparing a
+    // bus partial against a residual was a previous mistake in this case's history.
+    // The capture map is the one declared above, shared with the rank-side decorator:
+    const auto captureInputs = [&capturedStepInputs] (const RoleExecutionContext& context) {
+      if (context.activeStep)
+        capturedStepInputs[context.activeStep->stepId] = context.stepInputsBySlot;
+    };
 
     // Run the unsplit INIT entry with the deployment's own prompt to obtain the embedding the
     // first attention block consumes. Reading it from the export rather than computing it keeps
@@ -11976,6 +13752,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           bound == entry.inputSlotByGraphName.end() ? item.first : bound->second,
           item.second);
       }
+      captureInputs(context);
       return refParent->run(context);
     };
 
@@ -11997,11 +13774,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     std::vector<std::int64_t> ones(promptTokens.size(), 1);
     std::map<std::string, TensorBundle> initFeeds{
       {"input_ids", makeEncodedTensorBundle("input_ids",
-        {tokenVector("input_ids", promptTokens)})},
+        {tokenTensor("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {tokenVector("attention_mask", ones)})},
+        {tokenTensor("attention_mask", ones)})},
       {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
-        {tokenVector("position_ids", positions)})},
+        {tokenTensor("position_ids", positions)})},
     };
     std::map<std::string, TensorBundle> initOut;
     try {
@@ -12057,15 +13834,69 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     double worstReferenceExcess = std::numeric_limits<double>::lowest();
     for (std::size_t index = 0; index < refValues.size(); ++index) {
       const auto reference = double(refValues[index]);
-      const auto actual = double(rank0Values[index]) + double(rank1Values[index]);
+      // The production reduction, not a double sum. The ranks' partials are float, and the SUM that
+      // consumes them is float; adding them here in double would compare a path nobody runs.
+      const auto actual = double(static_cast<float>(rank0Values[index] + rank1Values[index]));
       const auto difference = std::fabs(actual - reference);
       const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
       worstReference = std::max(worstReference, difference);
       worstReferenceExcess = std::max(worstReferenceExcess, difference - allowance);
     }
+    // Whether the split's difference is proportional to the value or scattered. A per-element
+    // relative error that sits at a constant magnitude is the signature of summing the same terms in
+    // a different order; one that jumps at particular indices is the signature of a wrong slice,
+    // because a mis-sliced weight reads the wrong operand rather than reading the right one twice.
+    {
+      double worstRelative = 0.0;
+      std::size_t worstIndex = 0;
+      double worstReferenceValue = 0.0;
+      double worstAbsolute = 0.0;
+      std::size_t outliers = 0;
+      constexpr double kWholeSumRelativeFloor = 1e-7;
+      for (std::size_t index = 0; index < refValues.size(); ++index) {
+        const auto reference = double(refValues[index]);
+        const auto actual = double(static_cast<float>(rank0Values[index] + rank1Values[index]));
+        const auto difference = std::fabs(actual - reference);
+        const auto magnitude = std::fabs(reference);
+        if (magnitude > 1e-3) {
+          const auto relative = difference / magnitude;
+          if (relative > worstRelative) {
+            worstRelative = relative;
+            worstIndex = index;
+            worstReferenceValue = reference;
+            worstAbsolute = difference;
+          }
+        }
+        if (difference > kWholeSumRelativeFloor * std::max(magnitude, 1.0)) ++outliers;
+      }
+      BOOST_TEST_MESSAGE("layer-0 split difference shape: worstRelative=" << worstRelative
+                         << " at index=" << worstIndex
+                         << " reference=" << worstReferenceValue
+                         << " absolute=" << worstAbsolute
+                         << " width=" << refValues.size()
+                         << " aboveOneUlp=" << outliers);
+    }
     BOOST_TEST_MESSAGE("layer-0 partial vs unsplit reference: worst=" << worstReference
                        << " excessOverC8=" << worstReferenceExcess
                        << " width=" << refValues.size());
+
+    // Where the difference enters. Layer 0's attention is fed by each side's own INIT output, so a
+    // difference at layer 0 can come from the embedding rather than from the split. The unsplit
+    // side's embedding is available here; the rank side's INIT output is an internal step result and
+    // is not surfaced by the worker, so this records what the comparison can reach today.
+    {
+      const auto embeddingViews = decodeTensorBundleViews(initOut.at("x0"));
+      BOOST_REQUIRE(!embeddingViews.empty());
+      std::vector<float> embedding(embeddingViews.front().payload.size() / sizeof(float));
+      if (!embedding.empty())
+        std::memcpy(embedding.data(), embeddingViews.front().payload.data(),
+                    embeddingViews.front().payload.size());
+      double magnitude = 0.0;
+      for (const auto value : embedding) magnitude = std::max(magnitude, std::fabs(double(value)));
+      BOOST_TEST_MESSAGE("unsplit INIT embedding width=" << embedding.size()
+                         << " maxMagnitude=" << magnitude
+                         << " first=" << (embedding.empty() ? 0.0f : embedding.front()));
+    }
     BOOST_CHECK_LE(worstReferenceExcess, 0.0);
 
     // The two reference paths have to agree before a difference between them can be attributed to
@@ -12190,29 +14021,760 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     };
     const auto rank0Layer1Values = valuesOf1(*rank0Layer1);
     const auto rank1Layer1Values = valuesOf1(*rank1Layer1);
-    BOOST_REQUIRE_EQUAL(refValues1.size(), rank0Layer1Values.size());
+    // Compared through the production reduction, not by adding the two halves in double. The
+    // arithmetic path matters: the worker sums in float, and a double sum would answer a question
+    // nobody asks. This is the same reduction the sealed SUM step runs.
+    const auto summedLayer1 = sumTensorBundleViews(
+      "layer-1-partial",
+      {decodeTensorBundleViews(*rank0Layer1), decodeTensorBundleViews(*rank1Layer1)});
+    const auto summedValues1 = [&] {
+      const auto views = decodeTensorBundleViews(summedLayer1);
+      BOOST_REQUIRE(!views.empty());
+      std::vector<float> values(views.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+      return values;
+    }();
+    BOOST_REQUIRE_EQUAL(refValues1.size(), summedValues1.size());
     double worst1 = 0.0;
     double excess1 = std::numeric_limits<double>::lowest();
+    // How much of the difference the float reduction alone explains, measured rather than assumed:
+    // the same two halves added in double. The gap between the two says whether the reduction order
+    // is a material part of this comparison or a negligible one.
+    double worstReductionGap = 0.0;
     for (std::size_t index = 0; index < refValues1.size(); ++index) {
       const auto reference = double(refValues1[index]);
-      const auto actual = double(rank0Layer1Values[index]) + double(rank1Layer1Values[index]);
-      const auto difference = std::fabs(actual - reference);
+      const auto reduced = double(summedValues1[index]);
+      const auto inDouble = double(rank0Layer1Values[index]) + double(rank1Layer1Values[index]);
+      const auto difference = std::fabs(reduced - reference);
       const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
       worst1 = std::max(worst1, difference);
+      worstReductionGap = std::max(worstReductionGap, std::fabs(reduced - inDouble));
       excess1 = std::max(excess1, difference - allowance);
     }
-    BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference: worst=" << worst1
-                       << " excessOverC8=" << excess1 << " width=" << refValues1.size());
-    // This is the locating measurement, and it says something the KV comparison could not:
-    // layer 1's attention projection agrees to 2.4e-6 while layer 1's KV differs by 1.5e-4 -- sixty
-    // times larger. Both are produced by the same attention block from the same input, so the
-    // difference is not in what the layer was given and not in the query-to-output path. It is in
-    // the key/value path: k_proj and v_proj with their rotary application.
-    //
-    // Asserted against C8 as measured rather than recorded: the projection meets the allowance, so
-    // the assertion can be the contract's. The KV assertion elsewhere still fails, and that is the
-    // correct pair of results -- one tensor of this layer is within tolerance and another is not.
+    // The replay the audit asks for: give the unsplit layer-1 attention exactly the inputs the
+    // rank's own layer-1 attention consumed, then compare the KV it produces. If the unsplit entry
+    // on the same inputs still differs, the difference is in this layer's operators or their shard
+    // parameters; if it agrees, the difference entered upstream and belongs to block 0.
+    {
+      // The rank side's own step inputs, captured at the runner boundary by the wrapper above.
+      // The rank's step id for this entry is <unit>/ATTN/<layer>; the capture is keyed by it.
+      if (!capturedStepInputs.empty()) {
+        std::string keys;
+        for (const auto& item2 : capturedStepInputs) {
+          if (!keys.empty()) keys += ' ';
+          if (keys.size() < 400) keys += item2.first;
+        }
+        BOOST_TEST_MESSAGE("captured step ids: count=" << capturedStepInputs.size()
+                           << " {" << keys << "}");
+      }
+      // Layer 0, where the chain first diverges. Same method: the rank's own inputs into the
+      // unsplit layer-0 attention, then compare both its projection and its KV. If this agrees, the
+      // divergence starts in layer 0's own operators; if it differs, the INIT embedding already
+      // differed and no attention comparison can be the origin.
+      {
+        // The INIT entry, the last link. Its boundary is three tensors, so a comparison here is
+        // unambiguous: if the unsplit INIT on the rank's own inputs produces the same embedding, the
+        // divergence starts after the embedding; if it differs, the embedding itself is the origin.
+        {
+          const auto initIt = capturedStepInputs.find("S0R0/INIT");
+          if (initIt == capturedStepInputs.end()) {
+            BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's INIT");
+          }
+          else {
+            const auto& initInputs = initIt->second;
+            std::map<std::string, TensorBundle> feeds;
+            std::size_t replaced = 0;
+            for (const auto& item2 : initFeeds) {
+              const auto asSlot = initInputs.find(item2.first);
+              if (asSlot != initInputs.end()) {
+                feeds.emplace(item2.first, asSlot->second);
+                ++replaced;
+                continue;
+              }
+              const auto bound = initEntry->inputSlotByGraphName.find(item2.first);
+              if (bound == initEntry->inputSlotByGraphName.end()) {
+                feeds.emplace(item2.first, item2.second);
+                continue;
+              }
+              const auto fed = initInputs.find(bound->second);
+              if (fed == initInputs.end()) feeds.emplace(item2.first, item2.second);
+              else { feeds.emplace(item2.first, fed->second); ++replaced; }
+            }
+            std::map<std::string, TensorBundle> replayedInit;
+            try {
+              replayedInit = runRefEntry(*initEntry, feeds);
+            }
+            catch (const std::exception& error) {
+              BOOST_FAIL(std::string("replay of the rank's INIT inputs: ") + error.what());
+            }
+            const auto replayedEmbedding = replayedInit.find("x0");
+            BOOST_REQUIRE_MESSAGE(replayedEmbedding != replayedInit.end(),
+                                  "the replayed INIT produced no embedding");
+            const auto replayedValues = [&] {
+              const auto views = decodeTensorBundleViews(replayedEmbedding->second);
+              BOOST_REQUIRE(!views.empty());
+              std::vector<float> values(views.front().payload.size() / sizeof(float));
+              if (!values.empty())
+                std::memcpy(values.data(), views.front().payload.data(),
+                            views.front().payload.size());
+              return values;
+            }();
+            const auto originalEmbedding = [&] {
+              const auto views = decodeTensorBundleViews(initOut.at("x0"));
+              BOOST_REQUIRE(!views.empty());
+              std::vector<float> values(views.front().payload.size() / sizeof(float));
+              if (!values.empty())
+                std::memcpy(values.data(), views.front().payload.data(),
+                            views.front().payload.size());
+              return values;
+            }();
+            BOOST_REQUIRE_EQUAL(replayedValues.size(), originalEmbedding.size());
+            double worstInit = 0.0;
+            std::size_t differing = 0;
+            for (std::size_t index = 0; index < replayedValues.size(); ++index) {
+              const auto difference =
+                std::fabs(double(replayedValues[index]) - double(originalEmbedding[index]));
+              if (difference != 0.0) ++differing;
+              worstInit = std::max(worstInit, difference);
+            }
+            BOOST_TEST_MESSAGE("INIT replay: rank inputs=" << initInputs.size()
+                               << " replaced=" << replaced
+                               << " width=" << replayedValues.size()
+                               << " worst=" << worstInit
+                               << " differing=" << differing);
+          }
+        }
+        const auto layer0It = capturedStepInputs.find("S0R0/ATTN/0");
+        if (layer0It == capturedStepInputs.end()) {
+          BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-0 attention");
+        }
+        else {
+          const auto& layer0Inputs = layer0It->second;
+          std::map<std::string, TensorBundle> feeds0;
+          std::size_t replaced0 = 0;
+          for (const auto& item2 : attnFeeds) {
+            const auto asSlot = layer0Inputs.find(item2.first);
+            if (asSlot != layer0Inputs.end()) {
+              feeds0.emplace(item2.first, asSlot->second);
+              ++replaced0;
+              continue;
+            }
+            const auto bound = attnEntry->inputSlotByGraphName.find(item2.first);
+            if (bound == attnEntry->inputSlotByGraphName.end()) {
+              feeds0.emplace(item2.first, item2.second);
+              continue;
+            }
+            const auto fed = layer0Inputs.find(bound->second);
+            if (fed == layer0Inputs.end()) feeds0.emplace(item2.first, item2.second);
+            else { feeds0.emplace(item2.first, fed->second); ++replaced0; }
+          }
+          std::map<std::string, TensorBundle> replayed0;
+          try {
+            replayed0 = runRefEntry(*attnEntry, feeds0);
+          }
+          catch (const std::exception& error) {
+            BOOST_FAIL(std::string("replay of the rank's layer-0 inputs: ") + error.what());
+          }
+          const auto partial0 = replayed0.find("partial");
+          BOOST_REQUIRE_MESSAGE(partial0 != replayed0.end(),
+                                "the replayed layer-0 attention produced no partial");
+          const auto values0 = [&] {
+            const auto views = decodeTensorBundleViews(partial0->second);
+            BOOST_REQUIRE(!views.empty());
+            std::vector<float> values(views.front().payload.size() / sizeof(float));
+            if (!values.empty())
+              std::memcpy(values.data(), views.front().payload.data(),
+                          views.front().payload.size());
+            return values;
+          }();
+          BOOST_REQUIRE_EQUAL(values0.size(), refValues.size());
+          // Two different comparisons, and the names say which is which. Conflating them is what
+          // made two earlier rounds report opposite conclusions from the same numbers.
+          //
+          //   replayVsUnsplitReference  the replay (rank inputs, unsplit operators) against the
+          //                             unsplit reference (its own inputs, unsplit operators)
+          //   unsplitVsRankSum          the unsplit reference against the two ranks summed
+          //
+          // The first isolates the inputs; the second isolates the split.
+          double replayVsUnsplitReference = 0.0;
+          double unsplitVsRankSum = 0.0;
+          {
+            // The rank sum through the production reducer, over the same published bundles the
+            // values were read from. A hand-written add would be a second implementation of the
+            // reduction, which is the number this comparison is trying to measure.
+            const auto summed = sumTensorBundleViews(
+              "layer-0-rank-sum",
+              {decodeTensorBundleViews(*rank0Partial), decodeTensorBundleViews(*rank1Partial)});
+            const auto summedViews = decodeTensorBundleViews(summed);
+            BOOST_REQUIRE(!summedViews.empty());
+            std::vector<float> rankSum(summedViews.front().payload.size() / sizeof(float));
+            if (!rankSum.empty())
+              std::memcpy(rankSum.data(), summedViews.front().payload.data(),
+                          summedViews.front().payload.size());
+            BOOST_REQUIRE_EQUAL(rankSum.size(), refValues.size());
+            for (std::size_t index = 0; index < refValues.size(); ++index) {
+              replayVsUnsplitReference = std::max(replayVsUnsplitReference,
+                std::fabs(double(values0[index]) - double(refValues[index])));
+              unsplitVsRankSum = std::max(unsplitVsRankSum,
+                std::fabs(double(refValues[index]) - double(rankSum[index])));
+            }
+          }
+          BOOST_TEST_MESSAGE("layer-0 replay: rank inputs=" << layer0Inputs.size()
+                             << " replaced=" << replaced0
+                             << " replayVsUnsplitReference=" << replayVsUnsplitReference
+                             << " unsplitVsRankSum=" << unsplitVsRankSum);
+
+          // The MLP's down projection splits on the same axis as the O projection, so it is the one
+          // other place in this block where two partial products are summed. Measuring it either
+          // confirms the mechanism or finds a second one; leaving it unmeasured would let a single
+          // explanation stand on one observation.
+          {
+            const auto mlp0It = capturedStepInputs.find("S0R0/MLP/0");
+            const auto mlp0Rank0 = bus->published("mlp-0-from-S0R0");
+            const auto mlp0Rank1 = bus->published("mlp-0-from-S0R1");
+            if (mlp0It == capturedStepInputs.end() || !mlp0Rank0 || !mlp0Rank1) {
+              BOOST_FAIL("layer-0 MLP: missing captured inputs or published partials");
+            }
+            else {
+              const auto& mlpInputs = mlp0It->second;
+              std::map<std::string, TensorBundle> feeds;
+              std::size_t replaced = 0;
+              for (const auto& item2 : mlpFeeds0) {
+                const auto asSlot = mlpInputs.find(item2.first);
+                if (asSlot != mlpInputs.end()) {
+                  feeds.emplace(item2.first, asSlot->second);
+                  ++replaced;
+                  continue;
+                }
+                const auto bound = mlpEntry0->inputSlotByGraphName.find(item2.first);
+                if (bound == mlpEntry0->inputSlotByGraphName.end()) {
+                  feeds.emplace(item2.first, item2.second);
+                  continue;
+                }
+                const auto fed = mlpInputs.find(bound->second);
+                if (fed == mlpInputs.end()) feeds.emplace(item2.first, item2.second);
+                else { feeds.emplace(item2.first, fed->second); ++replaced; }
+              }
+              std::map<std::string, TensorBundle> replayedMlp;
+              try {
+                replayedMlp = runRefEntry(*mlpEntry0, feeds);
+              }
+              catch (const std::exception& error) {
+                BOOST_FAIL(std::string("replay of the rank's layer-0 MLP inputs: ") + error.what());
+              }
+              const auto replayedPartial = replayedMlp.find("partial");
+              BOOST_REQUIRE_MESSAGE(replayedPartial != replayedMlp.end(),
+                                    "the replayed layer-0 MLP produced no partial");
+              const auto replayedValues = [&] {
+                const auto views = decodeTensorBundleViews(replayedPartial->second);
+                BOOST_REQUIRE(!views.empty());
+                std::vector<float> values(views.front().payload.size() / sizeof(float));
+                if (!values.empty())
+                  std::memcpy(values.data(), views.front().payload.data(),
+                              views.front().payload.size());
+                return values;
+              }();
+              const auto summed = sumTensorBundleViews(
+                "layer-0-mlp-rank-sum",
+                {decodeTensorBundleViews(*mlp0Rank0), decodeTensorBundleViews(*mlp0Rank1)});
+              const auto summedViews = decodeTensorBundleViews(summed);
+              BOOST_REQUIRE(!summedViews.empty());
+              std::vector<float> rankSum(summedViews.front().payload.size() / sizeof(float));
+              if (!rankSum.empty())
+                std::memcpy(rankSum.data(), summedViews.front().payload.data(),
+                            summedViews.front().payload.size());
+              BOOST_REQUIRE_EQUAL(replayedValues.size(), rankSum.size());
+              double unsplitVsRankSum = 0.0;
+              double magnitude = 0.0;
+              for (std::size_t index = 0; index < replayedValues.size(); ++index) {
+                // The replay is the unsplit operator on the rank's inputs, so it is compared
+                // against the split chain's sum -- that difference is the MLP's reassociation.
+                unsplitVsRankSum = std::max(unsplitVsRankSum,
+                  std::fabs(double(replayedValues[index]) - double(rankSum[index])));
+                magnitude = std::max(magnitude, std::fabs(double(rankSum[index])));
+              }
+              BOOST_TEST_MESSAGE("layer-0 MLP: rank inputs=" << mlpInputs.size()
+                                 << " replaced=" << replaced
+                                 << " unsplitVsRankSum=" << unsplitVsRankSum
+                                 << " largest=" << magnitude
+                                 << " relative="
+                                 << (magnitude > 0.0 ? unsplitVsRankSum / magnitude : 0.0));
+              BOOST_CHECK_GT(unsplitVsRankSum, 0.0);
+              BOOST_CHECK_LT(unsplitVsRankSum, 1e-3 * std::max(magnitude, 1.0));
+
+              // The same two reductions at the last layer. Layer 0's reassociation is about one part
+              // in six hundred thousand; if the deepest layer's is the same order, the 1.36e-04 seen
+              // there is propagation of that per-layer amount rather than a second mechanism.
+              {
+                const auto deepIt = capturedStepInputs.find("S0R0/MLP/27");
+                const auto deepRank0 = bus->published("mlp-27-from-S0R0");
+                const auto deepRank1 = bus->published("mlp-27-from-S0R1");
+                if (deepIt == capturedStepInputs.end() || !deepRank0 || !deepRank1) {
+                  BOOST_FAIL("layer-27 MLP: missing captured inputs or published partials");
+                }
+                else {
+                  const auto deepEntry = findEntry("MLP", 27);
+                  BOOST_REQUIRE_MESSAGE(deepEntry != referenceTable.end(),
+                                        "no unsplit MLP entry for layer 27");
+                  std::map<std::string, TensorBundle> deepFeeds;
+                  std::size_t deepReplaced = 0;
+                  for (const auto& item2 : deepIt->second) {
+                    const auto slot = item2.first;
+                    const auto bound = deepEntry->inputSlotByGraphName.find(slot);
+                    if (bound != deepEntry->inputSlotByGraphName.end()) {
+                      deepFeeds.emplace(slot, item2.second);
+                      ++deepReplaced;
+                      continue;
+                    }
+                    // A slot name the entry does not declare is still feedable by name; the splits
+                    // differ between layers only in which layer's tensors they name.
+                    deepFeeds.emplace(slot, item2.second);
+                    ++deepReplaced;
+                  }
+                  std::map<std::string, TensorBundle> deepOut;
+                  try {
+                    deepOut = runRefEntry(*deepEntry, deepFeeds);
+                  }
+                  catch (const std::exception& error) {
+                    BOOST_FAIL(std::string("replay of the rank's layer-27 MLP inputs: ")
+                               + error.what());
+                  }
+                  const auto deepPartial = deepOut.find("partial");
+                  BOOST_REQUIRE_MESSAGE(deepPartial != deepOut.end(),
+                                        "the replayed layer-27 MLP produced no partial");
+                  const auto deepValues = [&] {
+                    const auto views = decodeTensorBundleViews(deepPartial->second);
+                    BOOST_REQUIRE(!views.empty());
+                    std::vector<float> values(views.front().payload.size() / sizeof(float));
+                    if (!values.empty())
+                      std::memcpy(values.data(), views.front().payload.data(),
+                                  views.front().payload.size());
+                    return values;
+                  }();
+                  const auto deepSummed = sumTensorBundleViews(
+                    "layer-27-mlp-rank-sum",
+                    {decodeTensorBundleViews(*deepRank0), decodeTensorBundleViews(*deepRank1)});
+                  const auto deepSummedViews = decodeTensorBundleViews(deepSummed);
+                  BOOST_REQUIRE(!deepSummedViews.empty());
+                  std::vector<float> deepSum(deepSummedViews.front().payload.size() / sizeof(float));
+                  if (!deepSum.empty())
+                    std::memcpy(deepSum.data(), deepSummedViews.front().payload.data(),
+                                deepSummedViews.front().payload.size());
+                  BOOST_REQUIRE_EQUAL(deepValues.size(), deepSum.size());
+                  double deepDifference = 0.0;
+                  double deepMagnitude = 0.0;
+                  for (std::size_t index = 0; index < deepValues.size(); ++index) {
+                    deepDifference = std::max(deepDifference,
+                      std::fabs(double(deepValues[index]) - double(deepSum[index])));
+                    deepMagnitude = std::max(deepMagnitude, std::fabs(double(deepSum[index])));
+                  }
+                  BOOST_TEST_MESSAGE("layer-27 MLP: replaced=" << deepReplaced
+                                     << " unsplitVsRankSum=" << deepDifference
+                                     << " largest=" << deepMagnitude
+                                     << " relative="
+                                     << (deepMagnitude > 0.0
+                                           ? deepDifference / deepMagnitude : 0.0));
+                  BOOST_CHECK_GT(deepDifference, 0.0);
+                  BOOST_CHECK_LT(deepDifference, 1e-3 * std::max(deepMagnitude, 1.0));
+                }
+              }
+            }
+          }
+          // Both numbers have to be what the explanation says they are. The replay used the rank's
+          // inputs, so it must reproduce the unsplit reference exactly; and the split must be
+          // measurably non-zero, or this comparison is looking at the wrong tensors.
+          BOOST_CHECK_EQUAL(replayVsUnsplitReference, 0.0);
+          BOOST_CHECK_GT(unsplitVsRankSum, 0.0);
+          // The split's difference is a reassociation, so it has to be small against the values it
+          // applies to: a percentage-level difference would be an error rather than arithmetic order.
+          {
+            double magnitude = 0.0;
+            for (const auto value : refValues) magnitude = std::max(magnitude, std::fabs(double(value)));
+            BOOST_TEST_MESSAGE("layer-0 split difference is "
+                               << (magnitude > 0.0 ? unsplitVsRankSum / magnitude : 0.0)
+                               << " of the layer's largest value " << magnitude);
+            BOOST_CHECK_LT(unsplitVsRankSum, 1e-3 * std::max(magnitude, 1.0));
+          }
+          // The boundary layer 0 actually consumes, compared tensor by tensor. With
+          // `replayVsUnsplitReference` at zero the two chains already agree on this layer's input,
+          // so these comparisons are the evidence for that rather than a search for a difference.
+          {
+            const auto describe = [] (const TensorBundle& bundle) {
+              const auto views = decodeTensorBundleViews(bundle);
+              if (views.empty()) return std::string("empty");
+              const auto& view = views.front();
+              std::string shape;
+              for (const auto dim : view.shape) {
+                if (!shape.empty()) shape += "x";
+                shape += std::to_string(dim);
+              }
+              return view.name + " elem=" + std::to_string(static_cast<unsigned>(view.elementType))
+                + " shape=" + shape + " bytes=" + std::to_string(view.payload.size());
+            };
+            for (const auto& item2 : attnFeeds) {
+              const auto bound = attnEntry->inputSlotByGraphName.find(item2.first);
+              const auto slot = bound == attnEntry->inputSlotByGraphName.end()
+                ? item2.first : bound->second;
+              const auto onRank = layer0Inputs.find(slot);
+              if (onRank == layer0Inputs.end()) {
+                BOOST_TEST_MESSAGE("layer-0 boundary " << item2.first
+                                   << ": rank has no slot " << slot
+                                   << " (unsplit: " << describe(item2.second) << ")");
+                continue;
+              }
+              // Byte equality first: two tensors with the same declaration can still carry
+              // different values, and that is exactly the case this is looking for.
+              const auto unsplitViews = decodeTensorBundleViews(item2.second);
+              const auto rankViews = decodeTensorBundleViews(onRank->second);
+              const bool sameBytes = !unsplitViews.empty() && !rankViews.empty() &&
+                unsplitViews.front().payload.size() == rankViews.front().payload.size() &&
+                std::equal(unsplitViews.front().payload.begin(), unsplitViews.front().payload.end(),
+                           rankViews.front().payload.begin());
+              BOOST_TEST_MESSAGE("layer-0 boundary " << item2.first << " slot=" << slot
+                                 << " identical=" << (sameBytes ? "yes" : "no")
+                                 << " | unsplit: " << describe(item2.second)
+                                 << " | rank: " << describe(onRank->second));
+            }
+          }
+        }
+      }
+      const auto rankInputIt = capturedStepInputs.find("S0R0/ATTN/1");
+      if (rankInputIt == capturedStepInputs.end()) {
+        BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-1 attention");
+      }
+      else {
+        const auto& rankInputs = rankInputIt->second;
+        // Feed by graph name: the unsplit entry's declaration is the authority on what it reads,
+        // and a slot the rank used but the entry does not declare is a different bug.
+        std::map<std::string, TensorBundle> replayFeeds;
+        std::size_t unmatched = 0;
+        std::string unmatchedSlots;
+        // attnFeeds1 mixes two key spaces: `post_attention` and `previous_mlp` are slot names,
+        // while the INIT outputs and the empty `past_key_values.*` entries are graph tensor names.
+        // The capture is keyed by slot name, so a graph name has to be translated first -- and a
+        // slot name must not be translated, or it falls back to the reference value and the replay
+        // stops being a replay of anything.
+        std::size_t replaced = 0;
+        for (const auto& item2 : attnFeeds1) {
+          const auto asSlot = rankInputs.find(item2.first);
+          if (asSlot != rankInputs.end()) {
+            replayFeeds.emplace(item2.first, asSlot->second);
+            ++replaced;
+            continue;
+          }
+          const auto bound = attnEntry1->inputSlotByGraphName.find(item2.first);
+          if (bound == attnEntry1->inputSlotByGraphName.end()) {
+            replayFeeds.emplace(item2.first, item2.second);
+            continue;
+          }
+          const auto fed = rankInputs.find(bound->second);
+          if (fed == rankInputs.end()) {
+            ++unmatched;
+            unmatchedSlots += " " + item2.first;
+            replayFeeds.emplace(item2.first, item2.second);
+          }
+          else {
+            replayFeeds.emplace(item2.first, fed->second);
+            ++replaced;
+          }
+        }
+        // Which slots the rank actually had, and which of the unsplit feeds they replaced. Without
+        // this the replay's result cannot be read: replacing 5 of 61 feeds is a different experiment
+        // from replacing the boundary the entry really depends on.
+        {
+          std::string rankSlots;
+          for (const auto& slot : rankInputs) {
+            if (!rankSlots.empty()) rankSlots += ' ';
+            if (rankSlots.size() < 300) rankSlots += slot.first;
+          }
+          BOOST_TEST_MESSAGE("layer-1 replay: rank inputs=" << rankInputs.size()
+                             << " unsplit feeds=" << attnFeeds1.size()
+                             << " replaced=" << replaced
+                             << " unmatched=" << unmatched
+                             << " unmatchedSlots={"
+                             << (unmatchedSlots.empty() ? unmatchedSlots : unmatchedSlots.substr(1))
+                             << "}"
+                             << " rankSlots={" << rankSlots << "}");
+        }
+        std::map<std::string, TensorBundle> replayed;
+        try {
+          replayed = runRefEntry(*attnEntry1, replayFeeds);
+        }
+        catch (const std::exception& error) {
+          BOOST_FAIL(std::string("replay of the rank's layer-1 inputs: ") + error.what());
+        }
+        const auto replayedPartial = replayed.find("partial");
+        BOOST_REQUIRE_MESSAGE(replayedPartial != replayed.end(),
+                              "the replayed layer-1 attention produced no partial");
+        const auto replayedValues = [&] {
+          const auto views = decodeTensorBundleViews(replayedPartial->second);
+          BOOST_REQUIRE(!views.empty());
+          std::vector<float> values(views.front().payload.size() / sizeof(float));
+          if (!values.empty())
+            std::memcpy(values.data(), views.front().payload.data(),
+                        views.front().payload.size());
+          return values;
+        }();
+        BOOST_REQUIRE_EQUAL(replayedValues.size(), refValues1.size());
+        double replayWorst = 0.0;
+        for (std::size_t index = 0; index < refValues1.size(); ++index)
+          replayWorst = std::max(replayWorst,
+            double(std::fabs(double(replayedValues[index]) - double(refValues1[index]))));
+        // How far the replay moved the answer. Zero means the two chains had been fed the same
+        // values after all, so the difference is not upstream; a non-zero value is the size of the
+        // upstream divergence, measured at this layer's boundary.
+        double inputEffect = 0.0;
+        for (std::size_t index = 0; index < refValues1.size(); ++index) {
+          const auto original = double(static_cast<float>(rank0Layer1Values[index]
+            + rank1Layer1Values[index]));
+          inputEffect = std::max(inputEffect,
+            std::fabs(double(replayedValues[index]) - original));
+        }
+        BOOST_TEST_MESSAGE("layer-1 replay vs unsplit-on-unsplit-inputs: worst=" << replayWorst
+                           << " inputEffect=" << inputEffect);
+
+        // The KV path, which the projection comparison cannot speak for: `present.N.key` and
+        // `.value` are the third and fourth outputs of the attention operator, produced before the O
+        // projection. Comparing the replay's KV against the rank's own KV for the heads this rank
+        // owns answers whether the residual belongs to the key/value path or to the projection path.
+        {
+          const auto headsPerRank = static_cast<std::size_t>(shape.kvHeads) / 2U;
+          for (const auto* kvKind : {"key", "value"}) {
+            const auto name = std::string("present.1.") + kvKind;
+            const auto replayKv = replayed.find(name);
+            if (replayKv == replayed.end()) {
+              BOOST_FAIL("the replayed layer-1 attention produced no " + name);
+              continue;
+            }
+            const auto replayValues = [&] {
+              const auto views = decodeTensorBundleViews(replayKv->second);
+              BOOST_REQUIRE(!views.empty());
+              std::vector<float> values(views.front().payload.size() / sizeof(float));
+              if (!values.empty())
+                std::memcpy(values.data(), views.front().payload.data(),
+                            views.front().payload.size());
+              return values;
+            }();
+            // The rank's own successor, collected by declared name in the result.
+            const auto rankKv = kvOfResult(results.at("S0R0"), name);
+            if (rankKv.empty()) {
+              BOOST_FAIL("rank 0 published no " + name);
+              continue;
+            }
+            // The unsplit tensor carries all heads; this rank owns [0, headsPerRank) of them, and
+            // each head is headDim wide inside a [1, heads, seq, dim] layout.
+            const auto seq = static_cast<std::size_t>(promptTokens.size());
+            if (replayValues.size() != shape.kvHeads * seq * shape.headDim) {
+              BOOST_FAIL("layer-1 " + name + " shape is not [1," + std::to_string(shape.kvHeads) + "," + std::to_string(seq) + "," + std::to_string(shape.headDim) + "]: width=" + std::to_string(replayValues.size()));
+              continue;
+            }
+            // The same mapping the C8 loop uses: rank 0 owns unsplit heads [0, headsPerRank), and
+            // both tensors are [1, heads, sequence, dim] with the head axis first. Writing the
+            // formula independently is how the first version of this comparison produced 347.7 --
+            // the indices were transposed against the layout, not the values wrong.
+            double worstRankKv = 0.0;
+            std::size_t compared = 0;
+            for (std::size_t position = 0; position < seq; ++position) {
+              for (std::size_t head = 0; head < headsPerRank; ++head) {
+                const auto shardBase = (head * seq + position) * shape.headDim;
+                const auto unsplitBase = ((head)*seq + position) * shape.headDim;
+                for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                  if (shardBase + channel >= rankKv.size()) continue;
+                  if (unsplitBase + channel >= replayValues.size()) continue;
+                  worstRankKv = std::max(worstRankKv,
+                    double(std::fabs(double(rankKv[shardBase + channel])
+                                     - double(replayValues[unsplitBase + channel]))));
+                  ++compared;
+                }
+              }
+            }
+            BOOST_TEST_MESSAGE("layer-1 replay vs rank KV: " << name
+                               << " worst=" << worstRankKv << " compared=" << compared);
+            BOOST_CHECK_EQUAL(compared, headsPerRank * seq * std::size_t(shape.headDim));
+          }
+        }
+      }
+    }
+    BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference, production sum: worst=" << worst1
+                       << " excessOverC8=" << excess1
+                       << " floatVsDoubleReduction=" << worstReductionGap
+                       << " width=" << refValues1.size());
+    // These paths have different upstream inputs. A small projection error alone cannot locate a
+    // KV discrepancy; the captured-input replay above separates that input effect from this layer.
     BOOST_CHECK_LE(excess1, 0.0);
+
+    // Follow the first differing reduction forward, using the actual captured slot values rather
+    // than a late-layer error as the starting point. Observe full operators on each path's inputs.
+    const auto observeFirstNorm = [&] (const qwen::QwenTpEntryContract& entry,
+                                      const std::map<std::string, TensorBundle>& referenceFeeds,
+                                      const std::map<std::string, TensorBundle>& rankFeeds) {
+      const auto originalPath = root / "ref" / entry.relativeGraphPath;
+      onnx::ModelProto graph;
+      { std::ifstream file(originalPath, std::ios::binary);
+        BOOST_REQUIRE(graph.ParseFromIstream(&file)); }
+      std::vector<std::string> probes;
+      for (const auto& node : graph.graph().node()) {
+        const bool norm = node.op_type() == "SkipSimplifiedLayerNormalization" ||
+                          node.op_type() == "SimplifiedLayerNormalization";
+        const bool value = node.op_type() == "MatMulNBits" &&
+          (entry.kind == "MLP" || node.name().find("v_proj") != std::string::npos ||
+           node.name().find("k_proj") != std::string::npos);
+        if (!norm && !value) continue;
+        for (int index : {0, 3}) {
+          if ((!norm && index != 0) || index >= node.output_size() ||
+              node.output(index).empty()) continue;
+          const auto& name = node.output(index);
+          probes.push_back(name);
+        }
+      }
+      BOOST_REQUIRE(!probes.empty());
+      auto instrumented = graph;
+      for (const auto& name : probes) {
+        bool existing = false;
+        for (const auto& output : graph.graph().output())
+          existing = existing || output.name() == name;
+        if (existing) continue;
+        const auto info = std::find_if(graph.graph().value_info().begin(),
+          graph.graph().value_info().end(), [&] (const auto& item) { return item.name() == name; });
+        BOOST_REQUIRE_MESSAGE(info != graph.graph().value_info().end(), name);
+        *instrumented.mutable_graph()->add_output() = *info;
+      }
+      const auto run = [&] (const onnx::ModelProto& model,
+                            const std::map<std::string, TensorBundle>& feeds) {
+        const auto path = originalPath.parent_path() / "diagnostic-first-norm.onnx";
+        { std::ofstream file(path, std::ios::binary);
+          BOOST_REQUIRE(model.SerializeToOstream(&file)); }
+        Ort::SessionOptions options;
+        options.SetIntraOpNumThreads(1);
+        options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+        options.DisableMemPattern();
+        Ort::Session session(testOrtEnv(), path.c_str(), options);
+        auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        std::vector<NamedTensor> held;
+        held.reserve(model.graph().input_size());
+        for (const auto& input : model.graph().input()) {
+          const auto binding = entry.inputSlotByGraphName.find(input.name());
+          const auto slot = binding == entry.inputSlotByGraphName.end()
+            ? input.name() : binding->second;
+          auto supplied = feeds.find(input.name());
+          if (supplied == feeds.end()) supplied = feeds.find(slot);
+          if (supplied != feeds.end()) {
+            const auto tensors = decodeTensorBundleViews(supplied->second);
+            BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+            NamedTensor tensor;
+            tensor.name = input.name();
+            tensor.elementType = tensors.front().elementType;
+            tensor.shape = tensors.front().shape;
+            tensor.payload.assign(tensors.front().payload.begin(), tensors.front().payload.end());
+            held.push_back(std::move(tensor));
+          }
+          else {
+            BOOST_REQUIRE(input.name().rfind("past_key_values.", 0) == 0);
+            NamedTensor tensor;
+            tensor.name = input.name();
+            tensor.elementType = TensorElementType::Float32;
+            tensor.shape = {1, static_cast<std::int64_t>(shape.kvHeads), 0, shape.headDim};
+            held.push_back(std::move(tensor));
+          }
+        }
+        std::vector<const char*> names, outputs;
+        std::vector<Ort::Value> values;
+        float empty = 0;
+        for (auto& tensor : held) {
+          names.push_back(tensor.name.c_str());
+          const auto type = tensor.elementType == TensorElementType::Float32
+            ? ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT : tensor.elementType == TensorElementType::Int64
+            ? ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 : ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+          BOOST_REQUIRE(tensor.elementType == TensorElementType::Float32 ||
+                        tensor.elementType == TensorElementType::Int64 ||
+                        tensor.elementType == TensorElementType::Int32);
+          values.push_back(Ort::Value::CreateTensor(memory,
+            tensor.payload.empty() ? static_cast<void*>(&empty) : tensor.payload.data(),
+            tensor.payload.size(), tensor.shape.data(), tensor.shape.size(), type));
+        }
+        for (const auto& output : model.graph().output()) outputs.push_back(output.name().c_str());
+        auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(),
+                                  values.size(), outputs.data(), outputs.size());
+        std::map<std::string, std::vector<float>> captured;
+        for (std::size_t index = 0; index < result.size(); ++index) {
+          const auto info = result[index].GetTensorTypeAndShapeInfo();
+          BOOST_REQUIRE(info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+          const auto* data = result[index].GetTensorData<float>();
+          captured.emplace(outputs[index], std::vector<float>(data, data + info.GetElementCount()));
+        }
+        return captured;
+      };
+      const auto baseline = run(graph, referenceFeeds);
+      const auto reference = run(instrumented, referenceFeeds);
+      const auto rankBaseline = run(graph, rankFeeds);
+      const auto rank = run(instrumented, rankFeeds);
+      for (const auto& output : baseline) BOOST_REQUIRE(reference.at(output.first) == output.second);
+      for (const auto& output : rankBaseline) BOOST_REQUIRE(rank.at(output.first) == output.second);
+      // A raw ORT probe must first agree with the maintained runner on the same declared inputs.
+      for (const bool rankPath : {false, true}) {
+        const auto& feeds = rankPath ? rankFeeds : referenceFeeds;
+        const auto native = runRefEntry(entry, feeds);
+        const auto& rawControl = rankPath ? rankBaseline : baseline;
+        for (const auto& output : rawControl) {
+          const auto binding = entry.outputSlotByGraphName.find(output.first);
+          const auto slot = binding == entry.outputSlotByGraphName.end()
+            ? output.first : binding->second;
+          BOOST_REQUIRE_MESSAGE(native.count(slot), "missing native control output: " + slot);
+          const auto tensors = decodeTensorBundleViews(native.at(slot));
+          BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+          BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
+          std::vector<float> values(tensors.front().payload.size() / sizeof(float));
+          std::memcpy(values.data(), tensors.front().payload.data(), tensors.front().payload.size());
+          BOOST_REQUIRE_EQUAL(values.size(), output.second.size());
+          double worstControl = 0.0;
+          for (std::size_t index = 0; index < values.size(); ++index)
+            worstControl = std::max(worstControl,
+              std::fabs(double(values[index]) - double(output.second[index])));
+          BOOST_TEST_MESSAGE("first divergence probe control: " << entry.kind << "/" << entry.layer
+                             << " " << output.first << " worst=" << worstControl);
+          BOOST_CHECK_EQUAL(worstControl, 0.0);
+        }
+      }
+      if (entry.kind == "ATTN") {
+        const auto vName = "/model/layers." + std::to_string(entry.layer) +
+          "/attn/v_proj/MatMul/output_0";
+        const auto cacheName = "present." + std::to_string(entry.layer) + ".value";
+        for (const auto* captured : {&reference, &rank}) {
+          const auto& projected = captured->at(vName);
+          const auto& cached = captured->at(cacheName);
+          const auto positions = promptTokens.size();
+          BOOST_REQUIRE_EQUAL(projected.size(), shape.kvHeads * positions * shape.headDim);
+          BOOST_REQUIRE_EQUAL(cached.size(), projected.size());
+          double worst = 0.0;
+          for (std::size_t head = 0; head < shape.kvHeads; ++head)
+            for (std::size_t position = 0; position < positions; ++position)
+              for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                const auto sourceIndex = (position * shape.kvHeads + head) * shape.headDim + channel;
+                const auto cacheIndex = (head * positions + position) * shape.headDim + channel;
+                worst = std::max(worst,
+                  std::fabs(double(projected[sourceIndex]) - double(cached[cacheIndex])));
+              }
+          BOOST_TEST_MESSAGE("first divergence V cache layout control: worst=" << worst);
+          BOOST_CHECK_EQUAL(worst, 0.0);
+        }
+      }
+      for (const auto& name : probes) {
+        const auto& a = reference.at(name);
+        const auto& b = rank.at(name);
+        BOOST_REQUIRE_EQUAL(a.size(), b.size());
+        double worst = 0.0, magnitude = 0.0;
+        for (std::size_t index = 0; index < a.size(); ++index) {
+          BOOST_REQUIRE(std::isfinite(a[index]) && std::isfinite(b[index]));
+          worst = std::max(worst, std::fabs(double(a[index]) - double(b[index])));
+          magnitude = std::max(magnitude, std::fabs(double(a[index])));
+        }
+        BOOST_TEST_MESSAGE("first divergence forward: " << entry.kind << "/" << entry.layer
+                           << " " << name << " worst=" << worst << " magnitude=" << magnitude);
+      }
+    };
+    observeFirstNorm(*mlpEntry0, mlpFeeds0, capturedStepInputs.at("S0R0/MLP/0"));
+    observeFirstNorm(*attnEntry1, attnFeeds1, capturedStepInputs.at("S0R0/ATTN/1"));
 
     // The layers whose KV actually exceeds C8. The A/B agreement above covers layer 0, which is the
     // one layer a single entry reaches; the failing elements are at layers 25 and 26. Walking the
@@ -12240,6 +14802,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // layer are, and whether they match the unit's is the question.
       std::map<std::uint64_t, std::pair<std::vector<float>, std::vector<float>>> chainInputs;
       bool chainOk = true;
+      std::size_t deepKvComparisons = 0;
       for (std::uint64_t layer = 1; layer <= 26 && chainOk; ++layer) {
         const auto attnOf = findEntry("ATTN", layer);
         const auto mlpOf = findEntry("MLP", layer);
@@ -12280,6 +14843,72 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           chainOk = false;
           break;
         }
+        if (layer == 25 || layer == 26)
+          observeFirstNorm(*attnOf, chainFeeds,
+                           capturedStepInputs.at("S0R0/ATTN/" + std::to_string(layer)));
+        // Replay the failing layers with each rank's captured boundary. Keep the full reference's
+        // empty past tensors, but require every live input to come from the captured rank slots.
+        if (layer == 25 || layer == 26) {
+          for (std::size_t rank = 0; rank < 2; ++rank) {
+            const auto unit = "S0R" + std::to_string(rank);
+            const auto captured = capturedStepInputs.find(unit + "/ATTN/" +
+                                                         std::to_string(layer));
+            BOOST_REQUIRE(captured != capturedStepInputs.end());
+            std::map<std::string, TensorBundle> replayFeeds;
+            std::size_t replaced = 0;
+            for (const auto& input : chainFeeds) {
+              const auto binding = attnOf->inputSlotByGraphName.find(input.first);
+              const auto slot = binding == attnOf->inputSlotByGraphName.end()
+                ? input.first : binding->second;
+              const auto actual = captured->second.find(slot);
+              if (actual != captured->second.end()) {
+                replayFeeds.emplace(input.first, actual->second);
+                ++replaced;
+              }
+              else {
+                BOOST_REQUIRE_MESSAGE(input.first.rfind("past_key_values.", 0) == 0,
+                                      "missing captured live input: " + slot);
+                replayFeeds.emplace(input.first, input.second);
+              }
+            }
+            BOOST_REQUIRE_EQUAL(replaced, captured->second.size());
+            const auto replay = runRefEntry(*attnOf, replayFeeds);
+            const auto positions = promptTokens.size();
+            const auto heads = static_cast<std::size_t>(shape.kvHeads / 2);
+            for (const auto* kind : {"key", "value"}) {
+              const auto name = "present." + std::to_string(layer) + "." + kind;
+              const auto sameInput = floatsOfChain(replay.at(name));
+              const auto original = floatsOfChain(chainAttn.at(name));
+              const auto actual = kvOfResult(results.at(unit), name);
+              BOOST_REQUIRE_EQUAL(sameInput.size(), shape.kvHeads * positions * shape.headDim);
+              BOOST_REQUIRE_EQUAL(original.size(), sameInput.size());
+              BOOST_REQUIRE_EQUAL(actual.size(), heads * positions * shape.headDim);
+              double localWorst = 0.0;
+              double inheritedWorst = 0.0;
+              for (std::size_t head = 0; head < heads; ++head) {
+                for (std::size_t position = 0; position < positions; ++position) {
+                  for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                    const auto shardIndex = (head * positions + position) * shape.headDim + channel;
+                    const auto fullIndex = ((rank * heads + head) * positions + position) *
+                      shape.headDim + channel;
+                    BOOST_REQUIRE(std::isfinite(sameInput[fullIndex]));
+                    BOOST_REQUIRE(std::isfinite(original[fullIndex]));
+                    BOOST_REQUIRE(std::isfinite(actual[shardIndex]));
+                    localWorst = std::max(localWorst,
+                      std::fabs(double(actual[shardIndex]) - double(sameInput[fullIndex])));
+                    inheritedWorst = std::max(inheritedWorst,
+                      std::fabs(double(sameInput[fullIndex]) - double(original[fullIndex])));
+                  }
+                }
+              }
+              BOOST_TEST_MESSAGE("deep same-input KV: " << unit << " " << name
+                                 << " replaced=" << replaced << " localWorst=" << localWorst
+                                 << " inheritedWorst=" << inheritedWorst);
+              BOOST_CHECK_EQUAL(localWorst, 0.0);
+              ++deepKvComparisons;
+            }
+          }
+        }
         std::map<std::string, TensorBundle> chainMlpFeeds{
           {"merged", chainAttn.at("partial")},
           {"residual", chainAttn.at("residual")},
@@ -12294,20 +14923,16 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           chainOk = false;
           break;
         }
+        if (layer == 24 || layer == 25)
+          observeFirstNorm(*mlpOf, chainMlpFeeds,
+                           capturedStepInputs.at("S0R0/MLP/" + std::to_string(layer)));
         layerKv.emplace(layer, std::pair<std::vector<float>, std::vector<float>>{
           floatsOfChain(chainAttn.at("present." + std::to_string(layer) + ".key")),
           floatsOfChain(chainAttn.at("present." + std::to_string(layer) + ".value"))});
         carriedPost = chainMlp.at("post_residual");
         carriedMerged = chainMlp.at("partial");
       }
-      // Replaying layer 25's attention with "the inputs the unit consumed" is not possible through
-      // this bus, and the attempt is recorded here rather than kept as code: the bus carries the
-      // peer contributions a unit publishes -- `attn-N-from-S0R0` is rank 0's half of layer N's
-      // attention reduction -- not the unit's own local `post_residual`/`merged` step outputs.
-      // Feeding a partial under the `post_attention` key therefore compares two unrelated values,
-      // and the ~40 it yielded says only that. Obtaining the unit's real step input needs the value
-      // recorded where the worker assembles it, which is a different fixture from this one.
-
+      BOOST_REQUIRE_EQUAL(deepKvComparisons, 8U);
       // What the chain itself consumed at the failing layers. The earlier per-layer replay could
       // not answer this because the bus carries peer partials, not a unit's own step outputs; this
       // does not need the unit at all. It records the chain's inputs so a later fixture that can
@@ -12394,6 +15019,55 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     const auto& outputTimings = results.at("S0R0").outputTimings;
     BOOST_TEST_MESSAGE("output publish records: " << outputTimings.size());
     BOOST_CHECK_GT(outputTimings.size(), 0U);
+    // Every publication must claim a real size. A local value has no payload, so a record built
+    // from `payload.size()` reports zero for a transfer the transport actually carried.
+    {
+      std::size_t zeroBytes = 0;
+      std::size_t totalBytes = 0;
+      for (const auto& timing : outputTimings) {
+        if (timing.bytes == 0) ++zeroBytes;
+        totalBytes += timing.bytes;
+      }
+      BOOST_TEST_MESSAGE("output publish bytes: total=" << totalBytes
+                         << " zero-sized=" << zeroBytes);
+    // The receive side must be recorded too, with its own completion time: a wait whose result never
+    // reaches the ledger is indistinguishable from a wait that did not finish. Counted, not asserted
+    // per scope -- this fixture exchanges over an in-process bus, so how many arrivals it sees is a
+    // property of the fixture rather than of the worker.
+    {
+      const auto& inputTimings = results.at("S0R0").inputTimings;
+      std::size_t zeroBytes = 0;
+      std::size_t missingTime = 0;
+      for (const auto& timing : inputTimings) {
+        if (timing.bytes == 0) ++zeroBytes;
+        if (timing.fetchCompletedAt == std::chrono::steady_clock::time_point{}) ++missingTime;
+      }
+      BOOST_TEST_MESSAGE("input fetch records: " << inputTimings.size()
+                         << " zero-sized=" << zeroBytes
+                         << " missingCompletionTime=" << missingTime);
+      BOOST_CHECK_EQUAL(zeroBytes, 0U);
+      BOOST_CHECK_EQUAL(missingTime, 0U);
+    }
+    }
+    // The codec records SUM only when it is given the statistics owner, so these counts are the
+    // evidence that the production path reduces through the counted helper rather than around it.
+    // Before the owner was passed, a run that reduced every layer reported zero here.
+    {
+      BOOST_REQUIRE(unitStatistics.count("S0R0") == 1U);
+      const auto counts = unitStatistics.at("S0R0")->snapshot().counts;
+      const auto accumulators = counts.count("sum.accumulators") != 0
+        ? counts.at("sum.accumulators") : 0U;
+      const auto tensors = counts.count("sum.tensors") != 0
+        ? counts.at("sum.tensors") : 0U;
+      const auto bytes = counts.count("sum.bytes") != 0
+        ? counts.at("sum.bytes") : 0U;
+      BOOST_TEST_MESSAGE("SUM counts: accumulators=" << accumulators
+                         << " tensors=" << tensors << " bytes=" << bytes);
+      // 28 layers, each with one attention reduction and one MLP reduction.
+      BOOST_CHECK_EQUAL(accumulators, 56U);
+      BOOST_CHECK_GT(tensors, 0U);
+      BOOST_CHECK_GT(bytes, 0U);
+    }
     // The records must also survive serialization: the statistics file is how a Coordinator and an
     // oracle see them, so a field that exists in memory but never reaches the JSON is not a
     // measurement. Serializing the observation directly is the honest check -- the full statistics
@@ -12697,6 +15371,41 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     // excess is ever justified as reassociation, that argument belongs in the contract, and this
     // assertion changes then, deliberately, rather than here as a threshold.
     BOOST_TEST_MESSAGE("unit " << item.first << " C8 worst excess=" << worstExcess);
+    // Whether the excess is an absolute-error floor or a few elements gone wrong. C8 allows
+    // `atol + rtol*|ref|`, so an error whose magnitude is set by the residual stream rather than by
+    // the element's own value will exceed `atol` exactly where |ref| is small. Counting how many
+    // elements exceed and where their |ref| sits separates that from a wrong result.
+    {
+      std::size_t overCount = 0;
+      std::size_t total = 0;
+      double maxRelative = 0.0;
+      double maxRelativeReference = 0.0;
+      std::vector<double> absoluteErrors;
+      for (const auto& perLayer : layerWorst) absoluteErrors.push_back(perLayer.second);
+      std::sort(absoluteErrors.begin(), absoluteErrors.end());
+      const auto medianAbsolute = absoluteErrors.empty()
+        ? 0.0 : absoluteErrors[absoluteErrors.size() / 2];
+      // The error at the largest and smallest magnitudes, so "flat absolute error" is a measurement
+      // rather than an interpretation.
+      double errorAtLarge = 0.0;
+      double errorAtSmall = 0.0;
+      double largestMagnitude = 0.0;
+      for (const auto& perLayer : layerMagnitude)
+        largestMagnitude = std::max(largestMagnitude, perLayer.second);
+      if (!layerMagnitude.empty()) {
+        const auto minIt = std::min_element(layerMagnitude.begin(), layerMagnitude.end(),
+          [] (const auto& a, const auto& b) { return a.second < b.second; });
+        errorAtSmall = layerWorst.count(minIt->first) != 0 ? layerWorst.at(minIt->first) : 0.0;
+        const auto maxIt = std::max_element(layerMagnitude.begin(), layerMagnitude.end(),
+          [] (const auto& a, const auto& b) { return a.second < b.second; });
+        errorAtLarge = layerWorst.count(maxIt->first) != 0 ? layerWorst.at(maxIt->first) : 0.0;
+      }
+      BOOST_TEST_MESSAGE("unit " << item.first << " error shape: medianPerLayerMax="
+                         << medianAbsolute << " errorAtLargestMagnitude=" << errorAtLarge
+                         << " errorAtSmallestMagnitude=" << errorAtSmall
+                         << " largestMagnitude=" << largestMagnitude
+                         << " allowanceAtZeroMagnitude=" << 1e-4);
+    }
     BOOST_CHECK_LE(worstExcess, 0.0);
   }
 
@@ -17024,6 +19733,14 @@ BOOST_AUTO_TEST_CASE(LineageTravelsWithALocalValueWithoutReencodingIt)
   // Attaching twice is refused: two lineage records on one value would be ambiguous.
   BOOST_CHECK_THROW(attachGenerationEpochLineage(attached, lineage), std::invalid_argument);
 
+  // Attaching and stripping change which tensors the value holds, so `expectedBytes` -- the wire
+  // size it would cost to cross a boundary -- must change with them. Carrying the old total forward
+  // (or adding only the lineage payload) understates it, and the runtime's independent size check
+  // then rejects a value the codec itself produced. This is the intermediate edge admission the
+  // materialize check below could not catch, because materializing recomputes the size.
+  BOOST_CHECK_EQUAL(attached.expectedBytes, tensorBundleWireSize(*attached.localTensors));
+  BOOST_CHECK_EQUAL(stripped.expectedBytes, tensorBundleWireSize(*stripped.localTensors));
+  BOOST_CHECK_GT(attached.expectedBytes, stripped.expectedBytes);
   // And the whole local value still materializes to the bytes the codec would have produced for
   // its tensors, in the order it holds them.
   const auto wire = materializeTensorBundleWire(stripped);

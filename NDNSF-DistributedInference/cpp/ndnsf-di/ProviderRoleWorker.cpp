@@ -23,6 +23,50 @@ namespace ndnsf::di {
 
 namespace {
 
+/** Admit one peer contribution on a generation-bound unit.
+ *
+ * Every route that delivers a peer contribution uses this: the awaited fetch, a resumed
+ * contribution and a caller-supplied one. Checking only the endpoint fields would accept a partial
+ * from another round that arrived on the right name, so the whole generation state is compared; the
+ * binding is then stripped because the SUM reads float32 members only. Missing metadata on a
+ * generation-bound peer is rejected before its values can enter the reduction.
+ */
+TensorBundle
+admitPeerContribution(const RoleSpec& role, const DependencyEdge& edge, TensorBundle bundle)
+{
+  if (!role.generationLineage) return bundle;
+  const auto lineage = extractGenerationEpochLineage(bundle);
+  if (!lineage) {
+    throw std::runtime_error("GENERATION_EPOCH_LINEAGE_MISSING");
+  }
+  auto expected = *role.generationLineage;
+  expected.producerRole = edge.producerRole;
+  expected.consumerRole = edge.consumerRole;
+  expected.operationIndex = edge.collectiveOperationIndex;
+  if (!lineage->sameGenerationState(expected) ||
+      lineage->producerRole != expected.producerRole ||
+      lineage->consumerRole != expected.consumerRole ||
+      lineage->operationIndex != expected.operationIndex) {
+    throw std::runtime_error("GENERATION_EPOCH_LINEAGE_MISMATCH");
+  }
+  return stripGenerationEpochLineage(std::move(bundle));
+}
+
+/** Bytes a bundle will occupy on the wire, local or already encoded.
+ *
+ * A local value carries views, not a payload, so `payload.size()` is zero and a timing record
+ * built from it claims the transfer sent nothing. The transport materializes the encoded form,
+ * so that is what the record has to describe.
+ */
+std::size_t
+stagedWireBytes(const TensorBundle& bundle)
+{
+  if (bundle.localTensors) {
+    return static_cast<std::size_t>(tensorBundleWireSize(*bundle.localTensors));
+  }
+  return bundle.payload.size();
+}
+
 void
 appendUint64(std::ostringstream& os, std::uint64_t value)
 {
@@ -558,7 +602,7 @@ ProviderRoleWorker::executeAsyncImpl(
         timing.preSatisfied = true;
         validateTensorBundleForEdge(edge, existing->second);
         timing.fetchCompletedAt = std::chrono::steady_clock::now();
-        timing.bytes = existing->second.payload.size();
+        timing.bytes = stagedWireBytes(existing->second);
         completeStageTransferObservation(edge, existing->second, "receive");
         timing.transferObservation = existing->second.transferObservation;
         item.inputTimings.push_back(std::move(timing));
@@ -627,7 +671,7 @@ ProviderRoleWorker::executeAsyncImpl(
           NativeFaultPoint::DependencyFetched, item.role.role, item.sessionId);
 #endif
         pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
-        pending.timing.bytes = bundle.payload.size();
+        pending.timing.bytes = stagedWireBytes(bundle);
         completeStageTransferObservation(pending.edge, bundle, "receive");
         pending.timing.transferObservation = bundle.transferObservation;
         item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
@@ -712,6 +756,46 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
       try {
         auto bundle = state->pending.get();
         validateTensorBundleForEdge(state->edge, bundle);
+        // This is the step-scoped fetch, and it had no ledger entry at all: the wait was started
+        // when the step asked for it, the bytes arrived here, and neither the completion time nor
+        // the transfer was recorded -- so the budget at the end of the unit never saw these
+        // receives and the timing ledger showed a wait with no result.
+        // The record for this edge was created when the fetch was deferred, so it is completed in
+        // place rather than pushed again: a second record for the same scope would count one arrival
+        // twice and leave the first as a zero-byte, never-completed placeholder.
+        {
+          completeStageTransferObservation(state->edge, bundle, "receive");
+          auto existing = std::find_if(state->item.inputTimings.begin(),
+                                       state->item.inputTimings.end(),
+            [&] (const InputFetchTiming& entry) {
+              return entry.scope == state->edge.scope && !entry.preSatisfied;
+            });
+          if (existing != state->item.inputTimings.end()) {
+            existing->fetchCompletedAt = std::chrono::steady_clock::now();
+            existing->bytes = stagedWireBytes(bundle);
+            existing->transferObservation = bundle.transferObservation;
+          }
+          else {
+            InputFetchTiming timing;
+            timing.producerRole = state->edge.producerRole;
+            timing.scope = state->edge.scope;
+            timing.plannedDataName = state->edge.plannedDataName;
+            timing.plannedSegmentNames = plannedSegmentNamesForEdge(state->edge);
+            timing.expectedSegments = state->edge.expectedSegments;
+            timing.expectedBytes = state->edge.expectedBytes;
+            timing.fetchCompletedAt = std::chrono::steady_clock::now();
+            timing.bytes = stagedWireBytes(bundle);
+            timing.transferObservation = bundle.transferObservation;
+            state->item.inputTimings.push_back(std::move(timing));
+          }
+        }
+        // The peer stamped this contribution. Check the binding before reducing it: comparing only
+        // the endpoint fields would accept a partial from another round that happened to arrive on
+        // the right name, so the whole generation state is compared. Then strip it -- the SUM reads
+        // float32 members only, and a lineage tensor left in the set makes the counts disagree.
+        // One admission for every route: this is the third, and it used to carry its own copy of the
+        // check. Copies drift -- the two branches above had no check at all until the same round.
+        bundle = admitPeerContribution(state->item.role, state->edge, std::move(bundle));
         state->item.stepRemoteInputs[state->edge.scope] = std::move(bundle);
       }
       catch (...) {
@@ -727,6 +811,7 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
                   toString(submitted))));
   }
 }
+
 
 void
 ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
@@ -774,7 +859,7 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
             state->item.role.role, state->item.sessionId);
 #endif
           pending.timing.fetchCompletedAt = std::chrono::steady_clock::now();
-          pending.timing.bytes = bundle.payload.size();
+          pending.timing.bytes = stagedWireBytes(bundle);
           completeStageTransferObservation(pending.edge, bundle, "receive");
           pending.timing.transferObservation = bundle.transferObservation;
           state->item.initialInputsByScope[pending.edge.scope] = std::move(bundle);
@@ -1323,6 +1408,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       if (admitted == ctx.inputsByScope.end()) {
         const auto resumed = item.stepRemoteInputs.find(edge.scope);
         if (resumed != item.stepRemoteInputs.end()) {
+          // Already admitted where it arrived: the await callback checked the generation binding
+          // and stripped it before storing under `stepRemoteInputs`. Admitting again here would
+          // judge a stripped bundle by the rule that expects the stamp, so a legitimate peer result
+          // would be rejected exactly once per step.
           if (!inputs.emplace(edge.consumerSlotId, std::move(resumed->second)).second) {
             throw std::runtime_error(
               "sealed step has duplicate contributions for one slot: " +
@@ -1367,7 +1456,12 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       // which inflates the reduction without looking wrong. The sealed template
       // declares one dependency per contribution, so a second one is a contract
       // violation rather than something to merge.
-      if (!inputs.emplace(edge.consumerSlotId, admitted->second).second) {
+      // Admission happens on the value this step actually consumes. `ctx.inputsByScope` is const
+      // and is a copy of the item's map, so re-binding the item's copy earlier left the two
+      // different: the check ran on one bundle and the reduction received another, which is the
+      // strip not happening at all.
+      if (!inputs.emplace(edge.consumerSlotId,
+                          admitPeerContribution(item.role, edge, admitted->second)).second) {
         throw std::runtime_error(
           "sealed step has duplicate contributions for one slot: " +
           edge.consumerSlotId);
@@ -1461,10 +1555,15 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       contributions.reserve(step.inputSlots.size());
       for (const auto& slot : step.inputSlots) {
         const auto input = inputs.find(slot.slotId);
-        contributions.push_back(decodeTensorBundleViews(input->second));
+        // The statistics owner is passed so the codec records what the SUM actually moved. The
+        // helper has had that ability since it was written, but the production worker never handed
+        // it the owner, so a C10 mechanism count read zero on a run that reduced every layer.
+        contributions.push_back(
+          decodeTensorBundleViews(input->second, item.role.workStatistics));
       }
       produced.emplace(step.stepId + "\n" + outputSlot,
-                       sumTensorBundleViews(outputSlot, contributions));
+                       sumTensorBundleViews(outputSlot, contributions,
+                                            item.role.workStatistics));
       // The step is done: its collected inputs are released so a long template does not retain
       // every contribution it ever read, and so a retry of this step cannot see a stale value.
       item.stepCollectedInputs.erase(step.stepId);
@@ -1572,6 +1671,16 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       auto stripped = withoutProviderLocalState(bundle, item.role.stateOutputNames,
                                                 item.role.workStatistics);
+      // A generation-bound unit stamps every dependency it publishes. This early path skipped it, so
+      // a partial sent here reached the peer with no round, prefix or position binding -- and the
+      // final pass, which does stamp, never sees it because `publishedScopes` already covers it.
+      if (item.role.generationLineage) {
+        auto lineage = *item.role.generationLineage;
+        lineage.producerRole = edge.producerRole;
+        lineage.consumerRole = edge.consumerRole;
+        lineage.operationIndex = edge.collectiveOperationIndex;
+        stripped = attachGenerationEpochLineage(stripped, lineage);
+      }
       validateTensorBundleForEdge(edge, stripped, false);
       // Charge the transfer where it actually happens. The final pass skips this
       // edge, so leaving it out here would make the timing ledger claim the partial
@@ -1594,7 +1703,10 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         partialTiming.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
         partialTiming.expectedSegments = edge.expectedSegments;
         partialTiming.expectedBytes = edge.expectedBytes;
-        partialTiming.bytes = stripped.payload.size();
+        // A local value has no payload; its cost is what the transport will materialize from it,
+        // so the recorded size is the wire size rather than zero. Recording `payload.size()` here
+        // made every local partial claim it sent nothing.
+        partialTiming.bytes = stagedWireBytes(stripped);
         partialTiming.transferObservation = stripped.transferObservation;
         partialTiming.outputReadyAt = partialPublishStartedAt;
         partialTiming.publishStartedAt = partialPublishStartedAt;
@@ -2054,7 +2166,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
       timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
       timing.expectedSegments = edge.expectedSegments;
       timing.expectedBytes = edge.expectedBytes;
-      timing.bytes = bundle.payload.size();
+      timing.bytes = stagedWireBytes(bundle);
       timing.transferObservation = bundle.transferObservation;
       timing.outputReadyAt = outputReadyAt;
       timing.publishDoneAt = outputReadyAt;
@@ -2093,7 +2205,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
     timing.plannedSegmentNames = plannedSegmentNamesForEdge(edge);
     timing.expectedSegments = edge.expectedSegments;
     timing.expectedBytes = edge.expectedBytes;
-    timing.bytes = bundle.payload.size();
+    timing.bytes = stagedWireBytes(bundle);
     timing.transferObservation = bundle.transferObservation;
     timing.outputReadyAt = outputReadyAt;
     timing.publishDoneAt = publishDoneAt;

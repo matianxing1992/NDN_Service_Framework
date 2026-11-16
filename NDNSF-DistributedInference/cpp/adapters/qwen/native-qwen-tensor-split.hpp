@@ -8,11 +8,13 @@
 
 #include <onnx/onnx_pb.h>
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <filesystem>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ndnsf::di::qwen {
@@ -276,6 +278,21 @@ onnx::ModelProto
 extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
                         const std::string& entryId);
 
+/** The boundary an entry would have, computed without extracting it.
+ *
+ * Extraction consumes the source (initializers are moved, not copied), so a caller that needs the
+ * entry's inputs and outputs *before* deciding what to extract -- the native assembly worker needs
+ * them in its certified recipe -- cannot get them from an extracted model. This computes the same
+ * boundary from a read-only source and the same classification result, so the two agree by
+ * construction and a case asserts that they do.
+ *
+ * @param source Parsed source graph, left untouched.
+ * @param entry  Entry whose nodes are owned.
+ * @returns The entry's declared inputs and outputs, in the order extraction would emit them.
+ */
+std::pair<std::vector<onnx::ValueInfoProto>, std::vector<onnx::ValueInfoProto>>
+describeQwenTpEntryBoundary(const onnx::ModelProto& source, const QwenTpEntryNodes& entry);
+
 /** One verified subgraph entry a tensor-parallel unit executes.
  *
  * The projection must not invent the entry naming rule or the entry interface:
@@ -452,6 +469,21 @@ struct QwenTpRankGeometry
  * each rank loads complete weights. They are optional only because a caller that
  * has no verified shape cannot slice; a tensor-parallel Provider always has one.
  */
+/** Rank-scoped limits for entry assembly.
+ *
+ * The deadline and the assembled-byte budget belong to the whole rank, not to each entry: a caller
+ * that reset them per entry would accept a table larger than the rank can hold and would ignore a
+ * cancellation that arrived between entries. Mirrors the native assembly control the worker path
+ * already takes, without pulling that header into this one.
+ */
+struct QwenTpAssemblyControl
+{
+  std::chrono::steady_clock::time_point deadline =
+    std::chrono::steady_clock::time_point::max();
+  std::function<void()> requireActive;
+  std::uint64_t maxAssembledBytes = 0;
+};
+
 struct QwenTpAssemblyShards
 {
   // Per layer, the slices this rank owns. Empty means "do not slice".
@@ -548,6 +580,17 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards);
 
+/** Assemble with the rank's own deadline and byte budget.
+ *
+ * @param control Optional rank-scoped limits; null keeps the unbounded behaviour the in-process
+ *                tools rely on.
+ */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control);
+
 /** Assemble a unit's table with a known head owner.
  *
  * Classification is per rank but the head belongs to one unit only. Without knowing which
@@ -564,6 +607,14 @@ std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const std::string& egressRole);
+
+/** Assemble with the rank's limits and a known head owner. */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
                          const std::string& egressRole);
 
 /** Rewrite an extracted entry's sharded weights to this rank's slice.
@@ -674,6 +725,7 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  *        narrowed to this rank's slices; one keeps every entry at full width so a
  *        pipeline role is unaffected.
  * @param tensorRank Rank of this unit within `tensorDegree`.
+ * @param control Existing assembly deadline and cancellation owner, if supplied.
  * @throws std::runtime_error when the rank artifact cannot be read or split.
  */
 void
@@ -682,7 +734,8 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         std::uint64_t rankedByteBudget,
                         std::uint64_t tensorDegree = 1,
                         std::uint64_t tensorRank = 0,
-                        const std::string& egressRole = {});
+                        const std::string& egressRole = {},
+                        const QwenTpAssemblyControl* control = nullptr);
 
 /** Serialize the step descriptors a spec carries for consistency checking.
  *

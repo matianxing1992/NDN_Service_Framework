@@ -28,12 +28,12 @@ process composition, and a common large-data reference abstraction. The UAV and
 DistributedInference applications are application layers that validate and
 stress these framework mechanisms.
 
-The current NDNSF-DI local deployment result is an evidence-backed **BLOCK**,
-not a production PASS: evidence integrity and correctness pass, while fixed
-1 RPS performance, live recovery, operations and soak do not. Physical work is
-deferred exclusively to Spec 106. See
-[`docs/NDNSF-DI-deployment-candidate.md`](docs/NDNSF-DI-deployment-candidate.md)
-for architecture, CLI, build/test, experiment and release details, and
+For installed NDNSF-DI experiments, start with the
+[Tiger and SIF guide](Experiments/TigerCluster/README.md) or
+[MiniNDN experiment launcher](Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py).
+Use the launcher's `--help` for its supported commands. Historical results retain
+their recorded candidate and verification scope.
+See
 [`packaging/ndnsf-di-systemd/README.md`](packaging/ndnsf-di-systemd/README.md)
 for the local operator runbook.
 
@@ -333,11 +333,11 @@ to check a complete NDNSF runtime profile before debugging individual logs.
 For NDNSF-DI experiments, use the shorter workflow document as the single entry
 point:
 
-- [NDNSF-DI Runtime Workflow](docs/NDNSF-DI-runtime-workflow.md)
+- [Native MiniNDN experiment launcher](Experiments/NDNSF_DI_Qwen06B_Native_Minindn.py)
+- [Tiger deployment and reusable models](Experiments/TigerCluster/README.md)
 
-The DI workflow covers profile validation, resolved config printing, doctor
-preflight, dry-runs, single NativeTracer runs, LLM campaigns, rate sweeps, and
-RPS searches.
+These entry points use the installed native actors and maintained cluster owner.
+Historical profile/NativeTracer campaigns retain their own evidence scope.
 
 For the HELLO/token-bootstrap path:
 
@@ -1124,7 +1124,7 @@ The runtime-aware DI planner keeps planning user-side. It creates reusable plan
 templates, then selects per-request runtime assignments from provider ACK
 metadata, fragment residency, directed provider-to-provider metrics, and
 optional admission leases. The workflow entry point is
-`docs/NDNSF-DI-runtime-workflow.md`.
+[the deployment guide](Experiments/TigerCluster/README.md).
 
 After the Spec 084 simplification, users do not share an advisory coordinator.
 Each user plans independently from typed provider hints; provider-owned,

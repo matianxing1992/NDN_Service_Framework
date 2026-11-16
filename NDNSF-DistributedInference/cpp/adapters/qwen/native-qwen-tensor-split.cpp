@@ -21,6 +21,16 @@ namespace ndnsf::di::qwen {
 
 namespace {
 
+void
+requireRankAssemblyActive(const QwenTpAssemblyControl* control)
+{
+  if (control == nullptr) return;
+  if (control->requireActive) control->requireActive();
+  if (std::chrono::steady_clock::now() >= control->deadline) {
+    throw std::runtime_error("tensor-parallel rank assembly deadline expired");
+  }
+}
+
 /** Turn a unit id or kind into a file-name component.
  *
  * Unit ids carry role separators and report characters, so the name is reduced
@@ -1048,6 +1058,82 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
   return entries;
 }
 
+std::pair<std::vector<onnx::ValueInfoProto>, std::vector<onnx::ValueInfoProto>>
+describeQwenTpEntryBoundary(const onnx::ModelProto& source, const QwenTpEntryNodes& entry)
+{
+  if (entry.nodeIndices.empty()) {
+    throw std::invalid_argument("tensor-parallel entry boundary needs nodes");
+  }
+  const auto& graph = source.graph();
+  const auto nodeCount = static_cast<std::uint64_t>(graph.node_size());
+  if (*std::max_element(entry.nodeIndices.begin(), entry.nodeIndices.end()) >= nodeCount) {
+    throw std::invalid_argument(
+      "tensor-parallel entry names a node outside the source graph");
+  }
+  // The same three sets `extractQwenTpEntryModel` uses, computed the same way: what the entry
+  // mentions, what it produces, and what it consumes from outside itself.
+  std::set<std::uint64_t> owned(entry.nodeIndices.begin(), entry.nodeIndices.end());
+  std::set<std::string> referenced;
+  for (const auto index : owned) {
+    const auto& node = graph.node(static_cast<int>(index));
+    for (const auto& input : node.input())
+      if (!input.empty()) referenced.insert(input);
+    for (const auto& output : node.output())
+      if (!output.empty()) referenced.insert(output);
+  }
+  std::set<std::string> initializerNames;
+  for (int i = 0; i < graph.initializer_size(); ++i)
+    initializerNames.insert(graph.initializer(i).name());
+  std::set<std::string> produced;
+  for (const auto index : owned)
+    for (const auto& output : graph.node(static_cast<int>(index)).output())
+      if (!output.empty()) produced.insert(output);
+  std::set<std::string> consumedOutside;
+  for (std::uint64_t index = 0; index < nodeCount; ++index) {
+    if (owned.count(index) != 0) continue;
+    for (const auto& input : graph.node(static_cast<int>(index)).input())
+      if (!input.empty()) consumedOutside.insert(input);
+  }
+  const auto findValue = [&graph] (const std::string& name) -> const onnx::ValueInfoProto* {
+    for (const auto& input : graph.input())
+      if (input.name() == name) return &input;
+    for (const auto& output : graph.output())
+      if (output.name() == name) return &output;
+    for (const auto& value : graph.value_info())
+      if (value.name() == name) return &value;
+    return nullptr;
+  };
+  std::vector<onnx::ValueInfoProto> inputs;
+  for (const auto& name : referenced) {
+    if (produced.count(name) != 0) continue;
+    if (initializerNames.count(name) != 0) continue;
+    const auto* value = findValue(name);
+    if (value == nullptr) {
+      throw std::invalid_argument(
+        "tensor-parallel entry input has no declared type in the source: " + name);
+    }
+    inputs.push_back(*value);
+  }
+  std::vector<onnx::ValueInfoProto> outputs;
+  for (const auto& name : referenced) {
+    if (produced.count(name) == 0) continue;
+    const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
+      [&name] (const auto& value) { return value.name() == name; });
+    if (consumedOutside.count(name) == 0 && !declaredOutput) continue;
+    const auto* value = findValue(name);
+    if (value == nullptr) {
+      throw std::invalid_argument(
+        "tensor-parallel entry output has no declared type in the source: " + name);
+    }
+    outputs.push_back(*value);
+  }
+  if (inputs.empty() || outputs.empty()) {
+    throw std::invalid_argument(
+      "tensor-parallel entry has no boundary, so it cannot be a separate graph");
+  }
+  return {std::move(inputs), std::move(outputs)};
+}
+
 onnx::ModelProto
 extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
                         const std::string& entryId)
@@ -1195,6 +1281,15 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards)
 {
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, nullptr);
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control)
+{
   if (root.empty() || unitId.empty() || graphBytes.empty() || layers == 0) {
     throw std::invalid_argument("tensor-parallel entry assembly needs a root, unit, graph and layers");
   }
@@ -1216,6 +1311,19 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
       "tensor-parallel entry root is unavailable: " + directoryError.message());
   }
 
+  // The budget and the deadline are the rank's, not each entry's: a caller that let every entry
+  // reset them would accept a table far larger than the rank can hold, and a cancellation arriving
+  // between entries would be ignored until the next one. `control` is optional so the in-process
+  // tools that predate it keep working, but a Provider always supplies one.
+  std::uint64_t assembledBytes = 0;
+  const auto checkBudget = [&] (std::uint64_t bytes) {
+    if (control == nullptr || control->maxAssembledBytes == 0) return;
+    if (bytes > control->maxAssembledBytes) {
+      throw std::runtime_error(
+        "tensor-parallel rank exceeds its assembled-byte budget: " +
+        std::to_string(bytes) + " > " + std::to_string(control->maxAssembledBytes));
+    }
+  };
   std::vector<QwenTpEntryContract> table;
   table.reserve(classified.size());
   // Extraction moves initializers out of the source, so each entry needs its own
@@ -1229,9 +1337,15 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
     }
     const auto fileName = sanitizeEntryFileName(unitId) + "-" +
       sanitizeEntryFileName(entry.kind) + "-" + std::to_string(entry.layer) + ".onnx";
-    table.push_back(writeQwenTpEntry(root, unitId, entry, source, fileName,
-                                     shards.enabled() ? &shards : nullptr));
+    requireRankAssemblyActive(control);
+    auto contract = writeQwenTpEntry(root, unitId, entry, source, fileName,
+                                     shards.enabled() ? &shards : nullptr);
+    // The written file is what the rank will load, so the budget is charged against its size.
+    assembledBytes += readEntryFile(root / contract.relativeGraphPath).size();
+    checkBudget(assembledBytes);
+    table.push_back(std::move(contract));
   }
+  requireRankAssemblyActive(control);
   if (table.empty()) {
     throw std::runtime_error("tensor-parallel entry assembly produced no entries");
   }
@@ -1255,7 +1369,18 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const std::string& egressRole)
 {
-  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards);
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, nullptr,
+                                  egressRole);
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         const std::string& egressRole)
+{
+  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control);
   if (egressRole.empty()) return table;
   if (unitId == egressRole) {
     // The egress unit must have the head; its absence means the caller and the taxonomy
@@ -2191,8 +2316,10 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,
                         std::uint64_t rankedByteBudget,
                         std::uint64_t tensorDegree, std::uint64_t tensorRank,
-                        const std::string& egressRole)
+                        const std::string& egressRole,
+                        const QwenTpAssemblyControl* control)
 {
+  requireRankAssemblyActive(control);
   if (spec.path.empty() || layers == 0 || spec.role.empty()) {
     throw std::invalid_argument(
       "tensor-parallel rank spec needs an assembled path, a role and layers");
@@ -2249,8 +2376,14 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   // The egress role decides whether this unit's table keeps the head: classification is
   // per rank, but only one unit runs the head step, so a non-egress table must drop it or
   // the strict verifier refuses an entry no step references.
+  // The rank's own budget, and a deadline the caller's assembly control already carries. Before
+  // this the table was produced with neither, so a rank could assemble a table larger than its
+  // declared budget and a cancellation arriving between entries was only noticed afterwards.
+  QwenTpAssemblyControl tableControl = control ? *control : QwenTpAssemblyControl{};
+  tableControl.maxAssembledBytes = rankedByteBudget;
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
-                                        graphBytes, layers, shards, egressRole);
+                                        graphBytes, layers, shards,
+                                        &tableControl, egressRole);
   // A caller that declares fewer steps than the taxonomy produces is building a partial
   // template -- a test driving one block, or a plan that intentionally executes a slice.
   // The verifier's set-agreement rule exists to catch an artifact that disagrees with the
@@ -2291,6 +2424,7 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
     throw std::runtime_error(
       "DI_NATIVE_ASSEMBLY_ENTRY_SET_REJECTED: " + problem);
   }
+  requireRankAssemblyActive(&tableControl);
   spec.metadata["tensorParallelEntries"] = qwenTpEntryTableJson(table);
   // The parent locates its children relative to this directory.
   spec.metadata["tensorParallelEntryRoot"] = modelPath.parent_path().string();
@@ -2302,6 +2436,7 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   // The parent runner is selected by backend name, and the single-file rank model
   // is no longer what executes.
   spec.backend = "native-qwen-tensor";
+  requireRankAssemblyActive(&tableControl);
 }
 
 std::string
@@ -2688,12 +2823,43 @@ bindIdentitySlots(QwenTpEntryContract& contract)
   }
 }
 
+/** Write an already-extracted entry: slice, declare, persist, digest.
+ *
+ * Declared at file scope rather than in the header because it takes the extracted model by value;
+ * the public entry point extracts first and calls it. Both the direct path and the worker-certified
+ * path must produce byte-identical entries, so they share this code instead of repeating it. My
+ * first version put the declaration in an anonymous namespace and the definition outside it, which
+ * linked against a symbol that did not exist.
+ */
+QwenTpEntryContract
+finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
+                    const QwenTpEntryNodes& entry, onnx::ModelProto model,
+                    const std::string& graphName,
+                    const QwenTpAssemblyShards* shards);
+
 QwenTpEntryContract
 writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
                  const QwenTpEntryNodes& entry, onnx::ModelProto& source,
                  const std::string& graphName,
                  const QwenTpAssemblyShards* shards)
 {
+  const auto entryId = unitId + "/" + entry.kind + "/" + std::to_string(entry.layer);
+  return finalizeQwenTpEntry(root, unitId, entry,
+                             extractQwenTpEntryModel(source, entry, entryId),
+                             graphName, shards);
+}
+
+QwenTpEntryContract
+finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
+                     const QwenTpEntryNodes& entry, onnx::ModelProto model,
+                     const std::string& graphName,
+                     const QwenTpAssemblyShards* shards)
+{
+  // Everything after extraction: narrow the weights to this rank, declare the boundary from the
+  // file itself, write it atomically and digest what landed. Split out of `writeQwenTpEntry` so a
+  // caller that obtained the extracted model elsewhere -- the native assembly worker, which
+  // extracts by node index and certifies the result -- produces an identical entry through the
+  // same code. Duplicating this would let the two paths disagree about slicing or about the digest.
   if (root.empty() || unitId.empty()) {
     throw std::invalid_argument("tensor-parallel entry write needs a root and a unit");
   }
@@ -2704,7 +2870,6 @@ writeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId,
       "tensor-parallel entry file name must be a plain name: " + graphName);
   }
   const auto entryId = unitId + "/" + entry.kind + "/" + std::to_string(entry.layer);
-  auto model = extractQwenTpEntryModel(source, entry, entryId);
 
   // Narrow this entry's weights to the rank's own shard before the file is
   // written, so the digest covers what the rank will actually load. INIT and HEAD

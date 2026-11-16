@@ -603,7 +603,9 @@ BOOST_AUTO_TEST_CASE(Spec189ThreeTurnProviderKvRestore)
         wrong.conversationStateBinding->checkpointDigest = hash('f');
         BOOST_CHECK_EXCEPTION(runtime.executeRoleAsync(role.requestId, wrong, io),
           std::runtime_error, [](const std::runtime_error& e) {
-            return std::string(e.what()) == "PROVIDER_CONVERSATION_STATE_MISSING";
+            const std::string message = e.what();
+            const std::string code = "PROVIDER_CONVERSATION_STATE_MISSING";
+            return message == code || message.rfind(code + " ", 0) == 0;
           });
         BOOST_CHECK_EQUAL(calls[stage], turn);
       }

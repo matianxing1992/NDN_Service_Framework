@@ -479,6 +479,14 @@ void requireActiveAssembly(const NativeCanonicalOnnxAssemblerOptions& options,
     options.protectedRuntime->withContentKey(nowMs(), [] (const auto&) {});
 }
 
+void
+requireActiveAssembly(const NativeAssemblyControl& control)
+{
+  if (control.requireActive) control.requireActive();
+  if (std::chrono::steady_clock::now() >= control.deadline)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_TIMEOUT: assembly deadline expired");
+}
+
 /**
  * Keep the authenticated Selection-status view alive while the native OA02
  * worker performs a long synchronous assembly.  This is deliberately scoped
@@ -2072,6 +2080,17 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   if (!isSha256Digest(projection.assemblyContract().recipeDigest))
     return std::nullopt;
 
+  if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000)
+    throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
+  const auto cacheWallNow = nowMs();
+  const auto cacheRemainingMs = projection.deadlineMs == 0 ? options.assemblyTimeoutMs :
+    (projection.deadlineMs > cacheWallNow ? projection.deadlineMs - cacheWallNow : 0);
+  const NativeAssemblyControl cacheControl{
+    std::chrono::steady_clock::now() + std::chrono::milliseconds(
+      std::min<std::uint64_t>(options.assemblyTimeoutMs, cacheRemainingMs)),
+    [&] { requireActiveAssembly(options, projection.deadlineMs); },
+    projection.assemblyContract().maxSourceBytes, projection.assemblyContract().maxAssembledBytes};
+
   std::optional<boost::property_tree::ptree> verifiedCurrentRoot;
   const auto currentRoot = [&] () -> const boost::property_tree::ptree& {
     if (!verifiedCurrentRoot) {
@@ -2191,16 +2210,10 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   if (projection.automaticShapeSeed) {
     if (!fetchers.getArtifact || !fetchers.fetchEncryptedLargeData ||
         projection.canonicalArtifactName.empty()) return std::nullopt;
-    if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000)
-      throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
-    const NativeAssemblyControl control{
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(options.assemblyTimeoutMs),
-      [&] { requireActiveAssembly(options, projection.deadlineMs); },
-      projection.assemblyContract().maxSourceBytes, projection.assemblyContract().maxAssembledBytes};
     // All current source/seed parsing and serialization stays outside cache
     // recovery: an invalid request must not discard a valid assembled entry.
-    const auto binding = loadAutomaticCachedSource(fetchers, currentRoot(), projection, control);
-    automaticSourceBindingJson = binding.canonicalJson(control);
+    const auto binding = loadAutomaticCachedSource(fetchers, currentRoot(), projection, cacheControl);
+    automaticSourceBindingJson = binding.canonicalJson(cacheControl);
   }
 
   try {
@@ -2382,11 +2395,13 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       }
       const std::string egressRole = projection.dataflow.terminalResponseOwner
         ? rankRole : std::string{};
+      const qwen::QwenTpAssemblyControl tableControl{
+        cacheControl.deadline, cacheControl.requireActive, contract.maxAssembledBytes};
       qwen::configureQwenTpRankSpec(spec, layers, ownedSteps,
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
                                     contract.tensorParallelRank,
-                                    egressRole);
+                                    egressRole, &tableControl);
       if (options.reportProgress)
         options.reportProgress("ENTRY_TABLE_READY", 0.95);
     }
@@ -2395,9 +2410,13 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
       spec.metadata["automaticSourceBinding"] = automaticSourceBindingJson;
     if (options.reportProgress)
       options.reportProgress("CACHE_HIT", 0.90);
+    requireActiveAssembly(cacheControl);
     return spec;
   }
   catch (const std::exception&) {
+    // A terminal request is not a corrupt cache entry. Preserve valid reusable artifacts and
+    // propagate its cancellation, authorization or deadline failure instead of falling back.
+    requireActiveAssembly(cacheControl);
     // Cache is an optimization, not an authority. Ignore stale or partial
     // entries and let the authenticated cold path decide.
     if (std::filesystem::exists(directory))
@@ -4045,11 +4064,13 @@ prepareNativeCanonicalOnnxRole(
       // would demand one -- so an empty value is passed through.
       const std::string egressRole = projection.dataflow.terminalResponseOwner
         ? rankRole : std::string{};
+      const qwen::QwenTpAssemblyControl tableControl{
+        assemblyControl.deadline, assemblyControl.requireActive, contract.maxAssembledBytes};
       qwen::configureQwenTpRankSpec(spec, layers, ownedSteps,
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
                                     contract.tensorParallelRank,
-                                    egressRole);
+                                    egressRole, &tableControl);
       logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
                               static_cast<std::uint64_t>(layers), "entries");
     }
@@ -4060,6 +4081,7 @@ prepareNativeCanonicalOnnxRole(
     if (!protectedRole) std::filesystem::remove_all(rootPath);
     // The Provider cache receives the runner metadata and installs its own
     // eviction cleanup only after this function returns successfully.
+    requireActiveAssembly(assemblyControl);
     protectedArtifactOwned = false;
     finalArtifactDirectoryOwned = false;
     return spec;
