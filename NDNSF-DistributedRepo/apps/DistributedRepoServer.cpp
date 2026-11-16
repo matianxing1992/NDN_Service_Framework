@@ -150,6 +150,29 @@ main(int argc, char* argv[])
         close();
       }
     } shutdownFence{*repo, provider};
+    // Drain queued owner-token completions on every exit path (early stopping,
+    // readiness failure, exception, normal return). An exhausted bound is a
+    // hard exit instead of an unbounded Provider destructor wait.
+    struct OwnerDrainGuard
+    {
+      ndn::Face& face;
+      ndn_service_framework::ServiceProvider& provider;
+
+      ~OwnerDrainGuard() noexcept
+      {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(10);
+        while (provider.hasPendingOwnerTokens() &&
+               std::chrono::steady_clock::now() < deadline) {
+          face.getIoContext().restart();
+          face.getIoContext().run_for(std::chrono::milliseconds(20));
+        }
+        if (provider.hasPendingOwnerTokens()) {
+          std::cerr << "NDNSF_REPO_OWNER_TOKENS_UNDRAINED" << std::endl;
+          std::_Exit(3);
+        }
+      }
+    } ownerDrain{face, provider};
     bool stopping = false;
     const auto signalActive = std::make_shared<bool>(true);
     boost::asio::signal_set signals(face.getIoContext(), SIGINT, SIGTERM);
@@ -199,18 +222,9 @@ main(int argc, char* argv[])
     }
     if (!stopping)
       face.processEvents();
-    // The signal handler stops the context. Queued completions still hold owner tokens and a stopped
-    // context never runs them, so the provider's destructor would wait for tokens nobody returns:
-    // restart the loop and let it run until the tokens are gone (bounded) before objects die.
-    // `run_for` is used rather than `processEvents(timeout)`, which stops the context at each batch
-    // boundary and would abort the very work being drained.
-    const auto ownerDrainDeadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (stopping && provider.hasPendingOwnerTokens() &&
-           std::chrono::steady_clock::now() < ownerDrainDeadline) {
-      face.getIoContext().restart();
-      face.getIoContext().run_for(std::chrono::milliseconds(20));
-    }
+    // Queued completions still hold owner tokens after the context stops; the
+    // OwnerDrainGuard above drains them on every exit path before the Provider
+    // and Face are destroyed.
     std::cout << "NDNSF_REPO_CACHE_STATUS " << repo->cacheStatus().toJson() << std::endl;
     return 0;
   }

@@ -9873,7 +9873,8 @@ namespace ndn_service_framework
                             struct EntryRelease
                             {
                                 std::shared_ptr<RegistrationControl> control;
-                                ~EntryRelease() { control->releaseOwner(); }
+                                bool armed = true;
+                                ~EntryRelease() { if (armed) control->releaseOwner(); }
                             } entryRelease{control};
                             const auto completion = publisher->finish(
                                 payload, reason, std::chrono::steady_clock::now() +
@@ -9897,6 +9898,9 @@ namespace ndn_service_framework
                                             requestId, requestMessage, std::move(response),
                                             selectionDigest, registrationState);
                                     });
+                                // The posted closure now owns the single lease; the entry
+                                // must not release a second time.
+                                entryRelease.armed = false;
                             }
                             return true;
                         },
@@ -9909,7 +9913,8 @@ namespace ndn_service_framework
                             struct EntryRelease
                             {
                                 std::shared_ptr<RegistrationControl> control;
-                                ~EntryRelease() { control->releaseOwner(); }
+                                bool armed = true;
+                                ~EntryRelease() { if (armed) control->releaseOwner(); }
                             } entryRelease{control};
                             publisher->fail(message);
                             {
@@ -9923,6 +9928,7 @@ namespace ndn_service_framework
                                             requesterName, providerName, serviceName, requestId,
                                             requestMessage, message, selectionDigest);
                                     });
+                                entryRelease.armed = false;
                             }
                             return true;
                         },
@@ -9977,9 +9983,15 @@ namespace ndn_service_framework
                 // waits for it instead of destroying the provider under a running lambda.
                 if (auto* completionOwner = m_registrationControl->acquireOwner()) {
                     auto completionControl = m_registrationControl;
+                    // The queued closure owns the single lease; if posting throws or the
+                    // queue is discarded without running, the token still returns the
+                    // owner count so the destructor cannot wait forever.
+                    std::shared_ptr<void> ownerLease(nullptr,
+                        [completionControl](void*) { completionControl->releaseOwner(); });
                     boost::asio::post(m_face.getIoContext(),
                         [completionOwner,
                          completionControl,
+                         ownerLease,
                          requesterName,
                          providerName,
                          serviceName,
@@ -9988,11 +10000,6 @@ namespace ndn_service_framework
                          selectionDigest,
                          response = std::move(response),
                          registrationState]() mutable {
-                            struct OwnerRelease
-                            {
-                                std::shared_ptr<RegistrationControl> control;
-                                ~OwnerRelease() { control->releaseOwner(); }
-                            } release{completionControl};
                             completionOwner->finishRequestExecutionOnEventLoop(
                                 requesterName,
                                 providerName,
