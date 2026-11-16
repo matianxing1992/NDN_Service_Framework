@@ -495,6 +495,18 @@ slotDtypeBytes(const std::string& dtype)
 
 } // namespace
 
+std::uint64_t
+NativeExecutionPlan::degreeForRole(const std::string& role) const
+{
+  for (const auto& stage : stageLayout) {
+    for (const auto& unit : stage.unitRoleIds) {
+      if (unit == role)
+        return stage.degree();
+    }
+  }
+  return tensorDegree;
+}
+
 NativeStepCommunicationCost
 nativeStepCommunicationCost(const NativeExecutionPlan& plan)
 {
@@ -539,6 +551,27 @@ nativeStepCommunicationCost(const NativeExecutionPlan& plan)
 }
 
 void
+NativeStageLayout::validate() const
+{
+  if (stageId.empty())
+    throw std::invalid_argument("stage layout entry has an empty stage id");
+  if (unitRoleIds.empty())
+    throw std::invalid_argument("stage layout entry has no units");
+  for (const auto& unit : unitRoleIds)
+    if (unit.empty())
+      throw std::invalid_argument("stage layout entry declares an empty unit id");
+}
+
+std::string
+NativeStageLayout::canonicalJson() const
+{
+  validate();
+  NativeJson value{{"stage_id", stageId}, {"source_region_digest", sourceRegionDigest},
+                   {"unit_role_ids", unitRoleIds}};
+  return value.dump();
+}
+
+void
 NativeExecutionPlan::validateSteps() const
 {
   const std::set<std::string> roleSet(roles.begin(), roles.end());
@@ -549,13 +582,53 @@ NativeExecutionPlan::validateSteps() const
     if (tensorDegree != 1) {
       throw std::invalid_argument("execution plan tensor degree requires a step plan");
     }
+    if (!stageLayout.empty()) {
+      throw std::invalid_argument("execution plan stage layout requires a step plan version");
+    }
     return;
   }
-  if (stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1 || steps.empty()) {
+  const bool stepPlanV2 = stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2;
+  if (!stepPlanV2 && stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1) {
+    throw std::invalid_argument("execution plan declares an unsupported step plan version: " +
+                                stepPlanVersion);
+  }
+  if (steps.empty()) {
     throw std::invalid_argument("execution plan declares an unsupported or empty step plan");
   }
-  if (tensorDegree < 2) {
+  // v1 was sealed for tensor-parallel plans only, so a single unit could never be
+  // described. v2 admits degree-one stages, which is what lets one plan mix a sharded
+  // stage with a plain one.
+  if (!stepPlanV2 && tensorDegree < 2) {
     throw std::invalid_argument("execution plan step template requires tensor degree >= 2");
+  }
+  if (stepPlanV2 && tensorDegree < 1) {
+    throw std::invalid_argument("execution plan step template requires tensor degree >= 1");
+  }
+  if (!stageLayout.empty()) {
+    if (!stepPlanV2) {
+      throw std::invalid_argument("v1 step plan cannot carry a stage layout");
+    }
+    std::set<std::string> seenStages;
+    std::set<std::string> seenUnits;
+    std::uint64_t widest = 0;
+    for (const auto& stage : stageLayout) {
+      stage.validate();
+      if (!seenStages.insert(stage.stageId).second)
+        throw std::invalid_argument("execution plan declares a duplicate stage id: " + stage.stageId);
+      for (const auto& unit : stage.unitRoleIds) {
+        if (roleSet.count(unit) == 0)
+          throw std::invalid_argument("stage layout names an undeclared unit: " + unit);
+        if (!seenUnits.insert(unit).second)
+          throw std::invalid_argument("stage layout repeats a unit across stages: " + unit);
+      }
+      widest = std::max<std::uint64_t>(widest, stage.degree());
+    }
+    if (seenUnits.size() != roleSet.size())
+      throw std::invalid_argument("stage layout does not cover every declared unit");
+    if (widest != tensorDegree) {
+      throw std::invalid_argument(
+        "execution plan tensor degree must equal the widest stage degree");
+    }
   }
   if (roleSet.size() != roles.size()) {
     std::string detail;
@@ -1129,7 +1202,9 @@ roleSpecFor(const NativeExecutionPlan& plan,
     // what lets the worker reference the template without copying it per epoch.
     spec.steps = std::move(owned);
     spec.stepPlanVersion = plan.stepPlanVersion;
-    spec.tensorDegree = plan.tensorDegree;
+    // A unit's degree is its own stage's member count. Reading the plan-wide maximum
+    // gives a degree-one stage the geometry of a sharded neighbour.
+    spec.tensorDegree = plan.degreeForRole(role);
   }
   return spec;
 }

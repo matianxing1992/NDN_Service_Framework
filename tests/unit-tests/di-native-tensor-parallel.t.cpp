@@ -317,8 +317,10 @@ BOOST_AUTO_TEST_CASE(StepsWithoutVersionOrWithDegreeOneAreRejected)
   degreeOne.tensorDegree = 1;
   BOOST_CHECK_THROW(degreeOne.validateSteps(), std::invalid_argument);
 
+  // Step-plan v2 is a real version now (Spec 242 T001 admits per-stage degrees and
+  // degree-one stages), so the unknown-version case uses a name no reader defines.
   auto unknownVersion = twoRankPlan();
-  unknownVersion.stepPlanVersion = "step-plan-v2";
+  unknownVersion.stepPlanVersion = "step-plan-v3";
   BOOST_CHECK_THROW(unknownVersion.validateSteps(), std::invalid_argument);
 
   auto degreeWithoutSteps = twoRankPlan();

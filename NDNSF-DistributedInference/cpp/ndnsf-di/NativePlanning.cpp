@@ -756,7 +756,9 @@ nativePlanRequiredCapabilities(const NativeExecutionPlan& plan)
   // A plan without a step template needs nothing beyond the legacy path, so an
   // old Provider stays admissible for ordinary pipeline execution.
   if (plan.steps.empty()) return {};
-  std::vector<std::string> required{NATIVE_STEP_PLAN_CAPABILITY_V1};
+  const auto stepCapability = plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2
+    ? NATIVE_STEP_PLAN_CAPABILITY_V2 : NATIVE_STEP_PLAN_CAPABILITY_V1;
+  std::vector<std::string> required{stepCapability};
   // SUM is a distinct local operation: declaring the DAG alone does not imply
   // the provider can also reduce partials.
   if (std::any_of(plan.steps.begin(), plan.steps.end(),
