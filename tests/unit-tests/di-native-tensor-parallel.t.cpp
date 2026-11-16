@@ -13307,18 +13307,76 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             return values;
           }();
           BOOST_REQUIRE_EQUAL(values0.size(), refValues.size());
-          double vsReference0 = 0.0;
-          double vsTp0 = 0.0;
-          for (std::size_t index = 0; index < refValues.size(); ++index) {
-            vsReference0 = std::max(vsReference0,
-              std::fabs(double(values0[index]) - double(refValues[index])));
-            const auto tp = double(static_cast<float>(rank0Values[index] + rank1Values[index]));
-            vsTp0 = std::max(vsTp0, std::fabs(double(values0[index]) - tp));
+          // Two different comparisons, and the names say which is which. Conflating them is what
+          // made two earlier rounds report opposite conclusions from the same numbers.
+          //
+          //   replayVsUnsplitReference  the replay (rank inputs, unsplit operators) against the
+          //                             unsplit reference (its own inputs, unsplit operators)
+          //   unsplitVsRankSum          the unsplit reference against the two ranks summed
+          //
+          // The first isolates the inputs; the second isolates the split.
+          double replayVsUnsplitReference = 0.0;
+          double unsplitVsRankSum = 0.0;
+          {
+            // The rank sum through the production reducer. The published partials are captured
+            // earlier by `valuesOf`, so the sum is taken over those same bytes rather than a
+            // second read of the bus.
+            std::vector<float> rankSum(rank0Values.size());
+            for (std::size_t index = 0; index < rankSum.size(); ++index)
+              rankSum[index] = static_cast<float>(rank0Values[index] + rank1Values[index]);
+            BOOST_REQUIRE_EQUAL(rankSum.size(), refValues.size());
+            for (std::size_t index = 0; index < refValues.size(); ++index) {
+              replayVsUnsplitReference = std::max(replayVsUnsplitReference,
+                std::fabs(double(values0[index]) - double(refValues[index])));
+              unsplitVsRankSum = std::max(unsplitVsRankSum,
+                std::fabs(double(refValues[index]) - double(rankSum[index])));
+            }
           }
           BOOST_TEST_MESSAGE("layer-0 replay: rank inputs=" << layer0Inputs.size()
                              << " replaced=" << replaced0
-                             << " vsReference=" << vsReference0
-                             << " vsTp=" << vsTp0);
+                             << " replayVsUnsplitReference=" << replayVsUnsplitReference
+                             << " unsplitVsRankSum=" << unsplitVsRankSum);
+          // The boundary layer 0 actually consumes, compared tensor by tensor. With
+          // `replayVsUnsplitReference` at zero the two chains already agree on this layer's input,
+          // so these comparisons are the evidence for that rather than a search for a difference.
+          {
+            const auto describe = [] (const TensorBundle& bundle) {
+              const auto views = decodeTensorBundleViews(bundle);
+              if (views.empty()) return std::string("empty");
+              const auto& view = views.front();
+              std::string shape;
+              for (const auto dim : view.shape) {
+                if (!shape.empty()) shape += "x";
+                shape += std::to_string(dim);
+              }
+              return view.name + " elem=" + std::to_string(static_cast<unsigned>(view.elementType))
+                + " shape=" + shape + " bytes=" + std::to_string(view.payload.size());
+            };
+            for (const auto& item2 : attnFeeds) {
+              const auto bound = attnEntry->inputSlotByGraphName.find(item2.first);
+              const auto slot = bound == attnEntry->inputSlotByGraphName.end()
+                ? item2.first : bound->second;
+              const auto onRank = layer0Inputs.find(slot);
+              if (onRank == layer0Inputs.end()) {
+                BOOST_TEST_MESSAGE("layer-0 boundary " << item2.first
+                                   << ": rank has no slot " << slot
+                                   << " (unsplit: " << describe(item2.second) << ")");
+                continue;
+              }
+              // Byte equality first: two tensors with the same declaration can still carry
+              // different values, and that is exactly the case this is looking for.
+              const auto unsplitViews = decodeTensorBundleViews(item2.second);
+              const auto rankViews = decodeTensorBundleViews(onRank->second);
+              const bool sameBytes = !unsplitViews.empty() && !rankViews.empty() &&
+                unsplitViews.front().payload.size() == rankViews.front().payload.size() &&
+                std::equal(unsplitViews.front().payload.begin(), unsplitViews.front().payload.end(),
+                           rankViews.front().payload.begin());
+              BOOST_TEST_MESSAGE("layer-0 boundary " << item2.first << " slot=" << slot
+                                 << " identical=" << (sameBytes ? "yes" : "no")
+                                 << " | unsplit: " << describe(item2.second)
+                                 << " | rank: " << describe(onRank->second));
+            }
+          }
         }
       }
       const auto rankInputIt = capturedStepInputs.find("S0R0/ATTN/1");
