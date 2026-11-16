@@ -1,0 +1,34 @@
+{
+  "schema": "ndnsf-check-profiles-v1",
+  "note": "One entry per native check binary. A case that is not selected by any profile is an error, not a silent omission: see tests/run-checks.py. `model` profiles are never selected by default because they need an explicitly prepared asset.",
+  "profiles": {
+    "unit": {
+      "description": "Asset-free native unit cases: no model, no network, no cluster.",
+      "targets": [
+        {"target": "unit-tests", "selector": {"include": ["*"]}}
+      ]
+    },
+    "integration": {
+      "description": "Native integration cases that own their fixture processes; still asset-free.",
+      "targets": [
+        {"target": "integration-tests", "selector": {"include": ["*"]}}
+      ]
+    },
+    "model": {
+      "description": "Cases that require an explicitly prepared model asset. Never selected by default.",
+      "targets": [
+        {"target": "spec224-tp-tests", "selector": {"include": ["*"]},
+         "assets": ["qwen3-0.6b-int4-frozen-export"]}
+      ]
+    }
+  },
+  "assets": {
+    "qwen3-0.6b-int4-frozen-export": {
+      "kind": "external-model-cache",
+      "note": "Prepared outside Git by the maintained preparation recipe; a missing directory is PREREQUISITE_MISSING, never a pass.",
+      "env": "NDNSF_DI_MODEL_CACHE",
+      "default": "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b",
+      "requiredFiles": ["canonical-source.onnx"]
+    }
+  }
+}

@@ -1856,6 +1856,11 @@ def build(bld):
                 source=([bld.path.find_node('main.cpp')] +
                         bld.path.ant_glob('unit-tests/**/*.cpp',
                                            excl=['unit-tests/sanitizer/**']) +
+                        # Four unit cases drive the shared integration fixture, which owns the
+                        # in-memory Controller/Provider/NFD setup they need. Without it the target
+                        # links every one of their symbols and then fails on the fixture's, which is
+                        # a missing source rather than a missing dependency.
+                        [bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                         framework_sources +
                         bld.path.parent.ant_glob([
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',
@@ -1884,6 +1889,17 @@ def build(bld):
                             'NDNSF-UAV-APP/shared/UavObservationRefVerifier.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingSession.cpp',
                             'NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
+                            'NDNSF-UAV-APP/tracking/uav-tracking-config.cpp',
+                            'NDNSF-UAV-APP/tracking/uav-tracking-job.cpp',
+                            'NDNSF-UAV-APP/tracking/uav-tracking-presentation.cpp',
+                            # Three sources the UAV unit cases call but the list above omits. They
+                            # are compiled here rather than obtained by linking the
+                            # `uav-tracking-provider-core` objects, because that object set also
+                            # contains sources this list already names and the link would then see
+                            # every one of them twice.
+                            'NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
+                            'NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactManifest.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactTransfer.cpp',
@@ -1899,23 +1915,33 @@ def build(bld):
                             'NDNSF-DistributedRepo/src/RepoStoreBackend.cpp',
                             'NDNSF-DistributedRepo/src/RepoProtocol.cpp',
                             'NDNSF-DistributedRepo/src/RepoTypes.cpp',
+                            'NDNSF-DistributedRepo/src/RepoCommitPipeline.cpp',
+                            'NDNSF-DistributedRepo/src/face-data-reference-fetcher.cpp',
                         ]) +
-                        bld.path.parent.ant_glob([
+                        bld.path.parent.ant_glob(
                             'NDNSF-DistributedInference/cpp/ndnsf-di/*.cpp',
+                            excl=di_integration_excludes) +
+                        bld.path.parent.ant_glob([
                             'NDNSF-DistributedInference/cpp/adapters/onnx/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/yolo/*.cpp',
                             'NDNSF-DistributedInference/cpp/adapters/qwen/*.cpp',
                         ]) +
-                        [bld.path.parent.find_node('examples/DI_NetworkProbeCalibration.cpp')]),
+                        [bld.path.parent.find_node('examples/DI_NetworkProbeCalibration.cpp'),
+                         # The ONNX reference oracle is a library (no `main`), and one unit case
+                         # calls its validator directly. Two other targets already compile it.
+                         bld.path.parent.find_node('examples/spec220-onnx-reference-oracle.cpp')]),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3',
+                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3',
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public
                 # headers, so define it explicitly for the test executable.
-                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN',
+                # The UAV tracking cases reach their provider through a test seam, exactly as the
+                # component's own target declares it; without the define the umbrella compiles the
+                # case but not the seam it calls.
+                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN', 'NDNSF_UAV_TRACKING_TEST_SEAM',
                          'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                 # GCC 9 can ICE during inlining while compiling the large UAV
                 # protocol and SVS translation units. Tests do not depend on
