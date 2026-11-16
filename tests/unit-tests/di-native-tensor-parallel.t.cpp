@@ -13346,6 +13346,86 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                              << " replaced=" << replaced0
                              << " replayVsUnsplitReference=" << replayVsUnsplitReference
                              << " unsplitVsRankSum=" << unsplitVsRankSum);
+
+          // The MLP's down projection splits on the same axis as the O projection, so it is the one
+          // other place in this block where two partial products are summed. Measuring it either
+          // confirms the mechanism or finds a second one; leaving it unmeasured would let a single
+          // explanation stand on one observation.
+          {
+            const auto mlp0It = capturedStepInputs.find("S0R0/MLP/0");
+            const auto mlp0Rank0 = bus->published("mlp-0-from-S0R0");
+            const auto mlp0Rank1 = bus->published("mlp-0-from-S0R1");
+            if (mlp0It == capturedStepInputs.end() || !mlp0Rank0 || !mlp0Rank1) {
+              BOOST_FAIL("layer-0 MLP: missing captured inputs or published partials");
+            }
+            else {
+              const auto& mlpInputs = mlp0It->second;
+              std::map<std::string, TensorBundle> feeds;
+              std::size_t replaced = 0;
+              for (const auto& item2 : mlpFeeds0) {
+                const auto asSlot = mlpInputs.find(item2.first);
+                if (asSlot != mlpInputs.end()) {
+                  feeds.emplace(item2.first, asSlot->second);
+                  ++replaced;
+                  continue;
+                }
+                const auto bound = mlpEntry0->inputSlotByGraphName.find(item2.first);
+                if (bound == mlpEntry0->inputSlotByGraphName.end()) {
+                  feeds.emplace(item2.first, item2.second);
+                  continue;
+                }
+                const auto fed = mlpInputs.find(bound->second);
+                if (fed == mlpInputs.end()) feeds.emplace(item2.first, item2.second);
+                else { feeds.emplace(item2.first, fed->second); ++replaced; }
+              }
+              std::map<std::string, TensorBundle> replayedMlp;
+              try {
+                replayedMlp = runRefEntry(*mlpEntry0, feeds);
+              }
+              catch (const std::exception& error) {
+                BOOST_FAIL(std::string("replay of the rank's layer-0 MLP inputs: ") + error.what());
+              }
+              const auto replayedPartial = replayedMlp.find("partial");
+              BOOST_REQUIRE_MESSAGE(replayedPartial != replayedMlp.end(),
+                                    "the replayed layer-0 MLP produced no partial");
+              const auto replayedValues = [&] {
+                const auto views = decodeTensorBundleViews(replayedPartial->second);
+                BOOST_REQUIRE(!views.empty());
+                std::vector<float> values(views.front().payload.size() / sizeof(float));
+                if (!values.empty())
+                  std::memcpy(values.data(), views.front().payload.data(),
+                              views.front().payload.size());
+                return values;
+              }();
+              const auto summed = sumTensorBundleViews(
+                "layer-0-mlp-rank-sum",
+                {decodeTensorBundleViews(*mlp0Rank0), decodeTensorBundleViews(*mlp0Rank1)});
+              const auto summedViews = decodeTensorBundleViews(summed);
+              BOOST_REQUIRE(!summedViews.empty());
+              std::vector<float> rankSum(summedViews.front().payload.size() / sizeof(float));
+              if (!rankSum.empty())
+                std::memcpy(rankSum.data(), summedViews.front().payload.data(),
+                            summedViews.front().payload.size());
+              BOOST_REQUIRE_EQUAL(replayedValues.size(), rankSum.size());
+              double unsplitVsRankSum = 0.0;
+              double magnitude = 0.0;
+              for (std::size_t index = 0; index < replayedValues.size(); ++index) {
+                // The replay is the unsplit operator on the rank's inputs, so it is compared
+                // against the split chain's sum -- that difference is the MLP's reassociation.
+                unsplitVsRankSum = std::max(unsplitVsRankSum,
+                  std::fabs(double(replayedValues[index]) - double(rankSum[index])));
+                magnitude = std::max(magnitude, std::fabs(double(rankSum[index])));
+              }
+              BOOST_TEST_MESSAGE("layer-0 MLP: rank inputs=" << mlpInputs.size()
+                                 << " replaced=" << replaced
+                                 << " unsplitVsRankSum=" << unsplitVsRankSum
+                                 << " largest=" << magnitude
+                                 << " relative="
+                                 << (magnitude > 0.0 ? unsplitVsRankSum / magnitude : 0.0));
+              BOOST_CHECK_GT(unsplitVsRankSum, 0.0);
+              BOOST_CHECK_LT(unsplitVsRankSum, 1e-3 * std::max(magnitude, 1.0));
+            }
+          }
           // Both numbers have to be what the explanation says they are. The replay used the rank's
           // inputs, so it must reproduce the unsplit reference exactly; and the split must be
           // measurably non-zero, or this comparison is looking at the wrong tensors.
