@@ -1306,6 +1306,62 @@ BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
   }
 }
 
+BOOST_AUTO_TEST_CASE(TheEntryBoundaryNamesAreWhatTheProbeNeeds)
+{
+  // A read-only probe of the two entries the three-way comparison needs. Writing that comparison
+  // without knowing the exact graph input and output names produced two failed rounds: one filled
+  // token ids where an embedding was expected, another read a post-projection tensor as the GQA
+  // output. Both were interface guesses, and both would have been answered by printing this.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(source)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
+                                              std::istreambuf_iterator<char>());
+  onnx::ModelProto frozen;
+  BOOST_REQUIRE(frozen.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+  const auto classified = qwen::classifyQwenTpEntryNodes(frozen, 28);
+  const auto describeValue = [] (const onnx::ValueInfoProto& value) {
+    std::string text = value.name() + " elem=" +
+      std::to_string(value.type().has_tensor_type()
+        ? value.type().tensor_type().elem_type() : 0) + " shape=";
+    if (value.type().has_tensor_type() && value.type().tensor_type().has_shape()) {
+      bool first = true;
+      for (const auto& dim : value.type().tensor_type().shape().dim()) {
+        if (!first) text += "x";
+        first = false;
+        if (dim.has_dim_value()) text += std::to_string(dim.dim_value());
+        else if (dim.has_dim_param()) text += dim.dim_param();
+        else text += "?";
+      }
+    }
+    return text;
+  };
+  for (const auto* want : {"INIT", "ATTN"}) {
+    const auto entry = std::find_if(classified.begin(), classified.end(),
+      [want] (const auto& item) {
+        return item.kind == want && item.layer == 0;
+      });
+    BOOST_REQUIRE_MESSAGE(entry != classified.end(),
+                          std::string("the taxonomy has no layer-0 ") + want);
+    onnx::ModelProto copy;
+    BOOST_REQUIRE(copy.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+    const auto entryModel = qwen::extractQwenTpEntryModel(copy, *entry, std::string(want) + "/0");
+    for (const auto& input : entryModel.graph().input())
+      BOOST_TEST_MESSAGE(want << "/0 input  " << describeValue(input));
+    for (const auto& output : entryModel.graph().output())
+      BOOST_TEST_MESSAGE(want << "/0 output " << describeValue(output));
+    // The GQA tensor, so the next round can name it without guessing.
+    for (const auto& value : entryModel.graph().value_info())
+      if (value.name().find("GroupQueryAttention/output_0") != std::string::npos)
+        BOOST_TEST_MESSAGE(want << "/0 internal " << describeValue(value));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
 {
   // The frozen export's own o_proj, at its own width: K=2048 (the concatenated attention channels of
