@@ -8901,20 +8901,19 @@ namespace ndn_service_framework
                 // destructor waits for it.
                 if (auto* ackOwner = m_registrationControl->acquireOwner()) {
                     auto ackControl = m_registrationControl;
+                    // The token is held by the closure itself, so it is released when the closure is
+                    // destroyed - whether its body ran, threw, or the executor dropped it.
+                    std::shared_ptr<void> ackToken(nullptr,
+                        [ackControl](void*) { ackControl->releaseOwner(); });
                     boost::asio::post(m_face.getIoContext(),
                         [ackOwner,
-                         ackControl,
+                         ackToken,
                          requesterIdentity,
                          serviceName,
                          requestId,
                          requestMessage,
                          decision = std::move(decision),
                          registrationState]() mutable {
-                            struct OwnerRelease
-                            {
-                                std::shared_ptr<RegistrationControl> control;
-                                ~OwnerRelease() { control->releaseOwner(); }
-                            } release{ackControl};
                             ackOwner->finishAckDecisionOnEventLoop(
                                 requesterIdentity,
                                 serviceName,
@@ -9861,9 +9860,21 @@ namespace ndn_service_framework
                             cursor = result->cursor;
                             return true;
                         },
-                        [this, publisher, requesterName, providerName, serviceName,
+                        // The control block is captured instead of `this`: this callback can run
+                        // after the destructor begins, so it must be able to acquire the owner
+                        // token without dereferencing the provider first. The Face outlives the
+                        // provider, so its io_context pointer is safe for the same reason.
+                        [control = m_registrationControl, io = &m_face.getIoContext(),
+                         publisher, requesterName, providerName, serviceName,
                          requestId, requestMessage, selectionDigest, registrationState]
                         (const ndn::Buffer& payload, StreamFinishReason reason) {
+                            auto* owner = control->acquireOwner();
+                            if (owner == nullptr) return false;
+                            struct EntryRelease
+                            {
+                                std::shared_ptr<RegistrationControl> control;
+                                ~EntryRelease() { control->releaseOwner(); }
+                            } entryRelease{control};
                             const auto completion = publisher->finish(
                                 payload, reason, std::chrono::steady_clock::now() +
                                                    std::chrono::seconds(30));
@@ -9873,28 +9884,46 @@ namespace ndn_service_framework
                             auto finalPayload = payload;
                             response.setPayload(finalPayload, finalPayload.size());
                             response.setStreamCompletion(*completion);
-                            boost::asio::post(m_face.getIoContext(),
-                                [this, requesterName, providerName, serviceName,
-                                 requestId, requestMessage, response = std::move(response),
-                                 selectionDigest, registrationState]() mutable {
-                                    finishRequestExecutionOnEventLoop(
-                                        requesterName, providerName, serviceName,
-                                        requestId, requestMessage, std::move(response),
-                                        selectionDigest, registrationState);
-                                });
+                            {
+                                std::shared_ptr<void> finishToken(nullptr,
+                                    [control](void*) { control->releaseOwner(); });
+                                boost::asio::post(*io,
+                                    [owner, finishToken, control, requesterName, providerName,
+                                     serviceName, requestId, requestMessage,
+                                     response = std::move(response),
+                                     selectionDigest, registrationState]() mutable {
+                                        owner->finishRequestExecutionOnEventLoop(
+                                            requesterName, providerName, serviceName,
+                                            requestId, requestMessage, std::move(response),
+                                            selectionDigest, registrationState);
+                                    });
+                            }
                             return true;
                         },
-                        [this, publisher, requesterName, providerName, serviceName,
+                        [control = m_registrationControl, io = &m_face.getIoContext(),
+                         publisher, requesterName, providerName, serviceName,
                          requestId, requestMessage, selectionDigest]
-                        (StreamedInvocationErrorCode, const std::string& message) {
+                        (StreamedInvocationErrorCode, const std::string& message) -> bool {
+                            auto* owner = control->acquireOwner();
+                            if (owner == nullptr) return false;
+                            struct EntryRelease
+                            {
+                                std::shared_ptr<RegistrationControl> control;
+                                ~EntryRelease() { control->releaseOwner(); }
+                            } entryRelease{control};
                             publisher->fail(message);
-                            boost::asio::post(m_face.getIoContext(),
-                                [this, requesterName, providerName, serviceName,
-                                 requestId, requestMessage, message, selectionDigest]() mutable {
-                                    publishExecutionFailureOnEventLoop(
-                                        requesterName, providerName, serviceName, requestId,
-                                        requestMessage, message, selectionDigest);
-                                });
+                            {
+                                std::shared_ptr<void> failureToken(nullptr,
+                                    [control](void*) { control->releaseOwner(); });
+                                boost::asio::post(*io,
+                                    [owner, failureToken, control, requesterName, providerName,
+                                     serviceName, requestId, requestMessage, message,
+                                     selectionDigest]() mutable {
+                                        owner->publishExecutionFailureOnEventLoop(
+                                            requesterName, providerName, serviceName, requestId,
+                                            requestMessage, message, selectionDigest);
+                                    });
+                            }
                             return true;
                         },
                         [lifecycle] {
@@ -10251,12 +10280,23 @@ namespace ndn_service_framework
                         if (stopping->load()) return;
                         if (!current()) {
                             if (stopping->load()) return;
-                            boost::asio::post(m_face.getIoContext(),
-                                [this, stopping, requesterName, serviceName, requestId,
-                                 requestMessage, selectionDigest] {
+                            // This lambda runs on a worker thread; the posted failure can land after
+                            // the provider's destructor begins, so it holds the owner token.
+                            auto* failureOwner = m_registrationControl->acquireOwner();
+                            if (failureOwner != nullptr) {
+                                auto failureControl = m_registrationControl;
+                                const auto failureIdentity = identity;
+                                std::shared_ptr<void> failureToken(nullptr,
+                                    [failureControl](void*) {
+                                        failureControl->releaseOwner();
+                                    });
+                                boost::asio::post(m_face.getIoContext(),
+                                [failureOwner, failureToken, failureControl, stopping,
+                                 requesterName, serviceName, requestId, requestMessage,
+                                 selectionDigest, failureIdentity] {
                                     if (stopping->load()) return;
-                                    publishExecutionFailureOnEventLoop(
-                                        requesterName, identity, serviceName, requestId,
+                                    failureOwner->publishExecutionFailureOnEventLoop(
+                                        requesterName, failureIdentity, serviceName, requestId,
                                         requestMessage,
                                         requestMessage.hasStreamRequestOptions() &&
                                             requestMessage.getStreamRequestOptions().deadlineEpochMs <= nowMilliseconds()
@@ -10264,6 +10304,7 @@ namespace ndn_service_framework
                                             : "collaboration execution authority or deadline expired",
                                         selectionDigest);
                                 });
+                            }
                             return;
                         }
                         const bool traceAssignmentFetch =
@@ -21657,6 +21698,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     bool ServiceProvider::isRequestDecryptionReady()
     {
         return activeNacConsumer().readyForDecryption();
+    }
+
+    bool ServiceProvider::hasPendingOwnerTokens() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+        return m_registrationControl->activeOwnerCalls != 0;
     }
 
     size_t ServiceProvider::getCurrentPolicyEpoch() const

@@ -1524,7 +1524,16 @@ RepoNode::registerServices(ndn_service_framework::ServiceProvider& provider)
           return handler(requesterIdentity, providerName, resolvedServiceName,
                          requestId, request);
         };
-      provider.addService(serviceName, std::move(serviceAck), std::move(retainedHandler));
+      // The ACK handler runs on the provider's ACK thread and can outlive the caller that
+      // replaces the service handlers; keep the node alive for its duration the same way the
+      // request handler does, instead of letting it reach a destroyed RepoNode through `this`.
+      ndn_service_framework::ServiceProvider::AckStrategyHandler retainedAck =
+        [self, ack = std::move(serviceAck)](
+          const ndn_service_framework::RequestMessage& request) {
+          (void)self;
+          return ack(request);
+        };
+      provider.addService(serviceName, std::move(retainedAck), std::move(retainedHandler));
     };
 
   registerRepoService(

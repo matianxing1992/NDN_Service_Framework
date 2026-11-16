@@ -1379,6 +1379,11 @@ namespace ndn_service_framework{
             /** Return whether NAC-ABE public parameters and the Provider DKEY
              * are installed so protected incoming requests can be decrypted. */
             bool isRequestDecryptionReady();
+
+            /** True while a posted callback that captured this provider still holds its owner token.
+             *  A shutdown path uses it to keep processing events until queued completions have run:
+             *  the destructor waits for this count, and a stopped executor never runs them. */
+            bool hasPendingOwnerTokens() const noexcept;
             size_t getCurrentPolicyEpoch() const;
             size_t getCurrentPolicyEpoch(const ndn::Name& serviceName) const;
             static bool handlePermissionResponseData(const ndn::Data& data,
