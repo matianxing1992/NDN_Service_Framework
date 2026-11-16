@@ -1,6 +1,7 @@
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
 
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Provider.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
@@ -97,7 +98,10 @@ private:
 std::filesystem::path
 trustSchema()
 {
-  return std::filesystem::absolute("examples/trust-any.conf").lexically_normal();
+  // Resolved from the declared roots, not from the working directory: `absolute()` answered a
+  // different path for every caller, so the same case validated against a trust schema that existed
+  // only when it ran from the checkout root.
+  return ndnsf::test::testSourcePath("examples/trust-any.conf");
 }
 
 ProviderConfig
@@ -197,16 +201,17 @@ publicKey(const EvpKey& privateKey)
 std::filesystem::path
 providerAssemblyFixture()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::is_regular_file(candidate))
-      return candidate;
+  // Resolved from the declared fixture root rather than from the current directory. The previous
+  // form searched the working directory and two parents, which found the checkout on this machine
+  // and nothing elsewhere -- and would have found a different `tests/fixtures` first if one existed
+  // closer to the working directory.
+  try {
+    return ndnsf::test::testFixturePath(
+      "spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
   }
-  return {};
+  catch (const std::exception&) {
+    return {};
+  }
 }
 
 std::vector<std::uint8_t>

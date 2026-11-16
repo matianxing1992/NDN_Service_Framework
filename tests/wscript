@@ -1570,7 +1570,8 @@ def build(bld):
                         bld.path.parent.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/Provider.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
-                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
+                defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
+                         'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
