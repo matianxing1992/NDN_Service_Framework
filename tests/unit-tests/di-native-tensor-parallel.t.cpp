@@ -1417,14 +1417,200 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
   BOOST_REQUIRE_EQUAL(packed.size(), qwen::packedInt4Bytes(N, K));
   BOOST_REQUIRE_EQUAL(scaleBytes.size(), N * (K / qwen::QWEN_INT4_BLOCK_SIZE) * sizeof(float));
 
-  // A deterministic activation of the real shape. The question is whether the split changes the
-  // arithmetic, so the input only has to be fixed and non-degenerate; the values need not come from
-  // a particular layer, and deriving them from one would add a dependency without changing the
-  // answer.
-  std::vector<float> activation(seq * K);
-  for (std::size_t i = 0; i < activation.size(); ++i) {
-    activation[i] = 0.3f * std::sin(0.0037f * float(i))
-      + 0.2f * float((i * 53) % 97) / 97.0f - 0.1f;
+  // Execute INIT and ATTN together so graph inputs remain token IDs, not embeddings.
+  // Expose the internal GQA value by name only in this test model; no step-slot alias is added.
+  std::vector<float> activation;
+  std::vector<float> originalProjection;
+  std::vector<std::vector<float>> actualRankProjections;
+  std::vector<float> downActivation;
+  std::vector<float> originalDownProjection;
+  {
+    std::ifstream inputFile("/var/tmp/spec224-inputs/turn-1-input.bin", std::ios::binary);
+    BOOST_REQUIRE(inputFile.good());
+    const std::vector<std::uint8_t> inputBytes((std::istreambuf_iterator<char>(inputFile)),
+                                             std::istreambuf_iterator<char>());
+    const auto inputTensors = decodeTensorBundle(inputBytes);
+    BOOST_REQUIRE_EQUAL(inputTensors.size(), 1U);
+    BOOST_REQUIRE(inputTensors.front().elementType == TensorElementType::Int64);
+    BOOST_REQUIRE_EQUAL(inputTensors.front().payload.size(), seq * sizeof(std::int64_t));
+    std::vector<std::int64_t> prompt(seq);
+    std::memcpy(prompt.data(), inputTensors.front().payload.data(), inputTensors.front().payload.size());
+    BOOST_REQUIRE_EQUAL(prompt.size(), seq);
+    const auto classified = qwen::classifyQwenTpEntryNodes(frozen, 28);
+    qwen::QwenTpEntryNodes prefix;
+    prefix.kind = "ATTN";
+    prefix.layer = 0;
+    for (const auto& entry : classified) {
+      if (entry.kind == "INIT" || (entry.kind == "ATTN" && entry.layer == 0))
+        prefix.nodeIndices.insert(prefix.nodeIndices.end(), entry.nodeIndices.begin(),
+                                  entry.nodeIndices.end());
+    }
+    onnx::ModelProto copy = frozen;
+    auto model = qwen::extractQwenTpEntryModel(copy, prefix, "diagnostic-prefix");
+    const std::string gqaName = "/model/layers.0/attn/GroupQueryAttention/output_0";
+    const auto info = std::find_if(model.graph().value_info().begin(),
+      model.graph().value_info().end(), [&] (const auto& value) { return value.name() == gqaName; });
+    BOOST_REQUIRE(info != model.graph().value_info().end());
+    const auto gqaInfo = *info;
+    const auto root = std::filesystem::temp_directory_path() /
+      ("spec224-real-gqa-" + std::to_string(getpid()));
+    BOOST_REQUIRE(!std::filesystem::exists(root));
+    std::filesystem::create_directory(root);
+    struct Scratch
+    {
+      std::filesystem::path path;
+      ~Scratch()
+      {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+      }
+    } scratch{root};
+    std::filesystem::create_hard_link(sidecar, root / "model.onnx_data");
+    const auto runPrefix = [&] (const onnx::ModelProto& graph, std::int64_t kvHeads) {
+      const auto file = root / "prefix.onnx";
+      { std::ofstream stream(file, std::ios::binary); BOOST_REQUIRE(graph.SerializeToOstream(&stream)); }
+      Ort::SessionOptions options;
+      options.SetIntraOpNumThreads(1);
+      options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+      options.DisableMemPattern();
+      Ort::Session session(testOrtEnv(), file.c_str(), options);
+      auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+      std::vector<std::int64_t> ones(seq, 1), positions(seq);
+      for (std::size_t index = 0; index < seq; ++index) positions[index] = index;
+      const std::vector<std::int64_t> tokenShape{1, std::int64_t(seq)};
+      const std::vector<std::int64_t> pastShape{1, kvHeads, 0, 128};
+      std::vector<const char*> names;
+      std::vector<Ort::Value> values;
+      float empty = 0.0f;
+      for (const auto& input : graph.graph().input()) {
+        names.push_back(input.name().c_str());
+        if (input.name().rfind("past_key_values.", 0) == 0) {
+          values.push_back(Ort::Value::CreateTensor<float>(memory, &empty, 0,
+            pastShape.data(), pastShape.size()));
+        }
+        else {
+          BOOST_REQUIRE(input.name() == "input_ids" || input.name() == "attention_mask" ||
+                        input.name() == "position_ids");
+          const auto& data = input.name() == "input_ids" ? prompt :
+            input.name() == "attention_mask" ? ones : positions;
+          values.push_back(Ort::Value::CreateTensor<std::int64_t>(memory,
+            const_cast<std::int64_t*>(data.data()), data.size(), tokenShape.data(), tokenShape.size()));
+        }
+      }
+      std::vector<const char*> outputs;
+      for (const auto& output : graph.graph().output()) outputs.push_back(output.name().c_str());
+      auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(),
+        values.size(), outputs.data(), outputs.size());
+      std::map<std::string, std::vector<std::uint8_t>> captured;
+      for (std::size_t index = 0; index < result.size(); ++index) {
+        const auto tensorInfo = result[index].GetTensorTypeAndShapeInfo();
+        const auto type = tensorInfo.GetElementType();
+        BOOST_REQUIRE(type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+                      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ||
+                      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
+        const auto width = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ? 8U : 4U;
+        const auto* data = static_cast<const std::uint8_t*>(result[index].GetTensorRawData());
+        captured.emplace(outputs[index], std::vector<std::uint8_t>(
+          data, data + tensorInfo.GetElementCount() * width));
+      }
+      return captured;
+    };
+    const auto baseline = runPrefix(model, 8);
+    const auto originalModel = model;
+    *model.mutable_graph()->add_output() = gqaInfo;
+    const auto observed = runPrefix(model, 8);
+    for (const auto& output : baseline)
+      BOOST_REQUIRE(observed.at(output.first) == output.second);
+    const auto& gqaBytes = observed.at(gqaName);
+    activation.resize(gqaBytes.size() / sizeof(float));
+    std::memcpy(activation.data(), gqaBytes.data(), gqaBytes.size());
+    for (const auto value : activation) BOOST_REQUIRE(std::isfinite(value));
+    const auto& projectionBytes = baseline.at("/model/layers.0/attn/o_proj/MatMul/output_0");
+    originalProjection.resize(projectionBytes.size() / sizeof(float));
+    std::memcpy(originalProjection.data(), projectionBytes.data(), projectionBytes.size());
+    for (const auto value : originalProjection) BOOST_REQUIRE(std::isfinite(value));
+    BOOST_REQUIRE_EQUAL(activation.size(), seq * K);
+    BOOST_TEST_MESSAGE("real GQA activation: tokens=" << seq << " elements=" << activation.size()
+                       << " original outputs unchanged=" << baseline.size());
+    const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+    for (std::uint64_t rank = 0; rank < 2; ++rank) {
+      auto rankModel = originalModel;
+      const auto slices = qwen::planQwenTensorSlices(shape, 2, rank);
+      const auto layer = std::find_if(slices.begin(), slices.end(),
+        [] (const auto& candidate) { return candidate.layer == 0; });
+      BOOST_REQUIRE(layer != slices.end());
+      (void)qwen::applyQwenTpRankSlices(rankModel, &*layer, readRange);
+      qwen::QwenTpRankGeometry geometry;
+      geometry.degree = 2;
+      geometry.rank = rank;
+      geometry.headDim = shape.headDim;
+      geometry.queryWidth = shape.queryWidth();
+      geometry.kvWidth = shape.kvWidth();
+      geometry.hidden = shape.hidden;
+      geometry.ffn = shape.ffn;
+      (void)qwen::adaptQwenTpEntryParameters(rankModel, geometry);
+      const auto rankBaseline = runPrefix(rankModel, shape.kvHeads / 2);
+      const auto rankInfo = std::find_if(rankModel.graph().value_info().begin(),
+        rankModel.graph().value_info().end(),
+        [&] (const auto& value) { return value.name() == gqaName; });
+      BOOST_REQUIRE(rankInfo != rankModel.graph().value_info().end());
+      const auto rankGqaInfo = *rankInfo;
+      *rankModel.mutable_graph()->add_output() = rankGqaInfo;
+      const auto rankObserved = runPrefix(rankModel, shape.kvHeads / 2);
+      for (const auto& output : rankBaseline)
+        BOOST_REQUIRE(rankObserved.at(output.first) == output.second);
+      const auto& bytes = rankObserved.at(gqaName);
+      BOOST_REQUIRE_EQUAL(bytes.size(), seq * (K / 2) * sizeof(float));
+      std::vector<float> rankActivation(bytes.size() / sizeof(float));
+      std::memcpy(rankActivation.data(), bytes.data(), bytes.size());
+      double worstGqa = 0.0;
+      for (std::size_t row = 0; row < seq; ++row) {
+        for (std::size_t channel = 0; channel < K / 2; ++channel) {
+          const auto value = rankActivation[row * (K / 2) + channel];
+          BOOST_REQUIRE(std::isfinite(value));
+          worstGqa = std::max(worstGqa, std::fabs(double(value) -
+            double(activation[row * K + rank * (K / 2) + channel])));
+        }
+      }
+      BOOST_TEST_MESSAGE("rank " << rank << " real GQA vs full slice: worst=" << worstGqa);
+      BOOST_CHECK_EQUAL(worstGqa, 0.0);
+      const auto& partial = rankBaseline.at("/model/layers.0/attn/o_proj/MatMul/output_0");
+      BOOST_REQUIRE_EQUAL(partial.size(), seq * N * sizeof(float));
+      std::vector<float> projection(partial.size() / sizeof(float));
+      std::memcpy(projection.data(), partial.data(), partial.size());
+      for (const auto value : projection) BOOST_REQUIRE(std::isfinite(value));
+      actualRankProjections.push_back(std::move(projection));
+    }
+    auto mlpPrefix = prefix;
+    for (const auto& entry : classified)
+      if (entry.kind == "MLP" && entry.layer == 0)
+        mlpPrefix.nodeIndices.insert(mlpPrefix.nodeIndices.end(), entry.nodeIndices.begin(),
+                                     entry.nodeIndices.end());
+    auto mlpCopy = frozen;
+    auto mlpModel = qwen::extractQwenTpEntryModel(mlpCopy, mlpPrefix, "diagnostic-down-prefix");
+    const auto down = std::find_if(mlpModel.graph().node().begin(), mlpModel.graph().node().end(),
+      [] (const auto& node) { return node.name() == "/model/layers.0/mlp/down_proj/MatMul_Q4"; });
+    BOOST_REQUIRE(down != mlpModel.graph().node().end());
+    const auto downInput = down->input(0);
+    const auto downOutput = down->output(0);
+    const auto downInfo = std::find_if(mlpModel.graph().value_info().begin(),
+      mlpModel.graph().value_info().end(),
+      [&] (const auto& value) { return value.name() == downInput; });
+    BOOST_REQUIRE(downInfo != mlpModel.graph().value_info().end());
+    const auto downValueInfo = *downInfo;
+    const auto mlpBaseline = runPrefix(mlpModel, 8);
+    *mlpModel.mutable_graph()->add_output() = downValueInfo;
+    const auto mlpObserved = runPrefix(mlpModel, 8);
+    for (const auto& output : mlpBaseline)
+      BOOST_REQUIRE(mlpObserved.at(output.first) == output.second);
+    const auto& downBytes = mlpObserved.at(downInput);
+    downActivation.resize(downBytes.size() / sizeof(float));
+    std::memcpy(downActivation.data(), downBytes.data(), downBytes.size());
+    const auto& downOutputBytes = mlpBaseline.at(downOutput);
+    originalDownProjection.resize(downOutputBytes.size() / sizeof(float));
+    std::memcpy(originalDownProjection.data(), downOutputBytes.data(), downOutputBytes.size());
+    for (const auto value : downActivation) BOOST_REQUIRE(std::isfinite(value));
+    for (const auto value : originalDownProjection) BOOST_REQUIRE(std::isfinite(value));
   }
   const auto scalesAsFloat = [&scaleBytes] {
     std::vector<float> values(scaleBytes.size() / sizeof(float));
@@ -1489,6 +1675,8 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
     model.SerializeToString(&bytes);
     Ort::SessionOptions options;
     options.SetIntraOpNumThreads(1);
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+    options.DisableMemPattern();
     Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
     const std::vector<std::int64_t> shape{1, std::int64_t(rows), std::int64_t(k)};
     auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
@@ -1499,11 +1687,20 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
     auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &inputValue, 1,
                                outputNames, 1);
     const auto* data = outputs[0].GetTensorData<float>();
-    return std::vector<float>(data, data + rows * n);
+    std::vector<float> result(data, data + rows * n);
+    for (const auto value : result) BOOST_REQUIRE(std::isfinite(value));
+    return result;
   };
 
   const auto reference = runOProjection(K, N, packed, scalesAsFloat, activation, seq);
   BOOST_REQUIRE_EQUAL(reference.size(), seq * N);
+  BOOST_REQUIRE_EQUAL(originalProjection.size(), reference.size());
+  double prefixControl = 0.0;
+  for (std::size_t index = 0; index < reference.size(); ++index)
+    prefixControl = std::max(prefixControl,
+      std::fabs(double(reference[index]) - double(originalProjection[index])));
+  BOOST_TEST_MESSAGE("standalone full O vs original prefix O: worst=" << prefixControl);
+  BOOST_CHECK_EQUAL(prefixControl, 0.0);
 
   // The split the rank actually performs: o_proj reduces over its input channels, so each rank owns
   // half of K and produces a full-width partial.
@@ -1534,6 +1731,9 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
   const auto rank1 = runOProjection(K / 2, N, rank1Weight, rank1Scales, rank1Input, seq);
   BOOST_REQUIRE_EQUAL(rank0.size(), reference.size());
   BOOST_REQUIRE_EQUAL(rank1.size(), reference.size());
+  BOOST_REQUIRE_EQUAL(actualRankProjections.size(), 2U);
+  BOOST_CHECK(actualRankProjections[0] == rank0);
+  BOOST_CHECK(actualRankProjections[1] == rank1);
 
   // Through the production reducer, which is the step the sealed template runs.
   struct Held
@@ -1593,6 +1793,99 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
   BOOST_CHECK_LT(worst, 1e-3 * std::max(magnitude, 1.0));
   BOOST_TEST_MESSAGE("real o_proj elements over C8 allowance: " << overC8
                      << " of " << reference.size());
+
+  // Isolate accumulation precision without another INT4 decoder: an identity input exposes the
+  // same operator's effective FP32 weights. This is a local conditional reference, not C8's oracle.
+  const auto compareAccumulation = [&] (const std::string& label, std::size_t k,
+                                       const std::vector<std::uint8_t>& weight,
+                                       const std::vector<float>& weightScales,
+                                       const std::vector<float>& input,
+                                       const std::vector<float>& original) {
+    BOOST_REQUIRE_EQUAL(input.size(), seq * k);
+    const auto full32 = runOProjection(k, N, weight, weightScales, input, seq);
+    BOOST_REQUIRE(full32 == original);
+    std::vector<float> identity(k * k, 0.0f);
+    for (std::size_t index = 0; index < k; ++index) identity[index * k + index] = 1.0f;
+    const auto effectiveWeights = runOProjection(k, N, weight, weightScales, identity, k);
+    std::vector<std::vector<float>> partial32;
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+      const auto bytes = qwen::slicePackedInt4(weight, N, k,
+        qwen::QwenSliceAxis::InputChannels, rank * k / 2, (rank + 1) * k / 2);
+      std::vector<std::uint8_t> scalesBytes(weightScales.size() * sizeof(float));
+      std::memcpy(scalesBytes.data(), weightScales.data(), scalesBytes.size());
+      const auto slicedScales = qwen::sliceInt4Scales(scalesBytes, N, k,
+        qwen::QwenSliceAxis::InputChannels, rank * k / 2, (rank + 1) * k / 2);
+      std::vector<float> scales(slicedScales.size() / sizeof(float));
+      std::memcpy(scales.data(), slicedScales.data(), slicedScales.size());
+      std::vector<float> rankInput(seq * k / 2);
+      for (std::size_t row = 0; row < seq; ++row)
+        std::copy_n(input.begin() + row * k + rank * k / 2, k / 2,
+                    rankInput.begin() + row * k / 2);
+      partial32.push_back(runOProjection(k / 2, N, bytes, scales, rankInput, seq));
+    }
+    struct Error
+    {
+      double worst = 0.0;
+      double squared = 0.0;
+      void
+      add(double value)
+      {
+        worst = std::max(worst, std::fabs(value));
+        squared += value * value;
+      }
+    } fullError, splitError, highWireError, highFinalError, highVsFull32;
+    double doubleReassociation = 0.0;
+    for (std::size_t row = 0; row < seq; ++row) {
+      for (std::size_t column = 0; column < N; ++column) {
+        double full64 = 0.0, rank0 = 0.0, rank1 = 0.0;
+        for (std::size_t channel = 0; channel < k; ++channel) {
+          const auto product = double(input[row * k + channel]) *
+            double(effectiveWeights[channel * N + column]);
+          full64 += product;
+          (channel < k / 2 ? rank0 : rank1) += product;
+        }
+        const auto index = row * N + column;
+        const auto split32 = float(partial32[0][index] + partial32[1][index]);
+        const auto highWire = float(float(rank0) + float(rank1));
+        const auto highFinal = float(rank0 + rank1);
+        BOOST_REQUIRE(std::isfinite(full64) && std::isfinite(highWire) && std::isfinite(highFinal));
+        fullError.add(double(full32[index]) - full64);
+        splitError.add(double(split32) - full64);
+        highWireError.add(double(highWire) - full64);
+        highFinalError.add(double(highFinal) - full64);
+        highVsFull32.add(double(highWire) - double(full32[index]));
+        doubleReassociation = std::max(doubleReassociation, std::fabs(rank0 + rank1 - full64));
+        // Promoting only the final addition does not undo the rounding inside either partial.
+        BOOST_CHECK_EQUAL(float(double(partial32[0][index]) + double(partial32[1][index])), split32);
+      }
+    }
+    const auto report = [&] (const char* route, const Error& error) {
+      BOOST_TEST_MESSAGE("accumulation control " << label << " " << route
+                         << " worst=" << error.worst
+                         << " rms=" << std::sqrt(error.squared / (seq * N)));
+    };
+    report("full32-vs-conditional64", fullError);
+    report("split32-vs-conditional64", splitError);
+    report("fp64-partials-fp32-wire-vs-conditional64", highWireError);
+    report("fp64-partials-final-fp32-vs-conditional64", highFinalError);
+    report("fp64-partials-fp32-wire-vs-original-full32", highVsFull32);
+    BOOST_TEST_MESSAGE("accumulation control " << label
+                       << " double-reassociation=" << doubleReassociation);
+    BOOST_CHECK_LT(doubleReassociation, 1e-10);
+  };
+  compareAccumulation("O0", K, packed, scalesAsFloat, activation, originalProjection);
+  const auto* downWeight = tensorByName("model.layers.0.mlp.down_proj.MatMul.weight_Q4");
+  const auto* downScale = tensorByName("model.layers.0.mlp.down_proj.MatMul.weight_scales");
+  BOOST_REQUIRE(downWeight != nullptr && downScale != nullptr);
+  const auto downWeightRange = externalRange(*downWeight);
+  const auto downScaleRange = externalRange(*downScale);
+  const auto downPacked = readRange(downWeightRange.first, downWeightRange.second);
+  const auto downScaleBytes = readRange(downScaleRange.first, downScaleRange.second);
+  std::vector<float> downScales(downScaleBytes.size() / sizeof(float));
+  std::memcpy(downScales.data(), downScaleBytes.data(), downScaleBytes.size());
+  const auto shape = qwen::deriveQwenTpShape(graphBytes, 28);
+  compareAccumulation("down0", shape.ffn, downPacked, downScales, downActivation,
+                      originalDownProjection);
 }
 
 BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
@@ -14031,16 +14324,181 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                        << " excessOverC8=" << excess1
                        << " floatVsDoubleReduction=" << worstReductionGap
                        << " width=" << refValues1.size());
-    // This is the locating measurement, and it says something the KV comparison could not:
-    // layer 1's attention projection agrees to 2.4e-6 while layer 1's KV differs by 1.5e-4 -- sixty
-    // times larger. Both are produced by the same attention block from the same input, so the
-    // difference is not in what the layer was given and not in the query-to-output path. It is in
-    // the key/value path: k_proj and v_proj with their rotary application.
-    //
-    // Asserted against C8 as measured rather than recorded: the projection meets the allowance, so
-    // the assertion can be the contract's. The KV assertion elsewhere still fails, and that is the
-    // correct pair of results -- one tensor of this layer is within tolerance and another is not.
+    // These paths have different upstream inputs. A small projection error alone cannot locate a
+    // KV discrepancy; the captured-input replay above separates that input effect from this layer.
     BOOST_CHECK_LE(excess1, 0.0);
+
+    // Follow the first differing reduction forward, using the actual captured slot values rather
+    // than a late-layer error as the starting point. Observe full operators on each path's inputs.
+    const auto observeFirstNorm = [&] (const qwen::QwenTpEntryContract& entry,
+                                      const std::map<std::string, TensorBundle>& referenceFeeds,
+                                      const std::map<std::string, TensorBundle>& rankFeeds) {
+      const auto originalPath = root / "ref" / entry.relativeGraphPath;
+      onnx::ModelProto graph;
+      { std::ifstream file(originalPath, std::ios::binary);
+        BOOST_REQUIRE(graph.ParseFromIstream(&file)); }
+      std::vector<std::string> probes;
+      for (const auto& node : graph.graph().node()) {
+        const bool norm = node.op_type() == "SkipSimplifiedLayerNormalization" ||
+                          node.op_type() == "SimplifiedLayerNormalization";
+        const bool value = node.op_type() == "MatMulNBits" &&
+          (entry.kind == "MLP" || node.name().find("v_proj") != std::string::npos ||
+           node.name().find("k_proj") != std::string::npos);
+        if (!norm && !value) continue;
+        for (int index : {0, 3}) {
+          if ((!norm && index != 0) || index >= node.output_size() ||
+              node.output(index).empty()) continue;
+          const auto& name = node.output(index);
+          probes.push_back(name);
+        }
+      }
+      BOOST_REQUIRE(!probes.empty());
+      auto instrumented = graph;
+      for (const auto& name : probes) {
+        bool existing = false;
+        for (const auto& output : graph.graph().output())
+          existing = existing || output.name() == name;
+        if (existing) continue;
+        const auto info = std::find_if(graph.graph().value_info().begin(),
+          graph.graph().value_info().end(), [&] (const auto& item) { return item.name() == name; });
+        BOOST_REQUIRE_MESSAGE(info != graph.graph().value_info().end(), name);
+        *instrumented.mutable_graph()->add_output() = *info;
+      }
+      const auto run = [&] (const onnx::ModelProto& model,
+                            const std::map<std::string, TensorBundle>& feeds) {
+        const auto path = originalPath.parent_path() / "diagnostic-first-norm.onnx";
+        { std::ofstream file(path, std::ios::binary);
+          BOOST_REQUIRE(model.SerializeToOstream(&file)); }
+        Ort::SessionOptions options;
+        options.SetIntraOpNumThreads(1);
+        options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+        options.DisableMemPattern();
+        Ort::Session session(testOrtEnv(), path.c_str(), options);
+        auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        std::vector<NamedTensor> held;
+        held.reserve(model.graph().input_size());
+        for (const auto& input : model.graph().input()) {
+          const auto binding = entry.inputSlotByGraphName.find(input.name());
+          const auto slot = binding == entry.inputSlotByGraphName.end()
+            ? input.name() : binding->second;
+          auto supplied = feeds.find(input.name());
+          if (supplied == feeds.end()) supplied = feeds.find(slot);
+          if (supplied != feeds.end()) {
+            const auto tensors = decodeTensorBundleViews(supplied->second);
+            BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+            NamedTensor tensor;
+            tensor.name = input.name();
+            tensor.elementType = tensors.front().elementType;
+            tensor.shape = tensors.front().shape;
+            tensor.payload.assign(tensors.front().payload.begin(), tensors.front().payload.end());
+            held.push_back(std::move(tensor));
+          }
+          else {
+            BOOST_REQUIRE(input.name().rfind("past_key_values.", 0) == 0);
+            NamedTensor tensor;
+            tensor.name = input.name();
+            tensor.elementType = TensorElementType::Float32;
+            tensor.shape = {1, static_cast<std::int64_t>(shape.kvHeads), 0, shape.headDim};
+            held.push_back(std::move(tensor));
+          }
+        }
+        std::vector<const char*> names, outputs;
+        std::vector<Ort::Value> values;
+        float empty = 0;
+        for (auto& tensor : held) {
+          names.push_back(tensor.name.c_str());
+          const auto type = tensor.elementType == TensorElementType::Float32
+            ? ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT : tensor.elementType == TensorElementType::Int64
+            ? ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 : ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+          BOOST_REQUIRE(tensor.elementType == TensorElementType::Float32 ||
+                        tensor.elementType == TensorElementType::Int64 ||
+                        tensor.elementType == TensorElementType::Int32);
+          values.push_back(Ort::Value::CreateTensor(memory,
+            tensor.payload.empty() ? static_cast<void*>(&empty) : tensor.payload.data(),
+            tensor.payload.size(), tensor.shape.data(), tensor.shape.size(), type));
+        }
+        for (const auto& output : model.graph().output()) outputs.push_back(output.name().c_str());
+        auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(),
+                                  values.size(), outputs.data(), outputs.size());
+        std::map<std::string, std::vector<float>> captured;
+        for (std::size_t index = 0; index < result.size(); ++index) {
+          const auto info = result[index].GetTensorTypeAndShapeInfo();
+          BOOST_REQUIRE(info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+          const auto* data = result[index].GetTensorData<float>();
+          captured.emplace(outputs[index], std::vector<float>(data, data + info.GetElementCount()));
+        }
+        return captured;
+      };
+      const auto baseline = run(graph, referenceFeeds);
+      const auto reference = run(instrumented, referenceFeeds);
+      const auto rankBaseline = run(graph, rankFeeds);
+      const auto rank = run(instrumented, rankFeeds);
+      for (const auto& output : baseline) BOOST_REQUIRE(reference.at(output.first) == output.second);
+      for (const auto& output : rankBaseline) BOOST_REQUIRE(rank.at(output.first) == output.second);
+      // A raw ORT probe must first agree with the maintained runner on the same declared inputs.
+      for (const bool rankPath : {false, true}) {
+        const auto& feeds = rankPath ? rankFeeds : referenceFeeds;
+        const auto native = runRefEntry(entry, feeds);
+        const auto& rawControl = rankPath ? rankBaseline : baseline;
+        for (const auto& output : rawControl) {
+          const auto binding = entry.outputSlotByGraphName.find(output.first);
+          const auto slot = binding == entry.outputSlotByGraphName.end()
+            ? output.first : binding->second;
+          BOOST_REQUIRE_MESSAGE(native.count(slot), "missing native control output: " + slot);
+          const auto tensors = decodeTensorBundleViews(native.at(slot));
+          BOOST_REQUIRE_EQUAL(tensors.size(), 1U);
+          BOOST_REQUIRE(tensors.front().elementType == TensorElementType::Float32);
+          std::vector<float> values(tensors.front().payload.size() / sizeof(float));
+          std::memcpy(values.data(), tensors.front().payload.data(), tensors.front().payload.size());
+          BOOST_REQUIRE_EQUAL(values.size(), output.second.size());
+          double worstControl = 0.0;
+          for (std::size_t index = 0; index < values.size(); ++index)
+            worstControl = std::max(worstControl,
+              std::fabs(double(values[index]) - double(output.second[index])));
+          BOOST_TEST_MESSAGE("first divergence probe control: " << entry.kind << "/" << entry.layer
+                             << " " << output.first << " worst=" << worstControl);
+          BOOST_CHECK_EQUAL(worstControl, 0.0);
+        }
+      }
+      if (entry.kind == "ATTN") {
+        const auto vName = "/model/layers." + std::to_string(entry.layer) +
+          "/attn/v_proj/MatMul/output_0";
+        const auto cacheName = "present." + std::to_string(entry.layer) + ".value";
+        for (const auto* captured : {&reference, &rank}) {
+          const auto& projected = captured->at(vName);
+          const auto& cached = captured->at(cacheName);
+          const auto positions = promptTokens.size();
+          BOOST_REQUIRE_EQUAL(projected.size(), shape.kvHeads * positions * shape.headDim);
+          BOOST_REQUIRE_EQUAL(cached.size(), projected.size());
+          double worst = 0.0;
+          for (std::size_t head = 0; head < shape.kvHeads; ++head)
+            for (std::size_t position = 0; position < positions; ++position)
+              for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                const auto sourceIndex = (position * shape.kvHeads + head) * shape.headDim + channel;
+                const auto cacheIndex = (head * positions + position) * shape.headDim + channel;
+                worst = std::max(worst,
+                  std::fabs(double(projected[sourceIndex]) - double(cached[cacheIndex])));
+              }
+          BOOST_TEST_MESSAGE("first divergence V cache layout control: worst=" << worst);
+          BOOST_CHECK_EQUAL(worst, 0.0);
+        }
+      }
+      for (const auto& name : probes) {
+        const auto& a = reference.at(name);
+        const auto& b = rank.at(name);
+        BOOST_REQUIRE_EQUAL(a.size(), b.size());
+        double worst = 0.0, magnitude = 0.0;
+        for (std::size_t index = 0; index < a.size(); ++index) {
+          BOOST_REQUIRE(std::isfinite(a[index]) && std::isfinite(b[index]));
+          worst = std::max(worst, std::fabs(double(a[index]) - double(b[index])));
+          magnitude = std::max(magnitude, std::fabs(double(a[index])));
+        }
+        BOOST_TEST_MESSAGE("first divergence forward: " << entry.kind << "/" << entry.layer
+                           << " " << name << " worst=" << worst << " magnitude=" << magnitude);
+      }
+    };
+    observeFirstNorm(*mlpEntry0, mlpFeeds0, capturedStepInputs.at("S0R0/MLP/0"));
+    observeFirstNorm(*attnEntry1, attnFeeds1, capturedStepInputs.at("S0R0/ATTN/1"));
 
     // The layers whose KV actually exceeds C8. The A/B agreement above covers layer 0, which is the
     // one layer a single entry reaches; the failing elements are at layers 25 and 26. Walking the
@@ -14068,6 +14526,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // layer are, and whether they match the unit's is the question.
       std::map<std::uint64_t, std::pair<std::vector<float>, std::vector<float>>> chainInputs;
       bool chainOk = true;
+      std::size_t deepKvComparisons = 0;
       for (std::uint64_t layer = 1; layer <= 26 && chainOk; ++layer) {
         const auto attnOf = findEntry("ATTN", layer);
         const auto mlpOf = findEntry("MLP", layer);
@@ -14108,6 +14567,72 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           chainOk = false;
           break;
         }
+        if (layer == 25 || layer == 26)
+          observeFirstNorm(*attnOf, chainFeeds,
+                           capturedStepInputs.at("S0R0/ATTN/" + std::to_string(layer)));
+        // Replay the failing layers with each rank's captured boundary. Keep the full reference's
+        // empty past tensors, but require every live input to come from the captured rank slots.
+        if (layer == 25 || layer == 26) {
+          for (std::size_t rank = 0; rank < 2; ++rank) {
+            const auto unit = "S0R" + std::to_string(rank);
+            const auto captured = capturedStepInputs.find(unit + "/ATTN/" +
+                                                         std::to_string(layer));
+            BOOST_REQUIRE(captured != capturedStepInputs.end());
+            std::map<std::string, TensorBundle> replayFeeds;
+            std::size_t replaced = 0;
+            for (const auto& input : chainFeeds) {
+              const auto binding = attnOf->inputSlotByGraphName.find(input.first);
+              const auto slot = binding == attnOf->inputSlotByGraphName.end()
+                ? input.first : binding->second;
+              const auto actual = captured->second.find(slot);
+              if (actual != captured->second.end()) {
+                replayFeeds.emplace(input.first, actual->second);
+                ++replaced;
+              }
+              else {
+                BOOST_REQUIRE_MESSAGE(input.first.rfind("past_key_values.", 0) == 0,
+                                      "missing captured live input: " + slot);
+                replayFeeds.emplace(input.first, input.second);
+              }
+            }
+            BOOST_REQUIRE_EQUAL(replaced, captured->second.size());
+            const auto replay = runRefEntry(*attnOf, replayFeeds);
+            const auto positions = promptTokens.size();
+            const auto heads = static_cast<std::size_t>(shape.kvHeads / 2);
+            for (const auto* kind : {"key", "value"}) {
+              const auto name = "present." + std::to_string(layer) + "." + kind;
+              const auto sameInput = floatsOfChain(replay.at(name));
+              const auto original = floatsOfChain(chainAttn.at(name));
+              const auto actual = kvOfResult(results.at(unit), name);
+              BOOST_REQUIRE_EQUAL(sameInput.size(), shape.kvHeads * positions * shape.headDim);
+              BOOST_REQUIRE_EQUAL(original.size(), sameInput.size());
+              BOOST_REQUIRE_EQUAL(actual.size(), heads * positions * shape.headDim);
+              double localWorst = 0.0;
+              double inheritedWorst = 0.0;
+              for (std::size_t head = 0; head < heads; ++head) {
+                for (std::size_t position = 0; position < positions; ++position) {
+                  for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                    const auto shardIndex = (head * positions + position) * shape.headDim + channel;
+                    const auto fullIndex = ((rank * heads + head) * positions + position) *
+                      shape.headDim + channel;
+                    BOOST_REQUIRE(std::isfinite(sameInput[fullIndex]));
+                    BOOST_REQUIRE(std::isfinite(original[fullIndex]));
+                    BOOST_REQUIRE(std::isfinite(actual[shardIndex]));
+                    localWorst = std::max(localWorst,
+                      std::fabs(double(actual[shardIndex]) - double(sameInput[fullIndex])));
+                    inheritedWorst = std::max(inheritedWorst,
+                      std::fabs(double(sameInput[fullIndex]) - double(original[fullIndex])));
+                  }
+                }
+              }
+              BOOST_TEST_MESSAGE("deep same-input KV: " << unit << " " << name
+                                 << " replaced=" << replaced << " localWorst=" << localWorst
+                                 << " inheritedWorst=" << inheritedWorst);
+              BOOST_CHECK_EQUAL(localWorst, 0.0);
+              ++deepKvComparisons;
+            }
+          }
+        }
         std::map<std::string, TensorBundle> chainMlpFeeds{
           {"merged", chainAttn.at("partial")},
           {"residual", chainAttn.at("residual")},
@@ -14122,20 +14647,16 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           chainOk = false;
           break;
         }
+        if (layer == 24 || layer == 25)
+          observeFirstNorm(*mlpOf, chainMlpFeeds,
+                           capturedStepInputs.at("S0R0/MLP/" + std::to_string(layer)));
         layerKv.emplace(layer, std::pair<std::vector<float>, std::vector<float>>{
           floatsOfChain(chainAttn.at("present." + std::to_string(layer) + ".key")),
           floatsOfChain(chainAttn.at("present." + std::to_string(layer) + ".value"))});
         carriedPost = chainMlp.at("post_residual");
         carriedMerged = chainMlp.at("partial");
       }
-      // Replaying layer 25's attention with "the inputs the unit consumed" is not possible through
-      // this bus, and the attempt is recorded here rather than kept as code: the bus carries the
-      // peer contributions a unit publishes -- `attn-N-from-S0R0` is rank 0's half of layer N's
-      // attention reduction -- not the unit's own local `post_residual`/`merged` step outputs.
-      // Feeding a partial under the `post_attention` key therefore compares two unrelated values,
-      // and the ~40 it yielded says only that. Obtaining the unit's real step input needs the value
-      // recorded where the worker assembles it, which is a different fixture from this one.
-
+      BOOST_REQUIRE_EQUAL(deepKvComparisons, 8U);
       // What the chain itself consumed at the failing layers. The earlier per-layer replay could
       // not answer this because the bus carries peer partials, not a unit's own step outputs; this
       // does not need the unit at all. It records the chain's inputs so a later fixture that can
