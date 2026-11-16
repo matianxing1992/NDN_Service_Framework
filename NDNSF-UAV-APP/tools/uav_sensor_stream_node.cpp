@@ -3,6 +3,7 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -36,6 +37,10 @@ struct Options
   std::string publicationLog;
   std::string admissionLog;
   std::string status;
+  ndn::Name actorIdentity;
+  ndn::Name groupPrefix;
+  ndn::Name controllerIdentity;
+  std::string trustSchema;
   uint64_t sessionEpoch = 144001;
   uint64_t mappingVersion = 144001;
   uint64_t warmupSeconds = 5;
@@ -85,6 +90,16 @@ parseOptions(int argc, char** argv)
   options.publicationLog = value("--publication-log").value_or("");
   options.admissionLog = value("--admission-log").value_or("");
   options.status = value("--status").value_or("");
+  options.actorIdentity = ndn::Name(value("--identity").value_or(""));
+  options.groupPrefix = ndn::Name(value("--group").value_or(""));
+  options.controllerIdentity = ndn::Name(value("--controller").value_or(""));
+  options.trustSchema = value("--trust-schema").value_or("");
+  nsf::validateConfiguredActorName(options.actorIdentity, "identity");
+  nsf::validateConfiguredActorName(options.groupPrefix, "group");
+  nsf::validateConfiguredActorName(options.controllerIdentity, "controller");
+  if (options.trustSchema.empty()) {
+    throw std::invalid_argument("an explicit trust-schema is required");
+  }
   if (const auto input = value("--session-epoch")) {
     options.sessionEpoch = std::stoull(*input);
   }
@@ -396,14 +411,14 @@ runProvider(const Options& options)
 {
   ndn::Face face;
   ndn::KeyChain keyChain;
-  const ndn::Name providerName("/example/uav/drone/A");
-  const ndn::Name controllerName("/example/uav/controller");
+  const auto& providerName = options.actorIdentity;
+  const auto& controllerName = options.controllerIdentity;
   const auto providerCert = identity(keyChain, providerName);
   const auto controllerCert = identity(keyChain, controllerName);
   nsf::CertificatePublisher certificatePublisher(
     face, keyChain, providerCert.getName());
   nsf::ServiceProvider provider(
-    face, "/example/uav", providerCert, controllerCert, "examples/trust-any.conf");
+    face, options.groupPrefix, providerCert, controllerCert, options.trustSchema);
   const auto definition = options.workload == "telemetry"
     ? uav::makeUavTelemetryStreamDefinition(
         providerName, options.sessionEpoch, options.mappingVersion)
@@ -547,12 +562,12 @@ runConsumer(const Options& options)
   ndn::KeyChain keyChain;
   // Reuse the deployed UAV APP identity and policy membership used by the
   // video reference path; this is not a synthetic stream-only principal.
-  const ndn::Name userName("/example/uav/gs");
-  const ndn::Name controllerName("/example/uav/controller");
+  const auto& userName = options.actorIdentity;
+  const auto& controllerName = options.controllerIdentity;
   const auto userCert = identity(keyChain, userName);
   const auto controllerCert = identity(keyChain, controllerName);
   nsf::ServiceUser user(
-    face, "/example/uav", userCert, controllerCert, "examples/trust-any.conf");
+    face, options.groupPrefix, userCert, controllerCert, options.trustSchema);
   uav::LatestTelemetryAdmission telemetry("A");
   uav::CompleteAcousticBlockAdmission acoustic(descriptor.definition.streamId);
   std::vector<double> measuredLatenciesMs;

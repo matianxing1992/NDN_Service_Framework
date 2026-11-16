@@ -106,6 +106,10 @@ struct MainAppTrackingFixture : JobFlowFixture
     releaseCompute->store(false);
     releaseSource->store(false);
     UavRuntimeConfig config;
+    config.groupPrefix = ndn::Name("/example/uav/group");
+    config.controllerPrefix = ndn::Name("/example/uav/controller");
+    config.groundStationIdentity = ndn::Name("/example/uav/gs");
+    config.droneIdentityPrefix = ndn::Name("/example/uav/drone");
     runtime = std::make_unique<GroundStationServiceContainer>(
       false, 1000, 10000, config, "UAV1", 1000, 10, 640, 0);
     GroundStationTrackingTestAccess::attach(*runtime, environment->user(), environment->userFace());

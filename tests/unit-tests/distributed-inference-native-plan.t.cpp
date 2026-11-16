@@ -1321,6 +1321,11 @@ BOOST_AUTO_TEST_CASE(NativeFixedTemplateRepeatedInterfacesKeepDistinctSlots)
   BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[1].microbatch, 1U);
   BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[0].endpointDigest, first.endpointDigest);
   BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[1].endpointDigest, second.endpointDigest);
+  BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[0].producerNamespace, first.producerNamespace);
+  BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[1].producerNamespace, second.producerNamespace);
+  BOOST_CHECK_EQUAL(decoded.dataflow.mustFetch[0].requester, first.requester);
+  BOOST_CHECK_NE(decoded.dataflow.mustFetch[0].producerNamespace, "/fixed-template");
+  BOOST_CHECK_EQUAL(current.dataflow.mustFetch[0].producerNamespace, first.producerNamespace);
   BOOST_CHECK_EQUAL(decoded.fixedExecutionTemplateOwner.get(), restored->executionTemplate().get());
   current.dataflow.mustFetch[0].microbatch = 7;
   current.dataflow.mustFetch[1].microbatch = 8;

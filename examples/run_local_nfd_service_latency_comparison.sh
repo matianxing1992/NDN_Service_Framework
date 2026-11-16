@@ -143,7 +143,10 @@ run_benchmark() {
   sleep 1
 }
 
-./build/examples/App_ServiceController >"${tmpdir}/controller.log" 2>&1 &
+./build/examples/App_ServiceController \
+  --controller-prefix /example/hello/controller \
+  --ensure-identities /example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user \
+  >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 if ! wait_for_controller; then
   echo "Controller did not become ready"

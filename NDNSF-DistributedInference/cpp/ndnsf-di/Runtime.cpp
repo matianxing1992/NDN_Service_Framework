@@ -309,14 +309,8 @@ PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& k
   spec.taskContractDigest = taskContractDigest;
   spec.inputLayoutDigest = inputLayoutDigest;
   spec.configurationDigest = frozen.configurationDigest;
-  spec.publicationServiceName = request.value("service", std::string{});
+  spec.publicationServiceName = requiredString(request, "service");
   spec.repositoryArtifactPublisher = std::move(repositoryArtifactPublisher);
-  if (spec.publicationServiceName.empty()) {
-    const auto artifactRoot = catalog.at("publication").at("artifact_root").get<std::string>();
-    const auto separator = artifactRoot.find('/', 1);
-    spec.publicationServiceName = artifactRoot.substr(
-      0, separator == std::string::npos ? artifactRoot.size() : separator);
-  }
   const auto positiveLimit = [&] (const char* field) {
     if (!limits.contains(field) || !limits.at(field).is_number_unsigned() ||
         limits.at(field).get<std::uint64_t>() == 0)

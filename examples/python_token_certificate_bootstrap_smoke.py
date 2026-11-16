@@ -11,6 +11,9 @@ from ndnsf import ServiceController, ServiceProvider, ServiceUser
 
 def _run_user(label: str) -> int:
     user = ServiceUser(
+        group="/example/hello/group",
+        controller="/example/hello/controller",
+        user="/example/hello/user",
         bootstrap_token="user045A",
         permission_wait_ms=2500,
     )
@@ -30,6 +33,7 @@ def _run_user(label: str) -> int:
 
 def _run_controller() -> int:
     ServiceController(
+        controller_prefix="/example/hello/controller",
         policy_file="examples/hello.policies",
         bootstrap_token_file="examples/hello.bootstrap-tokens",
     ).run()
@@ -38,6 +42,9 @@ def _run_controller() -> int:
 
 def _run_provider() -> int:
     provider = ServiceProvider(
+        group="/example/hello/group",
+        controller="/example/hello/controller",
+        provider_prefix="/example/hello/provider",
         bootstrap_token="prov045A",
     )
     provider.add_handler("/HELLO", lambda payload: b"HELLO")

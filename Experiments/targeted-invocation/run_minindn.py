@@ -878,7 +878,8 @@ from pathlib import Path
 from ndnsf import ServiceUser,_ndnsf
 from ndnsf import service as facade
 payload=b"binding-private-input".ljust(64,b"_")
-user=ServiceUser(group=sys.argv[1],trust_schema=sys.argv[2],permission_wait_ms=15000)
+user=ServiceUser(group=sys.argv[1],trust_schema=sys.argv[2],controller=sys.argv[4],
+                 user=sys.argv[5],permission_wait_ms=15000)
 user.start()
 try:
     first=user.request_service("/HELLO",payload,discovery_payload=sys.argv[3].encode())
@@ -897,7 +898,7 @@ finally:
             try:
                 proc, log = launch(ndn.net['gs'], 'python-descriptor',
                                    ['python3', '-c', code, group, str(trust),
-                                    args.discovery_payload])
+                                    args.discovery_payload, CONTROLLER, USER])
                 proc.wait(timeout=90)
                 text = log.read_text()
                 if proc.returncode or 'SPEC205_PYTHON_DESCRIPTOR_PASS ' not in text:

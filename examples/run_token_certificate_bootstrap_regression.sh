@@ -40,6 +40,7 @@ ndnsf_start_nfd_if_needed "${tmpdir}/nfd.log" || {
 
 generated_token_file="${tmpdir}/generated.bootstrap-tokens"
 timeout 4s "${build_dir}/examples/App_ServiceController" \
+  --controller-prefix /example/hello/controller \
   --bootstrap-token-file "${generated_token_file}" \
   >"${tmpdir}/generated-controller.log" 2>&1
 generated_controller_status=$?
@@ -49,6 +50,7 @@ generated_bad_token_count=$(awk 'NF >= 2 && $1 !~ /^#/ && length($2) != 8 { coun
   "${generated_token_file}" 2>/dev/null || echo 0)
 
 "${build_dir}/examples/App_ServiceController" \
+  --controller-prefix /example/hello/controller \
   --bootstrap-token-file examples/hello.bootstrap-tokens \
   >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!

@@ -168,7 +168,8 @@ def main():
         env = perf.app_env(OUT, session, args)
 
         ctrl_cmd = perf.managed_cmd(
-            APP_CONTROLLER, ["--policy-file", "examples/ai_collaboration.policies"]
+            APP_CONTROLLER, ["--controller-prefix", "/example/hello/controller",
+                             "--policy-file", "examples/ai_collaboration.policies"]
         )
         start(ndn.net["memphis"], "controller", ctrl_cmd, env, procs)
         time.sleep(2)

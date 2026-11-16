@@ -23,6 +23,8 @@ expectation()
   value.sourceEpoch = 42;
   value.computeProvider = ndn::Name("/example/uav/compute");
   for (size_t index = 0; index < value.sourceIds.size(); ++index) {
+    value.sourceProviders[index] = ndn::Name("/example/uav/drone").append(
+      "UAV" + std::to_string(index + 1));
     value.sourceIds[index] = "source-UAV" + std::to_string(index + 1);
     value.inputDigests[index] = "sha256:" + std::string(64, static_cast<char>('a' + index));
   }
@@ -41,7 +43,7 @@ makeResultJson(const UavTrackingResultExpectation& expected, bool includePresent
     if (index != 0) json << ',';
     const std::string camera = "UAV" + std::to_string(index + 1);
     const auto observationName = makeUavObservationDataName(
-      droneIdentity(camera), camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
+      ndn::Name("/example/uav/drone").append(camera), camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
     const std::string observationDigest = "sha256:" + std::string(64, 'd');
     json << "{\"cameraId\":\"" << camera << "\",\"sequence\":" << expected.sequence
          << ",\"sourceId\":\"" << expected.sourceIds[index]
@@ -196,6 +198,22 @@ BOOST_AUTO_TEST_CASE(RejectsMismatchedResultRequestAndSourceBindings)
     std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(RejectsMissingOrForeignSourceProducerMapping)
+{
+  const auto expected = expectation();
+  const auto name = makeUavMultiViewResultName(
+    expected.computeProvider, expected.missionId, expected.windowId, expected.sequence, 1);
+  const auto json = makeResultJson(expected);
+  auto missing = expected;
+  missing.sourceProviders = {};
+  BOOST_CHECK_THROW(validateUavTrackingResultContext(
+    name.toUri(), expected.computeProvider.toUri(), json, missing), std::invalid_argument);
+  auto foreign = expected;
+  foreign.sourceProviders[0] = ndn::Name("/another/site/source/UAV1");
+  BOOST_CHECK_THROW(validateUavTrackingResultContext(
+    name.toUri(), expected.computeProvider.toUri(), json, foreign), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_CASE(AcceptsAllDemoCaptureSequencesIncludingBinaryColon)
 {
   for (uint64_t sequence = 1; sequence <= 100; ++sequence) {
@@ -221,7 +239,7 @@ BOOST_AUTO_TEST_CASE(NativeVehicleAdmissionPinsDecisionAndOriginalFrames)
   expected.vehicleTracking = UavVehicleTrackingResultExpectation{true,
     "sha256:" + std::string(64, 'e')};
   for (size_t i = 0; i < 3; ++i) {
-    expected.sourceProviders[i] = droneIdentity("UAV" + std::to_string(i + 1));
+    expected.sourceProviders[i] = ndn::Name("/example/uav/drone").append("UAV" + std::to_string(i + 1));
   }
   auto result = Json::parse(makeResultJson(expected));
   result["decisionSchema"] = "uav-vehicle-native-decision-v1";
@@ -280,7 +298,7 @@ BOOST_AUTO_TEST_CASE(LegacyNativeVehicleStillRequiresItsOriginalEvidence)
     {"nativeDecisionDigest", "sha256:" + std::string(64, 'a')}, {"frames", Json::array()}};
   for (size_t i = 0; i < 3; ++i) {
     const auto camera = "UAV" + std::to_string(i + 1);
-    expected.sourceProviders[i] = droneIdentity(camera);
+    expected.sourceProviders[i] = ndn::Name("/example/uav/drone").append(camera);
     result["frames"].push_back({{"cameraId", camera}, {"sequence", expected.sequence},
       {"ptsUs", 0}, {"imageWidth", 640}, {"imageHeight", 480},
       {"inputDigest", expected.inputDigests[i]}, {"imageRef", {

@@ -30,10 +30,6 @@ from .core.ports import CandidateBudget, ModelCandidate, PlanCandidate, PlanCand
 
 
 DEFAULT_LLM_SERVICE = "/AI/LLM/StubInference"
-DEFAULT_LLM_CONTROLLER = "/NDNSF-DistributeInference/example/controller"
-DEFAULT_LLM_GROUP = "/NDNSF-DistributeInference/example/group"
-DEFAULT_LLM_USER = "/NDNSF-DistributeInference/example/user"
-DEFAULT_LLM_PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
 
 LLM_RUNTIME_COMPATIBILITY: dict[str, tuple[str, ...]] = dict(
     RUNTIME_COMPATIBILITY[ModelFamily.LLM.value])
@@ -370,11 +366,15 @@ def llm_splitter_output_from_result(
     result: PlannerResult,
     *,
     application: str = "llm-stub-demo",
-    controller: str = DEFAULT_LLM_CONTROLLER,
-    group: str = DEFAULT_LLM_GROUP,
-    user: str = DEFAULT_LLM_USER,
-    provider_prefix: str = DEFAULT_LLM_PROVIDER_PREFIX,
+    controller: str = "",
+    group: str = "",
+    user: str = "",
+    provider_prefix: str = "",
 ) -> SplitterOutput:
+    for field, value in (("controller", controller), ("group", group),
+                         ("user", user), ("provider_prefix", provider_prefix)):
+        if not value.startswith("/") or value == "/":
+            raise ValueError(f"{field} requires an explicit non-root NDN name")
     split = result.split_plan
     service_name = str(split["service"])
     provider_count = max(1, len(split["roles"]))

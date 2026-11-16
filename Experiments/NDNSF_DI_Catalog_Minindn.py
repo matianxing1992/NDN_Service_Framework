@@ -122,7 +122,8 @@ def main() -> int:
         controller, controller_log = start(
             ndn.net[args.publisher_node], "controller",
             " ".join(("cd", quote(REPO), "&&", "exec",
-                      quote(REPO / "build/examples/App_ServiceController"))),
+                      quote(REPO / "build/examples/App_ServiceController"),
+                      "--controller-prefix", quote("/example/hello/controller"))),
             env, root, processes)
         if not wait_for(controller_log, "ServiceController listening on:", 8, controller):
             raise RuntimeError("controller did not become ready")

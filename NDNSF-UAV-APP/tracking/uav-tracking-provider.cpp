@@ -1,4 +1,5 @@
 #include "uav-tracking-provider.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 #include "UavTrackingCoordinator.hpp"
 #include "uav-vehicle-tracking-engine.hpp"
 
@@ -170,9 +171,9 @@ struct Options
   std::string workerScript = "NDNSF-UAV-APP/tracking/tracking_worker.py";
   std::string display = "headless";
   std::string runId = "spec191";
-  std::string groupPrefix = "/example/uav";
-  std::string controller = "/example/uav/controller";
-  std::string trustSchema = "examples/trust-any.conf";
+  std::string groupPrefix;
+  std::string controller;
+  std::string trustSchema;
   std::string motionDir;
   std::string observationStreamDir;
   std::string observationSourceId;
@@ -185,9 +186,8 @@ struct Options
   uint64_t requestTimeoutMs = 30000;
   std::string fault = "none";
   std::filesystem::path ownedWorkerRoot;
-  std::array<ndn::Name, 3> sourceProducers{
-    uav::droneIdentity("UAV1"), uav::droneIdentity("UAV2"), uav::droneIdentity("UAV3")};
-  ndn::Name computeProducer{"/example/uav/compute"};
+  std::array<ndn::Name, 3> sourceProducers;
+  ndn::Name computeProducer;
 };
 
 Options
@@ -3050,7 +3050,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         std::string reason;
         const auto publishedIdentity = options.fault == "bad-identity" &&
             options.camera == "UAV3" && index == 1
-          ? uav::droneIdentity("UAV1") : identity;
+          ? options.sourceProducers[0] : identity;
         if (publishedIdentity != identity) {
           std::cerr << "SPEC191_TRACKING_BAD_IDENTITY_INJECTED camera="
                     << options.camera << " window=" << window << std::endl;
@@ -3777,13 +3777,26 @@ runTrackingNodeCli(int argc, char** argv)
 {
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
-  const auto options = parseOptions(argc, argv);
+  auto options = parseOptions(argc, argv);
   if (options.fault == "unauthorized-frame-cache") std::signal(SIGUSR2, onCacheProbeSignal);
   if (!options.describePersonComputation.empty()) {
     std::cout << loadPersonComputation(options, [] { return !g_stop.load(); }).manifest.canonicalJson
               << std::endl;
     return 0;
   }
+  auto names = loadUavRuntimeConfig(option(argc, argv, "--runtime-config"));
+  names.groupPrefix = ndn::Name(option(argc, argv, "--group-prefix", names.groupPrefix.toUri()));
+  names.controllerPrefix = ndn::Name(option(
+    argc, argv, "--controller-prefix", names.controllerPrefix.toUri()));
+  validateUavRuntimeConfig(names);
+  options.groupPrefix = names.groupPrefix.toUri();
+  options.controller = names.controllerPrefix.toUri();
+  options.trustSchema = option(argc, argv, "--trust-schema", names.trustSchema);
+  for (size_t i = 0; i < options.sourceProducers.size(); ++i) {
+    options.sourceProducers[i] = droneIdentity(names, "UAV" + std::to_string(i + 1));
+  }
+  options.computeProducer = ndn::Name(option(argc, argv, "--compute-identity"));
+  nsf::validateConfiguredActorName(options.computeProducer, "compute-identity");
   if (!std::filesystem::is_regular_file(options.trustSchema)) {
     throw std::invalid_argument("trust schema is not a regular file: " + options.trustSchema);
   }
@@ -3796,7 +3809,7 @@ runTrackingNodeCli(int argc, char** argv)
     throw std::invalid_argument("tracking model is not a regular file: " + options.model);
   }
   const ndn::Name identity = options.role == "source"
-    ? droneIdentity(options.camera) : ndn::Name("/example/uav/compute");
+    ? droneIdentity(names, options.camera) : options.computeProducer;
   ndn::Face face;
   ndn::KeyChain keyChain;
   UavTrackingProviderConfig config;

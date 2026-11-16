@@ -51,6 +51,9 @@ def planned_commands(session_options: dict | None = None) -> list[list[str]]:
     session = NDNSFSession(**(session_options or {}))
     apps = [
         ControllerConfig(
+            extra_args=("--controller-prefix", "/example/hello/controller",
+                        "--ensure-identities",
+                        "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
             policy_file="examples/ai_collaboration.policies").as_application()
     ]
     for spec in ai_provider_specs():
@@ -92,7 +95,11 @@ def run_local_distributed_ai(
             ndnsf.configure_svs_group("/example/hello/group")
 
         ndnsf.start_controller(
-            ControllerConfig(policy_file="examples/ai_collaboration.policies"))
+            ControllerConfig(
+                extra_args=("--controller-prefix", "/example/hello/controller",
+                            "--ensure-identities",
+                            "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+                policy_file="examples/ai_collaboration.policies"))
         wait_for_startup(controller_startup_wait_s)
 
         for spec in ai_provider_specs():

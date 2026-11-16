@@ -245,7 +245,7 @@ def main() -> int:
         controller_proc, controller_log = start(
             ndn.net[args.controller_node],
             "controller",
-            app_cmd("App_ServiceController"),
+            app_cmd("App_ServiceController", "--controller-prefix", "/example/hello/controller"),
             env,
             output_dir,
             processes,

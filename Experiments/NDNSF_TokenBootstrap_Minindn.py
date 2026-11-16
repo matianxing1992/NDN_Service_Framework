@@ -152,6 +152,7 @@ def main() -> int:
             ndn.net[args.controller_node],
             "controller",
             app_cmd("App_ServiceController",
+                    "--controller-prefix", "/example/hello/controller",
                     "--bootstrap-token-file", "examples/hello.bootstrap-tokens"),
             env,
             output_dir,

@@ -16,8 +16,8 @@ BOOST_AUTO_TEST_SUITE(UavTrackingCoordinatorTests)
 
 BOOST_AUTO_TEST_CASE(ModeReadinessAndServiceMustMatchBeforeSelection)
 {
-  const std::vector<ndn::Name> sources{droneIdentity("UAV1"), droneIdentity("UAV2"),
-                                        droneIdentity("UAV3")};
+  const std::vector<ndn::Name> sources{ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"),
+                                        ndn::Name("/example/uav/drone/UAV3")};
   const ndn::Name compute("/example/uav/compute");
   const auto plan = UavTrackingCoordinator::makePlan(sources, compute, {}, 1000, 3000, {},
     {{"Tracking-Compute", {{"tracking_mode", "person"}}}});
@@ -48,7 +48,7 @@ BOOST_AUTO_TEST_CASE(ModeReadinessAndServiceMustMatchBeforeSelection)
 BOOST_AUTO_TEST_CASE(CalibrationMustAdvertiseTheDrainProtocolAndMatchingEpoch)
 {
   const std::vector<ndn::Name> sources{
-    droneIdentity("UAV1"), droneIdentity("UAV2"), droneIdentity("UAV3")};
+    ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"), ndn::Name("/example/uav/drone/UAV3")};
   const ndn::Name compute("/example/uav/compute");
   const ndn::Name calibration("/example/uav/calibration");
   const Fields expected{{"tracking_mode", "vehicle"}, {"source_epoch", "17"},
@@ -85,7 +85,7 @@ BOOST_AUTO_TEST_CASE(BuildsThreeSourceOneComputePlan)
 {
   const std::array<uint8_t, 3> assignmentBytes{{1, 2, 3}};
   const auto plan = UavTrackingCoordinator::makePlan(
-    {droneIdentity("UAV1"), droneIdentity("UAV2"), droneIdentity("UAV3")},
+    {ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"), ndn::Name("/example/uav/drone/UAV3")},
     ndn::Name("/example/uav/compute"),
     ndn::Buffer(assignmentBytes.data(), assignmentBytes.size()));
   BOOST_REQUIRE_EQUAL(plan.roles.size(), 4);
@@ -111,7 +111,7 @@ BOOST_AUTO_TEST_CASE(RejectsMissingParticipant)
 {
   ndn_service_framework::SelectedParticipant participant;
   participant.role = "Camera-UAV1";
-  participant.provider = droneIdentity("UAV1");
+  participant.provider = ndn::Name("/example/uav/drone/UAV1");
   std::string reason;
   BOOST_CHECK(!UavTrackingCoordinator::hasRequiredParticipants({participant}, &reason));
   BOOST_CHECK(!reason.empty());
@@ -121,12 +121,12 @@ BOOST_AUTO_TEST_CASE(RejectsDuplicateOrComputeAsSource)
 {
   BOOST_CHECK_THROW(
     UavTrackingCoordinator::makePlan(
-      {droneIdentity("UAV1"), droneIdentity("UAV1"), droneIdentity("UAV3")},
+      {ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV3")},
       ndn::Name("/example/uav/compute"), ndn::Buffer{1, 2, 3}),
     std::invalid_argument);
   BOOST_CHECK_THROW(
     UavTrackingCoordinator::makePlan(
-      {droneIdentity("UAV1"), droneIdentity("UAV2"), ndn::Name("/example/uav/compute")},
+      {ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"), ndn::Name("/example/uav/compute")},
       ndn::Name("/example/uav/compute"), ndn::Buffer{1, 2, 3}),
     std::invalid_argument);
 }
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(RejectsDuplicateOrComputeAsSource)
 BOOST_AUTO_TEST_CASE(AddsOnlyTheExplicitCalibrationProviderRole)
 {
   const std::vector<ndn::Name> sources{
-    droneIdentity("UAV1"), droneIdentity("UAV2"), droneIdentity("UAV3")};
+    ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"), ndn::Name("/example/uav/drone/UAV3")};
   const ndn::Name compute("/example/uav/compute");
   const ndn::Name calibration("/example/uav/calibration-provider");
   const ndn::Buffer assignment{1, 2, 3};

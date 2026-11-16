@@ -37,19 +37,12 @@ struct UavTrackingResultExpectation
   std::array<std::string, 3> inputDigests;
   ndn::Name computeProvider;
   std::optional<UavPersonTrackingResultExpectation> personTracking;
-  /** Explicit source Producers; all-empty retains the maintained legacy CLI namespace. */
+  /** Explicit, complete source Producer mapping for every result mode. */
   std::array<ndn::Name, 3> sourceProviders;
   std::optional<UavVehicleTrackingResultExpectation> vehicleTracking;
 };
 
 /** Serialize native decisions and original source references without exposing gallery vectors. */
-std::string
-makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
-                                const UavPersonBackendWindow& backend,
-                                const UavPersonTrackingProfile& profile,
-                                const std::array<std::string, 3>& observationNames,
-                                const std::array<std::string, 3>& observationDigests);
-
 std::string
 makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
                                 const UavPersonBackendWindow& backend,

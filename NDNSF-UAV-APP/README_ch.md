@@ -411,7 +411,8 @@ cd ndnsf-uav-ubuntu20-x86_64-*
 ./scripts/check-runtime-deps.sh
 ```
 
-当前二进制默认读取 `configs/uav_runtime.conf`。这个文件保留了 demo 用的
+当前二进制要求显式提供 runtime 配置路径。演示可传入
+`--runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf`。这个文件保留了 demo 用的
 `/example/uav/controller`、`/example/uav/gs` 和 `/example/uav/drone/<id>`，
 但真实部署的 identity namespace 和 service name 应该写在复制出来的 runtime config
 里，而不是改进 C++ 代码。实机部署时先复制配置文件，修改其中的 namespace，并确保

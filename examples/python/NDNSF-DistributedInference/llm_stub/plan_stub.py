@@ -58,7 +58,11 @@ def main() -> int:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     result = llm_planner_registry().plan(request)
-    output = llm_splitter_output_from_result(result)
+    output = llm_splitter_output_from_result(
+        result, controller="/NDNSF-DistributeInference/example/controller",
+        group="/NDNSF-DistributeInference/example/group",
+        user="/NDNSF-DistributeInference/example/user",
+        provider_prefix="/NDNSF-DistributeInference/example/provider")
     policy = Path(args.policy) if args.policy else Path(args.out_dir) / "llm_policy.yaml"
     output.write_policy_config(policy)
     print(

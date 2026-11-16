@@ -24,7 +24,11 @@ def provider_ids() -> tuple[str, ...]:
 
 def planned_commands(session_options: dict | None = None) -> list[list[str]]:
     session = NDNSFSession(**(session_options or {}))
-    apps = [ControllerConfig(policy_file="examples/hello.policies").as_application()]
+    apps = [ControllerConfig(
+                extra_args=("--controller-prefix", "/example/hello/controller",
+                            "--ensure-identities",
+                            "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+                policy_file="examples/hello.policies").as_application()]
     for provider_id in provider_ids():
         apps.append(ProviderConfig(
             name=f"intermittent-provider-{provider_id}",
@@ -66,7 +70,11 @@ def run_intermittent(
     with NDNSFSession(log_dir=log_dir, **session_options) as ndnsf:
         if configure_local_nfd:
             ndnsf.configure_svs_group("/example/hello/group")
-        ndnsf.start_controller(ControllerConfig(policy_file="examples/hello.policies"))
+        ndnsf.start_controller(ControllerConfig(
+        extra_args=("--controller-prefix", "/example/hello/controller",
+                    "--ensure-identities",
+                    "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+        policy_file="examples/hello.policies"))
         wait_for_startup(controller_startup_wait_s)
         for provider_id in provider_ids():
             ndnsf.start_provider(ProviderConfig(

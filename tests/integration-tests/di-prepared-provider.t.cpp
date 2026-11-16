@@ -33,6 +33,8 @@
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/segmenter.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+#include <ndn-cxx/util/scope.hpp>
+#include <ndn-cxx/util/io.hpp>
 
 #include <chrono>
 #include <cctype>
@@ -101,9 +103,10 @@ trustSchema()
 ProviderConfig
 makeConfig(const std::string& providerName = "/spec185/provider",
            const std::string& serviceName = "/Inference/Spec185Provider",
-           const std::string& artifactCacheDir = {})
+           const std::string& artifactCacheDir = {},
+           const std::filesystem::path& configuredTrust = {})
 {
-  const auto trust = trustSchema().string();
+  const auto trust = (configuredTrust.empty() ? trustSchema() : configuredTrust).string();
   std::vector<std::string> values{
     "provider", "--provider", providerName, "--group", "/spec185/group",
     "--controller", "/spec185/controller", "--trust-schema", trust,
@@ -492,6 +495,70 @@ makeProviderPublication(const ndn::Name& messageName,
 
 BOOST_AUTO_TEST_SUITE(Spec185ProviderAssembly)
 
+BOOST_AUTO_TEST_CASE(ActorInputsCannotFallBackToDefaultIdentities)
+{
+  const auto parse = [] (const std::vector<std::string>& values) {
+    std::vector<const char*> argv;
+    for (const auto& value : values)
+      argv.push_back(value.c_str());
+    return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
+  };
+  const std::vector<std::string> valid{
+    "provider", "--provider", "/tenant-a/actors/provider", "--group", "/tenant-a/sync",
+    "--controller", "/tenant-a/actors/controller", "--trust-schema", trustSchema().string(),
+    "--service", "/Inference/Explicit"};
+  BOOST_CHECK(parse(valid).valid());
+  auto other = valid;
+  other[2] = "/tenant-b/actors/provider";
+  other[4] = "/tenant-b/sync";
+  other[6] = "/tenant-b/actors/controller";
+  BOOST_CHECK(!parse(valid).equivalent(parse(other)));
+  for (const auto* option : {"--provider", "--group", "--controller"}) {
+    auto missing = valid;
+    auto position = std::find(missing.begin(), missing.end(), option);
+    missing.erase(position, position + 2);
+    BOOST_CHECK_EXCEPTION(parse(missing), std::invalid_argument,
+      [option] (const std::invalid_argument& error) {
+        return std::string(error.what()).find(std::string(option).substr(2)) != std::string::npos;
+      });
+    auto root = valid;
+    *std::next(std::find(root.begin(), root.end(), option)) = "/";
+    BOOST_CHECK_THROW(parse(root), std::invalid_argument);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(ForeignControllerCertificateCannotStartCacheOrWorkers)
+{
+  auto pattern = (std::filesystem::temp_directory_path() / "spec241-provider-XXXXXX").string();
+  const auto* directory = ::mkdtemp(pattern.data());
+  BOOST_REQUIRE(directory != nullptr);
+  const std::filesystem::path root(directory);
+  const auto cleanup = ndn::make_scope_exit([root] {
+    std::error_code error;
+    std::filesystem::remove_all(root, error);
+  });
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  const auto identity = keys.createIdentity(ndn::Name("/foreign/controller"));
+  const auto certificate = root / "foreign.cert";
+  ndn::io::save(identity.getDefaultKey().getDefaultCertificate(), certificate.string());
+  const auto cache = root / "must-not-be-created" / "cache";
+  const std::vector<std::string> values{
+    "provider", "--provider", "/tenant/actors/provider", "--group", "/tenant/sync",
+    "--controller", "/tenant/actors/controller", "--controller-cert", certificate.string(),
+    "--trust-schema", trustSchema().string(), "--service", "/Inference/Explicit",
+    "--artifact-cache-dir", cache.string()};
+  std::vector<const char*> argv;
+  for (const auto& value : values)
+    argv.push_back(value.c_str());
+  const auto config = ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
+  BOOST_CHECK_EXCEPTION(Runtime::open(config), DiError,
+    [] (const DiError& error) {
+      return error.code() == "INVALID_RUNTIME_CONFIGURATION" && error.boundary() == "provider" &&
+             std::string(error.what()).find("controller certificate") != std::string::npos;
+    });
+  BOOST_CHECK(!std::filesystem::exists(cache.parent_path()));
+}
+
 BOOST_AUTO_TEST_CASE(ProviderConfigUsesOneValidatedCppGrammar)
 {
   const auto config = makeConfig();
@@ -554,7 +621,8 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
   environment.enableProviderProductionIngressForTest();
-  const auto config = makeConfig();
+  const auto pinnedTrust = std::filesystem::path(environment.profile().trustSchemaPath);
+  const auto config = makeConfig("/spec185/provider", "/Inference/Spec185Provider", {}, pinnedTrust);
   auto runtime = Runtime::open(config);
   BOOST_REQUIRE(runtime);
   const auto providerIdentity = environment.keyChain().getPib().getIdentity(
@@ -579,7 +647,8 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
   BOOST_CHECK_EQUAL(beforeSelection.sourceFetches, 0U);
   BOOST_CHECK_EQUAL(beforeSelection.assemblies, 0U);
   BOOST_CHECK_EQUAL(beforeSelection.runnersCreated, 0U);
-  auto conflicting = makeConfig("/spec185/other-provider");
+  auto conflicting = makeConfig("/spec185/other-provider", "/Inference/Spec185Provider", {},
+                                pinnedTrust);
   BOOST_CHECK_EXCEPTION(runtime->provider(conflicting), DiError,
                         [](const DiError& error) {
                           return error.code() == "CONFIG_CONFLICT" &&

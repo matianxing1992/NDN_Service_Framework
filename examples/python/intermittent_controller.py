@@ -21,7 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    config = ControllerConfig(name="intermittent-controller", policy_file=args.policy_file)
+    config = ControllerConfig(
+                 extra_args=("--controller-prefix", "/example/hello/controller",
+                             "--ensure-identities",
+                             "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+                 name="intermittent-controller", policy_file=args.policy_file)
     session = NDNSFSession(log_dir=Path(args.log_dir) if args.log_dir else None,
                            **session_kwargs(args))
     if args.dry_run:

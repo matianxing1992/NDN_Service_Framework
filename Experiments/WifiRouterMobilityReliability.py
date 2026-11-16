@@ -1372,7 +1372,8 @@ def run_ndnsf(ndn, output_dir, args):
                 packet_capture_commands[node_name] = capture_command
             time.sleep(0.5)
         env = app_env(output_dir, session_base)
-        controller_args = ["--trust-schema", str(trust_schema)]
+        controller_args = ["--controller-prefix", "/example/hello/controller",
+                           "--trust-schema", str(trust_schema)]
         if ACTIVE_PROFILE in {"four-provider-single-ap", "four-provider-multi-ap"}:
             controller_args.extend(["--policy-file", str(write_mobility_policy(output_dir))])
         controller_command = perf.managed_cmd(APP_CONTROLLER, controller_args)

@@ -222,7 +222,8 @@ class MiniNdnRuntime:
             "cd "
             + shlex.quote(str(REPO))
             + " && exec "
-            + shlex.quote(str(REPO / "build/examples/App_ServiceController")),
+            + shlex.quote(str(REPO / "build/examples/App_ServiceController"))
+            + " --controller-prefix /example/hello/controller",
         )
         if not self.wait_log(
             controller_log, "ServiceController started...", controller

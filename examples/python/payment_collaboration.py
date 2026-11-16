@@ -37,7 +37,11 @@ def provider_specs() -> list[PaymentProviderSpec]:
 def planned_commands(session_options: dict | None = None) -> list[list[str]]:
     session = NDNSFSession(**(session_options or {}))
     apps = [
-        ControllerConfig(policy_file="examples/payment_collaboration.policies").as_application()
+        ControllerConfig(
+            extra_args=("--controller-prefix", "/example/hello/controller",
+                        "--ensure-identities",
+                        "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+            policy_file="examples/payment_collaboration.policies").as_application()
     ]
     for spec in provider_specs():
         args = ["--role", spec.role]
@@ -74,7 +78,11 @@ def run_payment(
         if configure_local_nfd:
             ndnsf.configure_svs_group("/example/hello/group")
         ndnsf.start_controller(
-            ControllerConfig(policy_file="examples/payment_collaboration.policies"))
+            ControllerConfig(
+                extra_args=("--controller-prefix", "/example/hello/controller",
+                            "--ensure-identities",
+                            "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+                policy_file="examples/payment_collaboration.policies"))
         wait_for_startup(controller_startup_wait_s)
         for spec in provider_specs():
             args = ["--role", spec.role]

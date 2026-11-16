@@ -41,7 +41,9 @@ def main() -> int:
     identity = f"/example/hello/provider/{provider_id}"
     boot_epoch = f"spec163-boot-{provider_id}"
     roles = ROLES[provider_id]
-    provider = ServiceProvider(provider_id=provider_id)
+    provider = ServiceProvider(
+        provider_id=provider_id, group="/example/hello/group",
+        controller="/example/hello/controller", provider_prefix="/example/hello/provider")
     boot_epoch = provider.provider_boot_epoch
     ledger = GpuMiBAdmissionLedger(
         provider=identity, boot_epoch=boot_epoch, capacity_mib=2048)

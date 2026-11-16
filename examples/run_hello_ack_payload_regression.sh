@@ -26,7 +26,10 @@ export NDNSF_CONFIG="${tmpdir}/ndnsf.conf"
 export NDNSF_SESSION_BASE="$(( $(date +%s) + $$ ))"
 export NDN_LOG="${NDN_LOG:-ndn_service_framework.*=INFO}"
 
-"${build_dir}/examples/App_ServiceController" >"${tmpdir}/controller.log" 2>&1 &
+"${build_dir}/examples/App_ServiceController" \
+  --controller-prefix /example/hello/controller \
+  --ensure-identities /example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user \
+  >"${tmpdir}/controller.log" 2>&1 &
 controller_pid=$!
 sleep 2
 

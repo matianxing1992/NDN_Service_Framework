@@ -94,7 +94,7 @@ main(int argc, char** argv)
       getConfigOption(argc, argv, appConfig, "--fc-status-file", "fc-status-file", "");
     UavRuntimeConfig config = loadUavRuntimeConfig(
       getConfigOption(argc, argv, appConfig, "--runtime-config", "runtime-config",
-                      "NDNSF-UAV-APP/configs/uav_runtime.conf"));
+                      ""));
     config.groupPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--group-prefix", "group-prefix", config.groupPrefix.toUri()));
     config.controllerPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--controller-prefix", "controller-prefix", config.controllerPrefix.toUri()));
     config.droneIdentityPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--drone-prefix", "drone-prefix", config.droneIdentityPrefix.toUri()));
@@ -111,6 +111,8 @@ main(int argc, char** argv)
     config.serviceMavlinkAnalyzeSnapshotSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-mavlink-analyze-snapshot-suffix", "service-mavlink-analyze-snapshot-suffix", config.serviceMavlinkAnalyzeSnapshotSuffix.toUri()));
     config.servicePreflightChecklistSuffix = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-preflight-checklist-suffix", "service-preflight-checklist-suffix", config.servicePreflightChecklistSuffix.toUri()));
     config.serviceGsObjectDetection = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-object-detection", "service-gs-object-detection", config.serviceGsObjectDetection.toUri()));
+
+    validateUavRuntimeConfig(config);
 
     if (autoCameraRecordSmoke) {
       cameraOptions.captureOnStart = true;

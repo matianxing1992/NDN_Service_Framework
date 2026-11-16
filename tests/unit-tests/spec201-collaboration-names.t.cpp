@@ -65,5 +65,24 @@ BOOST_AUTO_TEST_CASE(CompleteProducerAndCanonicalInvocationFields)
   BOOST_CHECK_EQUAL(parseCollaborationDataName(singleName, producer)->requestId, singleRequest);
 }
 
+BOOST_AUTO_TEST_CASE(DeploymentTopicsDoNotReplaceTheActualProducer)
+{
+  const ndn::Name topic("/NDNSF/DI/QWEN");
+  for (const auto* root : {"/site/alpha/actors", "/different/team/beta"}) {
+    const auto producer = ndn::Name(root).append("provider").append("nested");
+    const auto requester = ndn::Name(root).append("requester");
+    const auto request = ndn::Name(requester).append("session").append("7");
+    const auto name = makeCollaborationDataName(producer, requester, request, "scope", topic, 1);
+    const auto parsed = parseCollaborationDataName(name, producer);
+    BOOST_REQUIRE(parsed);
+    BOOST_CHECK_EQUAL(parsed->producerName, producer);
+    BOOST_CHECK_EQUAL(parsed->requesterName, requester);
+    BOOST_CHECK_EQUAL(parsed->topic, topic);
+    BOOST_CHECK(!topic.isPrefixOf(name));
+    BOOST_CHECK(!parseCollaborationDataName(name, ndn::Name(producer.toUri() + "-other")));
+    BOOST_CHECK(!parseCollaborationDataName(name, requester));
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 }

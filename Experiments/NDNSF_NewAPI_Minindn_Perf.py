@@ -4338,7 +4338,8 @@ def run_rate_series(ndn, args, output_dir):
 
 def start_controller(ndn, output_dir, session_base, processes, args):
     controller_proc, controller_log = start_process(
-        ndn.net[args.controller_node], "controller", APP_TARGETS["controller"], [],
+        ndn.net[args.controller_node], "controller", APP_TARGETS["controller"],
+        ["--controller-prefix", "/example/hello/controller"],
         output_dir, session_base, processes, args)
     if not wait_for_log(controller_log,
                         r"ServiceController (listening on:|started)",

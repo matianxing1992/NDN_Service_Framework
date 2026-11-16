@@ -343,7 +343,8 @@ def run_request(user: ServiceUser) -> int:
 
 
 def main() -> int:
-    user = ServiceUser()
+    user = ServiceUser(group="/example/hello/group", controller="/example/hello/controller",
+                       user="/example/hello/user")
     try:
         return run_request(user)
     finally:

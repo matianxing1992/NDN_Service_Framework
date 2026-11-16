@@ -728,5 +728,5 @@ created. For those host-side failures, the Codex IDE/CLI itself must provide
 retry or model fallback; never claim that an agent instruction can catch them.
 
 <!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/233-automatic-model-precision/plan.md.
+Active implementation plan is at specs/241-ndn-name-authority/plan.md.
 <!-- SPEC_KIT_PLAN_END -->

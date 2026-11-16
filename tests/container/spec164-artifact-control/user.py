@@ -40,7 +40,9 @@ def main() -> int:
         payload = b"spec164-secure-collaboration-artifact" * 1024
         source.write_bytes(payload)
 
-    service_user = ServiceUser()
+    service_user = ServiceUser(
+        group="/example/hello/group", controller="/example/hello/controller",
+        user="/example/hello/user")
     control_backend = CollaborationArtifactApiBackend(
         None,
         service_user,

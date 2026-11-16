@@ -24,6 +24,7 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
@@ -57,9 +58,9 @@ namespace ndnsf::di {
 struct ProviderConfig::Impl
 {
   std::filesystem::path sourcePath;
-  std::string providerName = "/ndnsf/provider";
-  std::string groupName = "/ndnsf/group";
-  std::string controllerName = "/ndnsf/controller";
+  std::string providerName;
+  std::string groupName;
+  std::string controllerName;
   std::filesystem::path trustSchema;
   std::filesystem::path controllerCertificatePath;
   std::filesystem::path planPath;
@@ -625,6 +626,12 @@ ProviderConfig ProviderConfig::fromCommandLine(int argc,
   requireAbsoluteName(result->providerName, "provider");
   requireAbsoluteName(result->groupName, "group");
   requireAbsoluteName(result->controllerName, "controller");
+  ndn_service_framework::validateConfiguredActorName(
+    ndn::Name(result->providerName), "provider");
+  ndn_service_framework::validateConfiguredActorName(
+    ndn::Name(result->groupName), "group");
+  ndn_service_framework::validateConfiguredActorName(
+    ndn::Name(result->controllerName), "controller");
   if (result->trustSchema.empty())
     invalid("trust-schema is required");
   if (result->artifactCacheDir.empty())
@@ -1079,12 +1086,40 @@ Provider Provider::fromConfig(const ProviderConfig& config)
 {
   if (!config.m_impl)
     throw std::invalid_argument("Provider requires a validated ProviderConfig");
-  cleanupProviderArtifactStaging(config.m_impl->artifactCacheDir,
-                                 config.m_impl->assemblyJobTimeout);
   std::error_code ec;
   if (!std::filesystem::is_regular_file(config.m_impl->trustSchema, ec) || ec ||
       std::filesystem::file_size(config.m_impl->trustSchema, ec) == 0 || ec)
     throw std::invalid_argument("provider trust schema is unavailable");
+#if defined(NDNSF_DI_PROVIDER_TEST_SEAM)
+  bool makeLocalController = false;
+#endif
+  ndn::security::Certificate controllerCert;
+  if (!config.m_impl->controllerCertificatePath.empty()) {
+    auto loaded = ndn::io::load<ndn::security::Certificate>(
+      config.m_impl->controllerCertificatePath.string());
+    if (!loaded || !loaded->isValid() ||
+        loaded->getIdentity() != ndn::Name(config.m_impl->controllerName))
+      throw std::invalid_argument("controller certificate does not match controller identity");
+    controllerCert = *loaded;
+  }
+  else if (const char* certPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
+           certPath != nullptr && *certPath != '\0') {
+    auto loaded = ndn::io::load<ndn::security::Certificate>(certPath);
+    if (!loaded || !loaded->isValid() ||
+        loaded->getIdentity() != ndn::Name(config.m_impl->controllerName))
+      throw std::invalid_argument("NDNSF_CONTROLLER_CERT_FILE identity mismatch");
+    controllerCert = *loaded;
+  }
+  else {
+#if defined(NDNSF_DI_PROVIDER_TEST_SEAM)
+    makeLocalController = std::getenv("NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER") != nullptr;
+    if (!makeLocalController)
+#endif
+      throw std::invalid_argument(
+        "controller certificate is required; set NDNSF_CONTROLLER_CERT_FILE or pass --controller-cert");
+  }
+  cleanupProviderArtifactStaging(config.m_impl->artifactCacheDir,
+                                 config.m_impl->assemblyJobTimeout);
   auto state = std::make_shared<State>();
   state->config = config.m_impl;
   state->artifactCache = std::make_shared<ProviderArtifactCache>(
@@ -1107,38 +1142,16 @@ Provider Provider::fromConfig(const ProviderConfig& config)
   // process KeyChain and resolves the same identities by name.  Keeping the
   // creating KeyChain alive here preserves the private keys for signer use.
   state->keyChain = std::make_unique<ndn::KeyChain>();
-  const auto providerIdentity = state->keyChain->createIdentity(
-    ndn::Name(state->config->providerName), ndn::RsaKeyParams(2048));
-  ndn::security::Identity controllerIdentity;
-  const auto providerCert = providerIdentity.getDefaultKey().getDefaultCertificate();
-  ndn::security::Certificate controllerCert;
-  if (!state->config->controllerCertificatePath.empty()) {
-    auto loaded = ndn::io::load<ndn::security::Certificate>(
-      state->config->controllerCertificatePath.string());
-    if (!loaded || !loaded->isValid() ||
-        loaded->getIdentity() != ndn::Name(state->config->controllerName))
-      throw std::invalid_argument("controller certificate does not match controller identity");
-    controllerCert = *loaded;
-  }
-  else if (const char* certPath = std::getenv("NDNSF_CONTROLLER_CERT_FILE");
-           certPath != nullptr && *certPath != '\0') {
-    auto loaded = ndn::io::load<ndn::security::Certificate>(certPath);
-    if (!loaded || !loaded->isValid() ||
-        loaded->getIdentity() != ndn::Name(state->config->controllerName))
-      throw std::invalid_argument("NDNSF_CONTROLLER_CERT_FILE identity mismatch");
-    controllerCert = *loaded;
-  }
 #if defined(NDNSF_DI_PROVIDER_TEST_SEAM)
-  else if (std::getenv("NDNSF_SPEC185_ALLOW_LOCAL_CONTROLLER") != nullptr) {
-    const auto controllerIdentity = state->keyChain->createIdentity(
-      ndn::Name(state->config->controllerName), ndn::RsaKeyParams(2048));
-    controllerCert = controllerIdentity.getDefaultKey().getDefaultCertificate();
+  if (makeLocalController) {
+    const auto identity = state->keyChain->createIdentity(
+      ndn::Name(config.m_impl->controllerName), ndn::RsaKeyParams(2048));
+    controllerCert = identity.getDefaultKey().getDefaultCertificate();
   }
 #endif
-  else {
-    throw std::invalid_argument(
-      "controller certificate is required; set NDNSF_CONTROLLER_CERT_FILE or pass --controller-cert");
-  }
+  const auto providerIdentity = state->keyChain->createIdentity(
+    ndn::Name(state->config->providerName), ndn::RsaKeyParams(2048));
+  const auto providerCert = providerIdentity.getDefaultKey().getDefaultCertificate();
   state->providerCertificate = providerCert;
   state->controllerCertificate = controllerCert;
   state->serviceProvider = std::make_shared<ndn_service_framework::ServiceProvider>(

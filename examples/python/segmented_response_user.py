@@ -111,7 +111,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     pause_error = ""
 
     with optional_local_nfd(args.start_local_nfd):
-        user = ServiceUser(**session_kwargs(args))
+        user = ServiceUser(
+            group="/example/hello/group",
+            controller="/example/hello/controller",
+            user="/example/hello/user",
+            **session_kwargs(args),
+        )
         for index, size in enumerate(args.sizes):
             request = encode_request(args.run_id, index, size)
             started = time.monotonic()

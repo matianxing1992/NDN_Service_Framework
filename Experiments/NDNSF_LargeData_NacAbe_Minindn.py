@@ -223,6 +223,7 @@ def run(output_dir: Path) -> int:
         controller = start(
             ndn.net["memphis"], "controller",
             managed(APP_CONTROLLER, [
+                "--controller-prefix", "/example/hello/controller",
                 "--policy-file", "examples/large-data-validation.policies",
                 "--trust-schema", "examples/trust-schema.conf",
             ]), output_dir, env, processes)

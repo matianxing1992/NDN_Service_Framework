@@ -4,6 +4,14 @@ This directory contains an installable Python wrapper around the NDNSF C++
 runtime and selected C++ applications. It intentionally does not change the
 NDNSF core logic.
 
+Actor names and publication `signing_identity` values must be explicit, non-root NDN names.
+Generated Data names must be under that Producer. Original-wire serving preserves the original
+packets and uses an explicit local command signer. Segmented publishers use their configured
+Producer to sign NFD commands unless `NDNSF_NFD_COMMAND_IDENTITY` explicitly selects another Actor;
+the override is captured per publisher. No helper creates a default `/ndnsf/python/...` Actor.
+The native `App_ServiceController` launcher requires `--controller-prefix`; demo participant keys
+must be requested explicitly with `--ensure-identities CSV` or prepared by the application.
+
 The wrapper provides two layers:
 
 - `ServiceController` / `ServiceProvider` / `ServiceUser`: the preferred

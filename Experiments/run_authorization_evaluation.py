@@ -467,7 +467,9 @@ def _run_minindn_case(
         controller, controller_log = start_app(
             ndn.net["memphis"],
             "controller",
-            app_command("App_ServiceController", ["--policy-file", str(policy_file)]),
+            app_command("App_ServiceController", [
+                "--controller-prefix", "/example/hello/controller",
+                "--policy-file", str(policy_file)]),
             env,
         )
         if not _wait_for_log(controller_log, "ServiceController started", 8, controller):
@@ -1125,7 +1127,9 @@ def run_overhead(args: argparse.Namespace) -> int:
             controller_handle = controller_log.open("w", encoding="utf-8")
             provider_handle = provider_log.open("w", encoding="utf-8")
             controller = subprocess.Popen(
-                [str(build_dir / "examples/App_ServiceController")],
+                [str(build_dir / "examples/App_ServiceController"),
+                 "--controller-prefix", "/example/hello/controller",
+                 "--ensure-identities", "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"],
                 cwd=ROOT,
                 stdout=controller_handle,
                 stderr=subprocess.STDOUT,

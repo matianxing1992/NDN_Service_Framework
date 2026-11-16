@@ -843,7 +843,8 @@ def run_network_matrix(output: Path) -> dict[str, Any]:
         controller, controller_log = start(
             ndn.net["memphis"], "controller",
             f"cd {shlex.quote(str(REPO))} && exec "
-            f"{shlex.quote(str(REPO / 'build/examples/App_ServiceController'))}",
+            f"{shlex.quote(str(REPO / 'build/examples/App_ServiceController'))} "
+            "--controller-prefix /example/hello/controller",
             env)
         if not wait_log(
                 controller_log, "ServiceController listening on:", 15,

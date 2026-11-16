@@ -885,6 +885,33 @@ BOOST_AUTO_TEST_CASE(LongPreparationBootstrapBudgetRemainsBounded)
   });
 }
 
+BOOST_AUTO_TEST_CASE(PublicationServiceCannotBeInferredFromArtifactRoot)
+{
+  TempRuntimeConfig files;
+  const auto path = files.makeConfig("explicit-service.json");
+  ndnsf::di::NativeJson original;
+  {
+    std::ifstream input(path);
+    input >> original;
+  }
+  for (const bool missing : {true, false}) {
+    auto root = original;
+    root["catalog"]["publication"]["artifact_root"] = "/must-not-be-service/artifacts";
+    if (missing)
+      root["request"].erase("service");
+    else
+      root["request"]["service"] = "";
+    RuntimeConfig config;
+    config.nativeConfigPath = files.write("missing-service.json",
+      ndnsf::di::nativeCanonicalJson(root)).string();
+    BOOST_CHECK_EXCEPTION(Runtime::open(config), DiError,
+      [] (const DiError& error) {
+        return error.code() == "INVALID_RUNTIME_CONFIGURATION" &&
+               std::string(error.what()).find("service") != std::string::npos;
+      });
+  }
+}
+
 BOOST_AUTO_TEST_CASE(PrepareReportsSourceFailureAtPreparationBoundary)
 {
   TempRuntimeConfig files;

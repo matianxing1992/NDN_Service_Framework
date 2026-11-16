@@ -1057,6 +1057,9 @@ def write_policy_bundle(
     validate_runtime_user_authorization(config, services)
     validate_service_provider_role_coverage(services)
     validate_service_runtime_compatibility(services)
+    group = str(config.get("group", ""))
+    if not group.startswith("/") or group == "/":
+        raise ValueError("policy bundle requires an explicit non-root group")
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     trust_schema = out / "trust-schema.conf"
@@ -1070,7 +1073,7 @@ def write_policy_bundle(
     return DistributedInferenceDeployment(
         application=str(config.get("application", "distributed-inference")),
         controller=str(config["controller"]),
-        group=str(config.get("group", "/NDNSF-DistributeInference/example/group")),
+        group=group,
         user=_runtime_user_identity(config),
         provider_prefix=_runtime_provider_prefix(config),
         services=services,

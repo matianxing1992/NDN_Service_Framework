@@ -39,7 +39,12 @@ def main() -> int:
         return 0
 
     with optional_local_nfd(args.start_local_nfd):
-        user = ServiceUser(**session_kwargs(args))
+        user = ServiceUser(
+            group="/example/hello/group",
+            controller="/example/hello/controller",
+            user="/example/hello/user",
+            **session_kwargs(args),
+        )
         if args.list_services:
             services = user.get_allowed_services()
             if not services:

@@ -210,7 +210,14 @@ struct MainDroneFixture : JobFlowFixture
     shutDown = true;
   }
 
-  UavRuntimeConfig config;
+  UavRuntimeConfig config = [] {
+    UavRuntimeConfig value;
+    value.groupPrefix = ndn::Name("/example/uav/group");
+    value.controllerPrefix = ndn::Name("/example/uav/controller");
+    value.groundStationIdentity = ndn::Name("/example/uav/gs");
+    value.droneIdentityPrefix = ndn::Name("/example/uav/drone");
+    return value;
+  }();
   UavTrackingProviderConfig catalog;
   std::string droneId;
   std::unique_ptr<DroneServiceContainer> runtime;

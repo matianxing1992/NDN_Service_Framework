@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <iostream>
 #include <limits>
@@ -34,6 +35,18 @@ std::string hex(const ndn::Block& block)
 
 BOOST_AUTO_TEST_SUITE(ProducerDataNaming)
 
+BOOST_AUTO_TEST_CASE(ConfiguredActorsRequireExplicitNonRootNames)
+{
+  BOOST_CHECK_THROW(validateConfiguredActorName(ndn::Name(), "provider"), std::invalid_argument);
+  BOOST_CHECK_THROW(validateConfiguredActorName(ndn::Name("/"), "group"), std::invalid_argument);
+  for (const auto* uri : {"/tenant-a/actors/provider", "/tenant-b/actors/controller",
+                          "/tenant-a/%2F/device", "/tenant-a/测试"}) {
+    BOOST_CHECK_NO_THROW(validateConfiguredActorName(ndn::Name(uri), "actor"));
+  }
+  const ndn::Name oversized = ndn::Name("/tenant").append(std::string(1100, 'x'));
+  BOOST_CHECK_THROW(validateConfiguredActorName(oversized, "authority"), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(ExactProducerBoundary)
 {
   const ndn::Name producer("/org/NDNSF/TENSOR/provider");
@@ -51,6 +64,22 @@ BOOST_AUTO_TEST_CASE(ExactProducerBoundary)
   BOOST_CHECK_THROW(makeProducerDataPrefix(producer, "MODEL/OTHER"), std::invalid_argument);
   BOOST_CHECK_THROW(makeProducerDataPrefix(producer, "model"), std::invalid_argument);
   BOOST_CHECK_EQUAL(name.size(), producer.size() + 3); // No naming path version.
+}
+
+BOOST_AUTO_TEST_CASE(DeploymentNamespacesKeepComponentOwnership)
+{
+  for (const auto* root : {"/site/alpha/actors", "/different/team/beta"}) {
+    const auto producer = ndn::Name(root).append("provider").append("nested");
+    const auto object = makeProducerDataPrefix(producer, "MODEL").append("original");
+    const auto parsed = parseProducerDataName(object, producer);
+    BOOST_REQUIRE(parsed);
+    BOOST_CHECK_EQUAL(parsed->producer, producer);
+    const auto similar = ndn::Name(root).append("provider").append("nested-extra");
+    BOOST_CHECK(!parseProducerDataName(object, similar));
+    const auto impostor = ndn::Name(producer.toUri() + "-other");
+    BOOST_CHECK(!parseProducerDataName(object, impostor));
+    BOOST_CHECK(!parseProducerDataName(object, producer.getPrefix(-1)));
+  }
 }
 
 BOOST_AUTO_TEST_CASE(FullDigestAndDecimalWire)

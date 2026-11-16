@@ -219,6 +219,7 @@ def main() -> int:
 
         controller_cmd = cpp_cmd(
             "App_ServiceController",
+            "--controller-prefix", "/example/hello/controller",
             "--policy-file", "examples/text-to-image-status.policies")
         start(ndn.net[args.controller_node], "controller", controller_cmd, env, output_dir, processes)
         time.sleep(args.controller_wait_s)

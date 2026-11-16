@@ -23,7 +23,11 @@ from ndnsf.runtime import ProcessResult, wait_for_startup  # noqa: E402
 def planned_commands(session_options: dict | None = None) -> list[list[str]]:
     session = NDNSFSession(**(session_options or {}))
     apps = [
-        ControllerConfig(policy_file="examples/hello.policies").as_application(),
+        ControllerConfig(
+            extra_args=("--controller-prefix", "/example/hello/controller",
+                        "--ensure-identities",
+                        "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+            policy_file="examples/hello.policies").as_application(),
     ]
     commands = session.commands_for(apps)
     commands.append([sys.executable, "examples/python/hello_provider.py"])
@@ -68,7 +72,11 @@ def run_hello(
         if configure_local_nfd:
             ndnsf.configure_svs_group("/example/hello/group")
         ndnsf.start_controller(
-            ControllerConfig(policy_file="examples/hello.policies"))
+            ControllerConfig(
+                extra_args=("--controller-prefix", "/example/hello/controller",
+                            "--ensure-identities",
+                            "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
+                policy_file="examples/hello.policies"))
         wait_for_startup(controller_startup_wait_s)
 
         provider_log = (log_dir / "python-provider.out").open("w", encoding="utf-8")

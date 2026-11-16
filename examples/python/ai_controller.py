@@ -14,6 +14,9 @@ from ndnsf import ControllerConfig, NDNSFSession  # noqa: E402
 
 def controller_config(policy_file: str) -> ControllerConfig:
     return ControllerConfig(
+               extra_args=("--controller-prefix", "/example/hello/controller",
+                           "--ensure-identities",
+                           "/example/hello/provider,/example/hello/provider/A,/example/hello/provider/B,/example/hello/provider/C,/example/hello/user"),
         name="ai-controller",
         policy_file=policy_file,
     )
