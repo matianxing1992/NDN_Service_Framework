@@ -9,10 +9,26 @@ from ndnsf_distributed_inference.core.ports import (
     AdmissionProposal, AdmissionScope, CandidateBudget, PolicyEvidence, PolicyResult,
 )
 from ndnsf_distributed_inference.planner.deployment_policy import LifecycleDeploymentPolicy
+from ndnsf_distributed_inference.app_sdk.contracts import ApplicationRuntimeConfig
 from support.spec111_policy import request
 
 
 class PolicyBoundaryNegativeTest(unittest.TestCase):
+    def test_runtime_group_cannot_silently_select_a_deployment(self):
+        configured = {
+            "application": {"identity": "/team/alpha/requester"},
+            "controller": "/team/alpha/controller",
+            "service": "/AI/Model/Inference",
+            "trust_schema": "configured-trust.conf",
+        }
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            ApplicationRuntimeConfig.from_mapping(configured)
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            ApplicationRuntimeConfig.from_mapping(dict(configured, group="/"))
+        runtime = ApplicationRuntimeConfig.from_mapping(
+            dict(configured, group="/different/site/sync/domain"))
+        self.assertEqual(runtime.group, "/different/site/sync/domain")
+
     def test_candidate_overflow_and_rejection_reversal_fail(self):
         with self.assertRaisesRegex(ValueError, "budget"):
             validate_candidate_budget(range(3), CandidateBudget(2))

@@ -38,6 +38,7 @@ class ExplicitActorInputs(unittest.TestCase):
         self.directory = self.home.name if self.home is not None else os.environ["HOME"]
         self.previous_home = os.environ.get("HOME")
         self.previous_certificate = os.environ.pop("NDNSF_CONTROLLER_CERT_FILE", None)
+        self.previous_command_identity = os.environ.pop("NDNSF_NFD_COMMAND_IDENTITY", None)
         os.environ["HOME"] = self.directory
         self.previous_locators = {name: os.environ.get(name)
                                   for name in ("NDN_CLIENT_PIB", "NDN_CLIENT_TPM")}
@@ -58,6 +59,10 @@ class ExplicitActorInputs(unittest.TestCase):
             os.environ.pop("NDNSF_CONTROLLER_CERT_FILE", None)
         else:
             os.environ["NDNSF_CONTROLLER_CERT_FILE"] = self.previous_certificate
+        if self.previous_command_identity is None:
+            os.environ.pop("NDNSF_NFD_COMMAND_IDENTITY", None)
+        else:
+            os.environ["NDNSF_NFD_COMMAND_IDENTITY"] = self.previous_command_identity
         if self.home is not None:
             self.home.cleanup()
 
@@ -138,6 +143,62 @@ class ExplicitActorInputs(unittest.TestCase):
             self.assert_no_candidate_identity((controller, identity))
         finally:
             provider.stop()
+
+    @isolated_native_case
+    def test_publication_helpers_reject_missing_or_foreign_producer(self):
+        base = "/spec241/candidate/producer/object"
+        for identity in ("", "/"):
+            for call in (
+                lambda: _ndnsf.make_signed_data(base, b"payload", identity),
+                lambda: _ndnsf.make_segmented_data_packets(base, b"payload", identity),
+                lambda: _ndnsf.SegmentedObjectProducer(base, b"payload", identity),
+                lambda: _ndnsf.StoredDataProducer(base, [], identity),
+                lambda: _ndnsf.RepoDataPlaneProducer(lambda name: None, identity),
+            ):
+                with self.assertRaisesRegex(ValueError, "explicit non-root NDN name"):
+                    call()
+        for identity in ("/spec241/foreign", "/spec241/candidate/produce"):
+            for call in (
+                lambda: _ndnsf.make_signed_data(base, b"payload", identity),
+                lambda: _ndnsf.make_segmented_data_packets(base, b"payload", identity),
+                lambda: _ndnsf.SegmentedObjectProducer(base, b"payload", identity),
+            ):
+                with self.assertRaisesRegex(ValueError, "under its explicit Producer"):
+                    call()
+        self.assert_no_candidate_identity()
+
+    @isolated_native_case
+    def test_publication_uses_only_explicit_producer_and_accepts_original_wire(self):
+        identity = "/spec241/explicit/producer/nested"
+        packets = _ndnsf.make_segmented_data_packets(identity + "/object", b"payload", identity)
+        self.assertEqual(len(packets), 1)
+        self.assertTrue(packets[0].name.startswith(identity + "/object/"))
+        self.assertEqual(packets[0].content, b"payload")
+        publication = _ndnsf.SegmentedObjectProducer(identity + "/live", b"payload", identity)
+        self.assertEqual(publication.segment_count, 1)
+        publication.stop()
+        # Storage serving uses its own command signer without changing original packets.
+        server = _ndnsf.StoredDataProducer(identity + "/object", [packets[0].wire], identity)
+        self.assertEqual(server.segment_count, 1)
+        server.stop()
+        self.assert_no_candidate_identity((identity,))
+
+    @isolated_native_case
+    def test_command_signer_is_explicit_and_not_process_global(self):
+        identity = "/spec241/explicit/producer"
+        os.environ["NDNSF_NFD_COMMAND_IDENTITY"] = "/"
+        with self.assertRaisesRegex(ValueError, "NFD command identity"):
+            _ndnsf.SegmentedObjectProducer(identity + "/object", b"payload", identity)
+        self.assert_no_candidate_identity()
+        actors = [identity]
+        for suffix in ("first", "second"):
+            command_identity = "/spec241/explicit/command/" + suffix
+            os.environ["NDNSF_NFD_COMMAND_IDENTITY"] = command_identity
+            publication = _ndnsf.SegmentedObjectProducer(
+                identity + "/" + suffix, b"payload", identity)
+            publication.stop()
+            actors.append(command_identity)
+            self.assert_no_candidate_identity(actors)
 
     @isolated_native_case
     def test_facade_and_native_defaults_have_no_example_actor(self):

@@ -5,6 +5,10 @@
 Controller 证书在缓存和 worker 启动前校验。Requester 配置必须提供
 `request.service`，不能从对象路径推断发布服务或授权范围。
 
+Application runtime 配置和生成的 policy bundle 也必须显式提供 `group`。
+GUI 的 Actor 字段初始为空，应加载明确配置或输入部署身份。LLM policy 输出 helper
+要求显式传入既有 controller/group/user/provider-prefix 参数；示例由调用方明确提供身份。
+
 ## 推荐用户 API（Spec 116）
 
 新应用只从 `ndnsf_distributed_inference.api` 导入。主流程是直接对

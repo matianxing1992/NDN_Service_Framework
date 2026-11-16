@@ -117,6 +117,8 @@ def build_commands(output: Path, transports: dict[str, str],
         "provider": (
             common + f"NDN_CLIENT_TRANSPORT={transports['provider']} "
             f"{shlex.quote(str(binary))} --role provider "
+            "--identity /example/uav/drone/A --group /example/uav "
+            "--controller /example/uav/controller --trust-schema examples/trust-any.conf "
             f"--workload {workload} --descriptor {shlex.quote(str(descriptor))} "
             "--warmup-seconds 5 --measurement-seconds 60 "
             f"--publication-log {shlex.quote(str(publication))} "
@@ -126,6 +128,8 @@ def build_commands(output: Path, transports: dict[str, str],
         "consumer": (
             common + f"NDN_CLIENT_TRANSPORT={transports['consumer']} "
             f"{shlex.quote(str(binary))} --role consumer "
+            "--identity /example/uav/gs --group /example/uav "
+            "--controller /example/uav/controller --trust-schema examples/trust-any.conf "
             f"--workload {workload} --descriptor {shlex.quote(str(descriptor))} "
             "--warmup-seconds 5 --measurement-seconds 60 "
             f"--admission-log {shlex.quote(str(output / 'admission.jsonl'))} "

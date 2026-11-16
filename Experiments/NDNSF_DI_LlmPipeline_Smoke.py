@@ -200,7 +200,11 @@ def main() -> int:
         layers=args.layers,
     )
     result = llm_planner_registry().plan(request)
-    llm_splitter_output_from_result(result).write_policy_config(policy)
+    llm_splitter_output_from_result(
+        result, controller="/NDNSF-DistributeInference/example/controller",
+        group="/NDNSF-DistributeInference/example/group",
+        user="/NDNSF-DistributeInference/example/user",
+        provider_prefix="/NDNSF-DistributeInference/example/provider").write_policy_config(policy)
     deployment = write_policy_bundle(policy, generated)
 
     native_plan = Path(deployment.native_execution_plan_file)

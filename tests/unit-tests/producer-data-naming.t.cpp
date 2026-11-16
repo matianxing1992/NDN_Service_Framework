@@ -66,6 +66,22 @@ BOOST_AUTO_TEST_CASE(ExactProducerBoundary)
   BOOST_CHECK_EQUAL(name.size(), producer.size() + 3); // No naming path version.
 }
 
+BOOST_AUTO_TEST_CASE(DeploymentNamespacesKeepComponentOwnership)
+{
+  for (const auto* root : {"/site/alpha/actors", "/different/team/beta"}) {
+    const auto producer = ndn::Name(root).append("provider").append("nested");
+    const auto object = makeProducerDataPrefix(producer, "MODEL").append("original");
+    const auto parsed = parseProducerDataName(object, producer);
+    BOOST_REQUIRE(parsed);
+    BOOST_CHECK_EQUAL(parsed->producer, producer);
+    const auto similar = ndn::Name(root).append("provider").append("nested-extra");
+    BOOST_CHECK(!parseProducerDataName(object, similar));
+    const auto impostor = ndn::Name(producer.toUri() + "-other");
+    BOOST_CHECK(!parseProducerDataName(object, impostor));
+    BOOST_CHECK(!parseProducerDataName(object, producer.getPrefix(-1)));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(FullDigestAndDecimalWire)
 {
   const auto digest = makeNamingDigestComponent(std::string(64, 'a'));

@@ -868,7 +868,7 @@ class ApplicationRuntimeConfig:
     identity: str
     controller: str
     service: str
-    group: str = "/NDNSF-DistributeInference/example/group"
+    group: str = ""
     trust_schema: str = "examples/trust-schema.conf"
     ack_timeout_ms: int = 500
     hard_deadline_ms: int = 900_000
@@ -884,7 +884,9 @@ class ApplicationRuntimeConfig:
         if (not self.identity.startswith("/")
                 or not self.controller.startswith("/")
                 or not self.service.startswith("/")
-                or not self.group.startswith("/") or not self.trust_schema):
+                or not self.group.startswith("/") or not self.trust_schema
+                or any(value == "/" for value in
+                       (self.identity, self.controller, self.service, self.group))):
             raise ValueError("application runtime identities are incomplete")
         if (self.ack_timeout_ms <= 0 or self.progress_idle_ms <= 0
                 or self.hard_deadline_ms <= self.ack_timeout_ms
@@ -911,7 +913,7 @@ class ApplicationRuntimeConfig:
             controller=str(value.get("controller", "")),
             service=str(value.get("service", "")),
             group=str(value.get(
-                "group", "/NDNSF-DistributeInference/example/group")),
+                "group", "")),
             trust_schema=str(value.get(
                 "trust_schema", "examples/trust-schema.conf")),
             ack_timeout_ms=int(value.get("ack_timeout_ms", 500)),

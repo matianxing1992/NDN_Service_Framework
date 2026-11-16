@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/deployment-readiness.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/execution-evidence-aggregation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactMaterializer.hpp"
@@ -200,9 +201,9 @@ struct Options
   std::string planPath;
   std::string manifestPath;
   std::string serviceName = "/AI/YOLO/2x2Inference";
-  std::string providerName = "/example/native-provider";
-  std::string groupName = "/NDNSF-DistributeInference/example/group";
-  std::string controllerName = "/NDNSF-DistributeInference/example/controller";
+  std::string providerName;
+  std::string groupName;
+  std::string controllerName;
   std::string trustSchema = "examples/trust-schema.conf";
   std::string bootstrapToken;
   std::string roles = "all";
@@ -1257,6 +1258,11 @@ main(int argc, char** argv)
     std::signal(SIGTERM, requestShutdown);
     std::signal(SIGUSR1, [](int) { g_withdrawRequested = 1; });
     auto options = parseArgs(argc, argv);
+    if (options.serve) {
+      ndn_service_framework::validateConfiguredActorName(ndn::Name(options.providerName), "provider");
+      ndn_service_framework::validateConfiguredActorName(ndn::Name(options.groupName), "group");
+      ndn_service_framework::validateConfiguredActorName(ndn::Name(options.controllerName), "controller");
+    }
     std::optional<NativeJson> kvHandoff;
     if (!options.kvHandoffConfigPath.empty()) {
       std::error_code error;

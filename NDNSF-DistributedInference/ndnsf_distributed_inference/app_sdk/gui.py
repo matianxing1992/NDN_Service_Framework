@@ -109,8 +109,8 @@ class NdnsfSvsEnvConfig:
 
 @dataclass
 class SharedNdnsfConfig:
-    group: str = "/NDNSF-DI/Tracer/group"
-    controller: str = "/NDNSF-DI/Tracer/controller"
+    group: str = ""
+    controller: str = ""
     trust_schema: str = "examples/trust-schema.conf"
     serve_certificates: bool = True
 
@@ -124,7 +124,7 @@ class SharedNdnsfConfig:
 
 @dataclass
 class ControllerTabConfig:
-    controller_prefix: str = "/NDNSF-DI/Tracer/controller"
+    controller_prefix: str = ""
     policy_file: str = "examples/hello.policies"
     trust_schema: str = "examples/trust-schema.conf"
     bootstrap_token_file: str = "examples/hello.bootstrap-tokens"
@@ -142,9 +142,9 @@ class ControllerTabConfig:
 @dataclass
 class ProviderTabConfig:
     provider_id: str = "A"
-    provider_prefix: str = "/NDNSF-DI/Tracer/provider"
-    group: str = "/NDNSF-DI/Tracer/group"
-    controller: str = "/NDNSF-DI/Tracer/controller"
+    provider_prefix: str = ""
+    group: str = ""
+    controller: str = ""
     trust_schema: str = "examples/trust-schema.conf"
     bootstrap_token: str = ""
     service_name: str = "/HELLO"
@@ -204,9 +204,9 @@ class UserRequestConfig:
 
 @dataclass
 class UserTabConfig:
-    user: str = "/NDNSF-DI/Tracer/user"
-    group: str = "/NDNSF-DI/Tracer/group"
-    controller: str = "/NDNSF-DI/Tracer/controller"
+    user: str = ""
+    group: str = ""
+    controller: str = ""
     trust_schema: str = "examples/trust-schema.conf"
     bootstrap_token: str = ""
     permission_wait_ms: int = 1500
@@ -1198,10 +1198,10 @@ class WizardTab(ttk.Frame):
         self._field(0, "Model file", "model", "", browse=True)
         self._field(1, "Application", "application", "di-gui-project")
         self._field(2, "Service name", "service", "/AI/Model/Inference")
-        self._field(3, "Controller", "controller", "/NDNSF-DistributeInference/example/controller")
-        self._field(4, "Group", "group", "/NDNSF-DistributeInference/example/group")
-        self._field(5, "Runtime user identity", "user", "/NDNSF-DistributeInference/example/user")
-        self._field(6, "Provider prefix", "provider_prefix", "/NDNSF-DistributeInference/example/provider")
+        self._field(3, "Controller", "controller", "")
+        self._field(4, "Group", "group", "")
+        self._field(5, "Runtime user identity", "user", "")
+        self._field(6, "Provider prefix", "provider_prefix", "")
         self._field(7, "Provider IDs", "provider_ids", "A,B")
         self._field(8, "Roles", "roles", "/Stage/0,/Stage/1")
         self._field(9, "Output policy", "output", "examples/python/NDNSF-DistributedInference/gui_policy.yaml",
@@ -1696,7 +1696,7 @@ class ControllerCertificateFrame(ttk.LabelFrame):
 
     def __init__(self, parent):
         super().__init__(parent, text="Controller certificate authority")
-        self.root_identity_var = tk.StringVar(value="/NDNSF-DistributeInference/example")
+        self.root_identity_var = tk.StringVar(value="")
         self.root_cert_path_var = tk.StringVar(value="/tmp/ndnsf-di-root.cert")
         self.issuer_id_var = tk.StringVar(value="ROOT")
         self.request_path_var = tk.StringVar()
@@ -1808,7 +1808,7 @@ class ParticipantCertificateFrame(ttk.LabelFrame):
     def __init__(self, parent, role: str):
         super().__init__(parent, text=f"{role.title()} certificate request / install")
         role_suffix = role.lower()
-        self.identity_var = tk.StringVar(value=f"/NDNSF-DistributeInference/example/{role_suffix}")
+        self.identity_var = tk.StringVar(value="")
         self.request_path_var = tk.StringVar(value=f"/tmp/ndnsf-di-{role_suffix}.req")
         self.cert_path_var = tk.StringVar(value=f"/tmp/ndnsf-di-{role_suffix}.cert")
         self._build()
@@ -2103,7 +2103,7 @@ class ControllerDirectTab(DirectRoleTab):
         top.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         top.columnconfigure(1, weight=1)
         self._field(top, 0, "Controller prefix", "controller_prefix",
-                    "/NDNSF-DI/Tracer/controller")
+                    "")
         self._field(top, 1, "Policy file", "policy_file", "examples/hello.policies",
                     browse="open")
         self._field(top, 2, "Trust schema", "trust_schema", "examples/trust-schema.conf",
@@ -2189,9 +2189,9 @@ class ProviderDirectTab(DirectRoleTab):
         basic.columnconfigure(1, weight=1)
         rows = [
             ("Provider ID", "provider_id", "A"),
-            ("Provider prefix", "provider_prefix", "/NDNSF-DI/Tracer/provider"),
-            ("Sync group", "group", "/NDNSF-DI/Tracer/group"),
-            ("Controller", "controller", "/NDNSF-DI/Tracer/controller"),
+            ("Provider prefix", "provider_prefix", ""),
+            ("Sync group", "group", ""),
+            ("Controller", "controller", ""),
             ("Trust schema", "trust_schema", "examples/trust-schema.conf"),
             ("Bootstrap token", "bootstrap_token", ""),
             ("Service name", "service_name", "/HELLO"),
@@ -2312,9 +2312,9 @@ class UserDirectTab(DirectRoleTab):
         basic.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         basic.columnconfigure(1, weight=1)
         rows = [
-            ("User identity", "user", "/NDNSF-DI/Tracer/user"),
-            ("Sync group", "group", "/NDNSF-DI/Tracer/group"),
-            ("Controller", "controller", "/NDNSF-DI/Tracer/controller"),
+            ("User identity", "user", ""),
+            ("Sync group", "group", ""),
+            ("Controller", "controller", ""),
             ("Trust schema", "trust_schema", "examples/trust-schema.conf"),
             ("Bootstrap token", "bootstrap_token", ""),
             ("Permission wait ms", "permission_wait_ms", "1500"),

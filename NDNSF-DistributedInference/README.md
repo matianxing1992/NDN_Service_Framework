@@ -6,6 +6,11 @@ The configured Controller certificate is checked before cache/worker startup.
 Requester configurations must supply `request.service`; an artifact path never
 selects the publication service or authorization scope.
 
+Application runtime configurations and generated policy bundles also require an explicit `group`.
+GUI Actor fields start empty; load an explicit policy/configuration or enter deployment identities.
+The LLM policy-output helper requires its existing controller/group/user/provider-prefix arguments;
+standalone demos supply their example identities explicitly.
+
 ## Tiger login-node and recovery policy
 
 Use the shared Tiger login node for light editing, preparing/submitting jobs and

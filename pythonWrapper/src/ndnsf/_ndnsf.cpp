@@ -196,14 +196,24 @@ loadNativePublicKey(const std::filesystem::path& path)
   return {key, EVP_PKEY_free};
 }
 
-const ndn::Name&
-nfdCommandIdentity()
+ndn::Name
+nfdCommandIdentity(const ndn::Name& producer)
 {
-  static const ndn::Name identity([] {
-    const char* configured = std::getenv("NDNSF_NFD_COMMAND_IDENTITY");
-    return (configured != nullptr && *configured != '\0') ?
-      ndn::Name(configured) : ndn::Name("/localhost/operator");
-  }());
+  const char* configured = std::getenv("NDNSF_NFD_COMMAND_IDENTITY");
+  ndn::Name identity = configured != nullptr && *configured != '\0'
+    ? ndn::Name(configured) : producer;
+  nsf::validateConfiguredActorName(identity, "NFD command identity");
+  return identity;
+}
+
+ndn::Name
+publicationIdentity(const std::string& configured, const ndn::Name& contentName)
+{
+  ndn::Name identity(configured);
+  nsf::validateConfiguredActorName(identity, "signing_identity");
+  if (!identity.isPrefixOf(contentName)) {
+    throw std::invalid_argument("Data name must be under its explicit Producer identity");
+  }
   return identity;
 }
 
@@ -739,11 +749,11 @@ public:
                                 int freshnessMs)
     : m_baseName(baseName)
   {
-    const auto identityName = signingIdentity.empty() ?
-      ndn::Name("/ndnsf/python/segmented-producer") : ndn::Name(signingIdentity);
-    getOrCreateIdentity(m_keyChain, identityName);
+    const auto identityName = publicationIdentity(signingIdentity, m_baseName);
     m_signingIdentity = identityName;
-    getOrCreateIdentity(m_keyChain, nfdCommandIdentity());
+    m_commandIdentity = nfdCommandIdentity(identityName);
+    getOrCreateIdentity(m_keyChain, identityName);
+    getOrCreateIdentity(m_keyChain, m_commandIdentity);
 
     m_versionedName = m_baseName;
     m_versionedName.appendVersion(static_cast<uint64_t>(
@@ -806,7 +816,7 @@ public:
       },
       ndn::security::SigningInfo(
         ndn::security::SigningInfo::SIGNER_TYPE_ID,
-        nfdCommandIdentity()));
+        m_commandIdentity));
 
     m_thread = std::thread([this] {
       while (m_running.load()) {
@@ -872,6 +882,7 @@ private:
   ndn::Name m_baseName;
   ndn::Name m_versionedName;
   ndn::Name m_signingIdentity;
+  ndn::Name m_commandIdentity;
   std::vector<std::shared_ptr<ndn::Data>> m_segments;
   std::atomic_bool m_running{false};
   std::thread m_thread;
@@ -898,11 +909,13 @@ public:
       throw std::invalid_argument("file segmented producer segment size must be in [1,8000]");
     }
     m_signingIdentity = ndn::Name(signingIdentity);
+    nsf::validateConfiguredActorName(m_signingIdentity, "signing_identity");
     if (m_digestSigning || m_signingIdentity.empty() ||
         !m_signingIdentity.isPrefixOf(m_baseName)) {
       throw std::invalid_argument("file publication requires its explicit Producer identity signature");
     }
-    getOrCreateIdentity(m_keyChain, nfdCommandIdentity());
+    m_commandIdentity = nfdCommandIdentity(m_signingIdentity);
+    getOrCreateIdentity(m_keyChain, m_commandIdentity);
     const char* cacheOverride = std::getenv("NDNSF_FILE_PUBLICATION_CACHE");
     const char* cacheHome = std::getenv("XDG_CACHE_HOME");
     const char* userHome = std::getenv("HOME");
@@ -969,7 +982,7 @@ public:
       },
       ndn::security::SigningInfo(
         ndn::security::SigningInfo::SIGNER_TYPE_ID,
-        nfdCommandIdentity()));
+        m_commandIdentity));
     m_thread = std::thread([this] {
       while (m_running.load()) {
         try {
@@ -1093,6 +1106,7 @@ private:
   std::mutex m_packetMutex;
   ndn::Name m_versionedName;
   ndn::Name m_signingIdentity;
+  ndn::Name m_commandIdentity;
   size_t m_maxSegmentSize;
   int m_freshnessMs;
   bool m_digestSigning;
@@ -1122,8 +1136,8 @@ public:
                          const std::vector<std::string>& forwardingRoutePrefixes)
     : m_baseName(baseName)
   {
-    m_signingIdentity = signingIdentity.empty() ?
-      ndn::Name("/ndnsf/python/stored-data-producer") : ndn::Name(signingIdentity);
+    m_signingIdentity = ndn::Name(signingIdentity);
+    nsf::validateConfiguredActorName(m_signingIdentity, "signing_identity");
     getOrCreateIdentity(m_keyChain, m_signingIdentity);
     for (const auto& prefix : forwardingRoutePrefixes) {
       if (!prefix.empty()) {
@@ -1269,8 +1283,8 @@ public:
                               const std::vector<std::string>& forwardingRoutePrefixes)
     : m_lookup(keepPyFunction(std::move(lookup)))
   {
-    m_signingIdentity = signingIdentity.empty() ?
-      ndn::Name("/ndnsf/python/repo-data-plane") : ndn::Name(signingIdentity);
+    m_signingIdentity = ndn::Name(signingIdentity);
+    nsf::validateConfiguredActorName(m_signingIdentity, "signing_identity");
     getOrCreateIdentity(m_keyChain, m_signingIdentity);
     for (const auto& prefix : forwardingRoutePrefixes) {
       if (!prefix.empty()) {
@@ -1456,8 +1470,7 @@ makeSegmentedDataPackets(const std::string& baseName,
                          int freshnessMs)
 {
   ndn::KeyChain keyChain;
-  const auto identityName = signingIdentity.empty() ?
-    ndn::Name("/ndnsf/python/segmented-packets") : ndn::Name(signingIdentity);
+  const auto identityName = publicationIdentity(signingIdentity, ndn::Name(baseName));
   getOrCreateIdentity(keyChain, identityName);
 
   ndn::Name versionedName(baseName);
@@ -1496,8 +1509,7 @@ makeSignedData(const std::string& name,
     throw std::invalid_argument("freshness_ms must be nonnegative");
   }
   ndn::KeyChain keyChain;
-  const auto identityName = signingIdentity.empty() ?
-    ndn::Name("/ndnsf/python/signed-data") : ndn::Name(signingIdentity);
+  const auto identityName = publicationIdentity(signingIdentity, ndn::Name(name));
   getOrCreateIdentity(keyChain, identityName);
 
   ndn::Data data(ndn::Name{name});

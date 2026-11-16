@@ -1,6 +1,7 @@
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/common.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -22,10 +23,6 @@
 #include <string>
 
 namespace {
-
-const ndn::Name DEFAULT_CONTROLLER_PREFIX("/example/hello/controller");
-const ndn::Name PROVIDER_IDENTITY("/example/hello/provider");
-const ndn::Name USER_IDENTITY("/example/hello/user");
 
 ndn::security::Certificate
 getOrCreateIdentity(ndn::security::KeyChain& keyChain, const ndn::Name& identity)
@@ -119,6 +116,8 @@ int
 main(int argc, char** argv)
 {
   try {
+    const ndn::Name controllerPrefix(getOption(argc, argv, "--controller-prefix", ""));
+    ndn_service_framework::validateConfiguredActorName(controllerPrefix, "controller-prefix");
     ndn::Face face;
     ndn::KeyChain keyChain;
     ndn_service_framework::TrustSchemaValidator validator(face);
@@ -129,8 +128,6 @@ main(int argc, char** argv)
     const std::string bootstrapTokenFile = getOption(argc, argv, "--bootstrap-token-file", "");
     const std::string ensureIdentityCsv = getOption(
       argc, argv, "--ensure-identities", "");
-    const ndn::Name controllerPrefix(
-      getOption(argc, argv, "--controller-prefix", DEFAULT_CONTROLLER_PREFIX.toUri()));
     const auto revokeAfterMs = getIntegerOption(argc, argv, "--revoke-after-ms", -1);
     const auto revokeRetryAfterMs = getIntegerOption(argc, argv, "--revoke-retry-after-ms", -1);
     const auto revokeTriggerFile = getOption(argc, argv, "--revoke-trigger-file", "");
@@ -160,13 +157,6 @@ main(int argc, char** argv)
 
     auto controllerCert = getOrCreateIdentity(keyChain, controllerPrefix);
     keyChain.setDefaultIdentity(keyChain.getPib().getIdentity(controllerPrefix));
-    if (bootstrapTokenFile.empty() && !hasFlag(argc, argv, "--no-demo-identities")) {
-      getOrCreateIdentity(keyChain, PROVIDER_IDENTITY);
-      getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("A"));
-      getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("B"));
-      getOrCreateIdentity(keyChain, ndn::Name(PROVIDER_IDENTITY).append("C"));
-      getOrCreateIdentity(keyChain, USER_IDENTITY);
-    }
     ensureIdentities(keyChain, ensureIdentityCsv);
 
     ndn_service_framework::loadTrustSchema(validator, trustSchema);

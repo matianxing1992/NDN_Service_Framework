@@ -380,7 +380,7 @@ class APPClient:
             controller=runtime.controller,
             group=runtime.group,
             user=runtime.identity,
-            provider_prefix=runtime.service.rstrip("/") + "/provider",
+            provider_prefix="",
             services=(),
             trust_schema=runtime.trust_schema,
             policy_file="",
