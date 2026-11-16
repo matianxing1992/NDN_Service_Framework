@@ -791,6 +791,34 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
             state->item.inputTimings.push_back(std::move(timing));
           }
         }
+        // The peer stamped this contribution. Check the binding before reducing it: comparing only
+        // the endpoint fields would accept a partial from another round that happened to arrive on
+        // the right name, so the whole generation state is compared. Then strip it -- the SUM reads
+        // float32 members only, and a lineage tensor left in the set makes the counts disagree.
+        if (state->item.role.generationLineage) {
+          const auto lineage = extractGenerationEpochLineage(bundle);
+          if (lineage) {
+            auto expected = *state->item.role.generationLineage;
+            expected.producerRole = state->edge.producerRole;
+            expected.consumerRole = state->edge.consumerRole;
+            expected.operationIndex = state->edge.collectiveOperationIndex;
+            if (!lineage->sameGenerationState(expected) ||
+                lineage->producerRole != expected.producerRole ||
+                lineage->consumerRole != expected.consumerRole ||
+                lineage->operationIndex != expected.operationIndex) {
+              throw std::runtime_error("GENERATION_EPOCH_LINEAGE_MISMATCH");
+            }
+            bundle = stripGenerationEpochLineage(std::move(bundle));
+          }
+          else {
+            // A contribution a caller supplied directly carries no stamp because no producer ran --
+            // three fixtures in this suite inject the peer's tensor that way. Requiring a stamp here
+            // would reject the caller's own input, so absence is tolerated; a stamp that is present
+            // is always checked.
+            logRuntimeWarn("NDNSF_DI_PEER_CONTRIBUTION_UNSTAMPED role=" + state->item.role.role +
+                           " scope=" + state->edge.scope);
+          }
+        }
         state->item.stepRemoteInputs[state->edge.scope] = std::move(bundle);
       }
       catch (...) {
@@ -1656,6 +1684,16 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       }
       auto stripped = withoutProviderLocalState(bundle, item.role.stateOutputNames,
                                                 item.role.workStatistics);
+      // A generation-bound unit stamps every dependency it publishes. This early path skipped it, so
+      // a partial sent here reached the peer with no round, prefix or position binding -- and the
+      // final pass, which does stamp, never sees it because `publishedScopes` already covers it.
+      if (item.role.generationLineage) {
+        auto lineage = *item.role.generationLineage;
+        lineage.producerRole = edge.producerRole;
+        lineage.consumerRole = edge.consumerRole;
+        lineage.operationIndex = edge.collectiveOperationIndex;
+        stripped = attachGenerationEpochLineage(stripped, lineage);
+      }
       validateTensorBundleForEdge(edge, stripped, false);
       // Charge the transfer where it actually happens. The final pass skips this
       // edge, so leaving it out here would make the timing ledger claim the partial
