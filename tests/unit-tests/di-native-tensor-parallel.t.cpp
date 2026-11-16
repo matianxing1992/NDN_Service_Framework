@@ -12833,6 +12833,40 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       worstReference = std::max(worstReference, difference);
       worstReferenceExcess = std::max(worstReferenceExcess, difference - allowance);
     }
+    // Whether the split's difference is proportional to the value or scattered. A per-element
+    // relative error that sits at a constant magnitude is the signature of summing the same terms in
+    // a different order; one that jumps at particular indices is the signature of a wrong slice,
+    // because a mis-sliced weight reads the wrong operand rather than reading the right one twice.
+    {
+      double worstRelative = 0.0;
+      std::size_t worstIndex = 0;
+      double worstReferenceValue = 0.0;
+      double worstAbsolute = 0.0;
+      std::size_t outliers = 0;
+      constexpr double kWholeSumRelativeFloor = 1e-7;
+      for (std::size_t index = 0; index < refValues.size(); ++index) {
+        const auto reference = double(refValues[index]);
+        const auto actual = double(static_cast<float>(rank0Values[index] + rank1Values[index]));
+        const auto difference = std::fabs(actual - reference);
+        const auto magnitude = std::fabs(reference);
+        if (magnitude > 1e-3) {
+          const auto relative = difference / magnitude;
+          if (relative > worstRelative) {
+            worstRelative = relative;
+            worstIndex = index;
+            worstReferenceValue = reference;
+            worstAbsolute = difference;
+          }
+        }
+        if (difference > kWholeSumRelativeFloor * std::max(magnitude, 1.0)) ++outliers;
+      }
+      BOOST_TEST_MESSAGE("layer-0 split difference shape: worstRelative=" << worstRelative
+                         << " at index=" << worstIndex
+                         << " reference=" << worstReferenceValue
+                         << " absolute=" << worstAbsolute
+                         << " width=" << refValues.size()
+                         << " aboveOneUlp=" << outliers);
+    }
     BOOST_TEST_MESSAGE("layer-0 partial vs unsplit reference: worst=" << worstReference
                        << " excessOverC8=" << worstReferenceExcess
                        << " width=" << refValues.size());
