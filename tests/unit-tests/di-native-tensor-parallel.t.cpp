@@ -67,11 +67,6 @@ namespace {
 
 using namespace ndnsf::di;
 
-// Defined far below, next to the case that reads the deployment's own files. Declared here so a
-// case earlier in the file can use it: reading a recorded artifact by the codec is the rule, and a
-// local lambda in each case was how three of them ended up transcribing vectors by hand.
-std::vector<std::int64_t>
-readDeploymentTokens(const std::string& path);
 
 /** One int64 tensor as a bundle would carry it. Four cases had their own copy of this. */
 inline NamedTensor
@@ -281,6 +276,13 @@ parsePlan(const std::string& wire)
 }
 
 } // namespace
+
+// The deployment-file reader is defined beside the cases that use it, and declared at global scope
+// so a case above its definition can call it. Declaring it inside the anonymous namespace made the
+// declaration and the definition different entities, which turned every call into an undefined
+// reference -- the failure this replaces.
+std::vector<std::int64_t>
+readDeploymentTokens(const std::string& path);
 
 BOOST_AUTO_TEST_SUITE(TensorParallel)
 BOOST_AUTO_TEST_SUITE(PlanAndPlacement)
