@@ -1276,6 +1276,239 @@ BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
   }
 }
 
+BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
+{
+  // The frozen export's own o_proj, at its own width: K=2048 (the concatenated attention channels of
+  // 16 heads x 128), N=1024 (the hidden width), INT4 with block size 32. This is the one reduction in
+  // the attention block whose two halves are summed, so it is where a split can change the arithmetic;
+  // the random-weight case at K=64 cannot speak for this width or these bytes.
+  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
+    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string source = modelDir + "/canonical-source.onnx";
+  const std::string sidecar = modelDir + "/model.onnx_data";
+  if (!std::filesystem::is_regular_file(source) ||
+      !std::filesystem::is_regular_file(sidecar)) {
+    BOOST_TEST_MESSAGE("NOT_RUN: frozen export or its sidecar is absent");
+    return;
+  }
+  std::ifstream in(source, std::ios::binary);
+  const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
+                                              std::istreambuf_iterator<char>());
+  onnx::ModelProto frozen;
+  BOOST_REQUIRE(frozen.ParseFromString(std::string(graphBytes.begin(), graphBytes.end())));
+  const auto readRange = [&sidecar] (std::uint64_t offset, std::uint64_t length) {
+    std::ifstream data(sidecar, std::ios::binary);
+    std::vector<std::uint8_t> bytes(length);
+    data.seekg(static_cast<std::streamoff>(offset));
+    data.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(length));
+    return bytes;
+  };
+  // The layer-0 o_proj weight and scales, read from the sidecar at their declared offsets.
+  const auto tensorByName = [&frozen] (const std::string& name) -> const onnx::TensorProto* {
+    for (const auto& init : frozen.graph().initializer())
+      if (init.name() == name) return &init;
+    return nullptr;
+  };
+  const auto externalRange = [] (const onnx::TensorProto& tensor) {
+    std::uint64_t offset = 0, length = 0;
+    for (const auto& kv : tensor.external_data()) {
+      if (kv.key() == "offset") offset = std::stoull(kv.value());
+      if (kv.key() == "length") length = std::stoull(kv.value());
+    }
+    return std::pair<std::uint64_t, std::uint64_t>{offset, length};
+  };
+  const auto* weightTensor = tensorByName("model.layers.0.attn.o_proj.MatMul.weight_Q4");
+  const auto* scaleTensor = tensorByName("model.layers.0.attn.o_proj.MatMul.weight_scales");
+  BOOST_REQUIRE_MESSAGE(weightTensor != nullptr, "the frozen export has no layer-0 o_proj weight");
+  BOOST_REQUIRE_MESSAGE(scaleTensor != nullptr, "the frozen export has no layer-0 o_proj scales");
+  const auto weightRange = externalRange(*weightTensor);
+  const auto scaleRange = externalRange(*scaleTensor);
+  const auto packed = readRange(weightRange.first, weightRange.second);
+  const auto scaleBytes = readRange(scaleRange.first, scaleRange.second);
+  constexpr std::uint64_t K = 2048;
+  constexpr std::uint64_t N = 1024;
+  constexpr std::uint64_t seq = 24;
+  BOOST_REQUIRE_EQUAL(packed.size(), qwen::packedInt4Bytes(N, K));
+  BOOST_REQUIRE_EQUAL(scaleBytes.size(), N * (K / qwen::QWEN_INT4_BLOCK_SIZE) * sizeof(float));
+
+  // A deterministic activation of the real shape. The question is whether the split changes the
+  // arithmetic, so the input only has to be fixed and non-degenerate; the values need not come from
+  // a particular layer, and deriving them from one would add a dependency without changing the
+  // answer.
+  std::vector<float> activation(seq * K);
+  for (std::size_t i = 0; i < activation.size(); ++i) {
+    activation[i] = 0.3f * std::sin(0.0037f * float(i))
+      + 0.2f * float((i * 53) % 97) / 97.0f - 0.1f;
+  }
+  const auto scalesAsFloat = [&scaleBytes] {
+    std::vector<float> values(scaleBytes.size() / sizeof(float));
+    std::memcpy(values.data(), scaleBytes.data(), scaleBytes.size());
+    return values;
+  }();
+
+  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-real-o-proj");
+  const auto runOProjection = [&] (std::uint64_t k, std::uint64_t n,
+                                   const std::vector<std::uint8_t>& weight,
+                                   const std::vector<float>& weightScales,
+                                   const std::vector<float>& input,
+                                   std::uint64_t rows) {
+    onnx::ModelProto model;
+    model.set_ir_version(7);
+    auto* opset = model.add_opset_import();
+    opset->set_domain(""); opset->set_version(17);
+    auto* ms = model.add_opset_import();
+    ms->set_domain("com.microsoft"); ms->set_version(1);
+    auto* graph = model.mutable_graph();
+    graph->set_name("spec224-real-o-proj");
+    auto* node = graph->add_node();
+    node->set_name("mm"); node->set_op_type("MatMulNBits");
+    node->set_domain("com.microsoft");
+    node->add_input("A"); node->add_input("B"); node->add_input("S");
+    node->add_output("Y");
+    const auto addInt = [&] (const char* name, std::int64_t value) {
+      auto* attribute = node->add_attribute();
+      attribute->set_name(name);
+      attribute->set_type(onnx::AttributeProto::INT);
+      attribute->set_i(value);
+    };
+    addInt("K", std::int64_t(k));
+    addInt("N", std::int64_t(n));
+    addInt("bits", 4);
+    addInt("block_size", std::int64_t(qwen::QWEN_INT4_BLOCK_SIZE));
+    auto* weightInit = graph->add_initializer();
+    weightInit->set_name("B");
+    weightInit->set_data_type(onnx::TensorProto_DataType_UINT8);
+    weightInit->add_dims(std::int64_t(n));
+    weightInit->add_dims(std::int64_t(k / qwen::QWEN_INT4_BLOCK_SIZE));
+    weightInit->add_dims(std::int64_t(qwen::QWEN_INT4_BLOB_BYTES));
+    weightInit->set_raw_data(weight.data(), weight.size());
+    auto* scaleInit = graph->add_initializer();
+    scaleInit->set_name("S");
+    scaleInit->set_data_type(onnx::TensorProto_DataType_FLOAT);
+    scaleInit->add_dims(std::int64_t(weightScales.size()));
+    scaleInit->set_raw_data(reinterpret_cast<const char*>(weightScales.data()),
+                            weightScales.size() * sizeof(float));
+    const auto addIO = [&] (const char* name, bool isInput) {
+      auto* value = isInput ? graph->add_input() : graph->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto_DataType_FLOAT);
+      tensor->mutable_shape()->add_dim()->set_dim_value(1);
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(rows));
+      tensor->mutable_shape()->add_dim()->set_dim_value(std::int64_t(isInput ? k : n));
+    };
+    addIO("A", true);
+    addIO("Y", false);
+    std::string bytes;
+    model.SerializeToString(&bytes);
+    Ort::SessionOptions options;
+    options.SetIntraOpNumThreads(1);
+    Ort::Session session(ortEnv, bytes.data(), bytes.size(), options);
+    const std::vector<std::int64_t> shape{1, std::int64_t(rows), std::int64_t(k)};
+    auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    auto inputValue = Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(input.data()), input.size(), shape.data(), shape.size());
+    const char* inputNames[] = {"A"};
+    const char* outputNames[] = {"Y"};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &inputValue, 1,
+                               outputNames, 1);
+    const auto* data = outputs[0].GetTensorData<float>();
+    return std::vector<float>(data, data + rows * n);
+  };
+
+  const auto reference = runOProjection(K, N, packed, scalesAsFloat, activation, seq);
+  BOOST_REQUIRE_EQUAL(reference.size(), seq * N);
+
+  // The split the rank actually performs: o_proj reduces over its input channels, so each rank owns
+  // half of K and produces a full-width partial.
+  std::vector<std::uint8_t> rank0Weight, rank1Weight;
+  std::vector<float> rank0Scales, rank1Scales;
+  std::vector<float> rank0Input(seq * (K / 2)), rank1Input(seq * (K / 2));
+  {
+    rank0Weight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::InputChannels, 0, K / 2);
+    rank1Weight = qwen::slicePackedInt4(packed, N, K,
+      qwen::QwenSliceAxis::InputChannels, K / 2, K);
+    const auto resolve0 = qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::InputChannels, 0, K / 2);
+    const auto resolve1 = qwen::sliceInt4Scales(scaleBytes, N, K,
+      qwen::QwenSliceAxis::InputChannels, K / 2, K);
+    rank0Scales.resize(resolve0.size() / sizeof(float));
+    rank1Scales.resize(resolve1.size() / sizeof(float));
+    std::memcpy(rank0Scales.data(), resolve0.data(), resolve0.size());
+    std::memcpy(rank1Scales.data(), resolve1.data(), resolve1.size());
+    for (std::uint64_t row = 0; row < seq; ++row) {
+      for (std::uint64_t k = 0; k < K / 2; ++k) {
+        rank0Input[row * (K / 2) + k] = activation[row * K + k];
+        rank1Input[row * (K / 2) + k] = activation[row * K + K / 2 + k];
+      }
+    }
+  }
+  const auto rank0 = runOProjection(K / 2, N, rank0Weight, rank0Scales, rank0Input, seq);
+  const auto rank1 = runOProjection(K / 2, N, rank1Weight, rank1Scales, rank1Input, seq);
+  BOOST_REQUIRE_EQUAL(rank0.size(), reference.size());
+  BOOST_REQUIRE_EQUAL(rank1.size(), reference.size());
+
+  // Through the production reducer, which is the step the sealed template runs.
+  struct Held
+  {
+    std::vector<float> values;
+  };
+  auto owner0 = std::make_shared<Held>();
+  owner0->values = rank0;
+  auto owner1 = std::make_shared<Held>();
+  owner1->values = rank1;
+  const auto bundleOf = [&] (const std::shared_ptr<Held>& owner) {
+    auto local = std::make_shared<LocalTensorBundle>();
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(seq), static_cast<std::int64_t>(N)};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owner->values.data()),
+      owner->values.size() * sizeof(float));
+    local->tensors.push_back(view);
+    local->owner = owner;
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.localTensors = local;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    return bundle;
+  };
+  const auto bundle0 = bundleOf(owner0);
+  const auto bundle1 = bundleOf(owner1);
+  const auto summed = sumTensorBundleViews("real-o-proj",
+    {decodeTensorBundleViews(bundle0), decodeTensorBundleViews(bundle1)});
+  const auto summedViews = decodeTensorBundleViews(summed);
+  BOOST_REQUIRE(!summedViews.empty());
+  std::vector<float> rankSum(summedViews.front().payload.size() / sizeof(float));
+  if (!rankSum.empty())
+    std::memcpy(rankSum.data(), summedViews.front().payload.data(),
+                summedViews.front().payload.size());
+  BOOST_REQUIRE_EQUAL(rankSum.size(), reference.size());
+
+  double worst = 0.0;
+  double magnitude = 0.0;
+  std::size_t overC8 = 0;
+  for (std::size_t index = 0; index < reference.size(); ++index) {
+    const auto difference = std::fabs(double(rankSum[index]) - double(reference[index]));
+    worst = std::max(worst, difference);
+    magnitude = std::max(magnitude, std::fabs(double(reference[index])));
+    if (difference > 1e-4 + 1e-3 * std::fabs(double(reference[index]))) ++overC8;
+  }
+  BOOST_TEST_MESSAGE("real o_proj K=2048 N=1024 seq=24: worst=" << worst
+                     << " largest=" << magnitude
+                     << " relative=" << (magnitude > 0.0 ? worst / magnitude : 0.0)
+                     << " overC8=" << overC8
+                     << " width=" << reference.size());
+  // The split must be measurable, and it must be reassociation rather than a wrong slice: a
+  // percent-level difference would read the wrong operand.
+  BOOST_CHECK_GT(worst, 0.0);
+  BOOST_CHECK_LT(worst, 1e-3 * std::max(magnitude, 1.0));
+  BOOST_TEST_MESSAGE("real o_proj elements over C8 allowance: " << overC8
+                     << " of " << reference.size());
+}
+
 BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
 {
   // The C2 claim for the MLP is
