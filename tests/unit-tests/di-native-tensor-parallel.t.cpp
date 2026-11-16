@@ -72,6 +72,28 @@ using namespace ndnsf::di;
 // local lambda in each case was how three of them ended up transcribing vectors by hand.
 std::vector<std::int64_t>
 readDeploymentTokens(const std::string& path);
+
+/** One int64 tensor as a bundle would carry it. Four cases had their own copy of this. */
+inline NamedTensor
+tokenTensor(const std::string& name, const std::vector<std::int64_t>& values)
+{
+  NamedTensor tensor;
+  tensor.name = name;
+  tensor.elementType = TensorElementType::Int64;
+  tensor.shape = {1, static_cast<std::int64_t>(values.size())};
+  tensor.payload.resize(values.size() * sizeof(std::int64_t));
+  if (!values.empty())
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+  return tensor;
+}
+
+/** The file's ONNX Runtime environment, created once. Four cases had their own. */
+inline Ort::Env&
+testOrtEnv()
+{
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec224-test");
+  return env;
+}
 namespace qwen = ndnsf::di::qwen;
 
 const char* DIGEST_A = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
