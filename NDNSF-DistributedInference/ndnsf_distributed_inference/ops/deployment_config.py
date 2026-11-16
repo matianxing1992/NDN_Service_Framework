@@ -957,7 +957,7 @@ def _check_installed_files(release, ledger, by_kind, *, image_root=None, extra_p
         installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") != "file" or not path.is_file() or path.is_symlink():
             _fail("release.manifest", "required installed executable missing: " + path.name)
-        if ('sha256:' + _digest_file(path) != installed.get("sha256") or
+        if (_digest_file(path) != installed.get("sha256") or
                 not os.access(path, os.X_OK) or
                 stat.S_IMODE(path.stat().st_mode) != installed.get("mode")):
             _fail("release.manifest", "installed executable identity/mode mismatch: " + path.name)
@@ -977,7 +977,7 @@ def _check_installed_files(release, ledger, by_kind, *, image_root=None, extra_p
             installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") != "file" or not path.is_file() or path.is_symlink():
             _fail("release.manifest", "required installed library missing: " + library)
-        if ('sha256:' + _digest_file(path) != installed.get("sha256") or
+        if (_digest_file(path) != installed.get("sha256") or
                 not os.access(path, os.R_OK) or
                 stat.S_IMODE(path.stat().st_mode) != installed.get("mode")):
             _fail("release.manifest", "installed library identity mismatch: " + library)
