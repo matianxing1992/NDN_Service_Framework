@@ -12861,16 +12861,6 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
     return;
   }
-  const auto tokenVector = [] (const std::string& name,
-                               const std::vector<std::int64_t>& values) {
-    NamedTensor tensor;
-    tensor.name = name;
-    tensor.elementType = TensorElementType::Int64;
-    tensor.shape = {1, static_cast<std::int64_t>(values.size())};
-    tensor.payload.resize(values.size() * sizeof(std::int64_t));
-    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
-    return tensor;
-  };
   // The reference the KV is compared against: the unsplit export over the same 24-token context,
   // with its 28-layer state exposed. Built here rather than in a separate case so the two sides
   // cannot drift apart -- they share the prompt, the graph and the shape facts.
@@ -12917,11 +12907,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     refRole.attemptEpoch = 1;
     std::map<std::string, TensorBundle> refInputs{
       {"input_ids", makeEncodedTensorBundle("input_ids",
-        {tokenVector("input_ids", promptTokens)})},
+        {tokenTensor("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {tokenVector("attention_mask", ones)})},
+        {tokenTensor("attention_mask", ones)})},
       {"position_ids", makeEncodedTensorBundle("position_ids",
-        {tokenVector("position_ids", positions)})},
+        {tokenTensor("position_ids", positions)})},
     };
     for (std::uint64_t layer = 0; layer < 28; ++layer) {
       for (const auto* kind : {"key", "value"}) {
@@ -12973,11 +12963,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       positions[index] = static_cast<std::int64_t>(index);
     std::map<std::string, TensorBundle> initial{
       {"input_ids", makeEncodedTensorBundle("input_ids",
-        {tokenVector("input_ids", promptTokens)})},
+        {tokenTensor("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {tokenVector("attention_mask", ones)})},
+        {tokenTensor("attention_mask", ones)})},
       {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
-        {tokenVector("position_ids", positions)})},
+        {tokenTensor("position_ids", positions)})},
     };
     auto runner = item.second.runner;
     futures[item.first] = worker.executePreparedAsync(
@@ -13157,11 +13147,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     std::vector<std::int64_t> ones(promptTokens.size(), 1);
     std::map<std::string, TensorBundle> initFeeds{
       {"input_ids", makeEncodedTensorBundle("input_ids",
-        {tokenVector("input_ids", promptTokens)})},
+        {tokenTensor("input_ids", promptTokens)})},
       {"attention_mask", makeEncodedTensorBundle("attention_mask",
-        {tokenVector("attention_mask", ones)})},
+        {tokenTensor("attention_mask", ones)})},
       {"prompt_positions", makeEncodedTensorBundle("prompt_positions",
-        {tokenVector("position_ids", positions)})},
+        {tokenTensor("position_ids", positions)})},
     };
     std::map<std::string, TensorBundle> initOut;
     try {
