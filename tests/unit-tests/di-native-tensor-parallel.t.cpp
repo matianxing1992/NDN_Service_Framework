@@ -3951,7 +3951,6 @@ BOOST_AUTO_TEST_CASE(GenerationBoundPeerAdmissionIsStrictOnEveryDeliveryPath)
         shape.kvHeads = 8; shape.headDim = 128; shape.ffn = 3072; shape.vocab = 151936;
         NativeExecutionPlan plan;
         qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
-        plan.planDigest = "sha256:" + std::string(64, 'b');
         ExecutionAttemptKey key;
         key.requestId = "/request/peer-admission";
         key.attemptEpoch = 1;
@@ -3966,7 +3965,7 @@ BOOST_AUTO_TEST_CASE(GenerationBoundPeerAdmissionIsStrictOnEveryDeliveryPath)
         lineage.inferenceEpoch = 0;
         lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
         lineage.positionDigest = "sha256:" + std::string(64, 'a');
-        lineage.planDigest = plan.planDigest;
+        lineage.planDigest = "sha256:" + std::string(64, 'b');
         lineage.attemptEpoch = 1;
         lineage.logicalPrefixTokenCount = 1;
         lineage.logicalPrefixDigest = "sha256:" + std::string(64, 'c');
@@ -10753,6 +10752,14 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
       dependency.consumerSlotId = edge.consumerSlotId;
       plan.dependencies.push_back(std::move(dependency));
     }
+  }
+  // Retain this rank's real publication edges so the fake peer can bind its
+  // response to the current epoch observed from a production worker publication.
+  for (const auto& dependency : candidate.executionPlan.dependencies) {
+    if (dependency.operationKind == "TENSOR_PARTIAL" &&
+        std::find(dependency.producers.begin(), dependency.producers.end(), "S0R0") !=
+          dependency.producers.end())
+      plan.dependencies.push_back(dependency);
   }
   plan.streamingOperationStride = plan.dependencies.size();
   role = roleSpecFor(plan, "S0R0", "/session/coordinator-sample", assignment, "/provider/0");
