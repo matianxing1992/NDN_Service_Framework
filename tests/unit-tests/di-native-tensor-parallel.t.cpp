@@ -1162,7 +1162,7 @@ BOOST_AUTO_TEST_CASE(SlicedMatMulNBitsMatchesTheUnsplitKernel)
   constexpr std::uint64_t rowBytes = blocks * qwen::QWEN_INT4_BLOB_BYTES;
 
   // One environment for the whole case; every session below borrows it.
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-shard-math");
+  Ort::Env& ortEnv = testOrtEnv();
 
   std::mt19937 rng(7);
   std::vector<std::uint8_t> packed(N * rowBytes, 0);
@@ -1374,7 +1374,7 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
     return values;
   }();
 
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-real-o-proj");
+  Ort::Env& ortEnv = testOrtEnv();
   const auto runOProjection = [&] (std::uint64_t k, std::uint64_t n,
                                    const std::vector<std::uint8_t>& weight,
                                    const std::vector<float>& weightScales,
@@ -1555,7 +1555,7 @@ BOOST_AUTO_TEST_CASE(TensorParallelMlpBlockMatchesUnsplitReference)
   constexpr std::uint64_t blockSize = qwen::QWEN_INT4_BLOCK_SIZE;
   constexpr std::uint64_t blobBytes = qwen::QWEN_INT4_BLOB_BYTES;
 
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-mlp-block");
+  Ort::Env& ortEnv = testOrtEnv();
   std::mt19937 rng(11);
 
   const auto randomPacked = [&] (std::uint64_t n, std::uint64_t k) {
@@ -1760,7 +1760,7 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
   constexpr std::uint64_t blockSize = qwen::QWEN_INT4_BLOCK_SIZE;
   constexpr std::uint64_t blobBytes = qwen::QWEN_INT4_BLOB_BYTES;
 
-  Ort::Env ortEnv(ORT_LOGGING_LEVEL_WARNING, "spec224-attention-block");
+  Ort::Env& ortEnv = testOrtEnv();
   std::mt19937 rng(23);
 
   const auto randomPacked = [&] (std::uint64_t n, std::uint64_t k) {
