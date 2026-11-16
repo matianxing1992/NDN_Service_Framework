@@ -13556,6 +13556,41 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     // excess is ever justified as reassociation, that argument belongs in the contract, and this
     // assertion changes then, deliberately, rather than here as a threshold.
     BOOST_TEST_MESSAGE("unit " << item.first << " C8 worst excess=" << worstExcess);
+    // Whether the excess is an absolute-error floor or a few elements gone wrong. C8 allows
+    // `atol + rtol*|ref|`, so an error whose magnitude is set by the residual stream rather than by
+    // the element's own value will exceed `atol` exactly where |ref| is small. Counting how many
+    // elements exceed and where their |ref| sits separates that from a wrong result.
+    {
+      std::size_t overCount = 0;
+      std::size_t total = 0;
+      double maxRelative = 0.0;
+      double maxRelativeReference = 0.0;
+      std::vector<double> absoluteErrors;
+      for (const auto& perLayer : layerWorst) absoluteErrors.push_back(perLayer.second);
+      std::sort(absoluteErrors.begin(), absoluteErrors.end());
+      const auto medianAbsolute = absoluteErrors.empty()
+        ? 0.0 : absoluteErrors[absoluteErrors.size() / 2];
+      // The error at the largest and smallest magnitudes, so "flat absolute error" is a measurement
+      // rather than an interpretation.
+      double errorAtLarge = 0.0;
+      double errorAtSmall = 0.0;
+      double largestMagnitude = 0.0;
+      for (const auto& perLayer : layerMagnitude)
+        largestMagnitude = std::max(largestMagnitude, perLayer.second);
+      if (!layerMagnitude.empty()) {
+        const auto minIt = std::min_element(layerMagnitude.begin(), layerMagnitude.end(),
+          [] (const auto& a, const auto& b) { return a.second < b.second; });
+        errorAtSmall = layerWorst.count(minIt->first) != 0 ? layerWorst.at(minIt->first) : 0.0;
+        const auto maxIt = std::max_element(layerMagnitude.begin(), layerMagnitude.end(),
+          [] (const auto& a, const auto& b) { return a.second < b.second; });
+        errorAtLarge = layerWorst.count(maxIt->first) != 0 ? layerWorst.at(maxIt->first) : 0.0;
+      }
+      BOOST_TEST_MESSAGE("unit " << item.first << " error shape: medianPerLayerMax="
+                         << medianAbsolute << " errorAtLargestMagnitude=" << errorAtLarge
+                         << " errorAtSmallestMagnitude=" << errorAtSmall
+                         << " largestMagnitude=" << largestMagnitude
+                         << " allowanceAtZeroMagnitude=" << 1e-4);
+    }
     BOOST_CHECK_LE(worstExcess, 0.0);
   }
 
