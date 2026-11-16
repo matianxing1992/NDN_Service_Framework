@@ -12,6 +12,7 @@
 #include "../shared/uav-person-trace.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <boost/asio/post.hpp>
 #include <ndn-cxx/face.hpp>
@@ -230,10 +231,6 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
   std::string calibrationProviderText{};
   ndn::Name calibrationProvider{};
   uint64_t observationEpoch{};
-  ndn::Name groupPrefix{};
-  ndn::Name controllerPrefix{};
-  std::string trustSchema{};
-  ndn::Name userIdentity{};
   int startDelayMs{};
   int controllerReadyTimeoutMs{};
   int controllerReadyRetryMs{};
@@ -602,13 +599,6 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
       throw std::invalid_argument("--calibration-provider must be an absolute NDN identity name");
     }
     observationEpoch = 0;
-    groupPrefix = ndn::Name(option(argc, argv, "--group-prefix", "/example/uav"));
-    controllerPrefix = ndn::Name(
-      option(argc, argv, "--controller-prefix", "/example/uav/controller"));
-    trustSchema = option(argc, argv, "--trust-schema",
-                                           "examples/trust-any.conf");
-    userIdentity = ndn::Name(
-      option(argc, argv, "--user-identity", "/example/uav/gs"));
     startDelayMs = std::stoi(option(argc, argv, "--start-delay-ms", "2000"));
     controllerReadyTimeoutMs = std::stoi(
       option(argc, argv, "--controller-ready-timeout-ms", "30000"));
@@ -1701,10 +1691,19 @@ UavTrackingJob::stop(std::function<void(const TrackingCleanupResult&)> onDrained
 int
 runTrackingGroundStationCli(int argc, char** argv)
 {
-  const ndn::Name userIdentity(option(argc, argv, "--user-identity", "/example/uav/gs"));
-  const ndn::Name controllerPrefix(option(argc, argv, "--controller-prefix", "/example/uav/controller"));
-  const ndn::Name groupPrefix(option(argc, argv, "--group-prefix", "/example/uav"));
-  const auto trustSchema = option(argc, argv, "--trust-schema", "examples/trust-any.conf");
+  auto names = uav::loadUavRuntimeConfig(option(argc, argv, "--runtime-config"));
+  names.groundStationIdentity = ndn::Name(option(
+    argc, argv, "--user-identity", names.groundStationIdentity.toUri()));
+  names.controllerPrefix = ndn::Name(option(
+    argc, argv, "--controller-prefix", names.controllerPrefix.toUri()));
+  names.groupPrefix = ndn::Name(option(argc, argv, "--group-prefix", names.groupPrefix.toUri()));
+  uav::validateUavRuntimeConfig(names);
+  const auto userIdentity = names.groundStationIdentity;
+  const auto controllerPrefix = names.controllerPrefix;
+  const auto groupPrefix = names.groupPrefix;
+  const auto trustSchema = option(argc, argv, "--trust-schema", names.trustSchema);
+  const ndn::Name computeIdentity(option(argc, argv, "--compute-identity"));
+  nsf::validateConfiguredActorName(computeIdentity, "compute-identity");
   ndn::Face face;
   ndn::KeyChain keyChain;
   const auto userCert = getOrCreateIdentity(keyChain, userIdentity);
@@ -1723,9 +1722,10 @@ runTrackingGroundStationCli(int argc, char** argv)
     UavTrackingJob::AuthorityCheck{}, UavTrackingJob::SnapshotHandler{});
   impl->compatibility = true;
   impl->configure(argc, argv);
-  impl->sourceProviders = {uav::droneIdentity("UAV1"), uav::droneIdentity("UAV2"),
-                           uav::droneIdentity("UAV3")};
-  impl->computeProvider = ndn::Name("/example/uav/compute");
+  impl->sourceProviders = {uav::droneIdentity(names, "UAV1"),
+                           uav::droneIdentity(names, "UAV2"),
+                           uav::droneIdentity(names, "UAV3")};
+  impl->computeProvider = computeIdentity;
   impl->view.jobId = impl->runId;
   impl->view.runId = impl->runId;
   impl->view.missionId = impl->missionId;

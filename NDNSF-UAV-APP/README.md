@@ -1,5 +1,13 @@
 # NDNSF-UAV-APP
 
+Runtime applications require an explicit `--runtime-config PATH` containing non-root
+`group-prefix`, `controller-prefix`, `ground-station-identity` and `drone-prefix`.
+Pass the example configuration explicitly for demos; omitted fields never select demo Actors.
+CLI overrides are validated before role startup. Actor-dependent naming helpers require
+`UavRuntimeConfig`; tracking result builders and verifiers require explicit source Producers.
+The compatibility tracking CLIs additionally require `--compute-identity NAME`.
+
+
 `NDNSF-UAV-APP` is a C++ UAV Service Container Application built on NDNSF. It is
 kept beside `NDNSF-DistributedRepo` and `NDNSF-DistributedInference` because it
 is an application layer above the generic NDNSF runtime, not a low-level core
@@ -551,7 +559,8 @@ cd ndnsf-uav-ubuntu20-x86_64-*
 ./scripts/check-runtime-deps.sh
 ```
 
-The binaries load deployment names from `configs/uav_runtime.conf` by default.
+The binaries require an explicit runtime config path. For a demo, pass
+`--runtime-config NDNSF-UAV-APP/configs/uav_runtime.conf`.
 That file keeps convenient demo values such as `/example/uav/controller`,
 `/example/uav/gs`, and `/example/uav/drone/<id>`, but real deployment
 identities and service names should live in a copied runtime config rather than

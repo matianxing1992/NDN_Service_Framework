@@ -170,13 +170,16 @@ struct FlowFixture
     expected.personTracking = UavPersonTrackingResultExpectation{profile, context.computationDigest};
     for (size_t i = 0; i < context.frames.size(); ++i) {
       const auto& frame = context.frames[i];
-      observations[i] = makeUavObservationDataName(droneIdentity(frame.cameraId),
+      observations[i] = makeUavObservationDataName(ndn::Name("/example/uav/drone").append(frame.cameraId),
         frame.cameraId, frame.sourceEpoch, frame.sequence, "OBSERVATION", 1).toUri();
       digests[i] = "sha256:" + std::string(64, static_cast<char>('c' + i));
+      expected.sourceProviders[i] = ndn::Name("/example/uav/drone").append(frame.cameraId);
       expected.sourceIds[i] = frame.sourceId;
       expected.inputDigests[i] = frame.inputDigest;
     }
-    auto result = makeUavPersonTrackingResultJson(decision, backend, profile, observations, digests);
+    auto result = makeUavPersonTrackingResultJson(decision, backend, profile, observations, digests,
+      {ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"),
+       ndn::Name("/example/uav/drone/UAV3")});
     const auto name = makeUavMultiViewResultName(expected.computeProvider, context.missionId,
       context.windowId, context.sequence, 1);
     validateUavTrackingResultContext(name.toUri(), expected.computeProvider.toUri(), result, expected);

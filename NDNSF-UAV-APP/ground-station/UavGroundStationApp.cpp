@@ -130,7 +130,7 @@ runGroundStationApp(int argc, char** argv, bool& gtkInitialized)
       argc, argv, appConfig, "--mission-plan-file", "mission-plan-file", "");
     UavRuntimeConfig config = loadUavRuntimeConfig(
       getConfigOption(argc, argv, appConfig, "--runtime-config", "runtime-config",
-                      "NDNSF-UAV-APP/configs/uav_runtime.conf"));
+                      ""));
     config.groupPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--group-prefix", "group-prefix", config.groupPrefix.toUri()));
     config.controllerPrefix = ndn::Name(getConfigOption(argc, argv, appConfig, "--controller-prefix", "controller-prefix", config.controllerPrefix.toUri()));
   config.groundStationIdentity = ndn::Name(getConfigOption(argc, argv, appConfig, "--ground-station-identity", "ground-station-identity", config.groundStationIdentity.toUri()));
@@ -151,6 +151,8 @@ runGroundStationApp(int argc, char** argv, bool& gtkInitialized)
   config.serviceGsOperatorAuthorityLease = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-lease", "service-gs-operator-authority-lease", config.serviceGsOperatorAuthorityLease.toUri()));
   config.serviceGsOperatorAuthorityRevocation = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-revocation", "service-gs-operator-authority-revocation", config.serviceGsOperatorAuthorityRevocation.toUri()));
   config.serviceGsOperatorAuthorityAudit = ndn::Name(getConfigOption(argc, argv, appConfig, "--service-gs-operator-authority-audit", "service-gs-operator-authority-audit", config.serviceGsOperatorAuthorityAudit.toUri()));
+  validateUavRuntimeConfig(config);
+
   const auto groundStationMapLatText =
     getConfigOption(argc, argv, appConfig, "--ground-station-map-lat", "ground-station-map-lat", std::to_string(config.groundStationMapLat));
   const auto groundStationMapLonText =

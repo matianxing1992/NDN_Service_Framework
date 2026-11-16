@@ -1,15 +1,19 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-UAV-APP/shared/UavProtocol.hpp"
+#include "NDNSF-UAV-APP/shared/UavNames.hpp"
 #include "NDNSF-UAV-APP/shared/UavVideoPipeline.hpp"
 #include "NDNSF-UAV-APP/shared/UavSensorStreams.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 
 #include <array>
 #include <cstdio>
+#include <fstream>
 #include <limits>
 #include <openssl/sha.h>
 #include <set>
+#include <unistd.h>
+#include <ndn-cxx/util/scope.hpp>
 
 namespace ndn_service_framework::test {
 namespace {
@@ -191,6 +195,59 @@ makeMissionState(const std::string& phase)
 }
 
 BOOST_AUTO_TEST_SUITE(UavProtocolState)
+
+BOOST_AUTO_TEST_CASE(RuntimeActorsRequireExplicitCompleteConfiguration)
+{
+  using namespace ndnsf::examples::uav;
+  BOOST_CHECK_THROW(loadUavRuntimeConfig(""), std::invalid_argument);
+  BOOST_CHECK_THROW(validateUavRuntimeConfig(UavRuntimeConfig{}), std::invalid_argument);
+  BOOST_CHECK_THROW(droneIdentity(UavRuntimeConfig{}, "UAV1"), std::invalid_argument);
+
+  char path[] = "/tmp/ndnsf-uav-names-XXXXXX";
+  const int fd = mkstemp(path);
+  BOOST_REQUIRE(fd >= 0);
+  close(fd);
+  const auto cleanup = ndn::make_scope_exit([&] { std::remove(path); });
+  const std::array<std::string, 4> fields{
+    "group-prefix", "controller-prefix", "ground-station-identity", "drone-prefix"};
+  const auto writeConfig = [&] (const std::string& root, int omitted, int invalid) {
+    std::ofstream output(path);
+    for (size_t i = 0; i < fields.size(); ++i) {
+      if (static_cast<int>(i) != omitted) {
+        output << fields[i] << ' '
+               << (static_cast<int>(i) == invalid ? "/" : root + "/" + fields[i]) << '\n';
+      }
+    }
+    output.close();
+    BOOST_REQUIRE(output.good());
+  };
+  for (int i = 0; i < 4; ++i) {
+    writeConfig("/deployment/site/alpha", i, -1);
+    BOOST_CHECK_THROW(loadUavRuntimeConfig(path), std::invalid_argument);
+    writeConfig("/deployment/site/alpha", -1, i);
+    BOOST_CHECK_THROW(loadUavRuntimeConfig(path), std::invalid_argument);
+  }
+  for (const std::string root : {"/deployment/site/alpha", "/another/team/beta"}) {
+    writeConfig(root, -1, -1);
+    const auto config = loadUavRuntimeConfig(path);
+    const auto producer = ndn::Name(root).append("drone-prefix").append("UAV1");
+    BOOST_CHECK_EQUAL(config.groundStationIdentity, ndn::Name(root).append(fields[2]));
+    BOOST_CHECK_EQUAL(droneIdentity(config, "UAV1"), producer);
+    for (const auto& service : {
+           droneVideoControlService(config, "UAV1"),
+           droneCameraRecordingManifestService(config, "UAV1"),
+           droneCameraRepoCatalogService(config, "UAV1"),
+           droneMavlinkParametersService(config, "UAV1"),
+           droneMavlinkParameterEditService(config, "UAV1"),
+           droneMavlinkAnalyzeSnapshotService(config, "UAV1"),
+           dronePreflightChecklistService(config, "UAV1")}) {
+      BOOST_CHECK(producer.isPrefixOf(service));
+    }
+    const auto evidence = makeUavEvidenceName(producer, "mission", "incident", "frame", 1);
+    BOOST_CHECK(isUavProducerDataName(producer, evidence, "EVIDENCE"));
+    BOOST_CHECK(!isUavProducerDataName(ndn::Name(root).append("foreign"), evidence, "EVIDENCE"));
+  }
+}
 
 BOOST_AUTO_TEST_CASE(Sha256TextUsesCanonicalLowercaseHex)
 {

@@ -73,18 +73,18 @@ BOOST_AUTO_TEST_CASE(ThreeSourcesProduceBoundedNamedEvidenceAndOneTerminalResult
     frame.bytes = {1, 2, 3, 4};
     BOOST_REQUIRE(ingress.submit(frame));
     std::string reason;
-    const auto staged = store.stage(uav::droneIdentity(camera), "mission-1", "window-0",
+    const auto staged = store.stage(ndn::Name("/example/uav/drone").append(camera), "mission-1", "window-0",
                                     frame, &reason);
     BOOST_REQUIRE_MESSAGE(staged, reason);
-    BOOST_REQUIRE(uav::droneIdentity(camera).isPrefixOf(
+    BOOST_REQUIRE(ndn::Name("/example/uav/drone").append(camera).isPrefixOf(
       staged->reference.exactDataName));
     BOOST_CHECK_EQUAL(staged->segments.size(), 1);
     BOOST_CHECK_EQUAL(staged->payload.size(), frame.bytes.size());
   }
 
-  const auto p1 = uav::droneIdentity("UAV1");
-  const auto p2 = uav::droneIdentity("UAV2");
-  const auto p3 = uav::droneIdentity("UAV3");
+  const auto p1 = ndn::Name("/example/uav/drone/UAV1");
+  const auto p2 = ndn::Name("/example/uav/drone/UAV2");
+  const auto p3 = ndn::Name("/example/uav/drone/UAV3");
   uav::MultiViewModelProfile profile;
   profile.profileId = "mvcpu-v1";
   profile.algorithmId = "mvcpu-max-v1";

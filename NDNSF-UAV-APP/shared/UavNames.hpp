@@ -8,10 +8,6 @@
 
 namespace ndnsf::examples::uav {
 
-inline const ndn::Name GROUP_PREFIX("/example/uav/group");
-inline const ndn::Name CONTROLLER_PREFIX("/example/uav/controller");
-inline const ndn::Name GROUND_STATION_IDENTITY("/example/uav/gs");
-inline const ndn::Name DRONE_IDENTITY_PREFIX("/example/uav/drone");
 inline const char* TRUST_SCHEMA = "examples/trust-schema.conf";
 
 inline const ndn::Name SERVICE_MAVLINK_EXECUTE("/UAV/MAVLink/Execute");
@@ -45,10 +41,10 @@ inline constexpr double DEFAULT_GS_MAP_LON = -89.9375;
 
 struct UavRuntimeConfig
 {
-  ndn::Name groupPrefix = GROUP_PREFIX;
-  ndn::Name controllerPrefix = CONTROLLER_PREFIX;
-  ndn::Name groundStationIdentity = GROUND_STATION_IDENTITY;
-  ndn::Name droneIdentityPrefix = DRONE_IDENTITY_PREFIX;
+  ndn::Name groupPrefix;
+  ndn::Name controllerPrefix;
+  ndn::Name groundStationIdentity;
+  ndn::Name droneIdentityPrefix;
   std::string trustSchema = TRUST_SCHEMA;
   ndn::Name serviceMavlinkExecute = SERVICE_MAVLINK_EXECUTE;
   ndn::Name serviceMissionAssign = SERVICE_MISSION_ASSIGN;
@@ -69,6 +65,10 @@ struct UavRuntimeConfig
   double groundStationMapLat = std::numeric_limits<double>::quiet_NaN();
   double groundStationMapLon = std::numeric_limits<double>::quiet_NaN();
 };
+
+/** Reject missing Actor identities before starting any runtime resources. */
+void
+validateUavRuntimeConfig(const UavRuntimeConfig& config);
 
 UavRuntimeConfig
 loadUavRuntimeConfig(const std::string& path);
@@ -148,49 +148,25 @@ isUavProducerDataNameForContext(const ndn::Name& producerIdentity,
                                 const std::string& incidentId);
 
 ndn::Name
-droneIdentity(const std::string& droneId);
-
-ndn::Name
 droneIdentity(const UavRuntimeConfig& config, const std::string& droneId);
-
-ndn::Name
-droneVideoControlService(const std::string& droneId);
 
 ndn::Name
 droneVideoControlService(const UavRuntimeConfig& config, const std::string& droneId);
 
 ndn::Name
-droneCameraRecordingManifestService(const std::string& droneId);
-
-ndn::Name
 droneCameraRecordingManifestService(const UavRuntimeConfig& config, const std::string& droneId);
-
-ndn::Name
-droneCameraRepoCatalogService(const std::string& droneId);
 
 ndn::Name
 droneCameraRepoCatalogService(const UavRuntimeConfig& config, const std::string& droneId);
 
 ndn::Name
-droneMavlinkParametersService(const std::string& droneId);
-
-ndn::Name
 droneMavlinkParametersService(const UavRuntimeConfig& config, const std::string& droneId);
-
-ndn::Name
-droneMavlinkParameterEditService(const std::string& droneId);
 
 ndn::Name
 droneMavlinkParameterEditService(const UavRuntimeConfig& config, const std::string& droneId);
 
 ndn::Name
-droneMavlinkAnalyzeSnapshotService(const std::string& droneId);
-
-ndn::Name
 droneMavlinkAnalyzeSnapshotService(const UavRuntimeConfig& config, const std::string& droneId);
-
-ndn::Name
-dronePreflightChecklistService(const std::string& droneId);
 
 ndn::Name
 dronePreflightChecklistService(const UavRuntimeConfig& config, const std::string& droneId);

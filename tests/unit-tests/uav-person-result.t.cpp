@@ -47,15 +47,17 @@ struct ResultFixture
     for (size_t i = 0; i < 3; ++i) {
       const auto& frame = context.frames[i];
       observationNames[i] = makeUavObservationDataName(
-        droneIdentity(frame.cameraId), frame.cameraId, 1, 1, "OBSERVATION", 1).toUri();
+        ndn::Name("/example/uav/drone").append(frame.cameraId), frame.cameraId, 1, 1, "OBSERVATION", 1).toUri();
       observationDigests[i] = "sha256:" + std::string(64, static_cast<char>('c' + i));
+      expected.sourceProviders[i] = ndn::Name("/example/uav/drone").append(frame.cameraId);
       expected.sourceIds[i] = frame.sourceId;
       expected.inputDigests[i] = frame.inputDigest;
     }
     name = makeUavMultiViewResultName(
       expected.computeProvider, "mission", "window-1", 1, 1).toUri();
     encoded = makeUavPersonTrackingResultJson(result, backend, profile, observationNames,
-                                             observationDigests);
+                                             observationDigests,
+      expected.sourceProviders);
   }
 
   void
@@ -221,7 +223,8 @@ BOOST_AUTO_TEST_CASE(NativeCompositionPreservesOriginalRefsAndExcludesPrivateVec
   BOOST_CHECK_EQUAL(fixture.encoded.find("positionW"), std::string::npos);
   BOOST_CHECK_EQUAL(makeUavPersonTrackingResultJson(
     fixture.result, fixture.backend, fixture.profile, fixture.observationNames,
-    fixture.observationDigests), fixture.encoded);
+    fixture.observationDigests,
+      fixture.expected.sourceProviders), fixture.encoded);
   // Declared CUDA fields in a fixture test admission; they do not prove GPU execution.
 }
 
@@ -341,19 +344,23 @@ BOOST_AUTO_TEST_CASE(BuilderRejectsMismatchedNativeContextAndInvalidDecisionValu
   auto backend = fixture.backend;
   ++backend.context.frames[0].commonPtsUs;
   BOOST_CHECK_THROW(makeUavPersonTrackingResultJson(fixture.result, backend, fixture.profile,
-    fixture.observationNames, fixture.observationDigests), std::invalid_argument);
+    fixture.observationNames, fixture.observationDigests,
+      fixture.expected.sourceProviders), std::invalid_argument);
   auto result = fixture.result;
   result.tracks[0][0].distance = std::numeric_limits<double>::quiet_NaN();
   BOOST_CHECK_THROW(makeUavPersonTrackingResultJson(result, fixture.backend, fixture.profile,
-    fixture.observationNames, fixture.observationDigests), std::invalid_argument);
+    fixture.observationNames, fixture.observationDigests,
+      fixture.expected.sourceProviders), std::invalid_argument);
   result = fixture.result;
   result.tracks[0][0].confidence = std::numeric_limits<double>::quiet_NaN();
   BOOST_CHECK_THROW(makeUavPersonTrackingResultJson(result, fixture.backend, fixture.profile,
-    fixture.observationNames, fixture.observationDigests), std::invalid_argument);
+    fixture.observationNames, fixture.observationDigests,
+      fixture.expected.sourceProviders), std::invalid_argument);
   auto names = fixture.observationNames;
   names[0] = fixture.observationNames[1];
   BOOST_CHECK_THROW(makeUavPersonTrackingResultJson(
-    fixture.result, fixture.backend, fixture.profile, names, fixture.observationDigests),
+    fixture.result, fixture.backend, fixture.profile, names, fixture.observationDigests,
+      fixture.expected.sourceProviders),
     std::invalid_argument);
 }
 
@@ -371,11 +378,12 @@ BOOST_AUTO_TEST_CASE(ZeroBatchNoFeatureAndContinuedRowsRemainValid)
     auto names = fixture.observationNames;
     for (size_t i = 0; i < 3; ++i) {
       const auto& frame = context.frames[i];
-      names[i] = makeUavObservationDataName(droneIdentity(frame.cameraId), frame.cameraId,
+      names[i] = makeUavObservationDataName(ndn::Name("/example/uav/drone").append(frame.cameraId), frame.cameraId,
         1, sequence, "OBSERVATION", 1).toUri();
     }
     const auto encoded = makeUavPersonTrackingResultJson(result, backend, fixture.profile,
-      names, fixture.observationDigests);
+      names, fixture.observationDigests,
+      fixture.expected.sourceProviders);
     const auto wire = Json::parse(encoded);
     BOOST_CHECK_EQUAL(wire["actualReidDevice"].get<std::string>(), "not-run");
     BOOST_CHECK_EQUAL(wire["frames"][0]["tracks"][0]["associationStatus"].get<std::string>(),

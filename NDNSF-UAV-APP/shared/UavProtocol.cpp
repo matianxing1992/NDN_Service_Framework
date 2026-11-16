@@ -1,6 +1,7 @@
 #include "UavProtocol.hpp"
 #include "UavNames.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <algorithm>
 #include <array>
@@ -763,40 +764,39 @@ loadKeyValueConfig(const std::string& path)
   return fields;
 }
 
+void
+validateUavRuntimeConfig(const UavRuntimeConfig& config)
+{
+  using ndn_service_framework::validateConfiguredActorName;
+  validateConfiguredActorName(config.groupPrefix, "group-prefix");
+  validateConfiguredActorName(config.controllerPrefix, "controller-prefix");
+  validateConfiguredActorName(config.groundStationIdentity, "ground-station-identity");
+  validateConfiguredActorName(config.droneIdentityPrefix, "drone-prefix");
+}
+
 UavRuntimeConfig
 loadUavRuntimeConfig(const std::string& path)
 {
   UavRuntimeConfig config;
   if (path.empty()) {
-    return config;
+    throw std::invalid_argument("an explicit UAV runtime-config path is required");
   }
 
   for (const auto& [key, value] : loadKeyValueConfig(path)) {
     assignConfigValue(config, key, value);
   }
-
+  validateUavRuntimeConfig(config);
   return config;
-}
-
-ndn::Name
-droneIdentity(const std::string& droneId)
-{
-  return droneIdentity(UavRuntimeConfig{}, droneId);
 }
 
 ndn::Name
 droneIdentity(const UavRuntimeConfig& config, const std::string& droneId)
 {
+  ndn_service_framework::validateConfiguredActorName(config.droneIdentityPrefix, "drone-prefix");
   if (droneId.empty()) {
     return config.droneIdentityPrefix;
   }
   return ndn::Name(config.droneIdentityPrefix).append(droneId);
-}
-
-ndn::Name
-droneVideoControlService(const std::string& droneId)
-{
-  return droneVideoControlService(UavRuntimeConfig{}, droneId);
 }
 
 ndn::Name
@@ -810,12 +810,6 @@ droneVideoControlService(const UavRuntimeConfig& config, const std::string& dron
 }
 
 ndn::Name
-droneCameraRecordingManifestService(const std::string& droneId)
-{
-  return droneCameraRecordingManifestService(UavRuntimeConfig{}, droneId);
-}
-
-ndn::Name
 droneCameraRecordingManifestService(const UavRuntimeConfig& config, const std::string& droneId)
 {
   ndn::Name service = droneIdentity(config, droneId);
@@ -823,12 +817,6 @@ droneCameraRecordingManifestService(const UavRuntimeConfig& config, const std::s
     service.append(component);
   }
   return service;
-}
-
-ndn::Name
-droneCameraRepoCatalogService(const std::string& droneId)
-{
-  return droneCameraRepoCatalogService(UavRuntimeConfig{}, droneId);
 }
 
 ndn::Name
@@ -842,12 +830,6 @@ droneCameraRepoCatalogService(const UavRuntimeConfig& config, const std::string&
 }
 
 ndn::Name
-droneMavlinkParametersService(const std::string& droneId)
-{
-  return droneMavlinkParametersService(UavRuntimeConfig{}, droneId);
-}
-
-ndn::Name
 droneMavlinkParametersService(const UavRuntimeConfig& config, const std::string& droneId)
 {
   ndn::Name service = droneIdentity(config, droneId);
@@ -855,12 +837,6 @@ droneMavlinkParametersService(const UavRuntimeConfig& config, const std::string&
     service.append(component);
   }
   return service;
-}
-
-ndn::Name
-droneMavlinkParameterEditService(const std::string& droneId)
-{
-  return droneMavlinkParameterEditService(UavRuntimeConfig{}, droneId);
 }
 
 ndn::Name
@@ -874,12 +850,6 @@ droneMavlinkParameterEditService(const UavRuntimeConfig& config, const std::stri
 }
 
 ndn::Name
-droneMavlinkAnalyzeSnapshotService(const std::string& droneId)
-{
-  return droneMavlinkAnalyzeSnapshotService(UavRuntimeConfig{}, droneId);
-}
-
-ndn::Name
 droneMavlinkAnalyzeSnapshotService(const UavRuntimeConfig& config, const std::string& droneId)
 {
   ndn::Name service = droneIdentity(config, droneId);
@@ -887,12 +857,6 @@ droneMavlinkAnalyzeSnapshotService(const UavRuntimeConfig& config, const std::st
     service.append(component);
   }
   return service;
-}
-
-ndn::Name
-dronePreflightChecklistService(const std::string& droneId)
-{
-  return dronePreflightChecklistService(UavRuntimeConfig{}, droneId);
 }
 
 ndn::Name

@@ -37,10 +37,6 @@ constexpr std::array<const char*, 8> PERSON_ASSOCIATION_STATUSES = {
 ndn::Name
 sourceProducer(const UavTrackingResultExpectation& expected, size_t index)
 {
-  if (std::all_of(expected.sourceProviders.begin(), expected.sourceProviders.end(),
-                  [] (const ndn::Name& identity) { return identity.empty(); })) {
-    return droneIdentity("UAV" + std::to_string(index + 1));
-  }
   std::set<ndn::Name> identities{expected.computeProvider};
   for (const auto& identity : expected.sourceProviders) {
     if (identity.empty() || !identities.insert(identity).second) {
@@ -424,17 +420,6 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
 }
 
 } // namespace
-
-std::string
-makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
-                                const UavPersonBackendWindow& backend,
-                                const UavPersonTrackingProfile& inputProfile,
-                                const std::array<std::string, 3>& observationNames,
-                                const std::array<std::string, 3>& observationDigests)
-{
-  return makeUavPersonTrackingResultJson(result, backend, inputProfile, observationNames,
-    observationDigests, {droneIdentity("UAV1"), droneIdentity("UAV2"), droneIdentity("UAV3")});
-}
 
 std::string
 makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,

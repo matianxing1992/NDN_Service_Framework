@@ -231,13 +231,16 @@ struct AdmissionState
     expected.personTracking = UavPersonTrackingResultExpectation{profile, manifest.computationDigest};
     for (size_t i = 0; i < context.frames.size(); ++i) {
       const auto& frame = context.frames[i];
-      names[i] = makeUavObservationDataName(droneIdentity(frame.cameraId), frame.cameraId,
+      names[i] = makeUavObservationDataName(ndn::Name("/example/uav/drone").append(frame.cameraId), frame.cameraId,
         frame.sourceEpoch, frame.sequence, "OBSERVATION", 1).toUri();
       digests[i] = "sha256:" + std::string(64, 'c');
+      expected.sourceProviders[i] = ndn::Name("/example/uav/drone").append(frame.cameraId);
       expected.sourceIds[i] = frame.sourceId;
       expected.inputDigests[i] = frame.inputDigest;
     }
-    auto result = makeUavPersonTrackingResultJson(decision, backend, profile, names, digests);
+    auto result = makeUavPersonTrackingResultJson(decision, backend, profile, names, digests,
+      {ndn::Name("/example/uav/drone/UAV1"), ndn::Name("/example/uav/drone/UAV2"),
+       ndn::Name("/example/uav/drone/UAV3")});
     const auto name = makeUavMultiViewResultName(producer, context.missionId,
       context.windowId, context.sequence, 1);
     validateUavTrackingResultContext(name.toUri(), producer.toUri(), result, expected);

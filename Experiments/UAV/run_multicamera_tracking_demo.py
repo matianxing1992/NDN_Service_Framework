@@ -199,7 +199,8 @@ def _main_process_specs(root: Path, output: Path, *, model: Path, headless: bool
         (controller_binary, '--node', 'gs', '--controller-prefix', controller,
          '--group-prefix', group, '--policy-file', str(policy), '--trust-schema', str(trust_schema),
          '--no-demo-identities', '--ensure-identities', ','.join([*producers, compute, user])))]
-    gs_args = (main_gs, '--group-prefix', group, '--controller-prefix', controller,
+    gs_args = (main_gs, '--runtime-config',
+        str(root / 'NDNSF-UAV-APP/configs/uav_runtime.conf'), '--group-prefix', group, '--controller-prefix', controller,
         '--ground-station-identity', user, '--trust-schema', str(trust_schema),
         '--no-cert-dialog', '--target-drone', job['sources'][0]['droneId'],
         '--patrol-drones', ','.join(source['droneId'] for source in job['sources']),
@@ -233,7 +234,8 @@ def _main_process_specs(root: Path, output: Path, *, model: Path, headless: bool
             'ownedWorkspace': str(output / 'private' / private / 'tracking'), 'runs': [run]}
         _write_main_config(provider_path, catalog)
         specs.append(_actor_spec(name, root, output,
-            (main_node, '--headless', '--group-prefix', group, '--controller-prefix', controller,
+            (main_node, '--runtime-config',
+             str(root / 'NDNSF-UAV-APP/configs/uav_runtime.conf'), '--headless', '--group-prefix', group, '--controller-prefix', controller,
              '--drone-prefix', identity.rsplit('/', 1)[0], '--drone-id', catalog['droneId'],
              '--trust-schema', str(trust_schema), '--flight-controller-backend', 'mock',
              '--tracking-provider-config', str(provider_path))))
@@ -461,7 +463,9 @@ def _process_specs(root: Path, output: Path, *, source: Path, model: Path,
             trust_schema=trust_schema, person_tracking=person_tracking,
             worker_python=worker_python or Path(sys.executable))
     node_budget_args = ("--request-timeout-ms", str(request_timeout_ms))
-    common = ("--run-id", output.name, "--topology", str(TOPOLOGY),
+    common = ("--runtime-config", str(root / "NDNSF-UAV-APP/configs/uav_runtime.conf"),
+              "--compute-identity", "/example/uav/compute", "--group-prefix", "/example/uav",
+              "--run-id", output.name, "--topology", str(TOPOLOGY),
               "--window-count", str(window_count))
     display = "headless" if headless else "windows"
     fault_args = (() if fault in {"none", "user-cancel-during-person-worker",
