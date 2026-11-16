@@ -201,6 +201,22 @@ main(int argc, char** argv)
 {
   if (argc == 4) {
     try {
+      if (std::string(argv[1]) == "--inspect-existing-packet") {
+        require(std::filesystem::is_directory(argv[2]), "existing store is required");
+        StorageCapability capacity;
+        capacity.repoNode = "/spec241/offline-read";
+        capacity.freeBytes = 8ULL << 30;
+        RepoCore reopened(capacity,
+          std::make_shared<FilesystemRepoStoreBackend>(argv[2]));
+        const auto wire = reopened.getDataPacket(argv[3]);
+        ndn::Block block(ndn::span<const uint8_t>(wire.data(), wire.size()));
+        block.parse();
+        const ndn::Data packet(block);
+        require(packet.getName() == ndn::Name(argv[3]), "stored packet name mismatch");
+        std::cout << "EXISTING_PACKET_READ_PASS bytes=" << wire.size()
+                  << " sha256=" << sha256Hex(wire) << '\n';
+        return 0;
+      }
       if (std::string(argv[1]) == "--seed-original-packets")
         return seedOriginalPackets(argv[2], ndn::Name(argv[3]));
       if (std::string(argv[1]) == "--verify-original-packets")
@@ -212,7 +228,8 @@ main(int argc, char** argv)
     }
   }
   if (argc != 1) {
-    std::cerr << "Usage: DistributedRepoExactPacketTest [--seed-original-packets ROOT PRODUCER | --verify-original-packets ROOT FETCH_DIR]\n";
+    std::cerr << "Usage: DistributedRepoExactPacketTest [--seed-original-packets ROOT PRODUCER | "
+                 "--verify-original-packets ROOT FETCH_DIR | --inspect-existing-packet STORE NAME]\n";
     return 2;
   }
   auto directory = (std::filesystem::temp_directory_path() /
