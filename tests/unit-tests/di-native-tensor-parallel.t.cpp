@@ -12825,7 +12825,9 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     double worstReferenceExcess = std::numeric_limits<double>::lowest();
     for (std::size_t index = 0; index < refValues.size(); ++index) {
       const auto reference = double(refValues[index]);
-      const auto actual = double(rank0Values[index]) + double(rank1Values[index]);
+      // The production reduction, not a double sum. The ranks' partials are float, and the SUM that
+      // consumes them is float; adding them here in double would compare a path nobody runs.
+      const auto actual = double(static_cast<float>(rank0Values[index] + rank1Values[index]));
       const auto difference = std::fabs(actual - reference);
       const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
       worstReference = std::max(worstReference, difference);
@@ -12834,6 +12836,24 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_TEST_MESSAGE("layer-0 partial vs unsplit reference: worst=" << worstReference
                        << " excessOverC8=" << worstReferenceExcess
                        << " width=" << refValues.size());
+
+    // Where the difference enters. Layer 0's attention is fed by each side's own INIT output, so a
+    // difference at layer 0 can come from the embedding rather than from the split. The unsplit
+    // side's embedding is available here; the rank side's INIT output is an internal step result and
+    // is not surfaced by the worker, so this records what the comparison can reach today.
+    {
+      const auto embeddingViews = decodeTensorBundleViews(initOut.at("x0"));
+      BOOST_REQUIRE(!embeddingViews.empty());
+      std::vector<float> embedding(embeddingViews.front().payload.size() / sizeof(float));
+      if (!embedding.empty())
+        std::memcpy(embedding.data(), embeddingViews.front().payload.data(),
+                    embeddingViews.front().payload.size());
+      double magnitude = 0.0;
+      for (const auto value : embedding) magnitude = std::max(magnitude, std::fabs(double(value)));
+      BOOST_TEST_MESSAGE("unsplit INIT embedding width=" << embedding.size()
+                         << " maxMagnitude=" << magnitude
+                         << " first=" << (embedding.empty() ? 0.0f : embedding.front()));
+    }
     BOOST_CHECK_LE(worstReferenceExcess, 0.0);
 
     // The two reference paths have to agree before a difference between them can be attributed to
