@@ -15,6 +15,7 @@ def build(bld):
     # Installing either would re-expose the surface the migration just removed.
     public_headers = [
         'ArtifactManifest.hpp',
+        'ArtifactRepositoryApi.hpp',
         'artifact-client-types.hpp',
         'ArtifactTransfer.hpp',
         'ArtifactTypes.hpp',

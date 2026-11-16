@@ -1118,10 +1118,10 @@ run(const Options& options)
       }) != source) throw std::runtime_error("wrapper FETCH differs from source");
       const std::vector<uint8_t> window(source.begin() + 37, source.begin() + 150);
       if (call("FETCH_RANGE", [&context, prefix, ranged] (auto t, auto r) {
-        return repo::RepoClient::requestFetchRange(context.user(), prefix, ranged.objectName, {37, 113}, 30000, t, r);
+        return repo::RepoClientCompat::requestFetchRange(context.user(), prefix, ranged.objectName, {37, 113}, 30000, t, r);
       }) != window) throw std::runtime_error("wrapper range differs from source window");
       if (call("FETCH_RANGE_DIRECT", [&context, provider, prefix, ranged] (auto t, auto r) {
-        return repo::RepoClient::requestFetchRange(context.user(), provider, prefix, ranged.objectName, {37, 113}, 30000, t, r);
+        return repo::RepoClientCompat::requestFetchRange(context.user(), provider, prefix, ranged.objectName, {37, 113}, 30000, t, r);
       }) != window) throw std::runtime_error("direct wrapper range differs from source window");
       const auto found = repo::parseManifestJson(repo::toString(call("MANIFEST",
         [&context, prefix, ranged] (auto t, auto r) { return repo::RepoClientCompat::requestManifest(context.user(), prefix, ranged.objectName, 30000, t, r); })));
@@ -1266,7 +1266,7 @@ run(const Options& options)
             availability.report.objectPresence != "PRESENT" || availability.report.integrity != "VERIFIED")
           throw std::runtime_error("artifact wrapper current availability failed");
         if (call("ARTIFACT_FETCH", [&context, provider, prefix, reference, source] (auto t, auto r) {
-          return repo::RepoClient::requestFetchRange(context.user(), provider, prefix,
+          return repo::RepoClientCompat::requestFetchRange(context.user(), provider, prefix,
             repo::artifactStorageObjectName(reference), {0, source.size()}, 30000, t, r);
         }) != source) throw std::runtime_error("artifact wrapper bytes differ from source");
       }
@@ -1310,7 +1310,7 @@ run(const Options& options)
           observation.report.integrity != (phase == "missing" ? "NOT_CHECKED" : "VERIFIED"))
         throw std::runtime_error("metadata wrapper did not distinguish current physical availability");
       if (phase == "restored" && call("ARTIFACT_FETCH", [&context, provider, prefix, reference, source] (auto t, auto r) {
-        return repo::RepoClient::requestFetchRange(context.user(), provider, prefix,
+        return repo::RepoClientCompat::requestFetchRange(context.user(), provider, prefix,
           repo::artifactStorageObjectName(reference), {0, source.size()}, 30000, t, r);
       }) != source) throw std::runtime_error("restored artifact wrapper fetch differs from source");
     }

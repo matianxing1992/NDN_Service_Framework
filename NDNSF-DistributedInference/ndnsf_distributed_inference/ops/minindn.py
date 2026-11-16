@@ -160,7 +160,15 @@ class MiniNdnFacility:
 
         guard()
         with _bounded(self.deadline):
-            parsed, _ = Minindn.processTopo(str(topology))
+            # ndn_minindn's processTopo falls back to sys.argv when no args are
+            # given; the host CLI is invoked through -m, so sys.argv can be empty
+            # and args[0] raises IndexError. Seed argv for the duration of the call.
+            previous_argv = sys.argv
+            sys.argv = [str(topology)]
+            try:
+                parsed, _ = Minindn.processTopo(str(topology))
+            finally:
+                sys.argv = previous_argv
             if parsed.switches():
                 raise cluster.ClusterError('MININDN_POINT_TO_POINT_TOPOLOGY_REQUIRED')
             # The library has no argv parameter. Isolate its CLI parsing and

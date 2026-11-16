@@ -129,9 +129,9 @@ def _validate_installed_runtime(definition, text, builder, final):
     required = (
         "NDNSF_RUNTIME_LAYOUT=installed-v1", "NDNSF_CONTAINER_BUILD=1",
         "NDNSF_SKIP_DEV_PIP_INSTALL=1", "NDNSF_WAF_INSTALL_PAYLOAD=1",
-        "./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest",
+        './waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest',
         'if [ "$NDNSF_RUNTIME_PROFILE" = di-runtime ]; then\n'
-        '      ./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest\n'
+        '      ./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest\n'
         '    else',
         ",ndnsf-distributed-repo,",
         "--with-tests", "--install-experiment-fixtures",

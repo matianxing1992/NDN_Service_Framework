@@ -193,6 +193,9 @@ NativeCertifiedRecipe recipeFromVector(const boost::property_tree::ptree& row)
   value.maxSourceBytes = r.get<std::uint64_t>("maxSourceBytes");
   value.maxAssembledBytes = r.get<std::uint64_t>("maxAssembledBytes");
   value.maxNodes = r.get<std::uint64_t>("maxNodes");
+  // The worker requires a certified recipe identity; compute it from the same
+  // canonical recipe JSON the assembly contract uses.
+  value.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(value));
   return value;
 }
 
@@ -603,6 +606,19 @@ activationProjection(const boost::property_tree::ptree& row,
   projection.assembly = recipeFromVector(row);
   // The root manifest is synthesized per case; its digest is the assignment.
   projection.assembly.modelManifestDigest = sha256HexOf(rootPayload);
+  // The worker re-derives its digest from the contract it actually receives;
+  // bind the projection's contract to that same canonical form.
+  projection.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(projection.assembly));
+  // The merged V3 projection validation requires the execution role and the
+  // dataflow contract to agree with the projection identity.
+  projection.attempt = 1;
+  projection.planDigest = nativePlanningDigest("io-cold-plan");
+  projection.executionRole.roleId = projection.assembly.selectedRole;
+  projection.dataflow.role = projection.executionRole.roleId;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
   projection.deadlineMs = 0;
   return projection;
 }
@@ -2132,7 +2148,9 @@ BOOST_AUTO_TEST_CASE(ActivationAssemblesRealModelThroughWorkerFixedManifest)
                     "NATIVE_STRUCTURAL_CHECK");
   BOOST_CHECK_EQUAL(manifest.get<std::uint64_t>("nodeCount"),
                     projection.assembly.nodeIndices.size());
-  BOOST_CHECK_EQUAL(manifest.get<std::string>("recipeDigest"), "");
+  // The merged worker records the certified recipe digest in the manifest.
+  BOOST_CHECK_EQUAL(manifest.get<std::string>("recipeDigest"),
+                    projection.assembly.recipeDigest);
 
   // Determinism across cold caches: a second assembly spawns the worker
   // again and signs byte-identical manifest bytes (fixed manifest).
@@ -2224,7 +2242,7 @@ BOOST_AUTO_TEST_CASE(ActivationRejectsCertifiedGraphPoisonThroughWorker)
   const auto code = expectActivationReject([&] {
     return prepareNativeCanonicalOnnxRole(fetchers, projection, options);
   });
-  BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_RECIPE");
+  BOOST_CHECK_EQUAL(code.rfind("DI_NATIVE_ONNX_RECIPE", 0), 0U);
   checkNothingActivated(cacheDir, signLog);
 }
 

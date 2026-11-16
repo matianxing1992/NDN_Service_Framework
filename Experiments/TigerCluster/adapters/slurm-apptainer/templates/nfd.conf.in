@@ -7,7 +7,7 @@ log
 }
 tables
 {
-  cs_max_packets 4096
+  cs_max_packets 0
   cs_policy lru
   cs_unsolicited_policy drop-all
   strategy_choice

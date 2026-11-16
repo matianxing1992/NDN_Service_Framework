@@ -30,6 +30,8 @@
 #include <atomic>
 #include <chrono>
 #include <cfenv>
+#include <ndn-cxx/util/io.hpp>
+
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -111,6 +113,27 @@ struct TestKey
   std::string keyId;
   std::string publicPem;
 };
+
+/**
+ * Diagnostic-unrelated fixture: write a fixed file-anchored trust schema from a
+ * certificate. The validator rejects permissive `type any` anchors, so tests
+ * that only need a constructible provider use the provider's own certificate.
+ */
+static std::string
+makeFixedAnchorTrustSchema(const ndn::security::Certificate& anchor)
+{
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("spec194-trust-" + std::to_string(::getpid()));
+  std::filesystem::create_directories(dir);
+  const auto certPath = (dir / "anchor.cert").string();
+  ndn::io::save(anchor, certPath);
+  const auto schemaPath = (dir / "trust-schema.conf").string();
+  std::ofstream out(schemaPath);
+  out << "rule { id \"spec194 fixture\" for data checker { type hierarchical "
+         "sig-type rsa-sha256 } }\n"
+      << "trust-anchor { type file file-name \"" << certPath << "\" }\n";
+  return schemaPath;
+}
 
 struct Fixture
 {
@@ -916,7 +939,7 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckIssuesLocalOfferWithoutPeerProbes)
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-production-ack"));
   auto provider = std::make_shared<LocalServiceProvider>(
     face, ndn::Name("/spec194/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    makeFixedAnchorTrustSchema(providerCert));
   provider->applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));
@@ -1109,7 +1132,7 @@ BOOST_AUTO_TEST_CASE(Spec194ProductionAsyncAckDoesNotProbeAfterWireDeadline)
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-expired-probe"));
   auto provider = std::make_shared<LocalServiceProvider>(
     face, ndn::Name("/spec194/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    makeFixedAnchorTrustSchema(providerCert));
   provider->applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));

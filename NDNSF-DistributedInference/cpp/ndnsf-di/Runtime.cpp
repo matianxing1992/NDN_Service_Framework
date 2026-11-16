@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-catalog.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-model.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -54,9 +57,32 @@
 
 namespace ndnsf::di {
 
+namespace detail {
+struct FrozenConfig
+{
+  std::filesystem::path path;
+  std::string canonicalJson;
+  std::string configurationDigest;
+  std::string modelInputMode = "source";
+  std::string requesterIdentity;
+  std::string coreAuthorityIdentity;
+  std::string group;
+  std::filesystem::path trustSchema;
+  std::string authorityIdentity;
+  std::string authorityService;
+  std::string protectionEpoch;
+  std::shared_ptr<EVP_PKEY> requesterPrivateKey;
+  std::shared_ptr<EVP_PKEY> authorityPublicKey;
+  std::shared_ptr<ndn_service_framework::MessageValidator> trustValidator;
+  std::shared_ptr<const NativeOfferAdmission> offerAdmission;
+};
+} // namespace detail
+
 NDN_LOG_INIT(ndnsf.di.Spec220PreparationTrace);
 
 namespace {
+
+using detail::FrozenConfig;
 
 constexpr std::size_t MAX_RUNTIME_CONFIG_BYTES = 4 * 1024 * 1024;
 
@@ -261,24 +287,6 @@ loadTrustSchema(const std::filesystem::path& path, const std::string& group)
   }
 }
 
-struct FrozenConfig
-{
-  std::filesystem::path path;
-  std::string canonicalJson;
-  std::string configurationDigest;
-  std::string modelInputMode = "source";
-  std::string requesterIdentity;
-  std::string coreAuthorityIdentity;
-  std::string group;
-  std::filesystem::path trustSchema;
-  std::string authorityIdentity;
-  std::string authorityService;
-  std::string protectionEpoch;
-  std::shared_ptr<EVP_PKEY> requesterPrivateKey;
-  std::shared_ptr<EVP_PKEY> authorityPublicKey;
-  std::shared_ptr<ndn_service_framework::MessageValidator> trustValidator;
-  std::shared_ptr<const NativeOfferAdmission> offerAdmission;
-};
 
 PreparationSpec preparationSpec(const FrozenConfig& frozen, const std::string& key,
                                  RuntimeConfig::RepositorySourceLoader repositorySourceLoader = {},
@@ -388,6 +396,9 @@ FrozenConfig freezeConfig(const std::filesystem::path& path,
 
   if (!root.is_object() || !root.contains("schema") || !root.at("schema").is_string() ||
       root.at("schema").get<std::string>() != "ndnsf-di-native-requester-v1") {
+    std::fprintf(stderr, "RUNTIME_ROOT_DUMP type=%d schema=%s\n",
+                 static_cast<int>(root.type()),
+                 root.contains("schema") ? nativeCanonicalJson(root.at("schema")).c_str() : "<none>");
     throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "schema",
                   "unsupported native requester configuration schema");
   }
@@ -657,6 +668,8 @@ bool sameTrustDomain(const FrozenConfig& a, const FrozenConfig& b)
 } // namespace
 
 namespace detail {
+
+
 
 /**
  * Runtime-owned Core boundary.  T001 establishes the ownership graph so the
@@ -2104,6 +2117,14 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   logSpec220PreparationStage("runtime-state-captured");
   if (!cache)
     throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
+  return prepareWithSpec(frozen, modelKey, cache, options);
+}
+
+PreparedModel
+User::prepareWithSpec(const FrozenConfig& frozen, const std::string& modelKey,
+                      const std::shared_ptr<ModelPreparationCache>& cache,
+                      const PrepareOptions& options) const
+{
   auto spec = preparationSpec(frozen, modelKey, m_state->config.repositorySourceLoader,
                               m_state->config.repositorySourceProvider,
                               m_state->config.repositoryArtifactPublisher);
@@ -2229,6 +2250,97 @@ PreparedModel User::prepare(const std::string& modelKey, const PrepareOptions& o
   catch (const std::exception& error) {
     throw mapPreparationError(error);
   }
+}
+
+PreparedModel
+User::prepareOnnx(const std::filesystem::path& source, const PrepareOptions& options) const
+{
+  logSpec220PreparationStage("onnx-begin");
+  if (!m_state)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "User has no Runtime state");
+  if (m_state->coreOwner && m_state->coreOwner->operationRuntime &&
+      m_state->coreOwner->operationRuntime->isWorkerThread())
+    throw DiError("WOULD_DEADLOCK", "local", "preparation",
+                  "blocking preparation from Core worker would deadlock");
+  if (!source.is_absolute() || !std::filesystem::is_regular_file(source))
+    throw DiError("ONNX_SOURCE_PATH", "local", "preparation",
+                  "prepareOnnx requires an absolute regular ONNX source");
+  const auto deadline = std::chrono::steady_clock::now() + options.timeout;
+  detail::PreparationTicket ticket(m_state);
+  detail::FrozenConfig templateFrozen;
+  std::shared_ptr<ModelPreparationCache> cache;
+  {
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    if (m_state->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "preparation", "Runtime is closed");
+    if (m_state->models.empty())
+      throw DiError("ONNX_TEMPLATE_MISSING", "local", "preparation",
+                    "prepareOnnx needs one registered source-model template");
+    templateFrozen = m_state->models.begin()->second;
+    cache = m_state->preparationCache;
+    if (templateFrozen.modelInputMode != "source")
+      throw DiError("MODEL_INPUT_MODE_MISMATCH", "local", "preparation",
+                    "prepareOnnx is available only in source mode");
+    ++m_state->inFlight;
+    m_state->preparationInFlight.fetch_add(1, std::memory_order_acq_rel);
+    ticket.armed = true;
+  }
+  if (!cache)
+    throw DiError("RUNTIME_CLOSED", "local", "preparation", "preparation owner is unavailable");
+  const auto templateRoot = nativeParseJson(templateFrozen.canonicalJson);
+  const auto& limits = templateRoot.at("limits");
+  const auto maxSource = limits.at("max_source_bytes").get<std::uint64_t>();
+  const auto maxAssembled = limits.at("max_assembled_bytes").get<std::uint64_t>();
+  const NativeAssemblyControl control{deadline, [state = m_state, deadline] {
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw DiError("PREPARATION_TIMEOUT", "local", "preparation",
+                    "prepareOnnx inspection deadline expired");
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->phase != detail::RuntimeState::Phase::Open)
+      throw DiError("RUNTIME_CLOSED", "local", "preparation",
+                    "Runtime closed during prepareOnnx inspection");
+  }, maxSource, maxAssembled};
+  const auto model = inspectAutomaticOnnxModel({source}, control);
+  AutomaticOnnxCatalogSpec catalogSpec;
+  catalogSpec.sourceFile = source.string();
+  catalogSpec.dataName = "/NDNSF/DI/ONNX/" + model.opened.modelDigest.substr(7, 16);
+  catalogSpec.modelManifestDigest = nativePlanningDigest(
+    "automatic-onnx-manifest:" + model.opened.modelDigest);
+  catalogSpec.artifactProfileDigest = nativePlanningDigest("automatic-onnx-profile:v1");
+  const auto normalizationRevision = onnxInitializerNormalizationRevision(
+    model.opened.source, control);
+  catalogSpec.assemblerDescriptorDigest = normalizationRevision == 2
+    ? "sha256:5291ee00f425c59605f72e26c9b27a73aca43b976421218515fc1a38085c7a89"
+    : nativePlanningDigest("automatic-onnx-assembler:v1");
+  if (!model.opened.externalFiles.empty()) {
+    if (model.opened.externalFiles.size() != 1 ||
+        model.opened.source.externalFileRanges.size() != 1)
+      throw DiError("ONNX_EXTERNAL_UNSUPPORTED", "local", "preparation",
+                    "prepareOnnx accepts one external initializer object");
+    const auto& external = model.opened.externalFiles.front();
+    const auto initializerPath =
+      (source.parent_path() / external.location).lexically_normal();
+    catalogSpec.initializerFile = initializerPath.string();
+    catalogSpec.initializerDigest =
+      nativeCanonicalInitializerDigest(model.opened.source, control);
+  }
+  catalogSpec.maxSourceBytes = maxSource;
+  catalogSpec.maxAssembledBytes = maxAssembled;
+  auto derived = templateFrozen;
+  auto root = nativeParseJson(derived.canonicalJson);
+  root["catalog"] = automaticOnnxCatalogJson(model, catalogSpec, control);
+  derived.canonicalJson = nativeCanonicalJson(root);
+  derived.configurationDigest = nativePlanningDigest(derived.canonicalJson);
+  const auto key = "onnx-" + model.opened.modelDigest.substr(7, 16);
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+    deadline - std::chrono::steady_clock::now());
+  if (remaining.count() <= 0)
+    throw DiError("PREPARATION_TIMEOUT", "local", "preparation",
+                  "prepareOnnx deadline expired before preparation");
+  auto adjusted = options;
+  adjusted.timeout = remaining;
+  logSpec220PreparationStage("onnx-derived");
+  return prepareWithSpec(derived, key, cache, adjusted);
 }
 
 PreparationHandle User::prepareAsync(const std::string& modelKey,

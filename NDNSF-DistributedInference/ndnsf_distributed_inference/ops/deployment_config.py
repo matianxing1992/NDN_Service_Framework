@@ -88,13 +88,19 @@ def _pairs(items):
     return result
 
 
+# The installed stack ledger is a legitimate operator artifact that exceeds a few
+# MiB (the local install records its whole file list), so the JSON reader keeps a
+# generous but still bounded limit.
+MAX_JSON_BYTES = 64 * 1024 * 1024
+
+
 def _read_json(path):
     if not path.is_file():
         _fail("config", "expected regular JSON file")
     with path.open("rb") as stream:
-        raw = stream.read(4 * 1024 * 1024 + 1)
-    if len(raw) > 4 * 1024 * 1024:
-        _fail("config", "JSON exceeds 4 MiB")
+        raw = stream.read(MAX_JSON_BYTES + 1)
+    if len(raw) > MAX_JSON_BYTES:
+        _fail("config", "JSON exceeds 64 MiB")
     try:
         return json.loads(raw, object_pairs_hook=_pairs)
     except (UnicodeError, json.JSONDecodeError, RecursionError):
@@ -188,6 +194,7 @@ def load_deployment(path, *, prepare_only=False):
     config = _object(_read_json(source), "deployment", {
         "schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority", "operation",
+        "repo_benchmark",
     }, {"schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority"})
     if config["schema"] != "ndnsf-di-deployment-v1":
@@ -195,8 +202,24 @@ def load_deployment(path, *, prepare_only=False):
     _identifier(config["deployment_id"], "deployment_id")
     if prepare_only:
         config = preparation_deployment(config)
-    if config.get('operation', 'run') not in ('run', 'prepare'):
-        _fail('operation', 'expected run or prepare')
+    if config.get('operation', 'run') not in ('run', 'prepare', 'repo-benchmark'):
+        _fail('operation', 'expected run, prepare or repo-benchmark')
+    benchmark = config.get('operation') == 'repo-benchmark'
+    if benchmark:
+        # The frozen T012 profile: one immutable 500,000,000-byte source, three
+        # rounds. Other sizes, repetition counts and unknown fields are rejected.
+        spec = _object(config.get('repo_benchmark'), 'repo_benchmark',
+                       {"source", "sha256", "bytes", "repetitions"},
+                       {"source", "sha256", "bytes", "repetitions"})
+        source_path = _string(spec['source'], 'repo_benchmark.source')
+        if not Path(source_path).is_absolute() or ".." in Path(source_path).parts:
+            _fail('repo_benchmark.source', 'requires an absolute compute-node path')
+        if not re.fullmatch(r'[0-9a-f]{64}', _string(spec['sha256'], 'repo_benchmark.sha256')):
+            _fail('repo_benchmark.sha256', 'expected lowercase SHA-256')
+        if _integer(spec['bytes'], 'repo_benchmark.bytes', 1) != 500000000:
+            _fail('repo_benchmark.bytes', 'the frozen profile requires 500000000 bytes')
+        if _integer(spec['repetitions'], 'repo_benchmark.repetitions', 1) != 3:
+            _fail('repo_benchmark.repetitions', 'the frozen profile requires three rounds')
     requester_input = _object(config['requester'], 'requester')
     model_input = _object(requester_input.get('model_input', {}), 'requester.model_input')
     publish_only = config.get('operation') == 'prepare' and model_input.get('mode') == 'publish-stored'
@@ -304,7 +327,8 @@ def load_deployment(path, *, prepare_only=False):
         "trust_schema", "controller_certificate", "controller_policy"},
         {"trust_schema", "controller_certificate"})
     model = _object(config["model"], "model", {"plan", "manifest", "tokenizer"},
-                    () if config.get('operation') == 'prepare' else {"plan", "manifest", "tokenizer"})
+                    () if config.get('operation') in ('prepare', 'repo-benchmark')
+                    else {"plan", "manifest", "tokenizer"})
     for key in model:
         model[key] = resolve(model[key], "model." + key, exists=True)
     storage = _object(config["storage"], "storage", {
@@ -419,7 +443,7 @@ def load_deployment(path, *, prepare_only=False):
         if len(by_kind[kind]) != 1:
             _fail("actors", "requires exactly one " + kind)
     if len(by_kind['artifact-authority']) > 1 or (
-            not publish_only and len(by_kind['artifact-authority']) != 1):
+            not publish_only and not benchmark and len(by_kind['artifact-authority']) != 1):
         _fail('actors', 'requires exactly one artifact-authority except publish-only preparation')
     if by_kind["controller"][0]["external"]:
         if "controller_policy" in security:
@@ -428,7 +452,7 @@ def load_deployment(path, *, prepare_only=False):
         _fail("security.controller_policy", "owned Controller requires policy input")
     for key in security:
         security[key] = resolve(security[key], "security." + key, exists=True)
-    if ((not by_kind["provider"] and config.get('operation') != 'prepare') or
+    if ((not by_kind["provider"] and config.get('operation') not in ('prepare', 'repo-benchmark')) or
             len(by_kind["repo"]) > 1):
         _fail("actors", "requires providers and at most one Repo")
     if config.get('operation') == 'prepare' and (by_kind['provider'] or
@@ -506,6 +530,7 @@ def load_deployment(path, *, prepare_only=False):
 
 
 def _translate_native(config, by_kind, resolve):
+    benchmark = config.get('operation') == 'repo-benchmark'
     local = config['platform']['kind'] != 'slurm-apptainer'
     network, security = config["network"], config["security"]
     controller = by_kind["controller"][0]["identity"]
@@ -539,7 +564,7 @@ def _translate_native(config, by_kind, resolve):
         _fail("requester", "external Requester cannot own native process inputs")
     if authority_external and config["artifact_authority"]:
         _fail("artifact_authority", "external Authority cannot own native process inputs")
-    if not requester_external:
+    if not requester_external and not benchmark:
         _translate_requester(requester, network, security, controller, requester_identity,
                              authority_identity, paths, bind,
                              operation=config.get('operation', 'run'),
@@ -771,8 +796,22 @@ def _translate_requester(requester, network, security, controller, requester_ide
                 "group": network["group"]}, "requester.core")
     bind(core, {"trust_schema_file": security["trust_schema"]}, "requester.core", False)
     request = requester.setdefault('request', {})
+    # The runtime requires explicit task and adapter composition identity; supply
+    # neutral defaults when the deployment omits them.
+    request.setdefault('schema', 'ndnsf-di-native-request-runtime-v1')
+    request.setdefault('task', 'inference')
+    for digest in ('adapter_composition_digest', 'task_descriptor_digest',
+                   'input_layout_digest', 'security_policy_digest'):
+        request.setdefault(digest, 'sha256:' + '0' * 64)
     bind(request, {'service': network['service']}, 'requester.request')
     if mode == 'publish-stored':
+        # The publish-only path returns before the general offer_admission block,
+        # so its policy schema marker must be supplied here as well.
+        if "offer_admission" in requester:
+            admission = _object(requester["offer_admission"], "requester.offer_admission")
+            policy = _object(admission.setdefault("policy", {}),
+                             "requester.offer_admission.policy")
+            policy.setdefault("schema", "spec180-provider-offer-trust-v1")
         if 'catalog' in requester:
             catalog = _object(requester['catalog'], 'requester.catalog')
             if 'source' in catalog:
@@ -793,6 +832,10 @@ def _translate_requester(requester, network, security, controller, requester_ide
     paths(request, ("options_file",), "requester.request")
     if "offer_admission" in requester:
         admission = _object(requester["offer_admission"], "requester.offer_admission")
+        # NativeOfferAdmission parses the policy object and requires its schema
+        # marker; supply the maintained default when the deployment omits it.
+        policy = _object(admission.setdefault("policy", {}), "requester.offer_admission.policy")
+        policy.setdefault("schema", "spec180-provider-offer-trust-v1")
         keys = _object(admission.get("public_key_files", {}), "requester.offer_admission.public_key_files")
         paths(keys, tuple(keys), "requester.offer_admission.public_key_files")
     if "catalog" in requester:
@@ -914,7 +957,8 @@ def _check_installed_files(release, ledger, by_kind, *, image_root=None, extra_p
         installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") != "file" or not path.is_file() or path.is_symlink():
             _fail("release.manifest", "required installed executable missing: " + path.name)
-        if (_digest_file(path) != installed.get("sha256") or not os.access(path, os.X_OK) or
+        if ('sha256:' + _digest_file(path) != installed.get("sha256") or
+                not os.access(path, os.X_OK) or
                 stat.S_IMODE(path.stat().st_mode) != installed.get("mode")):
             _fail("release.manifest", "installed executable identity/mode mismatch: " + path.name)
     for library in ("libndn-service-framework.so", "libndnsf-distributed-inference.so"):
@@ -933,7 +977,8 @@ def _check_installed_files(release, ledger, by_kind, *, image_root=None, extra_p
             installed = row.get("installed", {}) if isinstance(row, dict) else {}
         if installed.get("kind") != "file" or not path.is_file() or path.is_symlink():
             _fail("release.manifest", "required installed library missing: " + library)
-        if (_digest_file(path) != installed.get("sha256") or not os.access(path, os.R_OK) or
+        if ('sha256:' + _digest_file(path) != installed.get("sha256") or
+                not os.access(path, os.R_OK) or
                 stat.S_IMODE(path.stat().st_mode) != installed.get("mode")):
             _fail("release.manifest", "installed library identity mismatch: " + library)
 

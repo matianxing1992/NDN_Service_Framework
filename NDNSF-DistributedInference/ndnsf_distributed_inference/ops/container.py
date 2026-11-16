@@ -323,7 +323,8 @@ def _oracle_reference_inputs(config, args):
 
 
 def role_mounts(config, source, actor=None, *, node=None, management=None,
-                trust_resources=(), oracle_inputs=(), verification_keys=()):
+                trust_resources=(), oracle_inputs=(), verification_keys=(),
+                phase_id=None):
     """Preserve absolute runtime paths while exposing only one role's inputs."""
     source = _canonical(source)
     node = node or next(item for item in config['nodes'] if item['id'] == actor['node'])
@@ -337,6 +338,10 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
     else:
         role_id, kind = actor['id'], actor['kind']
         evidence = source.parent / 'actors' / role_id
+        base_evidence = evidence
+        if phase_id:
+            # A bounded phase owns an independent runtime root and receipt.
+            evidence = evidence / 'phases' / phase_id
         home = Path(actor['credential_home'])
     # Only private output directories may be created. Credentials are never copied
     # or synthesized; native identity admission checks the provisioned HOME.
@@ -530,6 +535,16 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
                 output(model_input[key])
         if 'options_file' in requester.get('request', {}):
             add(requester['request']['options_file'])
+        if config.get('operation') == 'repo-benchmark':
+            # The staged benchmark requester has no inference catalog. The
+            # writer reads the frozen source; the reference directory is a
+            # separate mount added below so this control keeps the earlier
+            # request path unchanged.
+            if phase_id:
+                add(base_evidence, directory=True)
+            if os.environ.get('NDNSF_BENCHMARK_PHASE', 'write') != 'read':
+                add(config['repo_benchmark']['source'])
+            return role_id, home, evidence, mounts, repository_locks
         catalog = requester['catalog']
         for obj in (catalog, catalog.get('source', {})):
             for key in ('file', 'initializer_file'):
@@ -706,7 +721,8 @@ def execute(args):
         raise cluster.ClusterError('CONTAINER_ALLOCATION_NODE_MISMATCH')
     role_id, home, evidence, mounts, repository_locks = role_mounts(
         config, args.deployment, actor, node=node, management=args.management,
-        oracle_inputs=reference_inputs, verification_keys=verification_keys)
+        oracle_inputs=reference_inputs, verification_keys=verification_keys,
+        phase_id=getattr(args, 'phase_id', None))
     large_data_mount = _large_data_mount(config, actor, evidence, mounts)
     target_plan = dict(mounts)
     if large_data_mount:
@@ -866,6 +882,7 @@ def main(argv=None):
     role.add_argument('--actor')
     role.add_argument('--management', choices=('nfd', 'nfdc', 'gpu-probe', 'oracle'))
     parser.add_argument('--node')
+    parser.add_argument('--phase-id')
     parser.add_argument('--timeout', type=float, default=300)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--timing', action='store_true')

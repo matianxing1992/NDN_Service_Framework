@@ -312,11 +312,23 @@ def run_role(args):
         raise cluster.ClusterError('NATIVE_ALLOCATION_NODE_MISMATCH')
     role_id = actor['id'] if actor else management_role_id(args.management, node_id)
     kind = actor['kind'] if actor else args.management
+    phase_id = getattr(args, 'phase_id', None)
     bindings = {'NDNSF_DEPLOYMENT_ACTOR_ID': role_id, 'NDNSF_DEPLOYMENT_BOOT_ID': args.boot_id,
                 'NDNSF_DEPLOYMENT_CONFIG_SHA256': args.configuration_sha256}
     expected_bindings = dict(bindings)
     if host_container:
-        expected_bindings['NDNSF_DEPLOYMENT_ACTOR_ID'] = management_role_id('step', role_id)
+        # The allocation tags each bounded phase step with its phase id. Accept
+        # the phase-tagged id as well as the plain role step id, whichever form
+        # the caller used, without weakening the boot/config bindings.
+        candidates = {management_role_id('step', role_id)}
+        if phase_id:
+            candidates.add(management_role_id('step', role_id + '.' + phase_id))
+        observed_actor = os.environ.get('NDNSF_DEPLOYMENT_ACTOR_ID')
+        if observed_actor not in candidates:
+            raise cluster.ClusterError('NATIVE_ROLE_ENVIRONMENT_BINDING_MISMATCH:' + json.dumps(
+                {'NDNSF_DEPLOYMENT_ACTOR_ID': dict(expected=sorted(candidates),
+                                                    observed=observed_actor)}, sort_keys=True))
+        expected_bindings['NDNSF_DEPLOYMENT_ACTOR_ID'] = observed_actor
     mismatches = {key: dict(expected=value, observed=os.environ.get(key))
                   for key, value in expected_bindings.items() if os.environ.get(key) != value}
     for key in ('SLURM_JOB_ID', 'SLURM_STEP_ID'):
@@ -327,6 +339,10 @@ def run_role(args):
                                    json.dumps(mismatches, sort_keys=True))
     evidence = (args.deployment.parent / 'actors' / role_id if actor else
                 args.deployment.parent / 'nodes' / node_id / kind)
+    if phase_id:
+        # A bounded benchmark phase or Repo incarnation owns its own runtime
+        # root and receipt; re-entry on the shared role path is refused.
+        evidence = evidence / 'phases' / phase_id
     root = evidence / 'runtime' / config['deployment_id']
     cluster._private_directory(root)
     receipt = evidence / 'receipt.json'
@@ -424,8 +440,27 @@ def run_role(args):
                 if not host_container:
                     _check_installed_files(config['release'],
                                            _read_json(Path(config['release']['manifest'])), by_kind)
+                benchmark = None
+                if config.get('operation') == 'repo-benchmark' and kind == 'requester':
+                    # The frozen benchmark target is the declared Repo actor; the
+                    # phase identity arrives from the allocation owner.
+                    repo_actor = next((item for item in config['actors']
+                                       if item['kind'] == 'repo' and not item['external']), None)
+                    if repo_actor is None:
+                        raise cluster.ClusterError('BENCHMARK_REPO_ACTOR_MISSING')
+                    benchmark = dict(source=config['repo_benchmark']['source'],
+                                     sha256=config['repo_benchmark']['sha256'],
+                                     phase=os.environ.get('NDNSF_BENCHMARK_PHASE', 'write-read'),
+                                     under_gdb=os.environ.get('NDNSF_BENCHMARK_UNDER_GDB') == '1',
+                                     reference=os.environ.get('NDNSF_BENCHMARK_REFERENCE'),
+                                     target=dict(
+                                         repo_node=repo_actor['parameters'].get(
+                                             'repo-node', repo_actor['identity']),
+                                         provider_identity=repo_actor['identity'],
+                                         service_prefix=config['network']['repo_service']))
                 argv, env = cluster._native_launch(config, actor, root, state,
-                                                   visible_devices=state['gpu_visibility'])
+                                                   visible_devices=state['gpu_visibility'],
+                                                   repo_benchmark=benchmark)
                 env.update(image_environment)
                 if host_container:
                     env.update({key: value for key, value in os.environ.items()
@@ -589,6 +624,7 @@ def main(argv=None):
     role.add_argument('--actor')
     role.add_argument('--management', choices=('nfd', 'nfdc'))
     parser.add_argument('--node')
+    parser.add_argument('--phase-id')
     parser.add_argument('--timeout', type=float, required=True)
     parser.add_argument('--debug', action='store_true')
     parser.add_argument('--timing', action='store_true')

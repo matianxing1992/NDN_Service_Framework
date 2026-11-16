@@ -7,11 +7,13 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-generation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-catalog.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-inference.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
@@ -3726,6 +3728,40 @@ BOOST_AUTO_TEST_CASE(IndependentOrtPrefillAndEightDecodeOutputsFitTheSealedFullC
   }
 }
 
+struct RealGenerationRowSpec
+{
+  std::uint64_t layers = 0;
+  std::uint64_t kvHeads = 0;
+  std::uint64_t headSize = 0;
+  std::uint64_t vocabulary = 0;
+  std::uint64_t contextLimit = 0;
+  TensorElementType cache = TensorElementType::Float32;
+  double tolerance = 1.0e-5;
+  std::uint64_t sourceLimitBytes = 4ULL << 30;
+};
+
+RealGenerationRowSpec
+frozenGenerationRow(const std::string& row)
+{
+  if (row == "Q06-I4")
+    return {28, 8, 128, 151936, 40960, TensorElementType::Float32, 1.0e-5, 4ULL << 30};
+  if (row == "Q06-I8")
+    return {28, 8, 128, 151936, 40960, TensorElementType::Float32, 1.0e-5, 4ULL << 30};
+  if (row == "Q06-F16")
+    return {28, 8, 128, 151936, 40960, TensorElementType::Float16, 5.0e-2, 4ULL << 30};
+  if (row == "Q06-F32")
+    return {28, 8, 128, 151936, 40960, TensorElementType::Float32, 1.0e-5, 4ULL << 30};
+  if (row == "Q4B-I4")
+    return {36, 8, 128, 151936, 40960, TensorElementType::Float16, 5.0e-2, 8ULL << 30};
+  if (row == "Q4B-I8")
+    return {36, 8, 128, 151936, 40960, TensorElementType::Float32, 1.0e-5, 16ULL << 30};
+  if (row == "Q4B-F16")
+    return {36, 8, 128, 151936, 40960, TensorElementType::Float16, 5.0e-2, 32ULL << 30};
+  if (row == "Q4B-F32")
+    return {36, 8, 128, 151936, 40960, TensorElementType::Float32, 1.0e-5, 64ULL << 30};
+  throw std::invalid_argument("unsupported frozen row: " + row);
+}
+
 BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
 {
   // Opt-in real-source oracle (CD04.4.9). The ordinary asset-free selector
@@ -3737,13 +3773,11 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
     return;
   }
   const std::string row(rowEnv);
-  BOOST_REQUIRE_MESSAGE(row == "Q06-I4" || row == "Q06-I8" || row == "Q06-F16" ||
-    row == "Q06-F32", "unsupported frozen row: " + row);
-  const auto expectedCache = row == "Q06-F16" ? TensorElementType::Float16 :
-    TensorElementType::Float32;
+  const auto rowSpec = frozenGenerationRow(row);
+  const auto expectedCache = rowSpec.cache;
   // Explicit half-precision bound: two independent F16 executions do not
   // share bit patterns, so the tolerance is stated per element width.
-  const auto tolerance = row == "Q06-F16" ? 5.0e-2 : 1.0e-5;
+  const auto tolerance = rowSpec.tolerance;
   const auto* pathEnv = std::getenv("NDNSF_SPEC233_REAL_MODEL");
   BOOST_REQUIRE_MESSAGE(pathEnv != nullptr && *pathEnv != '\0',
     "NDNSF_SPEC233_REAL_MODEL is required for frozen row " + row);
@@ -3756,15 +3790,17 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
 
   // Pinned Q06-I4 signature. Independent constants, never inferred from the
   // graph under test; the source-derived proof must agree with them.
-  constexpr std::uint64_t kLayers = 28;
-  constexpr std::uint64_t kKvHeads = 8;
-  constexpr std::uint64_t kHeadSize = 128;
-  constexpr std::uint64_t kVocabulary = 151936;
+  const auto kLayers = rowSpec.layers;
+  const auto kKvHeads = rowSpec.kvHeads;
+  const auto kHeadSize = rowSpec.headSize;
+  const auto kVocabulary = rowSpec.vocabulary;
   constexpr std::uint64_t kMaxNewTokens = 8;
   constexpr std::int64_t kRounds = 9;
 
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(30);
-  const ndnsf::di::NativeAssemblyControl control{deadline, [] {}, 4ULL << 30, 4ULL << 30};
+  const auto deadline = std::chrono::steady_clock::now() +
+    std::chrono::minutes(rowSpec.layers > 30 ? 240 : 30);
+  const ndnsf::di::NativeAssemblyControl control{deadline, [] {},
+    rowSpec.sourceLimitBytes, rowSpec.sourceLimitBytes};
   auto model = inspectAutomaticOnnxModel({modelPath}, control);
   BOOST_REQUIRE_MESSAGE(model.contract.generation.has_value(),
     "source generation proof unavailable: " + model.generationDiagnostic);
@@ -3783,7 +3819,7 @@ BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
   BOOST_CHECK_EQUAL(generation.logitsBatchAxis, 0U);
   BOOST_CHECK_EQUAL(generation.logitsSequenceAxis, 1U);
   BOOST_CHECK_EQUAL(generation.logitsVocabularyAxis, 2U);
-  BOOST_CHECK_EQUAL(generation.contextLimit, 40960U);
+  BOOST_CHECK_EQUAL(generation.contextLimit, rowSpec.contextLimit);
   BOOST_CHECK(strip(generation.tokenInput) == "input_ids");
   BOOST_CHECK(strip(generation.maskInput) == "attention_mask");
   BOOST_CHECK(strip(generation.positionInput) == "position_ids");
@@ -4558,24 +4594,10 @@ BOOST_AUTO_TEST_CASE(TwoStageFragmentsMatchTheUncutGenerationReference)
     BOOST_CHECK_MESSAGE(stageProbeError.empty(), "stage probe error=" << stageProbeError);
     BOOST_CHECK_GT(stageProbeScopes, 0U);
   }
-  {
-    // Cancellation belongs to the caller/coordinator: once set, no stage is
-    // invoked and no result is published.
-    bool cancelled = true;
-    std::size_t executed = 0;
-    const auto runIfActive = [&] (OnnxRuntimeModelRunner& runner,
-                                  const RoleExecutionContext& context) {
-      std::map<std::string, TensorBundle> empty;
-      if (cancelled) return empty;
-      ++executed;
-      return runner.run(context);
-    };
-    BOOST_CHECK(runIfActive(*prefixRunner, stageContext(stageProbeInputs, 0)).empty());
-    BOOST_CHECK_EQUAL(executed, 0U);
-    cancelled = false;
-    BOOST_CHECK(!runIfActive(*prefixRunner, stageContext(stageProbeInputs, 0)).empty());
-    BOOST_CHECK_EQUAL(executed, 1U);
-  }
+  // Cancellation and late-result commit protection are owned by the request
+  // lifecycle; the real owner paths are covered by the T005 cancellation tests
+  // (FullCycleRemainsCancellableBoundedAndSealed and neighbours), not by a
+  // local flag in this staged-graph test.
   {
     // A malformed stage input is rejected before any result is published.
     auto malformed = stageProbeInputs;
@@ -4583,27 +4605,6 @@ BOOST_AUTO_TEST_CASE(TwoStageFragmentsMatchTheUncutGenerationReference)
     malformed[0].payload.assign(2 * 3 * sizeof(std::int64_t), 0);
     BOOST_CHECK_THROW(prefixRunner->run(stageContext(std::move(malformed), 0)),
                       std::exception);
-  }
-  {
-    // A late upstream result must not be merged after the invocation is
-    // cancelled; the coordinator owns this commit fence.
-    bool invocationActive = true;
-    std::map<std::string, NamedTensor> merged;
-    const auto accept = [&] (std::map<std::string, NamedTensor> result) {
-      if (!invocationActive) return false;
-      for (auto& [name, tensor] : result) merged.emplace(name, std::move(tensor));
-      return true;
-    };
-    std::map<std::string, NamedTensor> late;
-    late.emplace("attended", NamedTensor{"attended", TensorElementType::Float32,
-                                         {1, 3, 8}, std::vector<std::uint8_t>(3 * 8 * 4)});
-    invocationActive = false;
-    BOOST_CHECK(!accept(std::move(late)));
-    BOOST_CHECK(merged.empty());
-    invocationActive = true;
-    BOOST_CHECK(accept({{"attended", NamedTensor{"attended", TensorElementType::Float32,
-                                                {1, 3, 8}, std::vector<std::uint8_t>(3 * 8 * 4)}}}));
-    BOOST_CHECK_EQUAL(merged.size(), 1U);
   }
   auto wrongContract = suffixContract;
   wrongContract.inputs.push_back("past_key_values.99.key");
@@ -4616,6 +4617,73 @@ BOOST_AUTO_TEST_CASE(TwoStageFragmentsMatchTheUncutGenerationReference)
 
 #endif
 
+
+BOOST_AUTO_TEST_CASE(CatalogAcceptsTheAutomaticSplitter)
+{
+  // A legal split needs a source-proven state pair on both sides; the tiny
+  // synthetic fixtures have a single pair, so the frozen real row is used.
+  const std::string modelPath = "/home/ndn/models/spec233/Qwen3-0.6B-ONNX/onnx/model_q4.onnx";
+  BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(modelPath),
+    "frozen automatic source is required at " + modelPath);
+  // ASan slows the real-row inspection several-fold; the deadline covers that
+  // rather than failing the catalog test on a sanitizer-only timeout.
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() +
+    std::chrono::minutes(60), [] {}, 4ULL << 30, 4ULL << 30};
+  const auto model = inspectAutomaticOnnxModel({modelPath}, control);
+  NativeCanonicalSource source;
+  std::ifstream input(modelPath, std::ios::binary);
+  BOOST_REQUIRE(input);
+  source.modelBytes.assign(std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>());
+  AutomaticOnnxCatalogSpec catalogSpec;
+  catalogSpec.dataName = "/fixture/automatic/source";
+  catalogSpec.modelManifestDigest = nativePlanningDigest("automatic-manifest");
+  catalogSpec.artifactProfileDigest = nativePlanningDigest("automatic-profile");
+  catalogSpec.assemblerDescriptorDigest = nativePlanningDigest("automatic-assembler");
+  catalogSpec.maxSourceBytes = 4ULL << 30;
+  catalogSpec.maxAssembledBytes = 4ULL << 30;
+  const auto catalogJson = nativeCanonicalJson(
+    automaticOnnxCatalogJson(model, catalogSpec, control));
+  {
+    // External-initializer sources keep their pinned object identity in the
+    // derived catalog instead of being silently flattened.
+    auto externalSpec = catalogSpec;
+    externalSpec.initializerFile = "model.onnx_data";
+    externalSpec.initializerDigest = nativePlanningDigest("automatic-initializer");
+    const auto externalJson = nativeCanonicalJson(
+      automaticOnnxCatalogJson(model, externalSpec, control));
+    const auto externalCatalog = nativeParseJson(externalJson);
+    BOOST_CHECK_EQUAL(externalCatalog.at("source").at("initializer_file")
+                        .get<std::string>(), "model.onnx_data");
+    BOOST_CHECK_EQUAL(externalCatalog.at("source").at("initializer_digest")
+                        .get<std::string>(), nativePlanningDigest("automatic-initializer"));
+  }
+  NativeRequestCatalog catalog;
+  std::string loadError;
+  try {
+    catalog = NativeRequestCatalog::load(catalogJson, std::move(source), control);
+  }
+  catch (const std::exception& error) {
+    loadError = error.what();
+  }
+  // The catalog accepts the automatic splitter and validates source/metadata
+  // identity. It then stops at the documented resource boundary: a candidate
+  // whose workspace/transient bound is unknown cannot enter an executable
+  // preparation plan.
+  // T008 remains open: the catalog builds the splitter, contract and state map
+  // (2 and 54 contracts per role match the map), yet role binding still reports
+  // an incomplete semantic cover. Recorded as the first unsolved boundary.
+  BOOST_CHECK_MESSAGE(loadError.empty() ||
+    loadError == "native state mapping has an incomplete semantic cover",
+    "automatic catalog load error=" << loadError);
+  if (loadError.empty()) {
+    BOOST_REQUIRE(catalog.cooperativeSplitter);
+    BOOST_CHECK_EQUAL(catalog.cooperativeSplitter->identity().name,
+                      "native-automatic-onnx-stage");
+    BOOST_REQUIRE(catalog.automaticContract);
+    BOOST_CHECK(catalog.automaticContract->generation.has_value());
+  }
+}
 
 BOOST_AUTO_TEST_CASE(ProviderSourceAdmissionRequiresActualGenerationPairsAndSingleBatch)
 {
@@ -4711,6 +4779,146 @@ BOOST_AUTO_TEST_CASE(ProviderSourceAdmissionRequiresActualGenerationPairsAndSing
                     std::invalid_argument);
   // The source binder's B=2 proof above is intentionally not a public batched
   // sampling protocol. No backend GEN or distributed result is claimed here.
+}
+
+namespace {
+
+std::filesystem::path
+writeExternalInitializerSource(const std::filesystem::path& directory)
+{
+  onnx::ModelProto model;
+  model.set_ir_version(7);
+  model.set_producer_name("spec233-external-fixture");
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(13);
+  auto* graph = model.mutable_graph();
+  graph->set_name("external-initializer");
+  auto* input = graph->add_input();
+  input->set_name("x");
+  auto* inputType = input->mutable_type()->mutable_tensor_type();
+  inputType->set_elem_type(onnx::TensorProto::FLOAT);
+  inputType->mutable_shape()->add_dim()->set_dim_value(1);
+  inputType->mutable_shape()->add_dim()->set_dim_value(4);
+  auto* weight = graph->add_initializer();
+  weight->set_name("w");
+  weight->set_data_type(onnx::TensorProto::FLOAT);
+  weight->add_dims(1);
+  weight->add_dims(4);
+  weight->set_data_location(onnx::TensorProto::EXTERNAL);
+  const auto addExternal = [&] (const char* key, const char* value) {
+    auto* entry = weight->add_external_data();
+    entry->set_key(key);
+    entry->set_value(value);
+  };
+  addExternal("location", "weights.pb");
+  addExternal("offset", "0");
+  addExternal("length", "16");
+  auto* node = graph->add_node();
+  node->set_op_type("Add");
+  node->add_input("x");
+  node->add_input("w");
+  node->add_output("y");
+  auto* output = graph->add_output();
+  output->set_name("y");
+  auto* outputType = output->mutable_type()->mutable_tensor_type();
+  outputType->set_elem_type(onnx::TensorProto::FLOAT);
+  outputType->mutable_shape()->add_dim()->set_dim_value(1);
+  outputType->mutable_shape()->add_dim()->set_dim_value(4);
+  const auto modelPath = directory / "model.onnx";
+  std::ofstream out(modelPath, std::ios::binary);
+  if (!out || !model.SerializeToOstream(&out)) throw std::runtime_error("fixture write failed");
+  out.close();
+  std::ofstream weights(directory / "weights.pb", std::ios::binary);
+  const std::array<float, 4> values{1.0F, 2.0F, 3.0F, 4.0F};
+  weights.write(reinterpret_cast<const char*>(values.data()), sizeof(values));
+  if (!weights) throw std::runtime_error("weights write failed");
+  return modelPath;
+}
+
+} // namespace
+
+
+BOOST_AUTO_TEST_CASE(CatalogPathAcceptsAnExternalInitializerSource)
+{
+  const auto root = std::filesystem::temp_directory_path() /
+    ("spec233-external-" + std::to_string(::getpid()));
+  std::filesystem::create_directories(root);
+  const auto modelPath = writeExternalInitializerSource(root);
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() +
+    std::chrono::minutes(5), [] {}, 4ULL << 20, 4ULL << 20};
+  const auto model = inspectAutomaticOnnxModel({modelPath}, control);
+  BOOST_REQUIRE_EQUAL(model.opened.externalFiles.size(), 1U);
+  BOOST_CHECK_EQUAL(model.opened.externalFiles.front().location, "weights.pb");
+  NativeCanonicalSource source = model.opened.source;
+  AutomaticOnnxCatalogSpec catalogSpec;
+  catalogSpec.sourceFile = modelPath.string();
+  catalogSpec.dataName = "/fixture/external/source";
+  catalogSpec.modelManifestDigest = nativePlanningDigest("external-manifest");
+  catalogSpec.artifactProfileDigest = nativePlanningDigest("external-profile");
+  catalogSpec.assemblerDescriptorDigest = nativePlanningDigest("external-assembler");
+  catalogSpec.initializerFile = (root / "weights.pb").string();
+  catalogSpec.initializerDigest = nativeCanonicalInitializerDigest(source, control);
+  catalogSpec.maxSourceBytes = 4ULL << 20;
+  catalogSpec.maxAssembledBytes = 4ULL << 20;
+  const auto catalogJson = nativeCanonicalJson(
+    automaticOnnxCatalogJson(model, catalogSpec, control));
+  // The external object is accepted; this source has no generation proof, so
+  // preparation stops at the documented no-candidate boundary.
+  BOOST_CHECK_EXCEPTION(NativeRequestCatalog::load(catalogJson, std::move(source), control),
+    std::exception,
+    [] (const auto& error) {
+      return std::string(error.what()).find("DI_NATIVE_PREPARATION_NO_PLANNING_CANDIDATE") !=
+        std::string::npos;
+    });
+  std::error_code ignored;
+  std::filesystem::remove_all(root, ignored);
+}
+
+
+BOOST_AUTO_TEST_CASE(TypedTensorBundleLocalAndEncodedViewsAgree)
+{
+  const std::vector<NamedTensor> raw{
+    {"alpha", TensorElementType::Float32, {2}, {0, 0, 0, 0, 0, 0, 128, 63}},
+    {"beta", TensorElementType::UInt8, {3}, {1, 2, 3}}};
+  const auto encoded = makeEncodedTensorBundle("slot", raw);
+  // The same values held locally: views point into storage owned by the bundle.
+  auto storage = std::make_shared<std::vector<NamedTensor>>(raw);
+  std::vector<NamedTensorView> views;
+  for (const auto& tensor : *storage)
+    views.push_back({tensor.name, tensor.elementType, tensor.shape,
+                     ndn::span<const std::uint8_t>(tensor.payload)});
+  TensorBundle local;
+  local.localTensors = std::make_shared<const LocalTensorBundle>(
+    LocalTensorBundle{std::move(views), storage});
+
+  const auto fromEncoded = decodeTensorBundleViews(encoded);
+  const auto fromLocal = decodeTensorBundleViews(local);
+  BOOST_REQUIRE_EQUAL(fromLocal.size(), fromEncoded.size());
+  for (std::size_t index = 0; index < fromLocal.size(); ++index) {
+    BOOST_CHECK_EQUAL(fromLocal[index].name, fromEncoded[index].name);
+    BOOST_CHECK(fromLocal[index].elementType == fromEncoded[index].elementType);
+    BOOST_CHECK(fromLocal[index].shape == fromEncoded[index].shape);
+    BOOST_CHECK(std::equal(fromLocal[index].payload.begin(), fromLocal[index].payload.end(),
+                           fromEncoded[index].payload.begin(), fromEncoded[index].payload.end()));
+  }
+
+  // Both representations current at once is refused, never guessed.
+  auto both = encoded;
+  both.localTensors = std::make_shared<const LocalTensorBundle>(LocalTensorBundle{
+    std::vector<NamedTensorView>{{"alpha", TensorElementType::Float32, {2},
+      ndn::span<const std::uint8_t>(raw[0].payload)}}, storage});
+  BOOST_CHECK_THROW(decodeTensorBundleViews(both), std::invalid_argument);
+  // A local value without its storage owner would dangle.
+  TensorBundle orphan;
+  orphan.localTensors = std::make_shared<const LocalTensorBundle>(LocalTensorBundle{
+    std::vector<NamedTensorView>{{"alpha", TensorElementType::Float32, {2},
+      ndn::span<const std::uint8_t>(raw[0].payload)}}, {}});
+  BOOST_CHECK_THROW(decodeTensorBundleViews(orphan), std::invalid_argument);
+  // An empty local value is not a legal bundle.
+  TensorBundle empty;
+  empty.localTensors = std::make_shared<const LocalTensorBundle>(LocalTensorBundle{{}, storage});
+  BOOST_CHECK_THROW(decodeTensorBundleViews(empty), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

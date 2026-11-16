@@ -14,6 +14,15 @@ def build(bld):
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
                     cxxflags=['-std=c++17', '-O0', '-g0'], rpath=[bld.env.LIBDIR],
+                    linkflags=['-lz'],
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
+        bld.program(target='../spec233-automatic-catalog',
+                    name='spec233-automatic-catalog',
+                    source=['installed-api/installed-automatic-catalog-probe.cpp'],
+                    includes=['..', '../ndn-service-framework'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
+                    cxxflags=['-std=c++17', '-O0', '-g0'], rpath=[bld.env.LIBDIR],
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec233-onnx-source', name='spec233-onnx-source',
                     source=['main.cpp', 'unit-tests/spec233-onnx-source.t.cpp',
@@ -29,6 +38,7 @@ def build(bld):
                             'unit-tests/distributed-inference-async-runtime.t.cpp',
                             'unit-tests/spec189-logits-dtype.t.cpp',
                             'unit-tests/spec194-v4-offer.t.cpp',
+                            'unit-tests/stream-owner-lease.t.cpp',
                             'unit-tests/di-native-planning.t.cpp',
                             'unit-tests/di-native-canonical-publisher.t.cpp',
                             'unit-tests/di-native-assembly.t.cpp'] +

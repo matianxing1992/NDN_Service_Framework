@@ -2,7 +2,6 @@
 #define NDNSF_DI_STORED_MODEL_REPOSITORY_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
-#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
 
@@ -16,6 +15,13 @@
 #include <optional>
 #include <thread>
 #include <utility>
+
+namespace ndnsf_distributed_repo {
+// The bounded commit scheduler is a private Repo implementation. This
+// installed compatibility header only names it through shared_ptr and the
+// alias below; the full definition stays with the constructors and callers.
+class RepoCommitPipeline;
+} // namespace ndnsf_distributed_repo
 
 namespace ndnsf::di {
 

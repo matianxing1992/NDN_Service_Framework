@@ -85,6 +85,30 @@ def _allocation_result(state, result):
         raise cluster.ClusterError('SLURM_RESULT_EXTERNAL_REFERENCE_BINDING')
     result.update(execution=value['execution'], failure=value['failure'] or state.get('failure'),
                   oracle='NOT_RUN', readiness=value.get('readiness', 'UNVERIFIED'))
+    if config.get('operation') == 'repo-benchmark':
+        from .allocation import benchmark_phase_id, benchmark_phases
+        expected_phases = [benchmark_phase_id(item) for item in benchmark_phases(config)]
+        expected_keys = [(item['round'], item['phase']) for item in benchmark_phases(config)]
+        observed = value.get('benchmark_phases')
+        if not isinstance(observed, list):
+            raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASES')
+        if any(row.get('id') is not None for row in observed):
+            observed_keys = [row.get('id') for row in observed]
+            if observed_keys != expected_phases:
+                raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASES')
+        elif [(row.get('round'), row.get('phase')) for row in observed] != expected_keys:
+            raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASES')
+        for row in observed:
+            receipt = Path(row['receipt'])
+            if not receipt.is_file() or receipt.is_symlink():
+                raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_RECEIPT')
+            phase = json.loads(receipt.read_text(encoding='utf-8'))
+            if (phase.get('status') != 'STOPPED' or phase.get('execution') != 'COMPLETE' or
+                    any(item.get('status') != 'ZERO' for item in phase.get('cleanup', ()))):
+                raise cluster.ClusterError('SLURM_RESULT_BENCHMARK_PHASE_NOT_CLOSED:' +
+                                           str(row.get('id')))
+        if value['execution'] == 'COMPLETE' and not value['failure']:
+            result['execution'] = 'REPO_BENCHMARK_COMPLETE'
     _closed_groups(value, boot, digest)
     if value['execution'] not in ('COMPLETE', 'FAILED', 'INTERRUPTED'):
         raise cluster.ClusterError('SLURM_RESULT_EXECUTION_UNKNOWN')
@@ -102,8 +126,22 @@ def _allocation_result(state, result):
     args = SimpleNamespace(deployment=root / 'configuration.json', boot_id=boot,
                            configuration_sha256=digest, release_sha256=reference['release_sha256'])
     requesters = []
+    phase_roles = value.get('benchmark_role_phases') or {}
+    benchmark_phases_value = value.get('benchmark_phases') or []
+    if not phase_roles and benchmark_phases_value:
+        # Older SIFs record only the ordered phase list; derive each bounded
+        # role's latest phase/incarnation from it rather than the base paths.
+        last = benchmark_phases_value[-1]
+        last_requester = (last.get('id') or
+                          'round-{}.{}'.format(last.get('round'), last.get('phase')))
+        last_write = next((row for row in reversed(benchmark_phases_value)
+                           if row.get('phase') == 'write'), None)
+        phase_roles = {'requester': last_requester}
+        if last_write is not None:
+            phase_roles['repo'] = 'incarnation-{}'.format(last_write.get('round'))
     for role in value['roles']:
-        receipt = read_role(args, role, job_id=reference['job_id'])
+        receipt = read_role(args, role, job_id=reference['job_id'],
+                            phase_id=phase_roles.get(role['id']))
         if receipt is None and not finished:
             from .container import management_role_id
             attempt = next((row for row in value['launches']
@@ -363,8 +401,12 @@ def _remaining(deadline):
     return remaining
 
 
-def up(config, source, root, timeout, debug=False, timing=False):
+def up(config, source, root, timeout, debug=False, timing=False, repo_benchmark=None):
     """Persist a single submission intent before allowing any scheduler side effect."""
+    if config.get('operation') == 'repo-benchmark' and repo_benchmark is not None:
+        if (repo_benchmark.get('source') != config['repo_benchmark']['source'] or
+                repo_benchmark.get('sha256') != config['repo_benchmark']['sha256']):
+            raise cluster.ClusterError('BENCHMARK_CLI_CONFIGURATION_MISMATCH')
     cluster._private_directory(root)
     with cluster._lock(root):
         old = cluster._read_state(root)

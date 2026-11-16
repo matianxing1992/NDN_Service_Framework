@@ -160,6 +160,9 @@ main(int argc, char* argv[])
 
       ~OwnerDrainGuard() noexcept
       {
+        // Refuse new work first so the drain can actually finish; otherwise a
+        // still-running executor keeps admitting owner tokens past the bound.
+        provider.stopOwnerAdmission();
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::seconds(10);
         while (provider.hasPendingOwnerTokens() &&

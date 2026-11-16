@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
+#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-private-checkpoint-file.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-symmetric-crypto.hpp"
 
@@ -849,20 +850,37 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
     digestInput.clear();
     nameBytes = 0;
   };
-  for (const auto& packet : packets) {
-    io.requireCurrent();
-    const auto& wire = packet->wireEncode();
-    const auto name = packet->getName().toUri(ndn::name::UriFormat::CANONICAL);
-    require(wire.size() <= ndn::MAX_NDN_PACKET_SIZE && name.size() <= maxNames);
-    if (!group.empty() && (group.size() == maxPackets ||
-        wire.size() > maxWire - digestInput.size() ||
-        name.size() > maxNames - nameBytes))
-      flush();
-    nameBytes += name.size();
-    digestInput.insert(digestInput.end(), wire.begin(), wire.end());
-    group.emplace_back(wire.begin(), wire.end());
+  try {
+    for (const auto& packet : packets) {
+      io.requireCurrent();
+      const auto& wire = packet->wireEncode();
+      const auto name = packet->getName().toUri(ndn::name::UriFormat::CANONICAL);
+      require(wire.size() <= ndn::MAX_NDN_PACKET_SIZE && name.size() <= maxNames);
+      if (!group.empty() && (group.size() == maxPackets ||
+          wire.size() > maxWire - digestInput.size() ||
+          name.size() > maxNames - nameBytes))
+        flush();
+      nameBytes += name.size();
+      digestInput.insert(digestInput.end(), wire.begin(), wire.end());
+      group.emplace_back(wire.begin(), wire.end());
+    }
+    flush();
   }
-  flush();
+  catch (...) {
+    // A submitted group's observe callback captures this call's publication and
+    // observer, and a scope-owned pipeline outlives this call. Drain it before
+    // the exception leaves so the pipeline never invokes those references after
+    // they are destroyed; a local pipeline is finished the same way.
+    try {
+      if (io.commitPipeline)
+        pipeline.drain();
+      else
+        pipeline.finish();
+    }
+    catch (...) {
+    }
+    throw;
+  }
   // A scope pipeline outlives this call, so it drains but stays open for the next one;
   // a local pipeline is finished (drained and closed) as before. Either way the groups
   // submitted here are complete before this function returns, which is what keeps

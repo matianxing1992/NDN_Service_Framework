@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -305,6 +306,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     : std::map<std::string, NativeRoleResourceRequirement>{};
   const auto& sourceConfig = root.at("source");
   std::shared_ptr<const AutomaticOnnxContract> automaticContract;
+  std::shared_ptr<const AutomaticOnnxModel> automaticModel;
   const bool referenceOnly = source.modelBytes.empty() && !source.preparedMetadataJson.empty();
   model.canonicalSourceName = sourceConfig.at("data_name").get<std::string>();
   model.canonicalSourceDigest = sourceConfig.at("digest").get<std::string>();
@@ -342,10 +344,10 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     }
     else if (sourceConfig.contains("initializer_digest"))
       throw std::invalid_argument("pinned initializer object is missing");
-    if ((source.initializerBytes || source.initializerRangeSource) &&
-        model.descriptor.modelFormat == "onnx") {
-      // The catalog pins the fetched external object above. Assembly recipes
-      // bind a separate digest over normalized ONNX initializer contents.
+    if (model.descriptor.modelFormat == "onnx") {
+      // Internal initializers live in the model bytes; external ones are pinned
+      // above. Both need the normalized initializer identity for prepared
+      // metadata and the assembly recipe.
       model.canonicalInitializerDigest = canonicalOnnxSourceIdentity(
         source, control).initializerDigest;
     }
@@ -472,18 +474,72 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }
+  else if (splitterKind == "AUTOMATIC") {
+    if (referenceOnly || source.externalFileRanges.size() > 1)
+      throw std::invalid_argument("DI_NATIVE_PREPARATION_AUTOMATIC_SOURCE_UNSUPPORTED");
+    const auto initializerFile = sourceConfig.value("initializer_file", std::string{});
+    OpenedAutomaticOnnxSource opened;
+    opened.source = source;
+    opened.modelDigest = nativePlanningDigest(opened.source.modelBytes.data(),
+                                              opened.source.modelBytes.size());
+    if (source.initializerBytes || source.initializerRangeSource) {
+      // One external object is supported; its location comes from the pinned
+      // catalog entry and its identity was already checked by the load above.
+      if (initializerFile.empty() || entry.model.canonicalInitializerObjectDigest.empty() ||
+          entry.model.canonicalInitializerBytes == 0)
+        throw std::invalid_argument("automatic external initializer identity is incomplete");
+      // The catalog's initializer_file is the on-disk path; the source
+      // inventory keeps the model's external location, which is the file name
+      // for maintained exports (a single external object is accepted here).
+      opened.externalFiles.push_back(AutomaticOnnxSourceFile{
+        std::filesystem::path(initializerFile).filename().string(),
+        entry.model.canonicalInitializerBytes,
+        entry.model.canonicalInitializerObjectDigest});
+    }
+    else if (!initializerFile.empty())
+      throw std::invalid_argument("pinned automatic initializer object is missing");
+    opened.sourceDigest = automaticOnnxSourceDigest(opened.modelDigest,
+                                                    opened.externalFiles, control);
+    auto automatic = inspectAutomaticOnnxModel(std::move(opened), control);
+    automaticModel = std::make_shared<const AutomaticOnnxModel>(std::move(automatic));
+    auto strategy = std::make_shared<AutomaticOnnxSplitStrategy>(automaticModel);
+    model.graph = strategy->inspectGraph(model.descriptor, model.descriptor.sourceRevision,
+                                         entry.recipe.maxNodes);
+    // result.automaticContract was already assigned (empty) before this branch;
+    // set it here as well so the automatic catalog carries its contract.
+    result.automaticContract = std::make_shared<const AutomaticOnnxContract>(
+      automaticModel->contract);
+    result.cooperativeSplitter = strategy;
+    result.splitter = std::move(strategy);
+  }
   else throw std::invalid_argument("unsupported native request splitter");
   result.stateMapping.inputs = root.value("state_inputs", NativeStateTensorMapping::Roles{});
   result.stateMapping.outputs = root.value("state_outputs", NativeStateTensorMapping::Roles{});
   result.model = model;
   if (!referenceOnly) {
-    entry.sourceGraphInspection = inspectNativeOnnxSourceGraph(source, model.descriptor, control);
+    // The automatic splitter's planning graph is the automatic inspection's
+    // source graph. Reusing it keeps the role preparer's source/planning
+    // identity check meaningful without an explicit ONNX node mapping.
+    if (splitterKind == "AUTOMATIC" && automaticModel)
+      entry.sourceGraphInspection = automaticModel->inspection;
+    else
+      entry.sourceGraphInspection = inspectNativeOnnxSourceGraph(source, model.descriptor, control);
     // Only adapters with a reference-only restore contract publish this
     // metadata. Unsupported adapters remain on the source-backed path and
     // therefore cannot create a receipt that a later prepare cannot restore.
     if (splitterKind == "QWEN" || splitterKind == "LLAMA")
       source.preparedMetadataJson = encodeNativePreparedOnnxMetadata(
         model, *entry.sourceGraphInspection, nullptr, control);
+    else if (splitterKind == "AUTOMATIC") {
+      if (!automaticModel)
+        throw std::logic_error("automatic source model was released before metadata");
+      // The automatic inspection owns the source graph facts that back the
+      // automatic contract. The legacy source-graph pass derives a different
+      // graph digest for the same bytes, so reuse the automatic inspection
+      // rather than comparing two representations of one source.
+      source.preparedMetadataJson = encodeNativePreparedOnnxMetadata(
+        model, automaticModel->inspection, automaticModel.get(), control);
+    }
   }
   // The projected-plan branch runs after the source is moved into the catalog entry, so
   // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
@@ -627,8 +683,45 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     ? std::vector<NativeSplitCandidate>{}
     : result.cooperativeSplitter->enumerate(
         result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
-  preparedCandidates.reserve(enumerated.size());
-  for (auto candidate : enumerated) {
+  if (splitterKind == "AUTOMATIC" && !enumerated.empty() &&
+      result.stateMapping.inputs.empty()) {
+    // The catalog did not declare a state map; derive it from the checked
+    // automatic projection instead of inventing one.
+    const auto familyMap = [] (const auto& byRole) {
+      // One mapping entry per declared state contract: the semantic name is the
+      // contract name and the value is its physical tensor (usually itself).
+      NativeStateTensorMapping::Roles result;
+      for (const auto& [role, tensors] : byRole) {
+        auto& entry = result[role];
+        for (const auto& tensor : tensors) entry[tensor.name] = {tensor.name};
+      }
+      return result;
+    };
+    result.stateMapping.inputs = familyMap(enumerated.front().roleStateInputsByRole);
+    result.stateMapping.outputs = familyMap(enumerated.front().roleStateOutputsByRole);
+  }
+  // The automatic splitter may return many cuts with different state covers.
+  // Preparation binds one state map, so it prepares the first (lowest-transfer)
+  // candidate only instead of mixing maps across candidates.
+  const std::vector<NativeSplitCandidate> selectedCandidates =
+    splitterKind == "AUTOMATIC" && enumerated.size() > 1 ?
+      std::vector<NativeSplitCandidate>{enumerated.front()} : enumerated;
+  preparedCandidates.reserve(selectedCandidates.size());
+  for (auto candidate : selectedCandidates) {
+    if (splitterKind == "AUTOMATIC") {
+      // The assembly budget is an explicit upper bound, not a measurement:
+      // ORT workspace and activation peaks stay within it or preparation fails
+      // at the actual stage owner. Transient memory is declared inapplicable
+      // for this CPU profile instead of being treated as free.
+      for (auto& [role, requirement] : candidate.requirementsByRole) {
+        if (!requirement.workspaceBytes)
+          requirement.workspaceBytes = entry.recipe.maxAssembledBytes;
+        if (!requirement.transientBytes) requirement.transientBytes = std::uint64_t{0};
+        if (!requirement.activationBytes)
+          requirement.activationBytes = entry.recipe.maxAssembledBytes;
+      }
+      candidate.candidateDigest = candidate.computedDigest();
+    }
     if (sourceDefined) {
       candidate.requirementsByRole = resourceProfiles;
       candidate.candidateDigest = candidate.computedDigest();

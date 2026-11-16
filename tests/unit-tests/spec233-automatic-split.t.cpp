@@ -3,7 +3,9 @@
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-backend.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <chrono>
@@ -46,7 +48,8 @@ splitState(AutomaticAttentionState::Role role, const std::string& layer)
 /** Two-producer graph whose only interior cut t2 leaves one state pair on
  * each side. Every edge is a declared legal cut unless a test removes one. */
 AutomaticOnnxModel
-splitFixture(bool singlePair = false, bool splitPair = false, bool dropT2 = false)
+splitFixture(bool singlePair = false, bool splitPair = false, bool dropT2 = false,
+             bool independentKV = false, bool permutedAxes = false)
 {
   NativeGraphSnapshot graph;
   for (unsigned index = 0; index < 6; ++index) {
@@ -65,12 +68,15 @@ splitFixture(bool singlePair = false, bool splitPair = false, bool dropT2 = fals
       graph.legalCutEdges.push_back(name);
   };
   edge("t1", 0, 1);
-  edge("present.0.key", 1, 2);
-  edge("present.0.value", 1, 2);
   edge("t2", 2, 3);
-  edge("present.1.key", 3, 4);
-  edge("present.1.value", 3, 4);
   edge("logits", 4, 5);
+  // State outputs are graph outputs without consumers; their producers are
+  // carried by the source metadata, as on a real export.
+  const auto graphMetadata = nativeCanonicalJson(NativeJson{
+    {"tensorProducers", {{"present.0.key", 1},
+                         {"present.0.value", independentKV ? 2 : 1},
+                         {"present.1.key", 3}, {"present.1.value", 3},
+                         {"logits", 4}}}});
   graph.modelInputs = {splitTensor("input"), splitTensor("past.0.key"),
                        splitTensor("past.0.value"), splitTensor("past.1.key"),
                        splitTensor("past.1.value")};
@@ -85,6 +91,7 @@ splitFixture(bool singlePair = false, bool splitPair = false, bool dropT2 = fals
   AutomaticOnnxModel model;
   model.descriptor = std::move(descriptor);
   model.inspection.graph = std::move(graph);
+  model.inspection.graphMetadataJson = graphMetadata;
   AutomaticGenerationContract generation;
   generation.tokenInput = "graph/input";
   generation.logitsOutput = "graph/logits";
@@ -110,6 +117,10 @@ splitFixture(bool singlePair = false, bool splitPair = false, bool dropT2 = fals
                          splitState(AutomaticAttentionState::Role::VALUE, "0"),
                          splitState(AutomaticAttentionState::Role::KEY, "1"),
                          splitState(AutomaticAttentionState::Role::VALUE, "1")};
+  }
+  if (permutedAxes) {
+    generation.states[0].inputAxes = {0, 2, 1, 3};
+    generation.states[1].inputAxes = {0, 2, 1, 3};
   }
   model.contract.generation = std::move(generation);
   return model;
@@ -436,6 +447,121 @@ BOOST_AUTO_TEST_CASE(StageRunnerExposesExactlyItsProjection)
   none.metadata.erase("automaticStageBinding");
   BOOST_CHECK_EQUAL(*checkAutomaticOnnxStageRunner(none, ingress, candidate,
     model->contract), "AUTOMATIC_STAGE_RUNNER_CONTRACT_MISSING");
+}
+
+BOOST_AUTO_TEST_CASE(IndependentKeyAndValueProducersStayInOneRegion)
+{
+  auto model = std::make_shared<AutomaticOnnxModel>(splitFixture(false, false, false, true));
+  AutomaticOnnxSplitStrategy strategy(splitSource(model));
+  const auto candidates = strategy.enumerate(model->descriptor, model->inspection.graph,
+                                             splitBudget());
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto bindings = deriveAutomaticOnnxStageBindings(*model, candidates.front());
+  BOOST_REQUIRE_EQUAL(bindings.size(), 2U);
+  BOOST_CHECK_EQUAL(bindings.front().stateOutputs.size(), 2U);
+  BOOST_CHECK_EQUAL(bindings.back().stateOutputs.size(), 2U);
+  // Both K and V of the first pair sit before the cut even though their
+  // producers differ.
+  const auto& prefixOutputs = bindings.front().stateOutputs;
+  BOOST_CHECK(std::find(prefixOutputs.begin(), prefixOutputs.end(), "present.0.key") !=
+              prefixOutputs.end());
+  BOOST_CHECK(std::find(prefixOutputs.begin(), prefixOutputs.end(), "present.0.value") !=
+              prefixOutputs.end());
+}
+
+BOOST_AUTO_TEST_CASE(StateContractsFollowTheProvenAxisMap)
+{
+  auto model = std::make_shared<AutomaticOnnxModel>(splitFixture(false, false, false, false, true));
+  AutomaticOnnxSplitStrategy strategy(splitSource(model));
+  const auto candidates = strategy.enumerate(model->descriptor, model->inspection.graph,
+                                             splitBudget());
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  const auto& inputs = candidate.roleStateInputsByRole.at(candidate.inputIngressRole);
+  BOOST_REQUIRE(!inputs.empty());
+  const auto& first = inputs.front();
+  BOOST_REQUIRE_EQUAL(first.shape.size(), 4U);
+  BOOST_CHECK(std::holds_alternative<std::string>(first.shape[0]));
+  BOOST_CHECK_EQUAL(std::get<std::string>(first.shape[0]), "batch");
+  BOOST_CHECK(std::holds_alternative<std::string>(first.shape[1]));
+  BOOST_CHECK_EQUAL(std::get<std::string>(first.shape[1]), "sequence");
+  BOOST_CHECK(std::holds_alternative<std::int64_t>(first.shape[2]));
+  BOOST_CHECK_EQUAL(std::get<std::int64_t>(first.shape[2]), 2);
+  BOOST_CHECK(std::holds_alternative<std::int64_t>(first.shape[3]));
+  BOOST_CHECK_EQUAL(std::get<std::int64_t>(first.shape[3]), 4);
+}
+
+BOOST_AUTO_TEST_CASE(PrepareOnnxRejectsWithoutRuntime)
+{
+  // The public entry exists and refuses a User without Runtime state before
+  // inspecting any path.
+  ndnsf::di::User user;
+  BOOST_CHECK_EXCEPTION(user.prepareOnnx("/tmp/does-not-exist.onnx"),
+    ndnsf::di::DiError,
+    [] (const auto& error) { return error.code() == "RUNTIME_CLOSED"; });
+}
+
+BOOST_AUTO_TEST_CASE(StateByteAccountingIsExact)
+{
+  auto model = std::make_shared<AutomaticOnnxModel>(splitFixture());
+  AutomaticOnnxSplitStrategy strategy(splitSource(model));
+  const auto candidates = strategy.enumerate(model->descriptor, model->inspection.graph,
+                                             splitBudget());
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  // One key/value pair per role, context limit 32, heads 2, head size 4, F32:
+  // 32 * 2 * 4 * 4 bytes per component, two components per pair.
+  const std::uint64_t expectedKv = 32ULL * 2ULL * 4ULL * 4ULL * 2ULL;
+  for (const auto& role : candidate.executionPlan.roles) {
+    const auto found = candidate.requirementsByRole.find(role);
+    BOOST_REQUIRE(found != candidate.requirementsByRole.end());
+    BOOST_CHECK_EQUAL(found->second.kvBytes.value_or(0), expectedKv);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(StagePortsMustMatchTheFrozenContract)
+{
+  auto model = std::make_shared<AutomaticOnnxModel>(splitFixture());
+  AutomaticOnnxSplitStrategy strategy(splitSource(model));
+  const auto candidates = strategy.enumerate(model->descriptor, model->inspection.graph,
+                                             splitBudget());
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto bindings = deriveAutomaticOnnxStageBindings(*model, candidates.front());
+  BOOST_REQUIRE_EQUAL(bindings.size(), 2U);
+  const auto contractOf = [] (const AutomaticOnnxStageBinding& binding) {
+    AutomaticOnnxStageRunnerContract contract;
+    contract.role = binding.role;
+    contract.terminal = binding.terminal;
+    contract.inputs = binding.activationInputs;
+    contract.inputs.insert(contract.inputs.end(),
+                           binding.stateInputs.begin(), binding.stateInputs.end());
+    contract.outputs = binding.activationOutputs;
+    contract.outputs.insert(contract.outputs.end(),
+                            binding.stateOutputs.begin(), binding.stateOutputs.end());
+    return contract;
+  };
+  const auto scoped = [] (const std::vector<std::string>& names) {
+    std::vector<std::string> result;
+    for (const auto& name : names) result.push_back("graph/" + name);
+    return result;
+  };
+  for (const auto& binding : bindings) {
+    const auto contract = contractOf(binding);
+    BOOST_CHECK_NO_THROW(validateAutomaticOnnxStagePorts(
+      contract, scoped(contract.inputs), scoped(contract.outputs)));
+    auto extra = scoped(contract.inputs);
+    extra.push_back("graph/unexpected");
+    BOOST_CHECK_EXCEPTION(validateAutomaticOnnxStagePorts(
+      contract, extra, scoped(contract.outputs)), std::invalid_argument,
+      [] (const auto& error) { return std::string(error.what()).find(
+        "AUTOMATIC_STAGE_PORTS") != std::string::npos; });
+    auto missing = scoped(contract.outputs);
+    missing.pop_back();
+    BOOST_CHECK_EXCEPTION(validateAutomaticOnnxStagePorts(
+      contract, scoped(contract.inputs), missing), std::invalid_argument,
+      [] (const auto& error) { return std::string(error.what()).find(
+        "AUTOMATIC_STAGE_PORTS") != std::string::npos; });
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

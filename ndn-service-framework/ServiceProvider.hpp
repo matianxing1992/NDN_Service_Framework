@@ -1384,6 +1384,11 @@ namespace ndn_service_framework{
              *  A shutdown path uses it to keep processing events until queued completions have run:
              *  the destructor waits for this count, and a stopped executor never runs them. */
             bool hasPendingOwnerTokens() const noexcept;
+            /** Refuse new owner-token acquisitions and close existing registrations.
+             *  A shutdown path calls this before draining queued completions so new
+             *  work cannot keep extending the drain. Idempotent; the destructor
+             *  performs the same steps again. */
+            void stopOwnerAdmission() noexcept;
             size_t getCurrentPolicyEpoch() const;
             size_t getCurrentPolicyEpoch(const ndn::Name& serviceName) const;
             static bool handlePermissionResponseData(const ndn::Data& data,
@@ -3276,6 +3281,8 @@ namespace ndn_service_framework{
             // needs no extra lock; m_registrationControl->mutex serializes
             // only against the Provider destructor.  m_registrationControl is
             // null only if construction never completed.
+            friend struct ServiceProviderTestAccess;
+
             std::shared_ptr<RegistrationControl> m_registrationControl;
             uint64_t m_registrationGeneration = 0;
 

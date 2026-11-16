@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
+#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-symmetric-crypto.hpp"
 

@@ -199,6 +199,21 @@ RepoCore::buildPacketBaseIndex() const
   m_packetBaseIndexBuilt = true;
 }
 
+void
+RepoCore::invalidatePacketBaseIndex() const
+{
+  std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
+  m_packetBaseIndexBuilt = false;
+}
+
+bool
+RepoCore::packetBaseIndexComplete() const
+{
+  buildPacketBaseIndex();
+  std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
+  return m_packetBaseIndexBuilt;
+}
+
 std::optional<std::pair<std::shared_ptr<const RepoObjectManifest>, size_t>>
 RepoCore::findIndexedOriginalPacket(const ndn::Name& name, const std::string& canonical,
   const std::string& alternate,
@@ -613,6 +628,8 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
       payloadAlreadyCommitted = m_store->hasCommittedPayload(commitManifest);
     }
     m_store->commitRanges(commitManifest);
+    if (commitManifest.objectType == "original-packet-set")
+      invalidatePacketBaseIndex();
     // A successful backend commit is the durable-manifest contract.  The
     // lookup normally confirms the exact stored value; if a transient read
     // fails, return the canonical identity used for the commit instead of
@@ -1518,6 +1535,11 @@ RepoCore::findPacketRecord(const ndn::Name& name,
     if (const auto indexed = findIndexedOriginalPacket(name, key,
           name.toUri(ndn::name::UriFormat::ALTERNATE), acceptObject))
       return std::make_pair(*indexed->first, indexed->second);
+    // A miss on the complete base index proves no stored packet set contains
+    // the name; the durable scan below is only for unusual stores whose
+    // manifest list could not be indexed.
+    if (packetBaseIndexComplete())
+      return std::nullopt;
   }
   catch (const std::exception&) {
     // The durable fallback below remains authoritative for unusual stores.
@@ -2273,6 +2295,7 @@ RepoCore::deleteLocked(const std::string& objectName)
   const bool hadObject = m_store->has(objectName);
   if (hadObject) {
     manifest = m_store->getManifest(objectName);
+    invalidatePacketBaseIndex();
     oldSize = manifest.segmentCount > 1 || !manifest.packetNames.empty()
                 ? 0 : manifest.size;
   }

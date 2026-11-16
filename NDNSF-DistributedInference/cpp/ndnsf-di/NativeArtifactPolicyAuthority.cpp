@@ -147,8 +147,21 @@ NativeKeyGrant NativeArtifactGrantIssuer::issue(const NativeSignedGrantRequest& 
         root.at("modelName") != policy.modelName || root.at("modelIdentityDigest") != policy.modelContentDigest ||
         root.at("artifactProfileDigest") != policy.artifactProfileDigest ||
         metadata.at("canonicalSourceDigest") != policy.canonicalSourceDigest ||
-        metadata.value("canonicalInitializerObjectDigest", std::string{}) != policy.initializerObjectDigest)
-      throw reject("published manifest differs from authorized source");
+        metadata.value("canonicalInitializerObjectDigest", std::string{}) != policy.initializerObjectDigest) {
+      const auto text = [](const NativeJson& value, const char* key) {
+        return value.contains(key) && value.at(key).is_string() ?
+          value.at(key).get<std::string>() : std::string{"<missing>"};
+      };
+      const std::string detail = "published manifest differs from authorized source: schema=" + text(root, "schema") +
+        " state=" + text(root, "state") +
+        " modelName=" + text(root, "modelName") + " expected=" + policy.modelName +
+        " modelIdentity=" + text(root, "modelIdentityDigest") + " expected=" + policy.modelContentDigest +
+        " profile=" + text(root, "artifactProfileDigest") + " expected=" + policy.artifactProfileDigest +
+        " source=" + text(metadata, "canonicalSourceDigest") + " expected=" + policy.canonicalSourceDigest +
+        " initializer=" + text(metadata, "canonicalInitializerObjectDigest") +
+        " expected=" + policy.initializerObjectDigest;
+      throw std::runtime_error(detail);
+    }
   }
   const auto recipient = m_config.recipientPublicKeys.find(request.providerIdentity);
   if (recipient == m_config.recipientPublicKeys.end()) throw reject("recipient key is not configured");

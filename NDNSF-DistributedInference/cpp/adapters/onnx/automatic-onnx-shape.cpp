@@ -1715,7 +1715,8 @@ AutomaticOnnxGenerationProbe
 makeAutomaticOnnxGenerationProbe(const AutomaticOnnxSourceBinding& source,
                                 const std::vector<std::string>& rawInputNames,
                                 const std::vector<std::string>& rawOutputNames,
-                                const NativeAssemblyControl& control)
+                                const NativeAssemblyControl& control,
+                                const AutomaticOnnxStageRunnerContract* stage)
 {
   requireActive(control);
   const auto& contract = source.sourceContract();
@@ -1723,7 +1724,10 @@ makeAutomaticOnnxGenerationProbe(const AutomaticOnnxSourceBinding& source,
   std::vector<std::string> outputs;
   for (const auto& name : rawInputNames) inputs.push_back("graph/" + name);
   for (const auto& name : rawOutputNames) outputs.push_back("graph/" + name);
-  validateAutomaticOnnxGenerationRole(contract, inputs, outputs);
+  if (stage != nullptr)
+    validateAutomaticOnnxStagePorts(*stage, inputs, outputs);
+  else
+    validateAutomaticOnnxGenerationRole(contract, inputs, outputs);
   const auto& generation = *contract.generation;
   const auto& token = generationTensorFact(contract, generation.tokenInput);
   if (!token.dimensions || token.dimensions->size() != 2)

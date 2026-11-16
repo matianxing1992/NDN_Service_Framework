@@ -1,12 +1,19 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-publication.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
+#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "ndn-service-framework/CertificatePublisher.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/controller-certificate.hpp"
 #include "ndnsf-distributed-repo/RepoProtocol.hpp"
 
 #include <ndn-cxx/encoding/tlv.hpp>
+#include <csignal>
+#include <ucontext.h>
+#include <sys/ucontext.h>
+#include <cstdio>
+#include <execinfo.h>
+#include <unistd.h>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/util/scope.hpp>
 #include <ndn-cxx/util/sha256.hpp>
@@ -94,6 +101,7 @@ run(int argc, char** argv)
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "ndnsf-repo-file-benchmark: native 500000000-byte original-packet file I/O\n";
     for (const auto& option : required) std::cout << option << " VALUE ";
+    std::cout << "[--phase write|read|write-read] [--reference PATH] ";
     std::cout << "\nUses existing HOME/PIB/TPM credentials; bounded 4096-packet commits and "
                  "whole-group reads and at most "
               << di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS
@@ -102,14 +110,30 @@ run(int argc, char** argv)
   }
   std::map<std::string, std::string> options;
   for (int i = 1; i < argc; i += 2) {
-    require(i + 1 < argc && required.count(argv[i]) &&
-            options.emplace(argv[i], argv[i + 1]).second, "invalid benchmark option");
+    const bool known = required.count(argv[i]) || std::string(argv[i]) == "--phase" ||
+      std::string(argv[i]) == "--reference";
+    require(i + 1 < argc && known && options.emplace(argv[i], argv[i + 1]).second,
+            "invalid benchmark option");
   }
-  require(options.size() == required.size(), "missing benchmark option");
-  const auto& source = options.at("--source");
-  require(std::filesystem::is_regular_file(source) &&
-          !std::filesystem::is_symlink(source) && std::filesystem::file_size(source) == FILE_BYTES,
-          "benchmark input must be a regular 500000000-byte file");
+  const std::string phaseOption = options.count("--phase") ? options.at("--phase") : "write-read";
+  require(phaseOption == "write" || phaseOption == "read" || phaseOption == "write-read",
+          "benchmark phase must be write, read or write-read");
+  for (const auto& option : required) {
+    if (option == "--source") continue;
+    require(options.count(option) == 1, "missing benchmark option");
+  }
+  require(phaseOption == "read" || options.count("--source") == 1,
+          "write phase requires --source");
+  require(phaseOption != "write-read" || options.count("--reference") == 0,
+          "the combined phase does not use a reference file");
+  if (phaseOption != "write-read")
+    require(options.count("--reference") == 1,
+            "staged phases require --reference");
+  const auto& source = phaseOption == "read" ? std::string{} : options.at("--source");
+  if (phaseOption != "read")
+    require(std::filesystem::is_regular_file(source) &&
+            !std::filesystem::is_symlink(source) && std::filesystem::file_size(source) == FILE_BYTES,
+            "benchmark input must be a regular 500000000-byte file");
   const auto expected = options.at("--expected-sha256");
   require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(), [](char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -178,7 +202,40 @@ run(int argc, char** argv)
     try {
       auto io = di::nativeStoredModelRepositoryIo(user, target, deadline, current, true);
       require(bool(io.commitConcurrent), "benchmark native concurrent commit unavailable");
+      std::vector<Group> groups;
+      if (phaseOption == "read") {
+        // A staged reader trusts only the frozen expectation and the recorded
+        // group reference; every object is still fetched and verified through
+        // the production API below.
+        std::ifstream referenceInput(options.at("--reference"));
+        require(bool(referenceInput), "benchmark reference open failed");
+        const auto reference = Json::parse(referenceInput, nullptr, false);
+        require(!reference.is_discarded() &&
+                reference.at("schema") == "ndnsf-repo-file-benchmark-reference-v1" &&
+                reference.at("fileBytes") == FILE_BYTES &&
+                reference.at("sha256") == expected &&
+                reference.at("contentSegmentBytes") == CONTENT_BYTES,
+                "benchmark reference identity mismatch");
+        for (const auto& item : reference.at("groups")) {
+          Group group;
+          group.prefix = ndn::Name(item.at("prefix").get<std::string>());
+          group.packetCount = item.at("packetCount").get<size_t>();
+          group.wireDigest = item.at("wireSha256").get<std::string>();
+          group.payloadBytes = item.at("payloadBytes").get<uint64_t>();
+          group.wireBytes = item.at("wireBytes").get<uint64_t>();
+          require(group.packetCount > 0 &&
+                  group.packetCount <= di::NATIVE_STORED_MODEL_UPLOAD_PACKETS &&
+                  group.payloadBytes > 0 && group.payloadBytes <= group.packetCount * CONTENT_BYTES &&
+                  group.wireBytes >= group.payloadBytes,
+                  "benchmark reference group invalid");
+          payloadBytes += group.payloadBytes;
+          wireBytes += group.wireBytes;
+          groups.push_back(std::move(group));
+        }
+        require(payloadBytes == FILE_BYTES, "benchmark reference payload size mismatch");
+      }
       ndn::KeyChain packetKeys("pib-memory:repo-file-benchmark", "tpm-memory:repo-file-benchmark");
+      if (phaseOption != "read") {
       ndn::Name publication(identity);
       publication.append("repo-file-benchmark").appendVersion(static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -186,7 +243,6 @@ run(int argc, char** argv)
       std::ifstream input(source, std::ios::binary);
       require(bool(input), "benchmark source open failed");
       ndn::util::Sha256 sourceHash;
-      std::vector<Group> groups;
       const auto publicationRow = [&](const Measurement& measurement, const Group& group,
                                       size_t index, const char* rowPhase) {
         auto row = measurement.result();
@@ -286,6 +342,52 @@ run(int argc, char** argv)
         {"publicationIncludesReadback", false}, {"publicationMode", "bounded-pipeline"},
         {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS}});
       record(std::move(published));
+      if (phaseOption == "write") {
+        // The reference is an input record for a later independent reader, not
+        // a second Repo or publication authority. Write it atomically and sync
+        // before claiming the staged write complete.
+        ndn::util::Sha256 orderedWire;
+        Json referenceGroups = Json::array();
+        for (const auto& group : groups) {
+          referenceGroups.push_back(Json{{"prefix", group.prefix.toUri(ndn::name::UriFormat::CANONICAL)},
+            {"packetCount", group.packetCount}, {"payloadBytes", group.payloadBytes},
+            {"wireBytes", group.wireBytes}, {"wireSha256", group.wireDigest}});
+          orderedWire.update(ndn::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(group.wireDigest.data()), group.wireDigest.size()));
+        }
+        const auto referencePath = options.at("--reference");
+        const auto temporary = referencePath + ".tmp";
+        {
+          std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+          require(bool(output), "benchmark reference open failed");
+          output << di::nativeCanonicalJson(Json{
+            {"schema", "ndnsf-repo-file-benchmark-reference-v1"},
+            {"fileBytes", FILE_BYTES}, {"sha256", expected},
+            {"contentSegmentBytes", CONTENT_BYTES},
+            {"orderedWireSha256", digest(orderedWire)},
+            {"groups", referenceGroups}}) << std::endl;
+          require(output.good(), "benchmark reference write failed");
+        }
+        const int descriptor = ::open(temporary.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        require(descriptor >= 0 && ::fsync(descriptor) == 0, "benchmark reference sync failed");
+        ::close(descriptor);
+        require(::rename(temporary.c_str(), referencePath.c_str()) == 0,
+                "benchmark reference publish failed");
+        auto referenceRow = total.result();
+        referenceRow.update(Json{{"phase", "reference"}, {"groups", groups.size()},
+          {"orderedWireSha256", digest(orderedWire)},
+          {"status", "REFERENCE_WRITTEN"}});
+        record(std::move(referenceRow));
+        auto written = total.result();
+        written.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
+          {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
+          {"contentSegmentBytes", CONTENT_BYTES}, {"stagedPhase", "write"},
+          {"publicationMode", "bounded-pipeline"},
+          {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS}});
+        record(written);
+        return written;
+      }
+      }
       phase = "retrieval";
       const Measurement retrievalTime;
       ndn::util::Sha256 restored;
@@ -327,12 +429,15 @@ run(int argc, char** argv)
       result.update(Json{{"phase", "complete"}, {"pass", true}, {"fileBytes", FILE_BYTES},
         {"sha256", expected}, {"wireBytes", wireBytes}, {"groups", groups.size()},
         {"contentSegmentBytes", CONTENT_BYTES},
-        {"publicationIncludesReadback", false},
-        {"publicationMode", "bounded-pipeline"},
-        {"publicationMaxActiveCommits", di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS},
+        {"stagedPhase", phaseOption == "read" ? "read" : "write-read"},
         {"retainedGroupMetadata", "prefix/count/digest only; names regenerated per read group"},
         {"scope", "Native original-packet file I/O; publication confirms durable manifest; "
                    "retrieval may hit Repo memory/OS caches; no inference"}});
+      if (phaseOption != "read") {
+        result["publicationIncludesReadback"] = false;
+        result["publicationMode"] = "bounded-pipeline";
+        result["publicationMaxActiveCommits"] = di::NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
+      }
       record(result);
       return result;
     }
@@ -350,16 +455,59 @@ run(int argc, char** argv)
     catch (...) { cancelled.store(true); }
   }
   const auto result = work.get();
-  user.reset();
+  // The user owns the face callbacks and the SVS timers. Drain queued events
+  // while it is still alive, then release it; pumping the face after the user
+  // is destroyed would dispatch callbacks against freed framework state.
   face.processEvents(ndn::time::milliseconds(10));
+  user.reset();
   std::cout << di::nativeCanonicalJson(result) << std::endl;
   return 0;
 }
 } // namespace
 
+namespace {
+
+/** Diagnostic only: capture the faulting thread's stack for the T012 crash. */
+void
+onFatalSignal(int signalNumber)
+{
+  void* frames[64];
+  const int count = ::backtrace(frames, 64);
+  char header[64];
+  const int length = std::snprintf(header, sizeof(header), "BENCHMARK_FATAL_SIGNAL %d\n",
+                                   signalNumber);
+  if (length > 0) {
+    const auto written = ::write(STDERR_FILENO, header, static_cast<std::size_t>(length));
+    (void)written;
+  }
+  ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
+  ::_exit(128 + signalNumber);
+}
+
+} // namespace
+
 int
 main(int argc, char** argv)
 {
+  // Diagnostic only: capture the faulting PC and stack for the T012 crash.
+  struct sigaction action {};
+  action.sa_sigaction = [] (int signalNumber, siginfo_t*, void* context) {
+    const auto* uc = static_cast<const ucontext_t*>(context);
+    const auto pc = static_cast<unsigned long long>(uc->uc_mcontext.gregs[REG_RIP]);
+    char header[96];
+    const int length = std::snprintf(header, sizeof(header),
+                                     "BENCHMARK_FATAL_SIGNAL %d pc=0x%llx\n",
+                                     signalNumber, pc);
+    if (length > 0) {
+      const auto written = ::write(STDERR_FILENO, header, static_cast<std::size_t>(length));
+      (void)written;
+    }
+    onFatalSignal(signalNumber);
+  };
+  action.sa_flags = SA_SIGINFO;
+  sigemptyset(&action.sa_mask);
+  ::sigaction(SIGSEGV, &action, nullptr);
+  ::sigaction(SIGABRT, &action, nullptr);
   try { return run(argc, argv); }
   catch (const std::exception& error) {
     std::cerr << "REPO_FILE_BENCHMARK_FAILED: " << error.what() << '\n';

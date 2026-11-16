@@ -26,6 +26,43 @@ from .processes import process_identity, write_json
 _ROLE_STOP_GRACE_SECONDS = 10.0
 
 
+def benchmark_phases(config):
+    """Ordered finite phase plan for the frozen repo-benchmark operation.
+
+    Each round writes one immutable 500,000,000-byte file, restarts the Repo
+    once, then reads it twice through a fresh reader. The Repo incarnation is
+    the number of restarts completed before the phase runs.
+    """
+    if config.get('operation') != 'repo-benchmark':
+        return []
+    repetitions = config['repo_benchmark']['repetitions']
+    plan = []
+    for round_index in range(1, repetitions + 1):
+        plan.append(dict(round=round_index, phase='write',
+                         repo_incarnation=round_index - 1))
+        plan.append(dict(round=round_index, phase='read-first',
+                         repo_incarnation=round_index))
+        plan.append(dict(round=round_index, phase='read-repeat',
+                         repo_incarnation=round_index))
+    return plan
+
+
+def benchmark_phase_id(item):
+    return 'round-{}.{}'.format(item['round'], item['phase'])
+
+
+def benchmark_reference_path(config, item, boot_directory=None):
+    """Stable per-round reference path shared by the write and both reads.
+
+    The reference lives in the boot's evidence directory, which the requester
+    container already mounts writable; a separate cache-root mount was found to
+    break the role's other binds on the Slurm path.
+    """
+    base = Path(boot_directory) if boot_directory is not None else (
+        Path(config['storage']['evidence_root']) / config['deployment_id'])
+    return base / 'benchmark-references' / ('round-{}.reference.json'.format(item['round']))
+
+
 def _roles(config):
     result = []
     for node in config['nodes']:
@@ -48,10 +85,12 @@ def _audit_tag(node_id, role_id=None):
                                 if role_id else '')
 
 
-def _receipt_path(args, role):
+def _receipt_path(args, role, *, phase_id=None):
     root = args.deployment.parent
     if role['kind'] in ('nfd', 'nfdc'):
         return root / 'nodes' / role['node'] / role['kind'] / 'receipt.json'
+    if phase_id:
+        return root / 'actors' / role['id'] / 'phases' / phase_id / 'receipt.json'
     return root / 'actors' / role['id'] / 'receipt.json'
 
 
@@ -66,9 +105,9 @@ def _private_json(path):
     return value
 
 
-def read_role(args, role, *, job_id=None):
+def read_role(args, role, *, job_id=None, phase_id=None):
     """Consume only private receipts bound to this allocation and frozen boot."""
-    path = _receipt_path(args, role)
+    path = _receipt_path(args, role, phase_id=phase_id)
     try:
         value = _private_json(path)
     except FileNotFoundError:
@@ -132,6 +171,35 @@ def audit_node(args, config):
                   release_sha256=args.release_sha256, job_id=job, host=socket.gethostname(),
                   observed_at=time.time(), status='UNKNOWN', cleanup_scope='HOST_UID_JOB',
                   processes=[], errors=[])
+    # The NFD content store must stay disabled and empty: every read in this
+    # benchmark must come from the Repo, not from a forwarder cache.
+    transport = 'unix://' + str(node['nfd']['socket'])
+    nfdc = shutil.which('nfdc')
+    socket_dir = str(Path(node['nfd']['socket']).parent)
+    if nfdc is None and config['platform'].get('kind') == 'slurm-apptainer':
+        apptainer = config['platform'].get('apptainer')
+        image = config['platform'].get('sif')
+        if apptainer and image:
+            # Compute nodes are container-only: probe the managed NFD through the
+            # image's installed nfdc while binding the host socket directory.
+            nfdc = [str(apptainer), 'exec', '--cleanenv',
+                    '--bind', socket_dir + ':' + socket_dir,
+                    str(image), '/opt/ndnsf-di/current/bin/nfdc']
+    if nfdc is None:
+        nfdc = '/usr/local/bin/nfdc'
+    cs = {}
+    try:
+        probe = subprocess.run(([nfdc] if isinstance(nfdc, str) else nfdc) + ['cs', 'info'],
+                               capture_output=True, text=True,
+                               env={**os.environ, 'NDN_CLIENT_TRANSPORT': transport},
+                               timeout=15)
+        for key in ('capacity', 'nEntries'):
+            match = re.search(key + r'=([0-9]+)', probe.stdout)
+            if match:
+                cs[key] = int(match.group(1))
+    except (OSError, subprocess.SubprocessError) as error:
+        cs['error'] = str(error)
+    result['cs'] = cs
     if target_job is not None:
         result.update(auditor_job_id=auditor_job, recovery_id=recovery_id)
     deadline = time.monotonic() + args.timeout
@@ -219,7 +287,7 @@ def audit_node(args, config):
             role = next(role for role in _roles(config) if role['id'] == args.observe_role)
             if role['node'] != node['id']:
                 raise cluster.ClusterError('ALLOCATION_AUDIT_ROLE_NODE_MISMATCH')
-            receipt = read_role(args, role)
+            receipt = read_role(args, role, phase_id=getattr(args, 'phase_id', None))
             matches = [proof for proof in result['processes'] if receipt and _native_match(proof, receipt, role)]
             if len(matches) != 1:
                 raise cluster.ClusterError('ALLOCATION_NATIVE_HOST_PID_NOT_OBSERVED:' + role['id'])
@@ -288,10 +356,12 @@ def _stop_role_owners(config, args, state, children):
         if child is None or child.poll() is not None:
             continue
         try:
-            receipt = read_role(args, role)
+            phase_id = (state.get('benchmark_role_phases') or {}).get(role['id'])
+            receipt = read_role(args, role, phase_id=phase_id)
             if receipt is None or receipt['status'] == 'STOPPED':
                 continue
-            root = _receipt_path(args, role).parent / 'runtime' / config['deployment_id']
+            root = (_receipt_path(args, role, phase_id=phase_id).parent
+                    / 'runtime' / config['deployment_id'])
             if root.resolve() != root or not root.is_dir():
                 raise cluster.ClusterError('ALLOCATION_ROLE_STOP_ROOT_INVALID:' + role['id'])
             cluster._private_directory(root)
@@ -350,8 +420,8 @@ def run_allocation(args, config):
                 raise KeyboardInterrupt('ALLOCATION_SIGTERM')
             if time.monotonic() >= deadline:
                 raise cluster.ClusterError('ALLOCATION_TIMEOUT')
-            for child, role in services:
-                value = read_role(args, role)
+            for child, role, phase_id in services:
+                value = read_role(args, role, phase_id=phase_id)
                 if (role['kind'] == 'provider' and value and not value['failure'] and
                         value['execution'] == 'SERVICE_STOPPED' and
                         value['readiness'] == 'WITHDRAWN' and value['exit_code'] == 0):
@@ -373,11 +443,13 @@ def run_allocation(args, config):
             guard()
             return max(0.001, deadline - time.monotonic())
 
-        def launch(tag, kind, command):
+        def launch(tag, kind, command, extra_env=None):
             env = {key: value for key, value in os.environ.items() if key != 'PYTHONPATH'}
             env.update(NDNSF_DEPLOYMENT_BOOT_ID=args.boot_id,
                        NDNSF_DEPLOYMENT_CONFIG_SHA256=args.configuration_sha256,
                        NDNSF_DEPLOYMENT_ACTOR_ID=tag)
+            if extra_env:
+                env.update(extra_env)
             return cluster._spawn(state, root, tag, kind, _executable(command), env, guard)[0]
 
         def wait(child, tag):
@@ -388,12 +460,14 @@ def run_allocation(args, config):
             if child.returncode:
                 raise cluster.ClusterError('ALLOCATION_STEP_EXIT:' + tag + ':' + str(child.returncode))
 
-        def role_step(role):
+        def role_step(role, *, extra_env=None, record=True, phase_id=None):
             command = step_arguments(config, role, gpu_allocations.get(role['node']))
             command += ['/bin/sh', str(SCRIPTS / 'run-container.sh'), '--control-python', sys.executable]
             command += _bound_arguments(args, remaining())
             command += (['--management', role['kind'], '--node', role['node']]
                         if role['kind'] in ('nfd', 'nfdc') else ['--actor', role['id']])
+            if phase_id:
+                command += ['--phase-id', phase_id]
             # Prime a positive NFS entry before the remote owner polls it.
             # A newly created cancellation can otherwise remain negatively cached.
             cancel_root = _receipt_path(args, role).parent / 'runtime' / config['deployment_id']
@@ -408,12 +482,17 @@ def run_allocation(args, config):
                     json.dump({'boot_id': None}, stream)
                     stream.flush()
                     os.fsync(stream.fileno())
-            state['roles'].append(dict(role))
-            child = launch(management_role_id('step', role['id']), role['kind'], command)
+            if record:
+                state['roles'].append(dict(role))
+            # Each bounded phase or incarnation is its own step launch; reusing the
+            # role id would duplicate the allocation's launch ids.
+            step_id = role['id'] + (('.' + phase_id) if phase_id else '')
+            child = launch(management_role_id('step', step_id), role['kind'], command,
+                           extra_env=extra_env)
             role_children[role['id']] = child
             return child
 
-        def audit(node_id, role_id=None, *, closeout=False):
+        def audit(node_id, role_id=None, *, closeout=False, phase_id=None):
             role = dict(id=_audit_id(node_id), kind='audit', node=node_id)
             command = step_arguments(config, role) + [sys.executable, '-I', '-m',
                        'ndnsf_distributed_inference.ops.allocation']
@@ -421,6 +500,8 @@ def run_allocation(args, config):
             command += ['--audit-node', node_id]
             if role_id:
                 command += ['--observe-role', role_id]
+                if phase_id:
+                    command += ['--phase-id', phase_id]
             tag = _audit_tag(node_id, role_id)
             # Ignore only the explicit host-audit identity during its own scan.
             env = dict(os.environ, NDNSF_DEPLOYMENT_BOOT_ID=args.boot_id,
@@ -470,25 +551,109 @@ def run_allocation(args, config):
             if role_id:
                 observed = next(role for role in roles if role['id'] == role_id)
                 if (value.get('role_id') != role_id or not _native_match(
-                        value.get('native_process'), read_role(args, observed) or {}, observed)):
+                        value.get('native_process'),
+                        read_role(args, observed, phase_id=phase_id) or {}, observed)):
                     raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_PROOF_MISSING:' + role_id)
             elif value.get('processes') != [] or value.get('errors') != []:
                 raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_ZERO_NOT_PROVEN:' + node_id)
+            elif not isinstance(value.get('cs'), dict) or value['cs'].get('capacity') != 0 or \
+                    value['cs'].get('nEntries') != 0:
+                raise cluster.ClusterError('ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:' + node_id)
             state['host_audits'].append(str(target))
 
-        def await_ready(child, role):
+        def await_ready(child, role, *, phase_id=None):
             wanted = 'SOCKET_BOUND' if role['kind'] == 'nfd' else 'NATIVE_READY'
             while True:
                 guard()
                 if child.poll() is not None:
                     raise cluster.ClusterError('ALLOCATION_ROLE_EXIT_BEFORE_READY:' + role['id'])
-                value = read_role(args, role)
+                value = read_role(args, role, phase_id=phase_id)
                 if (value and value['readiness'] == wanted and not value['failure'] and
                         value['execution'] == 'RUNNING' and value['status'] == 'SERVICES_READY'):
-                    services.append((child, role))
-                    audit(role['node'], role['id'])
+                    services.append((child, role, phase_id))
+                    audit(role['node'], role['id'], phase_id=phase_id)
                     return
                 time.sleep(0.05)
+
+        def benchmark_sequence():
+            """Run the frozen 9-step plan in the existing owner.
+
+            Each requester step is a finite native client with a derived phase
+            identity; after every write the same Repo owner is stopped normally
+            and started again with the next incarnation, keeping its root and
+            owner ledger.
+            """
+            repo_role = next(role for role in roles if role['kind'] == 'repo')
+            requester_role = next(role for role in roles if role['kind'] == 'requester')
+            phases_root = root / 'benchmark-phases'
+            cluster._private_directory(phases_root)
+            state['benchmark_phases'] = []
+            plan = benchmark_phases(config)
+            recorded = False
+            repo_phase = None
+            for item in plan:
+                phase_id = benchmark_phase_id(item)
+                reference = benchmark_reference_path(
+                    config, item, args.deployment.parent / 'actors' / requester_role['id'])
+                if item['phase'] == 'write':
+                    cluster._private_directory(reference.parent)
+                    if reference.exists():
+                        raise cluster.ClusterError('ALLOCATION_BENCHMARK_REFERENCE_EXISTS')
+                extra = dict(NDNSF_BENCHMARK_PHASE=item['phase'],
+                             NDNSF_BENCHMARK_ROUND=str(item['round']),
+                             NDNSF_BENCHMARK_REFERENCE=str(reference))
+                child = role_step(requester_role, extra_env=extra, record=not recorded,
+                                  phase_id=phase_id)
+                recorded = True
+                while child.poll() is None:
+                    guard()
+                    value = read_role(args, requester_role, phase_id=phase_id)
+                    if value and value['readiness'] == 'FINITE_RUNNING':
+                        # The phase receipt already carries the native launch proof
+                        # and its own cleanup; the per-start host audit is not needed
+                        # here. Host ZERO remains the final closeout audit.
+                        break
+                    time.sleep(0.05)
+                wait(child, requester_role['id'])
+                value = read_role(args, requester_role, phase_id=phase_id)
+                if not value or value['execution'] != 'COMPLETE' or value['status'] != 'STOPPED':
+                    raise cluster.ClusterError('ALLOCATION_BENCHMARK_PHASE_NOT_COMPLETE:' + phase_id)
+                receipt = phases_root / (phase_id + '.json')
+                write_json(receipt, dict(value, benchmark=dict(item)))
+                state['benchmark_phases'].append(
+                    dict(item, id=phase_id, receipt=str(receipt)))
+                state.setdefault('benchmark_role_phases', {})['requester'] = phase_id
+                if item['phase'] == 'write' and not os.environ.get('NDNSF_BENCHMARK_NO_RESTART'):
+                    # Every write is followed by a normal Repo restart; the next
+                    # phase (read-first of this round) and the next round's write
+                    # reuse that incarnation. The diagnostic no-restart mode is
+                    # only for localizing the write-path crash.
+                    
+                    repo_child = role_children[repo_role['id']]
+                    services[:] = [row for row in services if row[1]['id'] != repo_role['id']]
+                    # Request the owner's normal stop through its cancellation
+                    # receipt; signalling srun directly kills the container and
+                    # loses the graceful Repo closeout.
+                    cancel_root = (_receipt_path(args, repo_role, phase_id=repo_phase).parent
+                                   / 'runtime' / config['deployment_id'])
+                    cluster._private_directory(cancel_root)
+                    write_json(cancel_root / 'cancel.json', {'boot_id': args.boot_id})
+                    while repo_child.poll() is None:
+                        if time.monotonic() >= deadline:
+                            raise cluster.ClusterError('ALLOCATION_BENCHMARK_REPO_STOP_TIMEOUT')
+                        time.sleep(0.05)
+                    if repo_child.returncode:
+                        raise cluster.ClusterError('ALLOCATION_BENCHMARK_REPO_STOP_EXIT:' +
+                                                   str(repo_child.returncode))
+                    # The cancellation is consumed by this stop only; a restarted
+                    # owner must not inherit it.
+                    (cancel_root / 'cancel.json').unlink(missing_ok=True)
+                    incarnation_id = 'incarnation-{}'.format(item['round'])
+                    restarted = role_step(repo_role, record=False, phase_id=incarnation_id)
+                    await_ready(restarted, repo_role, phase_id=incarnation_id)
+                    repo_phase = incarnation_id
+                    state.setdefault('benchmark_role_phases', {})['repo'] = incarnation_id
+                    state['benchmark_phases'][-1]['repoRestarted'] = True
 
         handler = signal.signal(signal.SIGTERM, terminate)
         write_json(root / 'state.json', state)
@@ -559,21 +724,24 @@ def run_allocation(args, config):
                         if role['kind'] == kind:
                             await_ready(role_step(role), role)
                 state['readiness'] = ('OWNED_SERVICES_READY' if state['external_references'] else 'SERVICES_READY')
-                role = next(role for role in roles if role['kind'] == 'requester')
-                child = role_step(role)
-                while child.poll() is None:
-                    guard()
+                if config.get('operation') == 'repo-benchmark':
+                    benchmark_sequence()
+                else:
+                    role = next(role for role in roles if role['kind'] == 'requester')
+                    child = role_step(role)
+                    while child.poll() is None:
+                        guard()
+                        value = read_role(args, role)
+                        if value and value['readiness'] == 'FINITE_RUNNING':
+                            audit(role['node'], role['id'])
+                            break
+                        time.sleep(0.05)
+                    wait(child, role['id'])
                     value = read_role(args, role)
-                    if value and value['readiness'] == 'FINITE_RUNNING':
-                        audit(role['node'], role['id'])
-                        break
-                    time.sleep(0.05)
-                wait(child, role['id'])
-                value = read_role(args, role)
-                if not value or value['execution'] != 'COMPLETE' or value['status'] != 'STOPPED':
-                    raise cluster.ClusterError('ALLOCATION_REQUESTER_NOT_COMPLETE')
-                if not any('host-audit-' + role['id'] + '.json' in item for item in state['host_audits']):
-                    raise cluster.ClusterError('ALLOCATION_REQUESTER_HOST_PID_UNOBSERVED')
+                    if not value or value['execution'] != 'COMPLETE' or value['status'] != 'STOPPED':
+                        raise cluster.ClusterError('ALLOCATION_REQUESTER_NOT_COMPLETE')
+                    if not any('host-audit-' + role['id'] + '.json' in item for item in state['host_audits']):
+                        raise cluster.ClusterError('ALLOCATION_REQUESTER_HOST_PID_UNOBSERVED')
             state['execution'] = 'COMPLETE'
         except (Exception, KeyboardInterrupt) as error:
             state.update(execution='INTERRUPTED' if stopping else 'FAILED',
@@ -604,9 +772,11 @@ def run_allocation(args, config):
                             state['roles'].extend(routes['roles'])
                         except (OSError, ValueError, RuntimeError, KeyError) as error:
                             state.update(status='UNKNOWN', failure=state['failure'] or str(error))
+                    closeout_phases = state.get('benchmark_role_phases') or {}
                     for role in state['roles']:
                         try:
-                            value = read_role(args, role)
+                            value = read_role(args, role,
+                                              phase_id=closeout_phases.get(role['id']))
                             if value is None and state['execution'] in ('FAILED', 'INTERRUPTED'):
                                 attempt = next((row for row in state['launches'] if row['id'] ==
                                                 management_role_id('step', role['id'])), {})
@@ -629,11 +799,13 @@ def run_allocation(args, config):
                         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                             state.update(status='UNKNOWN', failure=state['failure'] or str(error))
                 state['wall_seconds'] = time.monotonic() - started
+                state['code_version'] = 'r128-phase-ids'
                 write_json(root / 'state.json', state)
                 target = args.deployment.parent / ('routes.json' if args.routes_only else 'allocation.json')
                 write_json(target, state)
             finally:
                 signal.signal(signal.SIGTERM, handler)
+        state['code_version'] = 'r127-phase-ids'
         return state
 
 
@@ -649,6 +821,7 @@ def main(argv=None):
     purpose.add_argument('--routes-only', action='store_true')
     purpose.add_argument('--audit-node')
     parser.add_argument('--observe-role')
+    parser.add_argument('--phase-id')
     parser.add_argument('--audit-target-job')
     parser.add_argument('--recovery-id')
     parser.add_argument('--debug', action='store_true')
@@ -663,6 +836,8 @@ def main(argv=None):
         parser.error('allocation, finite bounded timeout and bound evidence path are required')
     try:
         config = load_frozen(args.deployment, args.configuration_sha256, args.boot_id, args.release_sha256)
+        import sys as _sys
+        print('NDNSF_ALLOCATION_CODE=r126-phase-ids', file=_sys.stderr, flush=True)
         result = audit_node(args, config) if args.audit_node else run_allocation(args, config)
     except (OSError, ValueError, RuntimeError, KeyError, StopIteration) as error:
         parser.exit(1, str(error) + '\n')

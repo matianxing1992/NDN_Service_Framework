@@ -53,6 +53,14 @@ NDNSF:   https://github.com/matianxing1992/NDN_Service_Framework
 sudo ./install_ndnsf_stack.sh
 ```
 
+首次安装后，固定复用`<checkout>/build`（普通构建、发布候选和全局安装）及
+`<checkout>/build-ASAN-UBSAN`（插桩诊断和测试）两套目录。Waf配置／锁状态、对象、
+生成头文件和链接产物独立；ASan/UBSan测试须核实加载插桩库。全局安装入口只接受普通
+`build/`，禁止安装诊断目录；正常运行和资格验证仍使用全局安装的程序、库和绑定。
+先修configure／`--out`接线并正常生成配置，禁止手改`_cache.py`等Waf缓存绕过失败。
+保留增量缓存，按需清理失效产物，不按Spec、时间或重试创建副本。当前bootstrap安装脚本
+要求源码树外的临时构建目录；安装结束应收尾清理，不能把它留成额外正常build。
+
 该脚本按依赖顺序安装整个栈：
 
 1. 安装 NDNSF 栈默认需要的编译/运行时系统包。

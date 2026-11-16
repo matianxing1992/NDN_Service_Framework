@@ -24,6 +24,8 @@
 
 namespace ndnsf::di {
 
+class ModelPreparationCache;
+
 class RepositorySourceProvider;
 class RepositoryArtifactPublisher;
 
@@ -207,6 +209,7 @@ public:
 
 namespace detail {
 struct RuntimeState;
+struct FrozenConfig;
 struct RuntimeTestAccess;
 struct StoredModelPreparationOperation;
 }
@@ -286,6 +289,13 @@ public:
   PreparedModel prepare(const std::string& modelKey = "default",
                         const PrepareOptions& options = {}) const;
 
+  /** Prepare one automatic ONNX source without a registered model entry.
+   * The catalog is derived from the same inspection the native path uses; the
+   * existing preparation cache and publication owner stay authoritative.
+   * Requires at least one registered source-model template. */
+  PreparedModel prepareOnnx(const std::filesystem::path& source,
+                            const PrepareOptions& options = {}) const;
+
   /** Store this User's prepared original Data in an independent Repo.
    * This confirms storage, not key delegation or permission for another User.
    * Partial failure retains existing Repo objects for Owner reconciliation.
@@ -340,6 +350,12 @@ public:
                                   const PrepareOptions& options = {}) const;
 
 private:
+
+  PreparedModel prepareWithSpec(const detail::FrozenConfig& frozen,
+                                const std::string& modelKey,
+                                const std::shared_ptr<ModelPreparationCache>& cache,
+                                const PrepareOptions& options) const;
+
   explicit User(std::shared_ptr<detail::RuntimeState> state,
                 std::string profileName);
 

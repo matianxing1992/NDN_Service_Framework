@@ -2159,7 +2159,10 @@ RepoClientCompat::requestSelectedService(
               throw std::runtime_error(
                 std::string("repo-ack-authentication-failed: selected Provider ACK was absent, duplicated, or untrusted") +
                 " (matching=" + std::to_string(matching) +
-                ", observed=" + std::to_string(closure.candidates.size()) + ")");
+                ", observed=" + std::to_string(closure.candidates.size()) +
+                ", service=" + serviceName.toUri() +
+                ", provider=" + providerIdentity.toUri() +
+                ", requestId=" + closure.requestId.toUri() + ")");
             }
             if (startState->abandoned.load(std::memory_order_acquire) ||
                 std::chrono::steady_clock::now() >= deadline) {
@@ -3249,9 +3252,13 @@ RepoClient::publishData(const RepoDataPublication& input,
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
   const auto target = m_impl->target(input.target);
+  // Original-packet publication carries a large request payload and its ACK
+  // travels through the SVS request path, so the collection window must cover
+  // the sync latency rather than only the local round trip.
+  constexpr int PUBLICATION_ACK_COLLECTION_MS = 1000;
   const auto manifest = RepoClientCompat::commitUserStorageOriginalPackets(
-    *m_impl->user, target, request, nextPacket, verifySignature, 200,
-    remainingMs(options.deadline), options.requireCurrent);
+    *m_impl->user, target, request, nextPacket, verifySignature,
+    PUBLICATION_ACK_COLLECTION_MS, remainingMs(options.deadline), options.requireCurrent);
   RepoPublishResult result;
   // Deliberately no operationReference: the Repo's status service does not resolve an insert
   // operation by id (`repo-publish-operation-not-found`), so handing the caller an id it

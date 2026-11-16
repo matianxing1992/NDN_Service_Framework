@@ -3629,6 +3629,8 @@ prepareNativeCanonicalOnnxRole(
         workerRecipe.materializedRole = true;
         workerRecipe.recipeDigest = nativePlanningDigest(
           canonicalNativeOnnxRecipeJson(workerRecipe));
+        std::fprintf(stderr, "ASSEMBLER_RECIPE_CANONICAL %s\n",
+                     canonicalNativeOnnxRecipeJson(workerRecipe).c_str());
         // The parent has admitted the complete file pair above. This worker
         // certifies only the bounded graph file; it never consumes weights.
         // The independent sidecar owner remains alive through finalization.

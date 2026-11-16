@@ -207,7 +207,9 @@ void validateCoreFields(const NativePlacementPlanCore& core, bool validateAssemb
     const auto& automaticDigest = assembly->second.automaticContractDigest;
     if (core.automaticShapeSeed ? automaticDigest != core.automaticShapeSeed->contractDigest
                                 : !automaticDigest.empty())
-      throw std::invalid_argument("sealed role automatic contract differs from its request seed");
+      throw std::invalid_argument("sealed role automatic contract differs from its request seed: role=" +
+        role + " assembly=" + automaticDigest + " seed=" +
+        (core.automaticShapeSeed ? core.automaticShapeSeed->contractDigest : std::string("<none>")));
     if (validateAssemblies && !core.fixedCoreOwner) validateNativeAssembly(assembly->second);
   }
   if (core.automaticShapeSeed) {

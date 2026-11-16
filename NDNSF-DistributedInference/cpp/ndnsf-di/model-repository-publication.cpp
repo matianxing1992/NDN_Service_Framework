@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-repository.hpp"
+#include "ndnsf-distributed-repo/repo-commit-pipeline.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/TimelineTrace.hpp"
 #include "ndnsf-distributed-repo/RepoClient.hpp"
@@ -245,6 +246,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
     auto config = repo::PersistentRepoClientConfig{};
     config.servicePrefix = ndn::Name(target.servicePrefix);
     config.providerScope = {ndn::Name(target.providerIdentity)};
+    config.ackCollectionTimeMs = 2000;
     auto client = repo::RepoClient::makePersistent(user, std::move(config));
     repo::RepoDataFetch request;
     request.packetNames.reserve(names.size());
@@ -345,6 +347,7 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       commitConfig.servicePrefix = ndn::Name(target.servicePrefix);
       commitConfig.providerScope = {ndn::Name(target.providerIdentity)};
       commitConfig.dataOnly = true;
+      commitConfig.ackCollectionTimeMs = 2000;
       auto commitFacade = std::make_shared<repo::RepoClient>(
         repo::RepoClient::makePersistent(user, std::move(commitConfig)));
       commitPacketGroup(*user, target, group, verify, callBudget, callCurrent, 2,
@@ -428,6 +431,7 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
   publicationConfig.servicePrefix = ndn::Name(repository.servicePrefix);
   publicationConfig.providerScope = {ndn::Name(repository.providerIdentity)};
   publicationConfig.dataOnly = true;
+  publicationConfig.ackCollectionTimeMs = 2000;
   auto publicationClient = std::make_shared<repo::RepoClient>(repo::RepoClient::makePersistent(
     std::shared_ptr<ndn_service_framework::ServiceUser>(&writer,
       [] (ndn_service_framework::ServiceUser*) {}),

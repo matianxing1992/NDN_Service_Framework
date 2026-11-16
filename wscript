@@ -980,6 +980,13 @@ def build(bld):
     bld._ndnsf_default_scope = not bld.targets and bld.cmd in ('build', 'install')
     if not bld.env.NDNSF_COMPONENTS:
         bld.fatal('Reconfigure with --components before building or installing this source')
+    # Diagnostic instrumentation is never a release artifact. Reject every
+    # install path before any install task is created; a selected-target install
+    # or the shared/static libraries would otherwise copy the instrumented
+    # closure into the global LIBDIR.
+    if bld.env.sanitize_di and bld.cmd in ('install', 'uninstall'):
+        bld.fatal('--sanitize-di builds must not be installed; reconfigure the '
+                  'ordinary build/ tree without the diagnostic option')
     if 'uav' in bld.env.NDNSF_COMPONENTS and bld.env.HAVE_GSTREAMER:
         bld.program(
             target='uav-video-pipeline-probe',
@@ -1066,7 +1073,7 @@ def build(bld):
                                 'NDNSF-DistributedInference/cpp/adapters/onnx'],
                       export_includes=['.', 'ndn-service-framework',
                                        'NDNSF-DistributedInference/cpp'],
-                      install_path='${LIBDIR}',
+                      install_path=None if bld.env.sanitize_di else '${LIBDIR}',
                       linkflags=['-Wl,-rpath,$ORIGIN'] + di_sanitize_linkflags)
         if bld.env.enable_static:
             di_static = bld.stlib(features='cxx cxxstlib',

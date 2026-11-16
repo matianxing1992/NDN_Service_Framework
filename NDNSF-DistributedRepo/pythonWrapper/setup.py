@@ -352,6 +352,7 @@ def build_extension() -> Extension:
         sources=[
             "src/py_repoclient/_py_repoclient.cpp",
             "src/py_repoclient/artifact_repository_bindings.cpp",
+            "src/py_repoclient/unified_client_bindings.cpp",
         ],
         include_dirs=[
             *explicit_includes,

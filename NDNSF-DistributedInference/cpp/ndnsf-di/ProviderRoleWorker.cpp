@@ -961,6 +961,7 @@ ProviderRoleWorker::snapshot() const
   // Preserve the public meaning of readyQueueDepth: preparation work is
   // bounded by the same capacity but is not a role admitted to execution.
   snapshot.readyQueueDepth = m_queue.size();
+  snapshot.preparationQueueDepth = m_preparationQueue.size();
   snapshot.readyQueueCapacity = m_readyQueueCapacity;
   const auto waitSnapshot = m_dependencyWaitScheduler->snapshot();
   snapshot.waitingForInputCount = waitSnapshot.queuedCount + waitSnapshot.activeCount;

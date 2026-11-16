@@ -23,6 +23,9 @@ or a past cleanup authorization valid for a new run.
   and `/var/tmp`. Use privileged read-only inventory when permissions hide root-owned data;
   do not infer absence or zero size from permission errors. Check deleted-open files with
   `lsof +L1` when `df` and allocated-file totals differ materially.
+  A privileged root total does not repair an earlier unprivileged child-directory table:
+  rerun the exact incomplete scopes with read access before reporting their totals. A path
+  newly visible in a privileged scan is not necessarily newly created or an active job.
 - Report parent/child overlap and hard links explicitly. Count allocated blocks by unique
   `(device, inode)`; reclaimable blocks require all links to be selected and no live open file.
   Do not add overlapping directory totals or treat logical model sizes as independent copies.
@@ -42,6 +45,34 @@ Use CodeGraph for code references only when an index exists, then confirm agains
 - Preserve current models, shared content caches, original Repo Data, active build/install
   prefixes, credential stores and minimum failure-reproduction inputs. A directory named for
   an older Spec can still supply the current feature's executable or warm-cache baseline.
+- Distinguish build selection from runtime dependency. A Waf `out_dir` reference alone is
+  not a reason to retain an idle build after global installation. Check installed executable
+  and library paths, loader search paths, bindings and live mappings; archive the old selector
+  and retire it with its outputs. Restoring an intact canonical selector only selects an
+  existing tree; it does not reconfigure that tree or prove the installed product works.
+  This retirement rule does not remove the two fixed build trees retained below.
+  Preserve the ordinary build user's ownership and writability when restoring Waf selectors;
+  privileged copies can silently leave root-owned lock files. Check the exact selector and
+  retained build configuration as that user. Correct only identified ownership mistakes,
+  never recursively change the checkout or installation ownership.
+  Waf 2.0.24 discovers `WAFLOCK` by basename in a directory listing: an absolute
+  lock path can configure successfully but fail discovery on the next build.
+  For an incompatible scratch check, exclusively claim a distinct temporary lock
+  basename, retain the canonical selector, and retire that exact temporary selector
+  together with the owned scratch output after the check.
+- Retain this checkout's fixed pair: `build/` for normal builds/release/global installation,
+  and `build-ASAN-UBSAN/` for reusable instrumented diagnostics/tests. Neither is disposable
+  merely because it is idle or the normal runtime is globally installed. Preserve separate
+  Waf configuration/locks, objects, generated headers and link outputs; diagnostic tests load
+  the instrumented libraries. Only the normal `build/` may install globally. Fix configure/
+  `--out` wiring and regenerate configuration rather than hand-editing `_cache.py` or other
+  Waf caches. Do not retain per-Spec, timestamped, per-retry or nested build copies. Clean
+  invalidated contents selectively after active-use checks while retaining useful incremental
+  caches. The bootstrap installer's out-of-checkout scratch remains temporary, not a third
+  persistent NDNSF tree.
+- Inspect review snapshots for nested `candidate/repo/build`, private installs and earlier
+  review packages. Preserve unique source/config/measurement content without copying the
+  whole tree again. Distinguish real duplicate content from hardlinks before estimating gain.
 - For each data purpose, retain only the latest usable version: once a newer SIF/cache/release
   manifest is qualified, old candidate SIFs (about 4.3GB each), old caches and superseded
   intermediates go through an explicit allowlist; keep build records, runtime definitions and
@@ -87,6 +118,11 @@ Use CodeGraph for code references only when an index exists, then confirm agains
 5. Verify archives by fully reading members and checking names, hashes and link metadata before
    deleting originals. Record the final archive hash. Restrict archives containing test identities
    or credentials (normally directory 0700/files 0600). Never follow archive symlinks when checking.
+   For many overlapping snapshots, content-addressed archive objects plus an original-path
+   manifest can avoid storing identical source/report bytes repeatedly. Record original inode
+   link groups, ownership, modes, times and symlink targets; bytewise deduplication must not
+   silently turn independent original files into hardlinks when restoring them. Discard only
+   established generated binaries; keep core dumps, unfamiliar formats and unresolved inputs.
 6. Revalidate selected file identity/content before removal; reject changes. Delete only the
    allowlisted entries and empty directories. Stale Unix sockets can be removed after proving
    inactivity and retaining endpoint identity; unexpected special files require investigation.
@@ -110,3 +146,7 @@ purpose workspaces and keeping durable inputs/evidence outside scratch.
 For the concrete 2026-11-07 case and known pitfalls, read
 [references/2026-11-07-case.md](references/2026-11-07-case.md) when useful. Its sizes and paths
 are historical evidence, not current inventory or an executable deletion list.
+
+For the repeated-build and nested-review failure observed on 2026-11-10, read
+[references/2026-11-10-build-retirement.md](references/2026-11-10-build-retirement.md).
+Use its distinctions and closeout method, never its historical paths as a new allowlist.

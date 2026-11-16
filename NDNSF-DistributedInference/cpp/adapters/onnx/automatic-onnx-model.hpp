@@ -218,6 +218,13 @@ struct AutomaticOnnxModel
 AutomaticOnnxModel
 inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyControl& control);
 
+/** Inspect an already opened (and therefore already authenticated) source.
+ * This split lets a caller that owns the source bytes reuse the same
+ * inspection without reopening a file path. */
+AutomaticOnnxModel
+inspectAutomaticOnnxModel(OpenedAutomaticOnnxSource opened,
+                          const NativeAssemblyControl& control);
+
 /** Derive only finite supported graph relations, retaining opaque regions as atomic. */
 std::vector<ShapeRelation>
 deriveAutomaticOnnxShapeRelations(const AutomaticOnnxContract& contract,

@@ -275,7 +275,7 @@ def test_explicit_core_directory_rejects_dependency_only_base(tmp_path):
 
 
 @pytest.mark.parametrize('old,new,reason', [
-    ('./waf install -j2 -v --destdir=/opt/ndnsf-waf-dest', './waf -j2', 'WAF_INSTALL_CONTRACT_MISSING'),
+    ('./waf install -j"$(nproc)" -v --destdir=/opt/ndnsf-waf-dest', './waf -j2', 'WAF_INSTALL_CONTRACT_MISSING'),
     ('NDNSF_SKIP_DEV_PIP_INSTALL=1', 'NDNSF_SKIP_DEV_PIP_INSTALL=0', 'WAF_INSTALL_CONTRACT_MISSING'),
     ('--with-tests', '', 'WAF_INSTALL_CONTRACT_MISSING'),
     (',ndnsf-distributed-repo,', ',', 'WAF_INSTALL_CONTRACT_MISSING'),

@@ -57,9 +57,13 @@ constexpr std::uint64_t MaxWorkerFramePayloadBytes = 2ULL * 1024 * 1024 * 1024;
 constexpr std::size_t WorkerPayloadReserveChunk = 16 * 1024 * 1024;
 
 void
-workerFail(const char* code)
+workerFail(const char* code, const char* detail = nullptr)
 {
-  throw std::runtime_error(std::string("DI_NATIVE_ONNX_") + code);
+  // The code stays the leading token so callers can match the family; the
+  // optional detail is appended for parent-side diagnosis.
+  throw std::runtime_error(detail == nullptr
+    ? std::string("DI_NATIVE_ONNX_") + code
+    : std::string("DI_NATIVE_ONNX_") + code + ": " + detail);
 }
 
 std::string
@@ -1617,10 +1621,14 @@ entryBudgetGate(const NativeCanonicalSource& source,
       source.initializerBytes->size() > control.maxSourceBytes) {
     workerFail("INITIALIZER_LIMIT");
   }
-  if (recipe.adapterId.empty() || recipe.backend.empty() ||
-      recipe.roleKind.empty() || recipe.nodeIndices.empty() ||
-      recipe.nodeIndices.size() > recipe.maxNodes) {
-    workerFail("RECIPE");
+  if (recipe.adapterId.empty() || recipe.backend.empty()) {
+    workerFail("RECIPE", "adapter/backend identity is empty");
+  }
+  if (recipe.roleKind.empty()) {
+    workerFail("RECIPE", "role kind is empty");
+  }
+  if (recipe.nodeIndices.empty() || recipe.nodeIndices.size() > recipe.maxNodes) {
+    workerFail("RECIPE", "node selection is empty or exceeds maxNodes");
   }
   if (recipe.expectedInputs.empty() || recipe.expectedOutputs.empty()) {
     workerFail("IO_CONTRACT");
@@ -2052,7 +2060,12 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
   const std::string canonicalJson = canonicalNativeOnnxRecipeJson(recipe);
   const std::string derivedDigest = digestOfRecipeJson(canonicalJson);
   if (!recipe.recipeDigest.empty() && recipe.recipeDigest != derivedDigest) {
-    workerFail("RECIPE");
+    {
+      const std::string detail = "recipe digest differs: bound=" + recipe.recipeDigest +
+        " derived=" + derivedDigest + " canonical=" + canonicalJson;
+      std::fprintf(stderr, "RECIPE_DIGEST_MISMATCH %s\n", detail.c_str());
+    }
+    workerFail("RECIPE", "recipe digest differs from the re-derived canonical digest");
   }
   const std::string metadata = buildNativeOnnxWorkerRequestMetadata(
     recipe, fileBacked ? std::optional<std::uint64_t>(modelFileBytes) :
@@ -2373,7 +2386,15 @@ runNativeOnnxAssemblyWorkerAt(const NativeOnnxWorkerLocation& location,
       if (!stderrLog.empty()) {
         childDiag("child-stderr: " + stderrLog);
       }
-      throw std::runtime_error(outcome.failureCode);
+      // Keep the code as the leading token for callers that match on it, and
+      // append the human-readable rule failure so the parent-side error is
+      // diagnosable without the child's stderr.
+      std::fprintf(stderr, "NATIVE_ONNX_WORKER_OUTCOME code=%s message=%s stderr=%s\n",
+                   outcome.failureCode.c_str(), outcome.failureMessage.c_str(),
+                   stderrLog.c_str());
+      throw std::runtime_error(outcome.failureMessage.empty()
+        ? outcome.failureCode
+        : outcome.failureCode + ": " + outcome.failureMessage);
     }
     return outcome.value;
   }

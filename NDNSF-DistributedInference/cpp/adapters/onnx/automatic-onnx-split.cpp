@@ -18,13 +18,24 @@ bareName(const std::string& name)
 }
 
 NativeTensorContract
-stateTensor(const std::string& name, const AutomaticAttentionState& state)
+stateTensor(const std::string& name, const AutomaticAttentionState& state, bool input)
 {
   NativeTensorContract result;
   result.name = bareName(name);
   result.dtype = tensorElementTypeName(state.elementType);
-  result.shape = {"batch", static_cast<std::int64_t>(state.heads), "sequence",
-                  static_cast<std::int64_t>(state.headSize)};
+  // Logical roles are batch, heads, sequence and head size; the source-proven
+  // axis map decides where each one sits in the physical tensor.
+  const auto& axes = input ? state.inputAxes : state.outputAxes;
+  std::array<std::variant<std::int64_t, std::string>, 4> logical{
+    std::string("batch"), static_cast<std::int64_t>(state.heads),
+    std::string("sequence"), static_cast<std::int64_t>(state.headSize)};
+  std::array<std::variant<std::int64_t, std::string>, 4> physical{};
+  for (std::size_t index = 0; index < 4; ++index) {
+    if (axes[index] >= 4)
+      throw std::invalid_argument("automatic state axis is out of range");
+    physical.at(axes[index]) = logical.at(index);
+  }
+  result.shape.assign(physical.begin(), physical.end());
   return result;
 }
 
@@ -79,8 +90,8 @@ regionWeightBytes(const NativeOnnxGraphInspection& inspection,
 std::uint64_t
 statePairBytes(const AutomaticAttentionState& state, std::uint64_t context)
 {
-  return 2ULL * context * state.heads * state.headSize *
-         tensorElementByteSize(state.elementType);
+  // One cache component; a pair is the sum of its key and value components.
+  return context * state.heads * state.headSize * tensorElementByteSize(state.elementType);
 }
 
 std::string
@@ -185,7 +196,10 @@ AutomaticOnnxSplitStrategy::enumerateImpl(
   {
     const AutomaticAttentionState* key = nullptr;
     const AutomaticAttentionState* value = nullptr;
-    long owner = -1;
+    // K and V may come from different producer nodes (for example separate
+    // Concat/Transpose outputs); both must still fall in one region.
+    long keyOwner = -1;
+    long valueOwner = -1;
     std::string keyName;
     std::string valueName;
   };
@@ -207,10 +221,10 @@ AutomaticOnnxSplitStrategy::enumerateImpl(
       topoIndex.find(keyProducer->second);
     const auto valueAt = valueProducer == producerByTensor.end() ? topoIndex.end() :
       topoIndex.find(valueProducer->second);
-    if (keyAt == topoIndex.end() || valueAt == topoIndex.end() ||
-        keyAt->second != valueAt->second)
+    if (keyAt == topoIndex.end() || valueAt == topoIndex.end())
       continue;
-    pair.owner = static_cast<long>(keyAt->second);
+    pair.keyOwner = static_cast<long>(keyAt->second);
+    pair.valueOwner = static_cast<long>(valueAt->second);
     pairs.push_back(std::move(pair));
   }
   if (pairs.empty()) return {};
@@ -255,9 +269,12 @@ AutomaticOnnxSplitStrategy::enumerateImpl(
     std::size_t suffixPairs = 0;
     bool mixed = false;
     for (const auto& pair : pairs) {
-      if (pair.owner < 0) { mixed = true; break; }
-      if (static_cast<std::size_t>(pair.owner) <= cut.producerIndex) ++prefixPairs;
-      else ++suffixPairs;
+      if (pair.keyOwner < 0 || pair.valueOwner < 0) { mixed = true; break; }
+      const bool keyPrefix = static_cast<std::size_t>(pair.keyOwner) <= cut.producerIndex;
+      const bool valuePrefix = static_cast<std::size_t>(pair.valueOwner) <= cut.producerIndex;
+      if (keyPrefix && valuePrefix) ++prefixPairs;
+      else if (!keyPrefix && !valuePrefix) ++suffixPairs;
+      else { mixed = true; break; }
     }
     if (mixed || prefixPairs == 0 || suffixPairs == 0) continue;
 
@@ -328,7 +345,9 @@ AutomaticOnnxSplitStrategy::enumerateImpl(
     for (const auto& pair : pairs) {
       const auto bytes = statePairBytes(*pair.key, generation.contextLimit) +
                          statePairBytes(*pair.value, generation.contextLimit);
-      (static_cast<std::size_t>(pair.owner) <= cut.producerIndex ? prefixKv : suffixKv) += bytes;
+      ((static_cast<std::size_t>(pair.keyOwner) <= cut.producerIndex &&
+        static_cast<std::size_t>(pair.valueOwner) <= cut.producerIndex) ?
+        prefixKv : suffixKv) += bytes;
     }
     std::uint64_t frontierBytes = 0;
     bool frontierKnown = true;
@@ -361,13 +380,14 @@ AutomaticOnnxSplitStrategy::enumerateImpl(
     auto& suffixStateInputs = candidate.roleStateInputsByRole[suffixRole];
     auto& suffixStateOutputs = candidate.roleStateOutputsByRole[suffixRole];
     for (const auto& pair : pairs) {
-      const bool prefix = static_cast<std::size_t>(pair.owner) <= cut.producerIndex;
+      const bool prefix = static_cast<std::size_t>(pair.keyOwner) <= cut.producerIndex &&
+        static_cast<std::size_t>(pair.valueOwner) <= cut.producerIndex;
       auto& inputs = prefix ? prefixStateInputs : suffixStateInputs;
       auto& outputs = prefix ? prefixStateOutputs : suffixStateOutputs;
-      inputs.push_back(stateTensor(pair.key->input, *pair.key));
-      outputs.push_back(stateTensor(pair.key->output, *pair.key));
-      inputs.push_back(stateTensor(pair.value->input, *pair.value));
-      outputs.push_back(stateTensor(pair.value->output, *pair.value));
+      inputs.push_back(stateTensor(pair.key->input, *pair.key, true));
+      outputs.push_back(stateTensor(pair.key->output, *pair.key, false));
+      inputs.push_back(stateTensor(pair.value->input, *pair.value, true));
+      outputs.push_back(stateTensor(pair.value->output, *pair.value, false));
     }
     candidate.estimatedCosts = {
       {"role_count", std::uint64_t(2)},

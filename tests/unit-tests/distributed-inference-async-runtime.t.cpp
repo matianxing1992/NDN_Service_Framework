@@ -1,6 +1,8 @@
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/spec182/native-sampling-epoch.hpp"
 
+#include <cstdint>
+
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/AsyncDataflowRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/DependencyWaitScheduler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
@@ -190,7 +192,7 @@ typedCapabilityJson(const ndn_service_framework::ServiceProvider::AckDecision& d
     return -1;
   };
   std::string decoded;
-  int bits = 0;
+  std::uint32_t bits = 0;
   int bitCount = 0;
   for (const char ch : encoded) {
     if (ch == '=') break;
@@ -3814,8 +3816,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeAutomaticallyReusesCommittedDecodeStat
           continue;
         }
         try {
-          const auto& state = findTensor(
-            decodeTensorBundle(input.second.payload), "attention_kv_in");
+          const auto decoded = decodeTensorBundle(input.second.payload);
+          const auto& state = findTensor(decoded, "attention_kv_in");
           BOOST_CHECK(state.payload == rawTensorPayload<std::int64_t>({1}));
           foundCommittedState = true;
         }
@@ -3965,8 +3967,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimePromotesDecodeStateAcrossRequests)
   resumed.identity.generationId = "generation-b";
   auto restored = runtime.lookupConversationState(resumed, 200);
   BOOST_REQUIRE(restored);
-  const auto& restoredTensor = findTensor(
-    decodeTensorBundle(restored->payload), "attention_kv_in");
+  const auto restoredDecoded = decodeTensorBundle(restored->payload);
+  const auto& restoredTensor = findTensor(restoredDecoded, "attention_kv_in");
   BOOST_CHECK(restoredTensor.payload == rawTensorPayload<std::int64_t>({42}));
   BOOST_REQUIRE(runtime.pauseConversationStateToHost(resumed, 300));
   BOOST_REQUIRE(runtime.prefetchConversationStateToGpu(resumed, 400).get());
@@ -4172,8 +4174,8 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshReque
           "__ndnsf_provider_decode_state");
         BOOST_REQUIRE(found != ctx.inputsByScope.end());
         BOOST_REQUIRE(isEncodedTensorBundle(found->second.payload));
-        const auto& state = findTensor(
-          decodeTensorBundle(found->second.payload), "attention_kv_in");
+        const auto decodedState = decodeTensorBundle(found->second.payload);
+        const auto& state = findTensor(decodedState, "attention_kv_in");
         BOOST_CHECK(state.payload == rawTensorPayload<std::int64_t>({42}));
         restored.store(true);
       }
@@ -4720,10 +4722,9 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeIsolatesConcurrentGenerationsAndAttemp
         if (decode == decodeValues.end()) {
           throw std::runtime_error("unexpected concurrent identity test input");
         }
-        const auto& state = findTensor(
-          decodeTensorBundle(
-            ctx.inputsByScope.at("__ndnsf_provider_decode_state").payload),
-          "attention_kv_in");
+        const auto decodedState = decodeTensorBundle(
+          ctx.inputsByScope.at("__ndnsf_provider_decode_state").payload);
+        const auto& state = findTensor(decodedState, "attention_kv_in");
         const auto expected = rawTensorPayload<std::int64_t>({decode->second});
         if (state.payload != expected) {
           throw std::runtime_error("decode state crossed generation/attempt");
@@ -4894,10 +4895,9 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimePreservesCommittedStateAfterFailedDeco
     makeNativeModelRunner([&calls] (const RoleExecutionContext& ctx) {
       const auto call = calls.fetch_add(1);
       if (call > 0) {
-        const auto& committed = findTensor(
-          decodeTensorBundle(
-            ctx.inputsByScope.at("__ndnsf_provider_decode_state").payload),
-          "attention_kv_in");
+        const auto committedDecoded = decodeTensorBundle(
+          ctx.inputsByScope.at("__ndnsf_provider_decode_state").payload);
+        const auto& committed = findTensor(committedDecoded, "attention_kv_in");
         BOOST_CHECK(committed.payload == rawTensorPayload<std::int64_t>({1}));
       }
       if (call == 1) {
@@ -5206,8 +5206,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorKeepsDecodeStateProviderLocal)
       const auto state = ctx.inputsByScope.find("__ndnsf_provider_decode_state");
       BOOST_CHECK_EQUAL(state != ctx.inputsByScope.end(), call == 1);
       if (state != ctx.inputsByScope.end()) {
-        const auto& cached = findTensor(
-          decodeTensorBundle(state->second.payload), "attention_kv_in");
+        const auto cachedDecoded = decodeTensorBundle(state->second.payload);
+        const auto& cached = findTensor(cachedDecoded, "attention_kv_in");
         BOOST_CHECK(cached.payload == rawTensorPayload<std::int64_t>({1}));
       }
 
@@ -5472,11 +5472,16 @@ checkNativeEpochStopBeforeRunner(bool queued, NativeEpochStopReason reason,
     });
   if (queued) {
     const auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (runtime.snapshot().readyQueueDepth == 0 &&
-           std::chrono::steady_clock::now() < limit) {
+    const auto queuedDepth = [&runtime] {
+      // A queued role may be in runner preparation before it is admitted to
+      // the ready queue; both states mean the attempt is queued, not running.
+      const auto snapshot = runtime.snapshot();
+      return snapshot.readyQueueDepth + snapshot.preparationQueueDepth;
+    };
+    while (queuedDepth() == 0 && std::chrono::steady_clock::now() < limit) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    admitted = runtime.snapshot().readyQueueDepth == 1;
+    admitted = queuedDepth() == 1;
     stopped.store(true);
     releaseBlocker.set_value();
     blocker.get();

@@ -102,15 +102,11 @@ makeNativeProviderDecodeState(const NativeModelRunner* runner,
   scopes.reserve(outputs.size());
   for (const auto& output : outputs) {
     if (ctx.executionGuard) ctx.executionGuard();
-    if (isEncodedTensorBundle(output.second.payload)) {
-      scopes.push_back(decodeTensorBundleViews(output.second.payload, ctx.workStatistics));
-    }
-    else if (output.second.localTensors) {
-      // A local producer owns its bytes in this process; the same consumer reads
-      // them by name. Keep the views borrowed from the local owner, which the
-      // caller keeps alive through this transaction.
-      scopes.push_back(output.second.localTensors->tensors);
-    }
+    // The bundle overload enforces the local/encoded exclusivity and keeps the
+    // views borrowed from their owner; a local producer's bytes stay valid for
+    // this transaction.
+    if (output.second.localTensors || isEncodedTensorBundle(output.second.payload))
+      scopes.push_back(decodeTensorBundleViews(output.second, ctx.workStatistics));
   }
   std::vector<NamedTensorView> selected;
   selected.reserve(outputNames.size());

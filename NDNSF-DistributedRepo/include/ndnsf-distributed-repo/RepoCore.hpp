@@ -282,6 +282,13 @@ private:
   // Bounded locator hints, restored at startup and refreshed after publication.
   // Every candidate still requires current metadata and caller admission.
   void buildPacketBaseIndex() const;
+  /** Drop the startup snapshot after a commit or delete so the next lookup
+   * rebuilds it from every stored manifest; a rebuilt index is a complete
+   * coverage proof and a miss on it is authoritative. */
+  void invalidatePacketBaseIndex() const;
+  /** True after a complete scan of every stored manifest; a base miss on it
+   * proves the packet is not stored in any packet set. */
+  bool packetBaseIndexComplete() const;
   std::optional<std::pair<std::shared_ptr<const RepoObjectManifest>, size_t>>
   findIndexedOriginalPacket(const ndn::Name& name, const std::string& canonical,
     const std::string& alternate,

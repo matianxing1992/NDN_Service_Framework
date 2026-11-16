@@ -3933,9 +3933,14 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
-  if (!role.automaticContractDigest.empty() &&
-      nativePlanningDigest(canonicalNativeOnnxRecipeJson(role)) != role.recipeDigest)
-    throw std::invalid_argument("automatic role recipe digest differs from its canonical contract");
+  if (!role.automaticContractDigest.empty()) {
+    const auto canonical = canonicalNativeOnnxRecipeJson(role);
+    const auto canonicalDigest = nativePlanningDigest(canonical);
+    if (canonicalDigest != role.recipeDigest)
+      throw std::invalid_argument("automatic role recipe digest differs from its canonical contract: role=" +
+        role.role + " recipe=" + role.recipeDigest + " canonical=" + canonicalDigest +
+        " canonicalJson=" + canonical.substr(0, 512));
+  }
   // Custom numeric locale facets can change the legacy integer conversions.
   // Preserve that path; typed canonical integers round trip in classic locale.
   if (std::locale() != std::locale::classic()) {

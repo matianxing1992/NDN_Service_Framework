@@ -7,6 +7,8 @@
 
 namespace ndnsf::di {
 
+struct AutomaticOnnxContract;
+
 struct Spec185PreparedModelTestAccess;
 struct NativeModelObjectKeyIndexV1;
 
@@ -24,6 +26,8 @@ struct NativeCanonicalCatalogEntry
   NativeCatalogModelAdapter::Format format = NativeCatalogModelAdapter::Format::OpaqueBytes;
   std::size_t maxPayloadBytes = 0;
   NativeCatalogModelAdapter::ConversationTokenEncoder conversationTokenEncoder;
+  /** Authenticated automatic contract decoded from the prepared metadata. */
+  std::shared_ptr<const AutomaticOnnxContract> automaticContract;
 };
 
 class NativeCanonicalPreparationCatalog
@@ -32,6 +36,9 @@ public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
+  /** Automatic contract for an automatic model, or null for other adapters. */
+  std::shared_ptr<const AutomaticOnnxContract> automaticContractFor(
+    const NativeModelDescriptor& model) const;
   /** Independent immutable model owner, retained without the catalog sources. */
   std::shared_ptr<const NativeInspectedModel> modelRefFor(
     const NativeModelDescriptor& model) const;

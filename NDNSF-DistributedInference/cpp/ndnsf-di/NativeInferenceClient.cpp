@@ -3113,7 +3113,7 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       }
     }
     catch (const NativeDiError&) { throw; }
-    catch (const std::exception&) {
+    catch (const std::exception& error) {
       if (now() >= operation->deadline) {
         failOperation(operation, NativeDiError(
           "NATIVE_REQUEST_TIMEOUT", "local", "request",
@@ -3123,7 +3123,8 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
       }
       failOperation(operation, NativeDiError(
         "NATIVE_INPUT_PREPARATION_FAILED", "planning", "prepareInput",
-        "native request input preparation failed", operation->requestId, operation->attempt));
+        std::string("native request input preparation failed: ") + error.what(),
+        operation->requestId, operation->attempt));
       return;
     }
     // Encoding can invoke application adapters while close/cancel/deadline

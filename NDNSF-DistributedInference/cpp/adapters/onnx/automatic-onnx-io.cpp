@@ -1,4 +1,5 @@
 #include "automatic-onnx-io.hpp"
+#include "automatic-onnx-split.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
@@ -226,6 +227,26 @@ bindAutomaticOnnxRunnerIo(NativeModelRunnerSpec& spec,
   spec.metadata.erase("stateful");
   spec.metadata["statefulModel"] = value.io.stateInputNames.empty() ? "false" : "true";
   spec.metadata["automaticIoContract"] = encoded;
+  // The Provider runner needs the stage projection of this role, not the whole
+  // source port set. Publish it with the spec so a split role validates its own
+  // ports instead of the full model's.
+  if (!projection.assemblyContract().automaticContractDigest.empty()) {
+    AutomaticOnnxStageRunnerContract stage;
+    stage.role = projection.assemblyContract().selectedRole;
+    for (const auto& port : projection.assemblyContract().expectedInputs)
+      stage.inputs.push_back(port.name);
+    for (const auto& port : projection.assemblyContract().expectedOutputs)
+      stage.outputs.push_back(port.name);
+    const std::string prefix = "graph/";
+    const auto strip = [&] (const std::string& name) {
+      return name.compare(0, prefix.size(), prefix) == 0 ? name.substr(prefix.size()) : name;
+    };
+    std::set<std::string> modelOutputs;
+    for (const auto& name : value.io.outputNames) modelOutputs.insert(strip(name));
+    std::set<std::string> stageOutputs(stage.outputs.begin(), stage.outputs.end());
+    stage.terminal = !modelOutputs.empty() && modelOutputs == stageOutputs;
+    spec.metadata["automaticStageBinding"] = stage.canonicalJson();
+  }
 }
 
 std::optional<AutomaticOnnxIoContract>

@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-model.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-cancellation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-owner.hpp"
@@ -1262,6 +1264,32 @@ NativeRequestRuntime nativeRequestRuntimeFromJson(
   runtime.grants = std::move(grants);
   runtime.catalog = catalog.preparation;
   runtime.planningCache = catalog.planningCache;
+  // The automatic request path binds its input shapes to the authenticated
+  // automatic contract. The contract lives with the catalog entry, so the
+  // factory is created here rather than by an operator setting.
+  if (const auto automatic = catalog.preparation->automaticContractFor(catalog.model.descriptor)) {
+    runtime.automaticShapeSeedFactory = [automatic](
+        const NativePreparedInput& prepared,
+        const std::optional<NativeGenerationExecutionContractV1>& generation,
+        const NativeRequestControl& control) {
+      if (prepared.payload.empty())
+        throw std::invalid_argument("automatic request input payload is missing");
+      const auto inputs = decodeTensorBundle(prepared.payload, control.workStatistics);
+      const auto maxNewTokens = generation ? generation->maxGeneratedTokens : 0;
+      const auto maxContext = automatic->generation ? automatic->generation->contextLimit : 0;
+      if (maxContext == 0)
+        throw std::runtime_error("automatic generation contract has no context limit");
+      // Byte bounds, not generation counts: the contract metadata charge is
+      // measured in bytes and must stay below the assembly limit.
+      NativeAssemblyControl assembly{control.deadline, [control] {
+        if (control.cancelled && control.cancelled())
+          throw std::runtime_error("automatic request was cancelled");
+      }, 1ULL << 30, 1ULL << 30};
+      const auto envelope = bindAutomaticOnnxShapes(*automatic, inputs, maxNewTokens,
+                                                   maxContext, assembly);
+      return automaticOnnxShapeSeed(envelope);
+    };
+  }
   return runtime;
 }
 
@@ -1571,9 +1599,12 @@ NativePlannedRequest planNativeRequestImpl(
                                       extensionControl);
       }
     }
-    catch (const NativeNoFeasiblePlacement&) {
+    catch (const NativeNoFeasiblePlacement& error) {
       policyUsed += std::chrono::steady_clock::now() - placementStart;
       extensionControl.requireActive();
+      logRuntimeEvidence("NDNSF_DI_PLACEMENT_CANDIDATE_REJECTED requestId=" +
+        control.requestId + " candidate=" + std::to_string(candidateIndex) +
+        " reason=" + error.what());
       if (policyUsed > policyLimit) throw std::runtime_error("DI_NATIVE_POLICY_BUDGET_EXCEEDED");
       continue;
     }

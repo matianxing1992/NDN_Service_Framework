@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalPreparationCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-model.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/model-object-keys.hpp"
@@ -18,6 +20,7 @@ struct NativeCanonicalPreparationCatalog::State
     mutable std::shared_ptr<const NativeCanonicalSource> source;
     NativeCanonicalRolePreparer roles;
     NativeCanonicalPublicationOptions publication;
+    std::shared_ptr<const AutomaticOnnxContract> automaticContract;
   };
   mutable std::map<std::string, Record> records;
   std::shared_ptr<const NativeAdapterRegistry> adapters;
@@ -89,6 +92,7 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
           throw std::invalid_argument("native catalog automatic source identity differs");
         }
         automaticSourceJson = nativeCanonicalJson(metadata.at("automatic_onnx"));
+        entry.automaticContract = decoded.automaticContract;
       }
     }
     if (entry.model.descriptor.adapter.name == "automatic-onnx" && automaticSourceJson.empty())
@@ -173,7 +177,7 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     immutableModel->validate();
     State::Record record{std::move(immutableModel),
       std::make_shared<const NativeCanonicalSource>(std::move(entry.source)),
-      std::move(roles), std::move(entry.publication)};
+      std::move(roles), std::move(entry.publication), std::move(entry.automaticContract)};
     if (!state->records.emplace(key, std::move(record)).second)
       throw std::invalid_argument("native preparation catalog repeats a model identity");
   }
@@ -253,6 +257,13 @@ NativeCanonicalPreparationCatalog::modelRefFor(const NativeModelDescriptor& mode
   return m_state->find(model).model;
 }
 
+std::shared_ptr<const AutomaticOnnxContract>
+NativeCanonicalPreparationCatalog::automaticContractFor(
+  const NativeModelDescriptor& model) const
+{
+  return m_state->find(model).automaticContract;
+}
+
 NativeCanonicalSource NativeCanonicalPreparationCatalog::sourceFor(
   const NativeModelDescriptor& model) const
 {
@@ -282,7 +293,41 @@ NativeCanonicalPreparationCatalog::prepareRoles(const NativeInspectedModel& mode
   const NativeSplitCandidate& candidate, const NativeRequestControl& control) const
 {
   control.requireActive();
-  return m_state->find(model).roles.prepare(model, candidate, control);
+  auto roles = m_state->find(model).roles.prepare(model, candidate, control);
+  // Automatic roles must carry the contract identity that the shape seed and
+  // the sealed assembly compare. The contract is owned by this catalog entry.
+  if (const auto automatic = automaticContractFor(model.descriptor)) {
+    const NativeAssemblyControl assembly{control.deadline, [control] {
+      control.requireActive();
+    }, 1ULL << 30, 1ULL << 30};
+    const auto digest = automatic->digest(assembly);
+    for (auto& role : roles) {
+      role.automaticContractDigest = digest;
+      // Constant-node tensors can have no shape in the graph metadata or the
+      // planning graph; the contract still knows their rank and fixed dims.
+      for (auto* ports : {&role.expectedInputs, &role.expectedOutputs}) {
+        for (auto& port : *ports) {
+          if (!port.shape.empty()) continue;
+          const auto scoped = "graph/" + port.name;
+          const auto tensor = std::find_if(automatic->tensors.begin(), automatic->tensors.end(),
+            [&](const auto& value) { return value.name == scoped; });
+          if (tensor == automatic->tensors.end() || !tensor->dimensions) continue;
+          for (const auto& dimension : *tensor->dimensions) {
+            if (dimension.kind == DimensionConstraint::Kind::FIXED)
+              port.shape.emplace_back(dimension.fixed);
+            else if (dimension.kind == DimensionConstraint::Kind::SYMBOL)
+              port.shape.emplace_back(dimension.symbol);
+            else
+              port.shape.emplace_back(std::int64_t{0});
+          }
+        }
+      }
+      // The recipe digest covers the role fields, so it must be recomputed
+      // after the digest and shape corrections are applied.
+      role.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(role));
+    }
+  }
+  return roles;
 }
 
 std::shared_ptr<NativeRequestPreparation> NativeCanonicalPreparationCatalog::makePreparation(

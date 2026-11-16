@@ -189,6 +189,7 @@ def _environment(home, socket, actor_id, state):
                NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256'])
     if state.get('diagnostic_logging'):
         # Explicit diagnostic mode may narrow logs to the boundary under study.
+        env['NDNSF_SPEC192_REPO_OPERATION_TRACE'] = '1'
         mask = os.environ.get('NDNSF_DI_DIAGNOSTIC_LOG_FILTER')
         if mask is not None:
             if not mask or len(mask) > 4096 or any(ord(c) < 33 or ord(c) > 126 for c in mask):
@@ -196,6 +197,10 @@ def _environment(home, socket, actor_id, state):
             env['NDN_LOG'] = mask
     if 'release_sha256' in state:
         env['NDNSF_DEPLOYMENT_RELEASE_SHA256'] = state['release_sha256']
+    if os.environ.get('NDNSF_BENCHMARK_UNDER_GDB') == '1':
+        # Diagnostic-only: the benchmark request wrapper runs the native
+        # binary under gdb so a crash yields a printable backtrace.
+        env['NDNSF_BENCHMARK_UNDER_GDB'] = '1'
     if state.get('runtime_timing'):
         env.update(NDNSF_DI_RUNTIME_TIMING='1', NDNSF_PHASE_TIMING='1', NDNSF_CONTROL_TIMING='1',
                    NDNSF_HYBRID_CRYPTO_TIMING='1', NDNSF_TIMELINE_TRACE_SAMPLE_RATE='1')
@@ -245,6 +250,9 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                 '--trust-schema', security['trust_schema']]
     elif kind in ('requester', 'artifact-authority'):
         native = dict(config['requester' if kind == 'requester' else 'artifact_authority'])
+        # The native applications require their schema marker in the written config.
+        native.setdefault('schema', 'ndnsf-di-native-requester-v1'
+                          if kind == 'requester' else 'ndnsf-di-native-authority-v1')
         source_cache = kind == 'requester' and native.get('model_input', {}).get('mode') == 'source-cache'
         if source_cache:
             model_input = native.pop('model_input')
@@ -254,7 +262,8 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         if kind == 'requester' and native.get('model_input', {}).get('mode') in ('source', 'publish-stored'):
             for key in ('preparation_state_file', 'private_handle_file'):
                 _private_directory(Path(native['model_input'][key]).parent)
-        if kind == 'requester' and config.get('operation') != 'prepare':
+        if (kind == 'requester' and config.get('operation') not in
+                ('prepare', 'repo-benchmark')):
             native.setdefault('statistics_file', str(directory / (actor['id'] + '-statistics.jsonl')))
             for turn in native['turns']:
                 for key in ('output_file', 'checkpoint_output_file'):
@@ -324,7 +333,7 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         for index in range(len(actor['resources']['gpu_devices'])):
             argv += ['--offer-device', 'cuda:' + str(index)]
     if kind == 'requester' and repo_benchmark is not None:
-        target = config['requester']['model_input']['repo_target']
+        target = repo_benchmark.get('target') or config['requester']['model_input']['repo_target']
         argv = [str(prefix / 'ndnsf-repo-file-benchmark'),
                 '--group-prefix', network['group'], '--user-identity', actor['identity'],
                 '--controller-identity', controller,
@@ -333,9 +342,20 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                 '--repo-node', target['repo_node'],
                 '--provider-identity', target['provider_identity'],
                 '--service-prefix', target['service_prefix'],
-                '--source', repo_benchmark['source'],
                 '--expected-sha256', repo_benchmark['sha256'],
                 '--report', str(directory / 'repo-file-statistics.jsonl')]
+        phase = repo_benchmark.get('phase', 'write-read')
+        # The allocation plan names read-first/read-repeat; the binary exposes
+        # one read phase whose staging is bound by the plan.
+        binary_phase = 'read' if phase.startswith('read') else phase
+        if binary_phase != 'write-read':
+            argv += ['--phase', binary_phase, '--reference', repo_benchmark['reference']]
+        if binary_phase != 'read':
+            argv += ['--source', repo_benchmark['source']]
+        if repo_benchmark.get('under_gdb'):
+            argv = ['/usr/bin/gdb', '-batch', '-ex', 'set pagination off',
+                    '-ex', 'run', '-ex', 'thread apply all bt full',
+                    '--args'] + argv
     return argv, env
 
 
@@ -646,7 +666,7 @@ def _nfd_config(socket, port):
     if any(char in str(socket) for char in ('"', '\\', '\n', '\r')):
         raise ClusterError('NFD socket contains unsupported configuration characters')
     return (f'general {{}}\nlog {{ default_level NONE }}\n'
-            f'tables {{ cs_max_packets 4096 }}\n'
+            f'tables {{ cs_max_packets 0 }}\n'
             f'face_system {{ unix {{ path "{socket}" }} '
             f'tcp {{ listen yes port {port} enable_v4 yes enable_v6 no }} '
             f'udp {{ listen yes port {port} enable_v4 yes enable_v6 no mcast no }} }}\n'
@@ -878,22 +898,32 @@ def _sample_repo_benchmark(directory, children, boundary):
 
 
 def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, repo_benchmark=None):
-    config = (load_deployment(source, prepare_only=True) if prepare_only
+    # The repo benchmark loads its own frozen operation; the inference prepare
+    # projection would rewrite it to operation=prepare and drop its fields.
+    config = (load_deployment(source) if repo_benchmark is not None else
+              load_deployment(source, prepare_only=True) if prepare_only
               else load_deployment(source))
     prepare_only = config.get('operation') == 'prepare'
     if repo_benchmark is not None:
-        if not prepare_only or config['platform']['kind'] != 'minindn':
-            raise ClusterError('Repo file benchmark requires the local MiniNDN prepare owner')
-        binary = Path(config['release']['prefix']) / 'bin/ndnsf-repo-file-benchmark'
-        manifest = _read_json(Path(config['release']['manifest']))['files']
-        expected = manifest.get(str(binary), {}).get('installed', {})
-        if (expected.get('kind') != 'file' or not binary.is_file() or binary.is_symlink() or
-                expected.get('sha256') != hashlib.sha256(binary.read_bytes()).hexdigest() or
-                not os.access(binary, os.X_OK)):
-            raise ClusterError('Repo file benchmark must match the installed release manifest')
+        if config['platform']['kind'] == 'minindn':
+            if not prepare_only:
+                raise ClusterError('Repo file benchmark requires the local MiniNDN prepare owner')
+            # The local MiniNDN path executes the installed binary directly, so
+            # its identity must match the release manifest here. The Slurm path
+            # runs the binary inside the SIF; its manifest and ELF closure are
+            # verified by the container preflight instead.
+            binary = Path(config['release']['prefix']) / 'bin/ndnsf-repo-file-benchmark'
+            manifest = _read_json(Path(config['release']['manifest']))['files']
+            expected = manifest.get(str(binary), {}).get('installed', {})
+            if (expected.get('kind') != 'file' or not binary.is_file() or binary.is_symlink() or
+                    expected.get('sha256') != hashlib.sha256(binary.read_bytes()).hexdigest() or
+                    not os.access(binary, os.X_OK)):
+                raise ClusterError('Repo file benchmark must match the installed release manifest')
+        elif config['platform']['kind'] != 'slurm-apptainer':
+            raise ClusterError('Repo file benchmark requires MiniNDN or Slurm')
     if config['platform']['kind'] == 'slurm-apptainer':
         from .slurm import up
-        return up(config, source, root, timeout, debug, timing)
+        return up(config, source, root, timeout, debug, timing, repo_benchmark)
     if timeout > 3600:
         raise ClusterError('timeout above 3600 seconds requires slurm-apptainer')
     _private_directory(root)
@@ -1152,7 +1182,7 @@ def _stop_provider(root, state, actor_id, timeout):
 def run_cluster(action, path, timeout=1800, *, debug=False, timing=False, actor_id=None,
                 repo_benchmark=None):
     """Run the host operation or inspect/close its persisted owned processes."""
-    maximum = 86400 if action in ('up', 'prepare') else 3600
+    maximum = 86400 if action in ('up', 'prepare', 'benchmark-repo') else 3600
     if type(timeout) not in (int, float) or not 0 < timeout <= maximum:
         raise ClusterError('timeout must be in (0,%d] seconds' % maximum)
     if type(debug) is not bool or (debug and action not in ('up', 'prepare', 'benchmark-repo')):

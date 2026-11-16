@@ -108,6 +108,10 @@ struct ProviderRoleWorkerSnapshot
 {
   std::size_t workerCount = 0;
   std::size_t readyQueueDepth = 0;
+  // Roles accepted for preparation (runner preparation) but not yet admitted
+  // to execution. Counted separately from readyQueueDepth so the ready depth
+  // keeps its public meaning, while callers can still observe admission.
+  std::size_t preparationQueueDepth = 0;
   std::size_t readyQueueCapacity = 0;
   std::size_t waitingForInputCount = 0;
   std::size_t activeWorkerCount = 0;

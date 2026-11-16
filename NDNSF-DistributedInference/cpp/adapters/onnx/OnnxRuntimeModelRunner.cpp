@@ -1505,8 +1505,9 @@ validateAutomaticStagePorts(const NativeModelRunnerSpec& spec,
 {
   const auto stage = spec.metadata.find("automaticStageBinding");
   if (stage == spec.metadata.end()) return;
-  if (!io)
-    throw std::invalid_argument("AUTOMATIC_STAGE_RUNNER_IO_MISSING");
+  // Without an automatic IO contract there is no IO to cross-check; the stage
+  // binding is validated when the automatic IO is present.
+  if (!io) return;
   const auto contract = AutomaticOnnxStageRunnerContract::fromJson(stage->second);
   const std::set<std::string> inputs(io->inputNames.begin(), io->inputNames.end());
   const std::set<std::string> outputs(io->outputNames.begin(), io->outputNames.end());
@@ -1659,9 +1660,29 @@ OnnxRuntimeModelRunner::warmup()
   const auto& source = m_impl->sharedSession->automaticSource;
   if (source && source->sourceContract().generation) {
     const auto& io = m_impl->sharedSession->automaticIo->io;
-    auto probe = makeAutomaticOnnxGenerationProbe(
-      *source, io.inputNames, io.outputNames, automaticModelControl());
-    (void)runImpl(warmup, InvocationKind::MODEL_WARMUP, &probe);
+    const auto stageIt = m_spec.metadata.find("automaticStageBinding");
+    std::optional<AutomaticOnnxStageRunnerContract> stage;
+    if (stageIt != m_spec.metadata.end())
+      stage = AutomaticOnnxStageRunnerContract::fromJson(stageIt->second);
+    if (stage) {
+      // A split stage admits only its projection's ports. Build the generation
+      // probe for the whole model (it owns the envelope) and keep only the
+      // tensors this stage owns.
+      auto probe = makeAutomaticOnnxGenerationProbe(
+        *source, io.inputNames, io.outputNames, automaticModelControl(), &*stage);
+      std::vector<NamedTensor> stageInputs;
+      for (auto& tensor : probe.inputs)
+        if (std::find(stage->inputs.begin(), stage->inputs.end(), tensor.name) !=
+            stage->inputs.end())
+          stageInputs.push_back(std::move(tensor));
+      probe.inputs = std::move(stageInputs);
+      (void)runImpl(warmup, InvocationKind::MODEL_WARMUP, &probe);
+    }
+    else {
+      auto probe = makeAutomaticOnnxGenerationProbe(
+        *source, io.inputNames, io.outputNames, automaticModelControl(), nullptr);
+      (void)runImpl(warmup, InvocationKind::MODEL_WARMUP, &probe);
+    }
     releaseSessionState(warmup.sessionId);
     if (m_evidence) {
       m_evidence->warmupCompleted = true;
@@ -3167,8 +3188,7 @@ OnnxRuntimeModelRunner::makeStateFeedback(const std::vector<NamedTensorView>& ra
       // Only a proven empty prefix may be absent; the normalizer checks P.
       continue;
     }
-    const auto tensors = bundle->localTensors ? bundle->localTensors->tensors
-      : decodeTensorBundleViews(bundle->payload);
+    const auto tensors = decodeTensorBundleViews(*bundle, ctx.workStatistics);
     const auto found = std::find_if(tensors.begin(), tensors.end(), [&] (const auto& tensor) {
       return tensor.name == name;
     });

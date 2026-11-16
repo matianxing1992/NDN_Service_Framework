@@ -97,6 +97,26 @@ validatePort(const NativeAssemblyTensorContractV3& port,
 } // namespace
 
 void
+validateAutomaticOnnxStagePorts(const AutomaticOnnxStageRunnerContract& stage,
+                                const std::vector<std::string>& scopedInputs,
+                                const std::vector<std::string>& scopedOutputs)
+{
+  if (stage.role.empty()) reject("AUTOMATIC_STAGE_ROLE_MISSING");
+  const std::string prefix = "graph/";
+  const auto strip = [&] (const std::string& name) {
+    return name.compare(0, prefix.size(), prefix) == 0 ? name.substr(prefix.size()) : name;
+  };
+  const auto samePorts = [&] (const auto& actual, const auto& expected) {
+    std::set<std::string> left, right;
+    for (const auto& name : actual) left.insert(strip(name));
+    for (const auto& name : expected) right.insert(name);
+    return left.size() == expected.size() && left == right;
+  };
+  if (!samePorts(scopedInputs, stage.inputs) || !samePorts(scopedOutputs, stage.outputs))
+    reject("AUTOMATIC_STAGE_PORTS");
+}
+
+void
 validateAutomaticOnnxGenerationRole(const AutomaticOnnxContract& source,
                                     const std::vector<std::string>& scopedInputs,
                                     const std::vector<std::string>& scopedOutputs)
@@ -115,7 +135,8 @@ validateAutomaticOnnxGenerationRole(const AutomaticOnnxContract& source,
 
 AutomaticOnnxRequestBinding::AutomaticOnnxRequestBinding(
   std::shared_ptr<const AutomaticOnnxContract> source, ExecutionShapeEnvelope envelope,
-  const NativeSelectionProjectionV3& projection, const NativeRequestControl& control)
+  const NativeSelectionProjectionV3& projection, const NativeRequestControl& control,
+  const AutomaticOnnxStageRunnerContract* stage)
   : m_source(std::move(source))
   , m_envelope(std::move(envelope))
   , m_requestId(projection.requestId)
@@ -133,7 +154,10 @@ AutomaticOnnxRequestBinding::AutomaticOnnxRequestBinding(
   for (const auto& input : role.expectedInputs) m_inputs.push_back("graph/" + input.name);
   for (const auto& output : role.expectedOutputs) m_outputs.push_back("graph/" + output.name);
   if (m_envelope.maxNewTokens != 0) {
-    validateAutomaticOnnxGenerationRole(*m_source, m_inputs, m_outputs);
+    if (stage != nullptr)
+      validateAutomaticOnnxStagePorts(*stage, m_inputs, m_outputs);
+    else
+      validateAutomaticOnnxGenerationRole(*m_source, m_inputs, m_outputs);
     const auto& generation = *m_source->generation;
     for (const auto* name : {&generation.tokenInput, &generation.maskInput,
                              &generation.positionInput}) {
@@ -154,7 +178,8 @@ AutomaticOnnxRequestBinding::generation() const
 std::shared_ptr<const AutomaticOnnxRequestBinding>
 AutomaticOnnxRequestBinding::admit(const AutomaticOnnxSourceBinding& source,
                                   const NativeSelectionProjectionV3& projection,
-                                  const NativeRequestControl& control)
+                                  const NativeRequestControl& control,
+                                  const AutomaticOnnxStageRunnerContract* stage)
 {
   control.requireActive();
   if (control.requestId != projection.requestId || control.attempt != projection.attempt)
@@ -165,7 +190,8 @@ AutomaticOnnxRequestBinding::admit(const AutomaticOnnxSourceBinding& source,
     std::min(role.maxAssembledBytes, NativeCanonicalMaterialPublicationMaxBytes)};
   auto envelope = admitAutomaticOnnxProjection(source, projection, admissionControl);
   auto result = std::shared_ptr<const AutomaticOnnxRequestBinding>(
-    new AutomaticOnnxRequestBinding(source.m_contract, std::move(envelope), projection, control));
+    new AutomaticOnnxRequestBinding(source.m_contract, std::move(envelope), projection,
+                                   control, stage));
   control.requireActive();
   return result;
 }

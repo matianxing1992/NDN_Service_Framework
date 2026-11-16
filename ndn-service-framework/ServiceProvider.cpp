@@ -9888,6 +9888,10 @@ namespace ndn_service_framework
                             {
                                 std::shared_ptr<void> finishToken(nullptr,
                                     [control](void*) { control->releaseOwner(); });
+                                // Hand the single lease to the posted closure first. If
+                                // post() throws, destroying finishToken releases it exactly
+                                // once; arming after the post would release twice.
+                                entryRelease.armed = false;
                                 boost::asio::post(*io,
                                     [owner, finishToken, control, requesterName, providerName,
                                      serviceName, requestId, requestMessage,
@@ -9898,9 +9902,6 @@ namespace ndn_service_framework
                                             requestId, requestMessage, std::move(response),
                                             selectionDigest, registrationState);
                                     });
-                                // The posted closure now owns the single lease; the entry
-                                // must not release a second time.
-                                entryRelease.armed = false;
                             }
                             return true;
                         },
@@ -9920,6 +9921,7 @@ namespace ndn_service_framework
                             {
                                 std::shared_ptr<void> failureToken(nullptr,
                                     [control](void*) { control->releaseOwner(); });
+                                entryRelease.armed = false;
                                 boost::asio::post(*io,
                                     [owner, failureToken, control, requesterName, providerName,
                                      serviceName, requestId, requestMessage, message,
@@ -9928,7 +9930,6 @@ namespace ndn_service_framework
                                             requesterName, providerName, serviceName, requestId,
                                             requestMessage, message, selectionDigest);
                                     });
-                                entryRelease.armed = false;
                             }
                             return true;
                         },
@@ -21711,6 +21712,15 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
         std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
         return m_registrationControl->activeOwnerCalls != 0;
+    }
+
+    void ServiceProvider::stopOwnerAdmission() noexcept
+    {
+        // The destructor performs the same two steps; doing them earlier stops
+        // new owner-token acquisitions while a shutdown path drains the queue.
+        std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+        m_registrationControl->owner = nullptr;
+        closeAllRegistrationStates();
     }
 
     size_t ServiceProvider::getCurrentPolicyEpoch() const

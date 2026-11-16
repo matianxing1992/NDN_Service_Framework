@@ -2,6 +2,7 @@
 #define NDNSF_DI_AUTOMATIC_ONNX_ADMISSION_HPP
 
 #include "automatic-onnx-model.hpp"
+#include "automatic-onnx-split.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -80,11 +81,21 @@ validateAutomaticOnnxGenerationRole(const AutomaticOnnxContract& source,
                                     const std::vector<std::string>& scopedInputs,
                                     const std::vector<std::string>& scopedOutputs);
 
+/** Check one stage role's ports against its frozen stage contract. The
+ * complete-source check above stays the default; this entry is for a caller
+ * that owns the projection contract for the stage. Scoped names may carry the
+ * `graph/` prefix used by request bindings. */
+void
+validateAutomaticOnnxStagePorts(const AutomaticOnnxStageRunnerContract& stage,
+                                const std::vector<std::string>& scopedInputs,
+                                const std::vector<std::string>& scopedOutputs);
+
 AutomaticOnnxGenerationProbe
 makeAutomaticOnnxGenerationProbe(const AutomaticOnnxSourceBinding& source,
                                 const std::vector<std::string>& rawInputNames,
                                 const std::vector<std::string>& rawOutputNames,
-                                const NativeAssemblyControl& control);
+                                const NativeAssemblyControl& control,
+                                const AutomaticOnnxStageRunnerContract* stage = nullptr);
 
 /** One admitted invocation. No permission, callback or execution-state owner. */
 class AutomaticOnnxRequestBinding
@@ -92,7 +103,8 @@ class AutomaticOnnxRequestBinding
 public:
   static std::shared_ptr<const AutomaticOnnxRequestBinding>
   admit(const AutomaticOnnxSourceBinding& source,
-        const NativeSelectionProjectionV3& projection, const NativeRequestControl& control);
+        const NativeSelectionProjectionV3& projection, const NativeRequestControl& control,
+        const AutomaticOnnxStageRunnerContract* stage = nullptr);
 
   const AutomaticOnnxContract& source() const { return *m_source; }
   const ExecutionShapeEnvelope& envelope() const { return m_envelope; }
@@ -133,7 +145,8 @@ private:
   AutomaticOnnxRequestBinding(std::shared_ptr<const AutomaticOnnxContract> source,
                               ExecutionShapeEnvelope envelope,
                               const NativeSelectionProjectionV3& projection,
-                              const NativeRequestControl& control);
+                              const NativeRequestControl& control,
+                              const AutomaticOnnxStageRunnerContract* stage);
 
   NativeAssemblyControl
   validationControl(const RoleExecutionContext& ctx) const;

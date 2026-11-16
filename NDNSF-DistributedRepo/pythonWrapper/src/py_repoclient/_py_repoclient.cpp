@@ -1101,11 +1101,19 @@ PYBIND11_MODULE(_py_repoclient, m)
            uint32_t replicationFactor,
            std::vector<std::string> replicaNodes,
            const std::string& policyEpoch) {
-          return repo::RepoClient::makeManifest(objectName, objectType,
-                                                bytesToVector(payload),
-                                                replicationFactor,
-                                                std::move(replicaNodes),
-                                                policyEpoch);
+          // The static helper moved behind the client facade; the binding builds
+          // the same public manifest value directly.
+          const auto bytes = bytesToVector(payload);
+          repo::RepoObjectManifest manifest;
+          manifest.objectName = objectName;
+          manifest.objectType = objectType;
+          manifest.sha256 = repo::sha256Hex(bytes);
+          manifest.size = bytes.size();
+          manifest.segmentCount = 1;
+          manifest.replicationFactor = replicationFactor;
+          manifest.replicaNodes = std::move(replicaNodes);
+          manifest.policyEpoch = policyEpoch;
+          return manifest;
         },
         py::arg("object_name"),
         py::arg("object_type"),

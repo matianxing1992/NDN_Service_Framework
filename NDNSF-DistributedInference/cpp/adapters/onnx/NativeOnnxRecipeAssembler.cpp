@@ -4550,10 +4550,11 @@ automaticPorts(const google::protobuf::RepeatedPtrField<onnx::ValueInfoProto>& v
 } // namespace
 
 AutomaticOnnxModel
-inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyControl& control)
+inspectAutomaticOnnxModel(OpenedAutomaticOnnxSource opened,
+                          const NativeAssemblyControl& control)
 {
   AutomaticOnnxModel result;
-  result.opened = openAutomaticOnnxSource(input.modelFile, control);
+  result.opened = std::move(opened);
   result.contract.sourceDigest = result.opened.sourceDigest;
   const auto& source = result.opened.source;
   std::uint64_t materializedBudget = 0;
@@ -5070,10 +5071,24 @@ inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyContr
     result.generationDiagnostic = std::string(error.what()).substr(0, 128);
   }
   result.contract.validate(control);
+  // The generation proof is derived after the adapter descriptor is built; an
+  // adapter whose contract proves generation must advertise the generation
+  // task, otherwise preparation rejects the request task as unsupported.
+  if (result.contract.generation &&
+      std::find(descriptor.adapter.tasks.begin(), descriptor.adapter.tasks.end(),
+                "text-generation") == descriptor.adapter.tasks.end())
+    descriptor.adapter.tasks.push_back("text-generation");
   descriptor.graphDigest = result.inspection.graph.graphDigest;
   descriptor.validate();
   checkActive(control);
   return result;
+}
+
+
+AutomaticOnnxModel
+inspectAutomaticOnnxModel(const OnnxModelInput& input, const NativeAssemblyControl& control)
+{
+  return inspectAutomaticOnnxModel(openAutomaticOnnxSource(input.modelFile, control), control);
 }
 
 NativeOnnxGraphInspection
