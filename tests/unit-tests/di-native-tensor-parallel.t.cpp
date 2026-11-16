@@ -12958,19 +12958,41 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     };
     const auto rank0Layer1Values = valuesOf1(*rank0Layer1);
     const auto rank1Layer1Values = valuesOf1(*rank1Layer1);
-    BOOST_REQUIRE_EQUAL(refValues1.size(), rank0Layer1Values.size());
+    // Compared through the production reduction, not by adding the two halves in double. The
+    // arithmetic path matters: the worker sums in float, and a double sum would answer a question
+    // nobody asks. This is the same reduction the sealed SUM step runs.
+    const auto summedLayer1 = sumTensorBundleViews(
+      "layer-1-partial",
+      {decodeTensorBundleViews(*rank0Layer1), decodeTensorBundleViews(*rank1Layer1)});
+    const auto summedValues1 = [&] {
+      const auto views = decodeTensorBundleViews(summedLayer1);
+      BOOST_REQUIRE(!views.empty());
+      std::vector<float> values(views.front().payload.size() / sizeof(float));
+      if (!values.empty())
+        std::memcpy(values.data(), views.front().payload.data(), views.front().payload.size());
+      return values;
+    }();
+    BOOST_REQUIRE_EQUAL(refValues1.size(), summedValues1.size());
     double worst1 = 0.0;
     double excess1 = std::numeric_limits<double>::lowest();
+    // How much of the difference the float reduction alone explains, measured rather than assumed:
+    // the same two halves added in double. The gap between the two says whether the reduction order
+    // is a material part of this comparison or a negligible one.
+    double worstReductionGap = 0.0;
     for (std::size_t index = 0; index < refValues1.size(); ++index) {
       const auto reference = double(refValues1[index]);
-      const auto actual = double(rank0Layer1Values[index]) + double(rank1Layer1Values[index]);
-      const auto difference = std::fabs(actual - reference);
+      const auto reduced = double(summedValues1[index]);
+      const auto inDouble = double(rank0Layer1Values[index]) + double(rank1Layer1Values[index]);
+      const auto difference = std::fabs(reduced - reference);
       const auto allowance = 1e-4 + 1e-3 * std::fabs(reference);
       worst1 = std::max(worst1, difference);
+      worstReductionGap = std::max(worstReductionGap, std::fabs(reduced - inDouble));
       excess1 = std::max(excess1, difference - allowance);
     }
-    BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference: worst=" << worst1
-                       << " excessOverC8=" << excess1 << " width=" << refValues1.size());
+    BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference, production sum: worst=" << worst1
+                       << " excessOverC8=" << excess1
+                       << " floatVsDoubleReduction=" << worstReductionGap
+                       << " width=" << refValues1.size());
     // This is the locating measurement, and it says something the KV comparison could not:
     // layer 1's attention projection agrees to 2.4e-6 while layer 1's KV differs by 1.5e-4 -- sixty
     // times larger. Both are produced by the same attention block from the same input, so the
