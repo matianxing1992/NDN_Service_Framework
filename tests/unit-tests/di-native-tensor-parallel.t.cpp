@@ -1751,7 +1751,10 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
     return values;
   };
 
-  std::vector<float> reduced(hidden * seq, 0.0f);
+  // The ranks' partials are kept as bundles and reduced through the production reducer, not by
+  // adding them here. A hand-written `reduced[i] += partial[i]` is a second implementation of the
+  // reduction, so it can agree with the reference while the path the Provider runs disagrees.
+  std::vector<std::vector<float>> rankPartials;
   for (std::uint64_t rank = 0; rank < degree; ++rank) {
     const auto qPerRank = queryHeads / degree;
     const auto kvPerRank = kvHeads / degree;
@@ -1780,9 +1783,49 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
 
     const auto partial = runAttention(qPerRank, kvPerRank, rankWq, rankSq, rankWk, rankSk,
                                       rankWv, rankSv, qPerRank * headDim, rankWo, rankSo);
-    BOOST_REQUIRE_EQUAL(partial.size(), reduced.size());
-    for (std::size_t i = 0; i < partial.size(); ++i) reduced[i] += partial[i];
+    BOOST_REQUIRE_EQUAL(partial.size(), std::size_t(hidden * seq));
+    rankPartials.push_back(partial);
   }
+  BOOST_REQUIRE_EQUAL(rankPartials.size(), degree);
+  // One bundle per rank, each holding the partial under the slot name the sealed SUM consumes.
+  struct OwnedPartials
+  {
+    std::vector<float> values;
+  };
+  // One bundle per rank, each holding its partial under the slot name the sealed SUM consumes.
+  std::vector<TensorBundle> bundles;
+  std::vector<std::shared_ptr<OwnedPartials>> ownersOfValues;
+  std::vector<std::vector<NamedTensorView>> contributions;
+  for (std::size_t rank = 0; rank < degree; ++rank) {
+    auto owned = std::make_shared<OwnedPartials>();
+    owned->values = rankPartials[rank];
+    ownersOfValues.push_back(owned);
+    auto local = std::make_shared<LocalTensorBundle>();
+    NamedTensorView view;
+    view.name = "partial";
+    view.elementType = TensorElementType::Float32;
+    view.shape = {1, static_cast<std::int64_t>(seq), static_cast<std::int64_t>(hidden)};
+    view.payload = ndn::span<const std::uint8_t>(
+      reinterpret_cast<const std::uint8_t*>(owned->values.data()),
+      owned->values.size() * sizeof(float));
+    local->tensors.push_back(view);
+    local->owner = owned;
+    TensorBundle bundle;
+    bundle.name = "partial";
+    bundle.localTensors = local;
+    bundle.expectedBytes = tensorBundleWireSize(*local);
+    bundles.push_back(std::move(bundle));
+  }
+  for (const auto& bundle : bundles)
+    contributions.push_back(decodeTensorBundleViews(bundle));
+  // The production reducer, which is what the sealed SUM step calls.
+  const auto summed = sumTensorBundleViews("attention-block", contributions);
+  const auto summedViews = decodeTensorBundleViews(summed);
+  BOOST_REQUIRE(!summedViews.empty());
+  std::vector<float> reduced(summedViews.front().payload.size() / sizeof(float));
+  if (!reduced.empty())
+    std::memcpy(reduced.data(), summedViews.front().payload.data(),
+                summedViews.front().payload.size());
 
   double maxAbsolute = 0.0;
   double maxReference = 0.0;
@@ -1793,7 +1836,9 @@ BOOST_AUTO_TEST_CASE(TensorParallelAttentionMatchesUnsplitReference)
   BOOST_TEST_MESSAGE("attention block max abs error " << maxAbsolute
     << " against max |reference| " << maxReference);
   BOOST_CHECK(maxReference > 1e-3);
-  BOOST_CHECK(maxAbsolute < 1e-4);
+  // The measured value is 1.3e-07, so 1e-4 would let a 700-fold regression pass. The bound is set
+  // just above what the arithmetic actually produces, which is what makes it able to fail.
+  BOOST_CHECK_LT(maxAbsolute, 1e-6);
 }
 
 BOOST_AUTO_TEST_CASE(ResidualChainMatchesTheUnsplitSkipNorm)
