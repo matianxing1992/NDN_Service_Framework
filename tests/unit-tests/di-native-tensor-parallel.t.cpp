@@ -13424,6 +13424,83 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                                  << (magnitude > 0.0 ? unsplitVsRankSum / magnitude : 0.0));
               BOOST_CHECK_GT(unsplitVsRankSum, 0.0);
               BOOST_CHECK_LT(unsplitVsRankSum, 1e-3 * std::max(magnitude, 1.0));
+
+              // The same two reductions at the last layer. Layer 0's reassociation is about one part
+              // in six hundred thousand; if the deepest layer's is the same order, the 1.36e-04 seen
+              // there is propagation of that per-layer amount rather than a second mechanism.
+              {
+                const auto deepIt = capturedStepInputs.find("S0R0/MLP/27");
+                const auto deepRank0 = bus->published("mlp-27-from-S0R0");
+                const auto deepRank1 = bus->published("mlp-27-from-S0R1");
+                if (deepIt == capturedStepInputs.end() || !deepRank0 || !deepRank1) {
+                  BOOST_FAIL("layer-27 MLP: missing captured inputs or published partials");
+                }
+                else {
+                  const auto deepEntry = findEntry("MLP", 27);
+                  BOOST_REQUIRE_MESSAGE(deepEntry != referenceTable.end(),
+                                        "no unsplit MLP entry for layer 27");
+                  std::map<std::string, TensorBundle> deepFeeds;
+                  std::size_t deepReplaced = 0;
+                  for (const auto& item2 : deepIt->second) {
+                    const auto slot = item2.first;
+                    const auto bound = deepEntry->inputSlotByGraphName.find(slot);
+                    if (bound != deepEntry->inputSlotByGraphName.end()) {
+                      deepFeeds.emplace(slot, item2.second);
+                      ++deepReplaced;
+                      continue;
+                    }
+                    // A slot name the entry does not declare is still feedable by name; the splits
+                    // differ between layers only in which layer's tensors they name.
+                    deepFeeds.emplace(slot, item2.second);
+                    ++deepReplaced;
+                  }
+                  std::map<std::string, TensorBundle> deepOut;
+                  try {
+                    deepOut = runRefEntry(*deepEntry, deepFeeds);
+                  }
+                  catch (const std::exception& error) {
+                    BOOST_FAIL(std::string("replay of the rank's layer-27 MLP inputs: ")
+                               + error.what());
+                  }
+                  const auto deepPartial = deepOut.find("partial");
+                  BOOST_REQUIRE_MESSAGE(deepPartial != deepOut.end(),
+                                        "the replayed layer-27 MLP produced no partial");
+                  const auto deepValues = [&] {
+                    const auto views = decodeTensorBundleViews(deepPartial->second);
+                    BOOST_REQUIRE(!views.empty());
+                    std::vector<float> values(views.front().payload.size() / sizeof(float));
+                    if (!values.empty())
+                      std::memcpy(values.data(), views.front().payload.data(),
+                                  views.front().payload.size());
+                    return values;
+                  }();
+                  const auto deepSummed = sumTensorBundleViews(
+                    "layer-27-mlp-rank-sum",
+                    {decodeTensorBundleViews(*deepRank0), decodeTensorBundleViews(*deepRank1)});
+                  const auto deepSummedViews = decodeTensorBundleViews(deepSummed);
+                  BOOST_REQUIRE(!deepSummedViews.empty());
+                  std::vector<float> deepSum(deepSummedViews.front().payload.size() / sizeof(float));
+                  if (!deepSum.empty())
+                    std::memcpy(deepSum.data(), deepSummedViews.front().payload.data(),
+                                deepSummedViews.front().payload.size());
+                  BOOST_REQUIRE_EQUAL(deepValues.size(), deepSum.size());
+                  double deepDifference = 0.0;
+                  double deepMagnitude = 0.0;
+                  for (std::size_t index = 0; index < deepValues.size(); ++index) {
+                    deepDifference = std::max(deepDifference,
+                      std::fabs(double(deepValues[index]) - double(deepSum[index])));
+                    deepMagnitude = std::max(deepMagnitude, std::fabs(double(deepSum[index])));
+                  }
+                  BOOST_TEST_MESSAGE("layer-27 MLP: replaced=" << deepReplaced
+                                     << " unsplitVsRankSum=" << deepDifference
+                                     << " largest=" << deepMagnitude
+                                     << " relative="
+                                     << (deepMagnitude > 0.0
+                                           ? deepDifference / deepMagnitude : 0.0));
+                  BOOST_CHECK_GT(deepDifference, 0.0);
+                  BOOST_CHECK_LT(deepDifference, 1e-3 * std::max(deepMagnitude, 1.0));
+                }
+              }
             }
           }
           // Both numbers have to be what the explanation says they are. The replay used the rank's
