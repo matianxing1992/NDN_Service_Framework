@@ -15230,11 +15230,25 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     std::map<std::uint64_t, double> layerMagnitude;
     double layer1KeyMagnitude = 0.0;
     std::optional<std::string> firstExcess;
+    // The elements that exceed the allowance, recorded rather than only reported one at a time.
+    // C8 allows `atol + rtol*|ref|`, so an error whose size is set by the residual stream exceeds it
+    // exactly where |ref| is small; an error proportional to |ref| exceeds it everywhere. Counting
+    // and locating the exceeding elements is what separates the two, and until now the block below
+    // that claims to do it declared its counters and never assigned them.
+    std::size_t comparedElements = 0;
+    std::size_t overC8Count = 0;
+    double worstAllowanceMultiple = 1.0;
+    std::optional<double> largestOverC8Reference;
+    std::uint64_t largestOverC8ReferenceLayer = 0;
     for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
       for (const auto* kind : {"key", "value"}) {
         const auto name = "present." + std::to_string(layer) + "." + kind;
         const auto unsplit = kvOfResult(referenceResult, name);
-        if (unsplit.empty()) continue;
+        // A missing reference tensor is a broken comparison, not a tensor to skip: the coverage
+        // assertion below expects one per layer and kind, and a `continue` here would report a
+        // smaller denominator rather than the missing tensor.
+        BOOST_REQUIRE_MESSAGE(!unsplit.empty(),
+                              "the unsplit reference produced no " + name);
         const auto shard = kvOfResult(item.second, name);
         BOOST_REQUIRE_MESSAGE(!shard.empty(), "rank produced no " + name);
         // [batch, heads, sequence, dim] on both sides.
@@ -15304,6 +15318,17 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
               const auto actual = double(shard[shardBase + channel]);
               const auto difference = std::fabs(actual - reference);
               const auto allowance = kAtol + kRtol * std::fabs(reference);
+              ++comparedElements;
+              if (difference > allowance) {
+                ++overC8Count;
+                worstAllowanceMultiple = std::max(worstAllowanceMultiple,
+                                                  difference / allowance);
+                const auto magnitude = std::fabs(reference);
+                if (!largestOverC8Reference || magnitude > *largestOverC8Reference) {
+                  largestOverC8Reference = magnitude;
+                  largestOverC8ReferenceLayer = layer;
+                }
+              }
               // The first element that exceeds the allowance, named exactly. A maximum alone says
               // how wrong the result is but not where, and locating one failing element is what
               // turns "the KV differs" into a place to look in the two computations.
@@ -15383,10 +15408,6 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     // the element's own value will exceed `atol` exactly where |ref| is small. Counting how many
     // elements exceed and where their |ref| sits separates that from a wrong result.
     {
-      std::size_t overCount = 0;
-      std::size_t total = 0;
-      double maxRelative = 0.0;
-      double maxRelativeReference = 0.0;
       std::vector<double> absoluteErrors;
       for (const auto& perLayer : layerWorst) absoluteErrors.push_back(perLayer.second);
       std::sort(absoluteErrors.begin(), absoluteErrors.end());
@@ -15412,6 +15433,32 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                          << " errorAtSmallestMagnitude=" << errorAtSmall
                          << " largestMagnitude=" << largestMagnitude
                          << " allowanceAtZeroMagnitude=" << 1e-4);
+      // The count and the location of the excess, which the line above cannot state. An error
+      // proportional to |ref| would put the exceeding elements at the layer's largest values; an
+      // error floored by the residual stream puts them at small ones. Measuring which one this is
+      // is what lets a reader tell a reassociation from a wrong slice without re-deriving it.
+      BOOST_REQUIRE_GT(comparedElements, 0U);
+      BOOST_TEST_MESSAGE("unit " << item.first << " over C8: " << overC8Count << " of "
+                         << comparedElements << " elements ("
+                         << (100.0 * double(overC8Count) / double(comparedElements))
+                         << "%), worst allowance multiple=" << worstAllowanceMultiple
+                         << (largestOverC8Reference
+                               ? " largest |ref| among them=" + std::to_string(*largestOverC8Reference)
+                                 + " at layer " + std::to_string(largestOverC8ReferenceLayer)
+                               : std::string(" none")));
+      // A real acceptance question, not a threshold: an exceeding element must be a small value in
+      // a large-magnitude tensor. If one of them sits at a layer's largest value, the difference is
+      // proportional to the value rather than floored by it, and this case must not be able to
+      // report that as "the same shape as before" -- it fails here, at the place the shape is
+      // claimed. The 0.1 fraction is not an accuracy tolerance: it asks whether the failing element
+      // is one of the big ones, which is a categorical question with a wide margin on both sides.
+      if (overC8Count != 0) {
+        BOOST_REQUIRE(largestOverC8Reference.has_value());
+        BOOST_CHECK_LT(*largestOverC8Reference, 0.1 * largestMagnitude);
+      }
+      else {
+        BOOST_CHECK(!largestOverC8Reference.has_value());
+      }
     }
     BOOST_CHECK_LE(worstExcess, 0.0);
   }
