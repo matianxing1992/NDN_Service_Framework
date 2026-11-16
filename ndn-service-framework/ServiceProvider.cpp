@@ -21700,6 +21700,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         return activeNacConsumer().readyForDecryption();
     }
 
+    bool ServiceProvider::hasPendingOwnerTokens() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(m_registrationControl->mutex);
+        return m_registrationControl->activeOwnerCalls != 0;
+    }
+
     size_t ServiceProvider::getCurrentPolicyEpoch() const
     {
         return m_currentPolicyEpoch;
