@@ -12743,6 +12743,10 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // export is therefore possible without changing the worker or the graph.
   std::vector<float> rank0Values;
   std::vector<float> rank1Values;
+  // The published bundles as well as their values: the production reducer takes bundles, and the
+  // block below needs the same bytes the values came from.
+  std::optional<TensorBundle> rank0Partial;
+  std::optional<TensorBundle> rank1Partial;
   {
     const auto scopes = bus->publishedScopes();
     std::string preview;
@@ -12754,8 +12758,8 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     // Layer 0's attention partial from each rank. The two must sum to the unsplit export's layer-0
     // attention projection -- the same comparison the synthetic-input case makes, now on the real
     // 24-token context the chain actually carried.
-    const auto rank0Partial = bus->published("attn-0-from-S0R0");
-    const auto rank1Partial = bus->published("attn-0-from-S0R1");
+    rank0Partial = bus->published("attn-0-from-S0R0");
+    rank1Partial = bus->published("attn-0-from-S0R1");
     BOOST_REQUIRE_MESSAGE(rank0Partial.has_value(), "rank0 published no layer-0 attention partial");
     BOOST_REQUIRE_MESSAGE(rank1Partial.has_value(), "rank1 published no layer-0 attention partial");
     const auto valuesOf = [] (const TensorBundle& bundle) {
@@ -13318,12 +13322,18 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           double replayVsUnsplitReference = 0.0;
           double unsplitVsRankSum = 0.0;
           {
-            // The rank sum through the production reducer. The published partials are captured
-            // earlier by `valuesOf`, so the sum is taken over those same bytes rather than a
-            // second read of the bus.
-            std::vector<float> rankSum(rank0Values.size());
-            for (std::size_t index = 0; index < rankSum.size(); ++index)
-              rankSum[index] = static_cast<float>(rank0Values[index] + rank1Values[index]);
+            // The rank sum through the production reducer, over the same published bundles the
+            // values were read from. A hand-written add would be a second implementation of the
+            // reduction, which is the number this comparison is trying to measure.
+            const auto summed = sumTensorBundleViews(
+              "layer-0-rank-sum",
+              {decodeTensorBundleViews(*rank0Partial), decodeTensorBundleViews(*rank1Partial)});
+            const auto summedViews = decodeTensorBundleViews(summed);
+            BOOST_REQUIRE(!summedViews.empty());
+            std::vector<float> rankSum(summedViews.front().payload.size() / sizeof(float));
+            if (!rankSum.empty())
+              std::memcpy(rankSum.data(), summedViews.front().payload.data(),
+                          summedViews.front().payload.size());
             BOOST_REQUIRE_EQUAL(rankSum.size(), refValues.size());
             for (std::size_t index = 0; index < refValues.size(); ++index) {
               replayVsUnsplitReference = std::max(replayVsUnsplitReference,
@@ -13336,6 +13346,21 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
                              << " replaced=" << replaced0
                              << " replayVsUnsplitReference=" << replayVsUnsplitReference
                              << " unsplitVsRankSum=" << unsplitVsRankSum);
+          // Both numbers have to be what the explanation says they are. The replay used the rank's
+          // inputs, so it must reproduce the unsplit reference exactly; and the split must be
+          // measurably non-zero, or this comparison is looking at the wrong tensors.
+          BOOST_CHECK_EQUAL(replayVsUnsplitReference, 0.0);
+          BOOST_CHECK_GT(unsplitVsRankSum, 0.0);
+          // The split's difference is a reassociation, so it has to be small against the values it
+          // applies to: a percentage-level difference would be an error rather than arithmetic order.
+          {
+            double magnitude = 0.0;
+            for (const auto value : refValues) magnitude = std::max(magnitude, std::fabs(double(value)));
+            BOOST_TEST_MESSAGE("layer-0 split difference is "
+                               << (magnitude > 0.0 ? unsplitVsRankSum / magnitude : 0.0)
+                               << " of the layer's largest value " << magnitude);
+            BOOST_CHECK_LT(unsplitVsRankSum, 1e-3 * std::max(magnitude, 1.0));
+          }
           // The boundary layer 0 actually consumes, compared tensor by tensor. With
           // `replayVsUnsplitReference` at zero the two chains already agree on this layer's input,
           // so these comparisons are the evidence for that rather than a search for a difference.
