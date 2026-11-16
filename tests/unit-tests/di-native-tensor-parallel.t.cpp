@@ -8209,7 +8209,6 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
       "/model/pos_ids_reformat/Reshape/output_0";
     side.runner = factory.create(spec);
-    BOOST_REQUIRE(side.runner != nullptr);
 
     side.role.role = unit;
     side.role.requestId = requestId.toUri();
@@ -12419,6 +12418,74 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     std::shared_ptr<NativeModelRunner> runner;
     RoleSpec role;
   };
+  // A pass-through that records each step's slot values, keyed by the rank's own step id so a
+  // replay can find the exact inputs one step consumed.
+  class CapturingRunner final : public NativeModelRunner
+  {
+  public:
+    CapturingRunner(std::shared_ptr<NativeModelRunner> inner,
+                    std::map<std::string, std::map<std::string, TensorBundle>>& capture,
+                    std::mutex& mutex)
+      : m_inner(std::move(inner))
+      , m_capture(capture)
+      , m_mutex(mutex)
+    {
+    }
+
+    std::map<std::string, TensorBundle>
+    run(const RoleExecutionContext& context) override
+    {
+      if (context.activeStep) {
+        // Two ranks run concurrently on the worker pool, so the capture is shared mutable state.
+        // Keyed by step id the entries do not collide, but `std::map` is not safe to mutate from
+        // two threads, and the run would then fail for a reason unrelated to the measurement.
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_capture[context.activeStep->stepId] = context.stepInputsBySlot;
+      }
+      return m_inner->run(context);
+    }
+
+    std::uint64_t
+    cacheIdentity() const
+    {
+      return m_inner->cacheIdentity();
+    }
+
+    // Forward the rest of the adapter surface. A decorator that swallowed these would hide the
+    // per-step backend timing and the opaque-state handle the worker relies on, and the run would
+    // look different for a reason that has nothing to do with the measurement.
+    std::optional<NativeRuntimeMetrics>
+    runtimeMetricsSnapshot() const override
+    {
+      return m_inner->runtimeMetricsSnapshot();
+    }
+
+    const std::optional<ExecutionEvidence>&
+    executionEvidence() const override
+    {
+      return m_inner->executionEvidence();
+    }
+
+    bool
+    supportsOpaqueStateHandles() const override
+    {
+      return m_inner->supportsOpaqueStateHandles();
+    }
+
+    std::optional<NativeOpaqueStateHandleV1>
+    stateHandleSnapshot(const std::string& sessionId) const override
+    {
+      return m_inner->stateHandleSnapshot(sessionId);
+    }
+
+  private:
+    std::shared_ptr<NativeModelRunner> m_inner;
+    std::map<std::string, std::map<std::string, TensorBundle>>& m_capture;
+    std::mutex& m_mutex;
+  };
+
+  std::map<std::string, std::map<std::string, TensorBundle>> capturedStepInputs;
+  std::mutex captureMutex;
   std::map<std::string, Side> sides;
   // One statistics owner per unit, kept so the SUM counts can be read after the run.
   std::map<std::string, std::shared_ptr<NativeWorkStatistics>> unitStatistics;
@@ -12445,8 +12512,13 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     spec.metadata["unrankedInputNames"] =
       "/model/attn_mask_reformat/attn_mask_subgraph/Gather/Cast/output_0,"
       "/model/pos_ids_reformat/Reshape/output_0";
-    side.runner = factory.create(spec);
-    BOOST_REQUIRE(side.runner != nullptr);
+    auto innerRunner = factory.create(spec);
+    BOOST_REQUIRE(innerRunner != nullptr);
+    // Capture what each rank step actually consumed. The worker releases a step's collected
+    // inputs right after it runs, so the runner boundary is the only place they still exist -- and
+    // it is the boundary that matters: the values handed to the runner, not what a bus published.
+    side.runner = std::make_shared<CapturingRunner>(innerRunner, capturedStepInputs,
+                                                    captureMutex);
 
     side.role.role = unit;
     // The SUM counts reach the report through this owner. Without it the codec records nothing, and
@@ -12748,6 +12820,15 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_REQUIRE(refRunner != nullptr);
     const auto refParent = std::dynamic_pointer_cast<qwen::NativeQwenTensorRunner>(refRunner);
     BOOST_REQUIRE(refParent != nullptr);
+    // The inputs each step actually consumed, captured at the runner boundary. This is the only
+    // place they exist once the worker releases a step's collected inputs, and it is the boundary the
+    // audit names: the values the runner is handed, not the values the bus published. Comparing a
+    // bus partial against a residual was a previous mistake in this case's history.
+    // The capture map is the one declared above, shared with the rank-side decorator:
+    const auto captureInputs = [&capturedStepInputs] (const RoleExecutionContext& context) {
+      if (context.activeStep)
+        capturedStepInputs[context.activeStep->stepId] = context.stepInputsBySlot;
+    };
 
     // Run the unsplit INIT entry with the deployment's own prompt to obtain the embedding the
     // first attention block consumes. Reading it from the export rather than computing it keeps
@@ -12789,6 +12870,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
           bound == entry.inputSlotByGraphName.end() ? item.first : bound->second,
           item.second);
       }
+      captureInputs(context);
       return refParent->run(context);
     };
 
@@ -13087,6 +13169,118 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       worst1 = std::max(worst1, difference);
       worstReductionGap = std::max(worstReductionGap, std::fabs(reduced - inDouble));
       excess1 = std::max(excess1, difference - allowance);
+    }
+    // The replay the audit asks for: give the unsplit layer-1 attention exactly the inputs the
+    // rank's own layer-1 attention consumed, then compare the KV it produces. If the unsplit entry
+    // on the same inputs still differs, the difference is in this layer's operators or their shard
+    // parameters; if it agrees, the difference entered upstream and belongs to block 0.
+    {
+      // The rank side's own step inputs, captured at the runner boundary by the wrapper above.
+      // The rank's step id for this entry is <unit>/ATTN/<layer>; the capture is keyed by it.
+      if (!capturedStepInputs.empty()) {
+        std::string keys;
+        for (const auto& item2 : capturedStepInputs) {
+          if (!keys.empty()) keys += ' ';
+          if (keys.size() < 400) keys += item2.first;
+        }
+        BOOST_TEST_MESSAGE("captured step ids: count=" << capturedStepInputs.size()
+                           << " {" << keys << "}");
+      }
+      const auto rankInputIt = capturedStepInputs.find("S0R0/ATTN/1");
+      if (rankInputIt == capturedStepInputs.end()) {
+        BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-1 attention");
+      }
+      else {
+        const auto& rankInputs = rankInputIt->second;
+        // Feed by graph name: the unsplit entry's declaration is the authority on what it reads,
+        // and a slot the rank used but the entry does not declare is a different bug.
+        std::map<std::string, TensorBundle> replayFeeds;
+        std::size_t unmatched = 0;
+        std::string unmatchedSlots;
+        // attnFeeds1 mixes two key spaces: `post_attention` and `previous_mlp` are slot names,
+        // while the INIT outputs and the empty `past_key_values.*` entries are graph tensor names.
+        // The capture is keyed by slot name, so a graph name has to be translated first -- and a
+        // slot name must not be translated, or it falls back to the reference value and the replay
+        // stops being a replay of anything.
+        std::size_t replaced = 0;
+        for (const auto& item2 : attnFeeds1) {
+          const auto asSlot = rankInputs.find(item2.first);
+          if (asSlot != rankInputs.end()) {
+            replayFeeds.emplace(item2.first, asSlot->second);
+            ++replaced;
+            continue;
+          }
+          const auto bound = attnEntry1->inputSlotByGraphName.find(item2.first);
+          if (bound == attnEntry1->inputSlotByGraphName.end()) {
+            replayFeeds.emplace(item2.first, item2.second);
+            continue;
+          }
+          const auto fed = rankInputs.find(bound->second);
+          if (fed == rankInputs.end()) {
+            ++unmatched;
+            unmatchedSlots += " " + item2.first;
+            replayFeeds.emplace(item2.first, item2.second);
+          }
+          else {
+            replayFeeds.emplace(item2.first, fed->second);
+            ++replaced;
+          }
+        }
+        // Which slots the rank actually had, and which of the unsplit feeds they replaced. Without
+        // this the replay's result cannot be read: replacing 5 of 61 feeds is a different experiment
+        // from replacing the boundary the entry really depends on.
+        {
+          std::string rankSlots;
+          for (const auto& slot : rankInputs) {
+            if (!rankSlots.empty()) rankSlots += ' ';
+            if (rankSlots.size() < 300) rankSlots += slot.first;
+          }
+          BOOST_TEST_MESSAGE("layer-1 replay: rank inputs=" << rankInputs.size()
+                             << " unsplit feeds=" << attnFeeds1.size()
+                             << " replaced=" << replaced
+                             << " unmatched=" << unmatched
+                             << " unmatchedSlots={"
+                             << (unmatchedSlots.empty() ? unmatchedSlots : unmatchedSlots.substr(1))
+                             << "}"
+                             << " rankSlots={" << rankSlots << "}");
+        }
+        std::map<std::string, TensorBundle> replayed;
+        try {
+          replayed = runRefEntry(*attnEntry1, replayFeeds);
+        }
+        catch (const std::exception& error) {
+          BOOST_FAIL(std::string("replay of the rank's layer-1 inputs: ") + error.what());
+        }
+        const auto replayedPartial = replayed.find("partial");
+        BOOST_REQUIRE_MESSAGE(replayedPartial != replayed.end(),
+                              "the replayed layer-1 attention produced no partial");
+        const auto replayedValues = [&] {
+          const auto views = decodeTensorBundleViews(replayedPartial->second);
+          BOOST_REQUIRE(!views.empty());
+          std::vector<float> values(views.front().payload.size() / sizeof(float));
+          if (!values.empty())
+            std::memcpy(values.data(), views.front().payload.data(),
+                        views.front().payload.size());
+          return values;
+        }();
+        BOOST_REQUIRE_EQUAL(replayedValues.size(), refValues1.size());
+        double replayWorst = 0.0;
+        for (std::size_t index = 0; index < refValues1.size(); ++index)
+          replayWorst = std::max(replayWorst,
+            double(std::fabs(double(replayedValues[index]) - double(refValues1[index]))));
+        // How far the replay moved the answer. Zero means the two chains had been fed the same
+        // values after all, so the difference is not upstream; a non-zero value is the size of the
+        // upstream divergence, measured at this layer's boundary.
+        double inputEffect = 0.0;
+        for (std::size_t index = 0; index < refValues1.size(); ++index) {
+          const auto original = double(static_cast<float>(rank0Layer1Values[index]
+            + rank1Layer1Values[index]));
+          inputEffect = std::max(inputEffect,
+            std::fabs(double(replayedValues[index]) - original));
+        }
+        BOOST_TEST_MESSAGE("layer-1 replay vs unsplit-on-unsplit-inputs: worst=" << replayWorst
+                           << " inputEffect=" << inputEffect);
+      }
     }
     BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference, production sum: worst=" << worst1
                        << " excessOverC8=" << excess1
