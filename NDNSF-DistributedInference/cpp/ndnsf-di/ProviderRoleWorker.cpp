@@ -38,6 +38,11 @@ admitPeerContribution(const RoleSpec& role, const DependencyEdge& edge, TensorBu
   if (!role.generationLineage) return bundle;
   const auto lineage = extractGenerationEpochLineage(bundle);
   if (!lineage) {
+    // A peer contribution ought to carry this round's binding, and requiring it is what makes the
+    // check meaningful. It is not required yet: four fixtures inject the peer's tensor through a
+    // test IO that has no producer to stamp it, so demanding a stamp rejects legitimate arrivals
+    // today. The warning names every unstamped arrival, so the gap is visible in a real run rather
+    // than assumed closed.
     logRuntimeWarn("NDNSF_DI_PEER_CONTRIBUTION_UNSTAMPED role=" + role.role +
                    " scope=" + edge.scope);
     return bundle;
@@ -1436,28 +1441,16 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     for (const auto& edge : item.role.inputs) {
       if (edge.consumerStepId != step.stepId) continue;
       auto admitted = ctx.inputsByScope.find(edge.scope);
-      // Every route that supplies a peer contribution goes through one admission. Three of them
-      // exist -- a resumed contribution, a caller-supplied one, and the awaited fetch that strips
-      // in its own completion -- and before this they disagreed: only the awaited one checked the
-      // generation binding, so a contribution arriving the other two ways reached the reduction
-      // unchecked.
-      // `ctx` is const here, so the admitted value is re-bound on a local iterator over the item's
-      // copy of the map rather than through the context. The step reads the admitted bundle from
-      // `item.initialInputsByScope`, which is the same value the fetch recorded.
-      if (item.role.generationLineage) {
-        const auto preAdmitted = item.initialInputsByScope.find(edge.scope);
-        if (preAdmitted != item.initialInputsByScope.end()) {
-          preAdmitted->second = admitPeerContribution(item.role, edge, preAdmitted->second);
-        }
-      }
       // A contribution this unit suspended on arrives here, already validated, when the unit
       // resumes. It is consumed once: the entry is removed so a later step cannot see it twice.
       if (admitted == ctx.inputsByScope.end()) {
         const auto resumed = item.stepRemoteInputs.find(edge.scope);
         if (resumed != item.stepRemoteInputs.end()) {
-          auto resumedBundle = admitPeerContribution(item.role, edge,
-                                                     std::move(resumed->second));
-          if (!inputs.emplace(edge.consumerSlotId, std::move(resumedBundle)).second) {
+          // Already admitted where it arrived: the await callback checked the generation binding
+          // and stripped it before storing under `stepRemoteInputs`. Admitting again here would
+          // judge a stripped bundle by the rule that expects the stamp, so a legitimate peer result
+          // would be rejected exactly once per step.
+          if (!inputs.emplace(edge.consumerSlotId, std::move(resumed->second)).second) {
             throw std::runtime_error(
               "sealed step has duplicate contributions for one slot: " +
               edge.consumerSlotId);
@@ -1501,7 +1494,12 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       // which inflates the reduction without looking wrong. The sealed template
       // declares one dependency per contribution, so a second one is a contract
       // violation rather than something to merge.
-      if (!inputs.emplace(edge.consumerSlotId, admitted->second).second) {
+      // Admission happens on the value this step actually consumes. `ctx.inputsByScope` is const
+      // and is a copy of the item's map, so re-binding the item's copy earlier left the two
+      // different: the check ran on one bundle and the reduction received another, which is the
+      // strip not happening at all.
+      if (!inputs.emplace(edge.consumerSlotId,
+                          admitPeerContribution(item.role, edge, admitted->second)).second) {
         throw std::runtime_error(
           "sealed step has duplicate contributions for one slot: " +
           edge.consumerSlotId);
