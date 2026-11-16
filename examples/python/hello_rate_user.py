@@ -164,7 +164,12 @@ def main() -> int:
     rates = [float(item.strip()) for item in args.rate_series.split(",") if item.strip()]
     rows = []
     with optional_local_nfd(args.start_local_nfd):
-        user = ServiceUser(**session_kwargs(args))
+        user = ServiceUser(
+            group="/example/hello/group",
+            controller="/example/hello/controller",
+            user="/example/hello/user",
+            **session_kwargs(args),
+        )
         user.start()
         try:
             for rate in rates:

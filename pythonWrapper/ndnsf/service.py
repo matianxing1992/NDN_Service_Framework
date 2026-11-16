@@ -2055,7 +2055,10 @@ class CollaborationInvocation:
 
 
 class ServiceProvider:
-    """Python API for writing NDNSF provider business logic."""
+    """Write provider business logic with explicit group/controller/provider_prefix.
+
+    C++ rejects missing deployment names before creating the actor identity.
+    """
 
     @property
     def provider_identity(self) -> str:
@@ -2095,9 +2098,9 @@ class ServiceProvider:
         self,
         *,
         provider_id: str = "",
-        group: str = "/example/hello/group",
-        controller: str = "/example/hello/controller",
-        provider_prefix: str = "/example/hello/provider",
+        group: str = "",
+        controller: str = "",
+        provider_prefix: str = "",
         trust_schema: str = "examples/trust-schema.conf",
         handler_threads: int = 4,
         ack_threads: int = 2,
@@ -2530,12 +2533,15 @@ class ServiceProvider:
 
 
 class ServiceController:
-    """Python API for running the NDNSF ServiceController role."""
+    """Run the native Controller with an explicit controller_prefix.
+
+    Actor names have no deployment defaults; missing names are rejected by C++.
+    """
 
     def __init__(
         self,
         *,
-        controller_prefix: str = "/example/hello/controller",
+        controller_prefix: str = "",
         policy_file: str = "examples/hello.policies",
         trust_schema: str = "examples/trust-schema.conf",
         bootstrap_identities: Optional[list[str]] = None,
@@ -2591,14 +2597,17 @@ class ServiceController:
 
 
 class ServiceUser:
-    """Python API for issuing NDNSF service requests."""
+    """Issue service requests with explicit group/controller/user names.
+
+    C++ rejects missing deployment names before creating the actor identity.
+    """
 
     def __init__(
         self,
         *,
-        group: str = "/example/hello/group",
-        controller: str = "/example/hello/controller",
-        user: str = "/example/hello/user",
+        group: str = "",
+        controller: str = "",
+        user: str = "",
         trust_schema: str = "examples/trust-schema.conf",
         permission_wait_ms: int = 1500,
         handler_threads: int = 2,

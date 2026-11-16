@@ -38,6 +38,7 @@ def main() -> int:
 
     with optional_local_nfd(args.start_local_nfd):
         controller = ServiceController(
+            controller_prefix="/example/hello/controller",
             policy_file=args.policy_file,
             bootstrap_identities=HELLO_BOOTSTRAP_IDENTITIES,
             **session_kwargs(args),

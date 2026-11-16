@@ -42,6 +42,7 @@
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 #include "ndn-service-framework/PublishedContentName.hpp"
 #include "ndn-service-framework/ImmutableFilePublication.hpp"
 #include <pybind11/stl.h>
@@ -3536,8 +3537,13 @@ public:
     , m_ackThreads(ackThreads)
     , m_serveCertificates(serveCertificates)
   {
+    nsf::validateConfiguredActorName(m_group, "group");
+    nsf::validateConfiguredActorName(m_controller, "controller");
+    nsf::validateConfiguredActorName(m_providerPrefix, "provider_prefix");
+    nsf::validateConfiguredActorName(m_providerIdentity, "provider identity");
+    const auto controllerCert = loadControllerCertificateOverride(m_controller);
     m_providerCert = getOrCreateIdentity(m_keyChain, m_providerIdentity);
-    if (auto controllerCert = loadControllerCertificateOverride(m_controller)) {
+    if (controllerCert) {
       m_controllerCert = *controllerCert;
     }
     else {
@@ -4268,6 +4274,7 @@ public:
     , m_validator(m_face)
     , m_serveCertificates(serveCertificates)
   {
+    nsf::validateConfiguredActorName(m_controllerPrefix, "controller_prefix");
     if (m_trustSchema.empty()) {
       throw std::invalid_argument("NativeServiceController requires a trust schema with a fixed root");
     }
@@ -4480,8 +4487,12 @@ public:
     , m_trustSchema(trustSchema)
     , m_permissionWaitMs(permissionWaitMs)
   {
+    nsf::validateConfiguredActorName(m_group, "group");
+    nsf::validateConfiguredActorName(m_controller, "controller");
+    nsf::validateConfiguredActorName(m_userIdentity, "user");
+    const auto controllerCert = loadControllerCertificateOverride(m_controller);
     m_userCert = getOrCreateIdentity(m_keyChain, m_userIdentity);
-    if (auto controllerCert = loadControllerCertificateOverride(m_controller)) {
+    if (controllerCert) {
       m_controllerCert = *controllerCert;
     }
     else {
@@ -8336,7 +8347,7 @@ PYBIND11_MODULE(_ndnsf, m)
                   const std::vector<std::string>&,
                   bool,
                   const std::string&>(),
-         py::arg("controller_prefix") = "/example/hello/controller",
+         py::arg("controller_prefix") = "",
          py::arg("policy_file") = "examples/hello.policies",
          py::arg("trust_schema") = "examples/trust-schema.conf",
          py::arg("bootstrap_identities") = std::vector<std::string>{},
@@ -8376,9 +8387,9 @@ PYBIND11_MODULE(_ndnsf, m)
                   bool,
                   const std::string&>(),
          py::arg("provider_id") = "",
-         py::arg("group") = "/example/hello/group",
-         py::arg("controller") = "/example/hello/controller",
-         py::arg("provider_prefix") = "/example/hello/provider",
+         py::arg("group") = "",
+         py::arg("controller") = "",
+         py::arg("provider_prefix") = "",
          py::arg("trust_schema") = "examples/trust-schema.conf",
          py::arg("handler_threads") = 4,
          py::arg("ack_threads") = 2,
@@ -8474,9 +8485,9 @@ PYBIND11_MODULE(_ndnsf, m)
                   bool,
                   bool,
                   const std::string&>(),
-         py::arg("group") = "/example/hello/group",
-         py::arg("controller") = "/example/hello/controller",
-         py::arg("user") = "/example/hello/user",
+         py::arg("group") = "",
+         py::arg("controller") = "",
+         py::arg("user") = "",
          py::arg("trust_schema") = "examples/trust-schema.conf",
          py::arg("permission_wait_ms") = 1500,
          py::arg("handler_threads") = 2,

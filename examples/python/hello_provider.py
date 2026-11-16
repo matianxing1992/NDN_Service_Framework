@@ -32,7 +32,13 @@ def main() -> int:
         ]])
         return 0
 
-    provider = ServiceProvider(provider_id=args.provider_id, **session_kwargs(args))
+    provider = ServiceProvider(
+        group="/example/hello/group",
+        controller="/example/hello/controller",
+        provider_prefix="/example/hello/provider",
+        provider_id=args.provider_id,
+        **session_kwargs(args),
+    )
 
     if args.selection_gated:
         def prepare(context):

@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/configured-actor-name.hpp"
 
 #include <iostream>
 #include <limits>
@@ -33,6 +34,18 @@ std::string hex(const ndn::Block& block)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ProducerDataNaming)
+
+BOOST_AUTO_TEST_CASE(ConfiguredActorsRequireExplicitNonRootNames)
+{
+  BOOST_CHECK_THROW(validateConfiguredActorName(ndn::Name(), "provider"), std::invalid_argument);
+  BOOST_CHECK_THROW(validateConfiguredActorName(ndn::Name("/"), "group"), std::invalid_argument);
+  for (const auto* uri : {"/tenant-a/actors/provider", "/tenant-b/actors/controller",
+                          "/tenant-a/%2F/device", "/tenant-a/测试"}) {
+    BOOST_CHECK_NO_THROW(validateConfiguredActorName(ndn::Name(uri), "actor"));
+  }
+  const ndn::Name oversized = ndn::Name("/tenant").append(std::string(1100, 'x'));
+  BOOST_CHECK_THROW(validateConfiguredActorName(oversized, "authority"), std::invalid_argument);
+}
 
 BOOST_AUTO_TEST_CASE(ExactProducerBoundary)
 {

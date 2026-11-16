@@ -36,7 +36,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     handled = 0
     rejected = 0
     try:
-        provider = ServiceProvider(provider_id=args.provider_id, **session_kwargs(args))
+        provider = ServiceProvider(
+            group="/example/hello/group",
+            controller="/example/hello/controller",
+            provider_prefix="/example/hello/provider",
+            provider_id=args.provider_id,
+            **session_kwargs(args),
+        )
 
         @provider.handler(args.service)
         def respond(request: bytes) -> bytes:
