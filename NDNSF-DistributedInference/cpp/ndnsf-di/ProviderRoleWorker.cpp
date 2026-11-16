@@ -23,6 +23,38 @@ namespace ndnsf::di {
 
 namespace {
 
+/** Admit one peer contribution on a generation-bound unit.
+ *
+ * Every route that delivers a peer contribution uses this: the awaited fetch, a resumed
+ * contribution and a caller-supplied one. Checking only the endpoint fields would accept a partial
+ * from another round that arrived on the right name, so the whole generation state is compared; the
+ * binding is then stripped because the SUM reads float32 members only. A contribution with no stamp
+ * is a caller's own input rather than a producer's output, so it is accepted and logged -- requiring
+ * a stamp there would reject inputs no producer ever handled.
+ */
+TensorBundle
+admitPeerContribution(const RoleSpec& role, const DependencyEdge& edge, TensorBundle bundle)
+{
+  if (!role.generationLineage) return bundle;
+  const auto lineage = extractGenerationEpochLineage(bundle);
+  if (!lineage) {
+    logRuntimeWarn("NDNSF_DI_PEER_CONTRIBUTION_UNSTAMPED role=" + role.role +
+                   " scope=" + edge.scope);
+    return bundle;
+  }
+  auto expected = *role.generationLineage;
+  expected.producerRole = edge.producerRole;
+  expected.consumerRole = edge.consumerRole;
+  expected.operationIndex = edge.collectiveOperationIndex;
+  if (!lineage->sameGenerationState(expected) ||
+      lineage->producerRole != expected.producerRole ||
+      lineage->consumerRole != expected.consumerRole ||
+      lineage->operationIndex != expected.operationIndex) {
+    throw std::runtime_error("GENERATION_EPOCH_LINEAGE_MISMATCH");
+  }
+  return stripGenerationEpochLineage(std::move(bundle));
+}
+
 /** Bytes a bundle will occupy on the wire, local or already encoded.
  *
  * A local value carries views, not a payload, so `payload.size()` is zero and a timing record
@@ -795,30 +827,9 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
         // the endpoint fields would accept a partial from another round that happened to arrive on
         // the right name, so the whole generation state is compared. Then strip it -- the SUM reads
         // float32 members only, and a lineage tensor left in the set makes the counts disagree.
-        if (state->item.role.generationLineage) {
-          const auto lineage = extractGenerationEpochLineage(bundle);
-          if (lineage) {
-            auto expected = *state->item.role.generationLineage;
-            expected.producerRole = state->edge.producerRole;
-            expected.consumerRole = state->edge.consumerRole;
-            expected.operationIndex = state->edge.collectiveOperationIndex;
-            if (!lineage->sameGenerationState(expected) ||
-                lineage->producerRole != expected.producerRole ||
-                lineage->consumerRole != expected.consumerRole ||
-                lineage->operationIndex != expected.operationIndex) {
-              throw std::runtime_error("GENERATION_EPOCH_LINEAGE_MISMATCH");
-            }
-            bundle = stripGenerationEpochLineage(std::move(bundle));
-          }
-          else {
-            // A contribution a caller supplied directly carries no stamp because no producer ran --
-            // three fixtures in this suite inject the peer's tensor that way. Requiring a stamp here
-            // would reject the caller's own input, so absence is tolerated; a stamp that is present
-            // is always checked.
-            logRuntimeWarn("NDNSF_DI_PEER_CONTRIBUTION_UNSTAMPED role=" + state->item.role.role +
-                           " scope=" + state->edge.scope);
-          }
-        }
+        // One admission for every route: this is the third, and it used to carry its own copy of the
+        // check. Copies drift -- the two branches above had no check at all until the same round.
+        bundle = admitPeerContribution(state->item.role, state->edge, std::move(bundle));
         state->item.stepRemoteInputs[state->edge.scope] = std::move(bundle);
       }
       catch (...) {
@@ -1425,12 +1436,28 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     for (const auto& edge : item.role.inputs) {
       if (edge.consumerStepId != step.stepId) continue;
       auto admitted = ctx.inputsByScope.find(edge.scope);
+      // Every route that supplies a peer contribution goes through one admission. Three of them
+      // exist -- a resumed contribution, a caller-supplied one, and the awaited fetch that strips
+      // in its own completion -- and before this they disagreed: only the awaited one checked the
+      // generation binding, so a contribution arriving the other two ways reached the reduction
+      // unchecked.
+      // `ctx` is const here, so the admitted value is re-bound on a local iterator over the item's
+      // copy of the map rather than through the context. The step reads the admitted bundle from
+      // `item.initialInputsByScope`, which is the same value the fetch recorded.
+      if (item.role.generationLineage) {
+        const auto preAdmitted = item.initialInputsByScope.find(edge.scope);
+        if (preAdmitted != item.initialInputsByScope.end()) {
+          preAdmitted->second = admitPeerContribution(item.role, edge, preAdmitted->second);
+        }
+      }
       // A contribution this unit suspended on arrives here, already validated, when the unit
       // resumes. It is consumed once: the entry is removed so a later step cannot see it twice.
       if (admitted == ctx.inputsByScope.end()) {
         const auto resumed = item.stepRemoteInputs.find(edge.scope);
         if (resumed != item.stepRemoteInputs.end()) {
-          if (!inputs.emplace(edge.consumerSlotId, std::move(resumed->second)).second) {
+          auto resumedBundle = admitPeerContribution(item.role, edge,
+                                                     std::move(resumed->second));
+          if (!inputs.emplace(edge.consumerSlotId, std::move(resumedBundle)).second) {
             throw std::runtime_error(
               "sealed step has duplicate contributions for one slot: " +
               edge.consumerSlotId);
