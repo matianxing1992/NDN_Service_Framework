@@ -1,5 +1,11 @@
 # NDNSF-DistributedInference
 
+Native `ProviderConfig` requires explicit `--provider`, `--group`, and `--controller`
+names in its CLI or launch-file `arguments`; these have no deployment defaults.
+The configured Controller certificate is checked before cache/worker startup.
+Requester configurations must supply `request.service`; an artifact path never
+selects the publication service or authorization scope.
+
 ## Tiger login-node and recovery policy
 
 Use the shared Tiger login node for light editing, preparing/submitting jobs and

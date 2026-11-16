@@ -1,5 +1,10 @@
 # NDNSF-DistributedInference
 
+原生 `ProviderConfig` 的 CLI 或启动文件 `arguments` 必须显式提供
+`--provider`、`--group`、`--controller`，不再采用具体部署身份默认值。
+Controller 证书在缓存和 worker 启动前校验。Requester 配置必须提供
+`request.service`，不能从对象路径推断发布服务或授权范围。
+
 ## 推荐用户 API（Spec 116）
 
 新应用只从 `ndnsf_distributed_inference.api` 导入。主流程是直接对
