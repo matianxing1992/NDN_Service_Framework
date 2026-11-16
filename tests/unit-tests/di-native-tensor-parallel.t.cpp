@@ -13186,6 +13186,141 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         BOOST_TEST_MESSAGE("captured step ids: count=" << capturedStepInputs.size()
                            << " {" << keys << "}");
       }
+      // Layer 0, where the chain first diverges. Same method: the rank's own inputs into the
+      // unsplit layer-0 attention, then compare both its projection and its KV. If this agrees, the
+      // divergence starts in layer 0's own operators; if it differs, the INIT embedding already
+      // differed and no attention comparison can be the origin.
+      {
+        // The INIT entry, the last link. Its boundary is three tensors, so a comparison here is
+        // unambiguous: if the unsplit INIT on the rank's own inputs produces the same embedding, the
+        // divergence starts after the embedding; if it differs, the embedding itself is the origin.
+        {
+          const auto initIt = capturedStepInputs.find("S0R0/INIT");
+          if (initIt == capturedStepInputs.end()) {
+            BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's INIT");
+          }
+          else {
+            const auto& initInputs = initIt->second;
+            std::map<std::string, TensorBundle> feeds;
+            std::size_t replaced = 0;
+            for (const auto& item2 : initFeeds) {
+              const auto asSlot = initInputs.find(item2.first);
+              if (asSlot != initInputs.end()) {
+                feeds.emplace(item2.first, asSlot->second);
+                ++replaced;
+                continue;
+              }
+              const auto bound = initEntry->inputSlotByGraphName.find(item2.first);
+              if (bound == initEntry->inputSlotByGraphName.end()) {
+                feeds.emplace(item2.first, item2.second);
+                continue;
+              }
+              const auto fed = initInputs.find(bound->second);
+              if (fed == initInputs.end()) feeds.emplace(item2.first, item2.second);
+              else { feeds.emplace(item2.first, fed->second); ++replaced; }
+            }
+            std::map<std::string, TensorBundle> replayedInit;
+            try {
+              replayedInit = runRefEntry(*initEntry, feeds);
+            }
+            catch (const std::exception& error) {
+              BOOST_FAIL(std::string("replay of the rank's INIT inputs: ") + error.what());
+            }
+            const auto replayedEmbedding = replayedInit.find("x0");
+            BOOST_REQUIRE_MESSAGE(replayedEmbedding != replayedInit.end(),
+                                  "the replayed INIT produced no embedding");
+            const auto replayedValues = [&] {
+              const auto views = decodeTensorBundleViews(replayedEmbedding->second);
+              BOOST_REQUIRE(!views.empty());
+              std::vector<float> values(views.front().payload.size() / sizeof(float));
+              if (!values.empty())
+                std::memcpy(values.data(), views.front().payload.data(),
+                            views.front().payload.size());
+              return values;
+            }();
+            const auto originalEmbedding = [&] {
+              const auto views = decodeTensorBundleViews(initOut.at("x0"));
+              BOOST_REQUIRE(!views.empty());
+              std::vector<float> values(views.front().payload.size() / sizeof(float));
+              if (!values.empty())
+                std::memcpy(values.data(), views.front().payload.data(),
+                            views.front().payload.size());
+              return values;
+            }();
+            BOOST_REQUIRE_EQUAL(replayedValues.size(), originalEmbedding.size());
+            double worstInit = 0.0;
+            std::size_t differing = 0;
+            for (std::size_t index = 0; index < replayedValues.size(); ++index) {
+              const auto difference =
+                std::fabs(double(replayedValues[index]) - double(originalEmbedding[index]));
+              if (difference != 0.0) ++differing;
+              worstInit = std::max(worstInit, difference);
+            }
+            BOOST_TEST_MESSAGE("INIT replay: rank inputs=" << initInputs.size()
+                               << " replaced=" << replaced
+                               << " width=" << replayedValues.size()
+                               << " worst=" << worstInit
+                               << " differing=" << differing);
+          }
+        }
+        const auto layer0It = capturedStepInputs.find("S0R0/ATTN/0");
+        if (layer0It == capturedStepInputs.end()) {
+          BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-0 attention");
+        }
+        else {
+          const auto& layer0Inputs = layer0It->second;
+          std::map<std::string, TensorBundle> feeds0;
+          std::size_t replaced0 = 0;
+          for (const auto& item2 : attnFeeds) {
+            const auto asSlot = layer0Inputs.find(item2.first);
+            if (asSlot != layer0Inputs.end()) {
+              feeds0.emplace(item2.first, asSlot->second);
+              ++replaced0;
+              continue;
+            }
+            const auto bound = attnEntry->inputSlotByGraphName.find(item2.first);
+            if (bound == attnEntry->inputSlotByGraphName.end()) {
+              feeds0.emplace(item2.first, item2.second);
+              continue;
+            }
+            const auto fed = layer0Inputs.find(bound->second);
+            if (fed == layer0Inputs.end()) feeds0.emplace(item2.first, item2.second);
+            else { feeds0.emplace(item2.first, fed->second); ++replaced0; }
+          }
+          std::map<std::string, TensorBundle> replayed0;
+          try {
+            replayed0 = runRefEntry(*attnEntry, feeds0);
+          }
+          catch (const std::exception& error) {
+            BOOST_FAIL(std::string("replay of the rank's layer-0 inputs: ") + error.what());
+          }
+          const auto partial0 = replayed0.find("partial");
+          BOOST_REQUIRE_MESSAGE(partial0 != replayed0.end(),
+                                "the replayed layer-0 attention produced no partial");
+          const auto values0 = [&] {
+            const auto views = decodeTensorBundleViews(partial0->second);
+            BOOST_REQUIRE(!views.empty());
+            std::vector<float> values(views.front().payload.size() / sizeof(float));
+            if (!values.empty())
+              std::memcpy(values.data(), views.front().payload.data(),
+                          views.front().payload.size());
+            return values;
+          }();
+          BOOST_REQUIRE_EQUAL(values0.size(), refValues.size());
+          double vsReference0 = 0.0;
+          double vsTp0 = 0.0;
+          for (std::size_t index = 0; index < refValues.size(); ++index) {
+            vsReference0 = std::max(vsReference0,
+              std::fabs(double(values0[index]) - double(refValues[index])));
+            const auto tp = double(static_cast<float>(rank0Values[index] + rank1Values[index]));
+            vsTp0 = std::max(vsTp0, std::fabs(double(values0[index]) - tp));
+          }
+          BOOST_TEST_MESSAGE("layer-0 replay: rank inputs=" << layer0Inputs.size()
+                             << " replaced=" << replaced0
+                             << " vsReference=" << vsReference0
+                             << " vsTp=" << vsTp0);
+        }
+      }
       const auto rankInputIt = capturedStepInputs.find("S0R0/ATTN/1");
       if (rankInputIt == capturedStepInputs.end()) {
         BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-1 attention");
@@ -13291,7 +13426,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             const auto name = std::string("present.1.") + kvKind;
             const auto replayKv = replayed.find(name);
             if (replayKv == replayed.end()) {
-              BOOST_TEST_MESSAGE("layer-1 replay has no " << name);
+              BOOST_FAIL("the replayed layer-1 attention produced no " + name);
               continue;
             }
             const auto replayValues = [&] {
@@ -13306,16 +13441,14 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             // The rank's own successor, collected by declared name in the result.
             const auto rankKv = kvOfResult(results.at("S0R0"), name);
             if (rankKv.empty()) {
-              BOOST_TEST_MESSAGE("rank 0 published no " << name);
+              BOOST_FAIL("rank 0 published no " + name);
               continue;
             }
             // The unsplit tensor carries all heads; this rank owns [0, headsPerRank) of them, and
             // each head is headDim wide inside a [1, heads, seq, dim] layout.
             const auto seq = static_cast<std::size_t>(promptTokens.size());
             if (replayValues.size() != shape.kvHeads * seq * shape.headDim) {
-              BOOST_TEST_MESSAGE("layer-1 " << name << " shape is not [1," << shape.kvHeads
-                                 << "," << seq << "," << shape.headDim << "]: width="
-                                 << replayValues.size());
+              BOOST_FAIL("layer-1 " + name + " shape is not [1," + std::to_string(shape.kvHeads) + "," + std::to_string(seq) + "," + std::to_string(shape.headDim) + "]: width=" + std::to_string(replayValues.size()));
               continue;
             }
             // The same mapping the C8 loop uses: rank 0 owns unsplit heads [0, headsPerRank), and
@@ -13340,6 +13473,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
             }
             BOOST_TEST_MESSAGE("layer-1 replay vs rank KV: " << name
                                << " worst=" << worstRankKv << " compared=" << compared);
+            BOOST_CHECK_EQUAL(compared, headsPerRank * seq * std::size_t(shape.headDim));
           }
         }
       }
