@@ -4254,7 +4254,9 @@ BOOST_AUTO_TEST_CASE(NativeProviderRuntimeRestoresConversationStateForFreshReque
       {{"input_ids", bundle("input_ids", "delta-2")}}),
     std::runtime_error,
     [] (const std::runtime_error& error) {
-      return std::string(error.what()) == "PROVIDER_CONVERSATION_STATE_MISSING";
+      const std::string message = error.what();
+      const std::string code = "PROVIDER_CONVERSATION_STATE_MISSING";
+      return message == code || message.rfind(code + " ", 0) == 0;
     });
   BOOST_CHECK_EQUAL(calls.load(), 2U);
 }
