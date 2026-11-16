@@ -13280,6 +13280,68 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         }
         BOOST_TEST_MESSAGE("layer-1 replay vs unsplit-on-unsplit-inputs: worst=" << replayWorst
                            << " inputEffect=" << inputEffect);
+
+        // The KV path, which the projection comparison cannot speak for: `present.N.key` and
+        // `.value` are the third and fourth outputs of the attention operator, produced before the O
+        // projection. Comparing the replay's KV against the rank's own KV for the heads this rank
+        // owns answers whether the residual belongs to the key/value path or to the projection path.
+        {
+          const auto headsPerRank = static_cast<std::size_t>(shape.kvHeads) / 2U;
+          for (const auto* kvKind : {"key", "value"}) {
+            const auto name = std::string("present.1.") + kvKind;
+            const auto replayKv = replayed.find(name);
+            if (replayKv == replayed.end()) {
+              BOOST_TEST_MESSAGE("layer-1 replay has no " << name);
+              continue;
+            }
+            const auto replayValues = [&] {
+              const auto views = decodeTensorBundleViews(replayKv->second);
+              BOOST_REQUIRE(!views.empty());
+              std::vector<float> values(views.front().payload.size() / sizeof(float));
+              if (!values.empty())
+                std::memcpy(values.data(), views.front().payload.data(),
+                            views.front().payload.size());
+              return values;
+            }();
+            // The rank's own successor, collected by declared name in the result.
+            const auto rankKv = kvOfResult(results.at("S0R0"), name);
+            if (rankKv.empty()) {
+              BOOST_TEST_MESSAGE("rank 0 published no " << name);
+              continue;
+            }
+            // The unsplit tensor carries all heads; this rank owns [0, headsPerRank) of them, and
+            // each head is headDim wide inside a [1, heads, seq, dim] layout.
+            const auto seq = static_cast<std::size_t>(promptTokens.size());
+            if (replayValues.size() != shape.kvHeads * seq * shape.headDim) {
+              BOOST_TEST_MESSAGE("layer-1 " << name << " shape is not [1," << shape.kvHeads
+                                 << "," << seq << "," << shape.headDim << "]: width="
+                                 << replayValues.size());
+              continue;
+            }
+            // The same mapping the C8 loop uses: rank 0 owns unsplit heads [0, headsPerRank), and
+            // both tensors are [1, heads, sequence, dim] with the head axis first. Writing the
+            // formula independently is how the first version of this comparison produced 347.7 --
+            // the indices were transposed against the layout, not the values wrong.
+            double worstRankKv = 0.0;
+            std::size_t compared = 0;
+            for (std::size_t position = 0; position < seq; ++position) {
+              for (std::size_t head = 0; head < headsPerRank; ++head) {
+                const auto shardBase = (head * seq + position) * shape.headDim;
+                const auto unsplitBase = ((head)*seq + position) * shape.headDim;
+                for (std::size_t channel = 0; channel < shape.headDim; ++channel) {
+                  if (shardBase + channel >= rankKv.size()) continue;
+                  if (unsplitBase + channel >= replayValues.size()) continue;
+                  worstRankKv = std::max(worstRankKv,
+                    double(std::fabs(double(rankKv[shardBase + channel])
+                                     - double(replayValues[unsplitBase + channel]))));
+                  ++compared;
+                }
+              }
+            }
+            BOOST_TEST_MESSAGE("layer-1 replay vs rank KV: " << name
+                               << " worst=" << worstRankKv << " compared=" << compared);
+          }
+        }
       }
     }
     BOOST_TEST_MESSAGE("layer-1 partial vs unsplit reference, production sum: worst=" << worst1
