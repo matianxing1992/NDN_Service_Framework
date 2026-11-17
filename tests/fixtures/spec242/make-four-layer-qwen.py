@@ -106,7 +106,10 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
              f"{pn}attn.total_sequence_length"],
             [f"{pn}attn.context", f"{pn}attn.present_key", f"{pn}attn.present_value"],
             name=f"{pn}attn.gqa", domain="com.microsoft",
-            num_heads=q_heads, kv_num_heads=kv_heads))
+            num_heads=q_heads, kv_num_heads=kv_heads,
+            # No rotary in the fixture: with rotary the head layout interacts with position
+            # encoding, which would make a head-range shard incomparable to the whole model.
+            do_rotary=0))
         node, w = matmul_nbits(f"{pn}attn.o_proj", f"{pn}attn.context", hidden,
                                q_width, rng, f"{p}attn.o_proj.MatMul.weight")
         add(node, w)
