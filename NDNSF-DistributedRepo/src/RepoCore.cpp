@@ -206,14 +206,6 @@ RepoCore::invalidatePacketBaseIndex() const
   m_packetBaseIndexBuilt = false;
 }
 
-bool
-RepoCore::packetBaseIndexComplete() const
-{
-  buildPacketBaseIndex();
-  std::lock_guard<std::mutex> lock(m_packetBaseIndexMutex);
-  return m_packetBaseIndexBuilt;
-}
-
 std::optional<std::pair<std::shared_ptr<const RepoObjectManifest>, size_t>>
 RepoCore::findIndexedOriginalPacket(const ndn::Name& name, const std::string& canonical,
   const std::string& alternate,
@@ -1535,11 +1527,9 @@ RepoCore::findPacketRecord(const ndn::Name& name,
     if (const auto indexed = findIndexedOriginalPacket(name, key,
           name.toUri(ndn::name::UriFormat::ALTERNATE), acceptObject))
       return std::make_pair(*indexed->first, indexed->second);
-    // A miss on the complete base index proves no stored packet set contains
-    // the name; the durable scan below is only for unusual stores whose
-    // manifest list could not be indexed.
-    if (packetBaseIndexComplete())
-      return std::nullopt;
+    // The bounded index is a locator hint, not an absence proof. Startup records
+    // root bases only; other packet bases are learned lazily and may be evicted.
+    // A miss must still consult the durable catalog, including alternate holders.
   }
   catch (const std::exception&) {
     // The durable fallback below remains authoritative for unusual stores.
