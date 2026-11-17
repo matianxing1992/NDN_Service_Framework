@@ -682,9 +682,6 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         }
         qwen::QwenTpStageWindow window;
         window.stageId = "stage-" + std::to_string(index);
-        window.sourceRegionDigest = nativePlanningDigest(
-          "qwen-hybrid-stage|" + role + "|" + std::to_string(begin) + "|" +
-          std::to_string(end) + "|" + std::to_string(stageDegree));
         window.layerBegin = begin;
         window.layerEnd = end;
         if (index > 0) {

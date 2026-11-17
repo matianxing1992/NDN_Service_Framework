@@ -3504,6 +3504,22 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   const auto& prepared = loaded.planningCache->candidates.front();
   BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
   const NativeRequestControl regionControl{"/fixture/source-region", 1, control.deadline, {}};
+  const auto& stages = prepared.candidate.executionPlan.stageLayout;
+  BOOST_REQUIRE_EQUAL(stages.size(), 2u);
+  std::set<std::string> sourceIdentities;
+  for (const auto& stage : stages) {
+    BOOST_REQUIRE(!stage.unitRoleIds.empty());
+    const auto& owner = stage.unitRoleIds.front();
+    std::vector<std::string> stateOutputs;
+    for (const auto& [slot, names] : loaded.stateMapping.outputs.at(owner))
+      stateOutputs.insert(stateOutputs.end(), names.begin(), names.end());
+    const auto region = loaded.preparation->sourceRegion(loaded.model,
+      prepared.candidate.roleNodeIdsByRole.at(owner), stateOutputs, regionControl);
+    BOOST_REQUIRE(!region.identityDigest.empty());
+    BOOST_CHECK(sourceIdentities.insert(region.identityDigest).second);
+    BOOST_CHECK_EQUAL(stage.sourceRegionDigest,
+                      nativePlanningDigest("qwen-hybrid-source-v2|" + region.identityDigest));
+  }
   // Invalid unit geometry must reject before querying any source or producing a candidate.
   const auto shape = qwen::deriveQwenTpShape(source.modelBytes, 4);
   const std::vector<qwen::QwenTpStageWindow> guardWindow{

@@ -2261,7 +2261,7 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
   plans.reserve(windows.size());
   std::vector<QwenTpUnit> units;
   for (std::size_t index = 0; index < windows.size(); ++index) {
-    const auto& window = windows.at(index);
+    auto window = windows.at(index);
     const auto& list = stageUnits.at(index);
     if (list.empty())
       throw std::invalid_argument("hybrid stage has no units: " + window.stageId);
@@ -2295,6 +2295,10 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
     if (regionPort != nullptr) {
       const auto additional = physicalStateNames(stateMapping->outputs, list.front().roleId);
       boundaries[index] = (*regionPort)(semanticNodes[index], additional);
+      if (boundaries[index].identityDigest.empty())
+        throw std::invalid_argument("source hybrid region is missing its checked identity");
+      window.sourceRegionDigest =
+        nativePlanningDigest("qwen-hybrid-source-v2|" + boundaries[index].identityDigest);
     }
     if (regionPort != nullptr && list.size() == 1) {
       const auto& unit = list.front();

@@ -199,7 +199,26 @@ NativeCanonicalRolePreparer::sourceRegion(const std::vector<std::string>& nodeId
   const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);
   if (additionalOutputs.size() > metadata.at("tensors").size())
     throw std::invalid_argument("native source region exceeds its output tensor bound");
-  return sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
+  auto result = sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
+  const auto ports = [&control] (const auto& contracts) {
+    auto values = NativeJson::object();
+    for (const auto& [name, contract] : contracts) {
+      control.requireActive();
+      auto shape = NativeJson::array();
+      for (const auto& dimension : contract.shape)
+        std::visit([&shape] (const auto& value) { shape.push_back(value); }, dimension);
+      values[name] = {{"dtype", contract.dtype}, {"shape", std::move(shape)}};
+    }
+    return values;
+  };
+  result.identityDigest = nativePlanningDigest(nativeCanonicalJson({
+    {"schema", "ndnsf-di-onnx-source-region-v1"},
+    {"source_digest", m_model.canonicalSourceDigest},
+    {"initializer_digest", m_model.canonicalInitializerObjectDigest},
+    {"graph_digest", m_model.canonicalGraphDigest},
+    {"node_indices", owned}, {"inputs", ports(result.inputs)}, {"outputs", ports(result.outputs)}
+  }));
+  return result;
 }
 
 NativeSplitCandidate NativeCanonicalRolePreparer::bindStateContracts(const NativeInspectedModel& model,

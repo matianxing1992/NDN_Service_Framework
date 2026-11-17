@@ -31,6 +31,7 @@ struct NativeSourceRegionBoundary
 {
   std::map<std::string, NativeAssemblyTensorContractV3> inputs;
   std::map<std::string, NativeAssemblyTensorContractV3> outputs;
+  std::string identityDigest;
 };
 
 /** Source-checked recipe producer. Semantic node mappings come from the
