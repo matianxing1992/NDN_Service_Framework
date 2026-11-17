@@ -711,7 +711,7 @@ private:
 };
 
 OnnxKvStateSample
-sampleKvState(const Ort::Value& value, const std::string& inputName)
+sampleKvState(const Ort::Value& value, const std::string& inputName, bool completeSmallState)
 {
   const auto info = value.GetTensorTypeAndShapeInfo();
   const auto count = info.GetElementCount();
@@ -740,7 +740,11 @@ sampleKvState(const Ort::Value& value, const std::string& inputName)
   const auto* source = static_cast<const std::uint8_t*>(value.GetTensorRawData());
   if (!source)
     throw std::runtime_error("missing qualification KV allocation");
-  const auto points = std::min<std::size_t>(16, count);
+  // The explicitly installed observer can verify complete small-fixture state. Larger
+  // production tensors keep the existing bounded scalar sample rather than copying KV.
+  constexpr std::size_t MAX_COMPLETE_KV_OBSERVATION_ELEMENTS = 4096;
+  const auto points = completeSmallState && count <= MAX_COMPLETE_KV_OBSERVATION_ELEMENTS
+    ? count : std::min<std::size_t>(16, count);
   for (std::size_t i = 0; i < points; ++i) {
     const auto index = points == 1 ? 0 :
       ((count - 1) / (points - 1)) * i + ((count - 1) % (points - 1)) * i / (points - 1);
@@ -2444,7 +2448,14 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
     }
   }
   std::uint64_t borrowedOutputBytes = 0;
-  const bool observeState = m_impl->stateObserver && m_impl->stateObserver->wants(effectiveContext);
+  // A factory-level observer also sees stateless children; only an admitted stateful
+  // contract owns KV to observe. A stateful child that omits its state still fails below.
+  const bool observeState = m_impl->statefulIo && m_impl->stateObserver &&
+    m_impl->stateObserver->wants(effectiveContext);
+  const auto* completeObserver = observeState
+    ? dynamic_cast<const OnnxCompleteKvStateObserver*>(m_impl->stateObserver.get()) : nullptr;
+  const bool completeSmallState = completeObserver &&
+    completeObserver->wantsCompleteSmallState(effectiveContext);
   std::vector<OnnxKvStateSample> stateSamples;
   for (std::size_t i = 0; i < outputs.size(); ++i) {
     auto& value = outputs[i];
@@ -2474,7 +2485,7 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
           throw std::runtime_error("qualification KV component bound exceeded");
         NativeWorkScope sampleWork(ctx.workStatistics, "onnx-kv-sample", NativeWorkKind::LOCAL);
         stateSamples.push_back(sampleKvState(relayoutState ? feedbackCandidate.at(successorInput) :
-                                              value, successorInput));
+                                              value, successorInput, completeSmallState));
       }
       if (relayoutState) {
         if (effectiveContext.streamingStateExecution) continue;

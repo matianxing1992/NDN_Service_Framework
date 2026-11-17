@@ -36,6 +36,9 @@ classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t
                        std::uint64_t layerBegin, std::uint64_t layerEnd);
 
 bool
+ownsStateInput(const QwenTpEntryContract& entry, const std::string& name);
+
+bool
 ownsRegionEntry(const QwenTpEntryNodes& entry, std::uint64_t layers,
                 std::uint64_t layerBegin, std::uint64_t layerEnd)
 {
@@ -1076,7 +1079,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
           throw std::invalid_argument("material outputs ambiguously share a slot: " + slot);
       }
       for (const auto& name : contract->inputNames) {
-        if (contract->inputSlotByGraphName.count(name) == 0)
+        if (contract->inputSlotByGraphName.count(name) == 0 && !ownsStateInput(*contract, name))
           throw std::invalid_argument("material graph input has no slot: " + name);
       }
       for (const auto& name : contract->outputNames) {
@@ -3118,6 +3121,15 @@ isPastTensorName(const std::string& name)
   return name.rfind("past_key_values.", 0) == 0;
 }
 
+bool
+ownsStateInput(const QwenTpEntryContract& entry, const std::string& name)
+{
+  if (!isPastTensorName(name)) return false;
+  const auto successor = "present." + name.substr(std::string("past_key_values.").size());
+  return std::find(entry.stateOutputGraphNames.begin(), entry.stateOutputGraphNames.end(),
+                   successor) != entry.stateOutputGraphNames.end();
+}
+
 } // namespace
 
 /** Freeze the graph-to-slot binding for one assembled entry.
@@ -3391,7 +3403,7 @@ void
 bindIdentitySlots(QwenTpEntryContract& contract)
 {
   for (const auto& name : contract.inputNames)
-    if (contract.inputSlotByGraphName.count(name) == 0 &&
+    if (!ownsStateInput(contract, name) && contract.inputSlotByGraphName.count(name) == 0 &&
         std::find(contract.synthesizedInputGraphNames.begin(),
                   contract.synthesizedInputGraphNames.end(), name) ==
           contract.synthesizedInputGraphNames.end())
@@ -3887,6 +3899,7 @@ mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages)
     merged.tensorDegree = std::max(merged.tensorDegree, stage.tensorDegree);
   }
   merged.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+  merged.streamingOperationStride = merged.dependencies.size();
   // The merged plan is the first object that contains every producer, so it is the first one
   // that can be validated.
   merged.validateSteps();

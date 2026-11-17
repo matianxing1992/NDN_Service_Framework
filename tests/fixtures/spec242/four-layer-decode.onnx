@@ -1,0 +1,1963 @@
+:ö«
+
+A
+model.embed_tokens.weight
+	input_idsembed
+INIT/embed"Gather
+'
+embedx0	INIT/cast"Cast*	
+to 
+[
+x0
+x0%model.layers.0/input_layernorm.square%model.layers.0/input_layernorm.square"Mul
+¤
+%model.layers.0/input_layernorm.square#model.layers.0/input_layernorm.mean#model.layers.0/input_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+§
+#model.layers.0/input_layernorm.mean
+&model.layers.0/input_layernorm.epsilon'model.layers.0/input_layernorm.variance*model.layers.0/input_layernorm.epsilon_add"Add
+€
+'model.layers.0/input_layernorm.variance*model.layers.0/input_layernorm.denominator#model.layers.0/input_layernorm.sqrt"Sqrt
+
+x0
+*model.layers.0/input_layernorm.denominator#model.layers.0/input_layernorm.unit%model.layers.0/input_layernorm.divide"Div
+›
+#model.layers.0/input_layernorm.unit
+%model.layers.0/input_layernorm.weight"model.layers.0/input_layernorm.out$model.layers.0/input_layernorm.scale"Mul
+Š
+"model.layers.0/input_layernorm.out
++model.layers.0.attn.q_proj.MatMul.weight_Q4
+/model.layers.0.attn.q_proj.MatMul.weight_scalesmodel.layers.0/attn.q_projmodel.layers.0/attn.q_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.0/input_layernorm.out
++model.layers.0.attn.k_proj.MatMul.weight_Q4
+/model.layers.0.attn.k_proj.MatMul.weight_scalesmodel.layers.0/attn.k_projmodel.layers.0/attn.k_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.0/input_layernorm.out
++model.layers.0.attn.v_proj.MatMul.weight_Q4
+/model.layers.0.attn.v_proj.MatMul.weight_scalesmodel.layers.0/attn.v_projmodel.layers.0/attn.v_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+^
+past_key_values.0.keymodel.layers.0/attn.past_shapemodel.layers.0/attn.past_shape"Shape
+‰
+model.layers.0/attn.past_shape
+model.layers.0/attn.past_axismodel.layers.0/attn.past_lengthmodel.layers.0/attn.past_length"Gather
+e
+model.layers.0/attn.q_projmodel.layers.0/attn.query_shapemodel.layers.0/attn.query_shape"Shape
+
+model.layers.0/attn.query_shape
+model.layers.0/attn.query_axis model.layers.0/attn.query_length model.layers.0/attn.query_length"Gather
+‡
+model.layers.0/attn.past_length
+ model.layers.0/attn.query_lengthmodel.layers.0/attn.total64 model.layers.0/attn.total_length"Add
+v
+model.layers.0/attn.total64)model.layers.0/attn.total_sequence_lengthmodel.layers.0/attn.total32"Cast*	
+to 
+w
+model.layers.0/attn.total64
+model.layers.0/attn.onemodel.layers.0/attn.last64model.layers.0/attn.last_index"Sub
+‰
+model.layers.0/attn.last64
+model.layers.0/attn.batch_axismodel.layers.0/attn.last_vectormodel.layers.0/attn.last_vector"	Unsqueeze
+n
+model.layers.0/attn.last_vectormodel.layers.0/attn.seqlens_kmodel.layers.0/attn.seqlens"Cast*	
+to 
+™
+model.layers.0/attn.q_proj
+model.layers.0/attn.k_proj
+model.layers.0/attn.v_proj
+past_key_values.0.key
+past_key_values.0.value
+model.layers.0/attn.seqlens_k
+)model.layers.0/attn.total_sequence_length
+
+rotary.cos
+
+rotary.sinmodel.layers.0/attn.contextpresent.0.keypresent.0.valuemodel.layers.0/attn.gqa"GroupQueryAttention*
+	do_rotary *
+kv_num_heads *
+	num_heads :com.microsoft
+ƒ
+model.layers.0/attn.context
++model.layers.0.attn.o_proj.MatMul.weight_Q4
+/model.layers.0.attn.o_proj.MatMul.weight_scalesmodel.layers.0/attn.o_projmodel.layers.0/attn.o_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+y
+x0
+model.layers.0/attn.o_projmodel.layers.0/attn.residual4model.layers.0/post_attention_layernorm.residual_add"Add
+¡
+model.layers.0/attn.residual
+model.layers.0/attn.residual.model.layers.0/post_attention_layernorm.square.model.layers.0/post_attention_layernorm.square"Mul
+¿
+.model.layers.0/post_attention_layernorm.square,model.layers.0/post_attention_layernorm.mean,model.layers.0/post_attention_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+Ë
+,model.layers.0/post_attention_layernorm.mean
+/model.layers.0/post_attention_layernorm.epsilon0model.layers.0/post_attention_layernorm.variance3model.layers.0/post_attention_layernorm.epsilon_add"Add
+›
+0model.layers.0/post_attention_layernorm.variance3model.layers.0/post_attention_layernorm.denominator,model.layers.0/post_attention_layernorm.sqrt"Sqrt
+¶
+model.layers.0/attn.residual
+3model.layers.0/post_attention_layernorm.denominator,model.layers.0/post_attention_layernorm.unit.model.layers.0/post_attention_layernorm.divide"Div
+¿
+,model.layers.0/post_attention_layernorm.unit
+.model.layers.0/post_attention_layernorm.weight+model.layers.0/post_attention_layernorm.out-model.layers.0/post_attention_layernorm.scale"Mul
+œ
++model.layers.0/post_attention_layernorm.out
+-model.layers.0.mlp.gate_proj.MatMul.weight_Q4
+1model.layers.0.mlp.gate_proj.MatMul.weight_scalesmodel.layers.0/mlp.gate_projmodel.layers.0/mlp.gate_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+”
++model.layers.0/post_attention_layernorm.out
++model.layers.0.mlp.up_proj.MatMul.weight_Q4
+/model.layers.0.mlp.up_proj.MatMul.weight_scalesmodel.layers.0/mlp.up_projmodel.layers.0/mlp.up_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+_
+model.layers.0/mlp.gate_projmodel.layers.0/mlp.sigmoidmodel.layers.0/mlp.sigmoid"Sigmoid
+q
+model.layers.0/mlp.gate_proj
+model.layers.0/mlp.sigmoidmodel.layers.0/mlp.silumodel.layers.0/mlp.silu"Mul
+j
+model.layers.0/mlp.silu
+model.layers.0/mlp.up_projmodel.layers.0/mlp.actmodel.layers.0/mlp.act"Mul
+‡
+model.layers.0/mlp.act
+-model.layers.0.mlp.down_proj.MatMul.weight_Q4
+1model.layers.0.mlp.down_proj.MatMul.weight_scalesmodel.layers.0/mlp.down_projmodel.layers.0/mlp.down_proj"MatMulNBits*	
+K€ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+ˆ
+model.layers.0/attn.residual
+model.layers.0/mlp.down_projmodel.layers.1/input.sum+model.layers.1/input_layernorm.residual_add"Add
+c
+model.layers.1/input.summodel.layers.1/input'model.layers.1/input_layernorm.identity"Identity
+
+model.layers.1/input
+model.layers.1/input%model.layers.1/input_layernorm.square%model.layers.1/input_layernorm.square"Mul
+¤
+%model.layers.1/input_layernorm.square#model.layers.1/input_layernorm.mean#model.layers.1/input_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+§
+#model.layers.1/input_layernorm.mean
+&model.layers.1/input_layernorm.epsilon'model.layers.1/input_layernorm.variance*model.layers.1/input_layernorm.epsilon_add"Add
+€
+'model.layers.1/input_layernorm.variance*model.layers.1/input_layernorm.denominator#model.layers.1/input_layernorm.sqrt"Sqrt
+“
+model.layers.1/input
+*model.layers.1/input_layernorm.denominator#model.layers.1/input_layernorm.unit%model.layers.1/input_layernorm.divide"Div
+›
+#model.layers.1/input_layernorm.unit
+%model.layers.1/input_layernorm.weight"model.layers.1/input_layernorm.out$model.layers.1/input_layernorm.scale"Mul
+Š
+"model.layers.1/input_layernorm.out
++model.layers.1.attn.q_proj.MatMul.weight_Q4
+/model.layers.1.attn.q_proj.MatMul.weight_scalesmodel.layers.1/attn.q_projmodel.layers.1/attn.q_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.1/input_layernorm.out
++model.layers.1.attn.k_proj.MatMul.weight_Q4
+/model.layers.1.attn.k_proj.MatMul.weight_scalesmodel.layers.1/attn.k_projmodel.layers.1/attn.k_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.1/input_layernorm.out
++model.layers.1.attn.v_proj.MatMul.weight_Q4
+/model.layers.1.attn.v_proj.MatMul.weight_scalesmodel.layers.1/attn.v_projmodel.layers.1/attn.v_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+^
+past_key_values.1.keymodel.layers.1/attn.past_shapemodel.layers.1/attn.past_shape"Shape
+‰
+model.layers.1/attn.past_shape
+model.layers.1/attn.past_axismodel.layers.1/attn.past_lengthmodel.layers.1/attn.past_length"Gather
+e
+model.layers.1/attn.q_projmodel.layers.1/attn.query_shapemodel.layers.1/attn.query_shape"Shape
+
+model.layers.1/attn.query_shape
+model.layers.1/attn.query_axis model.layers.1/attn.query_length model.layers.1/attn.query_length"Gather
+‡
+model.layers.1/attn.past_length
+ model.layers.1/attn.query_lengthmodel.layers.1/attn.total64 model.layers.1/attn.total_length"Add
+v
+model.layers.1/attn.total64)model.layers.1/attn.total_sequence_lengthmodel.layers.1/attn.total32"Cast*	
+to 
+w
+model.layers.1/attn.total64
+model.layers.1/attn.onemodel.layers.1/attn.last64model.layers.1/attn.last_index"Sub
+‰
+model.layers.1/attn.last64
+model.layers.1/attn.batch_axismodel.layers.1/attn.last_vectormodel.layers.1/attn.last_vector"	Unsqueeze
+n
+model.layers.1/attn.last_vectormodel.layers.1/attn.seqlens_kmodel.layers.1/attn.seqlens"Cast*	
+to 
+™
+model.layers.1/attn.q_proj
+model.layers.1/attn.k_proj
+model.layers.1/attn.v_proj
+past_key_values.1.key
+past_key_values.1.value
+model.layers.1/attn.seqlens_k
+)model.layers.1/attn.total_sequence_length
+
+rotary.cos
+
+rotary.sinmodel.layers.1/attn.contextpresent.1.keypresent.1.valuemodel.layers.1/attn.gqa"GroupQueryAttention*
+	do_rotary *
+kv_num_heads *
+	num_heads :com.microsoft
+ƒ
+model.layers.1/attn.context
++model.layers.1.attn.o_proj.MatMul.weight_Q4
+/model.layers.1.attn.o_proj.MatMul.weight_scalesmodel.layers.1/attn.o_projmodel.layers.1/attn.o_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+‹
+model.layers.1/input
+model.layers.1/attn.o_projmodel.layers.1/attn.residual4model.layers.1/post_attention_layernorm.residual_add"Add
+¡
+model.layers.1/attn.residual
+model.layers.1/attn.residual.model.layers.1/post_attention_layernorm.square.model.layers.1/post_attention_layernorm.square"Mul
+¿
+.model.layers.1/post_attention_layernorm.square,model.layers.1/post_attention_layernorm.mean,model.layers.1/post_attention_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+Ë
+,model.layers.1/post_attention_layernorm.mean
+/model.layers.1/post_attention_layernorm.epsilon0model.layers.1/post_attention_layernorm.variance3model.layers.1/post_attention_layernorm.epsilon_add"Add
+›
+0model.layers.1/post_attention_layernorm.variance3model.layers.1/post_attention_layernorm.denominator,model.layers.1/post_attention_layernorm.sqrt"Sqrt
+¶
+model.layers.1/attn.residual
+3model.layers.1/post_attention_layernorm.denominator,model.layers.1/post_attention_layernorm.unit.model.layers.1/post_attention_layernorm.divide"Div
+¿
+,model.layers.1/post_attention_layernorm.unit
+.model.layers.1/post_attention_layernorm.weight+model.layers.1/post_attention_layernorm.out-model.layers.1/post_attention_layernorm.scale"Mul
+œ
++model.layers.1/post_attention_layernorm.out
+-model.layers.1.mlp.gate_proj.MatMul.weight_Q4
+1model.layers.1.mlp.gate_proj.MatMul.weight_scalesmodel.layers.1/mlp.gate_projmodel.layers.1/mlp.gate_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+”
++model.layers.1/post_attention_layernorm.out
++model.layers.1.mlp.up_proj.MatMul.weight_Q4
+/model.layers.1.mlp.up_proj.MatMul.weight_scalesmodel.layers.1/mlp.up_projmodel.layers.1/mlp.up_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+_
+model.layers.1/mlp.gate_projmodel.layers.1/mlp.sigmoidmodel.layers.1/mlp.sigmoid"Sigmoid
+q
+model.layers.1/mlp.gate_proj
+model.layers.1/mlp.sigmoidmodel.layers.1/mlp.silumodel.layers.1/mlp.silu"Mul
+j
+model.layers.1/mlp.silu
+model.layers.1/mlp.up_projmodel.layers.1/mlp.actmodel.layers.1/mlp.act"Mul
+‡
+model.layers.1/mlp.act
+-model.layers.1.mlp.down_proj.MatMul.weight_Q4
+1model.layers.1.mlp.down_proj.MatMul.weight_scalesmodel.layers.1/mlp.down_projmodel.layers.1/mlp.down_proj"MatMulNBits*	
+K€ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+ˆ
+model.layers.1/attn.residual
+model.layers.1/mlp.down_projmodel.layers.2/input.sum+model.layers.2/input_layernorm.residual_add"Add
+c
+model.layers.2/input.summodel.layers.2/input'model.layers.2/input_layernorm.identity"Identity
+
+model.layers.2/input
+model.layers.2/input%model.layers.2/input_layernorm.square%model.layers.2/input_layernorm.square"Mul
+¤
+%model.layers.2/input_layernorm.square#model.layers.2/input_layernorm.mean#model.layers.2/input_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+§
+#model.layers.2/input_layernorm.mean
+&model.layers.2/input_layernorm.epsilon'model.layers.2/input_layernorm.variance*model.layers.2/input_layernorm.epsilon_add"Add
+€
+'model.layers.2/input_layernorm.variance*model.layers.2/input_layernorm.denominator#model.layers.2/input_layernorm.sqrt"Sqrt
+“
+model.layers.2/input
+*model.layers.2/input_layernorm.denominator#model.layers.2/input_layernorm.unit%model.layers.2/input_layernorm.divide"Div
+›
+#model.layers.2/input_layernorm.unit
+%model.layers.2/input_layernorm.weight"model.layers.2/input_layernorm.out$model.layers.2/input_layernorm.scale"Mul
+Š
+"model.layers.2/input_layernorm.out
++model.layers.2.attn.q_proj.MatMul.weight_Q4
+/model.layers.2.attn.q_proj.MatMul.weight_scalesmodel.layers.2/attn.q_projmodel.layers.2/attn.q_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.2/input_layernorm.out
++model.layers.2.attn.k_proj.MatMul.weight_Q4
+/model.layers.2.attn.k_proj.MatMul.weight_scalesmodel.layers.2/attn.k_projmodel.layers.2/attn.k_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.2/input_layernorm.out
++model.layers.2.attn.v_proj.MatMul.weight_Q4
+/model.layers.2.attn.v_proj.MatMul.weight_scalesmodel.layers.2/attn.v_projmodel.layers.2/attn.v_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+^
+past_key_values.2.keymodel.layers.2/attn.past_shapemodel.layers.2/attn.past_shape"Shape
+‰
+model.layers.2/attn.past_shape
+model.layers.2/attn.past_axismodel.layers.2/attn.past_lengthmodel.layers.2/attn.past_length"Gather
+e
+model.layers.2/attn.q_projmodel.layers.2/attn.query_shapemodel.layers.2/attn.query_shape"Shape
+
+model.layers.2/attn.query_shape
+model.layers.2/attn.query_axis model.layers.2/attn.query_length model.layers.2/attn.query_length"Gather
+‡
+model.layers.2/attn.past_length
+ model.layers.2/attn.query_lengthmodel.layers.2/attn.total64 model.layers.2/attn.total_length"Add
+v
+model.layers.2/attn.total64)model.layers.2/attn.total_sequence_lengthmodel.layers.2/attn.total32"Cast*	
+to 
+w
+model.layers.2/attn.total64
+model.layers.2/attn.onemodel.layers.2/attn.last64model.layers.2/attn.last_index"Sub
+‰
+model.layers.2/attn.last64
+model.layers.2/attn.batch_axismodel.layers.2/attn.last_vectormodel.layers.2/attn.last_vector"	Unsqueeze
+n
+model.layers.2/attn.last_vectormodel.layers.2/attn.seqlens_kmodel.layers.2/attn.seqlens"Cast*	
+to 
+™
+model.layers.2/attn.q_proj
+model.layers.2/attn.k_proj
+model.layers.2/attn.v_proj
+past_key_values.2.key
+past_key_values.2.value
+model.layers.2/attn.seqlens_k
+)model.layers.2/attn.total_sequence_length
+
+rotary.cos
+
+rotary.sinmodel.layers.2/attn.contextpresent.2.keypresent.2.valuemodel.layers.2/attn.gqa"GroupQueryAttention*
+	do_rotary *
+kv_num_heads *
+	num_heads :com.microsoft
+ƒ
+model.layers.2/attn.context
++model.layers.2.attn.o_proj.MatMul.weight_Q4
+/model.layers.2.attn.o_proj.MatMul.weight_scalesmodel.layers.2/attn.o_projmodel.layers.2/attn.o_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+‹
+model.layers.2/input
+model.layers.2/attn.o_projmodel.layers.2/attn.residual4model.layers.2/post_attention_layernorm.residual_add"Add
+¡
+model.layers.2/attn.residual
+model.layers.2/attn.residual.model.layers.2/post_attention_layernorm.square.model.layers.2/post_attention_layernorm.square"Mul
+¿
+.model.layers.2/post_attention_layernorm.square,model.layers.2/post_attention_layernorm.mean,model.layers.2/post_attention_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+Ë
+,model.layers.2/post_attention_layernorm.mean
+/model.layers.2/post_attention_layernorm.epsilon0model.layers.2/post_attention_layernorm.variance3model.layers.2/post_attention_layernorm.epsilon_add"Add
+›
+0model.layers.2/post_attention_layernorm.variance3model.layers.2/post_attention_layernorm.denominator,model.layers.2/post_attention_layernorm.sqrt"Sqrt
+¶
+model.layers.2/attn.residual
+3model.layers.2/post_attention_layernorm.denominator,model.layers.2/post_attention_layernorm.unit.model.layers.2/post_attention_layernorm.divide"Div
+¿
+,model.layers.2/post_attention_layernorm.unit
+.model.layers.2/post_attention_layernorm.weight+model.layers.2/post_attention_layernorm.out-model.layers.2/post_attention_layernorm.scale"Mul
+œ
++model.layers.2/post_attention_layernorm.out
+-model.layers.2.mlp.gate_proj.MatMul.weight_Q4
+1model.layers.2.mlp.gate_proj.MatMul.weight_scalesmodel.layers.2/mlp.gate_projmodel.layers.2/mlp.gate_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+”
++model.layers.2/post_attention_layernorm.out
++model.layers.2.mlp.up_proj.MatMul.weight_Q4
+/model.layers.2.mlp.up_proj.MatMul.weight_scalesmodel.layers.2/mlp.up_projmodel.layers.2/mlp.up_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+_
+model.layers.2/mlp.gate_projmodel.layers.2/mlp.sigmoidmodel.layers.2/mlp.sigmoid"Sigmoid
+q
+model.layers.2/mlp.gate_proj
+model.layers.2/mlp.sigmoidmodel.layers.2/mlp.silumodel.layers.2/mlp.silu"Mul
+j
+model.layers.2/mlp.silu
+model.layers.2/mlp.up_projmodel.layers.2/mlp.actmodel.layers.2/mlp.act"Mul
+‡
+model.layers.2/mlp.act
+-model.layers.2.mlp.down_proj.MatMul.weight_Q4
+1model.layers.2.mlp.down_proj.MatMul.weight_scalesmodel.layers.2/mlp.down_projmodel.layers.2/mlp.down_proj"MatMulNBits*	
+K€ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+ˆ
+model.layers.2/attn.residual
+model.layers.2/mlp.down_projmodel.layers.3/input.sum+model.layers.3/input_layernorm.residual_add"Add
+c
+model.layers.3/input.summodel.layers.3/input'model.layers.3/input_layernorm.identity"Identity
+
+model.layers.3/input
+model.layers.3/input%model.layers.3/input_layernorm.square%model.layers.3/input_layernorm.square"Mul
+¤
+%model.layers.3/input_layernorm.square#model.layers.3/input_layernorm.mean#model.layers.3/input_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+§
+#model.layers.3/input_layernorm.mean
+&model.layers.3/input_layernorm.epsilon'model.layers.3/input_layernorm.variance*model.layers.3/input_layernorm.epsilon_add"Add
+€
+'model.layers.3/input_layernorm.variance*model.layers.3/input_layernorm.denominator#model.layers.3/input_layernorm.sqrt"Sqrt
+“
+model.layers.3/input
+*model.layers.3/input_layernorm.denominator#model.layers.3/input_layernorm.unit%model.layers.3/input_layernorm.divide"Div
+›
+#model.layers.3/input_layernorm.unit
+%model.layers.3/input_layernorm.weight"model.layers.3/input_layernorm.out$model.layers.3/input_layernorm.scale"Mul
+Š
+"model.layers.3/input_layernorm.out
++model.layers.3.attn.q_proj.MatMul.weight_Q4
+/model.layers.3.attn.q_proj.MatMul.weight_scalesmodel.layers.3/attn.q_projmodel.layers.3/attn.q_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.3/input_layernorm.out
++model.layers.3.attn.k_proj.MatMul.weight_Q4
+/model.layers.3.attn.k_proj.MatMul.weight_scalesmodel.layers.3/attn.k_projmodel.layers.3/attn.k_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+Š
+"model.layers.3/input_layernorm.out
++model.layers.3.attn.v_proj.MatMul.weight_Q4
+/model.layers.3.attn.v_proj.MatMul.weight_scalesmodel.layers.3/attn.v_projmodel.layers.3/attn.v_proj"MatMulNBits*
+K@ *
+N  *
+bits *
+
+block_size  :com.microsoft
+^
+past_key_values.3.keymodel.layers.3/attn.past_shapemodel.layers.3/attn.past_shape"Shape
+‰
+model.layers.3/attn.past_shape
+model.layers.3/attn.past_axismodel.layers.3/attn.past_lengthmodel.layers.3/attn.past_length"Gather
+e
+model.layers.3/attn.q_projmodel.layers.3/attn.query_shapemodel.layers.3/attn.query_shape"Shape
+
+model.layers.3/attn.query_shape
+model.layers.3/attn.query_axis model.layers.3/attn.query_length model.layers.3/attn.query_length"Gather
+‡
+model.layers.3/attn.past_length
+ model.layers.3/attn.query_lengthmodel.layers.3/attn.total64 model.layers.3/attn.total_length"Add
+v
+model.layers.3/attn.total64)model.layers.3/attn.total_sequence_lengthmodel.layers.3/attn.total32"Cast*	
+to 
+w
+model.layers.3/attn.total64
+model.layers.3/attn.onemodel.layers.3/attn.last64model.layers.3/attn.last_index"Sub
+‰
+model.layers.3/attn.last64
+model.layers.3/attn.batch_axismodel.layers.3/attn.last_vectormodel.layers.3/attn.last_vector"	Unsqueeze
+n
+model.layers.3/attn.last_vectormodel.layers.3/attn.seqlens_kmodel.layers.3/attn.seqlens"Cast*	
+to 
+™
+model.layers.3/attn.q_proj
+model.layers.3/attn.k_proj
+model.layers.3/attn.v_proj
+past_key_values.3.key
+past_key_values.3.value
+model.layers.3/attn.seqlens_k
+)model.layers.3/attn.total_sequence_length
+
+rotary.cos
+
+rotary.sinmodel.layers.3/attn.contextpresent.3.keypresent.3.valuemodel.layers.3/attn.gqa"GroupQueryAttention*
+	do_rotary *
+kv_num_heads *
+	num_heads :com.microsoft
+ƒ
+model.layers.3/attn.context
++model.layers.3.attn.o_proj.MatMul.weight_Q4
+/model.layers.3.attn.o_proj.MatMul.weight_scalesmodel.layers.3/attn.o_projmodel.layers.3/attn.o_proj"MatMulNBits*
+K@ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+‹
+model.layers.3/input
+model.layers.3/attn.o_projmodel.layers.3/attn.residual4model.layers.3/post_attention_layernorm.residual_add"Add
+¡
+model.layers.3/attn.residual
+model.layers.3/attn.residual.model.layers.3/post_attention_layernorm.square.model.layers.3/post_attention_layernorm.square"Mul
+¿
+.model.layers.3/post_attention_layernorm.square,model.layers.3/post_attention_layernorm.mean,model.layers.3/post_attention_layernorm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+Ë
+,model.layers.3/post_attention_layernorm.mean
+/model.layers.3/post_attention_layernorm.epsilon0model.layers.3/post_attention_layernorm.variance3model.layers.3/post_attention_layernorm.epsilon_add"Add
+›
+0model.layers.3/post_attention_layernorm.variance3model.layers.3/post_attention_layernorm.denominator,model.layers.3/post_attention_layernorm.sqrt"Sqrt
+¶
+model.layers.3/attn.residual
+3model.layers.3/post_attention_layernorm.denominator,model.layers.3/post_attention_layernorm.unit.model.layers.3/post_attention_layernorm.divide"Div
+¿
+,model.layers.3/post_attention_layernorm.unit
+.model.layers.3/post_attention_layernorm.weight+model.layers.3/post_attention_layernorm.out-model.layers.3/post_attention_layernorm.scale"Mul
+œ
++model.layers.3/post_attention_layernorm.out
+-model.layers.3.mlp.gate_proj.MatMul.weight_Q4
+1model.layers.3.mlp.gate_proj.MatMul.weight_scalesmodel.layers.3/mlp.gate_projmodel.layers.3/mlp.gate_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+”
++model.layers.3/post_attention_layernorm.out
++model.layers.3.mlp.up_proj.MatMul.weight_Q4
+/model.layers.3.mlp.up_proj.MatMul.weight_scalesmodel.layers.3/mlp.up_projmodel.layers.3/mlp.up_proj"MatMulNBits*
+K@ *	
+N€ *
+bits *
+
+block_size  :com.microsoft
+_
+model.layers.3/mlp.gate_projmodel.layers.3/mlp.sigmoidmodel.layers.3/mlp.sigmoid"Sigmoid
+q
+model.layers.3/mlp.gate_proj
+model.layers.3/mlp.sigmoidmodel.layers.3/mlp.silumodel.layers.3/mlp.silu"Mul
+j
+model.layers.3/mlp.silu
+model.layers.3/mlp.up_projmodel.layers.3/mlp.actmodel.layers.3/mlp.act"Mul
+‡
+model.layers.3/mlp.act
+-model.layers.3.mlp.down_proj.MatMul.weight_Q4
+1model.layers.3.mlp.down_proj.MatMul.weight_scalesmodel.layers.3/mlp.down_projmodel.layers.3/mlp.down_proj"MatMulNBits*	
+K€ *
+N@ *
+bits *
+
+block_size  :com.microsoft
+
+model.layers.3/attn.residual
+model.layers.3/mlp.down_projmodel.layers.4/norm.residual model.layers.4/norm.residual_add"Add
+y
+model.layers.4/norm.residual
+model.layers.4/norm.residualmodel.layers.4/norm.squaremodel.layers.4/norm.square"Mul
+ƒ
+model.layers.4/norm.squaremodel.layers.4/norm.meanmodel.layers.4/norm.mean"
+ReduceMean*
+axes@ÿÿÿÿÿÿÿÿÿ *
+keepdims 
+{
+model.layers.4/norm.mean
+model.layers.4/norm.epsilonmodel.layers.4/norm.variancemodel.layers.4/norm.epsilon_add"Add
+_
+model.layers.4/norm.variancemodel.layers.4/norm.denominatormodel.layers.4/norm.sqrt"Sqrt
+z
+model.layers.4/norm.residual
+model.layers.4/norm.denominatormodel.layers.4/norm.unitmodel.layers.4/norm.divide"Div
+o
+model.layers.4/norm.unit
+model.layers.4/norm.weightmodel.layers.4/norm.outmodel.layers.4/norm.scale"Mul
+B
+model.layers.4/norm.out
+lm_head.weightlogitslm_head"MatMulspec242-four-layer-qwen*¥€@@Bmodel.embed_tokens.weightJ€€Ä¥¢¿BJñ¿Vë”>íÎr¿3úÀ¢›)>ò`?™<?Œg4>%T?!u¿J¿r9À?RŞù<ƒ)?Ñ·>Ô‹?Ë>PI?­?/ó?·Ò­?õù@‘‡==ëÊ?Ú/S¾~Ğ?ñ›É¿ş1?è5¿õº%¿"ìK¿h°û½uFH?mù?Eã>š¶{?§ì0¿(á˜>ãk’?\Ù À#fM?¸“¿VJí½ö:Ó=»Ô†¿ù@
+¥¿şi˜<Œ'¦>cŸ?«a†?>ø°½í"]¿˜ÆÊ>}}@ƒÉÉ¾ÿ4Â?í³¿Á8ş½ÙÚ?J:¿´‘%?ş§>ßËD?ëke¿¾J¬=áCB¿—<©½1y%=Óª¿á§—?WsÚ¾Cë?ˆZÑ¿`M?äh·?Ş2+¿””Ë=BK¯>aÀv¿§l¿Àd¦¿5Ï|¿ëığ¿a->¥—s?	c	?œ
+>P8T¿ˆà!@ìŸ]?|°>xV¿>ñM¿d¿g;$?0oÅ?»v? ˜„¾â¿’¿·gõ?GMŒ?’c–=¶ÒL=(îg¿Ò#À¥â7¿/s¢¿²* À‡×©> ²?Å"¿²áF¿	(¼¾w-¬¾(4~>*òÀ?V¨±¾›œ6¿âA?`ç@?XÚ¦¿C¿¿™‰
+?òB¿65¤>Î$š>Ğ? GĞ?Ûtx?Bé@MRz?ib?š¼a?ıj¿ºhh¿ù‚=F½œ?ğY)?ÜYe?UàÚ¿oaÇ>ğª¾GÑ†¿|ã~¾;"¼q>J<\CS=e(¿Ü©½ÓP£¾nêN?â¿É>NcB>B€>'}>GDª¾|»¢?céŸ¿y¯¾ä<¿IšÉ¿T ”¾Í
+|¿ßöp?JÆf¿½,„¾*):À‘Éë¿æıÊ¾^?ŸnË¼9´=:Ê¾'N)?5ÉB?'ok¿vzŸ¿lG=-UÆ½Ü…?ÊeD?ÿÁ%¿*/¿>>œ¿¾¾‹a¿k?èä¿©Â¬¾Dw¿CÓ¿Ê+?ıg<¿hs7¿s†Ä¾<åª¿ïQ…?ˆ¿?+›¾U h¿x¯Ö¾PÂ?5éC?\£l?p¸İ>N€V?ZÄ8?]:­>7³>f‹†>  F?E¿Âñ{½Ïì·¿Êı5=–¾™¿4ˆr¿_Ás?_">Z	@.¿µîô¾CCá½®Ìf¿ Î?F8´¿j¦û>yÅ¿9j¹¿¹U¾kf?­>jğL¿+²¿èù?€©F¿)*ª¿ gl>ºJ¾×¾–•?{fâ¿/&?õï¿P³†¾6õ¾fY?o`¿‘o@í¨=¶øZ¿„ç?5R¼Ì’D?Vı>k€Ğ>Hœ?ƒá1¾ü\¾Zº¿&	¢?ºj;¾gsA¿7 %¿¦ìˆ=Cá°?À-ñ½s‚Î¿‰á@,ö7½a¯/?¦ö¿0
+¿¶£?ì@‘?B‚?ğò^??(¾v{¶¾!¿yVÃ½ÆT=
+ñ©?Ü·i>€Mƒ>\Îò<hH°?|ı„?lz8?Í¦«>ØC<¢??SY¥>±ÿj¿4­K¿ßØê=?I>0âÖ¾w>ş‡+¿Iéû?ÁŒw¿8ò	¿ïZ¸>tÉ\¿oë]¾£«"?q™¾fzÚ¿¦§¾9?>ä€­¿0÷¿	¡€?ôr¸?‹>î˜?=>÷¾YGK?Š¡?‡ÍË?$=ö¾9P°?1ş=mø8¾[¿¿Wç{? Ëñ¿X¤”>¯]¿6uE¿$×‰¾¬(ù¾3µ¾‚•€?ø •>ÁÏ¾§¾[‹?ƒ¨9¿È%O?qÀ!½ëTE¿‘`©¿Ì¿Áä=@‘‰;¿ê¿g@Í¨™¿ Ö¾a|_¿‹x¾şE¿¸A><ÀU$?ê0]?½%š¿=ÕÅ¿ó _¿Q¿fY¿4®?JZd¿ìoâ¾ª÷°¿ê 2¾ÄY@Q,Ÿ¾@k§?Ï2¿¸Q«¾ërT?~è??x •?°J¿,±º¿}$x?w¿¿¬h?> ~¿J ½Q¥“?ù‰Ô¾ï@Æ>¾¾Ê6=Odğ?¢É‰¿>·”?!¿C¿¥f‹?ûGb¿,T¼¿†LU¿eâ¿ú(¿m×3@~4¿êY‘>:Œ–¿Ÿ[®¿w ³¼j7è»Pe¼>›—¿â7°? C)ÀpQw?&şÆ¾v½™¿ƒÏÏ?tã–?
+2S<ü`T¿à]§¾­å?†‘š¿îâ®¾Ü;ã?'eÉ>£Q¾{Á¾
+î@ '¢>ßM¿ı±¿B¿D?HA¿q]H¿ßNù½ò]©>X„¿®äı½™ÿ?MÂ2¿¬5±¿¿‡€ ¿†ßÀ¿KŞĞ¿2®??w™¿q–„?TJ¿‡jË¿¹ ™?¾¹F@òˆW?Ï@?Mt?á[g¿‰€²?2?v±r¾†¸8½¤R?şª1?O½–¾ŒaŒ?~ßB¿Kâ'¿’hb¿äs2?]+[¿erÇ>a_m?_~¾?‹=}=ûA½zâä¾=dÂ=nB?ŠB¿Ÿ?¾-!¾Ù³÷=b¤Ö>h¼¾œ*˜?zw¿ß¢«= £ê>D¼=YÄŸ¿š­¶>@¿¦Ãİ¾YL`?C‹½o¿Á‡ß½u†>1]¿	Rò?¼Ú¡¿#æx¿N•¾+|u¿<­-¿Oô“¿vÏË¾µ”&¿Òhf?Bq¾w÷ñ>©Ã½lóì½±ı¿*(£¿gH?ŞÒd?ã+?,Ÿ'>¼q’:SR¥¿@èr?;^?&ÌÀÜ"€¾Y"0>§¾6¿éè‘=~æ>ÍÆN?ä­¿!5¿È§“>6\¢=J\¿Ş‰?$Ñ¾3|í=Ìy÷¿Äkq>†«À^JÒ½V?¥ÜÙ?‡FÀ>iX›?FÃ¶?É~¡?ÅA?ˆ½}?½ØD¿ç…U?IÍâ=Hù±¾UÔ1?ğù…>¶Ö2¿3ø>9Îm?h+ú?K¿¦¿"»‡?	¿¿Í,L=“,¿—Šp?ÊêÑ?Ø5§>™Ã?İ¹¾4Ÿ
+¿io¿“l¿û6ö;ßÁ¾Ei¡¾fâT¾ó9¾M?VEÙ¿‡©­½FDA¿C»¾ƒæ¿Êw£?e¶Ó¿‘”¢¿ËÂ—¾‡·¿R|ò?±8¿g l?Ü…–¿ÚÆ:¿w¾yÕ>Xş¾Şô0¾Ë>4ã?G°™¿A³¾õğ8?|5¬>aÑ>&Š¡?v$¾¡h¿˜™ì?0‡Ô>x4â¼<qN?úRŒ?±xô¿ky=‡Ú­¿µ¿¿]ğ?V >¡¶?äÙ§¿#?>è·?~·Ø?­_=k ?; ä>(Ã9=~Oÿ>Ü].ºµ«¾[;i¾,ÿ±?ª3?¡¿=×ÀX/U?ß%æ¿k¿½Õ??v³©¾L;¿?äœ?¢ g?zÆå¿¨”¾U–ú<©t¶¾je¿q¹¿oh«?a2‚¾ÕV>Â«¿y¡D>"]É¿‚3q¾€D²¾¸—I¿Ò;ö?7@Õú=¶ À\*²>k‘É¿ˆQ¿Ã§a¾ì“–¾kÜ0>‘d¬¿Q‹=ÒùÔ?(Ú’¾‡7Ø>€Nk?õ¿Õ¾åV¿gá•>‘C—¾££l¿ÖÆ‹¿˜I¹?l¢¿YG?½œ?mş
+¿Ë¤J>ãEÿ=ö&3À¥’¾N·¿êûê>âp>¿‡b¿›Úü½&v†<%rû¾¬ ¥?C*?,n¿ìá>+QÈ¾ J?	 n¿Ø`¿ç}§¿Ñ†L¿]3¿øìF?ï¼¿aô#>nU?³?ÈşÖ>¦ŒÔ?·×¾Vë>RÒ?îW¦;AŸÑ>ãB†?Ûx½®?v1Ï¿ëc>ÔLJ¿ÌÂ¦?I‰&¼ˆñ¿bá»>FgÛ?$p¿+#œ¿á°{?M²¿ÛET?Ê×…>JI¿–k­¼V_2¿ôLn¾Çåí¾4Ë‰?ÕÓß>B×İ¾|O?ıf©?Ñ'Ê¿¢×¿¿´¶?vt>¿i˜X¾c¥%¾¨ï?x&>ei‹½ûÆ>TÏî¿ªEé?A;?2Ú°>)ö> ó¾İã?F”_??:(?«ªM¿‰k¾ÒmÌ¿+Ì­¿£G¾l´t?¬s¿-Æª=o à¾ Ã@?+6¿÷)à?Ìº8?Å¿ù>aÓ—?Şt¬?‡¤Ÿ¿p¼¿{Ís?~¾„6aºuşå¿i¿’=/Oœ?×w¾uAƒ;ËÒ¿¡ø?,¬É>&Ù?÷ƒ4¿jlD¿ĞçÉ>Ÿğ½%h$¾İ»>(!á¿•º@¸­°¿mò‡>#9,¿**9>c¿Å>“?ò'-¿Vúğ¿¹}]¿ÆKÈ?¿9·Ô>¶…¿ß"¿ç¿ØşÊ=šÓ±>‹’>‡%Ó?íöW¿«-¾—=ÆB¯=>Ì3¿ä“?Í®ƒ?¼Ç?Sp¿Sğ½=¿ÃæX¿A+w¾İ^º>]à>ğ
+]¿ûn?°»Å>É‹ ?Nø@3@¾œ’?œ³(¿|ë"?¨)?e ™¿rh¾¾™ƒ?a§X¿­æî¾Îş)ÀĞîN¿#\u½>ß>¿ª>'®|> Æ‚?¾17?Ô_ò¾•Ñ¿hñ>Ô®é?05@ >…åš?«Oû?*ø0¿*/?å*k?1—è?C­À?ı?Ù¾òa!?‘‘Ü> -å?UÁÁ¿šXÅ¿Ú”n½#ÊĞ¿ÃM.¿õdË?ß¿l.:?ú	¿³ÎG?nû’?ß_K>§mí¾ÌM_½“ö€>]2r?ŞK¤¾Óá¿°•`?©Ò…>‡¿P)¿tÌB¾âI?–Œv¿İÎ“>:
+Ç¼m&€?*Ã
+¿ú¾»Õ”¿O›‡¾)i–¿—7„¿Dt?6ìÄ=Tz1>¿7h>ÔÀ}=çw½º,?êe‰¾RVÛ>‰}[?4ª´=ë²Á¾¿??H­¿òÁ¾Öh?cÔ`¾ì­¿ìó©¿-ök>åY¿°Ñ¿™ÖU>º+¿Êº“?á¾–=2ñH?TÖ?ka¾’±¿fÂÀñÖ¿Uæ|¾ÅKŸ>ñˆ¿\é?½†?Hƒ(=¥-Ñ?%Ğ¯?á7?q¿ádŞ¿Î5¾Kæ)?»k¿“	¤¿Ë›µ¾†>ğŒ'?o1)¿şz5¿ÃâŞ=ë¿+œ©¿ØŸ=Mƒ¾6t"?r]S?Y)Š=mo?.H`¿Ø¦ø?ÀØÕ>Ülº¿H8¿ç¯?	‡Ø?úH?P	X¾{C¢<Ó¾à¿cÙ¿ŒUŠ? ƒ¾
+ôk?zq=	I4¿+¿âñ¾Ôà?4¿Ìw¿|>JÀ'Ç2<‹Na?ao„¿lÒ)¿8¤ÿ¾
+}R>^)j?{_?&=?cÜÈ=ÓÓÙ¿;-?£ó‰>õ¨>ºRŒ>ğc+@µ—J?ÇÓ¿•ÈË<öëk?l?.ãÌ¿ŸHË=®‡Î?5ÄI¿–Kñ?´.¾LÑÚ¾÷á>Îš?¼zW¿e]%¼¬ö(?À5ı¾èƒ]¿¶l€¾T‰“¿uú>OyŞ¿³	õ¾%†¾I¥ï?İ‹?…‹¾©ˆ¿o %?une¿r	1>ÊÏT¿UT¿>ëÁ¾íT@ƒß@/HU¿b?êw¿;>aÆo¾xuî¿rÑ¿ÜÇÒ?iµ @·ñö?xf€>¬8?1Æø>ˆÚ?¹"«¿hçw¾WóÍ¿¹”¿_ÎÊ?Ÿ©ó>Õ9%¿xI1?Ú*Àø.ˆ¾—·¾¨I??ãú_¿/ûÌ¿º$¿µ‚?¤ë–?$Å¿>ó¾õÑ?SÈ¿¸‚?‘¢ë>d-¯?±>rš…?QNÎ?	9?…ªQ?=ÏT>N¬?©£?6)‰?æ¬‚>°Ÿ?#§<.ñÜ¿Ù=‘=È”•?K¼¨¾‚2’¿°·Ñ>ë?
+o?“A¾ù4r>Sf¿9¿*D?K u>,w=W‘x?Iœ@"¶½¤„“¿0
+:?8YM?èšK¾¢5¿zØı<¹™?Ö²?¤„Œ>×V£¾Í6µ¿Eä‹?
+¥'ÀnŒ¿#¬>ª¾Í_?@ÿ“¿C¤?¸@Ä>N?gµ¿8Hˆ¾ãèp¿ÿ™¡¿UÁõ=ÿ>?™wx¿»3 ?÷o?cƒ¾è¿ëÛ–¿‹üU¿pÃ»¿4¯\?–4?Ø»¿‹M>QH¿„¾¿í5§?=F¥?u»±?ÆÀÅ?QİÊ?F;ƒ¿é‘o¿Dæ¿Tk®?>Yş¿&¤¿¾Òi?§L“¾wS¿÷¾œ æ¿ÑVÂ>Áh?‚ğL?ãA?V-$>%#¿UYü=éï~<¶Õ?Ä¬S?µ¨ì=ÃAõ=£zã¿íZL¿{¯†>°„¿ãz>G!Ñ¾8—J=.¿^¿?2`¾	ƒm>Ôì²>úR‡?›æÿ¾A•i> Ÿ¿Ó ƒ¾€ Ã=4cq?VÅ¿Y¿Ká¾É¿%¢>NÕ>…r‰¿dÕq¾¶/±?s¦¿Va¼>šÊk?f&>YÏP¾ÂÙ¿'‰#?Å¢¿óš¾‰u¢>ûzË?'ƒé¿F•{?¼wB?éÉË¿¶c‘¿— í>Ï*¯?[u;>­†¿xÄà¾ş?x¿†MË¾¿Õó¾İ”Ï½ ã’?:Qº½Hk?ğ•¿ô„?)à¯?»d?€½t?6Á¾ÏÙ?H7Í¿åÒª¾¯
+V¿Mè%?”°†?ª½ø½¯2?î(q?è€ÿ=Š5?ã­~>R?¸\À?	€?¦Ğ?]x?‹œ?;#?Ÿ*É>œÛ¡¿oàB?]®í?¡Œ‘¿ß’?»»;¿›VL?í<©‹3@%vß>ÿ-H¾†\•½¡7@˜g¦>Wx.ÀñÑ¾\¯Õ¿O1J¾u«8¿»?é7À?U!+½ÿB¨?@ú“?§gÇ¿-ØÂ?ÖÂ½˜½½–º?Ğq²¿ÎÁï¿Œëÿ¾«D\¿ Z¥>,ÆĞ¾“.@ŒÔš¿KI?@C ?•iŸ=ÔØ™?Uæ_?ß"GÀş¬&½Å<;¿G1m¿0`¾Î@¿”µ'¿P*µ¿’(?ƒ¹¾Áëì>è‘>Í™g>Ã¥CÀ)1ê?¾#D¾Ÿ”?QÅ?Ş¿¥$¬¿6”À¿Óšë¾WÖ·?Ñ›ö¾Ö…>,Œ>¡Ğ'¿ZØ¾µuk¿£Ò¿ı–·¿w›¿ì˜¿_g¿¢Ø>\^G>ßÿ¾Ò¡á?+ÏD?³qĞ¿8Ûc?_Ö¿f:n½+—¿À€¿µ«@ğ~ø?Ñ-?fzL?ä×ê>C`ı>ê¿Â£_¾'â¥>ãÔ?wL¾=Gœ¿ı^?®sÀsL-?ÿ<¾å‘?ªÎ>ÅOÌ¿Äs´¿”°B¿l4¿td>¿†@?•E¡¾G¿ß	¿@*g?y×¥¿>á½U¿-ƒÊ¾7?Îÿ4¿w¼?óµ’?H¢è>ƒÔá¾'TA>ÆZ¿½ùÊ?Xxs¿©|ä¿«Á¾pié>S¡¯>æ~`¾]h³¿÷³’?àúA¿5‡@¾Ğäw¿LÉ¨?o„?šÿ\?>£ğ¾×¿(Y>dæ˜½’±Ÿ¿WE=› §¿66ã¾Ùßq?d‡?±!x=2U.¿‡ ¿¿ŸŠ¿¯–:?’AÓ¾jW¿®š0=Å! ?³<>œË¾€¯@›À¯ÀÄTâ=Êj>ABT¿äW>ns™¿(Ç?!®?‡ìÈ½bÉ^¿€¯ï¾ï ¿ÏL@?Ç­‹¾¶æn>h\Ù?İòr¿”¦¬¿~'$¿ZO?
+¿¸¢V¿?:§>Dı>±Ó¿L Ø>’ŒÂ¿QPw?Xì-¿ĞP>·üÔ?ÈÈâ½ŸÃæ>ÔÑg¿™è¿|r…> c¼PÂ8=¶;ä¿ç¿è>Ü¢¿öÿ*>v?JÀ?på?²5@?°Şò>ï¹ @ˆ@J?O€£>­?ş¼’`¿Q¿”q¾*T†¿5µS¿ñêG?ŸÀ—`!Àö+Ç¿ÙÏ­¿šn¾ö!N>¹<>«Î>àÀ-?b¤Ş¿Ç„>‹±>O–[>¶iL¿—MĞ¿ßÁÒ?	”¾Æ¸Ç?!şG=~N¿‘Á¾LÛ-?ÿc<¿‰q@…—[½³Äj¾ªš6?´.¾ü¥¿>>Ä?¤³¾Y€ó¾ÇÒ3=«T„=ÿâ?œWG?ßN©?Ò¡Å>ĞA¿~4+?ªR¿°³ò?môİ>µÒ?˜"e?_R6¾6l¿>EëÕ=¥<?Æº½-2É>
+eÃ¿×L¥=–¯÷¾—í'>Ü°‚>å¿?X¢?Qïœ¾$0†>`£Ö>‹r«¿’ˆÊ=æ’¾×3T?QT»?ƒÆÇ?Ğ@ö[…¿×7Ô¿À“§¿5“H?µ¿aT¿69?Ù™?‘g???Àò¿#˜å¾+Ïˆ>Vû
+@eİŸ?l|À½qyO¿},f½ÉqÉ¾ú·R¿Õb±¿_ü"?Ù_1½y	Ö>÷vÛ>:?@p¿ƒˆ‡¾°‹¾	ï=*n­¿ˆ3›¿.É&?•hh¾Òù?Èt€?­S @ `µ?Lš”>¹ñQ¿9é?nq”¿Âc?óÍ>uN1@ñó>¯bÅ¿??é?&÷>°Ù¼¿Ì1?#?M…r¿7I>?{PÙ¾¢ò+¿ø¶v?³B‰¾ß÷—¿Ìe/?¸WÌ¾uæ?›t¿«°ş¾y*#?.–?(¢º¿÷9ì>¹šM¿G,?‚şN¾ÙqÖ>ÏÈ¸¿pr­?”Ş?È¼¿DX¾,;?¶.?NÖz¿lë¨¿Ï‡?.ø=ƒl#¿–½—½ïWH½ÈUà<°ˆ?¾AsV?˜ª>×°ë¾¶¢½ê Ò¿‚Z¿i%?Ÿˆ¿’+ı=fÍ¿eïè<ŠF°?}Ê¿(Ã>lw¿H}L?A’Á?ğ‹>ú_>
+yÒ¾lOÀ	IÇ¾ğ=Ä?Ô˜8>|i¾¯h¿Æ¹h½©Cª>£Í>ÒÀ÷ÛÆ>[©~¾ú«¿Ë»’½ßzŸ?}6?È~š?¦€›?Âê¾q™¿Íÿp½¼È°¿g¹—¾œ0¿ª@9¿¹bÀ)ßW½:ş¾/e¾ì¸t¿päÖ?)<E¿‹c¦?šU“?ÔJ?İ¿ë’Q?ˆ&?µÈ??÷Q?QE°¾Ò>ıG9¿'ÏK¾¦T¿™½?82.?7Y,?¥«>†‘¾2d£¾Ùl2¿B ¿<òó¿¥«P¿€:¾È±B?ê;?‚ÀÆ?ô\€¿Ã
+¼KÀÚú¿’?¸(Š¿üwM?Fı-¾#D?íT¿—İ“¾)?×¡p>Ê'¥¿ê5¡?Øë¹?Î?”À+½7l±¾› t<E&=>qÔ›¿¾üè>¨Ò¹¿x9?vÉ&?Ä|¿Ëš¿ÿ½ô¬ƒ¾óí>å:r?g³¹?¨tó=z1‹?×‡?)p·¿ßˆğ??m¿MA:¿#¿%?³ì…?·_k¿PW¿İW>÷‚¾2Õz¿Jt?@Ò¿!ş?Üñ©=¢gÙ>Ei?¢‘å¿Æ??²ûç?;yò?\nè¾7Î*¿ıß…¿ÿ˜>P‘>p»¾ƒ¿6¿½ì>c÷/=²nŞ?. ô>rE½ä=«=Í$?sÂ€¿˜¼ò><?òÔL> Î¾KÒ?¿ÒF"¿”ê¿›2w<J+³=ëœ?Ã	¿ÂB5=§Å¿ãŠ?;Àt¿â›Â?ŸxË¿¨T¿‰Zë¾Zœ?­o½/c¿‚òN>”Ä&??’?[0s¿u4?QûØ>Æ.¿úğ¿|±?ôß¦?rõ¿Šy&¿½hş>^«i>Ô-¿?î¼Š?ÿ]¿GÊ¾ˆ¾|<ä"¿É¿&À‹ÂÙ¿ëE¾ÂK»¾svÒ¿Ñ¡x¿²&İ¿´ün>©e¿·‡Ì?+¾Øş¼xWy¾LI¬?{<¼¿9Mú¾_N¿®ZÀÛŒ¿L2¿§W @#
+>µ)?‚r‚>ÿ8-¿ÿÚ6¿M¿M×?Êü„?H2?zü»¾¬€¿Nøµ¾(q¾&{„?øÕ¼-‹C¿%q<¹ø@À|
+>/r•¾¬¾‰Ó>¼Z@!ö†¾e|6¾Àit¿¾O¾î\?wwï¿óEâ½¯|N=ÕñÉ>fÎˆ¿wé>$Y€¾İïÏ¿÷Wı>Edr?ƒB]¿p¨¿§µ>-²¨¿…y¿Èª1½øL”=(v^¿[G?ú°¿j4¿H `¼¹ë?ÚÕ&?m¯>$‰¨?=t¯¾$R¿nPÎ½xåù?€8¿
+¨©¿…Éz¾Ó²ª?‘¿±o°?.v¾M&¿¥ôÉ¿#Y¾<6Ã;ıûa?…=>Ù¥‰?§1S¿cßR>ZC(?B¿ka‚¿‡së>¢wÚ¾§ği?ÇŸ3?ˆIU>Jó½Å3<Ÿ=Ÿ?ğ9y¿­‰<A9c½æ~¾vñ@d6€<
+ ·=`‹‰?F!Õ¾fÒ(¿)èS¾ğŸï>|õÅ¾T”Ì>=K>Èæ;¿\=Ã?=M©?yI¿i‡+?Ï&@²Sh>‰nì¾·ûE?¹jJ>	Ö?¿à?ªjœ?.Íª½äÂ¿NØ+¿Ÿ•?6–>+#—>ç¦‹¿~Ho¿—V?ïÆ‘¾ÃÔÒ<ã’@¤š?m$*?£L½>ñ÷'¾Ø†–¿ÿ¿dih=Ë¢Ä½y­>óFP¿tÏ>#“©>°,&¿Ùu?Â#}¿dò‘¾AÚÀ=2·‹¿—ç–?ïXJ¿’/¿Œ6´>1->@%>?D§Û>?È<½
+'¾N0â?A‘?ãŠ¿Ë?ô”â¼ï¹ ?4R?ìXK¿:Ø/¾/<?¿Ü>¾† Å¿´Çª¾@Ó×¿†-Ÿ¿ ½
+?ñÍ¿²Nƒ¿Qí?>>>>¹Ûî½VeÌ¿TÀÖ½Ì›ã?†0>ì·¢¿[_>),d¿Ã¿ş“Î¾4¦å¾Å‚?R& >Ò¾	T¿–cô¿xm?{4ÀX#c¾è­;?54â¾©­Àƒ¼b¿HZ¾HJeÀGWc¿¬Ä†¿ÏĞı=–<†¿ş k¿ `?p³-¿)Ø	?òùı¾î“¾Ã‡z¿´½Ö?Ó>¿j>üuŸ¾Ÿ¼¾ŒÈè½îC…¿!sa?æc½î7®¿ÕÌ?İ2?¨s?ú,K¿åC?=Â/×?‹«`?nT2¿´W¿ÛûA?~Šì¿xDĞ>„`…=7•g>I-×½È±ƒ?4P?Q¯ƒ¿r?ü…_>¾d#?T¿O4J¿õA?~R.¾İ¹Ö?dP™¾‹ü[>|•D¾gËÁ½ ,T¿P@í«…¿Ãy¿ú¶ ¿î? 9À,P´?* Ú>’õ!¿óBk¿â”¾Dr¾îÿ½nSP>äı¿A˜Ú=*t¤?xïS>h…<}bI¿å(E=ŸÙ’¿FÑ•?éf±¾‰ã®¾óóÏ¿ã¹\¿êO[½]U¿‹¿‹¾Â˜«>àUt?@¿’ñ<›•–¿Æp«>\!w?²ñ@|=-"¿Pfİ¿»"Ô>å@gï>45~¿¨\¿Û’¤;øŸ>¿Vó¿5æ´¾[ç2?‰Ú¾ŞRì¿üV?|?X?¨&¾Ú¨N¿«ƒ•?8‡¿½“?C‹â>½˜	?]µ‘¿şu?àù>\[½I¬U>ÃR*¿ˆ
+ÀÄ$º¿p¤¿>#¿UHÀQÍ¿”¡¿ÊX¥¿TW?u=?K\œ¿yì?¤Ò¿1¿Æ}¿@í>/Or¿©=V¿¼Ù&¾Ø.•¿­ª¾®?,xã¿Õ6?#¿<¥”=	†ó¾‰Ê>ıáG=J·¶?Š°î>èÓ@â&?cw¿Ó5˜¿/À_Á¿F0?qaÃ?¹
+?N–?êƒ¯¾‡q†?7§í?y8™>‡k±¾Yw>FÏ&?#Ô×¿œì†¿û§0>$[L?Œ?7¤p>æ|è?Lóù¾¯>7›¿
+-W?Şº¾½0ğ>Xò‘>?æ?(şmÀ
+·6¿‹±?áª¿UkÏ½®¿6›Y¿øq¿ß¾<\Ñš¾””¿—@¿%Ì¤¾ô¦À’“¿Jì‡¾ÎÆ‘¿{.¿ò2=?éÛ=ˆñJ¿ø¨?Ë+n?s¤L¾Çö¾J¯ß¿"ÄÀ& ?¤
+Î?,}¿®@ö¾\„C¿(¿÷„÷>#¶=-˜>zØ·¾`†‡¿ò¿üA3?XĞE?OÕ¿Fä ½¬H¿?‡>ÙG
+¿JHH>õÙ¾XÍ¾ÚşL?RT:¿†]“?À(?CÿQ?á¿–¶×¾ ®¤¿p¦r¿çƒ?û*¾?àD?Â~_?ìr¼õº’¾I¿:‡¿Vt$?êˆ>ê{!¿‰­Ñ½¿xŸ¿Ó?=w<@¶4©¿ĞP®>ƒö½=	îy?Ç“?¦½Xà¿ğĞ±?ˆ^?0ü½˜¤¥»›ô9?MW¿U¹ê><àI?ôŞ†¿×…<ÿˆÈ?Éû¿Àª¶¿ë³+¿eÇ›?×¹¾:yÎ?WÛ¿qIÀVwl?öj€¾} ¾?ã8Å?f¿ÌdÛ¾Æ]“?!Î¿¥)4¾£ƒ?ı™¾Ä2z>ÚïD>™4>ğÀ&ÄŞ¿Oq%À{Öj¿ˆs‘¿‘>Ş3#>Ğ4½¨v>½‡@³9•¿˜Î,>ğÑ¾ğ^‡¿¾ë“¾“”½¿À`Œ>»ì¿®OS¿Uí¿ê2œ¾ÿ	Ò¿.› ½}Š3¿‘=¼Ê@¼óo?; =/P¨¾9§®>š#ˆ¿–Ê’¿£â?ãm#¿4êe?'hH¿55¿à‚¡¾Ë+Ì?¦v?È??öÂÒ¿rF–¿D,¿?ä¹¿/»¯¾«°¾Ô¿iÿ¿é|Ş>¿Î>‹#o?ùs›¿„ı¹>w‡¿j[¾)€?¬i›?İ£‚¿™ß¹>óÌ.?s¿Â&@HDÓ>Zíp>Í{«¾G™¿lB?K4¿÷;¡½Õş¿c¿¥:¿w‘¿8nG¿7“.¾}pZ¿8`	¿Dt>[ø6?À>}ÊX¾–Q›¿äŒ‚?N
+ ><gŒ?«*¿‹	@tI…?û®G?a)c¾ÖÄ¾dÀír?öU+@M3?kî¬¿'e½	(¿­c¾Ûò?•§‘¿›Ë°½‹PÜ¾V™¾Öm(¿?
+À‚â=Õ“¿äÂ?^ğ¿7>ÿwD?›¿Â š>©=Ë‘½¿ÌLÀ½R&¿@›á½Ó&8¾w?>°¾“¾ÁŒü>÷;ò¼ƒ²õ>LÛÛ¾Ûéİ¾È˜¼¿Ç‹>ÿª"?l×/¿óN? +´¿]º¡?Y|ï¾Q‰ş>7wL?³[²="8¿ûs¾dŒ?¿hî”?¥õ?“Å)? ´¿‰Ü?Wc½½AWx?¤‡?ó®Ë¾§Ş¹¿nı­?VÇV?¤ş>­†
+>8Âƒ?©{A¿Æé¾ìŠ=5ì¹<z¿†VŒ?¾)µ¾zŸ>x¬ˆ>ÁsA¾f|\>ßÁ+¿ÙË¢¿g›­?í¡ˆ¿,Ç$¿b°Î¾™¿¯¿†WD?­4!¿õƒ¾Æ|?*X+>	›³>Mıƒ¿®;ß¾$+»?×46¿šÕM?È”±¿‡V€¿è;@jŒ6ÀÕŒ¾B3l>Û¤â¿
+/½>º‹¿î@ûgÅ>sLE?|â¿XÏ¾êŠ˜?¬ån>.?Ö?Uú*?ñŒ÷¾6îŒ?1 À¶L>9›¿@T«>F¢a?h?ĞE¿Uõ¿¤=e°@î(¿”àı¾a¹E¿~d¿`ƒÌ?Ğ
+¾¾kìÌ>‡íö>ÁÉ>ô%«¿""Š?‚ÇÎ¿Øk9?ó˜?)?‰¸6¿œÑ0?lğå>ók¾z¹›=ƒ‰†¿z ?·âˆ?¹À@?Ò< s¿Ö‚â?œ7¿'1ë¾€íí>™¾ıİ³¾?¤¿jü—?¥Ka?Òj¾`&¿eˆ¿}7¤½ü1?Ş#?^Ø=kğ¾ïu>@ûğğ?˜GP¼¸ œ¾½ÍPŒ¾tBÚ>¬a?Ùˆ¿f?•bù¾£É”¿Ûh†¾âE¿·™Á?¯Â¿®$½1¶:@Tçß?¯+?Q½= Õ¿ö Ü>°Úß½Ølw¿GÕ¿º2´?-Î?ûQg¿Âw¿Ù£?òÑd¿ò¿ŠÇ\¿QTV¿T1¿Ô-¿¾G>9Y¤?âı ¿_ğŠ¿û¹?Š	ó>Q¡A½´‰i?<¸•¿4’Í½—C?‡¼š>øÉË>¢ğ:¿ÔL3¿Ğ
+?ÆŒ‘?‘A?ã¯s¿˜{?mF@¿¦¿ı^g>¤Á½’¼®>Ô¾Û!Å?J˜Á¾ÜÈ>áMQ¿†‰¿]º@ ?(ÈÖ:â"A?·B¯>}t^¿®>ŞN[>Ûd@?Â¨¨¿¨ ?hº®¾ß*Ë=Õ‘¿#íÑ?q!Ç?° ¾÷şÀ¥é=?ô*‚¿GÍ>G¿³?û[à¾`ã?;?%í1¿˜Ô%¿¸˜¼>è•Ê=MõÃ½ğR†>¤÷Í¾Ê8K=°‘¿2Ú>K¢¿+/ ¿×Ñ¾?GvÚ>.v?es¿y÷<oŞ>ªH3¿¡œ¸½Ûê@?‰‡=µ=J>„!?‘(ı½Éj=¿rÆI¾Ïr?Ğšx?ñ$?¤Ì¯? }A½pÄ>¢ˆ¿âš?'ºc¿tn¯=¡–q?Y¦Æ¿»ä½ÿfÇ¾şt¿	#£>’˜½ĞnÀ¢Ì¿¡“¨¿…Ş?Y0¨>Bø)@ôíâ>¯—z¿>
+„¿,šW>»›?_‹€¿cı…>¸Ş‰¾Ì[¿n Á¿	;¿‘Ø>RŞ8¿œ =(‹?™SÀZ–¾K"	¿#¯W?ãÀöW¾W5²¾ÒA¾Üæ—½fï¿åV×>­À%?‚Âá>¼|ê?Wâ>Êí”=öİ_¿Æ¾¥Í=áh=á!z?ï?&{ÀxNW¿.*Ú?#Š‡<L±¿PÀŸ¢n¾ú.€>Gì±¾GŸ¾¿/|€¿¾Hƒ¾“"?Aù9?ŞC¾?âø½ã_a?€ø>»)>ÁU¦?>.¿¿€
+¼¾™„o¿ßJ?Ù2–»Š™ş¿¯J¿òK”¿İE,¿sä—½3á.¿…Ã?©\?D3?ĞÙ•>ĞX=>‚_ù¿h*¿ÿÀ“?İ¥¿X6!@¥Jâ?ªbÓ<ÍDÄ>«¿d’s?aE?È>¦?ıŒ*¿¾:xï?[a3¿Fşò?ˆ	À¤¾?CcŞ¾ácš?1ãX>awé¾ÿ3œ¿yÅo½†z>Xš¾;Q?z¿>£#½m?óÓ\¿rÙ0½îÑT?µÛC?¸†?ªÉ€?5ª¯?Òn”?³ƒ¿zõÎ>ÿs€¿œ‘+>;‘Ó¿W€g?Ææ?‡*w?` Š>H…>]"(¿Rƒ¿™r?·ã¾¶âz?r-C¿ú´ü¾I?&•„¿{¿m±?L@ğ¾;=>aÿÖ¿ıªï¼Ñßl¿ææ¬¿1îÄ=#=>‰@ûÖ¿Ğ¢Ä¾|€±¿QD’¿ë´/¿[ô“>ä´Á¾dØ™>ë®½¶Jş¿¬ù¿‰òk¿›
+¿jdó¿rb¬?“rB¿ê)Z?IŒÔ¾7lÖ?^åe¿õ¨Ä?ç$=İ` ¿,}Æ?rQ2?ÏM‚=ÈA¤¼ˆšú?Òä'?ê±­¿·È
+?ßñ¿e-Í¿lZ¥?:e–?ÕÙŒ?°²;Cœ¿=³W¿W9&?G„ã¿ Åİ¾á¹Í¿›;»½úí¾¸— ¾^ Ç½ ^?ø>?ú%:¿VÕ#@_÷c¾ZM¿#?¥ŒÔ<?“ó=?‹FÈ>g5Ö¾œbbÀ“‚>7¯¾pŒä>şv€½©åZ>dÍ¥¿Î
+À¾ô!??…—V¿))¿ßSÜ¾Ïî?®,À‹k#?f>R¿ÉºÌ>•æ±¿:ÕN?k°y¿«¿[ö[¾Å:¿ÆüĞ?(Òc?©›@ZœÕ?}¸@c%´>™^=İB?šIí?u?@>ZÑÉ¾óª¿ùÉ¿öAÀşë¾Šº£?è?õsN¿©ËP>Õ‘Ù>u[z?«¾i"¡¾œÖ²>×Z@µ0ù>JÊ¿c|Ô¿«&P<Ğ€ë>¥t®=‹r¾/dæ>¦×(?‘œ‘>Aì>e=ª?1¶a?É¶1?eğ?²ë>ís?(¾H¤Ö¿oq¿A~×¿bîó¿89½¬8µ>²(c=#(¿!e^<Ï›¿|ƒ¿ÕŞ?ÂğL¾ûëT¿[$Ÿ¿­‡?àBô¾ÒŒĞ¿¢M½=úËÀôeô¿N>,?u¾:C=1¹À§?	„B¿›4U¿YÑ±?÷'L¿oU§¿È«¿ÛxŠ?¬>¤_¿½‰–?Ša!?HË>ûµƒ>ıÑƒ?›f½w!Ğ>	¿¾°!=ªÜ¾§l?U¿}ó¥?G‹ù¼d›½Œ(8¿¡j¾ı‡–¿³Ü`?z¥?Ëÿÿ>«å?ÑìÀît˜>V±c¿fFk¿?!Ñ¿Œæ¿ÔøŒ¿»Z¤?¹¹ú>+¢½Xp;¿ÍÅ°¾Bå^¾¤¯±>¾°=¤¦×¾@¿dÔï>äĞ®¼'TJ¾¥A¹?¸¦©¾é:¼?$_€¾îX?2|.?­¿]1‡¿;Y ¿¢‘z¿şÌ’?÷‚¬>‰&¼^x¿ªº‡>Væ?a²(¿«]{¿•”,¿•¶¾mÔí¿äàî¾ı @¿€©Î?÷*z?ÀTS?Ïò?¦n6?SK?·'Ä¾Wyy?r-ì>	/r?o×Ì?rT¾aÜÕ?ğç"ÀaŸ=cs%?«Ñ¤>¨Ø…>pD¿š‘¿Ğ‹?Yç•>ı¾ûø3>”{¿Áé¡?­+I¾A	B¿eëD>gF\¿j—>IJû¾n4->ı”?YH?A(@€¨°¿ùÒ>å+a¿nb²>ş³›?Jˆª¾“>Ï>5ŸÈ¿bo>?‡A>Â1H>W†ô¾èùE=¡yš¾’¿Ø¾nœ?ş«Ú¿ ’?(d@î·ø¿Lyã>†Ñ¿¥ï»?úş¾-`¿P-‘¿`?“nÉ¿øÌ¼¾ò|?j¤?‡•s¿€ğÉ>Ÿ?¶.d>hW?Û¹©¿Õ%š¾¥›™?Ñë¿ó½?å¢¿Ş0”?ˆÒ$?p”¾e³µ?O¸ÀÉt¿ßüs½úƒc¿–€=Rı =¹NÉ¿è–’¿C+-½ı?µ¾;>M4Õ?‘Í‘?î¾¦¤?W±Q¾–Ë+À£ìœ?r ¿/*¿‰™í>Ş´?ROè¾I0¿É¾Ì¬Á¿èt¹¿×Â‰¾é·¼¾Û¿ş¼v¾¤C¥¿Lƒ/¿ER>ßƒ/¿Jø‘½09?ZF•½h+×>MÕ9¾–ƒ²½²´Ã¿ÂEÉ?>Œj¿…O=9h?îD%¿½ş+?õ2U?Íw•>5!Ä?ºl¿Áª‡=€(­?è?¶5ô=º‚¿â+d¿õ>5¿Ú¾¿‘ãL?¢T?Õhô¾<Ø?)fk?‡1ë¿QÌ?¨Ö»\¿ú{´¿8]?‰¤(¿YË¿XåÃ?/4]¾	5Õ?ÛB>
+—æ½«L³¼±“‘¿È›?£¸½	ğ>~ƒ§¼†kK?Ş\1¾oë@69À6Ä>Ñ­¾¬½Æ¾0¿f!\?±Å½ÌÀÄ¾”d<¿V¨­¿ÃH.¾nŠn½£/+?	ÔÎ¿
+ÙÅ?İo§¿­9À>ú¾G¿®>@±H>(ó¾¹Õ?E¿4u†?%»=¿`À¶/I>;!¿°ûÓ?,¡|?ÏïH?‹Û¤>ø”?•@”>S‚>O?6üÙ<ùbk¿&Ş¡¾±â(?Ä‹á?­\?k“ú¾„Š«¾e·G=:öb>Š÷;=Â-ğ¾‡Šz>tÌ?“C¿vˆ¿œ?¨ù>‡ã÷>!õè½=q?ş¦>^ôv<$ñ!?‚â‚?oÖ¨?ó¿Á-²¿»Ş<z¨½ò;‡=hG¹>šV‰¿<G¥¿Ã°>ëë™¿!ï?ão¾‚Â¿2a­>áÂC¿š‡¿Ê©€>±9Ó=Ü7ù½¹aÒ?N§?¿ä±Œ¿ ÅÍ¿=›¾z?Ë¡¹>C¹ı>¾UÂ?n‚\¿‚N=ü.Ú?¹ïT?İg?E×ğ¾’¢î¾±ò ¿¿sœ¿*=2ÀÓf¼¿6E„?«‘¿Ö²K?Û¹¿D>?¿h‹@u×¿ˆ¶¿¡¿a<¦³…½Îò/¿WÏ{¼ûÀšE«>°•À*:¾X¤5¿RÇŞ¾t”%¿nx>Ãœ¡¿x­?it¿¡Y®½R}¿xa¯¿Tè?‰'~?ƒå`?¿_ë/=<¼Ÿ¿½ÚŒ?çK…½ÈÀÕ?•Î><ç‰¾¬'¿ÉYÿ¿ûŸ¾•>°‰–¿ç¨ò?¢Ô@øÙÓ¾¢“Œ?HF7¿VÚ¿²~(?·á¾¢¬G?jO?Àº£¿\J¾±H?Ì·ƒ¿F*?G?ÿ¾¤¿†fô¿R8Â>Ğø»¼‚rv¾gÚ5?KÖ°¿	C?JÚË>¢˜¿µK¿|å5¾Æ©½¡Mr?=²?-¸?!Åš¾y!H¿¯Â½œÙ€¿)çğ¾Ü¿(ÀüL?µu”¿úq>Æu©¾%EÒ¿7ª‰¾ö“¾¿;¾¾/ä?$2 ¾@#‰>x]¿À»>1`=?Â¿N@4?wA,À×îø¿XP¿qÅÑ<#?W×Û>1ÃÀgï¯½4M¿6)Ü?ª»¿¤w>¿Cz?LKL=›Ó ¿Cj@jšn½\g@?š«Í?éü­?ªÔ¿™:/?ãKÊ?š,¿\ï´½¯Ö÷¾*ğ©¿ï~?¡q¤?º³Š¾ '>È0.¿³±u?{·È>È
+¿v V¿ J¿ík“¿®8ÀÒR¿ÑrD¾SQ+?0\î¾Ë_Ş>èg=?…¹œ¿L»?ª`#¿€ ¸?!Å×?ºÙ½ü–à>zÇ0¿“¨…?Jûc¿Òı¬?†EÓ¾°€­¾Ú‡?I5†¾Ê>°Ê‘¿Ò-»•|/?Ü$¾Œ‡s¿Au˜¾®	­?½b?±W¬?ÉGª?F—›¾yœ¿Ä*˜¿B6?Í°ã¿$ïX»˜ãÁ¿UÎ?ãem¿#†¿§±e¿â§é¿è¿±?HVÁ=fóÄ¿?Ã>²{½»RÇ?X­!?Œb>ªqû¿f‡­¿É	?¥v…=\–Ü>úõ¿5ı¿½È¼À­ ¿¤¬M¾Åa†?Ù
+¿”:>8é¿Çõ‘>Zı?Ám@›x(¿‚-Î¾mÀA¿YL>Ù‚>Úl0=Û@$0?b†±?^¦›¿?>¹Iì½K:r¿UK>"ƒ¿äÍû>®*>¾Ã•?@k^?¤ÜÀÿD=à#¾Œ½³?®"Ï¿iTó>}wè=¶±•?-í>Íµ?p<ø?²¿C?6´É?œNÒ>ó‚À>ù“?OwK¿tp=¿4ë =·–´>mÀ?ÏHÀ?=v2?IŞ¾ğ$T?àC€?N?Xn€¿!¿±uÀü0Y>Nj>¿ØË ¿t	1?	]y¿`Á®¼¨^˜¿N $@à¢¾Y•¶?Ü½Æ5ÀnK¿ßÄ‡?“r&>Éup¿~æñ>×1Ã½şê=E¯‚¿«N>—ó¹½ÉH¶¾Hd¿Â§v¿6¦ À=ûÌ¿Ş-=>@—9?g? TG?¦‚?!¥š¿zX?¹æË¾kµ`¾ñ}Ø?Qâs¿	?¹¿®üy?T?ß¯ÀAŞ¼—·&?¶·¾ë?­Q3?bÿ¾ L$@øû>öÕ˜¿(?PET?Eç3¾ŒF‰?IÄ`¿PÀ%á¾5ğÀ?i[?>{›?“ßû?°âÅ½1Ä2>8—y?Uë¿4sã½¨¿åt€¿¯ì¾bÕœ¾úµ—>Oìš¾“Àq<…?-:½œ(‰¿jö~¿ ì€>¥¾?¨±Â¾çó=·Êä?ª¾â
+“?Œö>ş˜?ià¿1gÇ?J×¾Öl¿¿|‡?¿E„ö>-Ïl¾Ì¼$?¤}À†©‰>1lH¾*f?¶¿ÒÒ¿ª•–¿ ¸'¿æØ>?–Mö?H§¿ïÌõ>¤½ŞÙ?øå?¼Ç?ë±ş<pñ•¿)S¾+È‰?I[u>«î¿g ?@[¿µÑ¿s~¾h…R?È†¿’â¿Ç„E¿a‰¿°ÖÔ¾ïæ®¾Ûı?Ş:@õŸ¿Ó&"À:hÁ?ıøã¿	‚š¿ğ!›¿MhÅ>Ÿå^?Ê1?j¶á¾N­¿?Ø¤š¾Å@[?¾¤˜¿'a¿ú?¢z¿¥í¿£Àb²Õ½¦ÓE?Â¿YvN¾…ìú¾|s°¿»Š¿±g ?®(—¾'¿Ğæ#=ñß‰<Ôd!ÀÎÍ¿Îu>":à>@cb?™P¿I¦?òš¿
+³@³êğ?(Î¼Òm¿÷E‹>õ-•>J´E@ÿ¾¿™éDÀ–C²?>åÑ¾åşª¿şƒš½ªv•¿ç©?‰g•¿šÇ=«€?ªÃ†¼Óˆ?|ğ]¼"QÍ?_ ½øy¿å	º>RöÎ½Ûk?7h¾+0ï>Tm=úô/?Õœ¿ù ƒ?Áİ“>Ü}J¿œ >04‡?h»v?$_ê=CÍ>ÎXÒ¾Š‡Ğ¾’+A>bk&½Ìç;¿]Ä.>¸Æ
+?dˆ˜¿‡B¿ö•> ·Ğ¿~Q¿]õÛ>e´€¿eBa?{uW>’‹?á,¡¿ñò¿yEK¾¨8è¿zßÀº« >àé?+úJ¿<Y–?Ïs¾T5j>AÌ¾:Äf?D%	¾‚c?jn>¹Ã>“>K?œ³G?˜CÀÜÍ¥?à'§¿–‹4>o?s°=†Èü¿:=Î¾ ¯¾<8M~¿VÒ¸<(Œ¹>gş•?²•?3@Dñ©?ö[¡>5÷ ÀÃn?c¿ÛW¢¾RM?uYß?NÑJ@«f=?õïh¾ ¯K?Ğ£4¿úú™?}‰Ä¿|º¾êÉ²¾¤÷ ¿n”?ÖÁ?Èˆ´>hŠ¿Ñ˜¿ªMÎ½[¿ b>Ak¾ı5¿¶q?.ü<£#¿iÿ	?ä±¿ÀIĞ?kP¿>^_?=+¿Ö(µ¿¬¯¿x™>Ç D?Ÿq…¿±ş¾O?}>ôy<¾'V‚?ş³Œ¿zD¿-P? h¦¿ø¤ì>ò ¾?T±®¿úW¾Õ^¿Ï9ğ¾TÉ¾Ü˜½1†…¾Î^5¾1°á½³”Å>€–Á¿q.>ğ[“¾†ö ¿ós¿Ãó¾[­ó¿ã”>çÁ¿>Z–œ>„¢	?K>¼Iê<Å¤2¾ÍU¿¬â¿ü?ÀUˆ¿ëæ€¾
+–<¼]“?‘>Ç(—?\x?Ë­÷<¡ZÏ?¤ÏÏ?òO¿oX¾®F=šƒ¿æS_¿t®¸?ö@~˜„>È«?©>¾×‰?|h ½ù÷?zı>ÂO½ª(‚?›ö ¿i<ä>¤f«¿[±æ¾Ìgà?4Ñ¾+F?s|C>íã§½‘ß«¾íÈ?»@èq‹¿Ær£>šés¿ó@,¿e™?;î|¼	q¿;şÄ¾N/¿‘"2?ƒ%Ñ?„}?è#˜¾w›×?J1¿¥¦¿„É½İ/?‹¿m^¼?T_¿U¿wj¿ı“˜¿bÿÇ?ˆ)e¿¡Ø*¿x»©¾?àÀz­ã¾Päñ¾«•=dÀ°Y	?Ô¾ı>T¤?.¾<üÀ¿µª¥?ÓÖÀ¾İvŸ¿2Ä½>B@b¹	>Ëëÿ¿ì+H¿wA]?¤Îõ½û§P?ãÒÀ¶uƒ?ê£¨¿*0B&model.layers.0/input_layernorm.epsilonJ½7†5*®@B%model.layers.0/input_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*¸@B+model.layers.0.attn.q_proj.MatMul.weight_Q4J€q­Åö[…Ê·Ğ?¾¬—–‘Ÿ$«z®Ãm{
+RFÌ¶ŞcƒY{Õ”PÌûw¡‹ÙÈÖ–ˆ®l™rºMNÁŸMÆÒîIPsQ*r"¨î˜pYhæ^p“ĞlşVØ^sŞ†ˆ¿C£v{>„ôìB.æá{‚AS,Ú/aOku}èiÓ`K Íq]íæ0O|çtÎ…\ÛÇ 0Rİ§B|n:³^Æ³<°#^ğÀ_œp[ıilØ&°äº…v_u‚¼ş0òM:4@ßqMo¶ÌcæS3Nå©ã4¤ùÏıÒõ6ŸaPñù,³¶Xı|„3p*Dræøˆqw"r´5 ÉüÂPçÌ T{Ê¼ÎLš’şÄ8û™ÇÃ±hë+8IáƒåA‘ÉFD¡ç°à“ï,uÆh½ä.©½?cG^%{ ÄèÒ÷ªN^h?gñÔ5P~€t¶×4€HlB~ã²‡ñ›Í¢ZgÆ»q7?Ä!’æÆ’-2¨y»o4IÙŞ¡™›|qóÔ¼§œvÄéîÃHÁæ‘‡•a³ª"öìÕh2äN„iå×Ü¹Â‚Dkvı¶E?d ­ÆvÓQ&œXk a›¯}5 òH*ki”ÈŞÉ—Q­£h$OÔö@”¿“èmè;VmØ¡R—'—MÏ~‹Uw]ºT’MuÑÙYÆÀÇ=ÎãÎP/LÂ‚g™,»ÚÁÚ²ş™sçf´‡Õ¡•£‰kr]'ØAÑqw½°E™`?§lHŞ¬é%ÅChMËîˆûg 3jX¦Rà˜9kr5ÀöÒ-dg_7Ò¹yñcŞO¦<Ü‚î…ªu)txys‚û„·Ö,’ÏÕ7ŠÇ«7İb–ıKÙ¹ƒÛõËÕµšC`±¦ÆwzxVÏ(¡^W±–ÅÃÜ4äÈgXIÈÄËşHy*cçhğô‹‹æ­ô?Ê‚¹*ÒCõ5™·¢¦X“šM¨“H›_	î¼‘ß?¿Á#qçºLåQàoÈã
+JH¡jp1ğö?#Û4~·\,N¬ÚÑ]CWàÒSÅ Ÿ:U! zM «u …S¬Òİ‘¿æâ¦ôø‘û¨ä¸&¢§-´JïÕS0ÈGaêøj(ğNĞß=ŠG™;œW.|ûäãf^p—ÈEgmã‡Ø=¨´uÛ/–y"ğ]8öEw+ù€ÕŸ"ÚP¶rôIŸ‘àQ'q?c·#6ºš^ŠßÔrAA’ÆyP€p1šm?ºt4ˆÚ³œŸ@Ù‰Ü
+=ÜÊ&ËNº'á°¶Äo°6p(\³xsĞ•­Ê;9öÿ®qßÛĞ×ou¨ÎXñé„`q­mà«Æ€º¢ïÕ]gşEAÑ4x'¢e6~ˆO˜BÖÒãœîãwcæ…Åt IOÑm­¶.luRÀ~Ó=ñû9'9#T¤KÈöå‡ökÁ$¶ä9c4»1~ètï|k98»]ëˆ–å“µ©+“4Ş‘×\…4I–58¼P£¾\Q¼ıÅ;Z¸1ß’Æ€šS/³ãª;·aP¬înt%Ğµå{êíi6H×;8[´âÕîì5ÖÿYÌo7L³•æÏëj‡ó€PìùC;½ªÙsÎö´À ¸Ùƒ6ñcúºyPàìMÅ¤í€„ÉOõéqÄßïÛœnšÀ» S“Õèu¸D84fa€f]'~IÉ]ˆ-áUÎêíi
+@ĞÖÁ”óÔ—-DÇyà:ã}X%Œ„>&8¶;[Õ¢y:äû[ş}ĞJ§Ó
+©ÓÜ³nJ8"”Â2œ¡æúš}-÷½ÙÈÌ…•F/ı_{ùéH³¡c9N)•`1œqN70¥•Ä×$ïš†’øk…,Õ3´Ö6VúL—ÏKıÔ0ğéÚÜiÆék]@ã2Ó•ğ0ÒQ]ËøûP„@2áGÈa’–,iËƒıl4¤“N—ë3=yO¨0
+¡ôşieu ;¨F²Ë
+äsnoıFo<Á¯SôfÇ‚áîO`ÜZ@÷](ıkÄá¤šÖ¢-0_tÓà«İğAüeMZá‘oÜgÃøG`Uïå.ˆ„u?´70<ÚøXÒİ’ûª|¼©”BNô*åuŠÅÓwmq|ÍN¨€Ê SÛ¹£Œëß,¦ßÉ×^Ä1ñ1çA:Ñ
+]­ëİùŞ¯¼}yZústÕ°-×>ï¬‡X{ôDä¡­0´Ïa[°ÂZ<ëŒ°¤R´Òµè_•QÖy0Úß 4Ã_³ËğXÔ‰ ©ù×ÔtKpƒ}\Ìfø_é¢ƒr+|¶PX1jcµ§p›úæKxU?B™v#¾?‡ˆÀ#×QğFáİ–C\¹:cwª«š™Uiò!«éöìªÜ»ê¤â:u‹¤ºhô~ËHÒ¤P6áŞ›“°ø˜tíÕ„p÷M¤¥Îğ7Ø»gX7õû†|tkŞ>Y*´‰¿ÙøqàeK§f\ª½k!Òg;Æ™­ÁõSô iÌ|Å:±r%D hB£ÎRfÓtôCC:Š‰pöù	›†'`@ƒø´&/A¥ãsµ¤këƒ¤×…æûDHã~_‰¢Ç£×ì;SgTxĞÖ³‡Õ¼‰ît]¦óÜ0€Eµª„äñLP*«	ha˜-j(„gR»Ù ì*¹€B/model.layers.0.attn.q_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*¸ B+model.layers.0.attn.k_proj.MatMul.weight_Q4J€’umÛ,Ë0IX¹šK¯‹´}oØ€«Ùës)-àól¤=ITˆQc{wËr=İÈ6‘Úï¼±FE¯=*b°©Ïñ/ËÌ‘:ã°£ë¯Bã-ÿñ³V¦´.;o¸ybAíŸ~©ài²^Ùj8{	Ö ¾”G~Ygvô’öŸw$ƒ*œ/ÌËÜÙ“ek}éıŒkÔhéjêä‘1šM½;Ò?ÄzßÏD²èØ‹PØâá3QU,Ä\NàŠu©x;‹ÁôEbkµt5­¶Ó˜ÀÏß_ÂîBâ4m2öÀuéùªÛX´:
+¿Úie$6ZSÚ£côV¸¤œëÒ(X#u¨ä§è»Ttêï™måñH”|¤ß	ÀPM“èj óñWV¨ReX8cñ"›)”^ùÿËÓ9e<g³;ƒ?5Y¤èiÄ›ùáüÑº¢êñ7û5ı¦ö[lå°_q Rp`¦;zõW•é˜µVEjXgÌ@EXïõ,ıà€-²–£•P¤aÕS4•`¯¥ap,r€\§EqÄª¹CŸq7»jØ’Ùvp#n€†Ÿ‰˜µzûmO›¸Ñq«¤·¹f€ì§Õ"&ĞÍêÎi
+Ç—F_=_'ôŸ!œ‹Qób½ªÃ˜FWT¯µ[	LüT@‘:_(üP‰ †¨ZµšŒ>ï®q§&Ú7/°#ã&ù¥Hö€ nJ	—Q¥ès–˜\>K¾/èf-ˆõ¼D“Bè‡:Ş–V
+<™ş€(,D‡Uİ#ÏÁ=lfWhÕ°ó”	Û¨-ıhƒ»ô¶]®b¡–7˜Q7Ñræ‰\»4¿SË`¢éÀ4ÀèrüçaĞŒ{½ªÜÏVe{”âYäéoÌ»ê}±àxA¹ÆiıChk¯î3â=®÷Ú
+Á³S'TtÌ¦[=ËïTµjÍ‰s
+ğ9ı[Ôí Şüˆ/[Ø0Úz °)£—[¯Ñ¯‰Üä
+ÁvRgMO ²b?MX:{GnWH›óşÉ”¶ÇÙü!„0ã ¼ÜÜˆ@š€,p—\(®›ûö5_«­…ê¦Å¼kîàZ‘Å^„_æ›gŒß7x¸.år¨6Uó½°ôã—ÄÌ£ŒvN†™±Õê©Lk~Zç˜rî]ÍÔ$˜ó
+&Ğ›f£ö[\‡6fmDhsĞ…ñ„t^´4KutÁ•È·ÄØ0Km‰KÃ’ÅÅTØ[ÜâQÂ	Z&„Ctªô‘hÍ+sƒíYYÈ¥(Ó)‘ßYÔ±^ı‰-Ù)Qß¨‹ªuş·kßq·Œ`…œ]&L'okßFRê*¸@B/model.layers.0.attn.k_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*¸ B+model.layers.0.attn.v_proj.MatMul.weight_Q4J€’$óßšLhé “¤şµS„l…¶ŸĞÂ­û$ˆˆB´h¼ieÑéÆ7xëQ|±n%`ˆ €Uùı÷F2Jš5Oã=¸kÚZŸhÿø²dPáriP’ÑwëDY‘Ëè&û]àgÅ…Â¢[é-ìamï5Û­%İnóÒş–Z1uHša¤Ù”âÄ¾1'6õy×ÃPV8¦ŞÆã	ªÔ¦›èn¡œ˜YqÏxİZ®—ã¿xõRcÆîå\š²ãÁb‚P |àh‰›8Wºy3µ‚.væ½NNùmNI«¤$NT&¶5tx=û¡mÙ«¹¡òš¹½8wS°RÚ5»vÂŒ¿5Ğ=83X;·I §¥¢_½ˆWŒ•WŒÒ¬À¯+Ó>&¬±[¾Ú-F½äXXÿßÚ¼şvåÁeBs¤…¬ßËİÿjOøæúÕ‡;W*e{½ZE\+^çvaç-˜ÄÜrŸÖmşÇöıúè•©‰¾AÑÍî¥b~Ì©Q‡°‚…ãôìèË–qú>L2ß‘›ŠVz½£Éprõ“7±úÑa³Læî÷0æ¤ø¨i$7CMGõ<%{pú$²$`Ò­9„>êù{>Şş$2šhûÈ×¶b@H#ş_•Îõt¤ja÷ıEi¶Í’^˜qsx K
+Å1H·“Ø`Ş<†^‡kÕ·f­)J»ı<îN,ìx)²S·ùÓÛ—rÅîªcN- Mò„¯¤2‘Ÿ¤\¿ÙÆ}•Å›,[)RİKCÃŞ§J0}Û@û1¼|ä.Ş{k€2ú ¸Î¬:Tm×ø(Wå.œRú/Âì0{˜8l_‡Õ¤f+8tï²¹@È)jŒÆ:4KìMN;²¶ß{!´„¶BLĞ®•—¢ıÜ¨ª.®ë2j§Ä¨¥'õ¹eı‡Ìëd@“ÍÙÆÔˆ-Eta±Èâ MåÌrîÏN¬wà0nbùÚ½ş€ÒÁ±×g…ãÔ™¤µöJ_êÔÉ(Ñ¹èÀóİJñôk€uD³¤RÙ@¤¯¨cì dÄô«ûqø{¾×/Ùõø5U–®ğ—µ„®<Ô™îYpå…•Ès;ÆİBAq'¶÷ÍšEÏ`6@¯ìjŠ¾?ÉÅ¢³ÈJYÿTTĞgZ´~Ë‰€4ysˆF´gš»ÇS“7·“R¼ o
+=OÁÜ]04¡,?!àİøn*#š–ø€*¡=ûP3=.ÿ’4à±c×`îy3ZÔ\Ä‡+:…Õ£@;­?\µNze@wMdÄA…µ±‰(úymñ	aà²jı;eøÁüŠ>EC­1]v¥Xb à´-µ¶h¸L	ìOØ0Dÿc*¸@B/model.layers.0.attn.v_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*+Bmodel.layers.0/attn.past_axisJ       *,Bmodel.layers.0/attn.query_axisJ       *%Bmodel.layers.0/attn.oneJ       *.Bmodel.layers.0/attn.batch_axisJ        *• B
+rotary.cosJ€  €?  €?  €?  €?  €?  €?  €?  €?@Q
+?jNs?˜¸~?<ß?¹ü?¬ÿ?øÿ?ÿÿ?3Õ¾ì{N?¥åz?ù|?åò?°ş?Şÿ?ıÿ?&p}¿W/?ït?OÙ~?ƒâ?ı?µÿ?øÿ?0U'¿±.š>§Êk?iô}?”Ë?Âú?zÿ?óÿ?,<‘>Ôr)¼@©`?Î|?®?Ï÷?.ÿ?ëÿ?¸Íu?o?¤¾2IS?ãg{?Š?4ô?Òş?âÿ?½ÿ@?»t¿³ÌC?êÀy?_?òï?eş?×ÿ?öı¾æ‘Q¿_[2?Úw?f.?ë?çı?Êÿ?Õ?i¿¢æt¿Õ!?©³u?Âö~?vå?Yı?¼ÿ?dÍV¿ûñ¿@Q
+?jNs?˜¸~?<ß?¹ü?¬ÿ?r‘;Œ›q¿À=è>äªp?ès~?[Ø?	ü?šÿ?ĞX?UOK¿õ†¹>ÃÉm?µ(~?ÒĞ?Hû?‡ÿ?oNh?Ù¿›õˆ>Ã«j? ×}?¡È?vú?rÿ?×>¾Ş.>±Qg?Ì~}?É¿?”ù?\ÿ?èzB¿÷"ş<ªŞ=h¼c? }?I¶?¡ø?Cÿ?,)u¿0>®>Ö3ï¼Ôì_?íº|?"¬?÷?)ÿ?6âŒ¾O©?Ğï¾îã[?IO|?S¡?ˆö?ÿ?„
+)?ëT?ª§h¾¿¢W?.İ{?Ü•?bõ?ğş?¿}?dv?6†¥¾\*S?¡d{?¾‰?,ô?Ñş?"ğĞ>íÇ?3Õ¾ì{N?¥åz?ù|?åò?°ş?ü7¿7Îo?˜=¿¡˜I?<`z?Œo?ñ?ş?oı¿yH?¨¿»D?jÔy?xa?$ğ?jş?¿g¿t?‘*¿ˆ8??3By?¼R?«î?Dş?ş-Ù>¦Û…>ÖÅ<¿c¾9?›©x?YC? í?ş?x¿}?W¸S½¿M¿±4?¥
+x?O3?…ë?ôı?œ%?Û)¸¾][¿æ<.?Uew?"?Úé?Éı?8“•¾ŸÌ!¿Fqg¿‚8(?±¹v?D?è?œı?Wmv¿§xW¿|5q¿	"?»v?Dÿ~?Pæ?nı?³€?¿oÆw¿·x¿ °?xOu?ì~?rä??ı?ô>Û¿&p}¿W/?ït?OÙ~?ƒâ?ı?,j?æm¿RÇ¿^ˆ?"Ìs?ZÅ~?ƒà?Úü?*• B
+rotary.sinJ€                                ¤jW?>9Ÿ>vuÌ=\=WÖ#< >O;mƒ:_Ë¥9·Çh?T?ùoK>Èp=>Ô£<İ=Ï;i;_Ë%:Ã>Â	P?mN—>ÁÿÁ= ¹õ<n<“›D;±x:Ï½A¿Şt?×aÇ>ˆ.>ÛË#=Í<O<Xƒ;\Ë¥:|u¿ü?Dwõ><!>õ¶L=…<ŞÖ£;1>Ï:Œ¾Mxr?iŒ?o A>Ñœu=Fl›<Y›Ä;±ø:F0(?oèL?së$?PÓ`>2>=¦Rµ<Ç_å;ì;•F}?}?¦¤7?R&€>Qª£=8Ï<<TË%;2Ó>ê•>ˆH?.Â>?¸=ïé<:t<»„:;øD¿‚p©¼¤jW?>9Ÿ>vuÌ=\=WÖ#< >O;\ÿ¿!A©¾*&d?‹‡®>rÓà=ks=j84<…÷c;Ø\	¿&‘¿šn?,©½>¬+õ=e=qšD<è°x;" ×>LS¿À«v?@šÌ>Ğ¾>iV(=küT<%µ†;r˜}?²¨u¿oF|?õVÛ>dä>FG5=V^e<Ô‘;Dy&?uà¿Õ[?ƒÛé>O>­7B=3Àu<ƒn›;h“¾.¸p¿ä?6$ø>P$#>•'O= ƒ<1Ë¥;%v¿ª°I¿¿İ}?±?#>->õ\=ŞA‹<Ş'°;³@@¿Å¨¿Ny?ºù	?‡S7>Äi=³r“<‰„º;iy>AöŠ¾¹@r?p¹?:dA>ûóu=~£›<4áÄ;È¶i?;g)=·Çh?T?ùoK>Èp=>Ô£<İ=Ï;/V?z6³>Jû\?
+È?ƒvU>>ç‡=õ¬<„šÙ;¼'½?ŸùN?”$?–w_>[]=Ÿ5´<+÷ã;ç¡X¿·V?‰æ>?5*?ñri>Ó”=>f¼<ÏSî;üÓg¿w?(ë,?+0?Qhs>yH›=Ñ–Ä<r°ø;8‡¾d¨?x5?øó5?wW}>r½¡=WÇÌ<Š†<7C?°İn?æ÷?E;? ƒ> 2¨=Ï÷Ô<Ú´<Õt?ÎbF?‰ÑÚ>ø@?‘ˆ> ¦®=9(İ<)ã<*´Š>l;
+?‘ƒ«>u1F?}~>Îµ=•Xå<w<éã)¿`½€>Çıt>7K?Th’>»=âˆí<Ä?<¤ï|¿§~½Ã>Â	P?mN—>ÁÿÁ= ¹õ<n<ŞÎ¾2½¾|P*=¥¦T?¥0œ>şqÈ=Méı<\œ <*¸@B+model.layers.0.attn.o_proj.MatMul.weight_Q4J€Ú2ó›Ox½§h]3€0QLjÏIf·½kùLæİg£İÔA$Œ¡Eˆ¬MÉ^€áº£Ï^øaPHWËïw-@"–‰X>RYèr€St 3®A¥˜EF=¦‘ğ0;Ÿ1™eî_®B–³šTØë8b7FßQö³ëW×~<%vk/Ùp¾ ‘EÆSuííÊ
+*4¿æ2îØ>z–Ee
+“5¢qÍxDJê?ıƒ±ecÇ¤ÈnUÀŞcÌ#ï„A´~ñ“°À%Sâ#€’è[1”ËÑ!wƒÏe_h÷…áRÆDY.É±j¥Pİé¨*ƒúÊ˜Jw	‘Ê©úôGÇå—áşíùZÿu÷ôÃº¨šÉ‰¡®E’÷h™Wã¥Êƒış†Â
+1wÇçyÜJ°kDú ±&‚«­uë¹zãúkÃBØ½»ÊÚ >ôº.ÒŸr!Ua“/LKQÁ³Ogÿ®¡¤Ì«yHí5|åœ§AĞØMƒµ#}E¥Ào`îb¸µÓü²)á-1º"ù¼XÿF.qµ$Âì‰Áï,C4…	ƒõ· [n9"8GŠLêAV]ùI)Q¢/’9/Ûó}aĞ-_ µñ›®Œ\G2Ğ™c7À©}ÓœôÙÉÃwr½°™t6ª¦\Ñi3»ÉŠ’'-›Ğ#³$¡^”F¾¯§ÈIT„ŸgGóK{s{õz¼”“¦¾ë>µ°Áú¯_@–VW¤¨Â‚||Úq$ßÎ“;Õ-¡q§(|gU–R¶üÈ@z¸á‚,çàpr;ıH’êûÈiDcšáæ?îµN*ã0	™-¥¦¢\!¾„4LLHÀš4ymfæâË8]ßW•Ää¤æaaå RôL£ø¾ó¡Õ·["À\˜Aà½Ämù·–1+¿Ø}çjšã^kÌ'¸%ù4§Kª2qL¤}Jë9t0„Åº>Aq	gwZİ?5Aò¢T…q=hëIÀ[f]V˜é»šÍ-@Gs'kÃWƒÀ(OÑ¯7r$šåæy­(.³#ğIç%ø”Îâ¸fæÛç0_UMÊÇ¡ˆR?u‰;Ñšäƒ‘—HsØõ´“ËÜì{ó-ú‚;äT„²Ì@Öl~4ƒó‘Í/àa€˜±ùæ¾Ég(ÅªÎräi±Ã²†wğÙ=b-m—¬ß>CG(vúúÛåˆ7:°ÊŠ¾ zÆ{
+ğ
+w:ŒbQˆ‹¶¼QˆÇ{€½].á>J’ òY *›ìÏ¶¢‰åJ7¡§e4´õ™K[£2tAøS´©Â>B9©ĞWÏáÔ=¸r<Ğ7R¸8O1\AÑ‰˜¹ï¼ôµth$(ˆĞQÇaÆ šÈBÆ[A-^@û[ğkEÂQÂ8h\ô…®ø²ş¸›hó2\÷V·+¹Îo&û>uDšRµè`h‹}Œ*„IàÔ_‚â¤x—j{ñfPsíÇV`û"«‘<ú³¿(öĞ¾mäè˜i(D¹™OÖcz×MñL¸åQ‘ğœ÷ş×A^†vİ=RrŸ©Tûõ&ã×Éøû;käôS¨Ï® ”ÎJ]<á\îŠşµ½údÅ†;_ñ-FÊ+=Ò°Ì<¿ŸÙ¸¹nè1˜Ê²_Ÿ¹À3$±.ô7àÊÙŠ†ÑÀı½»Æ>ã²9³İQ×uTñÇˆ^©ÊºP-D-]<DÇé_™‹í¾ØÄ=C)”*âúŸâ(*”â3VÃ‡œE%­'ØÄùˆ–±-Iä)ø.(‹µ_‘Ëoı79ê+4Ú]ä÷Tµ,™@Ş.0çª¯GMLŒaæmNÂzğ¦`Põ©íô¾[†gŒ¼Ì¸ ,w¥!1²÷‰xE4ä!¸XşéµxŸÒ[: (ŠåªÊ"xü=¿Ø€|ìYŠ°§ı˜HÊ½Ëà"½"Ëœkn/„:Ò^Â]Uô^&,ópÉ=‘F–·Ö‚<m_9C³"L2ªnşRòı	Àå~ñÈ½JCŞ›V¼«gİ·ÿE²­>²í•†!Äû«½«¥}åŞc
+ë½[u~˜ÿi´+Š«Ä‚ûŠ|{Ÿ4NJÚN[‘«·ò!Û¶ìk8Öƒş¬ğ£¿}R¹¤ùL`|9"…iÎŞbˆRãs3;¡¨…ìèI4&U”J!3*·V½j,‹˜&]à±oáKæšÎè™¦½à»Š"eùÜ)‘3û§¯wç&+«É¶Ø)@¨ »šqAî,ºvİ•]÷°¨4¡¢Uj¨XÂê,ôgğhÏ¿­Åãg€‚²¥L#Ü4tóòAHKcˆ}A•»EÉV­Œœ
+†Pš—xT(Iß õ Š”‰WWYå–;4İ1¸4«N¸æ¸²ü-	¢êaÛÎp«vPÏ) ´¢ìTéXá#·‹²ÑïÌ³‚Ò'ô8¹åÈC)4‰^CmåÑ³Dí|FÉ&ó¹<0†‹`âÒ"øJùV¦-sTúºôóÈ®ù®wNLmL8½†çÅÊº©JÃŞS ]³ô -ğíx©À@;‡3
+qn	»›U¹‡7¿iÇvÉÑ­[œˆéGoŸ}x÷x`‰ª
+&Ö:ıpŞ?ûöÜüíıÿÉ˜Y@,N²a3Irª‰šj½‘ì­Úgnî *¹€B/model.layers.0.attn.o_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*9B/model.layers.0/post_attention_layernorm.epsilonJ½7†5*·@B.model.layers.0/post_attention_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*» €B-model.layers.0.mlp.gate_proj.MatMul.weight_Q4J€ ó9Nşæ+@k’‡†Lÿ0óßSØqÀ­y…]V€%+vèÚYóØ]nÄõ¾!#†‘Ñ}5…¯·]¬€W®>YòÙt)¦>+æ%•ïK+ôXy8o*›¯$E<Q›#kÛßNÖhÅšŸßîÏ5åKxs§‹†v7ocjñgÁÔ{«®
+şÂeYEÇ?ÌèMbßMm#ÚàÔg;Ï"qy]Ø¯¢Aà'&O Gk<™k	ÇP"¶Cşı]_‹Qğ¾Ù™„wÊ1GİŸà	.šú®\Ü¾8À2!ê.‹~A!İgÅr(eŠ-ÏYPÓ6£ÌE/şÁRøû¢Œn°y»jy?Bà…iA°~õ¾ƒ›î	aÏ9Œı·ğÇÀá„gê"1@/Å¡·0¾GE³›ç‘ğ×Öi„ôâdG/|Yrğjv ıÑÔ*S?=ï¥È{r#”#ES‰cF3VáI“EäB:…Ù”p|—hÑlJ4ØâP»¤şá£A¾ˆIğ‚»MeÏ­uê¡"lä½ôzÓ$9Épˆ•Š<î>*„AHÑĞüh6—­sÎ`ä¿qğíªÁ{º?Ù“•Ë—60´èTúÖøî¢EdŸêA"~‰LÓËÛ|‘HëIÙ@ğ#³¾,è/÷ğ…ğ({o„@[Å|q,¶[;şşÊŸàÕmâçƒÜ^ÚB•ã¯E³dYß™ƒx¹36‰nWu7…jFÅb¾Yœe®lF©_5s'¼îaVœ÷Œ×dÉée¦Ú¶QîN3"±Lsy)¿KÍ±’Ç2î° †EŞìƒvº±ŠÌæ÷ˆ i„VÍ_^ìÎaƒº¡G!ØÖ=ìW§cø…^ş¯%ˆº¼c^Ôäék¸îÖ<ïq°}l«ı±Hõ[òä©õAª¼ó`®a‹`¼9İ!*¬ä5™;oŒ8ŸçKÊÙè&£Ë2O¤'ßzµz(p:éu.ê/¸^ØÁ–LRf7·±ï^g¯¢È¯N£Kç}vëj¶ÑëE‡v3×OĞ§>SË]şÄCû–³C3®§cq¶,)wñD§>P£Æqzß\}ÓBs&³j˜ 5¡\ºaáŠ©¡Qa¹‚)†a^ªw.)mµhuøÚhëÖÂÜ…%¾F‡ªß+eæa‹×T>-»™vyˆ"2—kù7äuòşO<µ±mo ¹!A‚y.Ä~!m!Y h»³EJÃÛ8u*âTF¶şÜz¡l¾Ï‹SÄLÀ‰6úÛj¿k¦´<÷?bà3åñŠ4eı$AÔÚ§¼_`%²¨ÉÖ ©®ÛQ éJIİ'Ã	´.ó£½“¦BàXá1Ô½}ı5
+&‡F_˜V^cÃú¸]V(t™ìîñæò¾….s–ì¹·YÑacrtêù\móº#Ù"Å>Çœ	İFä×à€´f¾³eQzLQRŸzhŞ…tşûìı¹éÁ,/²xk®ÅGoÄŒı›.*äÊwšd¦küøCÇÔ›]h–°Óâ´gê?glñ‰ ³¼]rÏâ¯öj* 1"WRã$˜Ùï”q)ã™/Læ¤ÿN3Ìø„]KæÅ[¤© z`\	ÙMÊuë­QèÓ4ÉšºÿC	æÓsò­?–ßMÉöy¨ùV…Pù èzbÎÙ ÎÉ3¿dy+¶ÁWõ@XÙ
+ã"Ë\€üäå`g¼×…“¢Ïˆ•÷môå¼ü*¯p´á,2XÈ¤oä§rsVØ#R<?Të1¬”ÎlŠæ/¥O	/ä£¯‰@¹&RA4×‡Nãïs¾$zo›Øø¤ïrrØ[„MşWIm­İu¼c±¦ˆíhI4+€±‰ÅjÒ:l¡¥»^È3ÔçÇäÊû;şù:ºüã‚øïl„ïÇ]×S—ÃîÜ«~Ùå‡_èªØ…µYEDŞO\A t‚Ì–¶Êö¦+YD©×|=9n>1òŸaÍ#œHzŒo
+ı¨‘P‹§55íP|Ü¡
+2_ø¸$¦jÍ¸éèªy$ÈıjÖÈ]K´™Ä¡†ÅDS¦ÿ7ÈğÉ8¹°¦×Q0ÔïfQ$'tŒE©’2€¡p\¼£Ö¢òş· ;ŸmàpKÅ`Œäšƒd~5¬zÑlí+‡MMRøWÌÂ#Áô pİ¼Èğu‹–dÕh&şt¶ò¥*ÿüÜ[5íì»>2²¸=îÂİü~³e.Ylµa¥w[[(Ö³*ËŞU….“ò„{@»Ò”Müö†A1*dŞeŠÊFî¬hO`ÿ¾·‹Ğo™kÍÈ:=¤^#dâÒ:««oo6cLÔ?lw÷qä†òS~°¨šW‹qfÈé:Š[Ä|–s"Q@½ïLµšCÊmİ³¦ŸùA“:;7©¤}G­%áÆõCM‘MÃ,^í)ÿNøÀş"Z†#ÜÚĞš°ÿè2Fó$sÜ»½¡Ä”¨}øÙt7 ‚ÑÀè8"éŠş^ƒA™u3¨ÆøM½Àï Éş£áó§!¤{2®gß•]Ïµ_º0‡†\²ñ:â–éw::cÓR-^5[%ƒª½¡pá.`¢`ÔLÄA×¡`Úòü*ıwœp÷.±¸,ı'ÎÏ‡[×Û‹æ ËìG‘TR/EİJ\xëÖ$c*,z»£î‡VN«€®á ÿ ?D‡ù8©ÖÃ¥"Hé¡øx4µîXV!_Èv˜:êƒ†ëÍì‚PZjïQ@„±PæY«ÍÖÿÄ˜O:íréÎVÓ'Ë~•IÔ ÅùaåÏ¾J&HfT`Jîİ².FMd P†®³êôÕÑCæFßñB%ä·í€•óçœv?+g[5Şåd{6\MvX	 ËqéËíbETırSÙl’«Y26ªz0%H‡Úb­sàß@=ÆÛã‚»¡‹KRYR¡ùY\öü)hÁ½U™îã”ë·à,¢ƒÒl:GìQÿ+ù ’b\-Ê ;Îòáø“×ˆe¨p,:ÚËƒ\ëØÃïD¤éåeúÉîËÚ¡;UÜ¯êyYßpn&İ¡RÌ§«nù`šuûdk7[	¼ª@ÔP:TõØğ)µî“§Õá*6Èú¶óz ¨¨h_7ƒ¾¯ôfè™€£®ÇAq¯'›€[Ó¢Àáf%šdˆ*;Ô¼1ò`âÛT1Kô¿d¢4,˜8hdşNãË	.ûŒ)Š’\™7,W5˜wû¨»±€á5&¡o…ò·/çc„s8¡§AÁ` ²É=ó¬J4$ğ	Ø®éõ«iD`5•ë–-{ècF>•ŒoëóåVŸ
+ÇkCİ¥ah:“¨d”Ü	P¯UÕuî¼…ÑƒTtê^tò:÷æƒÁ^Ş:3„]VXPe‹|2Ò4õ‰õêÁ’ˆ¸”æüÆx«tDú’õËsÔ@Ş_ÁléfÄ¸AÅú…¼“›J˜5ƒÏ© Çğ¾PGç’³OÑ‡r­©àıİøåÈûÖPD)+®ÿİ$¶iÓ¿5ûÔLÉ’øu¸A¨ ¼·çDx&a…VÜtZ”3¶²6ÏTÇ˜]ÖsõÜÚ_àÆ³¸çœ~E­3œÏœı¾>”Áˆ¼b¤v0ºTGWÂ©òá:ùÛâÌ©zı\Å2i³ˆ]y‚tĞ¦È‡ÜKÆ‹JäO¥¨ßëfÎçîñ/¯L½b­8â<œ AË·¾ºÏ6ÆïŞê¨ÂWCáâŸ@ÌÔÓ|#µxØônÂ·?Dö^f¾ŠïNò=‹œŒk¬œ 4A4&†^7fî5W‘Î3ÒVjÿ¯ˆØòîh=­µåõÈÂø@UæœÉRJ¥_V¹ç¿˜8oĞ)„‡ı¹Çw•$ÇÅv¡èhÇ˜Aş¯¢ß7Š=×¨Ï§šÒj8mğ@ÿ8¼q‹ß´°'…ø®ö´¢°¹&p»§Ïr;9}Š]R@½Ç—»Lt¨yû‡+5?,ä³5’sCªµ²Íƒ|Ô?¹ûb€ş´
+ 5ğ?gÅµ&Ô‡d[í«¬9cSéÍ#Ï5\ññòFä'ø4–±<y°ú´s6˜„·„ÈM´>û;md‚øô;Dbâ®P¸Q:Áö*+¶!6›ç`áÆÙV[¤•8‡8eM¯?Ó2‚•-÷YÔî‰/ ´ ½J
+wUâC%âd‡•9„­z¥±™OÌÿÈÌZÄU¸mª¶˜^
+töÊ$¼£XÍ0e!˜Ä^ìZT×í+,GÒVI²ß01yK¹¿ZxÏã“Èk9±ß8‡ğÔÆ-«á«"æñ—é‚%hf§—ú9í†›%ÑÂğ®Ëª/W‘ªw’ëdgÿÂ¥K§»8Ä¯ë«%Cl‹)ÓÀè¥CgJ¬ùQB‡úì¡Ì3#»@¶6x–øØ;K¡Hpx¯ùà¶-Á3µÔ§nrózü*€^õN ¥å®„Ã¨Fª•+¾-DÀ.˜_/’ÉÀèãÓzÏUî	T.—ç×‹¤æ„¿ƒ‹ŸC‘Ô†-?#õåÚ¿útV½tf#†Ú¨/‘­ŞUp½&¡Hì”dS[€ı Gƒ2:ö‡	Vf'CÑ‰õX†A díƒ^/¹*Í9¥ñ!¼Ì’MÆSxTG>s&`iÈdÅõE›@Ö~¶dj1»íŠ6W½î×($/áDheÑÜşqà0ßÖÉÁ3=WL_ò½ÎŠŸ<'ş´Õ'*Ğdû’µ6bÏÚl~?á/w§H¬7}~l
+bNYFƒjwn"õ)e¿É«M<êæ6í¼¸ à™…åO½Ç ``¸åt#€–kF}Êx$Î’Õw§vø‹&æ„å:ÌıÇŞß{Ö"ÇiSª;E1{§Éöoœ~•ÿÊíÓ—²ë:ñËËßåõ¦…øz*©¢HÀÀàUd]Fô²	:@aÏˆüŸ°ÁŠì{kãH’d')Ü×F¼÷¤~‡~¤Ãñ×[#R‡V}ê9C*Ä	‚@{* ØÖ¶,ó¨¿YÚ—‰d˜ÿOßï©ËÓsÔ#´…Cÿ.î¶`6f–*«•	ÇÖ¡ûÿ”bIÅšÂ2ë¾¯	V39¿2 ¯<Âæ£û•áB"äÂïåkw´vôà—Û#{@"Ğ7E0¬][Ê$XÅï€³Ş*±@]0†‹¼£F¦Ò±® N>1M¥ó&uŠ*?©{Aûã©ªÇÄ	ÙÊv7‹ßœ»ŞóZéç ä¤aeâ¡UQèOAó8ğzŞå†“zÒŒ S×%J6S.ERD¸*»€B1model.layers.0.mlp.gate_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*¹ €B+model.layers.0.mlp.up_proj.MatMul.weight_Q4J€ úG’ÆÌâ˜Cğœ,¼çxdÑ>ç–rĞØ$¿F–ÿÁÍ}Ğ®Ÿö³%7FcIíãš«Á?B´bæ(?¡µŠ§¡5¾ê6¶:lµ‹ÑçwŠÛKg/Å3Ø°BgèÀ«Ë¾0ëÉL¬ÆØ2·uWáeË@_É#Åtlƒö<A¹v‘ºy2P	]±ır=Mşëu—NEÑëa/¦Å¶Ù_;T!¦ƒW3=“ºe(¨i?™Ğm;¯Uì;sÌ}£~snägĞÖAæ7º¢˜íB»¼µöy	_â@€Oyì¢…´åáÏs5+d.#dLhg»ô3ê‹ÉeEˆiR»0Üë²œ/”ôİn‡‚EZxŞZû¢ÿZ×õähŞ‘ıºœóşùAÒ1OÏB«DÖ#:ˆáG%d6‚µ:‰¸“‘¶¤Ñ|¾‡ÄåĞXŞ;ÓÚ$ë·™2m²èû/2’îhİj[a«'7¹ŒØ—£LŞÖøY S$c}	xñ¾à€ò›?.Ôßq>Ù–E:Û’¤çš'ük[H“LN `ºĞ¸Ö@áøS• 
+ş~ù¿\µÎ9g¹¹°ç°,²•1š¬ëãÅ³ÛçóÕNl:À‘1	'¼Ù-Ï;gÓÑÈ("˜§Ù=3œ3°èº°®QÀ¡j±Á}µ¬rr˜:£²IzÏS+½t*
+pÍáM]¦º–LÍ“â;¬IJÁG®[¿Á\4!«üÜ
+7§!ÏSÚu×;%ïô4ƒ=‚ş×ä"Iq {·»¶ÙÆÜfßø²JZª3 <8áq8RUV¼!ÂÃü¹Ÿ…#}næ'Ë× 'Ñ¶†èÅÍåLW4ˆ›a©Ğ8©\åÓ ş8½wƒš;åü ¢fÈÑßş|«ÛU… –Ür4Ÿ5(ÓÁª—ØN7JpA9òüãÕ?†|”¹Üf ª-âBÙğÊïÌzM^ûğ¯$Z?Â¥¶ÁÎxn;Wó`ROEl¶q­c¾ÒY¹Æ9æ2_ÇZL<sçóXÑmG&‰Ò"/c6&%1óTìk4·­Uq×²l ğGâ¤¯>FmM­€VÏT‡yjœš;cÕi"Ira×iñHNœ4ìJ!Àz8†ñòç©‹¢ˆ?’ŠPÇ³\DOˆ²DYâÏ‡MG2Ùb2f@ãÄØoWµ‰Û¯s&(æÁG¢¶gvJ‰^2ÍÿWkDMó»úQÅ*_füz S¸´ÚßwzÛ¾ùÛíÒøâÌˆœ~ßïE‘,*çIù#j4É>´²³äå,? ü©g¿Ì¼âu@D~şswò3å¬ÑøÄ]>Ú"–æ†Š$læï1ŞLÏøÓØî·EéY˜;–Q„R32¨›ızÜ&&JÅôóVÈS]á<4‹Üö‹ñ»r¾"z,³ÿH›Á¬ş;]Ôº/ùbÈIı{{ÛânlÆàÍ>¤°ÔEå$¡ÏÉh¾­ÎîÖã#Rì9n7‚Dm\7MAP+ÿ_úxuù;H÷¸Øx™‹?d!ò¶N‚åCtkTÒ`ãAŒ–Ô›Ñ¼&<¹ƒşUE'	ÖyÎë³ÉÇŒÓj€Eåi¾à•§a²·Ğ-Ù¤Cu&‘.¤X²Ã› ş¼x¦Æ=ââ[ñÚS¡{óÇºÂ-6¶Èb£ÀQ‹3Ü X$½Oº§‘2tµÿ–±ÛˆÑò,.åÏét2y¥Û¦æw&³t¥Šv¯l¢p&G')x"ÂDÔe?D "ØÛÄ°¦ëêäéVµ²"àòe>`4õ®dïÌ`¬(âÄR;u®%Ú¢Rû¶Íá¬¶šÈvbXbhen¹ÎĞÃ ğÔ¢Oğ˜ª÷{r.»Pcl—„È&èÚƒ=×;Fá·T7Ü£¬È3P™/.õœ¿Dİ:]n½Q=IYawjhDRå’6ô=]‡É"¯~xêbïsøu¥ßgs\r@Ÿ_*V´Îr#ód	…úwPªõ;Mï™ŠP‡‡bšYeF£óŒL×6¶œ×?ìF†úQØd\} _('ª†]z	=…œYp­L©]€72a@æ“Wei\À£  )Z…ª×º½–™oLÔéøC¨Àd™4ğˆ5œO?ô©V¦¥D=´Ã½lJ!«I3z–8E¾1CèHm+q«IÔmõñî? F6Yr“½Â9,“ö¦gPY;Ç@r·¬$C®ê”$|ú—ïBıS›mÉó_\@5Ã¼öUèå
+½‚¢´„¾îTèà)©WCLEA@ËÍ#ÒJëôî¢—†IêÇ$4\ÉÇŞbíM`\·ïò„'Å\Fİ"¹f/òWEósÈ^Ub9aÉy¼(èDëÑç2 Dê°]G•~½–à»>[Õ••¯z%Mâhø´?ÙÃYEˆ¼¢ü°3tô
+—aÉ‘ÿ|Ü&„wëšé~”ıô(­-²Mšş°ê¼aİ2™G7 /%diŸûq‘§Ä7GÈ¬!Í{ÓŞ‹‚â%-•Ñ\ ÕŠgC¤ŠG|P/ÊÎ‡¢†ñ@@À|:!BfÎÀî«ùÅãª²ˆ›n¯'QkìëZûBÜäåk	–O7+c¡û
+Ù&Ä“ûŒuüª-ø0ëCá
+{7TˆÄ[Ö·İ¡æõã²™@.ŠŠ<©Q
+<L°ûeÑ €HR«´M<¤ÖIÕDø|\ŸïÙ“F´¿èÂíJ—áŞùŸT²@™ç)ÉyÂ¼½~0bÛC>öƒ£TÆ‹‚`‚ªî$×Ô—Æ®VÎ ØëGİ¤£õÆ0^Òn¨ İ½/Oş¨RºçÅ`‡Ğê‚f°=¿v1ËË¤½/Ë·ór~•£E‘>Ãì‘G0!a7Mü!—¹{7;.hjÂ	ËŸ0æ):rOu+ı#:œ\M ,(ø4.ÕoøZã´œ2ĞşÓI©3(¯‡®Ê=ŞÜ/L­ß«†åÑ*"GpÀ”ïº$ÌiœÆ00j¯:S€;ƒ2ã,|XìúBxC?Aªyl‡w‡bmÓİõ%©Axª©Œ‹;ÎØA\ù¼:ë¢­¯\ğŒN_‡²¥E:ŒÙÆÅì'îıkÃğî¬!ÄÓs§N©¥a®ÙvÑë–—»ˆö­zC7/î²ñè¨mp¶ñAËœq°­¹³7ÌÊÇó
+Pš„{öÔ¿Qj0?n„eq|ä1&şª:/Z*=ıòØm?ß™4Ñ‰=±Æ@%¹¼Mñ¬Œ*øÅxÙ…ô,ÒÇì€š©ö“*ÊCÇcÛ¾½œ†.‘Ü¹;‹ò–^ÙIèJìĞ4¾Ló£:0F(ºÛûñÛŒöF1´k[Â¡êÅŸ½°º.•Ï›ˆĞ…SÆc:<~BÿÏúÃEX’<Ğ­)OîVk9-cvs4K<ZÂÁº]*fhë7Ó’0±‹û3½ZV·#½YÑbÇ¬8v›K)~ÈUûİşWùŞ¾V¸äJâëK¾èbºv¸U‰‘P#KÔ Œãkäv„Sİ&qııU	Ríå8ü®ã”€³Z•ÍC3åï‚us•O˜y¦›&á®ü1!9;´¿îUPşğ·ÎŞà1Òs÷€=|œgı‚B³Ît[\Wu
+P;™MOø÷ó‘$-Ø1ã·sw…›_]3§wæ;N7 J+ÄßÕ²Ì@6`²péÆã"Y×ëj†b§|I±"QÂºÔa]Üİ1rª°3ªY¿Kº8¥dÒ ó­SÑ5òv`‡:2va;šŒØ”BNû}7Šg0¯9³W‘^Bíœ|^¥r3û@°¶Oş«a©oà¨ù¬RìÃKù§5Õ
+­!“•äd¾qˆi½¨½2UÌ„[ìƒÏk•‡ÊÈ­D«òõq”4ÜìÇ÷XVõ—JŸ^ã8G«yº|÷ª÷µF$W^{3Æay×øw0Ï¹8Æb_Ì(sÃ“vb³áˆ|çáÈc#ÅÚBêË_?süU¬üĞüÃde¢m^òcñEuÙS=°ÁGØ -vh¿jc•=3CQÖ%79’µsÛéõ~¢·3>BâM„IE+¸;éç:îÄRÿ÷	`ĞùD»Æùx(e¼ôÀ¬¾eÁì°Pkô×ôù¼Ûæã.BÂÏµPğÂEÕøœŒ?·×Õô…¾²…ËHÛasö£Ó<E„Øó€Ã£¤
+®‹”øè|¯d}Çv‡bÂn'Î›Ê¸-*o8lñÀƒÎßH(ÎåAÉ»–x}ú°İ-"=ˆ=ÊÆ”¾±¨pZó­ÍP`m¨½8¯$Ò)~g;àîøÉDQçµE-˜p!y8}  C–Ã›ÒdŸ]n¯ü=|“‚Âg+±«Ğá ”zÅñ¤üEÓ?%é›ÒÙ$²û3_â&ú‘”b»C“J» )~F1VC<#M…°n!í+Ñ“× ÊZ
+9ée}ã„bÕh´±C¤)çB~ªuèƒ4€³F[¤Åf[ÿìí3Ú	İNY¶û§tNª£¤‡m²E¯ïøÕZé<M×”ı7Hlo¸í‚°…Ê×bxÚÚ~÷T<ËÏzqµ]®¨v¦üOÓ/)/UZö:³5e¡‹f}ùh~šwfµ 4^º»*ûökcäÖ,âCÕõL`í&K>„Çıg©WÛ¬=TxRuÃ9	[‰! sƒån7©ò¥¸+L&Gÿ×ø ²€´Ê®
+pœª$S'Ç”(&f`¢×m.
+cwº³ÆééŠ¹yc1ÕBô
+~“0õ¤g]İ¿Òç¨’Ì5=üÁ¥OÏj%n÷BÀ§¡¸ÍËİòœ÷$¯›^ÖÍñ¯£‡™9†IjÿÛ¿x?DU¹‡Ÿ¯**£c÷b.¾I=™¨KÑ û†D&?ë7 +¹H/o6_œÔ²¸€X!ıèF"š©ÛpYaÎÓ8‡­ÌAy˜³À"lzğªë6­×‡gÀ¦†æˆôw¿;›ráØD'éµ+L2nÃü=½k?7}]˜f$·aÅ@ŒGBúºÍYERù§òĞu°’,r‚Zÿ:$!°¤¦—ıYíMÊ‹{sÔëÌNş0[+05ÉKq‘ÚR:"úsè_óúğ@èÏ(‘BvÀK‡lb£ö9a‘á]5AM å×¬$™êéhŞ¼bÀöğe.ø‚ZÕ=¢ì¯¼Ú¥ü¿„«é}XRvÚÍŠÌtQRıJıY8ÀG÷-PÌBÂ¬Ue¼ãñùı ³NUÎ_Õ8\#Ïç,Tà?WGØpEMËó½rå*l¾ôRĞŸvos½*¹€B/model.layers.0.mlp.up_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*º @B-model.layers.0.mlp.down_proj.MatMul.weight_Q4J€ `JÛê3‘GÒì%˜?¼Û1OT™*&(7˜§áSP‰Z¾él %xıR—nø7í¯„|èÜwmÓ4â¾ñÜ…~HQår¦ÁYõD%ğü5uôçœMÙdT3Ö«"x›Ø‹±Í]Í>&±¬˜¶EìøäÛi¿®Z®9µ?”7ÈiòÈ8uÁ)¿UÂÿÔvä:+}7Ü)â6+ŸFèA\€
+Ãã¡é™&á.dF›eÓ®Ô·o_õ"Ó¥B‡”¨ı$St ³“!a°ÆqäTœ¯xèÿ¥I7u–•¿‘rnW³¢”*Ìò'é‡Ë[në‡ë¹<íPÂ\B^÷?ÏFÃ©œ"­³\
+^Wn3úy0{éşcø
+TÁÒøÅÚÏDĞu=¹\İúemxuÓö'ü¬Å€òvÙôc£1Ã «=ûûO„
+oğ×\ìmwŠA?Wbù;’#ŸÏ¥¹•'kò–æ½d£h&Á‘µ¬=µ¼â@¿†U‘ô\‘ÿË7ì¢KTÏÛÿH¨Ï¤÷wª, 9mõÖä„›IÅ ‚ú£¸'´ë,	Pío¡zÂ°-TÅiHğq ‹›@iLP$÷¬ÿ¡L3ß£&¼35béªú0£›{ğ”\QrlL¶ªß{h5&ˆy_x0È3öÆ¯zH<qf˜ñæÕG‡H™’/lÉ¬ÙŠãØ5ò!ƒy‚µ)	V.1æÀ
+÷¡Âñ$V˜©;k
+Œ|p4ƒ9İMåÈ‹,Eÿº]s­•"ªlV'!Y/·B*'ËôÃVŸÊ'Î×­¼àŸ”¢‚ZÀŒ_5X‰¡uZ& Z>ş›Ê^³hÀG$*N¥ÂZtiÍ=ê-˜Ü^…¨«°7¤Ğp¦rî¼h’e†4üñ‘I{øØ&®İ–n÷xòÉœ121«'"3y§eÄy«™0	g¦¶¼ÓÁö
+¿n88,?)£ef´‰6Iì&šX’Ë€çúú¥>ë§
+	õWvÆëó Â®ªú¾¯ú“Ísšå¯2VèŸ©‡h‚× ARlŒˆT‚7èãŞ˜Áiüˆªf˜CCĞìå’¢0°`÷€Å¤aï˜Î^2ˆGÿÕªÑl¶ÄüY=V;Ú­P„ƒ6U„—q¡Õ"ÜˆìÃ‹‘Pbc³Z›~»İ¨½:-É"dxI§G-ætÙÛ‡¯£Êk1_±à);5af—ê;³”J‘XFmÃwñİ­`s÷yõ2p"1dc¸~ é'ûÑÄjË»Å©Ä²İ·-¶H²³÷È3½à}*û±ÂIÏá¸qOâÒvLËÈŒ~ı‡È6ì´D¥ÖC4bŠ/S¾œÏW·–©ãLNgIñ€ÌØoµV_ Rî”kÓÚô¬&Î¬æCïÁÌÌ¸Å2®ôeUa?
+1´AÚf]sïÑ—y¡¬—é@˜dr	±* Ş†
+ˆ	«éçR|íQ¨-à ¤Ã‡½1o¶
+QÍÍ‚y°ß¢ÂŸ+V±Ü›IzsÌ‰ão Ó>:øpS°O9=Šbm—ã/»Zé	C…pÚŠXä¿}T}(vÿ„G§Ö 
+†¯«.í³àûø1Ş¡×LcUZñ…ŠŸyö·£°3xİ6pá^hæ.íÁIxw{b= ƒòA|›³
+–àÿ è4û5fÆoAŸ ¡¬¯í´ÕnµxîÏPuĞé‹1‰Ú!èÊÁèYöf°bß;Üã9\¢ò‰ÍÎdÒaÖô§I R2ZåôÃÇı¶0#°izòlµËÔ3ÖŠåô^ã\&œöØ¾O¯b4qæŠBÓ&Hhgûwƒ*SåÏAaN7*d»LçÍ¡7_˜¹… Tu%{|}Ğş]cğq!üş½ëÚQw£=ÍşU!°îd¥±&ºÜ­UŞªy­§‘/ ÈÖ÷"ÍğJŸ¤_$˜Ì4FI„¦í¡¤o’CïÂÖİI±‡“>¹™Vî‡@Ìåy@Â±Ğ¶¿îNp³;5hãÀzÅ’¹,1:kímgÂ*çEÜĞ–¯ó³‡>ÏÕÆAuOú1ãq­¼4^L¦,½ÙäÚ»µ(s®‹:y•ëÃ¨.´ –º75Æ/ˆŠ`VS%†„9Û½Ù¥:ß…”»äŒ»Â¶cıŞ°Z‰ËyÁµßàâ>|^Â‚|²ó+¾ªì?‰’Ë«z©¬Í;M%1¨I_OœT&ßÌoc˜…¤vØ«Tù)ºôºÊµ&üfµ¼s¸”®ÚXX}¯K…%ªãiêJùz*…qÛi#£—ÒŞ?·¦'¾ıòº¨qdÆHfƒ¾{g×¿õ9F˜o®€¡ô¯n¼X,Oº~'¯ôÖ‰K‰˜pÃ¯O3¯¹ˆ€ò8%É’•egc!©8ïg'£¦úÔ—Ä„À(¶³¨ÀÉË;G«D@2ÌÖ_MÎKáÎ­¤ÚÏ5vàé\Ş¯å¾›ÉOîDÁÅ\ Ïô +&i½ºß|ˆq /ó(ºÁ·¬È|šâ‹ ½OëŒSì=³zªs¥ZÈ‚¯Şº¥»5œvuô@AA a<ñıpq‡wJš°¦ÿtËHÿ­¨Ÿ ¤}°zØsŒL˜õ? ½]ê%~xSˆÛt‡,YªÏMpLÅ÷/82úÚ–L²nÅc“ª\ê\r~~4‰|Ï«İq^g_}_"ÅaáæAqúóJÌ$U³ø‡³-úİEı8€·µE’Dßiï=•(³eùN˜H”´§'ã€BVÙ—Â†_ü«!õêÏ©(¦¯>Û `B‹aC|Dümæw°"¿ïˆÚ †1•–s¹/ïƒğY¬«š©ò?ì…#â0~½Í< Ijîğ™(‡ø]&V:ø0Oıà˜a.IÀG”S0…¢må–™t‚F3åuëúÏa…‡bi/	Ø¨8?w¼´ŒÜĞ#¨«…Ñ)6Š®Øgº$læáH°ZÍÎ`i{·mR¬¤P‰è®äğRKÓi±‚8÷=ZjÑ'-&mè9×!	7²ù8Y's{9"¡ófnåûW£uGDLÂ\cèÜ:Ö=&1|ë}ñ—D1È´?Ü¸F«Ï¬zîlâW	Ç¥Ä<˜jû¬á&~@>™Kˆš%tëùË)³Vn`nğ*¸0F£æùoRşÍ'¼Ÿ?]Î¨R;Åø%™Õ?ÎŞ`Ëd~ò>§«z|+È¼C:˜Úu6‹„úÇôµ£Öø#\ê ¿¤Áæl"Æl±Àğ¡^Æ¹Õş„à m²oÅÈƒJbù6ÆÌaãÇäÍ6¾ÿ¦í<Àøm¼†$A­ó@.¡==Âo®û)Æ×ê¿1õ.ò.iz±!÷ŞË|ÛÆ®ÎXÛmƒR+5,Ø—cmÄá& -òøÆ@œ“­0ˆ€E¯Ò„ëhŒ¹º~á2ãˆëBji'î·Òµ	yˆ|:}¹/Fç€™—ùè‘òê…Åƒ.cˆDß&8Úå*6õ”·2ØyU¸F‚ÿ@éyÒìuÂ¶S¼Ë°P=]FQüŠÙ’¦q5Ë)—l¸±¤±/VŞĞy`RÉ{@ŒA÷`ÓálB°Ï\|cV5¹høfo™ )ÏjA&Bw²¹kòC¢BĞJJLè–ÅõPÉ¬yB¬˜÷Š(~$™¦j;J¦Dæ£)€#vR¥İè\â…ˆ¶¿IœÚDz`(ŞGßºD7Ÿîê2üÌ$$Gc$bŒÙ@‰ Ë±
+~¢»î±D§ØûLªÚP9g$ø @²İÉoS2ö|j€Fu«ò@÷n.Iù^Ÿ•Àü/ü‡ºa 0¡RM´"Û2u3_«åvÁ_èèÁ¦ÃÈ Ó_Ã6—¥äœİ$ÎÂ¸–”¦®òyÍ1'U¤\&Ê¨_Õ‘İî;iûŞü+X‰KpI~;ÀéÖ®|g3†’¦¨ó½FUc˜±ûjOˆEœbIÏI…ià á£ÁxpS!ğÑéL¢békEğ–Š¢70/ÇÇöÌšEMº‚4Ï6şM¾³mdL¶‰_Gæ+]©7nPQÿÄß…Âş×€üHUzÎŞª¡”ÍëEé{WÖ¦aœ"zÃäø=}üN×ñ/­T	DÇ÷ØûÆŠù@ÊÜî‚Dºy—ø’¦vóèVëşp‰ˆu‘§´t‚!Èú¡@(û}%•‰¿á„|a¥óìH})S#	Ñ"•wÁºlpg¡ïäa¬ˆ(ÈhKÖOMkæÂ¬_şÇ'ä¢Ot“ºø»ú·u˜3‚Ù)û
+	—Şú!5q)œ o”*i©7pÆÎ@0	ÕÍRç§üö.²æÜo³MÍÚá+Å¿ÓIÀ©WMàeØ^Å¼©P€aŠ®Š¹ˆü}t\Šö
+¹êÆùÏQöÎÏÛ=w§®ZÏÏRñ†@_9l"ÏıC€•æOç@ÌZ3ÔÍ‰W‘âûuæ2£Ç ô0V9$‘JåwĞ«R†a¢"³¢QOUÀR'æÛZS¾=dW„›Ù©¤)óX…¦hT™Ueôú1>¯ÊÛvèü–ŸàÔj"~Ç§Ìªã5Nñé<
+yİ›ÕÎ@è|Ê?¤	x%^]Ö¿÷ø’ëÂãmĞuÉNFœ™<„>§¬íóâ»\±ê›—ÉóoÿwU¥KÀ`¯?º¤#R±¨káøaQ÷¼™~úÛg;ú¯,ëÚrm'âİ xvI)”Õ""í¢ƒ@Á:ÿ"Wh–”-­h
+íÃL‡ÔòŞCÆÛ‚X­½(Âñ6Aùb®e8ø	úDôzøaÂRÃÅq"×zÚs7é®ØÏ(ûàt³ğÔùØß£võ´†«e,9jŒ«u—¦uÅ˜5rİ-øÇåe²{oÚÑdÙ%O¨şîJ¬’<	é‰oWñuq‡›ƒ'U(»›Qz4"âÉ(nC†VŠOuŒcmaÙ'ñĞCƒ^“Šï–&ÚÌán¬“aÓIÑœ¼HÇj-vÕ¹ù!‡˜÷¹¨Çxı(ìv‘ŞEÀ&Ü©k-ùÄú"ß¶Ñ2¢ênùİÚ<59]
+ôl}üÏ´P×Ó•5w`oÈüHtÅQua»öuU·ëï”HŞ“):r/ğuÊÄ E%*	ŠŸÛê*-*cZ7ƒÑÀ"f¡	¶xH/[/›U÷]BY®–7­ú*Ü’V]ìÆOÏÈêlñ5KÙü¾K|ÂŠ£=õZÔÜ-8òv5ó$é‘­¨V"oB¿­ÎöP?PMGeòc“v›LöËê˜¯Ö|’$¶W¯AÀ2G;Û«Ëmû¬¶Ğ-«[nu%äQÍ—GE¿­_©‘øs=é„9ÚVÚYÚÕ?E›¬J‡«$m‹‰*»€B1model.layers.0.mlp.down_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*0B&model.layers.1/input_layernorm.epsilonJ½7†5*®@B%model.layers.1/input_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*¸@B+model.layers.1.attn.q_proj.MatMul.weight_Q4J€‡ÿcÌeüWlHLÿÂ-è¯Uï»ïä°'â _(ê‹­Ö“ïâÖ‡[Y¬{V—Qn0è±.Ûµ‡ ÿñ®v™5–	ä¡òóÈò—r–PR@º©†.ü:Œ@=›•‘¬3%¹1o\ä‰íkL“{Ï|úß‹V'Õ,`sÂxV/‘¬|>Ã3*½+!\Ší¥Õ
+¤½³e’M~|€6Ò™ˆÀøŒÒlöéxı×Ó×')H4şgf|7PÂàPW*í)Â2&myÁn±Âäÿo™b˜<añ6H?¨¶xG€N‚Û‘“şì½åF$ëÆó~3˜ıuå!&›¨,(U§ åû’÷–[
+ŞéŸ%Á¼quï @FD¤ÎÓëØ÷5³°`•ï+
+'h$
+5Nmô]âxöèÛtÇ5K™õD{˜Ä¤klïº±cè®oîRrÈ|a7“0·†š@÷•õGíjeUôÔjıä®õ:ƒÒ——ŒâÔvÈHd‘ûõ<‘Ê_§† ò†©œ¡¹ØŸ„†Ş¬Ï05CœvJÔOä™#›â˜-DL|³¹‰Tuu$»áú¹% ÿ¾Ş<™*Ş5àò¯çÆYí€.î¯ÂÚpŒYvŸƒªÉWÄÖãÈE€5•’ó‘Í‹‹ÈÚ[ƒ2Øw~?ºƒ1‡F®7—Š;Ñÿwí!õŒ$Í2ËI‰½]&·¾´€>°®QÒ>²‡ÂĞQ}½|\}o\ó}²–ğÎG¥Ìğnõé§gK@šƒø"Kå„Å»n •J>	n„!ªò«	äÒ6pÎh§ï,rÍ¾q¥ÈÕ›£…îòqxZ™6j]€ˆˆUÍ‰´ Öšî’ÛÆgÌ¦YÁQšYêfWY>¦<ËEHÃ~¾ ìS:5\®§b""
+\ rIUûõZÖ20C%T.j°^WÃ	ª+JO‰Ì,ùÎŞéİŸmD:Öfuƒè-Ø"ŒS0îºƒ­R'äm;ë†ÚÖ¬­{íÀr ÌÏÑà›~'ÏÛœkIÂ¦q;$Á–k»¶S¦`ÿ¯¥#¥şèyq©i{wØ¥”j€:Ş³9uS¤tà£”ï²?÷ÜÜÛòff—!á¤ú·¡†æ\Í›ÿ‰Cc‚oşª\‘¤;’´ÙU¹Uå$Hıãalôsêÿ‹””$®6Ëª¨°ÿò°…{Á
+2U>a±ø÷Ù¿¨Q9Šïîş#œğy¯Ó9DË™wÇr›øZCYD]Á½·.}lŠ·›oIKd EY®Wwç†ÿSñG£ı˜,ô£ï÷Ï‡]æ©v:’—†ÕMƒçFÙñÏ#ÿr“İ Öà·(ÉÕÈò'ç—NTÁÜûÃ5…·@8ıèÊŠRF J¿0áQX
+4ŒÎjÙ%¿ê<÷È‰Ş˜ô®*İƒÖ8Ví¸@©Í¯¶O{o,‚WDT5‚xJ^(âK6¬ã8¦‹”­\NQı“¸¶t¬}ìèúÅ§.àë¶¿Á_Ôò@ÇM".¥pcá¨'¸Åù»4`l®TM:äÈ°b¶hiªÒˆÉ¾CŸÜ‹÷œ]®ß	†~—çyÉ‰]šˆÕZ»Nk?N¾ó¿t#S«#^I[^fb2ÿ&²½7Ri]ÜÚEX_’'ãåÃMAGå³T=1;Ï<f¢°Ied ¤X…g§ÕÖE')OLÜÒâç-øYR6o@¢Ø%™£¸
+L2YÅf
+Æ†´úblFa®M¥X˜ËQ°L`”ä÷˜Ì,_	‘Iã·†ß}s	sâÅçG´»¶•Â§Uˆ–«ZÁ«Ø .`ıÊW«üuÏÆ"ñ±Vp„‹o„šªkÒŒOĞDı}.ûØ‹lr•§öë(ÊËÙ;rh³ B@W™¯L¤ï¥<iô£•îiÖâPMÚ–ö"¼o{çà¿¡C2ùœŸºşQ’ºÒ¶pz‹[Ë¸­—âÊB'šÔ6Ú[ ¹Oä73Òìé¼®=îl‘›ë¤{É7˜<3#ŸèLg"­Å/Cl{DòYäÚºvuXXCoréâBHºÜ¦F
+ ßòÊŒÄ–Óµ[3&•v)„!§"Ó«Óâh~¿	÷hÂ(Ê{hot
+^|_ì^ÿD×V¯|)¸h˜fævj"FÙƒ²Pªë>pßšeUÚ.ˆŒñ1Ò(£´»sÀ‹çoIH²™_¼Hˆq¿jyAğbà2“lübüŞŠ§Â5©8*h‡o»ízãP¶/×ñŞ*„hR˜P÷íÒ4{kg4ÌVÉz¨OÚo!yí| Ñ‡ ¥5…góvüRJş2Ö`öVùœKcaÅ³<n M	×²¿0n©“IuµŸ,À6•ºé*Õ7H¤
+@´“Ï­§½!–¡|ÈÂè“U	ëAó¦‘\wŸ`syc©IgŠå«%Rònß×,^lšD=‚Ü9ä‚¨­Ğ6b¦×X]åüúRXqäÈ;ØmKcÀ4ceˆG"%ö<*=6œ ìÏÍ[1õ™§¯È1ÎI7ìB’sâ$òúÎÊI}†›*éıïÒ0yùîÍK½Óä®§·t\"÷Ÿi $RóşA™§&¾½â¨Ş×TzÖá‹ğã<ş]„ÑG«ŒoÿxI*¹€B/model.layers.1.attn.q_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*¸ B+model.layers.1.attn.k_proj.MatMul.weight_Q4J€@-Ä–ìv”e£r†¥¢ïaØÜ>™`ûŸ*šV.[J²ˆîœiÓDF§#&Êúûs¥]oç(4OK5OÒS€=`SÆ£h“[Gï†bğ-1êĞˆü¤L;ßı­ue­eãc5wsˆíÍƒ8CºÈ'2Kƒª8ø	ë]åè< àd0P“7üXó›Q®Ùp&œ;@u¹/C½!5Ò>mœÂ£-²`_c3Ò7ÇÆppYã¯&†§U½a+A”íùŸ¶ZÆ:[Ğá1Á¡2i 8dUö;Æ-.pñÌ»­Ã¨¬ìÁÚ"f‚ÅÁì]Tş^xÚ;¹9Í>’`ÑBŠ·ìTº•ùyÀFnËRÊáR6\q‚ŞûP¡†!&üÌŞ¥ç
+†Ğ-üJÓ:ªøö)ºoÈ%§^.‡Â.)YÅLWêşÀ  €ª }œ2Ùc·ÜÑyò_¤áH´å¦#m¢¹ôÔyTˆæµcá‹ù\•¬¬‚½ĞèÔ¾dNİ`ã×< ^CÆßSpªçÎşã¤tçú^İå¥‡¾ªvEñèØV¾­Ã_İzûĞ[v~ !‡hÌœ{ïw2ébØ*ûíõ óC"*³µÌü¯³oWù@YSÓÁ~Ç…Ç]#<uL¢´Â¶Åm©y}D;è6;@ ÿ·ü 2ÑùT>2œÙjßğJ·ï¾  €ÈiŞ>>8ìJ!âYÕ¨!ÅßñlıL­Ö1UˆìoY\z'”‘$	Î”ë<¡_§¾M: Úq2ê|PÕğ”öNğ|%Š´²÷Ş"» BÁpNş—ßßéÍÄ¸'‹!)Ñ¬·WˆPV€Æ ]L·2ú¬óŠb6uoË†ÚWBµş÷¾ê<†ÍúX-ÆœÕnÁšÁH¾0F›ÉöÅ3ŞòÒ—ÊRCÍÅÔ@_ñE/è%?ÇÂÎé.ÕeÇCrÛò)ïâ–Èt!Ìu¦«sšåã~hÙı$2²ÒM~“DÄı!]NÔÇÌRac»¹.qêÜ 
+x/~¨ã–€o/à•…h­úw°«Q“àŞ©)¨¿`4åØúfû{<2óf÷UÈ¹Ì$şbºÏ"Ó/¾õ>è>*F1“9Çj‰¯É9AÏøhW<30ÃŞHÌ‚ã .c÷ùÙ[YT«¡Æ¶0ö¸Z«£¤ÿu³Ö>¦Läío:¹åJşæO±‘îã7ŞU¼ŠĞæ<ë¦x7‰ôÍËV<}ouĞbB™Ö’¶jòÛXDUøÆÁŒª*7iõ¯#üCÂ]²AÚZ„hù9"ÃÊSPÀ¹-×£'[2~YöÆ™Pm“(	C·–w-*¸@B/model.layers.1.attn.k_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*¸ B+model.layers.1.attn.v_proj.MatMul.weight_Q4J€LÁ¡<ü-·E‰ô¨â‚ü»Zû§^•n	±ßdªØœÙwIí_IS;•O	_²ñEÉ¬¹‹7å-J|¦˜ÑPæW©{>»vËbĞZ.Z˜¯w SÒ{òrÓÄ‘ÿ¾T·–jsc/¦ÕgÓ«2Çª)åÕg£=M'pj{Åè|hüËÃŒuÌxeî¶ú×‡«‡h€Æá[%Kz<âˆQ)»:O¿æTê`M#}§·ú‰D¦‰0Ot,lÜÙåêX7ä5¯qt1Q…/¼ê$¯Q©¥×›>ºõ§àüÀn•_Ò…åÒŠ@ssóÈ¡a	.¤|ú×GT\ôa?ÆH$¯1UşÊ÷öÂ!Ø¾èÍ†yÛRb?§%B …”<ôĞtBJ.CŒØ£–í4ğ#R¶è!LOó šP{ñBê†4Ërb=…|½dæv—S)ˆNdÑô«ÿüš}·~?0DI¿™MP´ºı8`è½ÛOëŒ×ÄùÙW¥^T:­Ó”É€:<"ÁiÚ(“E®°(Úè@…aÄÌã\¼øeó‰BËLCA:27½>ñ,bûúDÃšåşë¼İ6¥Ó(–4(T•!½âHEïø5Û=ãÇÃ*£wŞ'š,>òu‹±RÙß“ğ‹Ø‘¹±gKµdg-ºKÔ—A1]îĞ'^©‰¸edu—7İ7y.ˆ¹…Ñ–€šë#ì€,ï•oêòÁÛ<&/1Ôş:vø±¯¹l	á¼i‹,Èø«nF[-FñWA¤òz]®ŞòN,|š):Ds¸2Ç'ï|ï²G”¹¿½’úGSÁ$ëu%dCçÂç²F¹ËNÔd¿zØ9‰öãyÂ±#]I‚uÕ™·1/\&·HY¥ˆ‡›ÑâQöáo”êS¡šKÍ«9YŠİ wvã!=¯‚x¨33_d„öğ¡nìó'+uÊ£œ@a[ûˆ'ïTş3“«gBk®(j›HZ#¤î™\Dj­Ğ­ÿ…íu”[~âÜèHµU`„‹÷†8Ù*»§dÏPÕ…fû²Wè-'=¥øœoÎí£@"Lâ1„¶æÈ[Ü¼Gï^=|R
+K£ñ¹yäøúÊ*~½§Û­hÑ,Â8Ø‚ (M\©İ¥ÛsïŸÛ¿,ztİ9³Ïµ™æcğ94ënW@]©s¿qË…§>‘+KÑ@ê"AJ:z·1ŒSşµ6¯İu-ÊiÀéÁIf
+ÂºŠÚ1íñE£„W ûxˆnÀÒ?IU° ZıAMø` šÆì¶W{0úVŒ£È‡ªnMÖvèïoÊZ±³‰*¸@B/model.layers.1.attn.v_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*+Bmodel.layers.1/attn.past_axisJ       *,Bmodel.layers.1/attn.query_axisJ       *%Bmodel.layers.1/attn.oneJ       *.Bmodel.layers.1/attn.batch_axisJ        *¸@B+model.layers.1.attn.o_proj.MatMul.weight_Q4J€“U™JÆ¶P1
+Zwfÿ)¸j›QNÜÇ¾kû6²Pt°r‹ç?ª?àŞê=³§®˜\ÓÍ¾WOJR¾ÑCshPœ×“¯³şÍaøiš:ÅäˆÀÙç{o«,ä×z*¶tşe,ZÙhÍR³µR°ù®^âñrê†ü­/'Øıü+Ò¹]ñÚ[¢÷€m÷yÂÓµ²’Bp4û[03'õç+µ“X: ”fli…å‚,¦öÒ×
+õ¤PUva_Ñ½Ëò Jv- Î-{Jp˜ƒq#ËÍ?`ş4¼òV\l}¥õ Òé?Q¼±W­ëš MŸÜgÎ Ÿ£p†Nkl„xğåpÅî°ÓÖşDd“‡6Qi¿óòèéÃºa#ljÃàÖÈNvÅúÖ…œĞTfHåÎö6“ú˜5ıÇİA®†!åDËBç_²«~©R ©I2ô.›LÑÜÿ‹bíÖ“r¦…2q[8«‹ºñjq?[5#$Õa#+j¿{¾+RY*ÏR³H%Ä`l˜5•ŒªjCü³õŞ©Ë7ü²íÿ?}ló¸§	Nq3eëä˜ÔÀMª=ö².Mh nŸ{ ÂIKñØXŸwƒL<*Tyûb6«ôt›2u•ç=úå v±uréÈÖ°*™\/›h—óh5oùf¥-VÈ#5¯4™U¤…¸`l$"Ú‰kXš#M>ZÙèq~àšÀºí¨$ÈøcK$€h>å¨z°_±5[ğ’Œ
+µuHjL Ÿ÷yIî<#)4‹·“î7f6ç6Â¬å¥O²æ
+Qö¾ârx%:tŠHœiÓ¾o1‡“Ä†,Áu`š˜oœ¹ÍoTT1tàéµö¼÷³é]¨J‹Öÿ'"gd¼š¿”®cvcß=ËdÕ*>e	Qı¯é°1È¾şÇùy¾¯ô‡2ï<‹”-ÙSö‰¦¨ªzÑ«Ê¹˜»Üı·	¤C†…vc¿3•E<¨yO7ªıƒè{š[])dĞÎªÈŒ¼\Ş-‡ñAÑU‚|ŸÇAy¸yt—ø©Yµ$®=y)SõD²À©Á“‹&ÅÎÌ3%D™Œ¯ê™³eš÷´Q2<Øg b‘ğ·ò·ˆvüøäHÉ¬|mNo+cÃ±y¡#Ídà6%ï¾ì%ë¾Ò|ñ*ª—(¼ÍÕÖ'0½Ù  Rûıó3E‚|©Œ‰å¥ W„hEz0ÇägYZ"\÷ó¶•¡õ^¡Õs®ÿó,²‰×‰pôE>¯ö†ÏX=vÔÒK­pÒØ/Yç{úsFz ®4a|I¡o…#Ú€±y°A†åº	o`Ö˜ƒ…	†SD;‰ïc_(hBÚ?ºwòşT¿Yì
+JñŸõ‘ÕÙé˜ı
+,dõ‡ó«É)J“6Ø5›Æqd¬ï³.Î$'ÇÇ4…^Œû`^ÿÙk:\+ÿ³—›ã6¼e¶Û¹20lárl¶Nñd";ò,·3RˆTÕ¶ø‡±r~“pæïeèÆâæ ç,>ÿ¢tÓ_ 'ë¶şÿæ[vÑ_3ÑVÅzôóıÌQ$uZÔ‹Ó™<É9%\’ÄTEõ¸I’‡Måş-^ŸÒ¨,P‚
+¡Š‹zå¬5¼JÃ®¼İ İ›\ÑU[èÍ>ÙØút‹sÙ/0çÉÊ ÃŒ•Ù8mè0Kwk!	¶o¡“˜¿Póa"“ØÈ€¡mÌÚ@((EÔõS‚3OxÌkè¦UiïÓÀ‚(òÒ´Vc%;ºŒÑµ%P—å_ÜËW×‚b-l$W´ ºÖI¸fŞ8ÊdFÄ>¼^,ğIĞÛŒœP¬­"¡,’íìÏû3iã‹·1ß4§m°!¢ÔHŸ·Ft§„Äõ.wiA˜ûnr(¾|æ‹àÔRÂø4cfv¡~Sänô)v0í3¶‰5<ÁÒH¬êWv&×ôÚ”ÆwóU|@`lh†øxØ‹ÓŒ¡E|ªÊ`i8´_ä“,5ğ¼–Ë,Œ‰Ğõ¥·œğÎ]íïo1xh„òÃHÏŠEÏ¿$Ë-À@šß\2S8¿ –¼ï°‡ÉsbõÇ…Ãq©)—âÇÒ/‹Ny0qú½‚¹İäëû««O°z"XºvªªüŸ R½Ìwy³”<¨'‚µ‹‘ñLìùV´ÇÚ¯’®'Fú7ÊR‹Í—nÇ+hÌoÏO˜Ÿ$³¥ÄT®½Ñ¥oçWg€Ëªáåöâ³³ù.˜’'…u:—%iOßY=ôl0B„hV2”ú&§xö>:{ÇzCüµƒÁYGk6€IEªCRlKô2J£(ôj, °=İ¿©lÑ/Á~Xn«ñöÂ˜ê*Ğa¬è_Î/‚+LÚjâ£¥ÆCŸ´29«3ßá¨×*‹ãó1¿´|]JüD"ö‡°MyÎ7	3ÈZñ‡·Ø_?¡ÉİXtO".ñ˜•€Ì{ w¯q}a©(’X•O.Ö>ÊH¡¹a¶ËyÏ#ÛÇ?®Ô±Yw õøv!œo<ÇÚÁœ””û]e¬íª¬°éIh€zA†Æ&“ğùÀy)2¡Ï|Îì3şï®İóş¢œ€"c»“Øi»w,À2>ÁÑÓ®¯8)©ë†Ê ;W‚¶[ş…ÙÓ©Å ³Ê¹
+Ğ—e¾
+i¢]Ó*¹€B/model.layers.1.attn.o_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*9B/model.layers.1/post_attention_layernorm.epsilonJ½7†5*·@B.model.layers.1/post_attention_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*» €B-model.layers.1.mlp.gate_proj.MatMul.weight_Q4J€ sûŸdäípDßpåÙÊBsM“zujò\K<i¹¿â»2ôx(Ğa9½²MfUÊ¯tNS2yñï£n#LœQ­Ív‡eßSØv]ñgœbµì„á÷2qY˜åÄ5ÇW¸ÀÑÊ ÄğÕ´ŒÂd“°HúÓO©©ıÆ6í¿¯QbÍC1Ï.„Y	3™aï:ĞØqŒÛCİˆìSaAmOœÇiFºÇÖıåfÊ’ŞJZ}#åÖB;„}Njî³¯ğƒa‡ZÁR’£ ¨y¬ü"°J;¬ØUöóÿå£à]ğ¦ÀOùŠ„ßÏ±ÊÄXşù¸3  bË€ö¡â‹¬é ª±”€eï‘…"ÿ¹}Šá¢íğıÀ¼µMz ø îÂ;áœÎs°ä×²’Ò5`,sÁ† ñşq;?§12‡1ÿùRe"yªhı2	hÿ©B¿²5;J›ƒ93âw—¿6²ª”/‹`†ŠÂ.gcmqí`˜?F#.Èï[ª%KõŞµ{.›JxºL5v7n´=E¯‡ddFtéÜHŸ–5çµ¬öh×¾ØôĞgˆ³œ’şRéØÙ"‡i;Ø(h»é…’‡à¤Ä”j*ù‹É¹ñ­>J„öyyR”Ö¸”_XŞ~ğ,)"˜ñàEÎt{•ù•µÿ;nÒK±'[#¸¤}Ú ÑX/ê!sË':º­‰Œªn²ğÄŒ½»!\„ØÅ«ê@ˆŸ†¨_óÿş—\pnÈ7ÚaNu”„f¦Úd‘³ÅŸÖ„u
+xå7áN‘Şóù´úqÔ¿èÛo•ÛÅ#Zõôw5üù[LïÍˆ|q$0Æ†"|q»‡’ı¦Vÿ zªµá’=´¸QghÕôvG¯g€d&ÉÀBwã×ØGïTâvŸ7pşÍöşUÚfñÚ³%RkÆÏ·ÿn®’ \»¥V8DX³44¾xóCËˆm „F-GyŞ¨X‚3Ô÷ÿt+"¢Ë¸jÊòw?ó]åö7F#à–´*YAÈ="^Á#êƒí¢îÍGh‡Jë¿\!ÇÓZ_öød)o]·ó<.\}îÙÑbò„¶aC^˜éÈÀr	Ã¥,­l]æ•E¯nŞîrøÀ€ìá6#öŠ•£Æ»e'çÄşGeØÂµÇW[rFw*fÂ"BH™aQÑW­A÷ Z¬6†ÏĞşşØwŞ$îì ¸sWä©ç'JÄcA³l¥føpN[´jÑ‡¯!`Ë•±ÉuSXeIşŒ'¹·Óøs²whışú°B âó›í`4‡Út#ØWtaŞF! L¥aéÎÃHkä÷½$~2ÌÃÛ+y²HîúsÁÃ&àÁÏ=£53ïşOÁò9­šñ¹J3È]Øƒ¨É$mÎ¸_î{¿ÂA£Üˆ‡I|îvŸp6	Dœ‡È—J^_²f'8q¥üœİÆ€¼=ï@Ÿ¡|4#ĞœÚ·m Ñ©~èÁO':µMV½/5ò Ÿ¡±£
+ea•#º•2_Tí=ù3wg!Ì)† ;õyÀ¼®}ìw…Ç‡ï|©°¹°N&@pé?èöÈã“t5¢âJˆ…Áí¬±–=ğşKÇ‘oDf
+…z–ºkÑ~Œ”¡fQ4Ûc;YÒTS¶é*qˆÓë÷¿_ß'øİÅ;x&½w%1 œ‘`Bs ùU£¶*Ç¦i°ÇÈ¹ğ^	òy­ÆûÖ,›şŞŸ>[W@ÕÉhz±Å{qÇeÚÿüÊ©­»¦çÖ]6áÍT–#odp“yp üá`Šå‘sÉÂ5 ¡1İÃF[(ÇÌŸF‚€È,6{ñì\y)tX$¡k«çg£FÂ_MÍÉ)ª¯O©KH;7PGušÔs<Ã¾¢övz„Œ„Ú@›quÿáUÇ0rhÀm~Alì¨á]#‚vÁ£ƒÃÃ)JçÃôŒÃÄIÕíÎ¢Ç“6AºUƒfª®ú>8±Õ{­Œ‘>dÎ†¯ƒ¬ì”£È‚àºBN±ùz¸ÏôÚBHò×¿I/–¸¤* ÿƒ˜w¤g—¥{Ì×º7â=|:@zseÔDàº º—\òvñ'?°‰»a®%ÔÖ%™5’	›(Ñmˆ"àª’ß°‚ËI¬Ì;¸´O°İ‹5¯ıóY:[pH‹#„b`“è÷3i 3Y`h£')Nñ)Ğ*/àÑêX	6ïîÅÊ9Šâ©À 5F&^¢ÁÙ~ ~ºˆS©H²l„7­cyÍÌÄ )JÅ–§ˆR´ïê@°¥šD•Ãi˜½ŸÖÜ¤Gšr!òüQ@t½£”û@WeS¤ãì>›{e°uG‰cµš‘|w$C#ù›0dë	…ÃDd–Fêc8\¹ıÔ´HûpbmïWxÜz—oµk6‚icOÃz®f%s—0ã“gap¡Ÿ(Ô[µ2)Lon!JÀŒ1ÍR>™8íS‡%äpÖ”xºÈÛvT|Y7öuË	§¡(‡×úa‘§×0‹¾rò€u»(Âª¬ƒDxĞ¬£îj½¸S»íÖôcÄõş³«ä*4 SL¬WP³k)ÄÖ½^¿LùúäşÂ*Fş†‚‡nóÄ"×»º=¨1–Rß£œçO¡dÓß¯]®ıq·ÙjqKŠœE{­W½NÙ+JY6ÖJ°wsIc4¡î¯ˆtêzÌF-Û»O§ªşñ—¼=ÁÙâÛä*ò³Ã‰œİÛ„V©€»/îÖØi_º-2'vn¤3â™òÁdÔîCe×ÎyÓå…èÉ­3ÀpÛÙ9¹ÈÄù¨!é¬Cß©\3Üiƒı‘s˜[úÛ7™ÉüòR#®nÃuÛ~PÕª)}Ë®íğÌGíñ· ~.#bÔH9KÛñêSªÄ«‹³ï&!÷Ìè¹$DÂÔ”YÍØ Ee~¤-8½£…R ğ©½ùê/€-éfKûÃÔö5è—6¸°rk¶_ædKÉFQ›æüŞ!‚å¿¡³­BóõâÙ•Šãºı"Yò6Ş‚hNy£ ø±¨@ƒ(D,¿uæÚT„ÆÑ3µ=íÑ;—Kú–í)Ş6ú)4Y˜ğè½¤uú1+Ğ‡ÆN "],Ğş1´#Gîúv‡ÖÔ†óŸ‚X0o+Äß…'—Ñÿ}Œs¹o\!ÿ´XKKßÌLÛ3ğF.*BVíºÚ{½©AåuÄî^¹Ú|Ît‚ È¼‹ZÚ°3Ñ `=?4‚æoÓ•°ïğâ·IŠKWÑkôWMÍÃbtİQg:WD( <|Xİ™(C²•Ñ}«Ëüû³ìg ËºyÉ”–"(åƒDjáEF†J°GÿÉ×p&¢·ÆJH[‹Ùz>`>|²FMéãn€}‰µåfS&N
+L^šö)s D{Ø”63*Rü1tÉĞ˜”qòHv‰b—ù£c¾¡¼ÅAˆ"eÒ—.·>-…„n±Š÷ˆ?ÎuÈ†Û½Ø;ÈŠvM ­íø’Ø™ˆá"4Ñ@u;´<B[t)Ye±#6Õ\/NŒœ˜¶xeü/iåÊ¯•}-~EA>ì@æ	:Æ™ùáŒL§J„¨#• +**UnYîù·’P–o‰Å¡SdÙ–úDAœ†]¾—ß˜âCµ¼Í‡½3ËyÊ/„r¡bJ],½p¤[HBÈ”?ö` $wâ4A3¸Ï" Mğ¶G«ßYhCO§»ö‡»‹¤6BíV˜Ze!ÜÈ‰­ âíÂÊKÂp?%ıÁĞÜIƒs“ùdø°Ó¥îè‚[5'Ô>mğ3 ıÃ„ß%P¡~úÛZZê÷SÄgÜ‚4Fà¾m!0lçxSCÈË³¾«ègíïCûÂ®ğWW[‚ÚÜ®M²â<ÊuÙ¹Ş±Ì^½'=Ş¯q»É—ƒ¾¹lRø eml°ŞµŒœ…Á¥¥ËJ„2bJ×’ø)³-àœ”ëG¬›ÇŒ{\ãny{¦[LE ¼[8Òç]ÄZU¢N/ätECJm‚}›·æ…YV^,“W
+	Y¯Ñ=*ÔDS'gŞ2+hô…ÙÒº”&Åœ5‡ GOWÚ-;|¯¹ŠŠ»É²ŒåÈŸÚG‹Ï>éz¾JŠÛeôH#›™nVw6óÒC£%Uò¥ˆáë\ÿ?x©o‘Ï³jòQ*DÄÓ•Ï¢¢iÔM|Ê ~]`ÂŠŸúabî¸ê6hèõÈš“—qŒÖ¶¿¬Œ3N >˜?zy½ñ6`Á=*×ñÙÆ<8}"•ˆc& Hæ^GŞ…|›Ø¥4ò{B'¥0doîuÎÜîº¹ İ=ÛüÁıprık\?ë÷Û¾d¿ÕB›¡@#ÿFééÌo${'À£t\¢%Hé)6Íz:;#•ªŸÀF ‡ ‚oˆjí¿´N»RGİñgğèßïDƒq/«ª–2~ü×n¹òˆ”Sülb®hï
+FİÁ“»†aÓ¹| R¶yˆ¿& ­Sx	ø†ºŠ'À?xÉ‰¶ËÑm7:ßV¡^’ãØzSàc^wò	ô8÷«*ÍÀíŸæºî~€µô¹§WgÇİzÜ ²õi¥Vmä¢ŠHùêjµÂ“GI™«ì?¹Æ¯)_5ÉSßØAA…­Wª#ÎAyµåÀûuc6–óm@÷p'RúFÇˆ³<&¯!Ë‹_\ªÛ¼üå\[¤ı¯«FéyÜõú`3Ö‚Ë•V<m‘4øÎë¾X¬Ãvı‹`"Ëé›|áók¶ÆÍ@mšÂjj‘–3²|nªMö´îG6}&®0peş`ÅTÉ:ˆ¿
+ä÷iÇv}ªày½–{À¼ıgg¿LCöçÆô*ó#›‘º4Ë6¡Dg¨ôıB²áÇL÷f,†X,T]ë/Ğ4ıÌÚÚî7:ïèˆÒ…9«óÕZ&ı›b½U<%v©¦Á(
+Üá¸jC|´F¾mhÃîƒ—^
+™9²QN°2Ï¨Î[p›¢À\ª×û]×Şğ8–à!r4oF“rªvÑ‘4»üOÙDÔ­@Ißá]¢'§¤_V)±Y´€í7óŒ¼²u—oóôÈŞmeqÔ<²r,¢ØĞ.Í€•ùĞİWŠŸºû§‚Z›¸ş;×ÔåÃ?à*©¨‰u^®^+±}O1¡»EK¶ƒç€V[p¤CÔYçe¡Ç´nÊË#Ó„Ëãäu×¹†àNOø »0……Äûøä‰„ŸşÏ2ÃlFmç|¼Î ÷ŠàcàR´l=~€ˆpóÀwÎ#
+ö™ÒÖW:«XÿtöNM>Qx‡ùOº¨À’{¯cğZf6¬ŸcêåÒeÄ*»€B1model.layers.1.mlp.gate_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*¹ €B+model.layers.1.mlp.up_proj.MatMul.weight_Q4J€ BÍ÷9æÎòã‡ëûz¨ªMkMôU®%±Ó8”77DUKº‘p—	(JÍÖîüãM{Ù²ø]&”òW(äm¡\¹hz7A¾¼ijWÈK®æB§Nßí`ã#XÆ{Ø¡
+Í†:`ì‡İs–J2 Ê2Q6¯b¥9¤¤Š “\¾ºV.²Éøßâ¤I}x um÷–9šÎ‹×wÇ²&…zaŠ€rUCà¥$%œØb«ûéã¬ŠaLéúKúóŒóšbéCXæê0'CEãÕŸrl‰œCbÌbêñåÚà±u’cOMukLs‘©xŞÏ5å²Zû§¨£„ÑíÅò¡ğX¸¯YÉeRÏ(~Ú˜ÑÄ:N]Âu,ÎwEQ¦ôÍú‡¡îkl¸¿Pÿ<zèøÔĞõ¨Fß·<52ğ™nXıÇ«|ÃAÔüş*¥(×§„VZœO¦TŠ„]+œxFŒH¾°!ÂI‚Û,ÿ:œqH¹b8ğ”¨ÖéjFX«é—*Î¦„	KËjéZVè1@GŸÁŠ#ŞsÛ„K,o0o*UtnRë;"úXV,øqX—u°eŞ&‡ĞˆUìñzÂ¡X;ñãÄùÓ«şÕläpk¸¬ßq¶eı†Ğ÷ÍU¦Á>ùæÕòfV³OzÜ·_Î%Í,£‰“ $ŠYiH/!)e.ùºnyÛIÇø]Ô1Õ?(!>º¢ğÁÉQıÕ³c¨_rñ¯™ˆÛ3…)QéT$ÊnÁx¯pö’,FFE‡t	°ÒÁ*¬¢×ó*É’¶{[bRD£îÚyU¾n¸²FköNÕ;ˆ>VŸd‚¢Á¡×úaõdº^š¥MÛ}?ÌĞ[kW,ùï‘æâ*¡†×ğS’æ›Õ‹]])|f¶ã=¦UªBÁš"™53ã1IÓz×8A×Ş´¤‚	y'à-±äşÁtü6íĞáœ­Év›W'´×ÔÖ­ú«wT¹wğe/K<ÅÍ§BàÍã ØoÌàæñm˜è{mY1„EøÛÛ£6ÁA¿û·û‰J[€÷a‘7€Ûªt¨Å¶¼h;^u-ñ/¥ô}Xœ-VŒ^Jº‡Õßu¦¢9Û’&Ÿ÷!bh '/pSV&iQk™Òhœgìaƒ”ÓSı‹{ûUZôÀ¥åxN´°È¦ƒ™	m	÷ƒ–¬ÆÖƒçMÏJã/ñx1ûY*C25)ç'öq%ÃjFíğÌ~“¯ÿ ¾ÎŸØÛşúê™† ÷ÚSqÆ¸L/¬MÖHÃİåS°ş¬¤ÎŞ¶Ê:dò_{L!:•O¥‘coÑÕşšzˆ®Y¸YgW¥> ˆJ•ˆCÙÔøR@ë‘¯‰‰é1Šé™èA®á’çZ³ŞÆjº"î©ëª@ÙİÉÃâàB3Ğø÷ÈÆpã„šwñ-éïLÿÔ8Ç-¤ásÏ–²~Pæ³´¯}>•6´ oµ€»‡U>0aP‹?\ˆï¬7Š×X-^ÑøÒd?:ˆK;©å×ØÅ%+Säõİ6&øD±Ïˆ¿(4ø2[–.hbb§cÚŞù~·eú%>¿ú?£5–3+˜d¹a;Áqé‚»Mk–íSº²0»2’»lZ†ÿ9e­âÌõ(_i‰Ê×àÛ7ğĞXŞGD/WÁ–©’løÍÈ‡tÌîåøjí¼æ`â]ÔíyÇ©NF‘ñÔµü=·à<™¯¶Aû¢‹/?ĞåO™RÇî"+  ¶Cv}á›#Ë‡Ò`KªhıœêKOÔgp1}O äşĞï¯²¬ÄßuoñHÑØ„±mÌ.è 5_Vån²)&÷Ñ]Î|ğMø,˜şo790ïå™a½ŠL7-*_"ß@©S!,Š™zr1ú+™ï¦‚óW›¼<èS2/!B0V^Î¬­WÑs¢ÕõîÿıÿÌïø¶°z¢f*ğÀÆ®(X€ª
+x…d’1¸„Ê5K"eôĞ4£„™™ƒGnÛ©…˜ë–[”˜\µŒ«›i…õ'µ	ö)b©-úW§$Z+S9Á¥E´çÜMb¡5¤Èì`\pØâ2[àYY-{ÜX²É @ø­ÉƒfJ±ÈƒÓİéˆëK’´õÏAáÔÙ®ûÔÍ•’¹óƒº©Ö±±-QÛ‰JNFä
+{’¡ã,A/.áÕ…ñT~ƒ{ä9¸_§Ò£p ’wï&JÏØ¬”2ÂÆ¯Ÿx4‹àDø™š³Ùç-ÈÛÖŞ¾…›=æl³Óú,° RıÄ,%fJuïÑAgÚl-q´.´âv~Î0Y‹:®sõ»Dn«ö«Y%ç)7§<[áÊcÊ ÿ‡ ŒÜÕ~Ôøî¦£ú±êÜÍÑÁçõvNOË(æéê‚9—d×/Jh¶@Ğ¾Êù:è?b¸íĞ^£ËÙİ¸òö×s)ò,&ztÿ,eÁ7—î6·é¢Ãã£@Ûs{5êZËçØÎŞB]0Rª²ÓÑÉ×Z¤b…Ïw§ºá¾³f[øÏn®€s`âïşZÓz† áVû•i[ úùGîgÕ¦i%wrş™ØH5’ğCaVÅ©ÓÒ0…w3V=¡ÛšËôÅ¹:^’Õ.ÄñA¦:È¿jÌ]pÜö‚6ÿX8–-‚›÷°ÜJ.‰,µ«j‹,;¬—ğwÁ ‘°9	0 R®}ÛæpûrŸÁÂƒeh¥@3÷P 1fĞê§T|%vÜ)ÕGH®íƒ¬O2ß	§™î¯&ŒpK²FÎÕÅˆmßiŞ¥™œÜmëì'œëŒìu(_¦²;G±–ºáCıt7d«§îTFâ)g«‡Lr¦¾§*>—ã3A¨³'÷ˆ»øíja¯…³YƒÁ)ĞÉ…5Ğªdmó”œĞ#6ì„I5¹fÜ0ıåú†ÓJ…ú¸CåC×´ˆ¡t«ûJ4çÊ}¨:M4yRhÉµ¿}áİv¶iŞ9’áıû,	’­e`1´ódT·ğ½!>İR"“ÁgÀŞoIËÁIœ®#:lp¤Ò†{Bÿ©„İ®.Âmn4ÁG eV½yPØrÕˆ"9÷ÆRÉØ3©š@{‹š¼ı8W¸ÅÃ0šÄ.I€ËHZEŠDY±H«¢ˆO<ÃÈtèB¿Ï]ùyõİû£ù» û°‘Õ‚IÜ~U‘A”É˜ª<VÃÙ÷ışô¾½˜4UÖæú­§)‰w¥.ªjLêÌæf˜6gVù¦­	;«Œ9ÊWîDkK¢”ˆ»Zæ!¨„¦5±&İÍÁ»×Š`jÙpK!ş‰¥	wßŠxüZF7ç°MÔh£C¦B#šJQ÷Û§rx[!7éJ/ÏéÜhLó&‚aNáó.¯ı *¡ƒ˜ª:ÎvYhŠì‘&{læœ£T"ëƒ[;=w_ù÷qê\, ÉÂÍrm]nÒ.ŒQèŞ0„ïáWw›™Ö¿ÜäEÂ‰8±İÇÂ°Ü©ãî3›¦3€*…:äs®İïw$Ğ«[ë‚¹‡Ü#˜ÅöëŸ]Iø¤.š‰ÏõêX#*â%"°ÆÁ]¡­«|¡Ä˜–ö¼Å\û‚Â¼êYŠ¸¹ÜJ–Îj‚Íßnƒ‹•áÑßª¥şì
+õ2ğ•SõçlÅ4}{ùkWa²8—øö6¬f˜PE e¾#);¥kFå’”ë•_‡‡ëØ ó·¬ã’)*¼ÊÄMí¶…z¢
+İ t%a£&S›ÖÅ¬§ŠåĞ‘ùjª¢1`"a!v=¾ïù~7ÆÅçï$8•qdĞ&áûIõ”¢eòD<!f7mk»…Æ±ÒGŸô6tB•¸	PiÿF½¢`ã;È³J+G™Rø6ò/.éc=6ã%	´5Û“‹=„)ø¡O q¥ÂÛxH‚&‹à^¿~ÒZc9ë(Ò¾©Q :_å¢]Ï.TÏ´º¤şsU%z%" º¥Õ‹°1Â¿ÃeÏ2{úDÆ­*E'ğ†İrÈEëF¤0|`¡Áğ$t®r‹
+Ò5×®z…- ¾—½–ıjZs}J§h°×a!rNlZ‡©P]DÖ{Ò¬ó oŒQæ¡vx  ûnÃÒØs|¨™0!ğ¥™©¼~ür›´sßÏÊÛf‰Yúãü{NRó–1engS—–M`Ñ¢ 4¾e¿C’M/³öp¢/«—©Ü’ë™RLšTt¡À°å«*«Ú&Ë—T£¦k‘b§’úµÆ('±ÇkµtŠ”ö8aöG's¿¿Uæ»#|4Gì0÷º­R ·qó\füø—IEf»u_wa«TŸb\AVîÏËÃj¬‹I0áj‹5Ã¥Z'@Ã©¸³iùèîı}§c°sş@åß!…ñÃo—›0„­"hÆáüD§Š»º°yê”Ò£’‹[jñıÜ_õ¢U\!ßXôX¼qúÀ&ñvŒ¹ÓİÂ@£æ[¢Õ3¿÷…p÷BÁ2ïÛ™{{ù@İ€1&AîÛıÄb[FF€ÈÔuõR«Ü¦ÚØİ¬r¶Â7dïvı†fÜ4Ö¿Ô+ôC†Í¿™RÂ0®…}i6ï`ƒZ ÷‚	]ß»_ô Œë™Â#'/Ù9}¡7½Şµğ€Âq ÖÈ$°Ôùd~6ù8¼k*ñ7Î’(‘•)ä÷tÁÕ=&Ú5ò‹Èše¯ê+èë\ë!¶İ+(ù/ŒÈŒ÷J,jy/Âª2äŠ¶n‡fHÃtSô‹k„P¢{ö²¼Ì¥$»dôEZõŠµG~m ­jØ&æûçùqµ¢Wv]‡4}^ªïÈ°p)s$¡¡”(&£AÖğç¯Ô}:X¾ĞçX;Óxàr…Æƒ2¯<pC96ĞôAähô?#xÆå4o‡1ÿÿ­¥+O?¢
+všáûS#œYªXßz”ïÊ8”:ŸÌìu„Ş‚ÕÏ÷,±İ–]Ï‡
+ÌÏµËIá+Ğ–‘Ô-£ãtŸÓÌØu4Ni“×œÈù<ª«xOû'%›LµIÄÔù³êß‹Î6èl|öÔş–iUğEê˜Üj·³Yéœ´ZS*7)úgÏøDıy§\¤İCf;½ìP ƒ©‘*ël.ÿ™°L×Y§l¿| AˆäMÓ‹N­Ş»š³OŞÖ2ÃÌåK¦÷=RÅÖÔÜ©ÅMìo\bÍšŠ9>mFÌ¼AeñˆË— xĞ'€›ín	lâ$cz[	ÉÌ¦Ğ5ŒóTOK²8·H€ ‹.†Æ€ñCDÛIPD½éw¿Õ-T\qOkU]Á4BåÛÜŒğ%*¹€B/model.layers.1.mlp.up_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*º @B-model.layers.1.mlp.down_proj.MatMul.weight_Q4J€ HbÎÈ/âƒ“Ï™É¯øhãzÖ¤ğN#f
+·íæÓz'Kğ2"í==ë\õGNÁÔ¯ÀE"xYğõ”ÁŒ1ıâYW§ ­æÇñrGI¿?Œ=›ßÁ^Õ—Rä©‚İÌépL…x‡ø´m·³s¶SR%X¦oáéĞª^[èÉ£¥w±ŸOÕ›IpòJš¶¨A¶ ´Õ(ÏˆÓpî„gzÅx¸)èîúãûÑ&£5kÅWJÓ×Çû*Ëfd0–i-¡‚Ç¨µ3HÔ«J=äêªµQ±ç[çiˆŸ‘Iøœ*iÆ‹óÁ rŸí¬ıøª‹Zœªën|¨ñk6OXóİåµ‹ÀƒÊØfœúd÷À–”ÆÑjtŸ¦ç‘W'ê(Æ1ljö÷¯*OnÎ¿J‚›Wğ4Ò›ü÷@Ï;Ã¿ï¯°›#Y®^[tÖy<1÷gL½ÇâPfš£°e»øĞbªØ÷&c„yQB S‘»¡‘¬‰H_èbæ›Xx&vBÁøöão¤´xx/Z	7aÀ"í¢µÊF±€4Z5±8$	W #âğËÏ…Åşat•9­p‘Ò3ÎDµá“Q{qó@”bÇ§%[£y(øÖıÙo|z–VörÙG~qäìQøwl4,ÌÓL>Ó˜Soèòş¦´t½QQTqà5£ô¹I4=#‚ –'‘[\|Áû›c=M©Ã8ÍŠÑÔhJc*H«=rc9ítaß^™FÄ\ÃÊL•ù$Œ­•-#T/Çu¶
+ÆÌÖÔót›fõa˜Ì`¸$)Hbrû!	!Çbùuôû•ÖOÑÁ"Èì…?Nõ¦±$Ôfi°u`»DçÅş\ÿ#LÛ<¢ˆ?…ÙWˆLƒèùøæo£ºŸóYÃ*²5]wªúäy%ÀLÑ\Ê»f£bÆÈâ¿ñL‚ìªK·LïaôØºæÍ	˜N#‰l®`Â­~…ë»®¿-Ñc):IYğ"›Ì5Å$¡š·å5<Y"Ş¼°º¤5.ÉŒŸÒ9h`TFnYCF$(O«t¾vQ„İÃy[Æu7{u ŒïoÎÁÖXŠ½aïš_B)â”è/ƒpceóq«øAqb_ä·ê–S8¸D:9ö³€´ ˆ§İî~Îh¤³ÏŸWIï‹Û"¬ÍAbÕ-m
+£->Íƒs‹ÀI¤r3—¼k=K„­3 eğïP†²õËZ©/~cı‘7-5®½ò¡7=x‘4¥M0LrÁ„øGU8Ÿ·é÷¥»>É§¼vĞ®=®ßa›qj™Ã\Æ{ñqqmšloÁßz±,AsÅùˆ`»]J–v”%G–¯³
+ˆ­b¹ocqAëÅ3ÎBu~h$+é½wX{gı	7è;¦p½4¡w5ÿU¥bµ¼Wµë¶}ˆi–SÃ¾)»iRLv!Ü„™?õåÚÛ«ƒZ³ßüæ…So~lA,52‚Öbe÷<.3µàï~Æ†:]YŠWUƒNVÃ›Š>ÊÄÖßËod İn÷é“ 4ËWU¯BË’M¦fï9¶?†•¸²L=e’ˆm½S‰lßŞl¸hìˆ7?‡ÀFWLŞŸÎšeø_KélòæÒtpNO~ Ødñõ<ĞÅxjÅ:´gÛ=}Ç?™[íà)N«"fuÏõ"¹ğãG•—Ñ®`¯Räh¤·l°†a†x†à):Fo8JZ¡	HfaÖİëº0—šËJ%BÕàG†i t¨ÙJ°Š•'6¬SK  S…9Õ`fMóîˆ©IiODíÚŞ¨hzu\0±ş»ˆèšæô¾É¿è`ğ¿İÃ«tôºã¿ÄC;k‘T>Ä¤PîêÎÄj¸¨á«W!¡ÿ‰Ñ¼ïËññÒT¡„Vàû|¼»o>UUmÄa}ƒıè˜Å—hö@¡A,ªÇÀC6ˆu·¼å¹{½óÂrØ¿>Œ?G…'–mdœ{×¯ÚŸåyøl§ ”vÖcø{òIÂ¬*›ô1U›IK†Áãde‹ÓH;+ÌˆJü>7±Z&:í°xı1Q‰ıf"À/¨vë j"HR¨|t%ŸªĞ‚ÿ°&æ=Ã´TûŞĞLÔh&€}Š/»±ÑbnĞ1w,úÍº,¢ñ›3’ô*’Ën­]0Q»éVmI)À‚ğÆu
+ÁY°éùÏ0ª™cš‘9ÉŞ¤Æı¹R×C&z²Ú¶âjĞğ:0í}¬_‹+`Æ´Å(;êŞlŒ¾·\°f5FÎÔ§ëÙ	‹¢•öâºŒÈ20ÑöAõÏ¨·ÚGN«ßò–ÌÕ”êÀ¼HÍ½‚ôÓ¾õº6/œâÒ(·ó%&U€¯½ÈÔy§í ‡÷N
+pºåxÀP8œÃÏÁÂÏa:Ê€”¥ezÿé•]¬‹ ß‚[%ùÙ°¸ÈİS0\ ûëáş3H›âÓû+”æŒ5úóëºŞœØÖE¦ÆL^Å î
+g¦`ú	ÌÕÓkÙşÓjR;T"Ê~h4!4"40H]èzkçQ^<[†èÆ	ªxÂ4pJ[Z§hëgv±nüÙªµšFj|Åšğƒ zÈÛ@öEÂœæîÊÀ9’EyÎ‹'[†¤¶—pã¼ùƒæ—exÍxÚˆnˆA%îp2Óå’†TÙ$uòòDrÿTÔ"pû5÷Ö*¼O7o÷¾Kö&²B{gªkë9J¬°èàüh“:è®tmÅÿ[S‹na5­‰|û–] ³HˆŸ§/c¼*1i¼9ÁLu{*×º˜°oo³PY8ƒŞë'/£ÎÓşİ}ûqşDeHèO´_‰)ãpAÚ›G+Ä®ÄïÖ?“.±;óØ%wà.ì´¼U5òšËWYşƒ¦uœØ_Hş,«',W_gÓåpÒóØµ9ü'·pçjA<R5˜À
+Ö"ås÷ä“m[ˆôñHµlã½ZFWæˆÏ¯=ö=ÆâSèœzşzµîà‹’bàÈ'ÖãÑ:¯O«_ûˆvÔÓ/Ô›@5DoÜàxN­-ú¿hW‚n!£“ßÉMKÄZÊ’'>ÇxœB \¥¯já›N[ÙÀèÈf®°ˆ»ÿºZÎ3³A~2f6õWFsš}3“IÂÈÖ¸Z€ÑóÇŠÑ)]˜Ô  ú;ÃĞ©;æ>¨d0Jß¦Î+Ş»YX&õº×,—8$N×à‘†?6õ‘-—F¶ï7ıu¶::˜&¤…l´‡\]`àc•ÌAÀQMª3¡L‹o^Vö.ÁnFŸqÊ6(yR‚ºÎe>°Ğ&WÕÌeF¸ÊHG<óÉ‡VÙ¶‹Ay.µÕéìéa@°8Z@š$ÿƒ³+—¤EbN‡`“İê¨ş£&Ü¼°yğè¢ùat¶ƒ„¥%ú•K»é¼›ı`€Ò_±ùó€@;A¤íH'NÖ$qÂ_Î¥Jo× ˆÂ˜~Áã>¦äJšª8ë>_Ïj­Ê–ÏXŠÚ…è3i'í¦Ò‰œ…‹Ó-öİb‰ ›½c]1)Å? »	¥¬ÌXä`qš?›ÿò[Èè§G¯¡gÜ­0(Q?ÌÔ4ã¶À,ŠT©€›Ò×±V7Ğ	2[yoì¹7ÔæjşÑu újQ±ıF“×\€_Y+;/7ä¸ÁÖPA‹~êL~b˜Õ¢ñïÇøº­b®ñs>™ÿœXu=©S…¯“¸0Å”œ~ì¨óŞå6‘ï::RAJúU²éo± "0LRxLQóœ‹tİƒ1¬À.3vˆ
+|ò¢ùÒœñjP½mËA%”Ô 1©ıb~şZí'±51/Å½ğ
+ËÍ™(úßªèÈONŞ3@X¶íJ¯ØÖõ­>xºáWÙ5‰”lÉôÁhKc\­…Úx”ê©Àê}º¿èNM„üt}„~¯ÍN’~öş¦%m²"_˜¾Ñ;YŞ8Íë
+Şô=2‹ºcOØº¹™ĞÎP/m—1Hˆë_
+Œ6'ŠµK™¥ç  `ôp36p5ÑéL9È>CØs!êèôŸµ‹‰ƒlù¼˜-A÷3âÍº#úB½ÇÚ<øE#i–•R?CGuòQh¶ñ,1Ô>_t¢N¿¾qaUqƒĞÊm"GóiÛh»–ñã€5*†Sš(˜q°\hì#9( CäJx=#Š÷³aS£Ù6SI|üad—h/! 8ğ†Ÿ7&ÅHG‘çÖd9ùœéºÑ¯Ï„†z/òœo'«átÒÂ­ôo6Z&¾2/Ôš§²Wóó¬”LAmø¨©nÕ£&c¿Åj(†rÉg èvª{‡êÄm™;ìÆVj®ƒ%Wã^*õìbdãjå¬»ì"ÛQ‡Şkç@…ˆfU$¢ªN~ÖÌf	L&õSdr´^FR¼ï@Tx}¢ûÔ·;ã¤mm¿F{ı\Ò6îŒEÉg÷=!·ƒ#·ì&Yîó.nsÑ&XlQæsWf€b0äòĞñd|šŒmA™Ó0})M
+Î3wì¥Y†;ÂÖpiÃî¾­n¸ËÚÚc½ZÓPõŠø»ñÚÖvqY¹˜@)mHãÆåï)ËÎ9s¢,ECw«m™OãGi³/6ı¡6XXŠ1òqgçĞ&4 aãÈ³²İï<İU2 Í½üi€ŞVj1Ñ« ÊgWßfjòÕòt¢¹‡°Fpö’ø”8Æ}ø_¨|CÂşb^‘jÔø;Ú/­~JC.Û¢Dş‘¢-ŞO‚9¹Îß“l˜ÒÌ˜ Şå»Dk’ƒD¶¥é63µøEP
+Øa´.èÍùÏ˜Ïğ>ìWúãìŸ€8Ñ‘E)±ÙH52×Ø!!ÿ|Üœwçˆ†“Ûnû'‡Ì"KŸgbŠñöf ±¨Š/âÙOª6Ö½îßPü>>Û™Ò€Á^éıK”ÒÇğg.¡…'°UNş±wtjÇIl
+:)iÛšbó‚-Jd}1Ç™p±sçƒL¦_AE`ILˆÕ¿Æ3).ï•:c™óÚ±¬-ÍÂ ·Sf½7Í”<ùej¶ãæ^éõ,¯òn?®İKæÔ:AùÌìŸ®Ç¸ƒØ¹"Š*¬ğŒ—ŒO‚Èfoè*<¿›¨Ÿy:»çË'ÇŒB$•&! ÕëŒ§xk0Ù‰î²ıuÎ®>êÌ?¸¸¯G²µE\®µ•À?È­ÅzºD·9Ã)ö}ì4pnğ'O½ÒéZxÎØĞäaˆ*»€B1model.layers.1.mlp.down_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*0B&model.layers.2/input_layernorm.epsilonJ½7†5*®@B%model.layers.2/input_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*¸@B+model.layers.2.attn.q_proj.MatMul.weight_Q4J€]¼i“‡R‹FŠuÍ=âqªù+B·yblNv'‚ë°0®™a¸<<íö,ÏÍõö}XAF4*:îİ"¡ğóş-N¤ø”]“‡ãs¯ägRİ”c<Â?.×ØMxĞ	Óª«Tù×¯
+ŞŸ=SÏ()ãàY0á-æUBhNÖ‹Ø`°‰k\É|#=¨¸7]‡®mò>ö›r4ØğößéH§¥r(¿âƒAë¶~ZñbòàôİÇ/Ô£’´Ö™ó%§?6¶ÏıaÇ™ÅQL‹cû4¦‘”x„sÓßÕ|Ó&x;„†æ§©ÃV¨Wwn¹íü¬.sK)fŞvª*ôô™ &=Ñ‡“Q .4hsÑ%:.Ä’õ%ŠÛ
+)Y_¾	‡¾é¶a„¤¶ÄáŞ«˜÷@tÚå=¨z²q\œ¾¦B®ÖYÒš1ÊŒÿ|ÃgËH¶MÒo_G±;-œ¦ÿ#'ä÷tÖÒ±(le&ñÊŞíÇš‰¸DX6> ‰Á®­bÙgÉÄ]¹ŞES_?ñ®«Vş]²şNëWİø1qôj{Ö%”¥&øó*úœ±æƒºw£Ø ].Û#X*w˜ˆs­»gRıØÒèEkØH'KœzÔ6®§¯š.ŒÎ|=İ.uö ®E:
+Z0 ×E…Xe€hS6E*Ó½SÀ¢ßÃÚopÿ"Ù»mì@4—×ğ±¶Q¿ö•¸^íK‚ÿ“vŞDs3ğiHÃu—+Yh×N8’ EÂ÷»İeRıZ£‚S oõL½‡yK‰oä¿>°½ÄM %	¯.—9‡ò|U+m«	éçlE/z {‘I'¼Ú4•Gå0¬VçÆÈ‘DŞ©İÒ«“‘„ÛÔµ±3ùfì>Cåçˆ!”Ğ¥g„¿Ì@n%˜{Ş´îmâ 
+ß[a•d@¤oi°£XŞâ¹äx0@¹&£èŠ^4+£b@†€ßµ\Œ/rQó.éOÒsûÍœÚF¤û'Ş›¼CPÒŞy<Á˜Ÿ.Ôéw‹k[Ğ=é€ß­pØ9ošâ+G"ñ&í2Gn&hæ°Õ~œ±LÅ/`3uÚ±¼YO•"®:„ÏL</njP[¹²Æ]Œ’l æ£+ÒÂ&w Á WbÇ­ît­©	xÔÄ‘¢^ç±z.!jU™R’ÜÀÙ×ãj/i?½o&w}†ÊÚI†¬Úıï«5ÕR9®WğU»8n»ßSÍM äŞÚ¾Ñ£¶;éQ u01T,e¬ å×•…#]ÿOÁ=Bf'¢µO‘–án8¬^‹R®Óa+^”’)-7 3ÜíhıEâg=%şĞJ­œ±ğ{s‰&‡s”Ó±ÇíÌc×TÓİPØ¯b³¤¬Ëã%jÔI]»0²Ûí¢ë§äïŒô[|»Î›¹%æ ˜¿ĞÄÏ<›ë ç¿™[†JÏõ#1EÜ<İ,fƒÄ¡m§WÓ¶§=ëËr2ÁzvêaÜôUîK2Š/	2êÕa›ãøıÌ¦T×8R÷û¼áe›iÙıÒò>ú¢\ú¯i¨‚i|Ïsvªmº®~Æé€ÿÔ+Sˆ&¡öÂsªºÏè`¤İĞT­µj
+üŞA	¡è¢kÉyüãiè¬¬H`š¿©-åÁì®–Ëº~ïÛ˜6©P=NnH ë€m—‰%_ívÅ£”M°¹8» çÙ:’çwıWnúÇ†W´²é¸÷½nÎö¡ûâÅÂÄJöNLƒÅ{è˜ÅöA©ö½éeTş‚h¤_[§i>e?Ú}‹Näw†Fª}kÊ=G¡dGƒiã–ëˆëÌ†{Æt±×ÏV[?ï{Xû÷bğèì0×'†pÙ~£P¾mdÙuA–Š¤‘µ#BpÕ>ô»œ øî¹\|1×½YIk¼FÄTüÔr§¿.]>âÅËŸ “Á'×Lğ¸ÑÙ²·ÕbÍœpP…d¿ó<ÿù?yó2¬*šî•†'ˆfÄ@ekq‘p1ş¨2îMLqÏ©ˆ*ä…H%y}$jih¼7œõ—ßØ{Ş’^€¯C.£›`º÷|âïŞLdPr%gï¨ƒ©ô|‚¶ZÔ'fD;BwŞ9¹´‚Q@ßi|Ø¶jAsá.Şz<g‡EaÈ}ñ‘WÔÅGÍ¯·$VÄûU8>‹!Ä73hHEˆ~O¥=pá pÑ˜måPÊù–k:	”5ÀšA©{)mÀºÁŸŠ¬Ûéµë§ûß\‘œN1ŸX‰×ğÆğOè	‹yãÀpóŞåöUÄ…öÔ¢¬6‘¡ÓRO)¦Ø¶éæså`÷‹x3µç]’ùÚ»şäà:°ÿSì;ƒè4‡VP/Ã¼X8ŒÍÊÌäßûI	s«ˆ6(—Y¤Á\Fêö¦˜Ô‘+'©1P6¤¦v_JMMR—¨Qy…ã§ÛÈ½MÚ‘·¹ì7†öÛ¦[ ,+Iîï‹¥æíÑlawŞ0Ioz4êl- „üwpÌæ¸<Fe}-Ú^ş&vı‰{~Ú÷hRKiÖí!—UÎ NÌ¾à»§˜w`ÇmZ|´eêÃ² ‹´˜¯¯À3=n¿‰ ±³}#¾4’¦•Ï£xfÖN|Šk\\„ùcw%¶Qœ\£Ö¨;ˆki›­Û*¹€B/model.layers.2.attn.q_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*¸ B+model.layers.2.attn.k_proj.MatMul.weight_Q4J€ïºèÑuåcqtMàß¹(¥Å1D&„<àCœ´{ã •SÙ 6 ‹uCÒ^NVc ÙÓğşı"Î„”½ÀxÃ¶P[/·ÈèQ8'­jåßLñ“~=|G§‡ìÕÌ=øƒ˜â»ÜpÀÈí+5Õİ}´	(àpyF‘úö‚Ú‰êX!q„ˆß¯ÀÁ½ZøûTƒˆ)KuòÈˆ†…Î½ ?È¬š9 ‹…§~òä7~uØY×RŸßÀhqâ"jŞ}qóäíU4ˆ\×
+¢ä½~¡Ÿ–)l€„[E5€q›Øh—‡´şvs+c[Ş°åŒ¾nå=\Yî]“eäéöÓ­0†ªƒÉ	²øğ;pÔT&)ä#³Hz(˜§.\†? âïbV*är¡n¨„}Lîş)ß­†zÅ¿ÎN²À¤<»5ÌÁ ˜7(=şÂÏ3K«@úgPŒX™Ñz¼™.·SÒıÖ¡®ä Öx{¸æ(<ó?½Ó \Ç=şÆâÇ“5=F¥b‹ó·UGS¯¦eÉ¹‡ğD1pÎQ|¸R>à8ôFù»Htùß
+…XÆí¬q¡\ÀŞSYDŠQò²ª´¯XgÄŞë´ÊÌeyoL¹"›(OÜŞüà2¢S;‡õ)G¶ú2_Òù‘¯ÔEÃUV¶0ãv¡Å†£– Ìûú?[¤¼ĞKœw9ìXNY1p ªÕSŠƒ~³‘øÓ¬k7“TáQè˜ŞjâTøw¨yõ§1àqÛX¿üã†d	Ò@äš‚Í¾ªœò`æv~{0VÙ÷®AçˆÌï.…|Âh.™PóhFGà”AıÎÆ©©€SŸÈ¡g9ô5&p•AÀ1S1–Ó¤P·x–Éz· dY ¼èÂ*#‰¦›Û¼r÷zëŒLtZûœ×ï’Nªşœ¿÷«w›zœ²Ùb²jx,wŸ¬×åV£”^[!@v2’q2Nü4İÕ›¤}{Bİãc—·âÛXï=æ¸şÏ¸š&­ÛË¬›¯ªaü´àæS
+œ˜R× €vh	İ¥‘¿À=vl8ÏË‹!EÀk§énf‘g$İp$Íâôèğlà‘ÕÎÑ)w–ft(±“CŸM‰†Éyz*4|ZÆv^šÎ â´?ÔÀfİ¡`d^bøWîÙÛ°¬Çí–PÏ@‘ l
+Ô0&^Ã@mfèßC©]xŸ3>ÿwÜ²VrQˆ…Óö—­×\¥“D¶Ûç‡	Ÿq€§“
+Ã4üÎ,#Ò¹gôÂ»¹á?-[Zy¿!X°v'ĞèŒŞÇ•™É·%6Ú.„ÖŞ£Q
+¿/~±âı*¸@B/model.layers.2.attn.k_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*¸ B+model.layers.2.attn.v_proj.MatMul.weight_Q4J€®¤á]´ó¹CsT}î/¬72•ïSrÕzI¥<f“Í„ä=ISâB¡[î0ôP«Ò¾›ÜñŸF+®>'İ$ÙæÙœnn ‹1§âºe¸møÊ>Àí}XÕã-ğŞİ,7û0ï\›_*pËgîóó]q:üÒAµ¢vŞQ¸ç_¬¹ó±4cËnŠ“UäÓü±|“dÿãx_rÏ¢kn›¯—9õ«0Ö·TÉè¶£ñ¯QÃ%ÂŒï&R=Ùãe˜«_åY1¿q!è6ñÎsùœä:ÅèEWµƒÕÊ[ä©PÚ”‘{L<p)ÃîÀx³W€¨Ãîo¾Ü&4ÕMuXT,2ı¹/´•êQ?éãhˆ…P“"ûú^¢Å}²j7òŸÔîß&}Î€ŠÓOµÅõÒ‘Øu¶K;Ô¯lä:ùeèO—U9¡æII\V+³f—ÔŒŠ]Yø?×~²QtŞHOY<i^¿eâ¬åvCúB—sp™æƒê*lª¶òñeç¶oê”sF¼eÒ„àq˜ÃÛ'øtù›Ÿ®³	_÷LIän–vh‰%cŸ4c×q‘£eˆØWQXİİĞµ¾ÜÎ—Rm—e£“ôgşa$>Ë#EòhùŠ¥IsqmÇŒkY.»„_]â™àé–C‰14k¡ÄŸékµzª:Æ`®€½•¤¯uä(ªÇè½šÖß¨Ş‚şÔ~‚ŠÁ[¥º£T)¯–WÉ/3?2!ş¾]jObm³nUœ]îA8I:Ÿµ cbp´İ&ë§¸vÂ†b¯µ¾¨²Áøì©p3N¨œ±o×©Âe‹$?‰2îÇÂúä?xêCƒ!Õ®ÂCÓJÑULI	±=l!ésÊ}m:ŞbŒ‚ ái¯h†F‡Æ£¢lİ‘İ «ÏÆà^ğ±†âüx^3AM NÎ“š-Ú=$ôäµ«×‘6f—šÕ İ¸¢¬XÁÁ«áñ¶2Â£{gãWSÛ«²>‡Ü=àÂr÷>"İ©Óğ£P}“¬Ã€ø©”*tç§¼Yáu§‘4Ãb–LïÆù„£èô¶Öûu:ó½¶Ø•¯ze7=~ä3J¼FÍ ëH>UĞÅŒìHß39Ç[˜ôÆê5¾"ÓJ‡ûÀJg?Ü>Iıb:]\–’ƒ‚ÉµLtVÏ2‚Ü‡xÎñ2n
+	bk‘‰Æî‡¹ã¸gà©øş…gÿ¶Æ84öÂæùBü«·‡Ê]İØ×)}œ:±{®ÃÉB¥ØİôT2­ƒ`¸èÂ½^îak‡¾íU†k3?µĞX,"u6Ùm,í®ZÓFÚ¾Nœ§OÄN†*¸@B/model.layers.2.attn.v_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*+Bmodel.layers.2/attn.past_axisJ       *,Bmodel.layers.2/attn.query_axisJ       *%Bmodel.layers.2/attn.oneJ       *.Bmodel.layers.2/attn.batch_axisJ        *¸@B+model.layers.2.attn.o_proj.MatMul.weight_Q4J€ÌÍ,’İÂŠyÆ{áaìFÊŸ°YHÈ¨àš¹øyÒKÚå÷İBì„¼Ê[OTåÍ[.ğ]œ¤ò#Õ§`IÜy-ÿ¢Ä¨òm2˜©¢÷ş¼úe/}YÈq¦pÛ“a}“'b#(LÆñš±šG1'´Dü!HøÂĞ5c$!%¸¡9¿Üò‚$+éøÆwFòfn9æv™T‘½>±FÃË4òjÉ‰ğ¹kIÇ„ÜÏK˜’OäÔÚƒB¢áu‚Çöœo·w‘G>NÖÒÿÛ.Up¦µÛ‰Ãjøˆ•/8óşê7ˆ>,™åÑDñ¥1$•­Ç1+½â}fn)E1Áï= i`1ÍÃâú£¯éèŸ­Z¤‘Iøöf&:A"°Ám¦‰>®LfØë¤ûà{tHyç¾€Ì2Wµ å…é˜a2"µuúø}(«&Ï¬bÉ äÓ›y8@ìkœu¬±odw–Aâ¡º8éŒ”Œ‰ıM˜Xş%„æwĞà¶w)Ä_?G—zŸ/Õ—£JŒªld¿«¸—fØç4—ùğÒ¸ú¿¸<…9ÈáÕ6°•Hx(ÓE¥Ieÿ4üŸd‡]Py”dû‘ ‘©’¸PNI”: «¶¢w{áŒÍY(Ïû€ñì¯l¦fh_î	ƒiÿğu“èœ@$kg5Cˆ6+÷s¶nò›ã9`9U‰¥H¥ƒŒÓwŠ²l2Ÿs<à:0õ Å¤ğßê‡’r»áé4¬ìOM£]ˆ†[QKÅì{ŠÂWËoå¤Y+È©‚@Şš7ÎQä]*Íi&º÷5°²vgˆ¡JâáÅ·9Àø#¯ i¬şb&ÊĞDßæl‰ÃáëZ—„¥JÓÅA²=ä4Q8çªäw<6,‘…ü¦`ë¡­‚w¦ïøE®09ºó&ô¢ š¥¯K¾kcŞ¾¼ôlf›Cé›ñ;üEùÑï¾—Â8àœµŒğ…bóº(³#Éªšlá8™yXbĞ„¸›¬ƒ‹C)ZğÀ{Q¤¸éS®P×³ÒôĞäf±Û…ÒÀ®’¤|ßÀx‡ç¸Úä!É½=¯@(ıéàñ^µV6ÿ›}#¬´Ä*0~'¼»]0KI¿‘‹)ĞWrßØu?Ä/j™6ba»‚;7d(³–y´ûyßk‚ÓƒÛ„½¤²ÉĞåğ6çk•Í—à”v+=-›?–ßi°lèL¿öSşÑk8î6}g2ü	 xy¤ıİÕWc3`p„½İ$EQ¯#f?7¨´óİGù†€É!%ÎÔ¢4n^[F¨i”Ôğ}DÃ¼1ÅHU7ÏÍÓ iÀİ¢T‰Ü+AIÍs/<>ÛÎ3Ac‘°V³éë f¡F_Ù}¿Ğo/Ì%ş_À¤‚Ú™BBu–ÛX÷³ğ¬2ô‹Å1îIÃÃ=+©ñ±ïâÑ>)ŠççšÜØf©„DTFÁbú«­©ÿE«Sš¥iÆRËâû¯ù!ÜÔ‰ª¨NéjæÓU
+f9¼Ôÿç–Pì.ˆĞ:À¡ëüî¶×pH”íJù•óöáFçşÄ•3ÀîZ\Èƒ«&©¥K¥µcè‚iR´º­ğm,6RJJ°<B4éå·Eq™M.N›0é0ÂI¹»ÖKšÅ´¤¢müêÛÓ24Y›"¶É¹Êñÿš¢¼Tdò^æ´Ğêb@¨óƒnaõõ¸†|ÍñCIû#ã­9 ÑêÎÌëæïÜWÅ×üXl?/z2l«‡İ D$Jl „ÿG¸óny=>‚5W6QóT{g³}Æ×ı¬œ$Êf§Ëÿ&"‹4~ƒÇ´íC½ œ<pâÌ'ÒtëJ@ŠùüIÚénWõíôœ­T~kNF~éü¥ä¹°ïÖ $3Ùô‚%ë°Ëá*‹Ó­XøHí³õ>R1?yaÜ+O•·wŸ³PšÌ{se-wÔî‰ï¥îÚœÖÿˆúI
+ĞÖô$®Ë!ÑÄrì,@¦eñL+à¡HWG³ƒrÆÀ•…®‰YqÜ=±¾¿MØ<ÒË˜ ì§Ô]ª'³¬EÊ·?¡Ùqöª¸²¡ÎëÁÔ¿q‘[ÄÓårË5¸r*@H‹¸ê~IÊk^şŸÅkµêı¨pfK˜ñ1Ç™ß^^-‚ö-ïqlÛ1lV±M­Õ#Ú7ˆ#üÆ7Z'nÏîçØs<Ã2-ì±º¥•xÌ°¾ D²Éå°;ñHsçvñá¬İ#şê6ËiˆJ
+Ug›+»åxõ Ç¥•Çùc¶NİâbN¹ X†>Çn¦ÍçnuØÖR‰z deQJçÜ#Š¦ˆÓÃ=…û˜ãØK¾pùÎù5«ÀY½mõ)ªƒ&º_Ü$'OXV~É¿ÖQÈI(&£õÎX(/â¶²0XŸmá]•,@©9ıæçTÇc™å,v†óZŒŒ6”Th%§[ğóR“À-`/Ê†DbÎÂ•°É˜Ñ7W9; t²šÔe,ñªõˆƒ.}½5sü*¿~ß•Èv“ö0ØoÅN `ì¯ØÕAtvœ:¾)x ŒŠPâPa  7‘¨8Ú2kÛeãI'À‹×$HaæÄoB]ŒGC±:1•¡©iÂŞ9¢›ŠÊc•Ê,şÃu¡*¹€B/model.layers.2.attn.o_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*9B/model.layers.2/post_attention_layernorm.epsilonJ½7†5*·@B.model.layers.2/post_attention_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*» €B-model.layers.2.mlp.gate_proj.MatMul.weight_Q4J€ ŸŒ £¢¤L (c¤rÀM
+lØ_m‡Æ|»­DÓvÙ^2uŒ¹)øŠlwzô&V¿HDç ÌÙ -Ş)2»6¡¥³g]5´ï­’ºóÙÕÊh¤ş†šp<]`wnTAø:ù`ÿsø@ÀvvŒX0¨k¤´ìÜº#—\
+/ıÀ.å¥ß”Z`C¥!|70m×%[6íE7´>úõ‚„5Şû·ÅÇ=™Á‹<Å.Ûiß˜h×WOü…b÷'ÿîêßÁË«äœwWÄí%‹áğkŠ01;Da*€÷ÛÈq‰C›úa:wîOá#ãCæÆ&/_¨fRş¯‹¯	o•=ë:é]6Åg¶öA¼Ş±ÀË3Ú•0*-©eL$­f|‚Ñ©÷­sß}„vİ;2suMf$\Â€ñ#ÔX×^¨¶ƒP"¹Ş•¨`E_©–·ı½Áæj˜^(
+l-ğHdø!D~gz,æÚ@^Ä@“ø*'È¡0MÌ=¿YÉõrfåd”rxu”@ÄædÇ´l,Ç—(¹›>t€:rı%×êK«íIõ6tÈÅ³6äàhO—ÿ:l…JfŸƒ=¦2Ğ!f´ÛÏ¤ ïù…S¹D&è{­ÄŒÁÔ®;ÊlÌ#	¾%ĞÃËª¯a³ø
+)u/>6[X”ÿ0¦Ø©{WjˆÈõI\ñbÄ„é´·N­Šè1§)#t’Î§ŒøD¸÷òºDRp¼¢o“Ã_Î? ãJ<ÿú€mG°<AÚÅ]a^§¨¾Ï9Á(¾òzÒxäğ‡>?F‰ÛıM@0mÿD,Xv ÆqaúØ±~ñ—÷ıå;À¢z6KëåìŸHĞ”÷Š)`Î‰‘?>åkkÖ¤uœóÛÙÁ—Ñ}Ø¶GSHª‡HZâ}o~ÿcÙÙ)îàˆª{‘O_Õ¨h/“_Úäabeğ¦Ğß$¾)]¦!nlnZhWÉd/\tÿnM˜ûê¿´ Y>u:°É/VH£g|¦[$íH]©ì2UpE%Òâ½Â®*×Ñ‹Ûı³¥Xûòù‘" &;B•‚Õş|À8GS«›œì,•Œìg‰ädüY>†Y3LKœ®0ÔåbšÙZ¬E7^…µSÍolÏòuÎò3ŠÀ÷ï±aMW„ğ¹ÂûÕ‡<MØvEÖ5îÍsHUów§ĞlkÛ¨âã?ß0ïğ^B¨Ø@,X›O7+(q\kîÉÊ³â)! !F„'ªÿÂà>e*UK2†Ö_·tkš¯5ó…ŒßX“ï!YY\ì»Á2¡­hH˜‰b9Òºòûê\PÌ"iÑá–iïõ3 M¬şÓÌÃÓ–¹]uÎÿ\öŞæä?¦}+Ägon?d‚ÜP„L4´Um;ÇĞ!t^‡9h2Š%ä¡şLÛ)Ò(İda 0fHdCq¦8¡Råµä@=¦Øº•ÂÓğWÂ0 šOpısWx!ıt”‘@.Ç=è^0jÛ¥jm\TÁÏ˜³EÌ4%u°vwúÌ@L·afj‡õw‰6¹²wIybzJM¡­ÇAlšâuÉ¦û(ò”­?S¨É¡zasşÓëÚÉÑL›MçîË©ÑÑ·Bø¹¦+SøRKD¨#ôæ|‘Eñé?·Œ¾ÀöhÖÄ0õïÏ·¯şÆé…a}Ä‚|Z,ç2µ‹S™ëa ¤!!ˆ¸ş~¾îÖïºC8ë”íĞÀn”«´PKÀ¸üß¯í,N¹ã‘€Ú
+hüIR6è±ã’i¶ƒ‹!‹RâBPŠÂõ0P5BZw³öÓ Çœ	¤F y”C¹<”á¨6âpGD<Œ«ĞÁX`œŠqv(ĞÖ	ĞšW«[6®Qà‘~ÇK…İT#€ô“W‹8ÎúóÛ•xL­³d@è=]?$ï5ˆ5+SÁš0äÙïè)fÊ ^UR3çCt’[ Â™y„Ã”üÕ™ÊQ1?{o¡Ôpó†àå¶õ'ï¬ErŒÆ)!ò >Ÿî%>ü«ƒ;°?ìÎ³Ë¾€ñp¯1¿ßÖ–á©‡,†Z[ğsÑ+9üæÁÇ¡r•E]ô·*CMjË6xÎôü=éc1aØ»X˜şa‘n’G
+è,j"Ncó[Qˆ0ÆgtÈ¡ÍìwÍÀ_11ìsÆØE¯Ì”î;¦pÛ]P¦ä>a
+3„Œª„¬ƒÈ¯„–fkãWCWêÖ¾›–(Ê^YaG/•mÈ½¦1-ÊV
+(´û:><¹Y†\Ìò¦NªÙe´" '¿zIåñáväp²õm‰Ûp%Ê+|şSÎ¿…´Z|¿ëˆ§ç0P¸:šPïu?Ìş™¿j˜oô—|óÓ]/¡w8~X´ç3'×éÖÂ.ÓRna^±(¯5´ò&hñd¾´Æ|À¦‚Ëfÿy»bèi‡Ğéñ^z‹í©qá£?
+¥°Í>'ôé÷4%ºÄ8$]yŒ†;³dK,ø—yµğË;€ “|jIÿ»ºLÃ‚T\/Œn?G>ãé+gK›e­ÄåáşÑğú˜¸L1ÎÈSm¨œB½[%ød{p—R§mĞL$†pFçbÏßÄ¡\|ôEulEö¸#Óí)$ıa¿êêbÓ?÷_9ƒ(Ó £"à-Şê"'Õ‹•¿‚ÒKr"”Ø‡c|NV;Û5»áZAÏv,„_ØíH)õöoD+2û“÷7ö¥D2Mi}K¬Óß<d¥Ïr²ŸÔcFzÓéâ¡›ƒîlˆ'd>E(õÇäøZK Ç·2"™JEqA¢ƒv
+ã‰#W-¤¢´2 
+¹¼ˆÑ5ú— {ˆ&OVXŒ 	ûÁŠñÌİëŠùóŸ}¸](ˆnŒp«×FûšÁmçÓ®Õ1«ê‰Uî¸A;¹™Öz¥Ÿï.„é¥›Ú`^aŞ9=øQÒ]ËÕ¢İwîïkíV"G£¥NÂü§Ğ‰¨˜öÁ ÁãX†ií"Û°=qí¯Y¢™µ«;[ãZôI¯5Çû7ƒ?v‚6|„_Nhiä_¶BcA4•Çñ‘¼•.˜¶èåÆ4íçÁ®ªô+—O¾ÓÕ¿¡ì¶˜ÊOmMÿ„fõêL)îtso¯–^ãa®é;†€ Ó]âÆÒé©¬7"YÄ½GÇ~cÃa7¤«Uu Sö_/Şç ãŒõ¥KtY4GDCù¬W qèŒ½‘Æ]Zõº2¤˜Û‘ãWÿ¬ĞÂÎjÚâº%&~|Á‹­ébßª5[ÍM‘GÌK	A13÷ø©êvp›ÄF†ú‘}±QÉ32âQ¿B'ËëÜ“3ÔdÈe­rÿK`âÀc4·$¹—yÂÓWM¨ÎçntÖÎş–rŠDÍ÷çú‹“šs-UVLa1$Â_?|3ÛI’™,@QæT… 5{jô§cÇ,*ï–/„P—bmßõÉûß‘Ø£·6v—:Ñwí9-Š¡Ã‘İŸÚ†×û`r/óÈÖt!™ÃÖÇÈ%#ÿĞ./{_ÕvP°26£Å™SIWÚmû–7ÙQàÏ¼œö‚àà£LóÄlæîß	â6™AïøÛLê’ìXÇ©(ÏœôO¨[ D¯ªÿ` l_à‰Whº[²H?e"¾™“4öÏA?©­xOcÛâË? *lJæX®Î2¬(NŸR@oã¨¢l»^½şˆ=Ó¢”ô#é–M%âş‚o@¼–‰ >v€¾?îÆl¬£Fup€ıï>Ÿ*qÆ—ôy)èûGÏ‹ö|lñéù$^Gåš;¼¨É›õõ×İ
+İA¦§ªŒOò:Fx\‚áåMĞ 	!c¶R–^vS2\@l~PÖ­¾)(yƒ¬:î×åétÂéu^ÆªN Ö1|¬¹àz@â"mşK¥ë'Œ3Y4eÑüm©O_Œ;ÌÃƒJûåUî…Áu¯^ë©	–OS±¿:
+*é<mXÁÁïãÌ2D´6Äó­şunõß®ñY´nFKí:à–'”–·ÑƒÇZX‚i‚Ô1/!pX[uPæFËƒ›
+m¹ó‡ø„]ú6`®(úeBU¬«µrA1=‹® Ÿ;•ŠS`8#‰P¶VØTe¸µ2,••üg]†uük
+µõPË{•ı°X­€NË.úÃ@ÑƒÇB¢¦oÑr³ìO G%·˜OÙ¦²$LZ6o¹	ãê´Fcsò,Sê°t>ë{x×|õj ¬× CÎı‡%8„W¬‹ü¼©ïr6‡Y —‚è"iÓ-¶É’ø%Xø.b­§ÿ 1¤Ñşv5É!)
+	|'û"ê±jKhY‘\A¹ü"uUËÄÓHÆj‡éøËMa8\ŠYÅD«É›a 6¸/fØåÀÁƒŒ‰òá{XO6õ}‹æÜO¸ÎËhRnì_Ã~7^‰#O²Î|#†¬¸‹O±$­u	m¬†ªÒ^CHP¨HŞÈ°ÇK?gš—âö¢‰ÉÏæí¨(š$/Ò.Zk¯ßä¿ŒlC»…óî‚Ù:ûË”»,Ô ößsF%ÿ…¬cBœ)tœ
+@˜®¯ß¥®¾·‚ècF^cQG!Ü:/§xòÊ·9œüd’ÚÛäA½‡¦1ı#‰Áiæ¢twÖ,¿­’q5€¶Áaú”L¢`rŠ—ûõSKÍO(\‡Ê˜À×B`³áGZ{'Ùª‰d$‡Th´f³\·Ë¿ŠñËÁŞ(xS"B8È¥è:«ªë®û òÊçèïË´zğİi}?²}W_Gsóí{Éö±åZ°–&FÖóUÌL²OöÕû çYÃ¥Ïp÷¥5ôó3‘Ú‚Rël¢‰é¬f¡Ã“‚q€ˆÇ”5ˆÌ1’›÷¿Q‰T‰|:Dòo® ¤O#`ŞZ¼(ŠƒŠñ|íiMÇ·üvëû3ÚGVÙ„Èú’™Ï¯8ü·%²á¹ˆŠúd”ğ¨¤H¹.¯ö0¨'6ËwßG™¨øYÌáÿ+B@iÄ0C5{ª OEeÛ´ã“<©•;xÔš|-MŸıkå…b¸æuü¼ğdªÓŒŠr¸[âc	b­õÄ(qüTƒ)m>@ÂÚ¿_P‰ïŒƒx›Ğ;Ué¿›“~†ÇY’V³€Lj–Ò^J;s_º×‘…Ÿ¸Âø¤Ô4»uçí“4‘8Á#À‰’î`ëßÃ¥—‰qF"jÍ%¾¯k…ô{Ì’µåè3O„BiÉ2¤¢ërâÏ«á…Ô·ıCUõ~ÅzdU9^mXe©‚tæd-üTmõõÊô€ñÁËÓA-•‘‰ÊDËN´©‹*»€B1model.layers.2.mlp.gate_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*¹ €B+model.layers.2.mlp.up_proj.MatMul.weight_Q4J€ bò
+jå 1eWİ:ˆ¿Ö±1uDg»YÍ7B\²4)Â„àt§¸µ]W½'÷"‘õ›>|%ïvÊäz(„«¯ÙÎü*mºa¯$ÎˆBØ|Epx‰dÏÁe#k¤UEWÒ<”Bü‚ó˜¸&SÄ„p•PŸûé°VÉ®]]Q!"µ8Ó’g~çÊ€ı{>ÍB¨—Ï”I/×ü®YWB²ÀÕ!"ÍV`ùä0ûŸÑÅ‰–Ûé ETé†FE·ƒg™n@Yù[!‡ízñÀ\å´2B	.È2¼½¸-ëèÈc©])ÎÅ=xÂ´KD_beÀZvËgK«•ô\6×\Ş‚dW»ãİ`Ö	náGÅ¶Ç&\×½Æ$Ï°ëC$5İâª1{®¸˜U°ÏÆ±ŠîL¡ Âlt˜LÏP‚A×…Ü÷×Î3…ØÍZšÖie©Gsê›ÁV¥¥œûÇ=Ö¨}ùpcš¢Ípp†"j`‡öı“¤0rÃı«šÄ5,Hğ\s#ïS1JÇc±ùÚ2kĞ ægá€§	rå:ÅhäzüƒƒHU¢‡\Nò½L|+$u½D£©ˆ2DaÄ‚ |‹?¸+‚u{õÁ »w—ŒQjÈÍpÀBV1­r²x?íg3ÂV
+53Üq5UÓI?;&7eUÕÈêôB‚îCø9s¨;i\l³B¯û8)k³ GıeÕÂ3‰aWÎ41<'§“ùÛSPMÃÂg!êxuÈ	“óí' Æ·ÖÈ˜øP™ŠæÊ â]YçCÁušcÿ¹Š®üzx³åÊ/‡ôÎ—|Œ‘Á2áw’—U|å«‰jã[N+¸5¥Q]L„¼© ]å«»ëáƒKaçc æNçg“òü„(U²¯`sq:³\É—nâ¼µ‰¢†¸§•‡2ÔSqºo^–ôó¹G®m"è>57F¦3 ™ÓøH2—^­}AÄ"I~$KU×`ÔMÔ‘Å!Ë1€ÈÅ@ÍÚ°1eé‰@œÜµ¦±(ş†Ésç8Ï°®çYk8£ÈLNYá`†óç¹°YJÖ9V)KÒß˜ã„8;nk¡? ·³7câ(¬Ì?gVğTp›±€û†ÖIzú”œ€Ş¿qm<”¬NT>ljpğ÷>Ÿ Ø(×13¬»ÓíRç~û)~Ah)hö™ïd¼@„häû…Ú–;½>ŒÜÍÖqépEÅ6Àîã*Î¿è[¦’Â=q•İ¥£ÔŸ©PA«À]v­$\¶(íÖ<Mkæ#ÔCë¬¾‘²Í=1ÖMfÂÛä3"xÔîŸ†²À#Âß`û~İ„hlÿ¾¯üúEE?r5	œ6­ä+GsËW®UUE„½‰Ğ_nŞK%•ÀSÄİeWJÉC¹Ô
+æsa]|]áC¤Õ½ §û¨…¼ -BWâğOg,	îHÎf¿„Uœğ¦CØ¸ÁpÈ~§rh@³~ĞòÕ¤Î¬Tï&E‹×uŒLº›gó%4”®/óÑÑrrw{jqûƒõÿr¯/`|™Àµ‚!ñ©ƒİ‡nXâ¾ßºT^«~^Z:Õmî,ßƒ“sşp(«Çü}xD¥’ä|^T³Á½'OUdkrXB-¹hj¥ÅmK7I`ŠìmÇõÑf¹¬æ]`3Ç2·ÂÖ0åe»qFŠQ cu|Ú—…©aÙå£€âE9„Ëş¿ÏxAıÜ²¾äœ]]e+w
+OVÈ’Íå(íá‡«İèyS”ğ2šº~Ü:SÑ³èÿ)†2Œ¤ËøóDîJIçÇPPÖ (ì,NlB;@b³§Œ‘[§8"XéšŸşœC.½·ÜtõgëshJ‚†„p È‚JÇñ‚úYUú¡:”À~¿wÍ@ä#iTà
++¡óÄ’c¦)­€vèîŠ"ìI 
+õbRp¢H1	´ø³fS­Qìs•ÿ3ÌÜè“ó„F‚îäy¤V¬ñ`Š#F Á»ô§ù*AWTÓÂåFúì4Ì&UuÉàåt‡w~{&æÙVåelu6j˜ÁEşBBiïXâçD=îâeü,ƒVm-ı³ò°ç¹R–m^AbÒ±²RÇ¿çßXÒÆW=öÈÁàÒ¸á¶á†\:P¥·{‚úC¤=İõ|ğÂ¢£óÒ2Ã!Pu¬ßú¬Z$}_Õ}ÓºÈ¯]d•)xÏ{”ı‚Ÿ+û#·f5·‚æÌc1ª_I5¼Í­aæâêû®TŒH!œ{ºŒ¿“pÖÑ—„¯üBdÀvà›Çuaˆ–‰D·õ$\³ÈˆÌ–4©ƒTç¼o„r·õB¤±HìÉËë‹ÀİPò÷±kb¿$õæšNÙ¤L#ÍÁG³&g\Û·Š,¿ü¢-Lä°M¼h°VöÆCï½BE;'“8yèS±e@êúJ^†t-ˆ×WâÎÒ¹¨¡n%ÙíÇ”ëØM¬óáƒü[›)ešÙI”‚Z29u&›:¡OLäÙ$M0ÇŸØ‘{í±ujGûÛq2æ¾#Œ³¼ûiîÒÜ„8'§Ôì®ĞT“MÆÃôWótB”?Hd—	/a»?±:}23{¾jZWñº‘›š~ê.X¹ÓÄ°ğ˜ši:c¬‚ÊØˆÓ¯óöq6#FhôãÆ9Á§Ä‹)÷¦3¶ıñœÔÃ™¶!@@#Ø«”ç;"îD£$µ¯Ë©k}Ö¬cš@+ÄÙöØX“.•!‘*0`¿ı`n.!Fà„Oíú¨ÍL¿w[ƒp×H"6Ëâ‹ù†ğ‰¤å/$§ÃYyıSsz›³M/zPÕÍ:û0æCÇÖ£EêÚÿJKÃêƒ÷àF¡óNØ±Kz’Ï¸Deù4ĞŠ'¢†o“”`—b'¯z`Dş_¬ØQQñşYgIâ¥]ÆoR2&ôt;Ø‘Š ÎK±ø);-¢èxrôÕU<¸* Ü O~»¢©n=™‰`íÑmã¾H´Ñ —ŞáG‚Îÿ•Í¶W¬‹PöVšÚ‚£ƒåG¸6c®Êf¨GÈø¥(·«Gá×ÚÖÎã5ø:Uìì	^?†Î„ÕRñÚíˆÅÆ+ÔE6Œ½&¢¢-XD[€¦»Z	´+„ÃbvÖÊ:Ë6B¼À¹®²öV f ”:©èìqUÕ0ŠşE/€RôĞñ2ª¸X^a09”:KQ1Í˜¬wÍIº°ü‰±Cr_Óoòæ¯¦<F¥gxt$7ÛÃóÄ.î±Ëo[¤eVa“€6e‹…Ã+s±,Ÿôü-2ï…ù†Çáú÷|Eoâ|…,Ÿ¬.Hÿ¾&z*¯†zg¸âÛ¼ëæe°w/÷‰Ó=“6Wbd³]óI”xŸ*
+ätïß´ ` Ì¦TÚ º2¿>{†½1ÑBK“,Fg&ü·
+ğÄ`±égt
+P‚Ğ¦¥"·Kµ´—³¨éƒ5
+œÄA½İSFRÔ™)72bü’1“5(AMÄú¿nür?¸LL}Ş»F.‡‡‹öÜJêRª»X÷Ä'¹ÊAs"ÀÀg”²Lyw)OéùÙ)®ÎPªôÉŒ˜_ê"ç¤õÀÄ_üËÜ:MÓbù6J¡“ªDÏgıJ‚¡töá+"[Zç«`™`ís‰²k•ªK‚ŠÃcÕâW“0®1Ûá¼eµ`CÁˆCe»Òg¤ºèÌ5\ıcIg a^ôÑÌÁ8¦E2ğº-©İ”ŒP¤€Ôx™º³šxÂµ§õúVe¨ğ&X	äã¾h*qäc¡ó&4<a2:)èÀÍ¥“)—G—vò`ÉîË^84Ê¯ÅuÇ¢BõÙÖ‘t÷„EgKï­/l»%ÃÉ“Äƒ]»	5áÉ2çLuÏ²Qè…÷´ñdC!ä]ÈGÃ,È§nË”9Şà1aúV>dAŞc1×j²’YŠ&£ƒÜŠë*[¬‡Eª»ˆ]â4lşGèôß‚Â~ÅudÏlíNa¤sÚ2O¥‹=,-Íi˜uçã¹ÀlSÕ4£“TğBâ¬óUø>-T¢*Äâö q³?¦ã¿œÏiˆ!2L×v*¤øKqJuç¤-Ô:¥İX­¡iˆhŒóûı\Ÿ½g‹¿ølsÎD#1ı&‘ÜÖ¹µ(@	*‹Â7BÇÿièŠ,›¾¯Š•	-.´°Ş*•é÷ZÏ=aü»lVÿRã|Q£¶WMÚÀkfCø5ü*t	­ùàI€ƒ?1h}yL È˜lı3¶•0ğ~XEûgìƒíªáI`|õ9¤‘ĞƒÔ÷ÿ>j™u¼B¬Ê–±UÊ¦y³–£™Î‚,l6óqeÀĞ7a~©Æ$\
+•Ş¬~†éµÖ=u?±#xˆ9‚‚±ç0›»˜¡[¢?š5x>Ê§dºÙN¿È¦b)Ù{Ğâ|è_bÔ¬ÅéDx*#ı‡{[5#hfOÖ<Ôô88¢}=ÖÏŒ/üfÂG$Iûø(+5á9X–8z“±};H~ óæâàUm‚ªÌ¾qf)£‡Ó÷áÆ‚qW!•LÌiW¡”Í…0™¬zN_>ÌÊÌÑæÅ¨Äî@Ò2&çòÍJ¥ôÂºíåÜj/$‹uy÷şîIeÜ»B
+ßùgOU[>SÜ°Zö3Ÿà…Ü:Êıæ˜Æ×ÎÄ&İ4g#Céä[;òœ³k87ÅºšŠƒ¯I‡Œ1ûdÉ`Tz}Òødag¶aIa¾+ÂKáÖ5òŒEïj7²[œœxWkw<˜»ØÃäzí6bæ_NİÉõçç“2µY K&6[Dà±0^<šjÔŠ¨¦¦ÉŞòı©&ì•²ëröÿ©ÔKdboXL%ÁÈwéM÷e9üæëğL‹›½hŞêŠñj¸öCÊ´Q_tÃ¦7™ëO]·w*ŞqĞKõğo	)hš÷,È<”ÏaÿKFçİƒEÇ’¿¸‡Ğ!Fã)ˆßë‰Q2İQ†Ÿ˜\$KûC,JçpO°:çéL4¯
+Ìy«\‚5Êëñ†rUÕ‰o,˜'zx±;q8e¥¢*),cty|åƒ©Àqo¡¬<,øfN
+£­Š¡½K¨çVÏXGùÁMŞ³¯Äİ»×R¹";õlà«Ë­>`Î#îğ!ñH‹É&5¥ù°G/4…©îíH©ş;‰ö/xÊàlüB±èu´À–¶âkÏÑx:›Z™œ¸(@KnT¹ã`µI0)^Bèeh0=òÓÈŠˆÃ#§ {àîÍŸ‹(]ê|Ë<$_£øô^WÇA4œ¤›‚¾Cñó"Yª¼Ï‹R3Üö±<¤ı*¹€B/model.layers.2.mlp.up_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*º @B-model.layers.2.mlp.down_proj.MatMul.weight_Q4J€ Ok³$nÔ!âŸtœ •µOiF«YÈ?håÖÆw,Ç–£Œ('
+®8iù(‡7yƒï8„æ@È¬bö7rÕ&cC´\|8W±âöYœß¡:I^‹É¹+úó~ŞƒÁÍìZ÷#|)“Æ¾ÍoõB÷½â”Œ»Q…;¥§v1–XáuaÇfPÀkiJ)‚ u¶MòbÕŞx¿ÓC ïÃíĞİ±ÍG¬yŸ2pµö=?Îz@r	¾9$«gu1’’y-©¿æ[ó <|×#]‹©R·v¼0ÑÀ‰)ï´.]U¸¸^ei“éË¾ô?r°bI8¡©±…ä®ò;¿WeƒÍ6îğ·y¦½Wç\Ÿ-¶(˜¤.rĞ2ş/ƒ-|íÎå\,T›;Pî{>ˆ©& Õï)Óó  â7·Q­“jç¶tÙƒ­‚xšËà«˜äƒ«ÜÎƒÆz¿s¿Í»CE*µ`:œz¤[­CÈÊÖu0ÕWÔ³
+„>¼Ç…‘i‰UŞvÉR³™H¿•ÁÕnJÒÚ¦‘(!Ö;÷Y8l°ÈÿNPÍ…²lJeäM};ªïÙ²eL§µf}“l§êêšÈ$j.’Âòa6_İé·Aÿ6¦6|gÅ|rÅ¤ĞÑpÓ:š×yÓÑVNÉp5w7»³ú*Ğ0Bê•p,òqÚÙà	FÓ0“À§˜Ö'UÙ.y@i"uB- ş	ŞŞJİ4½{†§75}ˆ†¥~¡6ºƒwn9fQçfb‰UŠù•CA ÍAû•pàHÊQjÈ5»ÁTæ&¬^QÑıÊåòõ¹YÆVİÔı*i”÷ÚV)ÓO¶ìá‰Lís?¶ô†¹€)Ò»9×Óë±Z‰ƒÈm\Ù±Ò´ÊY­ôò•·u¡ÿ²`«ÜğL‹³L7Œ+Nx‘wò æPHlr#iq›õÜŠcIƒzk:÷j–ÛLÊ=¢Ù±µ;`WáòÄıÅú³ÅŠºAtå]DÆôŞ´}/‡_©sÔ¥‡§Íp)õÜ
+sÂS³ÎvËî·gï;0ëÚñ)Uªb…·æÒ›Öä“øÓ]Ü[âÚôG+é]n ÷¯ÔÚõ< ]®ÕóFµç‘	ñŸínû-Œâ†r:‡MÀçÚzqçéİÍ\A	*°}Ø*gƒgBWUã»K¯‚/<}/GD;¥¥poYzŞ÷°õŸ‚T©¼2Ä×ÚT}Óœ Æ¶6ŠÄÿøb~S”Ã‘‘999a%ópYÿB—oú¡¶£‡à“ÊêÀÄıæio	Z†ä„àvOãjíÃCØÒ75r,Æ/ö¸¿jš…5q´™Fòİ«é%æfV·¼ïµÒš£ßPÕ×f4šiztè2lâ…_„¼•7ìoÑ?Ù&Cy)m¿Íâ¢:t\o¸0‘WR¢¢`Û#"JƒéFuÇ“SŒ¿>Â8åÑ3Ü÷k®â¡ ÊÈpí¤±€vÑ0“yCŒë›r>Gp˜Ó2Ç=£;ø¼C§ç°°´F >úŠöˆã²¶”€ïM2—Õ°ƒíØÏ%‚Ìtóú´ÀJ3«ÒâãÚ†NÁ"eÉLâB|)ŠÔ÷eøÙ>Î¹vhíkt–Î¾GÒ´]bÇ…ÊneÖÆ‰ÕVcöºó÷.ÆÈ›f¦¥Ñ&ø†?:¥!ñÌnLÏÕ'~ñ–w Ù÷ü"æC]š1”xc|“¥ B¹»ú”
+ïÉw«LÍKÎ>9¢ßÕËÍ…¤Uk31&&‚–“ÃÿÂ‘ÿdoÑ½YÄh"aä!`ƒIQ‡´wJæóè¿"í/+39}µ3·ƒg­=¯)1–AÃQ
+ğ‰}İ€Õ4«¼Ni[*tæuÉR](/Oz8MÕÃù«ÈûÕ­¿®4Iå@O#vıLÌ#v+ÙX ­`ø¸-4DOp
+z³^
+½‰£iÃŸ˜r±*†ŒŞİô=˜ÄOÆô!p¸²¥ô»Dz`Á…Ù¾ŸÀb¿Ósİf;eO¹™ˆ;Ÿr\İ\ñùAiÁ$;©É’şàT2ø:|!QÚONey.zêˆº i.³½œ{;ESTÿá×’c·ãK\ÈU`
+kÆ>kzŠ&œ¼/“_!M©z¤@Câ%tW½.ıÆ‡
+ô­Mş$‘áU[ßÙLB¯sƒù"“FW¡Ù é6Ñ•MHşù%ë­¥{%‚MtÓõÒÑô¥í´ân¶lEË»œˆ†K6Õğ`¤œØw@ôš>R¼ìN‘~'é©,é4‘…Uï'¼­ĞÍhÇP&$»(\'y‘ĞƒÈ%GZw)Âv"Ø"ÿ×ÀJs°åÏ±µ3d4
+-$¿ìe“œFÇBCL™á8*6è·ÖO“”ÿJÏ\P©&]Ã¸lp­ÃE£ù—ÆÖéï2'@¹¢l;™°ğ	'†Ïr?‚ƒİTXpH^=–éwcz8ºJ”À¨]Äu=ãG:‘*•ó–ˆ?Á–Y¿E/Ğ’ãY+Ñ¾5n¬ó‹•ÖˆU;¼k óY€ûèÙ59M1?¼Ü¡èöŒèşÀ5bÏV(ºa³§j~¾'ªAÛm)?^zÎe„C(ÜJĞS ïé¨R°»{m	Ş4.‚	¨¬ŒS(×ãÌÂB-/mŠí¡›£/[B;ãúÍÆ"Ì˜ä¾ìÜí¹¢L:oŸ#È”[Ï:ªÜOHUû,Ù>ÚJâ2‹£ôèè1”ûU“¨ ü3ÂñrR‘/—q	9 Ç³Æ©‡"µlHõ¯m´»aæã‰š#¥ß$Gà³,ìR”—— ìÕíl5êü5­\j{39r;Ì‚Ö+IŸòûAoÑó1¤ÔAfB_¼ãj‰©^äátT÷MTÙJÀ"¤ÆœoÉÃ¦óCÜ®s«ê®Yì2Enñ’-å"w'»ÌÙ€WÇ›oò_Xr4Ëlcšë¶óïíÅéB€©†7<0,³ğèÑ|0éQ~‘cé;Í­:i‹fbAoD±øU;v0YÂ_^ˆLZq ¼sq=kÜ”¶ª¾~ã]Æšú*5Ö%(²PM+ß9˜!ŠA$oÆVş»éçÃX?>Ş(|Œ(§íQ}íÿcvÀbÄY@n@S™•iÂÖ{ì–§u˜°ğëñCí­pı| %m»1¼QûuŞQc2c–9¢¦à|³‰ÂrãÓÄ&û3ÜâH°Hq×Z·š)Gqzó‰NVíµóç ‰n(E•î’ê€–æÖ¤e0¸DŞX4¡ÿvŒñÆ1¸Tó9>6ºÀ“&…
+bÎ2+‹&N—„ø´–qåy‰J©Üıê1Ÿùğ²cÓî§™Hq3ØB9­íÄÃ_üìg–+°Õ¤ãè¬8es¾^»Z4ä<şi›2á&íMeAC_Á’3‚ ‚ê?}‰H“% cOŠët[Ph*æ…—
+ÑœòPÚşebF5/û5áÄÛ²“#éä´¹&@WxãY\Ê¬ øÚÖ}{Bı=›˜EŞb—Èù/FW{PôS=v
+º]P³s>2†Q¶î‘N¿†Ö¢«¢“¹RõåBNC…'•0zT©±6c÷ÊÄ;«ãF¦2ˆô±ô†Émk×ĞQÅ¯RÂÈcJC-Ájy0É€ÒÙQÛ¹ºÂ2å7¿òÁ®üıX|æÂ	ß”;—A ¯ÿhÉ¿5‹@«Ü±GUï¿º'€’Î(\§YI/,®¦²>—tO>S.*œüy¼’preF?øjåã<ÿ	mIJ£ZN–¢SFÈ¬ƒ%µ¢©ûÊI»ë–äÚS¡CáßX—ã·Ï£¸½ÒU²ÇT^Hí¹qY–¶	ÇfŸ˜±I¢m%Æcml:¨ÆÛ™¤V8â7Ãvë·(¬ğ˜«òaºˆtwµ¸U¥€NÊX X xù‚¾à@4KnTZngq"â%ˆÌ0'¶Å?‚Ğ´'œqpÊéß’’^œ@ñİğ0¹ôªûóì“@÷”š°&¨i“/’^×v¿F~í«z°ÍÃÓå­í—W4Àô+í¹Ú> ›á'Òñ~œİÖöay§K¢}„?¼¸>IÕäù9[™Ù×1Áù¡±L
+(wÁ‚)iÅk–ú‘Bbß®'™#ûíeán Ş;lqáı7m‹3jšù§%Âíl9<TŸ¦Œ¸÷Sr™½îá21ÒíŒwRYÄ~F1õ–ÄÏŒ¾Æfí#Ùæß_¾Ë`
+–02€šGß¹.á·>*ŒJ1}»Ã;~ÃZ‹¬ O—A×hP+ªn]ÏŒ?¼×ôÅø0ös !‘wŞóŞ—6.=”çThf6¹m×ÌuŒ†:øŸÃMÈ‘!\‚¼­‘8Bq£ã²×zø,\<ei”éò˜|n!ˆ¬‘%Cßîûl9
+ƒÓH5{Ûşm’ûüŸšeÓA‚ïwO+«¹Ï“uÁÓ¹ùÒÊxeÿƒå8‚Íô@[Hƒ™©[W:ÕH	ì£:o»Q–YñÆLkÕí¯;©<ñîM|µŸAŒ•ÊÌ5óğj@õÚF"OÄFrŒ.ÃÅÏt"ÎıÛ1¥}?*:Qò@ŠğNW ‚O«ˆş««*™ı _å&o²1Höº°ÏkM:ÈîSEéÎÅÿo•}†b­¨¤ùXIÛ–ÑIãVÀÕO §”Î«´lêÓì)óò™|<Îq:Á4_öça'ÓÿU6Oİ“÷ß\“İWI[¡XA€µ»POŠz°Nl*phú3LV¡ \ğ	zoPŒK1¨|êÚŞØº­eR*¬mˆ4}˜Õ-A,O› òêrµô¶ôÍI\ôS,ŒÿµÖë|Í‰5)oÅÜÑ{]&:_ôª;e±bSÛMìC=]N?³²ŠÕÿˆb¯qs½¸â…Ë)Oöô¼S}¨öDŞ¶”v~²0ÜšlïÖhÎ¹Â+”á°º9‚MT
+WM&dO™+hÓì*ï™³Ai"sô€ŞõNhÛ¦›Ú'éa\1J 1kPÉ:` ÖU8:›ÿYwÊ]Ñ„X%ßèêèô±È†WÀ~$ÛEQÕ E!#…K£ÏX”ß=£Îô¡ìÇèı‡°jœäSnˆ“X	~èç" 7‘ŒYÊlÂ"Kµù¦µ‚Õ@DaÆí³L/É>ÔıoRIYŸn\·X?¯b,§À÷ls¿°ş³]ş=Ø
+`q%)¿TkÀ‹±¶rµôj!æ»]9‡’]ÕD¶j2s7°¬_È5O\*»€B1model.layers.2.mlp.down_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*0B&model.layers.3/input_layernorm.epsilonJ½7†5*®@B%model.layers.3/input_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*¸@B+model.layers.3.attn.q_proj.MatMul.weight_Q4J€­}täã†¿É› ŸU}ğ’u¦uGÈ#«ëìsõVyµ¬Ãî¯¢çwzuá¯bAkõ¨z¢ùw±P’“èlà>éˆ»ÙÆÂ>×C%ŠNèĞDie]ıÿ¬KhÙw’¢AÚË½3_Ë.“¬J>‚Z8Ä‡ö;^-ó\Åe
+Ç]øW96¦ap„Z:Æ¶F`°i/œEmÜ<¼GÉu¦Ng—¾­½ùû±;0¨:ÌNYÔó*±åÏ bçïi†@LT]|à, eo=g{3=Ò‚ÇÎèúËÖıhê=#ytÌëæ‡¨Ö´ÀÀöjÃVJ1òX^•6Ùƒ%†¼‰ÿ$»1³|Õí‰D×h“¥Ø´ 
+ú›ò#‰6m.%F7/¶³;øôRÀ¢„MTŸÿ!Ã†’Ãä	sÊnıí»"â7â2Ób g†ã4ğÖNKîm²YËÍÆßc”I8yùLQ¿ìÌ”–ÙmÁ}œLRù:W°¦›s	Í<owí7=‹€\d×½W÷oU´/;³XÆ6ş­M%cˆ¥½•TÑÉÂûË®tl£,™Nùú|56àùZJÖóÄÓsÜ0Q‘ks›ğH)y»…ñ “šU÷fn0È2ÅÔ„>¢[÷~H³0nN ;‰ B"´„ °ş!Şô‘ZSq!JõÛXh±sÜüoäÖ–»ó~è&ıŸ%İ¶YÀøÔÿ¿ô&§Ò–å>ò™3¤›’"o¬*EŠú¼~UT(Á(Ó¨ŸÃ&6<= H¹Ë,@©"zFÜ¤äŒ[²¾œ|É"5öä‘T4£š
+(’jxˆe7mºDzvÁâDxÌğw•¸ùJ»ç¥”¡¶Ã;ö—¯ó¯˜Ï¬¬sL»¹Y{Yo&œ‹ÌV
+çÁ Ü–RÈiŒ5ZÔkËm-46¬_\P²diÜ²H¦±|¢oµ
+»|õìÒ ”†Gß5ÙO·=’­qÒ€¨» šÜìì»=#¹JÎ†ñ7=qÜuIÆ†]×•ó9‹”r]„ ¬v P¿¦Vloá–¦Úia;/+Gpñ3Øş]Œšğêª[{®ìB9"8DŸĞŒµ¤[»©ê÷FQpW—;BóGE®ìÛŞ¯*¬#'ïr¯ê¹nÿçéÆ‘ºşÕö‡Î	ƒÅKşZ¿™_PçõöË½ñ8ñz—Ù}¯Óji=9%‘Õà+ —+%\
+;™b°ù}Nî=P'å„u‘p¾Œoˆ0<#œ g
+ãĞDÄÏ	&X¸8]¤9Õ#7ß<[Ç.œ·ß—\ÍŒqÒ[AÏ#@RÏÆ5½âĞi°Iú>Ó±‡Y"YîÂ¢f? "0"›ò<ùvÖİÛzÚißĞ&;ícYéfå¶¸Q"®ëR©İ:ˆnw÷‘ã0 Ëe/°†±åÁmğšRlZàGH(Úh¢OP¢Õ´póËVFù’0—“&-™zFâà¶–×ÿÕÿÿõ Ûİ’FôfŞ®•–¤[T—·ÉÏS[0£‹vŸ³qTkÙ5\ö˜‹{ıßË–Övw%>n–÷^Ü¬²ª8ÔÖ^pZ[HIE·kÙ§œè—í›E|;]B×¬v’–ÀÏ²<ºš¸ÉËA#áH¸‚Müds5Á{0°o[ ,‘¾ ‰ÉuóîÎÆŸAu¬ËOˆ ÆûOœl˜fXàŠÈæˆWÆ»û5166%ÍbdM\Ú¸•ÁÖ»ºnô+¼Å™Äˆİ‹q‰®/Ï?Š¨Š5Ô+Rä¶¬\,Ò)«G¿PØe3Ò‰ìw•¿1eÕ:!zŞİ<ónÀë(›˜áÓš(Ü±<Î‰H€-oN£‰€¯zĞQŞªp~ö´zƒóõú4ï×a5z+9·DÙKîæa~½t§ËâFF É“‘¶W_`¿zFÀÂŠå­¦sf(îWú…ÈOUåp.ÆÙ”í±Ê@øö*Õ²Ï{G¹ü›~;yR™u°ªuË)ï¦híÖ[ÀcñŠÜ,&şÍâ·:ÈgdVµJ5b°îI¹Ç²üJ"¤¾&éƒm	';RÍ'Nbïf 5ÏÑÆ!	7·6›iºŸ6?˜úH¨ßnÆ¹árÅoøÙábGŸ/œ°œˆ»ÔÚé¯“·EğIâK9‚îEî—À{<Äş&Ìs>$¸Š„ˆ õ€.ä~]ŒÆm^±¡®NËÑ½²g»´å#™ÓÉhŞŠ<Cİ¨Õ£¿#¡×Ö|º¿qÊ–z¼[RÏŒâì¼(”^Îï-2Ïä†Óì4îÈ.0§Ú»œJ{8ûÅòl¯Ö©”›ZVÔ4àß¥`P-Õ=É¬Éë|ôø™ëÙx£}¶Ë, Ëâ!T~ü_A	·E&XüÂ†¶£‹°ìW$m$ğÃ‡šooN0ö«ÌÊÇÉ;,¯’*ÈV'ÿ¬‡aú1wMexÈ}À}Q®8‘±
+¼ínelõØ/œ‹«Â¬NJÅi<£÷ÊÕ=ƒ¼ÜÑXÕh@L«ÜmIæn§Ü¶DLç|gü
+0>~b1çÕ”o¯.÷ğ—aVF§"ïÈÌ5„s/x³©ÈÃ•¶&„á]Üa3~}M†{åì:*¹€B/model.layers.3.attn.q_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*¸ B+model.layers.3.attn.k_proj.MatMul.weight_Q4J€i3Õ÷n×ÑÄ]ûŒV!'”ï3v	öĞ€†¤.&ÓÀXZ&¿•
+@; òšã^9'"/¸6*{şDÓEb´=3»<İmZÚ<~ğá£JpövÁ´÷/ÎRüi}TöT3/A‘ò!xèˆ°`ücrfk 5	¦ÙÃ´,>Ë²ì!İJW€XºqÔ@RãPà¢¦,jŠãÂzy‰Ÿ-Èü¹·qß’™…9‘ 6¬ü°S¢¿¶èİß‹S„•VĞ×UD{¿Ù»®ŸÙqòìgóé
+ÜÃGÍ#åºxs§Ô]-Œ±â¦ğÏæïI¦ÿL¹Í9f_é$À*K†ªóáYÎ|ïœ›Ì÷#/•Ğú0C4°2ê”®—0CCÒO8•HŸp=ÕûeÎ½f£µŠ³Õ6®Ut%#Á×–]> ÌMç2‰3ø`ÇÏÏ0èf°XOcMUıÂªPB%aMß(ÂŞJhÂi×ø°>à9g-ıö¿-B¥ü~­–ï/ª6.»PKî§ã#öáƒÚbŠ°ì:HÄÍ Ï?‹pak g¬ı+­Â›§R¨yQAĞô ¦ ‰Ø{0L8bŒ-£¬‘¥Ë°¡šÄà_o¶5Î›í‚iÉP”‡A8ºfÊ<ËÂœuÔgªçH—Ş€ÛèÕ@şŞŒ 	 +.FçRqmşl9tAÃéÛ„WhÊ’if†U`%@oÆ~ñB€« ¿cF§S ^
+D+R†0†«oÉùf”u¢k{BµošRìS†ic6÷B,-)—ÔƒBp†±Ğ"ğ†kÏ÷\j1EpónÅ? :À70t¹IÒ<­¬/“¡N••Çª-pîVÌ‰ÄÚ‚H–¼M•¦:Ëû•%Ÿg>¦îùú·I^mYIí¸ƒº­RŸ Šoˆ¦C`SO`^w®NKöÚmö ¢÷cP{U¦^>rÉå
+ğé¤KL.&/ÃbØEbÙı±é1AdÛµ·À›®Ã–iÛEı‹]?HQ²ÅH¿Å†úS¾o~VkÂèW©z³‚)aùuX3òóø¿¬oÕä•å)åñ¾g‡g)ásˆ?º‚ÁùpÓ®Ó»t£7™"f0€`‘ò¤ùcŞ*¿cKB¾³l^ÄØ/‡J15ñ”k6¹Î9Ö¼.›NÎ)¼í$:"d€Ài³
+¹æ»Íïn]pR0§|ğ½Å” l”U=ÿr¤=Ù#&¶úãv¸8‡rX9}ºÔÌÇÕMû¿×i¹¹â_š›[ÑÄÖÿùÒ=<H¨ªY–¨\g†Ñ2#.¼7&SyúËB „Ô’>¸îpw¯ıá¼ Bu¡/ ºÀ¸âÙ·½¼lY*¸@B/model.layers.3.attn.k_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*¸ B+model.layers.3.attn.v_proj.MatMul.weight_Q4J€zãÎÚº&Ô^ØÔ-Ò½¸S*‚Û®n}×DÃp¡>ÓœaÀ¶
+Eã°IÆU)¢ÑÙI“ÂíÖô!¸÷^›X¹!vz65ŠÏƒLFs%‘T}oj©QoÍ2£Ò ŠùlrV6H+.“!Ô:íŒ¾Ÿ=aªj/àdš»«ÈÑòO’Û§Ş@5ê°É1õ`¼XAõ+?İ;Ü9¹°ŸÌmã5M3ÈáFíÓ²YÏ±û7Üü5TGëÎÃ]Ş~ƒäÃéÙ·Saù–¢±-,"•«ñŒ’Öcv‰ªzS’†T&äxÉ|Ú©²Ü1g¤¦`¹Öí(ĞMÜÜbÛ8*»±N*š1øô ):ùB~S:8ê­¬Ìœ0İø„˜%à}
+"5ÈdKĞ><˜I#pU£‰"+(0\ÀóÌÌ™ÚK$’Ùêâ .[ü ÆF²>ù‚ šÎ—[v‚2~Ç¨pP(F‡ŞßÍrõ9UOÀzêÊğÑœÆo>Ë¤#1rù8SËÓ4åà]—’í?ôÀ£5±õ n™4W-ô¥`’gè¾Nr®suà7Rğ‹w;q1à.Õ?vü-¯t
+ZûÌÈÆKæ'ºÂnı£ß¦İmY€ºDéëìæÄoÈºÜÍEôg–%Íç@û¶œAÓ|æ% +§¸YeŠ¶¾#ÜÍÁ[Ö€³¿İ’ë£r¬{T2®Æb*Ï´/d×ÒöÃı«P™í‚ÖÆ¥Ğš7›Å“¤ÚPLƒñ×ìcÑq¡hã/‘È`JœÇóŒXWóN1tlˆ¬Yø„<ÄLİnş$ô6J{W¯ÕF¾W´­ä„t»=§ BÌdZt ’.#?_¸Š~ìàjõ­
+6&[û38?#Ô«DeDùÆ¯‚¸t}¦\Í_xHÀÈAÁ÷Eª‡|¤¯ÆI¾ëÈ%eJ·µw‡~#y’»†¿ñÚ.HÀÛ#ú½K–ŞÑï¯K	Ö~'M!P¾ê“Xò6-Ve×ºÜò¹K¤nO•ÌHÄQ”…¤ŸÎéŒ>ÙP Ì½Ÿ3çÀŒØUøûK¯ã›#ĞmEµ¯Ë»	w»ZïîzA­Ú‘íÀ¼È¼{C²Âù\i³®¤çë Ù¸ßc¯­a‘ësìıkˆVQ?jõ)ÜœY)€£ö~	*>ö,d‰§×ö-=xü¨IÏYn¼å®»éƒè–ù²VI ¨ (ØëñO“šQ1P9…>œDI°l ÷q ©t¬UÉ›`“Âà×^Rzyù”ÛÌ½Ï±xP@EW§¿ÜêÄ*¸@B/model.layers.3.attn.v_proj.MatMul.weight_scalesJ€
+×#<‘
+)<>.<q3<$¥8<ªØ=<1C<·?H<>sM<Ä¦R<JÚW<Ñ]<WAb<Ştg<d¨l<ëÛq<qw<÷B|<?»€<Uƒ<Åî…<‰ˆˆ<L"‹<¼<ÒU<•ï’<Y‰•<#˜<ß¼š<¢V<eğŸ<)Š¢<ì#¥<¯½§<rWª<5ñ¬<ùŠ¯<¼$²<¾´<BX·<ò¹<É‹¼<Œ%¿<O¿Á<YÄ<ÖòÆ<™ŒÉ<\&Ì<ÀÎ<âYÑ<¦óÓ<iÖ<,'Ù<ïÀÛ<²ZŞ<vôà<9ã<ü'æ<¿Áè<ƒ[ë<Fõí<	ğ<Ì(ó<Âõ<*+Bmodel.layers.3/attn.past_axisJ       *,Bmodel.layers.3/attn.query_axisJ       *%Bmodel.layers.3/attn.oneJ       *.Bmodel.layers.3/attn.batch_axisJ        *¸@B+model.layers.3.attn.o_proj.MatMul.weight_Q4J€O¼ÿ2¾Ìş¥-CÑÉq….]<áx~ÀøWÅ?‚tË§Æ-4ÅØ¬[Ô~Ó[İ` Y€£&Á€zlw›¾­úß‹î½O˜öÄ{VæX†p\+iÆì¨X&û+™LWş„°â¬© ô3İ ÷³
+8Ÿijçóg834ŸÊé¦	°J‚¹ZÈ•×ø	nÜmı]qV ğšTéÿ çİÅDİY~÷-ıÉŒp‚d¥Â °WU™<ç`ŒKíÛ1®*l”#YûÑ¹Ö;cáìM¦cÈÕ¢4%Êd<ë¬°ÓòP²ó_{'ïÒˆÿ0ûy‚õ³´¾ä½9ƒ¾æ7eJ—ŒüXß?„Ä¸A4‰®"ÙŠM˜³®7Ñ£s²$ü-=@¦h(ƒ:³@!+÷•d— d¡Uü¿7A§ˆšmÜ¤3D'ş1 Ógr2¼4‘‚2_å½«'Ï>qã™’’½Ÿë •Çs¼L©Ğûk¾2X_p„Gùû•‰n™g[4u‡"…›çÓób:yƒ$8ş³şhÒ§ê¿aHí±t6İ;ü´æ„€)Ù“H?É=bÿ¹ù%–âŸPQ"'tá˜QhdA³®XZÑÅì<ÕD^ŒU, VR£°_û+Ûÿ<le}jLd³Ñ“7¤z¢ã­²sÕÈjö8
+AœÍ±ãÄŸuÚÍW¤Ğ`Åó¬æÏ>RgN:ºô©/µ­ÛšOÎ•RI—'¬ ‚(ß]@á ä²vú_Ş·EJ¦ÍïM}N½W7æJ©”ç	ÓÓıÖØnLç}•:C³êõß:Xò¯}+bÕ‡bŞE~œ}=Xs¾!—JXåÃ¨R³ëChÜZõzY—GF&¢l,òÙ0 Êz sÕó9ug£˜ta?¯Ø™¢ºQsŠn«Ã5úåë®û}º§wNá³>x¤t°é×*¸û–QĞxŞPI_[»‡‰7~F»0g WPjcİ‹hP<¶0Ö|Cœ¡E!\çÜ×Êİ”	éõT>|v¬„VĞYÄø^@¬ƒ²®$ÎˆyÛ…åMı,Hı)/¥¼Z³§Ô9gu9Sù¢Vk°ZŞsÆ‰ğeL|CŸå+|-ìzIí¸mvtÏ/WUÉH*tÅÁ5Øo`eeŠß/¢Ş~ı 7p;¤¨E÷]î68÷¯øuÙ®&LQÆ[(á@W‡ã£búôDt%4CY0~“7”àEj•–o.õ¼“Ï©:=™HAŠ[[AºS¹PÆé¯Œ]°İrPÑå¬Fo[˜–Á{Câ%I	«‘ œaË¶â%{¿ñµ´»½yád^˜aâ´|äÀ ’zï2E9qP\ÄDÔ'w,‡¤WBµ©UQl~ªw)@?ß0p|éS²øgsõ(>*Mb¹Çæœİåœ{a×?_vaÊÒ%º£¢/gZ¶ˆİùÛ3Âho4X€ïÉ«}ï•&vü›^¨Îô+BRsĞÄ:eàLÆ]ñ.iòìöëİ¨º†IŒĞ!ŸäJıÏ‘%õÂ/Ê$i!)¾B2zrƒ<UâiÇ¢HÜVÂp`”‘æ¢İQ´”6lêddªµÚƒğø% k9•Mpë÷¹¨ªÆö³gM;
+u«éÅP éyêacú4×ÓÉ-pˆÚÓ”æŒãC™uskî~ÇNF÷„úGóÊ¿ÍßôéËÆ„¦ÕÎ£¬íM^ØªÃ•aö†ĞAoÒşWœìc¸e;(~_Òm³%í=ZÙ\5ÌaaÄtÚÃqs ÓŒ×à·—öÇUVÌÄŸ ô;¢XQ†jµ‰âûCîÑä£hwÁÀød&Ìs6Æ'‹)‚L(®c†* I¹–íuj\˜N³ê+(-²_zŞóaà…!'´äÙ{+‰Gü'
+FÛÖbâ/“;F¤ÿbƒÔà¯¢nqŸ«†¦ eq,~”â‹á,EW–;oºµg†¥+¹0 ùfÕÇ‹ÑÆT%/×`‰9
+şÛïò/ØüZaw€OüÙî=ÇıŞRó¸sLŠ öJÆŞ½*Mo˜uÌÈ‚ûì:¾ÔNèüV€ÌŸİÑ*­ó)'Í€Ğ#'œú@@j;§—¡x…b˜Rğø!VŠ™ÁR7@ ĞÎ­{²±ÚWy§xÈÌÅ3ãÓâ±ÿ¿«‘«MÈè8¼A$;E¾yêƒaàÜËv6®;ØÈËGSÜ_«¦Ñ|Â}¦bP:†ç}™'ßwDZîo£ısuy§Õëœ°Ê4êå,aÆÆÙØ½¼‚â¿Tåên&ûû/(!şq%TRËu1,á…›ƒüıd¾hWÍFD;6 Ø½òB±©ù\L<¼¾–¥YVö"9fÕP æÛÎå?:Ï¨ª»Ğ_‚ÍãÆPSr6°<x9êÔŠ=î®\¦	\$3ÍÖ¨Ššùe[éÃß £–Ú*¶¥Í{ª4cm¸zxü¹lTìnŒ¶¢1pÃ$‰PóÈz¼şU=!ó]6>£ÆøW„.gÓãáõ™CGq>ù¨A_J"p~üXÉ[0ÇğÚˆ)éÇ†Í"æXŸ²0ÿ²ÊEŒ²À ²—ï¿İ.øB'‡êgxâ>VUziÂy'NùkHÚ¤İ ú¡_3¸³grÔ‹4¤›ğ¯*¹€B/model.layers.3.attn.o_proj.MatMul.weight_scalesJ€
+×#<k&< )<š”+<).<¤½0<)R3<¯æ5<4{8<¹;<>¤=<Ã8@<IÍB<ÎaE<SöG<ØŠJ<]M<ã³O<hHR<íÜT<rqW<÷Z<}š\</_<‡Ãa<Xd<‘ìf<i<œl<!ªn<¦>q<+Ós<±gv<6üx<»{<@%~<ã\€<%§<hñ‚<«;„<í……<0Ğ†<rˆ<µd‰<ø®Š<:ù‹<}C<¿<Ø<E"‘<‡l’<Ê¶“<•<OK–<’•—<Ôß˜<*š<Yt›<œ¾œ<ß<!SŸ<d <¦ç¡<é1£<,|¤<nÆ¥<±§<óZ¨<6¥©<yïª<»9¬<şƒ­<@Î®<ƒ°<Æb±<­²<K÷³<Aµ<Ğ‹¶<Ö·<U ¹<˜jº<Ú´»<ÿ¼<`I¾<¢“¿<åİÀ<'(Â<jrÃ<­¼Ä<ïÆ<2QÇ<t›È<·åÉ<ú/Ë<<zÌ<ÄÍ<ÁÏ<YĞ<G£Ñ<‰íÒ<Ì7Ô<‚Õ<QÌÖ<”Ø<Ö`Ù<«Ú<[õÛ<?İ<á‰Ş<#Ôß<fá<¨hâ<ë²ã<.ıä<pGæ<³‘ç<õÛè<8&ê<{pë<½ºì< î<BOï<…™ğ<Èãñ<
+.ó<Mxô<Âõ<*9B/model.layers.3/post_attention_layernorm.epsilonJ½7†5*·@B.model.layers.3/post_attention_layernorm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*» €B-model.layers.3.mlp.gate_proj.MatMul.weight_Q4J€ 'éWyŠğ0ºfÛÂ~ÌµùV[±şÀ‰<ş_ÏøLŠ^;„©V•³àHßà:œ†ãPú;5MÈ—ÏwŠTˆ\X$Ğ$øc<õÑ=_<}‰¢šöÿeiˆ¡¾­Öœ–jIAÆ:×O$ÎøXî!+çn-1ªæ6‘eûÌ[’Ç€u”™R$e•"“¯„lÆR{$Z¬dN0j/3Ì V¬À›2t z“Æûd>(C™T|ÛŸB´	£ªzåË¢ÿçi×—#jùk³W‡„f9ÄÙ)¸ÇıØà`ó‘Rı’a_$_Lı1¨@Şs¦Â·œ VAr: ì£hƒ~Ç0İÆuó»oÚÉ—©Th@ÆX‹¸³zl€‹bxşÃ ¬-É¢Äd®â”Ú)Ş&±ı°du¦üº_K¡Ğ¼5 æ`¾+j¡\z·ˆkë,Â1¨Uàï8:!‡«>sOvüôÀù×Y.YÒb9gù1ê›Qåş²NX+ªHGQ5¹ÁPv¾ÉrñHÚ?ôªHQëUñŠ» wßİ–¸•»€çc°95Håzax7Ó6
+;•ïr€£HÁ!¢^şLX§-QÓm€y V•Ÿ&78é]Dx` q+€İ!a"%¨š\®c‹Wø{FÛÆŞXd»ip”$@)Ld›ÚÄÚ*)²iºI(Ø®°¸ Ô•†|ò&4Ö£´§sR…†'È1ê$Ãg®˜N>h7®Î`¹ãæË‚!|•¡$VzR‰n^x ÑØÒÒ]4r4|Â’‘
+è‚u‚ÜÂ‘C*íÚ,ïŒX­¸ZV=ä)P„³=÷Š¼®Ûô»³ŠÄ›¹S‰ûZnÉ9ùpa%3S-¤aÇ†²ºX‘ê–¼ÂÚ‰Ş]DÁ0]AÀ?ıp­„ê ] ¦÷††yY5<$’ı+r3<9‰qP	1Œüg—-)VÙê%1!@A‡Te¯]Iµ¿*Z} M•ºÌä‚¢/É(ghítÏ’Ê7Ô)¤. [«œ8\ŠÊäÒ‡uêŞ#84?lú3eÊ_vıÓŸÏú„z§ø„I¥jùÅ±_2VÉS{5S;3 ¸‘qô\T'Nó€¥‰I	²L¥Î°‘Èôªä6ÛDä¥Ç)rıaYMñ>ä£Ks|kHşU¦sIh¬ àâ€%,–;|09%¦7Q¹›KƒV0a€Eì'IZØÛ<©¼\LRæCÜMWúï¤;I§ì³àÛÂ¦Û,£àMÔD²ã2}"ó$ìŸ/Eà,Ùr—a«Ğ«¶ååÆ³jçºYbåP¸o%wXÂä±|ET.§6Û}Á¬#¨†©ßâÇ«l&'©|n7­ÎïêaÜ	æ	æšµyêœ]¢§Xe·õ§Ç;U¸å]†’	óŞ)‹A|-È»öÒ1iÿÂJ¬>·±Tw
+ğ¯T¿«­`_ÛU®oïöÉ~¶ ²¥Ñ XNcƒzZùªbi=UÚ[*PÇ$£cT­Şg‡—Ì†S÷·õ¢Èúv0ÓN,NúÁÃj¾úšìDd”ng4¯#*!$í¦ıÜ¶C/%6|éŸ¹Œ|âæª5Õ"kŠÅ;«±«äQ“Wbö¥»Æ¾£ÈíÜ¹›TÙ‚-¡#½”õ’çô/Èe©*š9ğ’DwòÈãŞ‚/p[<¼’ÛtkCs~›áâÌáª£ÿ…ùÁl®Ÿ*0òò¡ @;\­åš™¤>ÿ~4Á8æ©‰#É5P…Ùy#ª,çT[†ÅR…m˜(ÅÚ@3á_ÀŠI6Œ6ÖÕ€<+ªŸŸ•Bm›LÛ†N3w_Ü¶¥+ğ+ÒÒŞN™)CBHP]X‹¦~‰$^Ôç˜³ô’­?¤…DŞ
+œ,áûëñ°Oæ,qGÿ)|è¦ `PSÔÚz„ğÉ	+g9g“]³‰bèœÈ¸&HÒ·b?âƒ\(a=|¿G§‡ÿï?oƒ3ÃÌyøM´ûÄ3µ€‚F‹ë*†W q4§ûßÎ{g$„pIòY”JGŞP¯7TÓsu=‡ Áfg¤ĞG¹\òë+ŸT,Á’\›ò+´¸íŸtrkßN°7c ™•zæ¿Á«Ğ#iĞë	‚X/Ãj>y=A™‚w;œ#91ÄÕAn6j~—áz;+ıŒ¿\¼@ÑäîÙWË.+_¾¢Qÿ‰™çÍƒr3b?7*šé={ü‹û¥ÈIˆìãò¡ŠVÄ:é_ª!'ÛwÏó…¹£O\wÑ¼jjïú”V½nñíÇNšALö³:ñÂBR¤	ò¤é¡#›=øàÿišÁtöJƒqÇü2˜¯‹‹]4¹~Üµo›Â&¤wí?Tİ'*¥Q {Pt9æ9¿EâË‰<"dßX-ûßßôÍØ1PR}ş<ÜÀÂ$"Bº
+ÏŸ)*>ÇÇÕh8v¥¢†?Pt3f^—h~Îë~(G]–RlFÊ !´½a4M^eR‘ ô{-şqäòËñ'ø·Ï;hÙ›3sæ˜0Í¾NĞÅ“X#[·0ØçCßiY†e1ß;íİºr°¼ªÄe¿ÙzUšİ”Ù®Áèıa–¾j@
+EK•ÛPü®„¨ÖÜ+Ö® Ñ&ŠÖï‹Õ8(ß®l¤RşWó
+Û>,ÎÒóhò‰Ø>Ñ1Güx‹ªÒ¥¶æ¼rÎàíñôÑø:Q{>%í¦áò‡$zŞû¢´2÷v3¥d¡ÿ¡‹Vbå`Ì·a’ ‰ÖgÖÑ !»¦he£óNæKz˜lˆ¶ß¥âœşî©YÜ8Q+Y{Àƒp¡é­$w¡ªŠMN‘Ú>Aû©ìœ®Ä=h¬L»i7“7D%Ê"Ø@ùODŞ6ùğÁÁjë}«Ş3+¡ŒÚ³ºÂ}DüÕeÇluX>õÆè7T+ÎoUÄæ  €2šPkšÙØÙ4vz!V ßÃ¬ ˆÅDB‡§{dŸ`ô…—²D£İIà‰+—wÓhp™ğMÚğFe\ù’Wñ u"›Œ—EªFµÈh‡x—ôâŞxMÛ¸‹×Ñ£²N„øk0‘%î6
+ˆ ğK?”&pfÓX’4Ê´%ÙÍÅåyà®‡j>”ùéà{ÕH®f[˜7YzÁ8½°ÛäéBG÷gg'Â$‹øfq&9ø½Ÿà‘|2¦‡4FøÕ'0róëjöA’˜Ä2CbôcÁ·÷Ö?ÁTŠˆã™ê‹•.W]Í¡$‚J˜i¨œªïÖô
+Š‘°œî,Ï½DŸca ¬bîÕ¸~	¥9;˜”äED{•Í wğ£tiŒ2˜»„ê¡1Q;*“&[MÊú®ß¬û“<L›.ªäÁtz†ù†a™_Ï®ÌK”5ùÚ‰B¡ßÅÀÔ;Rå0ğ—x¼³²ÃcÀYqÓuïgU=Ù…]+÷Izh2“™lH}¦+_¼ñ@K€›	 qÓsÔ«¾[¾nºşvûœÁÌ§|SæY-mğ&"¨=ue©H\%Ì»òÅv¯¼ ¹h\k¹KâûÎ½Àj%º{^ÒÙš7€˜tó¡cVÍ|Ïè ä‹ƒİˆ$sÕŠKSÌ(4—bí€\t¥òfˆ,ï¡2½±(ƒ_Õ‘7NX˜†Û©ÿA²ÜCÆ±(Pö;Nd»ìÆ¢eıÿ¥Õ=Õ­¸.!c8øypr‰¶§!¸×LÙòÀã´²²}:¸:Ç½ÆƒÅ©–QFÒÂûQ‡ĞjÙqßŠU‡‡Dfî–PXW)ÁµCº[Ö]6nM`Uë4Q•“›¼mÛdšÿû†uƒ!›P»I• F“™ásH#n›4¥~¬±â—Ú#¼1;§ =ğ¨vÎ•±ÒÕØeÎB ~¤{ªÀÈ¾onüEÏÉµÁ_.ãuh¬»¿­†ß7cÉÍj¯Ë|ª¼|®¯T Ee8.¼èl0t²U„ÿ—ee®¸èÇ¸YÊhK<şLÀèi»ïI$"aúHÇ50«z·°f«ÔÆÚ´ò/ßTÎ"-­x üªpÿ•6^fP©MÕqÆ˜Xpª³û­<ÉñrÖÕTl`…‰ŒLhË]ê[øz¥#‡ÿü¹èÉ$Æù=wâµñÆ¨œ©ìğ7†·lUæÃVêëœÕ|‡bI{°AÜ0Ã®ØDÁÃPFVF™æj7DX<°òóOğ¨Z”yŸ[zDVcŒß˜îÖ|Z© z¡ æ¾ö	Ô·R•ã‚°ëKW„Lñ×Q¿Xëß°ØØÁ½æËr<ßšc€]·÷´ÍŸä?½ùo”—Úª©Ò´7G‹ˆí˜ÄYa*ƒtHî‘Î‚H¼WZ|G G²œÉi§ ¢¼&˜>j]óNo°h_¯áÍéd‘ŠºáÌàšQğR•5¯¬‰£K•ò¹30-?µØ+üÎ<<9c„èúx%¨?ğvdLR)‘“…dqCùaˆyH³f_ÔûªO{ûyï|[ì:ÛÔZu†ñ³–kTL,lB«f;½–K‡0÷xTç…ÃÅÛ	èw·h…­ñë6y$ˆsöUÒ,Hµ•§Â@…•˜Fúxö¢*[\y«"¢nNúÃˆjsõØk8?·Æ±Éo‚›ÇaØ¦oáÚ7÷ÔÈÛ/ÿƒı7ê0ƒ¯¨tQ
+M»+õê:TL2ÅÒú6t˜Ã¡¢Çég‡¤ŞPÕë)ÜM.ì#²šX¦‹Ì(µV1YóËÃl},@Èš÷`Ş@¼7Ûö9ß‹Òl’«‡Ã2ğÃW$t"~vœöÌq´ies²ÛJêY-ÄÃ²¶'ûRªQùóÏ•À×Ônf_Ææ,vãÂş±‡úËÓ”öúÙµyş=	ÌCíWÖT,l…´¢ôk]òVù
+Y *ªtÚY‚,µz/œ	Æ¬¦Ï¹EòGßÒçã«aÃ ´Ã˜ ø­PRUM{Ìc)ózılæUFÂ*:uô©÷÷Í6óığBP’¾F,È.ªÙ•PKáGÈ«~hŒ<Ÿã²“rõéáìœ´£iãŸÖ”YÙòub}¦FoõDBÕ#2_¬şZ' Ñ[«ÁJ}ùG@_˜ŞêÒü¥ëÓ¨¯„ÔlÅ7]>‹ş~Î¾YÇğ•„+º$
+n x	Øío ŒmÇv‹‡ß‚°úJ{“êfı¡Jód&t&ÍÙE%ï™Œó¯8‹Å€Ò©öKï+‡uB§}¤ê%y8ºzæ¢R‡š¤F±ôI0•€Š_?*»€B1model.layers.3.mlp.gate_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*¹ €B+model.layers.3.mlp.up_proj.MatMul.weight_Q4J€ jFô÷óB,ÙìµÅìãD0Òy™l	¬‘í`é£j¤Z³{&T;3úÖ¸–Â4uPA©g'{‚XÕÂ®¬xyHLCƒÂùY1”Û¹“¨[sy;ü´Ñ•ÚÜwÒ">şÔö³'àÊ‚³¢·5‚ùcÎ\Í˜ùˆõÕÜKÃpZ†Œ¤M{ˆ@áÅ^¶½Ê—“şº–l“táO.Å	œá€cœ¢È"ö|Cl¦ÓÁilº’cLg!£ÃÈçik°‘O×°H çşŠf«kA¥§ºƒ›RYŒ(À×7M[£®ŞÀûl’r\”ÓÑ#ØÅÇÏIÔöËÛ0Ú£ÚŸ%k±Áè4dkÒ0cìOÏpàj7 N„/“)Œ¾nlÍ;§€úZVÕßèçß§yòÈèQ³åCï¨}Éè5˜ef^=Ä—¹®qÉ}psc2B¢§QQ¼%—ÍM3T?2<7o)à*H€:?Áä“¦&y~`Úüÿ1.=Ú·}C+
+`¾¹G¾A¨e‹©œ`
+ö(œ´ÜÄZG]2•g%œÄ*ß³Ÿ$W·€€æœI3¥[idVª.Š‘ø]ŠE&ŸKÃ™ôË;t>ßëo¸±±ç ×fÔs><ÄLå<ƒÀfd•¼»ñSğŸ„)1‰¸‹b>Hº<¥‹„•†jSßñ$cû“şc¸À*nØHdaLÛvÔ1J}JmÏ$-ë] ­Â$í«UgC©=C×ÁÖÉŠUñ*‡­ú×ÿÆÇ@ˆÀ£Ş>"şuaOÜ%Ô¿5?®¿‚ åúB?@g76†~BI+4Èí˜nªÃnŸíå6V?¶	vÜ—.Q®<H8­Å$bSZ[/¾ bd}ÁçĞ#©ÄÆö“š2ÁTªò™“»DáóÒq!+©]>®ºÒ‹5Ü•¦KPœé÷›|©¸±€j'åMÛÊ)6‘Ä°	¡,?9~,õtøYíº¿Š ÂïÄ{;—÷EáeFıD¹€-‘"!-˜Aâè³£`zSÙ¿¬½™f|«Â•İsÏ3u%ÄaßL,CŠgÆ“}Mƒ?oB»d·9`÷'Á’MU²³ˆI3>İ¥Bo³Ä‹õ1ÑŠ=P	pfÒşGq À]~TòSFQRšé ª™~«ç•Õ6†BP™Ê$š?pËè‚EÚaû¯¸lÉà¯³”Dàm¹ŒJóf,i…Ô{ß ÷øÔø7çEÆÎZHF©À* 2O²»}°ş^–±ËËHı•ÈÉ8ïJwV‚’™{0ÚŞŠ`¬U‚cİû#x_«G!ÀÔé”o¥iôåtş9‰ö`~Ê„®&Òº¡v	CšRD+>vÜöAU	‹Ãú·XDb"¯“· ë÷j±³8áè¡çÿM®°ÀïqWL!`ÿŞZ ÔiÖ“ÎöD™ªï™u9ˆà ^’Û?hÄ4´
+L+{.*„°ö†¤K ØJ³ÔÈ7@‡ÄS¤¤l·É…5dOÄ9™0ÙD®YÁ"•İ†œUM×¶kàœ4 %±ú†T’nº´/éƒ.X/{ÊZe´*£u(_Sï`ûµ‘€†oiD°£´‘XªlÉÁ«9z*Ö ÍÕVN•ª‘4ı]±WNe±î—r—ï ºR œN¢i-`-(ã
+í>.ã}ŞK>,»Ş)¥²ÉX)W@ô\o‘C°jH46ˆ9ÔÌğ*D/’ŞYŒ;ëØåjöÔçU[3±ğ9Iz;Ñ{–²Ÿ¹U+FvX¡í ÕzYÀ'}bìâY+ò!ë!t´Z¿¡™ã®½´²¿7ŸclÓU‰°®™LçKqÀ¬Ìí	cÈ‘¹† 4†¡ññÓ¥¾Òùá†t¼É‰ÆÖçêğGe CúujXuÔsš¦ËJ‡ú`ü{®\Aİ¾§PÑ©‚ÒUÜşüfqÄy?Ú‡İG¼wu¬×ü´.©ŞŞş–Äb8&M¬¿¼‹¨>šç[DõÄUÇÆ€¸…`á;ğø2ìvïÖFDŠú"£ šA˜£D:êÏ7ˆ gèÓŠÁhI+±â–ı¾?Ù¨İ¢¶¡ÑÌß'*7ïu9òÑ¿Òs¸òªw€ TZM3 !q&0”ˆ^lDº„\ÖÇ#7® åº§Sé‚ö{êUß®ærÄ(y':ù®ÚgKğu+Şg·’ ‚TŸ+Ù­TÌëµ,òaÀ,4YÛºËJsZ[£‚Ò P°Ù5Zúä{
+5«Cø²=+VüP·,şûCJU©ê{œ¸P;‘ê;Éëî†ê&+0ã¶L>ìµB@5:f¤Ry‰Ù«ôtP<÷fI6À\¨b±=ûÏ€„Sw¤ˆ¥>Å»Vw‹uGÃD›±º“I67LfàÙ¬/]şÀ®€:7²¥g³;mò’,Àœ—$Œãiæ…D­{ğİ  õÀK1ëZ¿7h	iQÈ³pÄÆ—î	û!Aa“V³Æ¨ÚªÀ†”¾“äóÑY=vbQ<Ü]~[8Î¾Ê«’Kş½ºù3äBÎ3~ZxŞ¯˜œ9å¡&–÷#”®4«D°Éjé*%Hj"ı çG×¸9T;£~æRâÜao)ªÏÖ¦åËÆS
+oÂ¥İ»¼ıÙğ\§ëü“)’6¤4©© `¦<_±Ü/¾À—tP·ªû(ÚnhF aÛ¦ß1kG j—í/DÚ]¼=İ7ô6JşÖÍÑ²'vzã™È‡v,õ²'Ü2ŠlvÅa`‰n£ù`‡è¬ªTŞšÉh~y†´mÈ'KN)5ø>PïT’œÒ%ä’=ğ«aßŒùò:Ë.¨öes€Égûû}€9¹“/)/c³7+KùEÊå.âÚ¨¬@Lµ´øßê‡C_âÇêlå©÷02r‡Ya†ú¦åsP' À§#²¢ıdmªØÄ&í[À„g§pÇd>
+îÃ
+C}K{/Ãq%
+‹Sœ¦ÍÓ‡aGr'Ÿ	öÇYšåUK…í¨ß½¡µH¤ß€şIƒ,fµioYè‰Ïşúp[<e,ZõkªUÅ«ëDzl"¡«Í ¸í–4T£O%pµ6ş~fß?v ±î×³‹µÑşÒ#p,ì·‹mòx:¿sòEä%Y¶Ü]ÁÔd!İg#\Ù~Œô4•«ü“g©óÒ8	ÕA<\¡R«bäµ}?j¦»°j
+Dç7e@O<Uk?‹\O–ÛğêCŸ×3ÒŒ°<<›KEŠõÆB¦älß…G?Ü.¡ÅçÙˆO\y7tĞãƒšaË_<âwËaÊíˆ&e¼×r–JIöÙvi­kNjîrróí£äšÃòIøS‡#†¯âúV…«]MùêÄäª¤ìuv?~{,EÈjÚèFsÆõ|·´Š§á§Ÿè.‡Ô
+:¯Œ3Òh±¹m	¶‚)?¯`ıöÆÓĞŞüà©‹•İz›©K7Sğ9‰”ƒ{<‡õğdBC>, ÀC› ô\‰¦ï{„e¥síùL¦!ùf‚pá:ş>¨Ö¿×I§iÊäxğ³Ë—9äa™Ú7><ÓOˆ?Geô/_Vı!ü=ÑA²!Ş~wícV’´úœ•Ş7FÆÚ!ç\byºqQi®Ú«³ÖL uÁ)XÙD0‡œÑ}Ûpğ° êô\Ä<Ò˜O$æN#VM	=“§|4$<¸^Äé´.pŠĞúô¸’bKx¯#Ò³~!…G:ÊXÿ:FN:ø”T—7ıÛ'²Š$òuŒS=OsD…QÖd´?<‹¾ãj—üÀw+ °ãs2{º¾6#qÁ¬tn±Ëê¾/Óšå•cTÇO°1;£.Ÿı¤&áÄŸ³r¬šbÚ’G÷Àyì]ÀIÜliÀã
+ãkVŸ\ıß .Aï}CU·icŒìÆ¯–C'Ü”<\9kò‚IÂk¿õö/˜Ãj°Ì=3Y¿ÜÊì.©õ»#Ê¶VëÒÍ7	0 z~AùÛáßôBºŞ$SšmhÇî6fÆCşı·İJç½&TÑ•z@äàZ+–fíÜh¥ go³2¸6Ú”ry2Xÿ›nèØªI ÆD\ÉËé•B1Ò¡£Ep‘Á.ˆÁ)W
+|)æ	‰3½ v“…	66W×Ø¢#qÈ@6ìštt‹9ÚK³Ì|¢=k¢®¾K¨ÇsQÓ?ÇUñûÓl-ìü*S`«ë·5ó5ÿ9‚yfÛ+›…HêúêÌ¯nõYhÙu9n¡ô«]¯]X±‚QG/ÇDè@ú3êãÚÏÅù'ÿ>Ö"‹˜‡%úLÉ†6YX]ÒÏ@,QÄJ>8ır	È‹‚^,D'§]ÜÁH1V6>œ‚ŸÊ§­ZŸÄ	yvdÀh,Şhst\¢í\×•ÊÿŞ ¦­W
+*°¿ğ(’rö<JR,»Æ)í“êlD aÓ…²L>‰Z‘ÂL;*wÃq<FåwßqÍk³Î÷2ŸfVI#¾†‰§ÂÉHMÄwf…0Aİ EÿÌÖ
+²¢Ü¶KFÁ5UËÊİ]ÁÙ"n›cË[ÈËÑ%E]âŠãİûÏÊ\Àõ„¥ışt™¯Wòé¯ú”|ªşkgµ%%Ò™¤WzmIÜk÷dä»«±à”"?œ-²ó2hœ+d…	Ş¿,>Kú—‹
+ÌÀù¸›{“2%y”Ñ{ıLu‹æ!äa™33ÈkN¡d±¨XÁ>BáD½Û¯•.k´ĞısËà'Û`ÃîĞïoíæ	üä&Œ±«ˆ˜Ù;³%ÌÜo¨±i'©f|nnırè@(%2}ÏÚõ6uÒQŠ> €y3ã€’Äî†¥¼{ó}„Ë•dîvß{ú}ØÉ÷–!ä¿²1¡C·¼ñÆÉ …'aØ(èt@w8ËÕD»ªVÊ€ggë@Ú©oóV—0äC&ó ªD®âÓóÉ^N×Ê¼"ô †o‰ ¤’P)x»n+'³×5³"a!Â`¤&ÖÈŠ¸‹¾0Ä²2ö­ÅV²a‰Ñngá—óÃ@Gı1™^±ÛÏÈ¼²¨Õ†sGå¦à9À3íá´A¶MÁÏÎµ“†H™/úÃˆºá Ì¶_£‰°!#Kl\cí á¸æhü2ëê×&éEaş¼o£–Ì±iÕäX[a[4á×M ĞñĞwÿµ¶İ&!|3t zŞâË˜ìãrğíMCwL8:Q§ÀN+*Ñ¶}UÃobAEÂ6ÄÎ÷qˆíß"iÒö‘€m©¥ìò(=`Ûz—*¹€B/model.layers.3.mlp.up_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*º @B-model.layers.3.mlp.down_proj.MatMul.weight_Q4J€ óOşşÇ?P¾Ä©î}BÁöµÇ4©^s%ZŸÜ;“›ı[á¹Û{,*Ş¾{İÆx@9­†ê@°ÂŒÆá„¿½Œ^.\ìI†>æCß–[/”›NÊ0’	ƒ5O\{ƒzÿõZAù{tà$DRºd3üPŸ.X´÷Y
+¡«½—Ó÷¯~I_s wÓOŒ;t§5ñtõ¬±¸v ñt Uç*t×±èğ&5Œã+§ùü]«G¯3ú/^¦?Ÿÿ6"V·úô–à¢J	l.êT,r8%üÛµÍ1=G1^ÿ­÷E—ƒrÇ@høL wÓ¡m>öæêÓfÛ2~?¢ÿšÿù>oy%fF7†÷®ìwVŞ<W9¿ur|ŸÍ”Ÿ*MjÍ† gN=~7!0Â0ş'cP³lØFÒrJäf39ÎÏ0|?/Qn4„7_uÚz½–Ò0—3Í—-·™œÔu€;[ºÚà³iˆª{ª¸j`>?¢eM_>¿Óû Q .KÛ¥¶«òâ‚'ñ(2áÓœ=’˜§ı)²œ%]I{Ã©IØ¶guTîšl@2œ±PWBöàõš©$–¬×!	ÒZ`w$E¹‚nˆK®‰‰áı¾0Š°rÕÏ]’q¡Ğ?ÆŞR£‚y’ÌŠõÌŠˆY&×›ï>ğüàŒ ÿ¡ˆB/¶zÁ{¯ßŸw:€‡ß3!ÒØD§oåJû¼# /èòŒ QÍ„ŸÁ¶	KCám Şxáis±†X_óŒ$NJ˜ĞèÈ•‘Sº9‡#ú™@ú^À|š»ÿÁWC°‚%¡BŸíW# ·²°|di‘„XÕêÿ)¤Ò+õ²{ôñ1áÜµ³aŒ—€Ÿ=&L>ƒíZÔÈœ2\8Z	üî‡â~AËm
+~X¿›ÖôÜëÅàlH)×ãqéÂğÈ¤Ïª¡ƒª&£*¹eè·D,aí ê\¥‡	…Ã®–êÖÉ†)²Ï qâå	ë aÂŞÿßÕ§ÎË ùéì-È¼eÊ0±*u®1$óÏ0&Øs×ù–€®¦Oì®>ävôj]Ø¢zuæ1Öşy“IŠÔı”y·v‚°½XW’7û±dª¹¯cÃ+7ihyğ*ˆ•wô‘÷ä_h¯4êÓãWš„ ¯'ÄÃœÖ’®¢«YÃİÛVåıÀ¦¹i«úƒÏ5Â=Lü|¢£š”›-ñFºRİm›”o€€ı>k¾ÀG;E0w à“%ÒMöG8ÍCYÿÕjÕ¨E?*6%Ù-)¢k… ŠşÇŞÜ½g"´óƒSáì$»öú¨ã96º¤(‹‹•4	S¦‡s>+ÖXf8!U´¯J¥–óªG6àÎtR˜»}:™0ÌV8Q’ÓšÁ¼WÚ†KHÏ7Í¼ÿ©”6rB HáDÑì²5×&3ÕîÖÆ³®Y'‡1ÁŸˆ¶uØoñ%º«½S_ÜC¤LÛÀxöÅÀ9X„xJs¼ÇâSl=:Ü¦Öı=ş‰û˜ÌòHç?>IP°©MKÛ†S†Íi£˜ä¿õøÛÜ˜ÒÏ˜\qèm¥gpŠó	<¹[Í2ÎÎ¹QÂ™çù¹2cRåpxpŞÁj.}'â^/ô·EÆTUÆóâX71çÄõ4ËşCœC,dzTV!¶í¡ûhd%Bù™ÿÒ”{HØûvQFuº¢
+(ŸC 	“ÃãÍDö	^®5˜ÁWZ÷ÿ¥àWn)sÜ¶œ£&•Fd<´³QĞÒHÒû^ù¹æ5ªkrŒÚ˜¼õMñ^¦‹XVÂ Z„ĞPÆ¯ë‚föKÎ,” \é"øÚQ+gœqY¶K[Ø¥4Nˆ}?¾&AöËùÒ×Ş&#¿õ ªç2io[•îHíÕJÀ½d²JĞsÑ¥âMŒed›¾L‰“sÕxõÌèå¸seà=Ç‘÷zšh¾Å™s7?+×ƒ‰Y{´m{Mròô*Ø^\º²f²0ÖÜ¤´ùÿŞÇgÀÖ
+¹şw|·b^Êj-M‘¿k¨¦;ıÖçå—\=l“GEÚît¯Õ£zË†a¦ä€“÷W_ïŠ»wñµ²\VµJéö.Âø
+ÓÔAŒ[ä=¢(ñLâjWÊhËÑZÑğvx©¶ø³‡C ~ñ½%üNT¿g‚~ƒòHY‡U®G\PTÛõ‚@ö7H£şİÚ55fEÜ|ªØÔÅ
+¼†z¿õåh:!¶Dñ±81y·wÔ/Wá*3üØµnƒÉè”@z¸ÛÎ¼"z_fÆjĞtœœ•ÿ~ÿp)¥êÎKSá<òæÄ¼NB’º¦'ìÊ-À™+ƒƒFa‚Â;vñµ®ÁDâq2®øº€Tkº£íÙ§©®á©%hÀÎçr?57¡[6ÔƒL¹õÎÃµÅ9ŸÄÁK”ÊpÁDÚ¼ÖÇğÊ ÀS¨•ÇM°Å3ù7¦ä0U+ö§Ü^'9ÁÅÀòdän
+}lœ'G3ŸvÌc/»ØJ‹vÄ<Jy4\¯ºs ÚÚaĞ¹¹æ!#GA¸3’/2ªB®Û£SmúóhGÏ}0‰U¬zl¾kzu-ôÖYñ÷õN?G‚|ÆúbÃı¡õ«ÜÆZE‡=ö´ThÕâŒİ}·»!òœÆÛM(üÔ ¤Lb±Í¿‚±:3_g…ØBÒ2¹‹(*ÎÛ­Ÿ…8¡wóü)ÑÑÈ_=Ãøõ^<yV1'%Éeñ³¹,Ï~ 
+vkšÉ==å–aÌ!çì™43ÆT—ÖP1Û;”·UÑqÔJ¯
+ÿÎ:¿²Å¨Ú Şö{ÀH›½ WÎzÿÉxöÑSWç‚:ÖçÚftôÅ){O½œK>?_š	^×ÔõÀõhØ°ãöj¯±ù'.ZfüdU…¹XH!
+ş§â¸ì•¥wÑrC°å ?m.ö5ë›’ô“5»jQ¨d|×¡—Iöô©mkÁ7>
+Ş²"ş[Ayk¡šùêT€:5?®©AÅòë?Ÿ°?1®'oxã²ërJ¬Ù¾¤óÊÆ.½´H¿WÇ˜åTq4á	}°Mh·Â¿ğ\:)a©ù]£;ZÂë_Úm0ÈbRïœH¹’ ­Ñ¤	A÷µ¬@Œói	Å|Ğ`1}€Á"réú=‚áG+ÆzÕŸÿÍc‡ÁzEM¶PŒåÔåìã;PİbÀãFéÔâhŒ!”`h˜o6„åBgÉÈ`øZÜµë2Oá”k7ü/©0‘`/¡IÎŠ›tvÕßHN³¤èã¸ë’Ÿ®_ÒÏËzq	î$`mœ0q‰á7‹\öíTëg±È˜s³FÊS–øÿµvÅQ+Æb&„Ú}§OÀQºO?OòQs®şö’Àcà´O }¼<¶ò›p2¿&E«ğ“BÒ¢Q§¶Ë@¬3ŠÔùèjog½ß
+ÿ/<6«HY°PS¹|ÌJ£ÁİıOÎšÈïg³íñW9)/)ê…,P\ÃoˆÒÅ!…—eD>ÚJÛ!jê ºôæ–<Ûƒm/x‡Ô"1$ÊVÙ€Ì\:§ÂIuıIé4–@BøcæAèó(°›kZ[e’cRßÖó¡d³âÕÏ-'ˆQ
+}…LWuF_Ğrß;YW<ĞHª@ÔD¡*Z‘èZş¦cvòÓyØ–«»duÃkú´7³rÍ„­Tu6ê<Nìp…å«m _"¾gÙ©ĞÓéôS¨.ñ´+fR4Ã ­ĞÄH%ŞxÕb‚~£—~h1¬-±!¥Şà‚ÇOUÊº½ˆØ;ÿ€b8yÛ&ïÿs¥ÿæe)PÚ·…ñvÁ /¦%m’qÑ;“sAõKĞÑBcm^FK†Ôtä^‰Ée!¼vÉó<ğ%§qòò§SnôIèüªª"¸ÛjåÀ•r@FNŠÿô²¸××%ñDÒı"yÈ¯±_òÒ.a@ZãJ²ÇKgZhVxã¸şQÚoƒC€g€ıOc®Q Ã$/kPØ™C…[ü8öÔÜ¬C rÌ{Lr§ü¤”ïcI©gä ¨*µÔAı•oQ±.ÒC§Îc
+‹áìBì”è’ÆÁ«V‘Ïiˆkœ*C¼%%Í=ÏĞ/Ş6ş¼Ì´Lušüš¤İØÚÏøä$C9ÌÑZIŞÎggJxHİñ=cOæ>…C¸m¯Ës„¨ÁÌÒ™ÀßjÒb­Ø1Êpx~¯Á_+öï'Ê“€tdX1ÜB‹‘Æ—UI%Ê×dQRÅ§5}İî¯ŠÈ¨[$Òÿé*Ö‹Ô¤¤kŠ`âŸşò9ßkíî†½Òì )_é¿}ĞG­¢»ÕdÍŞ=¾k6çÁÇvV˜JS¸ıyÎşÌƒ?å¦Ä!ÈÆwIŞ{qKÿ'oL‹ĞAmü*é"FS´°!uOàş“óPÕ»¶dÜ6Ğ’ÊîÄªQëpåÆôKp?ô6€(Á¤|vzp];Ïá¿í˜†ç=°ô›P†¢i8í|»tŞgq­õÓocu5n$8(3dßô4^´ß´%EuUmúÒÎÍ5ÿíGùüuüN!¬` š¢vÚÚ¶Ãº†BMFD¿À€ÚÄ‚ÔJ"nGFM¸·§¯Z$rDÿ/k­–LøÀí4Ğ¼^¨>¶†ÍŠÈƒJñ~yvĞÃ3ˆ7¢Ê0‰®6K6×x,W¼H†Éê¿uİÎ£N——¸7>a°á¼YîİO25ó~¾vı"jê9<×ñzÎ[J¢	|JOa@¸œ<>‘tâÄíè?i“	³˜›¬Mãäêİbø¡_¡fz¥F•Oá4ÎêY7j÷­lj€÷XIoÈBRŸŞAş£;k”³öäO¥Zü¿êo;õ`‚rúÙqÙA€¯ooİïDcó8Iíå„Ë"p[yèÄš±â;=W^¹Mr	“¿B:ÌıÜš—€È–‘ª$-L=¿’D©>_0=t.—¢]¯Û@vRj¡…kÁ%²\4^QèÁõO=9J"JÉA;ê!•"Õ·\»òİ¿‰÷XH|B;rà„f˜|evoñ¹qâE´¦‡Æ0^lÁx|ÌtË#ï'õg¹ÍîıÖ`gg6¬Jl•“a#Ülêˆ´šÂìãÛD¬º{ı©ı4å8²ŞØ|AxeŒfĞ	¢­7‘*Û˜eœ_…!÷À€dÉZ?€çÚ‚XÌ~wîz½ 5p€ê,…•yÿtÜ£4<[ç±dÀÈÒ'4Lhdø)L¼–Vâ˜ ‹sd4Ô‚"pş–?ÿAut*»€B1model.layers.3.mlp.down_proj.MatMul.weight_scalesJ€
+×#< %<øh&<ï±'<æú(<İC*<ÕŒ+<ÌÕ,<Ã.<ºg/<±°0<¨ù1<ŸB3<–‹4<Ô5<„7<{f8<r¯9<iø:<`A<<WŠ=<NÓ><E@<<eA<3®B<*÷C<!@E<‰F<ÒG<I<şcJ<õ¬K<ìõL<ã>N<Ú‡O<ÑĞP<ÈR<¿bS<¶«T<­ôU<¤=W<›†X<’ÏY<‰[<€a\<wª]<nó^<e<`<\…a<SÎb<Jd<B`e<9©f<0òg<';i<„j<Ík<m<_n<ú§o<ñğp<è9r<ß‚s<ÖËt<Ív<Ä]w<»¦x<²ïy<©8{< |<—Ê}<<C.€<¾Ò€<:w<µ‚<1À‚<¬dƒ<(	„<£­„<R…<šö…<›†<‘?‡<ä‡<‰ˆˆ<-‰<€Ñ‰<ûuŠ<w‹<ò¾‹<ncŒ<é<e¬<àP<\õ<×™<S><Îâ<J‡‘<Å+’<AĞ’<¼t“<8”<³½”</b•<«–<&«–<¢O—<ô—<™˜˜<=™<á™<†š<‡*›<Ï›<~sœ<ù<u¼<ğ`<lŸ<ç©Ÿ<cN <Şò <Z—¡<Õ;¢<Qà¢<Ì„£<H)¤<ÄÍ¤<?r¥<»¦<6»¦<²_§<-¨<©¨¨<$M©< ñ©<–ª<—:«<ß«<ƒ¬<	(­<…Ì­< q®<|¯<÷¹¯<s^°<î±<j§±<åK²<ağ²<İ”³<X9´<Ôİ´<O‚µ<Ë&¶<FË¶<Âo·<=¸<¹¸¸<4]¹<°º<+¦º<§J»<"ï»<“¼<8½<•Ü½<¾<Œ%¿<Ê¿<ƒnÀ<ÿÁ<z·Á<ö[Â<q Ã<í¤Ã<hIÄ<äíÄ<_’Å<Û6Æ<VÛÆ<ÒÇ<M$È<ÉÈÈ<DmÉ<ÀÊ<;¶Ê<·ZË<2ÿË<®£Ì<)HÍ<¥ìÍ< ‘Î<œ5Ï<ÚÏ<“~Ğ<#Ñ<ŠÇÑ<lÒ<Ó<ı´Ó<xYÔ<ôıÔ<o¢Õ<ëFÖ<fëÖ<â×<]4Ø<ÙØØ<T}Ù<Ğ!Ú<KÆÚ<ÇjÛ<BÜ<¾³Ü<:Xİ<µüİ<1¡Ş<¬Eß<(êß<£à<3á<š×á<|â<‘ ã<Åã<ˆiä<å<²å<ûVæ<vûæ<òŸç<mDè<éèè<dé<à1ê<[Öê<×zë<Sì<ÎÃì<Jhí<Åî<A±î<¼Uï<8úï<³ğ</Cñ<ªçñ<&Œò<¡0ó<Õó<˜yô<õ<Âõ<*%Bmodel.layers.4/norm.epsilonJ½7†5*£@Bmodel.layers.4/norm.weightJ€  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?  €?*š€@@Blm_head.weightJ€€ÕS“¿¥®÷>“²?Í©»¾ƒNZ¿¦ã¾7V=lïÍ?ÍÃ‘?ÂK2¿wÉO?‹ñ=+@€±,=:İÒ½«ãv?oâc=…ğ¿i¶Î?Ô, ¿÷¼|¾(¡¸=]_?¡fâ¿BŞ›?I1?|Ê?’Éã¾*›î=bó©>ª”+?éŒ÷=©‡¹?›û†>“>(•m?
+Z½D@×¾DÅ6¿}6S?áKQ?İº¤¿Åö¿ÍºØ¾T¶ò¿¬¡?ŒMó?Œ3h?1”5¿í¥P¾,z>àuÀ"Å?’G	?¡{?İîJ=‹NÀ½ÜÜD¿¬¿:Ì½÷v¦¿G†C¿lÔ?Š*â?Mş£¾UuÏ¿Æ­i?Pch¿é3b?—S?6ôò>É%1¿šMœ¿óã‰¿
+˜>rê¿QÅ={Nˆ?ü¯‘?1ªà½°*x?¹fƒ?±ÆË<Û—?Ká>7½Ø¿àÅh¾9Íª=tÎ¿ Á’¿ ƒ¼Äx@¾yÓi;Ì]h?Y¿W`4?Š±®¾ÉF©¾"\-?¢>_ÍÎ¾(1!?Íõë?îöĞ¿)lD¿ƒ4¿Mú?P8¹=ár¿û¤b¿æ=¸>³w¿h@Y¿Ù4ï¿Àšy¿ÊÈ¾Wì‡¿qÇs>‡î³¼Í%¿µ¬n¿Ìõò¾¹œ³?vl<¾Øb?h±?^Úe?Æ¥í?-­°?Óà¿M –>–	M¿èÒB¿ÜxÍ>»h¼kë=?¯t‚½Ê¶?½×?¼Ø-?[øm?'>›/*?‰oN?!gl¿Ö É=mx?ö‹3¿¯k¿¾Å¿]Œ¸¿ÜV>Ñ‡Á¾;…M¾æÁn¿#û>p<‹?&{[?ÒÑ>?œüÈ¿1	È½€P?¸ü?O‰O?ùkV¿}[¬¾g¦>¨	´¿ıg•?4£0>LÍˆ¿ÁÚ¿9E=¸†à¾ú»?!t“¼¯'À‚}z¿O€»?Ô£/>¶Zê?HÁ¿Ó=Á>†¼>R³?Ïƒ¾m€‹¿À£ˆ>íâY?\ã>¨?†¿ÿ>®Y…?Àäjâ½§<h>:qÄ>şª¿ú13?qkƒ¾ö˜ç?ñµ="f¿ÕWà¾€M?D¬¹>p«¿{ÉE¿Õi=XĞ ¿Ì‰?‚W_¿Á)š¿L[§¾ÉÂ¾Vb¿B©Ô¼™g¿ÖZ¾ym’¿ÙÑ2?uFÍ¾é~9?æ¿­1Á¿¨Q¨>S_©>Ä5¿DË_>ìÛ÷¿cÍÛ¿(w™¿."M?íèĞ¾5Ö?¾By?ğ&œ¿Î‘Ê>q2
+?Í+6?/âŠ?å¿Ò·¿‡Ö¾™ê¾TS¾é&»¿D£ü¿‡Ñ7>’)Q¿ítÃ¿Ïj³?kç•>a F¾¾]™?€u@ÛC;¿®Qm?Ä!@ø­¾$Íj¿à¡¡>µ=? ¹½Wc¿{¼t¿Û>Æ#í¿8@­İ¾3…S¾ğ´>ßOm?©Ã“½JÁÙ?b/C¿Rk¿d®?;5G¾ÈPD½í4-? f™?Ë"?F“?şZî¾8‹˜?³dÚ>#¢¨?iÂ?Ô,~?Æ6¼¼ú¼å?f¯—>ÌÁQ¿Ì`ë=µhÄ¿ÿr¿7‹M?pÒú¿L¯é?«ÇR?ÒX#?b1?Ô:¾R-À>5ÿ%@€¨E¿§Õ¾¾Äùš¿ÎSŠ=eH‰?Û¾ÏÅ¦¿ÃèX>_©ñ?{#„¿ä ?}ÚM¾æÖ˜½"›€¿@şÚ?o£i¾y+?òøÀ¹Š ¿hK¾WË&?uÔ¼ ı_¿#?ƒÜõ=5›?Ì¾?­>Ü†¬?Ö©?Ê&¶¿gÌ{?+næ>İï>¦û±¾;Øâ=!é½†s>B†·=f¤Æ¿OúĞ>ß­¿óˆ>úõÅ¿ÔNæ¿˜\?›¿Ø Ñ¾3&¿€'_¿©†Û>|
+?CË‘?r§?CLŠ?–İ¿Ù"ˆ?Y´½>[µ›?†ê>Î¡´¾¬BÉ=·2?á0ê¾Ï‘œ¿-;¾ æ ?NkF¾"ØD?Ô"–?5ó¾ƒ’!ÀÙ'>òşA¾ ÿ,Àˆ´¿©n?ıç?|;µ¿ °¿,N¿Œ™ç½P)Ò>	k¾nC?şV¿â_¿6Ò˜?Dy>X†>@6=‰&§?ş!¾Í9)¿J;¾İ£Ò?şqš?÷§W?¶ñµ>ô¼è®?‰"L¿÷ß|¿I¿†Ì?i±Œ>fT™¿®³>™ñ=œl>j¿|ªí¾oN?zb½¾jG>éS„<.$é½İ"@œx…?i?…c´¼9ùæ?4Ÿ=Ï¡?=¿?…¿Ñİ„¾Ñz¿‹«¿Äœ¾¿àv?Í	@ù7±?Äcl>Ämd¾;¿éå¿ÚÿF?ƒü¬>{ø€¿I´?ìv¨¾¤`¿!ï?¹EÕ?h°ø=ï/«?-¤N½ñ`ÿ>a[>·5Àn€?kÜ¿Øj@èe…¿=¢¾{¤½‡ç>ãäi?3Ò‹?
+Ø^¿c¢ƒ¿6ôN¿å>ä)?.Á«?Ij\>:îs?òÇÓ¿õJ‚=÷±>Ü$»¾ãÀ¿“Aé>šé?Jx“¾Ù
+¿Ø“¿Ïa›?œ‡?R‚°>“r¿%°¿j‚İ¿#¤À˜ª?LÆd?ãp	?’ôê>6è~½<õ¾“ã¿ÎÎ;¾ñj?Ie¿†@K?»± ?Ñrª?éÉP@,È­¾ä_?··?r¡¾ø·‘¾ôö6?ÄPú>2±¿0µÃ¿¾ÂÙ?<l¿§^$ÀÓ&e@8å¾Í’Å?Ä¾?Él¿#+œ?âï>¥ÿ–¾ À¿¸¶p¿Ìõ@‘û›¾XÅ%À8¸?“8Š>uÄÁ=­Ó„?P5§¿†w‡>GR¬?õ0Á¾¦R?²ô¿ü8ì?1ñÖ¾”ç¾äİ‘?İK?Xfß?²V¬>5¢?€d¿¢JC?3Ğ?XTÿ=j´¨¾Ûµ5?Bá?ºyˆ?ÓÄ¾;8>¡ğÚ>S	>xS6¿ÓvC¾¨…?€±>©+?¸ª0?şÃÃ>ØPà¿«3?Q;¿8üé¾ĞG’?S×Ï?9Ó¾¹ŒU¿—¡«>ĞÃ›?iÏ>Xªı¿9ê¾(?J¿¥lS¿ xb?n»ñ¾çì=r‘'¿ª°>|\¿²^Ÿ¿8
+¿Š¾Õİ§¿BÃª>Ÿ<¿iØ$¿S@­<?ş–¶?ŸQ?İßÏ¿î°¾ˆÚ¾ŒX¾Í;?Éc¿Ã‚¾Õf<¿Z‚ò¾Ïß¯¼éÇy?+áÏ¿/Í’;0Òu¿U£à=­ìK?]4¾­\ƒ?c¹ñ¿^4o¿ì¼?Îco>=>vkƒ>b•i½‘×¾7¿é)>" ¦¾Ë|x¿J<h>Ë9Ù?g	G?!*!¼Œrá?¶¾ğ”‡¿À/ü¿™–?² ¿‡°±>”iŸ¿$^¿4sj½†¾Ñ¬¾g¡_>¦­Ü¿ñ*Àê™¿­>Z?jÚÌ¾ œ>QŠ ¾T™ƒ?ŒÈg?û0½?='½Ú?Ã/´>‰z?¿ëœ?¾“Àœ¿¥f?Éç¿?ÂÓÆ¿Äs?ßù@>w¿Iê>­‚‹?OÕ??…š>
+•‘¿©u>åT¿Q¿—?õ<ª…I»‚>Ã9?_%”?ñq@U¯”=Ö¿?÷­‘¿ïÿ-@PûÓ¼şhÀ3ÒF=cI¤¿ë?jÍâ¾Ó7â¿V¡}¿ˆ•U¿´¼Š¾ 7å¾°şÀ=0~•?İ à>UÄW?£Pd?7©¿ı”¹?J—‡?YPX¾YI¿H .?§¢ü¾€¤¿ßÿq?]5h¾S¿·šf?üáŸ¿¼ú‹>ËNv?¿:ÿ¿nF½ê¿fò¿Ê2½ù£Ã¿ƒl>XƒV?êœ¿soG¾4dÀ;¸¿ºv
+>¢BÍ¾_ÅÙ?ƒx1¿g³¿bƒ:?v>Š¿Mw¿	¬¿¥(¾û”?2°»ıX™¾7{>O5¿õZW¿Ù =Ê5¿Ç?5Šš?Õ(]?òl>©q~¿ŒŸV¿G
+¹>‡f?£ùA?*Ï¿,¯æ>¡="È¼¾ÒSA¾•h2¾BúÀÑf½:Æ¾ß„ê¾9q>¼SÚ½˜W"¿&Ñ£?Eê¾£xL¿çp[>pğ?Ãwï¿¥å€>ş
+>ãí9¿ÂŞ}>a²Ü½ØË?c^=Ãt’¿8Lğ¿¿d4=B¼¿Nj¦¾H¡>÷ö(¿¥ˆA¿4–×¿Yq˜¾†’¿«º§¾Ü­U¿ßL®¿¶&¾ëÄ½ƒí'¿5U¿Ì£>ÛÜK?ÃËò½GR½¾À’@}ÅŸ¿|Ü>Òù’=+*‡?0¥^>ËµÃ¿ì”Š¾”ÜJ?S¾•¾?úò¾> •¾ì\n¿F0¿X ¿Ez¿2v‡?ÂF?ô`³?œ Ğ?@;¿}İ¿ê*?Å¥?ÙÒ›¾ƒ¯¿$Ëƒ¿@ÀÊî¿n2¿6Jí=Ñb–?F§¾ùĞü>¨ò¾¹Â¢¾Œ½¿kI˜¿a–‡?dœ™¿”ò~>›3Àé[¾ï4	?1S¡?(HY?¦˜?–¢±?@O?{ø{>°ÿ?q"€¿Kì©¿%éC¿„(L?Ve'¾Á¾l>o;@~¨¿kÑ½=TÍ]?ì
+£¾?ÅŠ'¿B¿„p:?¬?ÜÃ®>Êâ;ºŸ®¾tAµ½ä¾'¿Sš›¿4@˜>Õˆ˜?~j ÀÕö¬¾Ôğ?¿òP@j{®¿•~J¿"©í>}ª‚¿ƒü£?[šr¿¡@>?rl¿Ä¤§¿«Û?µË?CÍĞ?Ë¦Œ?w•?¡˜©¾Qü?Åd¿AŸÅ>óÀ¿?§¾è¦±?ÉL¿îÈ¿¾†cƒ>À:?>C¿†%X¿éÿÿ=öĞª¿ŠF6¿†âU¾¤>)¿¶·Ù½vÅ‚¾úh¿ÆÙd>3A?‚ı¦¿cUË¾7Y>Û˜¾éÃØ?ª;Z?·‡à¿| ¿‡¾¾;¸¸¿ÿ¢q¼å«¶¿ÎU>¨Oú=ÍÄ?i‘Y?ìï?	x¿¯¾Öö1¾#+
+?+ÑÈ?Ÿ[®¾ødŞ>â¤*¿´ø¿Àé?¦ûB>¨¿v1ã½o3?bô3¿¥œø¿¹]w?2d¿Z%>| ?˜»Ê>g>†=A–/ÀãçŠ½Å–Ì>…Á>¹ö(?T¼@?¥5>pU‹?Ä¼¿ÙR¿4ò†¾¾=¿şog¿Ä–½ø4Æ¿jœ]?Œğ¿ïğ¼>Aµ;¿![0¿cì\?ÖUâ>–';Ç-?è‰í?w?üH¾Ğ|¿R"I¿*ı¾cãù¿D`@¿@/?/¿“|©¿¥
+?g>6¿“C“?5}…?|ä¿×âë¾Dƒ?eÎ>4BÍ¾*Ú¿,¿¥ñS¾ÑÍl?ÜË?2 †?—òU>ğjü>ë-Q>Ïu=?áÅ¿#¤è¾g£Ñ>q¥>b…%¿]äÚ¾ğóĞ?Rb?tÁf¾ZUø?·T|¾=¹÷?¬J¿.Ğ=­çq?)xú>C¡+?Tœ?Í‚…?ÇL>õîÀÚë=²÷‚>š=¢¾É~?¿)Ê¾¼¨?ºÑ£¼`ˆ¾3Û¼?’O Àÿı@ëò†½Ê±>ú–¾Í<¿á·%¿ÿAå=Ö¶ü?Â‰?„Û¾º>?´MG?Fï¨¾yÌo¿º+ä>¡”™¾juá>MÑ¡¿ {7½3ÜÈ?°¾qd‰¾ö™>ğ¿{¿Äé¡>ıËº¿F>%Ì?‰»>½À–ßÕ>ĞL×¾aÁ>½-q=˜£+¿R
+?ôü!¿Z„+¾^5
+¿P•z?™œ2>Ò¯€=ş-¿¸;>¿Ã¿J><>tLË?ßŞ5ÀÇe¦¾m«'?‘î?ì«¤>
+9¾W?ëĞ>ƒ‘H¿­ÕF??€?Q¾Ø[[½+v>x×»?Ÿhá=›&¿pf¡>‰Ü?µµÑ?›×?ŠiÀ˜U÷½…i¦¾xê¿	Û>Ğ?FàW¾ÔJ…¿ÌA¦>+n?¿‰c?>Ö®>«2%?øI“¼ö¢û<×§Ø>Í¡”¾wÇ¿–ƒÇ¾ŸN?§â×?3d>?UÅ¨=€”±>Ù“n?±¹=…pP¿'k ½ÛCó>¼a?~C‡?ä+	?ÛR”¿ç†@v8J¿Öğ©=5W?1Ö¾É´¾z€?¹Ï–>È#£¿øÒë>ì æ¿Fƒ?†ìµ?±ô„¾¨‡O¿/ê?%ê¸¾Ÿ¢‚¿µIé>·T¨¿«¦¿D‘¾¬Œ?#ì¤¿õ2½*?lI¶?ë»‡¾î^•?æñk=só>ã“>NSs?î¤|?fx¿4u>ç‡?}Õ?­§?£$5¿ù>q¼º>/–¿Ìå-?ëyÍ=9¸¿û™$?UnÕ>ïú¿Ğ"?;ŞE¾ûÄæ>-å?ÄJ>Ì¦<½Èw‚>¡zÅ>5ò1½q*|?4tB¿@&?ÀÒ]¾<2?(Àûˆ?[œß>ê.„¿3?Yv†¿£W?MƒŞ¿AŒ¾9‰æ¾À@g/%?Èd´¾c9¨?F˜”¿d+Ï?éNÎ½ùZ?„­b>:p½d¥¿“òª?3r¨?Øs½‘²}?bÒƒ¾Å&Â¾'¿Ì"¾æá>BA9?Í;Ó>%ÕË>¤›•?ÿ÷¾©ÙY?gÃÛ¼wn!?£Ÿ?î_¿çÓš>_$?Œ¬$@ë×?ØM!>À;>,ö?/?<~$¾Å.>l8u?UëÀA(Ì>L²>E9°¿3¾rbH?¼ú<¿6X¹>[y¿Ñcù¾u6j¾­½
+L4¿€áF=ÀÀn¿á¥1?Ş¹•>âU,>oÄ@Ğ¾míŒ¿óŒ?0W°¾i™¡>M¦½ÿ@Û¾uÖ›?A{Í?(Ï>{?¶¸¿=‡E>&Ë@œ1t¿^zæ¾Ùª?ü¿´rø>î>pkò>4‹Ä¿‡!ú½F•„¿İ ?¼?3ER>·z@¿°f ¾ÿƒš¿ à?Aî¿¢€¿GÁ¾×[Ñ>JÙ¾ü…?´@±5d¾—Ü¬¿_¾Ï¾jØ¿¹k­?öa¿3U€¿‚Â?¼€ú½!ş? R?¡Œ??’r?o#æ? ?eÍõ=úƒ³¾¯Õ¿	L ?ıµ?Xë¿&v?»}‚?9Ô³?‘ŒŒ?»AÅ¾9Š=è®?Ì… ¾ü¸W?R‡¾Ö96?Ì!?‚¾Õ«¿ÈV¿R´¿\å…?p3?¡—?!èÄ?—¿Ã-Ï>BèÚ¾Ay¾A,ş>:(¾EÄ®?WŠÀ='’¿ †Â¾ñÉ?ìé
+>+˜ó>VzÉ¾~w±>AÒ¿Tô<¿ÊÒ>¶Àbê=Qõ?qò¬¿-¯7¿tKd>?­¿)öä¿Ğİ=®H¿?]ù>W¿¿5_‡?Ïˆâ¾õœ¿ş¤ ¿<ó¿ÁL?{Ï¶>Å)*>Mj>Ö@ÄšŞ¾Jî=UmØ?S»å>x1½?iÚ$¿UqÀÏª¨>•>e¢®½±§?Ç&¿¢¥”¾?„¸¿ÏGÓ¾ˆŞ3¿jt5?˜@Dª>îòª>yŠz>	=/?™•È¿S©¿Q0™?‡!Ñ>wR¿ì¬=J\»?ğ¢^¿#<?ë²?fü>Éâ‘?‘ÙE¿·F‚?Á¾ì¿8~œ¿eÉš>ı?Î6?Ö‰˜¿Qƒ?iú§?@Fc¿¯9¿r¼—>2±‰¼WÄœ¿èß?Ù<2@ä‘}¾‹­ˆ¿0~Ÿ?#À¿0?·æ¾Ê…¾˜œÆ>²æä>}p?Ú$¿K²b>çB@ûÀÚ]@T±?şò­?k‚½©¿¢it?1Ö¾E	¿ ¡?OÖ·? ¨ı>Vj•>)‘O?êk¿„ğ¿ù¤>çÎ>rÇ•?	È¿æF¿C¿½¾(?™H¾›¾âÍ¾ş™y?µ+‹?G0+?PèR>·@¡?_òé¾Èö>|d>ˆ÷:¿"'3=äu­¾áóP>ù¿Í¢¹¾·'q¾,«ò¿Ú9=±p¼¾–ÀT9ñ>³Ñ¿Rvt¿ğFf>u3>•k =Bæ8?p½ß/?´ëM¾î)¿+‘3>KâÂ>+tè¿Ú
+J¿GU?n›>e«¾^¥¤?f¿lp'¿ˆÀ…‘m¾ÿö|¾ÇÀ?™µ¿ ä¿“?$¾%Ñ©?Cİq¾o?ú×;¿²µ¿J
+­?AlR?+#¿ØÓ$>Aí>zúÛ?bß–¾[Àm¾‚ À³™²½€R>Æ×¾¿¿±lŞ¾aŸÅ¿˜)3¿ÕÀæ=‰¿NëJ>Z‡¾Ú.Â?m­ö¿–¸™=éŠQÀf 1@bGv¿ò	ÀÂUT¿Ÿ×E>(u„¿aÉ4¿Doä?€¯9>ĞA?%Ì@>ê¾M¸-¿}ø»¿b ¿ÆÓ?Ä’¾Ó®ã=¯~?Ÿ}¾®ëÛ?=Aş¿¦c‹¾QüÓ?‹3d¿”Ò¿Î¦˜¾/ÖW¿Ã¾¾îâ=¾]#?%2Œ¾e½İ=wL¿=ö,?ÁÛo½Zz?Ós?ƒî¾6(°¿ÌfI¿sû?-L¿˜
+.¿}ÚI¿ÀOc?ô`¾ø¿ÎA(?wjÏ>«À]sÏ?i¾=_Ø½.°?Ê=$¿n	Ú?¶VP=Uü=>¡Ş%½¦hw¿‚3e?uGÀäñg¿!œ¼¿‚0,=n£?mP¿hg¿G‡ö¿€¾ã	M¿Õj„>ØÉ?¡~W¿m©>Y/P¿|ô?Úšt¿$»>Ì€?®éº>ˆ°v¿ü	~¿Ôm{¿èÂ¢¿~¶ÀT¨T>u¨¿i®¿L»q?%¡¿¹çĞ=1"Å¿²b#?ÿ›C¿aqÁºí!í>áKÊ?BKÀ´¿"–?ÔVÄ?$@Á¾/©?Œ¼?¢·¿'@G£?t$É¿^E¥¾eJÀRv¾ƒ’›?àTª¿ë>h?`=³?#)±?niŞ¿K=R¿H,ú½ß?6>ì3¦¿®Õ$¿0`‚?»ó??\‰L¾%¾ †¾€º>"¹‹>³;½#Ô^¿¼òË½¿à¾DU§?ÆK¿Àİ?¦K}>¹æ@§CÕ?Pu~¿8-ö¿šeù>T9?àÛP¿<†z>±²?ıç×¿ëxË¿?%À¿S¹¾.Æş>o§œ?œĞ¾æN	¿.À.?x>E…5¿ŞÛ?œö@Ñ‘½²9>v›>šZL?•ÎJ¿¹ñ¾ì³G?æ
+—¿-Ôõ> (m?Ê¼ >fL@ÔXL¿Òvo=Š]A¿Á?Çr?G—¾#›Û¾ª¤¾#÷o¿“ª¿Nw=?¡?N ò¿Ô©·¿D^Ê¿á:¿±ls¿>º?Ø(2=GÖ!¿rÔ®>»m?<rà>‚C’>¸B£?qÁL>hí>zLø=Ó/³=Aú[¿A]w?_Øø¿hî ?z?7!½^ š?øO¿¶¿Eé>-0Ô¿•@?®æí¾pÖ–¿:)™¾ÏÍñ¿8`¿Zºæ>HMe¿Ù–>-¶ü¾»¿öº<ƒüO>Ø¼‡?`şJ?‰+g?*ü”>­¿7yß¿’KÅ?¹?5ò‚>e7…¿Î?-°Ë¿kpğ¾êd¼? ºkĞ¾Ú
+¿Hõİ½ ¾©>BU	?»¿Ì€ß>ÑCŞ=#ş¾šEú¾…¿À2œ¿û’Z¿JÅw¾ç%(½`<Ù¿e=(¿:³¿[˜?
+¿`i»?´“Õ>¼g¿Y¿æ=Û?„>‰¿ĞA¿Cü¾ÕşW¾ŠA?
+q»>ôãÉ¾7Ìà¿A>¾ ¿jÍ›?o‘Š¿ƒ© @"h?½ğÀb|>¿9¹ÀÅµª>X¾ƒ?¶lm¿¼vK?ôX¿òš¾¹?L^™¾¢Ù?p±¾Ÿÿ?pŒ½k2(¾<½ï¾4~ÿ?éO´¿=?÷£¿0ì>§b@-7²¿ŞÂ>È°?½@®,İ=¥[6¿àOÇ¿ó> >ün=¬x#>8ò4½´ê¿êr¿Ù£¿˜œ¾è‘ö½‘?:>,@wÄü½-!¿íİV>Xlì=8ZÀÃÃ·>
+í+?í¡F>ÛºÎ½Ç+U?ï†f¿ãw¯>/™É¾ä5Œ¿H¾B?ã=?st-?YÏJ¿ïâ"?q7@«¤?³0Ê¿ü«”?0ËÀ¿–¿??^¿d~²>ú¯>UU(?õñò¾ƒL<î»3¿>ê@_øÄ?tìT>œû‰>{W¿µPñ>¹ß±>s¿€¾=ëí&¿º:ä¾.›x>µ¯H¿ØS?Œ5?
+„_¿§k?HÁi>»Ow>Éÿ+¿ˆ'{?¼ÄÛ?Øf–¿`÷Š>à?ÂO²?€BÑ¿UU¾H?
+l ¾ÿà	¿à®¿	"µ>QO½?@+KÀo˜¿|ô²?ìàj?É@F¾#I—?iÚ‘¿oÀ À=ø3¾@9u¿¶§~?‘ÈÊ¿Ã©¾zCÄ¿Æk¿¨/¶¾èĞ?là’?Zr!>KÊ^¾ë?3J¿}êî=’´"?Ù‰¿-Em¿ÏAÒ;p	ã¾Õu?“/–=æ°[¿ˆÔ½èfŸ?¸3&=uÛª=¡ıU?Íq•?°”i?Âa7¿X!¿õ1 ½çÉ?ùx°½Î©?¬§¬¾»äb?ñ?9¤ß¿D¦P>œõ¾ÄÆş?W€?ái‰¿ÉE¿Æ>À‹¿òM@30Å¿#¼?3í¿F?Ø™»!ôN¾ëËÿ¾u]o?ò¾¿ùØ¾Æ‚c¿½·¾xÿò¼~TW>¤
+.?­So¿1ì–¿äç@ß&?fÇs¾²Ö >(‡T>Û?ú>¾ów:>™É?iT¢=«iÓ¿ö9¿F†>E¹A¿ø¦q?6Ë>@&Ò>Ä_>íš?Ak¦=e©2??öè>^–?„|Û?ãª¿‡Ç+?#‘>O¿2>a>ûaÜ¾YU@ŸÃ9?ËGÿ>+Å=¿q¿R.?¾J¥?U»•?§_@u;œ>Û¢®?‹¾ç¤¿0)Ô¿.·¿ê¼î?{XÍ¿ˆ}?$UQ?¹w¡¿ü?Ka¿†?‚,¿C½Q?¸Y?WÖ›?	HG?[EÍ¾t{¿Á°F¿ô@¿¹'|¿SQú¿]Bw?ÓŒ?9åD=6
+À(¿ÀÒy=wŠ¾Ûrv½-È—¿­#?È`Ş?*?P	¿ß…¾ñ¬=ªi ¿óÛà¾×†>5”§>[V¿X½ñ?ÛN@Ç|¿:]ƒ¾ç‚?§‚Z¿çr¿’Ö@™î>ÙÙ‘?è«¿¾Ú²ƒ¿.F±¿¯l>ÊG?–-?ğéê¾z)¿€}Œ¿Sêì?>´£?Ş&—>
+¾µ?cA¥>L%2?Îš¿İ<(?ƒ
+u¿åÜ>-À¹yI¿Ëœ¼ğÅ¾±¾7@Yº¿/ 	¿Œ…ª?A¼=?kÍ8=ò†B¿“[>+•¿Ì?æ¾4A¿Lò€½¿^Ñ>Ï¿¨O;¿D@—,Í¾i™T?^@·¿¿Ÿ@ˆº$¿Ü£¿?œ­?«<¾k²‘;2>)T¾­ç>Ü p?¾i?š+Ÿ¿ó‡Ş?7?¦¾·J“?°B¿>+VX>KŒ©¿Sz?£åÀ‚ãî?£$>??×IÛ¾¸t?öŠ?	Å²?tX<¾ú¤>åS2¿Ëîâ½:¸?=l?9Ç?”_?Ô?:‡?v@ƒ¿pí9?|èÕ¿H³
+?î`¿VCL?ñœ~¿S^Y¿µ›T¿Õy#À‘n?“?BI!¿ú‚¿ıÜ=ÒÖ¿¢>f4ÀÉD€¾½¨Æ¿M×¿>—´?’¹Ğ=ò¹™¿
+/?7µğ?Ÿ™’>Ò¼İ¾Ïj0?ƒ’Ô½	¾¿×ŒH?[»>¾f›»X C¿à;Ã¾Œ“ª<p@Å>%~:¿Öp¾gô>ë~†=d±¾Tyè?&2§>Éjå¾£/c?êÙ?”q£¿¶Ğ?q³Õ?Õ~E?G¶@Ú²j=®ÿ˜¾Îğ“¿·+³>5Lu>œ½ƒ>ê¾£¾/©û¾e¿æ¬¿~‘5¾Ï7?øÚ?ªÇÈ>l†£¿P‘?ğ*$¾Ï“¿ 2¡?â›¿œyM? #½Ô‚š¾Vm¿[b‡¾|
+D?y­Ë?•d?LŒ¾=T]¿Ó¿LV1¿¦š?!äd?[~?Î£?[Ú3<õ)Œ?Lpæ¾„öª¿µè>nj–¾àğÀ¡º•?Húy¾ w–>¬¬Ğ>f³>RA›?4É¾ïÔ@»³Õ½
+Z¾Ä»¿{œ¾\¶r¾*f?`¢N=Xäú=?ñ¿¾Özê¿½?=>/?Z)¿Ås»y²P?Yb•=ˆ)µ?ÚC©?Uì¿'_¾‰ò'¿ş${½õU?zû¾Çh‹>~³?qV»æÙG¿	¸ƒ?a7\>lä·?‘xQ?£q”¿=œ?ÑÈ¢?´3Ì>íÆè=qş¿»?;'•?`˜y¿ßnŞ?YoÃ»÷mM?!Ü¿JÛ>½…>a¸X?¡&€=J…¿š+:¾I“ë?ñÅ¿Ëô]¿FÂ¾,?O	@šå½ò¾¶¿´Æ¿A¿3?ø¿?m@¯½ÿ9­<Cm?3—¼8‡^¾¾"`¿J¿)†«¿ò×¾=ï¾tC.¿›¿®|?­iâ?¯e>ÔT	¿G½˜¼Ïü¿Ò=d_¿:QN¿gR÷½àe$¿—uu¿ßb¾Î×¾0Ã>ß-G>`/„>\ù¾54Ä¿İ‘?Ñhñ¾0™?Ã96¿Än=E¿½ ¾>rÅE¿À1ã>şó=÷r¿—¡b¿ ³A=;ßƒ=GÀ½«0t¾0¤»¿/.~?àp¿c—·?kº¾uÜÜ¾åà>Õ'?§ ?emâ>ÚVœ¾ å>dªh>¼|¿[)¢¿æï¿~ì¿÷0¿Æ‚è¾n^£>“•ü¿¼ÿª¾ÖÇ0?äo5?`´·¿\?N0@VÎ¿í»f?=F¿Ñ;Z?›ÖÒ¾EóS¿.G2¿ïH@U[1¿”öÇ?–¯Š?z¿v4¿p*š?:F¿u†r¿ƒl?&»^¿zÒÄ?Èêä?›y @Or.¾AĞ	À	8?I©£>g¾YIg¿Š•¾Æbå¾²¿EÔ?òáò½~5‹¿â?«ÀY>Äw^?`‹Ø¾4k¯?›ƒ >a¹:¿MAà½¥¡¾/\É>-¥¾şX¾µ‡?êe>© ÀûıÏ¾“üî½şš>á.T¾Éš½­)¾uÊó¾;|¿¦?ìó’=ù‡¿} H?
+7¿œh@è|1¿«´•¿‚x¿#(š?Ár>eV´¾7İ¿-E?’S ¿·D§¿Šÿ?¾ÖR¿éA¾DÌv?$‚?ŸÔ¾z¯Á?x½Àvø?ÂÓ?£éÃ¼^>³¿•‚©¿ß¾>¥†¿%Æ(?õÚI?Ü¿ó¾ö…2?…n>½âÛ-=+İ$?ŞŠJ>ÈíŒ¿ÒÀö¾Ö/@a".¿JÒÂ?9Ô>XÍ’?Í¾ÎF¾(Œ¿–sÁ>1>*?D·Œ½«“Ö¾İÜ”>1Ñd?õû¾]V?  ¬¿=Ó?1Œò>Ï~¿Êp?¿ãEŞ¾¶yU¿ª@ª¿mU.¿_T‹¿³Œ?ı³¿k‹Ÿ¾œ’@Î¿ƒ?æ?zT=¾·¿ËÅ?xSC?Š£é¿¨µ>\<
+?áıÎ>À¶:¿÷x·?ÛnÅ¿çG|¿œŒŠ¿è‰ç>cWµ>%”¿œÈv¿7½ò?¢b>1Ì“½ûÕ?õ,¿klR¿‡=€¿œW>Dë¢>·2æ¾@‰¹?ï­o?aT¿c¶Å?­£@é2¾(
+À÷/¿†·¿ŒØ¿¦À<¢½¾ó’
+?âÎõ½ØÃ*¿zªú>ëgH?ÀÀ¨g¾Á	é¼Sà?åß_¾HPÕ>Pb€¾%hŸ?ZŒ?–?á=‹d\>¹ÿo?İ?O‡¿|&Æ?Ü×û½~ZW¾I×B¿Íò±?ÿì¾÷5´?ˆ?jÕº¿©d¾%¢<Qá??ë>Øª>Ò‘@*@m¿Rõ@ds›=@Á?!\Ò»±wˆ¿,_›¿ôÌ…¿ãYÌ¼ì\Õ¿lH¿[?‘¿-|‘¾#V¿+ø]¿uÃs¿Å–@Ø½¿3¾´)?Ğö¾¾h Ş¿êH¿
+*¿§5î¿`À¾$q>ÔÎ>á#¡>Ë?D¿ëÇ¨¿ôt½2¼¼{•V¿$Ú®¿¹û?ÇV4?U¿Î½>¿Õ{—>|Á¿±@wu¿-…ê>g“„¾âÎó?Zß!¿ÃCö=E—¨?vµ£¿$•=iqØ<>¾^¹&¿Ãj¿­_‚?çÇ\?Œ L?Ó×>M¥±¿"P?%ë?>A?
+Ÿ¿›¬¿×‡¾U6¿ÿf„¾ïY¦¾Ÿ–?æà?†P¿#c¾>šş6¿ÜÊ—¿Ìø @bH>3®R?gÌ>mÔ ¿~o¿˜-3@İTş¾«wÜ?Z¤?R+¾/îÍ>dÚ8=H›¿Ì[¿‰ˆ?½9¿Ÿş½&Gñ¾02À‡Çî>b?ê¹Á¿‰›õ>ªI?¼!@E!¿èš½\ğ(@Áı>s  ?ßÏÿ¾»ùx¿¿ğ‡>"éˆ¿_È?¨.¿¦e>ğ‚‰¿>£ú¿Më®?µ(õ?X¬ÀU…Q>Åt?9n ¿ëÈ—>(Ò¿*5º;pSn=ù­?_Ú¿ó§¿Íñ¾ğTí?ˆe?,Ã?:ûŞ>+Ú9?ÂÀ@u(´¿7Ô¿À€£?y.½êÄe¾®/E¿{s¥<5E™>H<Œ>rOÛ¾™h½ ÿ=2à¶¿Fy-¿th?êÀa?¼&c¿åT	>ş ?ø×Q?F9}¿ñ‰>E­|?æøÍ¿Ğ¿HŠ¿…áK?Èº?ëÖ¾"Õ?
+¬ë?ÄK¬>Ç€ò>ğB™¿?ñˆ½¶Z?1È>ÆB»‰Z À0Ğ³>~©¾ÿ=…¿Áe?Ï Ä¿¶rÈ½zK¾¥|j¿¢¤"?,S¿9qæ¾íäµ?è¤Ã¿î^#>î–¿İ¸Ì¾úîh<*´|½_Ÿ ¿‚9²?è~•?×4Œ¾I%?¢r­>äX)ÀÇ#8?Qc<> =/¿ÃP³¿Ifì¾ëÑ?,?iÏ¾²LÛ=Åi“?‚T¿ÄìY?óó?6ş{?w%E¿)æ¾-¸?×@ˆ¿ÂZ?H£ş>Ë¸²½J’D¿á¶¿
+w6?P°B?,¡‰>…¹Â>Ãÿ¥? Ç˜¿\-…¾¬8§<G†'>ü§¾&¸¾í¢?-"F?,E¬?İïü=Şz?»&º¿øê4?9À›?5g:?­Á>øG¼#Ğâ¾/oš¿¸¿¡Öâ<WlÊ¾7¼½ê·ç¿&P2¿ª)¿æ(+¾tk÷?b—û?ë{ı>Uµ#À^ò<œnÁ¿Ÿİ=1J>Ã0—¿ÚüÂ>f‚x¿M"'¾®ë#@ëO>£â‡¾
+µÒ>10 ½	cç¾LR¿w¾Ÿ¥Ô¾7Ñ‰=3;?!W™¾Öş"¾aóX¿-T?A-W¿ÁŒ¿µ|Ê?`õ¿ƒŸ¿(Ö¯?z¬Ê¿³;v¿·?"ø¼Ü)…¿Ö”2¿qÄ»?´Ïş¾²â©¿µï©¾öÔ@3d>åP¿Å~ ¿¦ D?ä1›>›]Ğ<ê+Ø¿TËÏ?ø>«¾¸ |?7`@?û=€?7Ë-¾€–©¿·ûn¿¶¿2Kj¿fV¾6õ„?³ÿe>bÀ¤¿9ıë¿íX?–Oß?r)]¿³`‡?Ñù¿
+‚3?TB¨?zÇo>
+I¢?+™À/ÃH?ğDÌ=ksS?C[?—Š¿Ö¿»r„?TÌ#¿4èo¿_ë`¿9ÈÄ>¾U•¿ü¤å¿fÛ¤?¹½»3iñ=d'Î>'O¿ÎR?in¡?®Á†?!¤*¿$ºš¿A¾2§¿»­@M¹k¿*	Ù¿=Õ¿¾R@¾âì¹?Bô¨¿ë¬¿áîø¿s1H?û²­>< j½Í!¸½ìr·¿·¿øÈÉ>6ı>ä»è¾_÷y>‚Ó¿Ñø¾uÙ¦¾ÎFü>ß5<€?#€»¿4¶>÷'š?ßì?ß?¨¨¾», @~Ğñ>åå>aÓ˜¿Á>ekw¾Ì¶ï¾TO=*¢œ?¨«?#G? Jí¿CV2¿qòi>İ
+Ÿ¿ZR?V‘Ù¿Á)?¶ÚG¿oøŒ;$!”¿“à¾²/¿A­@O#ƒ¾Ëİ]¿Ô/?+¢F¾7™¿º >ù@I¿¹Ğ<@*‚?ğ\l>q\Á¿öl ¾î—*?TŠş¾Ù´´¾¡¡”½x€ÿ<{Eâ¾Â}?HÔ@¢É¶?ë @û=…?³‘¥?\-1>G­4¿`{ä?õ@ö½’L–¿âÇü>ª×9¿;¨7Àßx?“åË?ˆøA?œô(¿pË¿ŸŒ?÷îr>ª(l?ÆEİ¾Nñ?ô­y?}„˜¿½s>ó#n?D«?A4½·Àä¾ßü«?ÉJÒ¿«?şhƒ>¡9Â>&a¿BÒì>¨¸„¾!£@>ehÖ¿õÃ>dñl¿ÃDQ¿¥ëˆ¿ö<§¿ÁÆ?˜\¿èŠH?bÚÉ?Eá?ğÙş>©º¾„S,¿‹n>œ(¼>dí¦¾á=¾¿G›¿ãÆu>x`§>}ût?Fs¿I½?àx¿(R>õå®?ùó?’Ï¿Ö¶Ÿ?¡Ù6¿w]0¿½ÊS¿ú£‚¿cµ>¾u@×ÄR¼ñÌâ¿¸×‡¿²@û¿8•¸¾æÛÇ½pV¾Ë®¿,~ñ¼E`&@ïT@aÎ¯¿5!¿²`±>dÿC¿=n%?æ>{‚v¿²c=s‡¿ÑâÀw;N¾\Ù÷¿gZ(¾lS;Y¹Ş½WºÀ>9?¹>,·?ÜW!?!~‚>Ÿ‘—¾ô?Mš¿İe¾‹´?—İè¾tğN¾àï¿»ˆ5¿°'b?@ÀÓÔ6¾cÙ—>y6€¿Y ?¶š-½W34½ª+r¿0>–I¾(ª¿W…«?¹š>ÖÊ¿Œ*&?ÇE?éÜ?¼v¯¿´Ãª>Óğ×¾Ÿùp>ùŞ>ÒƒÑ?e3X?˜ª¤= R©?"aú>Ò=¦?`S9?],‚?Ä›@ÅÈ ¿]‰ï?W†‰¿$”D?†æ¿œì¥¾Nº%?İËŠ¿{…½Sé†¿ëN<ˆ÷ò>ğ›>¿d¿ş:”¿†…L?›-_¿°7¿¤¡À=+V¿i¡î¿?©?&~¡¾ZF‘¿ıÕƒ¿=Ğ¾ËÄÓ?v?ö¾m'(?Ê¡ê>–\¿èÉ¿¥#>Yã¾)‰”?kCÀ>
+?5Ä¾¦	æ¾±åT¿Œ»¾Îş>`V/¿_?î¿‹€á>e‡?b2?‡(¾ieğ¿µ¬†?DO¿¸°?=¤¦½šôœ>o¥ğ¾¦i²>hœ¾s¢¿ıv¥>ººÔ¾ku[?æ ¹¿*İ¥¿·H¿\b?_qX=¾ôü¢>d©Ñ?N”î?µK¿¾„I?™Æ¯¿ï[c> 0h<·S¿—x_?+‘®¾>Ş»?/›½´>e
+m¿àş™>Ø×¾À5?‚‹>ú?I¿7‡u?íR²?,É¦½(d?ÂŸ?™şØ?W]´?¥Ë¿ÚQŸ>ŞOb;õÚ›¾„¥k½òœÖ¿-¿O†>øY¾3ªİ?–›Y¿’ ¿ĞÒ¿›’”¾É¸ü¿'gö¿ÚVM¿ŠT¯¾<ô¿ÇÙô¼Qr/?n¿úÕj>Ïêû?b~¹¾ÕLV¿W H=¿/"á¿‚Ó½™1@×Ü>0/>êp¿šıÆ¾FvŠ¿Q°?.Ÿ?ŞÅ‰?ï÷–?VÀË>£k'?Û¹Å¿ y¿á}´¿_u¿ÎÛD?o‡Á¿×ù¿=,Õ¾À"l¿Éj}¿tUê>À7Ê¿&Õ¾%{?sØ¿É	¿7â	@f·?¦ˆ¿Å:K?ĞÉ¿…kc¾o4¿A£?0ş%=½I
+@è(?•} ¾c¶{¿J )¿\Ñ>úAV?¦MÉ=¦-ˆ?÷[ö¾Û.k¾]/:½Ü§¾ì¤³>ô°?™x;Ğ‹˜¿1_)¾"bk¿Œ½™¾0	?»á¿ã†?"š¬>(§]¾3FX¿ïÚ>ªİ~='E†¿¯“—¼x)>4h+¿AÛ¿¡mu>Æâ?éø>ê¿…U@‡ìY¿!šh½n€°¿3'¿5"¿]Aµ?Ìœ¨¿à+‡?¬_=öåt?@Ë ¿/Ê>»‡?Ï@²¿.”€½£N?&ğ>¿¥Á#>w·Ÿ?]µX¿f8S¿8;¢½‹Ú'>?Â¾œ(İ¿TF’>N¿¿™=¤øˆ¿X:å¿…ƒ<¿C?^”?2?ESt>KÅ›¿y'¿àJ¯?·&ü>êÔT<iêl?)(1¿ e—?PÖa?­÷˜¿²1ì¾?X-?ÙK'½3Ğ‡¿¥;|=­5?f+A¿’3¿/:Ó>>	ï¿·ã?”çÃ?ı¾òò ¾Ú[ì?"êÄ>eâÒ>í›?ôõ¾õ¬
+@»%¿N'@K•¿˜@–b›?:‡´¿nx™¿¸Ÿå¾ä£3?›·!¿¨L¾£›~?Ï4Ä?=V¸:®wä¿×ığ?®º–>í¿ò ‡¿w_?¬¯æ¿éÖ?(Ş½j˜[?ñÍ>Ş”?q;>ò/š>$Xu¿Öâ¢?¡o?{}J¿:Té>`ÁoÀÕ!=¤õ?¬Ô?T|?òãŞ¿ ¯¿*?Ù¿Õß×?>Ï>²ô¾êgÃ>Ô€=s?º?sñN>çŒ¾ÊsX¾ÿ—¿–¿Œ¼?÷!ƒ?;@öLİ>»o¡¿0ï½kx?¢º£>ù-?“ÙË¿W¾£¬–¾cÄÄ½2ü×¾šTå¾qHG?Œj>œø{¾ToS?l¿¦	=ô¡/?7Úı= ğÁ>+€¿Ù:G?‘SK¿°¿Uß¬¿[Ì¿¨—E¿³ğM¿àú?ØnÀÚô>e]È¾œŠ¿i%¿¦jk?Íš¿®ìN?ôL¿ø¿°0¾wğ¾±N&?Gål¾1»I>,ëŸ?¼/?ı¢’¿«‡?Îá±¿3¾'@ÏíW¿Ú©Ş?š‘3?ÙÀ³¾›q¿ìÚ}¿Òã=5ƒg>¤èº¿ £¿Qš¿>'‡>©á¾{¸1@M¬õ>ÙîD¿Š×ã¾Í5*?¿I­?€=À¿ÛöÎ¿Ysi?ªƒ?à(ø¾œò„?d•>Œ<¶Û@ˆ
+>£qÃ¿o
+¿Cò„?ÿõA¿ç??‡È£¾§=®¾JGc½àè¿‘#<eW¿yøŠ¿²§?w[È>db(@;†?¼hù>ğ½e¿ÅŞ>İ>À+®>Mpd>ÉÓF?lÂŸ¿÷÷½œs¿”³¿çãV?¬·>lîØ¾|Sœ¾³—n¿àåF?[ğM¿÷¶]?¿ ?}ø!?d«?ÈŠÏ¿ìzQ>½\¿X8V?fÊP¿ôy¤>bhE>ŒÍ'?yò>"È¨¿õ‰¤?$å'¿¹µb¾”¼Woİ>?¼>¿Á¿\"¿U¯y>„xš?A‰>­¸Ì=$u¼’'¿Ğl:?…gÉ¾ez?C~˜>ÖY%>Å ?.\0¾ØÈ½Óè—>º –¿sµL?`ûë=].´>n¤¾s2–¿îÓ¤?TÓ>¢dõ¾9~>Á@®¿ìÏÄ?çC?ıÉs?lD|¿»U³¿›âê?ĞˆQ¿šB½|O=’ƒ¿ÀÒ«¾É6=¿OÑ¾¬¯(À‰?ÃáÓ>™Êo>‚I¨¿uwÙ>ú×*?¿–¦¿º‚?œÕ¼»"k?äüIºòíø>h¢f;ßØM?1g\? %±?„»%›¿VjÜ¼Ô
+ª?–HË?£è?ÊJ @Tº¾ü€?
+Ï¿4‰…¿Ù>¦ÅÒ¾ò@?Ù÷¿I]–?é›½Pïº¿hF%=±vÙ¿”QÖ>îš¿Êéy¿8Œ¢¼ñT¾^3?6¾ïÆã¾FÛS¿Ş¿Tå¾€²÷¾œ«~>5hĞ¾£ü¿^êY?vÓ’>œ„Ó¿®c?ÕF•¿U+¾>ë@ôËŞ=ûG¾k¬>+J¿/S‘¾T©’¿Îk^?&é@¾ï-7?+´«?|{¡¿nÂ¼=‡ï˜¿õxé=[]•¾­^¿ö®¿ëˆ> 
+í½ÀbÏ?Ïâ˜?JÊÎ¿Ó@?ùu)>|àª½„PU?>p¿dCP?Îİ?%Z¾Q>ñD¿ÁR¿¿­¿qæT¿A(¥?ku?!O?Ø4¿³ê·¾»{¾q{H<+Ö¿³Ìd¾r¸\¾
+œ?˜¸½}4?†E¿{„¾«/?°ÀáÌ?ªâ>„S‚¾´ô²¿½ı¿âò£¿ìNÒ<¾âß?¬I¾şt¶¾.=ï=ö=Ş¾'yë¿XÔ|¿•#¿UZ­?åÌ¾ü? ğ“¾šqR¿Ìî}?Pè?‘{À¥„‘¼t!¾BH¾êQ¥¾ò½ã>Á'ÀÙ\q¿ûÖ>Æûà¾Á‡'?9Ú¿q@fû=>GÛ>_ŞP?j“S=qıÉ>	l3?è,m¿y<¿Ó€T¿Úì´¿‡Æ?}m)>_ºö¾ÔÌ?X
+=òç»=auº>¿·Í¿x‹n?g‚Ö¾÷d›?û+>ÃıÖ>“&Æ¿eX?äÄ¿n4ÀÔ\?Õc›?´0>úĞA¿‰ ÀD>Tkv¾ôb?.Á¿Kçˆ?~7Ô>à/³¾éV/>·ã=¿B?v¿Âµk¿Mş¸?Š}˜?]¿{f£?Ç|¿c8Ü?°¹ó½G|×>!Tæ<8Š?óQ¿P€â>SÁ¼¶"¿Ë­£¾ïô¾¿“ı¾‚£¾|=¿4d?âœ?¿h×9¿„L?m*?ëy¾ySò?[?l(&»Ó†„¿©"×¾&C¬?& ¿'f£¾ÈÄi?…ˆÛ>‹a´¿²§q¿øŒ?gîE¿o¨?H¸—?éŠ¿w!Æ?Ha€?Êœ¿Íˆ¿§T?ä¦>Á•¾7È²?tä>‹‚Ò¿Da~¿²±®½ß1?`)4?7ôÉ¾OÃ?ı_?t¾¸¨x>}ôê½×vò?Áş²¾?Ç$¿G<™?â’M¿E?A²û>-YÉ¿#úß¾²MĞ½¨µ„?ş“Ú?)9v¿Œ$¾ô]Ñ?¯f¿äc?ÇÀ¿Öİö>g`2¾™Ü±?XÑ&¿s–?8€ÀŒØ	?9Áä?‚oó¾‚®†¾şç{>?<r¿ú{«¾Qk’?ÆM²?Õ"?64e¾Ö›?%H’?
+X¾Ğ{È¿\Tt¾¹,>D.?Ò.ê¿™X9¾û	?¶)?Ïˆà?k:Ï¿E±Ò¾,0`?ŠÂ†¿ 8¿Q*–?u(‚?Ş,7¿f¦š>' ¤¾éX>×?G"À×Š?(Ú8>æ«¾¨[ó?¡ÙD?a˜¿
++K¾ÖÉ¢?áGf¿êÙ[¾¡UÊ¾¦qê>vF=?Õ£?'Eu=¤«s>Mİ¿ulL?XM?Ú9¾Âfì¾k4r¿<E@…Œ¿ÛÛf?ù>À8?fÕ+?K?´ÅÃ> ß²?06/>Íêä>mß„>iü>­ÁÈ?Ş›°¿øcµ¾ÄÇ ÀÏ¼?à V> <?æ}R¾#ç¿‡Å¾¡ÁÅ¾ËÁ”?ï²>²å‹¿—©?(#`?¬è‡½å1Š¾€Y¿µäJ¾%3|¾¥>¬¿Ã˜p¿¨Ë…¿Z#
+	input_ids
+
+
+
+sequenceZ<
+past_key_values.0.key#
+!
+
+
+past_sequence
+Z>
+past_key_values.0.value#
+!
+
+
+past_sequence
+Z<
+past_key_values.1.key#
+!
+
+
+past_sequence
+Z>
+past_key_values.1.value#
+!
+
+
+past_sequence
+Z<
+past_key_values.2.key#
+!
+
+
+past_sequence
+Z>
+past_key_values.2.value#
+!
+
+
+past_sequence
+Z<
+past_key_values.3.key#
+!
+
+
+past_sequence
+Z>
+past_key_values.3.value#
+!
+
+
+past_sequence
+b$
+logits
+
+
+
+sequence
+@b5
+present.0.key$
+"
+
+
+total_sequence
+b7
+present.0.value$
+"
+
+
+total_sequence
+b5
+present.1.key$
+"
+
+
+total_sequence
+b7
+present.1.value$
+"
+
+
+total_sequence
+b5
+present.2.key$
+"
+
+
+total_sequence
+b7
+present.2.value$
+"
+
+
+total_sequence
+b5
+present.3.key$
+"
+
+
+total_sequence
+b7
+present.3.value$
+"
+
+
+total_sequence
+j#
+embed
+
+
+
+sequence
+@j 
+x0
+
+
+
+sequence
+@j8
+model.layers.0/attn.q_proj
+
+
+
+sequence
+@j8
+model.layers.0/attn.k_proj
+
+
+
+sequence
+ j8
+model.layers.0/attn.v_proj
+
+
+
+sequence
+ j9
+model.layers.0/attn.context
+
+
+
+sequence
+@j8
+model.layers.0/attn.o_proj
+
+
+
+sequence
+@j:
+model.layers.0/attn.residual
+
+
+
+sequence
+@j;
+model.layers.0/mlp.gate_proj
+
+
+
+sequence
+€j9
+model.layers.0/mlp.up_proj
+
+
+
+sequence
+€j9
+model.layers.0/mlp.sigmoid
+
+
+
+sequence
+€j6
+model.layers.0/mlp.silu
+
+
+
+sequence
+€j5
+model.layers.0/mlp.act
+
+
+
+sequence
+€j:
+model.layers.0/mlp.down_proj
+
+
+
+sequence
+@jC
+%model.layers.0/input_layernorm.square
+
+
+
+sequence
+@jA
+#model.layers.0/input_layernorm.unit
+
+
+
+sequence
+@j@
+"model.layers.0/input_layernorm.out
+
+
+
+sequence
+@jA
+#model.layers.0/input_layernorm.mean
+
+
+
+sequence
+jE
+'model.layers.0/input_layernorm.variance
+
+
+
+sequence
+jH
+*model.layers.0/input_layernorm.denominator
+
+
+
+sequence
+jL
+.model.layers.0/post_attention_layernorm.square
+
+
+
+sequence
+@jJ
+,model.layers.0/post_attention_layernorm.unit
+
+
+
+sequence
+@jI
++model.layers.0/post_attention_layernorm.out
+
+
+
+sequence
+@jJ
+,model.layers.0/post_attention_layernorm.mean
+
+
+
+sequence
+jN
+0model.layers.0/post_attention_layernorm.variance
+
+
+
+sequence
+jQ
+3model.layers.0/post_attention_layernorm.denominator
+
+
+
+sequence
+j6
+model.layers.1/input.sum
+
+
+
+sequence
+@j2
+model.layers.1/input
+
+
+
+sequence
+@j8
+model.layers.1/attn.q_proj
+
+
+
+sequence
+@j8
+model.layers.1/attn.k_proj
+
+
+
+sequence
+ j8
+model.layers.1/attn.v_proj
+
+
+
+sequence
+ j9
+model.layers.1/attn.context
+
+
+
+sequence
+@j8
+model.layers.1/attn.o_proj
+
+
+
+sequence
+@j:
+model.layers.1/attn.residual
+
+
+
+sequence
+@j;
+model.layers.1/mlp.gate_proj
+
+
+
+sequence
+€j9
+model.layers.1/mlp.up_proj
+
+
+
+sequence
+€j9
+model.layers.1/mlp.sigmoid
+
+
+
+sequence
+€j6
+model.layers.1/mlp.silu
+
+
+
+sequence
+€j5
+model.layers.1/mlp.act
+
+
+
+sequence
+€j:
+model.layers.1/mlp.down_proj
+
+
+
+sequence
+@jC
+%model.layers.1/input_layernorm.square
+
+
+
+sequence
+@jA
+#model.layers.1/input_layernorm.unit
+
+
+
+sequence
+@j@
+"model.layers.1/input_layernorm.out
+
+
+
+sequence
+@jA
+#model.layers.1/input_layernorm.mean
+
+
+
+sequence
+jE
+'model.layers.1/input_layernorm.variance
+
+
+
+sequence
+jH
+*model.layers.1/input_layernorm.denominator
+
+
+
+sequence
+jL
+.model.layers.1/post_attention_layernorm.square
+
+
+
+sequence
+@jJ
+,model.layers.1/post_attention_layernorm.unit
+
+
+
+sequence
+@jI
++model.layers.1/post_attention_layernorm.out
+
+
+
+sequence
+@jJ
+,model.layers.1/post_attention_layernorm.mean
+
+
+
+sequence
+jN
+0model.layers.1/post_attention_layernorm.variance
+
+
+
+sequence
+jQ
+3model.layers.1/post_attention_layernorm.denominator
+
+
+
+sequence
+j6
+model.layers.2/input.sum
+
+
+
+sequence
+@j2
+model.layers.2/input
+
+
+
+sequence
+@j8
+model.layers.2/attn.q_proj
+
+
+
+sequence
+@j8
+model.layers.2/attn.k_proj
+
+
+
+sequence
+ j8
+model.layers.2/attn.v_proj
+
+
+
+sequence
+ j9
+model.layers.2/attn.context
+
+
+
+sequence
+@j8
+model.layers.2/attn.o_proj
+
+
+
+sequence
+@j:
+model.layers.2/attn.residual
+
+
+
+sequence
+@j;
+model.layers.2/mlp.gate_proj
+
+
+
+sequence
+€j9
+model.layers.2/mlp.up_proj
+
+
+
+sequence
+€j9
+model.layers.2/mlp.sigmoid
+
+
+
+sequence
+€j6
+model.layers.2/mlp.silu
+
+
+
+sequence
+€j5
+model.layers.2/mlp.act
+
+
+
+sequence
+€j:
+model.layers.2/mlp.down_proj
+
+
+
+sequence
+@jC
+%model.layers.2/input_layernorm.square
+
+
+
+sequence
+@jA
+#model.layers.2/input_layernorm.unit
+
+
+
+sequence
+@j@
+"model.layers.2/input_layernorm.out
+
+
+
+sequence
+@jA
+#model.layers.2/input_layernorm.mean
+
+
+
+sequence
+jE
+'model.layers.2/input_layernorm.variance
+
+
+
+sequence
+jH
+*model.layers.2/input_layernorm.denominator
+
+
+
+sequence
+jL
+.model.layers.2/post_attention_layernorm.square
+
+
+
+sequence
+@jJ
+,model.layers.2/post_attention_layernorm.unit
+
+
+
+sequence
+@jI
++model.layers.2/post_attention_layernorm.out
+
+
+
+sequence
+@jJ
+,model.layers.2/post_attention_layernorm.mean
+
+
+
+sequence
+jN
+0model.layers.2/post_attention_layernorm.variance
+
+
+
+sequence
+jQ
+3model.layers.2/post_attention_layernorm.denominator
+
+
+
+sequence
+j6
+model.layers.3/input.sum
+
+
+
+sequence
+@j2
+model.layers.3/input
+
+
+
+sequence
+@j8
+model.layers.3/attn.q_proj
+
+
+
+sequence
+@j8
+model.layers.3/attn.k_proj
+
+
+
+sequence
+ j8
+model.layers.3/attn.v_proj
+
+
+
+sequence
+ j9
+model.layers.3/attn.context
+
+
+
+sequence
+@j8
+model.layers.3/attn.o_proj
+
+
+
+sequence
+@j:
+model.layers.3/attn.residual
+
+
+
+sequence
+@j;
+model.layers.3/mlp.gate_proj
+
+
+
+sequence
+€j9
+model.layers.3/mlp.up_proj
+
+
+
+sequence
+€j9
+model.layers.3/mlp.sigmoid
+
+
+
+sequence
+€j6
+model.layers.3/mlp.silu
+
+
+
+sequence
+€j5
+model.layers.3/mlp.act
+
+
+
+sequence
+€j:
+model.layers.3/mlp.down_proj
+
+
+
+sequence
+@jC
+%model.layers.3/input_layernorm.square
+
+
+
+sequence
+@jA
+#model.layers.3/input_layernorm.unit
+
+
+
+sequence
+@j@
+"model.layers.3/input_layernorm.out
+
+
+
+sequence
+@jA
+#model.layers.3/input_layernorm.mean
+
+
+
+sequence
+jE
+'model.layers.3/input_layernorm.variance
+
+
+
+sequence
+jH
+*model.layers.3/input_layernorm.denominator
+
+
+
+sequence
+jL
+.model.layers.3/post_attention_layernorm.square
+
+
+
+sequence
+@jJ
+,model.layers.3/post_attention_layernorm.unit
+
+
+
+sequence
+@jI
++model.layers.3/post_attention_layernorm.out
+
+
+
+sequence
+@jJ
+,model.layers.3/post_attention_layernorm.mean
+
+
+
+sequence
+jN
+0model.layers.3/post_attention_layernorm.variance
+
+
+
+sequence
+jQ
+3model.layers.3/post_attention_layernorm.denominator
+
+
+
+sequence
+j:
+model.layers.4/norm.residual
+
+
+
+sequence
+@j8
+model.layers.4/norm.square
+
+
+
+sequence
+@j6
+model.layers.4/norm.unit
+
+
+
+sequence
+@j5
+model.layers.4/norm.out
+
+
+
+sequence
+@j6
+model.layers.4/norm.mean
+
+
+
+sequence
+j:
+model.layers.4/norm.variance
+
+
+
+sequence
+j=
+model.layers.4/norm.denominator
+
+
+
+sequence
+j,
+model.layers.0/attn.past_shape
+
+
+j)
+model.layers.0/attn.past_length
+ j-
+model.layers.0/attn.query_shape
+
+
+j*
+ model.layers.0/attn.query_length
+ j%
+model.layers.0/attn.total64
+ j3
+)model.layers.0/attn.total_sequence_length
+ j$
+model.layers.0/attn.last64
+ j-
+model.layers.0/attn.last_vector
+
+
+j+
+model.layers.0/attn.seqlens_k
+
+
+j,
+model.layers.1/attn.past_shape
+
+
+j)
+model.layers.1/attn.past_length
+ j-
+model.layers.1/attn.query_shape
+
+
+j*
+ model.layers.1/attn.query_length
+ j%
+model.layers.1/attn.total64
+ j3
+)model.layers.1/attn.total_sequence_length
+ j$
+model.layers.1/attn.last64
+ j-
+model.layers.1/attn.last_vector
+
+
+j+
+model.layers.1/attn.seqlens_k
+
+
+j,
+model.layers.2/attn.past_shape
+
+
+j)
+model.layers.2/attn.past_length
+ j-
+model.layers.2/attn.query_shape
+
+
+j*
+ model.layers.2/attn.query_length
+ j%
+model.layers.2/attn.total64
+ j3
+)model.layers.2/attn.total_sequence_length
+ j$
+model.layers.2/attn.last64
+ j-
+model.layers.2/attn.last_vector
+
+
+j+
+model.layers.2/attn.seqlens_k
+
+
+j,
+model.layers.3/attn.past_shape
+
+
+j)
+model.layers.3/attn.past_length
+ j-
+model.layers.3/attn.query_shape
+
+
+j*
+ model.layers.3/attn.query_length
+ j%
+model.layers.3/attn.total64
+ j3
+)model.layers.3/attn.total_sequence_length
+ j$
+model.layers.3/attn.last64
+ j-
+model.layers.3/attn.last_vector
+
+
+j+
+model.layers.3/attn.seqlens_k
+
+
+B
+ B
+com.microsoft
