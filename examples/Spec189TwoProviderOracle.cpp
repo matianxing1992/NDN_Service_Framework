@@ -1396,6 +1396,27 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   if (exact && (!minindn || groupedTurns || turns.size() < 2 || automaticPlacement ||
                 handoff || placement.size() != exact->providers))
     chainFailure("deployment-exact-conversation-configuration");
+  std::set<std::string> tokenInputRoles;
+  if (exact) {
+    // Each rank of the first Qwen stage admits the token input. Later stages
+    // admit activations, whose element count has different units.
+    const auto& split = requesterConfig.at("catalog").at("splitter");
+    const auto& stages = split.at("roles");
+    const auto& degrees = split.at("tensor_degrees");
+    if (split.at("kind") != "QWEN" || !stages.is_array() || stages.empty() ||
+        !degrees.is_array() || degrees.size() != stages.size())
+      chainFailure("deployment-exact-token-ingress-layout");
+    const auto& first = stages.at(0).get_ref<const std::string&>();
+    const auto width = nonnegativeInteger(degrees.at(0));
+    if (first.empty() || width == 0 || width > exact->providers)
+      chainFailure("deployment-exact-token-ingress-layout");
+    for (std::uint64_t rank = 0; rank < width; ++rank) {
+      const auto role = first + "/Tensor/Rank/" + std::to_string(rank);
+      if (!placement.contains(role))
+        chainFailure("deployment-exact-token-ingress-role:" + role);
+      tokenInputRoles.insert(role);
+    }
+  }
   std::set<std::string> conversationIds;
   std::vector<std::filesystem::path> readOnlyTurnPaths;
   std::vector<std::filesystem::path> outputTurnPaths;
@@ -1757,6 +1778,18 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
             nonnegativeInteger(prefill.at("representedPrefixTokenCount")) != prefillPrefixTokens)
           chainFailure("deployment-exact-parent-state:turn=" + std::to_string(round) +
                        ":role=" + role);
+        if (tokenInputRoles.count(role)) {
+          const auto& cache = observation.at("cacheObservations");
+          for (std::size_t epoch = 0; epoch < cache.size(); ++epoch) {
+            const auto expected = epoch == 0 ? prefillPrefixTokens - parentPrefixTokens : 1;
+            const auto observed = nonnegativeInteger(cache.at(epoch).at("actualNewInputExtent"));
+            if (observed != expected)
+              chainFailure("deployment-exact-token-input:turn=" + std::to_string(round) +
+                           ":epoch=" + std::to_string(epoch) + ":role=" + role +
+                           ":expected=" + std::to_string(expected) +
+                           ":actual=" + std::to_string(observed));
+          }
+        }
         const auto& finalExecution = observation.at("finalExecutionEvidence");
         if (finalExecution.is_null())
           chainFailure("deployment-exact-execution-missing");
@@ -1898,7 +1931,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   }
   if (exact) {
     receipt["exactConversation"] = {{"tokensPerTurn", exact->tokensPerTurn},
-      {"providersPerTurn", exact->providers}, {"parentContinuationCounters", "MATCHED"}};
+      {"providersPerTurn", exact->providers}, {"parentContinuationCounters", "MATCHED"},
+      {"tokenInputRoles", tokenInputRoles}, {"tokenInputExtent", "MATCHED"}};
   }
   return receipt;
 }
