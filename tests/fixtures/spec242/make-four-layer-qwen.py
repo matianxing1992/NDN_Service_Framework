@@ -50,7 +50,7 @@ def matmul_nbits(name, x, n, k, rng, base_name):
 
 
 def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128,
-          vocab=64, seed=242, sequence=3):
+          vocab=64, seed=242, sequence=3, attention='gqa'):
     rng = np.random.default_rng(seed)
     nodes, inits = [], []
     init_names = set()
@@ -69,6 +69,10 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
                                  "model.embed_tokens.weight")])
     add(helper.make_node("Cast", ["embed"], ["x0"], name="INIT/cast", to=TensorProto.FLOAT))
 
+    if attention == 'matmul':
+        # No GQA grouping in the numeric fixture: every head owns its own K/V, so a head range
+        # is exactly a row range of q, k, v and the shards decompose without a mapping rule.
+        kv_heads = q_heads
     q_width, kv_width = q_heads * head_dim, kv_heads * head_dim
     for layer in range(layers):
         p = f"model.layers.{layer}."      # initializer names keep dots
@@ -99,7 +103,46 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
         # counts from its attributes; a hand-rolled softmax attention has no such attributes.
         # Real (if empty) state tensors: ONNX Runtime's loader rejects empty strings for
         # these inputs even though the checker and the adapter accept them.
-        add(helper.make_node(
+        if attention == 'matmul':
+            # Numeric fixture: plain per-head attention. No contrib op, so a head range is a
+            # plain weight slice and the whole model decomposes exactly.
+            for name, heads, width in (("q", q_heads, q_width), ("k", kv_heads, kv_width),
+                                       ("v", kv_heads, kv_width)):
+                shape_name = f"{pn}attn.{name}_shape"
+                if shape_name not in init_names:
+                    inits.append(numpy_helper.from_array(
+                        np.array([1, heads, sequence, head_dim], dtype=np.int64), shape_name))
+                    init_names.add(shape_name)
+                add(helper.make_node("Reshape", [f"{pn}attn.{name}_proj", shape_name],
+                                     [f"{pn}attn.{name}4d"], name=f"{pn}attn.{name}_reshape"))
+            add(helper.make_node("Transpose", [f"{pn}attn.k4d"], [f"{pn}attn.kT"],
+                                 name=f"{pn}attn.kT", perm=[0, 1, 3, 2]))
+            add(helper.make_node("MatMul", [f"{pn}attn.q4d", f"{pn}attn.kT"],
+                                 [f"{pn}attn.scores"], name=f"{pn}attn.scores"))
+            add(helper.make_node("Mul", [f"{pn}attn.scores", "attn.scale"],
+                                 [f"{pn}attn.scaled"], name=f"{pn}attn.scale"))
+            add(helper.make_node("Softmax", [f"{pn}attn.scaled"], [f"{pn}attn.weights"],
+                                 name=f"{pn}attn.softmax", axis=-1))
+            add(helper.make_node("MatMul", [f"{pn}attn.weights", f"{pn}attn.v4d"],
+                                 [f"{pn}attn.ctx4d"], name=f"{pn}attn.ctx"))
+            if "attn.scale" not in init_names:
+                inits.append(numpy_helper.from_array(
+                    np.array([1.0 / np.sqrt(head_dim)], dtype=np.float32), "attn.scale"))
+                init_names.add("attn.scale")
+            ctx_shape = f"{pn}attn.ctx_shape"
+            if ctx_shape not in init_names:
+                inits.append(numpy_helper.from_array(
+                    np.array([1, sequence, q_heads * head_dim], dtype=np.int64), ctx_shape))
+                init_names.add(ctx_shape)
+            # [N, S, H] -> [S, N, H] before flattening: a direct reshape would reorder the
+            # sequence and head axes, which is exactly the kind of silent corruption a
+            # numeric check exists to catch.
+            add(helper.make_node("Transpose", [f"{pn}attn.ctx4d"], [f"{pn}attn.ctxTS"],
+                                 name=f"{pn}attn.ctx_transpose", perm=[0, 2, 1, 3]))
+            add(helper.make_node("Reshape", [f"{pn}attn.ctxTS", ctx_shape],
+                                 [f"{pn}attn.context"], name=f"{pn}attn.ctx_reshape"))
+        else:
+            add(helper.make_node(
             "GroupQueryAttention",
             [f"{pn}attn.q_proj", f"{pn}attn.k_proj", f"{pn}attn.v_proj",
              f"{pn}attn.past_key", f"{pn}attn.past_value", f"{pn}attn.seqlens_k",
@@ -167,5 +210,7 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="tests/fixtures/spec242/four-layer-qwen.onnx")
+    parser.add_argument("--attention", default="gqa", choices=["gqa", "matmul"],
+                        help="gqa for shape derivation, matmul for numeric slicing checks")
     args = parser.parse_args()
-    build(args.out)
+    build(args.out, attention=args.attention)
