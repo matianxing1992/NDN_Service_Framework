@@ -7610,6 +7610,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     std::shared_ptr<BlockingDependencyIo> io;
     std::string error;
     ProviderDecodeStateSnapshot decodeState;
+    std::vector<std::vector<std::int64_t>> tokenInputs;
   };
 
   struct FirstReadGate
@@ -7637,7 +7638,8 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
                        std::string samplingMode = "Greedy",
                        std::uint64_t samplingSeed = 1'750'001,
                        bool stateful = false,
-                       bool promptCancellationSupported = true) {
+                       bool promptCancellationSupported = true,
+                       std::string tokenInputName = "input_ids") {
     NativeProviderRuntime runtime(1);
     const auto maxEpochs = logitsByEpoch.size();
     const auto identity = exactStateIdentity();
@@ -7656,13 +7658,28 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
       {"state.schemaDigest", identity.stateSchemaDigest},
     };
 
+    auto tokenInputs = std::make_shared<std::vector<std::vector<std::int64_t>>>();
     auto runner = makeNativeModelRunner(
-        [logitsByEpoch = std::move(logitsByEpoch), stateful]
+        [logitsByEpoch = std::move(logitsByEpoch), stateful, tokenInputName, tokenInputs]
         (const RoleExecutionContext& ctx) {
           BOOST_REQUIRE(ctx.inferenceEpoch < logitsByEpoch.size());
           if (stateful) {
             BOOST_REQUIRE(ctx.streamingStateExecution);
           }
+          std::size_t tokenTensors = 0;
+          for (const auto& [scope, bundle] : ctx.inputsByScope) {
+            for (const auto& tensor : decodeTensorBundleViews(bundle)) {
+              if (tensor.name != tokenInputName) continue;
+              BOOST_REQUIRE(tensor.elementType == TensorElementType::Int64);
+              BOOST_REQUIRE_EQUAL(tensor.payload.size() % sizeof(std::int64_t), 0u);
+              std::vector<std::int64_t> tokens(tensor.payload.size() / sizeof(std::int64_t));
+              if (!tokens.empty())
+                std::memcpy(tokens.data(), tensor.payload.data(), tensor.payload.size());
+              tokenInputs->push_back(std::move(tokens));
+              ++tokenTensors;
+            }
+          }
+          BOOST_REQUIRE_EQUAL(tokenTensors, 1u);
           const auto& values = logitsByEpoch[ctx.inferenceEpoch];
           NamedTensor logits;
           logits.name = "logits";
@@ -7750,11 +7767,12 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     config.lineagePlanDigest = stateDigest('0');
     config.localProvider = identity.providerIdentity;
     config.role = runnerSpec.role;
+    config.tokenInputName = tokenInputName;
     config.initialInputs = {
-      {"input_ids",
+      {tokenInputName,
        makeEncodedTensorBundle(
          "prompt",
-         {NamedTensor{"input_ids", TensorElementType::Int64, {1, 3},
+         {NamedTensor{tokenInputName, TensorElementType::Int64, {1, 3},
                       rawTensorPayload<std::int64_t>({11, 12, 13})}})},
     };
     config.maxEpochs = maxEpochs;
@@ -7815,7 +7833,7 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
     }
     return GenerationRun{std::move(result), std::move(events),
                          std::move(ioEvents), std::move(timeline), std::move(io),
-                         std::move(error), runtime.decodeStateSnapshot()};
+                         std::move(error), runtime.decodeStateSnapshot(), std::move(*tokenInputs)};
   };
 
   const auto maxTokens = run({
@@ -7846,6 +7864,25 @@ BOOST_AUTO_TEST_CASE(NativeEpochCoordinatorProducesTextAndTerminalFeedback)
               std::string::npos);
   BOOST_CHECK(maxTokens.events[1].find("\"textDelta\":\"好\"") !=
               std::string::npos);
+
+  const auto customTokens = run({
+    {0.0F, 5.0F, 0.0F, 0.0F},
+    {0.0F, 0.0F, 5.0F, 0.0F},
+  }, {}, "Greedy", 1'750'001, false, true, "tokens");
+  const std::vector<std::vector<std::int64_t>> expectedTokenInputs{{11, 12, 13}, {1}};
+  for (const auto* generation : {&maxTokens, &customTokens}) {
+    BOOST_CHECK(generation->tokenInputs == expectedTokenInputs);
+    BOOST_CHECK_EQUAL(generation->result.epochsExecuted, 2u);
+    BOOST_CHECK_EQUAL(generation->events.size(), 2u);
+  }
+  std::size_t customFeedbacks = 0;
+  for (const auto& [name, bundle] : customTokens.io->available) {
+    for (const auto& tensor : decodeTensorBundleViews(bundle)) {
+      BOOST_CHECK(tensor.name != "input_ids");
+      if (tensor.name == "tokens") ++customFeedbacks;
+    }
+  }
+  BOOST_CHECK_EQUAL(customFeedbacks, 2u);
 
   firstReadGate = std::make_shared<FirstReadGate>();
   const auto gate = firstReadGate;

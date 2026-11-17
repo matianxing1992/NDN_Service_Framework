@@ -324,7 +324,7 @@ makeTokenFeedback(std::int64_t token, bool terminal,
                   const NativeEpochCoordinatorConfig& config)
 {
   auto type = TensorElementType::Int64;
-  std::string name = "input_ids";
+  std::string name = config.tokenInputName;
   if (config.automaticBinding) {
     const auto& binding = *config.automaticBinding;
     const auto& profile = binding.generation();
