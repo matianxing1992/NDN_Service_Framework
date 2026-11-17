@@ -19,6 +19,8 @@
 
 namespace ndnsf::di {
 struct NativeOnnxGraphInspection;
+struct NativeSourceRegionBoundary;
+struct NativeStateTensorMapping;
 }
 
 namespace ndnsf::di::qwen {
@@ -987,6 +989,24 @@ buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
                          const std::map<std::string, std::string>& artifactByUnit,
                          const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
                          const NativeOnnxGraphInspection& source);
+
+/** Synchronous query of the frozen source owner; never retained by a plan. */
+using QwenTpSourceRegionPort = std::function<NativeSourceRegionBoundary(
+  const std::vector<std::string>&, const std::vector<std::string>&)>;
+
+/** Lower singleton regions as ordinary whole-graph CALLs using checked source boundaries. */
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
+                         const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source,
+                         const QwenTpSourceRegionPort& regionPort,
+                         const NativeStateTensorMapping& stateMapping);
 
 
 void

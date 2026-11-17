@@ -2273,12 +2273,19 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
   std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
   for (const auto& role : plan.roles) {
     auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "");
-    const auto entries = qwen::parseQwenTpEntryTable(
-      specs.at(role).metadata.at("tensorParallelEntries"));
     std::set<std::string> ownedState;
-    for (const auto& entry : entries) {
-      BOOST_REQUIRE_EQUAL(entry.unitId, role);
-      ownedState.insert(entry.stateOutputGraphNames.begin(), entry.stateOutputGraphNames.end());
+    if (const auto& whole = specs.at(role).entryContract) {
+      BOOST_CHECK_EQUAL(whole->unitId, role);
+      for (const auto& state : whole->stateSuccessorByInputGraphName)
+        ownedState.insert(state.second);
+    }
+    else {
+      const auto entries = qwen::parseQwenTpEntryTable(
+        specs.at(role).metadata.at("tensorParallelEntries"));
+      for (const auto& entry : entries) {
+        BOOST_REQUIRE_EQUAL(entry.unitId, role);
+        ownedState.insert(entry.stateOutputGraphNames.begin(), entry.stateOutputGraphNames.end());
+      }
     }
     for (std::size_t i = 0; i < stateContract.stateOutputNames.size(); ++i) {
       if (ownedState.count(stateContract.stateOutputNames[i]) == 0) continue;
@@ -2304,6 +2311,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     const auto expected = fullReference(prefix);
     auto bus = std::make_shared<tests::PartialBus>();
     std::map<std::string, std::future<ProviderRoleResult>> futures;
+    std::set<std::string> epochPublications;
     for (const auto& role : plan.roles) {
       auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "", epoch);
       roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
@@ -2314,6 +2322,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
         BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
         BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
         BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
+        BOOST_CHECK(epochPublications.insert(edge.plannedDataName).second);
       }
       NamedTensor ids;
       ids.name = "input_ids";
@@ -2328,11 +2337,19 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
         {{"input_ids", makeEncodedTensorBundle("input_ids", {ids})}}));
     }
     std::map<std::string, ProviderRoleResult> results;
+    std::ostringstream failures;
     for (auto& [role, future] : futures) {
       BOOST_REQUIRE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
-      BOOST_REQUIRE_NO_THROW(results.emplace(role, future.get()));
+      try {
+        results.emplace(role, future.get());
+      }
+      catch (const std::exception& error) {
+        failures << role << ": " << error.what() << "; ";
+      }
     }
-    BOOST_CHECK_EQUAL(bus->publishedCount(), 6u);
+    BOOST_REQUIRE_MESSAGE(failures.str().empty(),
+      label << " epoch=" << epoch << " worker failures: " << failures.str());
+    BOOST_CHECK_EQUAL(bus->publishedCount(), epochPublications.size());
     BOOST_REQUIRE_EQUAL(results.size(), 3u);
     BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
     const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
@@ -2701,7 +2718,7 @@ namespace {
 
 std::pair<NativeJson, NativeCanonicalSource>
 hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
-                     const std::string& backend = "onnxruntime")
+                     const std::string& backend = "onnxruntime", bool mirrored = false)
 {
   std::ifstream input("../tests/fixtures/spec242/four-layer-decode.onnx", std::ios::binary);
   BOOST_REQUIRE(static_cast<bool>(input));
@@ -2738,6 +2755,11 @@ hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
     {"weight_bytes_by_role", {{"first", 8U << 20}, {"last", 8U << 20}}},
     {"resources_by_role", {{"first", resources}, {"last", resources}}},
     {"input_ingress_role", "first"}, {"result_egress_role", "last"}};
+  if (mirrored) {
+    configuration["splitter"]["tensor_degrees"] = {1, 2};
+    configuration["splitter"]["rank_artifact_digests_by_role"] =
+      {{"last", {digest, nativePlanningDigest("spec242-catalog-rank1")}}};
+  }
   onnx::ModelProto model;
   BOOST_REQUIRE(model.ParseFromArray(source.modelBytes.data(),
                                      static_cast<int>(source.modelBytes.size())));
@@ -2776,6 +2798,26 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   const auto& prepared = loaded.planningCache->candidates.front();
   BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
   const NativeRequestControl regionControl{"/fixture/source-region", 1, control.deadline, {}};
+  // Invalid unit geometry must reject before querying any source or producing a candidate.
+  const auto shape = qwen::deriveQwenTpShape(source.modelBytes, 4);
+  const std::vector<qwen::QwenTpStageWindow> guardWindow{
+    {"guard-stage", nativePlanningDigest("guard-region"), 0, 4}};
+  const qwen::QwenTpSourceRegionPort unusedRegion = [] (const auto&, const auto&)
+    -> NativeSourceRegionBoundary {
+      throw std::logic_error("invalid geometry reached the source owner");
+    };
+  const auto rejectsUnit = [&] (const std::vector<qwen::QwenTpUnit>& units,
+                                const std::string& expected) {
+    BOOST_CHECK_EXCEPTION(qwen::buildQwenHybridCandidate(loaded.model.graph, shape,
+      guardWindow, {units}, "entry", "guard-unit", loaded.model.descriptor, {}, {},
+      NativeOnnxGraphInspection{}, unusedRegion, NativeStateTensorMapping{}),
+      std::invalid_argument, [&] (const std::invalid_argument& error) {
+        return std::string(error.what()).find(expected) != std::string::npos;
+      });
+  };
+  rejectsUnit({{"guard-unit", 1, 0, 4}}, "out-of-range rank");
+  rejectsUnit({{"guard-unit", 0, 1, 4}}, "template's layer range");
+  rejectsUnit({{"guard-unit", 1, 0, 4}, {"guard-peer", 0, 0, 4}}, "member order");
   std::map<std::uint64_t, std::string> rankRecipes;
   for (const auto& role : prepared.roles) {
     const auto boundary = loaded.preparation->sourceRegion(loaded.model,
@@ -2830,6 +2872,20 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
       BOOST_CHECK_EQUAL(role.tensorParallelDegree, 0u);
       BOOST_CHECK_EQUAL(role.tensorParallelRank, 0u);
       BOOST_CHECK_EQUAL(prepared.candidate.tensorIdentityByRole.count(role.role), 0u);
+      std::vector<const NativeExecutionStepSpec*> owned;
+      for (const auto& step : prepared.candidate.executionPlan.steps)
+        if (step.unitId == role.role) owned.push_back(&step);
+      BOOST_REQUIRE_EQUAL(owned.size(), 1u);
+      BOOST_CHECK_EQUAL(owned.front()->operation, "CALL_SUBGRAPH");
+      BOOST_CHECK_EQUAL(owned.front()->inputSlots.size(), 2u);
+      BOOST_CHECK_EQUAL(owned.front()->outputSlots.size(), 1u);
+      BOOST_CHECK_EQUAL(owned.front()->localStateSlots.size(), 6u);
+      for (const auto& port : owned.front()->inputSlots) {
+        BOOST_CHECK_EQUAL(port.source, "REMOTE_STEP");
+        BOOST_CHECK_NE(port.producerStepId, owned.front()->stepId);
+        BOOST_CHECK_EQUAL(port.dtype, boundary.inputs.at(port.slotId).dtype);
+        BOOST_CHECK(port.shape == boundary.inputs.at(port.slotId).shape);
+      }
     }
   }
   BOOST_REQUIRE_EQUAL(rankRecipes.size(), 2u);
@@ -2877,7 +2933,10 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
     });
 }
 
-BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
+namespace {
+
+void
+verifyHybridMaterials(bool mirrored)
 {
   // These projections exercise post-admission assembly, not Selection or transport security.
   if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
@@ -2898,7 +2957,7 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       std::istringstream fixedWire(request.at("fixed").get<std::string>());
       const auto fixed = nativeFixedRoleAssignmentV1FromJson(fixedWire);
       std::istringstream wire(request.at("wire").get<std::string>());
-      const auto projection = nativeSelectionInvocationV1FromJson(wire,
+      auto projection = nativeSelectionInvocationV1FromJson(wire,
         request.at("role").get<std::string>(), *fixed);
       BOOST_CHECK_EQUAL(nativeSelectionInvocationV1ToJson(projection, *fixed),
                         request.at("wire").get<std::string>());
@@ -2907,16 +2966,34 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       BOOST_REQUIRE_EQUAL(projection.plan.stageLayout.size(), 2u);
       BOOST_CHECK_EQUAL(projection.plan.degreeForRole(projection.executionRole.roleId),
                         request.at("degree").get<std::uint64_t>());
+      // This codec/cache probe supplies its state contract explicitly after wire decoding;
+      // it does not qualify generation Selection or authorization.
+      projection.generationContract.enabled = true;
+      projection.generationContract.mode = "TOKEN_STREAMING";
+      projection.generationContract.maxGeneratedTokens = 3;
+      projection.generationContract.streamingOperationStride = projection.plan.dependencies.size();
+      qwen::bindQwenTpGenerationState(projection.plan, projection.generationContract);
       // No catalog, canonical source, fetch port or parent cache owner exists in this process.
       const auto reopened = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
       BOOST_REQUIRE(reopened);
       BOOST_CHECK_EQUAL(reopened->path, request.at("path").get<std::string>());
-      BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
-                        request.at("entries").get<std::string>());
-      for (const auto& entry : qwen::parseQwenTpEntryTable(
-             reopened->metadata.at("tensorParallelEntries"))) {
-        const auto path = std::filesystem::path(reopened->path).parent_path() /
-          entry.relativeGraphPath;
+      std::vector<std::filesystem::path> graphs;
+      if (request.at("degree").get<std::uint64_t>() == 1) {
+        BOOST_REQUIRE(reopened->entryContract);
+        BOOST_CHECK_EQUAL(reopened->entryContract->entryId,
+                          request.at("entry").get<std::string>());
+        BOOST_CHECK_EQUAL(reopened->backend, projection.assemblyContract().backend);
+        graphs.emplace_back(reopened->path);
+      }
+      else {
+        BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
+                          request.at("entries").get<std::string>());
+        for (const auto& entry : qwen::parseQwenTpEntryTable(
+               reopened->metadata.at("tensorParallelEntries")))
+          graphs.push_back(std::filesystem::path(reopened->path).parent_path() /
+                            entry.relativeGraphPath);
+      }
+      for (const auto& path : graphs) {
         Ort::Session session(env, path.c_str(), sessionOptions);
         BOOST_CHECK_GT(session.GetInputCount(), 0u);
         BOOST_CHECK_GT(session.GetOutputCount(), 0u);
@@ -2933,7 +3010,7 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
     BOOST_TEST_MESSAGE("fresh-process hybrid cache reopened all three roles");
     return;
   }
-  auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu");
+  auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu", mirrored);
   auto& configuration = fixture.first;
   const auto& source = fixture.second;
   const auto root = nativeCanonicalJson(NativeJson{
@@ -3028,6 +3105,11 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
     projection.dataflow.planDigest = projection.planDigest;
     projection.dataflow.terminalResponseOwner =
       role.role == prepared.candidate.resultEgressRole;
+    projection.generationContract.enabled = true;
+    projection.generationContract.mode = "TOKEN_STREAMING";
+    projection.generationContract.maxGeneratedTokens = 3;
+    projection.generationContract.streamingOperationStride = projection.plan.dependencies.size();
+    qwen::bindQwenTpGenerationState(projection.plan, projection.generationContract);
     BOOST_TEST_CONTEXT("role=" << role.role) {
       const auto cold = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
       const auto beforeReopen = sourceFetches;
@@ -3036,37 +3118,54 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       BOOST_CHECK_EQUAL(sourceFetches, beforeReopen);
       BOOST_CHECK_EQUAL(reopened->path, cold.path);
       BOOST_CHECK_EQUAL(reopened->backend, cold.backend);
-      BOOST_CHECK_EQUAL(cold.metadata.at("tensorParallelChildBackend"), role.backend);
-      BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelChildBackend"), role.backend);
       BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, cold));
       BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, *reopened));
-      for (const auto* invalid : {"", "unknown", "native-qwen-tensor", "onnxruntime-cuda"}) {
-        auto bad = cold;
-        if (std::string(invalid).empty()) bad.metadata.erase("tensorParallelChildBackend");
-        else bad.metadata["tensorParallelChildBackend"] = invalid;
-        const auto rejected = validateNativePreparedRunnerSpec(projection, bad);
+      const bool singleton = projection.plan.degreeForRole(role.role) == 1;
+      if (!singleton) {
+        BOOST_CHECK_EQUAL(cold.metadata.at("tensorParallelChildBackend"), role.backend);
+        BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelChildBackend"), role.backend);
+        for (const auto* invalid : {"", "unknown", "native-qwen-tensor", "onnxruntime-cuda"}) {
+          auto bad = cold;
+          if (std::string(invalid).empty()) bad.metadata.erase("tensorParallelChildBackend");
+          else bad.metadata["tensorParallelChildBackend"] = invalid;
+          const auto rejected = validateNativePreparedRunnerSpec(projection, bad);
+          BOOST_REQUIRE(rejected);
+          BOOST_CHECK_EQUAL(*rejected, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
+        }
+        auto foreignAdapter = projection;
+        foreignAdapter.assembly.adapterId = foreignAdapter.selectedRole.adapterId = "foreign";
+        const auto rejected = validateNativePreparedRunnerSpec(foreignAdapter, cold);
         BOOST_REQUIRE(rejected);
         BOOST_CHECK_EQUAL(*rejected, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
+        BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
+                          cold.metadata.at("tensorParallelEntries"));
       }
-      auto foreignAdapter = projection;
-      foreignAdapter.assembly.adapterId = foreignAdapter.selectedRole.adapterId = "foreign";
-      const auto rejected = validateNativePreparedRunnerSpec(foreignAdapter, cold);
-      BOOST_REQUIRE(rejected);
-      BOOST_CHECK_EQUAL(*rejected, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
-      BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
-                        cold.metadata.at("tensorParallelEntries"));
       coldSpecs.emplace(role.role, cold);
       cachedSpecs.emplace(role.role, *reopened);
       for (auto* specs : {&coldSpecs, &cachedSpecs})
         specs->at(role.role).metadata["providerIdentity"] = projection.provider;
-      const auto entries = qwen::parseQwenTpEntryTable(reopened->metadata.at("tensorParallelEntries"));
+      std::vector<qwen::QwenTpEntryContract> entries;
+      if (!singleton)
+        entries = qwen::parseQwenTpEntryTable(reopened->metadata.at("tensorParallelEntries"));
       const bool first = role.layerBegin == 0;
-      BOOST_REQUIRE_EQUAL(entries.size(), first ? 3u : 7u);
+      BOOST_REQUIRE_EQUAL(entries.size(), singleton ? 0u : first ? 3u :
+        role.role == prepared.candidate.resultEgressRole ? 7u : 6u);
       std::set<std::string> expectedEntries;
       std::set<std::string> actualEntries;
       for (const auto& step : projection.plan.steps)
         if (step.unitId == role.selectedRole && step.operation == "CALL_SUBGRAPH")
           expectedEntries.insert(step.artifactEntry);
+      if (singleton) {
+        BOOST_REQUIRE(cold.entryContract);
+        BOOST_REQUIRE(reopened->entryContract);
+        BOOST_CHECK(*cold.entryContract == *reopened->entryContract);
+        BOOST_CHECK_EQUAL(reopened->backend, role.backend);
+        BOOST_CHECK_EQUAL(expectedEntries.size(), 1u);
+        actualEntries.insert(reopened->entryContract->entryId);
+        Ort::Session session(env, reopened->path.c_str(), sessionOptions);
+        BOOST_CHECK_GT(session.GetInputCount(), 0u);
+        BOOST_CHECK_GT(session.GetOutputCount(), 0u);
+      }
       for (const auto& entry : entries) {
         actualEntries.insert(entry.entryId);
         BOOST_CHECK_EQUAL(entry.unitId, role.selectedRole);
@@ -3081,13 +3180,16 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
         BOOST_CHECK_GT(session.GetOutputCount(), 0u);
       }
       BOOST_CHECK(actualEntries == expectedEntries);
-      const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+      auto transportProjection = projection;
+      transportProjection.generationContract = {};
+      const auto fixed = nativeFixedRoleAssignmentV1FromProjection(transportProjection);
       reopenData["requests"].push_back({{"role", role.selectedRole},
         {"fixed", nativeFixedRoleAssignmentV1ToJson(*fixed)},
-        {"wire", nativeSelectionInvocationV1ToJson(projection, *fixed)}, {"path", cold.path},
+        {"wire", nativeSelectionInvocationV1ToJson(transportProjection, *fixed)}, {"path", cold.path},
         {"step_count", projection.plan.steps.size()},
         {"degree", projection.plan.degreeForRole(role.selectedRole)},
-        {"entries", cold.metadata.at("tensorParallelEntries")}});
+        {"entry", singleton ? cold.entryContract->entryId : std::string{}},
+        {"entries", singleton ? std::string{} : cold.metadata.at("tensorParallelEntries")}});
     }
   }
   BOOST_CHECK_EQUAL(sourceFetches, 3u);
@@ -3110,7 +3212,7 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
            {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
     verifyHybridExecution("../tests/fixtures/spec242/four-layer-decode.onnx",
       prepared.candidate.executionPlan, shape, units, prepared.candidate.resultEgressRole,
-      *item.second, true, item.first);
+      *item.second, true, item.first + (mirrored ? "-[1,2]" : "-[2,1]"));
   }
   const auto sidecar = workspace.root / "reopen.json";
   {
@@ -3125,6 +3227,14 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       "--log_level=message", "--report_level=short"},
     {{"NDNSF_SPEC242_CACHE_REOPEN", sidecar.string()}}, std::chrono::seconds(30));
   BOOST_CHECK_EQUAL(status, 0);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
+{
+  verifyHybridMaterials(false);
+  if (!std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) verifyHybridMaterials(true);
 }
 
 BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)

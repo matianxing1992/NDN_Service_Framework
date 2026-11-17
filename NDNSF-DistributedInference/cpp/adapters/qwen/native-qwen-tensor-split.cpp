@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -2022,6 +2023,199 @@ role_ids_contain(const std::vector<QwenTpUnit>& units, const std::string& role)
                      [&] (const auto& unit) { return unit.roleId == role; });
 }
 
+std::vector<std::vector<std::string>>
+stageSemanticNodes(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                   const std::vector<QwenTpStageWindow>& windows)
+{
+  if (graph.nodes.size() < 2 || shape.layers != graph.nodes.size() - 2)
+    throw std::invalid_argument("hybrid planning graph does not cover the model layers");
+  std::vector<std::vector<std::string>> result(windows.size());
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    const auto layer = index == 0 ? 0 : index - 1;
+    const auto expected = index == 0 ? std::string("embedding") :
+      index + 1 == graph.nodes.size() ? std::string("final-norm-head") :
+      std::string("layer-") + (layer < 10 ? "0" : "") + std::to_string(layer);
+    if (graph.nodes[index].id != expected)
+      throw std::invalid_argument("hybrid planning graph layer order is not canonical");
+    bool found = false;
+    for (std::size_t stage = 0; stage < windows.size(); ++stage) {
+      const auto& window = windows[stage];
+      if ((layer >= window.layerBegin && layer < window.layerEnd) ||
+          (layer == shape.layers && stage + 1 == windows.size())) {
+        result[stage].push_back(graph.nodes[index].id);
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      throw std::invalid_argument("hybrid candidate has a node outside every stage");
+  }
+  return result;
+}
+
+std::vector<std::string>
+physicalStateNames(const NativeStateTensorMapping::Roles& roles, const std::string& unit)
+{
+  const auto found = roles.find(unit);
+  if (found == roles.end())
+    throw std::invalid_argument("source hybrid state mapping omits a unit: " + unit);
+  std::vector<std::string> result;
+  for (const auto& family : found->second)
+    result.insert(result.end(), family.second.begin(), family.second.end());
+  return result;
+}
+
+NativeStepSlotSpec
+sourceStepSlot(const NativeJson& metadata, const std::string& name,
+               const std::string& slotId, const std::string& origin)
+{
+  const auto& facts = metadata.at("tensors").at(name);
+  NativeStepSlotSpec slot;
+  slot.slotId = slotId;
+  slot.dtype = facts.at("dtype").get<std::string>();
+  for (const auto& dimension : facts.at("shape")) {
+    if (dimension.is_string()) slot.shape.emplace_back(dimension.get<std::string>());
+    else slot.shape.emplace_back(dimension.get<std::int64_t>());
+  }
+  slot.layoutDigest = slot.dtype == "int64" || slot.dtype == "int32"
+    ? QWEN_TP_INDEX_LAYOUT_DIGEST : QWEN_TP_ACTIVATION_LAYOUT_DIGEST;
+  slot.source = origin;
+  return slot;
+}
+
+/** Close source graph values before the first merged-plan validation. */
+void
+bindHybridSourcePorts(std::vector<NativeExecutionPlan>& plans,
+                      const std::vector<std::vector<QwenTpUnit>>& units,
+                      const std::vector<std::vector<QwenTpEntryContract>>& tables,
+                      const std::vector<NativeSourceRegionBoundary>& boundaries,
+                      const NativeOnnxGraphInspection& source,
+                      const NativeStateTensorMapping& stateMapping)
+{
+  struct Producer
+  {
+    std::string step;
+    std::string slot;
+  };
+  std::map<std::string, std::map<std::string, Producer>> valuesByUnit;
+  std::map<std::string, NativeExecutionStepSpec*> steps;
+  std::map<std::pair<std::string, std::string>, std::string> outputNames;
+  std::map<std::string, std::map<std::string, std::string>> inputNames;
+  const auto metadata = nativeParseJson(source.graphMetadataJson);
+  const auto modelInputs = metadata.at("inputs").get<std::vector<std::string>>();
+  for (std::size_t stage = 0; stage < plans.size(); ++stage) {
+    for (auto& step : plans[stage].steps) {
+      if (!steps.emplace(step.stepId, &step).second)
+        throw std::invalid_argument("source hybrid repeats a step");
+      if (step.operation != "CALL_SUBGRAPH") continue;
+      auto& inputs = inputNames[step.stepId];
+      auto& values = valuesByUnit[step.unitId];
+      if (units[stage].size() == 1) {
+        for (const auto& slot : step.inputSlots) inputs.emplace(slot.slotId, slot.slotId);
+        for (const auto& slot : step.outputSlots) {
+          values.emplace(slot.slotId, Producer{step.stepId, slot.slotId});
+          outputNames.emplace(std::make_pair(step.stepId, slot.slotId), slot.slotId);
+        }
+        continue;
+      }
+      const auto contract = std::find_if(tables[stage].begin(), tables[stage].end(),
+        [&] (const auto& entry) { return entry.entryId == step.artifactEntry; });
+      if (contract == tables[stage].end())
+        throw std::invalid_argument("source hybrid CALL has no material contract");
+      for (const auto& binding : contract->inputSlotByGraphName)
+        if (!inputs.emplace(binding.second, binding.first).second)
+          throw std::invalid_argument("source hybrid input slot ambiguously binds graph values");
+      for (const auto& binding : contract->outputSlotByGraphName) {
+        const bool partial = binding.second == "partial" &&
+          (contract->kind == "ATTN" || contract->kind == "MLP");
+        const auto producer = partial
+          ? (contract->kind == "ATTN" ? sumAttnStep(step.unitId, contract->layer)
+                                      : sumMlpStep(step.unitId, contract->layer))
+          : step.stepId;
+        if (!values.emplace(binding.first,
+                             Producer{producer, partial ? "merged" : binding.second}).second)
+          throw std::invalid_argument("source hybrid graph value has multiple local producers");
+        outputNames.emplace(std::make_pair(step.stepId, binding.second), binding.first);
+      }
+      // A passthrough describes an alias, never a new source producer.
+      for (const auto& binding : contract->passthroughSlotByInputGraphName)
+        outputNames.emplace(std::make_pair(step.stepId, binding.second), binding.first);
+    }
+    for (const auto& step : plans[stage].steps) {
+      if (step.operation != "SUM") continue;
+      const auto local = std::find_if(step.inputSlots.begin(), step.inputSlots.end(),
+        [] (const auto& slot) { return slot.source == "LOCAL_STEP"; });
+      if (local == step.inputSlots.end())
+        throw std::invalid_argument("source hybrid reduction has no local contribution");
+      outputNames.emplace(std::make_pair(step.stepId, "merged"),
+        outputNames.at({local->producerStepId, local->producerSlotId}));
+    }
+  }
+  for (std::size_t stage = 0; stage < plans.size(); ++stage) {
+    auto& plan = plans[stage];
+    plan.dependencies.clear();
+    for (auto& step : plan.steps) {
+      for (auto& slot : step.outputSlots)
+        slot = sourceStepSlot(metadata, outputNames.at({step.stepId, slot.slotId}),
+                              slot.slotId, "LOCAL_STEP");
+      const auto state = physicalStateNames(stateMapping.inputs, step.unitId);
+      for (auto& slot : step.inputSlots) {
+        if (step.operation == "CALL_SUBGRAPH") {
+          const auto& name = inputNames.at(step.stepId).at(slot.slotId);
+          if (std::find(state.begin(), state.end(), name) != state.end())
+            throw std::invalid_argument("source hybrid exposes private state as an ordinary input");
+          const auto own = valuesByUnit.at(step.unitId).find(name);
+          Producer producer;
+          if (own != valuesByUnit.at(step.unitId).end() && own->second.step != step.stepId)
+            producer = own->second;
+          else if (std::find(modelInputs.begin(), modelInputs.end(), name) == modelInputs.end()) {
+            for (std::size_t previous = 0; previous < stage; ++previous) {
+              if (boundaries[previous].outputs.count(name) == 0) continue;
+              const auto& owner = valuesByUnit.at(units[previous].front().roleId);
+              const auto value = owner.find(name);
+              if (value == owner.end() || !producer.step.empty())
+                throw std::invalid_argument("source hybrid boundary has no unique complete producer");
+              producer = value->second;
+            }
+            if (producer.step.empty())
+              throw std::invalid_argument("source hybrid input has no producer: " + name);
+          }
+          slot = sourceStepSlot(metadata, name, slot.slotId,
+            producer.step.empty() ? "EPOCH_INPUT" :
+            steps.at(producer.step)->unitId == step.unitId ? "LOCAL_STEP" : "REMOTE_STEP");
+          slot.producerStepId = producer.step;
+          slot.producerSlotId = producer.slot;
+        }
+        else {
+          const auto name = outputNames.at({slot.producerStepId, slot.producerSlotId});
+          const auto old = slot;
+          slot = sourceStepSlot(metadata, name, old.slotId, old.source);
+          slot.producerStepId = old.producerStepId;
+          slot.producerSlotId = old.producerSlotId;
+        }
+        if (slot.source != "REMOTE_STEP") continue;
+        NativeDependencySpec dependency;
+        dependency.producers = {steps.at(slot.producerStepId)->unitId};
+        dependency.consumers = {step.unitId};
+        dependency.keyScope = "hybrid-" + std::to_string(stage) + "-" +
+          std::to_string(plan.dependencies.size());
+        dependency.dependencyId = dependency.keyScope;
+        dependency.topicPrefix = "/NDNSF/DI/QWEN";
+        dependency.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+        dependency.tensors = {outputNames.at({slot.producerStepId, slot.producerSlotId})};
+        dependency.operationKind = step.operation == "SUM" ? "TENSOR_PARTIAL" : "ACTIVATION";
+        dependency.useNdnsfDataV1 = true;
+        dependency.producerStepId = slot.producerStepId;
+        dependency.producerSlotId = slot.producerSlotId;
+        dependency.consumerStepId = step.stepId;
+        dependency.consumerSlotId = slot.slotId;
+        plan.dependencies.push_back(std::move(dependency));
+      }
+    }
+  }
+}
+
 } // namespace
 
 static ndnsf::di::NativeSplitCandidate
@@ -2032,10 +2226,17 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
                          const NativeModelDescriptor& model,
                          const std::map<std::string, std::string>& artifactByUnit,
                          const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
-                         const NativeOnnxGraphInspection* source)
+                         const NativeOnnxGraphInspection* source,
+                         const QwenTpSourceRegionPort* regionPort = nullptr,
+                         const NativeStateTensorMapping* stateMapping = nullptr)
 {
   if (windows.empty() || windows.size() != stageUnits.size())
     throw std::invalid_argument("hybrid candidate needs one window per stage");
+  if (regionPort != nullptr && (!*regionPort || source == nullptr || stateMapping == nullptr))
+    throw std::invalid_argument("source hybrid lowering requires its source and state owner");
+  const auto semanticNodes = stageSemanticNodes(graph, shape, windows);
+  std::vector<NativeSourceRegionBoundary> boundaries(windows.size());
+  std::vector<std::vector<QwenTpEntryContract>> tables(windows.size());
   std::vector<ndnsf::di::NativeExecutionPlan> plans;
   plans.reserve(windows.size());
   std::vector<QwenTpUnit> units;
@@ -2044,6 +2245,12 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
     const auto& list = stageUnits.at(index);
     if (list.empty())
       throw std::invalid_argument("hybrid stage has no units: " + window.stageId);
+    if (regionPort != nullptr) {
+      validateUnits(list, list.size(), shape.layers, window.layerBegin, window.layerEnd);
+      for (std::size_t rank = 0; rank < list.size(); ++rank)
+        if (list[rank].rank != rank)
+          throw std::invalid_argument("source hybrid rank differs from its member order");
+    }
     if (index == 0 && window.layerBegin != 0)
       throw std::invalid_argument("the first hybrid stage must own layer zero");
     if (index > 0) {
@@ -2065,10 +2272,48 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
     if (terminal && !role_ids_contain(list, egressRole))
       throw std::invalid_argument("hybrid result owner must belong to the last stage");
     const auto stageEgress = terminal ? egressRole : list.front().roleId;
-    if (source != nullptr) {
-      const auto entries = describeQwenTpEntryContracts(*source, shape.layers, list,
+    if (regionPort != nullptr) {
+      const auto additional = physicalStateNames(stateMapping->outputs, list.front().roleId);
+      boundaries[index] = (*regionPort)(semanticNodes[index], additional);
+    }
+    if (regionPort != nullptr && list.size() == 1) {
+      const auto& unit = list.front();
+      const auto stateInputs = physicalStateNames(stateMapping->inputs, unit.roleId);
+      const auto stateOutputs = physicalStateNames(stateMapping->outputs, unit.roleId);
+      plan.roles = {unit.roleId};
+      plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+      plan.tensorDegree = 1;
+      plan.stageLayout = {{window.stageId, window.sourceRegionDigest, {unit.roleId}}};
+      NativeExecutionStepSpec step;
+      step.stepId = step.artifactEntry = unit.roleId + "/REGION";
+      step.unitId = unit.roleId;
+      step.operation = "CALL_SUBGRAPH";
+      const auto slotFor = [] (const NativeAssemblyTensorContractV3& port) {
+        NativeStepSlotSpec slot;
+        slot.slotId = port.name;
+        slot.dtype = port.dtype;
+        slot.shape = port.shape;
+        slot.layoutDigest = port.dtype == "int64" || port.dtype == "int32"
+          ? QWEN_TP_INDEX_LAYOUT_DIGEST : QWEN_TP_ACTIVATION_LAYOUT_DIGEST;
+        slot.source = "LOCAL_STEP";
+        return slot;
+      };
+      for (const auto& port : boundaries[index].inputs)
+        if (std::find(stateInputs.begin(), stateInputs.end(), port.first) == stateInputs.end())
+          step.inputSlots.push_back(slotFor(port.second));
+      for (const auto& port : boundaries[index].outputs)
+        if (std::find(stateOutputs.begin(), stateOutputs.end(), port.first) == stateOutputs.end())
+          step.outputSlots.push_back(slotFor(port.second));
+      for (std::uint64_t layer = window.layerBegin; layer < window.layerEnd; ++layer) {
+        step.localStateSlots.push_back("kv." + std::to_string(layer) + ".key");
+        step.localStateSlots.push_back("kv." + std::to_string(layer) + ".value");
+      }
+      plan.steps.push_back(std::move(step));
+    }
+    else if (source != nullptr) {
+      tables[index] = describeQwenTpEntryContracts(*source, shape.layers, list,
         window.layerBegin, window.layerEnd, stageEgress);
-      projectQwenTpPlan(plan, shape, list.size(), stageEgress, list, entries, window);
+      projectQwenTpPlan(plan, shape, list.size(), stageEgress, list, tables[index], window);
     }
     else {
       projectQwenTpPlan(plan, shape, list.size(), entryPrefix, stageEgress, list, window);
@@ -2079,6 +2324,8 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
   if (!role_ids_contain(units, egressRole))
     throw std::invalid_argument("hybrid candidate egress role is not one of its units: " +
                                 egressRole);
+  if (regionPort != nullptr)
+    bindHybridSourcePorts(plans, stageUnits, tables, boundaries, *source, *stateMapping);
   auto merged = mergeQwenStagePlans(plans);
 
   ndnsf::di::NativeSplitCandidate candidate;
@@ -2124,33 +2371,12 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
   // node - the tensor-parallel rule - would tell a Provider to assemble layers it never runs.
   // The catalog supplies the semantic graph from NativeQwenLayerSplit::inspectGraph,
   // not individual ONNX operators. Entry classification belongs to materialization.
-  if (graph.nodes.size() < 2 || shape.layers != graph.nodes.size() - 2)
-    throw std::invalid_argument("hybrid planning graph does not cover the model layers");
-  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
-    const auto layer = index == 0 ? 0 : index - 1;
-    const auto expected = index == 0 ? std::string("embedding") :
-      index + 1 == graph.nodes.size() ? std::string("final-norm-head") :
-      std::string("layer-") + (layer < 10 ? "0" : "") + std::to_string(layer);
-    if (graph.nodes.at(index).id != expected)
-      throw std::invalid_argument("hybrid planning graph layer order is not canonical: " +
-                                  graph.nodes.at(index).id);
-    std::size_t owner = windows.size();
-    for (std::size_t stage = 0; stage < windows.size(); ++stage) {
-      const auto& window = windows.at(stage);
-      const bool inStage = layer >= window.layerBegin && layer < window.layerEnd;
-      const bool headStage = layer == shape.layers && stage + 1 == windows.size();
-      if (inStage || headStage) {
-        owner = stage;
-        break;
-      }
+  for (std::size_t stage = 0; stage < semanticNodes.size(); ++stage) {
+    const auto& ownerUnits = stageUnits[stage];
+    for (const auto& id : semanticNodes[stage]) {
+      candidate.nodeRoles[id] = ownerUnits.front().roleId;
+      for (const auto& unit : ownerUnits) candidate.roleNodeIdsByRole[unit.roleId].push_back(id);
     }
-    if (owner == windows.size())
-      throw std::invalid_argument("hybrid candidate has a node outside every stage: " +
-                                  graph.nodes.at(index).id);
-    const auto& ownerUnits = stageUnits.at(owner);
-    candidate.nodeRoles[graph.nodes.at(index).id] = ownerUnits.front().roleId;
-    for (const auto& unit : ownerUnits)
-      candidate.roleNodeIdsByRole[unit.roleId].push_back(graph.nodes.at(index).id);
   }
   // Every role must appear in the execution relation, even when it owns no node of its own.
   for (const auto& unit : units)
@@ -2208,6 +2434,22 @@ buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& sh
 {
   return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
     model, artifactByUnit, requirementByUnit, &source);
+}
+
+NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source,
+                         const QwenTpSourceRegionPort& regionPort,
+                         const NativeStateTensorMapping& stateMapping)
+{
+  return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
+    model, artifactByUnit, requirementByUnit, &source, &regionPort, &stateMapping);
 }
 
 void

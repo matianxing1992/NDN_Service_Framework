@@ -712,9 +712,14 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         throw std::invalid_argument("hybrid Qwen result egress is not in the terminal stage");
       if (!planningGraphInspection)
         throw std::invalid_argument("hybrid Qwen catalog requires inspected source port facts");
+      const auto unitState = detail::remapNativeStateRoles(result.stateMapping, sourceRoleByUnit);
+      const qwen::QwenTpSourceRegionPort regionPort = [&] (const auto& nodes, const auto& outputs) {
+        return result.preparation->sourceRegion(result.model, nodes, outputs, planningControl);
+      };
       projectedCandidate = qwen::buildQwenHybridCandidate(
         result.model.graph, hybridShape, windows, stageUnits, "entry", egressUnit,
-        result.model.descriptor, hybridArtifacts, hybridRequirements, *planningGraphInspection);
+        result.model.descriptor, hybridArtifacts, hybridRequirements, *planningGraphInspection,
+        regionPort, unitState);
       projectedCandidate->splitter = result.cooperativeSplitter->identity();
     }
     else {
