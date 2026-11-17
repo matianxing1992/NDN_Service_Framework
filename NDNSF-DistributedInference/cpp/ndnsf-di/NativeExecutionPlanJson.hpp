@@ -245,7 +245,23 @@ struct NativeFixedExecutionTemplateV1
   std::vector<NativeExecutionStepSpec> steps;
   std::string stepPlanVersion;
   std::uint64_t tensorDegree = 1;
+  // The stages the steps belong to. A v2 template must carry this, or a Provider that
+  // restores it would have to guess each unit's degree from the plan-wide maximum.
+  std::vector<NativeStageLayout> stageLayout;
 };
+
+/** Restore a plan's step template (and its stage layout) from a sealed fixed template.
+ *
+ * This is the restore path a Provider takes after a Selection: the template is the sealed
+ * fact, the plan is what the worker executes. A v2 template must carry its layout, because a
+ * plan restored from steps alone would give every unit the plan-wide degree again.
+ *
+ * @throws std::invalid_argument when the template's step metadata is incomplete or a v2
+ *         template has no layout.
+ */
+void
+bindFixedTemplateSteps(NativeExecutionPlan& plan,
+                       const NativeFixedExecutionTemplateV1& fixed);
 
 /** Fixed storage is a decoded contract, never invocation authority. */
 class NativeFixedRoleAssignmentV1 final

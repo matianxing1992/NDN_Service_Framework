@@ -708,6 +708,26 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
           throw std::invalid_argument("split candidate rank artifact is absent from its role");
     }
   }
+  // A unit's geometry is sealed twice: the recipe reads `tensorIdentityByRole`, the worker
+  // reads the stage layout. If the two disagree, one of them executes a shard it never
+  // assembled, so the candidate is refused here rather than at the Provider.
+  for (const auto& stage : executionPlan.stageLayout) {
+    for (std::size_t index = 0; index < stage.unitRoleIds.size(); ++index) {
+      const auto& unit = stage.unitRoleIds.at(index);
+      const auto identity = tensorIdentityByRole.find(unit);
+      if (identity == tensorIdentityByRole.end()) {
+        if (stage.degree() > 1)
+          throw std::invalid_argument("sharded unit has no tensor identity: " + unit);
+        continue;
+      }
+      if (identity->second.degree != stage.degree())
+        throw std::invalid_argument(
+          "unit tensor degree disagrees with its stage: " + unit);
+      if (identity->second.rank != index)
+        throw std::invalid_argument(
+          "unit tensor rank disagrees with its stage member index: " + unit);
+    }
+  }
   if (hybridPlan) {
     hybridPlan->validate();
     std::vector<std::uint64_t> degrees;

@@ -604,6 +604,11 @@ NativeExecutionPlan::validateSteps() const
   if (stepPlanV2 && tensorDegree < 1) {
     throw std::invalid_argument("execution plan step template requires tensor degree >= 1");
   }
+  // v2 exists to describe per-stage geometry. Without a layout every unit would inherit the
+  // plan-wide degree, which is exactly the defect the version was introduced to remove.
+  if (stepPlanV2 && stageLayout.empty()) {
+    throw std::invalid_argument("a v2 step plan must declare its stage layout");
+  }
   if (!stageLayout.empty()) {
     if (!stepPlanV2) {
       throw std::invalid_argument("v1 step plan cannot carry a stage layout");

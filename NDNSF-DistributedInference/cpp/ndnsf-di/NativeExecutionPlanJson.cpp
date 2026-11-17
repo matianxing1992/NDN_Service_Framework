@@ -40,7 +40,6 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
 std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
   const NativeJson& bindings, const NativeFixedExecutionTemplateV1& fixed);
 void requireOnlyBindingKeys(const NativeJson& value, std::initializer_list<const char*> keys);
-void bindFixedTemplateSteps(NativeExecutionPlan& plan, const NativeFixedExecutionTemplateV1& fixed);
 std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_tree::ptree& root);
 NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps);
 
@@ -2515,6 +2514,16 @@ NativeJson fixedTemplateJson(const NativeFixedExecutionTemplateV1& value)
     result["steps"] = nativeStepsJson(value.steps);
     result["step_plan_version"] = value.stepPlanVersion;
     result["tensor_degree"] = value.tensorDegree;
+    // Only a v2 template has stages, so v1 bytes stay identical.
+    if (!value.stageLayout.empty()) {
+      auto stages = NativeJson::array();
+      for (const auto& stage : value.stageLayout) {
+        stages.push_back(NativeJson{{"stage_id", stage.stageId},
+                                    {"source_region_digest", stage.sourceRegionDigest},
+                                    {"unit_role_ids", stage.unitRoleIds}});
+      }
+      result["stage_layout"] = std::move(stages);
+    }
   }
   return result;
 }
@@ -2756,7 +2765,10 @@ NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
 {
   NativeFixedExecutionTemplateV1 result;
   const bool withSteps = value.is_object() && value.contains("steps");
-  if (!value.is_object() || value.size() != (withSteps ? 8U : 5U) ||
+  const bool withLayout = value.is_object() && value.contains("stage_layout");
+  if (!value.is_object() ||
+      value.size() != (withSteps ? 8U : 5U) + (withLayout ? 1U : 0U) ||
+      (withLayout && !withSteps) ||
       !value.at("dependencies").is_array() ||
       !value.at("expand_role_epochs").is_boolean())
     throw std::invalid_argument("invalid fixed execution template fields");
@@ -2764,6 +2776,15 @@ NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
     result.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
     result.stepPlanVersion = value.at("step_plan_version").get<std::string>();
     result.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
+  }
+  if (withLayout) {
+    for (const auto& item : value.at("stage_layout")) {
+      NativeStageLayout stage;
+      stage.stageId = item.at("stage_id").get<std::string>();
+      stage.sourceRegionDigest = item.at("source_region_digest").get<std::string>();
+      stage.unitRoleIds = item.at("unit_role_ids").get<std::vector<std::string>>();
+      result.stageLayout.push_back(std::move(stage));
+    }
   }
   result.providerByRole = value.at("provider_by_role").get<std::map<std::string, std::string>>();
   result.expandRoleEpochs = value.at("expand_role_epochs").get<bool>();
@@ -2867,38 +2888,6 @@ std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
     }
   }
   return dependencies;
-}
-
-/** Carry the sealed step template into the invocation's execution plan. A
- * template without steps leaves the plan on its legacy whole-role path.
- */
-void bindFixedTemplateSteps(NativeExecutionPlan& plan,
-                            const NativeFixedExecutionTemplateV1& fixed)
-{
-  if (fixed.steps.empty()) {
-    if (!fixed.stepPlanVersion.empty() || fixed.tensorDegree != 1)
-      throw std::invalid_argument("fixed template has step metadata without steps");
-    return;
-  }
-  if (fixed.stepPlanVersion.empty() || fixed.tensorDegree < 2)
-    throw std::invalid_argument("fixed template step plan metadata is incomplete");
-  plan.steps = fixed.steps;
-  plan.stepPlanVersion = fixed.stepPlanVersion;
-  plan.tensorDegree = fixed.tensorDegree;
-  // The units named by a sealed template are the plan's roles, and the validation below
-  // checks every step against that list. A template whose edges are all self feedback lists
-  // no role through dependencies, so the roles must come from the steps before this check
-  // rather than after it.
-  for (const auto& step : plan.steps) {
-    if (std::find(plan.roles.begin(), plan.roles.end(), step.unitId) == plan.roles.end())
-      plan.roles.push_back(step.unitId);
-  }
-  // Validate the assembled plan, not just the template metadata. The template
-  // was normalized when it was sealed, but the invocation's plan binds it to a
-  // concrete role and dependency set, and that combination is what the Provider
-  // would execute. Without this check a malformed template that somehow reached
-  // the cache would be accepted as long as its metadata looked complete.
-  plan.validateSteps();
 }
 
 NativeJson endpointBindingsJson(const std::vector<NativeTensorEndpointV3>& endpoints)
@@ -3207,6 +3196,44 @@ rangeInvocationLogicalSize(const NativeJson& value)
   return size;
 }
 } // namespace
+
+/** Carry the sealed step template into the invocation's execution plan. A
+ * template without steps leaves the plan on its legacy whole-role path.
+ */
+void bindFixedTemplateSteps(NativeExecutionPlan& plan,
+                            const NativeFixedExecutionTemplateV1& fixed)
+{
+  if (fixed.steps.empty()) {
+    if (!fixed.stepPlanVersion.empty() || fixed.tensorDegree != 1)
+      throw std::invalid_argument("fixed template has step metadata without steps");
+    return;
+  }
+  const bool fixedV2 = fixed.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2;
+  if (fixed.stepPlanVersion.empty() || (!fixedV2 && fixed.tensorDegree < 2))
+    throw std::invalid_argument("fixed template step plan metadata is incomplete");
+  if (fixedV2 && fixed.stageLayout.empty())
+    throw std::invalid_argument("a v2 fixed template must carry its stage layout");
+  plan.steps = fixed.steps;
+  plan.stepPlanVersion = fixed.stepPlanVersion;
+  plan.tensorDegree = fixed.tensorDegree;
+  // Restore the stages with the steps: a Provider that read only the degree would give every
+  // unit the plan-wide geometry again.
+  plan.stageLayout = fixed.stageLayout;
+  // The units named by a sealed template are the plan's roles, and the validation below
+  // checks every step against that list. A template whose edges are all self feedback lists
+  // no role through dependencies, so the roles must come from the steps before this check
+  // rather than after it.
+  for (const auto& step : plan.steps) {
+    if (std::find(plan.roles.begin(), plan.roles.end(), step.unitId) == plan.roles.end())
+      plan.roles.push_back(step.unitId);
+  }
+  // Validate the assembled plan, not just the template metadata. The template
+  // was normalized when it was sealed, but the invocation's plan binds it to a
+  // concrete role and dependency set, and that combination is what the Provider
+  // would execute. Without this check a malformed template that somehow reached
+  // the cache would be accepted as long as its metadata looked complete.
+  plan.validateSteps();
+}
 
 void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
 {

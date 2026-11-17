@@ -127,6 +127,9 @@ BOOST_AUTO_TEST_CASE(VersionTwoAdmitsADegreeOnePlan)
   plan.steps = {callStep("S0R0/CALL/0", "S0R0")};
   plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
   plan.tensorDegree = 1;
+  // v2 must name its stages, even when there is only one unit: the layout is what makes the
+  // per-unit geometry explicit rather than inherited.
+  plan.stageLayout = {{"stage-0", "sha256:region-0", {"S0R0"}}};
   BOOST_CHECK_NO_THROW(plan.validateSteps());
   BOOST_CHECK_EQUAL(plan.degreeForRole("S0R0"), 1u);
 
@@ -427,6 +430,77 @@ BOOST_AUTO_TEST_CASE(StageWindowAndBoundaryPublisherFollowTheSealedFacts)
   ndnsf::di::NativeExecutionPlan empty;
   BOOST_CHECK_THROW(qwen::stageLayerWindow(empty), std::invalid_argument);
   BOOST_CHECK_THROW(qwen::boundaryPublisher(empty), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(VersionTwoWithoutALayoutIsRefused)
+{
+  // Three units and a degree of two look plausible and used to pass, which then gave every
+  // role degree two - the exact defect v2 exists to remove.
+  NativeExecutionPlan plan;
+  plan.serviceName = "/service/hybrid";
+  plan.roles = {"S0R0", "S0R1", "S1R0"};
+  plan.steps = {callStep("S0R0/CALL/0", "S0R0"), callStep("S0R1/CALL/0", "S0R1"),
+                callStep("S1R0/CALL/0", "S1R0")};
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.tensorDegree = 2;
+  BOOST_CHECK_THROW(plan.validateSteps(), std::invalid_argument);
+
+  plan.stageLayout = {{"stage-0", "sha256:r0", {"S0R0", "S0R1"}},
+                      {"stage-1", "sha256:r1", {"S1R0"}}};
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+}
+
+BOOST_AUTO_TEST_CASE(BoundTemplateRestoresPerUnitDegrees)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = 1;
+    units.push_back(unit);
+  }
+  qwen::QwenTpStageWindow window{"stage-0", "sha256:region-0", 0, 1};
+  ndnsf::di::NativeExecutionPlan sealed;
+  qwen::projectQwenTpPlan(sealed, shape, 2, "entry/S0", "S0R0", units, window);
+
+  // What the fixed assignment carries: the steps plus the facts that describe them.
+  ndnsf::di::NativeFixedExecutionTemplateV1 fixed;
+  fixed.steps = sealed.steps;
+  fixed.stepPlanVersion = sealed.stepPlanVersion;
+  fixed.tensorDegree = sealed.tensorDegree;
+  fixed.stageLayout = sealed.stageLayout;
+
+  ndnsf::di::NativeExecutionPlan restored;
+  // The production path binds the template's dependencies before the steps
+  // (NativeExecutionPlanJson.cpp:1887-1889): a remote step input with no admitting
+  // dependency has nothing to wait on, and validateSteps() refuses it.
+  restored.dependencies = sealed.dependencies;
+  ndnsf::di::bindFixedTemplateSteps(restored, fixed);
+  BOOST_REQUIRE_EQUAL(restored.stageLayout.size(), 1u);
+  BOOST_CHECK_EQUAL(restored.stageLayout.at(0).stageId, "stage-0");
+  BOOST_CHECK_EQUAL(restored.degreeForRole("S0R0"), 2u);
+  BOOST_CHECK_EQUAL(restored.degreeForRole("S0R1"), 2u);
+  BOOST_CHECK_NO_THROW(restored.validateSteps());
+
+  // A v2 template that dropped the layout is refused rather than restored with a guessed
+  // geometry.
+  auto withoutLayout = fixed;
+  withoutLayout.stageLayout.clear();
+  ndnsf::di::NativeExecutionPlan refused;
+  BOOST_CHECK_THROW(ndnsf::di::bindFixedTemplateSteps(refused, withoutLayout),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
