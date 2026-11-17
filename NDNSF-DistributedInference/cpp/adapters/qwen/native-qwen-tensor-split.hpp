@@ -605,9 +605,9 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
 
 /** Assemble only the entries that belong to one stage's layer window.
  *
- * `assembleQwenTpEntryTable` builds the whole model's table; a stage owns a window, so the
- * contracts it may reference are the ones inside that window plus the unit entries that belong
- * to its position in the chain (INIT on the stage that owns layer zero, HEAD on the last one).
+ * Accepts either the complete source or its checked region subgraph, preserving global
+ * layer numbers. Only the window's entries are written and charged to its byte budget:
+ * INIT belongs to the first stage and HEAD to the last stage.
  *
  * @param layerBegin First layer the stage owns, inclusive.
  * @param layerEnd   One past the last layer the stage owns.

@@ -1211,6 +1211,134 @@ BOOST_AUTO_TEST_CASE(StageMaterialsCarryTheRankGeometry)
   std::filesystem::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(WindowAssemblyWritesOnlyOwnedEntriesAndAcceptsRegionGraphs)
+{
+  std::ifstream input("../tests/fixtures/spec242/four-layer-qwen.onnx", std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                        std::istreambuf_iterator<char>());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+  const auto entries = qwen::classifyQwenTpEntryNodes(model, 4);
+  struct Workspace
+  {
+    std::filesystem::path root;
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace{std::filesystem::temp_directory_path() / "spec242-window-materials"};
+  workspace.owned = std::filesystem::create_directory(workspace.root);
+  BOOST_REQUIRE(workspace.owned);
+  const auto& root = workspace.root;
+  const qwen::QwenTpAssemblyShards unsliced;
+  const auto first = qwen::assembleQwenTpEntryTable(
+    root / "first", "first-unit", bytes, 4, unsliced, nullptr, 0, 1);
+  BOOST_REQUIRE_EQUAL(first.size(), 3u);
+  std::uint64_t firstBytes = 0;
+  for (const auto& entry : first) {
+    BOOST_CHECK(entry.kind == "INIT" || entry.layer == 0);
+    firstBytes += std::filesystem::file_size(root / "first" / entry.relativeGraphPath);
+  }
+  const auto fileCount = [] (const std::filesystem::path& directory) {
+    return std::distance(std::filesystem::directory_iterator(directory),
+                         std::filesystem::directory_iterator{});
+  };
+  BOOST_CHECK_EQUAL(fileCount(root / "first"), first.size());
+  qwen::QwenTpAssemblyControl control;
+  control.maxAssembledBytes = firstBytes;
+  BOOST_CHECK_NO_THROW(qwen::assembleQwenTpEntryTable(
+    root / "bounded", "first-unit", bytes, 4, unsliced, &control, 0, 1));
+  BOOST_CHECK_EQUAL(fileCount(root / "bounded"), first.size());
+  control.maxAssembledBytes = firstBytes - 1;
+  BOOST_CHECK_THROW(qwen::assembleQwenTpEntryTable(
+    root / "too-small", "first-unit", bytes, 4, unsliced, &control, 0, 1),
+    std::runtime_error);
+
+  // Extract the actual later source region; it has no embedding, INIT or layer zero.
+  qwen::QwenTpEntryNodes region;
+  region.kind = "REGION";
+  for (const auto& entry : entries) {
+    if (entry.kind == "HEAD" ||
+        ((entry.kind == "ATTN" || entry.kind == "MLP") && entry.layer >= 1)) {
+      region.nodeIndices.insert(region.nodeIndices.end(),
+                                entry.nodeIndices.begin(), entry.nodeIndices.end());
+    }
+  }
+  std::sort(region.nodeIndices.begin(), region.nodeIndices.end());
+  auto source = model;
+  auto later = qwen::extractQwenTpEntryModel(source, region, "later-region");
+  // The maintained export may derive the tied head weight with a constant-only
+  // transpose. It belongs to HEAD and must not force an otherwise empty INIT.
+  auto* graph = later.mutable_graph();
+  int headIndex = -1;
+  for (int index = 0; index < graph->node_size(); ++index) {
+    if (graph->node(index).name() == "lm_head") headIndex = index;
+  }
+  BOOST_REQUIRE(headIndex >= 0);
+  const auto weight = graph->node(headIndex).input(1);
+  auto* transpose = graph->add_node();
+  transpose->set_name("head-weight-transpose");
+  transpose->set_op_type("Transpose");
+  transpose->add_input(weight);
+  transpose->add_output("head-transposed-weight");
+  auto* perm = transpose->add_attribute();
+  perm->set_name("perm");
+  perm->set_type(onnx::AttributeProto::INTS);
+  perm->add_ints(1);
+  perm->add_ints(0);
+  graph->mutable_node()->SwapElements(headIndex, graph->node_size() - 1);
+  graph->mutable_node(graph->node_size() - 1)->set_input(1, "head-transposed-weight");
+  const auto serialized = later.SerializeAsString();
+  const std::vector<std::uint8_t> regionBytes(serialized.begin(), serialized.end());
+  // The full-model API still refuses an incomplete stack.
+  BOOST_CHECK_THROW(qwen::classifyQwenTpEntryNodes(later, 4), std::invalid_argument);
+  const auto table = qwen::assembleQwenTpEntryTable(
+    root / "later", "later-unit", regionBytes, 4, unsliced, nullptr, 1, 4);
+  BOOST_REQUIRE_EQUAL(table.size(), 7u);
+  BOOST_CHECK_EQUAL(fileCount(root / "later"), table.size());
+  std::set<std::uint64_t> attentionLayers;
+  bool relocated = false;
+  for (const auto& entry : table) {
+    BOOST_CHECK(entry.kind != "INIT");
+    BOOST_CHECK(entry.layer >= 1 && entry.layer <= 4);
+    if (entry.kind == "ATTN") attentionLayers.insert(entry.layer);
+    if (entry.kind == "HEAD") {
+      std::ifstream headFile(root / "later" / entry.relativeGraphPath, std::ios::binary);
+      const std::string headBytes((std::istreambuf_iterator<char>(headFile)),
+                                   std::istreambuf_iterator<char>());
+      onnx::ModelProto head;
+      BOOST_REQUIRE(head.ParseFromString(headBytes));
+      for (const auto& node : head.graph().node())
+        if (node.name() == "head-weight-transpose") relocated = true;
+    }
+  }
+  BOOST_CHECK(relocated);
+  BOOST_CHECK(attentionLayers == std::set<std::uint64_t>({1, 2, 3}));
+  // Requiring a source layer that the region does not own must still fail.
+  BOOST_CHECK_THROW(qwen::assembleQwenTpEntryTable(
+    root / "wrong-range", "later-unit", regionBytes, 4, unsliced, nullptr, 0, 4),
+    std::invalid_argument);
+  std::set<std::string> missingMlpNodes;
+  for (const auto& entry : entries) {
+    if (entry.kind != "MLP" || entry.layer != 2) continue;
+    for (const auto index : entry.nodeIndices)
+      missingMlpNodes.insert(model.graph().node(static_cast<int>(index)).name());
+  }
+  BOOST_REQUIRE(!missingMlpNodes.empty());
+  auto missingLayer = later;
+  auto* nodes = missingLayer.mutable_graph()->mutable_node();
+  for (int index = nodes->size() - 1; index >= 0; --index)
+    if (missingMlpNodes.count(nodes->Get(index).name()) != 0) nodes->DeleteSubrange(index, 1);
+  const auto broken = missingLayer.SerializeAsString();
+  const std::vector<std::uint8_t> brokenBytes(broken.begin(), broken.end());
+  BOOST_CHECK_THROW(qwen::assembleQwenTpEntryTable(
+    root / "missing-mlp", "later-unit", brokenBytes, 4, unsliced, nullptr, 1, 4),
+    std::invalid_argument);
+}
+
 namespace {
 
 /** One MatMulNBits kernel over given packed weights, for a numeric slice check. */

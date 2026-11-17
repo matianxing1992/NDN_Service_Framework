@@ -21,6 +21,14 @@ namespace ndnsf::di::qwen {
 
 namespace {
 
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd);
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd);
+
 void
 requireRankAssemblyActive(const QwenTpAssemblyControl* control)
 {
@@ -1091,11 +1099,20 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
 {
+  return classifyQwenRegionNodes(model, layers, 0, layers);
+}
+
+namespace {
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
   const auto& graph = model.graph();
   std::vector<std::string> names;
   names.reserve(graph.node_size());
   for (const auto& node : graph.node()) names.push_back(node.name());
-  auto entries = classifyQwenTpEntryNodes(names, layers);
+  auto entries = classifyQwenRegionNodes(names, layers, layerBegin, layerEnd);
 
   // A node with no layer and only initializer inputs is constant-derived. Naming
   // puts it in INIT, but its value is really a weight rearrangement that belongs
@@ -1158,6 +1175,13 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
     throw std::invalid_argument(
       "tensor-parallel entry relocation lost a graph node");
   }
+  // A later region may contain only a constant-derived preprocessing node. Once
+  // that node follows its consumer, there is no local INIT computation to emit.
+  if (layerBegin > 0) {
+    entries.erase(std::remove_if(entries.begin(), entries.end(), [] (const auto& entry) {
+      return entry.kind == "INIT" && entry.nodeIndices.empty();
+    }), entries.end());
+  }
   for (const auto& entry : entries) {
     if (entry.nodeIndices.empty()) {
       throw std::invalid_argument(
@@ -1166,6 +1190,8 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
   }
   return entries;
 }
+
+} // namespace
 
 std::pair<std::vector<onnx::ValueInfoProto>, std::vector<onnx::ValueInfoProto>>
 describeQwenTpEntryBoundary(const onnx::ModelProto& source, const QwenTpEntryNodes& entry)
@@ -1399,9 +1425,21 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const QwenTpAssemblyControl* control)
 {
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control, 0, layers);
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
   if (root.empty() || unitId.empty() || graphBytes.empty() || layers == 0) {
     throw std::invalid_argument("tensor-parallel entry assembly needs a root, unit, graph and layers");
   }
+  if (layerEnd > layers || layerBegin >= layerEnd)
+    throw std::invalid_argument("tensor-parallel stage window is outside the model");
   // The source is parsed once per stack. Extraction consumes the model, and
   // re-parsing the frozen export for every entry would be ~59 full protobuf
   // builds of a 918 MB initializer set.
@@ -1411,7 +1449,16 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
   }
   // Graph-aware classification, so a constant-derived node follows its consumer
   // instead of being filed under INIT by name.
-  const auto classified = classifyQwenTpEntryNodes(probe, layers);
+  auto classified = classifyQwenRegionNodes(probe, layers, layerBegin, layerEnd);
+  // Select before writing or charging the budget. A complete source is accepted too,
+  // but a window never emits files or consumes another stage's assembly allowance.
+  classified.erase(std::remove_if(classified.begin(), classified.end(),
+    [&] (const auto& entry) {
+      if (entry.kind == "ATTN" || entry.kind == "MLP")
+        return entry.layer < layerBegin || entry.layer >= layerEnd;
+      if (entry.kind == "HEAD") return layerEnd != layers;
+      return layerBegin != 0;
+    }), classified.end());
 
   std::error_code directoryError;
   std::filesystem::create_directories(root, directoryError);
@@ -1469,29 +1516,6 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
       throw std::logic_error("tensor-parallel entry assembly repeated an entry id");
     }
   }
-  return table;
-}
-
-std::vector<QwenTpEntryContract>
-assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
-                         const std::vector<std::uint8_t>& graphBytes,
-                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
-                         const QwenTpAssemblyControl* control,
-                         std::uint64_t layerBegin, std::uint64_t layerEnd)
-{
-  if (layerEnd > layers || layerBegin >= layerEnd)
-    throw std::invalid_argument("tensor-parallel stage window is outside the model");
-  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control);
-  // A stage may only reference entries it executes: its own layers, INIT only when it owns
-  // layer zero, and HEAD only when it owns the last layer.
-  table.erase(std::remove_if(table.begin(), table.end(),
-    [&] (const auto& entry) {
-      if (entry.kind == "ATTN" || entry.kind == "MLP")
-        return entry.layer < layerBegin || entry.layer >= layerEnd;
-      if (entry.layer >= layers)
-        return layerEnd != layers;
-      return layerBegin != 0;
-    }), table.end());
   return table;
 }
 
@@ -3282,7 +3306,16 @@ std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
                          std::uint64_t layers)
 {
-  if (nodeNames.empty() || layers == 0) {
+  return classifyQwenRegionNodes(nodeNames, layers, 0, layers);
+}
+
+namespace {
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (nodeNames.empty() || layers == 0 || layerBegin >= layerEnd || layerEnd > layers) {
     throw std::invalid_argument("tensor-parallel entry classification needs a graph");
   }
   // Layer indices run [0, layers); the export also carries a final
@@ -3361,20 +3394,21 @@ classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
     attention.nodeIndices.push_back(nodeIndex);
   }
 
-  if (init.nodeIndices.empty()) {
+  if (layerBegin == 0 && init.nodeIndices.empty()) {
     throw std::invalid_argument(
       "tensor-parallel entry classification found no INIT nodes");
   }
-  for (const auto& pair : perLayer) {
+  for (std::uint64_t layer = layerBegin; layer < layerEnd; ++layer) {
+    const auto& pair = perLayer[layer];
     if (pair.first.nodeIndices.empty() || pair.second.nodeIndices.empty()) {
       throw std::invalid_argument(
         "tensor-parallel entry classification left a layer without attention or MLP nodes");
     }
   }
-  entries.push_back(std::move(init));
+  if (!init.nodeIndices.empty()) entries.push_back(std::move(init));
   for (auto& pair : perLayer) {
-    entries.push_back(std::move(pair.first));
-    entries.push_back(std::move(pair.second));
+    if (!pair.first.nodeIndices.empty()) entries.push_back(std::move(pair.first));
+    if (!pair.second.nodeIndices.empty()) entries.push_back(std::move(pair.second));
   }
   if (!head.nodeIndices.empty()) entries.push_back(std::move(head));
   // The taxonomy must cover the graph exactly: a node in no entry would never be
@@ -3387,6 +3421,8 @@ classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
   }
   return entries;
 }
+
+} // namespace
 
 void
 QwenTpEntryContract::validate() const
