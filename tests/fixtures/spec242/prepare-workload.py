@@ -11,7 +11,6 @@ from pathlib import Path
 import onnx
 from ndnsf import _ndnsf
 from ndnsf_distributed_inference.adapters.onnx.graph import canonical_onnx_identity
-from tokenizers import Tokenizer, models, pre_tokenizers
 
 
 def digest(data):
@@ -113,11 +112,12 @@ def prepare(output, requester, protection_epoch):
 
     output.mkdir(mode=0o700)
     write_json(output / "catalog.json", catalog)
-    tokenizer = Tokenizer(models.WordLevel(
-        {f"token{index}": index for index in range(64)}, unk_token="token0"))
-    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     tokenizer_path = output / "tokenizer.json"
-    tokenizer.save(str(tokenizer_path))
+    write_json(tokenizer_path, dict(
+        version="1.0", truncation=None, padding=None, added_tokens=[], normalizer=None,
+        pre_tokenizer={"type": "Whitespace"}, post_processor=None, decoder=None,
+        model=dict(type="WordLevel", vocab={f"token{i}": i for i in range(64)},
+                   unk_token="token0")))
     (output / "prompt.bin").write_bytes(tensor_bundle([1, 2, 3]))
     (output / "delta.bin").write_bytes(tensor_bundle([4]))
     write_json(output / "generation.json", dict(

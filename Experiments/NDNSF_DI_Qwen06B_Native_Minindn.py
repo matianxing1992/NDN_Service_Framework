@@ -785,19 +785,19 @@ def qwen_graph_digest(model_name: str, revision: str,
     }))
 
 
-def run_host(command: list[str], *, check: bool = True) -> None:
+def run_host(command: list[str], *, check: bool = True, timeout: float | None = None) -> None:
     subprocess.run(command, cwd=ROOT, check=check,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout)
 
 
-def make_external_key(directory: Path, stem: str) -> tuple[Path, Path]:
+def make_external_key(directory: Path, stem: str, *, timeout: float | None = None) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     private = directory / f"{stem}-private.pem"
     public = directory / f"{stem}-public.pem"
     run_host(["/usr/bin/openssl", "genpkey", "-algorithm", "ED25519",
-              "-out", str(private)])
+              "-out", str(private)], timeout=timeout)
     run_host(["/usr/bin/openssl", "pkey", "-in", str(private), "-pubout",
-              "-out", str(public)])
+              "-out", str(public)], timeout=timeout)
     private.chmod(0o600)
     public.chmod(0o644)
     return private, public
