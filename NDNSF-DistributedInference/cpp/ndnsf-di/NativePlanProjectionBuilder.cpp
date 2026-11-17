@@ -540,9 +540,10 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       }
     };
     if (feedback) {
-      if (!core.generationContract.enabled || !dependency.useNdnsfDataV1 ||
+      if (!core.generationContract.enabled || core.generationContract.tokenInputName.empty() ||
+          !dependency.useNdnsfDataV1 ||
           dependency.producers.size() != 1 || dependency.consumers.size() != 1 ||
-          dependency.tensors != std::vector<std::string>{"input_ids"} ||
+          dependency.tensors != std::vector<std::string>{core.generationContract.tokenInputName} ||
           dependency.collectiveOperationIndex >= core.generationContract.streamingOperationStride ||
           binding.operationIndex != dependency.collectiveOperationIndex ||
           !digest(dependency.collectiveTensorDigest) ||

@@ -11,6 +11,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-generation-feedback.hpp"
 #include <ndn-cxx/encoding/tlv.hpp>
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
@@ -1776,6 +1777,22 @@ automaticInvocationEncoding(const NativeJson& value)
   return encoding;
 }
 
+std::vector<NativeStageLayout>
+nativeStageLayoutsFromJson(const NativeJson& rows)
+{
+  if (!rows.is_array()) throw std::invalid_argument("stage layout must be an array");
+  std::vector<NativeStageLayout> result;
+  for (const auto& row : rows) {
+    NativeStageLayout stage;
+    stage.stageId = row.at("stage_id").get<std::string>();
+    stage.sourceRegionDigest = row.at("source_region_digest").get<std::string>();
+    stage.unitRoleIds = row.at("unit_role_ids").get<std::vector<std::string>>();
+    stage.validate();
+    result.push_back(std::move(stage));
+  }
+  return result;
+}
+
 NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   const NativeJson& typedRoot, const boost::property_tree::ptree& root,
   const std::string& selectedRole,
@@ -1891,6 +1908,18 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
 
   projection.plan.version = 3;
   projection.plan.executionPolicy = "DATA_DRIVEN_V2";
+  if (!fixedAssignment && typedRoot.contains("step_template_v2")) {
+    const auto& value = typedRoot.at("step_template_v2");
+    requireOnlyBindingKeys(value, {"step_plan_version", "tensor_degree", "stage_layout", "steps"});
+    if (value.at("step_plan_version") != NATIVE_STEP_PLAN_VERSION_V2 ||
+        !value.at("tensor_degree").is_number_integer() ||
+        value.at("tensor_degree") <= 0 || !value.at("steps").is_array())
+      throw std::invalid_argument("Selection v2 step template metadata is invalid");
+    projection.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+    projection.plan.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
+    projection.plan.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
+    projection.plan.stageLayout = nativeStageLayoutsFromJson(value.at("stage_layout"));
+  }
   std::set<std::string> roleSet;
   const auto appendRole = [&] (const std::string& role) {
     if (!role.empty() && roleSet.insert(role).second) {
@@ -1902,6 +1931,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     projection.plan.dependencies = bindFixedTemplateDependencies(
       typedRoot.at("dependencies"), *fixedAssignment->executionTemplate());
     bindFixedTemplateSteps(projection.plan, *fixedAssignment->executionTemplate());
+    roleSet.insert(projection.plan.roles.begin(), projection.plan.roles.end());
     for (const auto& dependency : projection.plan.dependencies) {
       for (const auto& role : dependency.producers) appendRole(role);
       for (const auto& role : dependency.consumers) appendRole(role);
@@ -1925,6 +1955,8 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   // role list -- every step then belongs to an "undeclared unit", which is exactly what
   // validateSteps reported for a degree-two plan.
   for (const auto& step : projection.plan.steps) appendRole(step.unitId);
+  if (projection.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
+    projection.plan.validateSteps();
 
   if (const auto generation = root.get_child_optional("generation_contract")) {
     auto& contract = projection.generationContract;
@@ -2070,14 +2102,10 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
               contract.eosTokenIds.begin(), contract.eosTokenIds.end(), value) !=
               contract.eosTokenIds.end();
           }) ||
-        // C6 requires one feedback edge per receiving unit, so a sharded plan has one
-        // per role. A pipeline plan keeps the single edge it always had. Any other
-        // count is still refused: two edges for three roles would leave a unit without
-        // its next-epoch input while the others ran.
-        // The expected count is the number of units this plan executes. A projection lists
-        // one role, but a sealed template names every unit in its steps, so the unit count
-        // comes from there when the plan is a template.
-        (feedbackCount != 1 &&
+        // Preserve legacy feedback counts. V2 checks exact token consumers after dataflow
+        // restoration, including the legitimate two-receiver/three-unit hybrid layout.
+        (projection.plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 &&
+         feedbackCount != 1 &&
          feedbackCount != (projection.plan.steps.empty()
            ? projection.plan.roles.size() : planUnitCount()))) {
       throw std::invalid_argument(
@@ -2201,6 +2229,29 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     : dataflowFromV3Json(*dataflow);
   validateTensorNamingStrideContract(projection.dataflow, projection.generationContract);
   projection.deviceBinding = deviceBindingFromV3Json(*deviceBinding);
+
+  if (projection.generationContract.enabled &&
+      projection.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+    std::set<std::string> producers;
+    std::set<std::string> consumers;
+    for (const auto& edge : projection.plan.dependencies) {
+      if (edge.operationKind != "TOKEN_FEEDBACK") continue;
+      if (edge.producers.size() != 1 || edge.consumers.size() != 1 ||
+          edge.tensors != std::vector<std::string>{projection.generationContract.tokenInputName} ||
+          !consumers.insert(edge.consumers.front()).second)
+        throw std::invalid_argument("V3 v2 feedback owner or consumer is ambiguous");
+      producers.insert(edge.producers.front());
+    }
+    if (producers.size() != 1)
+      throw std::invalid_argument("V3 v2 feedback requires one result owner");
+    const auto topology = nativeGenerationFeedbackTopology(projection.plan, *producers.begin(),
+      projection.generationContract.tokenInputName);
+    const std::set<std::string> expected(topology.consumerRoles.begin(), topology.consumerRoles.end());
+    if (consumers != expected ||
+        ((topology.producerRole == projection.executionRole.roleId) !=
+         projection.dataflow.terminalResponseOwner))
+      throw std::invalid_argument("V3 v2 feedback differs from token ports or result ownership");
+  }
 
   if (const auto stateReference =
         root.get_child_optional("conversation_state_reference")) {
@@ -2793,13 +2844,7 @@ NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
     result.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
   }
   if (withLayout) {
-    for (const auto& item : value.at("stage_layout")) {
-      NativeStageLayout stage;
-      stage.stageId = item.at("stage_id").get<std::string>();
-      stage.sourceRegionDigest = item.at("source_region_digest").get<std::string>();
-      stage.unitRoleIds = item.at("unit_role_ids").get<std::vector<std::string>>();
-      result.stageLayout.push_back(std::move(stage));
-    }
+    result.stageLayout = nativeStageLayoutsFromJson(value.at("stage_layout"));
   }
   result.providerByRole = value.at("provider_by_role").get<std::map<std::string, std::string>>();
   result.expandRoleEpochs = value.at("expand_role_epochs").get<bool>();
@@ -3341,6 +3386,8 @@ NativeJson
 selectionProjectionValue(const NativeSelectionProjectionV3& value)
 {
   auto root = selectionInvocationFields(value);
+  if (value.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
+    root["step_template_v2"] = nativeV2StepTemplateJson(value.plan);
   root["roles"] = NativeJson::array({jsonValue(value.selectedRoleContract())});
   root["assembly"] = jsonValue(value.assemblyContract());
   if (value.compactAssembly) {

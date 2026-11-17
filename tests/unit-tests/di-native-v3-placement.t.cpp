@@ -1305,6 +1305,52 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
             input.ackDigest, generationSealing));
           const auto generationGroups = NativeGroupProjectionBuilder::build(
             generationSealed, input.split, keys, requestContext, 4096);
+          auto namedTokenPlan = generationPlan;
+          auto namedTokenSealing = generationSealing;
+          namedTokenSealing.generationContract.tokenInputName = "tokens";
+          auto& namedFeedback = namedTokenPlan.dependencies.back();
+          BOOST_REQUIRE_EQUAL(namedFeedback.operationKind, "TOKEN_FEEDBACK");
+          namedFeedback.tensors = {"tokens"};
+          namedFeedback.collectiveSourceLayoutDigest =
+            namedFeedback.collectiveTargetLayoutDigest = nativePlanningDigest(nativeCanonicalJson(
+              NativeJson{{"tensor", "tokens"}, {"layout", "int64[1,1]"},
+                         {"operation", "TOKEN_FEEDBACK"}}));
+          namedFeedback.collectiveTensorDigest =
+            nativePlanningDigest(nativeCanonicalJson(NativeJson::array({"tokens"})));
+          const auto namedTokenSeal = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, proposal, namedTokenPlan, input.offers,
+            input.ackDigest, namedTokenSealing));
+          const auto namedGroups = NativeGroupProjectionBuilder::build(
+            namedTokenSeal, input.split, keys, requestContext, 4096);
+          std::size_t namedEndpoints = 0;
+          for (const auto& role : namedGroups) {
+            for (const auto* edges : {&role.second.dataflow.mayPublish,
+                                      &role.second.dataflow.mustFetch}) {
+              for (const auto& endpoint : *edges) {
+                if (endpoint.operation != "TOKEN_FEEDBACK") continue;
+                ++namedEndpoints;
+                BOOST_CHECK_EQUAL(endpoint.tensorId, "tokens");
+                BOOST_REQUIRE_EQUAL(endpoint.bundleTensorNames.size(), 1u);
+                BOOST_CHECK_EQUAL(endpoint.bundleTensorNames.front(), "tokens");
+              }
+            }
+          }
+          BOOST_CHECK_GT(namedEndpoints, 0u);
+          auto mismatchedTokenPlan = namedTokenPlan;
+          mismatchedTokenPlan.dependencies.back().tensors = {"input_ids"};
+          const auto mismatchedTokenSeal = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, proposal, mismatchedTokenPlan, input.offers,
+            input.ackDigest, namedTokenSealing));
+          BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(mismatchedTokenSeal,
+            input.split, keys, requestContext, 4096), std::invalid_argument);
+          auto staleTokenDigestPlan = namedTokenPlan;
+          staleTokenDigestPlan.dependencies.back().collectiveTensorDigest =
+            generationPlan.dependencies.back().collectiveTensorDigest;
+          const auto staleTokenDigestSeal = projectionPlan(NativePlanSealer::sealCore(
+            input.inspected, input.split, proposal, staleTokenDigestPlan, input.offers,
+            input.ackDigest, namedTokenSealing));
+          BOOST_CHECK_THROW(NativeGroupProjectionBuilder::build(staleTokenDigestSeal,
+            input.split, keys, requestContext, 4096), std::invalid_argument);
           auto multiRoleSelfPlan = generationPlan;
           multiRoleSelfPlan.dependencies.back().consumers =
             multiRoleSelfPlan.dependencies.back().producers;

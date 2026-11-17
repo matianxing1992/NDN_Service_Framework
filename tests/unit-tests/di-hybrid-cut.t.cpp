@@ -22,6 +22,8 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-generation-feedback.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
 #include "tests/fixtures/native-dependency-bus.hpp"
 #include "tests/fixtures/owned-test-process.hpp"
 
@@ -3067,7 +3069,175 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
     });
 }
 
+BOOST_AUTO_TEST_CASE(HybridGenerationUsesDeclaredEgressAndActualTokenInputs)
+{
+  for (const bool mirrored : {false, true}) {
+    const auto fixture = hybridCatalogFixture("fixture", "onnxruntime", mirrored);
+    NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+      [] {}, 8U << 20, 8U << 20};
+    const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(fixture.first),
+                                                   fixture.second, control);
+    const auto& candidate = loaded.planningCache->candidates.front().candidate;
+    const auto& plan = candidate.executionPlan;
+    const auto topology = nativeGenerationFeedbackTopology(plan, candidate.resultEgressRole,
+                                                            "input_ids");
+    BOOST_CHECK_EQUAL(topology.producerRole, candidate.resultEgressRole);
+    BOOST_CHECK(topology.consumerRoles == plan.stageLayout.front().unitRoleIds);
+    BOOST_CHECK_EQUAL(topology.consumerRoles.size(), mirrored ? 1u : 2u);
+    BOOST_CHECK(std::find(topology.consumerRoles.begin(), topology.consumerRoles.end(),
+                          topology.producerRole) == topology.consumerRoles.end());
+    if (!mirrored) {
+      BOOST_CHECK(std::none_of(plan.steps.begin(), plan.steps.end(), [&] (const auto& step) {
+        return step.unitId == topology.producerRole &&
+          step.artifactEntry.find("/HEAD/") != std::string::npos;
+      }));
+    }
+    auto opaqueEntries = plan;
+    std::size_t entryIndex = 0;
+    for (auto& step : opaqueEntries.steps)
+      if (step.operation == "CALL_SUBGRAPH")
+        step.artifactEntry = "opaque-entry-" + std::to_string(entryIndex++);
+    const auto opaque = nativeGenerationFeedbackTopology(opaqueEntries,
+      candidate.resultEgressRole, "input_ids");
+    BOOST_CHECK(opaque.consumerRoles == topology.consumerRoles);
+    BOOST_CHECK_EQUAL(opaque.producerRole, topology.producerRole);
+    auto customToken = opaqueEntries;
+    for (auto& step : customToken.steps)
+      for (auto& slot : step.inputSlots)
+        if (slot.source == "EPOCH_INPUT" && slot.slotId == "input_ids") slot.slotId = "tokens";
+    const auto custom = nativeGenerationFeedbackTopology(customToken,
+      candidate.resultEgressRole, "tokens");
+    BOOST_CHECK(custom.consumerRoles == topology.consumerRoles);
+    // Topology-only variant: a downstream unit that declares a token port needs feedback too.
+    auto downstreamToken = plan;
+    NativeStepSlotSpec token;
+    for (const auto& step : plan.steps)
+      for (const auto& slot : step.inputSlots)
+        if (slot.source == "EPOCH_INPUT" && slot.slotId == "input_ids") token = slot;
+    BOOST_REQUIRE_EQUAL(token.slotId, "input_ids");
+    for (auto& step : downstreamToken.steps) {
+      if (step.unitId != topology.producerRole) continue;
+      step.inputSlots.push_back(token);
+      break;
+    }
+    const auto downstream = nativeGenerationFeedbackTopology(downstreamToken,
+      candidate.resultEgressRole, "input_ids");
+    BOOST_CHECK_EQUAL(downstream.consumerRoles.size(), topology.consumerRoles.size() + 1);
+    BOOST_CHECK(std::find(downstream.consumerRoles.begin(), downstream.consumerRoles.end(),
+                          downstream.producerRole) != downstream.consumerRoles.end());
+    BOOST_CHECK_THROW(nativeGenerationFeedbackTopology(plan, "foreign-unit", "input_ids"),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(nativeGenerationFeedbackTopology(plan, candidate.resultEgressRole,
+                                                        "absent-token"), std::invalid_argument);
+    BOOST_CHECK_THROW(nativeGenerationFeedbackTopology(plan, candidate.resultEgressRole, ""),
+                      std::invalid_argument);
+    auto incomplete = plan;
+    incomplete.steps.erase(std::remove_if(incomplete.steps.begin(), incomplete.steps.end(),
+      [&] (const auto& step) { return step.unitId == candidate.resultEgressRole; }),
+      incomplete.steps.end());
+    BOOST_CHECK_THROW(nativeGenerationFeedbackTopology(incomplete, candidate.resultEgressRole,
+                                                        "input_ids"), std::invalid_argument);
+  }
+}
+
 namespace {
+
+/** Generation contract codec only; no endpoint/grant or network execution is implied. */
+void
+verifyHybridGenerationCodec(NativeSelectionProjectionV3 projection,
+                             const qwen::QwenTpShape& shape, const std::string& egress)
+{
+  const auto topology = nativeGenerationFeedbackTopology(projection.plan, egress, "input_ids");
+  bindNativeGenerationFeedback(projection.plan, topology, "input_ids", projection.requestId,
+                                projection.attempt, projection.fixedProviderByRole);
+  qwen::QwenTpSealedGeneration sealed;
+  sealed.maxGeneratedTokens = 3;
+  sealed.samplingDigest = nativePlanningDigest("fixture-sampling");
+  sealed.tokenizerDigest = nativePlanningDigest("fixture-tokenizer");
+  sealed.eosTokenIds = {63};
+  sealed.generationId = std::string(32, 'a');
+  projection.generationContract = qwen::buildQwenTpGenerationContract(projection.plan,
+                                                                     shape, sealed);
+  std::istringstream fullWire(nativeSelectionProjectionV3ToJson(projection));
+  const auto cold = nativeSelectionProjectionV3FromJson(fullWire,
+    projection.executionRole.roleId);
+  BOOST_CHECK(cold.generationContract.enabled);
+  BOOST_CHECK_EQUAL(cold.plan.stepPlanVersion, NATIVE_STEP_PLAN_VERSION_V2);
+  BOOST_CHECK_EQUAL(cold.plan.steps.size(), projection.plan.steps.size());
+  BOOST_CHECK_EQUAL(cold.plan.stageLayout.size(), projection.plan.stageLayout.size());
+  BOOST_CHECK_EQUAL(cold.plan.roles.size(), projection.plan.roles.size());
+  BOOST_CHECK(std::set<std::string>(cold.plan.roles.begin(), cold.plan.roles.end()) ==
+              std::set<std::string>(projection.plan.roles.begin(), projection.plan.roles.end()));
+  BOOST_CHECK_EQUAL(nativeCanonicalJson(nativeV2StepTemplateJson(cold.plan)),
+                    nativeCanonicalJson(nativeV2StepTemplateJson(projection.plan)));
+  BOOST_CHECK(cold.generationContract.stateInputNames ==
+              projection.generationContract.stateInputNames);
+  BOOST_CHECK_EQUAL(cold.generationContract.stateSuccessorMap,
+                    projection.generationContract.stateSuccessorMap);
+  BOOST_CHECK_EQUAL(cold.plan.degreeForRole(cold.executionRole.roleId),
+                    projection.plan.degreeForRole(projection.executionRole.roleId));
+  BOOST_CHECK_NO_THROW(cold.plan.validateSteps());
+  BOOST_CHECK(cold.providerOwnership().empty());
+  BOOST_CHECK_THROW(nativeFixedRoleAssignmentV1FromProjection(cold), std::invalid_argument);
+  // Full Selection does not carry the complete assignment. Fixed construction also needs
+  // the caller's admitted ownership context; this fixture supplies it separately.
+  auto fixedSource = cold;
+  fixedSource.fixedProviderByRole = projection.providerOwnership();
+  const auto fixed = nativeFixedRoleAssignmentV1FromProjection(fixedSource);
+  std::istringstream fixedWire(nativeFixedRoleAssignmentV1ToJson(*fixed));
+  const auto restored = nativeFixedRoleAssignmentV1FromJson(fixedWire);
+  BOOST_REQUIRE(restored);
+  std::istringstream invocation(nativeSelectionInvocationV1ToJson(projection, *fixed));
+  const auto decoded = nativeSelectionInvocationV1FromJson(invocation,
+    projection.executionRole.roleId, *restored);
+  BOOST_CHECK(decoded.generationContract.enabled);
+  BOOST_CHECK_EQUAL(decoded.generationContract.tokenInputName, "input_ids");
+  BOOST_CHECK(decoded.generationContract.stateInputNames ==
+              projection.generationContract.stateInputNames);
+  BOOST_CHECK_EQUAL(decoded.generationContract.stateSuccessorMap,
+                    projection.generationContract.stateSuccessorMap);
+  BOOST_CHECK_EQUAL(decoded.plan.roles.size(), projection.plan.roles.size());
+  BOOST_CHECK_EQUAL(decoded.plan.steps.size(), projection.plan.steps.size());
+  BOOST_CHECK_EQUAL(decoded.plan.stageLayout.size(), 2u);
+  BOOST_CHECK_EQUAL(decoded.plan.degreeForRole(projection.executionRole.roleId),
+                    projection.plan.degreeForRole(projection.executionRole.roleId));
+  BOOST_CHECK_NO_THROW(decoded.plan.validateSteps());
+  std::set<std::string> consumers;
+  for (const auto& edge : decoded.plan.dependencies) {
+    if (edge.operationKind != "TOKEN_FEEDBACK") continue;
+    BOOST_REQUIRE_EQUAL(edge.producers.size(), 1u);
+    BOOST_REQUIRE_EQUAL(edge.consumers.size(), 1u);
+    BOOST_CHECK_EQUAL(edge.producers.front(), egress);
+    BOOST_CHECK_EQUAL(edge.collectiveProducerRank, "0");
+    BOOST_CHECK(consumers.insert(edge.consumers.front()).second);
+  }
+  BOOST_CHECK(consumers == std::set<std::string>(topology.consumerRoles.begin(),
+                                                topology.consumerRoles.end()));
+  if (topology.consumerRoles.size() > 1) {
+    auto missingTemplate = nativeParseJson(nativeSelectionProjectionV3ToJson(projection));
+    missingTemplate.erase("step_template_v2");
+    std::istringstream missingWire(nativeCanonicalJson(missingTemplate));
+    BOOST_CHECK_THROW(nativeSelectionProjectionV3FromJson(missingWire,
+      projection.executionRole.roleId), std::invalid_argument);
+  }
+  auto missing = projection;
+  missing.plan.dependencies.pop_back();
+  BOOST_CHECK_THROW(nativeFixedRoleAssignmentV1FromProjection(missing), std::invalid_argument);
+  auto wrongConsumer = projection;
+  wrongConsumer.plan.dependencies.back().consumers = {egress};
+  BOOST_CHECK_THROW(nativeFixedRoleAssignmentV1FromProjection(wrongConsumer),
+                    std::invalid_argument);
+  if (topology.consumerRoles.size() > 1) {
+    auto duplicate = projection;
+    duplicate.plan.dependencies.back().consumers = {topology.consumerRoles.front()};
+    BOOST_CHECK_THROW(nativeFixedRoleAssignmentV1FromProjection(duplicate),
+                      std::invalid_argument);
+  }
+  auto wrongOwnerFlag = projection;
+  wrongOwnerFlag.dataflow.terminalResponseOwner = !wrongOwnerFlag.dataflow.terminalResponseOwner;
+  BOOST_CHECK_THROW(nativeFixedRoleAssignmentV1FromProjection(wrongOwnerFlag),
+                    std::invalid_argument);
+}
 
 void
 verifyHybridMaterials(bool mirrored, bool externalControls = false)
@@ -3230,6 +3400,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false)
     {"cache", options.cacheDir}, {"requests", NativeJson::array()}};
   std::map<std::string, NativeModelRunnerSpec> coldSpecs;
   std::map<std::string, NativeModelRunnerSpec> cachedSpecs;
+  const auto shape = qwen::deriveQwenTpShape(source.modelBytes, 4);
   for (const auto& role : prepared.roles) {
     auto projection = stageWindowProjection(prepared.candidate.executionPlan);
     projection.provider = options.providerIdentity;
@@ -3337,6 +3508,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false)
         BOOST_CHECK_GT(session.GetOutputCount(), 0u);
       }
       BOOST_CHECK(actualEntries == expectedEntries);
+      verifyHybridGenerationCodec(projection, shape, prepared.candidate.resultEgressRole);
       auto transportProjection = projection;
       transportProjection.generationContract = {};
       const auto fixed = nativeFixedRoleAssignmentV1FromProjection(transportProjection);
@@ -3351,7 +3523,6 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false)
   }
   BOOST_CHECK_EQUAL(sourceFetches, 3u);
   BOOST_CHECK_EQUAL(signatures, 3u);
-  const auto shape = qwen::deriveQwenTpShape(source.modelBytes, 4);
   std::vector<std::vector<qwen::QwenTpUnit>> units;
   for (const auto& stage : prepared.candidate.executionPlan.stageLayout) {
     std::vector<qwen::QwenTpUnit> members;
