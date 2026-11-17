@@ -19,6 +19,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -116,6 +117,9 @@ def check_assets(roster, selected, manifest_path):
     return missing
 
 
+_ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+
+
 def _boostCounts(text):
     """Read selected, executed and failed out of one run's output.
 
@@ -129,6 +133,9 @@ def _boostCounts(text):
     announcement as executed is exactly the overstatement this replaces. A case that entered and
     never left is neither executed nor failed, which is the honest reading of a timeout.
     """
+    # Colour is presentation, not data: the escape sequences carry digits, so they are removed
+    # before any number is read out of the text.
+    text = _ANSI.sub('', text)
     selected, executed, failed = 0, 0, 0
     for line in text.splitlines():
         if 'Running ' in line and 'test case' in line:
@@ -141,8 +148,18 @@ def _boostCounts(text):
             # lower bound, never an overstatement.
             pass
         if 'failure' in line and 'detected in the test module' in line:
+            # The line carries ANSI colour codes, whose escape sequences contain digits
+            # ("[1;31;49m"), so stripping every digit from the prefix counted the colour as the
+            # failure count -- 1314910 for a run with 10 failures. Only the leading decimal token
+            # is the count.
             head = line.split('failure', 1)[0]
-            failed = int(''.join(ch for ch in head if ch.isdigit()) or 1)
+            digits = ''
+            for ch in head:
+                if ch.isdigit():
+                    digits += ch
+                elif digits:
+                    break
+            failed = int(digits or 1)
     return selected, executed, failed
 
 
@@ -384,6 +401,10 @@ def main(argv=None):
                                       'suites': len(suites), 'cases': len(cases),
                                       'runs': entries})
 
+    # `discovered` is the binary's listing; `selected` is what the selector announced. They can
+    # differ by one -- `integration-tests` lists 345 cases and announces 346 under `--run_test=*`,
+    # because Boost's explicit filter also matches the module-level node that the default run does
+    # not count. Both are measured; the gap is recorded rather than smoothed away.
     report['discovered'] = sum(target.get('cases', 0) for target in report['targets'])
     # A selector chooses a subset of the binary; its own count comes from the selector's listing, not
     # from the binary's total. `run_target` records what each selector actually reached.

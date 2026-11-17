@@ -1967,7 +1967,9 @@ def build(bld):
                 # address-taken inline constexpr into a direct call.  The
                 # monolithic test binary exercises many such constants.
                 linkflags=['-Wl,--no-relax'],
-                install_path=None)
+                # Installed beside the tensor-parallel binary so the roster can name it without a
+                # build tree. No build-tree RPATH: the runner binds the prefix's library directory.
+                install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # Keep the packet-level DummyClientFace/SVSPubSub flow runnable as a
     # separate integration target.  It intentionally reuses the existing
@@ -2025,7 +2027,7 @@ def build(bld):
                 # Keep the same GCC-9 ICE guard for the integration target.
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
-                install_path=None)
+                install_path='${PREFIX}/libexec/ndnsf-tests')
 
     bld.program(target='../service-controller-readiness',
                 name='service-controller-readiness',
