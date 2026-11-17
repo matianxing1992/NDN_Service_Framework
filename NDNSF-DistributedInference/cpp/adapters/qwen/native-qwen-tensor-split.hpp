@@ -17,6 +17,10 @@
 #include <utility>
 #include <vector>
 
+namespace ndnsf::di {
+struct NativeOnnxGraphInspection;
+}
+
 namespace ndnsf::di::qwen {
 
 /** Block width of the frozen weight-only INT4 export (`MatMulNBits`). */
@@ -368,6 +372,17 @@ struct QwenTpEntryContract
     return !relativeGraphPath.empty() && !graphDigest.empty();
   }
 };
+
+/** Describe region entry ports from authenticated source inspection, without model files.
+ *
+ * Shares classification and binding with materialization. The returned entries have no
+ * graph path/digest and cannot be loaded by a runner. Restored inspection is supported.
+ */
+std::vector<QwenTpEntryContract>
+describeQwenTpEntryContracts(const NativeOnnxGraphInspection& source, std::uint64_t layers,
+                             const std::vector<QwenTpUnit>& units,
+                             std::uint64_t layerBegin, std::uint64_t layerEnd,
+                             const std::string& egressRole);
 
 /** Generation contract a sharded plan needs so its egress unit can sample.
  *
@@ -961,6 +976,18 @@ buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
                          const std::map<std::string, std::string>& artifactByUnit,
                          const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit);
 
+/** Build with actual source ports before sealing; preserves the legacy metadata overload. */
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
+                         const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source);
+
 
 void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
@@ -1012,7 +1039,7 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   const std::vector<QwenTpUnit>& units,
                   const std::vector<QwenTpEntryContract>& entries);
 
-/** Project a region against materialized entry bindings.
+/** Project a region against verified source or materialized entry bindings.
  *
  * Unlike the legacy metadata projection, CALL ports must have actual graph bindings.
  * A later region may omit INIT when no declared input needs it. Missing producers,

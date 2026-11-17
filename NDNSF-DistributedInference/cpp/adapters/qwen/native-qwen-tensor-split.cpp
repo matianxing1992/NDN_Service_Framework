@@ -1,4 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -32,6 +34,16 @@ retainQwenTpEgressHead(std::vector<QwenTpEntryContract>& table,
 std::vector<QwenTpEntryNodes>
 classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t layers,
                        std::uint64_t layerBegin, std::uint64_t layerEnd);
+
+bool
+ownsRegionEntry(const QwenTpEntryNodes& entry, std::uint64_t layers,
+                std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (entry.kind == "ATTN" || entry.kind == "MLP")
+    return entry.layer >= layerBegin && entry.layer < layerEnd;
+  if (entry.kind == "HEAD") return layerEnd == layers;
+  return layerBegin == 0;
+}
 
 std::vector<QwenTpEntryNodes>
 classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
@@ -1566,10 +1578,7 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
   // but a window never emits files or consumes another stage's assembly allowance.
   classified.erase(std::remove_if(classified.begin(), classified.end(),
     [&] (const auto& entry) {
-      if (entry.kind == "ATTN" || entry.kind == "MLP")
-        return entry.layer < layerBegin || entry.layer >= layerEnd;
-      if (entry.kind == "HEAD") return layerEnd != layers;
-      return layerBegin != 0;
+      return !ownsRegionEntry(entry, layers, layerBegin, layerEnd);
     }), classified.end());
 
   std::error_code directoryError;
@@ -1801,33 +1810,36 @@ deriveQwenTpShapeFromGraphMetadata(const std::string& graphMetadataJson,
     const auto& attributes = node.at("integerAttributes");
     const auto heads = attributes.find("num_heads");
     const auto kv = attributes.find("kv_num_heads");
-    if (heads == attributes.end() || kv == attributes.end()) continue;
+    if (heads == attributes.end() || kv == attributes.end())
+      throw std::invalid_argument("tensor-parallel metadata attention head counts are missing");
     const auto headsValue = heads->get<std::int64_t>();
     const auto kvValue = kv->get<std::int64_t>();
-    if (headsValue <= 0 || kvValue <= 0) continue;
+    if (headsValue <= 0 || kvValue <= 0)
+      throw std::invalid_argument("tensor-parallel metadata attention head counts are invalid");
+    if (queryHeads != 0 &&
+        (queryHeads != static_cast<std::uint64_t>(headsValue) ||
+         kvHeads != static_cast<std::uint64_t>(kvValue)))
+      throw std::invalid_argument("tensor-parallel metadata attention head counts disagree");
     queryHeads = static_cast<std::uint64_t>(headsValue);
     kvHeads = static_cast<std::uint64_t>(kvValue);
-    break;
   }
   if (queryHeads == 0)
     throw std::invalid_argument(
       "tensor-parallel metadata derivation found no attention head counts");
 
-  // The projection widths are the last axis of each projection's output tensor. The
-  // tensor table records them, and the names match the ones the byte path reads.
-  const auto widthOf = [&tensors] (const std::string& marker) -> std::uint64_t {
-    for (const auto& item : tensors.items()) {
-      const auto& value = item.value();
-      if (item.key().find(marker) == std::string::npos) continue;
-      const auto& shape = value.at("shape");
-      if (shape.empty()) continue;
-      const auto& last = shape.back();
-      if (!last.is_number_integer()) continue;
-      const auto width = last.get<std::int64_t>();
-      if (width <= 0) continue;
-      return static_cast<std::uint64_t>(width);
+  // N is the MatMulNBits output-channel count. Tensor inventories also contain packed
+  // weights/scales whose final dimensions are storage geometry, never output widths.
+  const auto widthOf = [&nodesJson] (const std::string& marker) -> std::uint64_t {
+    std::uint64_t result = 0;
+    for (const auto& node : nodesJson) {
+      if (node.value("opType", std::string{}) != "MatMulNBits" ||
+          node.at("name").get<std::string>().find(marker) == std::string::npos) continue;
+      const auto width = node.at("integerAttributes").at("N").get<std::int64_t>();
+      if (width <= 0 || (result != 0 && result != static_cast<std::uint64_t>(width)))
+        throw std::invalid_argument("tensor-parallel metadata projection widths disagree");
+      result = static_cast<std::uint64_t>(width);
     }
-    return 0;
+    return result;
   };
   const auto queryWidth = widthOf("q_proj");
   const auto outputWidth = widthOf("o_proj");
@@ -2009,14 +2021,15 @@ role_ids_contain(const std::vector<QwenTpUnit>& units, const std::string& role)
 
 } // namespace
 
-ndnsf::di::NativeSplitCandidate
-buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+static ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
                          const std::vector<QwenTpStageWindow>& windows,
                          const std::vector<std::vector<QwenTpUnit>>& stageUnits,
                          const std::string& entryPrefix, const std::string& egressRole,
                          const NativeModelDescriptor& model,
                          const std::map<std::string, std::string>& artifactByUnit,
-                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit)
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection* source)
 {
   if (windows.empty() || windows.size() != stageUnits.size())
     throw std::invalid_argument("hybrid candidate needs one window per stage");
@@ -2045,9 +2058,18 @@ buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& sh
     plan.modelFormat = model.modelFormat;
     plan.plannerKind = "native-qwen-hybrid";
     plan.executionPolicy = "DATA_DRIVEN_V2";
-    const std::string stageEgress = std::string(list.front().roleId).rfind(egressRole, 0) == 0
-      ? list.front().roleId : list.back().roleId;
-    projectQwenTpPlan(plan, shape, list.size(), entryPrefix, stageEgress, list, window);
+    const bool terminal = index + 1 == windows.size();
+    if (terminal && !role_ids_contain(list, egressRole))
+      throw std::invalid_argument("hybrid result owner must belong to the last stage");
+    const auto stageEgress = terminal ? egressRole : list.front().roleId;
+    if (source != nullptr) {
+      const auto entries = describeQwenTpEntryContracts(*source, shape.layers, list,
+        window.layerBegin, window.layerEnd, stageEgress);
+      projectQwenTpPlan(plan, shape, list.size(), stageEgress, list, entries, window);
+    }
+    else {
+      projectQwenTpPlan(plan, shape, list.size(), entryPrefix, stageEgress, list, window);
+    }
     plans.push_back(std::move(plan));
     for (const auto& unit : list) units.push_back(unit);
   }
@@ -2153,6 +2175,33 @@ buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& sh
   };
   candidate.candidateDigest = candidate.computedDigest();
   return candidate;
+}
+
+NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit)
+{
+  return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
+    model, artifactByUnit, requirementByUnit, nullptr);
+}
+
+NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source)
+{
+  return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
+    model, artifactByUnit, requirementByUnit, &source);
 }
 
 void
@@ -3357,6 +3406,112 @@ bindIdentitySlots(QwenTpEntryContract& contract)
   }
 }
 
+std::vector<QwenTpEntryContract>
+describeQwenTpEntryContracts(const NativeOnnxGraphInspection& source, std::uint64_t layers,
+                             const std::vector<QwenTpUnit>& units,
+                             std::uint64_t layerBegin, std::uint64_t layerEnd,
+                             const std::string& egressRole)
+{
+  if (units.empty() || layerBegin >= layerEnd || layerEnd > layers)
+    throw std::invalid_argument("source entry description needs units and a valid region");
+  const auto metadata = nativeParseJson(source.graphMetadataJson);
+  const auto& nodes = metadata.at("nodes");
+  if (nodes.size() != source.graph.nodes.size())
+    throw std::invalid_argument("source entry metadata node cover differs from inspection");
+
+  // A structural view only: no initializer payload, graph hash or executable file is made.
+  // Boundary discovery reads sets of input names, so restored initializer operands need
+  // ownership, not their original argument positions or weight bytes.
+  onnx::ModelProto structure;
+  auto& graph = *structure.mutable_graph();
+  for (const auto& node : nodes) {
+    if (node.at("index").get<std::uint64_t>() !=
+        static_cast<std::uint64_t>(graph.node_size()))
+      throw std::invalid_argument("source entry metadata is not in canonical node order");
+    auto* item = graph.add_node();
+    item->set_name(node.at("name").get<std::string>());
+    item->set_op_type(node.at("opType").get<std::string>());
+    for (const auto& name : node.at("inputs")) item->add_input(name.get<std::string>());
+    for (const auto& name : node.at("outputs")) item->add_output(name.get<std::string>());
+  }
+  std::set<std::string> initializers;
+  for (const auto& item : metadata.at("initializers")) {
+    const auto name = item.get<std::string>();
+    if (!initializers.insert(name).second)
+      throw std::invalid_argument("source entry metadata repeats an initializer");
+    graph.add_initializer()->set_name(name);
+    const auto owners = source.initializerConsumers.find(name);
+    if (owners == source.initializerConsumers.end())
+      throw std::invalid_argument("source entry metadata lacks initializer ownership");
+    for (const auto index : owners->second) {
+      if (index >= static_cast<std::uint64_t>(graph.node_size()))
+        throw std::invalid_argument("source entry initializer owner is outside the graph");
+      graph.mutable_node(static_cast<int>(index))->add_input(name);
+    }
+  }
+  if (initializers.size() != source.initializerConsumers.size())
+    throw std::invalid_argument("source entry initializer ownership has foreign keys");
+
+  const auto valueInfo = [&] (const std::string& name) {
+    const auto& facts = metadata.at("tensors").at(name);
+    onnx::ValueInfoProto value;
+    value.set_name(name);
+    auto* type = value.mutable_type()->mutable_tensor_type();
+    const auto dtype = facts.at("dtype").get<std::string>();
+    if (dtype.rfind("onnx_type_", 0) == 0) {
+      const auto label = dtype.substr(10);
+      std::size_t used = 0;
+      const auto scalar = std::stol(label, &used);
+      if (used != label.size() || scalar < 0 ||
+          scalar > std::numeric_limits<std::int32_t>::max())
+        throw std::invalid_argument("source entry has an invalid ONNX scalar type");
+      type->set_elem_type(static_cast<std::int32_t>(scalar));
+    }
+    else {
+      type->set_elem_type(onnxTensorScalarType(tensorElementTypeFromName(dtype)));
+    }
+    for (const auto& dimension : facts.at("shape")) {
+      auto* dim = type->mutable_shape()->add_dim();
+      if (dimension.is_string()) dim->set_dim_param(dimension.get<std::string>());
+      else dim->set_dim_value(dimension.get<std::int64_t>());
+    }
+    return value;
+  };
+  for (const auto& name : metadata.at("inputs"))
+    *graph.add_input() = valueInfo(name.get<std::string>());
+  for (const auto& name : metadata.at("outputs"))
+    *graph.add_output() = valueInfo(name.get<std::string>());
+  for (const auto& item : metadata.at("tensors").items())
+    if (initializers.count(item.key()) == 0) *graph.add_value_info() = valueInfo(item.key());
+
+  const auto entries = classifyQwenRegionNodes(structure, layers, layerBegin, layerEnd);
+  std::vector<QwenTpEntryContract> result;
+  for (const auto& unit : units) {
+    if (unit.layerBegin != layerBegin || unit.layerEnd != layerEnd)
+      throw std::invalid_argument("source entry unit differs from its region");
+    for (const auto& entry : entries) {
+      if (!ownsRegionEntry(entry, layers, layerBegin, layerEnd) ||
+          (entry.kind == "HEAD" && unit.roleId != egressRole)) continue;
+      const auto boundary = describeQwenTpEntryBoundary(structure, entry);
+      onnx::ModelProto ports;
+      for (const auto& input : boundary.first) *ports.mutable_graph()->add_input() = input;
+      for (const auto& output : boundary.second) *ports.mutable_graph()->add_output() = output;
+      QwenTpEntryContract contract;
+      contract.entryId = unit.roleId + "/" + entry.kind + "/" + std::to_string(entry.layer);
+      contract.unitId = unit.roleId;
+      contract.kind = entry.kind;
+      contract.layer = entry.layer;
+      for (const auto& input : boundary.first) contract.inputNames.push_back(input.name());
+      for (const auto& output : boundary.second) contract.outputNames.push_back(output.name());
+      bindQwenTpEntrySlots(ports, contract);
+      bindIdentitySlots(contract);
+      contract.validate();
+      result.push_back(std::move(contract));
+    }
+  }
+  return result;
+}
+
 /** Write an already-extracted entry: slice, declare, persist, digest.
  *
  * Declared at file scope rather than in the header because it takes the extracted model by value;
@@ -3785,8 +3940,8 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   std::set<std::string> ids;
   for (const auto& contract : tp.entries) {
     contract.validate();
-    if (!contract.hasGraphFile() || !ids.insert(contract.entryId).second)
-      throw std::invalid_argument("region entries must have unique materialized identities");
+    if (!ids.insert(contract.entryId).second)
+      throw std::invalid_argument("region entries must have unique identities");
   }
   projectTemplate(plan, shape, degree, "/verified", egressRole, tp, &tp.entries, &window, true);
 }

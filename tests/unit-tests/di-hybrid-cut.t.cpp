@@ -10,6 +10,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -36,6 +38,36 @@
 using namespace ndnsf::di;
 
 namespace {
+
+NativeModelDescriptor
+qwenFixtureDescriptor()
+{
+  const auto digest = nativePlanningDigest("spec242-planning-graph");
+  NativeModelDescriptor model;
+  model.modelName = "qwen-fixture";
+  model.sourceRevision = "fixture-v1";
+  model.contentDigest = model.semanticsDigest = model.graphDigest = digest;
+  // Pinned semantic graph for fixture-v1, int4, and layer ranges [0,1), [1,4).
+  model.graphDigest =
+    "sha256:41b64660122c4bd042b455c1c7033dbd5756afcf209c9d8e82d88d677e7aaaee";
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int4";
+  model.quantizationSubtype = "weight_only_int4";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int4"};
+  model.adapter.stateDigest = model.adapter.inputSchemaDigest = digest;
+  model.adapter.optionsSchemaDigest = model.adapter.resultSchemaDigest = digest;
+  model.adapter.graphSchemaDigest = model.adapter.splitSchemaDigest = digest;
+  model.adapter.stateSchemaDigest = digest;
+  return model;
+}
 
 NativeStepSlotSpec
 callSlot()
@@ -373,29 +405,8 @@ BOOST_AUTO_TEST_CASE(VersionOneWireCannotCarryTheStageLayout)
 
 BOOST_AUTO_TEST_CASE(HybridOwnershipUsesTheCatalogPlanningGraph)
 {
+  auto model = qwenFixtureDescriptor();
   const auto digest = nativePlanningDigest("spec242-planning-graph");
-  NativeModelDescriptor model;
-  model.modelName = "qwen-fixture";
-  model.contentDigest = model.semanticsDigest = model.graphDigest = digest;
-  // Pinned semantic graph for fixture-v1, int4, and layer ranges [0,1), [1,4).
-  model.graphDigest =
-    "sha256:41b64660122c4bd042b455c1c7033dbd5756afcf209c9d8e82d88d677e7aaaee";
-  model.modelFormat = "onnx";
-  model.adapterId = "qwen";
-  model.adapterVersion = "1";
-  model.precision = "int4";
-  model.quantizationSubtype = "weight_only_int4";
-  model.adapter.name = "qwen";
-  model.adapter.version = "1";
-  model.adapter.abi = "onnxruntime";
-  model.adapter.modelFormats = {"onnx"};
-  model.adapter.tasks = {"text-generation"};
-  model.adapter.backends = {"onnxruntime"};
-  model.adapter.precisions = {"int4"};
-  model.adapter.stateDigest = model.adapter.inputSchemaDigest = digest;
-  model.adapter.optionsSchemaDigest = model.adapter.resultSchemaDigest = digest;
-  model.adapter.graphSchemaDigest = model.adapter.splitSchemaDigest = digest;
-  model.adapter.stateSchemaDigest = digest;
   qwen::NativeQwenLayerSplit splitter({{0, 1}, {1, 4}},
     {{"first", digest}, {"last", digest}}, {{"first", 4096}, {"last", 4096}},
     {"first", "last"}, {1, 1});
@@ -440,6 +451,30 @@ BOOST_AUTO_TEST_CASE(HybridOwnershipUsesTheCatalogPlanningGraph)
   BOOST_CHECK(candidate.roleNodeIdsByRole.at("unit-0-0") ==
               candidate.roleNodeIdsByRole.at("unit-0-1"));
   BOOST_CHECK_EQUAL(candidate.roleNodeIdsByRole.at("unit-1-0").size(), 4u);
+  // A terminal degree-three stage may explicitly choose its middle member as egress.
+  shape.queryHeads = shape.kvHeads = 12;
+  shape.headDim = 32;
+  shape.ffn = 384;
+  for (std::uint64_t rank = 1; rank < 3; ++rank) {
+    auto unit = units[1].front();
+    unit.rank = rank;
+    unit.roleId = "unit-1-" + std::to_string(rank);
+    artifacts[unit.roleId] = nativePlanningDigest(unit.roleId);
+    requirements[unit.roleId] = requirements.at("unit-1-0");
+    units[1].push_back(std::move(unit));
+  }
+  const auto middle = qwen::buildQwenHybridCandidate(graph, shape, windows, units, "entry",
+    "unit-1-1", model, artifacts, requirements);
+  BOOST_CHECK_NO_THROW(middle.validate(graph));
+  std::size_t heads = 0;
+  for (const auto& step : middle.executionPlan.steps) {
+    if (step.stepId.find("/HEAD") == std::string::npos) continue;
+    ++heads;
+    BOOST_CHECK_EQUAL(step.unitId, "unit-1-1");
+  }
+  BOOST_CHECK_EQUAL(heads, 1u);
+  BOOST_CHECK_THROW(qwen::buildQwenHybridCandidate(graph, shape, windows, units, "entry",
+    "unit-0-0", model, artifacts, requirements), std::invalid_argument);
   graph.nodes.at(1).id = "unmapped-node";
   BOOST_CHECK_THROW(build(), std::invalid_argument);
 }
@@ -2040,6 +2075,54 @@ BOOST_AUTO_TEST_CASE(ThreeUnitsRecomposeTheCompletePrefillGraph)
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
                                         std::istreambuf_iterator<char>());
   const auto shape = qwen::deriveQwenTpShape(bytes, 4);
+  NativeCanonicalSource canonicalSource;
+  canonicalSource.modelBytes = bytes;
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 8U << 20, 8U << 20};
+  const auto descriptor = qwenFixtureDescriptor();
+  const auto inspection = inspectNativeOnnxSourceGraph(canonicalSource, descriptor, control);
+  NativeInspectedModel inspected;
+  inspected.descriptor = descriptor;
+  inspected.canonicalSourceName = "/fixture/source";
+  inspected.canonicalSourceDigest = nativePlanningDigest(bytes.data(), bytes.size());
+  inspected.modelManifestDigest = nativePlanningDigest("fixture-manifest");
+  inspected.canonicalSourceBytes = bytes.size();
+  inspected.canonicalGraphDigest = inspection.canonicalIdentity.graphDigest;
+  inspected.canonicalInitializerDigest = inspection.canonicalIdentity.initializerDigest;
+  const auto preparedMetadata = encodeNativePreparedOnnxMetadata(inspected, inspection,
+                                                                 nullptr, control);
+  const auto restored = decodeNativePreparedOnnxMetadata(nativeParseJson(preparedMetadata), control);
+  const auto metadataShape = qwen::deriveQwenTpShapeFromGraphMetadata(
+    restored.graph.graphMetadataJson, 4);
+  BOOST_CHECK_EQUAL(metadataShape.layers, shape.layers);
+  BOOST_CHECK_EQUAL(metadataShape.hidden, shape.hidden);
+  BOOST_CHECK_EQUAL(metadataShape.queryHeads, shape.queryHeads);
+  BOOST_CHECK_EQUAL(metadataShape.kvHeads, shape.kvHeads);
+  BOOST_CHECK_EQUAL(metadataShape.headDim, shape.headDim);
+  BOOST_CHECK_EQUAL(metadataShape.ffn, shape.ffn);
+  BOOST_CHECK_EQUAL(metadataShape.vocab, shape.vocab);
+  auto brokenInspection = inspection;
+  brokenInspection.initializerConsumers.begin()->second = {inspection.graph.nodes.size()};
+  BOOST_CHECK_THROW(qwen::describeQwenTpEntryContracts(brokenInspection, 4,
+    std::vector<qwen::QwenTpUnit>{{"unit", 0, 0, 1}}, 0, 1, "unit"), std::invalid_argument);
+  auto brokenMetadata = nativeParseJson(restored.graph.graphMetadataJson);
+  std::size_t attention = 0;
+  for (auto& node : brokenMetadata.at("nodes")) {
+    if (node.at("opType") != "GroupQueryAttention" || ++attention != 2) continue;
+    node.at("integerAttributes").erase("num_heads");
+    break;
+  }
+  BOOST_CHECK_THROW(qwen::deriveQwenTpShapeFromGraphMetadata(
+    nativeCanonicalJson(brokenMetadata), 4), std::invalid_argument);
+  brokenMetadata = nativeParseJson(restored.graph.graphMetadataJson);
+  for (auto& node : brokenMetadata.at("nodes")) {
+    if (node.at("opType") != "MatMulNBits" ||
+        node.at("name").get<std::string>().find("q_proj") == std::string::npos) continue;
+    node["integerAttributes"]["N"] = 32;
+    break;
+  }
+  BOOST_CHECK_THROW(qwen::deriveQwenTpShapeFromGraphMetadata(
+    nativeCanonicalJson(brokenMetadata), 4), std::invalid_argument);
   struct Workspace
   {
     std::filesystem::path root;
@@ -2092,11 +2175,61 @@ BOOST_AUTO_TEST_CASE(ThreeUnitsRecomposeTheCompletePrefillGraph)
   qwen::QwenTpStageWindow first{"first", nativePlanningDigest("first"), 0, 1};
   qwen::QwenTpStageWindow last{"last", nativePlanningDigest("last"), 1, 4,
     upstream, upstream + "/MLP/0", "post_residual", upstream + "/SUM_MLP/0", "merged"};
+  std::vector<std::vector<qwen::QwenTpEntryContract>> sourceTables;
+  const auto samePorts = [] (const auto& left, const auto& right) {
+    BOOST_REQUIRE_EQUAL(left.size(), right.size());
+    for (std::size_t index = 0; index < left.size(); ++index) {
+      const auto& a = left[index];
+      const auto& b = right[index];
+      BOOST_CHECK_EQUAL(a.entryId, b.entryId);
+      BOOST_CHECK_EQUAL(a.unitId, b.unitId);
+      BOOST_CHECK_EQUAL(a.kind, b.kind);
+      BOOST_CHECK_EQUAL(a.layer, b.layer);
+      BOOST_CHECK(a.inputNames == b.inputNames && a.outputNames == b.outputNames);
+      BOOST_CHECK(a.inputSlotByGraphName == b.inputSlotByGraphName);
+      BOOST_CHECK(a.outputSlotByGraphName == b.outputSlotByGraphName);
+      BOOST_CHECK(a.passthroughSlotByInputGraphName == b.passthroughSlotByInputGraphName);
+      BOOST_CHECK(a.stateOutputGraphNames == b.stateOutputGraphNames);
+      BOOST_CHECK(a.synthesizedInputGraphNames == b.synthesizedInputGraphNames);
+    }
+  };
+  for (std::size_t stage = 0; stage < 2; ++stage) {
+    const auto begin = stage == 0 ? 0u : 1u;
+    const auto end = stage == 0 ? 1u : 4u;
+    const auto& owner = stage == 0 ? upstream : egress;
+    auto ports = qwen::describeQwenTpEntryContracts(inspection, 4, units[stage], begin, end, owner);
+    const auto cached = qwen::describeQwenTpEntryContracts(restored.graph, 4, units[stage],
+                                                         begin, end, owner);
+    samePorts(ports, cached);
+    samePorts(ports, tables[stage]);
+    BOOST_CHECK_THROW(qwen::qwenTpEntryTableJson(ports), std::invalid_argument);
+    for (const auto& entry : ports) BOOST_CHECK(!entry.hasGraphFile());
+    sourceTables.push_back(std::move(ports));
+  }
   NativeExecutionPlan stage0;
   NativeExecutionPlan stage1;
-  qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0], tables[0], first);
-  qwen::projectQwenTpPlan(stage1, shape, 1, egress, units[1], tables[1], last);
-  const auto plan = qwen::mergeQwenStagePlans({stage0, stage1});
+  qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0], sourceTables[0], first);
+  qwen::projectQwenTpPlan(stage1, shape, 1, egress, units[1], sourceTables[1], last);
+  std::map<std::string, std::string> artifactIds;
+  std::map<std::string, NativeRoleResourceRequirement> resources;
+  for (const auto& stage : units) {
+    for (const auto& unit : stage) {
+      artifactIds[unit.roleId] = nativePlanningDigest("fixture-artifact|" + unit.roleId);
+      resources[unit.roleId] = NativeRoleResourceRequirement{{"onnxruntime"}, 8U << 20};
+    }
+  }
+  const auto identity = nativePlanningDigest("fixture-stage");
+  qwen::NativeQwenLayerSplit splitter({{0, 1}, {1, 4}},
+    {{"first", identity}, {"last", identity}}, {{"first", 4096}, {"last", 4096}},
+    {"first", "last"}, {1, 1});
+  const auto planningGraph = splitter.inspectGraph(descriptor, "fixture-v1", 100);
+  const auto candidate = qwen::buildQwenHybridCandidate(planningGraph, shape,
+    {first, last}, units, "entry", egress, descriptor, artifactIds, resources, inspection);
+  const auto cachedCandidate = qwen::buildQwenHybridCandidate(planningGraph, metadataShape,
+    {first, last}, units, "entry", egress, descriptor, artifactIds, resources, restored.graph);
+  BOOST_CHECK_NO_THROW(candidate.validate(planningGraph));
+  BOOST_CHECK_EQUAL(candidate.candidateDigest, cachedCandidate.candidateDigest);
+  const auto& plan = candidate.executionPlan;
   BOOST_CHECK_NO_THROW(plan.validateSteps());
   for (const auto& step : plan.steps) {
     BOOST_CHECK(step.localStateSlots.empty());

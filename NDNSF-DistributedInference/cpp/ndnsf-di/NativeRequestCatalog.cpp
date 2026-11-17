@@ -565,13 +565,29 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // The projected-plan branch runs after the source is moved into the catalog entry, so
   // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
   // the serialized graph, which only exists before the move.
-  const std::vector<std::uint8_t> planningGraphBytes = source.modelBytes;
+  const bool sourceBoundHybrid = sourceDefined && splitterKind == "QWEN" &&
+    split.at("roles").size() > 1 &&
+    std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
+      [] (const auto& degree) { return degree.template get<std::uint64_t>() > 1; });
+  std::optional<qwen::QwenTpShape> hybridColdShape;
+  if (sourceBoundHybrid && !source.modelBytes.empty()) {
+    // Preserve full byte-based operator/quantization admission before releasing the bytes.
+    // Only the small geometry survives the move; port descriptions use inspected facts.
+    hybridColdShape = qwen::deriveQwenTpShape(source.modelBytes,
+      split.at("layer_ranges").back().at(1).get<std::uint64_t>());
+  }
+  // Hybrid cold/restore planning consumes the same inspected facts, without retaining
+  // another model-sized byte copy after the source moves into the preparation catalog.
+  const std::vector<std::uint8_t> planningGraphBytes =
+    sourceBoundHybrid ? std::vector<std::uint8_t>{} : source.modelBytes;
   // The same holds for the recorded graph facts: the sharded branch runs after the entry
   // has moved into the preparation catalog, so a reference-only restore could not reach
   // them there.
   const std::string planningGraphMetadata =
     entry.sourceGraphInspection ? entry.sourceGraphInspection->graphMetadataJson
                                 : std::string{};
+  const auto planningGraphInspection = sourceBoundHybrid
+    ? entry.sourceGraphInspection : std::optional<NativeOnnxGraphInspection>{};
   entry.source = std::move(source);
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
@@ -614,9 +630,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         throw std::invalid_argument(
           "hybrid Qwen catalog needs one role, layer range and degree per stage");
       const auto totalLayers = layerRanges.at(layerRanges.size() - 1).at(1).get<std::uint64_t>();
-      const auto hybridShape = planningGraphBytes.empty()
-        ? qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, totalLayers)
-        : qwen::deriveQwenTpShape(planningGraphBytes, totalLayers);
+      const auto hybridShape = hybridColdShape ? *hybridColdShape
+        : qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, totalLayers);
       std::map<std::string, std::vector<std::string>> rankArtifacts;
       if (split.contains("rank_artifact_digests_by_role")) {
         for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
@@ -642,7 +657,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
         if (stageDegree == 0)
           throw std::invalid_argument("hybrid Qwen stage has degree zero: " + role);
         const auto ranked = rankArtifacts.find(role);
-        if (ranked == rankArtifacts.end() || ranked->second.size() != stageDegree)
+        if (stageDegree > 1 &&
+            (ranked == rankArtifacts.end() || ranked->second.size() != stageDegree))
           throw std::invalid_argument(
             "hybrid Qwen stage needs one artifact digest per rank: " + role);
         const auto profile = resourceProfiles.find(role);
@@ -656,7 +672,9 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
           unit.rank = rank;
           unit.layerBegin = begin;
           unit.layerEnd = end;
-          hybridArtifacts[unit.roleId] = ranked->second.at(rank);
+          hybridArtifacts[unit.roleId] = stageDegree == 1
+            ? split.at("artifact_digests_by_role").at(role).get<std::string>()
+            : ranked->second.at(rank);
           hybridRequirements[unit.roleId] = profile->second;
           sourceRoleByUnit.emplace(unit.roleId, role);
           units.push_back(std::move(unit));
@@ -687,11 +705,15 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       const auto& lastStageUnits = stageUnits.back();
       const bool named = std::any_of(lastStageUnits.begin(), lastStageUnits.end(),
         [&] (const auto& unit) { return unit.roleId == egressUnit; });
-      if (!named)
+      if (egressUnit.empty() || egressUnit == stageRoles.back().get<std::string>())
         egressUnit = lastStageUnits.back().roleId;
+      else if (!named)
+        throw std::invalid_argument("hybrid Qwen result egress is not in the terminal stage");
+      if (!planningGraphInspection)
+        throw std::invalid_argument("hybrid Qwen catalog requires inspected source port facts");
       projectedCandidate = qwen::buildQwenHybridCandidate(
         result.model.graph, hybridShape, windows, stageUnits, "entry", egressUnit,
-        result.model.descriptor, hybridArtifacts, hybridRequirements);
+        result.model.descriptor, hybridArtifacts, hybridRequirements, *planningGraphInspection);
       projectedCandidate->splitter = result.cooperativeSplitter->identity();
     }
     else {
