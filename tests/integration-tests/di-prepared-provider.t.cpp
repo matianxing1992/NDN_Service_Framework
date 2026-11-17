@@ -1742,6 +1742,11 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_GT(modelKeyTableInterests.load(std::memory_order_relaxed),
                      modelKeyTableInterestsBefore);
+      // A rejected recipient capsule must not fetch or open stored model payloads.
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed),
+                        storedReadAttemptsBefore);
+      BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed),
+                        storedSegmentsBefore);
     }
     if (mutation >= 16 && mutation <= 19) {
       BOOST_CHECK_MESSAGE(providerFailure.find("SPEC222_STORED_OBJECT_REJECTED") != std::string::npos,
