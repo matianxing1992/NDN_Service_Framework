@@ -770,4 +770,58 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
   BOOST_CHECK(sawRemote);
 }
 
+BOOST_AUTO_TEST_CASE(MirroredLayoutClosesThroughTheSameEdge)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  const auto unitsFor = [] (const std::string& prefix, std::uint64_t degree,
+                            std::uint64_t begin, std::uint64_t end) {
+    std::vector<qwen::QwenTpUnit> units;
+    for (std::uint64_t rank = 0; rank < degree; ++rank) {
+      qwen::QwenTpUnit unit;
+      unit.roleId = prefix + std::to_string(rank);
+      unit.rank = rank;
+      unit.layerBegin = begin;
+      unit.layerEnd = end;
+      units.push_back(unit);
+    }
+    return units;
+  };
+
+  // [1,2]: a plain stage in front of a sharded one. The edge is the same one, so the mirror
+  // layout must close without any special case.
+  qwen::QwenTpStageWindow first{"stage-0", "sha256:region-0", 0, 1};
+  ndnsf::di::NativeExecutionPlan stage0;
+  qwen::projectQwenTpPlan(stage0, shape, 1, "entry/S0", "S0R0", unitsFor("S0R", 1, 0, 1), first);
+
+  qwen::QwenTpStageWindow second{"stage-1", "sha256:region-1", 1, 4,
+                                 "S0R0", "S0R0/MLP/0", "post_residual"};
+  ndnsf::di::NativeExecutionPlan stage1;
+  qwen::projectQwenTpPlan(stage1, shape, 2, "entry/S1", "S1R0", unitsFor("S1R", 2, 1, 4), second);
+
+  const auto merged = qwen::mergeQwenStagePlans({stage0, stage1});
+  BOOST_CHECK_NO_THROW(merged.validateSteps());
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S0R0"), 1u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 2u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S1R1"), 2u);
+
+  // One edge per consumer unit, both naming the same producer.
+  std::set<std::string> consumers;
+  for (const auto& dependency : merged.dependencies) {
+    if (dependency.operationKind != "ACTIVATION") continue;
+    BOOST_CHECK_EQUAL(dependency.producers.at(0), "S0R0");
+    consumers.insert(dependency.consumers.at(0));
+  }
+  BOOST_CHECK_EQUAL(consumers.size(), 2u);
+  BOOST_CHECK(consumers.count("S1R0") == 1 && consumers.count("S1R1") == 1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
