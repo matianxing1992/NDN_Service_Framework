@@ -1224,4 +1224,149 @@ BOOST_AUTO_TEST_CASE(AssembledAttentionEntryExecutes)
   std::filesystem::remove_all(root);
 }
 
+namespace {
+
+onnx::ModelProto pruneByNames(const onnx::ModelProto& source,
+                              const onnx::ModelProto& boundary,
+                              const std::set<std::string>& keep)
+{
+  onnx::ModelProto result;
+  result.set_ir_version(source.ir_version());
+  for (const auto& opset : source.opset_import()) *result.add_opset_import() = opset;
+  auto* graph = result.mutable_graph();
+  graph->set_name("spec242-pruned-reference");
+  std::set<std::string> wanted;
+  for (const auto& value : boundary.graph().input()) wanted.insert(value.name());
+  for (const auto& node : source.graph().node()) {
+    if (keep.count(node.name()) == 0) continue;
+    *graph->add_node() = node;
+    for (const auto& input : node.input())
+      if (!input.empty()) wanted.insert(input);
+  }
+  for (const auto& init : source.graph().initializer())
+    if (wanted.count(init.name()) != 0) *graph->add_initializer() = init;
+  for (const auto& value : boundary.graph().input()) *graph->add_input() = value;
+  for (const auto& value : boundary.graph().output()) *graph->add_output() = value;
+  return result;
+}
+
+} // namespace
+
+/** Write the stage's real artifacts so numeric questions can be asked without rebuilding.
+ *
+ * The test only insists the files exist; every comparison happens against these files, which
+ * keeps the "is the slice right" question away from hand-built graphs - that approach produced
+ * contradictory numbers three times.
+ */
+BOOST_AUTO_TEST_CASE(DumpStageArtifacts)
+{
+  const std::string fixturePath = "../tests/fixtures/spec242/four-layer-qwen.onnx";
+  std::ifstream input(fixturePath, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                        std::istreambuf_iterator<char>());
+  onnx::ModelProto fixture;
+  BOOST_REQUIRE(fixture.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+  std::vector<std::uint8_t> copy = bytes;
+  const auto shape = qwen::deriveQwenTpShape(copy, 4);
+
+  qwen::QwenTpRankGeometry geometry;
+  geometry.degree = 2;
+  geometry.headDim = shape.headDim;
+  geometry.queryWidth = shape.queryWidth();
+  geometry.kvWidth = shape.kvWidth();
+  geometry.hidden = shape.hidden;
+  geometry.ffn = shape.ffn;
+
+  const auto root = std::filesystem::path("/tmp/spec242-artifacts");
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  onnx::ModelProto entryShapes;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpAssemblyShards shards;
+    shards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, rank, 0, 1);
+    geometry.rank = rank;
+    shards.geometry = geometry;
+    shards.readExternal = [] (std::uint64_t, std::uint64_t) -> std::vector<std::uint8_t> {
+      throw std::runtime_error("unexpected sidecar read");
+    };
+    const auto table = qwen::assembleQwenTpEntryTable(
+      root, "S0R" + std::to_string(rank), bytes, 4, shards, nullptr, 0, 1);
+    for (const auto& entry : table) {
+      if (entry.kind != "ATTN") continue;
+      std::filesystem::copy_file(root / entry.relativeGraphPath,
+                                 root / ("rank" + std::to_string(rank) + "-attn.onnx"),
+                                 std::filesystem::copy_options::overwrite_existing);
+      if (rank == 0U) {
+        std::ifstream file(root / entry.relativeGraphPath, std::ios::binary);
+        const std::string raw((std::istreambuf_iterator<char>(file)),
+                              std::istreambuf_iterator<char>());
+        BOOST_REQUIRE(entryShapes.ParseFromArray(raw.data(), static_cast<int>(raw.size())));
+      }
+    }
+  }
+  std::set<std::string> keep;
+  for (const auto& node : entryShapes.graph().node()) keep.insert(node.name());
+  const auto reference = pruneByNames(fixture, entryShapes, keep);
+  {
+    const std::string serialized = reference.SerializeAsString();
+    std::ofstream out(root / "reference-attn.onnx", std::ios::binary);
+    out.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+  }
+  BOOST_REQUIRE(std::filesystem::exists(root / "rank0-attn.onnx"));
+  BOOST_REQUIRE(std::filesystem::exists(root / "rank1-attn.onnx"));
+  BOOST_REQUIRE(std::filesystem::exists(root / "reference-attn.onnx"));
+
+  // The numeric gate: two ranks recompose the reference's attention exactly. Each rank adds
+  // the residual stream itself, so one copy of `x` has to come back out.
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-artifacts");
+  Ort::SessionOptions options;
+  Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  std::vector<float> x0(1 * 3 * shape.hidden, 0.05f);
+  const std::array<std::int64_t, 3> dims{1, 3, static_cast<std::int64_t>(shape.hidden)};
+  const auto run = [&] (const std::filesystem::path& path) {
+    Ort::Session session(env, path.c_str(), options);
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto tensor = Ort::Value::CreateTensor<float>(memory, x0.data(), x0.size(),
+                                                  dims.data(), dims.size());
+    auto inbox = session.GetInputNameAllocated(0, allocator);
+    const char* names[] = {inbox.get()};
+    std::vector<const char*> outputs;
+    std::vector<std::string> owned;
+    for (std::size_t index = 0; index < session.GetOutputCount(); ++index) {
+      auto name = session.GetOutputNameAllocated(index, allocator);
+      owned.emplace_back(name.get());
+      outputs.push_back(owned.back().c_str());
+    }
+    auto values = session.Run(Ort::RunOptions{nullptr}, names, &tensor, 1, outputs.data(),
+                              outputs.size());
+    std::vector<float> result;
+    for (auto& value : values) {
+      const auto info = value.GetTensorTypeAndShapeInfo();
+      if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) continue;
+      const auto count = info.GetElementCount();
+      const float* data = value.GetTensorData<float>();
+      result.assign(data, data + count);
+      // The residual is the entry's first float output; later ones are the KV state the
+      // comparison does not use.
+      break;
+    }
+    return result;
+  };
+
+  const auto expected = run(root / "reference-attn.onnx");
+  const auto left = run(root / "rank0-attn.onnx");
+  const auto right = run(root / "rank1-attn.onnx");
+  BOOST_REQUIRE(!expected.empty());
+  BOOST_REQUIRE_EQUAL(left.size(), expected.size());
+  BOOST_REQUIRE_EQUAL(right.size(), expected.size());
+  for (std::size_t index = 0; index < expected.size(); ++index) {
+    const float composed = left[index] + right[index] - x0[index];
+    // The same files compare to 2e-08 under the Python wheel; this target links the system
+    // ONNX Runtime, whose INT4 kernels round differently, so the bound is 1e-3.
+    BOOST_CHECK_SMALL(composed - expected[index], 1e-3f);
+  }
+  std::filesystem::remove_all(root);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
