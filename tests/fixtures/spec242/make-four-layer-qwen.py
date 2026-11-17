@@ -84,11 +84,26 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
         node, w = matmul_nbits(f"{pn}attn.v_proj", x, kv_width, hidden, rng,
                                f"{p}attn.v_proj.MatMul.weight")
         add(node, w)
+        for tensor in (
+                numpy_helper.from_array(np.zeros((1, kv_heads, 1, head_dim), dtype=np.float32),
+                                        f"{pn}attn.past_key"),
+                numpy_helper.from_array(np.zeros((1, kv_heads, 1, head_dim), dtype=np.float32),
+                                        f"{pn}attn.past_value"),
+                numpy_helper.from_array(np.array([0], dtype=np.int32), f"{pn}attn.seqlens_k"),
+                numpy_helper.from_array(np.array([0], dtype=np.int32),
+                                        f"{pn}attn.total_sequence_length")):
+            if tensor.name not in init_names:
+                inits.append(tensor)
+                init_names.add(tensor.name)
         # The maintained export uses the contrib attention op, and the adapter reads the head
         # counts from its attributes; a hand-rolled softmax attention has no such attributes.
+        # Real (if empty) state tensors: ONNX Runtime's loader rejects empty strings for
+        # these inputs even though the checker and the adapter accept them.
         add(helper.make_node(
             "GroupQueryAttention",
-            [f"{pn}attn.q_proj", f"{pn}attn.k_proj", f"{pn}attn.v_proj", "", "", "", ""],
+            [f"{pn}attn.q_proj", f"{pn}attn.k_proj", f"{pn}attn.v_proj",
+             f"{pn}attn.past_key", f"{pn}attn.past_value", f"{pn}attn.seqlens_k",
+             f"{pn}attn.total_sequence_length"],
             [f"{pn}attn.context", f"{pn}attn.present_key", f"{pn}attn.present_value"],
             name=f"{pn}attn.gqa", domain="com.microsoft",
             num_heads=q_heads, kv_num_heads=kv_heads))
