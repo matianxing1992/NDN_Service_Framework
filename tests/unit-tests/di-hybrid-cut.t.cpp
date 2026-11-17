@@ -15,6 +15,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstdint>
+#include <onnxruntime_cxx_api.h>
+
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -998,6 +1000,145 @@ BOOST_AUTO_TEST_CASE(StageMaterialsCarryTheRankGeometry)
     BOOST_CHECK(sawScales);
   }
   std::filesystem::remove_all(root);
+}
+
+namespace {
+
+/** One MatMulNBits kernel over given packed weights, for a numeric slice check. */
+std::vector<float>
+runMatMulNBits(const std::vector<std::uint8_t>& packed,
+               const std::vector<float>& scales, std::uint64_t n, std::uint64_t k,
+               const std::vector<float>& input, std::uint64_t rows)
+{
+  onnx::ModelProto model;
+  auto* graph = model.mutable_graph();
+  graph->set_name("spec242-slice-check");
+  auto* node = graph->add_node();
+  node->set_op_type("MatMulNBits");
+  node->set_domain("com.microsoft");
+  node->add_input("x");
+  node->add_input("w");
+  node->add_input("s");
+  node->add_output("y");
+  const auto attribute = [node] (const char* name, std::int64_t value) {
+    auto* attr = node->add_attribute();
+    attr->set_name(name);
+    attr->set_type(onnx::AttributeProto::INT);
+    attr->set_i(value);
+  };
+  attribute("block_size", 32);
+  attribute("K", static_cast<std::int64_t>(k));
+  attribute("N", static_cast<std::int64_t>(n));
+  attribute("bits", 4);
+
+  const auto addInitializer = [graph] (const char* name, const void* data,
+                                       std::size_t bytes, bool isFloat,
+                                       const std::vector<std::int64_t>& dims) {
+    auto* init = graph->add_initializer();
+    init->set_name(name);
+    init->set_data_type(isFloat ? onnx::TensorProto::FLOAT : onnx::TensorProto::UINT8);
+    for (const auto dim : dims) init->add_dims(dim);
+    init->set_raw_data(data, bytes);
+  };
+  addInitializer("w", packed.data(), packed.size(), false,
+                 {static_cast<std::int64_t>(n), static_cast<std::int64_t>(k / 32), 16});
+  addInitializer("s", scales.data(), scales.size() * sizeof(float), true,
+                 {static_cast<std::int64_t>(scales.size())});
+
+  const auto fillValue = [] (onnx::ValueInfoProto* value, const char* name,
+                             const std::vector<std::int64_t>& dims) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    auto* shape = tensor->mutable_shape();
+    for (const auto dim : dims) shape->add_dim()->set_dim_value(dim);
+  };
+  fillValue(graph->add_input(), "x",
+            {1, static_cast<std::int64_t>(rows), static_cast<std::int64_t>(k)});
+  fillValue(graph->add_output(), "y",
+            {1, static_cast<std::int64_t>(rows), static_cast<std::int64_t>(n)});
+
+  model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_domain("");
+  opset->set_version(17);
+  auto* contrib = model.add_opset_import();
+  contrib->set_domain("com.microsoft");
+  contrib->set_version(1);
+
+  const auto root = std::filesystem::temp_directory_path() / "spec242-slice-check";
+  std::filesystem::create_directories(root);
+  const auto path = root / ("kernel-" + std::to_string(n) + ".onnx");
+  const std::string serialized = model.SerializeAsString();
+  {
+    std::ofstream out(path, std::ios::binary);
+    out.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+  }
+
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-slice-check");
+  Ort::SessionOptions options;
+  Ort::Session session(env, path.c_str(), options);
+  Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  const std::array<std::int64_t, 3> shape{1, static_cast<std::int64_t>(rows),
+                                          static_cast<std::int64_t>(k)};
+  auto tensor = Ort::Value::CreateTensor<float>(memory, const_cast<float*>(input.data()),
+                                                input.size(), shape.data(), shape.size());
+  const char* inputNames[] = {"x"};
+  const char* outputNames[] = {"y"};
+  auto outputs = session.Run(Ort::RunOptions{nullptr}, inputNames, &tensor, 1, outputNames, 1);
+  const float* data = outputs[0].GetTensorData<float>();
+  std::vector<float> result(data, data + rows * n);
+  std::filesystem::remove_all(root);
+  return result;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(SlicedKernelMatchesTheUnsplitColumns)
+{
+  const std::string path = "../tests/fixtures/spec242/four-layer-qwen.onnx";
+  std::ifstream input(path, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                        std::istreambuf_iterator<char>());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+
+  const onnx::TensorProto* weight = nullptr;
+  const onnx::TensorProto* scales = nullptr;
+  for (const auto& init : model.graph().initializer()) {
+    if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight_Q4") weight = &init;
+    if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight_scales") scales = &init;
+  }
+  BOOST_REQUIRE(weight != nullptr);
+  BOOST_REQUIRE(scales != nullptr);
+
+  const std::uint64_t n = 64;
+  const std::uint64_t k = 64;
+  const std::uint64_t rows = 2;
+  const std::vector<std::uint8_t> packed(weight->raw_data().begin(), weight->raw_data().end());
+  std::vector<float> scaleValues(scales->raw_data().size() / sizeof(float));
+  std::memcpy(scaleValues.data(), scales->raw_data().data(), scales->raw_data().size());
+
+  std::vector<float> x(rows * k);
+  for (std::size_t i = 0; i < x.size(); ++i)
+    x[i] = static_cast<float>((i % 7) - 3) * 0.25f;
+
+  const auto unsplit = runMatMulNBits(packed, scaleValues, n, k, x, rows);
+
+  // The C++ slicer's own bytes for rank 0, and the matching half of the flattened scales.
+  const auto left = qwen::slicePackedInt4(packed, n, k, qwen::QwenSliceAxis::OutputChannels, 0, 32);
+  std::vector<float> leftScales(scaleValues.begin(),
+                                scaleValues.begin() + 32 * (k / 32));
+  const auto shard = runMatMulNBits(left, leftScales, 32, k, x, rows);
+
+  BOOST_REQUIRE_EQUAL(shard.size(), rows * 32);
+  for (std::uint64_t row = 0; row < rows; ++row) {
+    for (std::uint64_t column = 0; column < 32; ++column) {
+      const float expected = unsplit[row * n + column];
+      BOOST_CHECK_SMALL(shard[row * 32 + column] - expected, 1e-4f);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

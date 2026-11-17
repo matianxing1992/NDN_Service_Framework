@@ -2244,7 +2244,7 @@ def build(bld):
                         bld.path.find_node('unit-tests/di-hybrid-cut.t.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' +
-                    framework_use,
+                    framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()],
                 install_path=None)
