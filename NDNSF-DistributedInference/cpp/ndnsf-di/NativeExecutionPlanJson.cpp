@@ -1452,6 +1452,15 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
       service.get<std::uint64_t>("tensor_degree", 1));
     if (const auto steps = service.get_child_optional("steps"))
       plan.steps = nativeStepsFromJson(*steps);
+    if (const auto stages = service.get_child_optional("stage_layout")) {
+      for (const auto& entry : *stages) {
+        NativeStageLayout stage;
+        stage.stageId = entry.second.get<std::string>("stage_id");
+        stage.sourceRegionDigest = entry.second.get<std::string>("source_region_digest", "");
+        stage.unitRoleIds = stringArrayFromJson(entry.second, "unit_role_ids");
+        plan.stageLayout.push_back(std::move(stage));
+      }
+    }
     const auto dependencies = service.get_child_optional("dependencies");
     if (dependencies) {
       for (const auto& depNode : dependencies.get()) {

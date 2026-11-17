@@ -8,11 +8,13 @@
  * not build rank materials (T002) and do not run a Provider (T003).
  */
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <boost/test/unit_test.hpp>
 
 #include <cstdint>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -153,6 +155,67 @@ BOOST_AUTO_TEST_CASE(CapabilitiesFollowTheDeclaredVersion)
   const auto v1 = nativePlanRequiredCapabilities(plan);
   BOOST_REQUIRE_EQUAL(v1.size(), 2u);
   BOOST_CHECK_EQUAL(v1.at(0), NATIVE_STEP_PLAN_CAPABILITY_V1);
+}
+
+BOOST_AUTO_TEST_CASE(PlanJsonCarriesTheStageLayout)
+{
+  const std::string wire = R"({
+    "version": 2,
+    "services": {"k": {
+      "service": "/service/hybrid",
+      "roles": ["S0R0", "S0R1", "S1R0"],
+      "step_plan_version": "step-plan-v2",
+      "tensor_degree": 2,
+      "steps": [
+        {"step_id": "S0R0/CALL/0", "unit_id": "S0R0", "operation": "CALL_SUBGRAPH",
+         "artifact_entry": "entry/S0R0", "input_slots": [], "output_slots": [], "local_state_slots": []},
+        {"step_id": "S0R1/CALL/0", "unit_id": "S0R1", "operation": "CALL_SUBGRAPH",
+         "artifact_entry": "entry/S0R1", "input_slots": [], "output_slots": [], "local_state_slots": []},
+        {"step_id": "S1R0/CALL/0", "unit_id": "S1R0", "operation": "CALL_SUBGRAPH",
+         "artifact_entry": "entry/S1R0", "input_slots": [], "output_slots": [], "local_state_slots": []}
+      ],
+      "stage_layout": [
+        {"stage_id": "stage-0", "source_region_digest": "sha256:region-0",
+         "unit_role_ids": ["S0R0", "S0R1"]},
+        {"stage_id": "stage-1", "source_region_digest": "sha256:region-1",
+         "unit_role_ids": ["S1R0"]}
+      ]
+    }}
+  })";
+  std::istringstream input(wire);
+  const auto plan = nativeExecutionPlanForServiceFromJson(input, "/service/hybrid");
+  BOOST_REQUIRE_EQUAL(plan.stageLayout.size(), 2u);
+  BOOST_CHECK_EQUAL(plan.stageLayout.at(0).stageId, "stage-0");
+  BOOST_CHECK_EQUAL(plan.stageLayout.at(0).sourceRegionDigest, "sha256:region-0");
+  BOOST_CHECK_EQUAL(plan.stageLayout.at(1).unitRoleIds.at(0), "S1R0");
+  BOOST_CHECK_EQUAL(plan.degreeForRole("S0R1"), 2u);
+  BOOST_CHECK_EQUAL(plan.degreeForRole("S1R0"), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(VersionOneWireCannotCarryTheStageLayout)
+{
+  const std::string wire = R"({
+    "version": 2,
+    "services": {"k": {
+      "service": "/service/hybrid",
+      "roles": ["S0R0", "S0R1"],
+      "step_plan_version": "step-plan-v1",
+      "tensor_degree": 2,
+      "steps": [
+        {"step_id": "S0R0/CALL/0", "unit_id": "S0R0", "operation": "CALL_SUBGRAPH",
+         "artifact_entry": "entry/S0R0", "input_slots": [], "output_slots": [], "local_state_slots": []},
+        {"step_id": "S0R1/CALL/0", "unit_id": "S0R1", "operation": "CALL_SUBGRAPH",
+         "artifact_entry": "entry/S0R1", "input_slots": [], "output_slots": [], "local_state_slots": []}
+      ],
+      "stage_layout": [
+        {"stage_id": "stage-0", "source_region_digest": "sha256:region-0",
+         "unit_role_ids": ["S0R0", "S0R1"]}
+      ]
+    }}
+  })";
+  std::istringstream input(wire);
+  BOOST_CHECK_THROW(nativeExecutionPlanForServiceFromJson(input, "/service/hybrid"),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

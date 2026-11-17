@@ -519,6 +519,17 @@ std::string NativeSplitCandidate::canonicalJson() const
     executionPlanJson["steps"] = std::move(steps);
     executionPlanJson["step_plan_version"] = executionPlan.stepPlanVersion;
     executionPlanJson["tensor_degree"] = executionPlan.tensorDegree;
+    // Only a v2 plan carries stages, so every v1 candidate's canonical bytes and digest
+    // stay exactly as they were.
+    if (!executionPlan.stageLayout.empty()) {
+      auto stages = NativeJson::array();
+      for (const auto& stage : executionPlan.stageLayout) {
+        stages.push_back(NativeJson{{"stage_id", stage.stageId},
+                                    {"source_region_digest", stage.sourceRegionDigest},
+                                    {"unit_role_ids", stage.unitRoleIds}});
+      }
+      executionPlanJson["stage_layout"] = std::move(stages);
+    }
   }
   return nativeCanonicalJson(NativeJson{
     {"source", source}, {"splitter", {{"name", splitter.name}, {"version", splitter.version},
