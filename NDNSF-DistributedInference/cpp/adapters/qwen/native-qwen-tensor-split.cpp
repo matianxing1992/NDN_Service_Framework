@@ -1799,6 +1799,168 @@ buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
   return candidate;
 }
 
+namespace {
+
+bool
+role_ids_contain(const std::vector<QwenTpUnit>& units, const std::string& role)
+{
+  return std::any_of(units.begin(), units.end(),
+                     [&] (const auto& unit) { return unit.roleId == role; });
+}
+
+} // namespace
+
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit)
+{
+  if (windows.empty() || windows.size() != stageUnits.size())
+    throw std::invalid_argument("hybrid candidate needs one window per stage");
+  std::vector<ndnsf::di::NativeExecutionPlan> plans;
+  plans.reserve(windows.size());
+  std::vector<QwenTpUnit> units;
+  for (std::size_t index = 0; index < windows.size(); ++index) {
+    const auto& window = windows.at(index);
+    const auto& list = stageUnits.at(index);
+    if (list.empty())
+      throw std::invalid_argument("hybrid stage has no units: " + window.stageId);
+    if (index == 0 && window.layerBegin != 0)
+      throw std::invalid_argument("the first hybrid stage must own layer zero");
+    if (index > 0) {
+      const auto& previous = windows.at(index - 1);
+      if (window.layerBegin != previous.layerEnd)
+        throw std::invalid_argument("hybrid stages must be contiguous");
+      if (window.upstreamStepId.empty())
+        throw std::invalid_argument("hybrid stage needs its upstream producer: " +
+                                    window.stageId);
+    }
+    ndnsf::di::NativeExecutionPlan plan;
+    plan.version = 3;
+    plan.modelName = model.modelName;
+    plan.modelFamily = "qwen";
+    plan.modelFormat = model.modelFormat;
+    plan.plannerKind = "native-qwen-hybrid";
+    plan.executionPolicy = "DATA_DRIVEN_V2";
+    const std::string stageEgress = std::string(list.front().roleId).rfind(egressRole, 0) == 0
+      ? list.front().roleId : list.back().roleId;
+    projectQwenTpPlan(plan, shape, list.size(), entryPrefix, stageEgress, list, window);
+    plans.push_back(std::move(plan));
+    for (const auto& unit : list) units.push_back(unit);
+  }
+  if (!role_ids_contain(units, egressRole))
+    throw std::invalid_argument("hybrid candidate egress role is not one of its units: " +
+                                egressRole);
+  auto merged = mergeQwenStagePlans(plans);
+
+  ndnsf::di::NativeSplitCandidate candidate;
+  candidate.source = "PRE_SPLIT";
+  candidate.splitter.name = "native-qwen-hybrid";
+  candidate.splitter.version = "1";
+  candidate.splitter.configurationDigest = nativePlanningDigest(
+    std::string("qwen-hybrid|1|") + std::to_string(windows.size()) + "|" + entryPrefix +
+    "|" + egressRole);
+  candidate.model = model;
+  candidate.graphDigest = graph.graphDigest;
+  candidate.executionPlan = std::move(merged);
+  candidate.inputIngressRole = units.front().roleId;
+  candidate.resultEgressRole = egressRole;
+
+  for (const auto& unit : units) {
+    if (artifactByUnit.count(unit.roleId) == 0 ||
+        requirementByUnit.count(unit.roleId) == 0)
+      throw std::invalid_argument("hybrid unit has no artifact or requirement: " + unit.roleId);
+    candidate.fragmentsByRole[unit.roleId] = nativePlanningDigest(
+      entryPrefix + "|" + unit.roleId + "|" + std::to_string(unit.rank));
+    candidate.tensorDegreesByRole[unit.roleId] = 1;
+    // The recipe needs the shard geometry of the unit's own stage, not of the widest one.
+    std::uint64_t stageDegree = 1;
+    for (const auto& list : stageUnits) {
+      if (std::any_of(list.begin(), list.end(),
+                      [&] (const auto& item) { return item.roleId == unit.roleId; })) {
+        stageDegree = list.size();
+        break;
+      }
+    }
+    candidate.tensorIdentityByRole[unit.roleId] = {stageDegree, unit.rank};
+    candidate.rankArtifactDigestsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
+    candidate.artifactsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
+    candidate.requirementsByRole[unit.roleId] = requirementByUnit.at(unit.roleId);
+  }
+
+  // Node ownership follows the stage windows: a node belongs to the stage whose layer range
+  // contains it, and every unit of that stage executes it. Handing the ingress unit every
+  // node - the tensor-parallel rule - would tell a Provider to assemble layers it never runs.
+  std::vector<std::string> names;
+  names.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) names.push_back(node.id);
+  const auto entries = classifyQwenTpEntryNodes(names, shape.layers);
+  std::map<std::uint64_t, std::pair<std::string, std::uint64_t>> layerOfNode;
+  for (const auto& entry : entries) {
+    for (const auto node : entry.nodeIndices) {
+      const auto layer = entry.kind == "HEAD" ? shape.layers : entry.layer;
+      layerOfNode[static_cast<std::uint64_t>(node)] = {entry.kind, layer};
+    }
+  }
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    const auto found = layerOfNode.find(index);
+    if (found == layerOfNode.end())
+      throw std::invalid_argument("hybrid candidate has an unclassified source node: " +
+                                  graph.nodes.at(index).id);
+    const auto layer = found->second.second;
+    std::size_t owner = windows.size();
+    for (std::size_t stage = 0; stage < windows.size(); ++stage) {
+      const auto& window = windows.at(stage);
+      const bool inStage = layer >= window.layerBegin && layer < window.layerEnd;
+      const bool headStage = layer == shape.layers && stage + 1 == windows.size();
+      if (inStage || headStage) {
+        owner = stage;
+        break;
+      }
+    }
+    if (owner == windows.size())
+      throw std::invalid_argument("hybrid candidate has a node outside every stage: " +
+                                  graph.nodes.at(index).id);
+    const auto& ownerUnits = stageUnits.at(owner);
+    candidate.nodeRoles[graph.nodes.at(index).id] = ownerUnits.front().roleId;
+    for (const auto& unit : ownerUnits)
+      candidate.roleNodeIdsByRole[unit.roleId].push_back(graph.nodes.at(index).id);
+  }
+  // Every role must appear in the execution relation, even when it owns no node of its own.
+  for (const auto& unit : units)
+    candidate.roleNodeIdsByRole[unit.roleId];
+
+  for (const auto& unit : units) {
+    std::vector<NativeTensorContract> stateInputs;
+    std::vector<NativeTensorContract> stateOutputs;
+    for (std::uint64_t layer = unit.layerBegin; layer < unit.layerEnd; ++layer) {
+      const auto suffix = std::to_string(layer);
+      for (const auto& kind : {"key", "value"}) {
+        stateInputs.push_back({"past_key_values." + suffix + "." + kind, "uint8",
+                               {"batch", "heads", "sequence", "head-dimension"},
+                               std::nullopt});
+        stateOutputs.push_back({"present." + suffix + "." + kind, "uint8",
+                                {"batch", "heads", "sequence", "head-dimension"},
+                                std::nullopt});
+      }
+    }
+    candidate.roleStateInputsByRole[unit.roleId] = std::move(stateInputs);
+    candidate.roleStateOutputsByRole[unit.roleId] = std::move(stateOutputs);
+  }
+
+  candidate.estimatedCosts = {
+    {"role_count", std::uint64_t(units.size())},
+    {"stage_count", std::uint64_t(windows.size())},
+    {"decoder_layers", std::uint64_t(shape.layers)},
+  };
+  candidate.candidateDigest = candidate.computedDigest();
+  return candidate;
+}
+
 void
 bindQwenTpGenerationState(const NativeExecutionPlan& plan,
                           NativeGenerationExecutionContractV1& contract)

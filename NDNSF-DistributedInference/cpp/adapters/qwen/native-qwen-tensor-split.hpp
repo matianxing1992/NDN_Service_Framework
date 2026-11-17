@@ -908,6 +908,28 @@ struct QwenTpStageWindow
   std::string upstreamSlotId;
 };
 
+/** Build one candidate from several projected stages.
+ *
+ * Each stage is projected with its own window (and, from the second on, its upstream
+ * producer), the plans are merged, and the candidate carries every unit with the geometry of
+ * its own stage. Source-graph ownership follows the windows: a node belongs to the stage whose
+ * layer range contains it.
+ *
+ * @throws std::invalid_argument when the windows are not contiguous from layer zero, a stage
+ *         has no units, a unit has no artifact/requirement, or a source node falls outside
+ *         every stage.
+ */
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
+                         const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit);
+
+
 void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                   std::uint64_t degree, const std::string& entryPrefix,
