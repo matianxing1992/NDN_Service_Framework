@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
 #include <ndn-cxx/encoding/tlv.hpp>
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
@@ -1530,6 +1531,20 @@ nativeExecutionPlanForServiceFromJson(std::istream& input, const std::string& se
     throw std::out_of_range("native execution plan has no service: " + serviceName);
   }
   return found->second;
+}
+
+NativeJson
+nativeV2StepTemplateJson(const NativeExecutionPlan& plan)
+{
+  if (plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2)
+    throw std::invalid_argument("v2 step commitment requires a v2 plan");
+  plan.validateSteps();
+  auto stages = NativeJson::array();
+  for (const auto& stage : plan.stageLayout)
+    stages.push_back(nativeParseJson(stage.canonicalJson()));
+  return NativeJson{{"step_plan_version", plan.stepPlanVersion},
+    {"tensor_degree", plan.tensorDegree}, {"stage_layout", std::move(stages)},
+    {"steps", nativeStepsJson(plan.steps)}};
 }
 
 namespace {

@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
@@ -65,6 +66,8 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
     {"ack_closed_digest", core.ackClosedDigest}, {"strategy_digest", strategy},
     {"candidate_digest", core.candidateDigest}, {"request_contract_digest", core.requestContractDigest},
     {"generation_contract", core.generationContract.enabled ? nativeGenerationJson(core.generationContract) : NativeJson(nullptr)}};
+  if (core.executionPlan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
+    value["step_template_v2"] = nativeV2StepTemplateJson(core.executionPlan);
   if (!core.placementObservationSnapshotDigest.empty()) {
     value["placement_observation_snapshot_digest"] = core.placementObservationSnapshotDigest;
   }
@@ -262,6 +265,12 @@ NativeFixedPlacementCoreV1::NativeFixedPlacementCoreV1(const NativePlacementPlan
 bool NativeFixedPlacementCoreV1::matches(const NativePlacementPlanCore& core) const
 {
   const auto& execution = core.executionPlan;
+  if (m_execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 ||
+      execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+    if (m_execution.stepPlanVersion != execution.stepPlanVersion ||
+        nativeV2StepTemplateJson(m_execution) != nativeV2StepTemplateJson(execution))
+      return false;
+  }
   if (m_model != core.modelDigest || m_source != core.sourceContentDigest || m_graph != core.graphDigest ||
       m_candidate != core.candidateDigest || m_providers != core.assignment.providerByRole ||
       std::tie(m_execution.version, m_execution.serviceName, m_execution.modelName, m_execution.modelFamily,

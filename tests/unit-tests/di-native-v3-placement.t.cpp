@@ -872,6 +872,113 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       const auto changed = NativePlanProjectionBuilder::build(seal(changedGeometry), input.split, input.offers, cachedContext);
       BOOST_CHECK(layout != retainedLayout);
       BOOST_CHECK_EQUAL(changed.at(execution.roles.front()).dataflow.mayPublish.front().tensorId, "changed-tensor");
+
+      // Post-admission endpoint derivation: internal step values need not be whole-role
+      // inputs/outputs. This fixture does not qualify v2 offer screening or graph execution.
+      auto stepExecution = execution;
+      stepExecution.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+      stepExecution.tensorDegree = stepExecution.roles.size();
+      stepExecution.stageLayout = {{"fixture-stage", nativePlanningDigest("fixture-region"),
+                                     stepExecution.roles}};
+      NativeStepSlotSpec output;
+      output.slotId = "out";
+      output.dtype = "float32";
+      output.shape = {std::int64_t(1), std::string("batch")};
+      output.layoutDigest = nativePlanningDigest("step-value-layout");
+      output.source = "LOCAL_STEP";
+      NativeExecutionStepSpec producerStep;
+      producerStep.stepId = stepExecution.roles.front() + "/produce";
+      producerStep.unitId = stepExecution.roles.front();
+      producerStep.operation = "CALL_SUBGRAPH";
+      producerStep.artifactEntry = "fixture-producer";
+      producerStep.outputSlots = {output};
+      NativeStepSlotSpec remote = output;
+      remote.slotId = "in";
+      remote.source = "REMOTE_STEP";
+      remote.producerStepId = producerStep.stepId;
+      remote.producerSlotId = output.slotId;
+      NativeExecutionStepSpec consumerStep;
+      consumerStep.stepId = stepExecution.roles.back() + "/consume";
+      consumerStep.unitId = stepExecution.roles.back();
+      consumerStep.operation = "CALL_SUBGRAPH";
+      consumerStep.artifactEntry = "fixture-consumer";
+      consumerStep.inputSlots = {remote};
+      consumerStep.outputSlots = {output};
+      stepExecution.steps = {producerStep, consumerStep};
+      auto& edge = stepExecution.dependencies.front();
+      edge.tensors = {"internal.entry.value"};
+      edge.producerStepId = producerStep.stepId;
+      edge.producerSlotId = output.slotId;
+      edge.consumerStepId = consumerStep.stepId;
+      edge.consumerSlotId = remote.slotId;
+      stepExecution.validateSteps();
+      std::shared_ptr<const NativeStaticProjectionLayout> stepLayout;
+      auto stepContext = context;
+      stepContext.layoutOwner = &stepLayout;
+      const auto stepSealed = seal(stepExecution);
+      const auto sharedCore = NativePlanSealer::shareFixedCore(stepSealed.core);
+      BOOST_REQUIRE(sharedCore.fixedCoreOwner);
+      BOOST_CHECK(sharedCore.fixedCoreOwner->matches(sharedCore));
+      BOOST_CHECK_EQUAL(sharedCore.coreDigest, stepSealed.core.coreDigest);
+      auto changedCore = sharedCore;
+      changedCore.executionPlan.steps.front().artifactEntry = "unsealed-fixed-entry";
+      BOOST_CHECK(!sharedCore.fixedCoreOwner->matches(changedCore));
+      BOOST_CHECK_THROW(changedCore.validate(), std::invalid_argument);
+      changedCore = sharedCore;
+      changedCore.executionPlan.stageLayout.front().sourceRegionDigest =
+        nativePlanningDigest("unsealed-fixed-region");
+      BOOST_CHECK(!sharedCore.fixedCoreOwner->matches(changedCore));
+      BOOST_CHECK_THROW(changedCore.validate(), std::invalid_argument);
+      const auto exact = NativePlanProjectionBuilder::build(stepSealed, input.split,
+        input.offers, stepContext);
+      const auto& published = exact.at(producerStep.unitId).dataflow.mayPublish;
+      const auto& fetched = exact.at(consumerStep.unitId).dataflow.mustFetch;
+      BOOST_REQUIRE_EQUAL(published.size(), 1u);
+      BOOST_REQUIRE_EQUAL(fetched.size(), 1u);
+      BOOST_REQUIRE_EQUAL(published.front().bundleTensorNames.size(), 1u);
+      BOOST_CHECK_EQUAL(published.front().bundleTensorNames.front(), "internal.entry.value");
+      BOOST_CHECK(published.front().bundleTensorNames == fetched.front().bundleTensorNames);
+      BOOST_CHECK_EQUAL(published.front().layoutDigest, output.layoutDigest);
+      BOOST_CHECK_EQUAL(published.front().targetLayoutDigest, output.layoutDigest);
+      BOOST_CHECK_EQUAL(fetched.front().layoutDigest, output.layoutDigest);
+      auto tampered = stepSealed;
+      tampered.core.executionPlan.steps.front().artifactEntry = "unsealed-entry";
+      BOOST_CHECK_THROW(tampered.validate(), std::invalid_argument);
+      tampered = stepSealed;
+      tampered.core.executionPlan.stageLayout.front().sourceRegionDigest =
+        nativePlanningDigest("unsealed-region");
+      BOOST_CHECK_THROW(tampered.validate(), std::invalid_argument);
+      const auto exactLayout = stepLayout;
+      stepContext.dependencies.at(0).groupEpoch = "refreshed-step-epoch";
+      const auto refreshed = NativePlanProjectionBuilder::build(stepSealed, input.split,
+        input.offers, stepContext);
+      BOOST_CHECK(stepLayout == exactLayout);
+      BOOST_CHECK_EQUAL(refreshed.at(producerStep.unitId).dataflow.mayPublish.front().groupEpoch,
+                        "refreshed-step-epoch");
+      auto changedPorts = stepExecution;
+      const auto changedLayout = nativePlanningDigest("changed-step-value-layout");
+      changedPorts.steps.front().outputSlots.front().layoutDigest = changedLayout;
+      changedPorts.steps.back().inputSlots.front().layoutDigest = changedLayout;
+      changedPorts.validateSteps();
+      const auto portChanged = NativePlanProjectionBuilder::build(seal(changedPorts), input.split,
+        input.offers, stepContext);
+      BOOST_CHECK(seal(changedPorts).core.coreDigest != stepSealed.core.coreDigest);
+      BOOST_CHECK(stepLayout != exactLayout);
+      BOOST_CHECK_EQUAL(portChanged.at(producerStep.unitId).dataflow.mayPublish.front().layoutDigest,
+                        changedLayout);
+      auto wrongPort = stepExecution;
+      wrongPort.dependencies.front().producerSlotId = "absent";
+      stepLayout = exactLayout;
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(wrongPort), input.split,
+        input.offers, stepContext), std::invalid_argument);
+      auto wrongType = stepExecution;
+      wrongType.steps.back().inputSlots.front().dtype = "int64";
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(wrongType), input.split,
+        input.offers, stepContext), std::invalid_argument);
+      auto wrongOrigin = stepExecution;
+      wrongOrigin.steps.front().outputSlots.front().source = "EPOCH_INPUT";
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(wrongOrigin), input.split,
+        input.offers, stepContext), std::invalid_argument);
     }
     recordProjectionOracle(built);
     BOOST_REQUIRE_EQUAL(built.size(), execution.roles.size());
