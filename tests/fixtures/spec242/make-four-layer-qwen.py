@@ -53,9 +53,12 @@ def matmul_nbits(name, x, n, k, rng, base_name):
 
 
 def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128,
-          vocab=64, seed=242, sequence=3, attention='gqa', decode=False):
+          vocab=64, seed=242, sequence=3, attention='gqa', decode=False,
+          rotary_positions=32):
     if decode and attention != 'gqa':
         raise ValueError("decode fixture requires the maintained GQA operator")
+    if rotary_positions <= 0:
+        raise ValueError("rotary_positions must be positive")
     if decode:
         sequence = "sequence"
     rng = np.random.default_rng(seed)
@@ -164,7 +167,7 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
                                  name=f"{pn}attn.seqlens", to=TensorProto.INT32))
             if "rotary.cos" not in init_names:
                 frequencies = 10000.0 ** (-2.0 * np.arange(head_dim // 2) / head_dim)
-                angles = np.outer(np.arange(32), frequencies)
+                angles = np.outer(np.arange(rotary_positions), frequencies)
                 for name, values in (("rotary.cos", np.cos(angles)),
                                      ("rotary.sin", np.sin(angles))):
                     inits.append(numpy_helper.from_array(values.astype(np.float32), name))
@@ -313,6 +316,9 @@ if __name__ == "__main__":
     parser.add_argument("--attention", default="gqa", choices=["gqa", "matmul"],
                         help="gqa for shape derivation, matmul for numeric slicing checks")
     parser.add_argument("--decode", action="store_true",
-                        help="dynamic sequence/past, KV successors and 32-position RoPE")
+                        help="dynamic sequence/past, KV successors and RoPE")
+    parser.add_argument("--rotary-positions", type=int, default=32,
+                        help="position capacity for the decode fixture")
     args = parser.parse_args()
-    build(args.out, attention=args.attention, decode=args.decode)
+    build(args.out, attention=args.attention, decode=args.decode,
+          rotary_positions=args.rotary_positions)

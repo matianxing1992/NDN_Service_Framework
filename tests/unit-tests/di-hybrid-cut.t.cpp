@@ -2341,18 +2341,9 @@ enum class CoordinatorFault
   PUBLICATION_FAILURE,
 };
 
-void
-verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan,
-                      const qwen::QwenTpShape& shape,
-                      const std::vector<std::vector<qwen::QwenTpUnit>>& units,
-                      const std::string& egress,
-                      const std::map<std::string, NativeModelRunnerSpec>& specs,
-                      bool dynamic, const std::string& label, bool externalControls = false,
-                      bool coordinator = false,
-                      CoordinatorFault fault = CoordinatorFault::NONE)
+auto
+makeCompleteSourceReference(const std::string& source, bool externalControls = false)
 {
-  const std::string sessionId = "three-worker-prefill/" + label +
-    (dynamic ? "/decode" : "/prefill");
   // Recompute the entire prefix with empty past for every epoch. This oracle never uses
   // splitter-selected nodes, sharded state or the worker's preceding outputs.
   static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-complete-source");
@@ -2360,7 +2351,6 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
   Ort::Session reference(env, source.c_str(), options);
   BOOST_TEST_MESSAGE("native ORT version = " << OrtGetApiBase()->GetVersionString());
   Ort::AllocatorWithDefaultOptions allocator;
-  auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
   std::vector<std::string> inputNames;
   std::vector<std::string> outputNames;
   for (std::size_t i = 0; i < reference.GetInputCount(); ++i) {
@@ -2371,8 +2361,12 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     auto name = reference.GetOutputNameAllocated(i, allocator);
     outputNames.emplace_back(name.get());
   }
-  const auto fullReference = [&] (std::vector<std::int64_t> prefix,
-                                 std::int32_t delta = 3, std::int64_t positionOffset = 0) {
+  return [reference = std::move(reference), inputNames = std::move(inputNames),
+          outputNames = std::move(outputNames), externalControls]
+         (std::vector<std::int64_t> prefix, std::int32_t delta = 3,
+          std::int64_t positionOffset = 0) mutable {
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     std::vector<Ort::Value> inputs;
     std::vector<std::int64_t> positions(prefix.size());
     for (std::size_t i = 0; i < positions.size(); ++i)
@@ -2423,6 +2417,21 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     }
     return result;
   };
+}
+
+void
+verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan,
+                      const qwen::QwenTpShape& shape,
+                      const std::vector<std::vector<qwen::QwenTpUnit>>& units,
+                      const std::string& egress,
+                      const std::map<std::string, NativeModelRunnerSpec>& specs,
+                      bool dynamic, const std::string& label, bool externalControls = false,
+                      bool coordinator = false,
+                      CoordinatorFault fault = CoordinatorFault::NONE)
+{
+  const std::string sessionId = "three-worker-prefill/" + label +
+    (dynamic ? "/decode" : "/prefill");
+  auto fullReference = makeCompleteSourceReference(source, externalControls);
 
   auto observer = std::make_shared<CompleteFixtureStateObserver>();
   RegistryNativeModelRunnerFactory factory;
@@ -3071,6 +3080,57 @@ verifyThreeUnitModel(bool dynamic)
 BOOST_AUTO_TEST_CASE(ThreeUnitsRecomposeTheCompletePrefillGraph)
 {
   verifyThreeUnitModel(false);
+}
+
+BOOST_AUTO_TEST_CASE(CompleteSourceSupportsThirtyTwoTokensInBothConversationTurns)
+{
+  auto run = makeCompleteSourceReference("../tests/fixtures/spec242/four-layer-conversation.onnx");
+  constexpr std::size_t TOKENS_PER_TURN = 32;
+  constexpr std::size_t VOCABULARY = 64;
+  constexpr std::int64_t EOS_TOKEN = 63;
+  const std::vector<std::vector<std::int64_t>> inputs{{1, 2, 3}, {4}};
+  std::vector<std::int64_t> prefix;
+  for (std::size_t turn = 0; turn < inputs.size(); ++turn) {
+    prefix.insert(prefix.end(), inputs[turn].begin(), inputs[turn].end());
+    std::vector<std::int64_t> generated;
+    for (std::size_t index = 0; index < TOKENS_PER_TURN; ++index) {
+      BOOST_TEST_CONTEXT("turn=" << turn + 1 << " token=" << index + 1) {
+        const auto outputs = run(prefix);
+        const auto& logits = outputs.at("logits");
+        BOOST_REQUIRE_EQUAL(logits.payload.size(), prefix.size() * VOCABULARY * sizeof(float));
+        std::array<float, VOCABULARY> row;
+        std::memcpy(row.data(), logits.payload.data() + logits.payload.size() - sizeof(row),
+                    sizeof(row));
+        BOOST_REQUIRE(std::all_of(row.begin(), row.end(), [] (float value) {
+          return std::isfinite(value);
+        }));
+        const auto token = std::distance(row.begin(), std::max_element(row.begin(), row.end()));
+        BOOST_REQUIRE_NE(token, EOS_TOKEN);
+        generated.push_back(token);
+        prefix.push_back(token);
+      }
+    }
+    // The last sampled token must be included in the reference state for the next turn.
+    const auto finalized = run(prefix);
+    BOOST_REQUIRE_EQUAL(finalized.size(), 9u);
+    for (std::size_t layer = 0; layer < 4; ++layer) {
+      for (const auto* kind : {"key", "value"}) {
+        const auto& tensor = finalized.at("present." + std::to_string(layer) + "." + kind);
+        const std::vector<std::int64_t> expectedShape{
+          1, 2, static_cast<std::int64_t>(prefix.size()), 16};
+        BOOST_REQUIRE(tensor.shape == expectedShape);
+        std::vector<float> state(2 * prefix.size() * 16);
+        BOOST_REQUIRE_EQUAL(tensor.payload.size(), state.size() * sizeof(float));
+        std::memcpy(state.data(), tensor.payload.data(), tensor.payload.size());
+        BOOST_CHECK(std::all_of(state.begin(), state.end(), [] (float value) {
+          return std::isfinite(value);
+        }));
+      }
+    }
+    BOOST_TEST_MESSAGE("reference turn=" << turn + 1 << " prefix=" << prefix.size()
+                       << " tokens=" << nativeCanonicalJson(NativeJson(generated)));
+  }
+  BOOST_CHECK_EQUAL(prefix.size(), 68u);
 }
 
 BOOST_AUTO_TEST_CASE(ThreeUnitsDecodeWithCompleteKvAndRotary)
