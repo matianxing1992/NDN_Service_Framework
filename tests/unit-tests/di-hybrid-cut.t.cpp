@@ -2318,6 +2318,12 @@ public:
     return m_samples.at(std::make_tuple(role, epoch, input));
   }
 
+  void clear()
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_samples.clear();
+  }
+
 private:
   mutable std::mutex m_mutex;
   std::map<std::tuple<std::string, std::uint64_t, std::string>, OnnxKvStateSample> m_samples;
@@ -2420,7 +2426,7 @@ makeCompleteSourceReference(const std::string& source, bool externalControls = f
 }
 
 void
-verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan,
+verifyHybridExecution(const std::string& source, const NativeExecutionPlan& basePlan,
                       const qwen::QwenTpShape& shape,
                       const std::vector<std::vector<qwen::QwenTpUnit>>& units,
                       const std::string& egress,
@@ -2432,7 +2438,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
 {
   const std::size_t generationTokens = finalizeCheckpoint ? 32 : 2;
   const auto generationEpochs = generationTokens + (finalizeCheckpoint ? 1 : 0);
-  const std::string sessionId = "three-worker-prefill/" + label +
+  const std::string baseSessionId = "three-worker-prefill/" + label +
     (dynamic ? "/decode" : "/prefill");
   auto fullReference = makeCompleteSourceReference(source, externalControls);
 
@@ -2441,20 +2447,20 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
   registerOnnxRuntimeBackend(factory, nullptr, observer);
   qwen::registerQwenTensorBackend(factory);
   NativeProviderAssignment assignment;
-  BOOST_REQUIRE_EQUAL(specs.size(), plan.roles.size());
-  for (const auto& role : plan.roles)
+  BOOST_REQUIRE_EQUAL(specs.size(), basePlan.roles.size());
+  for (const auto& role : basePlan.roles)
     assignment.providerByRole.emplace(role, specs.at(role).metadata.at("providerIdentity"));
   NativeGenerationExecutionContractV1 stateContract;
   if (dynamic) {
     stateContract.enabled = true;
     stateContract.mode = "TOKEN_STREAMING";
-    qwen::bindQwenTpGenerationState(plan, stateContract);
+    qwen::bindQwenTpGenerationState(basePlan, stateContract);
     BOOST_REQUIRE_EQUAL(stateContract.stateOutputNames.size(), 8u);
   }
   std::map<std::string, RoleSpec> roleSpecs;
   std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
-  for (const auto& role : plan.roles) {
-    auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "");
+  for (const auto& role : basePlan.roles) {
+    auto roleSpec = roleSpecFor(basePlan, role, baseSessionId, assignment, "");
     std::set<std::string> ownedState;
     if (const auto& whole = specs.at(role).entryContract) {
       BOOST_CHECK_EQUAL(whole->unitId, role);
@@ -2480,386 +2486,458 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     roleSpecs.emplace(role, std::move(roleSpec));
   }
 
-  std::map<std::size_t, std::map<std::string, ProviderRoleResult>> coordinatedResults;
-  std::vector<std::int64_t> sampledTokens;
   std::map<std::string, std::unique_ptr<NativeProviderRuntime>> coordinatedRuntimes;
   if (coordinator) {
-    BOOST_REQUIRE(dynamic && !externalControls);
-    const auto topology = nativeGenerationFeedbackTopology(plan, egress, "input_ids");
-    auto bus = std::make_shared<tests::PartialBus>();
-    tests::CancellableBusDependencyIo::PublicationMutation mutation;
-    if (fault != CoordinatorFault::NONE) {
-      mutation = [fault] (const DependencyEdge& edge, TensorBundle& value) {
-        if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") return;
-        auto lineage = extractGenerationEpochLineage(value);
-        if (!lineage)
-          throw std::runtime_error("fixture could not find the Producer's original lineage");
-        if (fault == CoordinatorFault::PUBLICATION_FAILURE)
-          throw std::runtime_error("injected activation publication failure");
-        value = stripGenerationEpochLineage(value);
-        if (fault == CoordinatorFault::WRONG_PRODUCER) {
-          lineage->producerRole = "foreign/Tensor/Rank/0";
-          value = attachGenerationEpochLineage(value, *lineage);
-        }
-      };
-    }
-    auto io = std::make_shared<tests::CancellableBusDependencyIo>(bus, std::move(mutation));
-    auto cancelled = std::make_shared<std::atomic<bool>>(false);
-    std::mutex observedMutex;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-    for (const auto& role : plan.roles)
+    for (const auto& role : basePlan.roles)
       coordinatedRuntimes.emplace(role, std::make_unique<NativeProviderRuntime>(1));
-    std::map<std::string, std::future<NativeEpochCoordinatorResult>> futures;
-    const auto stopFailure = std::make_exception_ptr(
-      std::runtime_error("bounded Coordinator fixture stopped"));
-    struct Drain
-    {
-      std::shared_ptr<tests::PartialBus> bus;
-      std::shared_ptr<std::atomic<bool>> cancelled;
-      decltype(futures)& pending;
-      std::exception_ptr failure;
-      ~Drain()
-      {
-        cancelled->store(true);
-        bus->cancel(failure);
-        for (auto& item : pending)
-          if (item.second.valid()) item.second.wait();
-      }
-    } drain{bus, cancelled, futures, stopFailure};
-    const auto seed = nativePlanningDigest("spec242-coordinator-trusted-fixture");
-    for (const auto& role : plan.roles) {
-      NativeEpochCoordinatorConfig config{*coordinatedRuntimes.at(role), plan, assignment, io};
-      config.sessionId = sessionId;
-      config.requestId = "/fixture/coordinator-request";
-      config.role = role;
-      config.attemptEpoch = 1;
-      config.streamEpoch = 1;
-      config.localProvider = assignment.providerByRole.at(role);
-      config.lineagePlanDigest = seed;
-      config.positionPolicyDigest = seed;
-      config.samplingDigest = seed;
-      config.maxEpochs = generationTokens;
-      config.checkpointFinalize = finalizeCheckpoint;
-      config.eosTokenIds = {63};
-      config.terminalRole = role == egress;
-      config.stateInputNames = roleSpecs.at(role).stateInputNames;
-      config.stateOutputNames = roleSpecs.at(role).stateOutputNames;
-      // This unit test supplies trusted identity values through the public config boundary;
-      // it does not reproduce the Provider handler's grant/identity admission algorithm.
-      DecodeStateIdentityV1 identity;
-      identity.modelDigest = identity.graphSemanticDigest = identity.artifactDigest = seed;
-      identity.adapterDigest = identity.tokenizerDigest = identity.runnerDigest = seed;
-      identity.roleSplitDigest = identity.layoutDigest = identity.stateSchemaDigest = seed;
-      identity.runtimeAbiDigest = identity.securityDomainDigest = seed;
-      identity.roleName = role;
-      identity.precision = "fp32";
-      identity.providerIdentity = config.localProvider;
-      identity.providerBootId = "none";
-      identity.cacheEpoch = 1;
-      identity.requestId = config.requestId;
-      identity.attemptEpoch = 1;
-      identity.generationId = "spec242-coordinator-generation";
-      identity.stateComponentDigests.assign(config.stateInputNames.size(), seed);
-      for (const auto& stage : units)
-        for (const auto& unit : stage)
-          if (unit.roleId == role) {
-            identity.layerBegin = unit.layerBegin;
-            identity.layerEnd = unit.layerEnd;
+  }
+  std::map<std::string, ConversationStateBinding> parentStates;
+  std::vector<std::int64_t> prefix;
+  const auto runTurn = [&] (bool resumed) {
+    const auto sessionId = resumed ? baseSessionId + "/next" : baseSessionId;
+    const std::string requestId = resumed ? "/fixture/coordinator-next" :
+                                            "/fixture/coordinator-request";
+    const std::vector<std::int64_t> initialTokens = resumed ? std::vector<std::int64_t>{4} :
+                                                             std::vector<std::int64_t>{1, 2, 3};
+    const auto prefixLengthAtStart = prefix.size();
+    auto plan = basePlan;
+    std::map<std::size_t, std::map<std::string, ProviderRoleResult>> coordinatedResults;
+    std::vector<std::int64_t> sampledTokens;
+    if (coordinator) {
+      BOOST_REQUIRE(dynamic && !externalControls);
+      const auto topology = nativeGenerationFeedbackTopology(plan, egress, "input_ids");
+      bindNativeGenerationFeedback(plan, topology, "input_ids", requestId, 1,
+                                   assignment.providerByRole);
+      auto bus = std::make_shared<tests::PartialBus>();
+      tests::CancellableBusDependencyIo::PublicationMutation mutation;
+      if (fault != CoordinatorFault::NONE) {
+        mutation = [fault] (const DependencyEdge& edge, TensorBundle& value) {
+          if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") return;
+          auto lineage = extractGenerationEpochLineage(value);
+          if (!lineage)
+            throw std::runtime_error("fixture could not find the Producer's original lineage");
+          if (fault == CoordinatorFault::PUBLICATION_FAILURE)
+            throw std::runtime_error("injected activation publication failure");
+          value = stripGenerationEpochLineage(value);
+          if (fault == CoordinatorFault::WRONG_PRODUCER) {
+            lineage->producerRole = "foreign/Tensor/Rank/0";
+            value = attachGenerationEpochLineage(value, *lineage);
           }
-      config.stateIdentityTemplate = std::move(identity);
-      auto runner = runners.at(role);
-      config.prepareRunner = [runner] { return runner; };
-      config.stopCheck = [cancelled, deadline] () -> std::optional<NativeEpochStopReason> {
-        if (cancelled->load()) return NativeEpochStopReason::Cancelled;
-        if (std::chrono::steady_clock::now() >= deadline) return NativeEpochStopReason::Deadline;
-        return std::nullopt;
-      };
-      if (std::find(topology.consumerRoles.begin(), topology.consumerRoles.end(), role) !=
-          topology.consumerRoles.end()) {
-        NamedTensor prompt;
-        prompt.name = "input_ids";
-        prompt.elementType = TensorElementType::Int64;
-        prompt.shape = {1, 3};
-        const std::array<std::int64_t, 3> tokens{1, 2, 3};
-        prompt.payload.resize(sizeof(tokens));
-        std::memcpy(prompt.payload.data(), tokens.data(), sizeof(tokens));
-        config.initialInputs.emplace("input_ids", makeEncodedTensorBundle("input_ids", {prompt}));
-      }
-      config.resultObserver = [&] (const auto& executed, const auto& result) {
-        std::lock_guard<std::mutex> lock(observedMutex);
-        if (!coordinatedResults[executed.inferenceEpoch].emplace(executed.role, result).second)
-          throw std::runtime_error("Coordinator fixture repeated a role epoch");
-      };
-      if (role == egress) {
-        config.eventSink = [&] (const auto& bytes) {
-          const auto event = nativeParseJson(std::string(bytes.begin(), bytes.end()));
-          std::lock_guard<std::mutex> lock(observedMutex);
-          sampledTokens.push_back(event.at("tokenId").template get<std::int64_t>());
-          return true;
         };
       }
-      futures.emplace(role, std::async(std::launch::async,
-        [bus, cancelled, config = std::move(config)] () mutable {
-          try {
-            return runNativeEpochCoordinator(std::move(config));
-          }
-          catch (...) {
-            cancelled->store(true);
-            bus->cancel(std::current_exception());
-            throw;
-          }
-        }));
-    }
-    std::map<std::string, NativeEpochCoordinatorResult> results;
-    std::ostringstream failures;
-    for (auto& item : futures) {
-      if (item.second.wait_until(deadline) != std::future_status::ready) {
-        cancelled->store(true);
-        bus->cancel(stopFailure);
-      }
-      try {
-        results.emplace(item.first, item.second.get());
-      }
-      catch (const std::exception& error) {
-        failures << item.first << ": " << error.what() << "; ";
-      }
-    }
-    if (fault != CoordinatorFault::NONE) {
-      BOOST_REQUIRE_MESSAGE(!failures.str().empty(), "corrupt lineage was accepted");
-      const auto expected = fault == CoordinatorFault::PUBLICATION_FAILURE
-        ? "injected activation publication failure" : "GENERATION_EPOCH_LINEAGE_MISMATCH";
-      BOOST_CHECK_MESSAGE(failures.str().find(expected) !=
-                            std::string::npos, failures.str());
-      BOOST_CHECK(sampledTokens.empty());
-      for (const auto& epoch : coordinatedResults) {
-        BOOST_CHECK_EQUAL(epoch.first, 0u);
-        BOOST_CHECK(epoch.second.count(egress) == 0);
-      }
-      for (const auto& item : runners)
-        BOOST_CHECK_MESSAGE(!item.second->stateHandleSnapshot(sessionId),
-                            "retained adapter state for " << item.first);
-      for (const auto& item : coordinatedRuntimes) {
-        const auto state = item.second->decodeStateSnapshot();
-        BOOST_CHECK_EQUAL(state.entries, 0u);
-        BOOST_CHECK_EQUAL(state.pinnedEntries, 0u);
-        BOOST_CHECK_EQUAL(state.candidates, 0u);
-      }
-      BOOST_TEST_MESSAGE(label << " rejected Coordinator fault " << static_cast<int>(fault));
-      return;
-    }
-    BOOST_REQUIRE_MESSAGE(failures.str().empty(), label << " Coordinator: " << failures.str());
-    BOOST_REQUIRE_EQUAL(sampledTokens.size(), generationTokens);
-    BOOST_REQUIRE_EQUAL(coordinatedResults.size(), generationEpochs);
-    BOOST_TEST_MESSAGE(label << " sampled token IDs="
-                            << nativeCanonicalJson(NativeJson(sampledTokens)));
-    for (const auto& item : results) {
-      BOOST_CHECK_EQUAL(item.second.epochsExecuted, generationEpochs);
-      BOOST_CHECK_EQUAL(item.second.eventsPublished,
-                        item.first == egress ? generationTokens : 0u);
-      if (finalizeCheckpoint) {
-        BOOST_REQUIRE(item.second.finalizedRole);
-        const auto& state = item.second.finalizedRole->candidateDecodeStateIdentity;
-        BOOST_REQUIRE(state);
-        BOOST_CHECK_EQUAL(state->prefixTokenCount, 3 + generationTokens);
-        BOOST_CHECK_EQUAL(item.second.finalizedRole->inferenceEpoch, generationTokens);
-      }
-    }
-  }
-
-  // Model independent Provider ownership rather than sharing one wait pool
-  // across roles whose dependencies can unblock each other.
-  std::map<std::string, std::unique_ptr<ProviderRoleWorker>> workers;
-  if (!coordinator) {
-    for (const auto& role : plan.roles)
-      workers.emplace(role, std::make_unique<ProviderRoleWorker>(
-        2, 2, 16, std::chrono::seconds(5)));
-  }
-  std::vector<std::int64_t> prefix;
-  std::set<std::string> publicationNames;
-  float worstLogits = 0;
-  double worstState = 0;
-  const std::size_t epochs = coordinator ? generationEpochs : dynamic ? 3 : 1;
-  for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
-    const std::vector<std::int64_t> tokens = epoch == 0
-      ? std::vector<std::int64_t>{1, 2, 3}
-      : std::vector<std::int64_t>{coordinator ? sampledTokens.at(epoch - 1)
-                                              : static_cast<std::int64_t>(3 + epoch)};
-    prefix.insert(prefix.end(), tokens.begin(), tokens.end());
-    const auto expected = fullReference(prefix);
-    if (externalControls && epoch == 0) {
-      for (const auto& altered : {fullReference(prefix, 0), fullReference(prefix, 3, 7)}) {
-        const auto& original = expected.at("logits").payload;
-        const auto& changed = altered.at("logits").payload;
-        BOOST_REQUIRE_EQUAL(original.size(), changed.size());
-        float difference = 0;
-        for (std::size_t offset = 0; offset < original.size(); offset += sizeof(float)) {
-          float left;
-          float right;
-          std::memcpy(&left, original.data() + offset, sizeof(left));
-          std::memcpy(&right, changed.data() + offset, sizeof(right));
-          difference = std::max(difference, std::abs(left - right));
+      auto io = std::make_shared<tests::CancellableBusDependencyIo>(bus, std::move(mutation));
+      auto cancelled = std::make_shared<std::atomic<bool>>(false);
+      std::mutex observedMutex;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+      std::map<std::string, std::future<NativeEpochCoordinatorResult>> futures;
+      const auto stopFailure = std::make_exception_ptr(
+        std::runtime_error("bounded Coordinator fixture stopped"));
+      struct Drain
+      {
+        std::shared_ptr<tests::PartialBus> bus;
+        std::shared_ptr<std::atomic<bool>> cancelled;
+        decltype(futures)& pending;
+        std::exception_ptr failure;
+        ~Drain()
+        {
+          cancelled->store(true);
+          bus->cancel(failure);
+          for (auto& item : pending)
+            if (item.second.valid()) item.second.wait();
         }
-        BOOST_CHECK_GT(difference, 1e-6f);
-      }
-    }
-    std::map<std::string, ProviderRoleResult> results;
-    if (coordinator) {
-      results = coordinatedResults.at(epoch);
-    }
-    else {
-      auto bus = std::make_shared<tests::PartialBus>();
-      std::map<std::string, std::future<ProviderRoleResult>> futures;
-      std::set<std::string> epochPublications;
+      } drain{bus, cancelled, futures, stopFailure};
+      const auto seed = nativePlanningDigest("spec242-coordinator-trusted-fixture");
       for (const auto& role : plan.roles) {
-        auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "", epoch);
-        roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
-        roleSpec.stateOutputNames = roleSpecs.at(role).stateOutputNames;
-        roleSpec.streamingStateExecution = dynamic;
-        roleSpec.inferenceEpoch = epoch;
-        for (const auto& edge : roleSpec.outputs) {
-          BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
-          BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
-          BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
-          BOOST_CHECK(epochPublications.insert(edge.plannedDataName).second);
+        NativeEpochCoordinatorConfig config{*coordinatedRuntimes.at(role), plan, assignment, io};
+        config.sessionId = sessionId;
+        config.requestId = requestId;
+        config.role = role;
+        config.attemptEpoch = 1;
+        config.streamEpoch = 1;
+        config.localProvider = assignment.providerByRole.at(role);
+        config.lineagePlanDigest = seed;
+        config.positionPolicyDigest = seed;
+        config.samplingDigest = seed;
+        config.maxEpochs = generationTokens;
+        config.checkpointFinalize = finalizeCheckpoint;
+        config.eosTokenIds = {63};
+        config.terminalRole = role == egress;
+        config.stateInputNames = roleSpecs.at(role).stateInputNames;
+        config.stateOutputNames = roleSpecs.at(role).stateOutputNames;
+        // This unit test supplies trusted identity values through the public config boundary;
+        // it does not reproduce the Provider handler's grant/identity admission algorithm.
+        DecodeStateIdentityV1 identity;
+        identity.modelDigest = identity.graphSemanticDigest = identity.artifactDigest = seed;
+        identity.adapterDigest = identity.tokenizerDigest = identity.runnerDigest = seed;
+        identity.roleSplitDigest = identity.layoutDigest = identity.stateSchemaDigest = seed;
+        identity.runtimeAbiDigest = identity.securityDomainDigest = seed;
+        identity.roleName = role;
+        identity.precision = "fp32";
+        identity.providerIdentity = config.localProvider;
+        identity.providerBootId = "none";
+        identity.cacheEpoch = 1;
+        identity.requestId = config.requestId;
+        identity.attemptEpoch = 1;
+        identity.generationId = resumed ? "spec242-next-generation" : "spec242-first-generation";
+        identity.stateComponentDigests.assign(config.stateInputNames.size(), seed);
+        for (const auto& stage : units)
+          for (const auto& unit : stage)
+            if (unit.roleId == role) {
+              identity.layerBegin = unit.layerBegin;
+              identity.layerEnd = unit.layerEnd;
+            }
+        config.stateIdentityTemplate = std::move(identity);
+        if (resumed) {
+          config.conversationStateBinding = parentStates.at(role);
+          config.conversationStateLookupNowMs = 200;
+          config.firstEpochConversationUse = config.runtime.acquireConversationUse(
+            *config.conversationStateBinding, config.conversationStateLookupNowMs);
+          BOOST_REQUIRE(config.firstEpochConversationUse);
         }
-        NamedTensor ids;
-        ids.name = "input_ids";
-        ids.elementType = TensorElementType::Int64;
-        ids.shape = {1, static_cast<std::int64_t>(tokens.size())};
-        ids.payload.resize(tokens.size() * sizeof(std::int64_t));
-        std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
-        auto io = std::make_shared<tests::BusDependencyIo>(bus);
-        auto runner = runners.at(role);
-        std::map<std::string, TensorBundle> epochInputs{
-          {"input_ids", makeEncodedTensorBundle("input_ids", {ids})}};
-        if (externalControls) {
-          NamedTensor delta;
-          delta.name = "control.delta";
-          delta.elementType = TensorElementType::Int32;
-          const std::int32_t value = 3;
-          delta.payload.resize(sizeof(value));
-          std::memcpy(delta.payload.data(), &value, sizeof(value));
-          NamedTensor positions;
-          positions.name = "control.positions";
-          positions.elementType = TensorElementType::Int64;
-          positions.shape = ids.shape;
-          positions.payload.resize(tokens.size() * sizeof(std::int64_t));
-          for (std::size_t i = 0; i < tokens.size(); ++i) {
-            const auto position = static_cast<std::int64_t>(prefix.size() - tokens.size() + i);
-            std::memcpy(positions.payload.data() + i * sizeof(position), &position,
-                        sizeof(position));
-          }
-          epochInputs.emplace(delta.name, makeEncodedTensorBundle(delta.name, {delta}));
-          epochInputs.emplace(positions.name,
-                              makeEncodedTensorBundle(positions.name, {positions}));
+        else {
+          auto runner = runners.at(role);
+          config.prepareRunner = [runner] { return runner; };
         }
-        futures.emplace(role, workers.at(role)->executePreparedAsync(sessionId, std::move(roleSpec),
-          io, [runner] { return runner; }, std::move(epochInputs)));
+        config.stopCheck = [cancelled, deadline] () -> std::optional<NativeEpochStopReason> {
+          if (cancelled->load()) return NativeEpochStopReason::Cancelled;
+          if (std::chrono::steady_clock::now() >= deadline) return NativeEpochStopReason::Deadline;
+          return std::nullopt;
+        };
+        if (std::find(topology.consumerRoles.begin(), topology.consumerRoles.end(), role) !=
+            topology.consumerRoles.end()) {
+          NamedTensor prompt;
+          prompt.name = "input_ids";
+          prompt.elementType = TensorElementType::Int64;
+          prompt.shape = {1, static_cast<std::int64_t>(initialTokens.size())};
+          prompt.payload.resize(initialTokens.size() * sizeof(std::int64_t));
+          std::memcpy(prompt.payload.data(), initialTokens.data(), prompt.payload.size());
+          config.initialInputs.emplace("input_ids", makeEncodedTensorBundle("input_ids", {prompt}));
+        }
+        config.resultObserver = [&] (const auto& executed, const auto& result) {
+          std::lock_guard<std::mutex> lock(observedMutex);
+          if (!coordinatedResults[executed.inferenceEpoch].emplace(executed.role, result).second)
+            throw std::runtime_error("Coordinator fixture repeated a role epoch");
+        };
+        if (role == egress) {
+          config.eventSink = [&] (const auto& bytes) {
+            const auto event = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+            std::lock_guard<std::mutex> lock(observedMutex);
+            sampledTokens.push_back(event.at("tokenId").template get<std::int64_t>());
+            return true;
+          };
+        }
+        futures.emplace(role, std::async(std::launch::async,
+          [bus, cancelled, config = std::move(config)] () mutable {
+            try {
+              return runNativeEpochCoordinator(std::move(config));
+            }
+            catch (...) {
+              cancelled->store(true);
+              bus->cancel(std::current_exception());
+              throw;
+            }
+          }));
       }
+      std::map<std::string, NativeEpochCoordinatorResult> results;
       std::ostringstream failures;
-      for (auto& [role, future] : futures) {
-        if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-          failures << role << ": worker completion timed out; ";
-          bus->cancel(std::make_exception_ptr(
-            std::runtime_error("fixture worker completion timed out")));
+      for (auto& item : futures) {
+        if (item.second.wait_until(deadline) != std::future_status::ready) {
+          cancelled->store(true);
+          bus->cancel(stopFailure);
         }
         try {
-          results.emplace(role, future.get());
+          results.emplace(item.first, item.second.get());
         }
         catch (const std::exception& error) {
-          failures << role << ": " << error.what() << "; ";
+          failures << item.first << ": " << error.what() << "; ";
         }
       }
-      BOOST_REQUIRE_MESSAGE(failures.str().empty(),
-        label << " epoch=" << epoch << " worker failures: " << failures.str());
-      BOOST_CHECK_EQUAL(bus->publishedCount(), epochPublications.size());
-    }
-    BOOST_REQUIRE_EQUAL(results.size(), plan.roles.size());
-    BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
-    const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
-    BOOST_REQUIRE_EQUAL(actual.size(), 1u);
-    BOOST_CHECK_EQUAL(actual.front().name, "logits");
-    BOOST_CHECK(actual.front().elementType == TensorElementType::Float32);
-    BOOST_CHECK(actual.front().shape ==
-      std::vector<std::int64_t>({1, static_cast<std::int64_t>(tokens.size()),
-                                 static_cast<std::int64_t>(shape.vocab)}));
-    const auto count = tokens.size() * shape.vocab;
-    BOOST_REQUIRE_EQUAL(actual.front().payload.size(), count * sizeof(float));
-    std::vector<float> values(count);
-    std::memcpy(values.data(), actual.front().payload.data(), actual.front().payload.size());
-    const auto& expectedLogits = expected.at("logits");
-    const auto offset = (prefix.size() - tokens.size()) * shape.vocab;
-    std::vector<float> referenceLogits(prefix.size() * shape.vocab);
-    BOOST_REQUIRE_EQUAL(expectedLogits.payload.size(), referenceLogits.size() * sizeof(float));
-    std::memcpy(referenceLogits.data(), expectedLogits.payload.data(), expectedLogits.payload.size());
-    if (coordinator && epoch < generationTokens) {
-      const auto last = referenceLogits.end() - static_cast<std::ptrdiff_t>(shape.vocab);
-      const auto wanted = std::distance(last, std::max_element(last, referenceLogits.end()));
-      BOOST_CHECK_EQUAL(sampledTokens.at(epoch), wanted);
-    }
-    for (std::size_t index = 0; index < values.size(); ++index) {
-      const auto wanted = referenceLogits.at(offset + index);
-      BOOST_REQUIRE(std::isfinite(values[index]) && std::isfinite(wanted));
-      const auto error = std::abs(values[index] - wanted);
-      worstLogits = std::max(worstLogits, error);
-      BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(wanted));
-    }
-    if (!dynamic) continue;
-    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
-      const auto stage = std::find_if(units.begin(), units.end(), [&] (const auto& members) {
-        return !members.empty() && members.front().layerBegin <= layer &&
-          layer < members.front().layerEnd;
-      });
-      BOOST_REQUIRE(stage != units.end());
-      const auto degree = stage->size();
-      for (const auto* kind : {"key", "value"}) {
-        const auto suffix = std::to_string(layer) + "." + kind;
-        const auto& whole = expected.at("present." + suffix);
-        const auto total = shape.kvHeads * prefix.size() * shape.headDim;
-        BOOST_REQUIRE(whole.shape == std::vector<std::int64_t>(
-          {1, static_cast<std::int64_t>(shape.kvHeads), static_cast<std::int64_t>(prefix.size()),
-           static_cast<std::int64_t>(shape.headDim)}));
-        BOOST_REQUIRE_EQUAL(whole.payload.size(), total * sizeof(float));
-        std::vector<float> referenceState(total);
-        std::memcpy(referenceState.data(), whole.payload.data(), whole.payload.size());
-        for (const auto& unit : *stage) {
-          const auto sample = observer->sample(unit.roleId, epoch, "past_key_values." + suffix);
-          BOOST_CHECK_EQUAL(sample.elementType, "float32");
-          BOOST_REQUIRE(sample.shape == std::vector<std::int64_t>(
-            {1, static_cast<std::int64_t>(shape.kvHeads / degree),
-             static_cast<std::int64_t>(prefix.size()), static_cast<std::int64_t>(shape.headDim)}));
-          BOOST_REQUIRE_EQUAL(sample.values.size(), total / degree);
-          BOOST_REQUIRE_EQUAL(sample.indices.size(), sample.values.size());
-          for (std::size_t i = 0; i < sample.values.size(); ++i) {
-            BOOST_REQUIRE_EQUAL(sample.indices[i], i);
-            const auto wanted = referenceState.at(unit.rank * sample.values.size() + i);
-            BOOST_REQUIRE(std::isfinite(sample.values[i]) && std::isfinite(wanted));
-            const auto error = std::abs(sample.values[i] - wanted);
-            worstState = std::max(worstState, error);
-            BOOST_CHECK_LE(error, 1e-5 + 1e-4 * std::abs(wanted));
+      if (fault != CoordinatorFault::NONE) {
+        BOOST_REQUIRE_MESSAGE(!failures.str().empty(), "corrupt lineage was accepted");
+        const auto expected = fault == CoordinatorFault::PUBLICATION_FAILURE
+          ? "injected activation publication failure" : "GENERATION_EPOCH_LINEAGE_MISMATCH";
+        BOOST_CHECK_MESSAGE(failures.str().find(expected) !=
+                              std::string::npos, failures.str());
+        BOOST_CHECK(sampledTokens.empty());
+        for (const auto& epoch : coordinatedResults) {
+          BOOST_CHECK_EQUAL(epoch.first, 0u);
+          BOOST_CHECK(epoch.second.count(egress) == 0);
+        }
+        for (const auto& item : runners)
+          BOOST_CHECK_MESSAGE(!item.second->stateHandleSnapshot(sessionId),
+                              "retained adapter state for " << item.first);
+        for (const auto& item : coordinatedRuntimes) {
+          const auto state = item.second->decodeStateSnapshot();
+          BOOST_CHECK_EQUAL(state.entries, 0u);
+          BOOST_CHECK_EQUAL(state.pinnedEntries, 0u);
+          BOOST_CHECK_EQUAL(state.candidates, 0u);
+        }
+        BOOST_TEST_MESSAGE(label << " rejected Coordinator fault " << static_cast<int>(fault));
+        return;
+      }
+      BOOST_REQUIRE_MESSAGE(failures.str().empty(), label << " Coordinator: " << failures.str());
+      BOOST_REQUIRE_EQUAL(sampledTokens.size(), generationTokens);
+      BOOST_REQUIRE_EQUAL(coordinatedResults.size(), generationEpochs);
+      BOOST_TEST_MESSAGE(label << " resumed=" << resumed << " sampled token IDs="
+                              << nativeCanonicalJson(NativeJson(sampledTokens)));
+      for (const auto& item : results) {
+        BOOST_CHECK_EQUAL(item.second.epochsExecuted, generationEpochs);
+        BOOST_CHECK_EQUAL(item.second.eventsPublished,
+                          item.first == egress ? generationTokens : 0u);
+        if (finalizeCheckpoint) {
+          BOOST_REQUIRE(item.second.finalizedRole);
+          const auto& state = item.second.finalizedRole->candidateDecodeStateIdentity;
+          BOOST_REQUIRE(state);
+          BOOST_CHECK_EQUAL(state->prefixTokenCount,
+                            prefixLengthAtStart + initialTokens.size() + generationTokens);
+          BOOST_CHECK_EQUAL(item.second.finalizedRole->inferenceEpoch, generationTokens);
+          auto& runtime = *coordinatedRuntimes.at(item.first);
+          if (resumed) {
+            const auto& observations = item.second.cacheObservations;
+            BOOST_REQUIRE(!observations.empty());
+            const auto& first = observations.front();
+            BOOST_CHECK_EQUAL(first.inferenceEpoch, 0u);
+            BOOST_CHECK(first.conversationStateHit);
+            BOOST_CHECK_EQUAL(first.representedPrefixTokenCount,
+                              prefixLengthAtStart + initialTokens.size());
+            BOOST_CHECK_EQUAL(first.prefixWorkAvoided, prefixLengthAtStart);
+            if (std::find(topology.consumerRoles.begin(), topology.consumerRoles.end(),
+                          item.first) != topology.consumerRoles.end())
+              BOOST_CHECK_EQUAL(first.actualNewInputExtent, initialTokens.size());
+          }
+          else {
+            ConversationStateBinding binding;
+            binding.conversationId = "spec242-conversation";
+            binding.contextEpoch = 1;
+            binding.serviceName = "/fixture/hybrid-inference";
+            binding.planRoleMapDigest = seed;
+            binding.receiptDigest = nativePlanningDigest(item.first);
+            binding.expiresAtMs = 10000;
+            binding.identity = *state;
+            BOOST_REQUIRE(runtime.stageDecodeStatePromotion(
+              sessionId, *item.second.finalizedRole, binding, 100));
+            const auto checkpointDigest = nativePlanningDigest("spec242-first-checkpoint");
+            BOOST_REQUIRE(runtime.commitStagedDecodeStatePromotion(binding, checkpointDigest));
+            binding.checkpointDigest = checkpointDigest;
+            parentStates.emplace(item.first, std::move(binding));
           }
         }
       }
     }
+
+    // Model independent Provider ownership rather than sharing one wait pool
+    // across roles whose dependencies can unblock each other.
+    std::map<std::string, std::unique_ptr<ProviderRoleWorker>> workers;
     if (!coordinator) {
-      for (const auto& [role, runner] : runners) {
-        const auto handle = runner->stateHandleSnapshot(sessionId);
-        BOOST_REQUIRE(handle.has_value());
-        BOOST_CHECK_EQUAL(handle->role, role);
-        BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, epoch);
+      for (const auto& role : plan.roles)
+        workers.emplace(role, std::make_unique<ProviderRoleWorker>(
+          2, 2, 16, std::chrono::seconds(5)));
+    }
+    std::set<std::string> publicationNames;
+    float worstLogits = 0;
+    double worstState = 0;
+    const std::size_t epochs = coordinator ? generationEpochs : dynamic ? 3 : 1;
+    for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
+      const std::vector<std::int64_t> tokens = epoch == 0
+        ? initialTokens
+        : std::vector<std::int64_t>{coordinator ? sampledTokens.at(epoch - 1)
+                                                : static_cast<std::int64_t>(3 + epoch)};
+      prefix.insert(prefix.end(), tokens.begin(), tokens.end());
+      const auto expected = fullReference(prefix);
+      if (externalControls && epoch == 0) {
+        for (const auto& altered : {fullReference(prefix, 0), fullReference(prefix, 3, 7)}) {
+          const auto& original = expected.at("logits").payload;
+          const auto& changed = altered.at("logits").payload;
+          BOOST_REQUIRE_EQUAL(original.size(), changed.size());
+          float difference = 0;
+          for (std::size_t offset = 0; offset < original.size(); offset += sizeof(float)) {
+            float left;
+            float right;
+            std::memcpy(&left, original.data() + offset, sizeof(left));
+            std::memcpy(&right, changed.data() + offset, sizeof(right));
+            difference = std::max(difference, std::abs(left - right));
+          }
+          BOOST_CHECK_GT(difference, 1e-6f);
+        }
+      }
+      std::map<std::string, ProviderRoleResult> results;
+      if (coordinator) {
+        results = coordinatedResults.at(epoch);
+      }
+      else {
+        auto bus = std::make_shared<tests::PartialBus>();
+        std::map<std::string, std::future<ProviderRoleResult>> futures;
+        std::set<std::string> epochPublications;
+        for (const auto& role : plan.roles) {
+          auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "", epoch);
+          roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
+          roleSpec.stateOutputNames = roleSpecs.at(role).stateOutputNames;
+          roleSpec.streamingStateExecution = dynamic;
+          roleSpec.inferenceEpoch = epoch;
+          for (const auto& edge : roleSpec.outputs) {
+            BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
+            BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
+            BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
+            BOOST_CHECK(epochPublications.insert(edge.plannedDataName).second);
+          }
+          NamedTensor ids;
+          ids.name = "input_ids";
+          ids.elementType = TensorElementType::Int64;
+          ids.shape = {1, static_cast<std::int64_t>(tokens.size())};
+          ids.payload.resize(tokens.size() * sizeof(std::int64_t));
+          std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
+          auto io = std::make_shared<tests::BusDependencyIo>(bus);
+          auto runner = runners.at(role);
+          std::map<std::string, TensorBundle> epochInputs{
+            {"input_ids", makeEncodedTensorBundle("input_ids", {ids})}};
+          if (externalControls) {
+            NamedTensor delta;
+            delta.name = "control.delta";
+            delta.elementType = TensorElementType::Int32;
+            const std::int32_t value = 3;
+            delta.payload.resize(sizeof(value));
+            std::memcpy(delta.payload.data(), &value, sizeof(value));
+            NamedTensor positions;
+            positions.name = "control.positions";
+            positions.elementType = TensorElementType::Int64;
+            positions.shape = ids.shape;
+            positions.payload.resize(tokens.size() * sizeof(std::int64_t));
+            for (std::size_t i = 0; i < tokens.size(); ++i) {
+              const auto position = static_cast<std::int64_t>(prefix.size() - tokens.size() + i);
+              std::memcpy(positions.payload.data() + i * sizeof(position), &position,
+                          sizeof(position));
+            }
+            epochInputs.emplace(delta.name, makeEncodedTensorBundle(delta.name, {delta}));
+            epochInputs.emplace(positions.name,
+                                makeEncodedTensorBundle(positions.name, {positions}));
+          }
+          futures.emplace(role, workers.at(role)->executePreparedAsync(sessionId, std::move(roleSpec),
+            io, [runner] { return runner; }, std::move(epochInputs)));
+        }
+        std::ostringstream failures;
+        for (auto& [role, future] : futures) {
+          if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+            failures << role << ": worker completion timed out; ";
+            bus->cancel(std::make_exception_ptr(
+              std::runtime_error("fixture worker completion timed out")));
+          }
+          try {
+            results.emplace(role, future.get());
+          }
+          catch (const std::exception& error) {
+            failures << role << ": " << error.what() << "; ";
+          }
+        }
+        BOOST_REQUIRE_MESSAGE(failures.str().empty(),
+          label << " epoch=" << epoch << " worker failures: " << failures.str());
+        BOOST_CHECK_EQUAL(bus->publishedCount(), epochPublications.size());
+      }
+      BOOST_REQUIRE_EQUAL(results.size(), plan.roles.size());
+      BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
+      const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
+      BOOST_REQUIRE_EQUAL(actual.size(), 1u);
+      BOOST_CHECK_EQUAL(actual.front().name, "logits");
+      BOOST_CHECK(actual.front().elementType == TensorElementType::Float32);
+      BOOST_CHECK(actual.front().shape ==
+        std::vector<std::int64_t>({1, static_cast<std::int64_t>(tokens.size()),
+                                   static_cast<std::int64_t>(shape.vocab)}));
+      const auto count = tokens.size() * shape.vocab;
+      BOOST_REQUIRE_EQUAL(actual.front().payload.size(), count * sizeof(float));
+      std::vector<float> values(count);
+      std::memcpy(values.data(), actual.front().payload.data(), actual.front().payload.size());
+      const auto& expectedLogits = expected.at("logits");
+      const auto offset = (prefix.size() - tokens.size()) * shape.vocab;
+      std::vector<float> referenceLogits(prefix.size() * shape.vocab);
+      BOOST_REQUIRE_EQUAL(expectedLogits.payload.size(), referenceLogits.size() * sizeof(float));
+      std::memcpy(referenceLogits.data(), expectedLogits.payload.data(), expectedLogits.payload.size());
+      if (coordinator && epoch < generationTokens) {
+        const auto last = referenceLogits.end() - static_cast<std::ptrdiff_t>(shape.vocab);
+        const auto wanted = std::distance(last, std::max_element(last, referenceLogits.end()));
+        BOOST_CHECK_EQUAL(sampledTokens.at(epoch), wanted);
+      }
+      for (std::size_t index = 0; index < values.size(); ++index) {
+        const auto wanted = referenceLogits.at(offset + index);
+        BOOST_REQUIRE(std::isfinite(values[index]) && std::isfinite(wanted));
+        const auto error = std::abs(values[index] - wanted);
+        worstLogits = std::max(worstLogits, error);
+        BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(wanted));
+      }
+      if (!dynamic) continue;
+      for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+        const auto stage = std::find_if(units.begin(), units.end(), [&] (const auto& members) {
+          return !members.empty() && members.front().layerBegin <= layer &&
+            layer < members.front().layerEnd;
+        });
+        BOOST_REQUIRE(stage != units.end());
+        const auto degree = stage->size();
+        for (const auto* kind : {"key", "value"}) {
+          const auto suffix = std::to_string(layer) + "." + kind;
+          const auto& whole = expected.at("present." + suffix);
+          const auto total = shape.kvHeads * prefix.size() * shape.headDim;
+          BOOST_REQUIRE(whole.shape == std::vector<std::int64_t>(
+            {1, static_cast<std::int64_t>(shape.kvHeads), static_cast<std::int64_t>(prefix.size()),
+             static_cast<std::int64_t>(shape.headDim)}));
+          BOOST_REQUIRE_EQUAL(whole.payload.size(), total * sizeof(float));
+          std::vector<float> referenceState(total);
+          std::memcpy(referenceState.data(), whole.payload.data(), whole.payload.size());
+          for (const auto& unit : *stage) {
+            const auto sample = observer->sample(unit.roleId, epoch, "past_key_values." + suffix);
+            BOOST_CHECK_EQUAL(sample.elementType, "float32");
+            BOOST_REQUIRE(sample.shape == std::vector<std::int64_t>(
+              {1, static_cast<std::int64_t>(shape.kvHeads / degree),
+               static_cast<std::int64_t>(prefix.size()), static_cast<std::int64_t>(shape.headDim)}));
+            BOOST_REQUIRE_EQUAL(sample.values.size(), total / degree);
+            BOOST_REQUIRE_EQUAL(sample.indices.size(), sample.values.size());
+            for (std::size_t i = 0; i < sample.values.size(); ++i) {
+              BOOST_REQUIRE_EQUAL(sample.indices[i], i);
+              const auto wanted = referenceState.at(unit.rank * sample.values.size() + i);
+              BOOST_REQUIRE(std::isfinite(sample.values[i]) && std::isfinite(wanted));
+              const auto error = std::abs(sample.values[i] - wanted);
+              worstState = std::max(worstState, error);
+              BOOST_CHECK_LE(error, 1e-5 + 1e-4 * std::abs(wanted));
+            }
+          }
+        }
+      }
+      if (!coordinator) {
+        for (const auto& [role, runner] : runners) {
+          const auto handle = runner->stateHandleSnapshot(sessionId);
+          BOOST_REQUIRE(handle.has_value());
+          BOOST_CHECK_EQUAL(handle->role, role);
+          BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, epoch);
+        }
       }
     }
-  }
-  for (const auto& [role, runner] : runners) {
-    if (finalizeCheckpoint)
-      BOOST_CHECK(coordinatedRuntimes.at(role)->releaseDecodeState(sessionId, role));
-    else if (coordinator)
+    for (const auto& [role, runner] : runners) {
+      if (!coordinator) {
+        runner->releaseSessionState(sessionId);
+      }
+      else if (finalizeCheckpoint) {
+        auto& runtime = *coordinatedRuntimes.at(role);
+        if (resumed) {
+          BOOST_CHECK(runtime.releaseDecodeState(sessionId, role));
+          BOOST_CHECK(runtime.releaseConversationState(parentStates.at(role)));
+        }
+        const auto decode = runtime.decodeStateSnapshot();
+        BOOST_CHECK_EQUAL(decode.entries, 0u);
+        BOOST_CHECK_EQUAL(decode.pinnedEntries, 0u);
+        BOOST_CHECK_EQUAL(decode.candidates, 0u);
+        const auto conversation = runtime.conversationStateSnapshot();
+        BOOST_CHECK_EQUAL(conversation.entries, resumed ? 0u : 1u);
+        BOOST_CHECK_EQUAL(conversation.pinnedEntries, 0u);
+        BOOST_CHECK_EQUAL(conversation.committingEntries, 0u);
+      }
       BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
-    runner->releaseSessionState(sessionId);
-    BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
+    }
+    BOOST_TEST_MESSAGE(label << " resumed=" << resumed << " "
+                       << (dynamic ? "prefill/decode" : "prefill")
+                       << " max errors: logits=" << worstLogits << " complete-KV=" << worstState);
+  };
+  runTurn(false);
+  if (finalizeCheckpoint) {
+    observer->clear();
+    runTurn(true);
   }
-  BOOST_TEST_MESSAGE(label << " " << (dynamic ? "prefill/decode" : "prefill")
-                     << " max errors: logits=" << worstLogits << " complete-KV=" << worstState);
 }
 
 void
@@ -4034,15 +4112,6 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     ++stageIndex;
   }
   auto executionPlan = prepared.candidate.executionPlan;
-  if (coordinator) {
-    std::map<std::string, std::string> providers;
-    for (const auto& item : coldSpecs)
-      providers.emplace(item.first, item.second.metadata.at("providerIdentity"));
-    const auto topology = nativeGenerationFeedbackTopology(executionPlan,
-      prepared.candidate.resultEgressRole, "input_ids");
-    bindNativeGenerationFeedback(executionPlan, topology, "input_ids",
-      "/fixture/coordinator-request", 1, providers);
-  }
   for (const auto& item : std::vector<std::pair<std::string,
          const std::map<std::string, NativeModelRunnerSpec>*>>{
            {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
