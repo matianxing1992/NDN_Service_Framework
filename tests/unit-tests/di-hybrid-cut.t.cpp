@@ -1368,9 +1368,20 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
     return values.empty() ? std::vector<float>{} : values.front().second;
   };
 
-  const auto expected = pickResidual(run(referencePath));
-  const auto left = pickResidual(run(entryPaths.at(0)));
-  const auto right = pickResidual(run(entryPaths.at(1)));
+  const auto fullRun = run(referencePath);
+  const auto leftRun = run(entryPaths.at(0));
+  const auto rightRun = run(entryPaths.at(1));
+  const auto pick = [] (const std::vector<std::pair<std::string, std::vector<float>>>& values,
+                        const std::string& needle) {
+    for (const auto& entry : values)
+      if (entry.first.find(needle) != std::string::npos) return entry.second;
+    return std::vector<float>{};
+  };
+  // Attention exposes its context, which composes by concatenation rather than by summing:
+  // rank 0 owns the first half of the head axis, rank 1 the second.
+  const auto expected = pickResidual(fullRun);
+  const auto left = pickResidual(leftRun);
+  const auto right = pickResidual(rightRun);
   BOOST_REQUIRE(!expected.empty());
   BOOST_REQUIRE_EQUAL(left.size(), expected.size());
   BOOST_REQUIRE_EQUAL(right.size(), expected.size());
@@ -1396,6 +1407,9 @@ BOOST_AUTO_TEST_CASE(StageEntriesRecomposeTheReference)
   // The MLP entry recomposes to 7e-09. The attention entry does not yet: comparing residuals by
   // name puts it at 8e-03, and the open question is whether that is the entry or this
   // comparison - recorded in the task notes rather than papered over with a loose bound.
+  // MLP recomposes exactly. Attention does not yet: its residual composition is 8e-03, and both
+  // sides expose only that one tensor, so the next probe is a degree-1 control - an unsliced
+  // entry against the same reference - to separate the op's head mapping from this comparison.
   verifyKindRecomposes("MLP", "mlp-gate");
 }
 
