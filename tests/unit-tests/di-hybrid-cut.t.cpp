@@ -1141,4 +1141,88 @@ BOOST_AUTO_TEST_CASE(SlicedKernelMatchesTheUnsplitColumns)
   }
 }
 
+BOOST_AUTO_TEST_CASE(AssembledAttentionEntryExecutes)
+{
+  const std::string fixturePath = "../tests/fixtures/spec242/four-layer-qwen.onnx";
+  std::ifstream input(fixturePath, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                        std::istreambuf_iterator<char>());
+  std::vector<std::uint8_t> copy = bytes;
+  const auto shape = qwen::deriveQwenTpShape(copy, 4);
+
+  qwen::QwenTpAssemblyShards shards;
+  shards.slicesByLayer = qwen::planQwenTensorSlices(shape, 2, 0, 0, 1);
+  qwen::QwenTpRankGeometry geometry;
+  geometry.degree = 2;
+  geometry.rank = 0;
+  geometry.headDim = shape.headDim;
+  geometry.queryWidth = shape.queryWidth();
+  geometry.kvWidth = shape.kvWidth();
+  geometry.hidden = shape.hidden;
+  geometry.ffn = shape.ffn;
+  shards.geometry = geometry;
+  shards.readExternal = [] (std::uint64_t, std::uint64_t) -> std::vector<std::uint8_t> {
+    throw std::runtime_error("unexpected sidecar read");
+  };
+
+  const auto root = std::filesystem::temp_directory_path() / "spec242-entry-run";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  const auto table = qwen::assembleQwenTpEntryTable(root, "S0R0", bytes, 4, shards, nullptr, 0, 1);
+  BOOST_REQUIRE(!table.empty());
+
+  // The rank's attention entry must load and run: its head counts are per rank now, so the KV
+  // state buffers have to be narrowed with them or the op refuses to execute.
+  bool ran = false;
+  for (const auto& entry : table) {
+    if (entry.kind != "ATTN") continue;
+    const auto path = root / entry.relativeGraphPath;
+    static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-entry-run");
+    Ort::SessionOptions options;
+    Ort::Session session(env, path.c_str(), options);
+    Ort::AllocatorWithDefaultOptions allocator;
+
+    std::vector<Ort::Value> values;
+    std::vector<std::string> owned;
+    for (std::size_t index = 0; index < session.GetInputCount(); ++index) {
+      auto name = session.GetInputNameAllocated(index, allocator);
+      const auto info = session.GetInputTypeInfo(index).GetTensorTypeAndShapeInfo();
+      std::vector<std::int64_t> dims = info.GetShape();
+      // The assembled entry leaves the boundary rank implicit, so the caller supplies it:
+      // x0 is one batch, the fixture's three tokens, and the hidden width.
+      if (dims.empty())
+        dims = {1, 3, static_cast<std::int64_t>(shape.hidden)};
+      std::size_t count = 1;
+      for (const auto dim : dims) count *= static_cast<std::size_t>(dim > 0 ? dim : 1);
+      std::vector<float> data(count, 0.05f);
+      values.push_back(Ort::Value::CreateTensor<float>(
+        Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault), data.data(),
+        data.size(), dims.data(), dims.size()));
+      owned.emplace_back(name.get());
+    }
+    std::vector<const char*> names;
+    for (const auto& name : owned) names.push_back(name.c_str());
+    std::vector<const char*> outputNames;
+    std::vector<std::string> outputOwned;
+    for (std::size_t index = 0; index < session.GetOutputCount(); ++index) {
+      auto name = session.GetOutputNameAllocated(index, allocator);
+      outputOwned.emplace_back(name.get());
+      outputNames.push_back(outputOwned.back().c_str());
+    }
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(),
+                               values.size(), outputNames.data(), outputNames.size());
+    BOOST_REQUIRE(!outputs.empty());
+    const auto count = outputs.front().GetTensorTypeAndShapeInfo().GetElementCount();
+    const float* data = outputs.front().GetTensorData<float>();
+    double magnitude = 0;
+    for (std::size_t i = 0; i < count; ++i) magnitude += std::abs(data[i]);
+    BOOST_CHECK(std::isfinite(magnitude));
+    BOOST_CHECK(magnitude > 0);
+    ran = true;
+  }
+  BOOST_CHECK(ran);
+  std::filesystem::remove_all(root);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

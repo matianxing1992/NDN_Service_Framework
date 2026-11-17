@@ -2179,6 +2179,33 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
           ++changes;
         }
       }
+      // The head counts above are per rank now, so the KV state tensors must be narrowed to
+      // the same heads; otherwise the op declares one KV head while its buffers carry all of
+      // them, which ONNX Runtime rejects when the entry runs.
+      const auto narrowState = [&] (const std::string& name) {
+        for (int i = 0; i < graph->initializer_size(); ++i) {
+          auto* state = graph->mutable_initializer(i);
+          if (state->name() != name || state->dims_size() != 4) continue;
+          const auto heads = static_cast<std::uint64_t>(state->dims(1));
+          if (geometry.degree == 0 || heads % geometry.degree != 0) return;
+          const auto perRank = heads / geometry.degree;
+          const auto sliceBytes = static_cast<std::size_t>(state->dims(2)) *
+            static_cast<std::size_t>(state->dims(3)) * sizeof(float);
+          const auto offset = static_cast<std::size_t>(geometry.rank * perRank) * sliceBytes;
+          const std::string raw = state->raw_data();
+          if (offset + perRank * sliceBytes > raw.size()) return;
+          std::vector<char> narrowed(raw.begin() + offset,
+                                     raw.begin() + offset + perRank * sliceBytes);
+          state->set_raw_data(narrowed.data(), narrowed.size());
+          state->set_dims(1, static_cast<std::int64_t>(perRank));
+          ++changes;
+          return;
+        }
+      };
+      if (node->input_size() > 4) {
+        narrowState(node->input(3));
+        narrowState(node->input(4));
+      }
     }
   }
 
