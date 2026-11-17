@@ -252,6 +252,11 @@ BOOST_AUTO_TEST_CASE(StateExpansionPreservesEachStagesSourceTensors)
   missing = source;
   missing.inputs.at("decoder").clear();
   BOOST_CHECK_THROW(detail::remapNativeStateRoles(missing, owners), std::invalid_argument);
+  missing.outputs.at("decoder").clear();
+  const auto stateless = detail::remapNativeStateRoles(missing, owners);
+  BOOST_CHECK(stateless.inputs.at("gamma").empty());
+  BOOST_CHECK(stateless.outputs.at("gamma").empty());
+  BOOST_CHECK(stateless.inputs.at("alpha") == source.inputs.at("encoder"));
   BOOST_CHECK_THROW(detail::remapNativeStateRoles(source, {{"", "encoder"}}),
                     std::invalid_argument);
   BOOST_CHECK_THROW(detail::remapNativeStateRoles(source, {{"alpha", ""}}),

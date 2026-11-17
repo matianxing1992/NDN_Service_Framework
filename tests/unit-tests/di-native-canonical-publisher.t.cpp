@@ -1074,6 +1074,105 @@ BOOST_AUTO_TEST_CASE(SourceDefinedStateBindingPreservesMixedBoundaryTypesAndReso
   BOOST_CHECK_EQUAL(input.candidate.roleStateInputsByRole.at("/role")[1].dtype, "float32");
 }
 
+BOOST_AUTO_TEST_CASE(VersionTwoSourceBindingDistinguishesStatelessFromMissingState)
+{
+  Input input;
+  NativeAssemblyControl control{input.control.deadline,
+    [&] { input.control.requireActive(); }, 1U << 20, 1U << 20};
+  const auto inspected = inspectNativeOnnxSourceGraph(*input.source, input.model.descriptor, control);
+  input.model.graph = inspected.graph;
+  input.model.descriptor.graphDigest = inspected.graph.graphDigest;
+  input.model.canonicalGraphDigest = inspected.canonicalIdentity.graphDigest;
+  input.candidate.model = input.model.descriptor;
+  input.candidate.graphDigest = inspected.graph.graphDigest;
+  input.candidate.nodeRoles.clear();
+  for (const auto& node : inspected.graph.nodes) input.candidate.nodeRoles[node.id] = "/role";
+  auto& plan = input.candidate.executionPlan;
+  const auto& original = input.roles.front();
+  NativeExecutionStepSpec step;
+  step.stepId = "ordinary-call";
+  step.unitId = "/role";
+  step.operation = "CALL_SUBGRAPH";
+  step.artifactEntry = "whole-region";
+  const auto slot = [] (const NativeAssemblyTensorContractV3& tensor,
+                        const std::string& source) {
+    NativeStepSlotSpec result;
+    result.slotId = tensor.name;
+    result.dtype = tensor.dtype;
+    result.shape = tensor.shape;
+    result.layoutDigest = nativePlanningDigest("stateless-layout");
+    result.source = source;
+    return result;
+  };
+  for (const auto& tensor : original.expectedInputs)
+    step.inputSlots.push_back(slot(tensor, "EPOCH_INPUT"));
+  for (const auto& tensor : original.expectedOutputs)
+    step.outputSlots.push_back(slot(tensor, "LOCAL_STEP"));
+  plan.steps = {step};
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.tensorDegree = 1;
+  plan.stageLayout = {{"ordinary-region", nativePlanningDigest("region"), {"/role"}}};
+  input.candidate.candidateDigest = input.candidate.computedDigest();
+  const NativeRoleRecipeProfile profile{original.artifactProfileDigest,
+    original.assemblerDescriptorDigest, original.backendAbi, original.precision,
+    original.quantization, original.layout, original.padding, original.protectionEpoch,
+    control.maxSourceBytes, control.maxAssembledBytes, 16};
+  const NativeCanonicalRolePreparer owner(input.model, *input.source, profile, control);
+  NativeStateTensorMapping mapping;
+  mapping.inputs["/role"] = {};
+  mapping.outputs["/role"] = {};
+  const auto bound = owner.bindStateContracts(input.model, input.candidate, mapping,
+    input.control, NativeStateContractBinding::SOURCE);
+  BOOST_CHECK(bound.roleStateInputsByRole.at("/role").empty());
+  BOOST_CHECK(bound.roleStateOutputsByRole.at("/role").empty());
+  BOOST_CHECK(bound.candidateDigest != input.candidate.candidateDigest);
+  BOOST_CHECK_NO_THROW(bound.validate(input.model.graph));
+  const auto roles = owner.prepare(input.model, bound, input.control);
+  BOOST_REQUIRE_EQUAL(roles.size(), 1u);
+  BOOST_CHECK(!roles.front().expectedInputs.empty());
+  BOOST_CHECK(!roles.front().expectedOutputs.empty());
+  BOOST_CHECK_EQUAL(roles.front().tensorParallelDegree, 0u);
+  BOOST_CHECK_EQUAL(roles.front().tensorParallelRank, 0u);
+
+  for (int failure = 0; failure < 5; ++failure) {
+    auto bad = mapping;
+    if (failure == 0) bad.inputs.clear();
+    if (failure == 1) bad.outputs.clear();
+    if (failure == 2) bad.inputs["foreign"] = {};
+    if (failure == 3) bad.inputs["/role"]["cache"] = {original.expectedInputs.front().name};
+    if (failure == 4) bad.outputs["/role"]["cache"] = {original.expectedOutputs.front().name};
+    BOOST_CHECK_THROW(owner.bindStateContracts(input.model, input.candidate, bad,
+      input.control, NativeStateContractBinding::SOURCE), std::invalid_argument);
+  }
+  auto required = input.candidate;
+  const auto& in = original.expectedInputs.front();
+  const auto& out = original.expectedOutputs.front();
+  required.roleStateInputsByRole["/role"] = {{in.name, in.dtype, in.shape, std::nullopt}};
+  required.roleStateOutputsByRole["/role"] = {{out.name, out.dtype, out.shape, std::nullopt}};
+  required.candidateDigest = required.computedDigest();
+  BOOST_CHECK_THROW(owner.bindStateContracts(input.model, required, mapping,
+    input.control, NativeStateContractBinding::SOURCE), std::invalid_argument);
+  auto oneSided = bound;
+  oneSided.roleStateInputsByRole["/role"] = required.roleStateInputsByRole.at("/role");
+  oneSided.candidateDigest = oneSided.computedDigest();
+  BOOST_CHECK_THROW(oneSided.validate(input.model.graph), std::invalid_argument);
+  auto localState = input.candidate;
+  localState.executionPlan.steps.front().localStateSlots = {"carry"};
+  localState.candidateDigest = localState.computedDigest();
+  BOOST_CHECK_THROW(owner.bindStateContracts(input.model, localState, mapping,
+    input.control, NativeStateContractBinding::SOURCE), std::invalid_argument);
+  localState.roleStateInputsByRole = bound.roleStateInputsByRole;
+  localState.roleStateOutputsByRole = bound.roleStateOutputsByRole;
+  localState.candidateDigest = localState.computedDigest();
+  BOOST_CHECK_THROW(localState.validate(input.model.graph), std::invalid_argument);
+  auto legacy = bound;
+  legacy.executionPlan.steps.clear();
+  legacy.executionPlan.stageLayout.clear();
+  legacy.executionPlan.stepPlanVersion.clear();
+  legacy.candidateDigest = legacy.computedDigest();
+  BOOST_CHECK_THROW(legacy.validate(input.model.graph), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(GeneratedMultiLayerModelSplitsAndAssemblesWithCleanup)
 {
   // This is intentionally a small deterministic model: it exercises the

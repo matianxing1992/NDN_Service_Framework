@@ -147,9 +147,29 @@ NativeSplitCandidate NativeCanonicalRolePreparer::bindStateContracts(const Nativ
         throw std::invalid_argument("source state mapping has an incomplete role cover");
       for (const auto& role : candidate.executionPlan.roles) {
         const auto found = side->find(role);
-        if (found == side->end() || found->second.empty())
+        if (found == side->end())
           throw std::invalid_argument("source state mapping omits a role state contract");
       }
+    }
+    // Empty is an explicit V2 contract, not permission to omit a role or erase required state.
+    for (const auto& role : candidate.executionPlan.roles) {
+      const bool noInputs = mapping.inputs.at(role).empty();
+      const bool noOutputs = mapping.outputs.at(role).empty();
+      if (noInputs != noOutputs)
+        throw std::invalid_argument("source state mapping has one-sided stateless I/O");
+      if (!noInputs) continue;
+      const auto requiredInput = candidate.roleStateInputsByRole.find(role);
+      const auto requiredOutput = candidate.roleStateOutputsByRole.find(role);
+      if (candidate.executionPlan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 ||
+          std::any_of(candidate.executionPlan.steps.begin(), candidate.executionPlan.steps.end(),
+            [&role] (const auto& step) {
+              return step.unitId == role && !step.localStateSlots.empty();
+            }) ||
+          (requiredInput != candidate.roleStateInputsByRole.end() &&
+           !requiredInput->second.empty()) ||
+          (requiredOutput != candidate.roleStateOutputsByRole.end() &&
+           !requiredOutput->second.empty()))
+        throw std::invalid_argument("source stateless mapping erases a required state contract");
     }
   }
   // Reuse the checked source-boundary producer without treating abstract

@@ -10,6 +10,7 @@ namespace ndnsf::di::detail {
 
 /** Expand logical source roles to execution units without changing tensor identities.
  * Each unit must explicitly identify a source role with both state mappings.
+ * Paired empty maps preserve explicit stateless declarations; missing maps reject.
  * Source-boundary validation remains the responsibility of the role preparer.
  */
 NativeStateTensorMapping

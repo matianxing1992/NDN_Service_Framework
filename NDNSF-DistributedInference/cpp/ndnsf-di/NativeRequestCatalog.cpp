@@ -80,7 +80,8 @@ detail::remapNativeStateRoles(const NativeStateTensorMapping& source,
     const auto inputs = source.inputs.find(sourceRole);
     const auto outputs = source.outputs.find(sourceRole);
     if (unit.empty() || sourceRole.empty() || inputs == source.inputs.end() ||
-        outputs == source.outputs.end() || inputs->second.empty() || outputs->second.empty())
+        outputs == source.outputs.end() ||
+        inputs->second.empty() != outputs->second.empty())
       throw std::invalid_argument("native state role expansion omits a source state contract");
     result.inputs.emplace(unit, inputs->second);
     result.outputs.emplace(unit, outputs->second);

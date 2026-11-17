@@ -630,7 +630,8 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
       throw std::invalid_argument("split candidate state I/O role cover is incomplete");
     for (const auto& role : roles) {
       const auto tensors = contracts.find(role);
-      if (tensors == contracts.end() || tensors->second.empty())
+      if (tensors == contracts.end() ||
+          (tensors->second.empty() && executionPlan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2))
         throw std::invalid_argument("split candidate state I/O is empty or has foreign roles");
       std::set<std::string> names;
       for (const auto& tensor : tensors->second) {
@@ -643,6 +644,16 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
   if (!roleStateInputsByRole.empty() || !roleStateOutputsByRole.empty()) {
     stateValid(roleStateInputsByRole);
     stateValid(roleStateOutputsByRole);
+    for (const auto& role : roles) {
+      if (roleStateInputsByRole.at(role).empty() != roleStateOutputsByRole.at(role).empty())
+        throw std::invalid_argument("split candidate has one-sided stateless state I/O");
+      if (roleStateInputsByRole.at(role).empty() &&
+          std::any_of(executionPlan.steps.begin(), executionPlan.steps.end(),
+            [&role] (const auto& step) {
+              return step.unitId == role && !step.localStateSlots.empty();
+            }))
+        throw std::invalid_argument("split candidate stateless role declares local state slots");
+    }
   }
   const std::set<std::string> cuts(crossPartitionTensors.begin(), crossPartitionTensors.end());
   const std::set<std::string> legal(graph.legalCutEdges.begin(), graph.legalCutEdges.end());
