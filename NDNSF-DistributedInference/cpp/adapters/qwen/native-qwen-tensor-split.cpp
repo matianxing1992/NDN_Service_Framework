@@ -753,6 +753,10 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
 
 namespace {
 
+NativeStepSlotSpec
+sourceStepSlot(const NativeJson& metadata, const std::string& name,
+               const std::string& slotId, const std::string& origin);
+
 /** Shared projection body.
  *
  * `verified` is null when the caller let the projection name its own entries,
@@ -765,7 +769,8 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                 std::uint64_t degree, const std::string& entryPrefix,
                 const std::string& egressRole, const QwenTpTemplate& tp,
                 const std::vector<QwenTpEntryContract>* verified,
-                const QwenTpStageWindow* window = nullptr, bool sourceBindings = false)
+                const QwenTpStageWindow* window = nullptr, bool sourceBindings = false,
+                const NativeJson* sourcePorts = nullptr)
 {
   // The egress unit owns the head, so it must be one of the declared units.
   if (std::none_of(tp.units.begin(), tp.units.end(),
@@ -1074,6 +1079,20 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       collect(contract->inputSlotByGraphName, contract->inputNames, inputs);
       collect(contract->outputSlotByGraphName, contract->outputNames, outputs);
       collect(contract->passthroughSlotByInputGraphName, contract->inputNames, outputs);
+      if (sourcePorts != nullptr) {
+        // Actual source ports precede semantic narrowing. Their producer is resolved only
+        // after every region exists; no epoch input or synthesized value is invented here.
+        const auto complete = [&] (auto& slots, const auto& bindings) {
+          for (const auto& [name, id] : bindings) {
+            if (std::none_of(slots.begin(), slots.end(),
+                            [&] (const auto& slot) { return slot.slotId == id; }))
+              slots.push_back(sourceStepSlot(*sourcePorts, name, id, "LOCAL_STEP"));
+          }
+        };
+        complete(step.inputSlots, contract->inputSlotByGraphName);
+        complete(step.outputSlots, contract->outputSlotByGraphName);
+        complete(step.outputSlots, contract->passthroughSlotByInputGraphName);
+      }
       std::set<std::string> producedSlots;
       for (const auto& [name, slot] : contract->outputSlotByGraphName) {
         if (!producedSlots.insert(slot).second)
@@ -1218,7 +1237,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
         throw std::invalid_argument("material dependency has no bound graph tensor");
     }
   }
-  if (firstLayer == 0)
+  if (firstLayer == 0 && sourcePorts == nullptr)
     plan.validateSteps();
 }
 
@@ -2235,6 +2254,7 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
   if (regionPort != nullptr && (!*regionPort || source == nullptr || stateMapping == nullptr))
     throw std::invalid_argument("source hybrid lowering requires its source and state owner");
   const auto semanticNodes = stageSemanticNodes(graph, shape, windows);
+  NativeJson sourceMetadata;
   std::vector<NativeSourceRegionBoundary> boundaries(windows.size());
   std::vector<std::vector<QwenTpEntryContract>> tables(windows.size());
   std::vector<ndnsf::di::NativeExecutionPlan> plans;
@@ -2313,7 +2333,24 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
     else if (source != nullptr) {
       tables[index] = describeQwenTpEntryContracts(*source, shape.layers, list,
         window.layerBegin, window.layerEnd, stageEgress);
-      projectQwenTpPlan(plan, shape, list.size(), stageEgress, list, tables[index], window);
+      if (regionPort != nullptr) {
+        if (sourceMetadata.is_null())
+          sourceMetadata = nativeParseJson(source->graphMetadataJson);
+        auto tp = buildQwenTpTemplate(shape, list.size(), "/verified", list,
+                                      window.layerBegin, window.layerEnd);
+        tp.entries = tables[index];
+        std::set<std::string> ids;
+        for (const auto& contract : tp.entries) {
+          contract.validate();
+          if (!ids.insert(contract.entryId).second)
+            throw std::invalid_argument("region entries must have unique identities");
+        }
+        projectTemplate(plan, shape, list.size(), "/verified", stageEgress, tp,
+                        &tp.entries, &window, true, &sourceMetadata);
+      }
+      else {
+        projectQwenTpPlan(plan, shape, list.size(), stageEgress, list, tables[index], window);
+      }
     }
     else {
       projectQwenTpPlan(plan, shape, list.size(), entryPrefix, stageEgress, list, window);
@@ -3399,8 +3436,8 @@ ownsStateInput(const QwenTpEntryContract& entry, const std::string& name)
  *    post-MLP residual.
  *  - INIT returns the positions, the reformatted mask and the embedded X0.
  *
- * The mask scalars the export derives internally have no template slot; they are recorded
- * as synthesized rather than silently omitted.
+ * Ports outside this adapter's semantic aliases are completed by bindIdentitySlots;
+ * they retain their actual graph names and require explicit admitted values.
  */
 void
 bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contract)
@@ -3589,11 +3626,8 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
     contract.inputSlotByGraphName[name] = fromAttention ? "merged" : "residual";
   }
 
-  // Two mask tensors reach attention: the reformatted mask the template carries as
-  // `attn_mask`, and the scalar the op reads as total_sequence_length. Only the first is a
-  // plan slot; the scalar is derived from the mask's own shape and has no slot, so it is
-  // synthesized. Mapping both to one slot would make the parent hand the same bundle to
-  // two inputs that expect different ranks.
+  // Mask and total length are distinct ports with distinct ranks. Unknown control inputs
+  // retain identity bindings below rather than borrowing either semantic slot.
   bool maskSlotTaken = false;
   bool lengthSlotTaken = false;
   for (const auto& input : graph.input()) {
@@ -3656,11 +3690,13 @@ void
 bindIdentitySlots(QwenTpEntryContract& contract)
 {
   for (const auto& name : contract.inputNames)
-    if (!ownsStateInput(contract, name) && contract.inputSlotByGraphName.count(name) == 0 &&
-        std::find(contract.synthesizedInputGraphNames.begin(),
-                  contract.synthesizedInputGraphNames.end(), name) ==
-          contract.synthesizedInputGraphNames.end())
+    if (!ownsStateInput(contract, name) && contract.inputSlotByGraphName.count(name) == 0)
       contract.inputSlotByGraphName[name] = name;
+  // Unknown real graph inputs remain explicit dependencies, never implicit defaults.
+  contract.synthesizedInputGraphNames.erase(std::remove_if(
+    contract.synthesizedInputGraphNames.begin(), contract.synthesizedInputGraphNames.end(),
+    [&] (const auto& name) { return contract.inputSlotByGraphName.count(name) != 0; }),
+    contract.synthesizedInputGraphNames.end());
   for (const auto& name : contract.outputNames) {
     if (contract.outputSlotByGraphName.count(name) != 0) continue;
     if (std::find(contract.stateOutputGraphNames.begin(),

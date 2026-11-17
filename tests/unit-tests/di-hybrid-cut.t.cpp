@@ -2192,7 +2192,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
                       const std::vector<std::vector<qwen::QwenTpUnit>>& units,
                       const std::string& egress,
                       const std::map<std::string, NativeModelRunnerSpec>& specs,
-                      bool dynamic, const std::string& label)
+                      bool dynamic, const std::string& label, bool externalControls = false)
 {
   const std::string sessionId = "three-worker-prefill/" + label +
     (dynamic ? "/decode" : "/prefill");
@@ -2214,13 +2214,27 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     auto name = reference.GetOutputNameAllocated(i, allocator);
     outputNames.emplace_back(name.get());
   }
-  const auto fullReference = [&] (std::vector<std::int64_t> prefix) {
+  const auto fullReference = [&] (std::vector<std::int64_t> prefix,
+                                 std::int32_t delta = 3, std::int64_t positionOffset = 0) {
     std::vector<Ort::Value> inputs;
+    std::vector<std::int64_t> positions(prefix.size());
+    for (std::size_t i = 0; i < positions.size(); ++i)
+      positions[i] = static_cast<std::int64_t>(i) + positionOffset;
     for (std::size_t i = 0; i < inputNames.size(); ++i) {
       if (inputNames[i] == "input_ids") {
         const std::array<std::int64_t, 2> dims{1, static_cast<std::int64_t>(prefix.size())};
         inputs.push_back(Ort::Value::CreateTensor<std::int64_t>(memory, prefix.data(),
           prefix.size(), dims.data(), dims.size()));
+      }
+      else if (externalControls && inputNames[i] == "control.delta") {
+        inputs.push_back(Ort::Value::CreateTensor<std::int32_t>(memory, &delta, 1,
+                                                                nullptr, 0));
+      }
+      else if (externalControls && inputNames[i] == "control.positions") {
+        const std::array<std::int64_t, 2> dims{1,
+          static_cast<std::int64_t>(positions.size())};
+        inputs.push_back(Ort::Value::CreateTensor<std::int64_t>(memory, positions.data(),
+          positions.size(), dims.data(), dims.size()));
       }
       else {
         BOOST_REQUIRE(inputNames[i].find("past_key_values.") == 0);
@@ -2309,6 +2323,22 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
       : std::vector<std::int64_t>{static_cast<std::int64_t>(3 + epoch)};
     prefix.insert(prefix.end(), tokens.begin(), tokens.end());
     const auto expected = fullReference(prefix);
+    if (externalControls && epoch == 0) {
+      for (const auto& altered : {fullReference(prefix, 0), fullReference(prefix, 3, 7)}) {
+        const auto& original = expected.at("logits").payload;
+        const auto& changed = altered.at("logits").payload;
+        BOOST_REQUIRE_EQUAL(original.size(), changed.size());
+        float difference = 0;
+        for (std::size_t offset = 0; offset < original.size(); offset += sizeof(float)) {
+          float left;
+          float right;
+          std::memcpy(&left, original.data() + offset, sizeof(left));
+          std::memcpy(&right, changed.data() + offset, sizeof(right));
+          difference = std::max(difference, std::abs(left - right));
+        }
+        BOOST_CHECK_GT(difference, 1e-6f);
+      }
+    }
     auto bus = std::make_shared<tests::PartialBus>();
     std::map<std::string, std::future<ProviderRoleResult>> futures;
     std::set<std::string> epochPublications;
@@ -2332,9 +2362,31 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
       std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
       auto io = std::make_shared<tests::BusDependencyIo>(bus);
       auto runner = runners.at(role);
+      std::map<std::string, TensorBundle> epochInputs{
+        {"input_ids", makeEncodedTensorBundle("input_ids", {ids})}};
+      if (externalControls) {
+        NamedTensor delta;
+        delta.name = "control.delta";
+        delta.elementType = TensorElementType::Int32;
+        const std::int32_t value = 3;
+        delta.payload.resize(sizeof(value));
+        std::memcpy(delta.payload.data(), &value, sizeof(value));
+        NamedTensor positions;
+        positions.name = "control.positions";
+        positions.elementType = TensorElementType::Int64;
+        positions.shape = ids.shape;
+        positions.payload.resize(tokens.size() * sizeof(std::int64_t));
+        for (std::size_t i = 0; i < tokens.size(); ++i) {
+          const auto position = static_cast<std::int64_t>(prefix.size() - tokens.size() + i);
+          std::memcpy(positions.payload.data() + i * sizeof(position), &position,
+                      sizeof(position));
+        }
+        epochInputs.emplace(delta.name, makeEncodedTensorBundle(delta.name, {delta}));
+        epochInputs.emplace(positions.name,
+                            makeEncodedTensorBundle(positions.name, {positions}));
+      }
       futures.emplace(role, worker.executePreparedAsync(sessionId, std::move(roleSpec),
-        io, [runner] { return runner; },
-        {{"input_ids", makeEncodedTensorBundle("input_ids", {ids})}}));
+        io, [runner] { return runner; }, std::move(epochInputs)));
     }
     std::map<std::string, ProviderRoleResult> results;
     std::ostringstream failures;
@@ -2716,14 +2768,96 @@ BOOST_AUTO_TEST_CASE(LegacyKvObserverKeepsItsSixteenPointContract)
 
 namespace {
 
+/** Add actual controls before SOURCE identity, retaining the complete original as oracle. */
+void
+addHybridFixtureControls(NativeCanonicalSource& source)
+{
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(source.modelBytes.data(),
+                                     static_cast<int>(source.modelBytes.size())));
+  auto& graph = *model.mutable_graph();
+  const std::vector<onnx::NodeProto> original(graph.node().begin(), graph.node().end());
+  graph.clear_node();
+  const auto info = [] (onnx::ValueInfoProto& value, const std::string& name, int type,
+                        const std::vector<std::int64_t>& shape) {
+    value.set_name(name);
+    auto* tensor = value.mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(type);
+    auto* dimensions = tensor->mutable_shape();
+    for (const auto size : shape) {
+      auto* dimension = dimensions->add_dim();
+      if (size < 0) dimension->set_dim_param("sequence");
+      else dimension->set_dim_value(size);
+    }
+  };
+  info(*graph.add_input(), "control.delta", onnx::TensorProto::INT32, {});
+  info(*graph.add_input(), "control.positions", onnx::TensorProto::INT64, {1, -1});
+  info(*graph.add_value_info(), "control.bias", onnx::TensorProto::FLOAT, {});
+  info(*graph.add_value_info(), "control.offsets", onnx::TensorProto::INT64, {1, -1});
+  const auto node = [&] (const std::string& kind, const std::string& name,
+                         const std::vector<std::string>& inputs, const std::string& output) {
+    auto* result = graph.add_node();
+    result->set_op_type(kind);
+    result->set_name(name);
+    for (const auto& input : inputs) result->add_input(input);
+    result->add_output(output);
+    return result;
+  };
+  const auto cast = [&] (const std::string& name, const std::string& input,
+                         const std::string& output) {
+    auto* result = node("Cast", name, {input}, output);
+    auto* attribute = result->add_attribute();
+    attribute->set_name("to");
+    attribute->set_type(onnx::AttributeProto::INT);
+    attribute->set_i(onnx::TensorProto::FLOAT);
+  };
+  cast("INIT/control_bias", "control.delta", "control.bias");
+  node("Identity", "INIT/control_offsets", {"control.positions"}, "control.offsets");
+  auto* axes = graph.add_initializer();
+  axes->set_name("fixture.control.axes");
+  axes->set_data_type(onnx::TensorProto::INT64);
+  axes->add_dims(1);
+  axes->add_int64_data(-1);
+  for (auto originalNode : original) {
+    for (std::uint64_t layer = 0; layer < 4; ++layer) {
+      const auto prefix = "model.layers." + std::to_string(layer) + "/input_layernorm";
+      const auto hidden = layer == 0 ? std::string("x0")
+        : "model.layers." + std::to_string(layer) + "/input";
+      if (originalNode.name() == prefix + ".square") {
+        cast(prefix + ".control_cast", "control.offsets", prefix + ".control_float");
+        node("Unsqueeze", prefix + ".control_expand",
+             {prefix + ".control_float", axes->name()}, prefix + ".control_vector");
+        node("Add", prefix + ".control_positions",
+             {hidden, prefix + ".control_vector"}, prefix + ".control_shift");
+        node("Add", prefix + ".control_bias",
+             {prefix + ".control_shift", "control.bias"}, prefix + ".controlled");
+        info(*graph.add_value_info(), prefix + ".control_float",
+              onnx::TensorProto::FLOAT, {1, -1});
+        info(*graph.add_value_info(), prefix + ".control_vector",
+              onnx::TensorProto::FLOAT, {1, -1, 1});
+        for (const auto* suffix : {".control_shift", ".controlled"})
+          info(*graph.add_value_info(), prefix + suffix, onnx::TensorProto::FLOAT, {1, -1, 64});
+      }
+      if (originalNode.name().rfind(prefix + ".", 0) == 0)
+        for (auto& input : *originalNode.mutable_input())
+          if (input == hidden) input = prefix + ".controlled";
+    }
+    *graph.add_node() = std::move(originalNode);
+  }
+  const auto wire = model.SerializeAsString();
+  source.modelBytes.assign(wire.begin(), wire.end());
+}
+
 std::pair<NativeJson, NativeCanonicalSource>
 hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
-                     const std::string& backend = "onnxruntime", bool mirrored = false)
+                     const std::string& backend = "onnxruntime", bool mirrored = false,
+                     bool externalControls = false)
 {
   std::ifstream input("../tests/fixtures/spec242/four-layer-decode.onnx", std::ios::binary);
   BOOST_REQUIRE(static_cast<bool>(input));
   NativeCanonicalSource source;
   source.modelBytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  if (externalControls) addHybridFixtureControls(source);
   auto descriptor = qwenFixtureDescriptor();
   descriptor.adapter.backends = {backend};
   NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
@@ -2936,7 +3070,7 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
 namespace {
 
 void
-verifyHybridMaterials(bool mirrored)
+verifyHybridMaterials(bool mirrored, bool externalControls = false)
 {
   // These projections exercise post-admission assembly, not Selection or transport security.
   if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
@@ -3010,7 +3144,8 @@ verifyHybridMaterials(bool mirrored)
     BOOST_TEST_MESSAGE("fresh-process hybrid cache reopened all three roles");
     return;
   }
-  auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu", mirrored);
+  auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu", mirrored,
+                                       externalControls);
   auto& configuration = fixture.first;
   const auto& source = fixture.second;
   const auto root = nativeCanonicalJson(NativeJson{
@@ -3028,6 +3163,21 @@ verifyHybridMaterials(bool mirrored)
                                                  control);
   const auto& prepared = loaded.planningCache->candidates.front();
   BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
+  if (externalControls) {
+    std::size_t remoteControls = 0;
+    for (const auto& step : prepared.candidate.executionPlan.steps) {
+      for (const auto& slot : step.inputSlots) {
+        if (slot.slotId != "control.bias" && slot.slotId != "control.offsets") continue;
+        BOOST_CHECK_EQUAL(slot.dtype, slot.slotId == "control.bias" ? "float32" : "int64");
+        BOOST_CHECK_EQUAL(slot.shape.size(), slot.slotId == "control.bias" ? 0u : 2u);
+        if (slot.source != "REMOTE_STEP") continue;
+        ++remoteControls;
+        BOOST_CHECK(!slot.producerStepId.empty());
+        BOOST_CHECK_EQUAL(slot.producerSlotId, slot.slotId);
+      }
+    }
+    BOOST_CHECK_GE(remoteControls, 2u);
+  }
   struct Workspace
   {
     std::filesystem::path root;
@@ -3040,6 +3190,13 @@ verifyHybridMaterials(bool mirrored)
   } workspace{std::filesystem::temp_directory_path() / "spec242-material-cache"};
   workspace.owned = std::filesystem::create_directory(workspace.root);
   BOOST_REQUIRE(workspace.owned);
+  const auto sourcePath = workspace.root / "source.onnx";
+  {
+    std::ofstream output(sourcePath, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(source.modelBytes.data()),
+                  static_cast<std::streamsize>(source.modelBytes.size()));
+    BOOST_REQUIRE(static_cast<bool>(output));
+  }
   NativeCanonicalOnnxAssemblerOptions options;
   options.cacheDir = workspace.root.string();
   options.providerIdentity = "/fixture/provider";
@@ -3210,9 +3367,10 @@ verifyHybridMaterials(bool mirrored)
   for (const auto& item : std::vector<std::pair<std::string,
          const std::map<std::string, NativeModelRunnerSpec>*>>{
            {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
-    verifyHybridExecution("../tests/fixtures/spec242/four-layer-decode.onnx",
+    verifyHybridExecution(sourcePath.string(),
       prepared.candidate.executionPlan, shape, units, prepared.candidate.resultEgressRole,
-      *item.second, true, item.first + (mirrored ? "-[1,2]" : "-[2,1]"));
+      *item.second, true, item.first + (mirrored ? "-[1,2]" : "-[2,1]") +
+        (externalControls ? "-controls" : ""), externalControls);
   }
   const auto sidecar = workspace.root / "reopen.json";
   {
@@ -3234,7 +3392,11 @@ verifyHybridMaterials(bool mirrored)
 BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
 {
   verifyHybridMaterials(false);
-  if (!std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) verifyHybridMaterials(true);
+  if (!std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
+    verifyHybridMaterials(true);
+    verifyHybridMaterials(false, true);
+    verifyHybridMaterials(true, true);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
