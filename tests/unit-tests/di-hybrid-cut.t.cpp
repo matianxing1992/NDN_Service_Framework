@@ -2080,7 +2080,8 @@ class FixtureStateObserver : public OnnxKvStateObserver
 public:
   bool wants(const RoleExecutionContext& context) const override
   {
-    return context.sessionId == "three-worker-prefill";
+    return context.sessionId == "three-worker-prefill" ||
+      context.sessionId.rfind("three-worker-prefill/", 0) == 0;
   }
 
   void record(const RoleExecutionContext& context,
@@ -2115,6 +2116,226 @@ public:
     return wants(context);
   }
 };
+
+void
+verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan,
+                      const qwen::QwenTpShape& shape,
+                      const std::vector<std::vector<qwen::QwenTpUnit>>& units,
+                      const std::string& egress,
+                      const std::map<std::string, NativeModelRunnerSpec>& specs,
+                      bool dynamic, const std::string& label)
+{
+  const std::string sessionId = "three-worker-prefill/" + label +
+    (dynamic ? "/decode" : "/prefill");
+  // Recompute the entire prefix with empty past for every epoch. This oracle never uses
+  // splitter-selected nodes, sharded state or the worker's preceding outputs.
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-complete-source");
+  Ort::SessionOptions options;
+  Ort::Session reference(env, source.c_str(), options);
+  BOOST_TEST_MESSAGE("native ORT version = " << OrtGetApiBase()->GetVersionString());
+  Ort::AllocatorWithDefaultOptions allocator;
+  auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  std::vector<std::string> inputNames;
+  std::vector<std::string> outputNames;
+  for (std::size_t i = 0; i < reference.GetInputCount(); ++i) {
+    auto name = reference.GetInputNameAllocated(i, allocator);
+    inputNames.emplace_back(name.get());
+  }
+  for (std::size_t i = 0; i < reference.GetOutputCount(); ++i) {
+    auto name = reference.GetOutputNameAllocated(i, allocator);
+    outputNames.emplace_back(name.get());
+  }
+  const auto fullReference = [&] (std::vector<std::int64_t> prefix) {
+    std::vector<Ort::Value> inputs;
+    for (std::size_t i = 0; i < inputNames.size(); ++i) {
+      if (inputNames[i] == "input_ids") {
+        const std::array<std::int64_t, 2> dims{1, static_cast<std::int64_t>(prefix.size())};
+        inputs.push_back(Ort::Value::CreateTensor<std::int64_t>(memory, prefix.data(),
+          prefix.size(), dims.data(), dims.size()));
+      }
+      else {
+        BOOST_REQUIRE(inputNames[i].find("past_key_values.") == 0);
+        auto type = reference.GetInputTypeInfo(i);
+        auto info = type.GetTensorTypeAndShapeInfo();
+        auto dims = info.GetShape();
+        BOOST_REQUIRE_EQUAL(dims.size(), 4u);
+        dims[2] = 0;
+        inputs.push_back(Ort::Value::CreateTensor<float>(allocator, dims.data(), dims.size()));
+      }
+    }
+    std::vector<const char*> in;
+    std::vector<const char*> out;
+    for (const auto& name : inputNames) in.push_back(name.c_str());
+    for (const auto& name : outputNames) out.push_back(name.c_str());
+    auto values = reference.Run(Ort::RunOptions{nullptr}, in.data(), inputs.data(),
+                                inputs.size(), out.data(), out.size());
+    std::map<std::string, NamedTensor> result;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      auto info = values[i].GetTensorTypeAndShapeInfo();
+      BOOST_REQUIRE(info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+      NamedTensor tensor;
+      tensor.name = outputNames[i];
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape = info.GetShape();
+      tensor.payload.resize(info.GetElementCount() * sizeof(float));
+      std::memcpy(tensor.payload.data(), values[i].GetTensorData<float>(), tensor.payload.size());
+      result.emplace(tensor.name, std::move(tensor));
+    }
+    return result;
+  };
+
+  auto observer = std::make_shared<CompleteFixtureStateObserver>();
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory, nullptr, observer);
+  qwen::registerQwenTensorBackend(factory);
+  ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(5));
+  NativeProviderAssignment assignment;
+  BOOST_REQUIRE_EQUAL(specs.size(), plan.roles.size());
+  for (const auto& role : plan.roles)
+    assignment.providerByRole.emplace(role, specs.at(role).metadata.at("providerIdentity"));
+  NativeGenerationExecutionContractV1 stateContract;
+  if (dynamic) {
+    stateContract.enabled = true;
+    stateContract.mode = "TOKEN_STREAMING";
+    qwen::bindQwenTpGenerationState(plan, stateContract);
+    BOOST_REQUIRE_EQUAL(stateContract.stateOutputNames.size(), 8u);
+  }
+  std::map<std::string, RoleSpec> roleSpecs;
+  std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
+  for (const auto& role : plan.roles) {
+    auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "");
+    const auto entries = qwen::parseQwenTpEntryTable(
+      specs.at(role).metadata.at("tensorParallelEntries"));
+    std::set<std::string> ownedState;
+    for (const auto& entry : entries) {
+      BOOST_REQUIRE_EQUAL(entry.unitId, role);
+      ownedState.insert(entry.stateOutputGraphNames.begin(), entry.stateOutputGraphNames.end());
+    }
+    for (std::size_t i = 0; i < stateContract.stateOutputNames.size(); ++i) {
+      if (ownedState.count(stateContract.stateOutputNames[i]) == 0) continue;
+      roleSpec.stateInputNames.push_back(stateContract.stateInputNames[i]);
+      roleSpec.stateOutputNames.push_back(stateContract.stateOutputNames[i]);
+    }
+    auto spec = specs.at(role);
+    spec.metadata["providerBootId"] = "none";
+    runners.emplace(role, factory.create(spec));
+    roleSpecs.emplace(role, std::move(roleSpec));
+  }
+
+  std::vector<std::int64_t> prefix;
+  std::set<std::string> publicationNames;
+  float worstLogits = 0;
+  double worstState = 0;
+  const std::size_t epochs = dynamic ? 3 : 1;
+  for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
+    const std::vector<std::int64_t> tokens = epoch == 0
+      ? std::vector<std::int64_t>{1, 2, 3}
+      : std::vector<std::int64_t>{static_cast<std::int64_t>(3 + epoch)};
+    prefix.insert(prefix.end(), tokens.begin(), tokens.end());
+    const auto expected = fullReference(prefix);
+    auto bus = std::make_shared<tests::PartialBus>();
+    std::map<std::string, std::future<ProviderRoleResult>> futures;
+    for (const auto& role : plan.roles) {
+      auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "", epoch);
+      roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
+      roleSpec.stateOutputNames = roleSpecs.at(role).stateOutputNames;
+      roleSpec.streamingStateExecution = dynamic;
+      roleSpec.inferenceEpoch = epoch;
+      for (const auto& edge : roleSpec.outputs) {
+        BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
+        BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
+        BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
+      }
+      NamedTensor ids;
+      ids.name = "input_ids";
+      ids.elementType = TensorElementType::Int64;
+      ids.shape = {1, static_cast<std::int64_t>(tokens.size())};
+      ids.payload.resize(tokens.size() * sizeof(std::int64_t));
+      std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
+      auto io = std::make_shared<tests::BusDependencyIo>(bus);
+      auto runner = runners.at(role);
+      futures.emplace(role, worker.executePreparedAsync(sessionId, std::move(roleSpec),
+        io, [runner] { return runner; },
+        {{"input_ids", makeEncodedTensorBundle("input_ids", {ids})}}));
+    }
+    std::map<std::string, ProviderRoleResult> results;
+    for (auto& [role, future] : futures) {
+      BOOST_REQUIRE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+      BOOST_REQUIRE_NO_THROW(results.emplace(role, future.get()));
+    }
+    BOOST_CHECK_EQUAL(bus->publishedCount(), 6u);
+    BOOST_REQUIRE_EQUAL(results.size(), 3u);
+    BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
+    const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
+    BOOST_REQUIRE_EQUAL(actual.size(), 1u);
+    BOOST_CHECK_EQUAL(actual.front().name, "logits");
+    BOOST_CHECK(actual.front().elementType == TensorElementType::Float32);
+    BOOST_CHECK(actual.front().shape ==
+      std::vector<std::int64_t>({1, static_cast<std::int64_t>(tokens.size()),
+                                 static_cast<std::int64_t>(shape.vocab)}));
+    const auto count = tokens.size() * shape.vocab;
+    BOOST_REQUIRE_EQUAL(actual.front().payload.size(), count * sizeof(float));
+    std::vector<float> values(count);
+    std::memcpy(values.data(), actual.front().payload.data(), actual.front().payload.size());
+    const auto& expectedLogits = expected.at("logits");
+    const auto offset = (prefix.size() - tokens.size()) * shape.vocab;
+    std::vector<float> referenceLogits(prefix.size() * shape.vocab);
+    BOOST_REQUIRE_EQUAL(expectedLogits.payload.size(), referenceLogits.size() * sizeof(float));
+    std::memcpy(referenceLogits.data(), expectedLogits.payload.data(), expectedLogits.payload.size());
+    for (std::size_t index = 0; index < values.size(); ++index) {
+      const auto wanted = referenceLogits.at(offset + index);
+      BOOST_REQUIRE(std::isfinite(values[index]) && std::isfinite(wanted));
+      const auto error = std::abs(values[index] - wanted);
+      worstLogits = std::max(worstLogits, error);
+      BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(wanted));
+    }
+    if (!dynamic) continue;
+    for (std::uint64_t layer = 0; layer < 4; ++layer) {
+      const auto stage = layer == 0 ? 0u : 1u;
+      const auto degree = units[stage].size();
+      for (const auto* kind : {"key", "value"}) {
+        const auto suffix = std::to_string(layer) + "." + kind;
+        const auto& whole = expected.at("present." + suffix);
+        const auto total = shape.kvHeads * prefix.size() * shape.headDim;
+        BOOST_REQUIRE(whole.shape == std::vector<std::int64_t>(
+          {1, static_cast<std::int64_t>(shape.kvHeads), static_cast<std::int64_t>(prefix.size()),
+           static_cast<std::int64_t>(shape.headDim)}));
+        BOOST_REQUIRE_EQUAL(whole.payload.size(), total * sizeof(float));
+        std::vector<float> referenceState(total);
+        std::memcpy(referenceState.data(), whole.payload.data(), whole.payload.size());
+        for (const auto& unit : units[stage]) {
+          const auto sample = observer->sample(unit.roleId, epoch, "past_key_values." + suffix);
+          BOOST_CHECK_EQUAL(sample.elementType, "float32");
+          BOOST_REQUIRE(sample.shape == std::vector<std::int64_t>(
+            {1, static_cast<std::int64_t>(shape.kvHeads / degree),
+             static_cast<std::int64_t>(prefix.size()), static_cast<std::int64_t>(shape.headDim)}));
+          BOOST_REQUIRE_EQUAL(sample.values.size(), total / degree);
+          BOOST_REQUIRE_EQUAL(sample.indices.size(), sample.values.size());
+          for (std::size_t i = 0; i < sample.values.size(); ++i) {
+            BOOST_REQUIRE_EQUAL(sample.indices[i], i);
+            const auto wanted = referenceState.at(unit.rank * sample.values.size() + i);
+            BOOST_REQUIRE(std::isfinite(sample.values[i]) && std::isfinite(wanted));
+            const auto error = std::abs(sample.values[i] - wanted);
+            worstState = std::max(worstState, error);
+            BOOST_CHECK_LE(error, 1e-5 + 1e-4 * std::abs(wanted));
+          }
+        }
+      }
+    }
+    for (const auto& [role, runner] : runners) {
+      const auto handle = runner->stateHandleSnapshot(sessionId);
+      BOOST_REQUIRE(handle.has_value());
+      BOOST_CHECK_EQUAL(handle->role, role);
+      BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, epoch);
+    }
+  }
+  for (const auto& [role, runner] : runners) {
+    runner->releaseSessionState(sessionId);
+    BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
+  }
+  BOOST_TEST_MESSAGE(label << " " << (dynamic ? "prefill/decode" : "prefill")
+                     << " max errors: logits=" << worstLogits << " complete-KV=" << worstState);
+}
 
 void
 verifyThreeUnitModel(bool dynamic)
@@ -2319,96 +2540,13 @@ verifyThreeUnitModel(bool dynamic)
                                             invalid, first), std::invalid_argument);
   }
 
-  // Recompute the entire prefix with empty past for every epoch. This oracle never uses
-  // splitter-selected nodes, sharded state or the worker's preceding outputs.
-  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-complete-source");
-  Ort::SessionOptions options;
-  Ort::Session reference(env, source.c_str(), options);
-  BOOST_TEST_MESSAGE("native ORT version = " << OrtGetApiBase()->GetVersionString());
-  Ort::AllocatorWithDefaultOptions allocator;
-  auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  std::vector<std::string> inputNames;
-  std::vector<std::string> outputNames;
-  for (std::size_t i = 0; i < reference.GetInputCount(); ++i) {
-    auto name = reference.GetInputNameAllocated(i, allocator);
-    inputNames.emplace_back(name.get());
-  }
-  for (std::size_t i = 0; i < reference.GetOutputCount(); ++i) {
-    auto name = reference.GetOutputNameAllocated(i, allocator);
-    outputNames.emplace_back(name.get());
-  }
-  const auto fullReference = [&] (std::vector<std::int64_t> prefix) {
-    std::vector<Ort::Value> inputs;
-    for (std::size_t i = 0; i < inputNames.size(); ++i) {
-      if (inputNames[i] == "input_ids") {
-        const std::array<std::int64_t, 2> dims{1, static_cast<std::int64_t>(prefix.size())};
-        inputs.push_back(Ort::Value::CreateTensor<std::int64_t>(memory, prefix.data(),
-          prefix.size(), dims.data(), dims.size()));
-      }
-      else {
-        BOOST_REQUIRE(inputNames[i].find("past_key_values.") == 0);
-        auto type = reference.GetInputTypeInfo(i);
-        auto info = type.GetTensorTypeAndShapeInfo();
-        auto dims = info.GetShape();
-        BOOST_REQUIRE_EQUAL(dims.size(), 4u);
-        dims[2] = 0;
-        inputs.push_back(Ort::Value::CreateTensor<float>(allocator, dims.data(), dims.size()));
-      }
-    }
-    std::vector<const char*> in;
-    std::vector<const char*> out;
-    for (const auto& name : inputNames) in.push_back(name.c_str());
-    for (const auto& name : outputNames) out.push_back(name.c_str());
-    auto values = reference.Run(Ort::RunOptions{nullptr}, in.data(), inputs.data(),
-                                inputs.size(), out.data(), out.size());
-    std::map<std::string, NamedTensor> result;
-    for (std::size_t i = 0; i < values.size(); ++i) {
-      auto info = values[i].GetTensorTypeAndShapeInfo();
-      BOOST_REQUIRE(info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-      NamedTensor tensor;
-      tensor.name = outputNames[i];
-      tensor.elementType = TensorElementType::Float32;
-      tensor.shape = info.GetShape();
-      tensor.payload.resize(info.GetElementCount() * sizeof(float));
-      std::memcpy(tensor.payload.data(), values[i].GetTensorData<float>(), tensor.payload.size());
-      result.emplace(tensor.name, std::move(tensor));
-    }
-    return result;
-  };
-
-  auto observer = std::make_shared<CompleteFixtureStateObserver>();
-  RegistryNativeModelRunnerFactory factory;
-  registerOnnxRuntimeBackend(factory, nullptr, observer);
-  qwen::registerQwenTensorBackend(factory);
-  ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(5));
-  NativeProviderAssignment assignment;
-  for (const auto& role : plan.roles)
-    assignment.providerByRole.emplace(role, "/fixture/" + role);
-  NativeGenerationExecutionContractV1 stateContract;
-  if (dynamic) {
-    stateContract.enabled = true;
-    stateContract.mode = "TOKEN_STREAMING";
-    qwen::bindQwenTpGenerationState(plan, stateContract);
-    BOOST_REQUIRE_EQUAL(stateContract.stateOutputNames.size(), 8u);
-  }
-  std::map<std::string, RoleSpec> roleSpecs;
-  std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
+  std::map<std::string, NativeModelRunnerSpec> specs;
   for (const auto& role : plan.roles) {
-    auto roleSpec = roleSpecFor(plan, role, "three-worker-prefill", assignment, "");
     std::vector<qwen::QwenTpEntryContract> entries;
-    std::set<std::string> ownedState;
-    for (const auto& table : tables) {
-      for (const auto& entry : table) {
-        if (entry.unitId != role) continue;
-        entries.push_back(entry);
-        ownedState.insert(entry.stateOutputGraphNames.begin(), entry.stateOutputGraphNames.end());
-      }
-    }
-    for (std::size_t i = 0; i < stateContract.stateOutputNames.size(); ++i) {
-      if (ownedState.count(stateContract.stateOutputNames[i]) == 0) continue;
-      roleSpec.stateInputNames.push_back(stateContract.stateInputNames[i]);
-      roleSpec.stateOutputNames.push_back(stateContract.stateOutputNames[i]);
-    }
+    for (const auto& table : tables)
+      for (const auto& entry : table)
+        if (entry.unitId == role) entries.push_back(entry);
+    BOOST_REQUIRE(!entries.empty());
     NativeModelRunnerSpec spec;
     spec.role = role;
     spec.kind = "onnx";
@@ -2416,126 +2554,14 @@ verifyThreeUnitModel(bool dynamic)
     spec.path = (roots.at(role) / entries.front().relativeGraphPath).string();
     spec.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson(entries);
     spec.metadata["tensorParallelEntryRoot"] = roots.at(role).string();
-    spec.metadata["tensorParallelSteps"] = qwen::qwenTpStepDeclarationJson(*roleSpec.steps);
-    spec.metadata["providerIdentity"] = assignment.providerByRole.at(role);
-    spec.metadata["providerBootId"] = "none";
-    runners.emplace(role, factory.create(spec));
-    roleSpecs.emplace(role, std::move(roleSpec));
+    std::vector<NativeExecutionStepSpec> steps;
+    for (const auto& step : plan.steps)
+      if (step.unitId == role) steps.push_back(step);
+    spec.metadata["tensorParallelSteps"] = qwen::qwenTpStepDeclarationJson(steps);
+    spec.metadata["providerIdentity"] = "/fixture/" + role;
+    specs.emplace(role, std::move(spec));
   }
-
-  std::vector<std::int64_t> prefix;
-  std::set<std::string> publicationNames;
-  float worstLogits = 0;
-  double worstState = 0;
-  const std::size_t epochs = dynamic ? 3 : 1;
-  for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
-    const std::vector<std::int64_t> tokens = epoch == 0
-      ? std::vector<std::int64_t>{1, 2, 3}
-      : std::vector<std::int64_t>{static_cast<std::int64_t>(3 + epoch)};
-    prefix.insert(prefix.end(), tokens.begin(), tokens.end());
-    const auto expected = fullReference(prefix);
-    auto bus = std::make_shared<tests::PartialBus>();
-    std::map<std::string, std::future<ProviderRoleResult>> futures;
-    for (const auto& role : plan.roles) {
-      auto roleSpec = roleSpecFor(plan, role, "three-worker-prefill", assignment, "", epoch);
-      roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
-      roleSpec.stateOutputNames = roleSpecs.at(role).stateOutputNames;
-      roleSpec.streamingStateExecution = dynamic;
-      roleSpec.inferenceEpoch = epoch;
-      for (const auto& edge : roleSpec.outputs) {
-        BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
-        BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
-        BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
-      }
-      NamedTensor ids;
-      ids.name = "input_ids";
-      ids.elementType = TensorElementType::Int64;
-      ids.shape = {1, static_cast<std::int64_t>(tokens.size())};
-      ids.payload.resize(tokens.size() * sizeof(std::int64_t));
-      std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
-      auto io = std::make_shared<tests::BusDependencyIo>(bus);
-      auto runner = runners.at(role);
-      futures.emplace(role, worker.executePreparedAsync("three-worker-prefill", std::move(roleSpec),
-        io, [runner] { return runner; },
-        {{"input_ids", makeEncodedTensorBundle("input_ids", {ids})}}));
-    }
-    std::map<std::string, ProviderRoleResult> results;
-    for (auto& [role, future] : futures) {
-      BOOST_REQUIRE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
-      BOOST_REQUIRE_NO_THROW(results.emplace(role, future.get()));
-    }
-    BOOST_CHECK_EQUAL(bus->publishedCount(), 6u);
-    BOOST_REQUIRE_EQUAL(results.size(), 3u);
-    BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
-    const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
-    BOOST_REQUIRE_EQUAL(actual.size(), 1u);
-    BOOST_CHECK_EQUAL(actual.front().name, "logits");
-    BOOST_CHECK(actual.front().elementType == TensorElementType::Float32);
-    BOOST_CHECK(actual.front().shape ==
-      std::vector<std::int64_t>({1, static_cast<std::int64_t>(tokens.size()),
-                                 static_cast<std::int64_t>(shape.vocab)}));
-    const auto count = tokens.size() * shape.vocab;
-    BOOST_REQUIRE_EQUAL(actual.front().payload.size(), count * sizeof(float));
-    std::vector<float> values(count);
-    std::memcpy(values.data(), actual.front().payload.data(), actual.front().payload.size());
-    const auto& expectedLogits = expected.at("logits");
-    const auto offset = (prefix.size() - tokens.size()) * shape.vocab;
-    std::vector<float> referenceLogits(prefix.size() * shape.vocab);
-    BOOST_REQUIRE_EQUAL(expectedLogits.payload.size(), referenceLogits.size() * sizeof(float));
-    std::memcpy(referenceLogits.data(), expectedLogits.payload.data(), expectedLogits.payload.size());
-    for (std::size_t index = 0; index < values.size(); ++index) {
-      const auto wanted = referenceLogits.at(offset + index);
-      BOOST_REQUIRE(std::isfinite(values[index]) && std::isfinite(wanted));
-      const auto error = std::abs(values[index] - wanted);
-      worstLogits = std::max(worstLogits, error);
-      BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(wanted));
-    }
-    if (!dynamic) continue;
-    for (std::uint64_t layer = 0; layer < 4; ++layer) {
-      const auto stage = layer == 0 ? 0u : 1u;
-      const auto degree = units[stage].size();
-      for (const auto* kind : {"key", "value"}) {
-        const auto suffix = std::to_string(layer) + "." + kind;
-        const auto& whole = expected.at("present." + suffix);
-        const auto total = shape.kvHeads * prefix.size() * shape.headDim;
-        BOOST_REQUIRE(whole.shape == std::vector<std::int64_t>(
-          {1, static_cast<std::int64_t>(shape.kvHeads), static_cast<std::int64_t>(prefix.size()),
-           static_cast<std::int64_t>(shape.headDim)}));
-        BOOST_REQUIRE_EQUAL(whole.payload.size(), total * sizeof(float));
-        std::vector<float> referenceState(total);
-        std::memcpy(referenceState.data(), whole.payload.data(), whole.payload.size());
-        for (const auto& unit : units[stage]) {
-          const auto sample = observer->sample(unit.roleId, epoch, "past_key_values." + suffix);
-          BOOST_CHECK_EQUAL(sample.elementType, "float32");
-          BOOST_REQUIRE(sample.shape == std::vector<std::int64_t>(
-            {1, static_cast<std::int64_t>(shape.kvHeads / degree),
-             static_cast<std::int64_t>(prefix.size()), static_cast<std::int64_t>(shape.headDim)}));
-          BOOST_REQUIRE_EQUAL(sample.values.size(), total / degree);
-          BOOST_REQUIRE_EQUAL(sample.indices.size(), sample.values.size());
-          for (std::size_t i = 0; i < sample.values.size(); ++i) {
-            BOOST_REQUIRE_EQUAL(sample.indices[i], i);
-            const auto wanted = referenceState.at(unit.rank * sample.values.size() + i);
-            BOOST_REQUIRE(std::isfinite(sample.values[i]) && std::isfinite(wanted));
-            const auto error = std::abs(sample.values[i] - wanted);
-            worstState = std::max(worstState, error);
-            BOOST_CHECK_LE(error, 1e-5 + 1e-4 * std::abs(wanted));
-          }
-        }
-      }
-    }
-    for (const auto& [role, runner] : runners) {
-      const auto handle = runner->stateHandleSnapshot("three-worker-prefill");
-      BOOST_REQUIRE(handle.has_value());
-      BOOST_CHECK_EQUAL(handle->role, role);
-      BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, epoch);
-    }
-  }
-  for (const auto& [role, runner] : runners) {
-    runner->releaseSessionState("three-worker-prefill");
-    BOOST_CHECK(!runner->stateHandleSnapshot("three-worker-prefill"));
-  }
-  BOOST_TEST_MESSAGE("three-unit " << (dynamic ? "prefill/decode" : "prefill")
-                     << " max errors: logits=" << worstLogits << " complete-KV=" << worstState);
+  verifyHybridExecution(source, plan, shape, units, egress, specs, dynamic, "direct material");
 }
 
 } // namespace
@@ -2872,6 +2898,8 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
   sessionOptions.SetIntraOpNumThreads(1);
   NativeJson reopenData{{"schema", "spec242-cache-reopen-v1"},
     {"cache", options.cacheDir}, {"requests", NativeJson::array()}};
+  std::map<std::string, NativeModelRunnerSpec> coldSpecs;
+  std::map<std::string, NativeModelRunnerSpec> cachedSpecs;
   for (const auto& role : prepared.roles) {
     auto projection = stageWindowProjection(prepared.candidate.executionPlan);
     projection.provider = options.providerIdentity;
@@ -2914,6 +2942,10 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       BOOST_CHECK_EQUAL(reopened->backend, cold.backend);
       BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
                         cold.metadata.at("tensorParallelEntries"));
+      coldSpecs.emplace(role.role, cold);
+      cachedSpecs.emplace(role.role, *reopened);
+      for (auto* specs : {&coldSpecs, &cachedSpecs})
+        specs->at(role.role).metadata["providerIdentity"] = projection.provider;
       const auto entries = qwen::parseQwenTpEntryTable(reopened->metadata.at("tensorParallelEntries"));
       const bool first = role.layerBegin == 0;
       BOOST_REQUIRE_EQUAL(entries.size(), first ? 3u : 7u);
@@ -2947,6 +2979,26 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
   }
   BOOST_CHECK_EQUAL(sourceFetches, 3u);
   BOOST_CHECK_EQUAL(signatures, 3u);
+  const auto shape = qwen::deriveQwenTpShape(source.modelBytes, 4);
+  std::vector<std::vector<qwen::QwenTpUnit>> units;
+  for (const auto& stage : prepared.candidate.executionPlan.stageLayout) {
+    std::vector<qwen::QwenTpUnit> members;
+    for (std::size_t rank = 0; rank < stage.unitRoleIds.size(); ++rank) {
+      const auto& id = stage.unitRoleIds[rank];
+      const auto role = std::find_if(prepared.roles.begin(), prepared.roles.end(),
+        [&] (const auto& value) { return value.role == id; });
+      BOOST_REQUIRE(role != prepared.roles.end());
+      members.push_back({id, rank, role->layerBegin, role->layerEnd});
+    }
+    units.push_back(std::move(members));
+  }
+  for (const auto& item : std::vector<std::pair<std::string,
+         const std::map<std::string, NativeModelRunnerSpec>*>>{
+           {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
+    verifyHybridExecution("../tests/fixtures/spec242/four-layer-decode.onnx",
+      prepared.candidate.executionPlan, shape, units, prepared.candidate.resultEgressRole,
+      *item.second, true, item.first);
+  }
   const auto sidecar = workspace.root / "reopen.json";
   {
     std::ofstream output(sidecar);
