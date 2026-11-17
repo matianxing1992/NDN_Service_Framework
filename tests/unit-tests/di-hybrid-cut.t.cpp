@@ -12,11 +12,13 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
 #include "tests/fixtures/native-dependency-bus.hpp"
+#include "tests/fixtures/owned-test-process.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -25,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <onnxruntime_cxx_api.h>
 
@@ -35,6 +38,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 using namespace ndnsf::di;
@@ -2598,13 +2602,18 @@ BOOST_AUTO_TEST_CASE(LegacyKvObserverKeepsItsSixteenPointContract)
   BOOST_CHECK(!runner->stateHandleSnapshot(context.sessionId));
 }
 
-BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
+namespace {
+
+std::pair<NativeJson, NativeCanonicalSource>
+hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
+                     const std::string& backend = "onnxruntime")
 {
   std::ifstream input("../tests/fixtures/spec242/four-layer-decode.onnx", std::ios::binary);
   BOOST_REQUIRE(static_cast<bool>(input));
   NativeCanonicalSource source;
   source.modelBytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-  const auto descriptor = qwenFixtureDescriptor();
+  auto descriptor = qwenFixtureDescriptor();
+  descriptor.adapter.backends = {backend};
   NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
     [] {}, 8U << 20, 8U << 20};
   const auto identity = canonicalOnnxSourceIdentity(source, control);
@@ -2619,12 +2628,12 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
     {"recipe", {{"artifact_profile_digest", digest}, {"assembler_descriptor_digest", digest},
       {"backend_abi", "onnxruntime"}, {"precision", "int4"},
       {"quantization", "weight_only_int4"}, {"layout", "BNSH"}, {"padding", "none"},
-      {"protection_epoch", "fixture"}, {"max_source_bytes", 8U << 20},
+      {"protection_epoch", protectionEpoch}, {"max_source_bytes", 8U << 20},
       {"max_assembled_bytes", 8U << 20}, {"max_nodes", 512}}},
     {"publication", {{"artifact_root", "/fixture/artifact"}}},
     {"input_format", "OPAQUE"}, {"max_payload_bytes", 1U << 20}};
   const auto resources = nativeParseJson(NativeRoleResourceRequirement{
-    {"onnxruntime"}, 8U << 20, 0, 0, 0, 0, 1.0}.canonicalJson());
+    {backend}, 8U << 20, 0, 0, 0, 0, 1.0}.canonicalJson());
   configuration["splitter"] = {
     {"kind", "QWEN"}, {"roles", roles}, {"layer_ranges", {{0, 1}, {1, 4}}},
     {"tensor_degrees", {2, 1}},
@@ -2653,6 +2662,18 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
       configuration["state_outputs"][role][suffix] = {"present." + suffix};
     }
   }
+  return {std::move(configuration), std::move(source)};
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
+{
+  const auto fixture = hybridCatalogFixture();
+  const auto& configuration = fixture.first;
+  const auto& source = fixture.second;
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 8U << 20, 8U << 20};
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source,
                                                  control);
   BOOST_REQUIRE(loaded.planningCache);
@@ -2732,6 +2753,213 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
     [] (const std::invalid_argument& error) {
       return std::string(error.what()).find("source boundary") != std::string::npos;
     });
+}
+
+BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
+{
+  // These projections exercise post-admission assembly, not Selection or transport security.
+  if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
+    BOOST_REQUIRE_LE(std::filesystem::file_size(childPath), 1U << 20);
+    std::ifstream input(childPath);
+    BOOST_REQUIRE(static_cast<bool>(input));
+    const auto data = nativeParseJson(std::string(std::istreambuf_iterator<char>(input), {}));
+    BOOST_REQUIRE_EQUAL(data.at("schema").get<std::string>(), "spec242-cache-reopen-v1");
+    NativeCanonicalOnnxAssemblerOptions options;
+    options.cacheDir = data.at("cache").get<std::string>();
+    options.providerIdentity = "/fixture/provider";
+    options.verifyCachedArtifactDigest = true;
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-fresh-cache");
+    Ort::SessionOptions sessionOptions;
+    sessionOptions.SetIntraOpNumThreads(1);
+    BOOST_REQUIRE_EQUAL(data.at("requests").size(), 3u);
+    for (const auto& request : data.at("requests")) {
+      std::istringstream fixedWire(request.at("fixed").get<std::string>());
+      const auto fixed = nativeFixedRoleAssignmentV1FromJson(fixedWire);
+      std::istringstream wire(request.at("wire").get<std::string>());
+      const auto projection = nativeSelectionInvocationV1FromJson(wire,
+        request.at("role").get<std::string>(), *fixed);
+      BOOST_CHECK_EQUAL(nativeSelectionInvocationV1ToJson(projection, *fixed),
+                        request.at("wire").get<std::string>());
+      BOOST_REQUIRE_EQUAL(projection.plan.steps.size(),
+                          request.at("step_count").get<std::size_t>());
+      BOOST_REQUIRE_EQUAL(projection.plan.stageLayout.size(), 2u);
+      BOOST_CHECK_EQUAL(projection.plan.degreeForRole(projection.executionRole.roleId),
+                        request.at("degree").get<std::uint64_t>());
+      // No catalog, canonical source, fetch port or parent cache owner exists in this process.
+      const auto reopened = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
+      BOOST_REQUIRE(reopened);
+      BOOST_CHECK_EQUAL(reopened->path, request.at("path").get<std::string>());
+      BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
+                        request.at("entries").get<std::string>());
+      for (const auto& entry : qwen::parseQwenTpEntryTable(
+             reopened->metadata.at("tensorParallelEntries"))) {
+        const auto path = std::filesystem::path(reopened->path).parent_path() /
+          entry.relativeGraphPath;
+        Ort::Session session(env, path.c_str(), sessionOptions);
+        BOOST_CHECK_GT(session.GetInputCount(), 0u);
+        BOOST_CHECK_GT(session.GetOutputCount(), 0u);
+      }
+      auto foreign = projection;
+      // Invocation decoding pins an immutable role; public compatibility copies are not
+      // authoritative. Give this cache-key negative its own complete role allocation.
+      auto foreignRole = projection.assemblyContract();
+      foreignRole.backendAbi = "foreign-fixture-abi";
+      foreignRole.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(foreignRole));
+      foreign.fixedRoleOwner = std::make_shared<const NativeSelectionRoleV3>(std::move(foreignRole));
+      BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(foreign, options));
+    }
+    BOOST_TEST_MESSAGE("fresh-process hybrid cache reopened all three roles");
+    return;
+  }
+  auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu");
+  auto& configuration = fixture.first;
+  const auto& source = fixture.second;
+  const auto root = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
+    {"artifactProfileDigest", configuration.at("recipe").at("artifact_profile_digest")},
+    {"modelIdentityDigest", configuration.at("model").at("content_digest")},
+    {"modelName", "qwen-fixture"},
+    {"metadata", {{"canonicalSourceDataName", "/fixture/source"},
+      {"canonicalSourceDigest", configuration.at("source").at("digest")},
+      {"canonicalSourceBytes", source.modelBytes.size()}}}});
+  configuration["source"]["model_manifest_digest"] = nativePlanningDigest(root);
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 8U << 20, 8U << 20};
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source,
+                                                 control);
+  const auto& prepared = loaded.planningCache->candidates.front();
+  BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
+  struct Workspace
+  {
+    std::filesystem::path root;
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace{std::filesystem::temp_directory_path() / "spec242-material-cache"};
+  workspace.owned = std::filesystem::create_directory(workspace.root);
+  BOOST_REQUIRE(workspace.owned);
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = workspace.root.string();
+  options.providerIdentity = "/fixture/provider";
+  options.workerLocation = resolveNativeOnnxWorkerLocation();
+  BOOST_REQUIRE(!options.workerLocation.path.empty());
+  BOOST_REQUIRE(!options.workerLocation.sha256.empty());
+  BOOST_TEST_MESSAGE("assembly worker=" << options.workerLocation.path << " "
+                     << options.workerLocation.sha256);
+  std::size_t signatures = 0;
+  options.signManifest = [&] (const std::string&) {
+    ++signatures;
+    return std::string("fixture-manifest-signature");
+  };
+  std::size_t sourceFetches = 0;
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    BOOST_REQUIRE(name == ndn::Name("/fixture/root"));
+    return ndn::Buffer(root.begin(), root.end());
+  };
+  fetchers.fetchEncryptedLargeData = [&] (const ndn::Name& name, const ndn::Name& service)
+    -> std::optional<ndn::Buffer> {
+    BOOST_REQUIRE(name == ndn::Name("/fixture/source"));
+    BOOST_REQUIRE(service == ndn::Name("/fixture/service"));
+    ++sourceFetches;
+    return ndn::Buffer(source.modelBytes.begin(), source.modelBytes.end());
+  };
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-material-cache");
+  Ort::SessionOptions sessionOptions;
+  sessionOptions.SetIntraOpNumThreads(1);
+  NativeJson reopenData{{"schema", "spec242-cache-reopen-v1"},
+    {"cache", options.cacheDir}, {"requests", NativeJson::array()}};
+  for (const auto& role : prepared.roles) {
+    auto projection = stageWindowProjection(prepared.candidate.executionPlan);
+    projection.provider = options.providerIdentity;
+    projection.fixedProviderByRole.clear();
+    for (const auto& unit : prepared.candidate.executionPlan.roles)
+      projection.fixedProviderByRole[unit] = projection.provider;
+    projection.deviceBinding.provider = projection.provider;
+    projection.deviceBinding.role = role.role;
+    projection.requestId = "/fixture/material-request";
+    projection.attempt = 1;
+    projection.planDigest = nativePlanningDigest("spec242-material-plan");
+    projection.deadlineMs = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()) + 120000;
+    projection.plan = prepared.candidate.executionPlan;
+    projection.plan.serviceName = "/fixture/service";
+    projection.canonicalArtifactName = "/fixture/root";
+    projection.selectedRole = projection.assembly = role;
+    projection.executionRole.roleId = role.role;
+    projection.executionRole.stageId = role.role;
+    projection.executionRole.rank = role.rank;
+    projection.executionRole.layerBegin = role.layerBegin;
+    projection.executionRole.layerEnd = role.layerEnd;
+    projection.executionRole.backend = role.backend;
+    projection.executionRole.adapterId = role.adapterId;
+    projection.executionRole.adapterVersion = role.adapterVersion;
+    projection.dataflow.role = role.role;
+    projection.dataflow.requestId = projection.requestId;
+    projection.dataflow.attempt = projection.attempt;
+    projection.dataflow.planDigest = projection.planDigest;
+    projection.dataflow.terminalResponseOwner =
+      role.role == prepared.candidate.resultEgressRole;
+    BOOST_TEST_CONTEXT("role=" << role.role) {
+      const auto cold = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+      const auto beforeReopen = sourceFetches;
+      const auto reopened = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
+      BOOST_REQUIRE(reopened);
+      BOOST_CHECK_EQUAL(sourceFetches, beforeReopen);
+      BOOST_CHECK_EQUAL(reopened->path, cold.path);
+      BOOST_CHECK_EQUAL(reopened->backend, cold.backend);
+      BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
+                        cold.metadata.at("tensorParallelEntries"));
+      const auto entries = qwen::parseQwenTpEntryTable(reopened->metadata.at("tensorParallelEntries"));
+      const bool first = role.layerBegin == 0;
+      BOOST_REQUIRE_EQUAL(entries.size(), first ? 3u : 7u);
+      std::set<std::string> expectedEntries;
+      std::set<std::string> actualEntries;
+      for (const auto& step : projection.plan.steps)
+        if (step.unitId == role.selectedRole && step.operation == "CALL_SUBGRAPH")
+          expectedEntries.insert(step.artifactEntry);
+      for (const auto& entry : entries) {
+        actualEntries.insert(entry.entryId);
+        BOOST_CHECK_EQUAL(entry.unitId, role.selectedRole);
+        if (entry.kind == "INIT") BOOST_CHECK(first);
+        else if (entry.kind == "HEAD") BOOST_CHECK(!first);
+        else BOOST_CHECK(entry.layer >= role.layerBegin && entry.layer < role.layerEnd);
+        const auto path = std::filesystem::path(reopened->path).parent_path() /
+          entry.relativeGraphPath;
+        BOOST_REQUIRE(std::filesystem::is_regular_file(path));
+        Ort::Session session(env, path.c_str(), sessionOptions);
+        BOOST_CHECK_GT(session.GetInputCount(), 0u);
+        BOOST_CHECK_GT(session.GetOutputCount(), 0u);
+      }
+      BOOST_CHECK(actualEntries == expectedEntries);
+      const auto fixed = nativeFixedRoleAssignmentV1FromProjection(projection);
+      reopenData["requests"].push_back({{"role", role.selectedRole},
+        {"fixed", nativeFixedRoleAssignmentV1ToJson(*fixed)},
+        {"wire", nativeSelectionInvocationV1ToJson(projection, *fixed)}, {"path", cold.path},
+        {"step_count", projection.plan.steps.size()},
+        {"degree", projection.plan.degreeForRole(role.selectedRole)},
+        {"entries", cold.metadata.at("tensorParallelEntries")}});
+    }
+  }
+  BOOST_CHECK_EQUAL(sourceFetches, 3u);
+  BOOST_CHECK_EQUAL(signatures, 3u);
+  const auto sidecar = workspace.root / "reopen.json";
+  {
+    std::ofstream output(sidecar);
+    output << nativeCanonicalJson(reopenData);
+    BOOST_REQUIRE(static_cast<bool>(output));
+  }
+  const auto executable = std::filesystem::read_symlink("/proc/self/exe");
+  BOOST_REQUIRE(executable.is_absolute());
+  const auto status = ndn_service_framework::test::runOwnedTestProcess(executable,
+    {executable.string(), "--run_test=DiHybridCut/HybridMaterialsReopenThroughProductionCache",
+      "--log_level=message", "--report_level=short"},
+    {{"NDNSF_SPEC242_CACHE_REOPEN", sidecar.string()}}, std::chrono::seconds(30));
+  BOOST_CHECK_EQUAL(status, 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
