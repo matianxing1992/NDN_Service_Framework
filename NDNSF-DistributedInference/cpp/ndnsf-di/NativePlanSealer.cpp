@@ -630,6 +630,23 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativePlanSealingInputs& inputs)
 {
   auto phaseStarted = detail::nativePhaseStarted();
+  const auto requiredCapabilities = nativePlanRequiredCapabilities(executionPlan);
+  if (proposal.context.requiredExecutionCapabilities != requiredCapabilities)
+    throw std::invalid_argument("V3 placement execution capability requirements differ from plan");
+  if (!requiredCapabilities.empty()) {
+    for (const auto& assignment : proposal.providerByRole) {
+      const auto admitted = std::find_if(offers.begin(), offers.end(), [&assignment] (const auto& item) {
+        return item.observation().provider == assignment.second;
+      });
+      if (admitted == offers.end() ||
+          !std::all_of(requiredCapabilities.begin(), requiredCapabilities.end(),
+            [&admitted] (const auto& capability) {
+              const auto& available = admitted->observation().capabilities;
+              return std::find(available.begin(), available.end(), capability) != available.end();
+            }))
+        throw std::invalid_argument("V3 selected Provider lacks required execution capabilities");
+    }
+  }
   if (inputs.borrowedPreparedRoles && !inputs.assemblyByRole.empty())
     throw std::invalid_argument("sealing inputs mix borrowed and value roles");
   std::vector<NativeSelectionRoleV3> preparedStorage;

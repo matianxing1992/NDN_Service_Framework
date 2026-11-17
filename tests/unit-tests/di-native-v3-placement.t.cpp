@@ -161,6 +161,47 @@ struct Input
   }
 };
 
+void makeStepCapabilityCandidate(Input& input)
+{
+  if (input.roles.size() != 1)
+    throw std::invalid_argument("capability fixture needs one ordinary unit");
+  const auto& role = input.roles.front();
+  auto& execution = input.split.executionPlan;
+  execution.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  execution.tensorDegree = 1;
+  execution.stageLayout = {{"capability-stage", nativePlanningDigest("capability-region"),
+                            {role.role}}};
+  const auto layout = nativePlanningDigest("capability-value-layout");
+  NativeExecutionStepSpec call;
+  call.stepId = "capability-call";
+  call.unitId = role.role;
+  call.operation = "CALL_SUBGRAPH";
+  call.artifactEntry = "capability-entry";
+  for (const auto& tensor : role.expectedInputs) {
+    NativeStepSlotSpec inputSlot;
+    inputSlot.slotId = tensor.name;
+    inputSlot.dtype = tensor.dtype;
+    inputSlot.shape = tensor.shape;
+    inputSlot.layoutDigest = layout;
+    inputSlot.source = "EPOCH_INPUT";
+    call.inputSlots.push_back(std::move(inputSlot));
+  }
+  call.outputSlots = {{"left", "float32", {std::int64_t{1}}, layout, "LOCAL_STEP", {}, {}},
+                      {"right", "float32", {std::int64_t{1}}, layout, "LOCAL_STEP", {}, {}}};
+  NativeExecutionStepSpec sum;
+  sum.stepId = "capability-sum";
+  sum.unitId = role.role;
+  sum.operation = "SUM";
+  sum.inputSlots = {{"lhs", "float32", {std::int64_t{1}}, layout, "LOCAL_STEP",
+                     call.stepId, "left"},
+                    {"rhs", "float32", {std::int64_t{1}}, layout, "LOCAL_STEP",
+                     call.stepId, "right"}};
+  sum.outputSlots = {{"merged", "float32", {std::int64_t{1}}, layout, "LOCAL_STEP", {}, {}}};
+  execution.steps = {std::move(call), std::move(sum)};
+  input.split.candidateDigest = input.split.computedDigest();
+  input.split.validate(input.inspected.graph);
+}
+
 void makeInterRoleProbeInput(Input& input)
 {
   auto roles = std::vector<NativeSelectionRoleV3>{input.roles[0], input.roles[1]};
@@ -388,7 +429,8 @@ NativeJson makeV4PlacementSnapshot(
 }
 
 NativePlacementPlanCore sealV4Proposal(
-  const Input& input, const NativeRolePlacementProposalV3& proposal)
+  const Input& input, const NativeRolePlacementProposalV3& proposal,
+  std::shared_ptr<const NativeFixedPlacementCoreV1> previous = {})
 {
   const auto& context = proposal.context;
   NativeExecutionPlan execution = input.split.executionPlan;
@@ -396,6 +438,7 @@ NativePlacementPlanCore sealV4Proposal(
   execution.modelName = input.inspected.descriptor.modelName;
   execution.roles.clear();
   NativePlanSealingInputs sealing;
+  sealing.previousFixedCore = std::move(previous);
   sealing.requesterIdentity = context.requesterIdentity;
   sealing.protectionEpoch = input.roles.front().protectionEpoch;
   sealing.expiresAtMs = context.deadlineMs;
@@ -546,6 +589,146 @@ BOOST_AUTO_TEST_CASE(ProductionGpuOfferFeedsAdmissionAndMemoryConstrainedPlaceme
     else {
       BOOST_CHECK_THROW(NativePreSplitFirstPlacement().proposeRoles(
         input.context, input.ackDigest, input.roles, offers, 200), NativeNoFeasiblePlacement);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(StepCapabilitiesReachSignedPlacementAndIndependentSealing)
+{
+  const auto f = oracle();
+  const auto sample = std::find_if(f.at("seal_cases").begin(), f.at("seal_cases").end(),
+    [] (const auto& row) { return row.at("name") == "cpu"; });
+  BOOST_REQUIRE(sample != f.at("seal_cases").end());
+  Input input(f, *sample, true);
+  makeStepCapabilityCandidate(input);
+  input.context.requesterIdentity = "/requester";
+  input.context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(input.split.executionPlan);
+  const std::vector<std::string> required{NATIVE_STEP_PLAN_CAPABILITY_V2, NATIVE_SUM_CAPABILITY_V1};
+  BOOST_REQUIRE(input.context.requiredExecutionCapabilities == required);
+  const auto originalAcks = input.acks;
+  const auto originalOffers = input.offers;
+  BOOST_REQUIRE_EQUAL(originalOffers.size(), 2u);
+  NativeOfferAdmission admission(uriProfileFixturePolicy(f),
+    {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}},
+    f.at("candidate"));
+  const auto request = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-request-envelope-v2"}, {"placementProfile", "DI_PLACEMENT_V3"},
+    {"request_id", input.context.requestId}, {"service", input.context.serviceName},
+    {"attempt", input.context.attempt}, {"plan_deadline_ms", input.context.deadlineMs},
+    {"model_identity_hash", input.context.modelDigest}, {"graphDigest", input.context.graphDigest}});
+  const ExtensionControl control{std::chrono::steady_clock::now() + std::chrono::seconds(5),
+                                  [] { return false; }};
+  const std::vector<std::vector<std::string>> profiles{
+    required, {}, {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_SUM_CAPABILITY_V1},
+    {NATIVE_STEP_PLAN_CAPABILITY_V2}};
+  std::shared_ptr<const NativeFixedPlacementCoreV1> fixedCore;
+  for (std::size_t profile = 0; profile < profiles.size(); ++profile) {
+    BOOST_TEST_CONTEXT("capability profile " << profile) {
+      input.offers.clear();
+      input.acks.clear();
+      input.context.placementObservationSnapshot = nullptr;
+      input.context.placementObservationSnapshotDigest.clear();
+      input.context.requiredExecutionCapabilities = required;
+      for (std::size_t index = 0; index < originalOffers.size(); ++index) {
+        const auto& original = originalOffers[index].observation();
+        NativeProviderOfferV3Config config;
+        config.provider = original.provider;
+        config.service = original.service;
+        config.bootEpoch = original.bootEpoch;
+        config.signerKeyId = original.signerKeyId;
+        config.acceptedRoles = {input.roles.front().role};
+        config.backends = {"onnxruntime-cpu"};
+        config.capabilities = profile == 0 && index == 0
+          ? profiles[2] : profiles[profile];
+        config.signDigest = [] (const std::string&) { return "fixture-signature-pending"; };
+        const auto issued = issueNativeProviderOfferV3(
+          {request.begin(), request.end()}, config, 200);
+        BOOST_REQUIRE(issued && issued->status);
+        const auto wire = resignOfferAcceptingRole(issued->payload, input.roles.front().role);
+        auto ack = originalAcks[index];
+        ndn::Buffer payload(wire.begin(), wire.end());
+        ack.ack.setPayload(payload, payload.size());
+        input.offers.push_back(admission.verify(ack, input.context, 200));
+        input.acks.push_back(std::move(ack));
+      }
+      const auto role = input.roles.front().role;
+      const auto goodProvider = originalOffers.back().observation().provider;
+      const NativeFixedProviderPlacement fixed(
+        std::map<std::string, std::string>{{role, goodProvider}});
+      const auto ordinary = [&] {
+        return NativePreSplitFirstPlacement().proposeRoles(
+          input.context, input.ackDigest, input.roles, input.offers, 200);
+      };
+      const auto pinned = [&] {
+        return fixed.proposeRoles(input.context, input.ackDigest, input.roles,
+                                  input.offers, 200, control);
+      };
+      const auto observed = [&] {
+        return NativeObservationAwarePlacementV4().proposeRoles(
+          input.context, input.ackDigest, input.roles, input.offers, 200);
+      };
+      if (profile == 0) {
+        const auto proposal = ordinary();
+        BOOST_CHECK_EQUAL(proposal.providerByRole.at(role), goodProvider);
+        BOOST_CHECK_EQUAL(pinned().providerByRole.at(role), goodProvider);
+        const auto fallback = observed();
+        BOOST_CHECK_EQUAL(fallback.providerByRole.at(role), goodProvider);
+        BOOST_REQUIRE(fallback.placementDecisionV4);
+        BOOST_CHECK_EQUAL(fallback.placementDecisionV4->at("status").get<std::string>(),
+                          "BASELINE_FALLBACK");
+        const auto core = sealV4Proposal(input, proposal);
+        const auto shared = NativePlanSealer::shareFixedCore(core);
+        fixedCore = shared.fixedCoreOwner;
+        BOOST_REQUIRE(fixedCore);
+        BOOST_CHECK_NO_THROW(sealV4Proposal(input, proposal, fixedCore));
+        BOOST_CHECK_NO_THROW(validateNativeRolePlacementWithFixedCore(
+          proposal, input.roles, *fixedCore, input.offers, 200));
+        BOOST_CHECK_NO_THROW(validateNativePublishedRolePlacement(
+          proposal, *fixedCore, input.offers, 200));
+      }
+      else {
+        BOOST_CHECK_THROW(ordinary(), NativeNoFeasiblePlacement);
+        BOOST_CHECK_THROW(pinned(), NativeNoFeasiblePlacement);
+        BOOST_CHECK_THROW(observed(), NativeNoFeasiblePlacement);
+        auto unconstrained = input.context;
+        unconstrained.requiredExecutionCapabilities.clear();
+        auto forged = fixed.proposeRoles(
+          unconstrained, input.ackDigest, input.roles, input.offers, 200, control);
+        BOOST_CHECK_EQUAL(forged.providerByRole.at(role), goodProvider);
+        const auto mismatched = [] (const std::invalid_argument& error) {
+          return std::string(error.what()) ==
+            "V3 placement execution capability requirements differ from plan";
+        };
+        BOOST_CHECK_EXCEPTION(sealV4Proposal(input, forged), std::invalid_argument, mismatched);
+        forged.context.requiredExecutionCapabilities = required;
+        BOOST_CHECK_THROW(validateNativeRolePlacement(forged, input.roles, input.offers, 200),
+                          std::invalid_argument);
+        BOOST_CHECK_THROW(validateNativeRolePlacementWithFixedCore(
+          forged, input.roles, *fixedCore, input.offers, 200), std::invalid_argument);
+        BOOST_CHECK_THROW(validateNativePublishedRolePlacement(
+          forged, *fixedCore, input.offers, 200), std::invalid_argument);
+        const auto unsupported = [] (const std::invalid_argument& error) {
+          return std::string(error.what()) ==
+            "V3 selected Provider lacks required execution capabilities";
+        };
+        BOOST_CHECK_EXCEPTION(sealV4Proposal(input, forged), std::invalid_argument, unsupported);
+        BOOST_CHECK_EXCEPTION(sealV4Proposal(input, forged, fixedCore),
+                              std::invalid_argument, unsupported);
+      }
+      input.context.placementObservationSnapshot = makeV4PlacementSnapshot(
+        input, input.roles, NativeJson(nullptr), false);
+      input.context.placementObservationSnapshotDigest = nativePlanningDigest(
+        nativeCanonicalJson(input.context.placementObservationSnapshot));
+      BOOST_CHECK_EQUAL(input.context.placementObservationSnapshot.at("provider_roster").size(), 2u);
+      if (profile == 0) {
+        const auto scored = observed();
+        BOOST_CHECK_EQUAL(scored.providerByRole.at(role), goodProvider);
+        BOOST_REQUIRE(scored.placementDecisionV4);
+        BOOST_CHECK_EQUAL(scored.placementDecisionV4->at("status").get<std::string>(), "SCORED");
+      }
+      else {
+        BOOST_CHECK_THROW(observed(), NativeNoFeasiblePlacement);
+      }
     }
   }
 }
@@ -912,10 +1095,39 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       edge.consumerStepId = consumerStep.stepId;
       edge.consumerSlotId = remote.slotId;
       stepExecution.validateSteps();
+      // Keep the logical source/rank candidate, but bind the final execution capabilities
+      // to newly signed observations before invoking the explicit execution-plan sealer.
+      NativeOfferAdmission stepAdmission(f.at("policy").dump(),
+        {{f.at("key_id").get<std::string>(), f.at("public_pem").get<std::string>()}},
+        f.at("candidate"));
+      std::vector<NativeAdmittedOfferV3> stepOffers;
+      for (auto ack : input.acks) {
+        const auto payload = ack.ack.getPayload();
+        auto value = nativeParseJson(std::string(payload.begin(), payload.end()));
+        value["capabilities"] = std::vector<std::string>{NATIVE_STEP_PLAN_CAPABILITY_V2};
+        const auto wire = resignOfferAcceptingRole(nativeCanonicalJson(value), input.roles.front().role);
+        ndn::Buffer signedPayload(wire.begin(), wire.end());
+        ack.ack.setPayload(signedPayload, signedPayload.size());
+        stepOffers.push_back(stepAdmission.verify(ack, input.context, now));
+      }
+      auto stepProposal = proposal;
+      stepProposal.context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(stepExecution);
+      stepProposal.offerDigestByProvider.clear();
+      for (const auto& assignment : stepProposal.providerByRole) {
+        const auto offer = std::find_if(stepOffers.begin(), stepOffers.end(), [&assignment] (const auto& item) {
+          return item.observation().provider == assignment.second;
+        });
+        BOOST_REQUIRE(offer != stepOffers.end());
+        stepProposal.offerDigestByProvider.emplace(assignment.second, offer->observation().offerDigest);
+      }
+      const auto sealStep = [&] (const NativeExecutionPlan& plan) {
+        return projectionPlan(NativePlanSealer::sealCore(input.inspected, input.split, stepProposal,
+          plan, stepOffers, input.ackDigest, sealing));
+      };
       std::shared_ptr<const NativeStaticProjectionLayout> stepLayout;
       auto stepContext = context;
       stepContext.layoutOwner = &stepLayout;
-      const auto stepSealed = seal(stepExecution);
+      const auto stepSealed = sealStep(stepExecution);
       const auto sharedCore = NativePlanSealer::shareFixedCore(stepSealed.core);
       BOOST_REQUIRE(sharedCore.fixedCoreOwner);
       BOOST_CHECK(sharedCore.fixedCoreOwner->matches(sharedCore));
@@ -930,7 +1142,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       BOOST_CHECK(!sharedCore.fixedCoreOwner->matches(changedCore));
       BOOST_CHECK_THROW(changedCore.validate(), std::invalid_argument);
       const auto exact = NativePlanProjectionBuilder::build(stepSealed, input.split,
-        input.offers, stepContext);
+        stepOffers, stepContext);
       const auto& published = exact.at(producerStep.unitId).dataflow.mayPublish;
       const auto& fetched = exact.at(consumerStep.unitId).dataflow.mustFetch;
       BOOST_REQUIRE_EQUAL(published.size(), 1u);
@@ -951,7 +1163,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       const auto exactLayout = stepLayout;
       stepContext.dependencies.at(0).groupEpoch = "refreshed-step-epoch";
       const auto refreshed = NativePlanProjectionBuilder::build(stepSealed, input.split,
-        input.offers, stepContext);
+        stepOffers, stepContext);
       BOOST_CHECK(stepLayout == exactLayout);
       BOOST_CHECK_EQUAL(refreshed.at(producerStep.unitId).dataflow.mayPublish.front().groupEpoch,
                         "refreshed-step-epoch");
@@ -960,25 +1172,25 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
       changedPorts.steps.front().outputSlots.front().layoutDigest = changedLayout;
       changedPorts.steps.back().inputSlots.front().layoutDigest = changedLayout;
       changedPorts.validateSteps();
-      const auto portChanged = NativePlanProjectionBuilder::build(seal(changedPorts), input.split,
-        input.offers, stepContext);
-      BOOST_CHECK(seal(changedPorts).core.coreDigest != stepSealed.core.coreDigest);
+      const auto portChanged = NativePlanProjectionBuilder::build(sealStep(changedPorts), input.split,
+        stepOffers, stepContext);
+      BOOST_CHECK(sealStep(changedPorts).core.coreDigest != stepSealed.core.coreDigest);
       BOOST_CHECK(stepLayout != exactLayout);
       BOOST_CHECK_EQUAL(portChanged.at(producerStep.unitId).dataflow.mayPublish.front().layoutDigest,
                         changedLayout);
       auto wrongPort = stepExecution;
       wrongPort.dependencies.front().producerSlotId = "absent";
       stepLayout = exactLayout;
-      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(wrongPort), input.split,
-        input.offers, stepContext), std::invalid_argument);
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealStep(wrongPort), input.split,
+        stepOffers, stepContext), std::invalid_argument);
       auto wrongType = stepExecution;
       wrongType.steps.back().inputSlots.front().dtype = "int64";
-      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(wrongType), input.split,
-        input.offers, stepContext), std::invalid_argument);
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealStep(wrongType), input.split,
+        stepOffers, stepContext), std::invalid_argument);
       auto wrongOrigin = stepExecution;
       wrongOrigin.steps.front().outputSlots.front().source = "EPOCH_INPUT";
-      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(seal(wrongOrigin), input.split,
-        input.offers, stepContext), std::invalid_argument);
+      BOOST_CHECK_THROW(NativePlanProjectionBuilder::build(sealStep(wrongOrigin), input.split,
+        stepOffers, stepContext), std::invalid_argument);
     }
     recordProjectionOracle(built);
     BOOST_REQUIRE_EQUAL(built.size(), execution.roles.size());
@@ -2170,12 +2382,22 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   class PreferenceProbe final : public NativePlacementStrategy {
   public:
     std::map<std::string, std::string> expected;
+    std::vector<std::string> expectedCapabilities;
+    bool clearRequirements = false;
+    mutable std::size_t calls = 0;
     NativeStrategyIdentity identity() const override { return NativePreSplitFirstPlacement().identity(); }
     NativeRolePlacementProposalV3 proposeRoles(const NativeOfferBindingContext& context,
-      const std::string&, const std::vector<NativeSelectionRoleV3>&,
-      const std::vector<NativeAdmittedOfferV3>&, std::uint64_t) const override
+      const std::string& ackDigest, const std::vector<NativeSelectionRoleV3>& roles,
+      const std::vector<NativeAdmittedOfferV3>& offers, std::uint64_t nowMs) const override
     {
+      ++calls;
       BOOST_CHECK(context.preferredProvidersByRole == expected);
+      BOOST_CHECK(context.requiredExecutionCapabilities == expectedCapabilities);
+      if (clearRequirements) {
+        auto modified = context;
+        modified.requiredExecutionCapabilities.clear();
+        return NativePreSplitFirstPlacement().proposeRoles(modified, ackDigest, roles, offers, nowMs);
+      }
       throw PreferenceObserved{};
     }
   } probe;
@@ -2251,6 +2473,29 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     probe, preparation, admission, closure, control, input.context.deadlineMs, cancelled,
     &continuation), PreferenceObserved);
+  {
+    auto stepInput = input;
+    makeStepCapabilityCandidate(stepInput);
+    Splitter stepSplitter(stepInput.split);
+    auto stepRuntime = runtime;
+    stepRuntime.planningCache.reset();
+    stepRuntime.fixedRoleAssignments = std::make_shared<NativeFixedRoleAssignmentCache>();
+    PreferenceProbe capabilityProbe;
+    capabilityProbe.expectedCapabilities = {NATIVE_STEP_PLAN_CAPABILITY_V2, NATIVE_SUM_CAPABILITY_V1};
+    BOOST_CHECK_THROW(planNativeRequest(stepRuntime, {}, stepInput.inspected, encoded,
+      stepSplitter, capabilityProbe, preparation, admission, closure, control,
+      input.context.deadlineMs, cancelled), PreferenceObserved);
+    capabilityProbe.clearRequirements = true;
+    BOOST_CHECK_EXCEPTION(planNativeRequest(stepRuntime, {}, stepInput.inspected, encoded,
+      stepSplitter, capabilityProbe, preparation, admission, closure, control,
+      input.context.deadlineMs, cancelled), std::invalid_argument,
+      [] (const std::invalid_argument& error) {
+        return std::string(error.what()) == "native placement modified the admitted request snapshot";
+      });
+    BOOST_CHECK_EQUAL(capabilityProbe.calls, 2u);
+    BOOST_CHECK_EQUAL(publications, successfulPublications);
+    BOOST_CHECK_EQUAL(grantPublications, successfulGrantPublications);
+  }
   cancelled->store(true);
   BOOST_CHECK_THROW(planNativeRequest(runtime, {}, input.inspected, encoded, splitter,
     NativePreSplitFirstPlacement(), preparation, admission, closure, control, input.context.deadlineMs, cancelled), std::runtime_error);

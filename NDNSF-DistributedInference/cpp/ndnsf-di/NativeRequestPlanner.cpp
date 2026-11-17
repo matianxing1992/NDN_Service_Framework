@@ -256,7 +256,8 @@ bool sameOfferBindingContext(const NativeOfferBindingContext& left,
     left.placementObservationSnapshot == right.placementObservationSnapshot &&
     left.placementObservationSnapshotDigest == right.placementObservationSnapshotDigest &&
     left.placementObservationFallbackReason == right.placementObservationFallbackReason &&
-    left.placementProbeRoundCompleted == right.placementProbeRoundCompleted;
+    left.placementProbeRoundCompleted == right.placementProbeRoundCompleted &&
+    left.requiredExecutionCapabilities == right.requiredExecutionCapabilities;
 }
 
 NativeJson placementProbePairsJson(
@@ -1672,6 +1673,7 @@ NativePlannedRequest planNativeRequestImpl(
       roles = preparation.prepareRoles(model, candidate, control);
     }
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
+    context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(candidate.executionPlan);
     NativeRolePlacementProposalV3 proposal;
     auto expectedPlacementIdentity = ports.placementIdentity;
     const auto placementStart = std::chrono::steady_clock::now();
