@@ -1857,6 +1857,9 @@ def build(bld):
     tests_share = '${PREFIX}/share/ndnsf/tests'
     bld.install_files(tests_share, 'check-profiles.json')
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
+    # The contract names `PREFIX/bin/ndnsf-checks` as the canonical entry point; the runner above is
+    # its implementation, so an operator path and a source path cannot diverge.
+    bld.install_files('${PREFIX}/bin', 'ndnsf-checks', chmod=0o755)
     fixtures_root = bld.path.find_node('fixtures')
     for fixture in bld.path.ant_glob('fixtures/**/*',
                                      excl=['fixtures/**/*.pyc',

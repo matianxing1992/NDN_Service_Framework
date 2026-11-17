@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Canonical installed entry point for the declared check profiles.
+#
+# One entry point, one implementation: this resolves the prefix it was installed under and hands off
+# to the runner that lives with the roster and fixtures. Keeping the logic in one Python file means
+# the source-tree invocation and the installed invocation cannot drift; this script only locates it.
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: $(basename "$0") --profile unit|integration|model|all [--report PATH]" >&2
+  exit 3
+fi
+
+# Resolve symlinks so an operator can link this into another directory without breaking prefix
+# discovery: the real location decides the prefix, not the link.
+self=$(readlink -f "${BASH_SOURCE[0]}")
+prefix=$(cd "$(dirname "$self")/.." && pwd)
+runner="$prefix/share/ndnsf/tests/run-checks.py"
+
+if [[ ! -f "$runner" ]]; then
+  echo "CHECK_RUNNER_MISSING: $runner" >&2
+  exit 6
+fi
+if [[ ! -f "$prefix/share/ndnsf/tests/check-profiles.json" ]]; then
+  echo "CHECK_ROSTER_MISSING: $prefix/share/ndnsf/tests/check-profiles.json" >&2
+  exit 6
+fi
+
+exec python3 "$runner" "$@"
