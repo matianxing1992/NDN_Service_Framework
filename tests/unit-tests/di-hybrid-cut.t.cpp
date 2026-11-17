@@ -880,6 +880,25 @@ BOOST_AUTO_TEST_CASE(AsymmetricAndAllPipelineLayoutsValidate)
   BOOST_CHECK_EQUAL(pipeline.degreeForRole("S0R0"), 1u);
   BOOST_CHECK_EQUAL(pipeline.degreeForRole("S1R0"), 1u);
   BOOST_CHECK_EQUAL(pipeline.tensorDegree, 1u);
+
+  const std::vector<std::vector<std::string>> heterogeneous{
+    {"entry-left", "entry-right"}, {"router-west", "router-east", "router-north"},
+    {"bridge"}, {"compute-red", "compute-blue", "compute-green", "compute-yellow"},
+    {"tail"}, {"sink-a", "sink-b"}};
+  for (std::size_t count = 2; count <= heterogeneous.size(); ++count) {
+    BOOST_TEST_CONTEXT("stage count " << count) {
+      const auto layout = plan({heterogeneous.begin(), heterogeneous.begin() + count});
+      BOOST_CHECK_NO_THROW(layout.validateSteps());
+      BOOST_REQUIRE_EQUAL(layout.stageLayout.size(), count);
+      for (std::size_t stage = 0; stage < count; ++stage) {
+        const auto& members = heterogeneous.at(stage);
+        BOOST_CHECK(layout.stageLayout.at(stage).unitRoleIds == members);
+        for (const auto& member : members)
+          BOOST_CHECK_EQUAL(layout.degreeForRole(member), members.size());
+      }
+      BOOST_CHECK_EQUAL(layout.tensorDegree, count >= 4 ? 4u : 3u);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
