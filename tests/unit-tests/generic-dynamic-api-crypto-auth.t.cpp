@@ -458,9 +458,9 @@ BOOST_AUTO_TEST_CASE(HybridMessageCryptoInvalidatesOnlyAffectedService)
 
 BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:generic-auth-negative",
                                    "tpm-memory:generic-auth-negative");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
@@ -470,13 +470,14 @@ BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-auth-negative"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
+  IsolatedTestTrust providerTrust{providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{},
                            face,
                            ndn::Name("/test/group"),
                            providerCert,
                            aaCert,
-                           "examples/trust-any.conf");
+                           providerTrust.schemaPath());
 
   bool handlerCalled = false;
   provider.addHandler<DynamicRequest, DynamicResponse>(
@@ -511,7 +512,7 @@ BOOST_AUTO_TEST_CASE(ProviderRequiresPermissionAndUserToken)
                                             ndn::Name("/test/group"),
                                             providerCert,
                                             aaCert,
-                                            "examples/trust-any.conf");
+                                            providerTrust.schemaPath());
   providerWithoutPermission.addHandler<DynamicRequest, DynamicResponse>(
     serviceName,
     std::function<void(const ndn::Name&, const DynamicRequest&, DynamicResponse&)>(
@@ -540,8 +541,7 @@ BOOST_AUTO_TEST_CASE(RequestServiceRequiresUserPermissionBeforePublication)
   LocalServiceUser user(face,
                         ndn::Name("/test/group"),
                         userCert,
-                        aaCert,
-                        "examples/trust-any.conf");
+                        aaCert);
 
   size_t publications = 0;
   user.setRequestPublisher(
@@ -583,8 +583,7 @@ BOOST_AUTO_TEST_CASE(AuthorizedRequestPublishesForExplicitAndDiscoveredProviders
   LocalServiceUser user(face,
                         ndn::Name("/test/group"),
                         userCert,
-                        aaCert,
-                        "examples/trust-any.conf");
+                        aaCert);
   user.applyPermissionResponse(
     makePermissionResponse(requesterName,
                            tlv::UserPermission,
@@ -619,9 +618,9 @@ BOOST_AUTO_TEST_CASE(AuthorizedRequestPublishesForExplicitAndDiscoveredProviders
 
 BOOST_AUTO_TEST_CASE(UnpermittedProviderAckAndResponseAreRejected)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:provider-user-permission",
                                    "tpm-memory:provider-user-permission");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name permittedProvider("/test/provider/permitted");
   const ndn::Name unpermittedProvider("/test/provider/unpermitted");
@@ -632,8 +631,7 @@ BOOST_AUTO_TEST_CASE(UnpermittedProviderAckAndResponseAreRejected)
   LocalServiceUser user(face,
                         ndn::Name("/test/group"),
                         userCert,
-                        aaCert,
-                        "examples/trust-any.conf");
+                        aaCert);
   user.applyPermissionResponse(
     makePermissionResponse(requesterName,
                            tlv::UserPermission,
@@ -662,9 +660,9 @@ BOOST_AUTO_TEST_CASE(UnpermittedProviderAckAndResponseAreRejected)
 
 BOOST_AUTO_TEST_CASE(StalePolicyEpochRejectsProviderRequestBeforeHandlers)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:stale-policy-epoch",
                                    "tpm-memory:stale-policy-epoch");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -674,8 +672,7 @@ BOOST_AUTO_TEST_CASE(StalePolicyEpochRejectsProviderRequestBeforeHandlers)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -709,7 +706,7 @@ BOOST_AUTO_TEST_CASE(StalePolicyEpochRejectsProviderRequestBeforeHandlers)
   request.setPolicyEpoch(1);
   const auto requestBlock = request.WireEncode();
   const ndn::Buffer requestWire(requestBlock.data(), requestBlock.size());
-  provider.OnRequestDecryptionSuccessCallbackV2(
+  provider.deliverDecodedRequestForTest(
     requesterName, serviceName, requestId, requestWire);
 
   BOOST_CHECK_EQUAL(ackHandlerCalls, 0);
@@ -719,9 +716,9 @@ BOOST_AUTO_TEST_CASE(StalePolicyEpochRejectsProviderRequestBeforeHandlers)
 
 BOOST_AUTO_TEST_CASE(NewUserUsesUnchangedProviderAfterControllerMaterialRefresh)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:new-user-provider-refresh",
                                    "tpm-memory:new-user-provider-refresh");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/new-user");
   const ndn::Name providerName("/test/provider/existing");
   const ndn::Name serviceName("/HELLO");
@@ -730,8 +727,7 @@ BOOST_AUTO_TEST_CASE(NewUserUsesUnchangedProviderAfterControllerMaterialRefresh)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -766,7 +762,7 @@ BOOST_AUTO_TEST_CASE(NewUserUsesUnchangedProviderAfterControllerMaterialRefresh)
   const auto requestBlock = request.WireEncode();
   const ndn::Buffer requestWire(requestBlock.data(), requestBlock.size());
   const ndn::Name staleRequestId("/request-before-provider-refresh");
-  provider.OnRequestDecryptionSuccessCallbackV2(
+  provider.deliverDecodedRequestForTest(
     requesterName, serviceName, staleRequestId, requestWire);
   BOOST_CHECK_EQUAL(ackHandlerCalls, 0);
   BOOST_CHECK_EQUAL(serviceHandlerCalls, 0);
@@ -783,7 +779,7 @@ BOOST_AUTO_TEST_CASE(NewUserUsesUnchangedProviderAfterControllerMaterialRefresh)
   BOOST_CHECK_EQUAL(provider.getCurrentPolicyEpoch(), 2);
 
   const ndn::Name refreshedRequestId("/request-after-provider-refresh");
-  provider.OnRequestDecryptionSuccessCallbackV2(
+  provider.deliverDecodedRequestForTest(
     requesterName, serviceName, refreshedRequestId, requestWire);
   BOOST_CHECK_EQUAL(ackHandlerCalls, 1);
   BOOST_CHECK(provider.hasPendingRequestForTokenTest(
@@ -820,9 +816,9 @@ BOOST_AUTO_TEST_CASE(NewUserUsesUnchangedProviderAfterControllerMaterialRefresh)
 
 BOOST_AUTO_TEST_CASE(LegacySplitNameFailsClosed)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:generic-v1-name-negative",
                                    "tpm-memory:generic-v1-name-negative");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
@@ -831,14 +827,14 @@ BOOST_AUTO_TEST_CASE(LegacySplitNameFailsClosed)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-v1-name-negative"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
+  IsolatedTestTrust providerTrust{providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{},
                            face,
                            ndn::Name("/test/group"),
                            providerCert,
                            aaCert,
-                           "examples/trust-any.conf");
+                           providerTrust.schemaPath());
 
   bool handlerCalled = false;
   provider.addHandler<DynamicRequest, DynamicResponse>(

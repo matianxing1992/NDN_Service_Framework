@@ -1,4 +1,5 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
 
 #include <ndn-cxx/mgmt/nfd/control-parameters.hpp>
 #include <ndn-cxx/mgmt/nfd/control-response.hpp>
@@ -22,10 +23,11 @@ struct IdentityRegistrationFixture
   IdentityRegistrationFixture()
     : keys("pib-memory:identity-registration", "tpm-memory:identity-registration")
     , certificate(makeRsaIdentity(keys, ndn::Name("/test/identity-registration/user")))
+    , trust({certificate})
     , face(keys)
     , user(std::make_unique<IdentityRegistrationUser>(
         ServiceUser::LocalMockTag{}, face, ndn::Name("/test/identity-registration"),
-        certificate, certificate, "examples/trust-any.conf"))
+        certificate, certificate, trust.schemaPath()))
   {
     face.onSendInterest.connect([this](const ndn::Interest& interest) {
       const auto& name = interest.getName();
@@ -77,6 +79,7 @@ struct IdentityRegistrationFixture
 
   ndn::KeyChain keys;
   ndn::security::Certificate certificate;
+  IsolatedTestTrust trust;
   ndn::DummyClientFace face;
   std::unique_ptr<IdentityRegistrationUser> user;
   size_t failures = 1;

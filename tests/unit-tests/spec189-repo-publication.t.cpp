@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "ndnsf-distributed-repo/RepoCore.hpp"
 #include "ndnsf-distributed-repo/RepoSourceProvider.hpp"
@@ -257,7 +258,7 @@ BOOST_AUTO_TEST_CASE(LegacyCanonicalReceiptWithoutLayersStillReuses)
 BOOST_AUTO_TEST_CASE(MaterialManifestPublishesWithOwnedTransactionsAndRejectsCorruption)
 {
   RepoFixture fixture;
-  std::ifstream stream("tests/fixtures/spec182/dependency-probes/extraction-vectors.json");
+  std::ifstream stream(ndnsf::test::testFixturePath("spec182/dependency-probes/extraction-vectors.json").string());
   BOOST_REQUIRE(stream.good());
   const auto vectors = NativeJson::parse(stream);
   const auto& row = vectors.at("cases").at(1);

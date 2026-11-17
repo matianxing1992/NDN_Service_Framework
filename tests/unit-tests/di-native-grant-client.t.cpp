@@ -5,7 +5,7 @@
 // NativeGrantClient is the requester-side acquisition boundary: it turns a
 // frozen provider grant view into a signed-grant request, runs the policy
 // authority in process, publishes the issued grant under the canonical
-// KEY-GRANT/v1 exact name through the injected Face publication port, and
+// producer-owned KEY-GRANT exact name through the injected Face publication port, and
 // returns the grant binding.  The client is state-free and synchronous:
 // every acquire performs exactly one issue plus one publication, a deadline
 // that already passed fences the attempt before any side effect, and a
@@ -16,10 +16,14 @@
 // port; the verifier envelope and real Provider consumption are T016.
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantClient.hpp"
+#include "tests/fixtures/naming-wire-oracle.hpp"
 
+#include <ndn-cxx/name.hpp>
+#include <ndn-cxx/util/string-helper.hpp>
 #include <boost/test/unit_test.hpp>
 #include <openssl/sha.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -104,30 +108,31 @@ void expectRejectedWithFamily(const std::function<void()>& operation)
   }
 }
 
-std::string bare(const std::string& canonicalDigest)
-{
-  return canonicalDigest.substr(7);
-}
-
-// Asserts that a published name is exactly the canonical KEY-GRANT/v1 layout
-// with the fixed requestId/epoch vector of completeView(): the fixed vector
-// makes the percent-encoded literals ("/request/1" -> %2Frequest%2F1) plain
-// constants instead of a re-implementation of the encoding.
+// Independent C01 transcript oracle for the producer-owned grant name.
 void expectCanonicalGrantName(
   const std::string& name, const std::string& modelManifestDigest,
-  const std::string& grantDigest)
+  const std::string& grantDigest, const std::string& requestId = "/request/1")
 {
-  const std::string prefix = "/user/a/NDNSF-DI/KEY-GRANT/v1/PROVIDER/";
-  const std::string suffix =
-    "/REQ/%2Frequest%2F1/ATTEMPT/1/PLAN-CORE/" + bare(digest("plan-core")) +
-    "/MODEL/" + bare(modelManifestDigest) +
-    "/EPOCH/epoch-1/GRANT/" + bare(grantDigest);
-  BOOST_REQUIRE(name.size() == prefix.size() + 64 + suffix.size());
-  BOOST_CHECK_EQUAL(name.substr(0, prefix.size()), prefix);
-  // The PROVIDER component is the 64-hex digest of the Provider identity
-  // (verifier-slice contract, covered by its own suite); the surrounding
-  // layout and every other component belong to this acquisition contract.
-  BOOST_CHECK_EQUAL(name.substr(prefix.size() + 64), suffix);
+  namespace oracle = ndn_service_framework::test::naming_oracle;
+  const auto bytes = [] (const std::string& value) {
+    const auto decoded = ndn::fromHex(value.substr(7));
+    return oracle::Bytes(decoded->begin(), decoded->end());
+  };
+  ndn::Name expected("/user/a/NDNSF/GRANT");
+  expected.append("kind=KEY-GRANT").append("RECIPIENT");
+  expected.append(oracle::commitment("ndnsf-naming/opaque/recipient",
+    {{1, 4, oracle::wire(ndn::Name("/provider/a"))}}));
+  expected.append("SCOPE").append("MODEL").append(oracle::commitment(
+    "ndnsf-naming/grant-scope",
+    {{1, 1, oracle::wire(ndn::Name("/user/a"))},
+     {2, 1, oracle::wire(ndn::Name(requestId))}, {3, 3, oracle::uint64(1)},
+     {4, 4, bytes(digest("plan-core"))}, {5, 4, bytes(modelManifestDigest)}}));
+  expected.append("EPOCH").append(oracle::commitment(
+    "ndnsf-naming/opaque/protection-epoch", {{1, 4, oracle::utf8("epoch-1")}}));
+  const auto grant = bytes(grantDigest);
+  expected.append("OBJECT").append(ndn::name::Component(
+    ndn::span<const uint8_t>(grant.data(), grant.size())));
+  BOOST_CHECK(ndn::Name(name) == expected);
 }
 
 } // namespace
@@ -345,21 +350,13 @@ BOOST_AUTO_TEST_CASE(GrantClientPublishesCanonicalGrantNameFromViewAndIssuedGran
   BOOST_CHECK_EQUAL(counters.publish, 2u);
 
   // Model-manifest fallback: a view without a model-manifest digest routes
-  // the model digest into the MODEL name component (matching the request
+  // the model digest into the MODEL scope commitment (matching the request
   // construction fallback), never the plan-core digest.
   auto bareView = completeView();
   bareView.modelManifestDigest.clear();
   bareView.requestId = "/request/2";
   const auto fallback = client.acquire(bareView, deadlineIn(2));
-  const std::string fallbackPrefix = "/user/a/NDNSF-DI/KEY-GRANT/v1/PROVIDER/";
-  const std::string fallbackSuffix =
-    "/REQ/%2Frequest%2F2/ATTEMPT/1/PLAN-CORE/" + bare(digest("plan-core")) +
-    "/MODEL/" + bare(digest("model")) +
-    "/EPOCH/epoch-1/GRANT/" + bare(digest("grant"));
-  BOOST_REQUIRE(fallback.grantName.size() ==
-                fallbackPrefix.size() + 64 + fallbackSuffix.size());
-  BOOST_CHECK_EQUAL(fallback.grantName.substr(fallbackPrefix.size() + 64),
-                    fallbackSuffix);
+  expectCanonicalGrantName(fallback.grantName, digest("model"), digest("grant"), "/request/2");
   BOOST_CHECK_EQUAL(counters.issue, 3u);
   BOOST_CHECK_EQUAL(counters.publish, 3u);
 }

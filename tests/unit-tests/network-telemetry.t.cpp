@@ -1,5 +1,6 @@
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
 
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "ndn-service-framework/NetworkTelemetry.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "tests/boost-test.hpp"
@@ -12,26 +13,7 @@
 
 namespace ndn_service_framework {
 
-struct NetworkTelemetryStoreTestAccess
-{
-  static void ageCaptures(NetworkTelemetryStore& store, uint64_t ageMs)
-  {
-    std::lock_guard<std::mutex> lock(store.m_mutex);
-    const auto now = NetworkTelemetryStore::nowMs();
-    for (auto& entry : store.m_snapshots)
-      entry.second.lastUpdatedMs = now - ageMs;
-  }
 
-  static void tieCaptureTimes(NetworkTelemetryStore& store)
-  {
-    std::lock_guard<std::mutex> lock(store.m_mutex);
-    uint64_t latest = 0;
-    for (const auto& entry : store.m_snapshots)
-      latest = std::max(latest, entry.second.lastUpdatedMs);
-    for (auto& entry : store.m_snapshots)
-      entry.second.lastUpdatedMs = latest;
-  }
-};
 
 } // namespace ndn_service_framework
 

@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
 
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -169,9 +170,36 @@ makeProviderTokenHashForTest(const ndn::Name& requesterName,
   return digest.toString();
 }
 
-class LocalServiceUser : public ServiceUser
+/** Explicit unit transport: validate publication ownership and framing, then accept locally.
+ * Actual SVS/Face delivery is exercised by the separate transport and integration fixtures.
+ */
+template<typename Actor>
+void
+configureUnitPublication(Actor& actor)
+{
+  actor.setLocalPublicationHandler([owner = &actor] (const ndn::Name& name,
+                                                   const ndn::Buffer& wire) {
+    BOOST_REQUIRE(owner->getName().isPrefixOf(name));
+    BOOST_REQUIRE(!wire.empty());
+    const ndn::Block packet(ndn::span<const uint8_t>(wire.data(), wire.size()));
+    BOOST_REQUIRE_EQUAL(packet.size(), wire.size());
+  });
+}
+
+class LocalServiceUser : private IsolatedTestTrust, public ServiceUser
 {
 public:
+  LocalServiceUser(ndn::Face& face,
+                   const ndn::Name& groupPrefix,
+                   const ndn::security::Certificate& identityCert,
+                   const ndn::security::Certificate& attrAuthorityCertificate)
+    : IsolatedTestTrust({identityCert, attrAuthorityCertificate})
+    , ServiceUser(LocalMockTag{}, face, groupPrefix, identityCert,
+                  attrAuthorityCertificate, IsolatedTestTrust::schemaPath())
+  {
+    configureUnitPublication(static_cast<ServiceUser&>(*this));
+  }
+
   LocalServiceUser(ndn::Face& face,
                    const ndn::Name& groupPrefix,
                    const ndn::security::Certificate& identityCert,
@@ -184,6 +212,7 @@ public:
                   attrAuthorityCertificate,
                   trustSchemaPath)
   {
+    configureUnitPublication(static_cast<ServiceUser&>(*this));
   }
 
   static SelectionExecutionStatus
@@ -249,14 +278,19 @@ public:
       const ndn::Name& providerName,
       const ndn::Name& serviceName,
       const ndn::Name& requestId,
-      const RequestAckMessage& ackMessage)
+      const RequestAckMessage& ackMessage,
+      ndn::KeyChain& signingKeys,
+      const ndn::security::Certificate& signer)
   {
     const auto ackName = makeRequestAckNameV2(providerName, identity,
                                                serviceName, requestId);
     const auto ackBlock = ackMessage.WireEncode();
     const ndn::Buffer ackBuffer(ackBlock.data(), ackBlock.size());
-    const std::optional<ndn::Data> packet;
-    const ndn::Name producerPrefix = ndn::Name(providerName).append("1");
+    ndn::Data signedPacket(ackName);
+    signedPacket.setContent(ackBuffer);
+    signingKeys.sign(signedPacket, ndn::security::signingByCertificate(signer));
+    const std::optional<ndn::Data> packet(signedPacket);
+    const ndn::Name producerPrefix = ndn::Name(providerName).append("provider").append("1");
     const ndn::svs::SVSPubSub::SubscriptionData publication{
       ackName,
       ndn::span<const uint8_t>(ackBuffer.data(), ackBuffer.size()),
@@ -521,9 +555,29 @@ public:
   }
 };
 
-class LocalServiceProvider : public ServiceProvider
+class LocalServiceProvider : private IsolatedTestTrust, public ServiceProvider
 {
 public:
+  /** Deliver a decoded unit request and dispatch the production event-loop continuation. */
+  void deliverDecodedRequestForTest(const ndn::Name& requester, const ndn::Name& service,
+                                    const ndn::Name& request, const ndn::Buffer& wire)
+  {
+    OnRequestDecryptionSuccessCallbackV2(requester, service, request, wire);
+    m_face.getIoContext().restart();
+    m_face.getIoContext().poll();
+  }
+
+  LocalServiceProvider(ndn::Face& face,
+                       const ndn::Name& groupPrefix,
+                       const ndn::security::Certificate& identityCert,
+                       const ndn::security::Certificate& attrAuthorityCertificate)
+    : IsolatedTestTrust({identityCert, attrAuthorityCertificate})
+    , ServiceProvider(LocalMockTag{}, face, groupPrefix, identityCert,
+                      attrAuthorityCertificate, IsolatedTestTrust::schemaPath())
+  {
+    configureUnitPublication(static_cast<ServiceProvider&>(*this));
+  }
+
   LocalServiceProvider(ndn::Face& face,
                        const ndn::Name& groupPrefix,
                        const ndn::security::Certificate& identityCert,
@@ -536,6 +590,7 @@ public:
                       attrAuthorityCertificate,
                       trustSchemaPath)
   {
+    configureUnitPublication(static_cast<ServiceProvider&>(*this));
   }
 
   static std::string

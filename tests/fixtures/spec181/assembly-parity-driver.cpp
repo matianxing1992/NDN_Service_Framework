@@ -1,5 +1,6 @@
 // File-backed integration port for the real native assembler. No network or
 // substitute assembler is used; the production helper is executed normally.
+#include "tests/fixtures/native-worker-location.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -24,33 +25,7 @@ using namespace ndnsf::di;
 std::string
 workerBinaryPath()
 {
-  std::vector<std::string> candidates;
-  const char* pinned = std::getenv("NDNSF_DI_WORKER_BINARY");
-  if (pinned != nullptr && *pinned != '\0') {
-    candidates.push_back(pinned);
-  }
-  const char* binDir = std::getenv("NDNSF_SPEC182_BIN_DIR");
-  if (binDir != nullptr && *binDir != '\0') {
-    candidates.push_back(std::string(binDir) + "/DI_NativeOnnxAssemblyWorker");
-  }
-  std::array<char, 4096> selfPath{};
-  const auto linkCount = ::readlink("/proc/self/exe", selfPath.data(),
-                                    selfPath.size() - 1);
-  if (linkCount > 0) {
-    selfPath[linkCount] = '\0';
-    const std::string invocationDir =
-      std::filesystem::path(selfPath.data()).parent_path().string();
-    candidates.push_back(invocationDir + "/DI_NativeOnnxAssemblyWorker");
-  }
-  for (const char* base : {"build-nac182/", "build/", "../build-nac182/",
-                           "../build/"}) {
-    candidates.push_back(std::string(base) + "DI_NativeOnnxAssemblyWorker");
-  }
-  for (const auto& path : candidates) {
-    if (std::filesystem::is_regular_file(path)) return path;
-  }
-  throw std::runtime_error("DI_NativeOnnxAssemblyWorker binary not found; the "
-                           "spec181 assembly parity now runs the OA02 worker");
+  return ndnsf::test::testNativeWorkerLocation().path;
 }
 
 ndn::Buffer decodeHex(const std::string& hex)

@@ -116,7 +116,9 @@ checkQwenPlannerMigration(NativeSplitCandidate& actual, const NativeJson& frozen
     currentFields.erase(key);
     frozenFields.erase(key);
   }
-  BOOST_CHECK(currentFields == frozenFields);
+  BOOST_TEST_CONTEXT("candidate field migration: " << NativeJson::diff(frozenFields, currentFields)) {
+    BOOST_CHECK(currentFields == frozenFields);
+  }
   BOOST_CHECK_EQUAL(actual.candidateDigest, actual.computedDigest());
   BOOST_CHECK(actual.candidateDigest != legacy.computedDigest());
 }
@@ -1478,7 +1480,7 @@ BOOST_AUTO_TEST_CASE(CandidateRejectsMissingNodeOwnersStateContractsAndRoleCycle
 
 BOOST_AUTO_TEST_CASE(CompleteModelDescriptorMatchesMaintainedPythonCanonicalIdentity)
 {
-  std::ifstream file("tests/fixtures/spec182/model-descriptor-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/model-descriptor-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto cases = NativeJson::parse(file);
   BOOST_REQUIRE_EQUAL(cases.size(), 6);
@@ -1534,7 +1536,7 @@ BOOST_AUTO_TEST_CASE(CompleteModelDescriptorMatchesMaintainedPythonCanonicalIden
 
 BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
 {
-  std::ifstream file("tests/fixtures/spec182/yolo-fragment-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-fragment-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto rows = NativeJson::parse(file);
   BOOST_REQUIRE_EQUAL(rows.size(), 2);
@@ -1567,7 +1569,7 @@ BOOST_AUTO_TEST_CASE(YoloFragmentMatchesMaintainedSplitterAndBindsRegistration)
 
 BOOST_AUTO_TEST_CASE(ResourceBudgetsMatchMaintainedPythonContract)
 {
-  std::ifstream input("tests/fixtures/spec182/resource-budget-oracle.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec182/resource-budget-oracle.json").string());
   BOOST_REQUIRE(input.good());
   const auto rows = NativeJson::parse(input);
   BOOST_REQUIRE_EQUAL(rows.size(), 12);
@@ -1620,7 +1622,7 @@ BOOST_AUTO_TEST_CASE(PlacementAccountsForKvAndRejectsUnknownPeak)
 
 BOOST_AUTO_TEST_CASE(CompleteCandidateIdentityMatchesMaintainedPython)
 {
-  std::ifstream file("tests/fixtures/spec182/candidate-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/candidate-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto rows = NativeJson::parse(file);
   BOOST_REQUIRE_EQUAL(rows.size(), 9);
@@ -1651,7 +1653,7 @@ BOOST_AUTO_TEST_CASE(CompleteCandidateIdentityMatchesMaintainedPython)
 
 BOOST_AUTO_TEST_CASE(CandidateIdentityRejectsStaleDigestForValidContractChanges)
 {
-  std::ifstream file("tests/fixtures/spec182/candidate-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/candidate-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto row = NativeJson::parse(file).at(0);
   auto base = fixture::candidateFromJson(row.at("input"));
@@ -1699,7 +1701,7 @@ BOOST_AUTO_TEST_CASE(CandidateIdentityRejectsStaleDigestForValidContractChanges)
 
 BOOST_AUTO_TEST_CASE(HybridCandidateRejectsIncompleteRankAndRedistributionContracts)
 {
-  std::ifstream file("tests/fixtures/spec182/candidate-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/candidate-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto row = NativeJson::parse(file).at(1);
   auto base = fixture::candidateFromJson(row.at("input"));
@@ -1735,7 +1737,7 @@ BOOST_AUTO_TEST_CASE(HybridCandidateRejectsIncompleteRankAndRedistributionContra
 
 BOOST_AUTO_TEST_CASE(QwenMetadataBuildsMaintainedGraphAndCandidate)
 {
-  std::ifstream file("tests/fixtures/spec182/qwen-metadata-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/qwen-metadata-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto rows = NativeJson::parse(file);
   BOOST_REQUIRE_EQUAL(rows.size(), 2);
@@ -1791,7 +1793,7 @@ BOOST_AUTO_TEST_CASE(QwenMetadataBuildsMaintainedGraphAndCandidate)
 
 BOOST_AUTO_TEST_CASE(YoloCatalogConsumesActualOnnxSemanticPartition)
 {
-  std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto row = NativeJson::parse(file);
   NativeCanonicalSource source;
@@ -1844,7 +1846,7 @@ BOOST_AUTO_TEST_CASE(YoloCatalogConsumesActualOnnxSemanticPartition)
 
 BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift)
 {
-  std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto oracle = NativeJson::parse(file);
   NativeCanonicalSource source;
@@ -1927,7 +1929,7 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
 
 BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
 {
-  std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto oracle = NativeJson::parse(file);
   NativeCanonicalSource source;
@@ -2027,7 +2029,7 @@ BOOST_AUTO_TEST_CASE(NativeRequestRuntimeLoadsPinnedPolicyAndRejectsDrift)
 
 BOOST_AUTO_TEST_CASE(OwnedOnnxGraphMatchesMaintainedPlanningAndCanonicalIdentities)
 {
-  std::ifstream file("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/onnx-planning-graph-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto rows = NativeJson::parse(file);
   BOOST_REQUIRE_EQUAL(rows.size(), 6);
@@ -2085,7 +2087,7 @@ BOOST_AUTO_TEST_CASE(OwnedOnnxGraphMatchesMaintainedPlanningAndCanonicalIdentiti
 
 BOOST_AUTO_TEST_CASE(OwnedOnnxGraphRejectsForeignAdapterSourceAndExpiredControl)
 {
-  std::ifstream file("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/onnx-planning-graph-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto rows = NativeJson::parse(file);
   const auto sourceFor = [](const NativeJson& row) {

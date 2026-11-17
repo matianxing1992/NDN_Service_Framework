@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/fixed-keychain-trust.hpp"
 
 #include "ndn-service-framework/NDNSFMessages.hpp"
 #include "ndn-service-framework/ServiceProvider.hpp"
@@ -152,7 +153,8 @@ protected:
     (void)token;
     auto record = table.find(fullServiceName.toUri());
     BOOST_REQUIRE(record);
-    BOOST_CHECK_EQUAL(record->serviceName, serviceName);
+    BOOST_CHECK_EQUAL(record->serviceName,
+      ndn::Name(serviceName).toUri(ndn::name::UriFormat::CANONICAL));
     BOOST_CHECK_GT(record->policyEpoch, 0);
   }
 
@@ -678,7 +680,10 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
   const ndn::Interest wrongControllerInterest(
     ndn::Name("/test/wrong-controller/NDNSF/PERMISSIONS/USER/test/user/alice"));
   bool signerMismatchRejected = false;
-  validator.validate(
+  const auto controllerSchema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(
+    std::filesystem::path(trust.path()).parent_path(), {controllerCert});
+  auto controllerValidator = std::make_shared<MessageValidator>(controllerSchema);
+  controllerValidator->validate(
     controllerSignedData,
     [&] (const ndn::Data& validatedData) {
       const auto expectedController =
@@ -694,7 +699,8 @@ BOOST_FIXTURE_TEST_CASE(PermissionResponseValidationRejectsUnsupportedSignatureA
                                                 userKeyChain,
                                                 permissionTable);
     },
-    [&] (const ndn::Data&, const ndn::security::ValidationError&) {
+    [&] (const ndn::Data&, const ndn::security::ValidationError& error) {
+      BOOST_FAIL("trusted controller fixture failed before identity admission: " << error);
     });
   BOOST_CHECK(signerMismatchRejected);
   BOOST_CHECK(permissionTable.snapshot().empty());

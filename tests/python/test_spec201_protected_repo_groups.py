@@ -25,7 +25,7 @@ class ProtectedRepoGroups(unittest.TestCase):
         env = dict(os.environ, SPEC201_PUBLICATION_PACKET_ORACLE=str(cls.oracle))
         env.pop("LD_PRELOAD", None)  # Native fixture is already sanitizer-linked.
         binary = os.environ.get("SPEC201_PUBLICATION_ORACLE_BINARY",
-                                "/var/tmp/spec200-asan/spec201-original-packet-publication")
+                                str(Path(__file__).resolve().parents[2] / "build/integration-tests"))
         result = subprocess.run([binary, "--run_test=Spec201OriginalPacketPublication/"
                                  "SemanticManifestCategoriesKeepOriginalBlobPackets"],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

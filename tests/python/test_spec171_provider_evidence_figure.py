@@ -17,10 +17,8 @@ SPEC.loader.exec_module(MODULE)
 class Spec171ProviderEvidenceFigureTest(unittest.TestCase):
     def test_frozen_evidence_values_and_outputs(self):
         data = MODULE.load_evidence(
-            ROOT / "specs/171-four-provider-mobility-advantage/evidence/"
-                   "provider-transition-results-20260809/transition-summary.json",
-            ROOT / "specs/171-four-provider-mobility-advantage/evidence/"
-                   "opportunity-analysis-20260809/opportunity-summary.json")
+            ROOT / "tests/fixtures/provider-evidence-figures/transition-summary.json",
+            ROOT / "tests/fixtures/provider-evidence-figures/opportunity-summary.json")
         self.assertEqual(data["transition_replays"], 3)
         self.assertEqual(data["switch_required_requests"], 1747)
         self.assertEqual(

@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "isolated-test-trust.hpp"
 #include "tests/boost-test.hpp"
 
@@ -828,7 +829,7 @@ BOOST_AUTO_TEST_CASE(PolicyStatusOriginalReplyCapacityExpiresWithoutRenamingOldR
       ndn::RsaKeyParams(2048)).getDefaultKey().getDefaultCertificate();
   ndn::DummyClientFace face(keys);
   ndn::ValidatorConfig validator(face);
-  ServiceController controller(face, certificate, validator, "examples/hello.policies");
+  ServiceController controller(face, certificate, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
   ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
   const auto query = [&] {
@@ -903,7 +904,7 @@ BOOST_AUTO_TEST_CASE(PolicyStatusRetryChangesNetworkNonceAndPreservesOriginalRep
   options.enableRegistrationReply = true;
   ndn::DummyClientFace controllerFace(keys, options);
   ndn::ValidatorConfig validator(controllerFace);
-  ServiceController controller(controllerFace, controllerCert, validator, "examples/hello.policies");
+  ServiceController controller(controllerFace, controllerCert, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
   ServiceControllerTestAccess::registerHandlersForDummyFace(controller);
   controllerFace.processEvents(ndn::time::milliseconds(-1));
@@ -1028,7 +1029,7 @@ BOOST_AUTO_TEST_CASE(ActualBootstrapRequesterPinsControllerAndOriginalSubjectKey
   boost::asio::io_context io;
   ndn::DummyClientFace controllerFace(io, keys), requesterFace(io, keys);
   ndn::ValidatorConfig validator(controllerFace);
-  ServiceController controller(controllerFace, controllerCert, validator, "examples/hello.policies");
+  ServiceController controller(controllerFace, controllerCert, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
   controller.setControllerPrefix(issuer.getName());
   controller.setBootstrapTokenFile(files.tokens.string());
   enum class Fault { ForeignReply, ForeignIssuer, WrongSubject, CertificateSignature, ReplySignature, None };
@@ -1361,7 +1362,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerMutatesTypedRevocationAndAdvancesEpoch)
   ndn::ValidatorConfig validator(face);
 
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto initial = serviceController.getControllerVersion();
   BOOST_REQUIRE(initial.isValid());
 
@@ -1460,7 +1461,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerGrantOnlyKeepsAbeGenerationAndReplacesTarg
   ndn::DummyClientFace face(io, keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const auto user = ndn::Name("/example/hello/user-b");
   const auto unaffected = ndn::Name("/example/hello/provider/A");
@@ -1737,7 +1738,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPublishesStableTimestampedRevocationSnapsh
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                       "examples/hello.policies");
+                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signingCert =
       ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
   ServiceControllerTestAccess::registerHandlersForDummyFace(serviceController);
@@ -1826,7 +1827,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRejectsStaleExactStatusAfterRevocation)
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                       "examples/hello.policies");
+                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(
       serviceController);
   ServiceControllerTestAccess::registerHandlersForDummyFace(serviceController);
@@ -1910,7 +1911,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerGlobalCertificateRevocationUsesDigestScope
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                       "examples/hello.policies");
+                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const auto providerA = ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, ndn::Name("/example/hello/provider/A"));
@@ -1974,7 +1975,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRejectsInvalidRevocationTargetsWithoutEpoc
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                       "examples/hello.policies");
+                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto initial = serviceController.getControllerVersion();
   BOOST_REQUIRE(initial.isValid());
 
@@ -2062,7 +2063,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRevocationRollsBackAfterWriterLoss)
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto initial = serviceController.getControllerVersion();
   BOOST_REQUIRE(initial.isValid());
 
@@ -2105,7 +2106,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRevocationRollsBackWhenStateCannotBeRead)
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                       "examples/hello.policies");
+                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto initial = serviceController.getControllerVersion();
   BOOST_REQUIRE(initial.isValid());
 
@@ -2146,7 +2147,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerFiltersRevokedPermissionSnapshots)
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const ndn::Name user("/example/hello/user");
   const ndn::Name provider("/example/hello/provider");
@@ -2243,7 +2244,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerFailsClosedWhenGenerationStateIsCorrupt)
   ndn::DummyClientFace face(keyChain, faceOptions);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   BOOST_CHECK(!serviceController.getControllerVersion().isValid());
   RevocationTarget target;
@@ -2292,11 +2293,11 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRejectsSecondWriterAndPreservesAuthority)
 
   {
     ServiceController first(firstFace, controllerCert, firstValidator,
-                            "examples/hello.policies");
+                            ndnsf::test::testFixturePath("controller-policies.conf").string());
     BOOST_REQUIRE(first.getControllerVersion().isValid());
 
     ServiceController second(secondFace, controllerCert, secondValidator,
-                             "examples/hello.policies");
+                             ndnsf::test::testFixturePath("controller-policies.conf").string());
     BOOST_CHECK(!second.getControllerVersion().isValid());
 
     RevocationTarget target;
@@ -2342,7 +2343,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusHandlerRejectsMissingService)
   ndn::DummyClientFace face(keyChain, faceOptions);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const auto malformedInterest = ndn::Interest(
       ndn::Name("/controller/spec179-status-handler/NDNSF/POLICY-STATUS"));
@@ -2372,7 +2373,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusHandlerPublishesSignedCurrentStatus)
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signingCert =
       ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
   RevocationTarget revokedUser;
@@ -2488,7 +2489,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusHandlerPreservesParametersDigestAndR
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(
       serviceController);
   ServiceControllerTestAccess::registerHandlersForDummyFace(serviceController);
@@ -2563,7 +2564,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusRoundTripPreservesAuthorityScopes)
   ndn::DummyClientFace face(io, keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   RevocationTarget identity = makeIdentityRevocation("/example/hello/user");
   RevocationTarget certificate = makeCertificateRevocation(
@@ -2621,7 +2622,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocati
     boost::asio::io_context io;
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
-    ServiceController controller(face, certificate, validator, "examples/hello.policies");
+    ServiceController controller(face, certificate, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
     originalDigest = controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest();
     BOOST_REQUIRE(!originalDigest.empty());
   }
@@ -2629,7 +2630,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocati
     boost::asio::io_context io;
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
-    ServiceController controller(face, certificate, validator, "examples/hello.policies");
+    ServiceController controller(face, certificate, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
     BOOST_REQUIRE(controller.getControllerVersion().isValid());
     BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest(),
                       originalDigest);
@@ -2641,7 +2642,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerReusesAbePairAcrossRestartAndAfterRevocati
     boost::asio::io_context io;
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
-    ServiceController controller(face, certificate, validator, "examples/hello.policies");
+    ServiceController controller(face, certificate, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
     BOOST_REQUIRE(controller.getControllerVersion().isValid());
     BOOST_CHECK_EQUAL(controller.getPolicyStatus(ndn::Name(SERVICE)).getAbePublicParametersDigest(),
                       revokedDigest);
@@ -2671,7 +2672,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRestoresRevocationsAfterRestart)
     ndn::DummyClientFace face(io, keyChain);
     ndn::ValidatorConfig validator(face);
     ServiceController serviceController(face, controllerCert, validator,
-                                        "examples/hello.policies");
+                                        ndnsf::test::testFixturePath("controller-policies.conf").string());
     RevocationTarget target = makeIdentityRevocation("/example/hello/user");
     BOOST_REQUIRE(serviceController.revoke(target));
     first = serviceController.getControllerVersion();
@@ -2681,7 +2682,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRestoresRevocationsAfterRestart)
     ndn::DummyClientFace face(io, keyChain);
     ndn::ValidatorConfig validator(face);
     ServiceController restarted(face, controllerCert, validator,
-                                 "examples/hello.policies");
+                                 ndnsf::test::testFixturePath("controller-policies.conf").string());
     const auto second = restarted.getControllerVersion();
     BOOST_CHECK(second.controllerGenerationTimestamp > first.controllerGenerationTimestamp);
     BOOST_CHECK_EQUAL(second.controllerEpoch, 1);
@@ -2727,7 +2728,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRestoresEveryRevocationKindAfterRestart)
     ndn::DummyClientFace face(keyChain);
     ndn::ValidatorConfig validator(face);
     ServiceController serviceController(face, controllerCert, validator,
-                                         "examples/hello.policies");
+                                         ndnsf::test::testFixturePath("controller-policies.conf").string());
     BOOST_REQUIRE(serviceController.revoke(makeIdentityRevocation(user.toUri().c_str())));
 
     RevocationTarget globalCertificate;
@@ -2752,7 +2753,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerRestoresEveryRevocationKindAfterRestart)
     ndn::DummyClientFace face(keyChain);
     ndn::ValidatorConfig validator(face);
     ServiceController restarted(face, controllerCert, validator,
-                                "examples/hello.policies");
+                                ndnsf::test::testFixturePath("controller-policies.conf").string());
     const auto secondVersion = restarted.getControllerVersion();
     BOOST_CHECK(secondVersion.controllerGenerationTimestamp >
                 firstVersion.controllerGenerationTimestamp);
@@ -2816,7 +2817,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusVersionIsMonotonicAcrossRestarts)
     ndn::DummyClientFace face(io, keyChain);
     ndn::ValidatorConfig validator(face);
     ServiceController serviceController(face, controllerCert, validator,
-                                        "examples/hello.policies");
+                                        ndnsf::test::testFixturePath("controller-policies.conf").string());
     BOOST_REQUIRE(serviceController.getControllerVersion().isValid());
     ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
     BOOST_REQUIRE(serviceController.revoke(target));
@@ -2875,7 +2876,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusVersionIsMonotonicAcrossRestarts)
     ndn::DummyClientFace face(io, keyChain);
     ndn::ValidatorConfig validator(face);
     ServiceController restarted(face, controllerCert, validator,
-                                "examples/hello.policies");
+                                ndnsf::test::testFixturePath("controller-policies.conf").string());
     secondVersion = restarted.getControllerVersion();
     BOOST_REQUIRE(secondVersion.isValid());
     ServiceControllerTestAccess::ensureInternalControllerSigner(restarted);
@@ -2936,7 +2937,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerPermissionHandlersEncryptCurrentRevocation
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const ndn::Name user("/example/hello/user");
   const ndn::Name provider("/example/hello/provider");
@@ -3197,7 +3198,7 @@ BOOST_AUTO_TEST_CASE(ServiceControllerStatusSignatureRejectsWrongSignerAndTamper
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signingCert =
       ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
   const auto wrongCert = ServiceControllerTestAccess::ensureInternalIdentity(
@@ -3536,7 +3537,7 @@ BOOST_AUTO_TEST_CASE(RealControllerStatusDrivesUserAndProviderRevocation)
   ndn::ValidatorConfig controllerValidator(controllerFace);
   ServiceController serviceController(controllerFace, controllerCert,
                                       controllerValidator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   ndn::Face runtimeFace;
   ndn::security::KeyChain runtimeKeys(
@@ -3693,7 +3694,7 @@ BOOST_AUTO_TEST_CASE(LiveControllerStatusRefreshRejectsRevokedRenewal)
   ndn::ValidatorConfig controllerValidator(controllerFace);
   ServiceController serviceController(controllerFace, controllerCert,
                                       controllerValidator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto controllerPrefix = controllerCert.getIdentity();
   // ServiceController owns the signing KeyChain used by its NAC-ABE
   // AttributeAuthority.  Use that internally provisioned certificate for the
@@ -3907,7 +3908,7 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshIssuesOneTargetFetchWithZeroFanOut)
   ndn::ValidatorConfig controllerValidator(controllerFace);
   ServiceController serviceController(controllerFace, controllerCert,
                                       controllerValidator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto controllerPrefix = controllerCert.getIdentity();
   const auto runtimeAaCert =
       ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
@@ -4075,7 +4076,7 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall)
   ndn::ValidatorConfig controllerValidator(controllerFace);
   ServiceController serviceController(controllerFace, controllerCert,
                                       controllerValidator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto controllerPrefix = controllerCert.getIdentity();
   const auto runtimeAaCert =
       ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
@@ -4227,7 +4228,7 @@ BOOST_AUTO_TEST_CASE(ControllerRevokeRotationFailureRecordsPendingAndReconciles)
   ndn::ValidatorConfig controllerValidator(controllerFace);
   ServiceController serviceController(controllerFace, controllerCert,
                                       controllerValidator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
   ServiceControllerTestAccess::ensureInternalIdentity(
       serviceController, ndn::Name("/spec179/rotate-fail/user"));
@@ -4294,7 +4295,7 @@ BOOST_AUTO_TEST_CASE(PendingRotationFencesGrantAndPreservesImmutableStatus)
       ndn::DummyClientFace face(keys);
       ndn::ValidatorConfig validator(face);
       ServiceController controller(face, identity.getDefaultKey().getDefaultCertificate(),
-                                   validator, "examples/hello.policies");
+                                   validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
       ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
       const ndn::Name user("/spec179/pending-rotation/user");
       ServiceControllerTestAccess::ensureInternalIdentity(controller, user);
@@ -4379,7 +4380,7 @@ BOOST_AUTO_TEST_CASE(RealControllerStatusRevokesEveryTargetKindAtEveryCutPoint)
   ndn::DummyClientFace face(keyChain);
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                       "examples/hello.policies");
+                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const ndn::Name service(SERVICE);
   const ndn::Name otherService("/OtherService");
@@ -5263,7 +5264,7 @@ BOOST_AUTO_TEST_CASE(PersistedRuntimeStatusSurvivesRuntimeRestart)
   ndn::ValidatorConfig controllerValidator(controllerFace);
   ServiceController serviceController(controllerFace, controllerCert,
                                       controllerValidator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto controllerPrefix = controllerCert.getIdentity();
   const auto runtimeAaCert =
       ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
@@ -5440,7 +5441,7 @@ BOOST_AUTO_TEST_CASE(Spec201CurrentPermissionRpcPreservesOriginalAndRefreshesAft
   ndn::DummyClientFace face(keys);
   ndn::ValidatorConfig validator(face);
   ServiceController controller(face, identity.getDefaultKey().getDefaultCertificate(), validator,
-                               "examples/hello.policies");
+                               ndnsf::test::testFixturePath("controller-policies.conf").string());
   const auto signer = ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
   ServiceControllerTestAccess::ensureInternalIdentity(controller, user);
   ServiceControllerTestAccess::registerHandlersForDummyFace(controller);

@@ -18,6 +18,7 @@
 #include <iterator>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -32,24 +33,30 @@ using namespace ndnsf::di;
 
 std::filesystem::path repositoryRoot()
 {
-  if (const char* value = std::getenv("SPEC185_REPO_ROOT"); value != nullptr && *value != '\0')
-    return std::filesystem::absolute(value).lexically_normal();
-
-  auto current = std::filesystem::current_path();
-  for (auto candidate = current; !candidate.empty(); candidate = candidate.parent_path()) {
-    if (std::filesystem::is_regular_file(candidate / "tests/standalone/run-spec182-native-unary-process.py"))
-      return candidate;
-    if (candidate == candidate.parent_path())
-      break;
-  }
-  return current;
+  const char* value = std::getenv("SPEC185_REPO_ROOT");
+  if (value == nullptr) value = std::getenv("NDNSF_TEST_SUPPORT_ROOT");
+  std::filesystem::path root;
+  if (value != nullptr) root = value;
+#ifdef NDNSF_TEST_SOURCE_DIR
+  else root = NDNSF_TEST_SOURCE_DIR;
+#endif
+  if (!root.is_absolute() || !std::filesystem::is_directory(root))
+    throw std::runtime_error("native process test support root is missing or not absolute");
+  return root;
 }
 
-std::filesystem::path buildDirectory(const std::filesystem::path& root)
+std::filesystem::path buildDirectory(const std::filesystem::path&)
 {
-  if (const char* value = std::getenv("SPEC185_BUILD_DIR"); value != nullptr && *value != '\0')
-    return std::filesystem::absolute(value).lexically_normal();
-  return root / "build-spec185-b0c-normal";
+  const char* value = std::getenv("SPEC185_BUILD_DIR");
+  if (value == nullptr) value = std::getenv("NDNSF_SPEC182_BIN_DIR");
+  std::filesystem::path root;
+  if (value != nullptr) root = value;
+#ifdef NDNSF_TEST_BINARY_DIR
+  else root = NDNSF_TEST_BINARY_DIR;
+#endif
+  if (!root.is_absolute() || !std::filesystem::is_directory(root))
+    throw std::runtime_error("native process test binary root is missing or not absolute");
+  return root;
 }
 
 // Cross-process Python drivers are lifecycle orchestration only.  Allow a
@@ -58,9 +65,12 @@ std::filesystem::path buildDirectory(const std::filesystem::path& root)
 // continue to resolve through SPEC185_BUILD_DIR.
 std::filesystem::path externalBuildDirectory(const std::filesystem::path& root)
 {
-  if (const char* value = std::getenv("SPEC185_EXTERNAL_BUILD_DIR");
-      value != nullptr && *value != '\0')
-    return std::filesystem::absolute(value).lexically_normal();
+  if (const char* value = std::getenv("SPEC185_EXTERNAL_BUILD_DIR")) {
+    const std::filesystem::path selected(value);
+    if (!selected.is_absolute() || !std::filesystem::is_directory(selected))
+      throw std::runtime_error("external native process binary root is missing or not absolute");
+    return selected;
+  }
   return buildDirectory(root);
 }
 
@@ -366,7 +376,9 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
   }
   std::string command = "env LD_LIBRARY_PATH=" + shellQuote(libraryPath) +
     " SPEC185_BUILD_DIR=" + shellQuote(externalBuild.string()) +
-    " /usr/bin/timeout --kill-after=5s 180s python3 " +
+    " /usr/bin/timeout --kill-after=5s 180s " +
+    shellQuote(std::getenv("NDNSF_TEST_PYTHON") ? std::getenv("NDNSF_TEST_PYTHON") :
+                                             "/usr/bin/python3") + " " +
     shellQuote(script.string()) +
     " --build " + shellQuote(externalBuild.string()) +
     " --run-root " + shellQuote(runRoot.string());

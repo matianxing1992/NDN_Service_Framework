@@ -22,7 +22,7 @@ for ranges in (((0, 1), (1, 2)), ((0, 5), (5, 12))):
     graph = adapter.graph.snapshot
     model = fixture_model('QwenFixture', digest('QwenFixture-content'), graph.graph_digest, 'qwen')
     graph = replace(graph, adapter=model.adapter)
-    state = 'qwen-layer-split|1|' + ''.join(f'{r}:{start}-{end}:{artifacts[r]};'
+    state = 'qwen-layer-split|1|' + ''.join(f'{r}:{start}-{end}:{artifacts[r]}:d1;'
         for r, (start, end) in zip(roles, ranges))
     splitter = replace(adapter.splitter, splitter_descriptor=SplitterDescriptor('native-qwen-layer-split', '1', digest(state)))
     candidate = splitter.enumerate_candidates(model, graph)[0]

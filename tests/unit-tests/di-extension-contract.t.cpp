@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/extensions.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
@@ -225,7 +226,7 @@ BOOST_AUTO_TEST_CASE(BuiltinYoloCooperativeSplitterChecksControlInsideLoops)
 
 BOOST_AUTO_TEST_CASE(CooperativePlannerRejectsCancelledRequestBeforePublication)
 {
-  std::ifstream file("tests/fixtures/spec182/placement-v3-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/placement-v3-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto oracle = NativeJson::parse(file);
   NativeOfferAdmission admission(oracle.at("policy").dump(),
@@ -247,7 +248,7 @@ BOOST_AUTO_TEST_CASE(CooperativePlannerRejectsCancelledRequestBeforePublication)
 
 BOOST_AUTO_TEST_CASE(CooperativePlannerInvokesStrategyAndStopsBeforeSelection)
 {
-  std::ifstream file("tests/fixtures/spec182/placement-v3-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/placement-v3-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto oracle = NativeJson::parse(file);
   const auto& sample = oracle.at("seal_cases").at(0);

@@ -16,7 +16,7 @@ BOOST_AUTO_TEST_CASE(PreparedServiceRequestOnlyCreatesContext)
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-prepared-context"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
 
   bool published = false;
   user.setRequestPublisher(
@@ -43,7 +43,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestServicePreservesOpaquePayloadAndRequestId)
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-prepared-opaque"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(AdaptiveAdmissionControlWarnsAtSoftLimitAndRejectsAtHardLim
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-admission"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
 
   ServiceUser::AdaptiveAdmissionOptions options;
@@ -181,7 +181,7 @@ BOOST_AUTO_TEST_CASE(LargeDataNamePayloadRemainsOpaqueAcrossPreparedRequestServi
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-name-opaque"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
@@ -244,7 +244,7 @@ BOOST_AUTO_TEST_CASE(MultipleLargeDataObjectsUseOnePreparedRequestScope)
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-multiple"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
   const std::vector<uint8_t> imageBytes = {'i', 'm', 'a', 'g', 'e'};
@@ -289,8 +289,7 @@ BOOST_AUTO_TEST_CASE(LargeDataPublicationEmitsBoundedFinalizedSegments)
   const ndn::Name serviceName("/HELLO/LARGE");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-segments"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   user.useSigningKeyChainForSigningOnlyForTest(keyChain);
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
@@ -337,8 +336,9 @@ BOOST_AUTO_TEST_CASE(LargeDataPublicationEmitsBoundedFinalizedSegments)
   HybridMessageEnvelope envelope;
   BOOST_REQUIRE(envelope.WireDecode(ndn::Block(assembled)));
   BOOST_CHECK_EQUAL(envelope.getMessageType(), "REQUEST-LARGE");
-  const std::string adText = published.encryptedDataName.toUri() +
-                             "|REQUEST-LARGE|" + serviceName.toUri();
+  const std::string adText = published.encryptedDataName.toUri(ndn::name::UriFormat::CANONICAL) +
+                             "|REQUEST-LARGE|" +
+                             serviceName.toUri(ndn::name::UriFormat::CANONICAL);
   const ndn::Buffer associatedData(reinterpret_cast<const uint8_t*>(adText.data()),
                                    adText.size());
   ndn::Buffer decrypted;
@@ -362,8 +362,7 @@ BOOST_AUTO_TEST_CASE(LargeDataImsLimitIsExplicitAndFailClosed)
   const ndn::Name serviceName("/HELLO/LARGE");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-ims-limit"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
   const std::vector<uint8_t> payload(7001, 0x5a);
   const auto before = face.sentData.size();
@@ -387,8 +386,7 @@ BOOST_AUTO_TEST_CASE(MissingLargeDataFetchFailsCleanly)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   const auto started = std::chrono::steady_clock::now();
   const auto result =
@@ -446,7 +444,7 @@ BOOST_AUTO_TEST_CASE(LargeDataOptimizationKeepsSmallPayloadInline)
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-inline"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
   const std::vector<uint8_t> smallPayload = {'s', 'm', 'a', 'l', 'l'};
@@ -470,7 +468,7 @@ BOOST_AUTO_TEST_CASE(LargeDataOptimizationPublishesReferenceForLargePayload)
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-large-data-reference"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
 
   const auto ctx = user.prepareServiceRequest(serviceName.toUri());
   const std::vector<uint8_t> largePayload(2048, static_cast<uint8_t>('x'));
@@ -505,8 +503,7 @@ BOOST_AUTO_TEST_CASE(ProviderResolveLargeDataReferenceLeavesInlinePayload)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   const std::vector<uint8_t> inlinePayload = {'i', 'n', 'l', 'i', 'n', 'e'};
   const ndn::Buffer payload(inlinePayload.data(), inlinePayload.size());
@@ -531,8 +528,7 @@ BOOST_AUTO_TEST_CASE(RequestScopedLargeResponseKeepsSmallPayloadInline)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   const auto userOffer = makeSelectionInputKeyOffer(userCert);
   const auto providerOffer = makeSelectionInputKeyOffer(providerCert);
@@ -589,8 +585,7 @@ BOOST_AUTO_TEST_CASE(RequestScopedLargeResponseUsesPerSegmentAeadReference)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   // The request-scoped large-response path signs each encrypted segment with
   // the Provider certificate.  LocalMock owns a separate in-memory keychain
   // by default, so explicitly bind it to the fixture keychain before testing
@@ -800,13 +795,14 @@ BOOST_AUTO_TEST_CASE(AddHandlerRequestServiceDispatchResponseAndAck)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/test/provider/camera"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
+  IsolatedTestTrust providerTrust{providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{},
                            face,
                            ndn::Name("/test/group"),
                            providerCert,
                            aaCert,
-                           "examples/trust-any.conf");
+                           providerTrust.schemaPath());
 
   runLocalFlow(user, provider, ndn::Name("/ObjectDetection/YOLOv8"), "local-image-bytes", 42);
   runLocalFlow(user, provider, ndn::Name("/LLM/Llama3/Prefill"), "prompt-tokens", 7);
@@ -848,8 +844,7 @@ BOOST_AUTO_TEST_CASE(RequestScopedDefaultActivationWithConfiguredController)
   const ndn::Name serviceName("/HELLO");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-compat"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
 
   // The request-scoped default only exists on a configured Controller runtime.

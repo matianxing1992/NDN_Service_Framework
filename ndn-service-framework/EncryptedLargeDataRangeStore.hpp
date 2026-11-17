@@ -149,7 +149,7 @@ public:
    * Legacy adapters retain identity discovery, including its ambiguity checks.
    */
   virtual std::optional<EncryptedLargeDataLookupResult> lookupDurableObject(
-    const std::string& publicationIdentity, const ndn::Name& manifestName,
+    const std::string& publicationIdentity, const ndn::Name&,
     const std::function<void()>& requireActive = {}) const
   {
     return lookupDurable(publicationIdentity, requireActive);

@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/frozen-binary-fixture.hpp"
 #include "tests/fixtures/spec182/native-sampling-epoch.hpp"
 
 #include <cstdint>
@@ -2690,12 +2691,8 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRegistersAndReportsBuildState)
 
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsFloat32ModelWhenFixtureProvided)
 {
-  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MODEL");
-  if (modelPath == nullptr || std::string(modelPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_MODEL not set; skipping real ONNX Runtime model smoke");
-    BOOST_CHECK(true);
-    return;
-  }
+  const ::ndnsf::test::FrozenBinaryFixture fixture("native-onnx/linear.onnx.hex");
+  const auto modelPath = fixture.path();
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   BOOST_FAIL("NDNSF_DI_TEST_ONNX_MODEL requires C++ ONNX Runtime backend");
@@ -2764,11 +2761,9 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeProviderSelectionRequiresExplicitCpuFallback)
 
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendRunsDynamicPilotDtypesAndReportsDeviceEvidence)
 {
-  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_TYPED_MODEL");
-  if (modelPath == nullptr || std::string(modelPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_TYPED_MODEL not set; skipping typed ONNX smoke");
-    return;
-  }
+  const ::ndnsf::test::FrozenBinaryFixture fixture("native-onnx/typed.onnx.hex");
+  const auto modelPath = fixture.path();
+
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   BOOST_FAIL("NDNSF_DI_TEST_ONNX_TYPED_MODEL requires C++ ONNX Runtime backend");
 #else
@@ -3254,12 +3249,8 @@ BOOST_AUTO_TEST_CASE(DependencyWaitSchedulerShutdownCancelsPendingWork)
 
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendAcceptsEncodedTensorBundleInput)
 {
-  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MODEL");
-  if (modelPath == nullptr || std::string(modelPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_MODEL not set; skipping encoded-input ONNX smoke");
-    BOOST_CHECK(true);
-    return;
-  }
+  const ::ndnsf::test::FrozenBinaryFixture fixture("native-onnx/linear.onnx.hex");
+  const auto modelPath = fixture.path();
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   BOOST_FAIL("NDNSF_DI_TEST_ONNX_MODEL requires C++ ONNX Runtime backend");
@@ -3299,12 +3290,8 @@ BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendAcceptsEncodedTensorBundleInput)
 
 BOOST_AUTO_TEST_CASE(OnnxRuntimeBackendProducesEncodedMultiOutputBundle)
 {
-  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MULTI_MODEL");
-  if (modelPath == nullptr || std::string(modelPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_TEST_ONNX_MULTI_MODEL not set; skipping multi-output ONNX smoke");
-    BOOST_CHECK(true);
-    return;
-  }
+  const ::ndnsf::test::FrozenBinaryFixture fixture("native-onnx/linear-multi.onnx.hex");
+  const auto modelPath = fixture.path();
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   BOOST_FAIL("NDNSF_DI_TEST_ONNX_MULTI_MODEL requires C++ ONNX Runtime backend");

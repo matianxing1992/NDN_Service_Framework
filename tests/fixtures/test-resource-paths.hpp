@@ -7,8 +7,35 @@
 #include <string>
 #include <vector>
 #include <system_error>
+#include <unistd.h>
 
 namespace ndnsf::test {
+
+/** Resolve a test-owned executable from an explicit or Waf-configured binary root. */
+inline std::filesystem::path
+testBinaryPath(const std::filesystem::path& basename)
+{
+  if (basename.empty() || basename.has_parent_path() || basename.is_absolute()) {
+    throw std::invalid_argument("test binary must be a basename");
+  }
+  std::filesystem::path root;
+  if (const auto* configured = std::getenv("NDNSF_SPEC182_BIN_DIR")) {
+    root = configured;
+  }
+#ifdef NDNSF_TEST_BINARY_DIR
+  else {
+    root = NDNSF_TEST_BINARY_DIR;
+  }
+#endif
+  if (root.empty() || !root.is_absolute() || !std::filesystem::is_directory(root)) {
+    throw std::runtime_error("test binary root is missing or not absolute");
+  }
+  const auto path = root / basename;
+  if (!std::filesystem::is_regular_file(path) || ::access(path.c_str(), X_OK) != 0) {
+    throw std::runtime_error("required native test binary missing: " + path.string());
+  }
+  return path;
+}
 
 /** Resolve one read-only test resource, without guessing where it lives.
  *
@@ -46,6 +73,9 @@ testFixturePath(const std::filesystem::path& relative)
 
   std::filesystem::path root;
   if (const char* explicitRoot = std::getenv("NDNSF_TEST_FIXTURE_ROOT")) {
+    if (*explicitRoot == '\0') {
+      throw std::runtime_error("NDNSF_TEST_FIXTURE_ROOT is explicitly empty");
+    }
     if (*explicitRoot != '\0') {
       std::error_code statusError;
       const auto candidate = std::filesystem::path(explicitRoot);
@@ -122,79 +152,6 @@ makeTestScratchTemplate(const std::string& stem)
   return (base / (stem + "-XXXXXX")).string();
 }
 
-/** Resolve one read-only repository resource, without depending on the working directory.
- *
- * Not every input a test needs lives under `tests/fixtures`: a trust schema, a tiny config and a
- * prompt template are shared with production examples. Those are still tracked files, so they are
- * resolved from the same declared roots rather than from `std::filesystem::absolute`, which resolves
- * against the working directory and silently produces a different path for every caller.
- *
- * @param relative Path below the repository (or installed share) root.
- * @returns Absolute path to an existing regular file.
- * @throws std::invalid_argument when the path is absolute or escapes its root.
- * @throws std::runtime_error when no root is configured or the resource is missing.
- */
-inline std::filesystem::path
-testSourcePath(const std::filesystem::path& relative)
-{
-  if (relative.is_absolute() || relative.has_root_path()) {
-    throw std::invalid_argument(
-      "test source path must be relative: " + relative.string());
-  }
-  for (const auto& part : relative) {
-    if (part == "..") {
-      throw std::invalid_argument(
-        "test source path must not escape its root: " + relative.string());
-    }
-  }
-
-  const auto resolveUnder = [&relative] (const std::filesystem::path& base)
-    -> std::filesystem::path {
-    std::error_code statusError;
-    const auto candidate = (base / relative).lexically_normal();
-    if (!std::filesystem::is_regular_file(candidate, statusError)) return {};
-    const auto canonicalBase = std::filesystem::weakly_canonical(base, statusError);
-    if (statusError) return {};
-    const auto canonicalFile = std::filesystem::weakly_canonical(candidate, statusError);
-    if (statusError) return {};
-    const auto baseText = canonicalBase.string();
-    const auto fileText = canonicalFile.string();
-    if (fileText.size() <= baseText.size() ||
-        fileText.compare(0, baseText.size(), baseText) != 0 ||
-        (fileText[baseText.size()] != '/' && fileText[baseText.size()] != '\\')) {
-      return {};
-    }
-    return canonicalFile;
-  };
-
-  // An installed runner carries the shared inputs under its prefix, beside the fixture root's
-  // parent; a source runner uses the tree Waf recorded.
-  if (const char* explicitRoot = std::getenv("NDNSF_TEST_FIXTURE_ROOT")) {
-    if (*explicitRoot != '\0') {
-      std::error_code statusError;
-      const auto rootPath = std::filesystem::path(explicitRoot);
-      if (!std::filesystem::is_directory(rootPath, statusError)) {
-        throw std::runtime_error(
-          std::string("NDNSF_TEST_FIXTURE_ROOT is not a directory: ") + explicitRoot);
-      }
-      const auto candidate = resolveUnder(rootPath);
-      if (!candidate.empty()) return candidate;
-      // An explicit root that is a directory but lacks the resource is still a configuration
-      // error: falling through to the source tree would answer a different question than the
-      // caller asked.
-      throw std::runtime_error(
-        "test source resource is missing under NDNSF_TEST_FIXTURE_ROOT: " + relative.string());
-    }
-  }
-#ifdef NDNSF_TEST_SOURCE_DIR
-  {
-    const auto candidate = resolveUnder(std::filesystem::path(NDNSF_TEST_SOURCE_DIR));
-    if (!candidate.empty()) return candidate;
-  }
-#endif
-  throw std::runtime_error(
-    "test source resource is missing: " + relative.string());
-}
 
 } // namespace ndnsf::test
 

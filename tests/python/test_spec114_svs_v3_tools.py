@@ -110,12 +110,19 @@ class Spec114RunOnceContractTest(unittest.TestCase):
         self.assertEqual(count_sync_ack_lines(text, prefix), 1)
 
     def test_node_runtime_is_explicit_and_modern(self) -> None:
-        node = Path(os.environ.get(
-            "SPEC114_NODE_BIN", "/home/tianxing/.local/node-v22.23.1/bin/node"))
-        identity = validate_node_bin(node)
-        self.assertEqual(identity["version"], "v22.23.1")
-        self.assertEqual(Path(identity["path"]), node.resolve())
-        self.assertEqual(len(identity["sha256"]), 64)
+        # Probe the validator contract with an owned process fixture. Real Node
+        # interoperability is verified by the experiment, not this unit test.
+        with tempfile.TemporaryDirectory() as directory:
+            node = Path(directory) / "node-version-fixture"
+            node.write_text("#!/bin/sh\nprintf 'v22.23.1\\n'\n", encoding="utf-8")
+            node.chmod(0o700)
+            identity = validate_node_bin(node)
+            self.assertEqual(identity["version"], "v22.23.1")
+            self.assertEqual(Path(identity["path"]), node.resolve())
+            self.assertEqual(len(identity["sha256"]), 64)
+            node.write_text("#!/bin/sh\nprintf 'v20.0.0\\n'\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "requires Node.js >=22"):
+                validate_node_bin(node)
 
     def test_formal_aggregation_requires_all_six_bound_cells(self) -> None:
         from Experiments.spec114_candidate_manifest import CELLS

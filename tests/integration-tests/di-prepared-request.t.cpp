@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/spec182/native-qwen-config.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 
 #include <ndn-cxx/util/io.hpp>
 
@@ -715,8 +716,12 @@ public:
     std::filesystem::create_directories(root);
     testTrust = std::make_unique<ndn_service_framework::test::IsolatedTestTrust>();
     ndn::KeyChain trustKeyChain{"pib-memory:", "tpm-memory:"};
-    testTrust->createTestIdentityCertificate(trustKeyChain,
-                                              ndn::Name("/spec185/runtime-trust"));
+    const auto controllerCertificate = testTrust->createTestIdentityCertificate(
+      trustKeyChain, ndn::Name("/aa"));
+    const auto controllerPath = (root / "controller.cert").string();
+    ndn::io::save(controllerCertificate, controllerPath);
+    controllerEnvironment = std::make_unique<ScopedEnvironmentValue>(
+      "NDNSF_CONTROLLER_CERT_FILE", controllerPath.c_str());
     writeEd25519KeyPair(root / "requester.pem", root / "requester-public.pem");
     writeEd25519KeyPair(root / "authority.pem", root / "authority-public.pem");
     writeEd25519KeyPair(root / "offer.pem", root / "offer-public.pem");
@@ -793,7 +798,7 @@ public:
         {"state_inputs", stateInputs}, {"state_outputs", stateOutputs}};
     }
     else {
-      std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
+      std::ifstream oracleFile(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
       if (!oracleFile.good()) throw std::runtime_error("missing YOLO semantic oracle");
       NativeJson oracle;
       oracleFile >> oracle;
@@ -801,7 +806,7 @@ public:
       for (std::size_t i = 0; i < hex.size(); i += 2)
         source.modelBytes.push_back(static_cast<std::uint8_t>(
           std::stoul(hex.substr(i, 2), nullptr, 16)));
-      std::ifstream graphFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+      std::ifstream graphFile(ndnsf::test::testFixturePath("spec182/onnx-planning-graph-oracle.json").string());
       if (!graphFile.good()) throw std::runtime_error("missing ONNX graph oracle");
       NativeJson graphOracles;
       graphFile >> graphOracles;
@@ -934,6 +939,7 @@ public:
 
   ~RuntimeFixture()
   {
+    controllerEnvironment.reset();
     std::error_code error;
     std::filesystem::remove_all(root, error);
   }
@@ -949,6 +955,7 @@ public:
   std::filesystem::path root;
   std::filesystem::path configPath;
   std::unique_ptr<ndn_service_framework::test::IsolatedTestTrust> testTrust;
+  std::unique_ptr<ScopedEnvironmentValue> controllerEnvironment;
   inline static std::atomic<unsigned> sequence{0};
 };
 
@@ -1150,7 +1157,7 @@ preparedProviderConfig(const std::string& serviceName,
   std::vector<std::string> values{
     "provider", "--provider", "/provider", "--group", "/group",
     "--controller", "/controller", "--trust-schema",
-    std::filesystem::absolute("examples/trust-any.conf").string(),
+    ndnsf::test::testFixturePath("config-trust.conf").string(),
     "--service", serviceName, "--workers", std::to_string(workerCount)};
   for (const auto& role : roles) {
     values.push_back("--role");

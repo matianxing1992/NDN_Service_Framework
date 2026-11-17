@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/api.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -193,7 +194,7 @@ public:
   std::filesystem::path makeValidPreparationConfig(const std::string& name)
   {
     const auto configPath = makeConfig(name);
-    std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
+    std::ifstream oracleFile(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
     if (!oracleFile.good())
       throw std::runtime_error("YOLO semantic oracle is unavailable");
     ndnsf::di::NativeJson oracle;
@@ -208,7 +209,7 @@ public:
       model.write(reinterpret_cast<const char*>(source.modelBytes.data()),
                   static_cast<std::streamsize>(source.modelBytes.size()));
     }
-    std::ifstream graphOracleFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+    std::ifstream graphOracleFile(ndnsf::test::testFixturePath("spec182/onnx-planning-graph-oracle.json").string());
     if (!graphOracleFile.good())
       throw std::runtime_error("ONNX planning graph oracle is unavailable");
     ndnsf::di::NativeJson graphOracles;
@@ -1127,7 +1128,7 @@ BOOST_AUTO_TEST_CASE(PrepareSuccessUsesTheProductionRuntimeEntry)
   const auto ownerStats = sourceOwner->stats();
   BOOST_CHECK_EQUAL(ownerStats.lookups, 1U);
   BOOST_CHECK_EQUAL(ownerStats.missIngests, 1U);
-  std::ifstream oracleFile("tests/fixtures/spec182/yolo-semantic-oracle.json");
+  std::ifstream oracleFile(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
   ndnsf::di::NativeJson oracle;
   oracleFile >> oracle;
   BOOST_CHECK_EQUAL(prepared.manifest().modelName, "yolo26n");

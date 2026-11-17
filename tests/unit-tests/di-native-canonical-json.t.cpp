@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <boost/test/unit_test.hpp>
@@ -14,7 +15,7 @@ BOOST_AUTO_TEST_SUITE(Spec182CanonicalJson)
 
 BOOST_AUTO_TEST_CASE(FrozenPythonIdentityBytes)
 {
-  std::ifstream file("tests/fixtures/spec182/canonical-json-vectors.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/canonical-json-vectors.json").string());
   BOOST_REQUIRE(file.good());
   const auto fixture = NativeJson::parse(file);
   BOOST_REQUIRE_EQUAL(fixture.at("schema").get<std::string>(), "spec182-canonical-json-v1");

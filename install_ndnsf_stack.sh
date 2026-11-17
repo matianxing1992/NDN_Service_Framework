@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NATIVE_BUILD_DIR="$ROOT/build"
 PYTHON_BIN="${PYTHON:-python3}"
 JOBS="${NDNSF_BUILD_JOBS:-6}"
 PERSON_RUNTIME=""
@@ -9,6 +10,7 @@ WAF_CONFIGURE_ARGS=()
 QWEN_MININDN=0
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
+NATIVE_ONLY=0
 USE_USER_FLAG=0
 INSTALL_EDITABLE=0
 INSTALL_DEPENDENCIES=auto
@@ -16,6 +18,7 @@ FORCE_DEPENDENCIES=0
 NO_DEPENDENCIES_REQUESTED=0
 DEPS_DIR="$ROOT/dependencies"
 BUILD_DIR="${NDNSF_BUILD_DIR:-}"
+DEFAULT_BUILD_SCRATCH=0
 REUSE_BUILD_DIR="${NDNSF_REUSE_BUILD_DIR:-0}"
 INSTALL_SYSTEM_PACKAGES=1
 INSTALL_TEST_PACKAGES=0
@@ -116,7 +119,8 @@ Options:
   --no-dependencies        Check dependencies without rebuilding them.
   --force-dependencies     Rebuild dependencies even when found.
   --deps-dir PATH          Source checkout root (default: ./dependencies).
-  NDNSF_REUSE_BUILD_DIR=1  Reuse a build dir only when its checkout marker matches.
+  NDNSF_BUILD_DIR=PATH     Explicit SDK scratch; default is one owned /tmp purpose per checkout.
+  NDNSF_REUSE_BUILD_DIR=1  Reuse explicit SDK scratch only when its checkout marker matches.
   --install-system-packages Install common APT build packages (default).
   --no-system-packages     Do not install OS packages.
   --with-system-tests-deps Install test/documentation OS packages.
@@ -133,11 +137,12 @@ Options:
   --configure              Always run ./waf configure.
   --no-configure           Unsupported; configure is required for every install.
   --jobs N                 Build parallelism (default: NDNSF_BUILD_JOBS or 6).
-  NDNSF_TMPDIR=PATH        Temporary files (default: BUILD_DIR/tmp).
+  NDNSF_TMPDIR=PATH        SDK temporary files (default: BUILD_DIR/tmp; native Waf uses ROOT/build).
   --with-examples          Pass --with-examples to Waf configure.
   --with-tests             Pass --with-tests to Waf configure.
   --no-system-install      Build without running ./waf install.
   --system-install         Run ./waf install (default).
+  --native-only            Install native applications, SDK and tests; skip public Python wheels.
   --user                   Unsupported; system Python is required.
   --no-user                Use system Python (default).
   --no-editable            Install wheels, not source-tree links (default).
@@ -274,6 +279,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --system-install)
       RUN_SYSTEM_INSTALL=1
+      shift
+      ;;
+    --native-only)
+      NATIVE_ONLY=1
       shift
       ;;
     --user)
@@ -427,9 +436,9 @@ case ",$component_closure," in *,uav,*) NDNSF_INSTALL_UAV=1 ;; esac
 for component_arg in "${WAF_CONFIGURE_ARGS[@]}"; do
   case "$component_arg" in
     --components|--components=*) echo 'Use installer --components before --' >&2; exit 2 ;;
-    --with-tests|--with-examples|--install-experiment-fixtures)
+    --with-examples|--install-experiment-fixtures)
       [[ "$NATIVE_COMPONENT_PROFILE" == all ]] || {
-        echo 'Historical examples/tests/fixtures require --components all' >&2; exit 2;
+        echo 'Historical examples/experiment fixtures require --components all' >&2; exit 2;
       } ;;
   esac
 done
@@ -1297,17 +1306,8 @@ native_runtime_rpath() {
 run_waf_clean() {
   refresh_global_pkg_config_path
   local -a waf_args=("$@")
-  local ndncxx_source_tree=""
-  local needs_ndncxx_test_source=0 arg
-  for arg in "${WAF_CONFIGURE_ARGS[@]}"; do
-    if [[ "$arg" == "--with-tests" ]]; then
-      needs_ndncxx_test_source=1
-      break
-    fi
-  done
-  if (( needs_ndncxx_test_source )); then
-    ndncxx_source_tree="$(ensure_source_tree "ndn-cxx" "$NDNCXX_REPO_URL")"
-  fi
+  # Only an explicitly requested private-SDK driver needs an ndn-cxx source pin.
+  local ndncxx_source_tree="${NDNSF_NDN_CXX_SOURCE_TREE:-}"
   if [[ "${waf_args[0]:-}" == "configure" ]]; then
     # Keep native outputs separate from the external SDK search roots.
     waf_args+=("--prefix=$RUNTIME_PREFIX" "--libdir=$RUNTIME_LIBRARY_DIR"
@@ -1332,11 +1332,12 @@ run_waf_clean() {
     NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
     NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
     NDNSF_NDN_CXX_SOURCE_TREE="$ndncxx_source_tree" \
-    "$PYTHON_BIN" ./waf --out="$BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" "${waf_args[@]}"
+    "$PYTHON_BIN" ./waf \
+    --out="$NATIVE_BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" "${waf_args[@]}"
 }
 
 prepare_build_dir() {
-  local existed=0 temp_dir raw_build
+  local existed=0 temp_dir raw_build directory_mode
   local -a marker_mode=()
   (( ! DEPS_ONLY )) || marker_mode+=(--dependencies-only)
   if [[ -z "$BUILD_DIR" ]]; then
@@ -1344,8 +1345,14 @@ prepare_build_dir() {
       echo 'NDNSF_REUSE_BUILD_DIR=1 requires NDNSF_BUILD_DIR to name an existing build directory' >&2
       exit 2
     }
-    BUILD_DIR="$(mktemp -d --tmpdir=/var/tmp ndnsf-build.XXXXXXXX)"
-  else
+    case "$(stat -f -c %T /tmp)" in
+      tmpfs|ramfs) echo 'Default SDK scratch needs disk-backed /tmp; set NDNSF_BUILD_DIR explicitly.' >&2; exit 2 ;;
+    esac
+    BUILD_DIR="/tmp/ndnsf-stack-sdk-$UID-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+    DEFAULT_BUILD_SCRATCH=1
+    REUSE_BUILD_DIR=1
+  fi
+  if [[ -n "$BUILD_DIR" ]]; then
     raw_build="$BUILD_DIR"
     while [[ "$raw_build" == */ && "$raw_build" != / ]]; do raw_build="${raw_build%/}"; done
     if [[ -L "$raw_build" ]]; then
@@ -1363,6 +1370,15 @@ prepare_build_dir() {
         ;;
     esac
     if [[ -e "$BUILD_DIR" || -L "$BUILD_DIR" ]]; then
+      if (( DEFAULT_BUILD_SCRATCH )); then
+        [[ "$(stat -c %u "$BUILD_DIR")" == "$UID" ]] || {
+          echo "Default SDK scratch is not owned by this user: $BUILD_DIR" >&2; exit 2;
+        }
+        directory_mode="$(stat -c %a "$BUILD_DIR")"
+        (( (8#$directory_mode & 0022) == 0 )) || {
+          echo "Default SDK scratch is writable by another user/group: $BUILD_DIR" >&2; exit 2;
+        }
+      fi
       [[ "$REUSE_BUILD_DIR" == 1 && -d "$BUILD_DIR" && ! -L "$BUILD_DIR" ]] || {
         echo "Build directory already exists; refusing to reuse it without NDNSF_REUSE_BUILD_DIR=1: $BUILD_DIR" >&2
         exit 2
@@ -1371,13 +1387,15 @@ prepare_build_dir() {
       manifest_tool build-marker \
         --build-dir "$BUILD_DIR" --root "$ROOT" --verify "${marker_mode[@]}"
     else
-      mkdir -p -- "$BUILD_DIR"
+      mkdir -p -m 700 -- "$BUILD_DIR"
     fi
   fi
   if (( ! existed )); then
     manifest_tool build-marker \
       --build-dir "$BUILD_DIR" --root "$ROOT"
   fi
+  exec 8>"$BUILD_DIR/.ndnsf-stack-purpose.lock"
+  flock -n 8 || { echo "SDK scratch is active: $BUILD_DIR" >&2; exit 75; }
   temp_dir="$(realpath -m -- "${NDNSF_TMPDIR:-$BUILD_DIR/tmp}")"
   case "$temp_dir" in
     "$ROOT"|"$ROOT"/*)
@@ -1389,6 +1407,24 @@ prepare_build_dir() {
   export TMPDIR="$temp_dir"
   echo "==> External temporary directory: $TMPDIR"
   echo "==> External build/log root: $BUILD_DIR"
+}
+
+release_default_sdk_scratch() {
+  if (( DEFAULT_BUILD_SCRATCH )); then
+    local retained
+    for retained in "$DEPS_DIR" "$LOCK_FILE" "$RUNTIME_PREFIX" "${PERSON_RUNTIME:-}" \
+                    "${NDNSF_NDN_CXX_SOURCE_TREE:-}"; do
+      [[ -n "$retained" ]] || continue
+      retained="$(realpath -m -- "$retained")"
+      case "$retained" in
+        "$BUILD_DIR"|"$BUILD_DIR"/*)
+          echo "==> Retaining SDK scratch containing an explicit input/install path: $retained"
+          return 0 ;;
+      esac
+    done
+    manifest_tool build-marker --build-dir "$BUILD_DIR" --root "$ROOT" --verify
+    rm -rf -- "$BUILD_DIR"
+  fi
 }
 
 require_system_toolchain() {
@@ -2115,7 +2151,14 @@ install_common_system_packages() {
       packages+=(gcc-10 g++-10)
     fi
     if (( NDNSF_INSTALL_UAV )); then
-      packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev)
+      packages+=(libgtkmm-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libffi-dev
+                 gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav)
+      for test_option in "${WAF_CONFIGURE_ARGS[@]}"; do
+        if [[ "$test_option" == --with-tests ]]; then
+          packages+=(xvfb xauth)
+          break
+        fi
+      done
       if [[ "$HOST_UBUNTU_VERSION" == "20.04" ]]; then
         packages+=(libpcre3-dev)
       fi
@@ -2125,6 +2168,9 @@ install_common_system_packages() {
     fi
     if [[ "$INSTALL_TEST_PACKAGES" == "1" ]]; then
       packages+=(libgtest-dev)
+      if (( NDNSF_INSTALL_DI )); then
+        packages+=(python3-cryptography bubblewrap openssl)
+      fi
     fi
     if [[ "$INSTALL_DOC_PACKAGES" == "1" ]]; then
       packages+=(doxygen graphviz)
@@ -2677,26 +2723,61 @@ ensure_minindn_boost_iostreams() {
   rm -rf -- "$build"
 }
 
+selected_python_ndn_version() {
+  case "$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" in
+    3.8) printf '0.3' ;;
+    3.14) printf '0.5.1' ;;
+    *) echo "No supported python-ndn pin for $PYTHON_BIN" >&2; return 2 ;;
+  esac
+}
+
+install_native_test_python_support() (
+  (( NDNSF_INSTALL_DI )) || exit 0
+  local enabled=0 test_option stage version test_stage_root
+  for test_option in "${WAF_CONFIGURE_ARGS[@]}"; do
+    [[ "$test_option" != --with-tests ]] || enabled=1
+  done
+  (( enabled )) || exit 0
+  version="$(selected_python_ndn_version)"
+  env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "$PYTHON_BIN" -I -c 'import cryptography' || {
+    echo 'Native process tests require system python3-cryptography; enable system packages or prepare it explicitly.' >&2
+    exit 2
+  }
+  test_stage_root="${TMPDIR:-/tmp}"
+  case "$(stat -f -c %T "$test_stage_root")" in
+    tmpfs|ramfs) echo 'Native test Python staging requires disk-backed scratch' >&2; exit 2 ;;
+  esac
+  [[ $(df -B1 --output=avail "$test_stage_root" | tail -n 1) -ge 536870912 ]] || {
+    echo 'Native test Python preparation requires 512 MiB free scratch space' >&2; exit 2;
+  }
+  stage="$(mktemp -d "$test_stage_root/ndnsf-native-test-python.XXXXXXXX")"
+  trap 'rm -rf -- "$stage"' EXIT
+  mkdir -p -- "$stage/tmp" "$stage/tree/libexec/ndnsf-tests/python"
+  run_bounded env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 TMPDIR="$stage/tmp" \
+    "$PYTHON_BIN" -m pip --isolated install --no-cache-dir --no-compile \
+    --target "$stage/tree/libexec/ndnsf-tests/python" "python-ndn==$version"
+  install_manifest_tree "$stage/tree" "$RUNTIME_PREFIX" ndnsf-test-python
+)
+
 install_yolo_minindn_profile() {
   local python_tag torch_version torchvision_version python_ndn_version onnxruntime_python_version
   local mini_prefix yolo_prefix
   local mini_source source_copy stage_root mini_site yolo_site mini_stage yolo_stage
   local model_stage topology
   local -a pip_env
+  python_ndn_version="$(selected_python_ndn_version)"
 
   case "$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" in
     3.8)
       python_tag=python3.8
       torch_version=2.4.1+cpu
       torchvision_version=0.19.1+cpu
-      python_ndn_version=0.3
       onnxruntime_python_version=1.18.0
       ;;
     3.14)
       python_tag=python3.14
       torch_version=2.14.0+cpu
       torchvision_version=0.29.0+cpu
-      python_ndn_version=0.5.1
       onnxruntime_python_version=1.26.0
       ;;
     *)
@@ -3473,6 +3554,7 @@ if (( CONFIGURE_ONLY )); then
   require_system_toolchain
   prepare_build_dir
   run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
+  release_default_sdk_scratch
   exit 0
 fi
 
@@ -3546,6 +3628,7 @@ fi
 
 if (( DEPS_ONLY )); then
   echo '==> External dependency stage complete; NDNSF build/install not run'
+  release_default_sdk_scratch
   exit 0
 fi
 
@@ -3590,11 +3673,13 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
     NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
     NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
-    "$PYTHON_BIN" ./waf --out="$BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" \
+    "$PYTHON_BIN" ./waf --out="$NATIVE_BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" \
     install "--destdir=$BUILD_DIR/install-staging/ndnsf" -j"$JOBS"
   install_manifest_tree "$local_install_stage" "$RUNTIME_PREFIX" ndnsf-native
   rm -rf -- "$BUILD_DIR/install-staging/ndnsf"
-  sudo_run /sbin/ldconfig
+  if [[ "$RUNTIME_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]]; then
+    sudo_run /sbin/ldconfig
+  fi
   selected_native_libraries=(libndn-service-framework.so)
   (( ! NDNSF_INSTALL_DI )) || selected_native_libraries+=(libndnsf-distributed-inference.so)
   (( ! NDNSF_INSTALL_REPO )) || selected_native_libraries+=(libndnsf-distributed-repo.a)
@@ -3633,8 +3718,17 @@ else
   exit 2
 fi
 
+install_native_test_python_support
+
+if (( NATIVE_ONLY )); then
+  echo "==> Native-only candidate installed; public Python bindings and DI CLI not selected"
+  release_default_sdk_scratch
+  exit 0
+fi
+
 if (( ! NDNSF_INSTALL_DI )); then
   echo "==> Selected native roles installed; DI bindings and CLI are not selected"
+  release_default_sdk_scratch
   exit 0
 fi
 
@@ -3681,3 +3775,4 @@ if (( QWEN_MININDN )); then
   check_qwen_installed_programs
 fi
 echo "==> NDNSF stack installation complete"
+release_default_sdk_scratch

@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/boost-test.hpp"
 
 #include "tests/integration-tests/ndnsf-integration-fixture.hpp"
@@ -149,17 +150,8 @@ testStreamOptions()
 std::filesystem::path
 findSpec175OneRoleFixture()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/one-role");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::exists(candidate / "role-0.onnx")) {
-      return candidate;
-    }
-  }
-  return {};
+  return ndnsf::test::testFixturePath(
+    "spec175/tiny-causal-lm-v1/one-role/role-0.onnx").parent_path();
 }
 
 ndnsf::di::TensorBundle

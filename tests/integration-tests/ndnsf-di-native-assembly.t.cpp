@@ -1,3 +1,5 @@
+#include "tests/fixtures/test-resource-paths.hpp"
+#include "tests/fixtures/native-worker-location.hpp"
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
@@ -40,17 +42,8 @@ namespace fixture = ndn_service_framework::test;
 std::filesystem::path
 findFixture()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::is_regular_file(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
+  return ndnsf::test::testFixturePath(
+    "spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
 }
 
 std::vector<std::uint8_t>
@@ -63,29 +56,12 @@ readBytes(const std::filesystem::path& path)
 
 // OA02 worker used by every post-Selection assembly in this suite.  The
 // integration binary is not a shell of the worker: the spawned child is the
-// real installed DI_NativeOnnxAssemblyWorker from the build root (or the
-// NDNSF_SPEC182_BIN_DIR override).  sha256 stays empty here (no rehash
-// pinning); the Spec182OnnxActivation suite covers pinned preflight.
+// real installed worker resolved by the production preflight, with an explicit
+// NDNSF_DI_WORKER_BINARY or legacy bin-directory override when requested.
 NativeOnnxWorkerLocation
 testWorkerLocation()
 {
-  std::vector<std::string> candidates;
-  const char* dir = std::getenv("NDNSF_SPEC182_BIN_DIR");
-  if (dir != nullptr && *dir != '\0') {
-    candidates.push_back(std::string(dir) + "/DI_NativeOnnxAssemblyWorker");
-  }
-  candidates.push_back("build-nac182/DI_NativeOnnxAssemblyWorker");
-  candidates.push_back("build/DI_NativeOnnxAssemblyWorker");
-  candidates.push_back("../build-nac182/DI_NativeOnnxAssemblyWorker");
-  candidates.push_back("examples/DI_NativeOnnxAssemblyWorker");
-  for (const auto& path : candidates) {
-    if (std::filesystem::is_regular_file(path)) {
-      return NativeOnnxWorkerLocation{path, ""};
-    }
-  }
-  BOOST_FAIL("DI_NativeOnnxAssemblyWorker binary not found: run the full waf "
-             "build (with examples) before the integration suites");
-  return {};
+  return ndnsf::test::testNativeWorkerLocation();
 }
 
 std::string

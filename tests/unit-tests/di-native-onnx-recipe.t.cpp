@@ -28,6 +28,8 @@
 //           io shape poison            -> DI_NATIVE_ONNX_IO_DTYPE (S6 compare)
 //           layer escape               -> DI_NATIVE_ONNX_LAYER_RANGE (entry)
 
+#include "tests/fixtures/native-worker-location.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
@@ -73,20 +75,10 @@ namespace {
 
 boost::property_tree::ptree loadExtractionVectors()
 {
-  namespace pt = boost::property_tree;
-  const std::string candidates[] = {
-    "tests/fixtures/spec182/dependency-probes/extraction-vectors.json",
-    "../tests/fixtures/spec182/dependency-probes/extraction-vectors.json",
-  };
-  for (const auto& path : candidates) {
-    std::ifstream in(path);
-    if (in) {
-      pt::ptree root;
-      pt::read_json(in, root);
-      return root;
-    }
-  }
-  throw std::runtime_error("fixture not found: extraction-vectors.json");
+  boost::property_tree::ptree root;
+  boost::property_tree::read_json(ndnsf::test::testFixturePath(
+    "spec182/dependency-probes/extraction-vectors.json").string(), root);
+  return root;
 }
 
 // JSON arrays parse to children with empty keys, so rows are found by
@@ -530,20 +522,10 @@ workerAcceptRow()
 std::string
 spec182BinaryPath(const std::string& basename)
 {
-  std::vector<std::string> candidates;
-  const char* dir = std::getenv("NDNSF_SPEC182_BIN_DIR");
-  if (dir != nullptr && *dir != '\0') {
-    candidates.push_back(std::string(dir) + "/" + basename);
+  if (basename == "DI_NativeOnnxAssemblyWorker") {
+    return ndnsf::test::testNativeWorkerLocation().path;
   }
-  candidates.push_back("build-nac182/" + basename);
-  candidates.push_back("build/" + basename);
-  candidates.push_back("../" + basename);
-  candidates.push_back(basename);
-  for (const auto& path : candidates) {
-    std::ifstream in(path, std::ios::binary);
-    if (in) return path;
-  }
-  return "";
+  return ndnsf::test::testBinaryPath(basename).string();
 }
 
 std::string
@@ -1356,7 +1338,7 @@ BOOST_AUTO_TEST_CASE(FinalizeRejectsCountAndIoNameMismatch)
 
 BOOST_AUTO_TEST_CASE(AutomaticRecipeMatchesIndependentGoldenAndRejectsDowngrade)
 {
-  std::ifstream fixture("tests/fixtures/spec233/automatic-recipe-v2-vector.json");
+  std::ifstream fixture(ndnsf::test::testFixturePath("spec233/automatic-recipe-v2-vector.json").string());
   BOOST_REQUIRE(fixture.good());
   const auto golden = NativeJson::parse(fixture);
   auto recipe = recipeFromVector(workerAcceptRow());
@@ -1427,6 +1409,7 @@ BOOST_AUTO_TEST_CASE(AutomaticRecipeInstalledChildRetainsLegacyModelBytes)
   recipe.automaticContractDigest = "sha256:" + std::string(64, '2');
   for (const bool materialized : {false, true}) {
     recipe.materializedRole = materialized;
+    recipe.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(recipe));
     const auto expected = assembleInProcess(source, recipe);
     const auto actual = runNativeOnnxAssemblyWorkerAt({worker, ""}, source, recipe,
                                                     extractionControl());
@@ -1701,6 +1684,7 @@ BOOST_AUTO_TEST_CASE(SubprocessFileBackedMaterializedRoleMatchesInProcess)
   const auto source = sourceFromRow(row);
   auto recipe = recipeFromVector(row);
   recipe.materializedRole = true;
+  recipe.recipeDigest = nativePlanningDigest(canonicalNativeOnnxRecipeJson(recipe));
   const auto path = std::filesystem::temp_directory_path() /
     ("ndnsf-di-worker-file-" + std::to_string(::getpid()) + ".onnx");
   struct TempFileCleanup {
@@ -1742,12 +1726,12 @@ BOOST_AUTO_TEST_CASE(SubprocessChainRejectionPropagatesItsOwnCode)
   const auto root = loadExtractionVectors();
   const auto& row = caseRow(root.get_child("cases"), "pythonError",
                             "canonical ONNX graph digest mismatch");
-  BOOST_CHECK_EQUAL(
-    expectWorkerThrow([&] {
-      runNativeOnnxAssemblyWorker(sourceFromRow(row), recipeFromVector(row),
-                                  extractionControl());
-    }),
-    "DI_NATIVE_ONNX_RECIPE");
+  const auto error = expectWorkerThrow([&] {
+    runNativeOnnxAssemblyWorker(sourceFromRow(row), recipeFromVector(row),
+                                extractionControl());
+  });
+  // The stable family is the leading token; the parent also retains child diagnostics.
+  BOOST_CHECK_EQUAL(error.substr(0, error.find(": ")), "DI_NATIVE_ONNX_RECIPE");
 }
 
 BOOST_AUTO_TEST_CASE(SubprocessCrashBySignalReported)

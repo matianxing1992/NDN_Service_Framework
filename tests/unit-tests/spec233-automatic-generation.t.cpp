@@ -3764,14 +3764,11 @@ frozenGenerationRow(const std::string& row)
 
 BOOST_AUTO_TEST_CASE(RealQ06I4PrefillEightDecodeAndSecondRequestMatchRawOrt)
 {
-  // Opt-in real-source oracle (CD04.4.9). The ordinary asset-free selector
-  // leaves this case inert; explicit selection must fail without its frozen row.
+  // The model profile owns this oracle; explicit selection requires its frozen row.
   const auto* rowEnv = std::getenv("NDNSF_SPEC233_REAL_GENERATION_ROW");
-  if (rowEnv == nullptr || *rowEnv == '\0') {
-    BOOST_TEST_MESSAGE("real-source generation oracle not selected; set "
+  BOOST_REQUIRE_MESSAGE(rowEnv != nullptr && *rowEnv != '\0',
+    "real-source generation oracle requires "
       "NDNSF_SPEC233_REAL_GENERATION_ROW=Q06-I4 and NDNSF_SPEC233_REAL_MODEL to the frozen source");
-    return;
-  }
   const std::string row(rowEnv);
   const auto rowSpec = frozenGenerationRow(row);
   const auto expectedCache = rowSpec.cache;

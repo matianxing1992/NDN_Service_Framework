@@ -20,17 +20,18 @@ BOOST_AUTO_TEST_CASE(ServiceContainerComposesUsersProvidersLocalServicesAndLifec
   const auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/test/provider/drone"));
 
   auto operatorUser = std::make_shared<LocalServiceUser>(
-    face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), userCert, aaCert);
   auto aiUser = std::make_shared<LocalServiceUser>(
-    face, ndn::Name("/test/group"), aiUserCert, aaCert, "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), aiUserCert, aaCert);
   auto droneProvider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/test/group"), providerCert, aaCert, "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), providerCert, aaCert);
 
+  IsolatedTestTrust containerTrust{userCert, aiUserCert, providerCert, aaCert};
   ServiceContainer container({
     ndn::Name("/test/container"),
     ndn::Name("/test/group"),
     ndn::Name("/test/controller"),
-    "examples/trust-any.conf"
+    containerTrust.schemaPath()
   });
 
   container.addUser("operator", operatorUser);

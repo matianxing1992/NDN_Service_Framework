@@ -9,13 +9,18 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace ndnsf_distributed_repo::tests {
 
 /** Write fixed fixture anchors with the maintained hierarchical signer rule. */
 inline std::string
-writeFixedKeychainTrust(const std::filesystem::path& directory, ndn::KeyChain& keyChain)
+writeFixedKeychainTrust(const std::filesystem::path& directory,
+                       const std::vector<ndn::security::Certificate>& trustedAnchors)
 {
+  if (trustedAnchors.empty()) {
+    throw std::invalid_argument("fixed fixture trust requires explicit anchors");
+  }
   const auto path = directory / "fixed-trust.conf";
   std::ofstream schema(path);
   schema << "rule { id fixture for data checker { type customized sig-type rsa-sha256 "
@@ -23,9 +28,9 @@ writeFixedKeychainTrust(const std::filesystem::path& directory, ndn::KeyChain& k
             "k-regex \"^(<>*)<KEY|8=KEY><>{1,3}$\" k-expand \"\\\\1\" "
             "h-relation is-prefix-of p-regex \"^(<>*)$\" p-expand \"\\\\1\" } } } }\n";
   std::size_t anchors = 0;
-  for (const auto& identity : keyChain.getPib().getIdentities()) {
+  for (const auto& certificate : trustedAnchors) {
     std::ostringstream encoded;
-    ndn::io::save(identity.getDefaultKey().getDefaultCertificate(), encoded);
+    ndn::io::save(certificate, encoded);
     auto base64 = encoded.str();
     base64.erase(std::remove(base64.begin(), base64.end(), '\n'), base64.end());
     schema << "trust-anchor { type base64 base64-string \"" << base64 << "\" }\n";

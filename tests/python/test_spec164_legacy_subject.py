@@ -9,10 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 EVIDENCE = (
     ROOT
-    / "specs"
-    / "164-distributed-repo-large-artifact-transport"
-    / "evidence"
-    / "legacy-subject.json"
+    / "tests/fixtures/legacy-repo-subject/subject.json"
 )
 
 

@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
 #include "tests/fixtures/spec182/native-sampling-epoch.hpp"
@@ -1429,7 +1430,7 @@ BOOST_AUTO_TEST_CASE(Spec204RecoveryCancelHasExactBoundedWireShape)
 
 BOOST_AUTO_TEST_CASE(RuntimeStateCommitmentAndLogicalTranscriptAreBothVerified)
 {
-  std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec182/conversation-oracle.json").string());
   const auto oracle = NativeJson::parse(input);
   for (const auto& fixture : oracle.at("nativeStateCases")) {
     const auto tokens = fixture.at("canonicalTokenIds").get<std::vector<std::int64_t>>();
@@ -1446,7 +1447,7 @@ BOOST_AUTO_TEST_CASE(RuntimeStateCommitmentAndLogicalTranscriptAreBothVerified)
 }
 BOOST_AUTO_TEST_CASE(LegacyEncryptedEnvelopeAndSubkeyParity)
 {
-  std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec182/conversation-oracle.json").string());
   const auto oracle = NativeJson::parse(input);
   std::vector<std::uint8_t> key(32);
   for (std::size_t i = 0; i != key.size(); ++i) key[i] = static_cast<std::uint8_t>(i);
@@ -1479,7 +1480,7 @@ BOOST_AUTO_TEST_CASE(LegacyEncryptedEnvelopeAndSubkeyParity)
 
 BOOST_AUTO_TEST_CASE(LegacyCheckpointAndTranscriptWireParity)
 {
-  std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec182/conversation-oracle.json").string());
   const auto oracle = NativeJson::parse(input);
   std::vector<std::uint8_t> key(32);
   for (std::size_t i = 0; i != key.size(); ++i) key[i] = static_cast<std::uint8_t>(i);
@@ -1601,7 +1602,7 @@ BOOST_AUTO_TEST_CASE(ProvisionedDirectoriesNeedNoPermissionMutation)
 
 BOOST_AUTO_TEST_CASE(LegacyReadNativeAppendAndWriterLease)
 {
-  std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec182/conversation-oracle.json").string());
   const auto oracle = NativeJson::parse(input);
   char directory[] = "/tmp/spec182-native-journal-XXXXXX";
   BOOST_REQUIRE(::mkdtemp(directory) != nullptr);
@@ -1720,7 +1721,7 @@ struct ConversationOwnerFixture
 {
   ConversationOwnerFixture()
   {
-    std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");
+    std::ifstream input(ndnsf::test::testFixturePath("spec182/conversation-oracle.json").string());
     oracle = NativeJson::parse(input);
     char directory[] = "/tmp/spec182-conversation-owner-XXXXXX";
     if (!::mkdtemp(directory)) throw std::runtime_error("test temporary directory failed");

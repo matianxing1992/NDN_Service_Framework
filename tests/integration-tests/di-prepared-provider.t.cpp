@@ -1,5 +1,6 @@
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
 
+#include "tests/fixtures/native-worker-location.hpp"
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/test-resource-paths.hpp"
 
@@ -98,10 +99,8 @@ private:
 std::filesystem::path
 trustSchema()
 {
-  // Resolved from the declared roots, not from the working directory: `absolute()` answered a
-  // different path for every caller, so the same case validated against a trust schema that existed
-  // only when it ran from the checkout root.
-  return ndnsf::test::testSourcePath("examples/trust-any.conf");
+  // Parsing uses public test material; runtime actor cases pass their owned trust explicitly.
+  return ndnsf::test::testFixturePath("config-trust.conf");
 }
 
 ProviderConfig
@@ -266,23 +265,7 @@ zeroDigest(char value)
 NativeOnnxWorkerLocation
 providerAssemblyWorker()
 {
-  std::vector<std::string> candidates;
-  if (const auto* dir = std::getenv("NDNSF_SPEC182_BIN_DIR"); dir && *dir) {
-    candidates.emplace_back(std::string(dir) + "/di-native-assembly-worker");
-    candidates.emplace_back(std::string(dir) + "/DI_NativeOnnxAssemblyWorker");
-  }
-  candidates.emplace_back("build-nac182/DI_NativeOnnxAssemblyWorker");
-  candidates.emplace_back("build/DI_NativeOnnxAssemblyWorker");
-  candidates.emplace_back("build-spec185-b0c-normal/DI_NativeOnnxAssemblyWorker");
-  candidates.emplace_back("../build-nac182/DI_NativeOnnxAssemblyWorker");
-  candidates.emplace_back("../build-spec185-b0c-normal/DI_NativeOnnxAssemblyWorker");
-  candidates.emplace_back("examples/DI_NativeOnnxAssemblyWorker");
-  for (const auto& path : candidates) {
-    if (std::filesystem::is_regular_file(path))
-      return NativeOnnxWorkerLocation{path, ""};
-  }
-  BOOST_FAIL("DI_NativeOnnxAssemblyWorker binary not found");
-  return {};
+  return ndnsf::test::testNativeWorkerLocation();
 }
 
 NativeSelectionProjectionV3

@@ -620,7 +620,7 @@ BOOST_AUTO_TEST_CASE(StoreAndLocationHandlersBindLocalBytesReceiptAndIdentities)
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
     ndn::Name("/spec192/group"), providerCert, authorityCert,
-    writeFixedKeychainTrust(temporary.path(), keyChain));
+    writeFixedKeychainTrust(temporary.path(), {providerCert, authorityCert}));
 
   const ndn::Name servicePrefix(RepoClient::DEFAULT_SERVICE_NAME);
   const std::string logicalRepo = "/logical/repo-a";
@@ -956,7 +956,7 @@ BOOST_AUTO_TEST_CASE(RangeAbortIsOwnerBoundAndExpiredStagingReleasesCapacity)
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
     ndn::Name("/spec192/group-abort"), providerCert, authorityCert,
-    writeFixedKeychainTrust(temporary.path(), keyChain));
+    writeFixedKeychainTrust(temporary.path(), {providerCert, authorityCert}));
 
   const ndn::Name servicePrefix(RepoClient::DEFAULT_SERVICE_NAME);
   const std::string logicalRepo = "/logical/range-abort";
@@ -1360,7 +1360,7 @@ BOOST_AUTO_TEST_CASE(ServerAndClientDefaultsAndOverrideKeepRegisteredStatusPrefi
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
     ndn::Name("/spec192/group"), providerCert, authorityCert,
-    writeFixedKeychainTrust(temporary.path(), keyChain));
+    writeFixedKeychainTrust(temporary.path(), {providerCert, authorityCert}));
 
   serverConfig.servicePrefix = ndn::Name("/spec192/custom-repo/v2");
   clientConfig.servicePrefix = serverConfig.servicePrefix;

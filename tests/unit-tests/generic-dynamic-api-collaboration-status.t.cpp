@@ -1,4 +1,6 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/PublishedContentName.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 
 #include <set>
@@ -202,8 +204,7 @@ BOOST_AUTO_TEST_CASE(DeferredAckClosureAndPlanCommitAreOneShotAndIdempotent)
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/a"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
   LocalServiceUser user(
-    face, ndn::Name("/test/group"), userCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), userCert, aaCert);
   const ndn::Name requestId("/request/deferred-1");
   size_t closureCount = 0;
   CollaborationAckClosure closed;
@@ -250,8 +251,7 @@ BOOST_AUTO_TEST_CASE(LargeThreeRoleCollaborationPublishesBoundedProviderProjecti
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/large-collab"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
   LocalServiceUser user(
-    face, ndn::Name("/test/group"), userCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), userCert, aaCert);
   user.useSigningKeyChainForTest(keyChain);
   user.prepareHybridSendKeyForTest(
     ndn::Name("/generic/work"), "REQUEST-LARGE");
@@ -330,10 +330,19 @@ BOOST_AUTO_TEST_CASE(LargeThreeRoleCollaborationPublishesBoundedProviderProjecti
     BOOST_CHECK_EQUAL(reference->plaintextSize, 24 * 1024);
     BOOST_CHECK_EQUAL(reference->digest.size(), 71);
     BOOST_CHECK_EQUAL(reference->digest.substr(0, 7), "sha256:");
-    ndn::Name expectedPrefix("/user/large-collab/NDNSF/LARGE-DATA");
-    expectedPrefix.append(ndn::Name("/generic/work")).append(requestId);
-    BOOST_CHECK(expectedPrefix.isPrefixOf(reference->dataName));
-    BOOST_CHECK(reference->dataName.get(-1).isVersion());
+    const auto parsed = parseProducerDataName(reference->dataName, userCert.getIdentity());
+    BOOST_REQUIRE(parsed);
+    BOOST_CHECK_EQUAL(parsed->nameSpace, "NDNSF");
+    BOOST_CHECK_EQUAL(parsed->category, "blob");
+    BOOST_REQUIRE_EQUAL(parsed->suffix.size(), 6);
+    const auto label = "selection-assignment-" + provider.toUri() + "-" + envelope.role +
+                       "-" + reference->digest.substr(7, 16);
+    BOOST_CHECK(matchesNamingLabelComponent(parsed->suffix[0], label));
+    BOOST_CHECK_EQUAL(parsed->suffix[1].value_size(), 32);
+    BOOST_CHECK(parsed->suffix[2] == makeNamingDigestComponent(reference->digest.substr(7)));
+    BOOST_CHECK(parsed->suffix[3] == ndn::name::Component("PROTECTED"));
+    BOOST_CHECK_EQUAL(parsed->suffix[4].value_size(), 32);
+    BOOST_CHECK(parsed->suffix[5] == ndn::name::Component("DATA"));
     combinedAssignmentBytes += assignment.size();
   }
   BOOST_CHECK(combinedAssignmentBytes < 12 * 1024);
@@ -355,8 +364,7 @@ BOOST_AUTO_TEST_CASE(ExternalCollaborationAssignmentReferenceFailsClosedOnInvali
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/stage-0"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
   LocalServiceProvider provider(
-    face, ndn::Name("/test/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), providerCert, aaCert);
 
   const ndn::Name requester("/user/large-collab");
   const ndn::Name requestId("/request/external-assignment");
@@ -404,13 +412,19 @@ BOOST_AUTO_TEST_CASE(ProviderDestructionCancelsQueuedAndActiveAssignmentFetches)
     const auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/cancel"));
     const auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
     auto provider = std::make_unique<LocalServiceProvider>(
-      face, ndn::Name("/test/group"), providerCert, aaCert, "examples/trust-any.conf");
+      face, ndn::Name("/test/group"), providerCert, aaCert);
     ServiceProvider::CollaborationAssignment assignment;
     assignment.role = "stage-0";
     assignment.service = ndn::Name("/generic/work");
+    const ndn::Name requester("/user/cancel");
     for (int i = 0; i < 8; ++i) {
+      PublishedContentName content;
+      content.label = "missing-key-" + std::to_string(i);
+      auto missing = content.contentPrefix(requester, std::string(64, 'a'));
+      missing.append("PROTECTED").append(makeNamingDigestComponent(std::string(64, 'b')))
+             .append("DATA");
       assignment.scopeKeyDataNames["missing-" + std::to_string(i)] =
-        ndn::Name("/missing/key").appendNumber(i);
+        std::move(missing);
     }
     bool callbackCalled = false;
     provider->prepareCollaborationAssignmentForTest(
@@ -421,8 +435,11 @@ BOOST_AUTO_TEST_CASE(ProviderDestructionCancelsQueuedAndActiveAssignmentFetches)
     if (dispatch) {
       face.processEvents(ndn::time::milliseconds(100));
       BOOST_REQUIRE(std::any_of(face.sentInterests.begin(), face.sentInterests.end(),
-        [](const auto& interest) {
-          return ndn::Name("/missing/key").isPrefixOf(interest.getName());
+        [&](const auto& interest) {
+          return std::any_of(assignment.scopeKeyDataNames.begin(),
+            assignment.scopeKeyDataNames.end(), [&](const auto& entry) {
+              return entry.second.isPrefixOf(interest.getName());
+            });
         }));
     }
     const auto started = std::chrono::steady_clock::now();
@@ -440,8 +457,7 @@ BOOST_AUTO_TEST_CASE(QueuedAssignmentFetchDoesNotResumeAfterAcceptedRevocation)
   ndn::DummyClientFace face(keyChain);
   const auto cert = makeRsaIdentity(keyChain, ndn::Name("/provider/fenced"));
   const auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
-  FencedCollaborationProvider provider(face, ndn::Name("/test/group"), cert, aa,
-                                       "examples/trust-any.conf");
+  FencedCollaborationProvider provider(face, ndn::Name("/test/group"), cert, aa);
   const ndn::Name service("/generic/work");
   const ndn::Name requestId("/request/fenced");
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -497,8 +513,7 @@ BOOST_AUTO_TEST_CASE(QueuedCollaborationHandlerRejectsChangedControllerVersion)
   ndn::DummyClientFace face(keyChain);
   const auto cert = makeRsaIdentity(keyChain, ndn::Name("/provider/fenced"));
   const auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
-  FencedCollaborationProvider provider(face, ndn::Name("/test/group"), cert, aa,
-                                       "examples/trust-any.conf");
+  FencedCollaborationProvider provider(face, ndn::Name("/test/group"), cert, aa);
   const ndn::Name service("/generic/work");
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
@@ -545,7 +560,7 @@ BOOST_AUTO_TEST_CASE(ProviderDestructionFencesQueuedActiveAndPostedCollaboration
     const auto cert = makeRsaIdentity(keyChain, ndn::Name("/provider/fenced"));
     const auto aa = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
     auto provider = std::make_unique<FencedCollaborationProvider>(
-        face, ndn::Name("/test/group"), cert, aa, "examples/trust-any.conf");
+        face, ndn::Name("/test/group"), cert, aa);
     provider->setHandlerThreads(1);
     const bool queued = mode == 0 || mode == 3;
     auto release = queued ? provider->holdHandlerWorker() :
@@ -643,7 +658,7 @@ BOOST_AUTO_TEST_CASE(CancelDeferredCollaborationRemovesPendingStateAndTimers)
   ndn::DummyClientFace face(keyChain);
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/cancel"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
-  CancelUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  CancelUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   for (bool closed : {false, true}) {
     const ndn::Name id(closed ? "/request/closed" : "/request/open");
     unsigned closures = 0, timerCallbacks = 0;
@@ -669,8 +684,7 @@ BOOST_AUTO_TEST_CASE(DeferredCollaborationTracksAckDecryptBeforeClosure)
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/user/decrypt"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
   LocalServiceUser user(
-    face, ndn::Name("/test/group"), userCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/test/group"), userCert, aaCert);
   const ndn::Name requestId("/request/deferred-ack-decrypt");
   user.prepareDeferredCollaborationForTest(
     requestId, [](const CollaborationAckClosure&) {});
@@ -722,8 +736,7 @@ BOOST_AUTO_TEST_CASE(SelectionSnapshotRejectsStaleMemberAndKeepsLatest)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/a"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
   LocalServiceProvider provider(face, ndn::Name("/test/group"),
-                                providerCert, aaCert,
-                                "examples/trust-any.conf");
+                                providerCert, aaCert);
   provider.seedSelectionStatusForTest("sha256:selection",
                                       ndn::Name("/LLM/Qwen"),
                                       ndn::Name("/request/1"));
@@ -767,8 +780,7 @@ BOOST_AUTO_TEST_CASE(SelectionAssemblyProgressContinuesIntoRootProgress)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/admission"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-admission"));
   LocalServiceProvider provider(face, ndn::Name("/test/group"),
-                                providerCert, aaCert,
-                                "examples/trust-any.conf");
+                                providerCert, aaCert);
   const std::string selectionDigest = "sha256:selection-admission";
   provider.seedSelectionStatusForTest(selectionDigest,
                                       ndn::Name("/LLM/Qwen"),
@@ -822,8 +834,7 @@ BOOST_AUTO_TEST_CASE(SelectionSnapshotConcurrentMembersRemainOwned)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/concurrent"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-concurrent"));
   LocalServiceProvider provider(face, ndn::Name("/test/group"),
-                                providerCert, aaCert,
-                                "examples/trust-any.conf");
+                                providerCert, aaCert);
   const std::string selectionDigest = "sha256:selection-concurrent";
   provider.seedSelectionStatusForTest(selectionDigest,
                                       ndn::Name("/LLM/Qwen"),
@@ -869,8 +880,7 @@ BOOST_AUTO_TEST_CASE(CollaborationFailureUpdatesSelectionStatus)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/provider/a"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
   LocalServiceProvider provider(face, ndn::Name("/test/group"),
-                                providerCert, aaCert,
-                                "examples/trust-any.conf");
+                                providerCert, aaCert);
   const std::string selectionDigest = "sha256:failed-selection";
   const ndn::Name serviceName("/LLM/Qwen");
   const ndn::Name requestId("/request/failed-1");

@@ -1,3 +1,4 @@
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "isolated-test-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
@@ -24,38 +25,7 @@
 #include <sys/wait.h>
 
 namespace ndn_service_framework {
-struct ServiceProviderTestAccess
-{
-  static ndn::Name extractLargeDataProducerPrefix(const ndn::Name& dataName)
-  {
-    return ServiceProvider::extractLargeDataProducerPrefix(dataName);
-  }
 
-  static void
-  scheduleCleanup(ServiceProvider& provider, const ndn::Name& key,
-                  ndn::time::milliseconds ttl, bool authoritative)
-  {
-    provider.schedulePendingRequestCleanup(key, ttl, authoritative);
-  }
-
-  static std::int64_t
-  cleanupDeadlineNs(ServiceProvider& provider, const ndn::Name& key)
-  {
-    std::lock_guard<std::mutex> lock(provider.m_pendingCleanupDeadlineMutex);
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-      provider.m_pendingCleanupDeadlines.at(key).time_since_epoch()).count();
-  }
-
-  static std::int64_t
-  workDeadlineNs(ServiceProvider& provider, const ndn::Name& requester,
-                 const ndn::Name& request, const ndn::Name& service)
-  {
-    const auto fence = provider.makeCollaborationWorkFence(
-      requester, request, service, std::nullopt);
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-      fence.deadline.time_since_epoch()).count();
-  }
-};
 } // namespace ndn_service_framework
 
 namespace {
@@ -260,8 +230,7 @@ BOOST_AUTO_TEST_CASE(WorkerCommitKeepsIoResponsiveAndCancellationDrains)
   ndn::DummyClientFace face(keys);
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/worker-user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/worker-aa"));
-  InspectingUser user(face, ndn::Name("/spec189/worker"), certificate, authority,
-                        "examples/trust-any.conf");
+  InspectingUser user(face, ndn::Name("/spec189/worker"), certificate, authority);
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -311,7 +280,7 @@ BOOST_AUTO_TEST_CASE(ProtectedSegmentsSurviveTtlAndReleaseWithLease)
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/authority"));
   InspectingUser user(face, ndn::Name("/spec189/group"), certificate,
-                        authority, "examples/trust-any.conf");
+                        authority);
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -498,7 +467,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesRepoSourceWithoutSecondCommit)
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/reuse-user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/reuse-authority"));
   InspectingUser user(face, ndn::Name("/spec189/reuse"), certificate,
-                      authority, "examples/trust-any.conf");
+                      authority);
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -555,7 +524,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
   LargeDataPublishResult first;
   {
     InspectingUser user(face, ndn::Name("/spec189/restart"), certificate,
-                        authority, "examples/trust-any.conf");
+                        authority);
     user.useSigningKeyChainForSigningOnlyForTest(keys);
     user.attachLocalMockPubSubForTest(pubsub(face, keys));
     user.setEncryptedLargeDataRangeStore(store);
@@ -573,7 +542,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationReusesAfterServiceUserRestart)
 
   {
     InspectingUser restarted(face, ndn::Name("/spec189/restart"), certificate,
-                              authority, "examples/trust-any.conf");
+                              authority);
     restarted.useSigningKeyChainForSigningOnlyForTest(keys);
     restarted.attachLocalMockPubSubForTest(pubsub(face, keys));
     restarted.setEncryptedLargeDataRangeStore(store);
@@ -631,7 +600,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
     const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/exec-user"));
     const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/exec-authority"));
     InspectingUser restarted(face, ndn::Name("/spec189/exec-restart"), certificate,
-                             authority, "examples/trust-any.conf");
+                             authority);
     restarted.useSigningKeyChainForSigningOnlyForTest(keys);
     restarted.attachLocalMockPubSubForTest(pubsub(face, keys));
     restarted.setEncryptedLargeDataRangeStore(store);
@@ -711,7 +680,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
     const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/exec-user"));
     const auto authority = makeRsaIdentity(keys, ndn::Name("/spec189/exec-authority"));
     InspectingUser user(face, ndn::Name("/spec189/exec-restart"), certificate,
-                        authority, "examples/trust-any.conf");
+                        authority);
     user.useSigningKeyChainForSigningOnlyForTest(keys);
     user.attachLocalMockPubSubForTest(pubsub(face, keys));
     user.setEncryptedLargeDataRangeStore(store);
@@ -787,7 +756,7 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   const auto authority = makeRsaIdentity(
     keys, ndn::Name("/spec189/provider-fetch-authority"));
   InspectingUser user(face, ndn::Name("/spec189/provider-fetch"),
-                      userCertificate, authority, "examples/trust-any.conf");
+                      userCertificate, authority);
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -808,8 +777,7 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
 
   LocalServiceProvider provider(face, ndn::Name("/spec189/provider-fetch"),
-                                providerCertificate, authority,
-                                "examples/trust-any.conf");
+                                providerCertificate, authority);
   provider.useSigningKeyChainForTest(keys);
   // This fixture intentionally supplies the current key because it does not
   // model Controller/AA DKEY bootstrap; the production fetch/decrypt path is
@@ -883,8 +851,7 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsAuthenticatedBlobWithFalsePlaintextIdentity)
   const auto producer = makeRsaIdentity(keys, ndn::Name("/spec201/NDNSF/BLOB/producer"));
   const auto receiver = makeRsaIdentity(keys, ndn::Name("/spec201/digest-receiver"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/digest-authority"));
-  LocalServiceProvider provider(face, ndn::Name("/spec201"), receiver, authority,
-                                "examples/trust-any.conf");
+  LocalServiceProvider provider(face, ndn::Name("/spec201"), receiver, authority);
   provider.useSigningKeyChainForTest(keys);
   const ndn::Buffer key(32, 0x11);
   provider.cacheHybridReceiveKeyForTest("spec201-key", "1", key);
@@ -941,7 +908,7 @@ BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRetiresOnlyOlderServiceOwner)
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec190/status-user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec190/status-aa"));
   InspectingUser user(face, ndn::Name("/spec190/status"), certificate,
-                      authority, "examples/trust-any.conf");
+                      authority);
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);
@@ -1011,7 +978,7 @@ BOOST_AUTO_TEST_CASE(ProtectedStatusAdvanceRejectsPostCommitStalePublication)
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec190/race-user"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec190/race-aa"));
   InspectingUser user(face, ndn::Name("/spec190/race"), certificate,
-                      authority, "examples/trust-any.conf");
+                      authority);
   user.useSigningKeyChainForSigningOnlyForTest(keys);
   user.attachLocalMockPubSubForTest(pubsub(face, keys));
   user.setEncryptedLargeDataRangeStore(store);

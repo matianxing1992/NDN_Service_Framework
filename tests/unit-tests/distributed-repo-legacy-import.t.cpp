@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/LegacyRepoImporter.hpp"
 #include "tests/boost-test.hpp"
@@ -74,17 +75,6 @@ private:
   sqlite3* m_db = nullptr;
 };
 
-fs::path
-repositoryRoot()
-{
-  auto current = fs::current_path();
-  for (;;) {
-    if (fs::exists(current / "tests/fixtures/spec192")) return current;
-    const auto parent = current.parent_path();
-    if (parent == current) throw std::runtime_error("spec192-fixture-root-not-found");
-    current = parent;
-  }
-}
 
 std::string
 readFile(const fs::path& path)
@@ -136,8 +126,7 @@ artifactReference()
 void
 initializeArtifactFixture(sqlite3* db, const fs::path& payloadRoot)
 {
-  execute(db, readFile(repositoryRoot() /
-                       "tests/fixtures/spec192/legacy-python-artifact-v12.sql"));
+  execute(db, readFile(ndnsf::test::testFixturePath("spec192/legacy-python-artifact-v12.sql")));
   execute(db, "PRAGMA journal_mode=WAL");
 
   const auto reference = artifactReference();
@@ -445,8 +434,7 @@ BOOST_AUTO_TEST_CASE(rejectsUnknownMarkerAndExistingDestinationBeforeWrites)
   const auto payloadRoot = temporary.path() / "source-payloads";
   const auto destination = temporary.path() / "native";
   Database database(source);
-  execute(database.get(), readFile(repositoryRoot() /
-    "tests/fixtures/spec192/legacy-python-artifact-v12.sql"));
+  execute(database.get(), readFile(ndnsf::test::testFixturePath("spec192/legacy-python-artifact-v12.sql")));
   execute(database.get(), "UPDATE artifact_schema_state SET schema_generation=11");
 
   LegacyRepoImportConfig config;
@@ -460,8 +448,7 @@ BOOST_AUTO_TEST_CASE(rejectsUnknownMarkerAndExistingDestinationBeforeWrites)
   const auto conflict = temporary.path() / "conflict";
   const auto validSource = temporary.path() / "valid.sqlite3";
   Database validDatabase(validSource);
-  execute(validDatabase.get(), readFile(repositoryRoot() /
-    "tests/fixtures/spec192/legacy-python-artifact-v12.sql"));
+  execute(validDatabase.get(), readFile(ndnsf::test::testFixturePath("spec192/legacy-python-artifact-v12.sql")));
   fs::create_directories(payloadRoot);
   fs::create_directories(conflict);
   std::ofstream marker(conflict / "keep.txt");

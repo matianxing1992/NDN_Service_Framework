@@ -1,0 +1,170 @@
+{
+  "campaign_root": "/home/tianxing/NDN/ndn-service-framework/results/spec171-burnin300-100-150m-2ms-seeds62-71-20260808",
+  "ndnsf_latency_proxy": "request-id timestamp to Provider RESPONSE_PUBLISHED",
+  "ndnsf_user_latency_available": false,
+  "paired_seed_p95_reduction_ms": {
+    "ci95_high": 886.2699548904419,
+    "ci95_low": 140.50213458862305,
+    "mean": 512.9343276824951,
+    "repetitions": 20000,
+    "seed": 171
+  },
+  "per_seed": [
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1004.893,
+      "grpc_first_attempt_deadline_fraction": 0.06280193236714976,
+      "grpc_success": 207,
+      "ndnsf_selection_cost_p95_ms": 56.1518669128418,
+      "ndnsf_success": 207,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 93,
+        "SWITCH_REQUIRED": 207
+      },
+      "request_count": 300,
+      "seed": 62,
+      "switch_required": 207
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1005.486,
+      "grpc_first_attempt_deadline_fraction": 0.0625,
+      "grpc_success": 208,
+      "ndnsf_selection_cost_p95_ms": 57.209014892578125,
+      "ndnsf_success": 208,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 92,
+        "SWITCH_REQUIRED": 208
+      },
+      "request_count": 300,
+      "seed": 63,
+      "switch_required": 208
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1712.5780000000002,
+      "grpc_first_attempt_deadline_fraction": 0.18604651162790697,
+      "grpc_success": 129,
+      "ndnsf_selection_cost_p95_ms": 67.40713119506836,
+      "ndnsf_success": 129,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 171,
+        "SWITCH_REQUIRED": 129
+      },
+      "request_count": 300,
+      "seed": 64,
+      "switch_required": 129
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1005.821,
+      "grpc_first_attempt_deadline_fraction": 0.0625,
+      "grpc_success": 192,
+      "ndnsf_selection_cost_p95_ms": 65.01197814941406,
+      "ndnsf_success": 192,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 108,
+        "SWITCH_REQUIRED": 192
+      },
+      "request_count": 300,
+      "seed": 65,
+      "switch_required": 192
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 0.615,
+      "grpc_first_attempt_deadline_fraction": 0.006666666666666667,
+      "grpc_success": 150,
+      "ndnsf_selection_cost_p95_ms": 62.814950942993164,
+      "ndnsf_success": 150,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 150,
+        "SWITCH_REQUIRED": 150
+      },
+      "request_count": 300,
+      "seed": 66,
+      "switch_required": 150
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 0.9319999999999999,
+      "grpc_first_attempt_deadline_fraction": 0.0,
+      "grpc_success": 153,
+      "ndnsf_selection_cost_p95_ms": 63.0030632019043,
+      "ndnsf_success": 153,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 147,
+        "SWITCH_REQUIRED": 153
+      },
+      "request_count": 300,
+      "seed": 67,
+      "switch_required": 153
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1.049,
+      "grpc_first_attempt_deadline_fraction": 0.0,
+      "grpc_success": 179,
+      "ndnsf_selection_cost_p95_ms": 59.767961502075195,
+      "ndnsf_success": 179,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 61,
+        "NONE_REACHABLE": 58,
+        "SWITCH_REQUIRED": 181
+      },
+      "request_count": 300,
+      "seed": 68,
+      "switch_required": 181
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1006.865,
+      "grpc_first_attempt_deadline_fraction": 0.05333333333333334,
+      "grpc_success": 225,
+      "ndnsf_selection_cost_p95_ms": 54.0618896484375,
+      "ndnsf_success": 225,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 75,
+        "SWITCH_REQUIRED": 225
+      },
+      "request_count": 300,
+      "seed": 69,
+      "switch_required": 225
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 0.982,
+      "grpc_first_attempt_deadline_fraction": 0.013157894736842105,
+      "grpc_success": 152,
+      "ndnsf_selection_cost_p95_ms": 62.54386901855469,
+      "ndnsf_success": 152,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 148,
+        "SWITCH_REQUIRED": 152
+      },
+      "request_count": 300,
+      "seed": 70,
+      "switch_required": 152
+    },
+    {
+      "grpc_failed_attempt_cost_p95_ms": 1.119,
+      "grpc_first_attempt_deadline_fraction": 0.0,
+      "grpc_success": 150,
+      "ndnsf_selection_cost_p95_ms": 63.02499771118164,
+      "ndnsf_success": 150,
+      "opportunity_counts": {
+        "INITIAL_REACHABLE": 150,
+        "SWITCH_REQUIRED": 150
+      },
+      "request_count": 300,
+      "seed": 71,
+      "switch_required": 150
+    }
+  ],
+  "provider_order": [
+    "ucla",
+    "wustl",
+    "uiuc",
+    "arizona"
+  ],
+  "range_m": 100,
+  "rate_rps": 5.0,
+  "schema": "spec171-opportunity-analysis-v1",
+  "speed_token": "2p0",
+  "switching_cost_definition": {
+    "grpc": "sum of failed RPC attempt durations before the successful RPC",
+    "ndnsf": "request-id timestamp to selected Provider SELECTION_RECEIVED"
+  },
+  "verdict": "CONDITIONAL_SWITCHING_COST_REDUCTION"
+}

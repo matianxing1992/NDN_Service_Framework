@@ -40,7 +40,8 @@ struct TransportFixture
     if (!::mkdtemp(pattern.data()))
       throw std::runtime_error("save fixture workspace allocation failed");
     directory = pattern;
-    const auto schema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(directory, keys);
+    const auto schema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(
+      directory, {producer, authority});
     config.storageWriter = std::make_shared<ServiceUser>(ServiceUser::LocalMockTag{},
       face, ndn::Name("/group/save"), producer, authority, schema);
     config.signingCertificate = producer;

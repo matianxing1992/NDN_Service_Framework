@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -243,7 +244,7 @@ BOOST_AUTO_TEST_CASE(PlanSealerMatchesFrozenPythonCoreAndSecurityDigests)
   const auto core = NativePlanSealer::sealCore(plan.snapshot, plan.proposal, plan.inputs);
   const auto sealed = NativePlanSealer::finalizeSecurity(core,
     {{"provider-a", plan.role, "/grant/1", digest("grant"), "provider-a"}}, {digest("policy"), true});
-  std::ifstream file("tests/fixtures/spec182/sealer-python-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/sealer-python-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto oracle = NativeJson::parse(file);
   BOOST_CHECK_EQUAL(core.coreDigest, oracle.at("core_digest").get<std::string>());

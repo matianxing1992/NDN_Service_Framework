@@ -6,6 +6,7 @@
  * A shutdown path stops admission first so queued late callbacks observe a
  * refused acquire instead of extending an unbounded drain.
  */
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "tests/boost-test.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 
@@ -22,26 +23,7 @@ using namespace ndn_service_framework::test;
 namespace ndn_service_framework {
 
 /** Friend of ServiceProvider used only to exercise the owner-token primitive. */
-struct ServiceProviderTestAccess
-{
-  static ServiceProvider*
-  acquire(ServiceProvider& provider)
-  {
-    return provider.m_registrationControl->acquireOwner();
-  }
 
-  static void
-  release(ServiceProvider& provider)
-  {
-    provider.m_registrationControl->releaseOwner();
-  }
-
-  static bool
-  pending(const ServiceProvider& provider)
-  {
-    return provider.m_registrationControl->activeOwnerCalls != 0;
-  }
-};
 
 } // namespace ndn_service_framework
 

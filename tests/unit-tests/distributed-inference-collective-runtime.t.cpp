@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/frozen-binary-fixture.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/CollectiveRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
@@ -266,13 +267,8 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerReleasesAuthenticatedRanksTogether)
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerRunsRealOnnxRanksThroughCollective)
 {
-  const auto* modelPath = std::getenv("NDNSF_DI_TEST_ONNX_MODEL");
-  if (modelPath == nullptr || std::string(modelPath).empty()) {
-    BOOST_TEST_MESSAGE(
-      "NDNSF_DI_TEST_ONNX_MODEL not set; skipping real collective ONNX adapter test");
-    BOOST_CHECK(true);
-    return;
-  }
+  const ::ndnsf::test::FrozenBinaryFixture fixture("native-onnx/linear.onnx.hex");
+  const auto modelPath = fixture.path();
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   BOOST_FAIL("NDNSF_DI_TEST_ONNX_MODEL requires C++ ONNX Runtime backend");
@@ -344,16 +340,10 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerRunsRealOnnxRanksThroughCollective)
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerMatchesRealOnnxUnsplitOracle)
 {
-  const auto* sliceModel = std::getenv("NDNSF_DI_TEST_ONNX_SLICE_MODEL");
-  const auto* unsplitModel = std::getenv("NDNSF_DI_TEST_ONNX_UNSPLIT_MODEL");
-  if (sliceModel == nullptr || std::string(sliceModel).empty() ||
-      unsplitModel == nullptr || std::string(unsplitModel).empty()) {
-    BOOST_TEST_MESSAGE(
-      "NDNSF_DI_TEST_ONNX_SLICE_MODEL/UNSPLIT_MODEL not set; "
-      "skipping real ONNX unsplit oracle test");
-    BOOST_CHECK(true);
-    return;
-  }
+  const ::ndnsf::test::FrozenBinaryFixture slice("native-onnx/slice.onnx.hex");
+  const ::ndnsf::test::FrozenBinaryFixture unsplit("native-onnx/unsplit.onnx.hex");
+  const auto sliceModel = slice.path();
+  const auto unsplitModel = unsplit.path();
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
   BOOST_FAIL("real ONNX unsplit oracle requires C++ ONNX Runtime backend");

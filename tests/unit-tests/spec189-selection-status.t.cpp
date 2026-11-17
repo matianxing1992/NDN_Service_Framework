@@ -15,7 +15,7 @@ BOOST_AUTO_TEST_CASE(UnknownSelectionStatusIsNotPublishedAsUnboundData)
   const auto aaCert = makeRsaIdentity(
     keyChain, ndn::Name("/test/aa-spec189-selection-status"));
   LocalServiceProvider provider(face, ndn::Name("/test/group"), providerCert,
-                                aaCert, "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,

@@ -7,6 +7,27 @@ processes run without loading a sanitizer-instrumented extension into Python.
 
 import hashlib
 import json
+import os
+from pathlib import Path
+
+
+def fixture_path(relative):
+    """Read only a declared fixture root; never search a checkout or the current directory."""
+    relative = Path(relative)
+    if relative.is_absolute() or '..' in relative.parts:
+        raise ValueError('fixture path must be relative and contained')
+    if 'NDNSF_TEST_FIXTURE_ROOT' in os.environ:
+        value = os.environ['NDNSF_TEST_FIXTURE_ROOT']
+        if not value:
+            raise ValueError('NDNSF_TEST_FIXTURE_ROOT is empty')
+        root = Path(value).resolve(strict=True)
+    else:
+        root = (Path(__file__).resolve().parents[1] / 'fixtures').resolve(strict=True)
+    path = (root / relative).resolve(strict=True)
+    path.relative_to(root)
+    if not path.is_file():
+        raise ValueError('test fixture is not a regular file: ' + str(path))
+    return path
 
 
 def canonical_bytes(value):

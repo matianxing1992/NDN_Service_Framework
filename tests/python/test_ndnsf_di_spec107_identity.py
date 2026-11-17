@@ -6,10 +6,13 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+
+from lineage_fixture import create_lineage_fixture
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -258,22 +261,38 @@ class Spec107IdentityTest(unittest.TestCase):
         for command in ("lineage", "artifact", "candidate", "campaign", "gate"):
             self.assertIn(command, help_result.stdout)
 
-        lineage = subprocess.run([
-            sys.executable, str(cli), "lineage", "verify", "--lock",
-            str(REPO / "specs/107-ndnsf-di-minindn-gate-recovery/lineage-lock.json"),
-        ], cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            check=False)
-        self.assertEqual(lineage.returncode, 0, lineage.stderr)
-        self.assertEqual(json.loads(lineage.stdout)["verifiedIdentifierCount"], 5)
+        with tempfile.TemporaryDirectory(prefix="ndnsf-lineage-cli-") as directory:
+            root = Path(directory)
+            lock, payload = create_lineage_fixture(root)
+            environment = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+            environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null')
+            git = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Fixture',
+                   '-c', 'user.email=fixture@example.invalid']
+            for arguments in (['init', '-q'], ['add', '--'] +
+                              [row['path'] for row in payload['files']],
+                              ['commit', '-q', '-m', 'Synthetic lineage fixture']):
+                subprocess.run(git + arguments, cwd=root, env=environment,
+                               check=True, capture_output=True)
+            payload['frozenCommit'] = subprocess.check_output(
+                git + ['rev-parse', 'HEAD'], cwd=root, env=environment, text=True).strip()
+            lock.write_text(json.dumps(payload), encoding='utf-8')
+            lineage = subprocess.run([
+                sys.executable, str(cli), '--repo-root', str(root),
+                'lineage', 'verify', '--lock', str(lock),
+            ], cwd=root, env=environment, text=True, capture_output=True, check=False)
+            self.assertEqual(lineage.returncode, 0, lineage.stderr)
+            self.assertEqual(json.loads(lineage.stdout)['verifiedIdentifierCount'], 5)
 
-        gate = subprocess.run([
-            sys.executable, str(cli), "gate", "generate",
-            "--feature", "specs/107-ndnsf-di-minindn-gate-recovery",
-            "--output", "specs/107-ndnsf-di-minindn-gate-recovery/release-gate.json",
-        ], cwd=REPO, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            check=False)
-        self.assertEqual(gate.returncode, 2)
-        self.assertIn("SPEC107_RELEASE_INPUT_INVALID", gate.stderr)
+            feature = root / 'specs/107-ndnsf-di-minindn-gate-recovery'
+            feature.mkdir(parents=True)
+            output = feature / 'release-gate.json'
+            gate = subprocess.run([
+                sys.executable, str(cli), '--repo-root', str(root), 'gate', 'generate',
+                '--feature', str(feature), '--output', str(output),
+            ], cwd=root, env=environment, text=True, capture_output=True, check=False)
+            self.assertEqual(gate.returncode, 2)
+            self.assertIn('SPEC107_RELEASE_INPUT_INVALID', gate.stderr)
+            self.assertFalse(output.exists())
 
     def test_cli_creates_exclusive_candidate_and_campaign_manifests(self) -> None:
         cli = REPO / "tools/ndnsf-di/spec107_candidate.py"

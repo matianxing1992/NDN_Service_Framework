@@ -4,6 +4,7 @@
 #include "ndn-service-framework/ServiceProvider.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/utils.hpp"
+#include "tests/integration-tests/isolated-test-trust.hpp"
 
 #include <ndn-cxx/security/key-chain.hpp>
 #include <ndn-cxx/security/key-params.hpp>
@@ -349,18 +350,19 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/test/user/alice"));
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/test/provider/camera"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa"));
+  IsolatedTestTrust trust{userCert, providerCert, aaCert};
 
   LocalSvsServiceUser user(userFace,
                            ndn::Name("/test/group"),
                            userCert,
                            aaCert,
-                           "examples/trust-any.conf");
+                           trust.schemaPath());
   ServiceProvider provider(ServiceProvider::LocalMockTag{},
                            providerFace,
                            ndn::Name("/test/group"),
                            providerCert,
                            aaCert,
-                           "examples/trust-any.conf");
+                           trust.schemaPath());
 
   const ndn::Name serviceName("/ObjectDetection/YOLOv8");
   installPermissions(user,
@@ -372,6 +374,8 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
   bool handlerCalled = false;
   bool ackPublished = false;
   bool userReceivedAck = false;
+  bool selectionPublished = false;
+  bool providerReceivedSelection = false;
   bool responsePublished = false;
   bool userReceived = false;
   bool typedCallbackCalled = false;
@@ -395,6 +399,18 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
   providerPubSub.subscribeToProducer(
     userNode,
     [&] (const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+      if (const auto selection = parseServiceSelectionNameV2(publication.name)) {
+        BOOST_REQUIRE_EQUAL(selection->providerName, provider.getName());
+        BOOST_REQUIRE_EQUAL(selection->requesterName, user.getName());
+        BOOST_REQUIRE_EQUAL(selection->serviceName, serviceName);
+        providerReceivedSelection = true;
+        BOOST_REQUIRE(responseReady);
+        providerPubSub.publish(
+          deferredResponseName,
+          ndn::span<const uint8_t>(deferredResponseWire.data(), deferredResponseWire.size()));
+        responsePublished = true;
+        return;
+      }
       auto parsedRequest = parseRequestNameV2(publication.name);
       if (!parsedRequest || parsedRequest->serviceName != serviceName) {
         return;
@@ -445,13 +461,6 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
         BOOST_CHECK(ackHandled);
         ackCountAfterAck = user.getPendingRequestAckCount(parsedAck->requestId);
         selectedProviderAfterAck = user.getSelectedProvider(parsedAck->requestId);
-        if (ackHandled && responseReady && !responsePublished) {
-          providerPubSub.publish(
-            deferredResponseName,
-            ndn::span<const uint8_t>(deferredResponseWire.data(),
-                                     deferredResponseWire.size()));
-          responsePublished = true;
-        }
         return;
       }
 
@@ -465,6 +474,13 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
       BOOST_CHECK(user.handleDecryptedResponseByName(publication.name, responseBlock));
     },
     true);
+
+  // LocalMock owns no internal SVS instance; both publication boundaries use this fixture's SVS.
+  user.setLocalPublicationHandler([&] (const ndn::Name& name, const ndn::Buffer& wire) {
+    BOOST_REQUIRE(parseServiceSelectionNameV2(name));
+    userPubSub.publish(name, ndn::span<const uint8_t>(wire.data(), wire.size()));
+    selectionPublished = true;
+  });
 
   user.setRequestPublisher(
     [&] (const ndn::Name&,
@@ -510,6 +526,8 @@ BOOST_AUTO_TEST_CASE(ServiceUserRequestServiceReachesProviderAndReturnsResponse)
   BOOST_CHECK(handlerCalled);
   BOOST_CHECK(ackPublished);
   BOOST_CHECK(userReceivedAck);
+  BOOST_CHECK(selectionPublished);
+  BOOST_CHECK(providerReceivedSelection);
   BOOST_CHECK_EQUAL(ackCountAfterAck, ackCountBeforeAck + 1);
   BOOST_CHECK_EQUAL(selectedProviderAfterAck, provider.getName());
   BOOST_CHECK(responsePublished);

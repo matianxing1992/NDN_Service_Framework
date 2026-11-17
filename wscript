@@ -401,8 +401,8 @@ def configure(conf):
         conf.fatal(str(error))
     conf.env.NDNSF_COMPONENTS = list(selected_components)
     if conf.options.components != 'all' and (conf.options.with_examples or
-            conf.options.with_tests or conf.options.install_experiment_fixtures):
-        conf.fatal('Historical examples/tests/fixtures require --components=all')
+            conf.options.install_experiment_fixtures):
+        conf.fatal('Historical examples/experiment fixtures require --components=all')
     missing, optional = inventory['check_dependencies'](
         nac_prefix=conf.options.nac_abe_prefix,
         onnx_prefix=conf.options.onnx_prefix, components=conf.options.components)
@@ -1239,7 +1239,9 @@ def build(bld):
         bld.targets = ','.join(
             generator.name for group in bld.groups for generator in group
             if getattr(generator, 'install_path', None) and generator.name and
-            'install_task' not in generator.to_list(generator.features))
+            'install_task' not in generator.to_list(generator.features) and
+            (bld.cmd == 'install' or
+             not generator.path.is_child_of(bld.srcnode.find_dir('tests'))))
 
     # A selected-target install still needs the public header installation
     # tasks. Waf otherwise posts only the explicitly named native targets and

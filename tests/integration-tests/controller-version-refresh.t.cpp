@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
@@ -51,7 +52,7 @@ BOOST_AUTO_TEST_CASE(ControllerStatusRefreshCoordinatesRevocationAndUnrelatedTra
   ndn::Face face;
   ndn::ValidatorConfig validator(face);
   ServiceController serviceController(face, controllerCert, validator,
-                                      "examples/hello.policies");
+                                      ndnsf::test::testFixturePath("controller-policies.conf").string());
 
   const ndn::Name service("/HELLO");
   const auto version1 = serviceController.getControllerVersion();

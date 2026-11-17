@@ -35,6 +35,7 @@ public:
     std::error_code error;
     fs::remove_all(m_path, error);
     fs::create_directories(m_path);
+    fs::permissions(m_path, fs::perms::owner_all);
   }
 
   ~TemporaryDirectory()

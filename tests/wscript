@@ -3,6 +3,8 @@
 top = '..'
 
 import os
+import json
+import runpy
 
 def build(bld):
     if 'di' in bld.env.NDNSF_COMPONENTS and bld.env.HAVE_ONNXRUNTIME_CPP:
@@ -262,30 +264,29 @@ def build(bld):
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-main-app.t.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-presentation.t.cpp'),
-                            bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
-                            bld.path.find_node('unit-tests/uav-ack-publication.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                     includes=['..', '../ndn-service-framework'],
                     use='uav-main-common uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL gtkmm GSTREAMER',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM'],
-                    rpath=[bld.bldnode.abspath()], install_path=None)
+                    defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
+                             'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec228-tracking-main-drone-tests',
                     name='spec228-tracking-main-drone-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-main-drone.t.cpp'),
                             bld.path.find_node('integration-tests/uav-static-metadata.t.cpp'),
                             bld.path.find_node('integration-tests/uav-vehicle-packet-capacity.t.cpp'),
-                            bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                     includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                     use='uav-main-common uav-tracking-provider-core uav-tracking-job-core '
                         'ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL gtkmm sqlite3 GSTREAMER',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM'],
-                    rpath=[bld.bldnode.abspath()], install_path=None)
+                    defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
+                             'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec228-tracking-provider-tests',
                     name='spec228-tracking-provider-tests',
                     source=[bld.path.find_node('main.cpp'),
@@ -306,7 +307,9 @@ def build(bld):
                     use='uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+                    defines=['HAVE_TESTS',
+                             'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                    install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec228-tracking-job-tests', name='spec228-tracking-job-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-job.t.cpp'),
@@ -379,7 +382,8 @@ def build(bld):
                                    ('nvml', 'nvidia-ml', '1')):
         bld.shlib(name='spec217-' + name + '-query-fixture',
                   target='../spec217-gpu-fixtures/' + library, vnum=version,
-                  source=['fixtures/spec217-gpu-query.cpp'], install_path=None)
+                  source=['fixtures/spec217-gpu-query.cpp'],
+                  install_path='${PREFIX}/libexec/ndnsf-tests/vendor-gpu')
     bld.program(target='../spec217-device-query-tests', name='spec217-device-query-tests',
                 source=['main.cpp', 'unit-tests/spec217-device-query.t.cpp'],
                 includes=['..'], use='BOOST', cxxflags=['-std=c++17', '-O0', '-g0'],
@@ -1013,7 +1017,8 @@ def build(bld):
                     name=target,
                     source=[bld.path.find_node('standalone/spec182-worker-tools/' + role + '.cpp')],
                     cxxflags=['-fPIC', '-O0', '-g0'],
-                    install_path=None)
+                    install_path=('${PREFIX}/libexec/ndnsf-tests'
+                                  if 'di' in bld.env.NDNSF_COMPONENTS else None))
 
     # Keep integration binaries linked against the complete current DI source
     # closure.  A hand-maintained subset silently went stale as conversation,
@@ -1482,7 +1487,7 @@ def build(bld):
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
-                rpath=[bld.bldnode.abspath()], install_path=None)
+                install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # Spec194 T008 full-path V4 composition oracle.  It shares the maintained
     # served-Provider fixture but has a distinct binary, suite, and test case;
@@ -1578,7 +1583,7 @@ def build(bld):
                          'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
-                rpath=[bld.bldnode.abspath()], install_path=None)
+                install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # Exercise the actual exact large-object fetch owner, including cancellation.
     # The sanitizer target instruments the changed production Core translation unit.
@@ -1657,7 +1662,8 @@ def build(bld):
                             'NDNSF-DistributedInference/cpp/ndnsf-di/model-repository-no-repo.cpp')],
                 includes=framework_includes + ['../NDNSF-DistributedRepo/include'],
                 use=framework_use, cxxflags=['-fPIC', '-O0', '-g0'],
-                linkflags=['-Wl,--no-relax'], install_path=None)
+                linkflags=['-Wl,--no-relax'],
+                install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # The same wire/lifetime oracle linked directly to the production DI target.
     bld.program(target='../spec199-prefetch-transport', name='spec199-prefetch-transport',
@@ -1853,33 +1859,19 @@ def build(bld):
                 linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    # The installed check runner: one entry point, one roster, one fixture tree, all under the
-    # prefix. An installed consumer must not need the source tree, so the roster and the fixtures
-    # travel with the binary and the runner resolves them from its own prefix.
-    # `share` is spelled out because this tree does not define a DATADIR variable, and inventing
-    # one here would disagree with the installer's own manifest, which records absolute paths.
-    tests_share = '${PREFIX}/share/ndnsf/tests'
-    bld.install_files(tests_share, 'check-profiles.json')
-    bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
-    # The contract names `PREFIX/bin/ndnsf-checks` as the canonical entry point; the runner above is
-    # its implementation, so an operator path and a source path cannot diverge.
-    bld.install_files('${PREFIX}/bin', 'ndnsf-checks', chmod=0o755)
-    fixtures_root = bld.path.find_node('fixtures')
-    for fixture in bld.path.ant_glob('fixtures/**/*',
-                                     excl=['fixtures/**/*.pyc',
-                                           'fixtures/**/__pycache__/**']):
-        bld.install_as(tests_share + '/fixtures/' +
-                       str(fixture.path_from(fixtures_root)), fixture)
-
     bld.program(target='../unit-tests',
                 name='unit-tests',
+                # Keep the existing object namespace stable when fixture installs are added.
+                idx=309,
                 # Share the production framework closure.  A hand-maintained
                 # subset silently misses newer framework implementations.
                 source=([bld.path.find_node('main.cpp')] +
                         bld.path.ant_glob('unit-tests/**/*.cpp',
-                                           excl=([*uav_unit_excludes, 'unit-tests/sanitizer/**']
-                                                 if 'uav' not in bld.env.NDNSF_COMPONENTS
-                                                 else ['unit-tests/sanitizer/**'])) +
+                            # Packet-level SVS checks have one canonical integration owner below.
+                            excl=['unit-tests/sanitizer/**', 'unit-tests/ndn-svs-smoke.t.cpp',
+                                  'unit-tests/model-repository-no-repo.t.cpp'] +
+                                 (uav_unit_excludes
+                                  if 'uav' not in bld.env.NDNSF_COMPONENTS else [])) +
                         # Four unit cases drive the shared integration fixture, which owns the
                         # in-memory Controller/Provider/NFD setup they need. Without it the target
                         # links every one of their symbols and then fails on the fixture's, which is
@@ -1997,26 +1989,21 @@ def build(bld):
     # corpus or silently classify it as a unit-only result.
     bld.program(target='../integration-tests',
                 name='integration-tests',
+                idx=310,
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/ndn-svs-smoke.t.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-data-v1-svs-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/spec181-exact-data-wire.t.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
-                        bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
-                        bld.path.find_node('integration-tests/invocation-stream-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/uav-collaboration-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/uav-multiview-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/uav-tracking-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/uav-person-tracking-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/uav-person-admission.t.cpp'),
-                        bld.path.find_node('integration-tests/uav-observation-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/controller-revocation-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/controller-version-refresh.t.cpp'),
-                        bld.path.find_node('integration-tests/request-scoped-selection.t.cpp'),
-                        bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
-                        bld.path.find_node('integration-tests/spec192-response-provider-identity.t.cpp'),
-                        bld.path.find_node('integration-tests/di-native-requester-grant.t.cpp'),
+                        bld.path.find_node('unit-tests/ndn-svs-smoke.t.cpp')] +
+                       bld.path.ant_glob('integration-tests/*.t.cpp', excl=[
+                           # These owners need their registered DI seam or UAV object groups.
+                           'integration-tests/di-prepared-provider.t.cpp',
+                           'integration-tests/di-prepared-request.t.cpp',
+                           # This .t.cpp is a standalone argv-driven helper with its own main.
+                           'integration-tests/ndnsf-di-protected-grant.t.cpp',
+                           'integration-tests/uav-static-metadata.t.cpp',
+                           'integration-tests/uav-vehicle-packet-capacity.t.cpp',
+                           'integration-tests/uav-tracking-main-app.t.cpp',
+                           'integration-tests/uav-tracking-main-drone.t.cpp',
+                           'integration-tests/uav-tracking-presentation.t.cpp',
+                           'integration-tests/uav-tracking-job-flow.t.cpp']) + [
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavMissionSession.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavDetectorProvider.cpp'),
@@ -2043,7 +2030,8 @@ def build(bld):
                 use=di_integration_use + framework_use + ' ONNXRUNTIME',
                 # Keep NAC-ABE's test visibility contract enabled for the
                 # integration target as well as the unit-test target.
-                defines=['HAVE_TESTS'],
+                defines=['HAVE_TESTS',
+                         'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                 # Keep the same GCC-9 ICE guard for the integration target.
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -2073,7 +2061,8 @@ def build(bld):
     if not ndn_cxx_source_tree or not os.path.isfile(
             os.path.join(ndn_cxx_source_tree,
                          'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
-        if (getattr(bld, '_ndnsf_default_scope', False) or
+        if (bld.cmd == 'list' or 'repo' not in bld.env.NDNSF_COMPONENTS or
+                getattr(bld, '_ndnsf_default_scope', False) or
                 (bld.targets and 'spec192-repo-client' not in bld.targets.split(','))):
             bld.msg('Skipping spec192-repo-client',
                     'the requested target does not need its unavailable pinned ndn-cxx source tree')
@@ -2113,12 +2102,15 @@ def build(bld):
                 source=[bld.path.find_node('standalone/spec182-native-grant-requester-process.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
-                rpath=[bld.bldnode.abspath()], install_path=None)
+                install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # Faults are scoped to a test-owned destination and never enter production targets.
-    for name in ('unit-tests', 'spec202-repo-conformance', 'spec192-repo-inapp-api',
+    if repo_enabled:
+        bld.get_tgen_by_name('integration-tests').linkflags += [
+            '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink']
+    for name in (('unit-tests', 'spec202-repo-conformance', 'spec192-repo-inapp-api',
                  'spec192-repo-persistent-api', 'spec192-repo-persistent-api-asan',
-                 'spec192-repo-legacy-import-unit'):
+                 'spec192-repo-legacy-import-unit') if repo_enabled else ()):
         bld.get_tgen_by_name(name).linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',
             '-Wl,--wrap=flock']
@@ -2304,3 +2296,40 @@ def build(bld):
                           '-fsanitize=address,undefined'],
                 linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
+
+    # Declare resources after native targets: Waf counts install generators in the
+    # per-directory index, which must not move native object paths when a fixture is added.
+    # The installed check runner: one entry point, one roster, one fixture tree, all under the
+    # prefix. An installed consumer must not need the source tree, so the roster and the fixtures
+    # travel with the binary and the runner resolves them from its own prefix.
+    # `share` is spelled out because this tree does not define a DATADIR variable, and inventing
+    # one here would disagree with the installer's own manifest, which records absolute paths.
+    tests_share = '${PREFIX}/share/ndnsf/tests'
+    bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
+    driver_names = (['run-spec182-native-grant-process.py',
+                     'run-spec182-native-unary-process.py',
+                     'run-spec182-native-stream-process.py', 'spec185_native_fixture.py']
+                    if 'di' in bld.env.NDNSF_COMPONENTS else [])
+    bld.env.NDNSF_TEST_DRIVER_FILES = driver_names
+    if driver_names:
+        bld.install_files(tests_share + '/standalone',
+                          [bld.path.find_node('standalone/' + name) for name in driver_names])
+    # The contract names `PREFIX/bin/ndnsf-checks` as the canonical entry point; the runner above is
+    # its implementation, so an operator path and a source path cannot diverge.
+    bld.install_files('${PREFIX}/bin', 'ndnsf-checks', chmod=0o755)
+    fixtures_root = bld.path.find_node('fixtures')
+    fixtures = bld.path.ant_glob('fixtures/**/*',
+                               excl=['fixtures/**/*.pyc', 'fixtures/**/__pycache__/**'])
+    bld.env.NDNSF_TEST_FIXTURE_FILES = sorted(str(fixture.path_from(fixtures_root))
+                                            for fixture in fixtures)
+    for fixture in fixtures:
+        bld.install_as(tests_share + '/fixtures/' +
+                       str(fixture.path_from(fixtures_root)), fixture)
+
+    component_tools = runpy.run_path(bld.path.find_node('build-components.py').abspath())
+    roster = json.loads(bld.path.find_node('check-profiles.json').read())
+    component_tools['apply_component_scope'](bld, roster)
+    bld(name='ndnsf-test-roster', rule=component_tools['write_roster'],
+        source=bld.srcnode.find_node('tests/check-profiles.json'), target='check-profiles.json',
+        vars=['NDNSF_COMPONENTS', 'NDNSF_TEST_FIXTURE_FILES', 'NDNSF_TEST_DRIVER_FILES'],
+        install_path=tests_share)

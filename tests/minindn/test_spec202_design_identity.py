@@ -8,7 +8,7 @@ import spec193_preflight as preflight
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FEATURE = ROOT / "specs/202-distributedrepo-convergence"
+FEATURE = ROOT / "tests/fixtures/design-identity"
 
 
 class DesignIdentityTests(unittest.TestCase):

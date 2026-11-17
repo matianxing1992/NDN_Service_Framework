@@ -1451,11 +1451,11 @@ BOOST_AUTO_TEST_CASE(ReplayedTargetedRuntimeRequestExecutesOnce)
   const ndn::Buffer encoded(block.data(), block.size());
   const ndn::Name requestId("/targeted-replay");
 
-  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+  provider.deliverDecodedRequestForTest(requesterName,
                                                 serviceName,
                                                 requestId,
                                                 encoded);
-  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+  provider.deliverDecodedRequestForTest(requesterName,
                                                 serviceName,
                                                 requestId,
                                                 encoded);

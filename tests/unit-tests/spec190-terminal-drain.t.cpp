@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationJournal.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
@@ -34,7 +35,7 @@ struct ConversationFixture
 {
   ConversationFixture()
   {
-    std::ifstream input("tests/fixtures/spec182/conversation-oracle.json");
+    std::ifstream input(ndnsf::test::testFixturePath("spec182/conversation-oracle.json").string());
     oracle = NativeJson::parse(input);
     char directory[] = "/tmp/spec190-terminal-drain-XXXXXX";
     if (!::mkdtemp(directory)) throw std::runtime_error("terminal fixture temp root failed");
@@ -243,7 +244,7 @@ BOOST_AUTO_TEST_CASE(FacePublicationIsCountedUntilItsIoCallbackRuns)
   const auto authorityCertificate = ndn_service_framework::test::makeRsaIdentity(
     keyChain, ndn::Name("/spec190/authority"));
   PublishTestUser user(face, ndn::Name("/spec190/group"), userCertificate,
-                       authorityCertificate, "examples/trust-any.conf");
+                       authorityCertificate);
   ndn::svs::SecurityOptions security(keyChain);
   security.interestSigner = std::make_shared<ndn::svs::BaseSigner>();
   security.dataSigner->signingInfo = ndn::security::signingWithSha256();

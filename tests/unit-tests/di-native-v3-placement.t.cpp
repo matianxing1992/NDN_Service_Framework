@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
@@ -48,7 +49,7 @@ namespace {
 using namespace ndnsf::di;
 NativeJson oracle()
 {
-  std::ifstream file("tests/fixtures/spec182/placement-v3-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/placement-v3-oracle.json").string());
   if (!file) throw std::runtime_error("missing V3 placement oracle");
   return NativeJson::parse(file);
 }
@@ -3930,7 +3931,7 @@ BOOST_AUTO_TEST_CASE(AdmittedPlacementSealsSdkCoreAndRejectsTampering)
         BOOST_CHECK_THROW(client.acquire(core, *admitted, policy, expired), std::runtime_error);
       }
       if (proposal.roles.size() == 1) {
-        std::ifstream expectedFile("tests/fixtures/spec182/projection-oracle.json");
+        std::ifstream expectedFile(ndnsf::test::testFixturePath("spec182/projection-oracle.json").string());
         BOOST_REQUIRE(expectedFile.good());
         const auto expected = NativeJson::parse(expectedFile).at(sample.at("name").get<std::string>());
         const auto sealed = projectionPlan(core);

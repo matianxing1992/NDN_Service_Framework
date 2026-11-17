@@ -23,7 +23,7 @@ class CorePublicationReferenceTest(unittest.TestCase):
         cls.payload = bytes([0x42]) * 40000
         cls.records = []
         binary = os.environ.get("SPEC201_PUBLICATION_ORACLE_BINARY",
-                                "/var/tmp/spec200-asan/spec201-original-packet-publication")
+                                str(ROOT / "build/integration-tests"))
         with tempfile.TemporaryDirectory(prefix="spec201-reference-") as directory:
             oracle = Path(directory) / "publications.txt"
             env = dict(os.environ, SPEC201_PUBLICATION_BINDING_ORACLE=str(oracle),

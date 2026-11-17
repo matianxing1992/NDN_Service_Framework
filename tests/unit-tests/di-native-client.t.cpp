@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeInferenceClient.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
@@ -465,7 +466,7 @@ BOOST_AUTO_TEST_CASE(ConfiguredClientClosesEmptyAckAndCancelsActualCorePendingCa
   configuredAdapters->registerAdapter(std::make_shared<NativeCatalogModelAdapter>(
     std::vector<NativeModelDescriptor>{model}, NativeCatalogModelAdapter::Format::OpaqueBytes, 1024));
   configuredAdapters->freeze();
-  std::ifstream file("tests/fixtures/spec182/placement-v3-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/placement-v3-oracle.json").string());
   BOOST_REQUIRE(file.good());
   const auto oracle = NativeJson::parse(file);
   auto admission = std::make_shared<NativeOfferAdmission>(oracle.at("policy").dump(),

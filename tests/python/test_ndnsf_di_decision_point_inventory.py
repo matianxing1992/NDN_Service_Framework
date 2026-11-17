@@ -8,7 +8,7 @@ from ndnsf_distributed_inference.sdk.contracts import POLICY_KINDS
 
 
 ROOT = Path(__file__).resolve().parents[2]
-INVENTORY = ROOT / "specs/111-ndnsf-di-core-app-separation/contracts/decision-point-inventory.json"
+INVENTORY = ROOT / "tests/fixtures/ndnsf-di-core-app-separation/decision-point-inventory.json"
 PLANNER = ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/planner"
 
 

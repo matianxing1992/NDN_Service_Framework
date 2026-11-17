@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 
 #include "NDNSF-UAV-APP/shared/UavMissionSession.hpp"
 #include "NDNSF-UAV-APP/shared/UavNames.hpp"
@@ -492,7 +493,8 @@ BOOST_AUTO_TEST_CASE(DetectorProviderBindsCapabilityAndVerifiesNamedEvidence)
 
 BOOST_AUTO_TEST_CASE(ConfigUsesLogicalNamesAndIncidentPermission)
 {
-  const auto config = loadUavRuntimeConfig("NDNSF-UAV-APP/configs/uav_runtime.conf");
+  const auto config = loadUavRuntimeConfig(
+    ::ndnsf::test::testFixturePath("uav/runtime.conf").string());
   BOOST_CHECK(config.serviceIncidentAnalyze == ndn::Name("/UAV/Incident/Analyze"));
   BOOST_CHECK(config.serviceIncidentAnalyze.toUri().find("10.") == std::string::npos);
   BOOST_CHECK(config.serviceIncidentAnalyze.toUri().find(":") == std::string::npos);

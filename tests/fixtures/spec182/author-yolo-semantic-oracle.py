@@ -8,7 +8,7 @@ import tempfile
 root = Path(__file__).resolve().parent
 repo = root.parents[2]
 sys.path[:0] = [str(repo / 'NDNSF-DistributedInference'), str(repo / 'NDNSF-DistributedRepo/pythonWrapper')]
-from candidate_oracle_support import fixture_model, digest
+from candidate_oracle_support import fixture_model, digest, integer_attribute_graph
 from ndnsf_distributed_inference.adapters.base import AdapterPortDescriptor
 from ndnsf_distributed_inference.adapters.onnx.graph import analyze_onnx_graph, to_model_graph_snapshot
 from ndnsf_distributed_inference.adapters.yolo.adapter import Yolo26Splitter
@@ -22,8 +22,9 @@ with tempfile.TemporaryDirectory() as temp:
     summary = analyze_onnx_graph(path)
     adapter = fixture_model('YOLOFixture', digest('YOLOFixture-content'), digest('placeholder'), 'yolo26n').adapter
     graph = to_model_graph_snapshot(summary, adapter)
+    import onnx
+    graph, metadata = integer_attribute_graph(onnx.load(path), summary, graph)
     model = fixture_model('YOLOFixture', digest('YOLOFixture-content'), graph.graph_digest, 'yolo26n')
-    metadata = summary.to_dict()
     names = [node['name'] for node in metadata['nodes']]
     roles = ['Front', 'Branch', 'Merge']
     owners = dict(zip(graph.topological_order, ['Front', 'Branch', 'Branch', 'Merge']))

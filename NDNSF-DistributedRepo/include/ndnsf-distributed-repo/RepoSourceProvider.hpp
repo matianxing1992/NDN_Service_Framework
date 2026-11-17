@@ -1317,7 +1317,11 @@ public:
           ndnsf::di::RepositorySourceError::Kind::Unavailable,
           "selected material payload differs from manifest reference");
       auto bytes = readObject(dataName, digest, expectedSize);
-      resultManifest->payloads.push_back({payloadId, digest, std::move(bytes)});
+      ndnsf::di::NativeCanonicalSource::MaterialPayload payload;
+      payload.payloadId = payloadId;
+      payload.digest = digest;
+      payload.bytes = std::move(bytes);
+      resultManifest->payloads.push_back(std::move(payload));
     }
     resultManifest->payloadsComplete = false;
     resultManifest->validate();

@@ -7,9 +7,9 @@ BOOST_AUTO_TEST_SUITE(TokensAndReplay)
 
 BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:token-handshake-negative",
                                    "tpm-memory:token-handshake-negative");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -19,7 +19,7 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-negative"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
   user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
 
@@ -50,8 +50,7 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   installPermissions(user, provider, requesterName, serviceName);
 
   int providerHandlerCallCount = 0;
@@ -138,9 +137,9 @@ BOOST_AUTO_TEST_CASE(TokenHandshakeNegativeRegression)
 
 BOOST_AUTO_TEST_CASE(CompactSelectionUsesProviderBoundTokenProof)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:compact-selection-token",
                                    "tpm-memory:compact-selection-token");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name otherProviderName("/test/provider/other");
@@ -153,8 +152,7 @@ BOOST_AUTO_TEST_CASE(CompactSelectionUsesProviderBoundTokenProof)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   int providerHandlerCallCount = 0;
   provider.addService(
@@ -221,9 +219,9 @@ BOOST_AUTO_TEST_CASE(CompactSelectionUsesProviderBoundTokenProof)
 
 BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:runtime-replay",
                                    "tpm-memory:runtime-replay");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -233,12 +231,11 @@ BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-runtime-replay"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   installPermissions(user, provider, requesterName, serviceName);
 
   int ackHandlerCalls = 0;
@@ -267,11 +264,11 @@ BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
   RequestMessage requestMessage = makeRequestMessageWithUserToken("hello");
   auto requestBlock = requestMessage.WireEncode();
   ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
-  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+  provider.deliverDecodedRequestForTest(requesterName,
                                                 serviceName,
                                                 requestId,
                                                 requestBuffer);
-  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+  provider.deliverDecodedRequestForTest(requesterName,
                                                 serviceName,
                                                 requestId,
                                                 requestBuffer);
@@ -309,9 +306,9 @@ BOOST_AUTO_TEST_CASE(ReplayedRuntimeMessagesOnlyTakeEffectOnce)
 
 BOOST_AUTO_TEST_CASE(TokenModeDefaultsToEnabledAndPreservesChecks)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:token-mode-default",
                                    "tpm-memory:token-mode-default");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -321,12 +318,11 @@ BOOST_AUTO_TEST_CASE(TokenModeDefaultsToEnabledAndPreservesChecks)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-mode-default"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   BOOST_CHECK(user.getUseTokens());
   BOOST_CHECK(provider.getUseTokens());
@@ -341,9 +337,9 @@ BOOST_AUTO_TEST_CASE(TokenModeDefaultsToEnabledAndPreservesChecks)
 
 BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckSelectionResponsePath)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:token-mode-disabled",
                                    "tpm-memory:token-mode-disabled");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -352,12 +348,11 @@ BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckSelectionResponsePa
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-mode-disabled"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   user.setUseTokens(false);
   provider.setUseTokens(false);
   BOOST_CHECK(!user.getUseTokens());
@@ -396,7 +391,7 @@ BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckSelectionResponsePa
 
       auto requestBlock = requestMessage.WireEncode();
       ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
-      provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+      provider.deliverDecodedRequestForTest(requesterName,
                                                     serviceName,
                                                     requestId,
                                                     requestBuffer);
@@ -450,9 +445,9 @@ BOOST_AUTO_TEST_CASE(TokenModeDisabledKeepsFirstRespondingAckSelectionResponsePa
 
 BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:token-mode-mismatch",
                                    "tpm-memory:token-mode-mismatch");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -462,12 +457,11 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-token-mode-mismatch"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   user.setUseTokens(false);
   installPermissions(user, provider, requesterName, serviceName);
 
@@ -487,7 +481,7 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
   RequestMessage tokenlessRequest = makeRequestMessageWithUserToken("payload", "");
   auto requestBlock = tokenlessRequest.WireEncode();
   ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
-  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+  provider.deliverDecodedRequestForTest(requesterName,
                                                 serviceName,
                                                 requestId,
                                                 requestBuffer);
@@ -496,8 +490,7 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
   LocalServiceUser secureUser(face,
                               ndn::Name("/test/group"),
                               userCert,
-                              aaCert,
-                              "examples/trust-any.conf");
+                              aaCert);
   installUserPermissions(secureUser, requesterName, serviceName, {providerName});
   secureUser.addPendingCallForTokenTest(requestId, serviceName, "user-token");
   auto tokenlessAck = makeSuccessAck();
@@ -508,9 +501,9 @@ BOOST_AUTO_TEST_CASE(TokenModeMismatchFailsClearly)
 
 BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUnselectedAckState)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:provider-token-cleanup",
                                    "tpm-memory:provider-token-cleanup");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -522,8 +515,7 @@ BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUnselectedAckState)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   int providerHandlerCallCount = 0;
   provider.addService(
@@ -601,9 +593,9 @@ BOOST_AUTO_TEST_CASE(ProviderTokenCleanupExpiresUnselectedAckState)
 
 BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:provider-token-adversarial",
                                    "tpm-memory:provider-token-adversarial");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -615,8 +607,7 @@ BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   int providerHandlerCallCount = 0;
   provider.addService(
@@ -668,8 +659,7 @@ BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
   LocalServiceProvider restartedProvider(face,
                                          ndn::Name("/test/group"),
                                          providerCert,
-                                         aaCert,
-                                         "examples/trust-any.conf");
+                                         aaCert);
   restartedProvider.addService(
     serviceName,
     ServiceProvider::RequestHandler(
@@ -696,9 +686,9 @@ BOOST_AUTO_TEST_CASE(ProviderTokenAdversarialRejectionAndRestartBehavior)
 
 BOOST_AUTO_TEST_CASE(ProviderStateCleanupEdgeCases)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:provider-cleanup-edge",
                                    "tpm-memory:provider-cleanup-edge");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -709,8 +699,7 @@ BOOST_AUTO_TEST_CASE(ProviderStateCleanupEdgeCases)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   int providerHandlerCallCount = 0;
   provider.addService(
@@ -795,9 +784,9 @@ BOOST_AUTO_TEST_CASE(ProviderStateCleanupEdgeCases)
 
 BOOST_AUTO_TEST_CASE(ProviderStateLightweightStressIsDeterministic)
 {
-  ndn::Face face;
   ndn::security::KeyChain keyChain("pib-memory:provider-state-stress",
                                    "tpm-memory:provider-state-stress");
+  ndn::DummyClientFace face(keyChain);
   const ndn::Name requesterName("/test/user/alice");
   const ndn::Name providerName("/test/provider/camera");
   const ndn::Name serviceName("/HELLO");
@@ -808,8 +797,7 @@ BOOST_AUTO_TEST_CASE(ProviderStateLightweightStressIsDeterministic)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
 
   int providerHandlerCallCount = 0;
   provider.addService(

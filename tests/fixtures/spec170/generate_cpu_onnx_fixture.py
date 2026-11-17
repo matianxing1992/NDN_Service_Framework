@@ -46,6 +46,27 @@ def write_model(path: Path, output_names: list[str], width: int) -> None:
     onnx.save(model, path)
 
 
+def write_typed_model(path: Path) -> None:
+    contracts = [
+        ('input_ids', 'ids_out', TensorProto.INT64, ['batch', 'sequence']),
+        ('attention_mask', 'mask_out', TensorProto.BOOL, ['batch', 'sequence']),
+        ('hidden_states', 'hidden_out', TensorProto.FLOAT16, ['batch', 'sequence', 4]),
+    ]
+    graph = helper.make_graph(
+        [helper.make_node('Identity', [source], [target])
+         for source, target, _, _ in contracts],
+        'ndnsf-native-typed-fixture',
+        [helper.make_tensor_value_info(source, dtype, shape)
+         for source, _, dtype, shape in contracts],
+        [helper.make_tensor_value_info(target, dtype, shape)
+         for _, target, dtype, shape in contracts])
+    model = helper.make_model(graph, ir_version=8,
+        opset_imports=[helper.make_opsetid('', 17)])
+    onnx.checker.check_model(model)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    onnx.save(model, path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
@@ -54,6 +75,7 @@ def main() -> int:
     write_model(args.output / "linear-multi.onnx", ["y", "z"], 3)
     write_model(args.output / "slice.onnx", ["y"], 2)
     write_model(args.output / "unsplit.onnx", ["y"], 4)
+    write_typed_model(args.output / "typed.onnx")
     return 0
 
 

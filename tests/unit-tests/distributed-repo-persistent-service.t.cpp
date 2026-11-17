@@ -1,3 +1,4 @@
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "ndnsf-distributed-repo/PersistentRepoServerConfig.hpp"
 #include "ndnsf-distributed-repo/ArtifactTypes.hpp"
@@ -11,6 +12,7 @@
 #include "ndnsf-distributed-repo/RepoTypes.hpp"
 #include "ndnsf-distributed-repo/detail/StrictJson.hpp"
 #include "tests/fixtures/fixed-keychain-trust.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedRepo/src/face-data-reference-fetcher.hpp"
 #include "NDNSF-DistributedRepo/src/owned-manifest-query.hpp"
 
@@ -53,44 +55,7 @@
 
 namespace ndn_service_framework {
 
-struct ServiceProviderTestAccess
-{
-  static void configureFaceBackedProducerValidator(ServiceProvider& provider,
-    const std::string& trustSchemaPath, ndn::Face& face)
-  {
-    provider.validator = std::make_shared<MessageValidator>(trustSchemaPath, std::nullopt, &face);
-    provider.m_isLocalMock = false;
-  }
 
-  static std::function<std::size_t()> observeProducerValidationWaiters(ServiceProvider& provider)
-  {
-    const auto control = provider.validator->m_producerPacketValidationControl;
-    return [control] {
-      std::lock_guard<std::mutex> lock(control->mutex);
-      return control->outstanding;
-    };
-  }
-
-  static bool knowsCertificate(ServiceProvider& provider, const ndn::Name& name)
-  {
-    return provider.validator->getConfiguredValidatorForSegmentFetcher().isCertKnown(name);
-  }
-
-  static std::function<size_t()> observeRecipientDecrypts(ServiceProvider& provider)
-  {
-    const auto pending = provider.m_pendingContextCrypto;
-    return [pending] { return pending->load(); };
-  }
-
-  static void checkCertificateTrust(ServiceProvider& provider, const ndn::Data& data)
-  {
-    provider.validator->validateWithConfiguredTrustSchema(data,
-      [](const ndn::Data&) { BOOST_TEST_MESSAGE("certificate schema accepted"); },
-      [](const ndn::Data&, const ndn::security::ValidationError& error) {
-        BOOST_ERROR("certificate schema rejected: " << error);
-      });
-  }
-};
 
 } // namespace ndn_service_framework
 
@@ -445,7 +410,7 @@ BOOST_AUTO_TEST_CASE(PersistentModeRejectsNonPersistentAndUnknownValues)
     "--group-prefix", "/repo/group",
     "--provider-identity", "/repo/provider",
     "--authority-identity", "/repo/authority",
-    "--trust-schema", std::filesystem::absolute("examples/trust-any.conf").string(),
+    "--trust-schema", ndnsf::test::testFixturePath("config-trust.conf").string(),
   };
   auto argv = mutableArgv(invalidArguments);
   BOOST_CHECK_THROW(PersistentRepoServerConfig::fromArguments(
@@ -460,7 +425,7 @@ BOOST_AUTO_TEST_CASE(PersistentModeRejectsNonPersistentAndUnknownValues)
     "--group-prefix", "/repo/group",
     "--provider-identity", "/repo/provider",
     "--authority-identity", "/repo/authority",
-    "--trust-schema", std::filesystem::absolute("examples/trust-any.conf").string(),
+    "--trust-schema", ndnsf::test::testFixturePath("config-trust.conf").string(),
     "--unexpected", "value",
   };
   argv = mutableArgv(unknownOptionArguments);
@@ -510,7 +475,7 @@ BOOST_AUTO_TEST_CASE(PersistentModeRejectsNonPersistentAndUnknownValues)
   config.providerIdentity = ndn::Name("/repo/provider");
   config.authorityIdentity = ndn::Name("/repo/authority");
   config.databasePath = temp.path() / "must-not-be-created" / "repo.sqlite3";
-  config.trustSchemaPath = std::filesystem::absolute("examples/trust-any.conf");
+  config.trustSchemaPath = ndnsf::test::testFixturePath("config-trust.conf");
   BOOST_CHECK_THROW(config.validate(), std::invalid_argument);
   BOOST_CHECK(!std::filesystem::exists(config.databasePath.parent_path()));
 }
@@ -526,13 +491,13 @@ BOOST_AUTO_TEST_CASE(PersistentConfigRequiresExplicitDurableRuntimeInputs)
   config.providerIdentity = ndn::Name("/repo/provider");
   config.authorityIdentity = ndn::Name("/repo/authority");
   config.databasePath = temp.path() / "repo.sqlite3";
-  config.trustSchemaPath = std::filesystem::absolute("examples/trust-any.conf");
+  config.trustSchemaPath = ndnsf::test::testFixturePath("config-trust.conf");
   config.validate();
 
   config.databasePath = "relative/repo.sqlite3";
   BOOST_CHECK_THROW(config.validate(), std::invalid_argument);
   config.databasePath = temp.path() / "repo.sqlite3";
-  config.trustSchemaPath = "examples/trust-any.conf";
+  config.trustSchemaPath = "relative/config-trust.conf";
   BOOST_CHECK_THROW(config.validate(), std::invalid_argument);
 }
 
@@ -546,7 +511,7 @@ BOOST_AUTO_TEST_CASE(PersistentOperationWorkerTimeoutsAreParsedAndBounded)
     "--group-prefix", "/repo/group",
     "--provider-identity", "/repo/provider",
     "--authority-identity", "/repo/authority",
-    "--trust-schema", std::filesystem::absolute("examples/trust-any.conf").string(),
+    "--trust-schema", ndnsf::test::testFixturePath("config-trust.conf").string(),
     "--ack-collection-ms", "400",
     "--request-timeout-ms", "7000",
   };
@@ -589,7 +554,7 @@ BOOST_AUTO_TEST_CASE(NetworkRegistrationCoversOperationsAndRetainsRepoLifetime)
       ndn::Name("/spec192/group"),
       providerCert,
       authorityCert,
-    writeFixedKeychainTrust(temp.path(), keyChain));
+    writeFixedKeychainTrust(temp.path(), {providerCert, authorityCert}));
 
     StorageCapability capability;
     capability.repoNode = "/repo/test";
@@ -753,7 +718,7 @@ BOOST_AUTO_TEST_CASE(AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart)
     ndn_service_framework::ServiceProvider provider(
       ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
       ndn::Name("/spec192/group-restart"), providerCert, authorityCert,
-    writeFixedKeychainTrust(temp.path(), keyChain));
+    writeFixedKeychainTrust(temp.path(), {providerCert, authorityCert}));
     StorageCapability capability;
     capability.repoNode = repoNode;
     capability.repoMode = "persistent";
@@ -821,12 +786,12 @@ BOOST_AUTO_TEST_CASE(AcceptedPublishRecoversFromSeedReceiptAfterOwnerRestart)
     auto publisherUser = std::make_shared<ndn_service_framework::ServiceUser>(
       ndn_service_framework::ServiceUser::LocalMockTag{}, face,
       ndn::Name("/spec192/group-restart"), providerCert, authorityCert,
-    writeFixedKeychainTrust(temp.path(), keyChain));
+    writeFixedKeychainTrust(temp.path(), {providerCert, authorityCert}));
     publisherUser->useSigningKeyChainForSigningOnlyForTest(keyChain);
     ndn_service_framework::ServiceProvider provider(
       ndn_service_framework::ServiceProvider::LocalMockTag{}, face,
       ndn::Name("/spec192/group-restart"), providerCert, authorityCert,
-    writeFixedKeychainTrust(temp.path(), keyChain));
+    writeFixedKeychainTrust(temp.path(), {providerCert, authorityCert}));
     StorageCapability capability;
     capability.repoNode = repoNode;
     capability.repoMode = "persistent";
@@ -919,7 +884,7 @@ BOOST_AUTO_TEST_CASE(NetworkRegistrationRejectsStackOwnedRepoBeforePublishingHan
     ndn::Name("/spec192/group"),
     providerCert,
     authorityCert,
-    writeFixedKeychainTrust(temp.path(), keyChain));
+    writeFixedKeychainTrust(temp.path(), {providerCert, authorityCert}));
 
   StorageCapability capability;
   capability.repoNode = "/repo/stack";
@@ -1742,7 +1707,8 @@ BOOST_AUTO_TEST_CASE(OwnerServicesUseAuthenticatedRequesterAndPersistExactGrants
   const auto authorityCertificate = makeRsaIdentity(keys, ndn::Name("/repo/authority"));
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face, ndn::Name("/group"),
-    providerCertificate, authorityCertificate, writeFixedKeychainTrust(temp.path(), keys));
+    providerCertificate, authorityCertificate,
+    writeFixedKeychainTrust(temp.path(), {providerCertificate, authorityCertificate}));
   StorageCapability capability;
   capability.repoNode = "/repo/a";
   capability.repoMode = "persistent";
@@ -1904,7 +1870,7 @@ struct RecipientConsumerFixture
   ndn::security::Certificate recipient = makeRsaIdentity(keys, ndn::Name("/provider/recipient"));
   ndn::security::Certificate authority = makeRsaIdentity(keys, ndn::Name("/authority"));
   Provider provider{Provider::LocalMockTag{}, face, ndn::Name("/group"), recipient, authority,
-    writeFixedKeychainTrust(temp.path(), keys)};
+    writeFixedKeychainTrust(temp.path(), {recipient, authority})};
   std::shared_ptr<std::atomic<bool>> active = std::make_shared<std::atomic<bool>>(true);
   ndn::Buffer secret = ndn::Buffer(32, 0x5a);
   ndn::Buffer aad = ndn::Buffer(32, 0x42);
@@ -2167,6 +2133,43 @@ BOOST_AUTO_TEST_CASE(TargetedProducerSignerNeedsNoCollaborationAndSharesBoundedO
   BOOST_CHECK(ndn::security::verifySignature(packet, fixture.recipient));
 }
 
+BOOST_AUTO_TEST_CASE(FixedTrustIncludesOnlyExplicitAnchorsFromSharedKeychain)
+{
+  TempRoot temp;
+  ndn::KeyChain keys("pib-memory:explicit-anchors", "tpm-memory:explicit-anchors");
+  const auto trusted = makeRsaIdentity(keys, ndn::Name("/fixture/trusted"));
+  const auto untrusted = makeRsaIdentity(keys, ndn::Name("/fixture/untrusted"));
+  BOOST_CHECK_THROW(writeFixedKeychainTrust(temp.path(), {}), std::invalid_argument);
+  const auto schema = writeFixedKeychainTrust(temp.path(), {trusted});
+  ndn::DummyClientFace face(keys, ndn::DummyClientFace::Options{true, true});
+  ndn_service_framework::MessageValidator validator(schema, std::nullopt, &face);
+  auto fetchedUntrusted = std::make_shared<bool>(false);
+  auto certificateLink = face.onSendInterest.connect(
+    [&, fetchedUntrusted] (const ndn::Interest& interest) {
+      if (interest.getName().isPrefixOf(untrusted.getName())) {
+        *fetchedUntrusted = true;
+        boost::asio::post(face.getIoContext(), [&face, untrusted] { face.receive(untrusted); });
+      }
+    });
+  const auto validate = [&] (const ndn::Data& packet) {
+    auto result = std::make_shared<std::optional<bool>>();
+    validator.getConfiguredValidatorForSegmentFetcher().validate(packet,
+      [result] (const ndn::Data&) { *result = true; },
+      [result] (const ndn::Data&, const ndn::security::ValidationError&) { *result = false; });
+    face.getIoContext().restart();
+    face.getIoContext().run_for(std::chrono::seconds(1));
+    BOOST_REQUIRE(result->has_value());
+    return **result;
+  };
+  ndn::Data good(ndn::Name("/fixture/trusted/data"));
+  keys.sign(good, ndn::security::signingByCertificate(trusted));
+  BOOST_CHECK(validate(good));
+  ndn::Data rogue(ndn::Name("/fixture/untrusted/data"));
+  keys.sign(rogue, ndn::security::signingByCertificate(untrusted));
+  BOOST_CHECK(!validate(rogue));
+  BOOST_CHECK(*fetchedUntrusted);
+}
+
 BOOST_AUTO_TEST_CASE(OriginalPacketValidationRequiresTrustProducerAndExactWire)
 {
   TempRoot temp;
@@ -2176,7 +2179,7 @@ BOOST_AUTO_TEST_CASE(OriginalPacketValidationRequiresTrustProducerAndExactWire)
   const auto foreign = makeRsaIdentity(keys, ndn::Name("/provider/b"));
   ndn_service_framework::ServiceProvider provider(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, face, ndn::Name("/group"),
-    certificate, foreign, writeFixedKeychainTrust(temp.path(), keys));
+    certificate, foreign, writeFixedKeychainTrust(temp.path(), {certificate, foreign}));
   ndn::Data packet(ndn::Name("/provider/a/kv/checkpoint/seg=0"));
   const std::vector<uint8_t> content{1, 2, 3};
   packet.setContent(ndn::span<const uint8_t>(content.data(), content.size()));
@@ -2320,7 +2323,7 @@ BOOST_AUTO_TEST_CASE(OriginalPacketValidationBoundsPendingCallbacksAndWakesOnShu
   ndn::KeyChain keys("pib-memory:spec221-validation-stop", "tpm-memory:spec221-validation-stop");
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/provider/a"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
-  const auto schema = writeFixedKeychainTrust(temp.path(), keys);
+  const auto schema = writeFixedKeychainTrust(temp.path(), {certificate, authority});
   auto provider = std::make_unique<ndn_service_framework::ServiceProvider>(
     ndn_service_framework::ServiceProvider::LocalMockTag{}, *face, ndn::Name("/group"),
     certificate, authority, schema);
@@ -2543,7 +2546,7 @@ BOOST_AUTO_TEST_CASE(OwnerOriginalPacketValidationUsesConfiguredTrustAndSubject)
   const auto owner = makeRsaIdentity(keys, ndn::Name("/owner/a"));
   const auto source = makeRsaIdentity(keys, ndn::Name("/provider/a"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
-  const auto schema = writeFixedKeychainTrust(temp.path(), keys);
+  const auto schema = writeFixedKeychainTrust(temp.path(), {owner, source, authority});
   ndn_service_framework::ServiceUser user(
     ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/group"),
     owner, authority, schema);
@@ -2580,7 +2583,7 @@ BOOST_AUTO_TEST_CASE(OwnerOriginalPacketValidationBoundsCallbacksThroughTeardown
   const auto owner = makeRsaIdentity(keys, ndn::Name("/owner/a"));
   const auto source = makeRsaIdentity(keys, ndn::Name("/provider/a"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
-  const auto schema = writeFixedKeychainTrust(temp.path(), keys);
+  const auto schema = writeFixedKeychainTrust(temp.path(), {owner, source, authority});
   auto user = std::make_unique<ndn_service_framework::ServiceUser>(
     ndn_service_framework::ServiceUser::LocalMockTag{}, *face, ndn::Name("/group"),
     owner, authority, schema);
@@ -2824,7 +2827,7 @@ struct OwnedPacketFixture
     open();
     provider = std::make_unique<ndn_service_framework::ServiceProvider>(
       ndn_service_framework::ServiceProvider::LocalMockTag{}, face, ndn::Name("/group"),
-      repo, authority, writeFixedKeychainTrust(temp.path(), keys));
+      repo, authority, writeFixedKeychainTrust(temp.path(), {producer, repo, authority}));
     node->registerServices(*provider);
     node->setDataReferenceFetcher([this](const RepoDataReference&) {
       ++fetches;
@@ -4017,7 +4020,7 @@ BOOST_AUTO_TEST_CASE(UnbootstrappedSelectedRepoRequestWaitsUntilTimeoutOrCancell
   const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
   ndn::DummyClientFace face(keys, ndn::DummyClientFace::Options{true, true});
   ndn_service_framework::ServiceUser user(face, ndn::Name("/group"), owner, owner,
-    authority, writeFixedKeychainTrust(temp.path(), keys), keys);
+    authority, writeFixedKeychainTrust(temp.path(), {owner, authority}), keys);
   // A production User with no Controller bootstrap must not enter Begin.
   // LocalMock intentionally reports ready and cannot cover this boundary.
   for (const bool cancel : {false, true}) {
@@ -4065,7 +4068,7 @@ BOOST_AUTO_TEST_CASE(SelectedRepoRequestCancellationAbandonsQueuedDispatchBefore
   const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
   ndn_service_framework::ServiceUser user(
     ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/group"),
-    owner, authority, writeFixedKeychainTrust(temp.path(), keys));
+    owner, authority, writeFixedKeychainTrust(temp.path(), {owner, authority}));
   std::atomic<unsigned> probes{0};
   std::atomic<bool> closed{false};
   const auto emitted = std::make_shared<std::atomic<bool>>(false);
@@ -4110,7 +4113,7 @@ BOOST_AUTO_TEST_CASE(OwnerPacketClientUsesConfiguredFaceAndChecksWireSignerSizeA
     .getDefaultKey().getDefaultCertificate();
   ndn_service_framework::ServiceUser user(
     ndn_service_framework::ServiceUser::LocalMockTag{}, ownerFace, ndn::Name("/group"),
-    owner, authority, writeFixedKeychainTrust(fixture.temp.path(), fixture.keys));
+    owner, authority, writeFixedKeychainTrust(fixture.temp.path(), {owner, authority, producer}));
   const RepoArtifactTarget target{"/repo/a", "/repo/provider", "/SERVICE/repo"};
   const ndn::Name name(fixture.request.reference.packetSetMetadata->packetNames.front());
   fixture.node->registerOriginalDataServing(repoFace);
@@ -4178,7 +4181,7 @@ BOOST_AUTO_TEST_CASE(OwnerPacketTimeoutKeepsAdmissionUntilPausedFaceCallbacksDra
   const auto authority = makeRsaIdentity(keys, ndn::Name("/authority"));
   auto user = std::make_unique<ndn_service_framework::ServiceUser>(
     ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/group"),
-    owner, authority, writeFixedKeychainTrust(temp.path(), keys));
+    owner, authority, writeFixedKeychainTrust(temp.path(), {owner, authority}));
   const RepoArtifactTarget target{"/repo/a", "/repo/provider", "/SERVICE/repo"};
   for (size_t i = 0; i < 16; ++i) {
     BOOST_CHECK_THROW(RepoClientCompat::fetchOriginalDataPacketFromUserStorage(
@@ -4219,7 +4222,7 @@ BOOST_AUTO_TEST_CASE(SourcePublicationAdmissionPrecedesPacketGenerationAndSpooli
     .getDefaultKey().getDefaultCertificate();
   ndn_service_framework::ServiceUser writer(
     ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/group"),
-    source, authority, writeFixedKeychainTrust(fixture.temp.path(), fixture.keys));
+    source, authority, writeFixedKeychainTrust(fixture.temp.path(), {source, authority}));
   std::vector<std::shared_ptr<void>> leases;
   for (size_t i = 0; i < 16; ++i) {
     leases.push_back(writer.postToIoWithFace([](ndn::Face&) {}));

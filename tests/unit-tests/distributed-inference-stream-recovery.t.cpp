@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <boost/test/unit_test.hpp>
@@ -13,7 +14,7 @@ struct EpochTokenizer
 {
   EpochTokenizer()
   {
-    std::ifstream input("tests/fixtures/spec182/dependency-probes/tokenizer/stable-vectors.json");
+    std::ifstream input(ndnsf::test::testFixturePath("spec182/dependency-probes/tokenizer/stable-vectors.json").string());
     NativeFixtureJsonRead(input);
   }
   void NativeFixtureJsonRead(std::istream& input)
@@ -167,6 +168,10 @@ BOOST_AUTO_TEST_CASE(GenerationDerivesSamplingFromBoundOptions)
   BOOST_CHECK_EQUAL(random.samplingTopK, 4);
   BOOST_CHECK_EQUAL(random.samplingSeed, 0);
   BOOST_CHECK_NE(random.samplingDigest, result.samplingDigest);
+  for (const auto limit : {65, 1025}) {
+    options["maxNewTokens"] = limit;
+    BOOST_CHECK_EQUAL(parseGeneration(options).maxGeneratedTokens, limit);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(GenerationRejectsUnboundOrMalformedOptions)
@@ -176,7 +181,7 @@ BOOST_AUTO_TEST_CASE(GenerationRejectsUnboundOrMalformedOptions)
     switch (invalid) {
       case 0: value["useCache"] = false; break;
       case 1: value["maxNewTokens"] = true; break;
-      case 2: value["maxNewTokens"] = 65; break;
+      case 2: value["maxNewTokens"] = 1026; break;
       case 3: value["maxNewTokens"] = 1.5; break;
       case 4: value["eosTokenIds"] = {-1}; break;
       case 5: value["eosTokenIds"] = {true}; break;

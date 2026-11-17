@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ModelPreparationCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -86,13 +87,13 @@ struct Fixture
 
   Fixture()
   {
-    std::ifstream file("tests/fixtures/spec182/yolo-semantic-oracle.json");
+    std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
     BOOST_REQUIRE(file.good());
     file >> oracle;
     const auto hex = oracle.at("model_hex").get<std::string>();
     for (std::size_t i = 0; i < hex.size(); i += 2)
       source.modelBytes.push_back(static_cast<std::uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
-    std::ifstream graphOracleFile("tests/fixtures/spec182/onnx-planning-graph-oracle.json");
+    std::ifstream graphOracleFile(ndnsf::test::testFixturePath("spec182/onnx-planning-graph-oracle.json").string());
     BOOST_REQUIRE(graphOracleFile.good());
     NativeJson graphOracles;
     graphOracleFile >> graphOracles;
@@ -623,8 +624,7 @@ BOOST_AUTO_TEST_CASE(CompletePreparedHitRestoresQwenCatalogAcrossFreshCacheOwner
   BOOST_CHECK_EXCEPTION(
     NativeRequestCatalog::load(nativeCanonicalJson(yoloCatalog), yoloReference, restoreControl),
     std::invalid_argument, [] (const std::invalid_argument& error) {
-      return std::string(error.what()).find("unsupported native prepared metadata schema") !=
-        std::string::npos;
+      return std::string(error.what()) == "PREPARED_METADATA_VERSION";
     });
 }
 

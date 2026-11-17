@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -17,8 +18,11 @@
 #include <vector>
 
 namespace {
-const auto STABLE_VECTORS = std::filesystem::path(
-  "tests/fixtures/spec182/dependency-probes/tokenizer/stable-vectors.json");
+std::filesystem::path
+stableVectorsPath()
+{
+  return ndnsf::test::testFixturePath("spec182/dependency-probes/tokenizer/stable-vectors.json");
+}
 
 std::string
 sha256Hex(const std::string& bytes)
@@ -47,7 +51,7 @@ std::vector<StableFixture>
 loadStableFixtures()
 {
   boost::property_tree::ptree root;
-  boost::property_tree::read_json(STABLE_VECTORS.string(), root);
+  boost::property_tree::read_json(stableVectorsPath().string(), root);
   std::vector<StableFixture> fixtures;
   for (const auto& entry : root.get_child("fixtures")) {
     const auto& node = entry.second;

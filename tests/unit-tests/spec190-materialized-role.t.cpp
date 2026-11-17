@@ -3,6 +3,7 @@
 // reachability-extraction protobuf graph.  The final checker, contract check,
 // deterministic wire and real ORT load remain in the production chain.
 
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
@@ -22,21 +23,13 @@ namespace {
 boost::property_tree::ptree
 loadVector()
 {
-  const std::string paths[] = {
-    "tests/fixtures/spec182/dependency-probes/extraction-vectors.json",
-    "../tests/fixtures/spec182/dependency-probes/extraction-vectors.json",
-  };
-  for (const auto& path : paths) {
-    std::ifstream input(path);
-    if (!input)
-      continue;
-    boost::property_tree::ptree root;
-    boost::property_tree::read_json(input, root);
-    for (const auto& item : root.get_child("cases")) {
-      if (item.second.get<std::string>("expectedModelDigest", "") ==
-          "sha256:59269bc795b453dcc15fcb34dd6c9b1625070bc094f32361fcd236c3b6600383")
-        return item.second;
-    }
+  boost::property_tree::ptree root;
+  boost::property_tree::read_json(ndnsf::test::testFixturePath(
+    "spec182/dependency-probes/extraction-vectors.json").string(), root);
+  for (const auto& item : root.get_child("cases")) {
+    if (item.second.get<std::string>("expectedModelDigest", "") ==
+        "sha256:59269bc795b453dcc15fcb34dd6c9b1625070bc094f32361fcd236c3b6600383")
+      return item.second;
   }
   throw std::runtime_error("Spec190 materialized-role vector is unavailable");
 }

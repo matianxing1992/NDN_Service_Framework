@@ -16,22 +16,23 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'tests/standalone'))
 import importlib.util
 s=importlib.util.spec_from_file_location('b1', str(ROOT/'tests/standalone/run-spec182-native-grant-process.py')); b=importlib.util.module_from_spec(s); s.loader.exec_module(b)
+b.install_termination_handlers()
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--build', type=Path, default=ROOT/'.codex-tmp/spec182-r11-b2-fresh-20260910/build')
+parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build")))
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--revoke', action='store_true',
                     help='revoke the Provider identity from the real Controller before the request')
 args=parser.parse_args()
 BUILD=args.build.resolve()
-CONTROLLER=BUILD/'examples/App_ServiceController'; AUTHORITY=BUILD/'examples/DI_NativeArtifactAuthority'; PROVIDER=BUILD/'examples/di-native-provider'; REQUESTER=BUILD/'examples/DI_NativeRequester'; WORKER=BUILD/'DI_NativeOnnxAssemblyWorker'
+CONTROLLER=b.native_program(BUILD, 'App_ServiceController'); AUTHORITY=b.native_program(BUILD, 'DI_NativeArtifactAuthority'); PROVIDER=b.native_program(BUILD, 'di-native-provider'); REQUESTER=b.native_program(BUILD, 'DI_NativeRequester'); WORKER=b.native_program(BUILD, "DI_NativeOnnxAssemblyWorker", source_subdir="", installed_subdir="libexec/ndnsf-di")
 # make descriptor/catalog.  These helpers are deliberately pure Python fixture
 # metadata; the process driver must not import the native Python wrapper when
 # the selected C++ binaries are sanitizer-instrumented.
 sys.path.insert(0, str(ROOT/'tests/standalone'))
-from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor
+from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
 def dg(x): return 'sha256:'+hashlib.sha256(x.encode()).hexdigest()
-yolo=json.loads((ROOT/'tests/fixtures/spec182/yolo-semantic-oracle.json').read_text())
+yolo=json.loads(fixture_path('spec182/yolo-semantic-oracle.json').read_text())
 src=bytes.fromhex(yolo['model_hex']); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
 ad=adapter_descriptor('yolo26n','1',dg('fixture-adapter-state'),'fixture-abi-v1',('onnx',),('task',),('onnxruntime',),('float32',),dg('fixture-input-schema'),dg('fixture-options-schema'),dg('fixture-result-schema'),dg('fixture-graph-schema'),dg('fixture-split-schema'),dg('fixture-state-schema'),True,True,True)
 model=model_descriptor('YOLOFixture',dg('YOLOFixture-content'),dg('YOLOFixture-semantics'),yolo['graph_digest'],'onnx','float32',ad)
@@ -55,8 +56,12 @@ for n in ['shared','bootstrap-store','authority','provider','requester']:(run_ro
 nfd_socket=b.bounded_nfd_socket(run_root); nfdconf=run_root/'nfd.conf'; b.nfd_config(nfdconf,nfd_socket); policy=run_root/'hello.policies'; b.write(policy,policy_text(),0o600)
 # bootstrap identities
 bootenv=os.environ.copy(); bootenv.update({'HOME':str(run_root/'bootstrap-store/home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(run_root/'bootstrap-store/pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(run_root/'bootstrap-store/tpm'),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin'})
-for ident in ['/example/hello/controller','/example/hello/authority','/example/hello/provider','/example/hello/user']:
- subprocess.run(['/usr/local/bin/ndnsec','key-gen','-t','r',ident],env=bootenv,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+actor_identities=['/example/hello/controller','/example/hello/authority','/example/hello/provider','/example/hello/user']
+root_certificate=b.provision_actor_identities(run_root,bootenv,actor_identities)
+fixture_schema=b.actor_trust_schema(actor_identities)
+b.write(run_root/'shared/trust-schema.conf',fixture_schema,0o644)
+for directory in ['authority','provider','requester']:
+ b.write(run_root/directory/'root.cert',root_certificate,0o644)
 for n in ['controller-store','authority-store','provider-store','requester-store']:
  shutil.copytree(run_root/'bootstrap-store',run_root/n)
  with sqlite3.connect(run_root/n/'pib/pib.db') as db: db.execute('UPDATE tpmInfo SET tpm_locator=?',(f'tpm-file:{run_root/n}/tpm',)); db.commit()
@@ -70,7 +75,7 @@ def edkey(d,prefix):
  priv=prefix/'private.pem'; pub=prefix/'public.pem'; subprocess.run(['/usr/bin/openssl','genpkey','-algorithm','ED25519','-out',str(priv)],check=True,stdout=subprocess.DEVNULL); subprocess.run(['/usr/bin/openssl','pkey','-in',str(priv),'-pubout','-out',str(pub)],check=True,stdout=subprocess.DEVNULL); priv.chmod(0o600); pub.chmod(0o644); return priv,pub
 reqpriv,reqpub=edkey(0,run_root/'requester'); authpriv,authpub=edkey(0,run_root/'authority'); recippriv,recippub=edkey(0,run_root/'provider'); offerpriv,offerpub=edkey(0,run_root/'provider/offer')
 (run_root/'authority/content-key.bin').write_bytes(b'spec182-b2-content-key-000000000'); (run_root/'authority/content-key.bin').chmod(0o600)
-(run_root/'authority/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text()); (run_root/'provider/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text())
+(run_root/'authority/trust-schema.conf').write_text(fixture_schema); (run_root/'provider/trust-schema.conf').write_text(fixture_schema)
 # registry for provider
 registry={"schemaVersion":1,"status":"CONFIGURED","artifactPolicyAuthority":{"publicKeyAlgorithm":"ed25519","signatureAlgorithm":"ed25519","grantSchema":"ndnsf-di-key-grant-v1","authorityId":"/example/hello/authority","keyId":"model-key","publicKeyPath":"provider/authority-public.pem","publicKeySha256":"sha256:"+hashlib.sha256(authpub.read_bytes()).hexdigest(),"acceptedModelFamilies":["YOLOFixture"],"protectionEpochs":["epoch-1"]}}
 (run_root/'provider/trust-root-registry-v1.json').write_text(json.dumps(registry)); shutil.copy2(authpub,run_root/'provider/authority-public.pem'); (run_root/'provider/recipient-private.pem').write_bytes(recippriv.read_bytes()); (run_root/'provider/recipient-private.pem').chmod(0o600); (run_root/'provider/recipient-key-map.json').write_text(json.dumps({'/example/hello/provider':str(run_root/'provider/recipient-private.pem')}))
@@ -78,13 +83,12 @@ registry={"schemaVersion":1,"status":"CONFIGURED","artifactPolicyAuthority":{"pu
 ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":{"/example/hello/provider":"../provider/public.pem"},"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"artifact_profile_digest":profile}}}}
 (run_root/'authority/authority.json').write_text(json.dumps(ac))
 # requester files
-(run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); shutil.copy2(offerpub,run_root/'requester/offer-public.pem'); (run_root/'requester/trust-schema.conf').write_text((ROOT/'examples/trust-schema.conf').read_text()); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
+(run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); shutil.copy2(offerpub,run_root/'requester/offer-public.pem'); (run_root/'requester/trust-schema.conf').write_text(fixture_schema); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
 # Cert name query from the provider PIB lets the requester validate the
 # signed offer without sharing the provider's private NDN key.
-from ndn.encoding import Name,Component
-with sqlite3.connect(run_root/'provider-store/pib/pib.db') as db: kb=db.execute("select key_name from keys").fetchall()
-keyblob=next(bytes(row[0]) for row in kb if b'provider' in bytes(row[0]))
-parts,_=Name.decode(keyblob); keyprefix='/'+'/'.join(Component.to_str(x.tobytes()) for x in parts); cert=keyprefix+'/ID-CERT'
+cert=b.certificate_name(bootenv,'/example/hello/provider')
+keyprefix=b.certificate_key_name(cert)
+
 # offer policy
 op={"schema":"spec180-provider-offer-trust-v1","candidateId":"b2","candidateDigest":offer_policy,"trustSchema":"/example/hello/trust","entries":[{"provider":"/example/hello/provider","service":"/Inference/NativeUnary","keyLocatorPrefix":keyprefix,"signerKeyId":"sha256:"+hashlib.sha256(load_pem_public_key(offerpub.read_bytes(), backend=default_backend()).public_bytes(Encoding.Raw,PublicFormat.Raw)).hexdigest(),"certificateName":cert}]}
 # requester config
@@ -105,8 +109,8 @@ try:
  while not nfd_socket.exists(): time.sleep(.05)
  subprocess.run(['/usr/local/bin/nfdc','strategy','set','/example/hello/group','/localhost/nfd/strategy/multicast'],env=base,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  def penv(store):
-  e=dict(base);e.update({'HOME':str(store/'home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(store/'pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(store/'tpm')});return e
- controller_command=[str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--ensure-identities','/example/hello/authority,/example/hello/provider,/example/hello/user','--no-serve-certificates']
+  return b.actor_environment(base,store)
+ controller_command=[str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--trust-schema',str(run_root/'shared/trust-schema.conf'),'--ensure-identities','/example/hello/authority,/example/hello/provider,/example/hello/user','--no-serve-certificates']
  revoke_after_ms=60000
  if args.revoke:
   controller_command += ['--revoke-after-ms',str(revoke_after_ms),'--revoke-kind','identity','--revoke-identity','/example/hello/provider']

@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeTokenizer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeStandaloneTokenizer.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -19,10 +20,17 @@
 #include <vector>
 
 namespace {
-const auto FIXTURE = std::filesystem::path(
-  "tests/fixtures/spec175/tiny-causal-lm-v1/standalone/tokenizer.json");
-const auto VECTORS = std::filesystem::path(
-  "tests/fixtures/spec182/dependency-probes/tokenizer/vectors.json");
+std::filesystem::path
+fixturePath()
+{
+  return ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/standalone/tokenizer.json");
+}
+
+std::filesystem::path
+vectorsPath()
+{
+  return ndnsf::test::testFixturePath("spec182/dependency-probes/tokenizer/vectors.json");
+}
 
 std::string
 sha256Hex(const std::string& bytes)
@@ -50,7 +58,7 @@ std::vector<TokenizerFixture>
 loadFixtures()
 {
   boost::property_tree::ptree root;
-  boost::property_tree::read_json(VECTORS.string(), root);
+  boost::property_tree::read_json(vectorsPath().string(), root);
   std::vector<TokenizerFixture> fixtures;
   for (const auto& entry : root.get_child("fixtures")) {
     const auto& node = entry.second;
@@ -133,10 +141,10 @@ BOOST_AUTO_TEST_CASE(MissingArtifactIsRejectedBeforeEngineCreate)
 
 BOOST_AUTO_TEST_CASE(DigestMismatchIsRejectedBeforeEngineCreate)
 {
-  BOOST_REQUIRE(std::filesystem::is_regular_file(FIXTURE));
+  BOOST_REQUIRE(std::filesystem::is_regular_file(fixturePath()));
   BOOST_CHECK_THROW(
     ndnsf::di::qwen::NativeTokenizer(
-      FIXTURE.string(), "sha256:" + std::string(64, '0')),
+      fixturePath().string(), "sha256:" + std::string(64, '0')),
     std::invalid_argument);
 }
 

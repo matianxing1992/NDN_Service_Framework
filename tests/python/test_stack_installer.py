@@ -212,7 +212,7 @@ run_waf_clean configure
 
 
 @pytest.mark.parametrize("args", [
-    ["--components", "unknown"], ["--components", "core", "--with-tests"],
+    ["--components", "unknown"],
     ["--components", "di", "--with-examples"],
     ["--components", "repo", "--with-qwen-minindn"],
     ["--", "--components=core"],
@@ -221,6 +221,94 @@ def test_invalid_component_combination_stops_before_mutation(args):
     result = shell(SCRIPT.read_text(), "--plan", *args)
     assert result.returncode == 2
     assert not result.stdout
+
+
+@pytest.mark.parametrize("profile", ["core", "repo", "di"])
+def test_component_native_tests_are_supported_without_examples(profile):
+    result = shell(SCRIPT.read_text(), "--plan", "--components", profile, "--with-tests")
+    assert result.returncode == 0, result.stderr
+    assert "Waf configure options: --with-tests" in result.stdout
+    assert "Offline plan only" in result.stdout
+
+
+def test_native_waf_uses_one_launcher_and_the_maintained_tree(tmp_path):
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    launcher = scripts / 'build-safe.sh'
+    launcher.write_text('''#!/bin/bash
+set -eu
+[[ ${TEST_LAUNCHER_ACTIVE:-0} == 0 ]] || exit 91
+export TEST_LAUNCHER_ACTIVE=1
+[[ $1 == run && $2 == -- ]]
+shift 2
+exec "$@"
+''')
+    launcher.chmod(0o700)
+    interpreter = tmp_path / 'fake-python'
+    interpreter.write_text('#!/bin/sh\nprintf "NATIVE_ARG=%s\\n" "$@"\n')
+    interpreter.chmod(0o700)
+    code = DEFINITIONS + '\n' + '\n'.join([
+        'ROOT=' + shlex.quote(str(tmp_path)),
+        'NATIVE_BUILD_DIR="$ROOT/build"',
+        'BUILD_DIR="$ROOT/external-sdk"',
+        'PYTHON_BIN=' + shlex.quote(str(interpreter)),
+        'refresh_global_pkg_config_path() { :; }',
+        # shell() normally replaces the bounded launcher with a command stub.
+        'run_bounded() { bash "$ROOT/scripts/build-safe.sh" run -- "$@"; }',
+        'run_waf_clean build --targets=unit-tests',
+    ])
+    result = shell(code)
+    assert result.returncode == 0, result.stderr
+    assert 'NATIVE_ARG=--out=' + str(tmp_path / 'build') in result.stdout
+    assert 'NATIVE_ARG=--targets=unit-tests' in result.stdout
+
+
+def test_default_sdk_scratch_reuses_one_purpose_and_releases_after_success(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    code = DEFINITIONS + '\nROOT=' + shlex.quote(str(source)) + '''
+BUILD_DIR=""
+REUSE_BUILD_DIR=0
+prepare_build_dir
+first="$BUILD_DIR"
+printf 'FIRST=%s\\n' "$first"
+BUILD_DIR=""
+REUSE_BUILD_DIR=0
+prepare_build_dir
+printf 'SECOND=%s\\n' "$BUILD_DIR"
+[[ "$first" == "$BUILD_DIR" ]]
+release_default_sdk_scratch
+[[ ! -e "$first" ]]
+'''
+    result = shell(code)
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    first = next(line.split('=', 1)[1] for line in lines if line.startswith('FIRST='))
+    second = next(line.split('=', 1)[1] for line in lines if line.startswith('SECOND='))
+    assert first == second
+    assert first.startswith('/tmp/ndnsf-stack-sdk-')
+    assert not Path(first).exists()
+
+
+def test_default_sdk_scratch_does_not_remove_declared_installation(tmp_path):
+    source = tmp_path / 'source'
+    source.mkdir()
+    code = DEFINITIONS + '\nROOT=' + shlex.quote(str(source)) + '''
+BUILD_DIR=""
+REUSE_BUILD_DIR=0
+prepare_build_dir
+original_prefix="$RUNTIME_PREFIX"
+RUNTIME_PREFIX="$BUILD_DIR/retained-install"
+mkdir -p -- "$RUNTIME_PREFIX"
+release_default_sdk_scratch
+[[ -d "$RUNTIME_PREFIX" ]]
+RUNTIME_PREFIX="$original_prefix"
+release_default_sdk_scratch
+[[ ! -e "$BUILD_DIR" ]]
+'''
+    result = shell(code)
+    assert result.returncode == 0, result.stderr
+    assert 'Retaining SDK scratch containing an explicit input/install path' in result.stdout
 
 
 def test_core_does_not_probe_or_download_model_sdk():
@@ -248,6 +336,20 @@ install_common_system_packages
         assert "protobuf-compiler" in result.stdout
     assert "gtkmm" not in result.stdout
     assert "gstreamer" not in result.stdout
+
+
+def test_uav_os_packages_include_native_video_codecs():
+    result = shell(DEFINITIONS + '''
+sudo_run() { printf 'SUDO:%s\\n' "$*"; }
+dpkg-query() { return 1; }
+has_global_boost() { return 0; }
+select_global_boost() { return 0; }
+install_common_system_packages
+''', "--components", "all")
+    assert result.returncode == 0, result.stderr
+    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad",
+                    "gstreamer1.0-libav"):
+        assert package in result.stdout
 
 
 @pytest.mark.parametrize("profile", ["core", "repo", "di", "all"])
@@ -337,6 +439,39 @@ manifest_tool uninstall --manifest "$INSTALL_MANIFEST"
     assert result.returncode == 0, result.stderr
     assert (prefix / "bin/service").read_text() == "prior"
     assert persistent.read_text() == "preserved"
+
+
+def test_private_test_python_uses_the_selected_manifest_root(tmp_path):
+    prefix = tmp_path / 'runtime'
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    result = shell(DEFINITIONS + '''
+sudo_run() { "$@"; }
+env() {
+  if [[ "${*: -1}" == 'import cryptography' ]]; then return 0; fi
+  command env "$@"
+}
+NDNSF_INSTALL_DI=1
+WAF_CONFIGURE_ARGS=(--with-tests)
+run_bounded() {
+  local destination=
+  while (($#)); do
+    if [[ "$1" == --target ]]; then destination="$2"; break; fi
+    shift
+  done
+  [[ -n "$destination" ]] || return 98
+  mkdir -p "$destination/ndn"
+  printf '# private test namespace\n' > "$destination/ndn/__init__.py"
+}
+install_native_test_python_support
+''', '--prefix', str(prefix), env=dict(os.environ, TMPDIR=str(scratch)))
+    assert result.returncode == 0, result.stderr
+    target = prefix / 'libexec/ndnsf-tests/python/ndn/__init__.py'
+    assert target.read_text() == '# private test namespace\n'
+    import json
+    receipt = json.loads((prefix / 'share/ndnsf/stack-install-manifest.json').read_text())
+    assert receipt['files'][str(target)]['owners'] == ['ndnsf-test-python']
+    assert not list(scratch.iterdir())
 
 
 def test_runtime_prefix_cannot_be_an_existing_file(tmp_path):
@@ -997,6 +1132,35 @@ pip_install /example/package
     result = shell(code, '--prefix', '/opt/ndnsf-fixture')
     assert result.returncode == 0, result.stderr
     assert 'CLEAN_WHEEL_NATIVE_IDENTITY_OK' in result.stdout
+
+
+def test_native_only_stops_before_public_python_wheels(tmp_path):
+    source = SCRIPT.read_text()
+    start = source.index('if (( NATIVE_ONLY )); then',
+                         source.index('install_native_test_python_support\n\n'))
+    end = source.index('echo "==> Installing ndnsf Python wrapper"', start)
+    code = DEFINITIONS + '''
+release_default_sdk_scratch() { echo NATIVE_SCRATCH_RELEASED; }
+''' + source[start:end] + '\necho PUBLIC_WHEELS_WOULD_START\n'
+    result = shell(code, '--native-only', '--prefix', str(tmp_path / 'candidate'))
+    assert result.returncode == 0, result.stderr
+    assert 'Native-only candidate installed' in result.stdout
+    assert 'NATIVE_SCRATCH_RELEASED' in result.stdout
+    assert 'PUBLIC_WHEELS_WOULD_START' not in result.stdout
+
+
+def test_non_global_native_prefix_does_not_refresh_global_linker_cache(tmp_path):
+    source = SCRIPT.read_text()
+    start = source.index('  if [[ "$RUNTIME_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]]; then',
+                         source.index('==> Installing C++ libraries and headers'))
+    end = source.index('\n  selected_native_libraries=', start)
+    code = DEFINITIONS + '\nsudo_run() { echo GLOBAL_LINKER_REFRESH; }\n' + source[start:end]
+    isolated = shell(code, '--prefix', str(tmp_path / 'candidate'))
+    assert isolated.returncode == 0, isolated.stderr
+    assert 'GLOBAL_LINKER_REFRESH' not in isolated.stdout
+    normal = shell(code)
+    assert normal.returncode == 0, normal.stderr
+    assert 'GLOBAL_LINKER_REFRESH' in normal.stdout
 
 
 def test_host_profile_normalizes_symlink_venv_interpreter(tmp_path):

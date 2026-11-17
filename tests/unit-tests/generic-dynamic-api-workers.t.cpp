@@ -19,7 +19,7 @@ BOOST_AUTO_TEST_CASE(AllSelectedPublishesSelectionForEveryValidAckResponder)
   };
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-selection"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, providers);
 
   ndn::Name publishedRequestId;
@@ -97,8 +97,7 @@ BOOST_AUTO_TEST_CASE(AllSelectedProvidersExecuteOnlyAfterSelection)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -119,7 +118,7 @@ BOOST_AUTO_TEST_CASE(AllSelectedProvidersExecuteOnlyAfterSelection)
   auto requestBlock = request.WireEncode();
   ndn::Buffer requestBuffer(requestBlock.data(), requestBlock.size());
 
-  provider.OnRequestDecryptionSuccessCallbackV2(requesterName,
+  provider.deliverDecodedRequestForTest(requesterName,
                                                 serviceName,
                                                 requestId,
                                                 requestBuffer);
@@ -167,7 +166,7 @@ BOOST_AUTO_TEST_CASE(AllSelectedHandlesMultipleSelectedProviderResponses)
   };
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-all-selected-responses"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, providers);
 
   ndn::Name publishedRequestId;
@@ -238,8 +237,7 @@ BOOST_AUTO_TEST_CASE(CollaborationFinalResponseReleasesPendingCall)
   const ndn::Name finalProvider("/test/provider/merge");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-collaboration-final-response"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
 
   const ndn::Name requestId("/request-collaboration-final-response");
   int responseCallbacks = 0;
@@ -266,12 +264,13 @@ BOOST_AUTO_TEST_CASE(BaseServiceProviderDefaultsAreSafe)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name("/test/provider/default"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-default"));
 
+  IsolatedTestTrust providerTrust{providerCert, aaCert};
   ServiceProvider provider(ServiceProvider::LocalMockTag{},
                            face,
                            ndn::Name("/test/group"),
                            providerCert,
                            aaCert,
-                           "examples/trust-any.conf");
+                           providerTrust.schemaPath());
 
   provider.registerServiceInfo();
 
@@ -438,8 +437,7 @@ BOOST_AUTO_TEST_CASE(ProviderHandlerExecutionCanRunOffEventLoopAndInParallel)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.setHandlerThreads(2);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
@@ -530,8 +528,8 @@ BOOST_AUTO_TEST_CASE(SelectionStatusQueryIsOptInPerService)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
+  provider.useSigningKeyChainForTest(keyChain);
   provider.setHandlerThreads(0);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
@@ -571,9 +569,10 @@ BOOST_AUTO_TEST_CASE(SelectionStatusQueryIsOptInPerService)
   BOOST_REQUIRE(executionStatus.has_value());
   BOOST_CHECK(executionStatus->state == SelectionExecutionState::Completed);
 
-  const ndn::Interest query(makeSelectionStatusQueryName(providerName,
-                                                        serviceName,
-                                                        selectionDigest));
+  const auto parameters = encodeSelectionStatusQueryParameters(serviceName, selectionDigest);
+  ndn::Interest query(makeControlRpcName(providerName, "SELECTION-STATUS", parameters,
+                                       makeControlQueryNonce()));
+  query.setApplicationParameters(parameters);
   BOOST_CHECK(!provider.replySelectionStatusForTest(query));
 
   bool receivedStatus = false;
@@ -614,7 +613,7 @@ BOOST_AUTO_TEST_CASE(UserResponseCallbackCanRunOffEventLoopAfterStateUpdate)
   const ndn::Name requestId("/request-callback");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-user-callback"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert, "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
   user.setHandlerThreads(1);
 
@@ -665,8 +664,7 @@ BOOST_AUTO_TEST_CASE(UserResponseCallbackRunsInlineWhenHandlerThreadsAreDisabled
   const ndn::Name requestId("/request-callback-inline");
   auto userCert = makeRsaIdentity(keyChain, requesterName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-user-callback-inline"));
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   installUserPermissions(user, requesterName, serviceName, {providerName});
   user.setHandlerThreads(0);
 
@@ -706,8 +704,7 @@ BOOST_AUTO_TEST_CASE(StreamLifecycleAttachesToExistingRequestContext)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/test/aa-stream-lifecycle"));
 
-  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/test/group"), userCert, aaCert);
   RequestMessage request;
   user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
   size_t publishedRequests = 0;
@@ -736,7 +733,7 @@ BOOST_AUTO_TEST_CASE(StreamLifecycleAttachesToExistingRequestContext)
                    std::logic_error);
 
   LocalServiceProvider provider(face, ndn::Name("/test/group"), providerCert,
-                                aaCert, "examples/trust-any.conf");
+                                aaCert);
   request.setUserToken("user-token");
   provider.addPendingRequestForTokenTest(requesterName, serviceName, requestId,
                                          request, "provider-token");

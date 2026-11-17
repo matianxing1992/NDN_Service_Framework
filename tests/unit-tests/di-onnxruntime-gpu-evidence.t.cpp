@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
@@ -174,18 +175,10 @@ struct ScopedRunnerTimingCapture
 std::filesystem::path
 findSpec175Fixture()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::exists(candidate / "role-0.onnx") &&
-        std::filesystem::exists(candidate / "role-1.onnx")) {
-      return candidate;
-    }
-  }
-  return {};
+  const auto first = ndnsf::test::testFixturePath(
+    "spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
+  ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/two-role/role-1.onnx");
+  return first.parent_path();
 }
 
 TensorBundle

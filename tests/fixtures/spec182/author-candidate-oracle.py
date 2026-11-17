@@ -58,7 +58,7 @@ rows = [{'name': name, 'input': json.loads(_canonical_bytes(value)),
 # Real rank-one Qwen algorithm, with an explicitly supplied native strategy identity.
 roles = ('front', 'end')
 artifacts = {r: digest('qwen-' + r) for r in roles}
-state = 'qwen-layer-split|1|' + ''.join(f'{r}:{i}-{i+1}:{artifacts[r]};' for i, r in enumerate(roles))
+state = 'qwen-layer-split|1|' + ''.join(f'{r}:{i}-{i+1}:{artifacts[r]}:d1;' for i, r in enumerate(roles))
 model = fixture_model('QwenFixture', digest('QwenFixture-content'), digest('qwen-graph'), 'qwen')
 nodes = ('embedding', 'layer-00', 'layer-01', 'final-norm-head')
 graph = ModelGraphSnapshot(model.graph_digest, model.adapter,

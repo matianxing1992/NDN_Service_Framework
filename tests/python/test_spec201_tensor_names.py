@@ -17,7 +17,7 @@ from ndnsf_distributed_inference.sdk.placement import (
 class TensorNamingParity(unittest.TestCase):
     def test_actual_native_endpoint_and_typed_wire(self):
         root = Path(__file__).resolve().parents[2]
-        binary = os.environ.get("SPEC201_TENSOR_NAMING_CPP", "/var/tmp/spec200-asan/spec189-epoch-projection")
+        binary = os.environ.get("SPEC201_TENSOR_NAMING_CPP", str(root / "build/unit-tests"))
         with tempfile.TemporaryDirectory(prefix="spec201-tensor-parity-") as directory:
             output = Path(directory) / "tensor.json"
             env = dict(os.environ, SPEC201_TENSOR_RECORDS=str(output))

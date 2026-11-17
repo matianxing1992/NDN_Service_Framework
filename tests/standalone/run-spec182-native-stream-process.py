@@ -14,11 +14,12 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key, En
 from cryptography.hazmat.backends import default_backend
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
+CONVERSATION_RETENTION_MS=120000
 sys.path.insert(0, str(ROOT/'tests/standalone'))
 import importlib.util
 s=importlib.util.spec_from_file_location('b1', str(ROOT/'tests/standalone/run-spec182-native-grant-process.py')); b=importlib.util.module_from_spec(s); s.loader.exec_module(b)
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--build', type=Path, default=ROOT/'.codex-tmp/spec182-r11-b2-fresh-20260910/build')
+parser.add_argument('--build', type=Path, default=Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build")))
 parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--conversation', action='store_true',
@@ -61,13 +62,9 @@ def run_command(*command,**options):
  return subprocess.run(*command,**options)
 def wait_ready(process,log,marker,timeout):
  return b.wait_marker(process,log,marker,remaining_timeout(timeout))
-if args.stored_model_reuse:
- def terminate_owned_run(number,frame):
-  raise RuntimeError('stored process received termination signal '+str(number))
- signal.signal(signal.SIGTERM,terminate_owned_run)
- signal.signal(signal.SIGINT,terminate_owned_run)
+b.install_termination_handlers()
 BUILD=args.build.resolve()
-CONTROLLER=BUILD/'examples/App_ServiceController'; AUTHORITY=BUILD/'examples/DI_NativeArtifactAuthority'; PROVIDER=BUILD/'examples/di-native-provider'; REQUESTER=BUILD/'examples/DI_NativeRequester'; WORKER=BUILD/'DI_NativeOnnxAssemblyWorker'
+CONTROLLER=b.native_program(BUILD, 'App_ServiceController'); AUTHORITY=b.native_program(BUILD, 'DI_NativeArtifactAuthority'); PROVIDER=b.native_program(BUILD, 'di-native-provider'); REQUESTER=b.native_program(BUILD, 'DI_NativeRequester'); WORKER=b.native_program(BUILD, "DI_NativeOnnxAssemblyWorker", source_subdir="", installed_subdir="libexec/ndnsf-di")
 provider_a='/example/hello/provider-a' if args.replacement else '/example/hello/provider'
 provider_b='/example/hello/provider-b'
 provider_names=[provider_a]
@@ -87,9 +84,9 @@ if args.replacement and not args.replacement_no_backup:
 # metadata; the process driver must not import the native Python wrapper when
 # the selected C++ binaries are sanitizer-instrumented.
 sys.path.insert(0, str(ROOT/'tests/standalone'))
-from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor
+from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
 def dg(x): return 'sha256:'+hashlib.sha256(x.encode()).hexdigest()
-src=(ROOT/'tests/fixtures/spec175/tiny-causal-lm-v1/one-role/role-0.onnx').read_bytes(); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
+src=fixture_path('spec175/tiny-causal-lm-v1/one-role/role-0.onnx').read_bytes(); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
 stream_role='/LLM/Pipeline/Stage/0'
 stream_graph='sha256:fd13cfff524de62eb16c000c68cb9a09adcf5baa1083556acff0dc6c58228274'
 ad=adapter_descriptor('qwen-fixture','1',dg('fixture-adapter-state'),'fixture-abi-v1',('onnx',),('task',),('onnxruntime',),('float32',),dg('fixture-input-schema'),dg('fixture-options-schema'),dg('fixture-result-schema'),dg('fixture-graph-schema'),dg('fixture-split-schema'),dg('fixture-state-schema'),True,True,True)
@@ -136,25 +133,9 @@ nfd_socket=b.bounded_nfd_socket(run_root); nfdconf=run_root/'nfd.conf'; b.nfd_co
 # bootstrap identities
 bootenv=os.environ.copy(); bootenv.update({'HOME':str(run_root/'bootstrap-store/home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(run_root/'bootstrap-store/pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(run_root/'bootstrap-store/tpm'),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin'})
 extra_identities=[repo_provider]+list(consumer_ids.values()) if args.stored_model_reuse else []
-root_certificate=run_command(['/usr/local/bin/ndnsec','key-gen','-t','r','/example/hello'],
-                             env=bootenv,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout
-(run_root/'shared/root.cert').write_bytes(root_certificate)
 actor_identities=['/example/hello/controller','/example/hello/authority']+provider_names+['/example/hello/user']+extra_identities
-for ident in actor_identities:
- request=run_command(['/usr/local/bin/ndnsec','key-gen','-t','r',ident],env=bootenv,
-                     check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout
- certificate=run_command(['/usr/local/bin/ndnsec','cert-gen','-s','/example/hello',
-                         '-i','fixture','-'],input=request,env=bootenv,check=True,
-                         stdout=subprocess.PIPE,stderr=subprocess.PIPE).stdout
- run_command(['/usr/local/bin/ndnsec','cert-install','-I','-'],input=certificate,env=bootenv,
-             check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-fixture_schema=(ROOT/'examples/trust-schema.conf').read_text()
-role_pattern='<user|8=user|provider|8=provider|controller|8=controller>'
-if role_pattern not in fixture_schema:
- raise RuntimeError('example SVS signer policy changed; update fixture actor mapping')
-actor_roles=sorted({name.rsplit('/',1)[1] for name in actor_identities})
-fixture_schema=fixture_schema.replace(role_pattern,
- '<'+'|'.join(value for role in actor_roles for value in (role,'8='+role))+'>')
+root_certificate=b.provision_actor_identities(run_root,bootenv,actor_identities,runner=run_command)
+fixture_schema=b.actor_trust_schema(actor_identities)
 (run_root/'shared/trust-schema.conf').write_text(fixture_schema)
 for directory in ['authority','requester']+[name for name,_ in provider_dirs]:
  (run_root/directory/'root.cert').write_bytes(root_certificate)
@@ -201,23 +182,18 @@ recipient_public_key_files={name:'../'+data['dir']+'/public.pem' for name,data i
 ac={"schema":"ndnsf-di-native-authority-v1","run_for_ms":120000,"permission_bootstrap_ms":30000,"max_grant_ttl_ms":60000,"authority":{"identity":"/example/hello/authority","service":"/HELLO","group":"/example/hello/group","controller_identity":"/example/hello/controller","requester_identity":"/example/hello/user","protection_epoch":"epoch-1","content_key_id":"model-key","trust_schema_file":"trust-schema.conf","authority_private_key_file":"private.pem","requester_public_key_file":"../requester/public.pem","content_key_file":"content-key.bin","allowed_model_manifests":[package],"recipient_public_key_files":recipient_public_key_files,"publication_sources":{package:{"model_name":model["model_name"],"model_content_digest":model["content_digest"],"canonical_source_digest":src_digest,"artifact_profile_digest":profile}}}}
 if args.stored_model_reuse:
  ac['run_for_ms']=180000
+if args.conversation or args.stored_model_reuse:
+ ac['max_grant_ttl_ms']=CONVERSATION_RETENTION_MS
 (run_root/'authority/authority.json').write_text(json.dumps(ac))
 # requester files
 (run_root/'requester/requester-private.pem').write_bytes(reqpriv.read_bytes());(run_root/'requester/requester-private.pem').chmod(0o600); shutil.copy2(authpub,run_root/'requester/authority-public.pem'); (run_root/'requester/trust-schema.conf').write_text(fixture_schema); (run_root/'requester/model.onnx').write_bytes(src); (run_root/'requester/catalog.json').write_text(json.dumps(catalog));
 # Cert name query from the provider PIB lets the requester validate the
 # signed offer without sharing the provider's private NDN key.
-from ndn.encoding import Name,Component
 offer_entries=[]; public_key_files={}
 for index,name in enumerate(provider_names):
  data=provider_keys[name]
- with sqlite3.connect(run_root/(data['dir']+'-store')/'pib/pib.db') as db: kb=db.execute("select key_name from keys").fetchall()
- keyprefix=None
- for row in kb:
-  parts,_=Name.decode(bytes(row[0])); candidate='/'+'/'.join(Component.to_str(x.tobytes()) for x in parts)
-  if candidate.startswith(name+'/'):
-   keyprefix=candidate; break
- if keyprefix is None: raise RuntimeError('provider identity key missing: '+name)
- cert=keyprefix+'/ID-CERT'
+ cert=b.certificate_name(bootenv,name)
+ keyprefix=b.certificate_key_name(cert)
  offer_public=data['offer_public']; offer_key_id='sha256:'+hashlib.sha256(load_pem_public_key(offer_public.read_bytes(), backend=default_backend()).public_bytes(Encoding.Raw,PublicFormat.Raw)).hexdigest()
  offer_file='offer-public.pem' if len(provider_names)==1 else 'offer-%s-public.pem' % ('a' if index==0 else 'b')
  shutil.copy2(offer_public,run_root/'requester'/offer_file)
@@ -235,7 +211,7 @@ if args.conversation or args.stored_model_reuse:
  conversation_key_dir=run_root/'requester/keys'; conversation_key_dir.mkdir(mode=0o700)
  conversation_key=(conversation_key_dir/'conversation.key'); conversation_key.write_bytes(os.urandom(32)); conversation_key.chmod(0o600)
  role_map_digest=dg(json.dumps([[stream_role,'/example/hello/provider']],separators=(',',':')))
- retention=int(time.time()*1000)+120000
+ retention=int(time.time()*1000)+CONVERSATION_RETENTION_MS
  # The Provider receipt binds this field to the authenticated Selection
  # security-policy snapshot carried by the request contract.
  rc['conversation']={"schema":"ndnsf-di-native-conversation-v1","journal":{"state_root":"conversation-state","identity":"requester-a","keys":[{"id":"active","file":"keys/conversation.key"}],"quota_bytes":67108864,"test_only_allow_ephemeral_state_root":True},"owner":{"requester_identity":"/example/hello/user","service_name":"/Inference/NativeStream","security_domain_digest":dg('security')},"turn":{"conversation_id":"spec182-r11-b4-conversation","parent_context_epoch":0,"service_name":"/Inference/NativeStream","plan_role_map_digest":role_map_digest,"retention_deadline_ms":retention,"mode":"FULL_CONTEXT","generation_id":options['generationId'],"canonical_token_ids":[3],"expected_roles":[stream_role]},"checkpoint_output_file":"conversation-state.json"}
@@ -329,13 +305,13 @@ try:
   time.sleep(.05)
  run_command(['/usr/local/bin/nfdc','strategy','set','/example/hello/group','/localhost/nfd/strategy/multicast'],env=base,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  def penv(store):
-  e=dict(base);e.update({'HOME':str(store/'home'),'NDN_CLIENT_PIB':'pib-sqlite3:'+str(store/'pib'),'NDN_CLIENT_TPM':'tpm-file:'+str(store/'tpm')});return e
+  return b.actor_environment(base,store)
  ensure_identities=','.join(['/example/hello/authority']+provider_names+['/example/hello/user']+extra_identities)
  c=launch([str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--trust-schema',str(run_root/'shared/trust-schema.conf'),'--ensure-identities',ensure_identities,'--no-serve-certificates','--run-for-ms','180000' if args.stored_model_reuse else '120000'],penv(run_root/'controller-store'),'controller');children.append(c); wait_ready(c,run_root/'controller.log','ServiceController started...',30)
  if args.stored_model_reuse:
   repo_env=penv(run_root/'repo-store')
   repo_env['NDNSF_DEPLOYMENT_BOOT_ID']='spec222-owned-repo'
-  repo=launch([str(BUILD/'NDNSF-DistributedRepo/DistributedRepoServer'),
+  repo=launch([str(b.native_program(BUILD, "DistributedRepoServer", source_subdir="NDNSF-DistributedRepo")),
                '--repo-node',repo_node,'--provider-identity',repo_provider,
                '--database',str(run_root/'repo/store.sqlite'),'--repo-mode','persistent',
                '--group-prefix','/example/hello/group',
@@ -417,7 +393,7 @@ try:
  def provider_command(name):
   data=provider_keys[name]; provider_dir=run_root/data['dir']
   shutil.copy2(data['offer_private'],provider_dir/'offer-private.pem')
-  return [str(PROVIDER),'--plan',str(provider_dir/'plan.json'),'--manifest',str(provider_dir/'manifest.json'),'--service','/Inference/NativeStream','--provider',name,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(provider_dir/'trust-schema.conf'),'--roles',stream_role,'--serve','--run-for-ms','60000','--artifact-cache-dir',str(provider_dir/'cache'),'--tokenizer-json',str(ROOT/'tests/fixtures/spec175/tiny-causal-lm-v1/standalone/tokenizer.json'),'--selection-offer-key-file',str(provider_dir/'offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
+  return [str(PROVIDER),'--plan',str(provider_dir/'plan.json'),'--manifest',str(provider_dir/'manifest.json'),'--service','/Inference/NativeStream','--provider',name,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(provider_dir/'trust-schema.conf'),'--roles',stream_role,'--serve','--run-for-ms','60000','--artifact-cache-dir',str(provider_dir/'cache'),'--tokenizer-json',str(fixture_path('spec175/tiny-causal-lm-v1/standalone/tokenizer.json')),'--selection-offer-key-file',str(provider_dir/'offer-private.pem'),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
  provider_processes={}
  provider_envs={}
  for index,name in enumerate(provider_names):

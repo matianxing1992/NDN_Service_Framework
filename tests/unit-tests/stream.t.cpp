@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "../integration-tests/isolated-test-trust.hpp"
 /* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
 
@@ -46,19 +47,10 @@ toHex(const StreamContentDigest& digest)
 boost::property_tree::ptree
 readStreamFixture(const std::string& fileName)
 {
-  const std::vector<std::string> candidates = {
-    "tests/fixtures/stream-prefetch/" + fileName,
-    "../tests/fixtures/stream-prefetch/" + fileName,
-  };
-  for (const auto& path : candidates) {
-    std::ifstream input(path);
-    if (input.good()) {
-      boost::property_tree::ptree fixture;
-      boost::property_tree::read_json(input, fixture);
-      return fixture;
-    }
-  }
-  throw std::runtime_error("cannot locate stream-prefetch fixture " + fileName);
+  boost::property_tree::ptree root;
+  boost::property_tree::read_json(ndnsf::test::testFixturePath(
+    std::filesystem::path("stream-prefetch") / fileName).string(), root);
+  return root;
 }
 
 const boost::property_tree::ptree&

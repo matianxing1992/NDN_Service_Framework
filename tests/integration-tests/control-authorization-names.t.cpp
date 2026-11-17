@@ -1,3 +1,5 @@
+#include "tests/fixtures/test-resource-paths.hpp"
+#include "tests/fixtures/fixed-keychain-trust.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "isolated-test-trust.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
@@ -7,7 +9,7 @@
 #include "ndn-service-framework/CertificateBootstrap.hpp"
 #include "ndn-service-framework/ServiceController.hpp"
 #include "ndn-service-framework/ProducerSignerPolicy.hpp"
-#include "NativeGrantVerifier.hpp"
+#include "tests/fixtures/naming-wire-oracle.hpp"
 
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
@@ -169,7 +171,7 @@ struct InvocationNamesOracle {
 namespace {
 using namespace ndn_service_framework;
 using namespace ndn_service_framework::test;
-using Bytes = std::vector<uint8_t>;
+using namespace ndn_service_framework::test::naming_oracle;
 
 // Keep hierarchical authorization identical in both ndn-cxx URI profiles.
 constexpr const char* HIERARCHICAL_TEST_RULE = R"SCHEMA(
@@ -193,46 +195,6 @@ rule {
 }
 )SCHEMA";
 
-Bytes wire(const ndn::Name& name)
-{
-  const auto& value = name.wireEncode();
-  return Bytes(value.data(), value.data() + value.size());
-}
-Bytes utf8(const std::string& value) { return Bytes(value.begin(), value.end()); }
-Bytes uint64(uint64_t value)
-{
-  Bytes output;
-  for (int shift = 56; shift >= 0; shift -= 8) output.push_back(value >> shift);
-  return output;
-}
-ndn::name::Component rawHash(const Bytes& value)
-{
-  std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{};
-  SHA256(value.data(), value.size(), digest.data());
-  return ndn::name::Component(ndn::span<const uint8_t>(digest.data(), digest.size()));
-}
-// Independent C01 transcript; no production naming codec constructs expected Names.
-ndn::name::Component commitment(const std::string& domain,
-                               const std::vector<NamingDigestField>& fields)
-{
-  Bytes value;
-  const auto integer = [&](uint64_t number, size_t width) {
-    for (size_t i = width; i > 0; --i) value.push_back(number >> (8 * (i - 1)));
-  };
-  integer(domain.size(), 2); value.insert(value.end(), domain.begin(), domain.end());
-  integer(2, 2); integer(fields.size(), 2);
-  for (const auto& field : fields) {
-    integer(field.tag, 2); value.push_back(field.kind); integer(field.value.size(), 8);
-    value.insert(value.end(), field.value.begin(), field.value.end());
-  }
-  return rawHash(value);
-}
-ndn::name::Component repeatedDigest(uint8_t byte)
-{
-  const Bytes value(32, byte);
-  return ndn::name::Component(ndn::span<const uint8_t>(value.data(), value.size()));
-}
-std::string digestText(char character) { return "sha256:" + std::string(64, character); }
 void pump(boost::asio::io_context& io, const std::function<bool()>& finished,
           std::chrono::seconds budget = std::chrono::seconds(3))
 {
@@ -344,30 +306,22 @@ BOOST_AUTO_TEST_CASE(UnconfiguredStatusRepliesRequireExactPreparedOwnerAndSigner
       std::filesystem::remove(path.string() + ".lock", ignored);
     }
   } state;
-  ndn::KeyChain keys;
   // Reserved labels inside the Producer prefix must retain their boundary.
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   const auto issuer = makeRsaIdentity(keys, ndn::Name("/spec201/query-owner/NDNSF/RPC/controller"));
   const auto foreign = makeRsaIdentity(keys, ndn::Name("/spec201/query-owner/foreign"));
   const auto userCert = makeRsaIdentity(keys, ndn::Name("/spec201/query-owner/user"));
   const auto providerCert = makeRsaIdentity(keys, ndn::Name("/spec201/query-owner/provider"));
-  ndn::io::save(issuer, "spec201-query-owner-controller.cert");
-  ndn::io::save(foreign, "spec201-query-owner-foreign.cert");
-  {
-    std::ofstream schema("spec201-query-owner.conf");
-    schema << "rule { id status for data checker { type customized sig-type rsa-sha256 "
-              "key-locator { type name regex ^<>*$ } } }\n"
-              "trust-anchor { type file file-name spec201-query-owner-controller.cert }\n"
-              "trust-anchor { type file file-name spec201-query-owner-foreign.cert }\n";
-  }
+  IsolatedTestTrust statusTrust({issuer, foreign});
   ndn::DummyClientFace face(keys);
   ndn::ValidatorConfig validator(face);
-  ServiceController controller(face, issuer, validator, "examples/hello.policies");
+  ServiceController controller(face, issuer, validator, ndnsf::test::testFixturePath("controller-policies.conf").string());
   const ndn::Name service("/HELLO"), producer = issuer.getIdentity();
   const auto status = controller.getPolicyStatus(service);
   ServiceUser user(ServiceUser::LocalMockTag{}, face, ndn::Name("/spec201/query-owner"),
-                   userCert, issuer, "spec201-query-owner.conf");
+                   userCert, issuer, statusTrust.schemaPath());
   ServiceProvider provider(ServiceProvider::LocalMockTag{}, face, ndn::Name("/spec201/query-owner"),
-                           providerCert, issuer, "spec201-query-owner.conf");
+                           providerCert, issuer, statusTrust.schemaPath());
   const auto packet = [&](const ndn::Interest& query, const ndn::security::Certificate& signer) {
     ndn::Data data(query.getName());
     data.setContent(status.wireEncode());
@@ -489,7 +443,7 @@ BOOST_AUTO_TEST_CASE(UnconfiguredStatusRepliesRequireExactPreparedOwnerAndSigner
     // Real MessageValidator posts validation on the Face and returns first.
     // Change authority before delivering that queued validation work.
     InvocationNamesOracle::bindConfiguredValidator(runtime, face,
-      ndn::Name("/spec201/query-owner"), "spec201-query-owner.conf");
+      ndn::Name("/spec201/query-owner"), statusTrust.schemaPath());
     const auto delayed = InvocationNamesOracle::policyStatusQuery(runtime, producer, service);
     BOOST_REQUIRE(delayed);
     auto later = highest;
@@ -625,27 +579,9 @@ BOOST_AUTO_TEST_CASE(AuthorityReadinessRpcBindsOriginalChallengeAndFinalParamete
   changed.setName(query.getName()); BOOST_CHECK(!parseControlRpcName(changed, actor, "AA-READY"));
 }
 
-BOOST_AUTO_TEST_CASE(GrantAndDeploymentMatchIndependentPaperComponentWire)
+BOOST_AUTO_TEST_CASE(DeploymentRecordsMatchIndependentPaperComponentWire)
 {
-  const ndn::Name producer("/org/NDNSF/GRANT/user"), recipient("/org/KEY/provider");
-  const ndn::Name request = ndn::Name("/request/tail").appendVersion(257).appendSegment(0);
-  const Bytes plan(32, 0xaa), model(32, 0xbb);
-  auto expected = producer;
-  expected.append("NDNSF").append("GRANT").append(ndn::name::Component("kind=KEY-GRANT"))
-    .append("RECIPIENT").append(commitment("ndnsf-naming/opaque/recipient", {{1, 4, wire(recipient)}}))
-    .append("SCOPE").append("MODEL")
-    .append(commitment("ndnsf-naming/grant-scope", {
-      {1, 1, wire(producer)}, {2, 1, wire(request)}, {3, 3, uint64(7)},
-      {4, 4, plan}, {5, 4, model}}))
-    .append("EPOCH").append(commitment("ndnsf-naming/opaque/protection-epoch", {{1, 4, utf8("epoch/typed=1")}}))
-    .append("OBJECT").append(repeatedDigest(0xcc));
-  const ndn::Name actual(ndnsf::di::canonicalNativeGrantName(
-      producer.toUri(ndn::name::UriFormat::CANONICAL), recipient.toUri(), request.toUri(),
-      7, digestText('a'), digestText('b'), "epoch/typed=1", digestText('c')));
-  BOOST_CHECK(actual.wireEncode() == expected.wireEncode());
-  BOOST_CHECK(ndn::Name(ndnsf::di::canonicalNativeGrantName(producer.toUri(ndn::name::UriFormat::ALTERNATE),
-      recipient.toUri(), request.toUri(), 7, digestText('a'), digestText('b'),
-      "epoch/typed=1", digestText('c'))) == actual);
+  const ndn::Name producer("/org/NDNSF/GRANT/user");
   const ndn::Name application("/app/NDNSF/DEPLOYMENT/demo");
   auto definition = producer;
   definition.append("NDNSF").append("DEPLOYMENT")
@@ -698,9 +634,10 @@ BOOST_AUTO_TEST_CASE(PrefixOnlyControllerBootstrapCannotAdmitForgedData)
     keys.addCertificate(key, issued); keys.setDefaultCertificate(key, issued);
     BOOST_REQUIRE(ndn::security::verifySignature(issued, rootIdentity.getDefaultKey()));
   }
-  ndn::io::save(rootIdentity.getDefaultKey().getDefaultCertificate(), "spec201-control-root.cert");
-  const auto schema = std::getenv("SPEC201_CONTROL_SCHEMA");
-  BOOST_REQUIRE_MESSAGE(schema != nullptr, "actual generated anchored schema is required");
+  IsolatedTestTrust trust;
+  const auto schema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(
+    std::filesystem::path(trust.schemaPath()).parent_path(),
+    {rootIdentity.getDefaultKey().getDefaultCertificate()});
   boost::asio::io_context io;
   ndn::DummyClientFace face(io, keys);
   auto validator = std::make_shared<MessageValidator>(schema, std::nullopt, &face);
@@ -765,8 +702,6 @@ BOOST_AUTO_TEST_CASE(PrefixOnlyControllerBootstrapCannotAdmitForgedData)
 
 BOOST_AUTO_TEST_CASE(AsyncValidatorOwnerSurvivesCallerReleaseAndTerminates)
 {
-  const auto schema = std::getenv("SPEC201_CONTROL_SCHEMA");
-  BOOST_REQUIRE(schema != nullptr);
   for (bool configured : {false, true}) {
     for (unsigned mode : {0U, 1U, 2U, 3U, 4U}) {
       // The configured path additionally observes the installed 4x4s retry
@@ -780,7 +715,10 @@ BOOST_AUTO_TEST_CASE(AsyncValidatorOwnerSurvivesCallerReleaseAndTerminates)
       const auto actorKey = keys.createIdentity(actor, ndn::RsaKeyParams(2048)).getDefaultKey();
       const auto certificate = keys.makeCertificate(actorKey, ndn::security::signingByIdentity(root));
       keys.addCertificate(actorKey, certificate); keys.setDefaultCertificate(actorKey, certificate);
-      ndn::io::save(rootIdentity.getDefaultKey().getDefaultCertificate(), "spec201-control-root.cert");
+      IsolatedTestTrust trust;
+      const auto schema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(
+        std::filesystem::path(trust.schemaPath()).parent_path(),
+        {rootIdentity.getDefaultKey().getDefaultCertificate()});
       boost::asio::io_context io;
       ndn::DummyClientFace face(io, keys);
       const auto parameters = ndn::makeStringBlock(ndn::tlv::Content, "owner-lifetime");
@@ -853,15 +791,16 @@ BOOST_AUTO_TEST_CASE(AsyncValidatorOwnerSurvivesCallerReleaseAndTerminates)
 
 BOOST_AUTO_TEST_CASE(StackValidatorRejectsEscapingCertificateValidation)
 {
-  const auto schema = std::getenv("SPEC201_CONTROL_SCHEMA");
-  BOOST_REQUIRE(schema != nullptr);
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   const ndn::Name root("/spec201/control"), actor("/spec201/control/stack-owner");
   const auto rootIdentity = keys.createIdentity(root, ndn::RsaKeyParams(2048));
   const auto key = keys.createIdentity(actor, ndn::RsaKeyParams(2048)).getDefaultKey();
   const auto certificate = keys.makeCertificate(key, ndn::security::signingByIdentity(root));
   keys.addCertificate(key, certificate); keys.setDefaultCertificate(key, certificate);
-  ndn::io::save(rootIdentity.getDefaultKey().getDefaultCertificate(), "spec201-control-root.cert");
+  IsolatedTestTrust trust;
+  const auto schema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(
+    std::filesystem::path(trust.schemaPath()).parent_path(),
+    {rootIdentity.getDefaultKey().getDefaultCertificate()});
   boost::asio::io_context io; ndn::DummyClientFace face(io, keys);
   MessageValidator validator(schema, std::nullopt, &face);
   ndn::Data packet(ndn::Name(actor).append("NDNSF").append("POLICY-MANIFEST"));
@@ -875,34 +814,6 @@ BOOST_AUTO_TEST_CASE(StackValidatorRejectsEscapingCertificateValidation)
   validator.validate(packet, success, failure);
   BOOST_CHECK_EQUAL(successes, 0U); BOOST_CHECK_EQUAL(failures, 2U);
   BOOST_CHECK_EQUAL(face.getNPendingInterests(), 0U);
-}
-
-BOOST_AUTO_TEST_CASE(ActualUserGrantPublisherKeepsOriginalWireAndRejectsConflict)
-{
-  IsolatedTestTrust trustOwner;
-  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
-  ndn::DummyClientFace face(keys);
-  const auto owner = trustOwner.createTestIdentityCertificate(
-      keys, ndn::Name("/spec201/owner/NDNSF/GRANT"));
-  const auto authority = trustOwner.createTestIdentityCertificate(keys, ndn::Name("/spec201/authority"));
-  LocalServiceUser user(face, ndn::Name("/spec201/group"), owner, authority,
-                        trustOwner.schemaPath());
-  user.useSigningKeyChainForTest(keys);
-  const ndn::Name name(ndnsf::di::canonicalNativeGrantName(owner.getIdentity().toUri(), "/recipient", "/request", 1,
-       digestText('a'), digestText('b'), "epoch", digestText('c')));
-  ndn::Buffer payload(5); std::fill(payload.begin(), payload.end(), 0x71);
-  user.publishSignedAppData(name, payload, ndn::time::milliseconds(1000));
-  face.processEvents(ndn::time::milliseconds(1));
-  BOOST_REQUIRE(!face.sentData.empty());
-  const auto original = face.sentData.back().wireEncode();
-  user.publishSignedAppData(name, payload, ndn::time::milliseconds(1000));
-  face.processEvents(ndn::time::milliseconds(1));
-  BOOST_CHECK(face.sentData.back().wireEncode() == original);
-  payload[0] ^= 1;
-  BOOST_CHECK_THROW(user.publishSignedAppData(name, payload, ndn::time::milliseconds(1000)), std::invalid_argument);
-  BOOST_CHECK(face.sentData.back().wireEncode() == original);
-  BOOST_CHECK_THROW(user.publishSignedAppData(ndn::Name("/foreign/NDNSF/GRANT/object"), payload,
-                                            ndn::time::milliseconds(1000)), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(ActualSelectionStatusQueryPreservesOriginalAndRefreshesCurrentState)
@@ -923,9 +834,10 @@ BOOST_AUTO_TEST_CASE(ActualSelectionStatusQueryPreservesOriginalAndRefreshesCurr
   const auto requester = issue(ndn::Name("/spec201/control/status/user"));
   const auto aa = issue(ndn::Name("/spec201/control/status/authority"));
   const auto foreign = issue(ndn::Name("/spec201/control/status/foreign"));
-  ndn::io::save(rootIdentity.getDefaultKey().getDefaultCertificate(), "spec201-control-root.cert");
-  const auto schema = std::getenv("SPEC201_CONTROL_SCHEMA");
-  BOOST_REQUIRE_MESSAGE(schema != nullptr, "actual generated anchored schema is required");
+  IsolatedTestTrust trust;
+  const auto schema = ndnsf_distributed_repo::tests::writeFixedKeychainTrust(
+    std::filesystem::path(trust.schemaPath()).parent_path(),
+    {rootIdentity.getDefaultKey().getDefaultCertificate()});
   const ndn::Name service("/service/NDNSF/REQUEST/tail");
   const std::string digest = "selection-digest/full";
   LocalServiceProvider provider(providerFace, ndn::Name("/spec201/status/group"), actor, aa,

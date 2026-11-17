@@ -8896,24 +8896,21 @@ namespace ndn_service_framework
                                   {"serviceName", serviceName.toUri()},
                                   {"status", decision.status ? "true" : "false"}});
 
-                // Same rule as the request completion: the ACK completion runs on the Face
-                // event loop and may outlive this call, so it holds the owner token and the
-                // destructor waits for it.
-                if (auto* ackOwner = m_registrationControl->acquireOwner()) {
+                // Queued callbacks acquire ownership only when dispatched by the Face.
+                {
                     auto ackControl = m_registrationControl;
-                    // The token is held by the closure itself, so it is released when the closure is
-                    // destroyed - whether its body ran, threw, or the executor dropped it.
-                    std::shared_ptr<void> ackToken(nullptr,
-                        [ackControl](void*) { ackControl->releaseOwner(); });
                     boost::asio::post(m_face.getIoContext(),
-                        [ackOwner,
-                         ackToken,
+                        [ackControl,
                          requesterIdentity,
                          serviceName,
                          requestId,
                          requestMessage,
                          decision = std::move(decision),
                          registrationState]() mutable {
+                            auto* ackOwner = ackControl->acquireOwner();
+                            if (ackOwner == nullptr) return;
+                            std::shared_ptr<void> ackToken(nullptr,
+                                [ackControl](void*) { ackControl->releaseOwner(); });
                             ackOwner->finishAckDecisionOnEventLoop(
                                 requesterIdentity,
                                 serviceName,
@@ -9873,8 +9870,7 @@ namespace ndn_service_framework
                             struct EntryRelease
                             {
                                 std::shared_ptr<RegistrationControl> control;
-                                bool armed = true;
-                                ~EntryRelease() { if (armed) control->releaseOwner(); }
+                                ~EntryRelease() { control->releaseOwner(); }
                             } entryRelease{control};
                             const auto completion = publisher->finish(
                                 payload, reason, std::chrono::steady_clock::now() +
@@ -9886,17 +9882,14 @@ namespace ndn_service_framework
                             response.setPayload(finalPayload, finalPayload.size());
                             response.setStreamCompletion(*completion);
                             {
-                                std::shared_ptr<void> finishToken(nullptr,
-                                    [control](void*) { control->releaseOwner(); });
-                                // Hand the single lease to the posted closure first. If
-                                // post() throws, destroying finishToken releases it exactly
-                                // once; arming after the post would release twice.
-                                entryRelease.armed = false;
                                 boost::asio::post(*io,
-                                    [owner, finishToken, control, requesterName, providerName,
+                                    [control, requesterName, providerName,
                                      serviceName, requestId, requestMessage,
                                      response = std::move(response),
                                      selectionDigest, registrationState]() mutable {
+                                        auto* owner = control->acquireOwner();
+                                        if (owner == nullptr) return;
+                                        EntryRelease callbackLease{control};
                                         owner->finishRequestExecutionOnEventLoop(
                                             requesterName, providerName, serviceName,
                                             requestId, requestMessage, std::move(response),
@@ -9914,18 +9907,17 @@ namespace ndn_service_framework
                             struct EntryRelease
                             {
                                 std::shared_ptr<RegistrationControl> control;
-                                bool armed = true;
-                                ~EntryRelease() { if (armed) control->releaseOwner(); }
+                                ~EntryRelease() { control->releaseOwner(); }
                             } entryRelease{control};
                             publisher->fail(message);
                             {
-                                std::shared_ptr<void> failureToken(nullptr,
-                                    [control](void*) { control->releaseOwner(); });
-                                entryRelease.armed = false;
                                 boost::asio::post(*io,
-                                    [owner, failureToken, control, requesterName, providerName,
+                                    [control, requesterName, providerName,
                                      serviceName, requestId, requestMessage, message,
                                      selectionDigest]() mutable {
+                                        auto* owner = control->acquireOwner();
+                                        if (owner == nullptr) return;
+                                        EntryRelease callbackLease{control};
                                         owner->publishExecutionFailureOnEventLoop(
                                             requesterName, providerName, serviceName, requestId,
                                             requestMessage, message, selectionDigest);
@@ -9979,20 +9971,11 @@ namespace ndn_service_framework
                     response = makeErrorResponse("Request handler failed");
                 }
 
-                // The completion runs on the Face event loop, which may outlive this call by
-                // the whole queue depth. Hold the owner token across the post so the destructor
-                // waits for it instead of destroying the provider under a running lambda.
-                if (auto* completionOwner = m_registrationControl->acquireOwner()) {
+                // Never retain an active owner call while waiting in the Face queue.
+                {
                     auto completionControl = m_registrationControl;
-                    // The queued closure owns the single lease; if posting throws or the
-                    // queue is discarded without running, the token still returns the
-                    // owner count so the destructor cannot wait forever.
-                    std::shared_ptr<void> ownerLease(nullptr,
-                        [completionControl](void*) { completionControl->releaseOwner(); });
                     boost::asio::post(m_face.getIoContext(),
-                        [completionOwner,
-                         completionControl,
-                         ownerLease,
+                        [completionControl,
                          requesterName,
                          providerName,
                          serviceName,
@@ -10001,6 +9984,10 @@ namespace ndn_service_framework
                          selectionDigest,
                          response = std::move(response),
                          registrationState]() mutable {
+                            auto* completionOwner = completionControl->acquireOwner();
+                            if (completionOwner == nullptr) return;
+                            std::shared_ptr<void> ownerLease(nullptr,
+                                [completionControl](void*) { completionControl->releaseOwner(); });
                             completionOwner->finishRequestExecutionOnEventLoop(
                                 requesterName,
                                 providerName,
@@ -10051,17 +10038,20 @@ namespace ndn_service_framework
                 selectionDigest);
             return true;
         }
+        bool registrationChanged = false;
         if (registrationState) {
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
             const auto boundIt = m_collaborationRegistrationStates.find(requestId);
-            if (boundIt != m_collaborationRegistrationStates.end() &&
-                boundIt->second != registrationState) {
-                publishExecutionFailureOnEventLoop(requesterName, providerName, serviceName,
-                    requestId, requestMessage,
-                    "collaboration registration generation changed before execution",
-                    selectionDigest);
-                return true;
-            }
+            registrationChanged = boundIt != m_collaborationRegistrationStates.end() &&
+                                  boundIt->second != registrationState;
+        }
+        if (registrationChanged) {
+            // Failure completion releases subscriptions under the collaboration mutex.
+            publishExecutionFailureOnEventLoop(requesterName, providerName, serviceName,
+                requestId, requestMessage,
+                "collaboration registration generation changed before execution",
+                selectionDigest);
+            return true;
         }
 
         const auto handler = service->second.handler;
@@ -10288,21 +10278,21 @@ namespace ndn_service_framework
                         if (stopping->load()) return;
                         if (!current()) {
                             if (stopping->load()) return;
-                            // This lambda runs on a worker thread; the posted failure can land after
-                            // the provider's destructor begins, so it holds the owner token.
-                            auto* failureOwner = m_registrationControl->acquireOwner();
-                            if (failureOwner != nullptr) {
-                                auto failureControl = m_registrationControl;
-                                const auto failureIdentity = identity;
-                                std::shared_ptr<void> failureToken(nullptr,
-                                    [failureControl](void*) {
-                                        failureControl->releaseOwner();
-                                    });
-                                boost::asio::post(m_face.getIoContext(),
-                                [failureOwner, failureToken, failureControl, stopping,
+                            // Acquire only when the Face executes the callback: a queued token
+                            // would deadlock destruction on that same Face thread.
+                            auto failureControl = m_registrationControl;
+                            const auto failureIdentity = identity;
+                            boost::asio::post(m_face.getIoContext(),
+                                [failureControl, stopping,
                                  requesterName, serviceName, requestId, requestMessage,
                                  selectionDigest, failureIdentity] {
                                     if (stopping->load()) return;
+                                    auto* failureOwner = failureControl->acquireOwner();
+                                    if (failureOwner == nullptr) return;
+                                    std::shared_ptr<void> failureToken(nullptr,
+                                        [failureControl](void*) {
+                                            failureControl->releaseOwner();
+                                        });
                                     failureOwner->publishExecutionFailureOnEventLoop(
                                         requesterName, failureIdentity, serviceName, requestId,
                                         requestMessage,
@@ -10312,7 +10302,6 @@ namespace ndn_service_framework
                                             : "collaboration execution authority or deadline expired",
                                         selectionDigest);
                                 });
-                            }
                             return;
                         }
                         const bool traceAssignmentFetch =
@@ -20506,16 +20495,23 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             });
         });
         lock.lock();
-        const bool cleaned = cv->wait_for(lock,
-            std::chrono::milliseconds(std::min(interestLifetimeMs, 1000)),
-            [owner] { return owner->cleanupDone; });
-        lock.unlock();
-        if (!cleaned) {
-            result.errorMessage = "large-data Face cleanup acknowledgment timed out";
-            return result;
+        const auto cleanupDeadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(std::min(interestLifetimeMs, 1000));
+        while (!owner->cleanupDone && !stopping->load() &&
+               std::chrono::steady_clock::now() < cleanupDeadline) {
+            cv->wait_until(lock, std::min(cleanupDeadline,
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(20)));
         }
+        const bool cleaned = owner->cleanupDone;
+        lock.unlock();
+        // Destruction joins this worker on the Face thread. Its already-posted cleanup owns
+        // only shared fetch state, so cancellation must not wait for that same thread to run it.
         if (stopping->load()) {
             result.errorMessage = "provider is stopping";
+            return result;
+        }
+        if (!cleaned) {
+            result.errorMessage = "large-data Face cleanup acknowledgment timed out";
             return result;
         }
         if (!completed->load()) {

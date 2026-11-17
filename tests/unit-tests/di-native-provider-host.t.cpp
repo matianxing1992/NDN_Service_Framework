@@ -100,10 +100,9 @@ makeCountingRequestHandler(std::atomic<int>& executions)
     });
 }
 
-// 真实 accept：把请求投到 provider 的解密完成入口。LocalMock 默认
-// handler pool 为 0，decode 与 accept commit 同步完成；启用 worker 的
-// 编排必须先 drain handler pool 再泵 io（commit 经 io post 落 Face
-// 线程），此处只保证同步面可观察。
+// Enter through the actual decrypted-request boundary. ACK admission commits are posted to
+// the Face even with a zero-sized handler pool; observing pending fixture data is insufficient.
+// Callers that need completed admission must pump the Face and observe the real binding.
 void
 injectRequest(ServiceProvider& provider,
               const ndn::Name& requesterName,
@@ -134,6 +133,16 @@ class RegistrationCollabProvider : public LocalServiceProvider
 {
 public:
   using LocalServiceProvider::LocalServiceProvider;
+
+  bool hasAcceptedRegistrationForTest(const ndn::Name& requester,
+                                      const ndn::Name& service,
+                                      const ndn::Name& request)
+  {
+    const auto key = ndn::Name(requester).append(service).append(request);
+    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+    const auto found = m_pendingRegistrationStates.find(key);
+    return found != m_pendingRegistrationStates.end() && found->second != nullptr;
+  }
 
   // 排队一个哨兵任务；等它执行完即此前 post 到 handler pool 的任务
   // （例如异步 decode + accept commit）都已同步完成。
@@ -170,6 +179,17 @@ public:
   }
 };
 
+void
+waitForRegistrationAcceptance(RegistrationCollabProvider& provider, ndn::DummyClientFace& face,
+                              const ndn::Name& requester, const ndn::Name& service,
+                              const ndn::Name& request)
+{
+  BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
+    return provider.hasAcceptedRegistrationForTest(requester, service, request);
+  }, std::chrono::seconds(2)));
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec182Registration)
@@ -191,8 +211,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCloseBeforeAckFinish)
   LocalServiceProvider provider(face,
                                 ndn::Name("/spec182/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -221,8 +240,10 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCloseBeforeAckFinish)
   injectRequest(provider, requesterName, serviceName, requestId, requestWire);
 
   // ack worker 已进入 handler（决策途中）-> close 先于 commit。
-  BOOST_REQUIRE(waitUntil([&] { return ackHandlerCalls.load() == 1; },
-                          std::chrono::seconds(5)));
+  BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
+    return ackHandlerCalls.load() == 1;
+  }, std::chrono::seconds(5)));
   handle.close();
   BOOST_CHECK(handle.closed());
   // close() 消耗 handle（RAII 释放语义）；注册代次已随 entry 关闭。
@@ -249,8 +270,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckCarriesOuterIdentityAndCancelsOnRegistration
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack"));
   RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
-                                      providerCert, aaCert,
-                                      "examples/trust-any.conf");
+                                      providerCert, aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));
@@ -274,6 +294,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckCarriesOuterIdentityAndCancelsOnRegistration
   injectRequest(provider, requesterName, serviceName, requestId,
                 makeRequestWire("spec194-async-ack"));
   BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
     std::lock_guard<std::mutex> lock(completionMutex);
     return observedContext.has_value() && static_cast<bool>(retainedCompletion);
   }, std::chrono::seconds(2)));
@@ -316,8 +337,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckDeadlineCompletesAndCancelsRetainedHandler)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack-deadline"));
   RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
-                                      providerCert, aaCert,
-                                      "examples/trust-any.conf");
+                                      providerCert, aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));
@@ -341,6 +361,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckDeadlineCompletesAndCancelsRetainedHandler)
   injectRequest(provider, requesterName, serviceName, requestId,
                 makeRequestWire("spec194-async-ack-deadline"));
   BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
     std::lock_guard<std::mutex> lock(completionMutex);
     return observedContext.has_value() && static_cast<bool>(retainedCompletion);
   }, std::chrono::seconds(2)));
@@ -382,8 +403,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckCompletionAfterProviderDestructionIsSafe)
   ServiceProvider::AsyncAckCompletion retainedCompletion;
   {
     RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
-                                        providerCert, aaCert,
-                                        "examples/trust-any.conf");
+                                        providerCert, aaCert);
     provider.applyPermissionResponse(
       makePermissionResponse(providerName, tlv::ProviderPermission,
                              providerName, serviceName));
@@ -406,6 +426,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckCompletionAfterProviderDestructionIsSafe)
     injectRequest(provider, requesterName, serviceName, requestId,
                   makeRequestWire("spec194-async-ack-destroyed"));
     BOOST_REQUIRE(waitUntil([&] {
+      pumpFace(face, ndn::time::milliseconds(1));
       std::lock_guard<std::mutex> lock(completionMutex);
       return handlerEntered && static_cast<bool>(retainedCompletion);
     }, std::chrono::seconds(2)));
@@ -432,8 +453,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckLateSuccessAfterFaceDeadlineIsNegative)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec194/aa-async-ack-late"));
   RegistrationCollabProvider provider(face, ndn::Name("/spec194/group"),
-                                      providerCert, aaCert,
-                                      "examples/trust-any.conf");
+                                      providerCert, aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));
@@ -468,6 +488,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckLateSuccessAfterFaceDeadlineIsNegative)
   injectRequest(provider, requesterName, serviceName, requestId,
                 makeRequestWire("spec194-async-ack-late"));
   BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
     std::lock_guard<std::mutex> lock(completionMutex);
     return observedContext.has_value() && static_cast<bool>(retainedCompletion);
   }, std::chrono::seconds(2)));
@@ -504,8 +525,7 @@ BOOST_AUTO_TEST_CASE(Spec194AsyncAckLocalPublicationCanDestroyProvider)
   auto aaCert = makeRsaIdentity(
     keyChain, ndn::Name("/spec194/aa-async-ack-local-destroy"));
   auto provider = std::make_unique<RegistrationCollabProvider>(
-    face, ndn::Name("/spec194/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec194/group"), providerCert, aaCert);
   provider->applyPermissionResponse(
     makePermissionResponse(providerName, tlv::ProviderPermission,
                            providerName, serviceName));
@@ -556,8 +576,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationOldSelectionAfterReregister)
   RegistrationCollabProvider provider(face,
                                       ndn::Name("/spec182/group"),
                                       providerCert,
-                                      aaCert,
-                                      "examples/trust-any.conf");
+                                      aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -636,11 +655,10 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationInlineDispatchFence)
   const ndn::Name newRequestId("/request/successor-inline");
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-inline-fence"));
-  LocalServiceProvider provider(face,
+  RegistrationCollabProvider provider(face,
                                 ndn::Name("/spec182/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -655,14 +673,15 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationInlineDispatchFence)
     makeCountingRequestHandler(executionsGen1),
     ServiceProvider::ServiceMode::Normal);
 
-  // 真实 accept R1（inline：LocalMock 全链同步）。R2 必须用独立 user
-  // token 的 wire，否则 request replay hash 拒绝 R2。
+  // Wait for the posted ACK commit before replacing the registration. Give R2 a distinct
+  // user token so the request replay filter does not reject the independent acceptance.
   const auto [request1, requestWire1] =
     makeAuthenticatedRequestWire("payload-old-generation-inline",
                                  "spec182-user-token-old-inline");
   provider.addPendingRequestForTokenTest(
     requesterName, serviceName, oldRequestId, request1, "provider-token-old");
   injectRequest(provider, requesterName, serviceName, oldRequestId, requestWire1);
+  waitForRegistrationAcceptance(provider, face, requesterName, serviceName, oldRequestId);
   BOOST_REQUIRE(provider.hasPendingRequestForTokenTest(
     requesterName, serviceName, oldRequestId));
 
@@ -694,6 +713,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationInlineDispatchFence)
   provider.addPendingRequestForTokenTest(
     requesterName, serviceName, newRequestId, request2, "provider-token-new");
   injectRequest(provider, requesterName, serviceName, newRequestId, requestWire2);
+  waitForRegistrationAcceptance(provider, face, requesterName, serviceName, newRequestId);
   BOOST_REQUIRE(provider.hasPendingRequestForTokenTest(
     requesterName, serviceName, newRequestId));
   const auto newSelection = makeSelectionBuffer(newRequestId, "provider-token-new");
@@ -719,8 +739,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationSiblingAfterPendingCleanup)
   RegistrationCollabProvider provider(face,
                                       ndn::Name("/spec182/group"),
                                       providerCert,
-                                      aaCert,
-                                      "examples/trust-any.conf");
+                                      aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -803,8 +822,7 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCloseAfterProviderDestruction)
       face,
       ndn::Name("/spec182/group"),
       providerCert,
-      aaCert,
-      "examples/trust-any.conf");
+      aaCert);
     std::atomic<int> executions{0};
     handle = provider->addScopedService(
       serviceName,
@@ -847,11 +865,10 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCleanupDoesNotEraseSuccessor)
   const ndn::Name secondRequestId("/request/successor");
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-cleanup-successor"));
-  LocalServiceProvider provider(face,
+  RegistrationCollabProvider provider(face,
                                 ndn::Name("/spec182/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -876,11 +893,13 @@ BOOST_AUTO_TEST_CASE(Spec182RegistrationCleanupDoesNotEraseSuccessor)
   provider.addPendingRequestForTokenTest(
     requesterName, serviceName, firstRequestId, request1, "provider-token-first");
   injectRequest(provider, requesterName, serviceName, firstRequestId, requestWire1);
+  waitForRegistrationAcceptance(provider, face, requesterName, serviceName, firstRequestId);
   BOOST_REQUIRE(provider.hasPendingRequestForTokenTest(
     requesterName, serviceName, firstRequestId));
   provider.addPendingRequestForTokenTest(
     requesterName, serviceName, secondRequestId, request2, "provider-token-second");
   injectRequest(provider, requesterName, serviceName, secondRequestId, requestWire2);
+  waitForRegistrationAcceptance(provider, face, requesterName, serviceName, secondRequestId);
   BOOST_REQUIRE(provider.hasPendingRequestForTokenTest(
     requesterName, serviceName, secondRequestId));
 
@@ -1370,8 +1389,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostDualTargetSharedHostFencesDuplicate)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-dual"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
 
   auto host = std::make_shared<NativeInferenceProvider>(
     provider, std::make_shared<NativeAdapterRegistry>());
@@ -1405,8 +1423,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostFirstServeFailureRollsBackHost)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-rollback"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   auto host = std::make_shared<NativeInferenceProvider>(
     provider, std::make_shared<NativeAdapterRegistry>());
   auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
@@ -1434,8 +1451,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostRejectsUnboundIdentityBeforeHostCreation
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-identity"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   auto host = std::make_shared<NativeInferenceProvider>(
     provider, std::make_shared<NativeAdapterRegistry>());
   auto service = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
@@ -1468,8 +1484,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostHostConfigConsistencyFences)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-config"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   auto host = std::make_shared<NativeInferenceProvider>(
     provider, std::make_shared<NativeAdapterRegistry>());
   auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
@@ -1506,8 +1521,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostCloseAllowsSameNameReServe)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-reserve"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   auto host = std::make_shared<NativeInferenceProvider>(
     provider, std::make_shared<NativeAdapterRegistry>());
   auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
@@ -1542,8 +1556,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostStopClosesAllAndFencesServe)
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-stop"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   auto host = std::make_shared<NativeInferenceProvider>(
     provider, std::make_shared<NativeAdapterRegistry>());
   auto serviceA = makeHostService(HOST_SERVICE_A, makeAcceptingAckHandler());
@@ -1577,12 +1590,8 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostStopClosesAllAndFencesServe)
   BOOST_CHECK_NO_THROW(regB.close());
 }
 
-// close 后晚到 request/ack 的真实 Core 边界（host 注册面冻结）：
-// scoped close 的 fence 位于 dispatch/execution 层而非 decrypt->ack 决策
-// 层——closed 后到达的新 request 仍经过 host-installed 注册的 ack 决策
-// 并建立 pending（pending 保留到 cleanup 边界，同 Spec182Registration
-// selector 1/2 冻结语义），execution 的拒绝由 Core closed/generation gate
-// 保证（T009-A selector 1/2）。host 侧断言晚到 ack 不炸、注册链完好。
+// The retired registration reaches Core's negative ACK boundary without invoking
+// the application ACK policy again. A preseeded token is not an admitted registration.
 BOOST_AUTO_TEST_CASE(Spec182ProviderHostLateAckAfterCloseHitsCoreBoundary)
 {
   ndn::security::KeyChain keyChain("pib-memory:spec182-host-fence",
@@ -1594,9 +1603,8 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostLateAckAfterCloseHitsCoreBoundary)
   const ndn::Name requestId2("/request/host-fence-2");
   auto providerCert = makeRsaIdentity(keyChain, ndn::Name(HOST_PROVIDER_NAME));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-fence"));
-  auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+  auto provider = std::make_shared<RegistrationCollabProvider>(
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   provider->applyPermissionResponse(
     makePermissionResponse(ndn::Name(HOST_PROVIDER_NAME),
                            tlv::ProviderPermission,
@@ -1627,23 +1635,29 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostLateAckAfterCloseHitsCoreBoundary)
   injectRequest(*provider, requesterName, serviceName, requestId1, requestWire1);
   BOOST_REQUIRE(provider->hasPendingRequestForTokenTest(
     requesterName, serviceName, requestId1));
-  BOOST_REQUIRE(waitUntil([&ackCalls] { return ackCalls.load() == 1; },
-                          std::chrono::seconds(5)));
+  BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
+    return ackCalls.load() == 1;
+  }, std::chrono::seconds(5)));
+  waitForRegistrationAcceptance(*provider, face, requesterName, serviceName, requestId1);
 
   reg.close();
   BOOST_CHECK(reg.closed());
 
-  // Late R2 (new user token, distinct requestId) after close. The Core
-  // accept boundary stays reachable through the closed entry (ack decision
-  // is asked, pending is recorded for the cleanup boundary); execution is
-  // fenced by the Core closed/generation gate per Spec182Registration.
+  // Late R2 has a fresh token and requestId, but its scoped registration is closed.
   const auto [request2, requestWire2] =
     makeAuthenticatedRequestWire("payload-after-close", "spec182-host-token-2");
   provider->addPendingRequestForTokenTest(
     requesterName, serviceName, requestId2, request2, "provider-token-2");
   injectRequest(*provider, requesterName, serviceName, requestId2, requestWire2);
-  BOOST_REQUIRE(waitUntil([&ackCalls] { return ackCalls.load() == 2; },
-                          std::chrono::seconds(5)));
+  BOOST_REQUIRE(waitUntil([&] {
+    pumpFace(face, ndn::time::milliseconds(1));
+    const auto status = provider->getProviderRequestStatus(requestId2);
+    return status && status->state == ServiceProvider::ProviderRequestLifecycleState::ACK_PUBLISHED;
+  }, std::chrono::seconds(5)));
+  BOOST_CHECK_EQUAL(ackCalls.load(), 1);
+  BOOST_CHECK(!provider->hasAcceptedRegistrationForTest(requesterName, serviceName, requestId2));
+  // The token helper's preseed remains until cleanup; it must not become an execution binding.
   BOOST_CHECK(provider->hasPendingRequestForTokenTest(
     requesterName, serviceName, requestId2));
   BOOST_CHECK(reg.closed());
@@ -1664,8 +1678,7 @@ BOOST_AUTO_TEST_CASE(Spec182ProviderHostFixedLeaseEntryRoutesRealDispatch)
   auto providerCert = makeRsaIdentity(keyChain, providerName);
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/spec182/aa-host-lease-route"));
   auto provider = std::make_shared<LocalServiceProvider>(
-    face, ndn::Name("/spec182/group"), providerCert, aaCert,
-    "examples/trust-any.conf");
+    face, ndn::Name("/spec182/group"), providerCert, aaCert);
   provider->applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,

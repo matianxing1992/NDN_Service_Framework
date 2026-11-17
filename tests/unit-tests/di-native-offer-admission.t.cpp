@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
@@ -12,7 +13,7 @@ using namespace ndnsf::di;
 using ndn_service_framework::AckSelectionCandidate;
 NativeJson fixture()
 {
-  std::ifstream input("tests/fixtures/spec182/signed-offer-oracle.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec182/signed-offer-oracle.json").string());
   if (!input) throw std::runtime_error("missing signed SDK offer fixture");
   return NativeJson::parse(input);
 }

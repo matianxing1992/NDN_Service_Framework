@@ -7,22 +7,127 @@ or protocol implementation is used here.
 """
 
 import argparse
+import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import tempfile
 import time
 
 
+from spec185_native_fixture import fixture_path
+
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BUILD = ROOT / ".codex-tmp/spec182-r4-b2/build"
+DEFAULT_BUILD = Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build"))
 CONTROLLER = "App_ServiceController"
 AUTHORITY = "DI_NativeArtifactAuthority"
 PROBE = "spec182-native-grant-requester-process"
+
+
+def install_termination_handlers():
+    def terminate(number, frame):
+        raise RuntimeError("native process fixture received termination signal " + str(number))
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+
+
+def native_program(build, name, *, source_subdir="examples", installed_subdir="bin"):
+    if "NDNSF_TEST_RUNTIME_PREFIX" in os.environ:
+        value = os.environ["NDNSF_TEST_RUNTIME_PREFIX"]
+        if not value:
+            raise ValueError("NDNSF_TEST_RUNTIME_PREFIX is empty")
+        path = Path(value) / installed_subdir / name
+    else:
+        path = Path(build) / source_subdir / name
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError("required native process executable missing: " + str(path))
+    return path
+
+
+def provision_actor_identities(run_root, environment, identities, runner=subprocess.run):
+    """Generate one fixture root and root-issued actor certificates in the owned bootstrap PIB."""
+    root = "/example/hello"
+    # Certificate validity is encoded to whole seconds. Backdate this owned
+    # fixture slightly so a fast consumer cannot start before the rounded start.
+    not_before = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime('%Y%m%d%H%M%S')
+    root_certificate = runner(["/usr/local/bin/ndnsec", "key-gen", "-t", "r", root],
+                              env=environment, check=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=30).stdout
+    write(run_root / "shared/root.cert", root_certificate, 0o644)
+    for identity in identities:
+        request = runner(["/usr/local/bin/ndnsec", "key-gen", "-t", "r", identity],
+                         env=environment, check=True, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, timeout=30).stdout
+        certificate = runner(["/usr/local/bin/ndnsec", "cert-gen", "-s", root,
+                              "-i", "fixture", "--not-before", not_before, "-"],
+                             input=request, env=environment,
+                             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             timeout=30).stdout
+        runner(["/usr/local/bin/ndnsec", "cert-install", "-I", "-"], input=certificate,
+               env=environment, check=True, stdout=subprocess.DEVNULL,
+               stderr=subprocess.PIPE, timeout=30)
+    return root_certificate
+
+
+def certificate_name(environment, identity):
+    """Read the real default certificate instead of inventing a legacy /ID-CERT suffix."""
+    from ndn.encoding import Name, parse_data
+    encoded = subprocess.run(["/usr/local/bin/ndnsec", "cert-dump", "-i", identity],
+                             env=environment, check=True, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, timeout=30).stdout
+    name, _, _, _ = parse_data(base64.b64decode(b"".join(encoded.split()), validate=True))
+    if ([bytes(value) for value in name[:-4]] !=
+            [bytes(value) for value in Name.from_str(identity)]):
+        raise RuntimeError("default certificate does not belong to fixture actor")
+    return Name.to_str(name)
+
+
+def certificate_key_name(certificate):
+    """Use the key prefix from an admitted v2 certificate name, preserving typed components."""
+    from ndn.encoding import Component, Name
+    name = Name.from_str(certificate)
+    if len(name) < 4 or bytes(name[-4]) != bytes(Component.from_str('KEY')):
+        raise ValueError('fixture certificate name has no v2 key suffix')
+    return Name.to_str(name[:-2])
+
+
+def actor_trust_schema(identities):
+    """Bind the fixed fixture's SVS signer roles to its explicitly provisioned actors."""
+    roles = set()
+    for identity in identities:
+        role = identity.rsplit('/', 1)[-1]
+        if (not identity.startswith('/example/hello/') or identity.count('/') != 3 or
+                re.fullmatch(r'[A-Za-z0-9-]+', role) is None):
+            raise ValueError('unsupported fixture actor identity: ' + identity)
+        roles.add(role)
+    if not roles:
+        raise ValueError('fixture actors must not be empty')
+    schema = fixture_path('native-process-trust-schema.conf').read_text()
+    marker = '<user|8=user|provider|8=provider|controller|8=controller>'
+    if marker not in schema:
+        raise RuntimeError('fixture SVS signer policy changed; update actor mapping')
+    return schema.replace(marker, '<' + '|'.join(
+        value for role in sorted(roles) for value in (role, '8=' + role)) + '>')
+
+
+def actor_environment(base, store):
+    """Keep the actor's mutable SVS session counter beside its owned PIB/TPM."""
+    store = Path(store)
+    if not store.is_absolute():
+        raise ValueError('fixture actor store must be absolute')
+    result = dict(base)
+    result.update(HOME=str(store / 'home'),
+                  NDN_CLIENT_PIB='pib-sqlite3:' + str(store / 'pib'),
+                  NDN_CLIENT_TPM='tpm-file:' + str(store / 'tpm'),
+                  NDNSF_CONFIG=str(store / 'ndnsf-session.conf'))
+    return result
 
 
 def write(path: Path, data, mode=None):
@@ -53,7 +158,7 @@ def bounded_nfd_socket(run_root: Path) -> Path:
 
 def run(command, env, log, *, wait=True):
     handle = log.open("w", buffering=1)
-    process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=handle,
+    process = subprocess.Popen(command, cwd=log.parent, env=env, stdout=handle,
                                stderr=subprocess.STDOUT, text=True)
     process._ndnsf_log_handle = handle
     if wait:
@@ -155,7 +260,7 @@ def openssl_keys(authority_dir, requester_dir):
     write(requester_dir / "requester-private.pem", requester_private.read_bytes(), 0o600)
     write(requester_dir / "authority-public.pem", authority_public.read_bytes(), 0o644)
     write(requester_dir / "trust-schema.conf",
-          (ROOT / "examples/trust-schema.conf").read_text(), 0o644)
+          fixture_path("native-process-trust-schema.conf").read_text(), 0o644)
     return authority_private, authority_public, requester_private
 
 
@@ -251,21 +356,42 @@ def remove_private_keys_except(store, keep_identities):
         private.unlink(missing_ok=True)
 
 
-def probe_command(probe, config, requester_dir, requester_store, nfd_socket, build):
+def probe_libraries(probe, environment):
+    """Resolve this trusted native candidate's actual ELF dependencies, without guessed SDK roots."""
+    result = subprocess.run(['/usr/bin/ldd', str(probe)], env=environment,
+                            capture_output=True, text=True, timeout=15)
+    if result.returncode or 'not found' in result.stdout:
+        raise RuntimeError('native grant probe has an unresolved ELF dependency')
+    libraries = set()
+    for line in result.stdout.splitlines():
+        value = line.split('=>', 1)[-1].strip().split()
+        if value and value[0].startswith('/'):
+            path = Path(value[0])
+            if not path.is_file():
+                raise RuntimeError('native grant probe library missing: ' + str(path))
+            libraries.add(path)
+    return sorted(libraries)
+
+
+def probe_command(probe, config, requester_dir, requester_store, nfd_socket, build, environment):
     # Mount only the requester-visible files, its read-only identity snapshot,
     # and the NFD Unix socket.  The authority directory and identity snapshot
     # are outside every requester mount.
-    nac = Path("/home/tianxing/NDN/nac-abe-integration-182/install/lib")
-    svs = Path("/home/tianxing/NDN/ndn-svs/build")
-    onnx = Path("/opt/onnxruntime")
     command = [
         "/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session",
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
         "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
         "--ro-bind", "/sbin", "/sbin", "--ro-bind", "/lib", "/lib",
         "--ro-bind", "/lib64", "/lib64", "--ro-bind", "/etc", "/etc",
-        "--ro-bind", build, build, "--ro-bind", nac, nac, "--ro-bind", svs, svs,
-        "--ro-bind", onnx, onnx,
+        "--ro-bind", build, build,
+    ]
+    # System roots are already visible. Map other resolved library files individually, keeping
+    # unrelated source directories and Authority credentials outside the requester's namespace.
+    system_roots = tuple(Path(name) for name in ('/usr', '/bin', '/sbin', '/lib', '/lib64'))
+    for library in probe_libraries(probe, environment):
+        if not any(library == root or root in library.parents for root in system_roots):
+            command += ['--ro-bind', str(library), str(library)]
+    command += [
         "--dir", "/run",
         "--ro-bind", requester_dir, "/run/requester",
         # The probe only reads its identity snapshot.  A read-only mount
@@ -277,6 +403,7 @@ def probe_command(probe, config, requester_dir, requester_store, nfd_socket, bui
         # tmpfs.  The requester fixture is read-only so that authority
         # private files cannot become writable through the probe namespace.
         "--setenv", "HOME", "/tmp",
+        "--setenv", "NDNSF_CONFIG", "/tmp/ndnsf-session.conf",
         "--setenv", "NDN_CLIENT_PIB", "pib-sqlite3:/run/requester-store/pib",
         "--setenv", "NDN_CLIENT_TPM", "tpm-file:/run/requester-store/tpm",
         "--setenv", "NDN_CLIENT_TRANSPORT", "unix:///run/nfd.sock",
@@ -286,6 +413,7 @@ def probe_command(probe, config, requester_dir, requester_store, nfd_socket, bui
 
 
 def main():
+    install_termination_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD)
     parser.add_argument("--case", choices=("positive", "bad-signature", "wrong-epoch",
@@ -294,9 +422,9 @@ def main():
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
     build = args.build_dir.resolve()
-    controller = build / "examples" / CONTROLLER
-    authority = build / "examples" / AUTHORITY
-    probe = build / PROBE
+    controller = native_program(build, CONTROLLER)
+    authority = native_program(build, AUTHORITY)
+    probe = native_program(build, PROBE, source_subdir="", installed_subdir="libexec/ndnsf-tests")
     for executable in (controller, authority, probe):
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise RuntimeError(f"missing executable: {executable}")
@@ -321,7 +449,7 @@ def main():
     authority_log = run_root / "authority.log"
     probe_log = run_root / "probe.log"
     nfd_config(nfd_config_path, nfd_socket)
-    write(policy, (ROOT / "examples/hello.policies").read_text(), 0o600)
+    write(policy, fixture_path("controller-policies.conf").read_text(), 0o600)
     # Pre-create the NDN identities once, then give each native process a
     # private copy of the complete PIB/TPM.  Sharing a writable PIB between
     # Controller and Provider races default-identity/certificate updates in
@@ -341,10 +469,11 @@ def main():
         "/example/hello/provider/A", "/example/hello/provider/B",
         "/example/hello/provider/C", "/example/hello/user",
     )
-    for identity in identities:
-        subprocess.run(["/usr/local/bin/ndnsec", "key-gen", "-t", "r", identity],
-                       env=bootstrap_env, check=True, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.PIPE, text=True)
+    root_certificate = provision_actor_identities(run_root, bootstrap_env, identities)
+    fixture_schema = actor_trust_schema(identities)
+    write(shared / 'trust-schema.conf', fixture_schema, 0o644)
+    for directory in (authority_dir, requester_dir):
+        write(directory / "root.cert", root_certificate, 0o644)
     for store in (controller_store, authority_store, requester_store):
         shutil.copytree(bootstrap_store, store)
         # PIB stores the TPM locator as a URI.  Rewrite it after copying so
@@ -359,7 +488,7 @@ def main():
     remove_private_keys_except(authority_store, ("/example/hello/provider",))
     remove_private_keys_except(requester_store, ("/example/hello/user",))
     authority_private, authority_public, _ = openssl_keys(authority_dir, requester_dir)
-    write(authority_dir / "trust-schema.conf", (ROOT / "examples/trust-schema.conf").read_text(), 0o644)
+    write(authority_dir / "trust-schema.conf", fixture_schema, 0o644)
     authority_config(authority_dir / "authority.json", authority_dir)
     probe_config(requester_dir / "probe.json", args.case, args.case != "positive",
                  "/example/hello/provider")
@@ -384,14 +513,10 @@ def main():
                 raise RuntimeError("private NFD socket startup timed out")
             time.sleep(0.05)
 
-        controller_env = dict(env)
-        controller_env.update({
-            "HOME": str(controller_store / "home"),
-            "NDN_CLIENT_PIB": "pib-sqlite3:" + str(controller_store / "pib"),
-            "NDN_CLIENT_TPM": "tpm-file:" + str(controller_store / "tpm"),
-        })
+        controller_env = actor_environment(env, controller_store)
         controller_process = run([
             str(controller), "--controller-prefix", "/example/hello/controller",
+            "--trust-schema", str(shared / 'trust-schema.conf'),
             "--policy-file", str(policy), "--ensure-identities",
             "/example/hello/provider,/example/hello/user", "--no-serve-certificates",
             "--run-for-ms", "120000",
@@ -399,12 +524,7 @@ def main():
         children.append(controller_process)
         wait_marker(controller_process, controller_log, "ServiceController started...", 20)
 
-        authority_env = dict(env)
-        authority_env.update({
-            "HOME": str(authority_store / "home"),
-            "NDN_CLIENT_PIB": "pib-sqlite3:" + str(authority_store / "pib"),
-            "NDN_CLIENT_TPM": "tpm-file:" + str(authority_store / "tpm"),
-        })
+        authority_env = actor_environment(env, authority_store)
         authority_process = run([str(authority), "--config", str(authority_dir / "authority.json")],
                                 authority_env, authority_log, wait=False)
         children.append(authority_process)
@@ -416,7 +536,7 @@ def main():
 
         config = requester_dir / "probe.json"
         command = probe_command(probe, config, requester_dir, requester_store,
-                                nfd_socket, build)
+                                nfd_socket, build, env)
         probe_process = run(command, env, probe_log, wait=True)
         output = probe_log.read_text(errors="replace")
         print("SPEC182_NATIVE_GRANT_PROCESS_ROOT=" + str(run_root))

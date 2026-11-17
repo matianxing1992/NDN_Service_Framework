@@ -380,11 +380,17 @@ private:
   {
     auto source = std::make_shared<Source>(
       m_repo, manifest, ndn_service_framework::EncryptedLargeDataRetention::Durable);
-    ndn_service_framework::EncryptedLargeDataLookupResult result{
-      manifest.objectName, manifest.publicationIdentity, manifest.protectionEpoch,
-      manifest.keyReferenceId, manifest.keyReferenceVersion,
-      manifest.ciphertextManifestDigest, manifest.servingLocator,
-      manifest.contentDigest, manifest.plaintextSize, std::move(source)};
+    ndn_service_framework::EncryptedLargeDataLookupResult result;
+    result.encryptedName = manifest.objectName;
+    result.publicationIdentity = manifest.publicationIdentity;
+    result.protectionEpoch = manifest.protectionEpoch;
+    result.keyReferenceId = manifest.keyReferenceId;
+    result.keyReferenceVersion = manifest.keyReferenceVersion;
+    result.ciphertextManifestDigest = manifest.ciphertextManifestDigest;
+    result.servingLocator = manifest.servingLocator;
+    result.contentDigest = manifest.contentDigest;
+    result.plaintextSize = manifest.plaintextSize;
+    result.source = std::move(source);
     if (manifest.objectType == "original-packet-set") {
       if (manifest.envelopeBytes == 0 || manifest.dataPrefix.empty() ||
           manifest.packetOffsets.size() != manifest.packetNames.size() + 1 ||

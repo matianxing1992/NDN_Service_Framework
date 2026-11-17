@@ -1,3 +1,5 @@
+#include "tests/fixtures/test-resource-paths.hpp"
+#include "tests/fixtures/native-worker-location.hpp"
 #include "tests/boost-test.hpp"
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "tests/integration-tests/isolated-test-trust.hpp"
@@ -474,7 +476,7 @@ BOOST_AUTO_TEST_SUITE(Spec233PreparedMetadata)
 
 BOOST_AUTO_TEST_CASE(InventoryHashRetainsSixActualSourceGoldens)
 {
-  std::ifstream input("tests/fixtures/spec233/source-inventory-v1.json");
+  std::ifstream input(ndnsf::test::testFixturePath("spec233/source-inventory-v1.json").string());
   BOOST_REQUIRE(input.good());
   const auto fixture = nativeParseJson(std::string(std::istreambuf_iterator<char>(input), {}));
   BOOST_REQUIRE_EQUAL(fixture.at("rows").size(), 6);
@@ -1669,9 +1671,7 @@ BOOST_AUTO_TEST_CASE(AutomaticSourceFactsReachColdAndDiskCacheThroughAssignedEnc
   NativeCanonicalOnnxAssemblerOptions options;
   options.cacheDir = (file.root / "assembled-cache").string();
   options.providerIdentity = projection.provider;
-  const auto* bin = std::getenv("NDNSF_SPEC182_BIN_DIR");
-  options.workerLocation = {((bin ? std::filesystem::path(bin) :
-    std::filesystem::path("/usr/local/libexec/ndnsf-di")) / "DI_NativeOnnxAssemblyWorker").string(), ""};
+  options.workerLocation = ndnsf::test::testNativeWorkerLocation();
   options.signManifest = [] (const std::string&) { return "source-fixture-signature"; };
   nativeBindStoredModelAssemblyCache(projection, options);
   // Current-root primitive checks must run before any encrypted material read.
@@ -1861,10 +1861,7 @@ BOOST_AUTO_TEST_CASE(AutomaticFilesystemCacheReopensInFreshProcess)
     options.cacheCompatibilitySourceDir = file.root / "local-materials";
     options.providerIdentity = first.provider;
     options.verifyCachedArtifactDigest = true;
-    const auto* bin = std::getenv("NDNSF_SPEC182_BIN_DIR");
-    options.workerLocation = {((bin ? std::filesystem::path(bin) :
-      std::filesystem::path("/usr/local/libexec/ndnsf-di")) /
-        "DI_NativeOnnxAssemblyWorker").string(), ""};
+    options.workerLocation = ndnsf::test::testNativeWorkerLocation();
     options.signManifest = [] (const std::string&) { return "fs-fixture-signature"; };
     std::size_t networkCalls = 0;
     NativeCanonicalOnnxFetchers forbidden;

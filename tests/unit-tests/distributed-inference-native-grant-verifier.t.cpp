@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGrantVerifier.hpp"
@@ -47,31 +48,9 @@ readTextFile(const std::string& path)
 boost::property_tree::ptree
 loadVectors()
 {
-  std::string text;
-  // The unit-tests binary runs from the waf build directory
-  // (build-system-j2), whose parent is the repository root.
-  const char* candidates[] = {
-    "tests/fixtures/spec181/grant-vectors-v1.json",
-    "../tests/fixtures/spec181/grant-vectors-v1.json",
-  };
-  for (const auto* candidate : candidates) {
-    std::ifstream input(candidate);
-    if (!input) {
-      continue;
-    }
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    text = buffer.str();
-    break;
-  }
-  if (text.empty()) {
-    throw std::runtime_error(
-      "grant vector fixture not found; run from the repository root or the "
-      "waf build directory");
-  }
   boost::property_tree::ptree root;
-  std::istringstream input(text);
-  boost::property_tree::read_json(input, root);
+  boost::property_tree::read_json(ndnsf::test::testFixturePath(
+    "spec181/grant-vectors-v1.json").string(), root);
   return root;
 }
 

@@ -1,4 +1,5 @@
 #include "tests/boost-test.hpp"
+#include "tests/fixtures/frozen-binary-fixture.hpp"
 
 #include "NDNSF-UAV-APP/shared/UavProtocol.hpp"
 #include "NDNSF-UAV-APP/shared/UavNames.hpp"
@@ -6,17 +7,22 @@
 #include "NDNSF-UAV-APP/shared/UavSensorStreams.hpp"
 #include "ndn-service-framework/HybridMessageCrypto.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <openssl/sha.h>
 #include <set>
+#include <stdexcept>
 #include <unistd.h>
 #include <ndn-cxx/util/scope.hpp>
 
 namespace ndn_service_framework::test {
 namespace {
+
 
 using ndnsf::examples::uav::FlightSafetyGateState;
 using ndnsf::examples::uav::FlightActionControlState;
@@ -459,7 +465,8 @@ BOOST_AUTO_TEST_CASE(UavGStreamerFileCaptureHonorsWallClockFrameRate)
     return;
   }
 
-  const std::string source = "NDNSF-UAV-APP/videos/drone.mp4";
+  const ::ndnsf::test::FrozenBinaryFixture video("uav/tiny-video.mp4.hex");
+  const std::string source = video.path();
   for (const uint32_t fps : {10U, 60U}) {
     GStreamerVideoPipeline capture;
     std::atomic<uint64_t> callbacks{0};
@@ -511,6 +518,7 @@ BOOST_AUTO_TEST_CASE(UavGStreamerFileCaptureHonorsWallClockFrameRate)
 
 BOOST_AUTO_TEST_CASE(UavGStreamerLowRateDecodeDoesNotBufferFourFrames)
 {
+  const ::ndnsf::test::FrozenBinaryFixture video("uav/tiny-video.mp4.hex");
   GStreamerVideoPipeline capture;
   if (!capture.probeCapabilities().available) {
     BOOST_TEST_MESSAGE("GStreamer capability unavailable; covered by capability gate");
@@ -531,7 +539,7 @@ BOOST_AUTO_TEST_CASE(UavGStreamerLowRateDecodeDoesNotBufferFourFrames)
   });
 
   UavVideoCaptureConfig config;
-  config.source = "NDNSF-UAV-APP/videos/drone.mp4";
+  config.source = video.path();
   config.width = 160;
   config.height = 120;
   config.fps = 10;

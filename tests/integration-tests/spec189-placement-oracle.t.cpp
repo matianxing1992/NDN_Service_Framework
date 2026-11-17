@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -23,7 +24,7 @@ using namespace ndnsf::di;
 
 NativeJson oracle()
 {
-  std::ifstream file("tests/fixtures/spec182/placement-v3-oracle.json");
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/placement-v3-oracle.json").string());
   if (!file) throw std::runtime_error("missing V3 placement oracle");
   return NativeJson::parse(file);
 }

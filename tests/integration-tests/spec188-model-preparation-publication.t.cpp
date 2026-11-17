@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "ndn-service-framework/ServiceUser.hpp"
 
 #include <ndn-cxx/name.hpp>
@@ -50,15 +51,8 @@ struct Fixture
 
   Fixture()
   {
-    std::ifstream stream;
-    const std::filesystem::path relative = "tests/fixtures/spec182/dependency-probes/extraction-vectors.json";
-    for (auto directory = std::filesystem::current_path(); !directory.empty(); directory = directory.parent_path()) {
-      const auto candidate = directory / relative;
-      stream.open(candidate);
-      if (stream.good()) break;
-      stream.clear();
-      if (directory == directory.parent_path()) break;
-    }
+    std::ifstream stream(ndnsf::test::testFixturePath(
+      "spec182/dependency-probes/extraction-vectors.json"));
     if (!stream) throw std::runtime_error("missing frozen ONNX source fixture");
     const auto vectors = NativeJson::parse(stream);
     const auto& row = vectors.at("cases").at(0);

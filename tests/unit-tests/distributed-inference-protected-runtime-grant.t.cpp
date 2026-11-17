@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/boost-test.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -73,7 +74,7 @@ struct BoundGrantFixture
   BoundGrantFixture()
   {
     boost::property_tree::ptree vectors;
-    boost::property_tree::read_json("tests/fixtures/spec181/grant-vectors-v1.json", vectors);
+    boost::property_tree::read_json(ndnsf::test::testFixturePath("spec181/grant-vectors-v1.json").string(), vectors);
     const auto& positive = vectors.get_child("cases").front().second;
     wire = positive.get<std::string>("wire");
     boost::property_tree::ptree grant;

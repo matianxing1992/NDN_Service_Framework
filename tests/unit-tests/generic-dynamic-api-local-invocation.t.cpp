@@ -171,8 +171,7 @@ BOOST_AUTO_TEST_CASE(LocalInvocationDoesNotUseRemotePublisher)
   ndn::security::KeyChain keyChain;
   auto userCert = makeRsaIdentity(keyChain, ndn::Name("/local/user"));
   auto aaCert = makeRsaIdentity(keyChain, ndn::Name("/local/aa"));
-  LocalServiceUser user(face, ndn::Name("/local/group"), userCert, aaCert,
-                        "examples/trust-any.conf");
+  LocalServiceUser user(face, ndn::Name("/local/group"), userCert, aaCert);
   int publisherCalls = 0;
   user.setRequestPublisher([&] (const ndn::Name&,
                                 const ndn::Name&,

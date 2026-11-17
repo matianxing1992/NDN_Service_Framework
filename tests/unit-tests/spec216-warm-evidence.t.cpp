@@ -492,6 +492,7 @@ BOOST_AUTO_TEST_CASE(AtomicUpdatePreservesSummaryAndLegacyAck)
   BOOST_CHECK_EQUAL(summary,
     "NDNSF_DI_EXECUTION_EVIDENCE_UPDATE provider=/provider/A evidenceEpoch=9"
     " runnerKind=onnxruntime-cpu realCompute=true loadCompleted=true warmupCompleted=true"
+    " warmupSkippedUnrankedInput=false"
     " executionCompleted=true exactForwardCacheHit=false roles=1 artifacts=1"
     " nodeProviderAssignments=2 requestId=/request/old attemptEpoch=3 profileCaptured=true"
     " profileRequestId=/request/profile profileAttemptEpoch=2");

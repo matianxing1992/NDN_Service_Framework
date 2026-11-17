@@ -115,8 +115,7 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsInvalidLeaseBeforeExecution)
   LocalServiceProvider provider(face,
                                 ndn::Name("/test/group"),
                                 providerCert,
-                                aaCert,
-                                "examples/trust-any.conf");
+                                aaCert);
   provider.applyPermissionResponse(
     makePermissionResponse(providerName,
                            tlv::ProviderPermission,
@@ -211,8 +210,7 @@ BOOST_AUTO_TEST_CASE(UserStoresGenericLeaseSelectionPayload)
   LocalServiceUser user(face,
                         ndn::Name("/test/group"),
                         userCert,
-                        aaCert,
-                        "examples/trust-any.conf");
+                        aaCert);
 
   user.addPendingCallForTokenTest(requestId, serviceName, "user-token");
   const auto payload =

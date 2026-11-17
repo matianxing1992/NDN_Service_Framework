@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeObservedOfferV3.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <boost/test/unit_test.hpp>
@@ -9,7 +10,7 @@ namespace {
 using namespace ndnsf::di;
 NativeJson vectors()
 {
-  std::ifstream stream("tests/fixtures/spec182/offer-python-oracle.json");
+  std::ifstream stream(ndnsf::test::testFixturePath("spec182/offer-python-oracle.json").string());
   if (!stream) throw std::runtime_error("missing frozen SDK offer oracle");
   return NativeJson::parse(stream);
 }

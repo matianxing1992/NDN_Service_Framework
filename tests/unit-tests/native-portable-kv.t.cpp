@@ -129,6 +129,8 @@ BOOST_AUTO_TEST_CASE(AllSupportedElementTypesPreserveDeclaredWidthAndPayload)
     {"state-bool", TensorElementType::Bool, {1}, {1}},
     {"state-u8", TensorElementType::UInt8, {1}, {255}},
     {"state-i32", TensorElementType::Int32, {1}, {1, 0, 0, 0}},
+    {"state-i8", TensorElementType::INT8, {1}, {255}},
+    {"state-bf16", TensorElementType::BFLOAT16, {1}, {128, 63}},
   };
   NativePortableKvSnapshotV1 value;
   value.originIdentity = identity();
@@ -146,7 +148,7 @@ BOOST_AUTO_TEST_CASE(AllSupportedElementTypesPreserveDeclaredWidthAndPayload)
     value.components.push_back(std::move(component));
   }
 
-  BOOST_CHECK_EQUAL(value.logicalBytes, 20U);
+  BOOST_CHECK_EQUAL(value.logicalBytes, 23U);
   BOOST_CHECK_NO_THROW(validateNativePortableKvSnapshot(value, limits()));
   BOOST_REQUIRE_EQUAL(value.components.size(), expected.size());
   for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -161,17 +163,18 @@ BOOST_AUTO_TEST_CASE(AllSupportedElementTypesPreserveDeclaredWidthAndPayload)
 
   auto unsupported = snapshot();
   auto& component = unsupported.components[0];
-  component.elementType = static_cast<TensorElementType>(7);
+  constexpr std::uint32_t unsupportedType = 0xffffffffU;
+  component.elementType = static_cast<TensorElementType>(unsupportedType);
   const auto typeOffset = 8U + 2U * sizeof(std::uint32_t) + component.inputName.size();
   BOOST_REQUIRE_LE(typeOffset + sizeof(std::uint32_t), component.tensorWire.size());
   for (std::size_t i = 0; i < sizeof(std::uint32_t); ++i)
-    component.tensorWire[typeOffset + i] = i == 0 ? 7 : 0;
+    component.tensorWire[typeOffset + i] = 255;
   component.contentDigest = hash(component.tensorWire);
   BOOST_CHECK_THROW(validateNativePortableKvSnapshot(unsupported, limits()),
                     std::invalid_argument);
 
   BOOST_CHECK_THROW(encodeTensorBundle({NamedTensor{
-    "unsupported", static_cast<TensorElementType>(7), {1}, {1}}}),
+    "unsupported", static_cast<TensorElementType>(unsupportedType), {1}, {1}}}),
     std::invalid_argument);
 }
 

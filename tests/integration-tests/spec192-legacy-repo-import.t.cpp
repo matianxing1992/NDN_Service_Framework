@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/LegacyRepoImporter.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemRepoStoreBackend.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/RepoTypes.hpp"
@@ -77,17 +78,6 @@ private:
   sqlite3* m_db = nullptr;
 };
 
-fs::path
-repositoryRoot()
-{
-  auto current = fs::current_path();
-  for (;;) {
-    if (fs::exists(current / "tests/fixtures/spec192")) return current;
-    const auto parent = current.parent_path();
-    if (parent == current) throw std::runtime_error("spec192-fixture-root-not-found");
-    current = parent;
-  }
-}
 
 std::string
 readFile(const fs::path& path)
@@ -239,8 +229,7 @@ struct SourceObject
 SourceObject
 seedRepoFixture(sqlite3* db, const std::string& objectType = "artifact")
 {
-  execute(db, readFile(repositoryRoot() /
-    "tests/fixtures/spec192/legacy-python-repo-v12.sql"));
+  execute(db, readFile(ndnsf::test::testFixturePath("spec192/legacy-python-repo-v12.sql")));
   execute(db, "PRAGMA journal_mode=WAL");
 
   SourceObject source;
@@ -703,8 +692,7 @@ BOOST_AUTO_TEST_CASE(rejectsInvalidPacketWireBeforePublish)
   const auto destination = temporary.path() / "native";
   fs::create_directories(payloadRoot);
   Database sourceDb(sourcePath);
-  execute(sourceDb.get(), readFile(repositoryRoot() /
-    "tests/fixtures/spec192/legacy-python-repo-v12.sql"));
+  execute(sourceDb.get(), readFile(ndnsf::test::testFixturePath("spec192/legacy-python-repo-v12.sql")));
   execute(sourceDb.get(),
     "INSERT INTO serving_packets(data_name,object_name,generation,wire,wire_sha256,wire_size)"
     " VALUES('/invalid/wire','/legacy/invalid',1,X'00',"
@@ -727,8 +715,7 @@ BOOST_AUTO_TEST_CASE(rejectsPacketDigestMismatchBeforePublish)
   const auto destination = temporary.path() / "native";
   fs::create_directories(payloadRoot);
   Database sourceDb(sourcePath);
-  execute(sourceDb.get(), readFile(repositoryRoot() /
-    "tests/fixtures/spec192/legacy-python-repo-v12.sql"));
+  execute(sourceDb.get(), readFile(ndnsf::test::testFixturePath("spec192/legacy-python-repo-v12.sql")));
   execute(sourceDb.get(),
     "INSERT INTO serving_packets(data_name,object_name,generation,wire,wire_sha256,wire_size)"
     " VALUES('/invalid/digest','/legacy/invalid',1,X'00',"

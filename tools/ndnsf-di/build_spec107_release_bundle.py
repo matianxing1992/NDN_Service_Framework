@@ -13,7 +13,6 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
 
-from ndnsf_distributed_inference.release_gate import build_spec107_release_gate  # noqa: E402
 from spec107_lineage import assert_mutation_allowed  # noqa: E402
 
 
@@ -111,6 +110,12 @@ def build_release_bundle(*, feature: Path | str, output: Path | str,
             "path": row["path"], "bytes": path.stat().st_size,
             "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
         })
+    # File/path/content admission must report its own boundary even when an
+    # optional installed inference runtime is unavailable in this host tool.
+    try:
+        from ndnsf_distributed_inference.release_gate import build_spec107_release_gate
+    except ImportError as exc:
+        _fail("SPEC107_GATE_DEPENDENCY_UNAVAILABLE", str(exc))
     gate = build_spec107_release_gate(payload, evidence_root=feature_root)
     gate["bundleManifest"] = {
         "schema": "ndnsf-di-spec107-release-bundle-manifest-v1",

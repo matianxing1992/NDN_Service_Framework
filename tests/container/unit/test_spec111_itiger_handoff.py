@@ -8,8 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "tests/fixtures/ndnsf-di-core-app-separation/itiger-handoff-process-map.json"
-CANDIDATE = ROOT / "specs/111-ndnsf-di-core-app-separation/evidence/post-separation-candidate.json"
-CONTRACT = ROOT / "specs/111-ndnsf-di-core-app-separation/contracts/itiger-slurm-apptainer-handoff.md"
+CANDIDATE = ROOT / "tests/fixtures/ndnsf-di-core-app-separation/post-separation-candidate.json"
+CONTRACT = ROOT / "tests/fixtures/ndnsf-di-core-app-separation/itiger-slurm-apptainer-handoff.md"
 
 
 class Spec111ItigerStaticHandoffTest(unittest.TestCase):

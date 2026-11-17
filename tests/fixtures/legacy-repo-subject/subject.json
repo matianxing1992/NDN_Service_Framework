@@ -1,0 +1,127 @@
+{
+  "captureContext": {
+    "capturedAt": "2026-07-29",
+    "gitHeadAtCapture": "f179f779f2e6863f23d8387d38f6b45bb58a59ef",
+    "networkExecution": "NOT_RUN",
+    "runtimeArtifacts": [
+      {
+        "path": "pythonWrapper/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so",
+        "sha256": "8edd1974ca64e3264e7050278b9017ed4205b82a6abdb94c331db635a0597a40"
+      },
+      {
+        "path": "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/_py_repoclient.cpython-38-x86_64-linux-gnu.so",
+        "sha256": "33684644e1bd22da4dd258c771abeb4911b2d7853a445699a17d71891383ea8c"
+      }
+    ],
+    "runtimeLinkage": {
+      "boost": "1.71.0",
+      "libcrypto": "1.1",
+      "libndn-cxx": "0.9.0",
+      "libndn-service-framework": "0.1.0",
+      "libndn-svs": "0.1.0",
+      "libssl": "1.1"
+    },
+    "sourceAuthority": "working-tree bytes",
+    "tigerClusterExecution": "NOT_RUN",
+    "worktreeState": "dirty",
+    "worktreeWarning": "Both identified source files contained pre-existing user changes. T001 records their exact working-tree bytes and does not normalize or revert them."
+  },
+  "measurements": [],
+  "performanceVerdict": "NOT_MEASURED",
+  "subjectSha256": "5f2190cfae95f5cd182b270bc1f48229852b5b6fa20eebf31307029c7a3c1017",
+  "subject": {
+    "claimLevel": "captured-not-benchmarked",
+    "deterministicFixtures": [
+      {
+        "generator": "sha256-counter-v1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      {
+        "generator": "sha256-counter-v1",
+        "sha256": "d16bd22f7196c0a70f4b12aa0b290c4c4acecd5d6ba350ecc8447fbdf4c3819b",
+        "size": 1
+      },
+      {
+        "generator": "sha256-counter-v1",
+        "sha256": "589a1ee236de3647b36b5dab7516a7dafa2c8a02998fb5f1f70036c8a79a5ec1",
+        "size": 4000
+      },
+      {
+        "generator": "sha256-counter-v1",
+        "sha256": "757734ccdd7235089b90ccb7e570b3edcbf0d2224db3301c25ca9ac4f747db35",
+        "size": 4001
+      },
+      {
+        "generator": "sha256-counter-v1",
+        "sha256": "5fc8eb3f903a37727e6a712a668aedd0668fa9c8b4424f9daed9db8047895612",
+        "size": 1048593
+      }
+    ],
+    "observedBehavior": {
+      "dataPacketMaxSegmentBytes": 4000,
+      "fileBundleSchema": "ndnsf-distributed-repo-file-bundle-v1",
+      "packetRequestCarriesExactWire": true,
+      "putFileDefaultChunkBytes": 16777216,
+      "sqliteJournalMode": "WAL",
+      "sqliteStoresPacketWireBlob": true,
+      "sqliteTables": [
+        "capacity_reservations",
+        "catalog_journal",
+        "catalog_tombstones",
+        "data_packets",
+        "data_segments",
+        "object_packet_refs",
+        "objects",
+        "peer_watermarks",
+        "repair_jobs",
+        "repo_membership",
+        "repo_meta",
+        "serving_packets",
+        "serving_prefixes",
+        "write_operations",
+        "write_receipts"
+      ],
+      "storeObjectAttempts": 3,
+      "storeObjectControlOperations": [
+        "CAPABILITY",
+        "COMMIT_PACKET_SET",
+        "STORE_PACKET",
+        "STORE_PACKET_PULL"
+      ]
+    },
+    "operationCountModel": {
+      "capabilitySelectionCallsPerStoreAttempt": "0 with explicit replicas or valid placement cache; otherwise 1",
+      "commitCallsPerSuccessfulStoreAttempt": "replicationFactor COMMIT_PACKET_SET calls",
+      "maximumStoreAttempts": 3,
+      "pullStoreCallsPerStoreAttempt": "replicationFactor STORE_PACKET_PULL calls",
+      "pushStoreCallsPerStoreAttempt": "replicationFactor * signedDataPacketCount STORE_PACKET calls",
+      "putFileStoreObjectCalls": "ceil(fileBytes / chunkBytes) file chunks + 1 root manifest; an empty file publishes only the root manifest",
+      "reserveCallsPerStoreAttempt": "replicationFactor when capacity reservations are enabled"
+    },
+    "schemaVersion": "spec164-exact-packet-v1-subject-v1",
+    "sourceFiles": [
+      {
+        "path": "NDNSF-DistributedRepo/pythonWrapper/py_repoclient/orchestration.py",
+        "sha256": "e1a1fe1dfaa9941fa44388ace76da3f5dfd0285c47cc430a0af0caebfecd37b5"
+      },
+      {
+        "path": "pythonWrapper/src/ndnsf/_ndnsf.cpp",
+        "sha256": "ce7c8a66b0669046370585c53d634496c9bbe5d9712c91c523688c40d523f1e8"
+      }
+    ],
+    "subjectLabel": "legacy-exact-packet-path-before-artifact-manifest-v2",
+    "symbolSha256": {
+      "DistributedRepo.get_file": "27b60f9f85db4f335efa58e2442798228c1fe2fd3988456cc5f3d1d4e77d4f74",
+      "DistributedRepo.put": "162da0c0273d7336c4fb06e842aebe5a754bbc3957b53ab40ba7f24d3c60f189",
+      "DistributedRepo.put_file": "c1d2969c3489c20f6af33736aad735a90eac75a5af867aae65fcca610a5b14b8",
+      "NetworkDistributedRepoClient._packet_to_request": "0c85525c6339ab2cd0fdbe7cdf5e17d2e0d2b579b1fd06cc4a9dcb09fc0f7ba5",
+      "NetworkDistributedRepoClient.store_object": "e55df73685e1d9fd69eb34a908852a3bf90ef4519ec346ad69526a4dd6b5db81",
+      "RepoNodeApp._init_sqlite": "9432a07ade9f34491e4ebc2f7f2ede3916d013ba264a65cae3d60f4fb691e73f",
+      "RepoNodeApp._persist_packet": "69f81aa4721942552fb82e8034beb9ea437bc0492b502322bb1f4cbe2228d08e",
+      "RepoNodeApp._persist_packets": "ef5eee3a78d2f13ef11856703d0573a3478d9a15c83c5ce63ac74897dd8b1f88",
+      "fetchSegmentedDataPackets": "60fc54f74714a14d3dd5ee921c09bb5afc79625f98a820712a82317b9c34bef5",
+      "makeSegmentedDataPackets": "d9471becf86c025ec920fdde54626a7278d1db1695ac041b8841793ec9b76046"
+    }
+  }
+}

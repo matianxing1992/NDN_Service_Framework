@@ -11,7 +11,7 @@ from onnx import TensorProto, helper
 root = Path(__file__).resolve().parent
 repo = root.parents[2]
 sys.path[:0] = [str(repo / 'NDNSF-DistributedInference'), str(repo / 'NDNSF-DistributedRepo/pythonWrapper')]
-from candidate_oracle_support import fixture_model, digest
+from candidate_oracle_support import fixture_model, digest, integer_attribute_graph
 from ndnsf_distributed_inference.adapters.onnx.graph import analyze_onnx_graph, to_model_graph_snapshot, canonical_onnx_identity
 from ndnsf_distributed_inference.splitter import _canonical_bytes
 
@@ -47,9 +47,8 @@ with tempfile.TemporaryDirectory() as temp:
         onnx.save(model, path)
         summary = analyze_onnx_graph(path)
         snapshot = to_model_graph_snapshot(summary, adapter)
+        snapshot, metadata = integer_attribute_graph(model, summary, snapshot)
         identity = canonical_onnx_identity(path)
-        metadata = summary.to_dict()
-        metadata.pop('modelPath')
         rows.append({'name': label, 'model_hex': path.read_bytes().hex(),
             'snapshot': asdict(snapshot), 'metadata_json': _canonical_bytes(metadata).decode(),
             'canonical_graph_digest': identity.graph_digest,

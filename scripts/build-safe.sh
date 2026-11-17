@@ -9,6 +9,7 @@ if (( $# == 0 )); then
 fi
 
 build_command=()
+build_working_dir=$PWD
 if [[ $1 == run ]]; then
     shift
     [[ ${1:-} == -- ]] || { echo 'Usage: build-safe.sh run -- COMMAND [ARGS...]' >&2; exit 2; }
@@ -46,6 +47,13 @@ elif [[ $1 == build ]]; then
         set -- "$@" --jobs=6
     fi
     build_command=("$build_repo/waf" "$@")
+    # The root lock points at the last configured tree, which may be the sanitizer tree.
+    # Ordinary host builds always select the maintained normal configuration explicitly.
+    build_working_dir="$build_repo/build"
+    if [[ ! -f "$build_working_dir/.lock-waf_linux_build" ]]; then
+        echo 'Configure the maintained build/ tree before an ordinary host build' >&2
+        exit 2
+    fi
 else
     echo 'build-safe.sh accepts waf build or run -- COMMAND' >&2
     exit 2
@@ -59,4 +67,5 @@ if ! flock -n 9; then
 fi
 
 echo 'Host build memory limit: none'
+cd -- "$build_working_dir"
 exec "${build_command[@]}"

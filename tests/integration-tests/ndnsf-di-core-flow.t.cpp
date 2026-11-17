@@ -1,3 +1,5 @@
+#include "tests/fixtures/test-resource-paths.hpp"
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/spec182/native-qwen-config.hpp"
 
@@ -75,20 +77,11 @@
 #include <thread>
 
 namespace ndn_service_framework {
-struct ServiceProviderTestAccess
-{
-  static void seedCachedRtt(ServiceProvider& observer, ServiceProvider& peer)
-  {
-    // Controlled validated-store boundary; targeted response authentication and
-    // requester cache admission still use the production implementations.
-    observer.m_networkTelemetry.updateActiveProbe(observer.getName(), peer.getName(),
-      "spec199-cache-fixture", peer.getProviderBootEpoch(),
-      ndn::Name(peer.getName()).append("spec199-cached-rtt"), 20.0);
-  }
-};
+
 } // namespace ndn_service_framework
 
 namespace ndnsf::di::tests {
+namespace test = ::ndn_service_framework::test;
 namespace {
 
 using namespace ndn_service_framework;
@@ -5751,90 +5744,42 @@ struct Spec175NativeTinyCaseOptions
 std::filesystem::path
 findSpec175TinyOneRoleFixture()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/one-role/role-0.onnx");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::exists(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
+  return ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/one-role/role-0.onnx");
 }
 
 std::filesystem::path
 findSpec175TinyTwoRoleFixture()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/two-role");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::exists(candidate / "role-0.onnx") &&
-        std::filesystem::exists(candidate / "role-1.onnx")) {
-      return candidate;
-    }
-  }
-  return {};
+  const auto first = ndnsf::test::testFixturePath(
+    "spec175/tiny-causal-lm-v1/two-role/role-0.onnx");
+  ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/two-role/role-1.onnx");
+  return first.parent_path();
 }
 
 std::filesystem::path
 findSpec175TinyRoleFixture(std::size_t providerCount)
 {
-  if (providerCount == 2) {
-    return findSpec175TinyTwoRoleFixture();
+  if (providerCount == 2) return findSpec175TinyTwoRoleFixture();
+  const auto first = ndnsf::test::testFixturePath(
+    "spec175/tiny-causal-lm-v1/four-role/role-0.onnx");
+  for (std::size_t index = 1; index < providerCount; ++index) {
+    ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/four-role/role-" +
+                                std::to_string(index) + ".onnx");
   }
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/four-role");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    bool complete = true;
-    for (std::size_t index = 0; index < providerCount; ++index) {
-      complete = complete && std::filesystem::exists(
-        candidate / ("role-" + std::to_string(index) + ".onnx"));
-    }
-    if (complete) {
-      return candidate;
-    }
-  }
-  return {};
+  return first.parent_path();
 }
 
 std::filesystem::path
 findSpec175TinyStandaloneTokenizer()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/standalone/tokenizer.json");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::is_regular_file(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
+  return ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/standalone/tokenizer.json");
 }
 
 std::filesystem::path
 findSpec175TinyUnicodeTokenizer()
 {
-  const auto relative = std::filesystem::path(
-    "tests/fixtures/spec175/tiny-causal-lm-v1/standalone/unicode/tokenizer.json");
-  for (const auto& root : {std::filesystem::current_path(),
-                           std::filesystem::current_path().parent_path(),
-                           std::filesystem::current_path().parent_path().parent_path()}) {
-    const auto candidate = root / relative;
-    if (std::filesystem::is_regular_file(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
+  return ndnsf::test::testFixturePath(
+    "spec175/tiny-causal-lm-v1/standalone/unicode/tokenizer.json");
 }
 
 ndn::Buffer

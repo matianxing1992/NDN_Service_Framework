@@ -1,3 +1,4 @@
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 
@@ -445,20 +446,10 @@ std::vector<std::uint8_t> fromHex(const std::string& hex)
 
 boost::property_tree::ptree loadFixture(const std::string& fileName)
 {
-  namespace pt = boost::property_tree;
-  const std::string candidates[] = {
-    "tests/fixtures/spec182/dependency-probes/" + fileName,
-    "../tests/fixtures/spec182/dependency-probes/" + fileName,
-  };
-  for (const auto& path : candidates) {
-    std::ifstream in(path);
-    if (in) {
-      pt::ptree root;
-      pt::read_json(in, root);
-      return root;
-    }
-  }
-  throw std::runtime_error("fixture not found: " + fileName);
+  boost::property_tree::ptree root;
+  boost::property_tree::read_json(ndnsf::test::testFixturePath(
+    std::filesystem::path("spec182/dependency-probes") / fileName).string(), root);
+  return root;
 }
 
 // JSON arrays parse to children with empty keys, so rows are found by

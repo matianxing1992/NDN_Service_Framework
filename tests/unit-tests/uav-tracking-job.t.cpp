@@ -22,7 +22,7 @@ struct JobFixture : tracking_fixture::ConfigFixture
     , certificate(keys.createIdentity(ndn::Name("/lab/gs"), ndn::RsaKeyParams(2048))
                     .getDefaultKey().getDefaultCertificate())
     , face(keys)
-    , trustSchema(ndnsf_distributed_repo::tests::writeFixedKeychainTrust(root, keys))
+    , trustSchema(ndnsf_distributed_repo::tests::writeFixedKeychainTrust(root, {certificate}))
     , user(ndn_service_framework::ServiceUser::LocalMockTag{}, face, ndn::Name("/lab/group"),
            certificate, certificate, trustSchema)
     , job(user, face,

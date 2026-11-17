@@ -91,7 +91,7 @@ struct CanonicalPublisherInput
   NativeRequestControl control{"/request", 1, Clock::now() + std::chrono::seconds(10), {}};
   explicit CanonicalPublisherInput(bool external = false)
   {
-    std::ifstream stream("tests/fixtures/spec182/dependency-probes/extraction-vectors.json");
+    std::ifstream stream(ndnsf::test::testFixturePath("spec182/dependency-probes/extraction-vectors.json").string());
     if (!stream) throw std::runtime_error("missing frozen ONNX source fixture");
     const auto vectors = NativeJson::parse(stream);
     const auto& row = vectors.at("cases")[external ? 1 : 0];
@@ -908,7 +908,7 @@ BOOST_AUTO_TEST_CASE(CatalogComposesOwnedInputInspectionRolesAndPublication)
 BOOST_AUTO_TEST_CASE(StateBindingConsumesActualCausalOnnxExport)
 {
   Input input;
-  std::ifstream file("tests/fixtures/spec175/tiny-causal-lm-v1/one-role/role-0.onnx", std::ios::binary);
+  std::ifstream file(ndnsf::test::testFixturePath("spec175/tiny-causal-lm-v1/one-role/role-0.onnx").string(), std::ios::binary);
   BOOST_REQUIRE(file.good());
   input.source->modelBytes.assign(std::istreambuf_iterator<char>(file), {});
   input.model.canonicalSourceBytes = input.source->modelBytes.size();
@@ -2386,7 +2386,8 @@ BOOST_AUTO_TEST_CASE(RangeFileMutationAfterAdmissionCannotPublishStaleMaterialDi
 {
   Input input(true);
   const auto bytes = input.source->initializerBytes->asVector();
-  char path[] = "/var/tmp/ndnsf-di-material-mutation-XXXXXX";
+  auto pathTemplate = ndnsf::test::makeTestScratchTemplate("ndnsf-di-material-mutation");
+  auto* path = pathTemplate.data();
   const int fd = ::mkstemp(path);
   BOOST_REQUIRE_GE(fd, 0);
   struct Cleanup {
@@ -2948,7 +2949,7 @@ BOOST_AUTO_TEST_CASE(NativeMergePublishesAndSealsWithoutOnnxRecipe)
     candidate.mergeKind = merge.mergeKind;
     candidate.postprocessingJson = R"({"identity":"YOLO26n-canonical-detection-rows","outputName":"predictions","confidenceThreshold":0.001,"sort":"confidence-desc,class-asc,xyxy-asc"})";
     candidate.candidateDigest = candidate.computedDigest();
-    std::ifstream file("tests/fixtures/spec182/native-merge-offers.json");
+    std::ifstream file(ndnsf::test::testFixturePath("spec182/native-merge-offers.json").string());
     const auto signedOffers = NativeJson::parse(file);
     NativeOfferAdmission admission(signedOffers.at("policy").dump(),
       {{signedOffers.at("key_id"), signedOffers.at("public_pem")}}, signedOffers.at("candidate"));

@@ -1,3 +1,4 @@
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -48,14 +49,7 @@
 
 namespace ndn_service_framework {
 
-struct ServiceProviderTestAccess
-{
-  static void useSigningKeyChainForPeerProbe(ServiceProvider& provider,
-                                             ndn::KeyChain& keyChain)
-  {
-    provider.m_testSigningKeyChain = &keyChain;
-  }
-};
+
 
 } // namespace ndn_service_framework
 

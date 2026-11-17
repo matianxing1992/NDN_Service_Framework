@@ -10,10 +10,8 @@ from pptx.util import Inches
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SLIDES = REPO_ROOT / "docs" / "PAPER" / "proposal-defense" / "slides"
-sys.path.insert(0, str(SLIDES))
 SPEC = importlib.util.spec_from_file_location(
-    "hybrid_editable_pptx", SLIDES / "generate_hybrid_editable_pptx.py"
+    "pptx_text_layout", REPO_ROOT / "tools/pptx_text_layout.py"
 )
 hybrid = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = hybrid

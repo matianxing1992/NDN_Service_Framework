@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(FileBackedSegmentsAreExactAndWindowed)
   const auto expectedPath = dataDirectory;
   {
     LocalServiceUser user(face, ndn::Name("/spec188/group"), userCert,
-                          authorityCert, "examples/trust-any.conf");
+                          authorityCert);
     user.useSigningKeyChainForSigningOnlyForTest(keyChain);
     user.attachLocalMockPubSubForTest(makeTestPubSub(face, keyChain));
     user.init();
@@ -287,7 +287,7 @@ BOOST_AUTO_TEST_CASE(InvalidFileBackedRetentionHasNoPublicationSideEffects)
   const auto authorityCert = makeRsaIdentity(keyChain, ndn::Name("/spec188/invalid-authority"));
   {
     LocalServiceUser user(face, ndn::Name("/spec188/invalid-group"), userCert,
-                          authorityCert, "examples/trust-any.conf");
+                          authorityCert);
     user.useSigningKeyChainForSigningOnlyForTest(keyChain);
     user.attachLocalMockPubSubForTest(makeTestPubSub(face, keyChain));
     user.init();

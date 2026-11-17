@@ -401,8 +401,7 @@ BOOST_AUTO_TEST_CASE(ServiceProviderSeamCommitsBeforeProjectionAndReplays)
   auto authorityCert =
       makeRsaIdentity(keyChain, ndn::Name("/test/opaque-authority"));
   LocalServiceProvider provider(
-      face, ndn::Name("/test/group"), providerCert, authorityCert,
-      "examples/trust-any.conf");
+      face, ndn::Name("/test/group"), providerCert, authorityCert);
   const auto root = uniqueRoot("provider-seam");
   std::filesystem::create_directories(root);
   auto store = std::make_shared<GenericSelectionTxnStore>(
@@ -478,8 +477,7 @@ BOOST_AUTO_TEST_CASE(
   auto authorityCert =
       makeRsaIdentity(keyChain, ndn::Name("/test/opaque-deferred-authority"));
   LocalServiceProvider provider(
-      face, ndn::Name("/test/group"), providerCert, authorityCert,
-      "examples/trust-any.conf");
+      face, ndn::Name("/test/group"), providerCert, authorityCert);
   const auto root = uniqueRoot("provider-deferred-envelope");
   std::filesystem::create_directories(root);
   auto store = std::make_shared<GenericSelectionTxnStore>(
@@ -540,8 +538,7 @@ BOOST_AUTO_TEST_CASE(
   auto authorityCert = makeRsaIdentity(
       keyChain, ndn::Name("/test/structured-assignment-authority"));
   LocalServiceProvider provider(
-      face, ndn::Name("/test/group"), providerCert, authorityCert,
-      "examples/trust-any.conf");
+      face, ndn::Name("/test/group"), providerCert, authorityCert);
 
   std::atomic<bool> handlerCalled{false};
   std::string observedRole;
@@ -619,8 +616,7 @@ BOOST_AUTO_TEST_CASE(
   auto authorityCert = makeRsaIdentity(
       keyChain, ndn::Name("/test/single-structured-assignment-authority"));
   LocalServiceProvider provider(
-      face, ndn::Name("/test/group"), providerCert, authorityCert,
-      "examples/trust-any.conf");
+      face, ndn::Name("/test/group"), providerCert, authorityCert);
 
   std::atomic<bool> handlerCalled{false};
   ndn::Buffer observedAssignmentPayload;

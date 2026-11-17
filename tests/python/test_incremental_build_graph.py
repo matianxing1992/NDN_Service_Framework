@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +31,33 @@ def post_selected(build):
 
 @unittest.skipUnless(CONFIGURED_TEST_BUILD, 'requires the configured native test build')
 class IncrementalBuildGraph(unittest.TestCase):
+    def test_adding_a_fixture_preserves_native_object_paths(self):
+        targets = ['unit-tests', 'integration-tests', 'spec224-tp-tests']
+
+        def object_paths(build):
+            post_selected(build)
+            return {name: sorted(output.abspath()
+                    for task in build.get_tgen_by_name(name).compiled_tasks
+                    for output in task.outputs) for name in targets}
+
+        original = object_paths(load_graph(targets))
+        from waflib import Node
+        original_glob = Node.Node.ant_glob
+
+        def extra_fixture(node, *args, **kwargs):
+            files = original_glob(node, *args, **kwargs)
+            if node.abspath() == str(ROOT / 'tests') and args == ('fixtures/**/*',):
+                # A graph-only node: no source file or build artifact is written.
+                return files + [node.make_node('fixtures/object-index-probe.json')]
+            return files
+
+        with patch.object(Node.Node, 'ant_glob', extra_fixture):
+            changed = object_paths(load_graph(targets))
+        for name in targets:
+            with self.subTest(target=name):
+                self.assertTrue(original[name])
+                self.assertEqual(original[name], changed[name])
+
     def test_production_di_has_one_compilation_owner(self):
         build = load_graph(['ndnsf-distributed-inference'])
         names = ['ndnsf-distributed-inference', 'ndnsf-di-core-objects',

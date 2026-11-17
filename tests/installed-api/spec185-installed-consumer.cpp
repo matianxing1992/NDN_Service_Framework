@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <unistd.h>
 #include <string>
@@ -21,10 +22,16 @@ writeTinyOnnxFixture()
   static constexpr char kHex[] =
     "080a1207737065633138353a4c0a1a0a01581201591a086964656e7469747922084964656e74697479"
     "120474696e795a130a0158120e0a0c080112080a0208010a02080162130a0159120e0a0c080112080a0208010a02080142040a00100d";
-  const auto path = std::filesystem::path("/tmp") /
-    ("spec185-installed-consumer-" + std::to_string(static_cast<long long>(::getpid())) + ".onnx");
+  char pattern[] = "/tmp/ndnsf-installed-consumer-XXXXXX";
+  const int descriptor = ::mkstemp(pattern);
+  if (descriptor < 0) throw std::runtime_error("cannot create tiny ONNX fixture");
+  ::close(descriptor);
+  const auto path = std::filesystem::path(pattern);
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output) throw std::runtime_error("cannot create tiny ONNX fixture");
+  if (!output) {
+    std::filesystem::remove(path);
+    throw std::runtime_error("cannot create tiny ONNX fixture");
+  }
   for (std::size_t i = 0; kHex[i] != '\0'; i += 2) {
     const auto nibble = [] (char c) -> unsigned char {
       if (c >= '0' && c <= '9') return static_cast<unsigned char>(c - '0');
@@ -35,6 +42,10 @@ writeTinyOnnxFixture()
     output.put(byte);
   }
   output.close();
+  if (!output) {
+    std::filesystem::remove(path);
+    throw std::runtime_error("cannot write tiny ONNX fixture");
+  }
   return path;
 }
 #endif
@@ -50,12 +61,8 @@ main()
   static_assert(std::is_destructible_v<ndnsf::di::OnnxRuntimeModelRunner>);
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
-  // This translation unit declares the macro absent, and the assertion is about what the *library*
-  // does when it is present: the installed library is linked either way, so `create` reaches the
-  // real adapter. The previous form demanded a "not enabled" message, which only an ONNX-disabled
-  // library produces -- it conflated "this probe was compiled without the macro" with "the library
-  // was built without the backend". What the probe can assert here is that the factory rejects an
-  // unusable spec rather than returning a runner for it, whichever layer rejects it.
+  // The caller must select a library built without the ONNX backend. A missing model in an
+  // enabled library does not exercise the disabled-backend contract.
   ndnsf::di::NativeModelRunnerSpec spec;
   spec.backend = "onnxruntime";
   spec.path = "/does/not/exist.onnx";
@@ -65,10 +72,7 @@ main()
     (void)factory.create(spec);
   }
   catch (const std::runtime_error& error) {
-    const std::string message = error.what();
-    const bool rejected = message.find("not enabled") != std::string::npos ||
-      message.find("cannot open ONNX graph") != std::string::npos;
-    return rejected ? 0 : 3;
+    return std::string(error.what()).find("not enabled") != std::string::npos ? 0 : 3;
   }
   return 2;
 #else
@@ -76,6 +80,15 @@ main()
   // ONNX graph.  The later native qualification batch owns full request
   // behavior; this B0 probe is limited to installed object lifetime.
   const auto fixture = writeTinyOnnxFixture();
+  struct FixtureCleanup
+  {
+    const std::filesystem::path& path;
+    ~FixtureCleanup()
+    {
+      std::error_code error;
+      std::filesystem::remove(path, error);
+    }
+  } cleanup{fixture};
   ndnsf::di::NativeModelRunnerSpec spec;
   spec.backend = "onnxruntime";
   spec.path = fixture.string();
