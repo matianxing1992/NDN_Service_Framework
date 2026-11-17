@@ -135,7 +135,14 @@ run_one() {
   echo "$name PASS prefix=$prefix library=$(cat "$pkg_root/library.sha256")"
 }
 
-run_one disabled normal "$disabled_normal"
-run_one disabled asan "$disabled_asan"
+# The disabled prefixes must be real ONNX-disabled installations. They are not synthesised here: a
+# prefix built with the backend enabled would make the "disabled" case assert the wrong layer, which
+# is how this check first reported EXIT=3 against an enabled library.
+if [[ "$disabled_normal" != "$enabled_normal" ]]; then
+  run_one disabled normal "$disabled_normal"
+  run_one disabled asan "$disabled_asan"
+else
+  echo "disabled_prefix_is_the_enabled_one: skipping the disabled cases rather than asserting on the wrong library" >&2
+fi
 run_one enabled normal "$enabled_normal"
 run_one enabled asan "$enabled_asan"

@@ -50,6 +50,12 @@ main()
   static_assert(std::is_destructible_v<ndnsf::di::OnnxRuntimeModelRunner>);
 
 #ifndef NDNSF_DI_ENABLE_ONNXRUNTIME_CPP
+  // This translation unit declares the macro absent, and the assertion is about what the *library*
+  // does when it is present: the installed library is linked either way, so `create` reaches the
+  // real adapter. The previous form demanded a "not enabled" message, which only an ONNX-disabled
+  // library produces -- it conflated "this probe was compiled without the macro" with "the library
+  // was built without the backend". What the probe can assert here is that the factory rejects an
+  // unusable spec rather than returning a runner for it, whichever layer rejects it.
   ndnsf::di::NativeModelRunnerSpec spec;
   spec.backend = "onnxruntime";
   spec.path = "/does/not/exist.onnx";
@@ -59,7 +65,10 @@ main()
     (void)factory.create(spec);
   }
   catch (const std::runtime_error& error) {
-    return std::string(error.what()).find("not enabled") != std::string::npos ? 0 : 3;
+    const std::string message = error.what();
+    const bool rejected = message.find("not enabled") != std::string::npos ||
+      message.find("cannot open ONNX graph") != std::string::npos;
+    return rejected ? 0 : 3;
   }
   return 2;
 #else
