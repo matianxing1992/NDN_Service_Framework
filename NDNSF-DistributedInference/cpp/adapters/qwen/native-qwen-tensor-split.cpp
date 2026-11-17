@@ -2550,7 +2550,7 @@ buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape
                  contract.stateOutputNames[index];
   }
   contract.stateSuccessorMap = std::move(successor);
-  contract.positionInputPolicy = "position_ids";
+  contract.positionInputPolicy = "qwen-causal-position-v1";
   contract.attentionMaskInputName = "attention_mask";
   contract.positionIdsInputName = "position_ids";
   contract.eosTokenIds = sealed.eosTokenIds;

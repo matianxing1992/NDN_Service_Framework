@@ -7555,6 +7555,24 @@ BOOST_AUTO_TEST_CASE(ShardedGenerationContractSatisfiesTheSealerRequirements)
   sealed.eosTokenIds = {2};
   const auto contract = qwen::buildQwenTpGenerationContract(plan, shape, sealed);
 
+  // Exercise the actual ordinary-runner consumer, not just the generation wire schema.
+  // A tensor name is not a policy identifier, even when both contracts serialize it.
+  StatefulOnnxIoContractV1 positionIo;
+  positionIo.inputNames = {contract.tokenInputName, contract.attentionMaskInputName,
+                           contract.positionIdsInputName};
+  CausalPositionInputContractV1 position;
+  position.policy = contract.positionInputPolicy;
+  position.attentionMaskInputName = contract.attentionMaskInputName;
+  position.positionIdsInputName = contract.positionIdsInputName;
+  position.cachePositionInputName = contract.cachePositionInputName;
+  BOOST_CHECK_NO_THROW(position.validate(positionIo));
+  auto unknownPolicy = position;
+  unknownPolicy.policy = "position_ids";
+  BOOST_CHECK_THROW(unknownPolicy.validate(positionIo), std::invalid_argument);
+  auto missingPosition = positionIo;
+  missingPosition.inputNames.pop_back();
+  BOOST_CHECK_THROW(position.validate(missingPosition), std::invalid_argument);
+
   BOOST_CHECK(contract.enabled);
   BOOST_CHECK_EQUAL(contract.mode, std::string("TOKEN_STREAMING"));
   BOOST_CHECK_EQUAL(contract.maxGeneratedTokens, 4U);
