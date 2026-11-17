@@ -15463,7 +15463,18 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
     BOOST_CHECK_LE(worstExcess, 0.0);
   }
 
-  std::filesystem::remove_all(root, cleanupError);
+  // The per-rank entry tables are written under this root while the case runs, and the artifact a
+  // question about the real shards needs -- `S0R0-ATTN-27.onnx` as the assembler produced it -- is
+  // gone by the time anyone can look. Removal is therefore skippable and the path is printed; the
+  // default stays "clean up", because a test that leaves directories behind by default is a worse
+  // habit than one that can be asked to keep them.
+  if (const char* keep = std::getenv("NDNSF_SPEC224_KEEP_ENTRIES");
+      keep != nullptr && *keep != '\0' && std::string(keep) != "0") {
+    BOOST_TEST_MESSAGE("kept the rank entry tables under " << root.string());
+  }
+  else {
+    std::filesystem::remove_all(root, cleanupError);
+  }
 }
 
 BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
