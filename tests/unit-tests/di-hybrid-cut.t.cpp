@@ -2427,8 +2427,11 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
                       const std::map<std::string, NativeModelRunnerSpec>& specs,
                       bool dynamic, const std::string& label, bool externalControls = false,
                       bool coordinator = false,
-                      CoordinatorFault fault = CoordinatorFault::NONE)
+                      CoordinatorFault fault = CoordinatorFault::NONE,
+                      bool finalizeCheckpoint = false)
 {
+  const std::size_t generationTokens = finalizeCheckpoint ? 32 : 2;
+  const auto generationEpochs = generationTokens + (finalizeCheckpoint ? 1 : 0);
   const std::string sessionId = "three-worker-prefill/" + label +
     (dynamic ? "/decode" : "/prefill");
   auto fullReference = makeCompleteSourceReference(source, externalControls);
@@ -2535,7 +2538,8 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
       config.lineagePlanDigest = seed;
       config.positionPolicyDigest = seed;
       config.samplingDigest = seed;
-      config.maxEpochs = 2;
+      config.maxEpochs = generationTokens;
+      config.checkpointFinalize = finalizeCheckpoint;
       config.eosTokenIds = {63};
       config.terminalRole = role == egress;
       config.stateInputNames = roleSpecs.at(role).stateInputNames;
@@ -2644,13 +2648,21 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
       return;
     }
     BOOST_REQUIRE_MESSAGE(failures.str().empty(), label << " Coordinator: " << failures.str());
-    BOOST_REQUIRE_EQUAL(sampledTokens.size(), 2u);
-    BOOST_REQUIRE_EQUAL(coordinatedResults.size(), 2u);
-    BOOST_TEST_MESSAGE(label << " sampled token IDs=" << sampledTokens[0] << ","
-                            << sampledTokens[1]);
+    BOOST_REQUIRE_EQUAL(sampledTokens.size(), generationTokens);
+    BOOST_REQUIRE_EQUAL(coordinatedResults.size(), generationEpochs);
+    BOOST_TEST_MESSAGE(label << " sampled token IDs="
+                            << nativeCanonicalJson(NativeJson(sampledTokens)));
     for (const auto& item : results) {
-      BOOST_CHECK_EQUAL(item.second.epochsExecuted, 2u);
-      BOOST_CHECK_EQUAL(item.second.eventsPublished, item.first == egress ? 2u : 0u);
+      BOOST_CHECK_EQUAL(item.second.epochsExecuted, generationEpochs);
+      BOOST_CHECK_EQUAL(item.second.eventsPublished,
+                        item.first == egress ? generationTokens : 0u);
+      if (finalizeCheckpoint) {
+        BOOST_REQUIRE(item.second.finalizedRole);
+        const auto& state = item.second.finalizedRole->candidateDecodeStateIdentity;
+        BOOST_REQUIRE(state);
+        BOOST_CHECK_EQUAL(state->prefixTokenCount, 3 + generationTokens);
+        BOOST_CHECK_EQUAL(item.second.finalizedRole->inferenceEpoch, generationTokens);
+      }
     }
   }
 
@@ -2666,7 +2678,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
   std::set<std::string> publicationNames;
   float worstLogits = 0;
   double worstState = 0;
-  const std::size_t epochs = coordinator ? 2 : dynamic ? 3 : 1;
+  const std::size_t epochs = coordinator ? generationEpochs : dynamic ? 3 : 1;
   for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
     const std::vector<std::int64_t> tokens = epoch == 0
       ? std::vector<std::int64_t>{1, 2, 3}
@@ -2780,7 +2792,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     std::vector<float> referenceLogits(prefix.size() * shape.vocab);
     BOOST_REQUIRE_EQUAL(expectedLogits.payload.size(), referenceLogits.size() * sizeof(float));
     std::memcpy(referenceLogits.data(), expectedLogits.payload.data(), expectedLogits.payload.size());
-    if (coordinator) {
+    if (coordinator && epoch < generationTokens) {
       const auto last = referenceLogits.end() - static_cast<std::ptrdiff_t>(shape.vocab);
       const auto wanted = std::distance(last, std::max_element(last, referenceLogits.end()));
       BOOST_CHECK_EQUAL(sampledTokens.at(epoch), wanted);
@@ -2839,7 +2851,9 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     }
   }
   for (const auto& [role, runner] : runners) {
-    if (coordinator)
+    if (finalizeCheckpoint)
+      BOOST_CHECK(coordinatedRuntimes.at(role)->releaseDecodeState(sessionId, role));
+    else if (coordinator)
       BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
     runner->releaseSessionState(sessionId);
     BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
@@ -3276,10 +3290,13 @@ std::pair<NativeJson, NativeCanonicalSource>
 hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
                      const std::string& backend = "onnxruntime", bool mirrored = false,
                      bool externalControls = false,
-                     const std::vector<std::uint64_t>& degrees = {})
+                     const std::vector<std::uint64_t>& degrees = {},
+                     bool finalizeCheckpoint = false)
 {
-  std::ifstream input(degrees.empty() ? "../tests/fixtures/spec242/four-layer-decode.onnx"
-    : "../tests/fixtures/spec242/four-layer-degree-matrix.onnx", std::ios::binary);
+  const auto* sourcePath = finalizeCheckpoint ? "../tests/fixtures/spec242/four-layer-conversation.onnx"
+    : degrees.empty() ? "../tests/fixtures/spec242/four-layer-decode.onnx"
+                      : "../tests/fixtures/spec242/four-layer-degree-matrix.onnx";
+  std::ifstream input(sourcePath, std::ios::binary);
   BOOST_REQUIRE(static_cast<bool>(input));
   NativeCanonicalSource source;
   source.modelBytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
@@ -3698,7 +3715,8 @@ verifyHybridGenerationCodec(NativeSelectionProjectionV3 projection,
 void
 verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordinator = false,
                       CoordinatorFault fault = CoordinatorFault::NONE,
-                      const std::vector<std::uint64_t>& degrees = {})
+                      const std::vector<std::uint64_t>& degrees = {},
+                      bool finalizeCheckpoint = false)
 {
   // These projections exercise post-admission assembly, not Selection or transport security.
   if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
@@ -3774,7 +3792,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     return;
   }
   auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu", mirrored,
-                                      externalControls, degrees);
+                                      externalControls, degrees, finalizeCheckpoint);
   auto& configuration = fixture.first;
   const auto& source = fixture.second;
   const auto root = nativeCanonicalJson(NativeJson{
@@ -3907,7 +3925,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       role.role == prepared.candidate.resultEgressRole;
     projection.generationContract.enabled = true;
     projection.generationContract.mode = "TOKEN_STREAMING";
-    projection.generationContract.maxGeneratedTokens = 3;
+    projection.generationContract.maxGeneratedTokens = finalizeCheckpoint ? 32 : 3;
     projection.generationContract.streamingOperationStride = projection.plan.dependencies.size();
     qwen::bindQwenTpGenerationState(projection.plan, projection.generationContract);
     BOOST_TEST_CONTEXT("role=" << role.role) {
@@ -4034,7 +4052,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       executionPlan, shape, units, prepared.candidate.resultEgressRole,
       *item.second, true, item.first + "-" + layoutLabel +
         (externalControls ? "-controls" : "") + (coordinator ? "-coordinator" : ""),
-      externalControls, coordinator, fault);
+      externalControls, coordinator, fault, finalizeCheckpoint);
   }
   if (coordinator) return;
   const auto sidecar = workspace.root / "reopen.json";
@@ -4101,6 +4119,11 @@ BOOST_AUTO_TEST_CASE(HybridCoordinatorsGenerateFromActualFeedback)
 {
   verifyHybridMaterials(false, false, true);
   verifyHybridMaterials(true, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(HybridCoordinatorsFinalizeTheThirtySecondToken)
+{
+  verifyHybridMaterials(false, false, true, CoordinatorFault::NONE, {}, true);
 }
 
 BOOST_AUTO_TEST_CASE(HybridCoordinatorRejectsMissingAndForeignActivationLineage)
