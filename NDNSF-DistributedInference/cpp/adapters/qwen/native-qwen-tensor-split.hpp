@@ -745,7 +745,7 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  * directory, which a nested layout would produce.
  *
  * @param spec   Rank spec produced by assembly; rewritten in place.
- * @param layers Number of transformer layers the rank graph carries.
+ * @param layers Exclusive global layer end of the assembled source region.
  * @param steps  Sealed steps this unit must be able to execute.
  * @param rankedByteBudget Total bytes this rank may occupy. It is one budget for
  *        the whole rank, per D6, not a limit applied afresh to each entry.
@@ -754,8 +754,21 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  *        pipeline role is unaffected.
  * @param tensorRank Rank of this unit within `tensorDegree`.
  * @param control Existing assembly deadline and cancellation owner, if supplied.
+ * @param layerBegin First global layer in the assembled source region. `layers`
+ *        is its exclusive global end.
  * @throws std::runtime_error when the rank artifact cannot be read or split.
  */
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget,
+                        std::uint64_t tensorDegree,
+                        std::uint64_t tensorRank,
+                        const std::string& egressRole,
+                        const QwenTpAssemblyControl* control,
+                        std::uint64_t layerBegin);
+
+/** Full-model compatibility overload: retains the original API and symbol. */
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,

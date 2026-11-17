@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
@@ -1317,6 +1318,134 @@ BOOST_AUTO_TEST_CASE(WindowAssemblyWritesOnlyOwnedEntriesAndAcceptsRegionGraphs)
   }
   BOOST_CHECK(relocated);
   BOOST_CHECK(attentionLayers == std::set<std::uint64_t>({1, 2, 3}));
+
+  // Exercise the same configure entry point used by cold and cached assembly.
+  // These declarations verify material set agreement, not worker input admission.
+  std::vector<NativeExecutionStepSpec> ownedSteps;
+  for (const auto& entry : table) {
+    NativeExecutionStepSpec step;
+    step.stepId = entry.entryId;
+    step.unitId = "later-unit";
+    step.operation = "CALL_SUBGRAPH";
+    step.artifactEntry = entry.entryId;
+    ownedSteps.push_back(std::move(step));
+  }
+  std::filesystem::create_directory(root / "configured");
+  const auto modelPath = root / "configured" / "model.onnx";
+  {
+    std::ofstream output(modelPath, std::ios::binary);
+    output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+    BOOST_REQUIRE(output.good());
+  }
+  NativeModelRunnerSpec spec;
+  spec.role = "later-unit";
+  spec.path = modelPath.string();
+  for (const std::uint64_t degree : {1u, 2u}) {
+    qwen::configureQwenTpRankSpec(spec, 4, ownedSteps, 1024 * 1024,
+                                  degree, 0, "later-unit", nullptr, 1);
+    BOOST_CHECK_EQUAL(spec.backend, "native-qwen-tensor");
+    const auto configured = qwen::parseQwenTpEntryTable(spec.metadata.at("tensorParallelEntries"));
+    BOOST_REQUIRE_EQUAL(configured.size(), 7u);
+    for (const auto& entry : configured) {
+      if (entry.kind != "ATTN") continue;
+      std::ifstream file(modelPath.parent_path() / entry.relativeGraphPath, std::ios::binary);
+      const std::string data((std::istreambuf_iterator<char>(file)),
+                              std::istreambuf_iterator<char>());
+      onnx::ModelProto narrowed;
+      BOOST_REQUIRE(narrowed.ParseFromString(data));
+      bool sawProjection = false;
+      for (const auto& node : narrowed.graph().node()) {
+        if (node.name().find("q_proj") == std::string::npos) continue;
+        for (const auto& attr : node.attribute()) {
+          if (attr.name() != "N") continue;
+          sawProjection = true;
+          BOOST_CHECK_EQUAL(attr.i(), 64 / degree);
+        }
+      }
+      BOOST_CHECK(sawProjection);
+    }
+    const auto firstTable = spec.metadata.at("tensorParallelEntries");
+    qwen::configureQwenTpRankSpec(spec, 4, ownedSteps, 1024 * 1024,
+                                  degree, 0, "later-unit", nullptr, 1);
+    BOOST_CHECK_EQUAL(spec.metadata.at("tensorParallelEntries"), firstTable);
+  }
+  // Omitting the explicit begin still uses the legacy complete-source contract.
+  BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(spec, 4, ownedSteps, 1024 * 1024,
+                                                 2, 0, "later-unit"),
+                    std::invalid_argument);
+
+  auto peerSteps = ownedSteps;
+  peerSteps.erase(std::remove_if(peerSteps.begin(), peerSteps.end(), [] (const auto& step) {
+    return step.artifactEntry.find("/HEAD/") != std::string::npos;
+  }), peerSteps.end());
+  qwen::configureQwenTpRankSpec(spec, 4, peerSteps, 1024 * 1024,
+                                2, 1, "other-unit", nullptr, 1);
+  const auto peer = qwen::parseQwenTpEntryTable(spec.metadata.at("tensorParallelEntries"));
+  BOOST_REQUIRE_EQUAL(peer.size(), 6u);
+  bool checkedPacked = false;
+  for (const auto& entry : peer) {
+    BOOST_CHECK(entry.kind != "HEAD" && entry.kind != "INIT");
+    if (entry.kind != "ATTN" || entry.layer != 1) continue;
+    std::ifstream file(modelPath.parent_path() / entry.relativeGraphPath, std::ios::binary);
+    const std::string data((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+    onnx::ModelProto packed;
+    BOOST_REQUIRE(packed.ParseFromString(data));
+    const std::string weightName = "model.layers.1.attn.q_proj.MatMul.weight_Q4";
+    for (const auto& init : packed.graph().initializer()) {
+      if (init.name() != weightName) continue;
+      for (const auto& original : later.graph().initializer()) {
+        if (original.name() != weightName) continue;
+        checkedPacked = true;
+        BOOST_CHECK_EQUAL(init.dims(0), 32);
+        BOOST_CHECK_EQUAL(init.raw_data(),
+                          original.raw_data().substr(original.raw_data().size() / 2));
+      }
+    }
+  }
+  BOOST_CHECK(checkedPacked);
+
+  const auto rejectGeometry = [&] (const onnx::ModelProto& damaged, const char* expected) {
+    std::filesystem::create_directories(root / "bad-geometry");
+    NativeModelRunnerSpec bad;
+    bad.role = "later-unit";
+    bad.path = (root / "bad-geometry" / "model.onnx").string();
+    {
+      const auto data = damaged.SerializeAsString();
+      std::ofstream output(bad.path, std::ios::binary);
+      output.write(data.data(), static_cast<std::streamsize>(data.size()));
+      BOOST_REQUIRE(output.good());
+    }
+    BOOST_CHECK_EXCEPTION(qwen::configureQwenTpRankSpec(bad, 4, ownedSteps, 1024 * 1024,
+                                                        2, 0, "later-unit", nullptr, 1),
+      std::invalid_argument, [&] (const auto& error) {
+        return std::string(error.what()).find(expected) != std::string::npos;
+      });
+  };
+  auto inconsistent = later;
+  bool changedHeads = false;
+  for (auto& node : *inconsistent.mutable_graph()->mutable_node()) {
+    if (node.op_type() != "GroupQueryAttention" || changedHeads) continue;
+    for (auto& attr : *node.mutable_attribute()) {
+      if (attr.name() != "num_heads") continue;
+      attr.set_i(8);
+      changedHeads = true;
+    }
+  }
+  BOOST_REQUIRE(changedHeads);
+  rejectGeometry(inconsistent, "inconsistent attention head counts");
+  auto missingProjection = later;
+  auto* projections = missingProjection.mutable_graph()->mutable_node();
+  bool removedProjection = false;
+  for (int index = 0; index < projections->size(); ++index) {
+    if (projections->Get(index).name() != "model.layers.2/mlp.up_proj") continue;
+    projections->DeleteSubrange(index, 1);
+    removedProjection = true;
+    break;
+  }
+  BOOST_REQUIRE(removedProjection);
+  rejectGeometry(missingProjection, "does not cover every maintained projection");
+
   // Requiring a source layer that the region does not own must still fail.
   BOOST_CHECK_THROW(qwen::assembleQwenTpEntryTable(
     root / "wrong-range", "later-unit", regionBytes, 4, unsliced, nullptr, 0, 4),

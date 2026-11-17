@@ -21,6 +21,14 @@ namespace ndnsf::di::qwen {
 
 namespace {
 
+QwenTpShape
+deriveQwenTpRegionShape(const std::vector<std::uint8_t>& modelBytes,
+                        std::uint64_t layerBegin, std::uint64_t layerEnd);
+
+void
+retainQwenTpEgressHead(std::vector<QwenTpEntryContract>& table,
+                       const std::string& unitId, const std::string& egressRole);
+
 std::vector<QwenTpEntryNodes>
 classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t layers,
                        std::uint64_t layerBegin, std::uint64_t layerEnd);
@@ -1537,7 +1545,17 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::string& egressRole)
 {
   auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control);
-  if (egressRole.empty()) return table;
+  retainQwenTpEgressHead(table, unitId, egressRole);
+  return table;
+}
+
+namespace {
+
+void
+retainQwenTpEgressHead(std::vector<QwenTpEntryContract>& table,
+                       const std::string& unitId, const std::string& egressRole)
+{
+  if (egressRole.empty()) return;
   if (unitId == egressRole) {
     // The egress unit must have the head; its absence means the caller and the taxonomy
     // disagree about this model rather than that the entry is optional.
@@ -1547,19 +1565,29 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
       throw std::invalid_argument(
         "tensor-parallel egress unit assembled no head entry");
     }
-    return table;
+    return;
   }
   // A non-egress unit runs no head step, so holding a head entry would make its table
   // disagree with its own steps.
   table.erase(std::remove_if(table.begin(), table.end(),
     [] (const auto& entry) { return entry.kind == "HEAD"; }), table.end());
-  return table;
 }
+
+} // namespace
 
 QwenTpShape
 deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t layers)
 {
-  if (modelBytes.empty() || layers == 0) {
+  return deriveQwenTpRegionShape(modelBytes, 0, layers);
+}
+
+namespace {
+
+QwenTpShape
+deriveQwenTpRegionShape(const std::vector<std::uint8_t>& modelBytes,
+                        std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (modelBytes.empty() || layerBegin >= layerEnd) {
     throw std::invalid_argument("tensor-parallel shape derivation needs a graph and layers");
   }
   onnx::ModelProto model;
@@ -1586,9 +1614,12 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
       throw std::invalid_argument(
         "tensor-parallel shape derivation found no head counts on the attention op");
     }
-    queryHeads = static_cast<std::uint64_t>(*heads);
-    kvHeads = static_cast<std::uint64_t>(*kv);
-    break;
+    const auto query = static_cast<std::uint64_t>(*heads);
+    const auto keyValue = static_cast<std::uint64_t>(*kv);
+    if (queryHeads != 0 && (queryHeads != query || kvHeads != keyValue))
+      throw std::invalid_argument("tensor-parallel region has inconsistent attention head counts");
+    queryHeads = query;
+    kvHeads = keyValue;
   }
   if (queryHeads == 0) {
     throw std::invalid_argument(
@@ -1600,7 +1631,8 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   // come from the existing INT4 inspector rather than from reading node inputs
   // here: MatMulNBits takes its packed weight as the second input, and a second
   // copy of that schema knowledge is exactly how the earlier parser bug happened.
-  const auto nodes = inspectQwenNBitsGraph(modelBytes, layers);
+  const auto localLayers = layerEnd - layerBegin;
+  const auto nodes = inspectQwenNBitsGraph(modelBytes, localLayers);
   std::uint64_t queryWidth = 0;
   std::uint64_t outputWidth = 0;
   std::uint64_t gateWidth = 0;
@@ -1628,26 +1660,22 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
     vocab = static_cast<std::uint64_t>(init.dims(0));
     break;
   }
-  if (vocab == 0) {
+  if (vocab == 0 && layerBegin == 0) {
     throw std::invalid_argument(
       "tensor-parallel shape derivation found no embedding table");
   }
 
-  QwenTpShape shape;
-  shape.hidden = outputWidth;
-  shape.layers = layers;
-  shape.queryHeads = queryHeads;
-  shape.kvHeads = kvHeads;
-  shape.headDim = headDim;
-  shape.ffn = gateWidth;
-  shape.vocab = vocab;
+  auto shape = qwenTpShapeFromNodes(nodes, outputWidth, localLayers, queryHeads,
+                                    kvHeads, headDim, gateWidth, vocab);
+  // Geometry is checked against the local projection count. Slicing still uses
+  // original global layer IDs, whose upper bound is the region end. A later
+  // region need not contain an embedding: its vocabulary is unused for slicing.
+  shape.layers = layerEnd;
   shape.validate();
-  // Cross-check the derived geometry against every sharded node, which is what
-  // refuses an export whose widths contradict the head counts.
-  (void)qwenTpShapeFromNodes(nodes, shape.hidden, shape.layers, shape.queryHeads,
-                             shape.kvHeads, shape.headDim, shape.ffn, shape.vocab);
   return shape;
 }
+
+} // namespace
 
 QwenTpShape
 deriveQwenTpShapeFromGraphMetadata(const std::string& graphMetadataJson,
@@ -2659,8 +2687,20 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::string& egressRole,
                         const QwenTpAssemblyControl* control)
 {
+  configureQwenTpRankSpec(spec, layers, steps, rankedByteBudget, tensorDegree,
+                          tensorRank, egressRole, control, 0);
+}
+
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget,
+                        std::uint64_t tensorDegree, std::uint64_t tensorRank,
+                        const std::string& egressRole,
+                        const QwenTpAssemblyControl* control, std::uint64_t layerBegin)
+{
   requireRankAssemblyActive(control);
-  if (spec.path.empty() || layers == 0 || spec.role.empty()) {
+  if (spec.path.empty() || layerBegin >= layers || spec.role.empty()) {
     throw std::invalid_argument(
       "tensor-parallel rank spec needs an assembled path, a role and layers");
   }
@@ -2680,8 +2720,9 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
       throw std::invalid_argument(
         "tensor-parallel rank is outside the sealed degree");
     }
-    const auto shape = deriveQwenTpShape(graphBytes, layers);
-    shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank);
+    const auto shape = deriveQwenTpRegionShape(graphBytes, layerBegin, layers);
+    shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank,
+                                               layerBegin, layers);
     // The operators must describe the narrowed weights, or ORT rejects the entry
     // at load; the geometry is read from the same shape the slices came from.
     shards.geometry.degree = tensorDegree;
@@ -2723,7 +2764,8 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   tableControl.maxAssembledBytes = rankedByteBudget;
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
                                         graphBytes, layers, shards,
-                                        &tableControl, egressRole);
+                                        &tableControl, layerBegin, layers);
+  retainQwenTpEgressHead(table, spec.role, egressRole);
   // A caller that declares fewer steps than the taxonomy produces is building a partial
   // template -- a test driving one block, or a plan that intentionally executes a slice.
   // The verifier's set-agreement rule exists to catch an artifact that disagrees with the
