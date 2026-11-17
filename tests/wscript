@@ -612,6 +612,10 @@ def build(bld):
     # library. A hand-maintained subset omitted new naming/blob-store sources
     # and left integration binaries with unresolved framework symbols.
     framework_sources = bld.path.parent.ant_glob('ndn-service-framework/**/*.cpp')
+    # Cases that need the UAV appliance: their sources, GTK/GStreamer and the tracking test seam.
+    # Declared once here so a DI-only configuration leaves them out of the umbrella instead of
+    # failing to link a component it was not asked to build.
+    uav_unit_excludes = ['unit-tests/uav-*.cpp', 'unit-tests/stream.t.cpp']
     framework_includes = ['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx']
@@ -1873,14 +1877,21 @@ def build(bld):
                 # subset silently misses newer framework implementations.
                 source=([bld.path.find_node('main.cpp')] +
                         bld.path.ant_glob('unit-tests/**/*.cpp',
-                                           excl=['unit-tests/sanitizer/**']) +
+                                           excl=([*uav_unit_excludes, 'unit-tests/sanitizer/**']
+                                                 if 'uav' not in bld.env.NDNSF_COMPONENTS
+                                                 else ['unit-tests/sanitizer/**'])) +
                         # Four unit cases drive the shared integration fixture, which owns the
                         # in-memory Controller/Provider/NFD setup they need. Without it the target
                         # links every one of their symbols and then fails on the fixture's, which is
                         # a missing source rather than a missing dependency.
                         [bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                         framework_sources +
-                        bld.path.parent.ant_glob([
+                        # The UAV sources are compiled only when the configured component set
+                        # contains `uav`. The umbrella globs every unit case, and 23 of them are UAV
+                        # cases, so a DI-only configuration would otherwise pull GTK/GStreamer and
+                        # the whole appliance into a check that never exercises it. The contract
+                        # asks each component to select its real source closure, not `all`.
+                        (bld.path.parent.ant_glob([
                             'NDNSF-UAV-APP/shared/UavProtocol.cpp',
                             'NDNSF-UAV-APP/shared/UavMissionSession.cpp',
                             'NDNSF-UAV-APP/shared/UavCollaborationPolicy.cpp',
@@ -1918,6 +1929,8 @@ def build(bld):
                             'NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
                             'NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
                             'NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
+                        ]) if 'uav' in bld.env.NDNSF_COMPONENTS else []) +
+                        bld.path.parent.ant_glob([
                             'NDNSF-DistributedRepo/src/ArtifactManifest.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp',
                             'NDNSF-DistributedRepo/src/ArtifactTransfer.cpp',
@@ -1951,7 +1964,9 @@ def build(bld):
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
-                use='NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB ONNXRUNTIME GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3',
+                use=('NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB ONNXRUNTIME '
+                     'GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3'
+                     + (' gtkmm' if 'uav' in bld.env.NDNSF_COMPONENTS else '')),
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public
@@ -1959,8 +1974,10 @@ def build(bld):
                 # The UAV tracking cases reach their provider through a test seam, exactly as the
                 # component's own target declares it; without the define the umbrella compiles the
                 # case but not the seam it calls.
-                defines=['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN', 'NDNSF_UAV_TRACKING_TEST_SEAM',
-                         'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                defines=(['HAVE_TESTS', 'NDNSF_PROBE_CALIBRATION_NO_MAIN',
+                          'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()]
+                         + (['NDNSF_UAV_TRACKING_TEST_SEAM']
+                            if 'uav' in bld.env.NDNSF_COMPONENTS else [])),
                 # GCC 9 can ICE during inlining while compiling the large UAV
                 # protocol and SVS translation units. Tests do not depend on
                 # optimization or debug info, so use a low-memory deterministic
