@@ -230,8 +230,9 @@ NativeFixedPlacementCoreV1::NativeFixedPlacementCoreV1(const NativePlacementPlan
     m_source(core.sourceContentDigest), m_graph(core.graphDigest), m_candidate(core.candidateDigest)
 {
   ++detail::fixedAssignmentWork().placementBuilds;
+  // V2 step validation uses these scopes to distinguish feedback dependencies.
+  // Fixed-core matching already ignores invocation-specific feedback scopes.
   for (auto& dependency : m_execution.dependencies) {
-    if (dependency.operationKind == "TOKEN_FEEDBACK") dependency.keyScope = "fixed-token-feedback";
     dependency.expectedSegments = dependency.expectedBytes = 0;
   }
   const auto& generation = core.generationContract;

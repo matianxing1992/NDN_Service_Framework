@@ -34,7 +34,9 @@ def prepare(output, requester, protection_epoch):
         raise ValueError("Spec 242 ONNX fixture identity changed")
     graph_digest = canonical_onnx_identity(source).graph_digest
     partition = [[0, 1], [1, 4]]
-    stages = ["first", "last"]
+    # The Controller represents each absolute role as an NDN hierarchy.
+    # Relative ranks with embedded slashes would become one escaped component.
+    stages = ["/Stage/First", "/Stage/Last"]
     degrees = [2, 1]
     schema_digest = digest(b"spec242-planning-graph")
     manifest_digest = digest(b"spec242-four-layer-conversation:" + model_bytes)
@@ -57,11 +59,11 @@ def prepare(output, requester, protection_epoch):
                             safety_margin=1.0) for stage in stages}
     splitter = dict(kind="QWEN", roles=stages, layer_ranges=partition, tensor_degrees=degrees,
                     artifact_digests_by_role={stage: digest(stage.encode()) for stage in stages},
-                    rank_artifact_digests_by_role={"first": [digest(b"first-r0"),
-                                                            digest(b"first-r1")]},
+                    rank_artifact_digests_by_role={stages[0]: [digest(b"first-r0"),
+                                                               digest(b"first-r1")]},
                     weight_bytes_by_role={stage: bound for stage in stages},
-                    resources_by_role=profiles, input_ingress_role="first",
-                    result_egress_role="last")
+                    resources_by_role=profiles, input_ingress_role=stages[0],
+                    result_egress_role=stages[-1])
     node_mapping = {}
     for index, node in enumerate(onnx.load_model_from_string(model_bytes).graph.node):
         match = re.search(r"layers\.(\d+)(?:/|$)", node.name)

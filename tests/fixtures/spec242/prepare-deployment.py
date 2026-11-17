@@ -9,7 +9,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from urllib.parse import quote
 import uuid
 
 def write_json(path, value):
@@ -73,7 +72,7 @@ def secure_random(path):
         stream.write(os.urandom(32))
 
 
-def prepare_deployment(root, prefix, ledger):
+def prepare_deployment(root, prefix, ledger, journal_root):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import digest_bytes as digest, make_external_key
@@ -118,7 +117,7 @@ def prepare_deployment(root, prefix, ledger):
         "USER_STORAGE_GRANT", "USER_STORAGE_USAGE")]
     policy_rows = [(by_id["authority"]["identity"], [grant_service]),
                    (by_id["repo"]["identity"], repo_operations)]
-    policy_rows += [(actor["identity"], [service, service + "/ROLE/" + quote(role, safe="")])
+    policy_rows += [(actor["identity"], [service, service + "/ROLE" + role])
                     for role, actor in zip(roles, providers)]
     policy.write_text(
         "name " + by_id["controller"]["identity"] + "/NDNSF/ControllerPolicy/v1\n" +
@@ -135,6 +134,7 @@ def prepare_deployment(root, prefix, ledger):
     requester_private, requester_public = make_external_key(key_root, "requester", timeout=30)
     content = key_root / "content.key"
     journal = key_root / "conversation.key"
+    conversation_id = "spec242-" + uuid.uuid4().hex
     secure_random(content)
     secure_random(journal)
     model_uri = "/Model/Spec242/Qwen"
@@ -167,7 +167,7 @@ def prepare_deployment(root, prefix, ledger):
             certificateName=capture(["ndnsec", "get-default", "-c", "-i", identity],
                                     environments[name]).decode().strip()))
         actor["parameters"] = {
-            "roles": role, "offer-backend": "onnxruntime", "offer-can-provision": True,
+            "roles": role, "offer-backend": "onnxruntime-cpu", "offer-can-provision": True,
             "selection-offer-key-file": str(offer_private), "grant-authority-public-key": str(auth_public),
             "recipient-key-map": str(recipient_map), "allow-selection-generation-options": True,
             "capture-complete-kv-state": True, "assembly-timeout-ms": 120000,
@@ -184,7 +184,7 @@ def prepare_deployment(root, prefix, ledger):
     plan, manifest = root / "plan.json", root / "manifest.json"
     write_json(plan, dict(version=2, services=[dict(service=service, executionPolicy="DATA_DRIVEN_V2",
                                                     schemaVersion=2, **service_fields)]))
-    artifacts = [dict(artifact=model_uri + "/role/" + role, backend="onnxruntime",
+    artifacts = [dict(artifact=model_uri + "/role" + role, backend="onnxruntime",
                       exportArtifactDigest=source["digest"], filename="model.onnx", kind="model",
                       materialization="post-selection-canonical-assembly", role=role,
                       metadata={"executionProvider": "cpu", "deviceId": "cpu0",
@@ -227,16 +227,18 @@ def prepare_deployment(root, prefix, ledger):
             offer_admission=dict(candidate_digest=candidate_digest, public_key_files=offer_keys,
                 policy=dict(candidateDigest=candidate_digest, candidateId=candidate_digest[7:],
                             trustSchema=namespace + "/trust", entries=offer_entries)),
-            limits=dict(max_source_bytes=8 << 20, max_assembled_bytes=8 << 20),
+            limits=dict(bootstrap_ms=120000, max_source_bytes=8 << 20,
+                        max_assembled_bytes=8 << 20),
             request=dict(service=service, task="text-generation", generation_mode="TOKEN_STREAMING",
                          tokenizer_digest=options["tokenizerDigest"], security_policy_digest=security_digest,
                          options_file=options_file, provider_names=list(placement.values()),
-                         timeout_ms=240000, ack_timeout_ms=5000, no_progress_ms=120000),
-            conversation=dict(journal=dict(identity="spec242-requester", state_root=str(root / "journal"),
+                         timeout_ms=240000, ack_timeout_ms=5000, no_progress_ms=120000,
+                         max_candidates=1, max_policy_ms=5000),
+            conversation=dict(journal=dict(identity=conversation_id, state_root=str(journal_root),
                 keys=[dict(id="active", file=str(journal))]),
                 owner=dict(requester_identity=requester, service_name=service,
                            security_domain_digest=security_digest),
-                turn=dict(mode="FULL_CONTEXT", conversation_id="spec242-" + uuid.uuid4().hex,
+                turn=dict(mode="FULL_CONTEXT", conversation_id=conversation_id,
                           generation_id=uuid.uuid4().hex, parent_context_epoch=0,
                           retention_duration_ms=600000)),
             turns=turns),
@@ -258,6 +260,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--prefix", required=True, type=Path)
     parser.add_argument("--release-manifest", required=True, type=Path)
+    parser.add_argument("--journal-root", required=True, type=Path,
+                        help="Durable target filesystem directory for the native journal")
     args = parser.parse_args()
     prepare_deployment(args.output.resolve(), args.prefix.resolve(strict=True),
-                       args.release_manifest.resolve(strict=True))
+                       args.release_manifest.resolve(strict=True), args.journal_root.resolve())
