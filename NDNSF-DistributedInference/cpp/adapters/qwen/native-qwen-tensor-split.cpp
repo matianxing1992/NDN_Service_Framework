@@ -738,6 +738,15 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     throw std::invalid_argument(
       "tensor-parallel egress role is not one of the declared units");
   }
+  // A stage owns a window of layers. The template's units all describe the same window,
+  // so the step and dependency loops below walk that window rather than the whole model;
+  // without this a windowed plan referenced ENTRIES for layers its template never sliced.
+  const std::uint64_t firstLayer =
+    window != nullptr ? window->layerBegin
+                      : (tp.units.empty() ? 0 : tp.units.front().layerBegin);
+  const std::uint64_t lastLayer =
+    window != nullptr ? window->layerEnd
+                      : (tp.units.empty() ? shape.layers : tp.units.front().layerEnd);
   plan.roles.clear();
   plan.steps.clear();
   plan.dependencies.clear();
@@ -830,9 +839,12 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                         makeIndexSlot("attn_mask", "LOCAL_STEP", "int32"),
                         std::move(totalLength),
                         makeSlot("x0", "LOCAL_STEP", {}, shape.hidden)};
-    plan.steps.push_back(std::move(init));
+    // Embedding and positions belong to the stage that owns the model's first layer;
+    // a later stage starts from the activation its predecessor publishes.
+    if (firstLayer == 0)
+      plan.steps.push_back(std::move(init));
 
-    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+    for (std::uint64_t layer = firstLayer; layer < lastLayer; ++layer) {
       // Attention partial on this rank. Layer 0 reads the epoch input; later
       // layers read the MLP sum of the previous layer.
       ndnsf::di::NativeExecutionStepSpec attn;
@@ -853,11 +865,11 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // -- the residual plus the attention projection, which the MLP entry already formed --
       // not the attention reduction alone. Feeding the reduction alone would drop the
       // residual stream from every layer after the first.
-      attn.inputSlots = {layer == 0
+      attn.inputSlots = {layer == firstLayer
         ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
         : makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
                       "post_residual", shape.hidden)};
-      if (layer > 0) {
+      if (layer > firstLayer) {
         attn.inputSlots.push_back(
           makeFedSlot("previous_mlp", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1),
                       "merged", shape.hidden));
@@ -971,14 +983,16 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // describe the real width or a consumer would size its read buffer from
       // the residual stream.
       head.outputSlots = {makeSlot("logits", "LOCAL_STEP", {}, shape.vocab)};
-      plan.steps.push_back(std::move(head));
+      // The head samples once, on the stage that owns the model's last layer.
+      if (lastLayer == shape.layers)
+        plan.steps.push_back(std::move(head));
     }
   }
 
   // One dependency per remote contribution, bound to the exact producing and
   // consuming step/slot. The identity reuses keyScope and stays unique.
   for (const auto& unit : tp.units) {
-    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+    for (std::uint64_t layer = firstLayer; layer < lastLayer; ++layer) {
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) continue;
         for (const auto* kind : {"ATTN", "MLP"}) {
