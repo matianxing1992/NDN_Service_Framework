@@ -3531,9 +3531,13 @@ RepoClient::fetchData(const RepoDataFetch& input,
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
+  // A cancellation closure may retain the caller's transport owner. Preserve
+  // it through both queued Face binding and fetch callbacks after this wait ends.
+  const auto callbackLifetime = options.requireCurrent
+    ? std::make_shared<std::function<void()>>(options.requireCurrent) : nullptr;
   auto wires = RepoClientCompat::fetchOriginalDataPackets(
     m_impl->user, m_impl->target(input.target), names, wireBudget,
-    verifyPacket, remainingMs(options.deadline), options.requireCurrent);
+    verifyPacket, remainingMs(options.deadline), options.requireCurrent, callbackLifetime);
   RepoDataFetchResult result;
   result.wireBytes = 0;
   ndn::util::Sha256 digest;

@@ -694,14 +694,16 @@ def build(bld):
     # Spec185 B1 Runtime configuration boundary.  The selector validates the
     # native requester-v1 schema, trust-domain/model-key freeze, resource
     # limits, and deferred source loading before T002 adds shutdown owners.
+    runtime_probe_sanitize = (['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+                              if bld.env.sanitize_di else [])
     bld.program(target='../spec185-runtime',
                 name='spec185-runtime',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-runtime.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndn-service-framework ndnsf-distributed-inference ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'] + runtime_probe_sanitize,
+                linkflags=['-Wl,--no-relax'] + runtime_probe_sanitize,
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec185 B2E cooperative extension registry and control contract.

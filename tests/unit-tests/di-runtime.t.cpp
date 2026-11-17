@@ -805,8 +805,9 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
     observations->pauseRoot.store(true, std::memory_order_release);
     const auto journal = files.root() / "quiet-absent-preparation-state";
     auto failure = std::make_shared<std::pair<std::string, std::chrono::milliseconds>>();
+    auto failureDetail = std::make_shared<std::string>();
     openResult = std::async(std::launch::async,
-      [runtime, handlePath, repositoryConfig, sourceMode, expire, journal, failure] {
+      [runtime, handlePath, repositoryConfig, sourceMode, expire, journal, failure, failureDetail] {
       const auto started = std::chrono::steady_clock::now();
       try {
         if (sourceMode)
@@ -819,6 +820,7 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
       }
       catch (const DiError& error) {
         failure->first = error.code();
+        *failureDetail = error.what();
         failure->second = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started);
         return true;
@@ -839,10 +841,16 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
     BOOST_CHECK(reachedQuietRead);
     BOOST_CHECK(openResult.get());
     if (expire) {
-      BOOST_CHECK_EQUAL(failure->first, "PREPARATION_TIMEOUT");
+      BOOST_CHECK_MESSAGE(failure->first == "PREPARATION_TIMEOUT",
+        "deadline returned " + failure->first + ": " + *failureDetail);
       // A 300 ms deadline may incur scheduling delay, but not a later transport timeout.
       BOOST_CHECK_GE(failure->second.count(), 200);
       BOOST_CHECK_LE(failure->second.count(), 1000);
+    }
+    else {
+      BOOST_CHECK_MESSAGE(failure->first == "PREPARATION_CANCELLED" ||
+                          failure->first == "RUNTIME_CLOSED",
+        "close returned " + failure->first + ": " + *failureDetail);
     }
     runtime->close();
     BOOST_CHECK(!runtime->drain(std::chrono::milliseconds(20)));

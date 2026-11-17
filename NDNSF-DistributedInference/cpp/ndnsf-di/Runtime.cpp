@@ -1535,9 +1535,11 @@ DiError mapPreparationError(const std::exception& error)
   const std::string message = error.what();
   if (message.find("RESULT_TIMEOUT") != std::string::npos)
     return DiError("WAIT_TIMEOUT", "local", "preparation", message);
-  if (message.find("CANCELLED") != std::string::npos)
+  if (message == "repo-original-packet-fetch-cancelled" ||
+      message.find("CANCELLED") != std::string::npos)
     return DiError("PREPARATION_CANCELLED", "local", "preparation", message);
-  if (message.find("TIMEOUT") != std::string::npos)
+  if (message == "repo-original-packet-fetch-deadline" ||
+      message.find("TIMEOUT") != std::string::npos)
     return DiError("PREPARATION_TIMEOUT", "local", "preparation", message);
   if (message.find("MODEL_NOT_READY") != std::string::npos)
     return DiError("MODEL_NOT_READY", "local", "preparation", message);
