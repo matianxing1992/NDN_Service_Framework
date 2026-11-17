@@ -14,6 +14,8 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <onnxruntime_cxx_api.h>
 
@@ -1122,7 +1124,7 @@ BOOST_AUTO_TEST_CASE(SlicedKernelMatchesTheUnsplitColumns)
 
   std::vector<float> x(rows * k);
   for (std::size_t i = 0; i < x.size(); ++i)
-    x[i] = static_cast<float>((i % 7) - 3) * 0.25f;
+    x[i] = static_cast<float>(static_cast<int>(i % 7) - 3) * 0.25f;
 
   const auto unsplit = runMatMulNBits(packed, scaleValues, n, k, x, rows);
 
@@ -1137,6 +1139,49 @@ BOOST_AUTO_TEST_CASE(SlicedKernelMatchesTheUnsplitColumns)
     for (std::uint64_t column = 0; column < 32; ++column) {
       const float expected = unsplit[row * n + column];
       BOOST_CHECK_SMALL(shard[row * 32 + column] - expected, 1e-4f);
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(AttentionHeadPackingPreservesTokenCoordinates)
+{
+  std::ifstream input("../tests/fixtures/spec242/four-layer-numeric.onnx", std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromIstream(&input));
+  const auto expose = [&] (const std::string& name,
+                           const std::vector<std::int64_t>& dimensions) {
+    auto* output = model.mutable_graph()->add_output();
+    output->set_name(name);
+    auto* tensor = output->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    for (const auto dimension : dimensions)
+      tensor->mutable_shape()->add_dim()->set_dim_value(dimension);
+  };
+  expose("model.layers.0/attn.q_proj", {1, 3, 64});
+  expose("model.layers.0/attn.q4d", {1, 4, 3, 16});
+  const auto wire = model.SerializeAsString();
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-head-coordinates");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  Ort::Session session(env, wire.data(), wire.size(), options);
+  std::array<std::int64_t, 3> tokens{1, 2, 3};
+  const std::array<std::int64_t, 2> dimensions{1, 3};
+  auto values = Ort::Value::CreateTensor<std::int64_t>(
+    Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault),
+    tokens.data(), tokens.size(), dimensions.data(), dimensions.size());
+  const char* inputs[] = {"input_ids"};
+  const char* outputs[] = {"model.layers.0/attn.q_proj", "model.layers.0/attn.q4d"};
+  auto result = session.Run(Ort::RunOptions{nullptr}, inputs, &values, 1, outputs, 2);
+  const auto* projected = result.at(0).GetTensorData<float>();
+  const auto* heads = result.at(1).GetTensorData<float>();
+  for (std::size_t token = 0; token < 3; ++token) {
+    for (std::size_t head = 0; head < 4; ++head) {
+      for (std::size_t channel = 0; channel < 16; ++channel) {
+        const auto expected = projected[token * 64 + head * 16 + channel];
+        BOOST_REQUIRE(std::isfinite(expected));
+        BOOST_CHECK_EQUAL(heads[(head * 3 + token) * 16 + channel], expected);
+      }
     }
   }
 }
@@ -1184,6 +1229,8 @@ BOOST_AUTO_TEST_CASE(AssembledAttentionEntryExecutes)
     Ort::AllocatorWithDefaultOptions allocator;
 
     std::vector<Ort::Value> values;
+    std::vector<std::vector<float>> inputBuffers;
+    inputBuffers.reserve(session.GetInputCount());
     std::vector<std::string> owned;
     for (std::size_t index = 0; index < session.GetInputCount(); ++index) {
       auto name = session.GetInputNameAllocated(index, allocator);
@@ -1195,7 +1242,8 @@ BOOST_AUTO_TEST_CASE(AssembledAttentionEntryExecutes)
         dims = {1, 3, static_cast<std::int64_t>(shape.hidden)};
       std::size_t count = 1;
       for (const auto dim : dims) count *= static_cast<std::size_t>(dim > 0 ? dim : 1);
-      std::vector<float> data(count, 0.05f);
+      inputBuffers.emplace_back(count, 0.05f);
+      auto& data = inputBuffers.back();
       values.push_back(Ort::Value::CreateTensor<float>(
         Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault), data.data(),
         data.size(), dims.data(), dims.size()));
@@ -1205,6 +1253,7 @@ BOOST_AUTO_TEST_CASE(AssembledAttentionEntryExecutes)
     for (const auto& name : owned) names.push_back(name.c_str());
     std::vector<const char*> outputNames;
     std::vector<std::string> outputOwned;
+    outputOwned.reserve(session.GetOutputCount());
     for (std::size_t index = 0; index < session.GetOutputCount(); ++index) {
       auto name = session.GetOutputNameAllocated(index, allocator);
       outputOwned.emplace_back(name.get());
@@ -1213,11 +1262,14 @@ BOOST_AUTO_TEST_CASE(AssembledAttentionEntryExecutes)
     auto outputs = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(),
                                values.size(), outputNames.data(), outputNames.size());
     BOOST_REQUIRE(!outputs.empty());
-    // Execution is what this case proves. A magnitude check on this synthetic input is not
-    // stable when the card runs several ORT cases in one process - the same case passes alone
-    // and returns non-finite values in a full run - so it is deliberately not asserted here;
-    // the numeric contract is the kernel comparison above.
     BOOST_CHECK(outputs.front().GetTensorTypeAndShapeInfo().GetElementCount() > 0);
+    for (const auto& output : outputs) {
+      const auto info = output.GetTensorTypeAndShapeInfo();
+      if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) continue;
+      const auto* data = output.GetTensorData<float>();
+      for (std::size_t i = 0; i < info.GetElementCount(); ++i)
+        BOOST_CHECK(std::isfinite(data[i]));
+    }
     ran = true;
   }
   BOOST_CHECK(ran);
@@ -1340,6 +1392,7 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
     const char* names[] = {inbox.get()};
     std::vector<const char*> outputs;
     std::vector<std::string> owned;
+    owned.reserve(session.GetOutputCount());
     for (std::size_t index = 0; index < session.GetOutputCount(); ++index) {
       auto name = session.GetOutputNameAllocated(index, allocator);
       owned.emplace_back(name.get());

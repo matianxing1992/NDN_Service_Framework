@@ -111,10 +111,14 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
                 shape_name = f"{pn}attn.{name}_shape"
                 if shape_name not in init_names:
                     inits.append(numpy_helper.from_array(
-                        np.array([1, heads, sequence, head_dim], dtype=np.int64), shape_name))
+                        np.array([1, sequence, heads, head_dim], dtype=np.int64), shape_name))
                     init_names.add(shape_name)
                 add(helper.make_node("Reshape", [f"{pn}attn.{name}_proj", shape_name],
-                                     [f"{pn}attn.{name}4d"], name=f"{pn}attn.{name}_reshape"))
+                                     [f"{pn}attn.{name}_bsnh"],
+                                     name=f"{pn}attn.{name}_reshape"))
+                add(helper.make_node("Transpose", [f"{pn}attn.{name}_bsnh"],
+                                     [f"{pn}attn.{name}4d"],
+                                     name=f"{pn}attn.{name}_transpose", perm=[0, 2, 1, 3]))
             add(helper.make_node("Transpose", [f"{pn}attn.k4d"], [f"{pn}attn.kT"],
                                  name=f"{pn}attn.kT", perm=[0, 1, 3, 2]))
             add(helper.make_node("MatMul", [f"{pn}attn.q4d", f"{pn}attn.kT"],
@@ -150,8 +154,7 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
             [f"{pn}attn.context", f"{pn}attn.present_key", f"{pn}attn.present_value"],
             name=f"{pn}attn.gqa", domain="com.microsoft",
             num_heads=q_heads, kv_num_heads=kv_heads,
-            # No rotary in the fixture: with rotary the head layout interacts with position
-            # encoding, which would make a head-range shard incomparable to the whole model.
+            # Isolate projection and cache geometry from rotary in this fixture.
             do_rotary=0))
         node, w = matmul_nbits(f"{pn}attn.o_proj", f"{pn}attn.context", hidden,
                                q_width, rng, f"{p}attn.o_proj.MatMul.weight")
