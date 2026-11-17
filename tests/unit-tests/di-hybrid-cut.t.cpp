@@ -11,6 +11,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -312,6 +313,78 @@ BOOST_AUTO_TEST_CASE(VersionOneWireCannotCarryTheStageLayout)
   std::istringstream input(wire);
   BOOST_CHECK_THROW(nativeExecutionPlanForServiceFromJson(input, "/service/hybrid"),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(HybridOwnershipUsesTheCatalogPlanningGraph)
+{
+  const auto digest = nativePlanningDigest("spec242-planning-graph");
+  NativeModelDescriptor model;
+  model.modelName = "qwen-fixture";
+  model.contentDigest = model.semanticsDigest = model.graphDigest = digest;
+  // Pinned semantic graph for fixture-v1, int4, and layer ranges [0,1), [1,4).
+  model.graphDigest =
+    "sha256:41b64660122c4bd042b455c1c7033dbd5756afcf209c9d8e82d88d677e7aaaee";
+  model.modelFormat = "onnx";
+  model.adapterId = "qwen";
+  model.adapterVersion = "1";
+  model.precision = "int4";
+  model.quantizationSubtype = "weight_only_int4";
+  model.adapter.name = "qwen";
+  model.adapter.version = "1";
+  model.adapter.abi = "onnxruntime";
+  model.adapter.modelFormats = {"onnx"};
+  model.adapter.tasks = {"text-generation"};
+  model.adapter.backends = {"onnxruntime"};
+  model.adapter.precisions = {"int4"};
+  model.adapter.stateDigest = model.adapter.inputSchemaDigest = digest;
+  model.adapter.optionsSchemaDigest = model.adapter.resultSchemaDigest = digest;
+  model.adapter.graphSchemaDigest = model.adapter.splitSchemaDigest = digest;
+  model.adapter.stateSchemaDigest = digest;
+  qwen::NativeQwenLayerSplit splitter({{0, 1}, {1, 4}},
+    {{"first", digest}, {"last", digest}}, {{"first", 4096}, {"last", 4096}},
+    {"first", "last"}, {1, 1});
+  auto graph = splitter.inspectGraph(model, "fixture-v1", 100);
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  std::vector<std::vector<qwen::QwenTpUnit>> units(2);
+  std::map<std::string, std::string> artifacts;
+  std::map<std::string, NativeRoleResourceRequirement> requirements;
+  for (std::size_t stage = 0; stage < 2; ++stage) {
+    for (std::uint64_t rank = 0; rank < (stage == 0 ? 2u : 1u); ++rank) {
+      qwen::QwenTpUnit unit;
+      unit.roleId = "unit-" + std::to_string(stage) + "-" + std::to_string(rank);
+      unit.rank = rank;
+      unit.layerBegin = stage == 0 ? 0 : 1;
+      unit.layerEnd = stage == 0 ? 1 : 4;
+      artifacts[unit.roleId] = digest;
+      requirements[unit.roleId] = NativeRoleResourceRequirement{{"onnxruntime"}, 4096};
+      units[stage].push_back(std::move(unit));
+    }
+  }
+  const std::vector<qwen::QwenTpStageWindow> windows{
+    {"first", digest, 0, 1},
+    {"last", digest, 1, 4, "unit-0-0", "unit-0-0/MLP/0", "post_residual"}};
+  const auto build = [&] {
+    return qwen::buildQwenHybridCandidate(graph, shape, windows, units, "entry",
+      "unit-1-0", model, artifacts, requirements);
+  };
+  const auto candidate = build();
+  BOOST_CHECK_NO_THROW(candidate.validate(graph));
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("embedding"), "unit-0-0");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("layer-00"), "unit-0-0");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("layer-01"), "unit-1-0");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("final-norm-head"), "unit-1-0");
+  BOOST_CHECK(candidate.roleNodeIdsByRole.at("unit-0-0") ==
+              candidate.roleNodeIdsByRole.at("unit-0-1"));
+  BOOST_CHECK_EQUAL(candidate.roleNodeIdsByRole.at("unit-1-0").size(), 4u);
+  graph.nodes.at(1).id = "unmapped-node";
+  BOOST_CHECK_THROW(build(), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(SlicePlanningCoversOnlyItsOwnLayerRange)

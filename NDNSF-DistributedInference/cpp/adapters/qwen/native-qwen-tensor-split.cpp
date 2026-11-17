@@ -1918,23 +1918,18 @@ buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& sh
   // Node ownership follows the stage windows: a node belongs to the stage whose layer range
   // contains it, and every unit of that stage executes it. Handing the ingress unit every
   // node - the tensor-parallel rule - would tell a Provider to assemble layers it never runs.
-  std::vector<std::string> names;
-  names.reserve(graph.nodes.size());
-  for (const auto& node : graph.nodes) names.push_back(node.id);
-  const auto entries = classifyQwenTpEntryNodes(names, shape.layers);
-  std::map<std::uint64_t, std::pair<std::string, std::uint64_t>> layerOfNode;
-  for (const auto& entry : entries) {
-    for (const auto node : entry.nodeIndices) {
-      const auto layer = entry.kind == "HEAD" ? shape.layers : entry.layer;
-      layerOfNode[static_cast<std::uint64_t>(node)] = {entry.kind, layer};
-    }
-  }
+  // The catalog supplies the semantic graph from NativeQwenLayerSplit::inspectGraph,
+  // not individual ONNX operators. Entry classification belongs to materialization.
+  if (graph.nodes.size() < 2 || shape.layers != graph.nodes.size() - 2)
+    throw std::invalid_argument("hybrid planning graph does not cover the model layers");
   for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
-    const auto found = layerOfNode.find(index);
-    if (found == layerOfNode.end())
-      throw std::invalid_argument("hybrid candidate has an unclassified source node: " +
+    const auto layer = index == 0 ? 0 : index - 1;
+    const auto expected = index == 0 ? std::string("embedding") :
+      index + 1 == graph.nodes.size() ? std::string("final-norm-head") :
+      std::string("layer-") + (layer < 10 ? "0" : "") + std::to_string(layer);
+    if (graph.nodes.at(index).id != expected)
+      throw std::invalid_argument("hybrid planning graph layer order is not canonical: " +
                                   graph.nodes.at(index).id);
-    const auto layer = found->second.second;
     std::size_t owner = windows.size();
     for (std::size_t stage = 0; stage < windows.size(); ++stage) {
       const auto& window = windows.at(stage);
