@@ -650,4 +650,40 @@ BOOST_AUTO_TEST_CASE(FixedAssignmentWireCarriesTheStageLayout)
   BOOST_CHECK_NO_THROW(bound.validateSteps());
 }
 
+BOOST_AUTO_TEST_CASE(AsymmetricAndAllPipelineLayoutsValidate)
+{
+  const auto plan = [] (const std::vector<std::vector<std::string>>& stages) {
+    ndnsf::di::NativeExecutionPlan value;
+    value.serviceName = "/service/hybrid";
+    value.modelFamily = "qwen";
+    std::uint64_t widest = 0;
+    for (std::size_t index = 0; index < stages.size(); ++index) {
+      value.stageLayout.push_back({"stage-" + std::to_string(index),
+                                   "sha256:region-" + std::to_string(index), stages.at(index)});
+      widest = std::max<std::uint64_t>(widest, stages.at(index).size());
+      for (const auto& unit : stages.at(index)) {
+        value.roles.push_back(unit);
+        value.steps.push_back(callStep(unit + "/CALL/0", unit));
+      }
+    }
+    value.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+    value.tensorDegree = widest;
+    return value;
+  };
+
+  // [1,2]: a plain stage in front of a sharded one, the mirror of the [2,1] case.
+  const auto asymmetric = plan({{"S0R0"}, {"S1R0", "S1R1"}});
+  BOOST_CHECK_NO_THROW(asymmetric.validateSteps());
+  BOOST_CHECK_EQUAL(asymmetric.degreeForRole("S0R0"), 1u);
+  BOOST_CHECK_EQUAL(asymmetric.degreeForRole("S1R0"), 2u);
+  BOOST_CHECK_EQUAL(asymmetric.degreeForRole("S1R1"), 2u);
+
+  // Pure pipeline: every stage degree one. v2 must describe it rather than inherit a degree.
+  const auto pipeline = plan({{"S0R0"}, {"S1R0"}});
+  BOOST_CHECK_NO_THROW(pipeline.validateSteps());
+  BOOST_CHECK_EQUAL(pipeline.degreeForRole("S0R0"), 1u);
+  BOOST_CHECK_EQUAL(pipeline.degreeForRole("S1R0"), 1u);
+  BOOST_CHECK_EQUAL(pipeline.tensorDegree, 1u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
