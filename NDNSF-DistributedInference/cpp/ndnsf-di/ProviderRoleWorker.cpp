@@ -308,15 +308,21 @@ requireConsistentStepTemplate(const RoleSpec& role)
   // must be refused before any work starts.
   const bool hasTemplate = role.steps != nullptr && !role.steps->empty();
   if (role.stepPlanVersion.empty() && !hasTemplate && role.tensorDegree <= 1) return;
-  if (role.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1)
+  const bool stepPlanV2 = role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2;
+  if (!stepPlanV2 && role.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V1)
     throw std::invalid_argument(
       "Provider role carries an unsupported step plan version");
   if (!hasTemplate)
     throw std::invalid_argument(
       "Provider role declares a step plan without a step template");
-  if (role.tensorDegree < 2)
+  // v2 exists to admit per-stage geometry, so a degree-one unit is legitimate there; v1 was
+  // sealed for sharded stages only and keeps its original rule.
+  if (!stepPlanV2 && role.tensorDegree < 2)
     throw std::invalid_argument(
       "Provider role step template requires a tensor degree of at least two");
+  if (stepPlanV2 && role.tensorDegree < 1)
+    throw std::invalid_argument(
+      "Provider role v2 step template requires a tensor degree of at least one");
   for (const auto& step : *role.steps) {
     if (step.unitId != role.role)
       throw std::invalid_argument(
