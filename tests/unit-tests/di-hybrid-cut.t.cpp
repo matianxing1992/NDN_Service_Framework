@@ -1,11 +1,8 @@
 /**
  * Spec 242 T001 - sealed stage layout and the step-plan v2 contract.
  *
- * These are native contract tests over the production NativeExecutionPlan and
- * NativePlanning types. They check that one plan can describe stages of different
- * tensor degrees, that a unit's degree is its own stage's member count, and that the
- * capability a Provider must advertise follows the declared step-plan version. They do
- * not build rank materials (T002) and do not run a Provider (T003).
+ * Covers sealed geometry, material bindings and native worker/ORT prefill composition.
+ * In-process dependency transport is not installed Provider or NDN qualification.
  */
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
@@ -17,11 +14,13 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
+#include "tests/fixtures/native-dependency-bus.hpp"
 
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -2031,6 +2030,189 @@ BOOST_AUTO_TEST_CASE(StageEntriesRecomposeTheReference)
 {
   verifyKindRecomposes("ATTN", "attn-gate");
   verifyKindRecomposes("MLP", "mlp-gate");
+}
+
+BOOST_AUTO_TEST_CASE(ThreeUnitsRecomposeTheCompletePrefillGraph)
+{
+  const std::string source = "../tests/fixtures/spec242/four-layer-qwen.onnx";
+  std::ifstream input(source, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                        std::istreambuf_iterator<char>());
+  const auto shape = qwen::deriveQwenTpShape(bytes, 4);
+  struct Workspace
+  {
+    std::filesystem::path root;
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace{std::filesystem::temp_directory_path() / "spec242-three-workers"};
+  workspace.owned = std::filesystem::create_directory(workspace.root);
+  BOOST_REQUIRE(workspace.owned);
+
+  std::vector<std::vector<qwen::QwenTpUnit>> units(2);
+  std::vector<std::vector<qwen::QwenTpEntryContract>> tables(2);
+  std::map<std::string, std::filesystem::path> roots;
+  for (std::size_t stage = 0; stage < 2; ++stage) {
+    const std::uint64_t degree = stage == 0 ? 2 : 1;
+    for (std::uint64_t rank = 0; rank < degree; ++rank) {
+      qwen::QwenTpUnit unit;
+      unit.roleId = "stage" + std::to_string(stage) + "-member" + std::to_string(rank);
+      unit.rank = rank;
+      unit.layerBegin = stage == 0 ? 0 : 1;
+      unit.layerEnd = stage == 0 ? 1 : 4;
+      qwen::QwenTpAssemblyShards shards;
+      if (degree > 1) {
+        shards.slicesByLayer = qwen::planQwenTensorSlices(
+          shape, degree, rank, unit.layerBegin, unit.layerEnd);
+        shards.geometry.degree = degree;
+        shards.geometry.rank = rank;
+        shards.geometry.headDim = shape.headDim;
+        shards.geometry.queryWidth = shape.queryWidth();
+        shards.geometry.kvWidth = shape.kvWidth();
+        shards.geometry.hidden = shape.hidden;
+        shards.geometry.ffn = shape.ffn;
+      }
+      shards.readExternal = [] (std::uint64_t, std::uint64_t) -> std::vector<std::uint8_t> {
+        throw std::runtime_error("self-contained fixture unexpectedly reads a sidecar");
+      };
+      const auto root = workspace.root / unit.roleId;
+      const auto table = qwen::assembleQwenTpEntryTable(
+        root, unit.roleId, bytes, 4, shards, nullptr, unit.layerBegin, unit.layerEnd);
+      tables[stage].insert(tables[stage].end(), table.begin(), table.end());
+      roots.emplace(unit.roleId, root);
+      units[stage].push_back(std::move(unit));
+    }
+  }
+  const auto& upstream = units[0].front().roleId;
+  const auto& egress = units[1].front().roleId;
+  qwen::QwenTpStageWindow first{"first", nativePlanningDigest("first"), 0, 1};
+  qwen::QwenTpStageWindow last{"last", nativePlanningDigest("last"), 1, 4,
+    upstream, upstream + "/MLP/0", "post_residual", upstream + "/SUM_MLP/0", "merged"};
+  NativeExecutionPlan stage0;
+  NativeExecutionPlan stage1;
+  qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0], tables[0], first);
+  qwen::projectQwenTpPlan(stage1, shape, 1, egress, units[1], tables[1], last);
+  const auto plan = qwen::mergeQwenStagePlans({stage0, stage1});
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+  for (const auto& step : plan.steps) {
+    BOOST_CHECK(step.localStateSlots.empty());
+    if (step.unitId == egress)
+      BOOST_CHECK(step.artifactEntry.find("/INIT/") == std::string::npos);
+    for (const auto& port : step.inputSlots) {
+      BOOST_CHECK(port.slotId != "attn_mask" && port.slotId != "position_ids" &&
+                  port.slotId != "total_sequence_length");
+    }
+  }
+  // Required real bindings cannot be replaced by synthesized inputs or unknown slots.
+  auto invalid = tables[0];
+  invalid.front().inputSlotByGraphName.begin()->second = "unplanned-input";
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0],
+                                          invalid, first), std::invalid_argument);
+  invalid = tables[0];
+  invalid.front().synthesizedInputGraphNames = {"input_ids"};
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0],
+                                          invalid, first), std::invalid_argument);
+  invalid = tables[0];
+  invalid.front().outputSlotByGraphName.clear();
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0],
+                                          invalid, first), std::invalid_argument);
+  invalid = tables[0];
+  invalid.pop_back();
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage0, shape, 2, upstream, units[0],
+                                          invalid, first), std::invalid_argument);
+
+  // The independent oracle is the complete original graph, without splitter-selected nodes.
+  std::array<std::int64_t, 3> tokens{1, 2, 3};
+  const std::array<std::int64_t, 2> dimensions{1, 3};
+  static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-complete-prefill");
+  Ort::SessionOptions options;
+  Ort::Session reference(env, source.c_str(), options);
+  auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  auto tensor = Ort::Value::CreateTensor<std::int64_t>(memory,
+    tokens.data(), tokens.size(), dimensions.data(), dimensions.size());
+  const char* inputNames[] = {"input_ids"};
+  const char* outputNames[] = {"logits"};
+  const auto expected = reference.Run(Ort::RunOptions{nullptr}, inputNames, &tensor, 1,
+                                      outputNames, 1);
+  const auto expectedCount = expected.front().GetTensorTypeAndShapeInfo().GetElementCount();
+  const auto* expectedValues = expected.front().GetTensorData<float>();
+
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  auto bus = std::make_shared<tests::PartialBus>();
+  ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(5));
+  NativeProviderAssignment assignment;
+  for (const auto& role : plan.roles)
+    assignment.providerByRole.emplace(role, "/fixture/" + role);
+  std::map<std::string, RoleSpec> roleSpecs;
+  std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
+  std::map<std::string, std::future<ProviderRoleResult>> futures;
+  for (const auto& role : plan.roles) {
+    auto roleSpec = roleSpecFor(plan, role, "three-worker-prefill", assignment, "");
+    for (const auto& edge : roleSpec.outputs) {
+      BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
+      BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
+    }
+    std::vector<qwen::QwenTpEntryContract> entries;
+    for (const auto& table : tables)
+      for (const auto& entry : table)
+        if (entry.unitId == role) entries.push_back(entry);
+    NativeModelRunnerSpec spec;
+    spec.role = role;
+    spec.kind = "onnx";
+    spec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+    spec.path = (roots.at(role) / entries.front().relativeGraphPath).string();
+    spec.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson(entries);
+    spec.metadata["tensorParallelEntryRoot"] = roots.at(role).string();
+    spec.metadata["tensorParallelSteps"] = qwen::qwenTpStepDeclarationJson(*roleSpec.steps);
+    runners.emplace(role, factory.create(spec));
+    roleSpecs.emplace(role, std::move(roleSpec));
+  }
+  // Session construction is preparation, outside every unit's dependency deadline.
+  for (const auto& role : plan.roles) {
+    auto runner = runners.at(role);
+    NamedTensor ids;
+    ids.name = "input_ids";
+    ids.elementType = TensorElementType::Int64;
+    ids.shape.assign(dimensions.begin(), dimensions.end());
+    ids.payload.resize(sizeof(tokens));
+    std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
+    auto io = std::make_shared<tests::BusDependencyIo>(bus);
+    futures.emplace(role, worker.executePreparedAsync("three-worker-prefill",
+      std::move(roleSpecs.at(role)),
+      io, [runner] { return runner; },
+      {{"input_ids", makeEncodedTensorBundle("input_ids", {ids})}}));
+  }
+  std::map<std::string, ProviderRoleResult> results;
+  for (auto& [role, future] : futures) {
+    BOOST_REQUIRE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    BOOST_REQUIRE_NO_THROW(results.emplace(role, future.get()));
+  }
+  BOOST_CHECK_EQUAL(bus->publishedCount(), 6u);
+  BOOST_REQUIRE_EQUAL(results.size(), 3u);
+  BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
+  const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
+  BOOST_REQUIRE_EQUAL(actual.size(), 1u);
+  BOOST_CHECK_EQUAL(actual.front().name, "logits");
+  BOOST_CHECK(actual.front().elementType == TensorElementType::Float32);
+  BOOST_CHECK(actual.front().shape ==
+    std::vector<std::int64_t>({1, 3, static_cast<std::int64_t>(shape.vocab)}));
+  BOOST_REQUIRE_EQUAL(actual.front().payload.size(), expectedCount * sizeof(float));
+  std::vector<float> values(expectedCount);
+  std::memcpy(values.data(), actual.front().payload.data(), actual.front().payload.size());
+  float worst = 0;
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    BOOST_REQUIRE(std::isfinite(values[index]) && std::isfinite(expectedValues[index]));
+    const auto error = std::abs(values[index] - expectedValues[index]);
+    worst = std::max(worst, error);
+    BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(expectedValues[index]));
+  }
+  BOOST_TEST_MESSAGE("three-unit complete-prefill logits max abs error = " << worst);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

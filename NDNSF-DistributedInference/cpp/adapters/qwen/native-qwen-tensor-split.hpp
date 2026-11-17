@@ -1012,6 +1012,20 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   const std::vector<QwenTpUnit>& units,
                   const std::vector<QwenTpEntryContract>& entries);
 
+/** Project a region against materialized entry bindings.
+ *
+ * Unlike the legacy metadata projection, CALL ports must have actual graph bindings.
+ * A later region may omit INIT when no declared input needs it. Missing producers,
+ * unsupported bindings and unreferenced entries are rejected; inputs are never invented.
+ * The merged plan must be validated when the region has upstream dependencies.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const std::vector<QwenTpEntryContract>& entries,
+                  const QwenTpStageWindow& window);
+
 } // namespace ndnsf::di::qwen
 
 #endif // NDNSF_DI_QWEN_TENSOR_SPLIT_HPP

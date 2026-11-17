@@ -749,7 +749,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                 std::uint64_t degree, const std::string& entryPrefix,
                 const std::string& egressRole, const QwenTpTemplate& tp,
                 const std::vector<QwenTpEntryContract>* verified,
-                const QwenTpStageWindow* window = nullptr)
+                const QwenTpStageWindow* window = nullptr, bool sourceBindings = false)
 {
   // The egress unit owns the head, so it must be one of the declared units.
   if (std::none_of(tp.units.begin(), tp.units.end(),
@@ -821,9 +821,11 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                contract.layer == layer;
       });
     if (matched == verified->end()) {
+      if (sourceBindings && firstLayer > 0 && std::string(kind) == "INIT")
+        return std::string{};
       throw std::invalid_argument(
         "tensor-parallel step has no verified entry contract for its unit, "
-        "kind and layer");
+        "kind and layer: " + unit + "/" + kind + "/" + std::to_string(layer));
     }
     return matched->entryId;
   };
@@ -876,7 +878,8 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     // tensor the request may not carry.
     if (firstLayer == 0)
       init.outputSlots.push_back(makeSlot("x0", "LOCAL_STEP", {}, shape.hidden));
-    plan.steps.push_back(std::move(init));
+    if (!init.artifactEntry.empty())
+      plan.steps.push_back(std::move(init));
 
     for (std::uint64_t layer = firstLayer; layer < lastLayer; ++layer) {
       // Attention partial on this rank. Layer 0 reads the epoch input; later
@@ -1011,7 +1014,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 
     // Only the egress unit owns the complete head; every rank still keeps its
     // own KV slices and receipts.
-    if (unit.roleId == egressRole) {
+    if (unit.roleId == egressRole && lastLayer == shape.layers) {
       ndnsf::di::NativeExecutionStepSpec head;
       head.stepId = unit.roleId + "/HEAD";
       head.unitId = unit.roleId;
@@ -1027,9 +1030,67 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // describe the real width or a consumer would size its read buffer from
       // the residual stream.
       head.outputSlots = {makeSlot("logits", "LOCAL_STEP", {}, shape.vocab)};
-      // The head samples once, on the stage that owns the model's last layer.
-      if (lastLayer == shape.layers)
-        plan.steps.push_back(std::move(head));
+      plan.steps.push_back(std::move(head));
+    }
+  }
+
+  if (sourceBindings) {
+    std::set<std::string> referenced;
+    for (auto& step : plan.steps) {
+      if (step.operation != "CALL_SUBGRAPH") continue;
+      const auto contract = std::find_if(verified->begin(), verified->end(),
+        [&] (const auto& item) { return item.entryId == step.artifactEntry; });
+      if (contract == verified->end() || contract->unitId != step.unitId)
+        throw std::invalid_argument("material step has no matching entry: " + step.stepId);
+      referenced.insert(contract->entryId);
+      if (!contract->synthesizedInputGraphNames.empty())
+        throw std::invalid_argument("material entry requires unbound synthesized inputs: " +
+                                    contract->entryId);
+      std::set<std::string> inputs;
+      std::set<std::string> outputs;
+      const auto collect = [&] (const auto& bindings, const auto& names, auto& slots) {
+        for (const auto& [name, slot] : bindings) {
+          if (std::find(names.begin(), names.end(), name) == names.end() || slot.empty())
+            throw std::invalid_argument("material port binding names no graph value: " + name);
+          slots.insert(slot);
+        }
+      };
+      collect(contract->inputSlotByGraphName, contract->inputNames, inputs);
+      collect(contract->outputSlotByGraphName, contract->outputNames, outputs);
+      collect(contract->passthroughSlotByInputGraphName, contract->inputNames, outputs);
+      std::set<std::string> producedSlots;
+      for (const auto& [name, slot] : contract->outputSlotByGraphName) {
+        if (!producedSlots.insert(slot).second)
+          throw std::invalid_argument("material outputs ambiguously share a slot: " + slot);
+      }
+      for (const auto& name : contract->inputNames) {
+        if (contract->inputSlotByGraphName.count(name) == 0)
+          throw std::invalid_argument("material graph input has no slot: " + name);
+      }
+      for (const auto& name : contract->outputNames) {
+        if (contract->outputSlotByGraphName.count(name) == 0 &&
+            std::find(contract->stateOutputGraphNames.begin(),
+                      contract->stateOutputGraphNames.end(), name) ==
+              contract->stateOutputGraphNames.end())
+          throw std::invalid_argument("material graph output has no slot or state binding: " + name);
+      }
+      const auto narrow = [&] (auto& slots, const auto& required) {
+        for (const auto& id : required) {
+          if (std::none_of(slots.begin(), slots.end(),
+                          [&] (const auto& slot) { return slot.slotId == id; }))
+            throw std::invalid_argument("material port has no planned slot: " + id);
+        }
+        slots.erase(std::remove_if(slots.begin(), slots.end(),
+          [&] (const auto& slot) { return required.count(slot.slotId) == 0; }), slots.end());
+      };
+      narrow(step.inputSlots, inputs);
+      narrow(step.outputSlots, outputs);
+      if (contract->stateOutputGraphNames.empty()) step.localStateSlots.clear();
+    }
+    for (const auto& contract : *verified) {
+      if (referenced.count(contract.entryId) == 0)
+        throw std::invalid_argument("material entry is not used by its region: " +
+                                    contract.entryId);
     }
   }
 
@@ -1098,6 +1159,49 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
   // A later stage's input producer lives in the previous stage's plan, so the stage alone
   // cannot be validated - its remote slot would name a step this plan does not contain. The
   // merged plan is validated instead, where every producer exists.
+  if (sourceBindings) {
+    std::map<std::pair<std::string, std::string>, std::vector<std::string>> producedNames;
+    for (const auto& step : plan.steps) {
+      if (step.operation == "SUM") {
+        const auto local = std::find_if(step.inputSlots.begin(), step.inputSlots.end(),
+          [] (const auto& slot) { return slot.source == "LOCAL_STEP"; });
+        if (local == step.inputSlots.end())
+          throw std::invalid_argument("material reduction has no local contribution");
+        producedNames[{step.stepId, "merged"}] =
+          producedNames.at({local->producerStepId, local->producerSlotId});
+        continue;
+      }
+      const auto contract = std::find_if(verified->begin(), verified->end(),
+        [&] (const auto& item) { return item.entryId == step.artifactEntry; });
+      for (const auto& [name, slot] : contract->outputSlotByGraphName)
+        producedNames[{step.stepId, slot}].push_back(name);
+      for (const auto& [name, slot] : contract->passthroughSlotByInputGraphName) {
+        const auto key = std::make_pair(step.stepId, slot);
+        if (producedNames.count(key) == 0) producedNames[key] = {name};
+      }
+    }
+    for (auto& dependency : plan.dependencies) {
+      dependency.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+      const auto source = producedNames.find(
+        {dependency.producerStepId, dependency.producerSlotId});
+      if (source != producedNames.end()) {
+        dependency.tensors = source->second;
+        continue;
+      }
+      // The upstream stage is not in this regional plan. Its original tensor name is also
+      // the source graph input declared by this consumer; never use a logical slot as a name.
+      const auto consumer = std::find_if(plan.steps.begin(), plan.steps.end(),
+        [&] (const auto& step) { return step.stepId == dependency.consumerStepId; });
+      const auto contract = std::find_if(verified->begin(), verified->end(),
+        [&] (const auto& item) { return item.entryId == consumer->artifactEntry; });
+      dependency.tensors.clear();
+      for (const auto& [name, slot] : contract->inputSlotByGraphName)
+        if (slot == dependency.consumerSlotId) dependency.tensors.push_back(name);
+      if (dependency.tensors.empty())
+        throw std::invalid_argument("material dependency has no bound graph tensor");
+    }
+  }
   if (firstLayer == 0)
     plan.validateSteps();
 }
@@ -3666,6 +3770,25 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
     if (!ids.insert(contract.entryId).second)
       throw std::invalid_argument("tensor-parallel entry ids are duplicated");
   projectTemplate(plan, shape, degree, "/verified", egressRole, tp, &tp.entries);
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const std::vector<QwenTpEntryContract>& entries,
+                  const QwenTpStageWindow& window)
+{
+  auto tp = buildQwenTpTemplate(shape, degree, "/verified", units,
+                                window.layerBegin, window.layerEnd);
+  tp.entries = entries;
+  std::set<std::string> ids;
+  for (const auto& contract : tp.entries) {
+    contract.validate();
+    if (!contract.hasGraphFile() || !ids.insert(contract.entryId).second)
+      throw std::invalid_argument("region entries must have unique materialized identities");
+  }
+  projectTemplate(plan, shape, degree, "/verified", egressRole, tp, &tp.entries, &window, true);
 }
 
 } // namespace ndnsf::di::qwen
