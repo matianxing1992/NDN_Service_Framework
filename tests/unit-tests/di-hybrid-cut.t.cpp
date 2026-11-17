@@ -863,4 +863,58 @@ BOOST_AUTO_TEST_CASE(FourLayerFixtureMatchesItsDeclaredShape)
   BOOST_CHECK_EQUAL(mlp, 4u);
 }
 
+BOOST_AUTO_TEST_CASE(PackedSlicesOfTheFixtureReassembleExactly)
+{
+  const std::string path = "../tests/fixtures/spec242/four-layer-qwen.onnx";
+  std::ifstream input(path, std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                        std::istreambuf_iterator<char>());
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+
+  std::vector<std::uint8_t> copy = bytes;
+  const auto shape = qwen::deriveQwenTpShape(copy, 4);
+  const auto rank0 = qwen::planQwenTensorSlices(shape, 2, 0, 0, 1);
+  const auto rank1 = qwen::planQwenTensorSlices(shape, 2, 1, 0, 1);
+  BOOST_REQUIRE_EQUAL(rank0.size(), 1u);
+  BOOST_REQUIRE_EQUAL(rank1.size(), 1u);
+
+  // q_proj shards its output channels: the two ranks must reassemble the original packed
+  // bytes exactly, because the slice copies whole rows and never re-packs a nibble.
+  const auto* source = [&] () -> const onnx::TensorProto* {
+    for (const auto& init : model.graph().initializer()) {
+      if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight")
+        return &init;
+    }
+    return nullptr;
+  }();
+  BOOST_REQUIRE(source != nullptr);
+  const std::string raw = source->raw_data();
+  const std::vector<std::uint8_t> packed(raw.begin(), raw.end());
+  const std::uint64_t n = 64;    // q heads 4 * head_dim 16
+  const std::uint64_t k = 64;    // hidden
+  BOOST_REQUIRE_EQUAL(packed.size(), n * (k / 32) * 16);
+
+  const auto left = qwen::slicePackedInt4(packed, n, k, qwen::QwenSliceAxis::OutputChannels,
+                                          0, 32);
+  const auto right = qwen::slicePackedInt4(packed, n, k, qwen::QwenSliceAxis::OutputChannels,
+                                           32, 64);
+  BOOST_REQUIRE_EQUAL(left.size(), 32 * (k / 32) * 16);
+  BOOST_REQUIRE_EQUAL(right.size(), 32 * (k / 32) * 16);
+  std::vector<std::uint8_t> rejoined(left);
+  rejoined.insert(rejoined.end(), right.begin(), right.end());
+  BOOST_CHECK(rejoined == packed);
+
+  // And the plan's own range for rank 0 is the first half, not an arbitrary window.
+  bool sawQProj = false;
+  for (const auto& slice : rank0.front().initializers) {
+    if (slice.name != "model.layers.0.attn.q_proj.MatMul.weight") continue;
+    sawQProj = true;
+    BOOST_CHECK_EQUAL(slice.begin, 0u);
+    BOOST_CHECK_EQUAL(slice.end, 32u);
+  }
+  BOOST_CHECK(sawQProj);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
