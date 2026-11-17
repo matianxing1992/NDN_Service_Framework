@@ -584,11 +584,92 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     const auto& degrees = split.at("tensor_degrees");
     const auto& layerRanges = split.at("layer_ranges");
     const auto& stageRoles = split.at("roles");
-    if (stageRoles.size() != 1 || layerRanges.size() != 1 || degrees.size() != 1) {
-      throw std::invalid_argument(
-        "sharded Qwen catalog must be a single global stage; layer-parallel and "
-        "tensor-parallel cannot be combined in one plan");
+    const bool hybridLayout =
+      stageRoles.size() > 1 || layerRanges.size() > 1 || degrees.size() > 1;
+    if (hybridLayout) {
+      // A pipeline partition whose stages carry their own degrees. Each stage owns a layer
+      // window, so the units of one stage never cover another stage's layers.
+      if (stageRoles.size() != layerRanges.size() || stageRoles.size() != degrees.size())
+        throw std::invalid_argument(
+          "hybrid Qwen catalog needs one role, layer range and degree per stage");
+      const auto totalLayers = layerRanges.at(layerRanges.size() - 1).at(1).get<std::uint64_t>();
+      const auto hybridShape = planningGraphBytes.empty()
+        ? qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, totalLayers)
+        : qwen::deriveQwenTpShape(planningGraphBytes, totalLayers);
+      std::map<std::string, std::vector<std::string>> rankArtifacts;
+      if (split.contains("rank_artifact_digests_by_role")) {
+        for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
+          rankArtifacts.emplace(item.key(),
+            item.value().get<std::vector<std::string>>());
+        }
+      }
+      std::vector<qwen::QwenTpStageWindow> windows;
+      std::vector<std::vector<qwen::QwenTpUnit>> stageUnits;
+      std::map<std::string, std::string> hybridArtifacts;
+      std::map<std::string, NativeRoleResourceRequirement> hybridRequirements;
+      std::uint64_t previousEnd = 0;
+      std::string previousPublisher;
+      std::uint64_t previousLastLayer = 0;
+      for (std::size_t index = 0; index < stageRoles.size(); ++index) {
+        const auto role = stageRoles.at(index).get<std::string>();
+        const auto begin = layerRanges.at(index).at(0).get<std::uint64_t>();
+        const auto end = layerRanges.at(index).at(1).get<std::uint64_t>();
+        const auto stageDegree = degrees.at(index).get<std::uint64_t>();
+        if (begin != previousEnd || end <= begin)
+          throw std::invalid_argument(
+            "hybrid Qwen catalog needs contiguous, non-empty layer ranges from zero");
+        if (stageDegree == 0)
+          throw std::invalid_argument("hybrid Qwen stage has degree zero: " + role);
+        const auto ranked = rankArtifacts.find(role);
+        if (ranked == rankArtifacts.end() || ranked->second.size() != stageDegree)
+          throw std::invalid_argument(
+            "hybrid Qwen stage needs one artifact digest per rank: " + role);
+        const auto profile = resourceProfiles.find(role);
+        if (profile == resourceProfiles.end())
+          throw std::invalid_argument(
+            "hybrid Qwen catalog has no resource profile for its stage: " + role);
+        std::vector<qwen::QwenTpUnit> units;
+        for (std::uint64_t rank = 0; rank < stageDegree; ++rank) {
+          qwen::QwenTpUnit unit;
+          unit.roleId = role + "/Tensor/Rank/" + std::to_string(rank);
+          unit.rank = rank;
+          unit.layerBegin = begin;
+          unit.layerEnd = end;
+          hybridArtifacts[unit.roleId] = ranked->second.at(rank);
+          hybridRequirements[unit.roleId] = profile->second;
+          units.push_back(std::move(unit));
+        }
+        qwen::QwenTpStageWindow window;
+        window.stageId = "stage-" + std::to_string(index);
+        window.sourceRegionDigest = nativePlanningDigest(
+          "qwen-hybrid-stage|" + role + "|" + std::to_string(begin) + "|" +
+          std::to_string(end) + "|" + std::to_string(stageDegree));
+        window.layerBegin = begin;
+        window.layerEnd = end;
+        if (index > 0) {
+          window.upstreamUnit = previousPublisher;
+          window.upstreamStepId = previousPublisher + "/MLP/" +
+            std::to_string(previousLastLayer);
+          window.upstreamSlotId = "post_residual";
+        }
+        previousPublisher = units.front().roleId;
+        previousLastLayer = end - 1;
+        previousEnd = end;
+        stageUnits.push_back(std::move(units));
+        windows.push_back(std::move(window));
+      }
+      auto egressUnit = split.value("result_egress_role", std::string{});
+      const auto& lastStageUnits = stageUnits.back();
+      const bool named = std::any_of(lastStageUnits.begin(), lastStageUnits.end(),
+        [&] (const auto& unit) { return unit.roleId == egressUnit; });
+      if (!named)
+        egressUnit = lastStageUnits.back().roleId;
+      projectedCandidate = qwen::buildQwenHybridCandidate(
+        result.model.graph, hybridShape, windows, stageUnits, "entry", egressUnit,
+        result.model.descriptor, hybridArtifacts, hybridRequirements);
+      projectedCandidate->splitter = result.cooperativeSplitter->identity();
     }
+    else {
     const auto layers = layerRanges.at(0).at(1).get<std::uint64_t>();
     const auto degree = degrees.at(0).get<std::uint64_t>();
     const auto stageRole = stageRoles.at(0).get<std::string>();
@@ -678,6 +759,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     // request was refused at ACK_CLOSED as a foreign identity. Adopt the catalog's identity
     // here, where the candidate is produced under that strategy.
     projectedCandidate->splitter = result.cooperativeSplitter->identity();
+    }
   }
   const auto enumerated = projectedCandidate
     ? std::vector<NativeSplitCandidate>{}
