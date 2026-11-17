@@ -164,7 +164,8 @@ QwenInitializerSlice::validate() const
 
 std::vector<QwenRankLayerSlices>
 planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
-                     std::uint64_t rank)
+                     std::uint64_t rank, std::uint64_t layerBegin,
+                     std::uint64_t layerEnd)
 {
   shape.validate();
   if (degree < 2) {
@@ -172,6 +173,14 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
   }
   if (rank >= degree) {
     throw std::invalid_argument("tensor-parallel rank is outside its degree");
+  }
+  // A unit owns a contiguous region of the decoder stack. The range is explicit rather
+  // than implied by the shape so that one stage's ranks slice only their own layers.
+  if (layerEnd > shape.layers) {
+    throw std::invalid_argument("tensor-parallel layer range exceeds the model");
+  }
+  if (layerBegin >= layerEnd) {
+    throw std::invalid_argument("tensor-parallel layer range is empty");
   }
 
   // Whole heads split; a partial head is never acceptable.
@@ -195,8 +204,8 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
   }
 
   std::vector<QwenRankLayerSlices> result;
-  result.reserve(shape.layers);
-  for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+  result.reserve(layerEnd - layerBegin);
+  for (std::uint64_t layer = layerBegin; layer < layerEnd; ++layer) {
     const auto prefix = "model.layers." + std::to_string(layer) + ".";
     QwenRankLayerSlices slices;
     slices.layer = layer;

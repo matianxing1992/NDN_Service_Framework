@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -216,6 +217,36 @@ BOOST_AUTO_TEST_CASE(VersionOneWireCannotCarryTheStageLayout)
   std::istringstream input(wire);
   BOOST_CHECK_THROW(nativeExecutionPlanForServiceFromJson(input, "/service/hybrid"),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(SlicePlanningCoversOnlyItsOwnLayerRange)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  // The whole-model entry point keeps its old shape: one entry per layer, in order.
+  const auto whole = qwen::planQwenTensorSlices(shape, 2, 0);
+  BOOST_REQUIRE_EQUAL(whole.size(), 4u);
+  BOOST_CHECK_EQUAL(whole.front().layer, 0u);
+  BOOST_CHECK_EQUAL(whole.back().layer, 3u);
+
+  // A stage covering layers 1..3 plans only those, and each entry keeps the global layer
+  // index so the caller never renumbers what it left out.
+  const auto region = qwen::planQwenTensorSlices(shape, 2, 1, 1, 4);
+  BOOST_REQUIRE_EQUAL(region.size(), 3u);
+  BOOST_CHECK_EQUAL(region.front().layer, 1u);
+  BOOST_CHECK_EQUAL(region.back().layer, 3u);
+
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape, 2, 0, 2, 2), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape, 2, 0, 3, 1), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape, 2, 0, 0, 5), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

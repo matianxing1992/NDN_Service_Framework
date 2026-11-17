@@ -104,15 +104,27 @@ struct QwenRankLayerSlices
  * and up), while O and down split the reduction channels and therefore emit a
  * full-width `D` partial that the runtime sums.
  *
- * @param shape  Verified shape facts.
- * @param degree Tensor-parallel degree (first acceptance: 2).
- * @param rank   Rank in `[0, degree)`.
- * @returns The initializer slices this rank owns, in layer order.
- * @throws std::invalid_argument for a shape/degree/rank that cannot split exactly.
+ * @param shape       Verified shape facts.
+ * @param degree      Tensor-parallel degree (first acceptance: 2).
+ * @param rank        Rank in `[0, degree)`.
+ * @param layerBegin  First decoder layer this unit owns, inclusive.
+ * @param layerEnd    One past the last layer this unit owns; must be <= shape.layers.
+ * @returns The initializer slices this rank owns, in layer order. Each entry keeps its
+ *          global layer index, so a caller may address a region of the model without
+ *          renumbering the layers it left out.
+ * @throws std::invalid_argument for a shape/degree/rank/range that cannot split exactly.
  */
 std::vector<QwenRankLayerSlices>
 planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
-                     std::uint64_t rank);
+                     std::uint64_t rank, std::uint64_t layerBegin,
+                     std::uint64_t layerEnd);
+
+/** Whole-model overload: every layer the shape declares. */
+inline std::vector<QwenRankLayerSlices>
+planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree, std::uint64_t rank)
+{
+  return planQwenTensorSlices(shape, degree, rank, 0, shape.layers);
+}
 
 /**
  * Slice one packed INT4 initializer along the plan's axis.
