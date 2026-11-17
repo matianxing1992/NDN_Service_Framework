@@ -6372,6 +6372,51 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(GenericStateBindingsDoNotRequireAttentionNames)
+{
+  NativeSubgraphEntryContract recurrent;
+  recurrent.entryId = "recurrent-cell";
+  recurrent.unitId = "arbitrary-unit";
+  recurrent.inputNames = {"input", "carry"};
+  recurrent.outputNames = {"result", "next-carry"};
+  recurrent.stateSuccessorByInputGraphName = {{"carry", "next-carry"}};
+  auto stateless = recurrent;
+  stateless.entryId = "stateless-cell";
+  stateless.stateSuccessorByInputGraphName.clear();
+  std::map<std::string, std::shared_ptr<FakeStatefulRunner>> children;
+  NativeEntryRunner runner({stateless, recurrent},
+    [&children] (const NativeModelRunnerSpec& spec) {
+      auto child = std::make_shared<FakeStatefulRunner>(true);
+      children.emplace(spec.role, child);
+      return child;
+    },
+    [] (const NativeSubgraphEntryContract& entry) {
+      NativeModelRunnerSpec spec;
+      spec.role = entry.entryId;
+      return spec;
+    });
+  BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  BOOST_CHECK(runner.supportsConversationStateTransfer());
+  const auto state = runner.promoteSessionStateToConversation("session", "conversation");
+  BOOST_REQUIRE(state.has_value());
+  BOOST_CHECK_EQUAL(state->logicalBytes, 4096u);
+  BOOST_CHECK_EQUAL(state->opaque.role, "arbitrary-unit");
+  BOOST_CHECK_EQUAL(children.at("stateless-cell")->promoteCalls, 0u);
+  BOOST_CHECK_EQUAL(children.at("recurrent-cell")->promoteCalls, 1u);
+  BOOST_CHECK(runner.restoreConversationState(*state, "restored"));
+  BOOST_CHECK(runner.releaseConversationState(*state));
+  runner.releaseSessionState("restored");
+  BOOST_CHECK_EQUAL(children.at("stateless-cell")->releaseCalls, 1u);
+  BOOST_CHECK_EQUAL(children.at("recurrent-cell")->releaseCalls, 1u);
+
+  auto invalid = recurrent;
+  invalid.stateSuccessorByInputGraphName["carry"] = "missing";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+  invalid = recurrent;
+  invalid.stateSuccessorByInputGraphName["input"] = "next-carry";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
 {
   // C6: INIT/MLP/HEAD cannot answer a state question, and a unit that reported "no
@@ -6389,6 +6434,11 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
     entry.kind = spec.second;
     entry.inputNames = {"in"};
     entry.outputNames = {"out"};
+    if (entry.kind == "ATTN") {
+      const auto layer = entry.entryId.substr(entry.entryId.rfind('/') + 1);
+      entry.inputNames.push_back("past_key_values." + layer + ".key");
+      entry.stateOutputGraphNames.push_back("present." + layer + ".key");
+    }
     entry.relativeGraphPath = "entry.onnx";
     entry.graphDigest = "sha256:" + std::string(64, 'a');
     entry.validate();
@@ -6432,6 +6482,15 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
     // Release reaches every child, including the ones without state.
     runner.releaseSessionState("state-session");
     BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  }
+
+  // A diagnostic kind alone does not establish state ownership.
+  {
+    auto entry = table.front();
+    entry.kind = "ATTN";
+    const auto runner = makeRunner({entry}, true);
+    BOOST_CHECK(!runner.supportsOpaqueStateHandles());
+    BOOST_CHECK(!runner.supportsConversationStateTransfer());
   }
 
   // A non-stateful attention child makes the whole unit non-stateful: a partial
@@ -18767,6 +18826,11 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
     entry.kind = spec.second;
     entry.inputNames = {"in"};
     entry.outputNames = {"out"};
+    if (entry.kind == "ATTN") {
+      const auto layer = entry.entryId.substr(entry.entryId.rfind('/') + 1);
+      entry.inputNames.push_back("past_key_values." + layer + ".key");
+      entry.stateOutputGraphNames.push_back("present." + layer + ".key");
+    }
     entry.relativeGraphPath = "entry.onnx";
     entry.graphDigest = "sha256:" + std::string(64, 'a');
     entry.validate();

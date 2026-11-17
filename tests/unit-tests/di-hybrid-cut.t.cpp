@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
@@ -3012,6 +3013,156 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       "--log_level=message", "--report_level=short"},
     {{"NDNSF_SPEC242_CACHE_REOPEN", sidecar.string()}}, std::chrono::seconds(30));
   BOOST_CHECK_EQUAL(status, 0);
+}
+
+BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
+{
+  struct Workspace
+  {
+    std::filesystem::path root = "/tmp/spec242-generic-entry";
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace;
+  workspace.owned = std::filesystem::create_directory(workspace.root);
+  BOOST_REQUIRE(workspace.owned);
+
+  onnx::ModelProto model;
+  model.set_ir_version(8);
+  auto* opset = model.add_opset_import();
+  opset->set_version(17);
+  auto* graph = model.mutable_graph();
+  graph->set_name("two-port-arithmetic");
+  const auto signature = [] (onnx::ValueInfoProto* value, const std::string& name) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(1);
+    tensor->mutable_shape()->add_dim()->set_dim_value(2);
+  };
+  for (const auto* name : {"a", "b"}) signature(graph->add_input(), name);
+  signature(graph->add_output(), "sum-value");
+  signature(graph->add_output(), "delta-value");
+  for (const auto& item : std::vector<std::pair<std::string, std::string>>{
+         {"Add", "sum-value"}, {"Sub", "delta-value"}}) {
+    auto* node = graph->add_node();
+    node->set_name(item.first);
+    node->set_op_type(item.first);
+    node->add_input("a");
+    node->add_input("b");
+    node->add_output(item.second);
+  }
+  std::string wire;
+  BOOST_REQUIRE(model.SerializeToString(&wire));
+  const auto path = workspace.root / "entry.onnx";
+  {
+    std::ofstream output(path, std::ios::binary);
+    output.write(wire.data(), static_cast<std::streamsize>(wire.size()));
+    BOOST_REQUIRE(static_cast<bool>(output));
+  }
+  NativeSubgraphEntryContract entry;
+  entry.entryId = "arithmetic";
+  entry.unitId = "ordinary-unit";
+  entry.inputNames = {"a", "b"};
+  entry.outputNames = {"sum-value", "delta-value"};
+  entry.inputSlotByGraphName = {{"a", "left"}, {"b", "right"}};
+  entry.outputSlotByGraphName = {{"sum-value", "total"}, {"delta-value", "difference"}};
+  entry.relativeGraphPath = path.filename().string();
+  entry.graphDigest = nativePlanningDigest(wire);
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  auto runner = std::make_shared<NativeEntryRunner>(
+    std::vector<NativeSubgraphEntryContract>{entry},
+    [&factory] (const NativeModelRunnerSpec& spec) { return factory.create(spec); },
+    [&path] (const NativeSubgraphEntryContract& contract) {
+      NativeModelRunnerSpec spec;
+      spec.role = contract.entryId;
+      spec.kind = "onnx";
+      spec.backend = "onnxruntime-cpu";
+      spec.path = path.string();
+      spec.metadata["forceOutputBundle"] = "true";
+      for (std::size_t i = 0; i < contract.inputNames.size(); ++i)
+        spec.metadata["inputScope." + std::to_string(i)] = contract.inputNames[i];
+      for (std::size_t i = 0; i < contract.outputNames.size(); ++i)
+        spec.metadata["outputScope." + std::to_string(i)] = contract.outputNames[i];
+      return spec;
+    });
+  BOOST_CHECK(!runner->supportsOpaqueStateHandles());
+  BOOST_CHECK(!runner->supportsConversationStateTransfer());
+  const auto slot = [] (const std::string& name, const std::string& source) {
+    NativeStepSlotSpec value;
+    value.slotId = name;
+    value.dtype = "float32";
+    value.shape = {std::int64_t(1), std::int64_t(2)};
+    value.layoutDigest = nativePlanningDigest("two-port-layout");
+    value.source = source;
+    return value;
+  };
+  auto step = callStep("arithmetic-call", entry.unitId);
+  step.artifactEntry = entry.entryId;
+  step.inputSlots = {slot("left", "EPOCH_INPUT"), slot("right", "EPOCH_INPUT")};
+  step.outputSlots = {slot("total", "LOCAL_STEP"), slot("difference", "LOCAL_STEP")};
+  NativeExecutionPlan plan;
+  plan.serviceName = "/fixture/arithmetic";
+  plan.modelName = "arithmetic";
+  plan.roles = {entry.unitId};
+  plan.tensorDegree = 1;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  plan.stageLayout = {{"region", nativePlanningDigest(wire), {entry.unitId}}};
+  plan.steps = {step};
+  BOOST_REQUIRE_NO_THROW(plan.validateSteps());
+  BOOST_CHECK(runner->checkTemplate(plan.steps, entry.unitId).empty());
+  auto unknown = step;
+  unknown.artifactEntry = "unavailable";
+  BOOST_CHECK(!runner->checkTemplate({unknown}, entry.unitId).empty());
+  NativeProviderAssignment assignment;
+  assignment.providerByRole.emplace(entry.unitId, "/fixture/provider");
+  ProviderRoleWorker worker(1, 1, 4, std::chrono::seconds(5));
+  auto bus = std::make_shared<tests::PartialBus>();
+  auto io = std::make_shared<tests::BusDependencyIo>(bus);
+  const auto input = [] (const std::string& name, std::array<float, 2> values) {
+    NamedTensor tensor;
+    tensor.name = name;
+    tensor.elementType = TensorElementType::Float32;
+    tensor.shape = {1, 2};
+    tensor.payload.resize(sizeof(values));
+    std::memcpy(tensor.payload.data(), values.data(), sizeof(values));
+    return makeEncodedTensorBundle(name, {tensor});
+  };
+  const std::map<std::string, TensorBundle> inputs{
+    {"left", input("left", {1, 2})}, {"right", input("right", {3, -1})}};
+  auto future = worker.executePreparedAsync("generic-entry",
+    roleSpecFor(plan, entry.unitId, "generic-entry", assignment, ""), io,
+    [runner] { return runner; }, inputs);
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  const auto result = future.get();
+  BOOST_REQUIRE_EQUAL(result.outputsByScope.size(), 2u);
+  for (const auto& expected :
+       std::map<std::string, std::array<float, 2>>{{"total", {4, 1}},
+                                                {"difference", {-2, 3}}}) {
+    const auto views = decodeTensorBundleViews(result.outputsByScope.at(expected.first));
+    BOOST_REQUIRE_EQUAL(views.size(), 1u);
+    BOOST_CHECK(views.front().elementType == TensorElementType::Float32);
+    BOOST_CHECK(views.front().shape == std::vector<std::int64_t>({1, 2}));
+    BOOST_REQUIRE_EQUAL(views.front().payload.size(), sizeof(expected.second));
+    std::array<float, 2> values;
+    std::memcpy(values.data(), views.front().payload.data(), sizeof(values));
+    BOOST_CHECK_EQUAL_COLLECTIONS(values.begin(), values.end(),
+                                 expected.second.begin(), expected.second.end());
+  }
+  BOOST_CHECK_EQUAL(bus->publishedCount(), 0u);
+  auto missing = inputs;
+  missing.erase("right");
+  auto rejected = worker.executePreparedAsync("missing-entry-input",
+    roleSpecFor(plan, entry.unitId, "missing-entry-input", assignment, ""), io,
+    [runner] { return runner; }, missing);
+  BOOST_REQUIRE(rejected.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  BOOST_CHECK_THROW(rejected.get(), std::exception);
+  runner->releaseSessionState("generic-entry");
+  runner->releaseSessionState("missing-entry-input");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
