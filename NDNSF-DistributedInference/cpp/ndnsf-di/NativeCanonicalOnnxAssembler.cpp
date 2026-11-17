@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -2376,7 +2377,9 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     // whole-role runner whose backend is the assembled one: the steps then executed against a
     // single ONNX graph, which is why a tensor-parallel INIT produced the ONNX runner's own
     // bundle instead of the step's declared slots.
-    if (!projection.plan.steps.empty()) {
+    if (!projection.plan.steps.empty() && !detail::bindNativeWholeRegionEntry(projection, spec)) {
+      if (projection.assemblyContract().adapterId != "qwen")
+        throw std::invalid_argument("step plan has no supported verified material entry contract");
       const auto& contract = projection.assemblyContract();
       const auto rankRole = contract.selectedRole;
       const std::uint64_t layers = contract.layerEnd > contract.layerBegin
@@ -4029,7 +4032,9 @@ prepareNativeCanonicalOnnxRole(
     // assembler. Doing it earlier would split a file that is still being
     // finalized; doing it later would hand the Provider a whole-role spec that
     // runs the complete rank graph once per step.
-    if (!projection.plan.steps.empty()) {
+    if (!projection.plan.steps.empty() && !detail::bindNativeWholeRegionEntry(projection, spec)) {
+      if (projection.assemblyContract().adapterId != "qwen")
+        throw std::invalid_argument("step plan has no supported verified material entry contract");
       const auto rankRole = projection.assemblyContract().selectedRole;
       // Preserve the sealed global interval. A regional rank graph contains only
       // its own layers; its exclusive end is not a local layer count.

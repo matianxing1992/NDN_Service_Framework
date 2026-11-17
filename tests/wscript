@@ -2236,12 +2236,12 @@ def build(bld):
                 linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    # Spec 242 T001: the sealed stage layout and step-plan v2 contract are pure plan
-    # facts, so this card links only the DI and framework libraries - no ONNX Runtime,
-    # no Provider and no network.
+    # Spec 242 native layout/material/worker/ORT coverage, including the existing
+    # preparation-context regressions. In-process checks do not qualify NDN deployment.
     bld.program(target='../spec242-hybrid-cut-tests', name='spec242-hybrid-cut-tests',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/di-hybrid-cut.t.cpp')],
+                        bld.path.find_node('unit-tests/di-hybrid-cut.t.cpp'),
+                        bld.path.find_node('unit-tests/distributed-inference-native-preparation-context.t.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' +
                     framework_use + ' ONNXRUNTIME',

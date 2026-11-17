@@ -14,6 +14,10 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
@@ -3168,6 +3172,251 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   BOOST_CHECK_THROW(rejected.get(), std::exception);
   runner->releaseSessionState("generic-entry");
   runner->releaseSessionState("missing-entry-input");
+
+  // The same arithmetic model now traverses real source admission, native cold assembly,
+  // cache reconstruction and registry creation. Whole-region slots explicitly name source
+  // ports, unlike the alias-mapping dispatcher check above.
+  auto wholePlan = plan;
+  wholePlan.steps.front().inputSlots = {slot("a", "EPOCH_INPUT"), slot("b", "EPOCH_INPUT")};
+  wholePlan.steps.front().outputSlots = {
+    slot("sum-value", "LOCAL_STEP"), slot("delta-value", "LOCAL_STEP")};
+  NativeCanonicalSource source;
+  source.modelBytes.assign(wire.begin(), wire.end());
+  NativeAssemblyControl assemblyControl{
+    std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {}, 1U << 20, 1U << 20};
+  auto descriptor = qwenFixtureDescriptor();
+  descriptor.modelName = "arithmetic";
+  descriptor.contentDigest = nativePlanningDigest(wire);
+  descriptor.adapterId = descriptor.adapter.name = "arithmetic";
+  descriptor.precision = "fp32";
+  descriptor.quantizationSubtype = "none";
+  descriptor.adapter.precisions = {"fp32"};
+  descriptor.adapter.backends = {"onnxruntime-cpu"};
+  descriptor.adapter.tasks = {"arithmetic"};
+  const auto inspection = inspectNativeOnnxSourceGraph(source, descriptor, assemblyControl);
+  descriptor.graphDigest = inspection.graph.graphDigest;
+  const auto profileDigest = nativePlanningDigest("arithmetic-profile");
+  const auto root = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
+    {"artifactProfileDigest", profileDigest},
+    {"modelIdentityDigest", descriptor.contentDigest}, {"modelName", descriptor.modelName},
+    {"metadata", {{"canonicalSourceDataName", "/fixture/source"},
+      {"canonicalSourceDigest", nativePlanningDigest(wire)},
+      {"canonicalSourceBytes", wire.size()}}}});
+  NativeInspectedModel inspected;
+  inspected.descriptor = descriptor;
+  inspected.graph = inspection.graph;
+  inspected.canonicalGraphDigest = inspection.canonicalIdentity.graphDigest;
+  inspected.canonicalSourceName = "/fixture/source";
+  inspected.canonicalSourceDigest = nativePlanningDigest(wire);
+  inspected.canonicalSourceBytes = wire.size();
+  inspected.canonicalInitializerDigest = inspection.canonicalIdentity.initializerDigest;
+  inspected.modelManifestDigest = nativePlanningDigest(root);
+  NativeSplitCandidate candidate;
+  candidate.model = descriptor;
+  candidate.graphDigest = inspected.graph.graphDigest;
+  candidate.source = "GENERATED";
+  candidate.splitter = {"arithmetic", "1", nativePlanningDigest("arithmetic-split")};
+  candidate.executionPlan = wholePlan;
+  candidate.inputIngressRole = candidate.resultEgressRole = entry.unitId;
+  const auto artifact = nativePlanningDigest("arithmetic-region");
+  candidate.artifactsByRole = {{entry.unitId, {artifact}}};
+  candidate.fragmentsByRole = {{entry.unitId, artifact}};
+  candidate.requirementsByRole = {{entry.unitId,
+    {{"onnxruntime-cpu"}, 0, 1U << 20, 0, 1024, 0, 1.0}}};
+  for (const auto& node : inspected.graph.nodes) candidate.nodeRoles[node.id] = entry.unitId;
+  candidate.candidateDigest = candidate.computedDigest();
+  NativeRequestControl requestControl{"/fixture/whole-region", 1, assemblyControl.deadline, {}};
+  const NativeRoleRecipeProfile profile{profileDigest, nativePlanningDigest("assembler-v1"),
+    "onnxruntime", "fp32", "none", "native", "none", "plaintext-v1",
+    assemblyControl.maxSourceBytes, assemblyControl.maxAssembledBytes, 8};
+  const NativeCanonicalRolePreparer preparer(inspected, source, profile, assemblyControl);
+  NativeStateTensorMapping stateless;
+  stateless.inputs[entry.unitId] = {};
+  stateless.outputs[entry.unitId] = {};
+  const auto bound = preparer.bindStateContracts(inspected, candidate, stateless,
+    requestControl, NativeStateContractBinding::SOURCE);
+  const auto prepared = preparer.prepare(inspected, bound, requestControl);
+  BOOST_REQUIRE_EQUAL(prepared.size(), 1u);
+  const auto& role = prepared.front();
+  BOOST_CHECK_EQUAL(role.roleKind, "COMPONENT_SET");
+  BOOST_CHECK_EQUAL(role.layerEnd, 0u);
+  auto projection = stageWindowProjection(wholePlan);
+  projection.provider = "/fixture/provider";
+  projection.fixedProviderByRole = {{entry.unitId, projection.provider}};
+  projection.deviceBinding.provider = projection.provider;
+  projection.deviceBinding.role = entry.unitId;
+  projection.requestId = requestControl.requestId;
+  projection.deadlineMs = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count()) + 120000;
+  projection.canonicalArtifactName = "/fixture/root";
+  projection.selectedRole = projection.assembly = role;
+  projection.executionRole.roleId = projection.executionRole.stageId = role.role;
+  projection.executionRole.rank = role.rank;
+  projection.executionRole.layerBegin = role.layerBegin;
+  projection.executionRole.layerEnd = role.layerEnd;
+  projection.executionRole.backend = role.backend;
+  projection.executionRole.adapterId = role.adapterId;
+  projection.executionRole.adapterVersion = role.adapterVersion;
+  projection.dataflow.role = role.role;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.terminalResponseOwner = true;
+  NativeCanonicalOnnxAssemblerOptions options;
+  options.cacheDir = (workspace.root / "cache").string();
+  options.providerIdentity = projection.provider;
+  options.workerLocation = resolveNativeOnnxWorkerLocation();
+  options.verifyCachedArtifactDigest = true;
+  options.signManifest = [] (const std::string&) { return "fixture-signature"; };
+  std::size_t fetches = 0;
+  NativeCanonicalOnnxFetchers fetchers;
+  fetchers.getArtifact = [&root] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+    if (name != ndn::Name("/fixture/root")) return std::nullopt;
+    return ndn::Buffer(root.begin(), root.end());
+  };
+  fetchers.fetchEncryptedLargeData = [&] (const ndn::Name& name, const ndn::Name&)
+    -> std::optional<ndn::Buffer> {
+    if (name != ndn::Name("/fixture/source")) return std::nullopt;
+    ++fetches;
+    return ndn::Buffer(source.modelBytes.begin(), source.modelBytes.end());
+  };
+  const auto cold = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+  const auto beforeReopen = fetches;
+  const auto cached = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
+  BOOST_REQUIRE(cached);
+  BOOST_CHECK_EQUAL(fetches, beforeReopen);
+  BOOST_CHECK_EQUAL(cold.path, cached->path);
+  BOOST_CHECK_EQUAL(cold.backend, "onnxruntime-cpu");
+  BOOST_CHECK_EQUAL(cached->backend, cold.backend);
+  BOOST_CHECK(cold.metadata.count("tensorParallelEntries") == 0);
+  for (const auto& spec : {cold, *cached}) {
+    BOOST_REQUIRE(spec.entryContract);
+    BOOST_CHECK_EQUAL(spec.entryContract->entryId, entry.entryId);
+    BOOST_CHECK_EQUAL(spec.entryContract->inputNames.size(), 2u);
+    BOOST_CHECK_EQUAL(spec.entryContract->outputNames.size(), 2u);
+    auto materialRunner = factory.create(spec);
+    BOOST_REQUIRE(std::dynamic_pointer_cast<NativeEntryRunner>(materialRunner));
+    auto executed = worker.executePreparedAsync("whole-region",
+      roleSpecFor(wholePlan, entry.unitId, "whole-region", assignment, ""), io,
+      [materialRunner] { return materialRunner; },
+      {{"a", input("a", {1, 2})}, {"b", input("b", {3, -1})}});
+    BOOST_REQUIRE(executed.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+    const auto output = executed.get();
+    for (const auto& expected :
+         std::map<std::string, std::array<float, 2>>{{"sum-value", {4, 1}},
+                                                  {"delta-value", {-2, 3}}}) {
+      const auto views = decodeTensorBundleViews(output.outputsByScope.at(expected.first));
+      BOOST_REQUIRE_EQUAL(views.size(), 1u);
+      BOOST_CHECK(views.front().elementType == TensorElementType::Float32);
+      BOOST_CHECK(views.front().shape == std::vector<std::int64_t>({1, 2}));
+      BOOST_REQUIRE_EQUAL(views.front().payload.size(), sizeof(expected.second));
+      std::array<float, 2> values;
+      std::memcpy(values.data(), views.front().payload.data(), sizeof(values));
+      BOOST_CHECK_EQUAL_COLLECTIONS(values.begin(), values.end(),
+                                   expected.second.begin(), expected.second.end());
+    }
+    materialRunner->releaseSessionState("whole-region");
+  }
+  auto foreign = cold;
+  auto foreignEntry = *cold.entryContract;
+  foreignEntry.unitId = "foreign";
+  foreign.entryContract = std::make_shared<const NativeSubgraphEntryContract>(foreignEntry);
+  BOOST_CHECK_THROW(factory.create(foreign), std::invalid_argument);
+  BOOST_CHECK(validateNativePreparedRunnerSpec(projection, foreign).has_value());
+  auto missingEntry = cold;
+  missingEntry.entryContract.reset();
+  BOOST_CHECK(validateNativePreparedRunnerSpec(projection, missingEntry).has_value());
+  RegistryNativeModelRunnerFactory nullFactory;
+  nullFactory.registerBackend(cold.backend, [] (const NativeModelRunnerSpec&) {
+    return std::shared_ptr<NativeModelRunner>{};
+  });
+  BOOST_CHECK_THROW(nullFactory.create(cold), std::logic_error);
+
+  // Real in-memory template hits must rebind plan-owned entry values without rebuilding
+  // the artifact or retaining the previous invocation's entry ID/state map.
+  ProviderArtifactCache artifactCache;
+  const auto key = nativeProviderArtifactKey(projection, projection.provider,
+    inspected.canonicalSourceName, inspected.canonicalSourceDigest);
+  std::size_t builds = 0;
+  const auto build = [&] (const NativeRequestControl&) {
+    ++builds;
+    auto artifact = std::make_shared<PreparedProviderArtifact>();
+    artifact->encryptedObjectName = projection.canonicalArtifactName;
+    artifact->ciphertextDigest = cold.metadata.at("assembledModelDigest");
+    artifact->formatVersion = "fixture-plaintext";
+    artifact->canonicalMetadataJson = root;
+    artifact->ciphertextBytes = std::filesystem::file_size(cold.path);
+    auto templateSpec = cold;
+    // The facade publishes this stable cache descriptor before the cache strips path.
+    templateSpec.metadata["assembledCachePath"] = templateSpec.path;
+    return ProviderArtifactCache::BuildResult{
+      artifact, std::make_shared<const NativeModelRunnerSpec>(std::move(templateSpec)), {}};
+  };
+  auto firstLease = artifactCache.acquireWithRunner(key, projection, requestControl, build);
+  BOOST_REQUIRE(firstLease.runnerSpec());
+  BOOST_CHECK(!firstLease.runnerSpec()->entryContract);
+  auto reboundProjection = projection;
+  reboundProjection.requestId = "/fixture/rebound-entry";
+  reboundProjection.dataflow.requestId = reboundProjection.requestId;
+  reboundProjection.planDigest = nativePlanningDigest("rebound-entry-plan");
+  reboundProjection.dataflow.planDigest = reboundProjection.planDigest;
+  reboundProjection.plan.steps.front().artifactEntry = "rebound-arithmetic";
+  const auto reboundKey = nativeProviderArtifactKey(reboundProjection, projection.provider,
+    inspected.canonicalSourceName, inspected.canonicalSourceDigest);
+  BOOST_CHECK_EQUAL(key.canonicalKey(), reboundKey.canonicalKey());
+  auto reboundControl = requestControl;
+  reboundControl.requestId = reboundProjection.requestId;
+  auto hit = artifactCache.acquireWithRunner(reboundKey, reboundProjection, reboundControl, build);
+  BOOST_REQUIRE(hit.cacheHit());
+  BOOST_CHECK_EQUAL(builds, 1u);
+  auto reboundSpec = *hit.runnerSpec();
+  reboundSpec.path = reboundSpec.metadata.at("assembledCachePath");
+  bindNativeRunnerPreparationContext(reboundSpec, reboundProjection,
+    {projection.provider, "fixture-boot", 1234, workspace.root.string()});
+  BOOST_REQUIRE(reboundSpec.entryContract);
+  BOOST_CHECK_EQUAL(reboundSpec.entryContract->entryId, "rebound-arithmetic");
+  BOOST_CHECK_EQUAL(reboundSpec.metadata.at("evidence.createdAtMs"), "1234");
+  BOOST_CHECK_EQUAL(cold.entryContract->entryId, entry.entryId);
+  BOOST_CHECK(!validateNativePreparedRunnerSpec(reboundProjection, reboundSpec));
+  auto reboundRunner = factory.create(reboundSpec);
+  auto reboundFuture = worker.executePreparedAsync("rebound-entry",
+    roleSpecFor(reboundProjection.plan, entry.unitId, "rebound-entry", assignment, ""), io,
+    [reboundRunner] { return reboundRunner; },
+    {{"a", input("a", {1, 2})}, {"b", input("b", {3, -1})}});
+  BOOST_REQUIRE(reboundFuture.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+  const auto reboundResult = reboundFuture.get();
+  BOOST_CHECK_EQUAL(reboundResult.outputsByScope.size(), 2u);
+  reboundRunner->releaseSessionState("rebound-entry");
+  auto unsupported = reboundProjection;
+  auto extra = unsupported.plan.steps.front();
+  extra.stepId = "another-call";
+  extra.artifactEntry = "another-entry";
+  extra.outputSlots.front().slotId = "another-output";
+  unsupported.plan.steps.push_back(extra);
+  BOOST_CHECK_THROW(bindNativeRunnerPreparationContext(reboundSpec, unsupported,
+    {projection.provider, "fixture-boot", 1234, workspace.root.string()}), std::invalid_argument);
+  BOOST_CHECK(validateNativePreparedRunnerSpec(unsupported, missingEntry).has_value());
+
+  auto statelessGeneration = projection;
+  statelessGeneration.generationContract.enabled = true;
+  statelessGeneration.generationContract.stateInputNames = {"remote-state"};
+  statelessGeneration.generationContract.stateOutputNames = {"remote-successor"};
+  statelessGeneration.generationContract.stateSuccessorMap = "remote-state=remote-successor";
+  auto statelessSpec = cold;
+  statelessSpec.metadata["statefulModel"] = "true";
+  statelessSpec.metadata["stateInputNames"] = "stale-input";
+  statelessSpec.metadata["stateOutputNames"] = "stale-output";
+  bindNativeRunnerPreparationContext(statelessSpec, statelessGeneration,
+    {projection.provider, "fixture-boot", 1234, workspace.root.string()});
+  BOOST_CHECK(statelessSpec.metadata.count("statefulModel") == 0);
+  BOOST_CHECK(statelessSpec.metadata.count("stateInputNames") == 0);
+  BOOST_CHECK(!factory.create(statelessSpec)->supportsOpaqueStateHandles());
+  auto badPorts = projection;
+  badPorts.plan.steps.front().inputSlots.front().dtype = "int64";
+  BOOST_CHECK_EXCEPTION(prepareNativeCanonicalOnnxRole(fetchers, badPorts, options),
+    std::invalid_argument, [] (const std::invalid_argument& error) {
+      return std::string(error.what()).find("whole-region typed port") != std::string::npos;
+    });
 }
 
 BOOST_AUTO_TEST_SUITE_END()

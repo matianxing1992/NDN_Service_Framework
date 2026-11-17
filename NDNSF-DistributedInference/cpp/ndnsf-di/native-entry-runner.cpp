@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace ndnsf::di {
@@ -61,6 +62,18 @@ NativeSubgraphEntryContract::validate() const
         }))
       throw std::invalid_argument("entry graph digest is not canonical sha256");
   }
+}
+
+bool
+NativeSubgraphEntryContract::operator==(const NativeSubgraphEntryContract& other) const
+{
+  return std::tie(entryId, unitId, inputNames, outputNames, relativeGraphPath, graphDigest,
+                  inputSlotByGraphName, outputSlotByGraphName, passthroughSlotByInputGraphName,
+                  stateSuccessorByInputGraphName) ==
+         std::tie(other.entryId, other.unitId, other.inputNames, other.outputNames,
+                  other.relativeGraphPath, other.graphDigest, other.inputSlotByGraphName,
+                  other.outputSlotByGraphName, other.passthroughSlotByInputGraphName,
+                  other.stateSuccessorByInputGraphName);
 }
 
 NativeEntryRunner::NativeEntryRunner(

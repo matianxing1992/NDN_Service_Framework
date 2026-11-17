@@ -13,6 +13,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/collaboration-work-observer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 
@@ -1947,6 +1949,19 @@ validateNativePreparedRunnerSpec(
     spec.backend == "native-qwen-tensor" &&
     spec.metadata.count("tensorParallelEntries") != 0 &&
     spec.metadata.count("tensorParallelEntryRoot") != 0;
+  if (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend)) {
+    try {
+      auto expected = spec;
+      expected.entryContract.reset();
+      const bool wholeRegion = detail::bindNativeWholeRegionEntry(projection, expected);
+      if (!wholeRegion || wholeRegion != static_cast<bool>(spec.entryContract) ||
+          (wholeRegion && !(*spec.entryContract == *expected.entryContract)))
+        return "DI_PROVIDER_WHOLE_REGION_ENTRY_MISMATCH";
+    }
+    catch (const std::exception&) {
+      return "DI_PROVIDER_WHOLE_REGION_ENTRY_MISMATCH";
+    }
+  }
   if (spec.role != assembly.selectedRole ||
       (spec.backend != assembly.backend && !tensorParallelBackend) ||
       spec.path.empty()) {

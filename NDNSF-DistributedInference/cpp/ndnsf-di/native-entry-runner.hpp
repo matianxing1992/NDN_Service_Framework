@@ -34,6 +34,7 @@ struct NativeSubgraphEntryContract
   std::map<std::string, std::string> stateSuccessorByInputGraphName;
 
   void validate() const;
+  bool operator==(const NativeSubgraphEntryContract& other) const;
 };
 
 /** Execute one admitted CALL; ProviderRoleWorker owns readiness, SUM and publication.
