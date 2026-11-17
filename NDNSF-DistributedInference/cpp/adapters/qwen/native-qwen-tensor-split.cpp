@@ -729,7 +729,8 @@ void
 projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                 std::uint64_t degree, const std::string& entryPrefix,
                 const std::string& egressRole, const QwenTpTemplate& tp,
-                const std::vector<QwenTpEntryContract>* verified)
+                const std::vector<QwenTpEntryContract>* verified,
+                const QwenTpStageWindow* window = nullptr)
 {
   // The egress unit owns the head, so it must be one of the declared units.
   if (std::none_of(tp.units.begin(), tp.units.end(),
@@ -740,8 +741,21 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
   plan.roles.clear();
   plan.steps.clear();
   plan.dependencies.clear();
+  plan.stageLayout.clear();
   for (const auto& unit : tp.units) plan.roles.push_back(unit.roleId);
-  plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V1;
+  if (window != nullptr) {
+    // A stage window is what makes this a v2 plan: the units own part of the stack and
+    // the layout says which part, so a consumer never infers it from the roles.
+    plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+    ndnsf::di::NativeStageLayout layout;
+    layout.stageId = window->stageId;
+    layout.sourceRegionDigest = window->sourceRegionDigest;
+    for (const auto& unit : tp.units) layout.unitRoleIds.push_back(unit.roleId);
+    plan.stageLayout.push_back(std::move(layout));
+  }
+  else {
+    plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V1;
+  }
   plan.tensorDegree = degree;
   plan.modelFamily = "qwen";
   plan.plannerKind = "native-qwen-tensor";
@@ -3140,6 +3154,18 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
 {
   const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix, units);
   projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr);
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const QwenTpStageWindow& window)
+{
+  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix, units,
+                                      window.layerBegin, window.layerEnd);
+  projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr, &window);
 }
 
 void

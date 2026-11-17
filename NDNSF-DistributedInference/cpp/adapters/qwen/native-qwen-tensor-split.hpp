@@ -855,6 +855,20 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
  * @param entryPrefix Prefix for generated recipe entry ids.
  * @param egressRole  Role that owns the final response.
  */
+/** One stage's sealed window and identity for a hybrid projection.
+ *
+ * `sourceRegionDigest` is the digest of the admitted source region the stage covers; it
+ * takes part in the plan's stage layout, so two layouts over the same units cannot
+ * collide.
+ */
+struct QwenTpStageWindow
+{
+  std::string stageId;
+  std::string sourceRegionDigest;
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+};
+
 void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                   std::uint64_t degree, const std::string& entryPrefix,
@@ -872,6 +886,20 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   std::uint64_t degree, const std::string& entryPrefix,
                   const std::string& egressRole,
                   const std::vector<QwenTpUnit>& units);
+
+/** Project one stage of a hybrid layout.
+ *
+ * The units own `window.layerBegin..layerEnd` only, so the template is built for that
+ * window and the plan is sealed as `step-plan-v2` with a single stage layout entry naming
+ * the units. A plan-wide degree remains the stage's own degree: the other stages of the
+ * layout are sealed by their own projections.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const QwenTpStageWindow& window);
 
 /**
  * Project against caller-verified entries.

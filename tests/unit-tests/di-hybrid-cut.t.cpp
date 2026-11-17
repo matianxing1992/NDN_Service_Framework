@@ -290,4 +290,56 @@ BOOST_AUTO_TEST_CASE(TemplateAcceptsAStageLayerRange)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(StageProjectionSealsAVersionTwoLayout)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S1R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 1;
+    unit.layerEnd = 4;
+    units.push_back(unit);
+  }
+
+  qwen::QwenTpStageWindow window{"stage-1", "sha256:region-1", 1, 4};
+  ndnsf::di::NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry/S1", "S1R0", units, window);
+
+  BOOST_CHECK_EQUAL(plan.stepPlanVersion, std::string(ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2));
+  BOOST_REQUIRE_EQUAL(plan.stageLayout.size(), 1u);
+  BOOST_CHECK_EQUAL(plan.stageLayout.at(0).stageId, "stage-1");
+  BOOST_CHECK_EQUAL(plan.stageLayout.at(0).sourceRegionDigest, "sha256:region-1");
+  BOOST_REQUIRE_EQUAL(plan.stageLayout.at(0).unitRoleIds.size(), 2u);
+  BOOST_CHECK_EQUAL(plan.degreeForRole("S1R0"), 2u);
+  BOOST_CHECK_EQUAL(plan.degreeForRole("S1R1"), 2u);
+  BOOST_CHECK_NO_THROW(plan.validateSteps());
+
+  // The unwindowed projection keeps sealing a v1 plan with no layout; its units must cover
+  // the whole model, which is exactly the rule a windowed stage is allowed to narrow.
+  std::vector<qwen::QwenTpUnit> wholeUnits;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = shape.layers;
+    wholeUnits.push_back(unit);
+  }
+  ndnsf::di::NativeExecutionPlan whole;
+  qwen::projectQwenTpPlan(whole, shape, 2, "entry/S0", "S0R0", wholeUnits);
+  BOOST_CHECK_EQUAL(whole.stepPlanVersion, std::string(ndnsf::di::NATIVE_STEP_PLAN_VERSION_V1));
+  BOOST_CHECK(whole.stageLayout.empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
