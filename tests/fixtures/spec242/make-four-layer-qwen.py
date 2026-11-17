@@ -34,10 +34,14 @@ def scales(n, k):
     return np.full((n, k // BLOCK), 0.02, dtype=np.float32)
 
 
-def matmul_nbits(name, x, n, k, rng, weight_name):
+def matmul_nbits(name, x, n, k, rng, base_name):
+    # The export names the packed tensor `<base>_Q4` and its scales `<base>_scales`; the
+    # adapter's slicer derives both from the slice's logical base name.
+    weight_name = base_name + "_Q4"
+    scale_name = base_name + "_scales"
     w = numpy_helper.from_array(packed_int4(rng, n, k), weight_name)
-    s = numpy_helper.from_array(scales(n, k), weight_name + ".scales")
-    node = helper.make_node("MatMulNBits", [x, weight_name, weight_name + ".scales"],
+    s = numpy_helper.from_array(scales(n, k), scale_name)
+    node = helper.make_node("MatMulNBits", [x, weight_name, scale_name],
                             [name], name=name, domain="com.microsoft", block_size=BLOCK,
                             K=k, N=n, bits=4)
     return node, [w, s]
@@ -130,6 +134,9 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17),
                                                     helper.make_opsetid("com.microsoft", 1)])
     model.ir_version = 8
+    # The assembler reads a boundary tensor's declared type from the source, so the
+    # intermediate value_info must be present rather than implied.
+    model = onnx.shape_inference.infer_shapes(model)
     onnx.checker.check_model(model)
     onnx.save(model, path)
     data = open(path, "rb").read()

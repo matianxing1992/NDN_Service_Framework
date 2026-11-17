@@ -119,3 +119,7 @@ tests/container/**/actual/
 !/AGENTS.md
 
 # Do not reopen /docs/ here: paper and defense history stays in local-only repos.
+
+# Spec 242: the four-layer fixture is generated deterministically by
+# tests/fixtures/spec242/make-four-layer-qwen.py and is a test input, not build output.
+!tests/fixtures/spec242/*.onnx

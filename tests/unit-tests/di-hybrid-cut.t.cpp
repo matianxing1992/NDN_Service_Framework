@@ -885,7 +885,7 @@ BOOST_AUTO_TEST_CASE(PackedSlicesOfTheFixtureReassembleExactly)
   // bytes exactly, because the slice copies whole rows and never re-packs a nibble.
   const auto* source = [&] () -> const onnx::TensorProto* {
     for (const auto& init : model.graph().initializer()) {
-      if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight")
+      if (init.name() == "model.layers.0.attn.q_proj.MatMul.weight_Q4")
         return &init;
     }
     return nullptr;
@@ -976,21 +976,26 @@ BOOST_AUTO_TEST_CASE(StageMaterialsCarryTheRankGeometry)
                           std::istreambuf_iterator<char>());
     BOOST_REQUIRE(entryModel.ParseFromArray(raw.data(), static_cast<int>(raw.size())));
     bool sawQProj = false;
+    bool sawScales = false;
     for (const auto& init : entryModel.graph().initializer()) {
+      if (init.name().find("q_proj.MatMul.weight_scales") != std::string::npos) {
+        sawScales = true;
+        // Recorded, not asserted: the packed weight is narrowed to 32 rows but its scales
+        // still carry 64, so the slicer's scales branch (`native-qwen-tensor-split.cpp:2449`)
+        // does not apply to this entry. A MatMulNBits with mismatched scales would be wrong,
+        // so this is the next fix rather than a passing detail.
+        BOOST_TEST_MESSAGE("entry scales rows=" << init.dims(0));
+      }
       if (init.name().find("q_proj.MatMul.weight") == std::string::npos) continue;
-      // The scales initializer shares the prefix; the weight is the one under test here.
+      // The scales initializer shares the prefix; the packed weight is the one under test.
       if (init.name().size() > 7 &&
-          init.name().compare(init.name().size() - 7, 7, ".scales") == 0)
+          init.name().compare(init.name().size() - 7, 7, "_scales") == 0)
         continue;
       sawQProj = true;
-      // Known gap, recorded rather than asserted: the entry still carries the full-width
-      // q_proj even though the shard set is enabled and the slice name matches, and the
-      // guarded sidecar reader is never called - so `applyQwenTpRankSlices` is not reaching
-      // this initializer. Until that is fixed, a stage assembles the right entry set with
-      // unwidened weights, which is why no numeric claim is made here.
-      BOOST_TEST_MESSAGE("entry q_proj rows=" << init.dims(0));
+      BOOST_CHECK_EQUAL(init.dims(0), 32);
     }
     BOOST_CHECK(sawQProj);
+    BOOST_CHECK(sawScales);
   }
   std::filesystem::remove_all(root);
 }
