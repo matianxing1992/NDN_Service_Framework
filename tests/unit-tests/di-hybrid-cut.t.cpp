@@ -393,4 +393,40 @@ BOOST_AUTO_TEST_CASE(StagePlansMergeInOrder)
                     std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(StageWindowAndBoundaryPublisherFollowTheSealedFacts)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = 1;
+    units.push_back(unit);
+  }
+  qwen::QwenTpStageWindow window{"stage-0", "sha256:region-0", 0, 1};
+  ndnsf::di::NativeExecutionPlan stagePlan;
+  qwen::projectQwenTpPlan(stagePlan, shape, 2, "entry/S0", "S0R0", units, window);
+
+  const auto layers = qwen::stageLayerWindow(stagePlan);
+  BOOST_CHECK_EQUAL(layers.first, 0u);
+  BOOST_CHECK_EQUAL(layers.second, 0u);
+  // The first unit of the layout row publishes the boundary activation.
+  BOOST_CHECK_EQUAL(qwen::boundaryPublisher(stagePlan), "S0R0");
+
+  ndnsf::di::NativeExecutionPlan empty;
+  BOOST_CHECK_THROW(qwen::stageLayerWindow(empty), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::boundaryPublisher(empty), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

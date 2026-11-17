@@ -3170,6 +3170,45 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr);
 }
 
+std::pair<std::uint64_t, std::uint64_t>
+stageLayerWindow(const ndnsf::di::NativeExecutionPlan& stage)
+{
+  bool seen = false;
+  std::uint64_t first = 0;
+  std::uint64_t last = 0;
+  for (const auto& step : stage.steps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    const auto slash = step.stepId.rfind('/');
+    if (slash == std::string::npos || slash + 1 >= step.stepId.size()) continue;
+    std::uint64_t layer = 0;
+    try {
+      layer = std::stoull(step.stepId.substr(slash + 1));
+    }
+    catch (const std::exception&) {
+      continue;
+    }
+    if (!seen) {
+      first = last = layer;
+      seen = true;
+    }
+    else {
+      first = std::min(first, layer);
+      last = std::max(last, layer);
+    }
+  }
+  if (!seen)
+    throw std::invalid_argument("stage plan has no layer-bearing step");
+  return {first, last};
+}
+
+std::string
+boundaryPublisher(const ndnsf::di::NativeExecutionPlan& stage)
+{
+  if (stage.stageLayout.size() != 1 || stage.stageLayout.front().unitRoleIds.empty())
+    throw std::invalid_argument("a hybrid stage needs one non-empty layout row");
+  return stage.stageLayout.front().unitRoleIds.front();
+}
+
 ndnsf::di::NativeExecutionPlan
 mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages)
 {

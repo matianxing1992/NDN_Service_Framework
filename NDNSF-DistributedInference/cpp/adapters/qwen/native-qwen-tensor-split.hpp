@@ -855,6 +855,27 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
  * @param entryPrefix Prefix for generated recipe entry ids.
  * @param egressRole  Role that owns the final response.
  */
+/** First and last decoder layer a stage's steps cover.
+ *
+ * Derived from the step ids (`<unit>/<KIND>/<layer>`), which the adapter writes itself, so a
+ * caller wiring two stages together never has to re-derive the window from a parallel
+ * structure that could disagree with the steps.
+ *
+ * @throws std::invalid_argument when the plan has no layer-bearing step.
+ */
+std::pair<std::uint64_t, std::uint64_t>
+stageLayerWindow(const ndnsf::di::NativeExecutionPlan& stage);
+
+/** The unit that publishes a stage's collapsed output for the next stage.
+ *
+ * v1 rule: the first unit of the stage's layout row. A single producer keeps the boundary
+ * activation one object; every unit of the next stage consumes it.
+ *
+ * @throws std::invalid_argument when the plan has no single-row layout.
+ */
+std::string
+boundaryPublisher(const ndnsf::di::NativeExecutionPlan& stage);
+
 /** Merge per-stage projections into one plan.
  *
  * Each stage is projected on its own (its units own a layer window and its own degree), and
