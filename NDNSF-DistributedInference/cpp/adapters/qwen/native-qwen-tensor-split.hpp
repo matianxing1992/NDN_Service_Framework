@@ -855,6 +855,19 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
  * @param entryPrefix Prefix for generated recipe entry ids.
  * @param egressRole  Role that owns the final response.
  */
+/** Merge per-stage projections into one plan.
+ *
+ * Each stage is projected on its own (its units own a layer window and its own degree), and
+ * the layout rows of the merged plan are exactly those stages in order. Roles, steps and
+ * dependencies concatenate in stage order; the plan-wide degree is the widest stage, which
+ * is what `validateSteps()` derives and what a consumer reads as the layout's summary.
+ *
+ * @throws std::invalid_argument when a stage is not a single-row v2 plan, when two stages
+ *         share an id, or when two stages claim the same unit.
+ */
+ndnsf::di::NativeExecutionPlan
+mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages);
+
 /** One stage's sealed window and identity for a hybrid projection.
  *
  * `sourceRegionDigest` is the digest of the admitted source region the stage covers; it

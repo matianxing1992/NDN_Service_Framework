@@ -354,4 +354,43 @@ BOOST_AUTO_TEST_CASE(StageProjectionSealsAVersionTwoLayout)
   BOOST_CHECK(whole.stageLayout.empty());
 }
 
+BOOST_AUTO_TEST_CASE(StagePlansMergeInOrder)
+{
+  const auto stage = [] (const std::string& id, const std::vector<std::string>& units) {
+    ndnsf::di::NativeExecutionPlan plan;
+    plan.serviceName = "/service/hybrid";
+    plan.modelFamily = "qwen";
+    plan.plannerKind = "native-qwen-tensor";
+    plan.roles = units;
+    plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+    // The stage's degree is its member count; a stage that claims more would be refused by
+    // validateSteps(), so the fixture keeps the two consistent.
+    plan.tensorDegree = units.size();
+    plan.stageLayout = {{id, "sha256:" + id, units}};
+    return plan;
+  };
+
+  const auto merged = qwen::mergeQwenStagePlans(
+    {stage("stage-0", {"S0R0", "S0R1"}), stage("stage-1", {"S1R0"})});
+  BOOST_REQUIRE_EQUAL(merged.stageLayout.size(), 2u);
+  BOOST_CHECK_EQUAL(merged.stageLayout.at(0).stageId, "stage-0");
+  BOOST_CHECK_EQUAL(merged.stageLayout.at(1).stageId, "stage-1");
+  BOOST_CHECK_EQUAL(merged.roles.size(), 3u);
+  BOOST_CHECK_EQUAL(merged.tensorDegree, 2u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S0R0"), 2u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 1u);
+  BOOST_CHECK_EQUAL(merged.stepPlanVersion,
+                    std::string(ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2));
+  BOOST_CHECK_EQUAL(merged.plannerKind, "native-qwen-tensor");
+
+  BOOST_CHECK_THROW(qwen::mergeQwenStagePlans({}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::mergeQwenStagePlans({stage("same", {"A"}),
+                                               stage("same", {"B"})}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::mergeQwenStagePlans({stage("s0", {"A"}),
+                                               stage("s1", {"A"})}),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

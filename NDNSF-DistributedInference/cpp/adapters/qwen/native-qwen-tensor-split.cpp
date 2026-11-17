@@ -3170,6 +3170,42 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr);
 }
 
+ndnsf::di::NativeExecutionPlan
+mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages)
+{
+  if (stages.empty())
+    throw std::invalid_argument("a hybrid plan needs at least one stage");
+  ndnsf::di::NativeExecutionPlan merged;
+  std::set<std::string> stageIds;
+  std::set<std::string> unitIds;
+  for (const auto& stage : stages) {
+    if (stage.stepPlanVersion != ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2 ||
+        stage.stageLayout.size() != 1) {
+      throw std::invalid_argument(
+        "every hybrid stage must be a single-window version-two plan");
+    }
+    const auto& layout = stage.stageLayout.front();
+    if (!stageIds.insert(layout.stageId).second)
+      throw std::invalid_argument("hybrid stages share a stage id: " + layout.stageId);
+    for (const auto& unit : layout.unitRoleIds) {
+      if (!unitIds.insert(unit).second)
+        throw std::invalid_argument("hybrid stages share a unit: " + unit);
+    }
+    merged.roles.insert(merged.roles.end(), stage.roles.begin(), stage.roles.end());
+    merged.steps.insert(merged.steps.end(), stage.steps.begin(), stage.steps.end());
+    merged.dependencies.insert(merged.dependencies.end(), stage.dependencies.begin(),
+                               stage.dependencies.end());
+    merged.stageLayout.push_back(layout);
+    merged.tensorDegree = std::max(merged.tensorDegree, stage.tensorDegree);
+  }
+  merged.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+  merged.modelFamily = stages.front().modelFamily;
+  merged.plannerKind = stages.front().plannerKind;
+  merged.serviceName = stages.front().serviceName;
+  merged.modelName = stages.front().modelName;
+  return merged;
+}
+
 void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                   std::uint64_t degree, const std::string& entryPrefix,
