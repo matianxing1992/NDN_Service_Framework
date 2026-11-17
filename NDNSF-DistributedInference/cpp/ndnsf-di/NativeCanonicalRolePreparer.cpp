@@ -4,6 +4,7 @@
 #include <cctype>
 #include <limits>
 #include <regex>
+#include <set>
 
 namespace ndnsf::di {
 namespace {
@@ -34,6 +35,53 @@ NativeAssemblyTensorContractV3 tensor(const NativeJson& value)
     if (d.is_string()) result.shape.emplace_back(d.get<std::string>());
     else result.shape.emplace_back(d.get<std::int64_t>());
   }
+  return result;
+}
+
+NativeSourceRegionBoundary
+sourceBoundary(const NativeOnnxGraphInspection& source, const NativeJson& metadata,
+               const std::set<std::uint64_t>& owned,
+               const std::vector<std::string>& additionalOutputs,
+               const NativeRequestControl& control)
+{
+  NativeSourceRegionBoundary result;
+  const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
+  for (const auto& item : metadata.at("tensorConsumers").items()) {
+    control.requireActive();
+    if (std::find(initializers.begin(), initializers.end(), item.key()) != initializers.end())
+      continue;
+    const auto consumers = item.value().get<std::vector<std::uint64_t>>();
+    const auto producer = metadata.at("tensorProducers").find(item.key());
+    if (std::any_of(consumers.begin(), consumers.end(),
+                    [&] (auto i) { return owned.count(i); }) &&
+        (producer == metadata.at("tensorProducers").end() ||
+         !owned.count(producer->get<std::uint64_t>())))
+      result.inputs.emplace(item.key(), tensor(metadata.at("tensors").at(item.key())));
+    if (producer != metadata.at("tensorProducers").end() &&
+        owned.count(producer->get<std::uint64_t>()) &&
+        std::any_of(consumers.begin(), consumers.end(),
+                    [&] (auto i) { return !owned.count(i); }))
+      result.outputs.emplace(item.key(), tensor(metadata.at("tensors").at(item.key())));
+  }
+  for (const auto& item : source.graph.modelOutputs) {
+    control.requireActive();
+    const auto producer = metadata.at("tensorProducers").find(item.name);
+    if (producer != metadata.at("tensorProducers").end() &&
+        owned.count(producer->get<std::uint64_t>()))
+      result.outputs.emplace(item.name,
+        NativeAssemblyTensorContractV3{item.name, item.dtype, item.shape});
+  }
+  for (const auto& name : additionalOutputs) {
+    control.requireActive();
+    const auto producer = metadata.at("tensorProducers").find(name);
+    if (producer == metadata.at("tensorProducers").end() ||
+        !owned.count(producer->get<std::uint64_t>()))
+      throw std::invalid_argument("native role state output is not produced by its source role");
+    result.outputs.emplace(name, tensor(metadata.at("tensors").at(name)));
+  }
+  if (result.inputs.empty() || result.outputs.empty())
+    throw std::invalid_argument("native role source boundary requires input and output tensors");
+  control.requireActive();
   return result;
 }
 }
@@ -130,6 +178,28 @@ NativeRequestPreparation::RolePort NativeCanonicalRolePreparer::rolePort() const
   return [owner = *this](const auto& model, const auto& candidate, const auto& control) {
     return owner.prepare(model, candidate, control);
   };
+}
+
+NativeSourceRegionBoundary
+NativeCanonicalRolePreparer::sourceRegion(const std::vector<std::string>& nodeIds,
+  const std::vector<std::string>& additionalOutputs, const NativeRequestControl& control) const
+{
+  control.requireActive();
+  if (nodeIds.empty() || nodeIds.size() > m_mapping.size())
+    throw std::invalid_argument("native source region exceeds its semantic node bound");
+  std::set<std::string> unique;
+  std::set<std::uint64_t> owned;
+  for (const auto& id : nodeIds) {
+    control.requireActive();
+    const auto found = m_mapping.find(id);
+    if (found == m_mapping.end() || !unique.insert(id).second)
+      throw std::invalid_argument("native source region repeats or names a foreign semantic node");
+    owned.insert(found->second.begin(), found->second.end());
+  }
+  const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);
+  if (additionalOutputs.size() > metadata.at("tensors").size())
+    throw std::invalid_argument("native source region exceeds its output tensor bound");
+  return sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
 }
 
 NativeSplitCandidate NativeCanonicalRolePreparer::bindStateContracts(const NativeInspectedModel& model,
@@ -252,6 +322,7 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     throw std::invalid_argument("native role preparation model differs from frozen source");
   candidate.validate(m_model.graph);
   const auto metadata = nativeParseJson(m_sourceGraph.graphMetadataJson);
+  const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
   const auto postprocessing = nativeParseJson(candidate.postprocessingJson);
   const std::regex layerPattern("layer-([0-9]+)");
   std::vector<NativeSelectionRoleV3> result;
@@ -285,36 +356,13 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     if (!layers.empty() && (*layers.rbegin() == std::numeric_limits<std::uint64_t>::max() ||
         *layers.rbegin() - *layers.begin() + 1 != layers.size()))
       throw std::invalid_argument("native role layer nodes are not a contiguous range");
-    std::map<std::string, NativeAssemblyTensorContractV3> inputs, outputs;
-    const auto initializers = metadata.at("initializers").get<std::vector<std::string>>();
-    for (const auto& item : metadata.at("tensorConsumers").items()) {
-      if (std::find(initializers.begin(), initializers.end(), item.key()) != initializers.end()) continue;
-      const auto consumers = item.value().get<std::vector<std::uint64_t>>();
-      const auto producer = metadata.at("tensorProducers").find(item.key());
-      if (std::any_of(consumers.begin(), consumers.end(), [&](auto i) { return owned.count(i); }) &&
-          (producer == metadata.at("tensorProducers").end() || !owned.count(producer->get<std::uint64_t>())))
-        inputs.emplace(item.key(), tensor(metadata.at("tensors").at(item.key())));
-      if (producer != metadata.at("tensorProducers").end() && owned.count(producer->get<std::uint64_t>()) &&
-          std::any_of(consumers.begin(), consumers.end(), [&](auto i) { return !owned.count(i); }))
-        outputs.emplace(item.key(), tensor(metadata.at("tensors").at(item.key())));
-    }
-    for (const auto& item : m_sourceGraph.graph.modelOutputs) {
-      const auto producer = metadata.at("tensorProducers").find(item.name);
-      if (producer != metadata.at("tensorProducers").end() && owned.count(producer->get<std::uint64_t>()))
-        outputs.emplace(item.name, NativeAssemblyTensorContractV3{item.name, item.dtype, item.shape});
-    }
+    std::vector<std::string> additionalOutputs;
     const auto stateOutputs = candidate.roleStateOutputsByRole.find(name);
-    if (stateOutputs != candidate.roleStateOutputsByRole.end()) {
-      for (const auto& item : stateOutputs->second) {
-        const auto producer = metadata.at("tensorProducers").find(item.name);
-        if (producer == metadata.at("tensorProducers").end() ||
-            !owned.count(producer->get<std::uint64_t>()))
-          throw std::invalid_argument("native role state output is not produced by its source role");
-        outputs.emplace(item.name, tensor(metadata.at("tensors").at(item.name)));
-      }
-    }
-    if (inputs.empty() || outputs.empty())
-      throw std::invalid_argument("native role source boundary requires input and output tensors");
+    if (stateOutputs != candidate.roleStateOutputsByRole.end())
+      for (const auto& item : stateOutputs->second) additionalOutputs.push_back(item.name);
+    const auto boundary = sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
+    const auto& inputs = boundary.inputs;
+    const auto& outputs = boundary.outputs;
     const auto checkState = [&](const auto& declared, const auto& actual) {
       const auto found = declared.find(name);
       if (found == declared.end()) return;

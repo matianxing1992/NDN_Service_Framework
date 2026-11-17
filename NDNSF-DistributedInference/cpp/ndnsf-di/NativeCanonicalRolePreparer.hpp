@@ -2,6 +2,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
 
+#include <map>
+#include <string>
+#include <vector>
+
 namespace ndnsf::di {
 
 /** Explicitly choose declared semantic types or the inspected source boundary. */
@@ -22,6 +26,13 @@ struct NativeStateTensorMapping
   Roles inputs, outputs;
 };
 
+/** Actual source graph ports crossing a selected semantic region. */
+struct NativeSourceRegionBoundary
+{
+  std::map<std::string, NativeAssemblyTensorContractV3> inputs;
+  std::map<std::string, NativeAssemblyTensorContractV3> outputs;
+};
+
 /** Source-checked recipe producer. Semantic node mappings come from the
  * authenticated adapter/catalog; ordinal equality is never assumed. The
  * owner retains inspected metadata only, not another copy of model bytes. */
@@ -34,6 +45,11 @@ public:
   NativeCanonicalRolePreparer(NativeInspectedModel model, NativeOnnxGraphInspection sourceGraph,
     NativeRoleRecipeProfile profile, const NativeAssemblyControl& control, NodeMap mapping = {});
   NativeRequestPreparation::RolePort rolePort() const;
+  /** Inspect a region before constructing its execution plan. Additional outputs must
+   * be produced by the region; no placeholder tensors or candidate are accepted.
+   */
+  NativeSourceRegionBoundary sourceRegion(const std::vector<std::string>& nodeIds,
+    const std::vector<std::string>& additionalOutputs, const NativeRequestControl& control) const;
   /** Before candidate selection only: returns a new, fully digested candidate.
    * DECLARED preserves semantic cover/type checks. SOURCE uses the explicit
    * mapping and checked boundary types without trusting abstract placeholders.

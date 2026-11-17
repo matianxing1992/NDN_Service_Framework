@@ -52,6 +52,10 @@ public:
   NativeCanonicalSource sourceFor(const NativeModelDescriptor& model) const;
   /** Return the immutable publication profile frozen with the model entry. */
   NativeCanonicalPublicationOptions publicationFor(const NativeModelDescriptor& model) const;
+  /** Query source-owned typed ports before lowering a region into execution steps. */
+  NativeSourceRegionBoundary sourceRegion(const NativeInspectedModel& model,
+    const std::vector<std::string>& nodeIds, const std::vector<std::string>& additionalOutputs,
+    const NativeRequestControl& control) const;
   NativeSplitCandidate bindStateContracts(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
     const NativeRequestControl& control,

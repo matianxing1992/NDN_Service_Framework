@@ -2944,6 +2944,26 @@ BOOST_AUTO_TEST_CASE(CanonicalRoleProducerMapsSemanticNodesToActualOnnxSource)
     BOOST_CHECK_THROW(inspectNativeOnnxPlanningGraph(*input.source, input.model.descriptor, control), std::invalid_argument);
     BOOST_CHECK_THROW(NativeCanonicalRolePreparer(input.model, *input.source, profile, control), std::invalid_argument);
     const NativeCanonicalRolePreparer owner(input.model, *input.source, profile, control, {{"layer-00", {0, 1}}});
+    // This query precedes any candidate/step construction and reads the same frozen source.
+    const auto boundary = owner.sourceRegion({"layer-00"}, {}, input.control);
+    BOOST_REQUIRE_EQUAL(boundary.inputs.size(), 1u);
+    BOOST_REQUIRE_EQUAL(boundary.outputs.size(), 1u);
+    BOOST_CHECK_EQUAL(boundary.inputs.at("X").dtype, "float32");
+    BOOST_CHECK_EQUAL(boundary.outputs.at("Y").dtype, "float32");
+    BOOST_CHECK(boundary.inputs.at("X").shape == original.expectedInputs.front().shape);
+    BOOST_CHECK(boundary.outputs.at("Y").shape == original.expectedOutputs.front().shape);
+    BOOST_CHECK_EQUAL(owner.sourceRegion({"layer-00"}, {"Y"}, input.control).outputs.size(), 1u);
+    const auto withInternalState = owner.sourceRegion({"layer-00"}, {"T1"}, input.control);
+    BOOST_REQUIRE_EQUAL(withInternalState.outputs.size(), 2u);
+    BOOST_CHECK_EQUAL(withInternalState.outputs.at("T1").dtype, "float32");
+    const std::vector<std::variant<std::int64_t, std::string>> internalShape{
+      std::int64_t{2}, std::int64_t{2}};
+    BOOST_CHECK(withInternalState.outputs.at("T1").shape == internalShape);
+    BOOST_CHECK_THROW(owner.sourceRegion({}, {}, input.control), std::invalid_argument);
+    BOOST_CHECK_THROW(owner.sourceRegion({"foreign"}, {}, input.control), std::invalid_argument);
+    BOOST_CHECK_THROW(owner.sourceRegion({"layer-00", "layer-00"}, {}, input.control),
+                      std::invalid_argument);
+    BOOST_CHECK_THROW(owner.sourceRegion({"layer-00"}, {"X"}, input.control), std::invalid_argument);
     NativeRequestPreparation preparation(std::make_shared<NativeAdapterRegistry>(), {}, {}, owner.rolePort());
     const auto roles = preparation.prepareRoles(input.model, input.candidate, input.control);
     BOOST_REQUIRE_EQUAL(roles.size(), 1);
@@ -2982,6 +3002,7 @@ BOOST_AUTO_TEST_CASE(CanonicalRoleProducerMapsSemanticNodesToActualOnnxSource)
     wrongState.candidateDigest = wrongState.computedDigest();
     BOOST_CHECK_THROW(owner.prepare(input.model, wrongState, input.control), std::invalid_argument);
     auto cancelled = input.control; cancelled.cancelled = [] { return true; };
+    BOOST_CHECK_THROW(owner.sourceRegion({"layer-00"}, {}, cancelled), std::runtime_error);
     BOOST_CHECK_THROW(owner.prepare(input.model, input.candidate, cancelled), std::runtime_error);
     // A genuinely identical source/planning graph needs no semantic mapping.
     auto direct = input.model;

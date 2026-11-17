@@ -2775,8 +2775,21 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   BOOST_REQUIRE_EQUAL(loaded.planningCache->candidates.size(), 1u);
   const auto& prepared = loaded.planningCache->candidates.front();
   BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
+  const NativeRequestControl regionControl{"/fixture/source-region", 1, control.deadline, {}};
   std::map<std::uint64_t, std::string> rankRecipes;
   for (const auto& role : prepared.roles) {
+    const auto boundary = loaded.preparation->sourceRegion(loaded.model,
+      prepared.candidate.roleNodeIdsByRole.at(role.role), {}, regionControl);
+    BOOST_REQUIRE_EQUAL(boundary.inputs.size(), role.expectedInputs.size());
+    BOOST_REQUIRE_EQUAL(boundary.outputs.size(), role.expectedOutputs.size());
+    for (const auto& port : role.expectedInputs) {
+      BOOST_CHECK_EQUAL(boundary.inputs.at(port.name).dtype, port.dtype);
+      BOOST_CHECK(boundary.inputs.at(port.name).shape == port.shape);
+    }
+    for (const auto& port : role.expectedOutputs) {
+      BOOST_CHECK_EQUAL(boundary.outputs.at(port.name).dtype, port.dtype);
+      BOOST_CHECK(boundary.outputs.at(port.name).shape == port.shape);
+    }
     const bool first = role.layerBegin == 0;
     const auto& inputs = prepared.candidate.roleStateInputsByRole.at(role.role);
     const auto& outputs = prepared.candidate.roleStateOutputsByRole.at(role.role);
@@ -2821,6 +2834,11 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   }
   BOOST_REQUIRE_EQUAL(rankRecipes.size(), 2u);
   BOOST_CHECK_NE(rankRecipes.at(0), rankRecipes.at(1));
+  auto foreignModel = loaded.model;
+  foreignModel.canonicalSourceDigest = nativePlanningDigest("foreign source region");
+  BOOST_CHECK_THROW(loaded.preparation->sourceRegion(foreignModel,
+    prepared.candidate.roleNodeIdsByRole.at(prepared.roles.front().role), {}, regionControl),
+    std::invalid_argument);
   const auto verifiedSource = loaded.preparation->sourceRefFor(loaded.model.descriptor);
   BOOST_REQUIRE(verifiedSource);
   BOOST_REQUIRE(verifiedSource->materialManifest);
@@ -2841,6 +2859,15 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   BOOST_REQUIRE_EQUAL(warm.roles.size(), prepared.roles.size());
   for (std::size_t index = 0; index < warm.roles.size(); ++index)
     BOOST_CHECK_EQUAL(warm.roles[index].recipeDigest, prepared.roles[index].recipeDigest);
+  const auto& warmRole = warm.roles.back();
+  const auto warmBoundary = restored.preparation->sourceRegion(restored.model,
+    warm.candidate.roleNodeIdsByRole.at(warmRole.role), {}, regionControl);
+  BOOST_REQUIRE_EQUAL(warmBoundary.inputs.size(), warmRole.expectedInputs.size());
+  BOOST_REQUIRE_EQUAL(warmBoundary.outputs.size(), warmRole.expectedOutputs.size());
+  for (const auto& port : warmRole.expectedOutputs) {
+    BOOST_CHECK_EQUAL(warmBoundary.outputs.at(port.name).dtype, port.dtype);
+    BOOST_CHECK(warmBoundary.outputs.at(port.name).shape == port.shape);
+  }
   auto foreignState = configuration;
   foreignState["state_inputs"]["last"]["1.key"] = {"past_key_values.0.key"};
   BOOST_CHECK_EXCEPTION(NativeRequestCatalog::load(nativeCanonicalJson(foreignState), source,
