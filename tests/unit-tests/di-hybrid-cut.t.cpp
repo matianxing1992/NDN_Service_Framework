@@ -11,6 +11,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
@@ -21,6 +24,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <onnxruntime_cxx_api.h>
 
 #include <filesystem>
@@ -1307,6 +1311,13 @@ BOOST_AUTO_TEST_CASE(WindowAssemblyWritesOnlyOwnedEntriesAndAcceptsRegionGraphs)
     BOOST_CHECK(entry.layer >= 1 && entry.layer <= 4);
     if (entry.kind == "ATTN") attentionLayers.insert(entry.layer);
     if (entry.kind == "HEAD") {
+      BOOST_CHECK_EQUAL(entry.inputSlotByGraphName.at("model.layers.3/mlp.down_proj"), "merged");
+      BOOST_CHECK_EQUAL(entry.inputSlotByGraphName.at("model.layers.3/attn.residual"),
+                        "post_residual");
+      for (const auto& name : {"model.layers.3/mlp.down_proj", "model.layers.3/attn.residual"})
+        BOOST_CHECK(std::find(entry.synthesizedInputGraphNames.begin(),
+                              entry.synthesizedInputGraphNames.end(), name) ==
+                    entry.synthesizedInputGraphNames.end());
       std::ifstream headFile(root / "later" / entry.relativeGraphPath, std::ios::binary);
       const std::string headBytes((std::istreambuf_iterator<char>(headFile)),
                                    std::istreambuf_iterator<char>());
@@ -1801,9 +1812,23 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
   geometry.ffn = shape.ffn;
 
   const auto root = std::filesystem::temp_directory_path() / ("spec242-" + label);
-  std::filesystem::remove_all(root);
-  std::filesystem::create_directories(root);
-  std::vector<std::filesystem::path> entryPaths;
+  struct Workspace
+  {
+    std::filesystem::path root;
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace{root};
+  workspace.owned = std::filesystem::create_directory(root);
+  BOOST_REQUIRE(workspace.owned);
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  qwen::registerQwenTensorBackend(factory);
+  std::vector<std::shared_ptr<NativeModelRunner>> parents;
+  std::vector<qwen::QwenTpEntryContract> contracts;
   onnx::ModelProto entryShapes;
   for (std::uint64_t rank = 0; rank < 2; ++rank) {
     qwen::QwenTpAssemblyShards shards;
@@ -1817,10 +1842,16 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
       root, "S0R" + std::to_string(rank), bytes, 4, shards, nullptr, 0, 1);
     for (const auto& entry : table) {
       if (entry.kind != kind) continue;
-      const auto target = root / ("rank" + std::to_string(rank) + ".onnx");
-      std::filesystem::copy_file(root / entry.relativeGraphPath, target,
-                                 std::filesystem::copy_options::overwrite_existing);
-      entryPaths.push_back(target);
+      NativeModelRunnerSpec spec;
+      spec.role = entry.unitId;
+      spec.kind = "onnx";
+      spec.backend = qwen::QWEN_TENSOR_RUNNER_BACKEND;
+      spec.path = (root / entry.relativeGraphPath).string();
+      spec.metadata["tensorParallelEntries"] = qwen::qwenTpEntryTableJson({entry});
+      spec.metadata["tensorParallelEntryRoot"] = root.string();
+      parents.emplace_back(factory.create(spec));
+      BOOST_REQUIRE(dynamic_cast<qwen::NativeQwenTensorRunner*>(parents.back().get()) != nullptr);
+      contracts.push_back(entry);
       if (rank == 0U) {
         std::ifstream file(root / entry.relativeGraphPath, std::ios::binary);
         BOOST_REQUIRE(static_cast<bool>(file));
@@ -1830,7 +1861,7 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
       }
     }
   }
-  BOOST_REQUIRE_EQUAL(entryPaths.size(), 2u);
+  BOOST_REQUIRE_EQUAL(parents.size(), 2u);
 
   std::set<std::string> keep;
   for (const auto& node : entryShapes.graph().node()) keep.insert(node.name());
@@ -1845,15 +1876,34 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
   static Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-stage-gate");
   Ort::SessionOptions options;
   Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  std::vector<float> x0(1 * 3 * shape.hidden, 0.05f);
+  std::vector<float> x0(1 * 3 * shape.hidden);
+  for (std::size_t index = 0; index < x0.size(); ++index)
+    x0[index] = static_cast<float>(static_cast<int>((index * 7) % 29) - 14) * 0.01f;
+  std::vector<float> mergedInput(x0.size());
+  for (std::size_t index = 0; index < mergedInput.size(); ++index)
+    mergedInput[index] =
+      static_cast<float>(static_cast<int>((index * 3) % 17) - 8) * 0.007f + 0.02f;
   const std::array<std::int64_t, 3> dims{1, 3, static_cast<std::int64_t>(shape.hidden)};
   const auto run = [&] (const std::filesystem::path& path) {
     Ort::Session session(env, path.c_str(), options);
     Ort::AllocatorWithDefaultOptions allocator;
-    auto tensor = Ort::Value::CreateTensor<float>(memory, x0.data(), x0.size(),
-                                                  dims.data(), dims.size());
-    auto inbox = session.GetInputNameAllocated(0, allocator);
-    const char* names[] = {inbox.get()};
+    std::vector<Ort::Value> tensors;
+    std::vector<std::string> inputOwned;
+    inputOwned.reserve(session.GetInputCount());
+    for (std::size_t index = 0; index < session.GetInputCount(); ++index) {
+      BOOST_REQUIRE(session.GetInputTypeInfo(index).GetTensorTypeAndShapeInfo().GetElementType() ==
+                    ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+      auto name = session.GetInputNameAllocated(index, allocator);
+      inputOwned.emplace_back(name.get());
+      const std::string graphName = name.get();
+      BOOST_REQUIRE(graphName == "x0" ||
+                    (kind == "MLP" && graphName == "model.layers.0/attn.o_proj"));
+      auto& data = graphName == "x0" ? x0 : mergedInput;
+      tensors.push_back(Ort::Value::CreateTensor<float>(memory, data.data(), data.size(),
+                                                       dims.data(), dims.size()));
+    }
+    std::vector<const char*> names;
+    for (const auto& name : inputOwned) names.push_back(name.c_str());
     std::vector<const char*> outputs;
     std::vector<std::string> owned;
     owned.reserve(session.GetOutputCount());
@@ -1862,9 +1912,8 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
       owned.emplace_back(name.get());
       outputs.push_back(owned.back().c_str());
     }
-    auto values = session.Run(Ort::RunOptions{nullptr}, names, &tensor, 1, outputs.data(),
-                              outputs.size());
-    // Ordered, because "the residual" is chosen by name and the fallback is the first output.
+    auto values = session.Run(Ort::RunOptions{nullptr}, names.data(), tensors.data(),
+                              tensors.size(), outputs.data(), outputs.size());
     std::vector<std::pair<std::string, std::vector<float>>> result;
     for (std::size_t index = 0; index < values.size(); ++index) {
       const auto info = values[index].GetTensorTypeAndShapeInfo();
@@ -1876,57 +1925,111 @@ verifyKindRecomposes(const std::string& kind, const std::string& label)
     return result;
   };
 
-  // Pick the residual stream by name: the adapter is free to order an entry's outputs, and
-  // taking "the first one" silently compared different tensors between kinds.
-  const auto pickResidual = [] (
-    const std::vector<std::pair<std::string, std::vector<float>>>& values) {
-    for (const auto& entry : values)
-      if (entry.first.find("residual") != std::string::npos) return entry.second;
-    return values.empty() ? std::vector<float>{} : values.front().second;
-  };
-
   const auto fullRun = run(referencePath);
-  const auto leftRun = run(entryPaths.at(0));
-  const auto rightRun = run(entryPaths.at(1));
-  const auto pick = [] (const std::vector<std::pair<std::string, std::vector<float>>>& values,
-                        const std::string& needle) {
-    for (const auto& entry : values)
-      if (entry.first.find(needle) != std::string::npos) return entry.second;
-    return std::vector<float>{};
-  };
-  // Attention exposes its context, which composes by concatenation rather than by summing:
-  // rank 0 owns the first half of the head axis, rank 1 the second.
-  const auto expected = pickResidual(fullRun);
-  const auto left = pickResidual(leftRun);
-  const auto right = pickResidual(rightRun);
+  const std::string projection = "model.layers.0/" +
+    std::string(kind == "ATTN" ? "attn.o_proj" : "mlp.down_proj");
+  std::vector<float> expected;
+  for (const auto& [name, values] : fullRun)
+    if (name == projection) expected = values;
   BOOST_REQUIRE(!expected.empty());
-  BOOST_REQUIRE_EQUAL(left.size(), expected.size());
-  BOOST_REQUIRE_EQUAL(right.size(), expected.size());
+
+  const auto runParent = [&] (std::size_t rank) {
+    const auto& entry = contracts.at(rank);
+    BOOST_CHECK_EQUAL(entry.outputSlotByGraphName.at(projection), "partial");
+    BOOST_CHECK_EQUAL(entry.inputSlotByGraphName.at("x0"),
+                      kind == "ATTN" ? "x" : "residual");
+    if (kind == "MLP")
+      BOOST_CHECK_EQUAL(entry.inputSlotByGraphName.at("model.layers.0/attn.o_proj"), "merged");
+    if (kind == "MLP") {
+      std::ifstream file(root / entry.relativeGraphPath, std::ios::binary);
+      const std::string data((std::istreambuf_iterator<char>(file)),
+                              std::istreambuf_iterator<char>());
+      onnx::ModelProto material;
+      BOOST_REQUIRE(material.ParseFromString(data));
+      std::size_t pointwise = 0;
+      bool fullResidual = false;
+      for (const auto& value : material.graph().value_info()) {
+        if (value.name() == "model.layers.0/mlp.sigmoid" ||
+            value.name() == "model.layers.0/mlp.silu" ||
+            value.name() == "model.layers.0/mlp.act") {
+          ++pointwise;
+          BOOST_REQUIRE_EQUAL(value.type().tensor_type().shape().dim_size(), 3);
+          BOOST_CHECK_EQUAL(value.type().tensor_type().shape().dim(2).dim_value(), shape.ffn / 2);
+        }
+        if (value.name() == "model.layers.0/attn.residual") {
+          fullResidual = true;
+          BOOST_CHECK_EQUAL(value.type().tensor_type().shape().dim(2).dim_value(), shape.hidden);
+        }
+      }
+      BOOST_CHECK_EQUAL(pointwise, 3u);
+      BOOST_CHECK(fullResidual);
+    }
+    NativeExecutionStepSpec step;
+    step.stepId = entry.entryId;
+    step.unitId = entry.unitId;
+    step.operation = "CALL_SUBGRAPH";
+    step.artifactEntry = entry.entryId;
+    RoleExecutionContext context;
+    context.role = entry.unitId;
+    context.activeStep = std::make_shared<const NativeExecutionStepSpec>(step);
+    context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+      std::vector<NativeExecutionStepSpec>{step});
+    const std::vector<std::string> slots = kind == "ATTN"
+      ? std::vector<std::string>{"x"} : std::vector<std::string>{"merged", "residual"};
+    for (const auto& slot : slots) {
+      NamedTensor tensor;
+      tensor.name = slot;
+      tensor.elementType = TensorElementType::Float32;
+      tensor.shape.assign(dims.begin(), dims.end());
+      const auto& data = slot == "merged" ? mergedInput : x0;
+      tensor.payload.resize(data.size() * sizeof(float));
+      std::memcpy(tensor.payload.data(), data.data(), tensor.payload.size());
+      context.stepInputsBySlot.emplace(slot, makeEncodedTensorBundle(slot, {tensor}));
+    }
+    const auto outputs = parents.at(rank)->run(context);
+    BOOST_REQUIRE(outputs.count("partial") == 1);
+    const std::string residualSlot = kind == "ATTN" ? "residual" : "post_residual";
+    BOOST_REQUIRE(outputs.count(residualSlot) == 1);
+    const auto residual = decodeTensorBundleViews(outputs.at(residualSlot));
+    BOOST_REQUIRE_EQUAL(residual.size(), 1u);
+    BOOST_REQUIRE_EQUAL(residual.front().payload.size(), x0.size() * sizeof(float));
+    std::vector<float> actualResidual(x0.size());
+    std::memcpy(actualResidual.data(), residual.front().payload.data(),
+                  residual.front().payload.size());
+    for (std::size_t index = 0; index < x0.size(); ++index) {
+      const float expectedResidual = x0[index] + (kind == "ATTN" ? 0 : mergedInput[index]);
+      BOOST_REQUIRE(std::isfinite(actualResidual[index]));
+      BOOST_CHECK_SMALL(actualResidual[index] - expectedResidual, 1e-6f);
+    }
+    return outputs.at("partial");
+  };
+  const auto left = runParent(0);
+  const auto right = runParent(1);
+  // Use the actual worker arithmetic implementation, without residual compensation.
+  const auto merged = sumTensorBundleViews("merged",
+    {decodeTensorBundleViews(left), decodeTensorBundleViews(right)});
+  const auto views = decodeTensorBundleViews(merged);
+  BOOST_REQUIRE_EQUAL(views.size(), 1u);
+  BOOST_CHECK_EQUAL(views.front().name, projection);
+  BOOST_REQUIRE_EQUAL(views.front().payload.size(), expected.size() * sizeof(float));
+  std::vector<float> composed(expected.size());
+  std::memcpy(composed.data(), views.front().payload.data(), views.front().payload.size());
 
   float worst = 0;
-  for (std::size_t index = 0; index < expected.size(); ++index)
-    worst = std::max(worst, std::abs(left[index] + right[index] - x0[index] - expected[index]));
-  BOOST_TEST_MESSAGE(label << ": worst |composed - reference| = " << worst);
-  // Each rank adds the residual stream itself, so one copy of `x` comes back out.
   for (std::size_t index = 0; index < expected.size(); ++index) {
-    const float composed = left[index] + right[index] - x0[index];
-    // Same files compare to 2e-08 under the Python wheel; this target links the system
-    // ONNX Runtime, whose INT4 kernels round differently, so the bound is 1e-3.
-    BOOST_CHECK_SMALL(composed - expected[index], 1e-3f);
+    BOOST_REQUIRE(std::isfinite(composed[index]) && std::isfinite(expected[index]));
+    const auto error = std::abs(composed[index] - expected[index]);
+    worst = std::max(worst, error);
+    BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(expected[index]));
   }
-  std::filesystem::remove_all(root);
+  BOOST_TEST_MESSAGE(label << ": worst |composed - reference| = " << worst);
 }
 
 } // namespace
 
 BOOST_AUTO_TEST_CASE(StageEntriesRecomposeTheReference)
 {
-  // The MLP entry recomposes to 7e-09. The attention entry does not yet: comparing residuals by
-  // name puts it at 8e-03, and the open question is whether that is the entry or this
-  // comparison - recorded in the task notes rather than papered over with a loose bound.
-  // MLP recomposes exactly. Attention does not yet: its residual composition is 8e-03, and both
-  // sides expose only that one tensor, so the next probe is a degree-1 control - an unsliced
-  // entry against the same reference - to separate the op's head mapping from this comparison.
+  verifyKindRecomposes("ATTN", "attn-gate");
   verifyKindRecomposes("MLP", "mlp-gate");
 }
 

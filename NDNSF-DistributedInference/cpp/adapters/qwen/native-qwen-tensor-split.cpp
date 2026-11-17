@@ -2395,6 +2395,45 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   for (int i = 0; i < graph->value_info_size(); ++i)
     rewriteProducerWidth(graph->mutable_value_info(i));
 
+  // SwiGLU's pointwise intermediates inherit their input width. Keep their
+  // declarations consistent with the narrowed projections rather than relying
+  // on ORT's lenient shape merge to discard stale full-FFN dimensions.
+  std::map<std::string, std::int64_t> widths;
+  const auto rememberWidth = [&] (const onnx::ValueInfoProto& value) {
+    const auto& shape = value.type().tensor_type().shape();
+    if (shape.dim_size() == 3 && shape.dim(2).has_dim_value() &&
+        shape.dim(2).dim_value() > 0)
+      widths[value.name()] = shape.dim(2).dim_value();
+  };
+  for (const auto& value : graph->input()) rememberWidth(value);
+  for (const auto& value : graph->value_info()) rememberWidth(value);
+  for (const auto& node : graph->node()) {
+    if ((!node.domain().empty() && node.domain() != "ai.onnx") || node.output_size() != 1)
+      continue;
+    std::optional<std::int64_t> width;
+    if (node.op_type() == "Sigmoid" && node.input_size() == 1) {
+      const auto input = widths.find(node.input(0));
+      if (input != widths.end()) width = input->second;
+    }
+    else if (node.op_type() == "Mul" && node.input_size() == 2) {
+      const auto left = widths.find(node.input(0));
+      const auto right = widths.find(node.input(1));
+      if (left != widths.end() && right != widths.end() && left->second == right->second)
+        width = left->second;
+    }
+    if (!width) continue;
+    widths[node.output(0)] = *width;
+    for (auto& value : *graph->mutable_value_info()) {
+      if (value.name() != node.output(0)) continue;
+      auto* shape = value.mutable_type()->mutable_tensor_type()->mutable_shape();
+      if (shape->dim_size() != 3 || !shape->dim(2).has_dim_value() ||
+          shape->dim(2).dim_value() == *width)
+        continue;
+      shape->mutable_dim(2)->set_dim_value(*width);
+      ++changes;
+    }
+  }
+
   for (int i = 0; i < graph->value_info_size(); ++i)
     shardKvState(graph->mutable_value_info(i));
   for (int i = 0; i < graph->input_size(); ++i)
@@ -3039,13 +3078,22 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
 
   if (contract.kind == "HEAD") {
     for (const auto& input : graph.input()) {
-      if (!hiddenInputs.empty() && input.name() == hiddenInputs.front()) continue;
+      if (std::find(hiddenInputs.begin(), hiddenInputs.end(), input.name()) != hiddenInputs.end())
+        continue;
       contract.synthesizedInputGraphNames.push_back(input.name());
     }
     // Two hidden inputs carry the merged attention value and the post-MLP residual.
     if (hiddenInputs.size() == 2) {
-      contract.inputSlotByGraphName[hiddenInputs[0]] = "merged";
-      contract.inputSlotByGraphName[hiddenInputs[1]] = "post_residual";
+      const bool firstMlp = hiddenInputs[0].find("down_proj") != std::string::npos;
+      const bool secondMlp = hiddenInputs[1].find("down_proj") != std::string::npos;
+      if (firstMlp != secondMlp) {
+        contract.inputSlotByGraphName[hiddenInputs[firstMlp ? 0 : 1]] = "merged";
+        contract.inputSlotByGraphName[hiddenInputs[firstMlp ? 1 : 0]] = "post_residual";
+      }
+      else {
+        contract.inputSlotByGraphName[hiddenInputs[0]] = "merged";
+        contract.inputSlotByGraphName[hiddenInputs[1]] = "post_residual";
+      }
     }
     // The head returns the vocabulary projection and, in the frozen export, the final
     // normalization's own output as well. Only the projection is a plan slot; binding both
