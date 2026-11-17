@@ -1371,6 +1371,11 @@ main(int argc, char** argv)
       config.devices = options.offerDevices;
       config.canProvision = options.offerCanProvision;
       config.hasModel = options.offerHasModel;
+      // Declare what this binary actually runs. The worker implements the sealed step
+      // template and the local partial SUM, so a plan that needs them must be able to find
+      // a Provider that says so; an empty list refused every step plan at screening.
+      // `step-plan-v2` is deliberately absent until the hybrid path is qualified.
+      config.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_SUM_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {
