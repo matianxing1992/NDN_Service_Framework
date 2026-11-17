@@ -85,9 +85,9 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
                                f"{p}attn.v_proj.MatMul.weight")
         add(node, w)
         for tensor in (
-                numpy_helper.from_array(np.zeros((1, kv_heads, 1, head_dim), dtype=np.float32),
+                numpy_helper.from_array(np.zeros((1, kv_heads, 0, head_dim), dtype=np.float32),
                                         f"{pn}attn.past_key"),
-                numpy_helper.from_array(np.zeros((1, kv_heads, 1, head_dim), dtype=np.float32),
+                numpy_helper.from_array(np.zeros((1, kv_heads, 0, head_dim), dtype=np.float32),
                                         f"{pn}attn.past_value"),
                 numpy_helper.from_array(np.array([0], dtype=np.int32), f"{pn}attn.seqlens_k"),
                 numpy_helper.from_array(np.array([sequence], dtype=np.int32),
