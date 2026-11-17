@@ -1186,6 +1186,147 @@ BOOST_AUTO_TEST_CASE(PackedSlicesOfTheFixtureReassembleExactly)
   BOOST_CHECK(sawQProj);
 }
 
+BOOST_AUTO_TEST_CASE(RankAdaptationRejectsBiasOnlyOnShardedProjections)
+{
+  std::ifstream input("../tests/fixtures/spec242/four-layer-qwen.onnx", std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  onnx::ModelProto original;
+  BOOST_REQUIRE(original.ParseFromIstream(&input));
+  const auto wire = original.SerializeAsString();
+  const std::vector<std::uint8_t> bytes(wire.begin(), wire.end());
+  const auto shape = qwen::deriveQwenTpShape(bytes, 4);
+  const qwen::QwenTpRankGeometry geometry{2, 0, shape.headDim, shape.queryWidth(),
+    shape.kvWidth(), shape.hidden, shape.ffn};
+  NativeExecutionPlan plan;
+  qwen::projectQwenTpPlan(plan, shape, 2, "entry", "S0R0");
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == "S0R0") steps.push_back(step);
+  struct Workspace
+  {
+    std::filesystem::path root = std::filesystem::temp_directory_path() /
+      "spec242-bias-admission";
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace;
+  workspace.owned = std::filesystem::create_directory(workspace.root);
+  BOOST_REQUIRE(workspace.owned);
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-bias-admission");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  for (const auto* projection : {"q_proj", "k_proj", "v_proj", "o_proj",
+                                  "gate_proj", "up_proj", "down_proj", "lm_head"}) {
+    BOOST_TEST_CONTEXT("projection=" << projection) {
+      auto model = original;
+      auto* graph = model.mutable_graph();
+      if (std::string(projection) == "lm_head") {
+        // This fixture's ordinary head is MatMul. Make a legal unsharded NBits head
+        // from its same-width Q projection; do not attach NBits operands to MatMul.
+        BOOST_REQUIRE_EQUAL(shape.queryWidth(), shape.vocab);
+        const auto head = std::find_if(graph->mutable_node()->begin(),
+          graph->mutable_node()->end(), [] (const auto& node) {
+            return node.name().find("lm_head") != std::string::npos;
+          });
+        const auto query = std::find_if(original.graph().node().begin(),
+          original.graph().node().end(), [] (const auto& node) {
+            return node.op_type() == "MatMulNBits" &&
+                   node.name().find("q_proj") != std::string::npos;
+          });
+        BOOST_REQUIRE(head != graph->mutable_node()->end());
+        BOOST_REQUIRE(query != original.graph().node().end());
+        const auto name = head->name();
+        const auto activation = head->input(0);
+        const auto output = head->output(0);
+        *head = *query;
+        head->set_name(name);
+        head->set_input(0, activation);
+        head->set_output(0, output);
+      }
+      const auto found = std::find_if(graph->mutable_node()->begin(),
+        graph->mutable_node()->end(), [&] (const auto& node) {
+          return node.op_type() == "MatMulNBits" &&
+                 node.name().find(projection) != std::string::npos;
+        });
+      BOOST_REQUIRE(found != graph->mutable_node()->end());
+      const auto nodeName = found->name();
+      std::int64_t width = 0;
+      for (const auto& attr : found->attribute())
+        if (attr.name() == "N") width = attr.i();
+      BOOST_REQUIRE_GT(width, 0);
+      const auto biasName = found->output(0) + ".test-bias";
+      while (found->input_size() < 6) found->add_input("");
+      found->set_input(5, biasName);
+      auto* bias = graph->add_initializer();
+      bias->set_name(biasName);
+      bias->set_data_type(onnx::TensorProto::FLOAT);
+      bias->add_dims(width);
+      for (std::int64_t i = 0; i < width; ++i) bias->add_float_data(0.125f);
+      // Bias is legal in the original full graph; inspection must not reject an ordinary
+      // region merely because another region will later use tensor parallelism.
+      const auto biasedWire = model.SerializeAsString();
+      const std::vector<std::uint8_t> biasedBytes(biasedWire.begin(), biasedWire.end());
+      const auto facts = qwen::inspectQwenNBitsGraph(biasedBytes, 4);
+      BOOST_CHECK(std::any_of(facts.begin(), facts.end(), [&] (const auto& node) {
+        return node.nodeName == nodeName && node.hasBias;
+      }));
+      Ort::Session session(env, biasedWire.data(), biasedWire.size(), options);
+      std::array<std::int64_t, 3> tokens{1, 2, 3};
+      const std::array<std::int64_t, 2> dimensions{1, 3};
+      auto values = Ort::Value::CreateTensor<std::int64_t>(
+        Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault),
+        tokens.data(), tokens.size(), dimensions.data(), dimensions.size());
+      const char* inputs[] = {"input_ids"};
+      const char* outputs[] = {"logits"};
+      const auto result = session.Run(Ort::RunOptions{nullptr}, inputs, &values, 1, outputs, 1);
+      const auto* logits = result.front().GetTensorData<float>();
+      const auto count = result.front().GetTensorTypeAndShapeInfo().GetElementCount();
+      BOOST_REQUIRE_GT(count, 0u);
+      BOOST_CHECK(std::all_of(logits, logits + count, [] (float value) {
+        return std::isfinite(value);
+      }));
+      auto rank = model;
+      const auto directory = workspace.root / projection;
+      BOOST_REQUIRE(std::filesystem::create_directory(directory));
+      const auto modelPath = directory / "model.onnx";
+      {
+        std::ofstream output(modelPath, std::ios::binary);
+        output.write(biasedWire.data(), static_cast<std::streamsize>(biasedWire.size()));
+        BOOST_REQUIRE(static_cast<bool>(output));
+      }
+      NativeModelRunnerSpec spec;
+      spec.role = "S0R0";
+      spec.kind = "onnx";
+      spec.backend = "onnxruntime-cpu";
+      spec.path = modelPath.string();
+      if (std::string(projection) == "lm_head") {
+        BOOST_CHECK_NO_THROW(qwen::adaptQwenTpEntryParameters(rank, geometry));
+        BOOST_CHECK_NO_THROW(qwen::configureQwenTpRankSpec(spec, 4, steps,
+          8U << 20, 2, 0, "S0R0"));
+      }
+      else {
+        BOOST_CHECK_EXCEPTION(qwen::adaptQwenTpEntryParameters(rank, geometry),
+          std::invalid_argument, [&] (const auto& error) {
+            return std::string(error.what()).find("unsupported bias: " + nodeName) !=
+                   std::string::npos;
+          });
+        // Cold and disk-cache assembly share this production entry reconstruction path.
+        BOOST_CHECK_EXCEPTION(qwen::configureQwenTpRankSpec(spec, 4, steps,
+          8U << 20, 2, 0, "S0R0"), std::invalid_argument, [&] (const auto& error) {
+            return std::string(error.what()).find("unsupported bias: " + nodeName) !=
+                   std::string::npos;
+          });
+      }
+      // ONNX represents absent optional operands with empty slots, not only short lists.
+      found->set_input(5, "");
+      BOOST_CHECK_NO_THROW(qwen::adaptQwenTpEntryParameters(model, geometry));
+    }
+  }
+}
+
 BOOST_AUTO_TEST_CASE(StageMaterialsCarryTheRankGeometry)
 {
   const std::string path = "../tests/fixtures/spec242/four-layer-qwen.onnx";

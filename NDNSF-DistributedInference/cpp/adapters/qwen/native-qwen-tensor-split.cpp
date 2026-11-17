@@ -2658,6 +2658,12 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
         node->name().find("up_proj") != std::string::npos;
       const bool inputSharded = node->name().find("o_proj") != std::string::npos ||
         node->name().find("down_proj") != std::string::npos;
+      // A full-width bias cannot follow column slicing, and a row-partial bias would be
+      // added once per contributor by SUM. Ordinary, unsharded projections keep their bias.
+      if ((outputSharded || inputSharded) && node->input_size() > 5 &&
+          !node->input(5).empty())
+        throw std::invalid_argument("tensor-parallel projection has an unsupported bias: " +
+                                    node->name());
       for (int a = 0; a < node->attribute_size(); ++a) {
         auto* attr = node->mutable_attribute(a);
         if (!attr->has_i()) continue;

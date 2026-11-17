@@ -196,7 +196,8 @@ struct QwenNBitsNode
  * This is the only place TP shape facts come from. It parses the graph on the
  * caller's behalf so `planQwenTensorSlices` never trusts a model name or a
  * hand-written constant: an unsupported export (extra operator, non-INT4
- * bits, block size mismatch, zero-point/g_idx/bias) is rejected by name.
+ * bits, block size mismatch, zero-point/g_idx) is rejected by name. Bias is reported;
+ * sharded entry adaptation rejects it when no partition rule exists for the projection.
  *
  * @param modelBytes Serialized ONNX bytes (external data may stay on disk).
  * @param layers     Expected transformer layer count; 0 disables the check.
