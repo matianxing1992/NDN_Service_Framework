@@ -280,14 +280,52 @@ public:
   }
 
   void
+  compareLogits(std::size_t round, std::size_t epoch, const std::string& name,
+                const Ort::Value& value)
+  {
+    if (m_owners.empty())
+      return;
+    const auto context = ":round=" + std::to_string(round) + ":epoch=" + std::to_string(epoch);
+    const auto found = m_logits.find({round, epoch});
+    if (found == m_logits.end())
+      reject("complete-logits-missing" + context);
+    const auto& tensor = found->second;
+    const auto info = value.GetTensorTypeAndShapeInfo();
+    const auto type = info.GetElementType();
+    const auto& scalars = tensor.at("values");
+    const char* elementType = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ? "float32" :
+      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ? "float16" : nullptr;
+    if (!elementType || tensor.at("inputName") != name ||
+        tensor.at("shape") != NativeJson(info.GetShape()) || tensor.at("elementType") != elementType ||
+        scalars.size() != info.GetElementCount())
+      reject("complete-logits-shape-or-type" + context);
+    for (std::size_t index = 0; index < scalars.size(); ++index) {
+      if (!scalars[index].is_number())
+        reject("complete-logits-scalar" + context);
+      const double reference = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+        ? value.GetTensorData<float>()[index] : value.GetTensorData<Ort::Float16_t>()[index].ToFloat();
+      const double error = std::abs(reference - scalars[index].get<double>());
+      if (!std::isfinite(error) || error > 1e-5 + 1e-4 * std::abs(reference))
+        reject("complete-logits-value" + context + ":index=" + std::to_string(index));
+      maxLogitsError = std::max(maxLogitsError, error);
+      ++logitsCompared;
+    }
+    m_logits.erase(found);
+  }
+
+  void
   finish() const
   {
     if (!m_tensors.empty())
       reject("complete-kv-unconsumed-shards");
+    if (!m_logits.empty())
+      reject("complete-logits-unconsumed");
   }
 
   std::size_t valuesCompared = 0;
   double maxError = 0;
+  std::size_t logitsCompared = 0;
+  double maxLogitsError = 0;
 
 private:
   void
@@ -315,6 +353,18 @@ private:
       reject("complete-kv-epoch-binding");
     const auto round = static_cast<std::size_t>(request - capture.requests.begin());
     const auto role = record.at("role").get<std::string>();
+    if (record.contains("logits")) {
+      const auto& logits = record.at("logits");
+      if (record.contains("tensors") || request->at("eventsPublished") != count - 1 ||
+          !logits.is_array() || logits.size() != 1)
+        reject("complete-logits-publisher");
+      const auto& values = logits.at(0).at("values");
+      if (!values.is_array() || values.empty() || values.size() > 4096)
+        reject("complete-logits-value-bound");
+      if (!m_logits.emplace(std::make_pair(round, epoch), logits.at(0)).second)
+        reject("complete-logits-duplicate");
+      return;
+    }
     const auto& tensors = record.at("tensors");
     if (!tensors.is_array() || tensors.empty() || tensors.size() > 256)
       reject("complete-kv-tensor-cover");
@@ -338,6 +388,7 @@ private:
   using TensorKey = std::tuple<std::size_t, std::size_t, std::string, std::size_t>;
   std::map<std::string, std::vector<std::string>> m_owners;
   std::map<TensorKey, NativeJson> m_tensors;
+  std::map<std::pair<std::size_t, std::size_t>, NativeJson> m_logits;
 };
 
 } // namespace
@@ -604,12 +655,14 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
       for (std::size_t i = 0; i < values.size(); ++i) values[i] = Ort::Value(rawOutputs[i]);
       Ort::ThrowOnError(status);
       prefix = nextPrefix;
-      const auto& logits = values.at(outputIndices.at(options.value("logitsOutputName", "logits")));
+      const auto logitsName = options.value("logitsOutputName", "logits");
+      const auto& logits = values.at(outputIndices.at(logitsName));
       const auto info = logits.GetTensorTypeAndShapeInfo();
       const auto shape = info.GetShape();
       if (shape.size() < 2 || shape.front() != 1 || shape.back() <= 0 ||
           info.GetElementCount() < static_cast<std::uint64_t>(shape.back()))
         reject("logits-shape");
+      completeKv.compareLogits(round, step, logitsName, logits);
       if (step < expected.size()) {
         const auto vocab = static_cast<std::size_t>(shape.back());
         const auto offset = info.GetElementCount() - vocab;
@@ -693,6 +746,8 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     {"providerStateValuesCompared", completeKv.valuesCompared != 0},
     {"providerStateValueCount", completeKv.valuesCompared},
     {"providerStateMaxAbsoluteError", completeKv.maxError},
+    {"providerLogitsValueCount", completeKv.logitsCompared},
+    {"providerLogitsMaxAbsoluteError", completeKv.maxLogitsError},
     {"checkpointAuthentication", "VERIFIED"},
     {"performanceQualification", "NOT_RUN"}};
 }

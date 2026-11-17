@@ -21,14 +21,16 @@ namespace ndnsf::di {
 
 /** Bounded private qualification output shared by this Provider's runners. */
 class OnnxKvStateProbe final : public OnnxKvStateObserver,
-                              public OnnxCompleteKvStateObserver
+                              public OnnxCompleteKvStateObserver,
+                              public OnnxOutputTensorObserver
 {
 public:
   OnnxKvStateProbe(std::filesystem::path destination, std::string provider,
-                   bool captureComplete = false)
+                   bool captureComplete = false, std::string logitsOutput = {})
     : m_destination(std::move(destination))
     , m_provider(std::move(provider))
     , m_captureComplete(captureComplete)
+    , m_logitsOutput(std::move(logitsOutput))
   {
     std::error_code error;
     const auto status = std::filesystem::symlink_status(m_destination, error);
@@ -37,6 +39,8 @@ public:
       throw std::runtime_error("qualification KV destination must be absent");
     if (!m_destination.is_absolute() || m_provider.empty() || m_provider.size() > 4096)
       throw std::invalid_argument("invalid qualification KV destination or provider");
+    if ((!m_logitsOutput.empty() && !m_captureComplete) || m_logitsOutput.size() > 1024)
+      throw std::invalid_argument("logits qualification requires complete KV mode");
     if (m_captureComplete && ::mkdir(m_destination.c_str(), S_IRWXU) != 0)
       throw std::runtime_error("cannot create private qualification KV directory");
   }
@@ -61,6 +65,31 @@ public:
 
   void
   record(const RoleExecutionContext& context, std::vector<OnnxKvStateSample> samples) final
+  {
+    recordTensors(context, std::move(samples), false);
+  }
+
+  bool
+  wantsOutput(const RoleExecutionContext& context, const std::string& name) const final
+  {
+    return !m_logitsOutput.empty() && name == m_logitsOutput && wants(context);
+  }
+
+  void
+  recordOutput(const RoleExecutionContext& context, OnnxKvStateSample sample) final
+  {
+    if (!wantsOutput(context, sample.inputName) ||
+        (sample.elementType != "float32" && sample.elementType != "float16"))
+      throw std::invalid_argument("invalid qualification logits output");
+    std::vector<OnnxKvStateSample> samples;
+    samples.push_back(std::move(sample));
+    recordTensors(context, std::move(samples), true);
+  }
+
+private:
+  void
+  recordTensors(const RoleExecutionContext& context, std::vector<OnnxKvStateSample> samples,
+                bool logits)
   {
     if (!wants(context) || samples.empty() || samples.size() > 256 ||
         context.requestId.empty() || context.providerBootId.empty() || context.attemptEpoch == 0)
@@ -123,10 +152,10 @@ public:
       {"generationId", lineage.generationId},
       {"logicalPrefixDigest", lineage.logicalPrefixDigest},
       {"logicalPrefixTokenCount", lineage.logicalPrefixTokenCount},
-      {"tensors", std::move(tensors)}};
+      {logits ? "logits" : "tensors", std::move(tensors)}};
     std::lock_guard<std::mutex> lock(m_mutex);
     const EpochKey key{context.requestId, context.attemptEpoch, context.role,
-                       context.inferenceEpoch};
+                       context.inferenceEpoch, logits};
     if (m_captureComplete) {
       // Stateful child entries may observe disjoint tensors for the same epoch.
       if (m_completeRecords >= MAX_COMPLETE_RECORDS)
@@ -168,16 +197,16 @@ public:
     nativeExportPrivateCheckpoint(m_destination, document);
   }
 
-private:
   static constexpr std::size_t MAX_COMPLETE_TENSOR_ELEMENTS = 4096;
   static constexpr std::size_t MAX_COMPLETE_RECORD_ELEMENTS = 16384;
   static constexpr std::size_t MAX_COMPLETE_RECORDS = 512;
   static constexpr std::size_t MAX_COMPLETE_BYTES = 16 * 1024 * 1024;
-  using EpochKey = std::tuple<std::string, std::uint64_t, std::string, std::uint64_t>;
+  using EpochKey = std::tuple<std::string, std::uint64_t, std::string, std::uint64_t, bool>;
 
   const std::filesystem::path m_destination;
   const std::string m_provider;
   const bool m_captureComplete;
+  const std::string m_logitsOutput;
   std::mutex m_mutex;
   std::size_t m_completeBytes = 0;
   std::size_t m_completeRecords = 0;

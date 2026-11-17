@@ -2456,6 +2456,7 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
     ? dynamic_cast<const OnnxCompleteKvStateObserver*>(m_impl->stateObserver.get()) : nullptr;
   const bool completeSmallState = completeObserver &&
     completeObserver->wantsCompleteSmallState(effectiveContext);
+  auto* outputObserver = dynamic_cast<OnnxOutputTensorObserver*>(m_impl->stateObserver.get());
   std::vector<OnnxKvStateSample> stateSamples;
   for (std::size_t i = 0; i < outputs.size(); ++i) {
     auto& value = outputs[i];
@@ -2531,6 +2532,9 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
       {"outputAlias." + outputNames[i], "output_alias." + outputNames[i]});
     if (tensor.name.empty()) {
       tensor.name = outputNames[i];
+    }
+    if (!stateOutput && outputObserver && outputObserver->wantsOutput(effectiveContext, tensor.name)) {
+      outputObserver->recordOutput(effectiveContext, sampleKvState(value, tensor.name, true));
     }
     tensor.elementType = elementType;
     tensor.shape = tensorInfo.GetShape();

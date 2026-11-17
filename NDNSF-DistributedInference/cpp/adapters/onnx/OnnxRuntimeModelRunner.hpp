@@ -50,6 +50,15 @@ public:
   virtual bool wantsCompleteSmallState(const RoleExecutionContext& context) const = 0;
 };
 
+/** Optional synchronous observer of one named ONNX output for qualification. */
+class OnnxOutputTensorObserver
+{
+public:
+  virtual ~OnnxOutputTensorObserver() = default;
+  virtual bool wantsOutput(const RoleExecutionContext& context, const std::string& name) const = 0;
+  virtual void recordOutput(const RoleExecutionContext& context, OnnxKvStateSample tensor) = 0;
+};
+
 struct OnnxRuntimeProviderSelection
 {
   std::string requestedProvider;

@@ -2250,6 +2250,8 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
         'artifact-cache-max-mib': 131072}
     if core_budget is not None:
         config['actors'][-1]['parameters']['core-work-timeout-ms'] = core_budget
+    if kv_option == 'capture-complete-kv-state':
+        config['actors'][-1]['parameters']['capture-logits-output'] = 'model_logits'
     path = write_config(base, config)
     native = parser.load_deployment(path)
     cluster = importlib.import_module('_spec217_ops.cluster')
@@ -2270,6 +2272,8 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     assert argv[0] == str(base / 'release/bin/di-native-provider')
     assert '--allow-selection-generation-options' in argv
     assert f'--{kv_option}' in argv
+    if kv_option == 'capture-complete-kv-state':
+        assert argv[argv.index('--capture-logits-output') + 1] == 'model_logits'
     assert argv[argv.index('--repo-fetch-timeout-ms') + 1] == '900000'
     assert argv[argv.index('--conversation-retention-ms') + 1] == '3600000'
     assert argv[argv.index('--assembly-timeout-ms') + 1] == '900000'

@@ -302,7 +302,7 @@ BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch
       const std::string request = "request-" + std::to_string(round);
       const std::string session = "session-" + std::to_string(round);
       NativeJson row{{"requestId", request}, {"role", role}, {"planDigest", "plan"},
-        {"attemptEpoch", 1}, {"epochsExecuted", 3}};
+        {"attemptEpoch", 1}, {"epochsExecuted", 3}, {"eventsPublished", rank == 1 ? 2 : 0}};
       for (std::size_t epoch = 0; epoch < 3; ++epoch) {
         const auto prefix = (round == 0 ? 2 : 5) + epoch;
         row["runtimeMetrics"].push_back({{"lastBackendExecution", {{"sessionId", session}}}});
@@ -310,14 +310,22 @@ BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch
         std::vector<double> values(fullPrefix.begin(), fullPrefix.begin() + prefix);
         if (rank != 0)
           for (auto& value : values) value = -value;
-        nativeExportPrivateCheckpoint(path / (std::to_string(round * 3 + epoch) + ".json"),
-          {{"schema", "ndnsf-di-kv-complete-v1"}, {"provider", captures.back().provider},
+        const auto index = std::to_string(round * 3 + epoch);
+        NativeJson document{{"schema", "ndnsf-di-kv-complete-v1"},
+           {"provider", captures.back().provider},
            {"record", {{"requestId", request}, {"sessionId", session}, {"role", role},
             {"providerBootId", captures.back().boot}, {"planDigest", "plan"}, {"attemptEpoch", 1},
             {"inferenceEpoch", epoch}, {"logicalPrefixTokenCount", prefix},
             {"transitionKind", epoch == 0 ? "PREFILL" : epoch == 1 ? "DECODE" : "CHECKPOINT_FINALIZE"},
             {"tensors", {{{"inputName", "past"}, {"elementType", "float32"},
-                          {"shape", {1, 1, prefix, 1}}, {"values", values}}}}}}});
+                          {"shape", {1, 1, prefix, 1}}, {"values", values}}}}}}};
+        nativeExportPrivateCheckpoint(path / (index + ".json"), document);
+        if (rank == 1) {
+          document["record"].erase("tensors");
+          document["record"]["logits"] = {{{"inputName", "logits"}, {"elementType", "float32"},
+                                           {"shape", {1, 1, 4}}, {"values", {0, 2, 0, 0}}}};
+          nativeExportPrivateCheckpoint(path / ("logits-" + index + ".json"), document);
+        }
       }
       statistics[rank].push_back(std::move(row));
     }
@@ -329,7 +337,23 @@ BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch
   const auto result = replay();
   BOOST_CHECK_EQUAL(result.at("providerStateValuesCompared"), true);
   BOOST_CHECK_EQUAL(result.at("providerStateValueCount"), 54);
+  BOOST_CHECK_EQUAL(result.at("providerLogitsValueCount"), 24);
   BOOST_CHECK_EQUAL(result.at("providerStateMaxAbsoluteError"), 0);
+  const auto logitsPath = captures.back().directory / "logits-5.json";
+  std::ifstream logitFile(logitsPath);
+  NativeJson observedLogits;
+  logitFile >> observedLogits;
+  auto wrongLogits = observedLogits;
+  wrongLogits["record"]["logits"][0]["values"][0] = 1;
+  nativeExportPrivateCheckpoint(logitsPath, wrongLogits);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-logits-value:round=1:epoch=2:index=0");
+  });
+  std::filesystem::remove(logitsPath);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-logits-missing:round=1:epoch=2");
+  });
+  nativeExportPrivateCheckpoint(logitsPath, observedLogits);
 
   const auto path = captures.back().directory / "5.json";
   std::ifstream file(path);
@@ -450,7 +474,8 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
                                                std::pair{20U, true}}) {
       const auto destination = fixture.directory /
         ("private-kv-" + std::to_string(initialSize) + (complete ? ".complete" : ".json"));
-      auto probe = std::make_shared<OnnxKvStateProbe>(destination, "/reference-provider", complete);
+      auto probe = std::make_shared<OnnxKvStateProbe>(destination, "/reference-provider",
+                                                     complete, complete ? "logits" : "");
       RegistryNativeModelRunnerFactory factory;
       registerOnnxRuntimeBackend(factory, nullptr, probe);
       NativeModelRunnerSpec spec;
@@ -512,7 +537,7 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           BOOST_REQUIRE(expected.count(output.first));
           BOOST_CHECK(output.second.payload == expected.at(output.first).payload);
         }
-        const auto recordPath = complete ? destination / (std::to_string(epoch) + ".json") :
+        const auto recordPath = complete ? destination / (std::to_string(2 * epoch + 1) + ".json") :
                                            destination;
         std::ifstream file(recordPath);
         NativeJson samples;
@@ -540,17 +565,26 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           values.push_back(prefix.at(index));
         }
         BOOST_CHECK(tensor.at("values") == NativeJson(values));
-        if (complete)
+        if (complete) {
           BOOST_CHECK(!tensor.contains("indices"));
-        else
+          std::ifstream logitFile(destination / (std::to_string(2 * epoch) + ".json"));
+          NativeJson logitRecord;
+          logitFile >> logitRecord;
+          const auto& logits = logitRecord.at("record").at("logits").at(0);
+          BOOST_CHECK_EQUAL(logits.at("inputName"), "logits");
+          BOOST_CHECK(logits.at("shape") == NativeJson({1, 1, 4}));
+          BOOST_CHECK(logits.at("values") == NativeJson({0, 2, 0, 0}));
+        }
+        else {
           BOOST_CHECK(tensor.at("indices") == NativeJson(indices));
+        }
         const auto fileMode = std::filesystem::status(recordPath).permissions();
         BOOST_CHECK((fileMode & std::filesystem::perms::group_all) == std::filesystem::perms::none);
         BOOST_CHECK((fileMode & std::filesystem::perms::others_all) == std::filesystem::perms::none);
         if (complete && epoch == finalEpoch) {
           const OnnxKvStateSample other{"past-other-layer", "float32", {1, 2}, {0, 1}, {3, 4}};
           BOOST_CHECK_NO_THROW(probe->record(context, {other}));
-          std::ifstream fragmentFile(destination / "4.json");
+          std::ifstream fragmentFile(destination / "8.json");
           NativeJson fragment;
           fragmentFile >> fragment;
           BOOST_CHECK_EQUAL(fragment.at("record").at("inferenceEpoch"), finalEpoch);
@@ -561,7 +595,7 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           incomplete.inputName = "past-uncovered";
           incomplete.shape = {1, 3};
           BOOST_CHECK_THROW(probe->record(context, {incomplete}), std::runtime_error);
-          BOOST_CHECK(!std::filesystem::exists(destination / "5.json"));
+          BOOST_CHECK(!std::filesystem::exists(destination / "9.json"));
         }
       }
       const auto mode = std::filesystem::status(destination).permissions();

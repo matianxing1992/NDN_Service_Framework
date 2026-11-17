@@ -218,6 +218,7 @@ struct Options
   std::string statisticsFile;
   bool sampleKvStateValues = false;
   bool captureCompleteKvState = false;
+  std::string captureLogitsOutput;
   std::string kvHandoffConfigPath;
   bool checkKvHandoffConfig = false;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
@@ -853,6 +854,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--capture-complete-kv-state") {
       options.captureCompleteKvState = true;
     }
+    else if (arg == "--capture-logits-output") {
+      options.captureLogitsOutput = readValue();
+    }
     else if (arg == "--repo-service") {
       options.repoServiceName = readValue();
     }
@@ -1236,6 +1240,7 @@ printUsage(const char* program)
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
     << "[--statistics-file <jsonl-path>] [--sample-kv-state-values | --capture-complete-kv-state] "
+    << "[--capture-logits-output <tensor-name>] "
     << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
     << "[--conversation-retention-ms <1..3600000>] "
     << "[--repo-ack-timeout-ms <ms>] "
@@ -1437,6 +1442,8 @@ main(int argc, char** argv)
     std::shared_ptr<OnnxKvStateProbe> stateProbe;
     if (options.sampleKvStateValues && options.captureCompleteKvState)
       throw std::invalid_argument("choose one KV qualification mode");
+    if (!options.captureLogitsOutput.empty() && !options.captureCompleteKvState)
+      throw std::invalid_argument("logits qualification requires complete KV mode");
     if (options.sampleKvStateValues || options.captureCompleteKvState) {
       if (options.statisticsFile.empty() || options.wiringCheckOnly ||
           options.tracerDeterministicRunner)
@@ -1444,7 +1451,7 @@ main(int argc, char** argv)
       stateProbe = std::make_shared<OnnxKvStateProbe>(
         std::filesystem::absolute(options.statisticsFile +
           (options.captureCompleteKvState ? ".kv-complete" : ".kv-samples.json")),
-        options.providerName, options.captureCompleteKvState);
+        options.providerName, options.captureCompleteKvState, options.captureLogitsOutput);
     }
     registerOnnxRuntimeBackend(*factory, sessionCache, std::move(stateProbe));
     factory->registerBackend(
