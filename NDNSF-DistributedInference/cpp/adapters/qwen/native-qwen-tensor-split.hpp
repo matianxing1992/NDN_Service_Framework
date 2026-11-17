@@ -824,6 +824,23 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
                     const std::string& entryPrefix,
                     const std::vector<QwenTpUnit>& units);
 
+/** Build the template for caller-supplied units that own one layer range.
+ *
+ * A stage of a hybrid layout holds a shard of its own layers, not of every layer, so
+ * the range is explicit: every unit must describe exactly `[layerBegin, layerEnd)`,
+ * the range must be inside the model and non-empty, and the per-rank slice plans then
+ * cover only that window.
+ *
+ * @param layerBegin First layer the units own, inclusive.
+ * @param layerEnd   One past the last layer the units own.
+ * @throws std::invalid_argument when the units or the range are inconsistent.
+ */
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix,
+                    const std::vector<QwenTpUnit>& units,
+                    std::uint64_t layerBegin, std::uint64_t layerEnd);
+
 /**
  * Project one template into sealed execution steps and dependencies.
  *

@@ -633,8 +633,11 @@ validateTemplateInputs(const QwenTpShape& shape, std::uint64_t degree,
  */
 void
 validateUnits(const std::vector<QwenTpUnit>& units, std::uint64_t degree,
-              std::uint64_t layers)
+              std::uint64_t layers, std::uint64_t layerBegin, std::uint64_t layerEnd)
 {
+  if (layerEnd > layers || layerBegin >= layerEnd) {
+    throw std::invalid_argument("tensor-parallel unit range is empty or outside the model");
+  }
   if (units.size() != degree) {
     throw std::invalid_argument(
       "tensor-parallel units do not cover the declared degree");
@@ -650,9 +653,11 @@ validateUnits(const std::vector<QwenTpUnit>& units, std::uint64_t degree,
       throw std::invalid_argument(
         "tensor-parallel units have a duplicate or out-of-range rank");
     }
-    if (unit.layerBegin != 0 || unit.layerEnd != layers) {
+    // Every unit of one template owns the same window; a rank holds a shard of its
+    // stage's layers rather than of every layer in the model.
+    if (unit.layerBegin != layerBegin || unit.layerEnd != layerEnd) {
       throw std::invalid_argument(
-        "tensor-parallel unit does not cover every layer");
+        "tensor-parallel unit does not cover the template's layer range");
     }
   }
 }
@@ -676,8 +681,17 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
                     const std::string& entryPrefix,
                     const std::vector<QwenTpUnit>& units)
 {
+  return buildQwenTpTemplate(shape, degree, entryPrefix, units, 0, shape.layers);
+}
+
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix,
+                    const std::vector<QwenTpUnit>& units,
+                    std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
   validateTemplateInputs(shape, degree, entryPrefix);
-  validateUnits(units, degree, shape.layers);
+  validateUnits(units, degree, shape.layers, layerBegin, layerEnd);
   QwenTpTemplate result;
   result.degree = degree;
   result.units = units;
@@ -685,7 +699,8 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
   // rather than the list order.
   result.slicesByRank.resize(degree);
   for (const auto& unit : units)
-    result.slicesByRank[unit.rank] = planQwenTensorSlices(shape, degree, unit.rank);
+    result.slicesByRank[unit.rank] =
+      planQwenTensorSlices(shape, degree, unit.rank, layerBegin, layerEnd);
   return result;
 }
 

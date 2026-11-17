@@ -249,4 +249,45 @@ BOOST_AUTO_TEST_CASE(SlicePlanningCoversOnlyItsOwnLayerRange)
   BOOST_CHECK_THROW(qwen::planQwenTensorSlices(shape, 2, 0, 0, 5), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(TemplateAcceptsAStageLayerRange)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S1R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 1;
+    unit.layerEnd = 4;
+    units.push_back(unit);
+  }
+
+  const auto templ = qwen::buildQwenTpTemplate(shape, 2, "entry/S1", units, 1, 4);
+  BOOST_REQUIRE_EQUAL(templ.slicesByRank.size(), 2u);
+  BOOST_REQUIRE_EQUAL(templ.slicesByRank.at(0).size(), 3u);
+  BOOST_CHECK_EQUAL(templ.slicesByRank.at(0).front().layer, 1u);
+  BOOST_CHECK_EQUAL(templ.slicesByRank.at(1).back().layer, 3u);
+
+  // A unit that claims the whole model while the template declares a window is refused,
+  // and so is a window that runs past the model.
+  auto mismatched = units;
+  mismatched.at(0).layerBegin = 0;
+  mismatched.at(0).layerEnd = shape.layers;
+  BOOST_CHECK_THROW(qwen::buildQwenTpTemplate(shape, 2, "entry/S1", mismatched, 1, 4),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::buildQwenTpTemplate(shape, 2, "entry/S1", units, 1, 5),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::buildQwenTpTemplate(shape, 2, "entry/S1", units, 2, 2),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
