@@ -50,7 +50,7 @@ def matmul_nbits(name, x, n, k, rng, base_name):
 
 
 def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128,
-          vocab=64, seed=242):
+          vocab=64, seed=242, sequence=3):
     rng = np.random.default_rng(seed)
     nodes, inits = [], []
     init_names = set()
@@ -90,7 +90,7 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
                 numpy_helper.from_array(np.zeros((1, kv_heads, 1, head_dim), dtype=np.float32),
                                         f"{pn}attn.past_value"),
                 numpy_helper.from_array(np.array([0], dtype=np.int32), f"{pn}attn.seqlens_k"),
-                numpy_helper.from_array(np.array([0], dtype=np.int32),
+                numpy_helper.from_array(np.array([sequence], dtype=np.int32),
                                         f"{pn}attn.total_sequence_length")):
             if tensor.name not in init_names:
                 inits.append(tensor)
@@ -145,8 +145,8 @@ def build(path, layers=4, hidden=64, q_heads=4, kv_heads=2, head_dim=16, ffn=128
 
     graph = helper.make_graph(
         nodes, "spec242-four-layer-qwen",
-        [helper.make_tensor_value_info("input_ids", TensorProto.INT64, [1, "sequence"])],
-        [helper.make_tensor_value_info("logits", TensorProto.FLOAT, [1, "sequence", vocab])],
+        [helper.make_tensor_value_info("input_ids", TensorProto.INT64, [1, sequence])],
+        [helper.make_tensor_value_info("logits", TensorProto.FLOAT, [1, sequence, vocab])],
         initializer=inits)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17),
                                                     helper.make_opsetid("com.microsoft", 1)])
