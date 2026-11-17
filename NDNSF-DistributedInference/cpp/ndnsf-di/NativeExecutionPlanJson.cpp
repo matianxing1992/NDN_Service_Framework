@@ -3443,6 +3443,9 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
   configuration.steps = projection.plan.steps;
   configuration.stepPlanVersion = projection.plan.stepPlanVersion;
   configuration.tensorDegree = projection.plan.tensorDegree;
+  // The stages belong to the template for the same reason the steps do: a Provider that
+  // restored only steps and the plan-wide degree would give every unit the wrong geometry.
+  configuration.stageLayout = projection.plan.stageLayout;
   collapseFixedRoleEpochs(configuration);
   auto executionTemplate = std::make_shared<const NativeFixedExecutionTemplateV1>(
     normalizeExecutionTemplate(std::move(configuration)));

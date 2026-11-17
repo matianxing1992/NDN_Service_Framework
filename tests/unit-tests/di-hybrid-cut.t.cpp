@@ -66,6 +66,92 @@ hybridPlan()
   return plan;
 }
 
+/** One local role of a two-rank stage window, complete enough for the fixed
+ * assignment factory: the factory validates the whole Selection projection before it
+ * seals the execution template. The plan is the caller's sealed stage plan.
+ */
+NativeSelectionProjectionV3
+stageWindowProjection(const NativeExecutionPlan& sealed)
+{
+  NativeSelectionProjectionV3 projection;
+  projection.provider = "/provider/0";
+  projection.requestId = "/request/hybrid-cut";
+  projection.attempt = 1;
+  projection.planCoreDigest = nativePlanningDigest("hybrid-cut-core");
+  projection.planDigest = nativePlanningDigest("hybrid-cut-plan");
+  projection.ackClosedDigest = nativePlanningDigest("hybrid-cut-ack");
+  projection.offerDigest = nativePlanningDigest("hybrid-cut-offer");
+  projection.securityPolicySnapshotDigest = nativePlanningDigest("hybrid-cut-security");
+  projection.deadlineMs = 120000;
+
+  // The sealed template names both stage units, so the fixed Owner cover must say
+  // where the remote contribution comes from instead of leaving it unowned.
+  projection.fixedProviderByRole = {{"S0R0", projection.provider},
+                                    {"S0R1", "/provider/1"}};
+
+  NativeSelectionRoleV3 role;
+  role.role = "S0R0";
+  role.selectedRole = "S0R0";
+  role.rank = 0;
+  role.layerBegin = 0;
+  role.layerEnd = 1;
+  role.backend = "onnxruntime-cpu";
+  role.roleKind = "TENSOR_RANK";
+  role.artifactDigest = nativePlanningDigest("hybrid-cut-artifact");
+  role.recipeDigest = nativePlanningDigest("hybrid-cut-recipe");
+  role.adapterId = "qwen";
+  role.adapterVersion = "1";
+  role.modelManifestDigest = nativePlanningDigest("hybrid-cut-manifest");
+  role.artifactProfileDigest = nativePlanningDigest("hybrid-cut-profile");
+  role.graphDigest = nativePlanningDigest("hybrid-cut-graph");
+  role.canonicalInitializerDigest = nativePlanningDigest("hybrid-cut-initializer");
+  role.adapterDescriptorDigest = nativePlanningDigest("hybrid-cut-adapter");
+  role.assemblerDescriptorDigest = nativePlanningDigest("hybrid-cut-assembler");
+  role.backendAbi = "onnxruntime-1-cpu";
+  role.nodeIndices = {1, 2};
+  role.expectedInputs = {{"x", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  role.expectedOutputs = {{"y", "float32", {std::int64_t(1), std::int64_t(4)}}};
+  role.precision = "fp32";
+  role.quantization = "int4";
+  role.layout = "native";
+  role.padding = "none";
+  role.maxSourceBytes = 4096;
+  role.maxAssembledBytes = 2048;
+  role.maxNodes = 4;
+  projection.selectedRole = role;
+  projection.assembly = role;
+
+  projection.executionRole.roleId = role.role;
+  projection.executionRole.stageId = role.role;
+  projection.executionRole.rank = role.rank;
+  projection.executionRole.layerBegin = role.layerBegin;
+  projection.executionRole.layerEnd = role.layerEnd;
+  projection.executionRole.backend = role.backend;
+  projection.executionRole.adapterId = role.adapterId;
+  projection.executionRole.adapterVersion = role.adapterVersion;
+
+  projection.dataflow.role = role.role;
+  projection.dataflow.requestId = projection.requestId;
+  projection.dataflow.attempt = projection.attempt;
+  projection.dataflow.planDigest = projection.planDigest;
+  projection.dataflow.dataflowDigest = nativePlanningDigest("hybrid-cut-dataflow");
+  projection.dataflow.terminalResponseOwner = true;
+
+  projection.deviceBinding.mode = "CPU";
+  projection.deviceBinding.provider = projection.provider;
+  projection.deviceBinding.role = role.role;
+  projection.deviceBinding.offerDigest = projection.offerDigest;
+  projection.deviceBinding.topologyProfileDigest =
+    nativePlanningDigest("hybrid-cut-topology");
+  projection.deviceBinding.resourceSnapshotDigest =
+    nativePlanningDigest("hybrid-cut-resources");
+  projection.deviceBinding.resourceSequence = 1;
+  projection.deviceBinding.sharingPolicy = "EXCLUSIVE_ROLE";
+
+  projection.plan = sealed;
+  return projection;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(DiHybridCut)
@@ -501,6 +587,67 @@ BOOST_AUTO_TEST_CASE(BoundTemplateRestoresPerUnitDegrees)
   ndnsf::di::NativeExecutionPlan refused;
   BOOST_CHECK_THROW(ndnsf::di::bindFixedTemplateSteps(refused, withoutLayout),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(FixedAssignmentWireCarriesTheStageLayout)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  std::vector<qwen::QwenTpUnit> units;
+  for (std::uint64_t rank = 0; rank < 2; ++rank) {
+    qwen::QwenTpUnit unit;
+    unit.roleId = "S0R" + std::to_string(rank);
+    unit.rank = rank;
+    unit.layerBegin = 0;
+    unit.layerEnd = 1;
+    units.push_back(unit);
+  }
+  qwen::QwenTpStageWindow window{"stage-0", "sha256:region-0", 0, 1};
+  ndnsf::di::NativeExecutionPlan sealed;
+  qwen::projectQwenTpPlan(sealed, shape, 2, "entry/S0", "S0R0", units, window);
+  BOOST_REQUIRE_EQUAL(sealed.stageLayout.size(), 1u);
+
+  // Production writer: the sealed plan becomes a fixed assignment source.
+  const auto assignment = ndnsf::di::nativeFixedRoleAssignmentV1FromProjection(
+    stageWindowProjection(sealed));
+  BOOST_REQUIRE(assignment != nullptr);
+  BOOST_REQUIRE_EQUAL(assignment->executionTemplate()->stageLayout.size(), 1u);
+
+  // Production reader: the same bytes a Provider fetches must restore the layout,
+  // not just the steps and the plan-wide degree.
+  const std::string wire = ndnsf::di::nativeFixedRoleAssignmentV1ToJson(*assignment);
+  std::istringstream input(wire);
+  const auto restored = ndnsf::di::nativeFixedRoleAssignmentV1FromJson(input);
+  const auto& templateAfter = restored->executionTemplate();
+  BOOST_REQUIRE_EQUAL(templateAfter->stageLayout.size(), 1u);
+  BOOST_CHECK_EQUAL(templateAfter->stageLayout.at(0).stageId,
+                    sealed.stageLayout.at(0).stageId);
+  BOOST_CHECK_EQUAL(templateAfter->stageLayout.at(0).sourceRegionDigest,
+                    sealed.stageLayout.at(0).sourceRegionDigest);
+  BOOST_CHECK(templateAfter->stageLayout.at(0).unitRoleIds ==
+              sealed.stageLayout.at(0).unitRoleIds);
+  BOOST_CHECK_EQUAL(templateAfter->stepPlanVersion,
+                    std::string(ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2));
+  BOOST_CHECK_EQUAL(templateAfter->tensorDegree, 2u);
+
+  // Binding the restored template is what a Provider does before execution. The
+  // dependencies are admitted first, as on the production decode path, so each
+  // remote step input has its edge before validateSteps() sees it.
+  ndnsf::di::NativeExecutionPlan bound;
+  bound.dependencies = templateAfter->dependencies;
+  ndnsf::di::bindFixedTemplateSteps(bound, *templateAfter);
+  BOOST_REQUIRE_EQUAL(bound.stageLayout.size(), 1u);
+  BOOST_CHECK_EQUAL(bound.degreeForRole("S0R0"), 2u);
+  BOOST_CHECK_EQUAL(bound.degreeForRole("S0R1"), 2u);
+  BOOST_CHECK_NO_THROW(bound.validateSteps());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
