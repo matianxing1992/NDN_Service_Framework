@@ -2110,7 +2110,10 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
         break;
       }
     }
-    candidate.tensorIdentityByRole[unit.roleId] = {stageDegree, unit.rank};
+    // Singleton stages retain the ordinary, unsharded recipe identity. Their degree and
+    // membership remain sealed by stageLayout; only actual shards need a TP recipe binding.
+    if (stageDegree > 1)
+      candidate.tensorIdentityByRole[unit.roleId] = {stageDegree, unit.rank};
     candidate.rankArtifactDigestsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
     candidate.artifactsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
     candidate.requirementsByRole[unit.roleId] = requirementByUnit.at(unit.roleId);

@@ -2598,4 +2598,140 @@ BOOST_AUTO_TEST_CASE(LegacyKvObserverKeepsItsSixteenPointContract)
   BOOST_CHECK(!runner->stateHandleSnapshot(context.sessionId));
 }
 
+BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
+{
+  std::ifstream input("../tests/fixtures/spec242/four-layer-decode.onnx", std::ios::binary);
+  BOOST_REQUIRE(static_cast<bool>(input));
+  NativeCanonicalSource source;
+  source.modelBytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  const auto descriptor = qwenFixtureDescriptor();
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 8U << 20, 8U << 20};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const auto digest = nativePlanningDigest("spec242-catalog");
+  const std::vector<std::string> roles{"first", "last"};
+  NativeJson configuration = {
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest}, {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest}, {"assembler_descriptor_digest", digest},
+      {"backend_abi", "onnxruntime"}, {"precision", "int4"},
+      {"quantization", "weight_only_int4"}, {"layout", "BNSH"}, {"padding", "none"},
+      {"protection_epoch", "fixture"}, {"max_source_bytes", 8U << 20},
+      {"max_assembled_bytes", 8U << 20}, {"max_nodes", 512}}},
+    {"publication", {{"artifact_root", "/fixture/artifact"}}},
+    {"input_format", "OPAQUE"}, {"max_payload_bytes", 1U << 20}};
+  const auto resources = nativeParseJson(NativeRoleResourceRequirement{
+    {"onnxruntime"}, 8U << 20, 0, 0, 0, 0, 1.0}.canonicalJson());
+  configuration["splitter"] = {
+    {"kind", "QWEN"}, {"roles", roles}, {"layer_ranges", {{0, 1}, {1, 4}}},
+    {"tensor_degrees", {2, 1}},
+    {"artifact_digests_by_role", {{"first", digest}, {"last", digest}}},
+    {"rank_artifact_digests_by_role", {{"first",
+      {digest, nativePlanningDigest("spec242-catalog-rank1")}}}},
+    {"weight_bytes_by_role", {{"first", 8U << 20}, {"last", 8U << 20}}},
+    {"resources_by_role", {{"first", resources}, {"last", resources}}},
+    {"input_ingress_role", "first"}, {"result_egress_role", "last"}};
+  onnx::ModelProto model;
+  BOOST_REQUIRE(model.ParseFromArray(source.modelBytes.data(),
+                                     static_cast<int>(source.modelBytes.size())));
+  std::vector<std::string> nodeNames;
+  for (const auto& node : model.graph().node()) nodeNames.push_back(node.name());
+  for (const auto& entry : qwen::classifyQwenTpEntryNodes(nodeNames, 4)) {
+    const auto semantic = entry.kind == "INIT" ? "embedding" : entry.kind == "HEAD"
+      ? "final-norm-head" : "layer-0" + std::to_string(entry.layer);
+    for (const auto index : entry.nodeIndices)
+      configuration["node_mapping"][semantic].push_back(index);
+  }
+  for (std::uint64_t layer = 0; layer < 4; ++layer) {
+    const auto& role = roles.at(layer == 0 ? 0 : 1);
+    for (const std::string component : {"key", "value"}) {
+      const auto suffix = std::to_string(layer) + "." + component;
+      configuration["state_inputs"][role][suffix] = {"past_key_values." + suffix};
+      configuration["state_outputs"][role][suffix] = {"present." + suffix};
+    }
+  }
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source,
+                                                 control);
+  BOOST_REQUIRE(loaded.planningCache);
+  BOOST_REQUIRE_EQUAL(loaded.planningCache->candidates.size(), 1u);
+  const auto& prepared = loaded.planningCache->candidates.front();
+  BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
+  std::map<std::uint64_t, std::string> rankRecipes;
+  for (const auto& role : prepared.roles) {
+    const bool first = role.layerBegin == 0;
+    const auto& inputs = prepared.candidate.roleStateInputsByRole.at(role.role);
+    const auto& outputs = prepared.candidate.roleStateOutputsByRole.at(role.role);
+    BOOST_REQUIRE_EQUAL(inputs.size(), first ? 2u : 6u);
+    BOOST_REQUIRE_EQUAL(outputs.size(), inputs.size());
+    const std::vector<std::variant<std::int64_t, std::string>> inputShape{
+      std::int64_t{1}, std::int64_t{2}, std::string("past_sequence"), std::int64_t{16}};
+    auto outputShape = inputShape;
+    outputShape[2] = std::string("total_sequence");
+    std::set<std::string> actualInputs;
+    std::set<std::string> actualOutputs;
+    for (const auto& tensor : inputs) {
+      BOOST_CHECK_EQUAL(tensor.dtype, "float32");
+      BOOST_CHECK(tensor.shape == inputShape);
+      actualInputs.insert(tensor.name);
+    }
+    for (const auto& tensor : outputs) {
+      BOOST_CHECK_EQUAL(tensor.dtype, "float32");
+      BOOST_CHECK(tensor.shape == outputShape);
+      actualOutputs.insert(tensor.name);
+    }
+    std::set<std::string> expectedInputs;
+    std::set<std::string> expectedOutputs;
+    for (std::uint64_t layer = first ? 0 : 1; layer < (first ? 1 : 4); ++layer) {
+      for (const std::string component : {"key", "value"}) {
+        const auto suffix = std::to_string(layer) + "." + component;
+        expectedInputs.insert("past_key_values." + suffix);
+        expectedOutputs.insert("present." + suffix);
+      }
+    }
+    BOOST_CHECK(actualInputs == expectedInputs);
+    BOOST_CHECK(actualOutputs == expectedOutputs);
+    if (first) {
+      BOOST_CHECK_EQUAL(role.tensorParallelDegree, 2u);
+      BOOST_CHECK(rankRecipes.emplace(role.tensorParallelRank, role.recipeDigest).second);
+    }
+    else {
+      BOOST_CHECK_EQUAL(role.tensorParallelDegree, 0u);
+      BOOST_CHECK_EQUAL(role.tensorParallelRank, 0u);
+      BOOST_CHECK_EQUAL(prepared.candidate.tensorIdentityByRole.count(role.role), 0u);
+    }
+  }
+  BOOST_REQUIRE_EQUAL(rankRecipes.size(), 2u);
+  BOOST_CHECK_NE(rankRecipes.at(0), rankRecipes.at(1));
+  const auto verifiedSource = loaded.preparation->sourceRefFor(loaded.model.descriptor);
+  BOOST_REQUIRE(verifiedSource);
+  BOOST_REQUIRE(verifiedSource->materialManifest);
+  NativeCanonicalSource reference;
+  reference.preparedMetadataJson = verifiedSource->preparedMetadataJson;
+  auto references = std::make_shared<NativeCanonicalSource::MaterialManifest>(
+    *verifiedSource->materialManifest);
+  references->payloads.clear();
+  references->payloadsComplete = false;
+  references->validate();
+  reference.materialManifest = std::move(references);
+  const auto restored = NativeRequestCatalog::load(nativeCanonicalJson(configuration),
+                                                   reference, control);
+  BOOST_REQUIRE(restored.planningCache);
+  BOOST_REQUIRE_EQUAL(restored.planningCache->candidates.size(), 1u);
+  const auto& warm = restored.planningCache->candidates.front();
+  BOOST_CHECK_EQUAL(warm.candidate.candidateDigest, prepared.candidate.candidateDigest);
+  BOOST_REQUIRE_EQUAL(warm.roles.size(), prepared.roles.size());
+  for (std::size_t index = 0; index < warm.roles.size(); ++index)
+    BOOST_CHECK_EQUAL(warm.roles[index].recipeDigest, prepared.roles[index].recipeDigest);
+  auto foreignState = configuration;
+  foreignState["state_inputs"]["last"]["1.key"] = {"past_key_values.0.key"};
+  BOOST_CHECK_EXCEPTION(NativeRequestCatalog::load(nativeCanonicalJson(foreignState), source,
+                                                  control), std::invalid_argument,
+    [] (const std::invalid_argument& error) {
+      return std::string(error.what()).find("source boundary") != std::string::npos;
+    });
+}
+
 BOOST_AUTO_TEST_SUITE_END()
