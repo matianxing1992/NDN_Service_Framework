@@ -6,6 +6,7 @@
  */
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeEpochCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
@@ -31,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -40,6 +42,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -2329,13 +2333,23 @@ public:
   }
 };
 
+enum class CoordinatorFault
+{
+  NONE,
+  MISSING,
+  WRONG_PRODUCER,
+  PUBLICATION_FAILURE,
+};
+
 void
 verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan,
                       const qwen::QwenTpShape& shape,
                       const std::vector<std::vector<qwen::QwenTpUnit>>& units,
                       const std::string& egress,
                       const std::map<std::string, NativeModelRunnerSpec>& specs,
-                      bool dynamic, const std::string& label, bool externalControls = false)
+                      bool dynamic, const std::string& label, bool externalControls = false,
+                      bool coordinator = false,
+                      CoordinatorFault fault = CoordinatorFault::NONE)
 {
   const std::string sessionId = "three-worker-prefill/" + label +
     (dynamic ? "/decode" : "/prefill");
@@ -2414,7 +2428,6 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
   RegistryNativeModelRunnerFactory factory;
   registerOnnxRuntimeBackend(factory, nullptr, observer);
   qwen::registerQwenTensorBackend(factory);
-  ProviderRoleWorker worker(2, 2, 16, std::chrono::seconds(5));
   NativeProviderAssignment assignment;
   BOOST_REQUIRE_EQUAL(specs.size(), plan.roles.size());
   for (const auto& role : plan.roles)
@@ -2455,15 +2468,196 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     roleSpecs.emplace(role, std::move(roleSpec));
   }
 
+  std::map<std::size_t, std::map<std::string, ProviderRoleResult>> coordinatedResults;
+  std::vector<std::int64_t> sampledTokens;
+  std::map<std::string, std::unique_ptr<NativeProviderRuntime>> coordinatedRuntimes;
+  if (coordinator) {
+    BOOST_REQUIRE(dynamic && !externalControls);
+    const auto topology = nativeGenerationFeedbackTopology(plan, egress, "input_ids");
+    auto bus = std::make_shared<tests::PartialBus>();
+    tests::CancellableBusDependencyIo::PublicationMutation mutation;
+    if (fault != CoordinatorFault::NONE) {
+      mutation = [fault] (const DependencyEdge& edge, TensorBundle& value) {
+        if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") return;
+        auto lineage = extractGenerationEpochLineage(value);
+        if (!lineage)
+          throw std::runtime_error("fixture could not find the Producer's original lineage");
+        if (fault == CoordinatorFault::PUBLICATION_FAILURE)
+          throw std::runtime_error("injected activation publication failure");
+        value = stripGenerationEpochLineage(value);
+        if (fault == CoordinatorFault::WRONG_PRODUCER) {
+          lineage->producerRole = "foreign/Tensor/Rank/0";
+          value = attachGenerationEpochLineage(value, *lineage);
+        }
+      };
+    }
+    auto io = std::make_shared<tests::CancellableBusDependencyIo>(bus, std::move(mutation));
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    std::mutex observedMutex;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    for (const auto& role : plan.roles)
+      coordinatedRuntimes.emplace(role, std::make_unique<NativeProviderRuntime>(1));
+    std::map<std::string, std::future<NativeEpochCoordinatorResult>> futures;
+    const auto stopFailure = std::make_exception_ptr(
+      std::runtime_error("bounded Coordinator fixture stopped"));
+    struct Drain
+    {
+      std::shared_ptr<tests::PartialBus> bus;
+      std::shared_ptr<std::atomic<bool>> cancelled;
+      decltype(futures)& pending;
+      std::exception_ptr failure;
+      ~Drain()
+      {
+        cancelled->store(true);
+        bus->cancel(failure);
+        for (auto& item : pending)
+          if (item.second.valid()) item.second.wait();
+      }
+    } drain{bus, cancelled, futures, stopFailure};
+    const auto seed = nativePlanningDigest("spec242-coordinator-trusted-fixture");
+    for (const auto& role : plan.roles) {
+      NativeEpochCoordinatorConfig config{*coordinatedRuntimes.at(role), plan, assignment, io};
+      config.sessionId = sessionId;
+      config.requestId = "/fixture/coordinator-request";
+      config.role = role;
+      config.attemptEpoch = 1;
+      config.streamEpoch = 1;
+      config.localProvider = assignment.providerByRole.at(role);
+      config.lineagePlanDigest = seed;
+      config.positionPolicyDigest = seed;
+      config.samplingDigest = seed;
+      config.maxEpochs = 2;
+      config.eosTokenIds = {63};
+      config.terminalRole = role == egress;
+      config.stateInputNames = roleSpecs.at(role).stateInputNames;
+      config.stateOutputNames = roleSpecs.at(role).stateOutputNames;
+      // This unit test supplies trusted identity values through the public config boundary;
+      // it does not reproduce the Provider handler's grant/identity admission algorithm.
+      DecodeStateIdentityV1 identity;
+      identity.modelDigest = identity.graphSemanticDigest = identity.artifactDigest = seed;
+      identity.adapterDigest = identity.tokenizerDigest = identity.runnerDigest = seed;
+      identity.roleSplitDigest = identity.layoutDigest = identity.stateSchemaDigest = seed;
+      identity.runtimeAbiDigest = identity.securityDomainDigest = seed;
+      identity.roleName = role;
+      identity.precision = "fp32";
+      identity.providerIdentity = config.localProvider;
+      identity.providerBootId = "none";
+      identity.cacheEpoch = 1;
+      identity.requestId = config.requestId;
+      identity.attemptEpoch = 1;
+      identity.generationId = "spec242-coordinator-generation";
+      identity.stateComponentDigests.assign(config.stateInputNames.size(), seed);
+      for (const auto& stage : units)
+        for (const auto& unit : stage)
+          if (unit.roleId == role) {
+            identity.layerBegin = unit.layerBegin;
+            identity.layerEnd = unit.layerEnd;
+          }
+      config.stateIdentityTemplate = std::move(identity);
+      auto runner = runners.at(role);
+      config.prepareRunner = [runner] { return runner; };
+      config.stopCheck = [cancelled, deadline] () -> std::optional<NativeEpochStopReason> {
+        if (cancelled->load()) return NativeEpochStopReason::Cancelled;
+        if (std::chrono::steady_clock::now() >= deadline) return NativeEpochStopReason::Deadline;
+        return std::nullopt;
+      };
+      if (std::find(topology.consumerRoles.begin(), topology.consumerRoles.end(), role) !=
+          topology.consumerRoles.end()) {
+        NamedTensor prompt;
+        prompt.name = "input_ids";
+        prompt.elementType = TensorElementType::Int64;
+        prompt.shape = {1, 3};
+        const std::array<std::int64_t, 3> tokens{1, 2, 3};
+        prompt.payload.resize(sizeof(tokens));
+        std::memcpy(prompt.payload.data(), tokens.data(), sizeof(tokens));
+        config.initialInputs.emplace("input_ids", makeEncodedTensorBundle("input_ids", {prompt}));
+      }
+      config.resultObserver = [&] (const auto& executed, const auto& result) {
+        std::lock_guard<std::mutex> lock(observedMutex);
+        if (!coordinatedResults[executed.inferenceEpoch].emplace(executed.role, result).second)
+          throw std::runtime_error("Coordinator fixture repeated a role epoch");
+      };
+      if (role == egress) {
+        config.eventSink = [&] (const auto& bytes) {
+          const auto event = nativeParseJson(std::string(bytes.begin(), bytes.end()));
+          std::lock_guard<std::mutex> lock(observedMutex);
+          sampledTokens.push_back(event.at("tokenId").template get<std::int64_t>());
+          return true;
+        };
+      }
+      futures.emplace(role, std::async(std::launch::async,
+        [bus, cancelled, config = std::move(config)] () mutable {
+          try {
+            return runNativeEpochCoordinator(std::move(config));
+          }
+          catch (...) {
+            cancelled->store(true);
+            bus->cancel(std::current_exception());
+            throw;
+          }
+        }));
+    }
+    std::map<std::string, NativeEpochCoordinatorResult> results;
+    std::ostringstream failures;
+    for (auto& item : futures) {
+      if (item.second.wait_until(deadline) != std::future_status::ready) {
+        cancelled->store(true);
+        bus->cancel(stopFailure);
+      }
+      try {
+        results.emplace(item.first, item.second.get());
+      }
+      catch (const std::exception& error) {
+        failures << item.first << ": " << error.what() << "; ";
+      }
+    }
+    if (fault != CoordinatorFault::NONE) {
+      BOOST_REQUIRE_MESSAGE(!failures.str().empty(), "corrupt lineage was accepted");
+      const auto expected = fault == CoordinatorFault::PUBLICATION_FAILURE
+        ? "injected activation publication failure" : "GENERATION_EPOCH_LINEAGE_MISMATCH";
+      BOOST_CHECK_MESSAGE(failures.str().find(expected) !=
+                            std::string::npos, failures.str());
+      BOOST_CHECK(sampledTokens.empty());
+      for (const auto& epoch : coordinatedResults) {
+        BOOST_CHECK_EQUAL(epoch.first, 0u);
+        BOOST_CHECK(epoch.second.count(egress) == 0);
+      }
+      for (const auto& item : runners)
+        BOOST_CHECK_MESSAGE(!item.second->stateHandleSnapshot(sessionId),
+                            "retained adapter state for " << item.first);
+      for (const auto& item : coordinatedRuntimes) {
+        const auto state = item.second->decodeStateSnapshot();
+        BOOST_CHECK_EQUAL(state.entries, 0u);
+        BOOST_CHECK_EQUAL(state.pinnedEntries, 0u);
+        BOOST_CHECK_EQUAL(state.candidates, 0u);
+      }
+      BOOST_TEST_MESSAGE(label << " rejected Coordinator fault " << static_cast<int>(fault));
+      return;
+    }
+    BOOST_REQUIRE_MESSAGE(failures.str().empty(), label << " Coordinator: " << failures.str());
+    BOOST_REQUIRE_EQUAL(sampledTokens.size(), 2u);
+    BOOST_REQUIRE_EQUAL(coordinatedResults.size(), 2u);
+    BOOST_TEST_MESSAGE(label << " sampled token IDs=" << sampledTokens[0] << ","
+                            << sampledTokens[1]);
+    for (const auto& item : results) {
+      BOOST_CHECK_EQUAL(item.second.epochsExecuted, 2u);
+      BOOST_CHECK_EQUAL(item.second.eventsPublished, item.first == egress ? 2u : 0u);
+    }
+  }
+
+  std::unique_ptr<ProviderRoleWorker> worker;
+  if (!coordinator)
+    worker = std::make_unique<ProviderRoleWorker>(2, 2, 16, std::chrono::seconds(5));
   std::vector<std::int64_t> prefix;
   std::set<std::string> publicationNames;
   float worstLogits = 0;
   double worstState = 0;
-  const std::size_t epochs = dynamic ? 3 : 1;
+  const std::size_t epochs = coordinator ? 2 : dynamic ? 3 : 1;
   for (std::size_t epoch = 0; epoch < epochs; ++epoch) {
     const std::vector<std::int64_t> tokens = epoch == 0
       ? std::vector<std::int64_t>{1, 2, 3}
-      : std::vector<std::int64_t>{static_cast<std::int64_t>(3 + epoch)};
+      : std::vector<std::int64_t>{coordinator ? sampledTokens.at(epoch - 1)
+                                              : static_cast<std::int64_t>(3 + epoch)};
     prefix.insert(prefix.end(), tokens.begin(), tokens.end());
     const auto expected = fullReference(prefix);
     if (externalControls && epoch == 0) {
@@ -2482,69 +2676,78 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
         BOOST_CHECK_GT(difference, 1e-6f);
       }
     }
-    auto bus = std::make_shared<tests::PartialBus>();
-    std::map<std::string, std::future<ProviderRoleResult>> futures;
-    std::set<std::string> epochPublications;
-    for (const auto& role : plan.roles) {
-      auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "", epoch);
-      roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
-      roleSpec.stateOutputNames = roleSpecs.at(role).stateOutputNames;
-      roleSpec.streamingStateExecution = dynamic;
-      roleSpec.inferenceEpoch = epoch;
-      for (const auto& edge : roleSpec.outputs) {
-        BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
-        BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
-        BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
-        BOOST_CHECK(epochPublications.insert(edge.plannedDataName).second);
-      }
-      NamedTensor ids;
-      ids.name = "input_ids";
-      ids.elementType = TensorElementType::Int64;
-      ids.shape = {1, static_cast<std::int64_t>(tokens.size())};
-      ids.payload.resize(tokens.size() * sizeof(std::int64_t));
-      std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
-      auto io = std::make_shared<tests::BusDependencyIo>(bus);
-      auto runner = runners.at(role);
-      std::map<std::string, TensorBundle> epochInputs{
-        {"input_ids", makeEncodedTensorBundle("input_ids", {ids})}};
-      if (externalControls) {
-        NamedTensor delta;
-        delta.name = "control.delta";
-        delta.elementType = TensorElementType::Int32;
-        const std::int32_t value = 3;
-        delta.payload.resize(sizeof(value));
-        std::memcpy(delta.payload.data(), &value, sizeof(value));
-        NamedTensor positions;
-        positions.name = "control.positions";
-        positions.elementType = TensorElementType::Int64;
-        positions.shape = ids.shape;
-        positions.payload.resize(tokens.size() * sizeof(std::int64_t));
-        for (std::size_t i = 0; i < tokens.size(); ++i) {
-          const auto position = static_cast<std::int64_t>(prefix.size() - tokens.size() + i);
-          std::memcpy(positions.payload.data() + i * sizeof(position), &position,
-                      sizeof(position));
-        }
-        epochInputs.emplace(delta.name, makeEncodedTensorBundle(delta.name, {delta}));
-        epochInputs.emplace(positions.name,
-                            makeEncodedTensorBundle(positions.name, {positions}));
-      }
-      futures.emplace(role, worker.executePreparedAsync(sessionId, std::move(roleSpec),
-        io, [runner] { return runner; }, std::move(epochInputs)));
-    }
     std::map<std::string, ProviderRoleResult> results;
-    std::ostringstream failures;
-    for (auto& [role, future] : futures) {
-      BOOST_REQUIRE(future.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
-      try {
-        results.emplace(role, future.get());
-      }
-      catch (const std::exception& error) {
-        failures << role << ": " << error.what() << "; ";
-      }
+    if (coordinator) {
+      results = coordinatedResults.at(epoch);
     }
-    BOOST_REQUIRE_MESSAGE(failures.str().empty(),
-      label << " epoch=" << epoch << " worker failures: " << failures.str());
-    BOOST_CHECK_EQUAL(bus->publishedCount(), epochPublications.size());
+    else {
+      auto bus = std::make_shared<tests::PartialBus>();
+      std::map<std::string, std::future<ProviderRoleResult>> futures;
+      std::set<std::string> epochPublications;
+      for (const auto& role : plan.roles) {
+        auto roleSpec = roleSpecFor(plan, role, sessionId, assignment, "", epoch);
+        roleSpec.stateInputNames = roleSpecs.at(role).stateInputNames;
+        roleSpec.stateOutputNames = roleSpecs.at(role).stateOutputNames;
+        roleSpec.streamingStateExecution = dynamic;
+        roleSpec.inferenceEpoch = epoch;
+        for (const auto& edge : roleSpec.outputs) {
+          BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
+          BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
+          BOOST_CHECK(publicationNames.insert(edge.plannedDataName).second);
+          BOOST_CHECK(epochPublications.insert(edge.plannedDataName).second);
+        }
+        NamedTensor ids;
+        ids.name = "input_ids";
+        ids.elementType = TensorElementType::Int64;
+        ids.shape = {1, static_cast<std::int64_t>(tokens.size())};
+        ids.payload.resize(tokens.size() * sizeof(std::int64_t));
+        std::memcpy(ids.payload.data(), tokens.data(), ids.payload.size());
+        auto io = std::make_shared<tests::BusDependencyIo>(bus);
+        auto runner = runners.at(role);
+        std::map<std::string, TensorBundle> epochInputs{
+          {"input_ids", makeEncodedTensorBundle("input_ids", {ids})}};
+        if (externalControls) {
+          NamedTensor delta;
+          delta.name = "control.delta";
+          delta.elementType = TensorElementType::Int32;
+          const std::int32_t value = 3;
+          delta.payload.resize(sizeof(value));
+          std::memcpy(delta.payload.data(), &value, sizeof(value));
+          NamedTensor positions;
+          positions.name = "control.positions";
+          positions.elementType = TensorElementType::Int64;
+          positions.shape = ids.shape;
+          positions.payload.resize(tokens.size() * sizeof(std::int64_t));
+          for (std::size_t i = 0; i < tokens.size(); ++i) {
+            const auto position = static_cast<std::int64_t>(prefix.size() - tokens.size() + i);
+            std::memcpy(positions.payload.data() + i * sizeof(position), &position,
+                        sizeof(position));
+          }
+          epochInputs.emplace(delta.name, makeEncodedTensorBundle(delta.name, {delta}));
+          epochInputs.emplace(positions.name,
+                              makeEncodedTensorBundle(positions.name, {positions}));
+        }
+        futures.emplace(role, worker->executePreparedAsync(sessionId, std::move(roleSpec),
+          io, [runner] { return runner; }, std::move(epochInputs)));
+      }
+      std::ostringstream failures;
+      for (auto& [role, future] : futures) {
+        if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+          failures << role << ": worker completion timed out; ";
+          bus->cancel(std::make_exception_ptr(
+            std::runtime_error("fixture worker completion timed out")));
+        }
+        try {
+          results.emplace(role, future.get());
+        }
+        catch (const std::exception& error) {
+          failures << role << ": " << error.what() << "; ";
+        }
+      }
+      BOOST_REQUIRE_MESSAGE(failures.str().empty(),
+        label << " epoch=" << epoch << " worker failures: " << failures.str());
+      BOOST_CHECK_EQUAL(bus->publishedCount(), epochPublications.size());
+    }
     BOOST_REQUIRE_EQUAL(results.size(), 3u);
     BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
     const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
@@ -2563,6 +2766,11 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     std::vector<float> referenceLogits(prefix.size() * shape.vocab);
     BOOST_REQUIRE_EQUAL(expectedLogits.payload.size(), referenceLogits.size() * sizeof(float));
     std::memcpy(referenceLogits.data(), expectedLogits.payload.data(), expectedLogits.payload.size());
+    if (coordinator) {
+      const auto last = referenceLogits.end() - static_cast<std::ptrdiff_t>(shape.vocab);
+      const auto wanted = std::distance(last, std::max_element(last, referenceLogits.end()));
+      BOOST_CHECK_EQUAL(sampledTokens.at(epoch), wanted);
+    }
     for (std::size_t index = 0; index < values.size(); ++index) {
       const auto wanted = referenceLogits.at(offset + index);
       BOOST_REQUIRE(std::isfinite(values[index]) && std::isfinite(wanted));
@@ -2603,14 +2811,18 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
         }
       }
     }
-    for (const auto& [role, runner] : runners) {
-      const auto handle = runner->stateHandleSnapshot(sessionId);
-      BOOST_REQUIRE(handle.has_value());
-      BOOST_CHECK_EQUAL(handle->role, role);
-      BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, epoch);
+    if (!coordinator) {
+      for (const auto& [role, runner] : runners) {
+        const auto handle = runner->stateHandleSnapshot(sessionId);
+        BOOST_REQUIRE(handle.has_value());
+        BOOST_CHECK_EQUAL(handle->role, role);
+        BOOST_CHECK_EQUAL(handle->stateInferenceEpoch, epoch);
+      }
     }
   }
   for (const auto& [role, runner] : runners) {
+    if (coordinator)
+      BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
     runner->releaseSessionState(sessionId);
     BOOST_CHECK(!runner->stateHandleSnapshot(sessionId));
   }
@@ -3381,7 +3593,8 @@ verifyHybridGenerationCodec(NativeSelectionProjectionV3 projection,
 }
 
 void
-verifyHybridMaterials(bool mirrored, bool externalControls = false)
+verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordinator = false,
+                      CoordinatorFault fault = CoordinatorFault::NONE)
 {
   // These projections exercise post-admission assembly, not Selection or transport security.
   if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
@@ -3676,14 +3889,26 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false)
     }
     units.push_back(std::move(members));
   }
+  auto executionPlan = prepared.candidate.executionPlan;
+  if (coordinator) {
+    std::map<std::string, std::string> providers;
+    for (const auto& item : coldSpecs)
+      providers.emplace(item.first, item.second.metadata.at("providerIdentity"));
+    const auto topology = nativeGenerationFeedbackTopology(executionPlan,
+      prepared.candidate.resultEgressRole, "input_ids");
+    bindNativeGenerationFeedback(executionPlan, topology, "input_ids",
+      "/fixture/coordinator-request", 1, providers);
+  }
   for (const auto& item : std::vector<std::pair<std::string,
          const std::map<std::string, NativeModelRunnerSpec>*>>{
            {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
     verifyHybridExecution(sourcePath.string(),
-      prepared.candidate.executionPlan, shape, units, prepared.candidate.resultEgressRole,
+      executionPlan, shape, units, prepared.candidate.resultEgressRole,
       *item.second, true, item.first + (mirrored ? "-[1,2]" : "-[2,1]") +
-        (externalControls ? "-controls" : ""), externalControls);
+        (externalControls ? "-controls" : "") + (coordinator ? "-coordinator" : ""),
+      externalControls, coordinator, fault);
   }
+  if (coordinator) return;
   const auto sidecar = workspace.root / "reopen.json";
   {
     std::ofstream output(sidecar);
@@ -3709,6 +3934,46 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
     verifyHybridMaterials(false, true);
     verifyHybridMaterials(true, true);
   }
+}
+
+BOOST_AUTO_TEST_CASE(GenerationBusKeepsEpochNamesAndCancelsReaders)
+{
+  auto bus = std::make_shared<tests::PartialBus>();
+  tests::CancellableBusDependencyIo io(bus);
+  DependencyEdge first;
+  first.scope = "same-logical-edge";
+  first.plannedDataName = "/fixture/data/0";
+  TensorBundle value;
+  value.payload = {1, 2, 3};
+  io.publishOutput("session", first, value);
+  BOOST_CHECK(io.prefetchInput("session", first).get().payload == value.payload);
+  auto next = first;
+  next.plannedDataName = "/fixture/data/1";
+  auto waiting = io.prefetchInput("session", next);
+  BOOST_CHECK(waiting.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+  io.cancelPendingPrefetches();
+  BOOST_CHECK_THROW(waiting.get(), std::runtime_error);
+  auto late = io.prefetchInput("session", next);
+  BOOST_REQUIRE(late.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+  BOOST_CHECK_THROW(late.get(), std::runtime_error);
+  io.drainPendingPrefetches();
+}
+
+BOOST_AUTO_TEST_CASE(HybridCoordinatorsGenerateFromActualFeedback)
+{
+  verifyHybridMaterials(false, false, true);
+  verifyHybridMaterials(true, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(HybridCoordinatorRejectsMissingAndForeignActivationLineage)
+{
+  verifyHybridMaterials(false, false, true, CoordinatorFault::MISSING);
+  verifyHybridMaterials(false, false, true, CoordinatorFault::WRONG_PRODUCER);
+}
+
+BOOST_AUTO_TEST_CASE(HybridCoordinatorReleasesPreparedStateAfterPublicationFailure)
+{
+  verifyHybridMaterials(false, false, true, CoordinatorFault::PUBLICATION_FAILURE);
 }
 
 BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)

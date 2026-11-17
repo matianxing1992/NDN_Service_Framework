@@ -416,22 +416,28 @@ publishTerminalActivation(const NativeEpochCoordinatorConfig& config,
   }
 }
 
+/** Leave per-step contributions to the worker, but admit generation lineage first.
+ * Waiting for peer partials here would prevent either TP unit from starting. Boundary
+ * activations and feedback carry the epoch identity required before state can be admitted.
+ */
+bool
+workerFetchesPerStep(const RoleSpec& role, const DependencyEdge& edge)
+{
+  const bool carriesLineage = edge.operationKind == "ACTIVATION" ||
+    edge.operationKind == "PIPELINE" || edge.operationKind == "TOKEN_FEEDBACK";
+  return role.steps && !role.steps->empty() && !edge.consumerStepId.empty() && !carriesLineage;
+}
+
 std::map<std::string, TensorBundle>
 fetchInputs(const NativeEpochCoordinatorConfig& config,
             const RoleSpec& role,
             std::map<std::string, TensorBundle> inputs)
 {
-  // A step-carrying role admits each remote input at the step that needs it, which the
-  // worker does. Awaiting the whole set here would reinstate the gate that path removes:
-  // with two tensor-parallel units each waits for a partial the other has not computed, so
-  // neither reaches its first step. Epoch inputs and feedback are still fetched here,
-  // because the first step genuinely needs them and they cannot come from the peer.
-  const bool stepsAwaitTheirOwnInputs = role.steps && !role.steps->empty();
   for (const auto& edge : role.inputs) {
     if (inputs.find(edge.scope) != inputs.end()) {
       continue;
     }
-    if (stepsAwaitTheirOwnInputs && !edge.consumerStepId.empty()) {
+    if (workerFetchesPerStep(role, edge)) {
       // The worker starts this fetch and awaits it per step. Skipping it here is what lets
       // the unit begin computing.
       continue;
@@ -493,20 +499,6 @@ struct PendingInputPrefetch
     }
   }
 };
-
-/** Whether this role leaves the edge for its worker to fetch per step.
- *
- * A step-carrying role admits each remote input at the step that needs it, so the
- * coordinator must neither await it here nor start a prefetch whose future it would then
- * have to drain. Doing either reinstates the wait-all gate above the worker: with two
- * tensor-parallel units each waits for a partial the other has not computed, and neither
- * reaches its first step.
- */
-bool
-workerFetchesPerStep(const RoleSpec& role, const DependencyEdge& edge)
-{
-  return role.steps && !role.steps->empty() && !edge.consumerStepId.empty();
-}
 
 void
 beginInputPrefetch(const NativeEpochCoordinatorConfig& config,
@@ -739,11 +731,9 @@ actualNewInputExtent(
   std::size_t preferredExtent = 0;
   bool foundPreferred = false;
   for (const auto& item : inputs) {
-    if (!isEncodedTensorBundle(item.second.payload)) {
-      throw std::invalid_argument(
-        "native epoch cache observation requires encoded tensor inputs");
-    }
-    for (const auto& tensor : decodeTensorBundle(item.second.payload, workStatistics)) {
+    // Views borrow from the input bundle, whose owner remains alive for this whole scan.
+    for (const auto& tensor : decodeTensorBundleViews(item.second, workStatistics)) {
+      if (tensor.name == generationEpochLineageTensorName()) continue;
       if (std::find(stateInputNames.begin(), stateInputNames.end(), tensor.name) !=
           stateInputNames.end()) {
         continue;
@@ -951,7 +941,10 @@ extractAndVerifyInputLineage(const RoleSpec& role,
     accepted->consumerRole.clear();
     accepted->operationIndex = 0;
     completeStageTransferObservation(edge, found->second, "receive");
-    found->second = stripGenerationEpochLineage(found->second);
+    // A per-step input is checked again when its exact slot is consumed by the worker.
+    // Keep that stamp until then; ordinary whole-role/model inputs must not expose it.
+    if (!role.steps || role.steps->empty() || edge.consumerStepId.empty())
+      found->second = stripGenerationEpochLineage(found->second);
   }
   return accepted;
 }

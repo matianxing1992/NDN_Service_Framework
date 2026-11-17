@@ -5,11 +5,14 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 
 #include <atomic>
+#include <exception>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -22,9 +25,13 @@ public:
   subscribe(std::string scope)
   {
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto published = m_published.find(scope);
     std::promise<TensorBundle> promise;
     auto future = promise.get_future();
+    if (m_failure) {
+      promise.set_exception(m_failure);
+      return future;
+    }
+    const auto published = m_published.find(scope);
     if (published != m_published.end()) {
       promise.set_value(published->second);
     }
@@ -32,6 +39,21 @@ public:
       m_waiters[std::move(scope)].push_back(std::move(promise));
     }
     return future;
+  }
+
+  /** Wake current and future readers when the fixture's bounded generation is stopped. */
+  void
+  cancel(std::exception_ptr failure) noexcept
+  {
+    std::map<std::string, std::vector<std::promise<TensorBundle>>> waiters;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      if (m_failure) return;
+      m_failure = std::move(failure);
+      waiters.swap(m_waiters);
+    }
+    for (auto& entry : waiters)
+      for (auto& waiter : entry.second) waiter.set_exception(m_failure);
   }
 
   void
@@ -85,10 +107,11 @@ private:
   mutable std::mutex m_mutex;
   std::map<std::string, TensorBundle> m_published;
   std::map<std::string, std::vector<std::promise<TensorBundle>>> m_waiters;
+  std::exception_ptr m_failure;
 };
 
 /** DependencyIo that moves contributions over a shared bus instead of a network. */
-class BusDependencyIo final : public DependencyIo
+class BusDependencyIo : public DependencyIo
 {
 public:
   explicit BusDependencyIo(std::shared_ptr<PartialBus> bus)
@@ -100,7 +123,7 @@ public:
   prefetchInput(const std::string&, const DependencyEdge& edge) override
   {
     ++prefetchCalls;
-    return m_bus->subscribe(edge.scope);
+    return m_bus->subscribe(transportKey(edge));
   }
 
   void
@@ -108,14 +131,88 @@ public:
                 const TensorBundle& bundle) override
   {
     ++publishCalls;
-    m_bus->publish(edge.scope, bundle);
+    m_bus->publish(transportKey(edge), bundle);
   }
 
   std::atomic<std::size_t> prefetchCalls{0};
   std::atomic<std::size_t> publishCalls{0};
 
-private:
+protected:
+  virtual const std::string&
+  transportKey(const DependencyEdge& edge) const
+  {
+    return edge.scope;
+  }
+
   std::shared_ptr<PartialBus> m_bus;
+};
+
+/** The same transport with explicit cancellation for multi-epoch Coordinator fixtures. */
+class CancellableBusDependencyIo final : public BusDependencyIo,
+                                        public PromptCancellableDependencyIo
+{
+public:
+  using PublicationMutation = std::function<void(const DependencyEdge&, TensorBundle&)>;
+
+  explicit CancellableBusDependencyIo(std::shared_ptr<PartialBus> bus,
+                                      PublicationMutation mutation = {})
+    : BusDependencyIo(std::move(bus))
+    , m_mutation(std::move(mutation))
+  {
+  }
+
+  void
+  publishOutput(const std::string& sessionId, const DependencyEdge& edge,
+                const TensorBundle& bundle) override
+  {
+    if (!m_mutation) {
+      BusDependencyIo::publishOutput(sessionId, edge, bundle);
+      return;
+    }
+    auto changed = bundle;
+    m_mutation(edge, changed);
+    BusDependencyIo::publishOutput(sessionId, edge, changed);
+  }
+
+  bool
+  supportsPromptPrefetchCancellation(const DependencyEdge&) const noexcept override
+  {
+    return true;
+  }
+
+  PrefetchOperation
+  prefetchInputWithFirstReadBarrier(const std::string& sessionId,
+                                    const DependencyEdge& edge) override
+  {
+    auto result = prefetchInput(sessionId, edge);
+    std::promise<void> registered;
+    registered.set_value();
+    return {std::move(result), registered.get_future().share()};
+  }
+
+  void
+  cancelPendingPrefetches() noexcept override
+  {
+    m_bus->cancel(std::make_exception_ptr(std::runtime_error("fixture dependency cancelled")));
+  }
+
+  void
+  drainPendingPrefetches() noexcept override
+  {
+    // Futures are backed by already-resolved promises; no transport worker owns a thread.
+  }
+
+protected:
+  const std::string&
+  transportKey(const DependencyEdge& edge) const override
+  {
+    if (edge.plannedDataName.empty())
+      throw std::invalid_argument("generation fixture requires an exact Data name");
+    return edge.plannedDataName;
+  }
+
+private:
+  PublicationMutation m_mutation;
 };
 
 
