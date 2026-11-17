@@ -750,6 +750,19 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
   const std::uint64_t lastLayer =
     window != nullptr ? window->layerEnd
                       : (tp.units.empty() ? shape.layers : tp.units.front().layerEnd);
+  if (window != nullptr && firstLayer > 0 &&
+      (window->upstreamUnit.empty() || window->upstreamStepId.empty() ||
+       window->upstreamSlotId.empty() || window->upstreamMlpStepId.empty() ||
+       window->upstreamMlpSlotId.empty())) {
+    throw std::invalid_argument("a later stage needs both residual and MLP input producers");
+  }
+  if (window != nullptr && firstLayer > 0 &&
+      (window->upstreamStepId != mlpStep(window->upstreamUnit, firstLayer - 1) ||
+       window->upstreamSlotId != "post_residual" ||
+       window->upstreamMlpStepId != sumMlpStep(window->upstreamUnit, firstLayer - 1) ||
+       window->upstreamMlpSlotId != "merged")) {
+    throw std::invalid_argument("a Qwen stage boundary requires the complete previous layer");
+  }
   plan.roles.clear();
   plan.steps.clear();
   plan.dependencies.clear();
@@ -870,14 +883,21 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // -- the residual plus the attention projection, which the MLP entry already formed --
       // not the attention reduction alone. Feeding the reduction alone would drop the
       // residual stream from every layer after the first.
-      attn.inputSlots = {layer == firstLayer
-        ? (firstLayer == 0
-            ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
-            : makeFedSlot("x", "REMOTE_STEP", window->upstreamStepId,
-                          window->upstreamSlotId, shape.hidden))
-        : makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
+      if (layer == 0) {
+        attn.inputSlots = {
+          makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)};
+      }
+      else if (layer == firstLayer) {
+        attn.inputSlots = {
+          makeFedSlot("post_attention", "REMOTE_STEP", window->upstreamStepId,
+                      window->upstreamSlotId, shape.hidden),
+          makeFedSlot("previous_mlp", "REMOTE_STEP", window->upstreamMlpStepId,
+                      window->upstreamMlpSlotId, shape.hidden)};
+      }
+      else {
+        attn.inputSlots = {
+          makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
                       "post_residual", shape.hidden)};
-      if (layer > firstLayer) {
         attn.inputSlots.push_back(
           makeFedSlot("previous_mlp", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1),
                       "merged", shape.hidden));
@@ -1034,29 +1054,29 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       }
     }
   }
-  // A stage that does not own layer 0 reads its activation from the predecessor. The edge is
-  // one producer to one consumer with a single tensor and no redistribution, which is the
-  // shape `NativeRequestPlanner` admits as ACTIVATION.
+  // Preserve both source graph inputs across the stage boundary. Each edge carries one
+  // complete tensor, not an additive contribution or a partially reduced rank output.
   if (window != nullptr && firstLayer > 0) {
-    if (window->upstreamStepId.empty() || window->upstreamUnit.empty())
-      throw std::invalid_argument("a later stage needs its input producer");
     for (const auto& unit : tp.units) {
-      ndnsf::di::NativeDependencySpec dependency;
-      dependency.producers = {window->upstreamUnit};
-      dependency.consumers = {unit.roleId};
-      dependency.keyScope = "stage-input-" + window->stageId + "-" + unit.roleId;
-      dependency.dependencyId = dependency.keyScope;
-      dependency.topicPrefix = "/NDNSF/DI/QWEN";
-      dependency.objectNameTemplate =
-        "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
-      dependency.tensors = {"x"};
-      dependency.operationKind = "ACTIVATION";
-      dependency.useNdnsfDataV1 = true;
-      dependency.producerStepId = window->upstreamStepId;
-      dependency.producerSlotId = window->upstreamSlotId;
-      dependency.consumerStepId = attnStep(unit.roleId, firstLayer);
-      dependency.consumerSlotId = "x";
-      plan.dependencies.push_back(std::move(dependency));
+      for (const auto* slot : {"post_attention", "previous_mlp"}) {
+        const bool residual = std::string(slot) == "post_attention";
+        ndnsf::di::NativeDependencySpec dependency;
+        dependency.producers = {window->upstreamUnit};
+        dependency.consumers = {unit.roleId};
+        dependency.keyScope = "stage-input-" + window->stageId + "-" + unit.roleId + "-" + slot;
+        dependency.dependencyId = dependency.keyScope;
+        dependency.topicPrefix = "/NDNSF/DI/QWEN";
+        dependency.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+        dependency.tensors = {slot};
+        dependency.operationKind = "ACTIVATION";
+        dependency.useNdnsfDataV1 = true;
+        dependency.producerStepId = residual ? window->upstreamStepId : window->upstreamMlpStepId;
+        dependency.producerSlotId = residual ? window->upstreamSlotId : window->upstreamMlpSlotId;
+        dependency.consumerStepId = attnStep(unit.roleId, firstLayer);
+        dependency.consumerSlotId = slot;
+        plan.dependencies.push_back(std::move(dependency));
+      }
     }
   }
   // A later stage's input producer lives in the previous stage's plan, so the stage alone

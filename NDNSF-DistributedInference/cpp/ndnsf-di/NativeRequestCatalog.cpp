@@ -673,6 +673,9 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
           window.upstreamStepId = previousPublisher + "/MLP/" +
             std::to_string(previousLastLayer);
           window.upstreamSlotId = "post_residual";
+          window.upstreamMlpStepId = previousPublisher + "/SUM_MLP/" +
+            std::to_string(previousLastLayer);
+          window.upstreamMlpSlotId = "merged";
         }
         previousPublisher = units.front().roleId;
         previousLastLayer = end - 1;

@@ -16,6 +16,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -420,7 +421,8 @@ BOOST_AUTO_TEST_CASE(HybridOwnershipUsesTheCatalogPlanningGraph)
   }
   const std::vector<qwen::QwenTpStageWindow> windows{
     {"first", digest, 0, 1},
-    {"last", digest, 1, 4, "unit-0-0", "unit-0-0/MLP/0", "post_residual"}};
+    {"last", digest, 1, 4, "unit-0-0", "unit-0-0/MLP/0", "post_residual",
+     "unit-0-0/SUM_MLP/0", "merged"}};
   const auto build = [&] {
     return qwen::buildQwenHybridCandidate(graph, shape, windows, units, "entry",
       "unit-1-0", model, artifacts, requirements);
@@ -845,8 +847,7 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
     return units;
   };
 
-  // Both stages are sharded here: a degree-one stage still needs the whole-region subgraph
-  // path, which is T002's remaining item, so this case proves the edge itself.
+  // This checks the projected ports; degree-one materialization is a separate boundary.
   const auto stage0Units = unitsFor("S0R", 2, 0, 1);
   const auto stage1Units = unitsFor("S1R", 1, 1, 4);
 
@@ -855,7 +856,8 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
   qwen::projectQwenTpPlan(stage0, shape, 2, "entry/S0", "S0R0", stage0Units, first);
 
   qwen::QwenTpStageWindow second{"stage-1", "sha256:region-1", 1, 4,
-                                 "S0R0", "S0R0/MLP/0", "post_residual"};
+                                 "S0R0", "S0R0/MLP/0", "post_residual",
+                                 "S0R0/SUM_MLP/0", "merged"};
   ndnsf::di::NativeExecutionPlan stage1;
   qwen::projectQwenTpPlan(stage1, shape, 1, "entry/S1", "S1R0", stage1Units, second);
   // Alone it cannot close: its input producer lives in stage 0. The merged plan is the first
@@ -868,9 +870,8 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
   BOOST_CHECK_EQUAL(merged.degreeForRole("S0R0"), 2u);
   BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 1u);
 
-  // The stage-1 input is the predecessor's activation, and exactly one ACTIVATION edge binds
-  // it per consumer unit.
-  bool bound = false;
+  // The next layer's skip normalization needs two distinct complete values.
+  std::set<std::string> bound;
   for (const auto& dependency : merged.dependencies) {
     if (dependency.operationKind != "ACTIVATION") continue;
     BOOST_CHECK_EQUAL(dependency.producers.size(), 1u);
@@ -878,26 +879,65 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
     BOOST_CHECK_EQUAL(dependency.tensors.size(), 1u);
     BOOST_CHECK(dependency.redistributions.empty());
     if (dependency.consumers.at(0) != "S1R0") continue;
-    bound = true;
+    bound.insert(dependency.consumerSlotId);
     BOOST_CHECK_EQUAL(dependency.producers.at(0), "S0R0");
-    BOOST_CHECK_EQUAL(dependency.producerStepId, "S0R0/MLP/0");
-    BOOST_CHECK_EQUAL(dependency.producerSlotId, "post_residual");
-    BOOST_CHECK_EQUAL(dependency.consumerSlotId, "x");
+    const bool residual = dependency.consumerSlotId == "post_attention";
+    BOOST_CHECK_EQUAL(dependency.producerStepId,
+                      residual ? "S0R0/MLP/0" : "S0R0/SUM_MLP/0");
+    BOOST_CHECK_EQUAL(dependency.producerSlotId, residual ? "post_residual" : "merged");
+    BOOST_CHECK_EQUAL(dependency.consumerStepId, "S1R0/ATTN/1");
   }
-  BOOST_CHECK(bound);
+  BOOST_CHECK(bound == std::set<std::string>({"post_attention", "previous_mlp"}));
 
   // And the slot itself points at that producer rather than at a local INIT.
-  bool sawRemote = false;
+  std::set<std::string> remoteSlots;
   for (const auto& step : merged.steps) {
     if (step.unitId != "S1R0" || step.stepId.find("/ATTN/1") == std::string::npos) continue;
     for (const auto& slot : step.inputSlots) {
-      if (slot.slotId != "x") continue;
-      sawRemote = true;
+      if (slot.slotId != "post_attention" && slot.slotId != "previous_mlp") continue;
+      remoteSlots.insert(slot.slotId);
       BOOST_CHECK_EQUAL(slot.source, "REMOTE_STEP");
-      BOOST_CHECK_EQUAL(slot.producerStepId, "S0R0/MLP/0");
+      const bool residual = slot.slotId == "post_attention";
+      BOOST_CHECK_EQUAL(slot.producerStepId,
+                        residual ? "S0R0/MLP/0" : "S0R0/SUM_MLP/0");
+      BOOST_CHECK_EQUAL(slot.producerSlotId, residual ? "post_residual" : "merged");
     }
   }
-  BOOST_CHECK(sawRemote);
+  BOOST_CHECK(remoteSlots == bound);
+
+  NativeFixedExecutionTemplateV1 fixed;
+  fixed.steps = merged.steps;
+  fixed.stepPlanVersion = merged.stepPlanVersion;
+  fixed.tensorDegree = merged.tensorDegree;
+  fixed.stageLayout = merged.stageLayout;
+  NativeExecutionPlan restored;
+  restored.dependencies = merged.dependencies;
+  BOOST_CHECK_NO_THROW(bindFixedTemplateSteps(restored, fixed));
+  BOOST_CHECK_NO_THROW(restored.validateSteps());
+  // A Provider cannot bind the template after losing the MLP admission edge.
+  restored.dependencies.erase(std::remove_if(restored.dependencies.begin(),
+    restored.dependencies.end(), [] (const auto& dependency) {
+      return dependency.consumerSlotId == "previous_mlp";
+    }), restored.dependencies.end());
+  BOOST_CHECK_THROW(restored.validateSteps(), std::invalid_argument);
+
+  auto incomplete = second;
+  incomplete.upstreamMlpStepId.clear();
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage1, shape, 1, "entry/S1", "S1R0",
+                                           stage1Units, incomplete), std::invalid_argument);
+  incomplete = second;
+  incomplete.upstreamMlpSlotId = "partial";
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage1, shape, 1, "entry/S1", "S1R0",
+                                           stage1Units, incomplete), std::invalid_argument);
+  incomplete.upstreamMlpStepId = "S0R0/MLP/0";
+  BOOST_CHECK_THROW(qwen::projectQwenTpPlan(stage1, shape, 1, "entry/S1", "S1R0",
+                                           stage1Units, incomplete), std::invalid_argument);
+  auto missingProducer = merged;
+  missingProducer.steps.erase(std::remove_if(missingProducer.steps.begin(),
+    missingProducer.steps.end(), [] (const auto& step) {
+      return step.stepId == "S0R0/SUM_MLP/0";
+    }), missingProducer.steps.end());
+  BOOST_CHECK_THROW(missingProducer.validateSteps(), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(MirroredLayoutClosesThroughTheSameEdge)
@@ -933,7 +973,8 @@ BOOST_AUTO_TEST_CASE(MirroredLayoutClosesThroughTheSameEdge)
   qwen::projectQwenTpPlan(stage0, shape, 1, "entry/S0", "S0R0", unitsFor("S0R", 1, 0, 1), first);
 
   qwen::QwenTpStageWindow second{"stage-1", "sha256:region-1", 1, 4,
-                                 "S0R0", "S0R0/MLP/0", "post_residual"};
+                                 "S0R0", "S0R0/MLP/0", "post_residual",
+                                 "S0R0/SUM_MLP/0", "merged"};
   ndnsf::di::NativeExecutionPlan stage1;
   qwen::projectQwenTpPlan(stage1, shape, 2, "entry/S1", "S1R0", unitsFor("S1R", 2, 1, 4), second);
 
@@ -943,15 +984,57 @@ BOOST_AUTO_TEST_CASE(MirroredLayoutClosesThroughTheSameEdge)
   BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 2u);
   BOOST_CHECK_EQUAL(merged.degreeForRole("S1R1"), 2u);
 
-  // One edge per consumer unit, both naming the same producer.
+  // Both complete values fan out to both units of the later tensor stage.
   std::set<std::string> consumers;
+  std::map<std::string, std::set<std::string>> portsByConsumer;
+  std::size_t activationEdges = 0;
   for (const auto& dependency : merged.dependencies) {
     if (dependency.operationKind != "ACTIVATION") continue;
+    ++activationEdges;
     BOOST_CHECK_EQUAL(dependency.producers.at(0), "S0R0");
+    const bool residual = dependency.consumerSlotId == "post_attention";
+    BOOST_CHECK_EQUAL(dependency.producerStepId,
+                      residual ? "S0R0/MLP/0" : "S0R0/SUM_MLP/0");
+    BOOST_CHECK_EQUAL(dependency.producerSlotId, residual ? "post_residual" : "merged");
+    BOOST_CHECK_EQUAL(dependency.consumerStepId, dependency.consumers.at(0) + "/ATTN/1");
+    BOOST_CHECK(dependency.tensors == std::vector<std::string>({dependency.consumerSlotId}));
     consumers.insert(dependency.consumers.at(0));
+    portsByConsumer[dependency.consumers.at(0)].insert(dependency.consumerSlotId);
   }
   BOOST_CHECK_EQUAL(consumers.size(), 2u);
+  BOOST_CHECK_EQUAL(activationEdges, 4u);
   BOOST_CHECK(consumers.count("S1R0") == 1 && consumers.count("S1R1") == 1);
+  for (const auto& consumer : consumers)
+    BOOST_CHECK(portsByConsumer.at(consumer) ==
+                std::set<std::string>({"post_attention", "previous_mlp"}));
+
+  NativeProviderAssignment assignment;
+  assignment.providerByRole = {{"S0R0", "/test/source"},
+                               {"S1R0", "/test/receiver-a"},
+                               {"S1R1", "/test/receiver-b"}};
+  std::map<std::string, std::string> outputNameByScope;
+  for (const auto& role : merged.roles) {
+    const auto spec = roleSpecFor(merged, role, "hybrid-session", assignment, "");
+    for (const auto& edge : spec.outputs) {
+      if (edge.operationKind != "ACTIVATION") continue;
+      BOOST_CHECK(edge.plannedDataName.find('{') == std::string::npos);
+      BOOST_CHECK(edge.plannedDataName.find(edge.producerProvider + "/") == 0);
+      BOOST_CHECK(outputNameByScope.emplace(edge.scope, edge.plannedDataName).second);
+    }
+  }
+  std::set<std::string> names;
+  for (const auto& [scope, name] : outputNameByScope)
+    BOOST_CHECK(names.insert(name).second);
+  std::set<std::string> boundaryNames;
+  for (const auto& consumer : consumers) {
+    const auto spec = roleSpecFor(merged, consumer, "hybrid-session", assignment, "");
+    for (const auto& edge : spec.inputs) {
+      if (edge.operationKind != "ACTIVATION") continue;
+      BOOST_CHECK_EQUAL(edge.plannedDataName, outputNameByScope.at(edge.scope));
+      BOOST_CHECK(boundaryNames.insert(edge.plannedDataName).second);
+    }
+  }
+  BOOST_CHECK_EQUAL(boundaryNames.size(), 4u);
 }
 
 BOOST_AUTO_TEST_CASE(FourLayerFixtureMatchesItsDeclaredShape)
