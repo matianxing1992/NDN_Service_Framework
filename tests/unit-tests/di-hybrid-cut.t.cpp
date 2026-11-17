@@ -451,6 +451,8 @@ BOOST_AUTO_TEST_CASE(StagePlansMergeInOrder)
     plan.modelFamily = "qwen";
     plan.plannerKind = "native-qwen-tensor";
     plan.roles = units;
+    for (const auto& unit : units)
+      plan.steps.push_back(callStep(unit + "/CALL/0", unit));
     plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
     // The stage's degree is its member count; a stage that claims more would be refused by
     // validateSteps(), so the fixture keeps the two consistent.
@@ -467,6 +469,7 @@ BOOST_AUTO_TEST_CASE(StagePlansMergeInOrder)
   BOOST_CHECK_EQUAL(merged.roles.size(), 3u);
   BOOST_CHECK_EQUAL(merged.tensorDegree, 2u);
   BOOST_CHECK_EQUAL(merged.degreeForRole("S0R0"), 2u);
+  // stage-1 owns a single unit in this fixture
   BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 1u);
   BOOST_CHECK_EQUAL(merged.stepPlanVersion,
                     std::string(ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2));
@@ -684,6 +687,87 @@ BOOST_AUTO_TEST_CASE(AsymmetricAndAllPipelineLayoutsValidate)
   BOOST_CHECK_EQUAL(pipeline.degreeForRole("S0R0"), 1u);
   BOOST_CHECK_EQUAL(pipeline.degreeForRole("S1R0"), 1u);
   BOOST_CHECK_EQUAL(pipeline.tensorDegree, 1u);
+}
+
+BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 64;
+  shape.layers = 4;
+  shape.queryHeads = 4;
+  shape.kvHeads = 2;
+  shape.headDim = 16;
+  shape.ffn = 128;
+  shape.vocab = 64;
+  shape.validate();
+
+  const auto unitsFor = [] (const std::string& prefix, std::uint64_t degree,
+                            std::uint64_t begin, std::uint64_t end) {
+    std::vector<qwen::QwenTpUnit> units;
+    for (std::uint64_t rank = 0; rank < degree; ++rank) {
+      qwen::QwenTpUnit unit;
+      unit.roleId = prefix + std::to_string(rank);
+      unit.rank = rank;
+      unit.layerBegin = begin;
+      unit.layerEnd = end;
+      units.push_back(unit);
+    }
+    return units;
+  };
+
+  // Both stages are sharded here: a degree-one stage still needs the whole-region subgraph
+  // path, which is T002's remaining item, so this case proves the edge itself.
+  const auto stage0Units = unitsFor("S0R", 2, 0, 1);
+  const auto stage1Units = unitsFor("S1R", 2, 1, 4);
+
+  qwen::QwenTpStageWindow first{"stage-0", "sha256:region-0", 0, 1};
+  ndnsf::di::NativeExecutionPlan stage0;
+  qwen::projectQwenTpPlan(stage0, shape, 2, "entry/S0", "S0R0", stage0Units, first);
+
+  qwen::QwenTpStageWindow second{"stage-1", "sha256:region-1", 1, 4,
+                                 "S0R0", "S0R0/MLP/0", "post_residual"};
+  ndnsf::di::NativeExecutionPlan stage1;
+  qwen::projectQwenTpPlan(stage1, shape, 2, "entry/S1", "S1R0", stage1Units, second);
+  // Alone it cannot close: its input producer lives in stage 0. The merged plan is the first
+  // object that contains every producer, and it is validated below.
+  BOOST_CHECK_THROW(stage1.validateSteps(), std::invalid_argument);
+
+  const auto merged = qwen::mergeQwenStagePlans({stage0, stage1});
+  BOOST_CHECK_NO_THROW(merged.validateSteps());
+  BOOST_REQUIRE_EQUAL(merged.stageLayout.size(), 2u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S0R0"), 2u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 2u);
+
+  // The stage-1 input is the predecessor's activation, and exactly one ACTIVATION edge binds
+  // it per consumer unit.
+  bool bound = false;
+  for (const auto& dependency : merged.dependencies) {
+    if (dependency.operationKind != "ACTIVATION") continue;
+    BOOST_CHECK_EQUAL(dependency.producers.size(), 1u);
+    BOOST_CHECK_EQUAL(dependency.consumers.size(), 1u);
+    BOOST_CHECK_EQUAL(dependency.tensors.size(), 1u);
+    BOOST_CHECK(dependency.redistributions.empty());
+    if (dependency.consumers.at(0) != "S1R0") continue;
+    bound = true;
+    BOOST_CHECK_EQUAL(dependency.producers.at(0), "S0R0");
+    BOOST_CHECK_EQUAL(dependency.producerStepId, "S0R0/MLP/0");
+    BOOST_CHECK_EQUAL(dependency.producerSlotId, "post_residual");
+    BOOST_CHECK_EQUAL(dependency.consumerSlotId, "x");
+  }
+  BOOST_CHECK(bound);
+
+  // And the slot itself points at that producer rather than at a local INIT.
+  bool sawRemote = false;
+  for (const auto& step : merged.steps) {
+    if (step.unitId != "S1R0" || step.stepId.find("/ATTN/1") == std::string::npos) continue;
+    for (const auto& slot : step.inputSlots) {
+      if (slot.slotId != "x") continue;
+      sawRemote = true;
+      BOOST_CHECK_EQUAL(slot.source, "REMOTE_STEP");
+      BOOST_CHECK_EQUAL(slot.producerStepId, "S0R0/MLP/0");
+    }
+  }
+  BOOST_CHECK(sawRemote);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

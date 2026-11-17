@@ -901,6 +901,11 @@ struct QwenTpStageWindow
   std::string sourceRegionDigest;
   std::uint64_t layerBegin = 0;
   std::uint64_t layerEnd = 0;
+  // Producer of this stage's input activation. Empty for the stage that owns layer 0, which
+  // reads the epoch input instead; set by the caller for every later stage.
+  std::string upstreamUnit;
+  std::string upstreamStepId;
+  std::string upstreamSlotId;
 };
 
 void

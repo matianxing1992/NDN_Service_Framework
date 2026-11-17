@@ -837,12 +837,14 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     totalLength.shape.clear();
     init.outputSlots = {makeIndexSlot("position_ids", "LOCAL_STEP", "int64"),
                         makeIndexSlot("attn_mask", "LOCAL_STEP", "int32"),
-                        std::move(totalLength),
-                        makeSlot("x0", "LOCAL_STEP", {}, shape.hidden)};
-    // Embedding and positions belong to the stage that owns the model's first layer;
-    // a later stage starts from the activation its predecessor publishes.
+                        std::move(totalLength)};
+    // The embedding belongs to the stage that owns the model's first layer; a later stage
+    // starts from the activation its predecessor publishes. The metadata above is computed
+    // from the request, so every stage owns it locally rather than depending on a bundle
+    // tensor the request may not carry.
     if (firstLayer == 0)
-      plan.steps.push_back(std::move(init));
+      init.outputSlots.push_back(makeSlot("x0", "LOCAL_STEP", {}, shape.hidden));
+    plan.steps.push_back(std::move(init));
 
     for (std::uint64_t layer = firstLayer; layer < lastLayer; ++layer) {
       // Attention partial on this rank. Layer 0 reads the epoch input; later
@@ -866,7 +868,10 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // not the attention reduction alone. Feeding the reduction alone would drop the
       // residual stream from every layer after the first.
       attn.inputSlots = {layer == firstLayer
-        ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
+        ? (firstLayer == 0
+            ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
+            : makeFedSlot("x", "REMOTE_STEP", window->upstreamStepId,
+                          window->upstreamSlotId, shape.hidden))
         : makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
                       "post_residual", shape.hidden)};
       if (layer > firstLayer) {
@@ -1026,7 +1031,36 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       }
     }
   }
-  plan.validateSteps();
+  // A stage that does not own layer 0 reads its activation from the predecessor. The edge is
+  // one producer to one consumer with a single tensor and no redistribution, which is the
+  // shape `NativeRequestPlanner` admits as ACTIVATION.
+  if (window != nullptr && firstLayer > 0) {
+    if (window->upstreamStepId.empty() || window->upstreamUnit.empty())
+      throw std::invalid_argument("a later stage needs its input producer");
+    for (const auto& unit : tp.units) {
+      ndnsf::di::NativeDependencySpec dependency;
+      dependency.producers = {window->upstreamUnit};
+      dependency.consumers = {unit.roleId};
+      dependency.keyScope = "stage-input-" + window->stageId + "-" + unit.roleId;
+      dependency.dependencyId = dependency.keyScope;
+      dependency.topicPrefix = "/NDNSF/DI/QWEN";
+      dependency.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
+      dependency.tensors = {"x"};
+      dependency.operationKind = "ACTIVATION";
+      dependency.useNdnsfDataV1 = true;
+      dependency.producerStepId = window->upstreamStepId;
+      dependency.producerSlotId = window->upstreamSlotId;
+      dependency.consumerStepId = attnStep(unit.roleId, firstLayer);
+      dependency.consumerSlotId = "x";
+      plan.dependencies.push_back(std::move(dependency));
+    }
+  }
+  // A later stage's input producer lives in the previous stage's plan, so the stage alone
+  // cannot be validated - its remote slot would name a step this plan does not contain. The
+  // merged plan is validated instead, where every producer exists.
+  if (firstLayer == 0)
+    plan.validateSteps();
 }
 
 } // namespace
@@ -3238,6 +3272,9 @@ mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages)
     merged.tensorDegree = std::max(merged.tensorDegree, stage.tensorDegree);
   }
   merged.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+  // The merged plan is the first object that contains every producer, so it is the first one
+  // that can be validated.
+  merged.validateSteps();
   merged.modelFamily = stages.front().modelFamily;
   merged.plannerKind = stages.front().plannerKind;
   merged.serviceName = stages.front().serviceName;
