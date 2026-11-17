@@ -1484,6 +1484,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
   const auto requester = readStatistics(requesterStatisticsPath,
     "ndnsf-di-native-requester-statistics-v1", rounds, false);
   std::vector<StatisticsRows> providers;
+  std::vector<std::filesystem::path> providerKvDirectories;
   std::map<std::string, std::vector<std::string>> gpuUuids;
   std::set<std::string> gpuNodes;
   const auto requesterHost = slurm ? roleReceipts.at(requesterId).at("host").get<std::string>() : "";
@@ -1505,6 +1506,8 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       : (actorRoot(id) / (id + "-statistics.jsonl")).string();
     providers.push_back(readStatistics(statisticsPath,
       "ndnsf-di-native-request-statistics-v1", rounds, true, automaticPlacement));
+    if (exact)
+      providerKvDirectories.emplace_back(statisticsPath + ".kv-complete");
     providers.back().actor = id;
     if (slurm) {
       providers.back().host = roleReceipts.at(id).at("host").get<std::string>();
@@ -1880,8 +1883,16 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       receipt["referenceSourceIdentity"] = ndnsf::di::nativePlanningDigest(
         ndnsf::di::nativeCanonicalJson(expectedIdentity));
     }
+    std::vector<spec220::oracle::CompleteKvCapture> captures;
+    if (exact) {
+      for (std::size_t i = 0; i < providers.size(); ++i) {
+        const auto& provider = providers[i];
+        captures.push_back({providerKvDirectories.at(i), provider.provider,
+                            provider.boot, provider.requests});
+      }
+    }
     receipt["modelReference"] = spec220::oracle::validateOnnxReference(
-      referenceRequester, *versions.begin());
+      referenceRequester, *versions.begin(), captures);
     receipt["checkpointAuthentication"] = receipt.at("modelReference").at("checkpointAuthentication");
     receipt["scope"] = "deployment-unsplit-model-reference";
   }

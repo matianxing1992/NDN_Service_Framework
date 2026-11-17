@@ -232,6 +232,135 @@ BOOST_AUTO_TEST_CASE(IndependentTokensAndColdWarmStateProgression)
   }
 }
 
+BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch)
+{
+  ReferenceFixture fixture;
+  auto* graph = fixture.model.mutable_graph();
+  for (auto* value : {graph->mutable_input(3), graph->mutable_output(0)}) {
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    auto* shape = tensor->mutable_shape();
+    const auto sequence = shape->dim(1);
+    shape->clear_dim();
+    shape->add_dim()->set_dim_value(1);
+    shape->add_dim()->set_dim_value(2);
+    *shape->add_dim() = sequence;
+    shape->add_dim()->set_dim_value(1);
+  }
+  auto concat = graph->node(0);
+  graph->mutable_node()->DeleteSubrange(0, 1);
+  auto* axes = graph->add_initializer();
+  axes->set_name("head-axes");
+  axes->set_data_type(onnx::TensorProto::INT64);
+  axes->add_dims(2);
+  axes->add_int64_data(1);
+  axes->add_int64_data(3);
+  auto* expand = graph->add_node();
+  expand->set_op_type("Unsqueeze");
+  expand->add_input("input_ids");
+  expand->add_input("head-axes");
+  expand->add_output("head-integer");
+  auto* cast = graph->add_node();
+  cast->set_op_type("Cast");
+  cast->add_input("head-integer");
+  cast->add_output("head-zero");
+  auto* castType = cast->add_attribute();
+  castType->set_name("to");
+  castType->set_type(onnx::AttributeProto::INT);
+  castType->set_i(onnx::TensorProto::FLOAT);
+  auto* negate = graph->add_node();
+  negate->set_op_type("Neg");
+  negate->add_input("head-zero");
+  negate->add_output("head-one");
+  auto* heads = graph->add_node();
+  heads->set_op_type("Concat");
+  heads->add_input("head-zero");
+  heads->add_input("head-one");
+  heads->add_output("heads");
+  *heads->add_attribute() = concat.attribute(0);
+  concat.set_input(1, "heads");
+  concat.mutable_attribute(0)->set_i(2);
+  *graph->add_node() = concat;
+  fixture.saveModel();
+  auto& catalog = fixture.requester["catalog"];
+  catalog["splitter"]["roles"] = {"role"};
+  catalog["splitter"]["tensor_degrees"] = {2};
+  catalog["recipe"]["layout"] = "BNSH";
+  catalog["state_inputs"]["role"]["state"] = {"past"};
+
+  std::array<std::vector<NativeJson>, 2> statistics;
+  std::vector<spec220::oracle::CompleteKvCapture> captures;
+  for (std::size_t rank = 0; rank < statistics.size(); ++rank) {
+    const auto qualifier = std::to_string(rank);
+    const auto path = fixture.directory / ("provider-" + qualifier);
+    std::filesystem::create_directory(path);
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    captures.push_back({path, "/provider/" + qualifier, "boot-" + qualifier, statistics[rank]});
+    const std::string role = "role/Tensor/Rank/" + qualifier;
+    const std::vector<std::int64_t> fullPrefix{0, 2, 1, 1, 3, 1, 1};
+    for (std::size_t round = 0; round < 2; ++round) {
+      const std::string request = "request-" + std::to_string(round);
+      const std::string session = "session-" + std::to_string(round);
+      NativeJson row{{"requestId", request}, {"role", role}, {"planDigest", "plan"},
+        {"attemptEpoch", 1}, {"epochsExecuted", 3}};
+      for (std::size_t epoch = 0; epoch < 3; ++epoch) {
+        const auto prefix = (round == 0 ? 2 : 5) + epoch;
+        row["runtimeMetrics"].push_back({{"lastBackendExecution", {{"sessionId", session}}}});
+        row["cacheObservations"].push_back({{"representedPrefixTokenCount", prefix}});
+        std::vector<double> values(fullPrefix.begin(), fullPrefix.begin() + prefix);
+        if (rank != 0)
+          for (auto& value : values) value = -value;
+        nativeExportPrivateCheckpoint(path / (std::to_string(round * 3 + epoch) + ".json"),
+          {{"schema", "ndnsf-di-kv-complete-v1"}, {"provider", captures.back().provider},
+           {"record", {{"requestId", request}, {"sessionId", session}, {"role", role},
+            {"providerBootId", captures.back().boot}, {"planDigest", "plan"}, {"attemptEpoch", 1},
+            {"inferenceEpoch", epoch}, {"logicalPrefixTokenCount", prefix},
+            {"transitionKind", epoch == 0 ? "PREFILL" : epoch == 1 ? "DECODE" : "CHECKPOINT_FINALIZE"},
+            {"tensors", {{{"inputName", "past"}, {"elementType", "float32"},
+                          {"shape", {1, 1, prefix, 1}}, {"values", values}}}}}}});
+      }
+      statistics[rank].push_back(std::move(row));
+    }
+  }
+  const auto replay = [&] {
+    return spec220::oracle::validateOnnxReference(fixture.requester, Ort::GetVersionString(),
+                                                captures);
+  };
+  const auto result = replay();
+  BOOST_CHECK_EQUAL(result.at("providerStateValuesCompared"), true);
+  BOOST_CHECK_EQUAL(result.at("providerStateValueCount"), 54);
+  BOOST_CHECK_EQUAL(result.at("providerStateMaxAbsoluteError"), 0);
+
+  const auto path = captures.back().directory / "5.json";
+  std::ifstream file(path);
+  NativeJson tampered;
+  file >> tampered;
+  auto wrongRole = tampered;
+  wrongRole["record"]["role"] = "role/Tensor/Rank/0";
+  nativeExportPrivateCheckpoint(path, wrongRole);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-request-binding");
+  });
+  auto wrongEpoch = tampered;
+  wrongEpoch["record"]["inferenceEpoch"] = 1;
+  nativeExportPrivateCheckpoint(path, wrongEpoch);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-epoch-binding");
+  });
+  tampered["record"]["tensors"][0]["values"][1] = -2.00005;
+  nativeExportPrivateCheckpoint(path, tampered);
+  BOOST_CHECK_CLOSE(replay().at("providerStateMaxAbsoluteError").get<double>(), 0.00005, 1e-6);
+  tampered["record"]["tensors"][0]["values"][1] = 2;
+  nativeExportPrivateCheckpoint(path, tampered);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-value:round=1:epoch=2:role=role/Tensor/Rank/1");
+  });
+  std::filesystem::remove(path);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-missing-shard:round=1:epoch=2:role=role/Tensor/Rank/1");
+  });
+}
+
 BOOST_AUTO_TEST_CASE(IndependentConversationReplayStartsWithEmptyState)
 {
   ReferenceFixture fixture;

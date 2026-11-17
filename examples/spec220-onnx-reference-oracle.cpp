@@ -26,6 +26,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -140,10 +141,210 @@ stateShape(const Ort::ConstTensorTypeAndShapeInfo& info, std::uint64_t prefix)
   return shape;
 }
 
+class CompleteKvReplay
+{
+public:
+  CompleteKvReplay(const NativeJson& catalog, const std::vector<CompleteKvCapture>& captures)
+  {
+    if (captures.empty())
+      return;
+    const auto& splitter = catalog.at("splitter");
+    const auto& stages = splitter.at("roles");
+    const auto& degrees = splitter.at("tensor_degrees");
+    const auto& stateInputs = catalog.at("state_inputs");
+    if (!stages.is_array() || !degrees.is_array() || stages.empty() ||
+        stages.size() != degrees.size() || !stateInputs.is_object() ||
+        stateInputs.size() != stages.size())
+      reject("complete-kv-layout");
+    std::set<std::string> allRoles;
+    for (std::size_t stage = 0; stage < stages.size(); ++stage) {
+      const auto stageName = stages.at(stage).get<std::string>();
+      const auto degree = degrees.at(stage).get<std::size_t>();
+      if (stageName.empty() || degree == 0 || degree > captures.size() - allRoles.size())
+        reject("complete-kv-degree");
+      std::vector<std::string> roles;
+      for (std::size_t rank = 0; rank < degree; ++rank) {
+        roles.push_back(stageName + "/Tensor/Rank/" + std::to_string(rank));
+        if (!allRoles.insert(roles.back()).second)
+          reject("complete-kv-duplicate-role");
+      }
+      if (degree > 1 && catalog.at("recipe").at("layout") != "BNSH")
+        reject("complete-kv-shard-axis");
+      for (const auto& group : stateInputs.at(stageName)) {
+        for (const auto& input : group) {
+          if (!m_owners.emplace(input.get<std::string>(), roles).second)
+            reject("complete-kv-duplicate-owner");
+        }
+      }
+    }
+    if (m_owners.empty() || allRoles.size() != captures.size())
+      reject("complete-kv-role-cover");
+    std::uintmax_t totalBytes = 0;
+    for (const auto& capture : captures) {
+      struct stat directory{};
+      const auto& path = capture.directory;
+      if (!path.is_absolute() || ::lstat(path.c_str(), &directory) != 0 ||
+          !S_ISDIR(directory.st_mode) || directory.st_uid != ::getuid() ||
+          (directory.st_mode & 0777) != 0700 || std::filesystem::canonical(path) != path)
+        reject("complete-kv-private-directory");
+      std::uintmax_t bytes = 0;
+      std::size_t files = 0;
+      for (const auto& file : std::filesystem::directory_iterator(path)) {
+        struct stat info{};
+        if (++files > 512 || ::lstat(file.path().c_str(), &info) != 0 ||
+            !S_ISREG(info.st_mode) || info.st_uid != ::getuid() ||
+            (info.st_mode & 0777) != 0600 || info.st_size <= 0)
+          reject("complete-kv-private-record");
+        const auto size = static_cast<std::uintmax_t>(info.st_size);
+        bytes += size;
+        totalBytes += size;
+        if (bytes > 16U * 1024U * 1024U || totalBytes > 64U * 1024U * 1024U)
+          reject("complete-kv-record-budget");
+        load(nativeParseJson(readSmall(file.path())), capture);
+      }
+      if (files == 0)
+        reject("complete-kv-empty-provider");
+    }
+  }
+
+  void
+  compare(std::size_t round, std::size_t epoch, const std::string& input, const Ort::Value& value)
+  {
+    if (m_owners.empty())
+      return;
+    const auto owner = m_owners.find(input);
+    if (owner == m_owners.end())
+      reject("complete-kv-missing-owner:" + input);
+    const auto info = value.GetTensorTypeAndShapeInfo();
+    auto shape = info.GetShape();
+    const auto degree = static_cast<std::int64_t>(owner->second.size());
+    if (degree > 1) {
+      if (shape.size() != 4 || shape.front() != 1 || shape.at(1) % degree != 0)
+        reject("complete-kv-head-cover:" + input);
+      shape.at(1) /= degree;
+    }
+    const auto extent = info.GetElementCount() / owner->second.size();
+    if (extent == 0 || extent > 4096)
+      reject("complete-kv-value-bound");
+    const auto type = info.GetElementType();
+    const char* elementType = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ? "float32" :
+      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ? "float16" :
+      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ? "int64" :
+      type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ? "int32" : nullptr;
+    if (!elementType)
+      reject("complete-kv-type");
+    for (std::size_t rank = 0; rank < owner->second.size(); ++rank) {
+      const auto context = ":round=" + std::to_string(round) + ":epoch=" +
+        std::to_string(epoch) + ":role=" + owner->second[rank] + ":tensor=" + input;
+      const auto found = m_tensors.find({round, epoch, input, rank});
+      if (found == m_tensors.end())
+        reject("complete-kv-missing-shard" + context);
+      const auto& tensor = found->second;
+      const auto& scalars = tensor.at("values");
+      if (tensor.at("shape") != NativeJson(shape) || tensor.at("elementType") != elementType ||
+          !scalars.is_array() || scalars.size() != extent)
+        reject("complete-kv-shape-or-type" + context);
+      for (std::size_t i = 0; i < extent; ++i) {
+        const auto index = rank * extent + i;
+        if (!scalars[i].is_number())
+          reject("complete-kv-scalar" + context);
+        const double actual = scalars[i].get<double>();
+        double reference;
+        switch (type) {
+          case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+            reference = value.GetTensorData<float>()[index]; break;
+          case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+            reference = value.GetTensorData<Ort::Float16_t>()[index].ToFloat(); break;
+          case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+            reference = static_cast<double>(value.GetTensorData<std::int64_t>()[index]); break;
+          default:
+            reference = value.GetTensorData<std::int32_t>()[index]; break;
+        }
+        // The observer stores scalar values as doubles. Outside the consecutive
+        // integer range two different INT64 states can have the same observation.
+        constexpr double INT64_OBSERVATION_LIMIT = 9007199254740992.0;
+        if (type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 &&
+            (std::abs(reference) >= INT64_OBSERVATION_LIMIT ||
+             std::abs(actual) >= INT64_OBSERVATION_LIMIT))
+          reject("complete-kv-inexact-int64" + context);
+        const auto error = std::abs(reference - actual);
+        const double tolerance = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+          type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ? 1e-5 + 1e-4 * std::abs(reference) : 0;
+        if (!std::isfinite(error) || error > tolerance)
+          reject("complete-kv-value" + context + ":index=" + std::to_string(index));
+        maxError = std::max(maxError, error);
+        ++valuesCompared;
+      }
+      m_tensors.erase(found);
+    }
+  }
+
+  void
+  finish() const
+  {
+    if (!m_tensors.empty())
+      reject("complete-kv-unconsumed-shards");
+  }
+
+  std::size_t valuesCompared = 0;
+  double maxError = 0;
+
+private:
+  void
+  load(const NativeJson& document, const CompleteKvCapture& capture)
+  {
+    if (document.at("schema") != "ndnsf-di-kv-complete-v1" ||
+        document.at("provider") != capture.provider)
+      reject("complete-kv-provider");
+    const auto& record = document.at("record");
+    const auto request = std::find_if(capture.requests.begin(), capture.requests.end(),
+      [&] (const auto& item) { return item.at("requestId") == record.at("requestId"); });
+    if (request == capture.requests.end() || record.at("providerBootId") != capture.boot ||
+        record.at("role") != request->at("role") ||
+        record.at("attemptEpoch") != request->at("attemptEpoch") ||
+        record.at("planDigest") != request->at("planDigest"))
+      reject("complete-kv-request-binding");
+    const auto epoch = record.at("inferenceEpoch").get<std::size_t>();
+    const auto count = request->at("epochsExecuted").get<std::size_t>();
+    if (epoch >= count || record.at("sessionId") != request->at("runtimeMetrics").at(epoch)
+          .at("lastBackendExecution").at("sessionId") ||
+        record.at("logicalPrefixTokenCount") != request->at("cacheObservations").at(epoch)
+          .at("representedPrefixTokenCount") ||
+        record.at("transitionKind") !=
+          (epoch == 0 ? "PREFILL" : epoch + 1 == count ? "CHECKPOINT_FINALIZE" : "DECODE"))
+      reject("complete-kv-epoch-binding");
+    const auto round = static_cast<std::size_t>(request - capture.requests.begin());
+    const auto role = record.at("role").get<std::string>();
+    const auto& tensors = record.at("tensors");
+    if (!tensors.is_array() || tensors.empty() || tensors.size() > 256)
+      reject("complete-kv-tensor-cover");
+    for (const auto& tensor : tensors) {
+      const auto input = tensor.at("inputName").get<std::string>();
+      const auto& values = tensor.at("values");
+      if (!values.is_array() || values.empty() || values.size() > 4096)
+        reject("complete-kv-value-bound");
+      const auto owner = m_owners.find(input);
+      if (owner == m_owners.end())
+        reject("complete-kv-unexpected-input:" + input);
+      const auto rank = std::find(owner->second.begin(), owner->second.end(), role);
+      if (rank == owner->second.end())
+        reject("complete-kv-unexpected-role:" + role + ":tensor=" + input);
+      const auto index = static_cast<std::size_t>(rank - owner->second.begin());
+      if (!m_tensors.emplace(TensorKey{round, epoch, input, index}, tensor).second)
+        reject("complete-kv-duplicate-shard:" + input);
+    }
+  }
+
+  using TensorKey = std::tuple<std::size_t, std::size_t, std::string, std::size_t>;
+  std::map<std::string, std::vector<std::string>> m_owners;
+  std::map<TensorKey, NativeJson> m_tensors;
+};
+
 } // namespace
 
 NativeJson
-validateOnnxReference(const NativeJson& requester, const std::string& expectedRuntimeVersion)
+validateOnnxReference(const NativeJson& requester, const std::string& expectedRuntimeVersion,
+                      const std::vector<CompleteKvCapture>& captures)
 {
   if (expectedRuntimeVersion.empty() || expectedRuntimeVersion != Ort::GetVersionString())
     reject("runtime-version");
@@ -231,6 +432,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     admittedCheckpoints.push_back(std::move(checkpoint));
   }
   const auto& catalog = requester.at("catalog");
+  CompleteKvReplay completeKv(catalog, captures);
   const auto& source = catalog.at("source");
   const auto sourceBound = requester.at("limits").at("max_source_bytes").get<std::uint64_t>();
   const std::filesystem::path modelPath = source.at("file").get<std::string>();
@@ -446,6 +648,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
         const auto inputInfo = typeInfo.GetTensorTypeAndShapeInfo();
         if (stateInfo.GetElementType() != inputInfo.GetElementType() ||
             stateInfo.GetShape() != stateShape(inputInfo, prefix)) reject("state-extents");
+        completeKv.compare(round, step, entry.first, value);
         stateBytes += tensorBytes(stateInfo.GetShape(), stateInfo.GetElementType(),
                                   stateBound - stateBytes);
         if (step == expected.size()) {
@@ -483,10 +686,14 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
       {"processCpuSeconds", static_cast<double>(std::clock() - cpu) / CLOCKS_PER_SEC}});
   }
   for (const auto& file : files) if (stamp(file.first) != file.second) reject("source-changed");
+  completeKv.finish();
   return {{"scope", "unsplit-greedy-output-and-state-progression"},
     {"runtimeVersion", Ort::GetVersionString()}, {"executionProvider", "CPUExecutionProvider"},
     {"sourceDigest", source.at("digest")}, {"loadWallSeconds", loadSeconds}, {"rounds", rounds},
-    {"providerStateValuesCompared", false}, {"checkpointAuthentication", "VERIFIED"},
+    {"providerStateValuesCompared", completeKv.valuesCompared != 0},
+    {"providerStateValueCount", completeKv.valuesCompared},
+    {"providerStateMaxAbsoluteError", completeKv.maxError},
+    {"checkpointAuthentication", "VERIFIED"},
     {"performanceQualification", "NOT_RUN"}};
 }
 
