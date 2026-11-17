@@ -4,6 +4,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -19,14 +20,33 @@ bindNativeWholeRegionEntry(const NativeSelectionProjectionV3& projection,
   const auto& plan = projection.plan;
   const auto& role = projection.assemblyContract();
   if (plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 ||
-      plan.degreeForRole(role.selectedRole) != 1 || role.tensorParallelDegree != 0)
+      (role.adapterId == "qwen" && role.tensorParallelDegree != 0))
     return false;
-  std::vector<const NativeExecutionStepSpec*> steps;
-  for (const auto& step : plan.steps)
-    if (step.unitId == role.selectedRole) steps.push_back(&step);
-  if (steps.size() != 1 || steps.front()->operation != "CALL_SUBGRAPH")
+  const NativeStageLayout* owner = nullptr;
+  std::size_t rank = 0;
+  for (const auto& stage : plan.stageLayout) {
+    const auto member = std::find(stage.unitRoleIds.begin(), stage.unitRoleIds.end(),
+                                  role.selectedRole);
+    if (member == stage.unitRoleIds.end()) continue;
+    if (owner != nullptr) return false;
+    owner = &stage;
+    rank = static_cast<std::size_t>(std::distance(stage.unitRoleIds.begin(), member));
+  }
+  if (owner == nullptr ||
+      (owner->degree() == 1 &&
+        (role.tensorParallelDegree != 0 || role.tensorParallelRank != 0)) ||
+      (owner->degree() > 1 && (role.roleKind != "COMPONENT_SET" ||
+        role.tensorParallelDegree != owner->degree() || role.tensorParallelRank != rank)))
     return false;
-  const auto& step = *steps.front();
+  const NativeExecutionStepSpec* call = nullptr;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != role.selectedRole || step.operation == "SUM") continue;
+    if (step.operation != "CALL_SUBGRAPH" || call != nullptr) return false;
+    call = &step;
+  }
+  if (call == nullptr)
+    return false;
+  const auto& step = *call;
   NativeSubgraphEntryContract entry;
   entry.entryId = step.artifactEntry;
   entry.unitId = role.selectedRole;

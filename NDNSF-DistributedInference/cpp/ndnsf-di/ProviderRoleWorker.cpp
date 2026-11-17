@@ -18,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 
 namespace ndnsf::di {
 
@@ -1538,6 +1539,8 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     }
 
     if (step.operation == "SUM") {
+      if (step.inputSlots.empty() || step.outputSlots.size() != 1)
+        throw std::invalid_argument("sealed SUM requires inputs and exactly one output");
       // A SUM is admitted as a whole: every contribution it declares must already
       // be present, because a reduction over a subset would silently produce a
       // different tensor. This is the worker's admission duty, which is why the
@@ -1566,6 +1569,41 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         // it the owner, so a C10 mechanism count read zero on a run that reduced every layer.
         contributions.push_back(
           decodeTensorBundleViews(input->second, item.role.workStatistics));
+      }
+      // A SOURCE component preserves its graph's SSA port names. Distinct single-value
+      // producer ports are explicit operands, not bundles with interchangeable members.
+      // Normalize only owned view names after checking that exact sealed contract; never
+      // rewrite a published partial or relax the codec's multi-member/name validation.
+      const bool distinctPorts = item.role.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+        std::any_of(step.inputSlots.begin(), step.inputSlots.end(), [&] (const auto& slot) {
+          return slot.producerSlotId != step.inputSlots.front().producerSlotId;
+        });
+      const bool sharedMembers = std::all_of(contributions.begin(), contributions.end(),
+        [&] (const auto& values) {
+          const auto& first = contributions.front();
+          return values.size() == first.size() &&
+            std::equal(values.begin(), values.end(), first.begin(),
+              [] (const auto& left, const auto& right) { return left.name == right.name; });
+        });
+      if (distinctPorts && !sharedMembers) {
+        const auto& output = step.outputSlots.front();
+        for (std::size_t index = 0; index < contributions.size(); ++index) {
+          const auto& input = step.inputSlots[index];
+          auto& values = contributions[index];
+          if (input.producerSlotId.empty() || values.size() != 1 ||
+              values.front().name != input.producerSlotId ||
+              input.dtype != "float32" || input.dtype != output.dtype ||
+              input.shape != output.shape || input.layoutDigest != output.layoutDigest ||
+              values.front().elementType != TensorElementType::Float32 ||
+              values.front().shape.size() != output.shape.size())
+            throw std::invalid_argument("sealed single-value SUM operand differs from its port");
+          for (std::size_t axis = 0; axis < output.shape.size(); ++axis) {
+            const auto* extent = std::get_if<std::int64_t>(&output.shape[axis]);
+            if (extent != nullptr && *extent != values.front().shape[axis])
+              throw std::invalid_argument("sealed single-value SUM shape differs from its port");
+          }
+          values.front().name = outputSlot;
+        }
       }
       produced.emplace(step.stepId + "\n" + outputSlot,
                        sumTensorBundleViews(outputSlot, contributions,

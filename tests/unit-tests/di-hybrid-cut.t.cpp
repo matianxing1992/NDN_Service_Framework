@@ -4371,4 +4371,490 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
     });
 }
 
+BOOST_AUTO_TEST_CASE(VersionTwoSumPreservesSharedMembersAcrossPortAliases)
+{
+  for (const auto members : {1u, 2u}) {
+    NativeExecutionPlan plan;
+    plan.roles = {"alias-unit"};
+    plan.tensorDegree = 1;
+    plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+    plan.stageLayout = {{"alias-stage", nativePlanningDigest("alias-source"), plan.roles}};
+    const auto slot = [] (const std::string& name) {
+      NativeStepSlotSpec value;
+      value.slotId = name;
+      value.dtype = "float32";
+      value.shape = {std::int64_t(1), std::int64_t(2)};
+      value.layoutDigest = nativePlanningDigest("alias-layout");
+      value.source = "LOCAL_STEP";
+      return value;
+    };
+    auto call = callStep("alias-call", plan.roles.front());
+    call.outputSlots = {slot("left-port"), slot("right-port")};
+    NativeExecutionStepSpec sum;
+    sum.stepId = "alias-sum";
+    sum.unitId = plan.roles.front();
+    sum.operation = "SUM";
+    sum.inputSlots = {slot("left"), slot("right")};
+    for (std::size_t index = 0; index < sum.inputSlots.size(); ++index) {
+      sum.inputSlots[index].producerStepId = call.stepId;
+      sum.inputSlots[index].producerSlotId = call.outputSlots[index].slotId;
+    }
+    sum.outputSlots = {slot("merged")};
+    plan.steps = {call, sum};
+    BOOST_REQUIRE_NO_THROW(plan.validateSteps());
+    // Contract-only regression: a backend may map one shared member inventory onto
+    // different step ports. This is not the independent ONNX arithmetic qualification below.
+    auto runner = makeNativeModelRunner([members] (const RoleExecutionContext&) {
+      std::map<std::string, TensorBundle> outputs;
+      for (std::size_t side = 0; side < 2; ++side) {
+        std::vector<NamedTensor> values;
+        for (std::size_t member = 0; member < members; ++member) {
+          NamedTensor tensor{"member-" + std::to_string(member),
+                             TensorElementType::Float32, {1, 2}, {}};
+          const std::array<float, 2> data{static_cast<float>(1 + 2 * side + member),
+                                         static_cast<float>(2 + 2 * side + member)};
+          tensor.payload.resize(sizeof(data));
+          std::memcpy(tensor.payload.data(), data.data(), sizeof(data));
+          values.push_back(std::move(tensor));
+        }
+        const auto name = side == 0 ? "left-port" : "right-port";
+        outputs.emplace(name, makeEncodedTensorBundle(name, std::move(values)));
+      }
+      return outputs;
+    });
+    NativeProviderAssignment assignment;
+    assignment.providerByRole = {{plan.roles.front(), "/fixture/alias-provider"}};
+    ProviderRoleWorker worker(1, 1, 4, std::chrono::seconds(5));
+    auto bus = std::make_shared<tests::PartialBus>();
+    auto io = std::make_shared<tests::BusDependencyIo>(bus);
+    auto future = worker.executePreparedAsync("alias-session",
+      roleSpecFor(plan, plan.roles.front(), "alias-session", assignment, ""), io,
+      [runner] { return runner; }, {});
+    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+      bus->cancel(std::make_exception_ptr(std::runtime_error("alias fixture timeout")));
+    const auto result = future.get();
+    const auto values = decodeTensorBundleViews(result.outputsByScope.at("merged"));
+    BOOST_REQUIRE_EQUAL(values.size(), members);
+    const std::array<std::array<float, 2>, 2> expected{{{4, 6}, {6, 8}}};
+    for (std::size_t member = 0; member < members; ++member) {
+      BOOST_CHECK_EQUAL(values[member].name, "member-" + std::to_string(member));
+      BOOST_REQUIRE_EQUAL(values[member].payload.size(), sizeof(expected[member]));
+      std::array<float, 2> data;
+      std::memcpy(data.data(), values[member].payload.data(), sizeof(data));
+      BOOST_CHECK_EQUAL_COLLECTIONS(data.begin(), data.end(), expected[member].begin(),
+                                    expected[member].end());
+    }
+  }
+}
+
+BOOST_AUTO_TEST_CASE(GenericMixedSourceEntriesMatchTheCompleteOriginalGraph)
+{
+  struct Workspace
+  {
+    std::filesystem::path root = "/tmp/spec242-generic-mixed";
+    bool owned = false;
+    ~Workspace()
+    {
+      std::error_code error;
+      if (owned) std::filesystem::remove_all(root, error);
+    }
+  } workspace;
+  workspace.owned = std::filesystem::create_directory(workspace.root);
+  BOOST_REQUIRE(workspace.owned);
+
+  onnx::ModelProto original;
+  original.set_ir_version(8);
+  original.add_opset_import()->set_version(17);
+  auto* graph = original.mutable_graph();
+  graph->set_name("mixed-arithmetic");
+  const auto signature = [] (onnx::ValueInfoProto* value, const std::string& name) {
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    tensor->mutable_shape()->add_dim()->set_dim_value(1);
+    tensor->mutable_shape()->add_dim()->set_dim_value(2);
+  };
+  for (const auto* name : {"a", "b"}) signature(graph->add_input(), name);
+  for (const auto* name : {"result.joined", "result.contrasted"})
+    signature(graph->add_output(), name);
+  for (const auto& [name, value] : std::map<std::string, float>{{"quarter", 0.25f},
+                                                             {"remainder", 0.75f}}) {
+    auto* tensor = graph->add_initializer();
+    tensor->set_name(name);
+    tensor->set_data_type(onnx::TensorProto::FLOAT);
+    tensor->add_dims(1);
+    tensor->set_raw_data(std::string(reinterpret_cast<const char*>(&value), sizeof(value)));
+  }
+  const auto node = [&] (const std::string& operation, const std::string& name,
+                         const std::string& left, const std::string& right) {
+    auto* operationNode = graph->add_node();
+    operationNode->set_name(name);
+    operationNode->set_op_type(operation);
+    operationNode->add_input(left);
+    operationNode->add_input(right);
+    operationNode->add_output(name);
+    if (name.find("result.") != 0) signature(graph->add_value_info(), name);
+  };
+  node("Add", "joined", "a", "b");
+  node("Sub", "contrasted", "a", "b");
+  for (const auto& [prefix, factor] :
+       std::map<std::string, std::string>{{"left", "quarter"}, {"right", "remainder"}}) {
+    node("Mul", prefix + ".joined", "joined", factor);
+    node("Mul", prefix + ".contrasted", "contrasted", factor);
+  }
+  node("Add", "result.joined", "left.joined", "right.joined");
+  node("Add", "result.contrasted", "left.contrasted", "right.contrasted");
+  const auto wire = original.SerializeAsString();
+
+  // The oracle runs the complete original, including both final Adds. No material selection
+  // or entry descriptor constructs this session or its expected outputs.
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-generic-original");
+  Ort::SessionOptions sessionOptions;
+  sessionOptions.SetIntraOpNumThreads(1);
+  Ort::Session reference(env, wire.data(), wire.size(), sessionOptions);
+  const auto memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  std::array<float, 2> a{1, 2};
+  std::array<float, 2> b{3, -1};
+  const std::array<std::int64_t, 2> dimensions{1, 2};
+  std::array<Ort::Value, 2> tensors{
+    Ort::Value::CreateTensor<float>(memory, a.data(), a.size(), dimensions.data(), 2),
+    Ort::Value::CreateTensor<float>(memory, b.data(), b.size(), dimensions.data(), 2)};
+  const char* inputNames[] = {"a", "b"};
+  const char* outputNames[] = {"result.joined", "result.contrasted"};
+  const auto expected = reference.Run(Ort::RunOptions{nullptr}, inputNames, tensors.data(), 2,
+                                      outputNames, 2);
+
+  const std::vector<std::string> units{"ordinary", "part-a", "part-b"};
+  const auto layout = nativePlanningDigest("generic-pair-layout");
+  const auto slot = [&] (const std::string& name, const std::string& source,
+                         const std::string& producer = {}, const std::string& port = {}) {
+    NativeStepSlotSpec result;
+    result.slotId = name;
+    result.dtype = "float32";
+    result.shape = {std::int64_t(1), std::int64_t(2)};
+    result.layoutDigest = layout;
+    result.source = source;
+    result.producerStepId = producer;
+    result.producerSlotId = port;
+    return result;
+  };
+  NativeExecutionPlan plan;
+  plan.serviceName = "/fixture/arithmetic";
+  plan.modelName = "mixed-arithmetic";
+  plan.roles = units;
+  plan.tensorDegree = 2;
+  plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+  const auto regionDigest = [&] (const std::vector<std::uint64_t>& indices) {
+    return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+      {"source", nativePlanningDigest(wire)}, {"nodes", indices}}));
+  };
+  plan.stageLayout = {{"front", regionDigest({0, 1}), {units[0]}},
+                      {"branches", regionDigest({2, 3, 4, 5, 6, 7}), {units[1], units[2]}}};
+  auto front = callStep("front-call", units[0]);
+  front.inputSlots = {slot("a", "EPOCH_INPUT"), slot("b", "EPOCH_INPUT")};
+  front.outputSlots = {slot("joined", "LOCAL_STEP"), slot("contrasted", "LOCAL_STEP")};
+  plan.steps.push_back(front);
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    auto call = callStep("branch-" + std::to_string(rank), units[rank + 1]);
+    call.inputSlots = {slot("joined", "REMOTE_STEP", front.stepId, "joined"),
+                       slot("contrasted", "REMOTE_STEP", front.stepId, "contrasted")};
+    const auto prefix = rank == 0 ? "left." : "right.";
+    call.outputSlots = {slot(prefix + std::string("joined"), "LOCAL_STEP"),
+                        slot(prefix + std::string("contrasted"), "LOCAL_STEP")};
+    plan.steps.push_back(std::move(call));
+  }
+  for (std::size_t rank = 0; rank < 2; ++rank) {
+    for (const auto* value : {"joined", "contrasted"}) {
+      NativeExecutionStepSpec sum;
+      sum.stepId = "sum-" + std::to_string(rank) + "-" + value;
+      sum.unitId = units[rank + 1];
+      sum.operation = "SUM";
+      // The original graph's last two Add nodes become these Worker SUM operations.
+      sum.inputSlots = {
+        slot("left-input", rank == 0 ? "LOCAL_STEP" : "REMOTE_STEP", "branch-0",
+             std::string("left.") + value),
+        slot("right-input", rank == 1 ? "LOCAL_STEP" : "REMOTE_STEP", "branch-1",
+             std::string("right.") + value)};
+      sum.outputSlots = {slot(std::string("result.") + value, "LOCAL_STEP")};
+      plan.steps.push_back(std::move(sum));
+    }
+  }
+  for (const auto& step : plan.steps) {
+    for (const auto& input : step.inputSlots) {
+      if (input.source != "REMOTE_STEP") continue;
+      const auto producer = std::find_if(plan.steps.begin(), plan.steps.end(), [&] (const auto& s) {
+        return s.stepId == input.producerStepId;
+      });
+      BOOST_REQUIRE(producer != plan.steps.end());
+      NativeDependencySpec edge;
+      edge.producers = {producer->unitId};
+      edge.consumers = {step.unitId};
+      edge.keyScope = "edge-" + std::to_string(plan.dependencies.size());
+      edge.dependencyId = edge.keyScope;
+      edge.topicPrefix = "/NDNSF/DI/ARITHMETIC";
+      edge.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/ARITHMETIC/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+      edge.tensors = {input.producerSlotId};
+      edge.operationKind = step.operation == "SUM" ? "TENSOR_PARTIAL" : "ACTIVATION";
+      edge.producerStepId = input.producerStepId;
+      edge.producerSlotId = input.producerSlotId;
+      edge.consumerStepId = step.stepId;
+      edge.consumerSlotId = input.slotId;
+      plan.dependencies.push_back(std::move(edge));
+    }
+  }
+  BOOST_REQUIRE_NO_THROW(plan.validateSteps());
+
+  NativeCanonicalSource source;
+  source.modelBytes.assign(wire.begin(), wire.end());
+  NativeAssemblyControl control{
+    std::chrono::steady_clock::now() + std::chrono::seconds(60), [] {}, 1U << 20, 1U << 20};
+  auto descriptor = qwenFixtureDescriptor();
+  descriptor.modelName = "mixed-arithmetic";
+  descriptor.contentDigest = nativePlanningDigest(wire);
+  descriptor.adapterId = descriptor.adapter.name = "arithmetic";
+  descriptor.precision = "fp32";
+  descriptor.quantizationSubtype = "none";
+  descriptor.adapter.precisions = {"fp32"};
+  descriptor.adapter.backends = {"onnxruntime-cpu"};
+  descriptor.adapter.tasks = {"arithmetic"};
+  const auto inspection = inspectNativeOnnxSourceGraph(source, descriptor, control);
+  descriptor.graphDigest = inspection.graph.graphDigest;
+  BOOST_REQUIRE_EQUAL(inspection.canonicalNodeIndices.size(), 8u);
+  const auto profileDigest = nativePlanningDigest("mixed-arithmetic-profile");
+  const auto root = nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-canonical-model-manifest-v1"}, {"state", "ACTIVE"},
+    {"artifactProfileDigest", profileDigest},
+    {"modelIdentityDigest", descriptor.contentDigest}, {"modelName", descriptor.modelName},
+    {"metadata", {{"canonicalSourceDataName", "/fixture/mixed-source"},
+      {"canonicalSourceDigest", nativePlanningDigest(wire)},
+      {"canonicalSourceBytes", wire.size()}}}});
+  NativeInspectedModel inspected;
+  inspected.descriptor = descriptor;
+  inspected.graph = inspection.graph;
+  inspected.canonicalGraphDigest = inspection.canonicalIdentity.graphDigest;
+  inspected.canonicalSourceName = "/fixture/mixed-source";
+  inspected.canonicalSourceDigest = nativePlanningDigest(wire);
+  inspected.canonicalSourceBytes = wire.size();
+  inspected.canonicalInitializerDigest = inspection.canonicalIdentity.initializerDigest;
+  inspected.modelManifestDigest = nativePlanningDigest(root);
+  NativeSplitCandidate candidate;
+  candidate.model = descriptor;
+  candidate.graphDigest = inspected.graph.graphDigest;
+  candidate.source = "GENERATED";
+  candidate.splitter = {"arithmetic", "1", nativePlanningDigest("mixed-arithmetic-lowering")};
+  candidate.executionPlan = plan;
+  candidate.inputIngressRole = units.front();
+  candidate.resultEgressRole = units.back();
+  for (const auto& unit : units) {
+    const auto artifact = nativePlanningDigest("mixed-material-" + unit);
+    candidate.artifactsByRole[unit] = {artifact};
+    candidate.fragmentsByRole[unit] = artifact;
+    const std::uint64_t weightBytes = unit == units.front() ? 0 : sizeof(float);
+    candidate.requirementsByRole[unit] = {
+      {"onnxruntime-cpu"}, weightBytes, 1U << 20, 0, 1024, 0, 1.0};
+  }
+  for (const auto& [id, index] : inspection.canonicalNodeIndices) {
+    const auto& unit = units[index < 2 ? 0 : index < 4 ? 1 : 2];
+    candidate.nodeRoles[id] = unit;
+    if (index < 6) candidate.roleNodeIdsByRole[unit].push_back(id);
+  }
+  candidate.tensorIdentityByRole = {{units[1], {2, 0}}, {units[2], {2, 1}}};
+  candidate.candidateDigest = candidate.computedDigest();
+  NativeRequestControl request{"/fixture/generic-mixed", 1, control.deadline, {}};
+  const NativeRoleRecipeProfile profile{profileDigest, nativePlanningDigest("assembler-v1"),
+    "onnxruntime", "fp32", "none", "native", "none", "plaintext-v1",
+    control.maxSourceBytes, control.maxAssembledBytes, 32};
+  const NativeCanonicalRolePreparer preparer(inspected, source, profile, control);
+  NativeStateTensorMapping stateless;
+  for (const auto& unit : units) {
+    stateless.inputs[unit] = {};
+    stateless.outputs[unit] = {};
+  }
+  const auto bound = preparer.bindStateContracts(inspected, candidate, stateless, request,
+                                                 NativeStateContractBinding::SOURCE);
+  const auto prepared = preparer.prepare(inspected, bound, request);
+  BOOST_REQUIRE_EQUAL(prepared.size(), 3u);
+  RegistryNativeModelRunnerFactory factory;
+  registerOnnxRuntimeBackend(factory);
+  NativeProviderAssignment assignment;
+  for (const auto& unit : units) assignment.providerByRole[unit] = "/fixture/provider-" + unit;
+  std::map<std::string, NativeModelRunnerSpec> cold;
+  std::map<std::string, NativeModelRunnerSpec> cached;
+  for (const auto& role : prepared) {
+    BOOST_CHECK_EQUAL(role.roleKind, "COMPONENT_SET");
+    BOOST_CHECK_EQUAL(role.nodeIndices.size(), 2u);
+    auto projection = stageWindowProjection(plan);
+    projection.provider = assignment.providerByRole.at(role.role);
+    projection.fixedProviderByRole = assignment.providerByRole;
+    projection.deviceBinding.provider = projection.provider;
+    projection.deviceBinding.role = role.role;
+    projection.requestId = request.requestId;
+    projection.deadlineMs = static_cast<std::uint64_t>(std::chrono::duration_cast<
+      std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()) +
+      120000;
+    projection.canonicalArtifactName = "/fixture/mixed-root";
+    projection.selectedRole = projection.assembly = role;
+    projection.executionRole.roleId = projection.executionRole.stageId = role.role;
+    projection.executionRole.rank = role.rank;
+    projection.executionRole.backend = role.backend;
+    projection.executionRole.adapterId = role.adapterId;
+    projection.executionRole.adapterVersion = role.adapterVersion;
+    projection.dataflow.role = role.role;
+    projection.dataflow.requestId = projection.requestId;
+    projection.dataflow.terminalResponseOwner = role.role == units.back();
+    NativeCanonicalOnnxAssemblerOptions options;
+    options.cacheDir = (workspace.root / "cache").string();
+    options.providerIdentity = projection.provider;
+    options.workerLocation = resolveNativeOnnxWorkerLocation();
+    options.verifyCachedArtifactDigest = true;
+    options.signManifest = [] (const std::string&) { return "fixture-signature"; };
+    NativeCanonicalOnnxFetchers fetchers;
+    fetchers.getArtifact = [&root] (const ndn::Name& name) -> std::optional<ndn::Buffer> {
+      if (name != ndn::Name("/fixture/mixed-root")) return std::nullopt;
+      return ndn::Buffer(root.begin(), root.end());
+    };
+    std::size_t reads = 0;
+    fetchers.fetchEncryptedLargeData = [&] (const ndn::Name& name, const ndn::Name&)
+      -> std::optional<ndn::Buffer> {
+      if (name != ndn::Name("/fixture/mixed-source")) return std::nullopt;
+      ++reads;
+      return ndn::Buffer(source.modelBytes.begin(), source.modelBytes.end());
+    };
+    cold[role.role] = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
+    const auto cachedRole = tryLoadNativeCanonicalOnnxRoleFromCache(projection, options);
+    BOOST_REQUIRE(cachedRole);
+    cached[role.role] = *cachedRole;
+    BOOST_CHECK_EQUAL(reads, 1u);
+    for (const auto* spec : {&cold.at(role.role), &cached.at(role.role)}) {
+      BOOST_REQUIRE(spec->entryContract);
+      BOOST_CHECK_EQUAL(spec->backend, "onnxruntime-cpu");
+      BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, *spec));
+    }
+    if (role.role != units.front()) {
+      BOOST_CHECK_EQUAL(role.tensorParallelDegree, 2u);
+      BOOST_CHECK_EQUAL(role.tensorParallelRank, role.role == units[1] ? 0u : 1u);
+      auto wrongGeometry = projection;
+      wrongGeometry.selectedRole.tensorParallelRank ^= 1;
+      wrongGeometry.assembly = wrongGeometry.selectedRole;
+      auto spec = cold.at(role.role);
+      BOOST_CHECK_THROW(bindNativeRunnerPreparationContext(spec, wrongGeometry,
+        {projection.provider, "fixture-boot", 1234, workspace.root.string()}),
+        std::invalid_argument);
+    }
+  }
+  const auto input = [] (const std::string& name, const std::array<float, 2>& values) {
+    NamedTensor tensor{name, TensorElementType::Float32, {1, 2}, {}};
+    tensor.payload.resize(sizeof(values));
+    std::memcpy(tensor.payload.data(), values.data(), sizeof(values));
+    return makeEncodedTensorBundle(name, {tensor});
+  };
+  class FaultIo final : public tests::BusDependencyIo
+  {
+  public:
+    FaultIo(std::shared_ptr<tests::PartialBus> bus, std::string fault)
+      : tests::BusDependencyIo(std::move(bus))
+      , m_fault(std::move(fault))
+    {
+    }
+
+    void
+    publishOutput(const std::string& session, const DependencyEdge& edge,
+                  const TensorBundle& bundle) override
+    {
+      if (edge.producerRole != "part-a" || edge.producerSlotId != "left.joined" ||
+          m_fault == "cold" || m_fault == "cached" || m_fault == "layout") {
+        tests::BusDependencyIo::publishOutput(session, edge, bundle);
+        return;
+      }
+      if (m_fault == "missing") return;
+      std::vector<NamedTensor> copies;
+      for (const auto& value : decodeTensorBundleViews(bundle)) {
+        copies.push_back({value.name, value.elementType, value.shape,
+                          {value.payload.begin(), value.payload.end()}});
+      }
+      if (m_fault == "name") copies.front().name = "foreign";
+      if (m_fault == "extra") {
+        auto extra = copies.front();
+        extra.name = "extra";
+        copies.push_back(std::move(extra));
+      }
+      if (m_fault == "shape") copies.front().shape = {2, 1};
+      if (m_fault == "type") copies.front().elementType = TensorElementType::Int32;
+      tests::BusDependencyIo::publishOutput(session, edge,
+        makeEncodedTensorBundle(bundle.name, std::move(copies)));
+    }
+
+  private:
+    std::string m_fault;
+  };
+  for (const auto* mode : {"cold", "cached", "name", "extra", "shape", "type", "layout",
+                           "missing"}) {
+    const std::string label = mode;
+    const auto& specs = label == "cold" ? cold : cached;
+    auto runPlan = plan;
+    if (label == "layout") {
+      for (auto& step : runPlan.steps)
+        if (step.operation == "SUM")
+          step.outputSlots.front().layoutDigest = nativePlanningDigest("foreign-layout");
+    }
+    const auto session = "generic-mixed-" + label;
+    ProviderRoleWorker worker(1, 2, 16, std::chrono::seconds(5));
+    auto bus = std::make_shared<tests::PartialBus>();
+    auto io = std::make_shared<FaultIo>(bus, label);
+    std::map<std::string, std::future<ProviderRoleResult>> futures;
+    std::map<std::string, std::shared_ptr<NativeModelRunner>> runners;
+    for (const auto& unit : units) {
+      auto runner = factory.create(specs.at(unit));
+      BOOST_REQUIRE(std::dynamic_pointer_cast<NativeEntryRunner>(runner));
+      runners[unit] = runner;
+      std::map<std::string, TensorBundle> inputs;
+      if (unit == units.front()) inputs = {{"a", input("a", a)}, {"b", input("b", b)}};
+      futures.emplace(unit, worker.executePreparedAsync(session,
+        roleSpecFor(runPlan, unit, session, assignment, ""), io,
+        [runner] { return runner; }, inputs));
+    }
+    std::map<std::string, ProviderRoleResult> results;
+    std::string failures;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (auto& [unit, future] : futures) {
+      if (future.wait_until(deadline) != std::future_status::ready)
+        bus->cancel(std::make_exception_ptr(std::runtime_error("generic mixed fixture timeout")));
+      try {
+        results.emplace(unit, future.get());
+      }
+      catch (const std::exception& error) {
+        failures += unit + ": " + error.what() + "\n";
+        bus->cancel(std::current_exception());
+      }
+    }
+    for (const auto& [unit, runner] : runners) runner->releaseSessionState(session);
+    if (label != "cold" && label != "cached") {
+      BOOST_CHECK_MESSAGE(!failures.empty(), label << " unexpectedly accepted");
+      BOOST_CHECK(results.count(units.back()) == 0);
+      if (label != "missing")
+        BOOST_CHECK_MESSAGE(failures.find("sealed single-value SUM") != std::string::npos,
+                            label << ": " << failures);
+      continue;
+    }
+    BOOST_REQUIRE_MESSAGE(failures.empty(), failures);
+    BOOST_CHECK_EQUAL(bus->publishedCount(), 8u);
+    for (const auto& unit : {units[1], units[2]}) {
+      for (std::size_t index = 0; index < 2; ++index) {
+        const auto actual = decodeTensorBundleViews(results.at(unit).outputsByScope.at(
+          outputNames[index]));
+        BOOST_REQUIRE_EQUAL(actual.size(), 1u);
+        BOOST_CHECK_EQUAL(actual.front().name, outputNames[index]);
+        BOOST_CHECK(actual.front().shape == std::vector<std::int64_t>({1, 2}));
+        BOOST_REQUIRE_EQUAL(actual.front().payload.size(), 2u * sizeof(float));
+        std::array<float, 2> values;
+        std::memcpy(values.data(), actual.front().payload.data(), sizeof(values));
+        const auto* oracle = expected[index].GetTensorData<float>();
+        for (std::size_t element = 0; element < values.size(); ++element)
+          BOOST_CHECK_SMALL(values[element] - oracle[element], 1e-6f);
+      }
+    }
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
