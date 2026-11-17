@@ -31,6 +31,25 @@ def post_selected(build):
 
 @unittest.skipUnless(CONFIGURED_TEST_BUILD, 'requires the configured native test build')
 class IncrementalBuildGraph(unittest.TestCase):
+    def test_sanitized_provider_probe_instruments_its_fixture_and_facade(self):
+        lock = ROOT / 'build-ASAN-UBSAN/.lock-waf_linux_build'
+        if not lock.is_file():
+            self.skipTest('requires the configured sanitizer build')
+        build = CLOSURE.load_build_graph(ROOT, lock, ['spec185-provider-assembly'], 'build')
+        self.assertTrue(build.env.sanitize_di)
+        post_selected(build)
+        probe = build.get_tgen_by_name('spec185-provider-assembly')
+        self.assertEqual({task.inputs[0].name for task in probe.compiled_tasks},
+                         {'main.cpp', 'di-prepared-provider.t.cpp',
+                          'ndnsf-integration-fixture.cpp', 'Provider.cpp'})
+        for task in probe.compiled_tasks:
+            self.assertIn('-fsanitize=address,undefined', task.env.CXXFLAGS)
+        self.assertIn('-fsanitize=address,undefined', probe.link_task.env.LINKFLAGS)
+        core = build.get_tgen_by_name('ndnsf-di-core-objects')
+        self.assertTrue(core.compiled_tasks)
+        self.assertTrue(all('-fsanitize=address,undefined' in task.env.CXXFLAGS
+                            for task in core.compiled_tasks))
+
     def test_adding_a_fixture_preserves_native_object_paths(self):
         targets = ['unit-tests', 'integration-tests', 'spec224-tp-tests']
 

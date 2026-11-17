@@ -1571,6 +1571,8 @@ def build(bld):
     # public C++ ProviderConfig/Provider façade, Provider-only Runtime role
     # separation, authenticated identity binding, scoped registration and
     # idempotent drain/close against the complete DI source closure.
+    provider_assembly_sanitize = (['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+                                  if bld.env.sanitize_di else [])
     bld.program(target='../spec185-provider-assembly',
                 name='spec185-provider-assembly',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
@@ -1581,8 +1583,8 @@ def build(bld):
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS', 'NDNSF_DI_PROVIDER_TEST_SEAM',
                          'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
-                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
-                linkflags=['-Wl,--no-relax'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'] + provider_assembly_sanitize,
+                linkflags=['-Wl,--no-relax'] + provider_assembly_sanitize,
                 install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # Exercise the actual exact large-object fetch owner, including cancellation.
