@@ -1456,6 +1456,29 @@ std::vector<QwenTpEntryContract>
 assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
                          const std::vector<std::uint8_t>& graphBytes,
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (layerEnd > layers || layerBegin >= layerEnd)
+    throw std::invalid_argument("tensor-parallel stage window is outside the model");
+  auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control);
+  // A stage may only reference entries it executes: its own layers, INIT only when it owns
+  // layer zero, and HEAD only when it owns the last layer.
+  table.erase(std::remove_if(table.begin(), table.end(),
+    [&] (const auto& entry) {
+      if (entry.kind == "ATTN" || entry.kind == "MLP")
+        return entry.layer < layerBegin || entry.layer >= layerEnd;
+      if (entry.layer >= layers)
+        return layerEnd != layers;
+      return layerBegin != 0;
+    }), table.end());
+  return table;
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const std::string& egressRole)
 {
   return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, nullptr,

@@ -603,6 +603,22 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const QwenTpAssemblyControl* control);
 
+/** Assemble only the entries that belong to one stage's layer window.
+ *
+ * `assembleQwenTpEntryTable` builds the whole model's table; a stage owns a window, so the
+ * contracts it may reference are the ones inside that window plus the unit entries that belong
+ * to its position in the chain (INIT on the stage that owns layer zero, HEAD on the last one).
+ *
+ * @param layerBegin First layer the stage owns, inclusive.
+ * @param layerEnd   One past the last layer the stage owns.
+ */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         std::uint64_t layerBegin, std::uint64_t layerEnd);
+
 /** Assemble a unit's table with a known head owner.
  *
  * Classification is per rank but the head belongs to one unit only. Without knowing which
