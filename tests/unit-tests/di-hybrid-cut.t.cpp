@@ -980,11 +980,11 @@ BOOST_AUTO_TEST_CASE(StageMaterialsCarryTheRankGeometry)
     for (const auto& init : entryModel.graph().initializer()) {
       if (init.name().find("q_proj.MatMul.weight_scales") != std::string::npos) {
         sawScales = true;
-        // Recorded, not asserted: the packed weight is narrowed to 32 rows but its scales
-        // still carry 64, so the slicer's scales branch (`native-qwen-tensor-split.cpp:2449`)
-        // does not apply to this entry. A MatMulNBits with mismatched scales would be wrong,
-        // so this is the next fix rather than a passing detail.
-        BOOST_TEST_MESSAGE("entry scales rows=" << init.dims(0));
+        // Scales are a flattened `[rows * blocks]` tensor, so the shard's 32 rows over two
+        // block columns give 64 values - half of the source's 128.
+        BOOST_CHECK_EQUAL(init.dims_size(), 1);
+        BOOST_CHECK_EQUAL(init.dims(0), 64);
+        BOOST_CHECK_EQUAL(init.raw_data().size(), 64u * sizeof(float));
       }
       if (init.name().find("q_proj.MatMul.weight") == std::string::npos) continue;
       // The scales initializer shares the prefix; the packed weight is the one under test.

@@ -31,7 +31,9 @@ def packed_int4(rng, n, k):
 
 
 def scales(n, k):
-    return np.full((n, k // BLOCK), 0.02, dtype=np.float32)
+    # Flattened `[N * K/32]`, which is the layout the adapter's slicer narrows: it rewrites
+    # `dims(0)` to `rows * blocks` and leaves the tensor one-dimensional.
+    return np.full(n * (k // BLOCK), 0.02, dtype=np.float32)
 
 
 def matmul_nbits(name, x, n, k, rng, base_name):
