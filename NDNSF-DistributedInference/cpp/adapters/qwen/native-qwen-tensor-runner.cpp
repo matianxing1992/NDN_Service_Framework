@@ -201,8 +201,13 @@ childSpec(const NativeModelRunnerSpec& parent, const QwenTpEntryContract& entry)
   NativeModelRunnerSpec child;
   child.role = entry.entryId;
   child.kind = parent.kind;
-  // Children run through the ordinary ONNX creator, not this backend.
-  child.backend = "onnxruntime";
+  // Keep the admitted compute backend separate from this dispatch wrapper. Legacy direct
+  // entry tables retain their generic default; production admission requires the binding.
+  const auto backend = parent.metadata.find("tensorParallelChildBackend");
+  child.backend = backend == parent.metadata.end() ? "onnxruntime" : backend->second;
+  if (child.backend != "onnxruntime" && child.backend != "onnxruntime-cpu" &&
+      child.backend != "onnxruntime-cuda")
+    throw std::invalid_argument("tensor-parallel child requires an ordinary ONNX backend");
   // Each entry is one assembled subgraph file. The parent records the directory
   // it was handed, and the entry id names the file inside it.
   const auto root = parent.metadata.find("tensorParallelEntryRoot");

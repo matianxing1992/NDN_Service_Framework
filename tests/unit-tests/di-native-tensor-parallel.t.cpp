@@ -15755,9 +15755,14 @@ BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
   BOOST_REQUIRE(withoutTable.has_value());
   BOOST_CHECK_EQUAL(*withoutTable, std::string("DI_PROVIDER_ASSEMBLY_RUNNER_MISMATCH"));
 
-  // With a table and its root the same spec is accepted, which is the sharded case.
+  // A production wrapper also binds the admitted child backend and owning adapter.
   retargeted.metadata["tensorParallelEntries"] = R"([{"entryId":"S0R0/ATTN/0"}])";
   retargeted.metadata["tensorParallelEntryRoot"] = "/var/tmp/spec224-publish/S0R0";
+  const auto withoutChild = validateNativePreparedRunnerSpec(projection, retargeted);
+  BOOST_REQUIRE(withoutChild);
+  BOOST_CHECK_EQUAL(*withoutChild, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
+  assembly.adapterId = "qwen";
+  retargeted.metadata["tensorParallelChildBackend"] = assembly.backend;
   BOOST_CHECK_MESSAGE(!validateNativePreparedRunnerSpec(projection, retargeted).has_value(),
     "a sharded spec with an entry table was still refused");
 }

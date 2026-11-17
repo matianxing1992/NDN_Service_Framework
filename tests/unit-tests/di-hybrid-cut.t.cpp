@@ -1402,9 +1402,12 @@ BOOST_AUTO_TEST_CASE(WindowAssemblyWritesOnlyOwnedEntriesAndAcceptsRegionGraphs)
   spec.role = "later-unit";
   spec.path = modelPath.string();
   for (const std::uint64_t degree : {1u, 2u}) {
+    spec.backend = degree == 1 ? "onnxruntime-cpu" : "onnxruntime-cuda";
+    const auto selectedBackend = spec.backend;
     qwen::configureQwenTpRankSpec(spec, 4, ownedSteps, 1024 * 1024,
                                   degree, 0, "later-unit", nullptr, 1);
     BOOST_CHECK_EQUAL(spec.backend, "native-qwen-tensor");
+    BOOST_CHECK_EQUAL(spec.metadata.at("tensorParallelChildBackend"), selectedBackend);
     const auto configured = qwen::parseQwenTpEntryTable(spec.metadata.at("tensorParallelEntries"));
     BOOST_REQUIRE_EQUAL(configured.size(), 7u);
     for (const auto& entry : configured) {
@@ -1429,7 +1432,63 @@ BOOST_AUTO_TEST_CASE(WindowAssemblyWritesOnlyOwnedEntriesAndAcceptsRegionGraphs)
     qwen::configureQwenTpRankSpec(spec, 4, ownedSteps, 1024 * 1024,
                                   degree, 0, "later-unit", nullptr, 1);
     BOOST_CHECK_EQUAL(spec.metadata.at("tensorParallelEntries"), firstTable);
+    BOOST_CHECK_EQUAL(spec.metadata.at("tensorParallelChildBackend"), selectedBackend);
   }
+  // Inspect real registry-created children without requiring a CUDA installation. These
+  // material-only steps have no input declarations, so no worker template is claimed here.
+  class UnusedChild final : public NativeModelRunner
+  {
+  public:
+    std::map<std::string, TensorBundle>
+    run(const RoleExecutionContext&) override
+    {
+      throw std::logic_error("backend binding probe must not execute");
+    }
+  };
+  RegistryNativeModelRunnerFactory recording;
+  std::vector<NativeModelRunnerSpec> children;
+  for (const auto* backend : {"onnxruntime", "onnxruntime-cpu", "onnxruntime-cuda"})
+    recording.registerBackend(backend, [&children] (const NativeModelRunnerSpec& child) {
+      children.push_back(child);
+      return std::make_shared<UnusedChild>();
+    });
+  qwen::registerQwenTensorBackend(recording);
+  auto probe = spec;
+  probe.metadata.erase("tensorParallelSteps");
+  probe.metadata["deviceId"] = "3";
+  BOOST_REQUIRE(recording.create(probe));
+  BOOST_REQUIRE_EQUAL(children.size(), 7u);
+  for (const auto& child : children) {
+    BOOST_CHECK_EQUAL(child.backend, "onnxruntime-cuda");
+    BOOST_CHECK_EQUAL(child.metadata.at("deviceId"), "3");
+    const auto selected = resolveOnnxRuntimeProviderSelection(child,
+      {"CPUExecutionProvider", "CUDAExecutionProvider"});
+    BOOST_CHECK_EQUAL(selected.selectedProvider, "cuda");
+    BOOST_CHECK_EQUAL(selected.deviceId, "3");
+    BOOST_CHECK(!selected.usedCpuFallback);
+    BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(child, {"CPUExecutionProvider"}),
+                      std::runtime_error);
+    auto conflict = child;
+    conflict.metadata["executionProvider"] = "cpu";
+    BOOST_CHECK_THROW(resolveOnnxRuntimeProviderSelection(conflict,
+      {"CPUExecutionProvider", "CUDAExecutionProvider"}), std::invalid_argument);
+  }
+  for (const auto* invalid : {"unknown", "native-qwen-tensor", ""}) {
+    auto bad = probe;
+    bad.metadata["tensorParallelChildBackend"] = invalid;
+    BOOST_CHECK_THROW(recording.create(bad), std::invalid_argument);
+  }
+  children.clear();
+  auto legacy = probe;
+  legacy.metadata.erase("tensorParallelChildBackend");
+  BOOST_REQUIRE(recording.create(legacy));
+  BOOST_REQUIRE_EQUAL(children.size(), 7u);
+  for (const auto& child : children) BOOST_CHECK_EQUAL(child.backend, "onnxruntime");
+  auto unknown = spec;
+  unknown.backend = "unknown";
+  BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(unknown, 4, ownedSteps, 1024 * 1024,
+                                                 2, 0, "later-unit", nullptr, 1),
+                    std::invalid_argument);
   // Omitting the explicit begin still uses the legacy complete-source contract.
   BOOST_CHECK_THROW(qwen::configureQwenTpRankSpec(spec, 4, ownedSteps, 1024 * 1024,
                                                  2, 0, "later-unit"),
@@ -2950,6 +3009,23 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
       BOOST_CHECK_EQUAL(sourceFetches, beforeReopen);
       BOOST_CHECK_EQUAL(reopened->path, cold.path);
       BOOST_CHECK_EQUAL(reopened->backend, cold.backend);
+      BOOST_CHECK_EQUAL(cold.metadata.at("tensorParallelChildBackend"), role.backend);
+      BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelChildBackend"), role.backend);
+      BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, cold));
+      BOOST_CHECK(!validateNativePreparedRunnerSpec(projection, *reopened));
+      for (const auto* invalid : {"", "unknown", "native-qwen-tensor", "onnxruntime-cuda"}) {
+        auto bad = cold;
+        if (std::string(invalid).empty()) bad.metadata.erase("tensorParallelChildBackend");
+        else bad.metadata["tensorParallelChildBackend"] = invalid;
+        const auto rejected = validateNativePreparedRunnerSpec(projection, bad);
+        BOOST_REQUIRE(rejected);
+        BOOST_CHECK_EQUAL(*rejected, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
+      }
+      auto foreignAdapter = projection;
+      foreignAdapter.assembly.adapterId = foreignAdapter.selectedRole.adapterId = "foreign";
+      const auto rejected = validateNativePreparedRunnerSpec(foreignAdapter, cold);
+      BOOST_REQUIRE(rejected);
+      BOOST_CHECK_EQUAL(*rejected, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
       BOOST_CHECK_EQUAL(reopened->metadata.at("tensorParallelEntries"),
                         cold.metadata.at("tensorParallelEntries"));
       coldSpecs.emplace(role.role, cold);

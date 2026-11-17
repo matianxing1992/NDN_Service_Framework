@@ -2898,6 +2898,13 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const QwenTpAssemblyControl* control, std::uint64_t layerBegin)
 {
   requireRankAssemblyActive(control);
+  const auto savedBackend = spec.metadata.find("tensorParallelChildBackend");
+  const auto childBackend = spec.backend == "native-qwen-tensor"
+    ? (savedBackend == spec.metadata.end() ? "onnxruntime" : savedBackend->second)
+    : (spec.backend.empty() ? "onnxruntime" : spec.backend);
+  if (childBackend != "onnxruntime" && childBackend != "onnxruntime-cpu" &&
+      childBackend != "onnxruntime-cuda")
+    throw std::invalid_argument("tensor-parallel child requires an ordinary ONNX backend");
   if (spec.path.empty() || layerBegin >= layers || spec.role.empty()) {
     throw std::invalid_argument(
       "tensor-parallel rank spec needs an assembled path, a role and layers");
@@ -3015,6 +3022,7 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   spec.metadata["tensorParallelSteps"] = qwenTpStepDeclarationJson(steps);
   // The parent runner is selected by backend name, and the single-file rank model
   // is no longer what executes.
+  spec.metadata["tensorParallelChildBackend"] = childBackend;
   spec.backend = "native-qwen-tensor";
   requireRankAssemblyActive(&tableControl);
 }

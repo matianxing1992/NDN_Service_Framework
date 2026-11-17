@@ -1949,6 +1949,13 @@ validateNativePreparedRunnerSpec(
     spec.backend == "native-qwen-tensor" &&
     spec.metadata.count("tensorParallelEntries") != 0 &&
     spec.metadata.count("tensorParallelEntryRoot") != 0;
+  if (tensorParallelBackend) {
+    const auto childBackend = metadataValue(spec, {"tensorParallelChildBackend"});
+    if (assembly.adapterId != "qwen" || childBackend != assembly.backend ||
+        (childBackend != "onnxruntime" && childBackend != "onnxruntime-cpu" &&
+         childBackend != "onnxruntime-cuda"))
+      return "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH";
+  }
   if (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend)) {
     try {
       auto expected = spec;
