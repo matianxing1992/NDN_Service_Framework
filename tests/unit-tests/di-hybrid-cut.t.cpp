@@ -718,7 +718,7 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
   // Both stages are sharded here: a degree-one stage still needs the whole-region subgraph
   // path, which is T002's remaining item, so this case proves the edge itself.
   const auto stage0Units = unitsFor("S0R", 2, 0, 1);
-  const auto stage1Units = unitsFor("S1R", 2, 1, 4);
+  const auto stage1Units = unitsFor("S1R", 1, 1, 4);
 
   qwen::QwenTpStageWindow first{"stage-0", "sha256:region-0", 0, 1};
   ndnsf::di::NativeExecutionPlan stage0;
@@ -727,7 +727,7 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
   qwen::QwenTpStageWindow second{"stage-1", "sha256:region-1", 1, 4,
                                  "S0R0", "S0R0/MLP/0", "post_residual"};
   ndnsf::di::NativeExecutionPlan stage1;
-  qwen::projectQwenTpPlan(stage1, shape, 2, "entry/S1", "S1R0", stage1Units, second);
+  qwen::projectQwenTpPlan(stage1, shape, 1, "entry/S1", "S1R0", stage1Units, second);
   // Alone it cannot close: its input producer lives in stage 0. The merged plan is the first
   // object that contains every producer, and it is validated below.
   BOOST_CHECK_THROW(stage1.validateSteps(), std::invalid_argument);
@@ -736,7 +736,7 @@ BOOST_AUTO_TEST_CASE(TwoStagesCloseThroughAnActivationEdge)
   BOOST_CHECK_NO_THROW(merged.validateSteps());
   BOOST_REQUIRE_EQUAL(merged.stageLayout.size(), 2u);
   BOOST_CHECK_EQUAL(merged.degreeForRole("S0R0"), 2u);
-  BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 2u);
+  BOOST_CHECK_EQUAL(merged.degreeForRole("S1R0"), 1u);
 
   // The stage-1 input is the predecessor's activation, and exactly one ACTIVATION edge binds
   // it per consumer unit.

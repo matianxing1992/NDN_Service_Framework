@@ -620,8 +620,8 @@ validateTemplateInputs(const QwenTpShape& shape, std::uint64_t degree,
                        const std::string& entryPrefix)
 {
   shape.validate();
-  if (degree < 2) {
-    throw std::invalid_argument("tensor-parallel template requires degree >= 2");
+  if (degree < 1) {
+    throw std::invalid_argument("tensor-parallel template requires degree >= 1");
   }
   if (entryPrefix.empty()) {
     throw std::invalid_argument("tensor-parallel template requires an entry prefix");
@@ -698,9 +698,12 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
   // Slices are indexed by rank, so the per-rank plans follow the unit ranks
   // rather than the list order.
   result.slicesByRank.resize(degree);
-  for (const auto& unit : units)
-    result.slicesByRank[unit.rank] =
-      planQwenTensorSlices(shape, degree, unit.rank, layerBegin, layerEnd);
+  for (const auto& unit : units) {
+    // A single-rank stage owns whole tensors; there is no shard to plan.
+    if (degree > 1)
+      result.slicesByRank[unit.rank] =
+        planQwenTensorSlices(shape, degree, unit.rank, layerBegin, layerEnd);
+  }
   return result;
 }
 
