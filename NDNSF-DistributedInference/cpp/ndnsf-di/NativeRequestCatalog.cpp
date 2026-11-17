@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
 
 #include <algorithm>
 #include <cfenv>
@@ -67,6 +68,25 @@ resourceProfilesFromCatalog(const NativeJson& split, const std::vector<std::stri
 
 
 } // namespace
+
+NativeStateTensorMapping
+detail::remapNativeStateRoles(const NativeStateTensorMapping& source,
+                             const std::map<std::string, std::string>& sourceRoleByUnit)
+{
+  if (sourceRoleByUnit.empty())
+    throw std::invalid_argument("native state role expansion has no units");
+  NativeStateTensorMapping result;
+  for (const auto& [unit, sourceRole] : sourceRoleByUnit) {
+    const auto inputs = source.inputs.find(sourceRole);
+    const auto outputs = source.outputs.find(sourceRole);
+    if (unit.empty() || sourceRole.empty() || inputs == source.inputs.end() ||
+        outputs == source.outputs.end() || inputs->second.empty() || outputs->second.empty())
+      throw std::invalid_argument("native state role expansion omits a source state contract");
+    result.inputs.emplace(unit, inputs->second);
+    result.outputs.emplace(unit, outputs->second);
+  }
+  return result;
+}
 
 NativePreparedPlanningTemplate::NativePreparedPlanningTemplate(
   std::shared_ptr<const NativeInspectedModel> model,
@@ -428,6 +448,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // preparation as an enumerated candidate. A projected candidate with empty prepared
   // roles would fail role binding later, which is why it is not pushed alone.
   std::optional<NativeSplitCandidate> projectedCandidate;
+  std::map<std::string, std::string> sourceRoleByUnit;
   if (splitterKind == "QWEN" || splitterKind == "LLAMA") {
     const auto modelFamily = splitterKind == "LLAMA" ? "llama" : "qwen";
     // A sharded stage needs one artifact per rank. The catalog accepts the
@@ -637,6 +658,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
           unit.layerEnd = end;
           hybridArtifacts[unit.roleId] = ranked->second.at(rank);
           hybridRequirements[unit.roleId] = profile->second;
+          sourceRoleByUnit.emplace(unit.roleId, role);
           units.push_back(std::move(unit));
         }
         qwen::QwenTpStageWindow window;
@@ -715,6 +737,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       unit.layerEnd = layers;
       artifactByUnit[unit.roleId] = ranked->second.at(rank);
       requirementByUnit[unit.roleId] = profile->second;
+      sourceRoleByUnit.emplace(unit.roleId, stageRole);
       units.push_back(std::move(unit));
     }
     // The head lives on exactly one unit, and which one is configuration, not convention: the
@@ -816,28 +839,13 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   }
   if (projectedCandidate) {
     auto candidate = std::move(*projectedCandidate);
-    // The state mapping is keyed by the catalog's stage roles, but this candidate's roles
-    // are unit names. Re-key it to the units, because the source-bound state binding
-    // requires a non-empty contract for every role the candidate declares. Each unit
-    // executes every layer, so each takes the full per-stage KV set.
-    {
-      const auto& stageRole = split.at("roles").at(0).get<std::string>();
-      // Read the roles from the candidate that now owns them. The optional was moved
-      // from a few lines above, so reading through it here would iterate an empty list
-      // and produce an empty cover -- which is exactly the failure this re-key exists to
-      // prevent.
-      const auto rekey = [&candidate, &stageRole] (
-                           const NativeStateTensorMapping::Roles& source) {
-        NativeStateTensorMapping::Roles keyed;
-        const auto found = source.find(stageRole);
-        if (found == source.end()) return keyed;
-        for (const auto& unit : candidate.executionPlan.roles)
-          keyed[unit] = found->second;
-        return keyed;
-      };
-      result.stateMapping.inputs = rekey(result.stateMapping.inputs);
-      result.stateMapping.outputs = rekey(result.stateMapping.outputs);
-    }
+    // Every unit inherits only its logical stage's source tensors. The role preparer
+    // still validates these names and their shapes against the actual source boundary.
+    if (sourceRoleByUnit.size() != candidate.executionPlan.roles.size() ||
+        std::any_of(candidate.executionPlan.roles.begin(), candidate.executionPlan.roles.end(),
+          [&] (const auto& unit) { return sourceRoleByUnit.count(unit) != 1; }))
+      throw std::invalid_argument("native state role expansion has an incomplete unit cover");
+    result.stateMapping = detail::remapNativeStateRoles(result.stateMapping, sourceRoleByUnit);
     // No resource override here. `resourceProfiles` is keyed by the catalog's stage
     // roles, while this candidate's roles are the expanded unit names, so assigning it
     // would replace a complete per-unit cover with a per-stage one and the candidate

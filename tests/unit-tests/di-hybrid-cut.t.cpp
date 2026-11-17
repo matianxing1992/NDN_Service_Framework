@@ -12,6 +12,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
 
 #include <boost/test/unit_test.hpp>
 
@@ -162,6 +163,56 @@ stageWindowProjection(const NativeExecutionPlan& sealed)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(DiHybridCut)
+
+BOOST_AUTO_TEST_CASE(StateExpansionPreservesEachStagesSourceTensors)
+{
+  NativeStateTensorMapping source;
+  source.inputs = {{"encoder", {{"key", {"past.0.key"}}, {"value", {"past.0.value"}}}},
+                   {"decoder", {{"key", {"past.1.key", "past.2.key", "past.3.key"}},
+                                {"value", {"past.1.value", "past.2.value", "past.3.value"}}}}};
+  source.outputs = {{"encoder", {{"key", {"present.0.key"}}, {"value", {"present.0.value"}}}},
+                    {"decoder", {{"key", {"present.1.key", "present.2.key", "present.3.key"}},
+                                 {"value", {"present.1.value", "present.2.value",
+                                            "present.3.value"}}}}};
+  // Unit names deliberately carry no stage/rank syntax. Ownership is explicit.
+  const std::map<std::string, std::string> owners{
+    {"alpha", "encoder"}, {"beta", "encoder"}, {"gamma", "decoder"}};
+  const auto mapped = detail::remapNativeStateRoles(source, owners);
+  BOOST_REQUIRE_EQUAL(mapped.inputs.size(), 3);
+  BOOST_REQUIRE_EQUAL(mapped.outputs.size(), 3);
+  for (const auto* unit : {"alpha", "beta"}) {
+    BOOST_CHECK(mapped.inputs.at(unit) == source.inputs.at("encoder"));
+    BOOST_CHECK(mapped.outputs.at(unit) == source.outputs.at("encoder"));
+  }
+  BOOST_CHECK(mapped.inputs.at("gamma") == source.inputs.at("decoder"));
+  BOOST_CHECK(mapped.outputs.at("gamma") == source.outputs.at("decoder"));
+  BOOST_CHECK(mapped.inputs.at("gamma") != mapped.inputs.at("alpha"));
+
+  // The same expansion supports a later tensor stage and the single-stage TP path.
+  auto reversed = owners;
+  reversed.at("beta") = "decoder";
+  const auto laterTensor = detail::remapNativeStateRoles(source, reversed);
+  BOOST_CHECK(laterTensor.inputs.at("beta") == source.inputs.at("decoder"));
+  BOOST_CHECK(laterTensor.outputs.at("beta") == source.outputs.at("decoder"));
+  const auto singleStage = detail::remapNativeStateRoles(
+    source, {{"alpha", "encoder"}, {"beta", "encoder"}});
+  BOOST_CHECK(singleStage.inputs.at("alpha") == singleStage.inputs.at("beta"));
+  BOOST_CHECK(singleStage.outputs.at("alpha") == singleStage.outputs.at("beta"));
+
+  BOOST_CHECK_THROW(detail::remapNativeStateRoles(source, {}), std::invalid_argument);
+  BOOST_CHECK_THROW(detail::remapNativeStateRoles(source, {{"alpha", "missing"}}),
+                    std::invalid_argument);
+  auto missing = source;
+  missing.outputs.erase("decoder");
+  BOOST_CHECK_THROW(detail::remapNativeStateRoles(missing, owners), std::invalid_argument);
+  missing = source;
+  missing.inputs.at("decoder").clear();
+  BOOST_CHECK_THROW(detail::remapNativeStateRoles(missing, owners), std::invalid_argument);
+  BOOST_CHECK_THROW(detail::remapNativeStateRoles(source, {{"", "encoder"}}),
+                    std::invalid_argument);
+  BOOST_CHECK_THROW(detail::remapNativeStateRoles(source, {{"alpha", ""}}),
+                    std::invalid_argument);
+}
 
 BOOST_AUTO_TEST_CASE(StageDegreesFollowTheirOwnStage)
 {
