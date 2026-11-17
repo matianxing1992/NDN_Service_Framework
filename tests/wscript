@@ -1849,6 +1849,21 @@ def build(bld):
                 linkflags=['-Wl,--no-relax', '-fsanitize=address,undefined'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # The installed check runner: one entry point, one roster, one fixture tree, all under the
+    # prefix. An installed consumer must not need the source tree, so the roster and the fixtures
+    # travel with the binary and the runner resolves them from its own prefix.
+    # `share` is spelled out because this tree does not define a DATADIR variable, and inventing
+    # one here would disagree with the installer's own manifest, which records absolute paths.
+    tests_share = '${PREFIX}/share/ndnsf/tests'
+    bld.install_files(tests_share, 'check-profiles.json')
+    bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
+    fixtures_root = bld.path.find_node('fixtures')
+    for fixture in bld.path.ant_glob('fixtures/**/*',
+                                     excl=['fixtures/**/*.pyc',
+                                           'fixtures/**/__pycache__/**']):
+        bld.install_as(tests_share + '/fixtures/' +
+                       str(fixture.path_from(fixtures_root)), fixture)
+
     bld.program(target='../unit-tests',
                 name='unit-tests',
                 # Share the production framework closure.  A hand-maintained
@@ -2243,8 +2258,13 @@ def build(bld):
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' +
                     framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
-                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()],
-                install_path=None)
+                linkflags=['-Wl,--no-relax'],
+                # No build-tree RPATH on this target: it is the one installed for an out-of-tree
+                # consumer, and a RPATH naming this checkout does not exist on another machine. The
+                # installed binary resolves its libraries through the prefix's pkg-config/LD path,
+                # which the runner sets; the source-mode build resolves them through
+                # LD_LIBRARY_PATH, which run-checks.py sets only in source mode.
+                install_path='${PREFIX}/libexec/ndnsf-tests')
     # C10 asks for one bounded asan-ubsan card over the real C++ selector once the local tensor
     # representation exists. Only the local-handoff cases run there: the card is about ownership
     # and lifetime, so a whole-suite run under instrumentation would cost hours to cover paths

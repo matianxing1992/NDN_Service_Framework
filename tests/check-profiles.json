@@ -5,20 +5,59 @@
     "unit": {
       "description": "Asset-free native unit cases: no model, no network, no cluster.",
       "targets": [
-        {"target": "unit-tests", "selector": {"include": ["*"]}}
+        {
+          "target": "unit-tests",
+          "selector": {
+            "include": [
+              "*"
+            ],
+            "excludeSuites": [
+              "TensorParallel"
+            ],
+            "note": "The umbrella globs every unit case; the tensor-parallel cases need a prepared model, so they are declared in the model profile instead of being silently skipped here."
+          }
+        }
       ]
     },
     "integration": {
       "description": "Native integration cases that own their fixture processes; still asset-free.",
       "targets": [
-        {"target": "integration-tests", "selector": {"include": ["*"]}}
+        {
+          "target": "integration-tests",
+          "selector": {
+            "include": [
+              "*"
+            ]
+          }
+        }
       ]
     },
     "model": {
       "description": "Cases that require an explicitly prepared model asset. Never selected by default.",
       "targets": [
-        {"target": "spec224-tp-tests", "selector": {"include": ["*"]},
-         "assets": ["qwen3-0.6b-int4-frozen-export"]}
+        {
+          "target": "spec224-tp-tests",
+          "selector": {
+            "include": [
+              "*"
+            ]
+          },
+          "assets": [
+            "qwen3-0.6b-int4-frozen-export"
+          ]
+        },
+        {
+          "target": "unit-tests",
+          "selector": {
+            "include": [
+              "TensorParallel/*"
+            ],
+            "requireMatch": true
+          },
+          "assets": [
+            "qwen3-0.6b-int4-frozen-export"
+          ]
+        }
       ]
     }
   },
@@ -28,7 +67,9 @@
       "note": "Prepared outside Git by the maintained preparation recipe; a missing directory is PREREQUISITE_MISSING, never a pass.",
       "env": "NDNSF_DI_MODEL_CACHE",
       "default": "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b",
-      "requiredFiles": ["canonical-source.onnx"]
+      "requiredFiles": [
+        "canonical-source.onnx"
+      ]
     }
   }
 }
