@@ -4,12 +4,21 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+namespace ndnsf::di {
+struct NativeOnnxGraphInspection;
+struct NativeSourceRegionBoundary;
+struct NativeStateTensorMapping;
+}
+
 namespace ndnsf::di::qwen {
+
+struct QwenTpShape;
 
 /** Native counterpart of the maintained three-stage Qwen splitter.
  *
@@ -41,6 +50,16 @@ public:
     std::map<std::string, std::vector<std::string>> rankArtifactDigestsByRole = {});
 
   NativeStrategyIdentity identity() const override;
+
+  /** Lower configured windows using admitted source facts and return the unit-to-stage map. */
+  std::pair<NativeSplitCandidate, std::map<std::string, std::string>>
+  lowerSourceHybrid(const NativeModelDescriptor& model, const NativeGraphSnapshot& graph,
+    const QwenTpShape& shape,
+    const std::map<std::string, NativeRoleResourceRequirement>& resources,
+    const NativeOnnxGraphInspection& source,
+    const std::function<NativeSourceRegionBoundary(
+      const std::vector<std::string>&, const std::vector<std::string>&)>& region,
+    const NativeStateTensorMapping& stateMapping, const ExtensionControl& control) const;
   /** Build the maintained semantic graph from pinned model metadata. This is
    * not a mapping from decoder layers to canonical ONNX node indices. */
   NativeGraphSnapshot inspectGraph(const NativeModelDescriptor& model,

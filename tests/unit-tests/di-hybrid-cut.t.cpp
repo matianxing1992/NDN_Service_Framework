@@ -3506,6 +3506,8 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   const NativeRequestControl regionControl{"/fixture/source-region", 1, control.deadline, {}};
   const auto& stages = prepared.candidate.executionPlan.stageLayout;
   BOOST_REQUIRE_EQUAL(stages.size(), 2u);
+  BOOST_CHECK_EQUAL(stages.front().stageId, "first");
+  BOOST_CHECK_EQUAL(stages.back().stageId, "last");
   std::set<std::string> sourceIdentities;
   for (const auto& stage : stages) {
     BOOST_REQUIRE(!stage.unitRoleIds.empty());
@@ -3653,6 +3655,25 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
     [] (const std::invalid_argument& error) {
       return std::string(error.what()).find("source boundary") != std::string::npos;
     });
+}
+
+BOOST_AUTO_TEST_CASE(HybridCatalogAdmitsExplicitBoundaryUnits)
+{
+  auto [configuration, source] = hybridCatalogFixture();
+  auto& split = configuration.at("splitter");
+  split["input_ingress_role"] = "first/Tensor/Rank/1";
+  split["result_egress_role"] = "last/Tensor/Rank/0";
+  const NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 8U << 20, 8U << 20};
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.planningCache);
+  BOOST_REQUIRE_EQUAL(loaded.planningCache->candidates.size(), 1u);
+  const auto& candidate = loaded.planningCache->candidates.front().candidate;
+  BOOST_CHECK_EQUAL(candidate.inputIngressRole, "first/Tensor/Rank/1");
+  BOOST_CHECK_EQUAL(candidate.resultEgressRole, "last/Tensor/Rank/0");
+  split["input_ingress_role"] = "last";
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(HybridGenerationUsesDeclaredEgressAndActualTokenInputs)
