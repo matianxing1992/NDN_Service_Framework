@@ -2645,9 +2645,14 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
     }
   }
 
-  std::unique_ptr<ProviderRoleWorker> worker;
-  if (!coordinator)
-    worker = std::make_unique<ProviderRoleWorker>(2, 2, 16, std::chrono::seconds(5));
+  // Model independent Provider ownership rather than sharing one wait pool
+  // across roles whose dependencies can unblock each other.
+  std::map<std::string, std::unique_ptr<ProviderRoleWorker>> workers;
+  if (!coordinator) {
+    for (const auto& role : plan.roles)
+      workers.emplace(role, std::make_unique<ProviderRoleWorker>(
+        2, 2, 16, std::chrono::seconds(5)));
+  }
   std::vector<std::int64_t> prefix;
   std::set<std::string> publicationNames;
   float worstLogits = 0;
@@ -2727,7 +2732,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
           epochInputs.emplace(positions.name,
                               makeEncodedTensorBundle(positions.name, {positions}));
         }
-        futures.emplace(role, worker->executePreparedAsync(sessionId, std::move(roleSpec),
+        futures.emplace(role, workers.at(role)->executePreparedAsync(sessionId, std::move(roleSpec),
           io, [runner] { return runner; }, std::move(epochInputs)));
       }
       std::ostringstream failures;
@@ -2748,7 +2753,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
         label << " epoch=" << epoch << " worker failures: " << failures.str());
       BOOST_CHECK_EQUAL(bus->publishedCount(), epochPublications.size());
     }
-    BOOST_REQUIRE_EQUAL(results.size(), 3u);
+    BOOST_REQUIRE_EQUAL(results.size(), plan.roles.size());
     BOOST_REQUIRE(results.at(egress).outputsByScope.count("logits") == 1);
     const auto actual = decodeTensorBundleViews(results.at(egress).outputsByScope.at("logits"));
     BOOST_REQUIRE_EQUAL(actual.size(), 1u);
@@ -2779,9 +2784,13 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
       BOOST_CHECK_LE(error, 1e-5f + 1e-4f * std::abs(wanted));
     }
     if (!dynamic) continue;
-    for (std::uint64_t layer = 0; layer < 4; ++layer) {
-      const auto stage = layer == 0 ? 0u : 1u;
-      const auto degree = units[stage].size();
+    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+      const auto stage = std::find_if(units.begin(), units.end(), [&] (const auto& members) {
+        return !members.empty() && members.front().layerBegin <= layer &&
+          layer < members.front().layerEnd;
+      });
+      BOOST_REQUIRE(stage != units.end());
+      const auto degree = stage->size();
       for (const auto* kind : {"key", "value"}) {
         const auto suffix = std::to_string(layer) + "." + kind;
         const auto& whole = expected.at("present." + suffix);
@@ -2792,7 +2801,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& plan
         BOOST_REQUIRE_EQUAL(whole.payload.size(), total * sizeof(float));
         std::vector<float> referenceState(total);
         std::memcpy(referenceState.data(), whole.payload.data(), whole.payload.size());
-        for (const auto& unit : units[stage]) {
+        for (const auto& unit : *stage) {
           const auto sample = observer->sample(unit.roleId, epoch, "past_key_values." + suffix);
           BOOST_CHECK_EQUAL(sample.elementType, "float32");
           BOOST_REQUIRE(sample.shape == std::vector<std::int64_t>(
@@ -3206,9 +3215,11 @@ addHybridFixtureControls(NativeCanonicalSource& source)
 std::pair<NativeJson, NativeCanonicalSource>
 hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
                      const std::string& backend = "onnxruntime", bool mirrored = false,
-                     bool externalControls = false)
+                     bool externalControls = false,
+                     const std::vector<std::uint64_t>& degrees = {})
 {
-  std::ifstream input("../tests/fixtures/spec242/four-layer-decode.onnx", std::ios::binary);
+  std::ifstream input(degrees.empty() ? "../tests/fixtures/spec242/four-layer-decode.onnx"
+    : "../tests/fixtures/spec242/four-layer-degree-matrix.onnx", std::ios::binary);
   BOOST_REQUIRE(static_cast<bool>(input));
   NativeCanonicalSource source;
   source.modelBytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
@@ -3219,7 +3230,7 @@ hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
     [] {}, 8U << 20, 8U << 20};
   const auto identity = canonicalOnnxSourceIdentity(source, control);
   const auto digest = nativePlanningDigest("spec242-catalog");
-  const std::vector<std::string> roles{"first", "last"};
+  std::vector<std::string> roles{"first", "last"};
   NativeJson configuration = {
     {"schema", "ndnsf-di-native-request-catalog-v1"},
     {"model", nativeParseJson(descriptor.canonicalJson())},
@@ -3249,6 +3260,38 @@ hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
     configuration["splitter"]["rank_artifact_digests_by_role"] =
       {{"last", {digest, nativePlanningDigest("spec242-catalog-rank1")}}};
   }
+  if (!degrees.empty()) {
+    BOOST_REQUIRE(!mirrored && !externalControls);
+    BOOST_REQUIRE(degrees.size() == 3 || degrees.size() == 4);
+    roles.clear();
+    auto& split = configuration["splitter"];
+    split["roles"] = NativeJson::array();
+    split["layer_ranges"] = NativeJson::array();
+    split["tensor_degrees"] = degrees;
+    for (const auto* key : {"artifact_digests_by_role", "rank_artifact_digests_by_role",
+                            "weight_bytes_by_role", "resources_by_role"})
+      split[key] = NativeJson::object();
+    for (std::size_t stage = 0; stage < degrees.size(); ++stage) {
+      const auto role = "stage-" + std::to_string(stage);
+      roles.push_back(role);
+      split["roles"].push_back(role);
+      split["layer_ranges"].push_back({stage, stage + 1 == degrees.size() ? 4 : stage + 1});
+      split["artifact_digests_by_role"][role] = nativePlanningDigest(role);
+      split["weight_bytes_by_role"][role] = 8U << 20;
+      split["resources_by_role"][role] = resources;
+      if (degrees[stage] > 1) {
+        for (std::uint64_t rank = 0; rank < degrees[stage]; ++rank)
+          split["rank_artifact_digests_by_role"][role].push_back(
+            nativePlanningDigest(role + "-rank-" + std::to_string(rank)));
+      }
+    }
+    split["input_ingress_role"] = roles.front();
+    split["result_egress_role"] = roles.back();
+    // The semantic graph digest commits the configured layer ranges.
+    configuration["model"]["graph_digest"] = degrees.size() == 3
+      ? "sha256:fb1f2743a951cd523059ca361051bc9c58016d2f1e83cbd5ad28a37df7b31222"
+      : "sha256:6fe1870bd05c837aff1048615347a3b546f206f5273bf8e596b78eb7873a7ee2";
+  }
   onnx::ModelProto model;
   BOOST_REQUIRE(model.ParseFromArray(source.modelBytes.data(),
                                      static_cast<int>(source.modelBytes.size())));
@@ -3261,7 +3304,7 @@ hybridCatalogFixture(const std::string& protectionEpoch = "fixture",
       configuration["node_mapping"][semantic].push_back(index);
   }
   for (std::uint64_t layer = 0; layer < 4; ++layer) {
-    const auto& role = roles.at(layer == 0 ? 0 : 1);
+    const auto& role = roles.at(std::min<std::size_t>(layer, roles.size() - 1));
     for (const std::string component : {"key", "value"}) {
       const auto suffix = std::to_string(layer) + "." + component;
       configuration["state_inputs"][role][suffix] = {"past_key_values." + suffix};
@@ -3551,7 +3594,7 @@ verifyHybridGenerationCodec(NativeSelectionProjectionV3 projection,
                     projection.generationContract.stateSuccessorMap);
   BOOST_CHECK_EQUAL(decoded.plan.roles.size(), projection.plan.roles.size());
   BOOST_CHECK_EQUAL(decoded.plan.steps.size(), projection.plan.steps.size());
-  BOOST_CHECK_EQUAL(decoded.plan.stageLayout.size(), 2u);
+  BOOST_CHECK_EQUAL(decoded.plan.stageLayout.size(), projection.plan.stageLayout.size());
   BOOST_CHECK_EQUAL(decoded.plan.degreeForRole(projection.executionRole.roleId),
                     projection.plan.degreeForRole(projection.executionRole.roleId));
   BOOST_CHECK_NO_THROW(decoded.plan.validateSteps());
@@ -3594,7 +3637,8 @@ verifyHybridGenerationCodec(NativeSelectionProjectionV3 projection,
 
 void
 verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordinator = false,
-                      CoordinatorFault fault = CoordinatorFault::NONE)
+                      CoordinatorFault fault = CoordinatorFault::NONE,
+                      const std::vector<std::uint64_t>& degrees = {})
 {
   // These projections exercise post-admission assembly, not Selection or transport security.
   if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
@@ -3610,7 +3654,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec242-fresh-cache");
     Ort::SessionOptions sessionOptions;
     sessionOptions.SetIntraOpNumThreads(1);
-    BOOST_REQUIRE_EQUAL(data.at("requests").size(), 3u);
+    BOOST_REQUIRE_EQUAL(data.at("requests").size(), data.value("unit_count", std::size_t(3)));
     for (const auto& request : data.at("requests")) {
       std::istringstream fixedWire(request.at("fixed").get<std::string>());
       const auto fixed = nativeFixedRoleAssignmentV1FromJson(fixedWire);
@@ -3621,7 +3665,8 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
                         request.at("wire").get<std::string>());
       BOOST_REQUIRE_EQUAL(projection.plan.steps.size(),
                           request.at("step_count").get<std::size_t>());
-      BOOST_REQUIRE_EQUAL(projection.plan.stageLayout.size(), 2u);
+      BOOST_REQUIRE_EQUAL(projection.plan.stageLayout.size(),
+                          data.value("stage_count", std::size_t(2)));
       BOOST_CHECK_EQUAL(projection.plan.degreeForRole(projection.executionRole.roleId),
                         request.at("degree").get<std::uint64_t>());
       // This codec/cache probe supplies its state contract explicitly after wire decoding;
@@ -3669,7 +3714,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     return;
   }
   auto fixture = hybridCatalogFixture("plaintext-v1", "onnxruntime-cpu", mirrored,
-                                       externalControls);
+                                      externalControls, degrees);
   auto& configuration = fixture.first;
   const auto& source = fixture.second;
   const auto root = nativeCanonicalJson(NativeJson{
@@ -3686,7 +3731,12 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source,
                                                  control);
   const auto& prepared = loaded.planningCache->candidates.front();
-  BOOST_REQUIRE_EQUAL(prepared.roles.size(), 3u);
+  std::size_t expectedUnits = 0;
+  for (const auto& degree : configuration.at("splitter").at("tensor_degrees"))
+    expectedUnits += degree.get<std::size_t>();
+  const auto expectedStages = configuration.at("splitter").at("roles").size();
+  BOOST_REQUIRE_EQUAL(prepared.roles.size(), expectedUnits);
+  BOOST_REQUIRE_EQUAL(prepared.candidate.executionPlan.stageLayout.size(), expectedStages);
   if (externalControls) {
     std::size_t remoteControls = 0;
     for (const auto& step : prepared.candidate.executionPlan.steps) {
@@ -3751,10 +3801,18 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
   Ort::SessionOptions sessionOptions;
   sessionOptions.SetIntraOpNumThreads(1);
   NativeJson reopenData{{"schema", "spec242-cache-reopen-v1"},
-    {"cache", options.cacheDir}, {"requests", NativeJson::array()}};
+    {"cache", options.cacheDir}, {"requests", NativeJson::array()},
+    {"unit_count", expectedUnits}, {"stage_count", expectedStages}};
   std::map<std::string, NativeModelRunnerSpec> coldSpecs;
   std::map<std::string, NativeModelRunnerSpec> cachedSpecs;
   const auto shape = qwen::deriveQwenTpShape(source.modelBytes, 4);
+  if (!degrees.empty()) {
+    BOOST_CHECK_EQUAL(shape.hidden, 64u);
+    BOOST_CHECK_EQUAL(shape.queryHeads, 24u);
+    BOOST_CHECK_EQUAL(shape.kvHeads, 12u);
+    BOOST_CHECK_EQUAL(shape.headDim, 32u);
+    BOOST_CHECK_EQUAL(shape.ffn, 384u);
+  }
   for (const auto& role : prepared.roles) {
     auto projection = stageWindowProjection(prepared.candidate.executionPlan);
     projection.provider = options.providerIdentity;
@@ -3830,8 +3888,9 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       if (!singleton)
         entries = qwen::parseQwenTpEntryTable(reopened->metadata.at("tensorParallelEntries"));
       const bool first = role.layerBegin == 0;
-      BOOST_REQUIRE_EQUAL(entries.size(), singleton ? 0u : first ? 3u :
-        role.role == prepared.candidate.resultEgressRole ? 7u : 6u);
+      BOOST_REQUIRE_EQUAL(entries.size(), singleton ? 0u :
+        2 * (role.layerEnd - role.layerBegin) + (first ? 1 : 0) +
+        (role.role == prepared.candidate.resultEgressRole ? 1 : 0));
       std::set<std::string> expectedEntries;
       std::set<std::string> actualEntries;
       for (const auto& step : projection.plan.steps)
@@ -3852,7 +3911,10 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
         actualEntries.insert(entry.entryId);
         BOOST_CHECK_EQUAL(entry.unitId, role.selectedRole);
         if (entry.kind == "INIT") BOOST_CHECK(first);
-        else if (entry.kind == "HEAD") BOOST_CHECK(!first);
+        else if (entry.kind == "HEAD") {
+          BOOST_CHECK(!first);
+          BOOST_CHECK_EQUAL(role.role, prepared.candidate.resultEgressRole);
+        }
         else BOOST_CHECK(entry.layer >= role.layerBegin && entry.layer < role.layerEnd);
         const auto path = std::filesystem::path(reopened->path).parent_path() /
           entry.relativeGraphPath;
@@ -3875,9 +3937,10 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
         {"entries", singleton ? std::string{} : cold.metadata.at("tensorParallelEntries")}});
     }
   }
-  BOOST_CHECK_EQUAL(sourceFetches, 3u);
-  BOOST_CHECK_EQUAL(signatures, 3u);
+  BOOST_CHECK_EQUAL(sourceFetches, expectedUnits);
+  BOOST_CHECK_EQUAL(signatures, expectedUnits);
   std::vector<std::vector<qwen::QwenTpUnit>> units;
+  std::size_t stageIndex = 0;
   for (const auto& stage : prepared.candidate.executionPlan.stageLayout) {
     std::vector<qwen::QwenTpUnit> members;
     for (std::size_t rank = 0; rank < stage.unitRoleIds.size(); ++rank) {
@@ -3885,9 +3948,12 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
       const auto role = std::find_if(prepared.roles.begin(), prepared.roles.end(),
         [&] (const auto& value) { return value.role == id; });
       BOOST_REQUIRE(role != prepared.roles.end());
-      members.push_back({id, rank, role->layerBegin, role->layerEnd});
+      const auto& range = configuration.at("splitter").at("layer_ranges").at(stageIndex);
+      members.push_back({id, rank, range.at(0).get<std::uint64_t>(),
+                        range.at(1).get<std::uint64_t>()});
     }
     units.push_back(std::move(members));
+    ++stageIndex;
   }
   auto executionPlan = prepared.candidate.executionPlan;
   if (coordinator) {
@@ -3902,9 +3968,11 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
   for (const auto& item : std::vector<std::pair<std::string,
          const std::map<std::string, NativeModelRunnerSpec>*>>{
            {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
+    const auto layoutLabel = degrees.empty() ? std::string(mirrored ? "[1,2]" : "[2,1]")
+      : nativeCanonicalJson(NativeJson(degrees));
     verifyHybridExecution(sourcePath.string(),
       executionPlan, shape, units, prepared.candidate.resultEgressRole,
-      *item.second, true, item.first + (mirrored ? "-[1,2]" : "-[2,1]") +
+      *item.second, true, item.first + "-" + layoutLabel +
         (externalControls ? "-controls" : "") + (coordinator ? "-coordinator" : ""),
       externalControls, coordinator, fault);
   }
@@ -3934,6 +4002,16 @@ BOOST_AUTO_TEST_CASE(HybridMaterialsReopenThroughProductionCache)
     verifyHybridMaterials(false, true);
     verifyHybridMaterials(true, true);
   }
+}
+
+BOOST_AUTO_TEST_CASE(ThreeUnequalStagesExecuteDegreeThreeFromSource)
+{
+  verifyHybridMaterials(false, false, false, CoordinatorFault::NONE, {2, 3, 1});
+}
+
+BOOST_AUTO_TEST_CASE(FourStagesExecuteDegreeFourFromSource)
+{
+  verifyHybridMaterials(false, false, false, CoordinatorFault::NONE, {1, 1, 1, 4});
 }
 
 BOOST_AUTO_TEST_CASE(GenerationBusKeepsEpochNamesAndCancelsReaders)
