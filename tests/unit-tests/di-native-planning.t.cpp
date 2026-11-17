@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/fixtures/spec182/native-catalog-test-access.hpp"
 #include "tests/fixtures/spec182/native-qwen-config.hpp"
@@ -7,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include <fstream>
+#include <cstdio>
 #include "tests/fixtures/spec182/native-sealing-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
@@ -626,7 +628,10 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
     }
     inputs.erase(secondId);
   });
-  char preparationDirectory[] = "/var/tmp/spec222-prepared-XXXXXX";
+  const auto scratch = ndnsf::test::makeTestScratchTemplate("spec222-prepared");
+  char preparationDirectory[4096];
+  std::snprintf(preparationDirectory, sizeof(preparationDirectory), "%s",
+                scratch.c_str());
   BOOST_REQUIRE(::mkdtemp(preparationDirectory));
   struct PreparationDirectory
   {

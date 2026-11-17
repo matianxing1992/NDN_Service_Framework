@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalArtifactPublisher.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-material-fragment-cache.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-filesystem-artifacts.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
@@ -20,6 +21,7 @@
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 
 #include <onnx/onnx_pb.h>
+#include <cstdio>
 #include <onnx/checker.h>
 #include <onnx/defs/schema.h>
 #include <onnxruntime_cxx_api.h>
@@ -2260,7 +2262,9 @@ BOOST_AUTO_TEST_CASE(SingleInitializerBeyondProtobufLimitStreamsIntoExternalFile
 
 BOOST_AUTO_TEST_CASE(InitializerFileOwnerSurvivesUnlinkAndRejectsChangedOrInvalidFiles)
 {
-  char path[] = "/var/tmp/ndnsf-di-initializer-test-XXXXXX";
+  const auto scratch = ndnsf::test::makeTestScratchTemplate("ndnsf-di-initializer-test");
+  char path[4096];
+  std::snprintf(path, sizeof(path), "%s", scratch.c_str());
   const int fd = ::mkstemp(path);
   BOOST_REQUIRE_GE(fd, 0);
   struct Cleanup {
@@ -2305,7 +2309,9 @@ BOOST_AUTO_TEST_CASE(InitializerFileOwnerSurvivesUnlinkAndRejectsChangedOrInvali
 
 BOOST_AUTO_TEST_CASE(OwnedInitializerSnapshotReusesDigestAndKeepsCancellationAndBounds)
 {
-  char path[] = "/var/tmp/ndnsf-di-owned-initializer-XXXXXX";
+  const auto scratch = ndnsf::test::makeTestScratchTemplate("ndnsf-di-owned-initializer");
+  char path[4096];
+  std::snprintf(path, sizeof(path), "%s", scratch.c_str());
   const int fd = ::mkstemp(path);
   BOOST_REQUIRE_GE(fd, 0);
   const std::vector<std::uint8_t> bytes(2U << 20, 17);
@@ -2352,7 +2358,9 @@ BOOST_AUTO_TEST_CASE(OwnedInitializerSnapshotReusesDigestAndKeepsCancellationAnd
 
 BOOST_AUTO_TEST_CASE(OwnedInitializerWithOutstandingWriterRetainsByteVerification)
 {
-  char path[] = "/var/tmp/ndnsf-di-writable-initializer-XXXXXX";
+  const auto scratch = ndnsf::test::makeTestScratchTemplate("ndnsf-di-writable-initializer");
+  char path[4096];
+  std::snprintf(path, sizeof(path), "%s", scratch.c_str());
   const int fd = ::mkstemp(path);
   BOOST_REQUIRE_GE(fd, 0);
   struct Cleanup {

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <system_error>
 
 namespace ndnsf::test {
@@ -99,6 +100,26 @@ testFixturePath(const std::filesystem::path& relative)
     "no test fixture root is configured; set NDNSF_TEST_FIXTURE_ROOT or build the "
     "source-tree target: " + relative.string());
 #endif
+}
+
+/** A writable scratch directory for one test, with an owner and no shared parent.
+ *
+ * Tests that need to write use `std::filesystem::temp_directory_path()`, which honours `TMPDIR` and is
+ * correct, but several hard-coded `/var/tmp/...XXXXXX` as their `mkstemp`/`mkdtemp` template. That is a
+ * real input authority: on a host without `/var/tmp`, or in a container where it is read-only, those
+ * cases fail for a reason unrelated to what they test.
+ *
+ * @param stem Prefix for the entry name.
+ * @returns A template string ending in `XXXXXX` under the platform temp directory, for `mkstemp` or
+ *          `mkdtemp` to fill in. The caller owns and removes what it creates.
+ */
+inline std::string
+makeTestScratchTemplate(const std::string& stem)
+{
+  std::error_code statusError;
+  auto base = std::filesystem::temp_directory_path(statusError);
+  if (statusError || base.empty()) base = std::filesystem::path("/tmp");
+  return (base / (stem + "-XXXXXX")).string();
 }
 
 /** Resolve one read-only repository resource, without depending on the working directory.
