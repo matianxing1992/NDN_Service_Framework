@@ -5,7 +5,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCheckpointExport.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -13,16 +15,20 @@
 #include <system_error>
 #include <tuple>
 #include <utility>
+#include <sys/stat.h>
 
 namespace ndnsf::di {
 
-/** One bounded private qualification file, shared by this Provider's runners. */
-class OnnxKvStateProbe final : public OnnxKvStateObserver
+/** Bounded private qualification output shared by this Provider's runners. */
+class OnnxKvStateProbe final : public OnnxKvStateObserver,
+                              public OnnxCompleteKvStateObserver
 {
 public:
-  OnnxKvStateProbe(std::filesystem::path destination, std::string provider)
+  OnnxKvStateProbe(std::filesystem::path destination, std::string provider,
+                   bool captureComplete = false)
     : m_destination(std::move(destination))
     , m_provider(std::move(provider))
+    , m_captureComplete(captureComplete)
   {
     std::error_code error;
     const auto status = std::filesystem::symlink_status(m_destination, error);
@@ -31,6 +37,8 @@ public:
       throw std::runtime_error("qualification KV destination must be absent");
     if (!m_destination.is_absolute() || m_provider.empty() || m_provider.size() > 4096)
       throw std::invalid_argument("invalid qualification KV destination or provider");
+    if (m_captureComplete && ::mkdir(m_destination.c_str(), S_IRWXU) != 0)
+      throw std::runtime_error("cannot create private qualification KV directory");
   }
 
   bool
@@ -41,7 +49,14 @@ public:
     const auto& lineage = *context.generationLineage;
     return lineage.transitionKind == GenerationEpochLineageV1::PREFILL ||
       lineage.transitionKind == GenerationEpochLineageV1::CHECKPOINT_FINALIZE ||
-      (lineage.transitionKind == GenerationEpochLineageV1::DECODE && context.inferenceEpoch == 1);
+      (lineage.transitionKind == GenerationEpochLineageV1::DECODE &&
+       (m_captureComplete || context.inferenceEpoch == 1));
+  }
+
+  bool
+  wantsCompleteSmallState(const RoleExecutionContext& context) const final
+  {
+    return m_captureComplete && wants(context);
   }
 
   void
@@ -61,11 +76,13 @@ public:
       throw std::invalid_argument("qualification KV lineage mismatch");
     NativeJson tensors = NativeJson::array();
     std::set<std::string> names;
+    std::size_t elements = 0;
     for (const auto& sample : samples) {
       if (sample.inputName.empty() || sample.inputName.size() > 1024 ||
           !names.insert(sample.inputName).second || sample.shape.empty() ||
           sample.shape.size() > 8 ||
-          sample.indices.empty() || sample.indices.size() > 16 ||
+          sample.indices.empty() ||
+          sample.indices.size() > (m_captureComplete ? MAX_COMPLETE_TENSOR_ELEMENTS : 16) ||
           sample.indices.size() != sample.values.size())
         throw std::invalid_argument("qualification KV sample bound exceeded");
       if (sample.elementType != "float32" && sample.elementType != "float16" &&
@@ -74,8 +91,28 @@ public:
       for (const auto value : sample.values)
         if (!std::isfinite(value))
           throw std::invalid_argument("nonfinite qualification KV observation");
-      tensors.push_back({{"inputName", sample.inputName}, {"elementType", sample.elementType},
-        {"shape", sample.shape}, {"indices", sample.indices}, {"values", sample.values}});
+      NativeJson tensor{{"inputName", sample.inputName}, {"elementType", sample.elementType},
+                        {"shape", sample.shape}, {"values", sample.values}};
+      if (m_captureComplete) {
+        std::size_t extent = 1;
+        for (auto dimension : sample.shape) {
+          if (dimension <= 0 ||
+              static_cast<std::uint64_t>(dimension) > MAX_COMPLETE_TENSOR_ELEMENTS / extent)
+            throw std::runtime_error("complete qualification KV tensor exceeds element bound");
+          extent *= static_cast<std::size_t>(dimension);
+        }
+        if (extent != sample.indices.size() || extent > MAX_COMPLETE_RECORD_ELEMENTS - elements)
+          throw std::runtime_error("complete qualification KV coverage or record bound failed");
+        for (std::size_t index = 0; index < extent; ++index) {
+          if (sample.indices[index] != index)
+            throw std::runtime_error("complete qualification KV coverage is not contiguous");
+        }
+        elements += extent;
+      }
+      else {
+        tensor["indices"] = sample.indices;
+      }
+      tensors.push_back(std::move(tensor));
     }
     NativeJson observation{{"requestId", context.requestId}, {"sessionId", context.sessionId},
       {"role", context.role}, {"providerBootId", context.providerBootId},
@@ -88,9 +125,40 @@ public:
       {"logicalPrefixTokenCount", lineage.logicalPrefixTokenCount},
       {"tensors", std::move(tensors)}};
     std::lock_guard<std::mutex> lock(m_mutex);
-    const auto key = std::make_tuple(context.requestId, context.attemptEpoch, context.role,
-                                     context.inferenceEpoch);
-    if (m_records.size() >= 64 || !m_keys.insert(key).second)
+    const EpochKey key{context.requestId, context.attemptEpoch, context.role,
+                       context.inferenceEpoch};
+    if (m_captureComplete) {
+      // Stateful child entries may observe disjoint tensors for the same epoch.
+      if (m_completeRecords >= MAX_COMPLETE_RECORDS)
+        throw std::runtime_error("complete qualification KV record bound exceeded");
+      const auto found = m_completeKeys.find(key);
+      if (found != m_completeKeys.end()) {
+        for (const auto& name : names) {
+          if (found->second.count(name))
+            throw std::runtime_error("duplicate complete qualification KV tensor");
+        }
+      }
+      const NativeJson document{{"schema", "ndnsf-di-kv-complete-v1"},
+        {"provider", m_provider}, {"record", std::move(observation)}};
+      const auto bytes = nativeCanonicalJson(document).size();
+      if (bytes > MAX_COMPLETE_BYTES - m_completeBytes)
+        throw std::runtime_error("complete qualification KV directory byte bound exceeded");
+      auto [seen, inserted] = m_completeKeys.try_emplace(key);
+      try {
+        nativeExportPrivateCheckpoint(
+          m_destination / (std::to_string(m_completeRecords) + ".json"), document);
+      }
+      catch (...) {
+        if (inserted)
+          m_completeKeys.erase(seen);
+        throw;
+      }
+      seen->second.merge(names);
+      ++m_completeRecords;
+      m_completeBytes += bytes;
+      return;
+    }
+    if (m_keys.size() >= 64 || !m_keys.insert(key).second)
       throw std::runtime_error("qualification KV record bound or duplicate observation");
     m_records.push_back(std::move(observation));
     const NativeJson document{{"schema", "ndnsf-di-kv-value-samples-v1"},
@@ -101,11 +169,21 @@ public:
   }
 
 private:
+  static constexpr std::size_t MAX_COMPLETE_TENSOR_ELEMENTS = 4096;
+  static constexpr std::size_t MAX_COMPLETE_RECORD_ELEMENTS = 16384;
+  static constexpr std::size_t MAX_COMPLETE_RECORDS = 512;
+  static constexpr std::size_t MAX_COMPLETE_BYTES = 16 * 1024 * 1024;
+  using EpochKey = std::tuple<std::string, std::uint64_t, std::string, std::uint64_t>;
+
   const std::filesystem::path m_destination;
   const std::string m_provider;
+  const bool m_captureComplete;
   std::mutex m_mutex;
+  std::size_t m_completeBytes = 0;
+  std::size_t m_completeRecords = 0;
+  std::map<EpochKey, std::set<std::string>> m_completeKeys;
   NativeJson m_records = NativeJson::array();
-  std::set<std::tuple<std::string, std::uint64_t, std::string, std::uint64_t>> m_keys;
+  std::set<EpochKey> m_keys;
 };
 
 } // namespace ndnsf::di

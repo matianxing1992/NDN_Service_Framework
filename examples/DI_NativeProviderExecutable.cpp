@@ -217,6 +217,7 @@ struct Options
   std::string tokenizerJson;
   std::string statisticsFile;
   bool sampleKvStateValues = false;
+  bool captureCompleteKvState = false;
   std::string kvHandoffConfigPath;
   bool checkKvHandoffConfig = false;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
@@ -849,6 +850,9 @@ parseArgs(int argc, char** argv)
     else if (arg == "--sample-kv-state-values") {
       options.sampleKvStateValues = true;
     }
+    else if (arg == "--capture-complete-kv-state") {
+      options.captureCompleteKvState = true;
+    }
     else if (arg == "--repo-service") {
       options.repoServiceName = readValue();
     }
@@ -1231,7 +1235,7 @@ printUsage(const char* program)
     << "[--artifact-cache-max-mib <positive-MiB>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
-    << "[--statistics-file <jsonl-path>] [--sample-kv-state-values] "
+    << "[--statistics-file <jsonl-path>] [--sample-kv-state-values | --capture-complete-kv-state] "
     << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
     << "[--conversation-retention-ms <1..3600000>] "
     << "[--repo-ack-timeout-ms <ms>] "
@@ -1431,12 +1435,16 @@ main(int argc, char** argv)
       std::chrono::milliseconds(options.assemblyTimeoutMs);
     auto artifactCache = std::make_shared<ProviderArtifactCache>(artifactCacheConfig);
     std::shared_ptr<OnnxKvStateProbe> stateProbe;
-    if (options.sampleKvStateValues) {
+    if (options.sampleKvStateValues && options.captureCompleteKvState)
+      throw std::invalid_argument("choose one KV qualification mode");
+    if (options.sampleKvStateValues || options.captureCompleteKvState) {
       if (options.statisticsFile.empty() || options.wiringCheckOnly ||
           options.tracerDeterministicRunner)
         throw std::invalid_argument("KV qualification requires statistics and real ONNX execution");
       stateProbe = std::make_shared<OnnxKvStateProbe>(
-        std::filesystem::absolute(options.statisticsFile + ".kv-samples.json"), options.providerName);
+        std::filesystem::absolute(options.statisticsFile +
+          (options.captureCompleteKvState ? ".kv-complete" : ".kv-samples.json")),
+        options.providerName, options.captureCompleteKvState);
     }
     registerOnnxRuntimeBackend(*factory, sessionCache, std::move(stateProbe));
     factory->registerBackend(

@@ -1168,11 +1168,12 @@ def test_repo_cache_limits_reject_invalid_before_launch(ops, deployment, option,
 
 
 @pytest.mark.parametrize('value', [1, 'true', None])
-def test_kv_state_probe_requires_boolean_before_launch(ops, deployment, value):
+@pytest.mark.parametrize('option', ['sample-kv-state-values', 'capture-complete-kv-state'])
+def test_kv_state_probe_requires_boolean_before_launch(ops, deployment, value, option):
     module = importlib.import_module('_spec217_ops.deployment_config')
     root, config = deployment
-    config['actors'][-1].setdefault('parameters', {})['sample-kv-state-values'] = value
-    with pytest.raises(ValueError, match='sample-kv-state-values'):
+    config['actors'][-1].setdefault('parameters', {})[option] = value
+    with pytest.raises(ValueError, match=option):
         module.load_deployment(write_config(root, config))
     assert not (root / 'state_root').exists()
 
@@ -2229,8 +2230,9 @@ def test_diagnostic_log_filter_rejects_invalid_values(ops, tmp_path, monkeypatch
 @pytest.mark.parametrize('debug', (False, True))
 @pytest.mark.parametrize('timing', (False, True))
 @pytest.mark.parametrize('core_budget', (None, 100, 600000))
+@pytest.mark.parametrize('kv_option', ('sample-kv-state-values', 'capture-complete-kv-state'))
 def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
-        ops, deployment, monkeypatch, debug, timing, core_budget):
+        ops, deployment, monkeypatch, debug, timing, core_budget, kv_option):
     parser, _ = ops
     base, config = deployment
     (base / 'trust-root-registry-v1.json').write_text('{}')
@@ -2243,7 +2245,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     config['actors'][-1]['parameters'] = {'grant-authority-public-key': 'key.pem',
         'recipient-key-map': 'recipients.json', 'enable-admission-lease': False,
         'allow-selection-generation-options': True, 'repo-fetch-timeout-ms': 900000,
-        'sample-kv-state-values': True,
+        kv_option: True,
         'conversation-retention-ms': 3600000, 'assembly-timeout-ms': 900000,
         'artifact-cache-max-mib': 131072}
     if core_budget is not None:
@@ -2267,7 +2269,7 @@ def test_cluster_native_launch_uses_isolated_env_and_only_this_providers_key(
     argv, env = cluster._native_launch(native, native['actors'][-1], directory, state)
     assert argv[0] == str(base / 'release/bin/di-native-provider')
     assert '--allow-selection-generation-options' in argv
-    assert '--sample-kv-state-values' in argv
+    assert f'--{kv_option}' in argv
     assert argv[argv.index('--repo-fetch-timeout-ms') + 1] == '900000'
     assert argv[argv.index('--conversation-retention-ms') + 1] == '3600000'
     assert argv[argv.index('--assembly-timeout-ms') + 1] == '900000'
