@@ -775,6 +775,28 @@ BOOST_AUTO_TEST_CASE(StoredModelOpenKeepsCoreOwnerUntilQuietReadCallbacksDrain)
     BOOST_CHECK(!std::filesystem::exists(journal.string() + ".object"));
     sourceRuntime->close();
     BOOST_CHECK(sourceRuntime->drain(std::chrono::seconds(2)));
+
+    auto& split = sourceJson.at("catalog").at("splitter");
+    const auto role = split.at("roles").at(0).get<std::string>();
+    split["tensor_degrees"] = {2};
+    split["rank_artifact_digests_by_role"] = {{role, {
+      ndnsf::di::nativePlanningDigest("alternate-layout-rank-0"),
+      ndnsf::di::nativePlanningDigest("alternate-layout-rank-1")}}};
+    sourceConfig.nativeConfigPath = files.write("source-conflicting-layout.json",
+      ndnsf::di::nativeCanonicalJson(sourceJson)).string();
+    auto changedRuntime = Runtime::open(sourceConfig);
+    runtimes.push_back(changedRuntime);
+    ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
+      changedRuntime, fixtureUser, grants, admission);
+    BOOST_CHECK_EXCEPTION(changedRuntime->user().prepareStoredModel(
+      "default", repositoryConfig, journal, handlePath, std::chrono::seconds(10)),
+      DiError, [] (const DiError& error) {
+        return std::string(error.what()).find("DI_STORED_MODEL_LOCAL_POLICY_MISMATCH")
+          != std::string::npos;
+      });
+    BOOST_CHECK(!std::filesystem::exists(journal));
+    changedRuntime->close();
+    BOOST_CHECK(changedRuntime->drain(std::chrono::seconds(2)));
   }
   BOOST_CHECK_EQUAL(observations->unexpectedInterests.load(), 0U);
   {

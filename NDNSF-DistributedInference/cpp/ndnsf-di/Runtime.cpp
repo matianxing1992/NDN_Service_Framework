@@ -1925,10 +1925,11 @@ User::openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     std::lock_guard<std::mutex> lock(state->mutex);
     if (state->phase != detail::RuntimeState::Phase::Open || state->coreOwner != owner ||
         owner->closed.load(std::memory_order_acquire) ||
-        owner->ioFailed.load(std::memory_order_acquire) ||
-        std::chrono::steady_clock::now() >= deadline)
+        owner->ioFailed.load(std::memory_order_acquire))
       throw DiError("STORED_MODEL_OPEN_CANCELLED", "local", "stored-model-open",
-                    "Runtime owner closed, Core failed, or read deadline expired");
+                    "Runtime owner closed or Core failed");
+    if (std::chrono::steady_clock::now() >= deadline)
+      throw DiError("PREPARATION_TIMEOUT", "local", "stored-model-open", "read deadline expired");
   };
 
   ensureRuntimeCoreTransport(state);

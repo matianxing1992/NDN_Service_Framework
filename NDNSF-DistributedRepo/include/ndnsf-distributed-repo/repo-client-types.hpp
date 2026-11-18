@@ -393,6 +393,8 @@ struct RepoDataFetch
   uint64_t rangeLengthBytes = 0;
   bool hasRange = false;
   std::shared_ptr<const std::function<bool(const std::vector<uint8_t>&)>> verifyWire;
+  /** Optional owner lease for named packet reads, retained until their Face callbacks drain. */
+  std::shared_ptr<void> operationLifetime;
 };
 
 /** Result of an original-Data retrieval. */

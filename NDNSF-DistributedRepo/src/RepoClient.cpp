@@ -3422,6 +3422,8 @@ RepoClient::fetchData(const RepoDataFetch& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data retrieval requires a persistent client",
                           "fetchData");
+  if (input.operationLifetime && (input.ownerClaim || input.manifestBound))
+    throw RepoClientError("UNSUPPORTED", "owner lease requires a named packet read", "fetchData");
   requireWireVerifier(input.verifyWire, "fetchData");
   requireLiveDeadline(options.deadline, "fetchData");
   if (input.ownerClaim) {
@@ -3531,9 +3533,22 @@ RepoClient::fetchData(const RepoDataFetch& input,
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
-  auto wires = RepoClientCompat::fetchOriginalDataPackets(
-    m_impl->user, m_impl->target(input.target), names, wireBudget,
-    verifyPacket, remainingMs(options.deadline), options.requireCurrent);
+  const auto timeoutMs = remainingMs(options.deadline);
+  if (timeoutMs == 0)
+    throw RepoClientError("DEADLINE_EXPIRED", "named packet read deadline passed", "fetchData");
+  std::vector<std::vector<uint8_t>> wires;
+  try {
+    wires = RepoClientCompat::fetchOriginalDataPackets(
+      m_impl->user, m_impl->target(input.target), names, wireBudget,
+      verifyPacket, timeoutMs, options.requireCurrent, input.operationLifetime);
+  }
+  catch (const std::runtime_error& error) {
+    const std::string message(error.what());
+    if (message == "repo-original-packet-fetch-deadline" ||
+        message == "repo-original-packet-set-face-deadline")
+      throw RepoClientError("DEADLINE_EXPIRED", error.what(), "fetchData");
+    throw;
+  }
   RepoDataFetchResult result;
   result.wireBytes = 0;
   ndn::util::Sha256 digest;
