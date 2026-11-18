@@ -562,6 +562,16 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
         archived.epoch = m_abeMaterialVersion.controllerEpoch;
         archived.publicParameters = current->publicParameters;
         archived.masterSecret = current->masterSecret;
+        // Record the identity the parameters were actually served under: a historical reader
+        // matches Data to this generation through the name and wire digest, not the timestamp.
+        ndn::Name archivedName = m_aaCert.getIdentity();
+        archivedName.append(ndn::nacabe::PUBLIC_PARAMS);
+        archivedName.append(ndn::nacabe::ABE_TYPE_KP_ABE);
+        archivedName.appendVersion(m_abeMaterialVersion.controllerGenerationTimestamp * 1000ULL +
+                                   m_abeMaterialVersion.controllerEpoch);
+        archived.publicParametersName = archivedName.toUri(ndn::name::UriFormat::CANONICAL);
+        archived.publicParametersWireDigest = abePublicParametersDigest(
+          ndn::Buffer(current->publicParameters.begin(), current->publicParameters.end()));
         archived.reason = "revocation-rotation";
         m_generationStore->recordAbeHistory(archived);
       }

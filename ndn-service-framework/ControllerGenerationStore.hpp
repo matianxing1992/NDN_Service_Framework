@@ -50,6 +50,11 @@ public:
     uint64_t epoch = 0;
     std::string publicParameters;
     std::string masterSecret;
+    /** The published name this generation's parameters were served under, and the digest of
+     * their wire form. Without them an archive entry cannot be matched to the Data that was
+     * protected with it. */
+    std::string publicParametersName;
+    std::string publicParametersWireDigest;
     std::string digest;
     std::string reason;
 

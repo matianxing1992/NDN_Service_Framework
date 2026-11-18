@@ -643,6 +643,9 @@ BOOST_AUTO_TEST_CASE(ArchivedGenerationsAreRetainedAndBounded)
       entry.epoch = index;
       entry.publicParameters = "params-" + std::to_string(index);
       entry.masterSecret = "secret-" + std::to_string(index);
+      entry.publicParametersName = "/controller/a/PUBPARAMS/kp-abe/v=" +
+        std::to_string(1000 + index);
+      entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
       entry.reason = "revocation-rotation";
       store.recordAbeHistory(entry, 2);
     }
@@ -659,6 +662,8 @@ BOOST_AUTO_TEST_CASE(ArchivedGenerationsAreRetainedAndBounded)
     retry.epoch = 3;
     retry.publicParameters = "params-3";
     retry.masterSecret = "secret-3";
+    retry.publicParametersName = "/controller/a/PUBPARAMS/kp-abe/v=1003";
+    retry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
     retry.reason = "revocation-rotation";
     store.recordAbeHistory(retry, 2);
     const auto afterRetry = store.loadAbeHistory();
@@ -725,6 +730,8 @@ BOOST_AUTO_TEST_CASE(ArchivedGenerationDecryptsItsOwnCiphertext)
     archived.epoch = 1;
     archived.publicParameters = publicParameters;
     archived.masterSecret = masterSecret;
+    archived.publicParametersName = "/controller/a/PUBPARAMS/kp-abe/v=1000";
+    archived.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
     archived.reason = "revocation-rotation";
     store.recordAbeHistory(archived);
   }

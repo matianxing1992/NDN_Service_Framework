@@ -196,7 +196,8 @@ abeHistoryDigest(const ControllerGenerationStore::AbeHistoryEntry& entry)
   hash << std::string("NDNSF-CONTROLLER-ABE-HISTORY-V1");
   hash << std::to_string(entry.generationTimestamp);
   hash << std::to_string(entry.epoch);
-  for (const auto* field : {&entry.publicParameters, &entry.masterSecret}) {
+  for (const auto* field : {&entry.publicParametersName, &entry.publicParametersWireDigest,
+                            &entry.publicParameters, &entry.masterSecret}) {
     hash << (std::to_string(field->size()) + ":");
     hash << *field;
   }
@@ -252,6 +253,8 @@ ControllerGenerationStore::AbeHistoryEntry::operator=(const AbeHistoryEntry& oth
     epoch = other.epoch;
     publicParameters = other.publicParameters;
     masterSecret = other.masterSecret;
+    publicParametersName = other.publicParametersName;
+    publicParametersWireDigest = other.publicParametersWireDigest;
     digest = other.digest;
     reason = other.reason;
   }
@@ -525,6 +528,8 @@ ControllerGenerationStore::loadState() const
         entry.epoch = readU64(state);
         readStringInto(state, entry.publicParameters, MAX_ABE_FIELD_BYTES);
         readStringInto(state, entry.masterSecret, MAX_ABE_FIELD_BYTES);
+        readStringInto(state, entry.publicParametersName, MAX_LEASE_BYTES - 64);
+        readStringInto(state, entry.publicParametersWireDigest, 71);
         readStringInto(state, entry.digest, 71);
         readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
         if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
@@ -556,7 +561,8 @@ ControllerGenerationStore::recordAbeHistory(const AbeHistoryEntry& entry, size_t
   if (retention == 0 || retention > 64)
     throw std::invalid_argument("invalid Controller ABE history retention");
   if (entry.generationTimestamp == 0 || entry.publicParameters.empty() ||
-      entry.masterSecret.empty())
+      entry.masterSecret.empty() || entry.publicParametersName.empty() ||
+      !isDigest(entry.publicParametersWireDigest))
     throw std::invalid_argument("invalid archived Controller ABE generation");
   AbeHistoryEntry archived = entry;
   archived.digest = abeHistoryDigest(archived);
@@ -648,6 +654,8 @@ ControllerGenerationStore::persist(
         writeU64(fd, entry.epoch);
         writeString(fd, entry.publicParameters);
         writeString(fd, entry.masterSecret);
+        writeString(fd, entry.publicParametersName);
+        writeString(fd, entry.publicParametersWireDigest);
         writeString(fd, entry.digest);
         writeString(fd, entry.reason);
       }
