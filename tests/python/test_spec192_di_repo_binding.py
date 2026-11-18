@@ -30,6 +30,9 @@ from ndnsf_distributed_inference.repo_artifact_resolver import (
 from py_repoclient import ArtifactReference as NativeArtifactReference
 from py_repoclient import ArtifactRepositoryApi
 
+# Declared once so the reference name and the publisher identity cannot drift apart.
+PUBLISHER = "/spec192/test-publisher"
+
 
 def _native_inapp_artifact(tmp_path: Path, payload: bytes):
     source = tmp_path / "source.bin"
@@ -39,12 +42,16 @@ def _native_inapp_artifact(tmp_path: Path, payload: bytes):
         durable_root=tmp_path / "repo",
         owner_id="spec192-di-test",
     )
+    # The logical name must live under the declared publisher namespace, otherwise the native rule
+    # "artifact references must belong to the complete publisher namespace" rejects the reference before
+    # the digest/size/schema assertions this helper exists to exercise.
+    logical_name = PUBLISHER + "/DI/model.bin"
     reference = NativeArtifactReference(
-        logical_name="/Spec192/DI/model.bin",
+        logical_name=logical_name,
         content_digest=digest,
         size_bytes=len(payload),
-        root_manifest_name="/Spec192/DI/model.bin/root",
-        publisher_identity="/spec192/test-publisher",
+        root_manifest_name=logical_name + "/root",
+        publisher_identity=PUBLISHER,
         policy_epoch="/Policy/spec192/v1",
     )
     result = api.publish_file(source, reference)
