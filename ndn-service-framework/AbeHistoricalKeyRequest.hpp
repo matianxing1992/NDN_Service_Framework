@@ -85,7 +85,8 @@ matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controller
 bool
 buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& keyBytes,
                         uint64_t replyExpiresAtMs,
-                        const std::function<void(ndn::Data&)>& sign, ndn::Data& result);
+                        const std::function<void(ndn::Data&)>& sign, ndn::Data& result,
+                        const ndn::Name& replyName = {});
 
 /** What a consumer learns from a reply after it has checked every binding. */
 struct HistoricalKeyReply
@@ -152,7 +153,7 @@ public:
 
 private:
   std::optional<ndn::Data>
-  finish(const HistoricalKeyRequest& request, uint64_t nowMs);
+  finish(const HistoricalKeyRequest& request, uint64_t nowMs, const ndn::Name& replyName);
 
   SignerLookup m_signerLookup;
   MaterialLookup m_materialLookup;

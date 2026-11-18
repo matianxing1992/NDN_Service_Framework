@@ -159,7 +159,8 @@ matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controller
 bool
 buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& keyBytes,
                         uint64_t replyExpiresAtMs,
-                        const std::function<void(ndn::Data&)>& sign, ndn::Data& result)
+                        const std::function<void(ndn::Data&)>& sign, ndn::Data& result,
+                        const ndn::Name& replyName)
 {
   if (request.generation == 0 || keyBytes.empty() || request.expiresAtMs == 0)
     return false;
@@ -179,7 +180,17 @@ buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& 
   envelope += "\n";
   envelope += keyBytes;
 
-  result.setName(makeHistoricalKeyRequestName(request.controllerPrefix, request));
+  const auto requestName = makeHistoricalKeyRequestName(request.controllerPrefix, request);
+  // The reply answers the Interest that was expressed, whose name carries the requester's signature
+  // components after the request name. The request name must stay its prefix, and exact naming is
+  // what the forwarder accepts.
+  if (replyName.empty())
+    result.setName(requestName);
+  else if (replyName.size() >= requestName.size() &&
+           replyName.getSubName(0, requestName.size()) == requestName)
+    result.setName(replyName);
+  else
+    return false;
   result.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(envelope.data()),
                                 envelope.size()));
   result.setFreshnessPeriod(ndn::time::milliseconds(0));
@@ -214,7 +225,9 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
     };
     if (field(lines[1], "request ") != historicalKeyRequestDigest(request))
       return false;
-    if (reply.getName() != makeHistoricalKeyRequestName(request.controllerPrefix, request))
+    const auto requestName = makeHistoricalKeyRequestName(request.controllerPrefix, request);
+    if (reply.getName().size() < requestName.size() ||
+        reply.getName().getSubName(0, requestName.size()) != requestName)
       return false;
     if (field(lines[2], "recipient ") !=
         request.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL))
@@ -267,11 +280,12 @@ HistoricalKeyBroker::answerValidated(const ndn::Interest& interest,
   // Mint only for the certificate the request named.
   if (signer.getName() != request.recipientCertificate)
     return std::nullopt;
-  return finish(request, nowMs);
+  return finish(request, nowMs, interest.getName());
 }
 
 std::optional<ndn::Data>
-HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs)
+HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs,
+                            const ndn::Name& replyName)
 {
   for (auto it = m_seen.begin(); it != m_seen.end();) {
     if (it->second > nowMs) {
@@ -298,7 +312,8 @@ HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs)
     return std::nullopt;
   const std::string keyBytes(reinterpret_cast<const char*>(key.data()), key.size());
   ndn::Data reply;
-  if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, m_replySigner, reply))
+  if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, m_replySigner, reply,
+                               replyName))
     return std::nullopt;
   m_seen[digest] = request.expiresAtMs;
   return reply;
@@ -322,47 +337,14 @@ HistoricalKeyBroker::answer(const ndn::Interest& interest, const ndn::Name& cont
       request.mintedAtMs + MAX_AGE_MS < nowMs)
     return std::nullopt;
 
-  for (auto it = m_seen.begin(); it != m_seen.end();) {
-    if (it->second > nowMs) {
-      ++it;
-      continue;
-    }
-    it = m_seen.erase(it);
-  }
-  const auto digest = historicalKeyRequestDigest(request);
-  // A replay must not mint a second key.
-  if (m_seen.count(digest))
-    return std::nullopt;
-
   ndn::security::Certificate signer;
   if (!m_signerLookup || !m_signerLookup(request.recipientCertificate, signer))
     return std::nullopt;
   if (signer.getName() != request.recipientCertificate)
     return std::nullopt;
-  // The request must be signed by the certificate it names.
   if (!ndn::security::verifySignature(interest, signer.getPublicKey()))
     return std::nullopt;
-
-  Material material;
-  if (!m_materialLookup || !m_materialLookup(request.generation, request.epoch, material))
-    return std::nullopt;
-  HistoricalAbeMaterial keyMaterial{material.publicParameters, material.masterSecret};
-  std::vector<std::uint8_t> key;
-  try {
-    key = issueHistoricalDecryptionKey(keyMaterial, request.policy);
-  }
-  catch (const std::exception&) {
-    return std::nullopt;
-  }
-  if (key.empty())
-    return std::nullopt;
-  const std::string keyBytes(reinterpret_cast<const char*>(key.data()), key.size());
-
-  ndn::Data reply;
-  if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, m_replySigner, reply))
-    return std::nullopt;
-  m_seen[digest] = request.expiresAtMs;
-  return reply;
+  return finish(request, nowMs, interest.getName());
 }
 
 } // namespace ndn_service_framework
