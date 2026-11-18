@@ -378,9 +378,13 @@ def test_spec180_provider_prepared_roles_omit_external_artifact_fetch():
     from ndnsf_distributed_inference.app_sdk import placement as placement_mod
     source = Path(placement_mod.__file__).read_text(encoding="utf-8")
     request_v3 = source.split("def _request_v3", 1)[1].split("\n    def ", 1)[0]
-    assert "ACCEPT_IF_EXACT_REUSE" in request_v3
-    assert "selected_offer.preparation_accepted" in request_v3
-    assert 'fetch_name = ""' in request_v3
+    # The local-vs-fetch decision moved into `_v3_artifact_references`, which
+    # `_request_v3` calls per role; asserting the names inside `_request_v3`
+    # alone pinned their old placement rather than the behaviour.
+    references = source.split("def _v3_artifact_references", 1)[1].split("\n    def ", 1)[0]
+    assert "ExecutionDisposition.ACCEPT_IF_EXACT_REUSE" in references
+    assert "offer.preparation_accepted" in references
+    assert 'return artifact, ""' in references
     assert "artifact_fetch_names[role] = fetch_name" in request_v3
 
 
@@ -389,7 +393,10 @@ def test_spec180_controller_enters_publication_mode_without_repo_manifest():
     source = CONTROLLER.read_text(encoding="utf-8")
     assert "not args.spec180_runtime_publication_file" in source
     assert "SPEC180_RUNTIME_CATALOGUE_PUBLISHED" in source
-    assert "repository deployment manifest is required" in source
+    # The flag is now `--deploy-artifact-references`; the old
+    # `--deploy-to-repo-manifest` name and its error text no longer exist.
+    assert "--deploy-artifact-references" in source
+    assert "--deploy-to-repo-manifest" not in source
 
 
 def test_spec180_publication_decoder_rejects_tampered_batch():
