@@ -1,3 +1,4 @@
+#include "AbePublicParametersArchive.hpp"
 #include "ServiceController.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "ProducerDataNaming.hpp"
@@ -300,6 +301,7 @@ ServiceController::ServiceController(ndn::Face& face,
 
   // Convert policies into ABE attribute policies and register them in AA
   addAttributesForUsersAccordingToServicePolicy();
+  registerArchivedPublicParameters();
 
   // Build fast lookup tables for Interest answering
   buildLookupTables();
@@ -663,6 +665,41 @@ ServiceController::advanceAuthorizationEpoch(bool requireAbeRotationOnRestart)
   m_requiredKeyEpoch = m_policyEpoch;
   m_policyValidFromMs = nowMilliseconds();
   m_policyValidUntilMs = m_policyValidFromMs + 24ULL * 60ULL * 60ULL * 1000ULL;
+}
+
+void
+ServiceController::registerArchivedPublicParameters()
+{
+  if (!m_generationStore)
+    return;
+  std::vector<ControllerGenerationStore::AbeHistoryEntry> archived;
+  try {
+    archived = m_generationStore->loadAbeHistory();
+  }
+  catch (const std::exception& error) {
+    // A damaged archive must not take the Controller down with it: the live generation still
+    // serves, and the missing history surfaces when a historical read asks for it.
+    NDN_LOG_ERROR("Controller archived public parameters unavailable: " << error.what());
+    return;
+  }
+  for (const auto& entry : archived) {
+    try {
+      auto answer = std::make_shared<ndn::Data>();
+      const auto sign = [this] (ndn::Data& data) {
+        m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
+      };
+      if (!buildArchivedPublicParametersData(entry, m_aaCert.getIdentity(), sign, *answer))
+        continue;
+      m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
+        [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {
+          m_face.put(*answer);
+        }));
+    }
+    catch (const std::exception& error) {
+      NDN_LOG_ERROR("Controller archived public parameters skipped one generation: "
+                    << error.what());
+    }
+  }
 }
 
 bool

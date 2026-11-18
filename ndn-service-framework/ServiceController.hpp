@@ -104,6 +104,10 @@ public:
    * An already completed duplicate remains a no-op returning false. */
   bool revoke(const RevocationTarget& target);
 
+  /** Serve the public parameters of every archived generation under the name they were
+   * published with, so a historical fetch resolves without touching the live authority. */
+  void registerArchivedPublicParameters();
+
   /**
    * Grant one exact service authorization.  Grant-only mutations advance the
    * ControllerVersion but keep the current global ABE generation; the
@@ -263,6 +267,8 @@ private:
    * material named here, not the version being advanced to. */
   ControllerVersion m_abeMaterialVersion;
   std::unique_ptr<ControllerGenerationStore> m_generationStore;
+  /** Responders for superseded generations' public parameters, kept alive with the Controller. */
+  std::vector<ndn::ScopedInterestFilterHandle> m_archivedParameterFilters;
   bool m_generationReady = false;
   std::vector<RevocationTarget> m_revocations;
   // A revocation whose ABE rotation threw is still enforced in memory and in
