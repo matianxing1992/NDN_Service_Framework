@@ -41,14 +41,15 @@ buildArchivedPublicParametersData(const ControllerGenerationStore::AbeHistoryEnt
 /** Build the answers a Controller can serve, skipping entries it cannot answer for.
  *
  * Returns one Data per usable archived generation; a mismatched name or missing parameters drops
- * that generation instead of publishing a wrong answer. The count is the caller's evidence that
- * something was actually registered.
+ * that generation instead of publishing a wrong answer. A generation whose name equals `liveName`
+ * is skipped too: the live authority owns that name, and registering it here would race it.
  */
 std::vector<std::shared_ptr<ndn::Data>>
 collectArchivedPublicParameterAnswers(
   const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
   const ndn::Name& identity,
-  const std::function<void(ndn::Data&)>& sign);
+  const std::function<void(ndn::Data&)>& sign,
+  const ndn::Name& liveName = {});
 
 } // namespace ndn_service_framework
 

@@ -686,7 +686,8 @@ ServiceController::registerArchivedPublicParameters()
     m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
   };
   const auto answers = collectArchivedPublicParameterAnswers(archived, m_aaCert.getIdentity(),
-                                                            sign);
+                                                            sign,
+                                                            currentAbePublicParametersName());
   for (const auto& answer : answers) {
     m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
       [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {

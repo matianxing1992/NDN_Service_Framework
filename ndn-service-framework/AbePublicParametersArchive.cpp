@@ -43,7 +43,8 @@ std::vector<std::shared_ptr<ndn::Data>>
 collectArchivedPublicParameterAnswers(
   const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
   const ndn::Name& identity,
-  const std::function<void(ndn::Data&)>& sign)
+  const std::function<void(ndn::Data&)>& sign,
+  const ndn::Name& liveName)
 {
   std::vector<std::shared_ptr<ndn::Data>> answers;
   answers.reserve(entries.size());
@@ -51,6 +52,8 @@ collectArchivedPublicParameterAnswers(
     try {
       auto answer = std::make_shared<ndn::Data>();
       if (!buildArchivedPublicParametersData(entry, identity, sign, *answer))
+        continue;
+      if (!liveName.empty() && answer->getName() == liveName)
         continue;
       answers.push_back(std::move(answer));
     }

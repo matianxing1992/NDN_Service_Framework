@@ -965,6 +965,11 @@ BOOST_AUTO_TEST_CASE(CollectArchivedAnswersSkipsUnusableGenerations)
   const auto answers = collectArchivedPublicParameterAnswers(entries, identity, sign);
   BOOST_REQUIRE_EQUAL(answers.size(), 2u);
   BOOST_CHECK_EQUAL(signedCount, 2);
+  // The live generation owns its name; an archived entry that names it must never be served.
+  const auto live = archivedPublicParametersName(identity, 1003, 2);
+  const auto filtered = collectArchivedPublicParameterAnswers(entries, identity, sign, live);
+  BOOST_REQUIRE_EQUAL(filtered.size(), 1u);
+  BOOST_CHECK(filtered.front()->getName() == archivedPublicParametersName(identity, 1002, 1));
   BOOST_CHECK(answers.front()->getName() == archivedPublicParametersName(identity, 1002, 1));
   BOOST_CHECK(answers.back()->getName() == archivedPublicParametersName(identity, 1003, 2));
   // Nothing to answer for is not an error.
