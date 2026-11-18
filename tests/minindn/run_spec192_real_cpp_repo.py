@@ -2292,6 +2292,10 @@ def run_spec193_object_baseline(ndn, output: Path,
             "trustSchemaValidated": fields.get("validated") == "1",
             "capabilityRepoNode": fields.get("repo_node", ""),
             "wireDigest": fields.get("wire_digest", ""),
+            # Recorded so the oracle can tie each ACK to the call that produced it.
+            "requestId": fields.get("request", ""),
+            "service": fields.get("service", ""),
+            "signerKeyLocator": fields.get("locator", ""),
         })
     if not admitted_acks:
         raise RuntimeError("object client published no admitted provider ACK")

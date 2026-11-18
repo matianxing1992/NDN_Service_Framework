@@ -916,6 +916,7 @@ def verify_object_capability(output: Path, service_prefix: str, user: str,
     if not admitted_acks:
         raise RuntimeError("object capability admitted no provider ACK")
 
+    expected_service = service_prefix.rstrip("/")
     by_provider: dict = {}
     for record in admitted_acks:
         owner = record.get("provider", "")
@@ -925,13 +926,24 @@ def verify_object_capability(output: Path, service_prefix: str, user: str,
             raise RuntimeError("object capability ACK was not trust-schema validated: " + owner)
         if record.get("signerIdentity") != owner:
             raise RuntimeError("object capability ACK signer differs from its provider: " + owner)
+        # Bind the record to the call it answers. Digests alone would let an ACK from another request or
+        # another service satisfy this check.
+        if record.get("requestId", "").lstrip("/") != request_id:
+            raise RuntimeError("object capability ACK answers a different request: " + owner)
+        recorded_service = record.get("service", "").rstrip("/")
+        if expected_service and recorded_service != expected_service:
+            raise RuntimeError("object capability ACK answers a different service: " + owner)
+        if not record.get("signerKeyLocator"):
+            raise RuntimeError("object capability ACK lacks a signer key locator: " + owner)
         digest = record.get("wireDigest", "")
         if not digest.startswith("sha256:"):
             raise RuntimeError("object capability ACK lacks a wire digest: " + owner)
         by_provider.setdefault(owner, []).append(digest)
 
     accepted_digests = by_provider.get(provider, [])
-    if len(set(accepted_digests)) != 1:
+    # Count records, not distinct digests: two admissions that happen to share a digest are still two ACKs
+    # and must not collapse into one that looks correct.
+    if len(accepted_digests) != 1:
         raise RuntimeError("object capability lacks exactly one signed ACK from " + provider)
     accepted = accepted_digests[0]
     if accepted != accepted_ack_digest:

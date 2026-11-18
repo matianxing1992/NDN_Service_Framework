@@ -40,10 +40,13 @@ class _Signature:
 
 
 def record(provider=PROVIDER, signer=None, validated=True, digest=DIGEST,
-           repo_node="/example/repo/node/repoA"):
+           repo_node="/example/repo/node/repoA", request_id="/req-1", service="/svc",
+           locator=LOCATOR):
+    """One admitted ACK, carrying the context the oracle now requires."""
     return {"provider": provider, "signerIdentity": signer or provider,
             "trustSchemaValidated": validated, "wireDigest": digest,
-            "capabilityRepoNode": repo_node}
+            "capabilityRepoNode": repo_node, "requestId": request_id,
+            "service": service, "signerKeyLocator": locator}
 
 
 class ObjectCapabilityEvidenceTest(unittest.TestCase):
@@ -100,6 +103,23 @@ class ObjectCapabilityEvidenceTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "disagree on the selected Repo node"):
             self.run_oracle([record(), record(provider=OTHER, digest=OTHER_DIGEST,
                                               repo_node="/example/repo/node/repoB")])
+
+    def test_ack_answering_another_request_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "answers a different request"):
+            self.run_oracle([record(request_id="/somebody-else")])
+
+    def test_ack_answering_another_service_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "answers a different service"):
+            self.run_oracle([record(service="/other/service")])
+
+    def test_duplicate_records_sharing_a_digest_still_fail(self) -> None:
+        # Two admissions with the same digest must not collapse into one that looks correct.
+        with self.assertRaisesRegex(RuntimeError, "exactly one signed ACK"):
+            self.run_oracle([record(), record()])
+
+    def test_ack_without_a_signer_locator_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "lacks a signer key locator"):
+            self.run_oracle([record(locator="")])
 
     def test_malformed_request_id_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "request ID is malformed"):

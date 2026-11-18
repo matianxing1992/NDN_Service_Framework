@@ -541,6 +541,11 @@ struct AdmittedAckRecord
   bool trustSchemaValidated = false;
   std::string wireDigest;
   std::string capabilityRepoNode;
+  // Context, so a record can be tied to the one call that produced it instead of being matched by digest
+  // alone: the request it answered, the service it was asked for, and the signer's key locator.
+  std::string requestId;
+  std::string service;
+  std::string signerKeyLocator;
 };
 
 struct ObjectCapabilityEvidence
@@ -682,6 +687,8 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
             candidate.authenticationEvidence.trustSchemaValidated;
           record.wireDigest = candidate.authenticationEvidence.wireDigest;
           record.capabilityRepoNode = capabilityRepoNode;
+          record.service = serviceName.toUri();
+          record.signerKeyLocator = candidate.authenticationEvidence.signerKeyLocator;
           if (record.trustSchemaValidated) {
             evidence.admittedAcks.push_back(std::move(record));
           }
@@ -717,6 +724,11 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
     throw std::runtime_error("object CAPABILITY request was not admitted");
   }
   evidence.requestId = requestId.toUri();
+  // The request id is only known after RequestService returns, so stamp it onto the records here rather
+  // than inside the ACK callback.
+  for (auto& admitted : evidence.admittedAcks) {
+    admitted.requestId = evidence.requestId;
+  }
   {
     std::unique_lock<std::mutex> guard(mutex);
     if (!condition.wait_for(guard, std::chrono::seconds(130),
@@ -1430,7 +1442,10 @@ run(const Options& options)
                 << " signer=" << record.signerIdentity
                 << " validated=" << (record.trustSchemaValidated ? 1 : 0)
                 << " repo_node=" << record.capabilityRepoNode
-                << " wire_digest=" << record.wireDigest << '\n';
+                << " wire_digest=" << record.wireDigest
+                << " request=" << record.requestId
+                << " service=" << record.service
+                << " locator=" << record.signerKeyLocator << '\n';
     }
     const auto stored = repo::parseManifestJson(repo::toString(selected(
       "STORE", repo::encodeStoreRequest(manifest, payload))));
