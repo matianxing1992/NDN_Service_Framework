@@ -16,6 +16,16 @@ WAF_RUNTIME = next(ROOT.glob(".waf3-*"))
 sys.path.insert(0, str(WAF_RUNTIME))
 
 
+def test_dependency_helper_loads_through_actual_waf_from_another_directory(tmp_path, monkeypatch):
+    from waflib import Context
+
+    monkeypatch.chdir(tmp_path)
+    module = Context.load_module(str(ROOT / "wscript"))
+    assert "__file__" not in vars(module)
+    assert Path(module._DEPENDENCY_INVENTORY["__file__"]) == ROOT / "scripts/configure_dependencies.py"
+    assert callable(module._DEPENDENCY_INVENTORY["validate_nix_build_identity"])
+
+
 @pytest.mark.parametrize("components,missing", [(["core"], False), (["core", "repo"], False),
                                                (["core", "repo", "di"], True)])
 def test_dependency_identity_checks_only_selected_model_sdk(tmp_path, monkeypatch, components, missing):

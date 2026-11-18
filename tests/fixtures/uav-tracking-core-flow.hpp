@@ -9,6 +9,7 @@
 #include "NDNSF-UAV-APP/shared/UavDigest.hpp"
 #include "NDNSF-UAV-APP/shared/UavNames.hpp"
 #include "NDNSF-UAV-APP/shared/UavProtocol.hpp"
+#include "NDNSF-UAV-APP/shared/UavWindowBinding.hpp"
 #include "NDNSF-UAV-APP/tracking/uav-tracking-job.hpp"
 #include "tests/integration-tests/ndnsf-integration-fixture.hpp"
 
@@ -201,10 +202,29 @@ struct JobFlowFixture : tracking_fixture::ConfigFixture
           provider.getName(), definition.sources[i].cameraId);
         provider.addService(SERVICE_TRACKING_SOURCE,
           [] (const nsf::RequestMessage&) { nsf::ServiceProvider::AckDecision ack; ack.status = true; return ack; },
-          [frames] (const ndn::Name& requester, const ndn::Name&, const ndn::Name&,
+          [this, i, frames] (const ndn::Name& requester, const ndn::Name&, const ndn::Name&,
                     const ndn::Name&, const nsf::RequestMessage& request) {
             const auto payload = request.getPayload();
-            const auto fields = decodeFields(std::string(payload.begin(), payload.end()));
+            const std::string text(payload.begin(), payload.end());
+            if (!text.empty() && text.front() == '{') {
+              const auto query = parseUavSourceInfoRequest(text);
+              const auto& source = definition.sources[i];
+              if ((!query.cameraId.empty() && query.cameraId != source.cameraId) ||
+                  (!query.sourceId.empty() && query.sourceId != source.sourceId) ||
+                  (query.sourceEpoch != 0 && query.sourceEpoch != source.sourceEpoch)) {
+                throw std::invalid_argument("fixture source-info filter mismatch");
+              }
+              const UavSourceDescriptor descriptor{source.producerIdentity, source.cameraId,
+                source.sourceId, source.sourceEpoch, "simulated", "replay"};
+              const auto encoded = renderUavSourceInfoResponse(
+                {descriptor, uavSourceDescriptorDigest(descriptor)});
+              ndn::Buffer bytes(encoded.begin(), encoded.end());
+              nsf::ResponseMessage response;
+              response.setStatus(true);
+              response.setPayload(bytes, bytes.size());
+              return response;
+            }
+            const auto fields = decodeFields(text);
             auto bytes = frames->read(fields, requester);
             nsf::ResponseMessage response;
             response.setStatus(true);

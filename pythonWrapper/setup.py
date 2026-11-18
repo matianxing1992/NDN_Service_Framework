@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 import hashlib
 import json
+import runpy
 import shlex
 import subprocess
 from pathlib import Path
@@ -43,7 +45,37 @@ def runtime_prefix() -> Path:
     return prefix
 
 
+@lru_cache(maxsize=1)
+def _nix_build_helpers():
+    return runpy.run_path(str(ROOT / "scripts/configure_dependencies.py"))
+
+
+def nix_dependency_roots() -> tuple[Path, ...]:
+    """Explicit dependency roots from a controlled Nix build only."""
+    if not (os.environ.get("NDNSF_NIX_BUILD_IDENTITY") or
+            os.environ.get("NDNSF_NIX_DEPENDENCY_ROOTS")):
+        return ()
+    try:
+        helper = _nix_build_helpers()
+        identity = helper["nix_build_identity"]()
+        required = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
+        if not all(name in identity["libraries"] for name in required):
+            raise ValueError("binding Nix identity is missing installed native libraries")
+        compiler = shlex.split(os.environ.get("CXX", "c++"))
+        helper["validate_nix_compiler"](identity, compiler)
+        flag = "-B" + identity["binutilsPrefix"] + "/"
+        os.environ["CXX"] = shlex.join(
+            [identity["tools"]["cxx"]["realpath"]] + compiler[1:] +
+            ([flag] if flag not in compiler else []))
+        return tuple(Path(root) for root in identity["roots"])
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError("invalid Nix binding identity: " + str(error)) from error
+
+
 def dependency_roots() -> tuple[Path, ...]:
+    nix_roots = nix_dependency_roots()
+    if nix_roots:
+        return nix_roots
     roots = list(HOST_GLOBAL_DEPENDENCY_ROOTS)
     if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
         roots.extend(CONTAINER_GLOBAL_DEPENDENCY_ROOTS)
@@ -239,17 +271,7 @@ def validate_native_library_digests(dirs: list[str]) -> None:
             raise RuntimeError("NDNSF global library digest mismatch: " + name)
 
 
-def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
-    validate_pkg_config_environment()
-    try:
-        output = subprocess.check_output(
-            ["pkg-config", "--cflags", "--libs", *packages],
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError(
-            "pkg-config failed for " + ", ".join(packages)) from error
-
+def parse_pkg_config(output: str) -> tuple[list[str], list[str], list[str], list[str]]:
     include_dirs: list[str] = []
     library_dirs: list[str] = []
     libraries: list[str] = []
@@ -264,6 +286,33 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
         else:
             extra_link_args.append(token)
     return include_dirs, library_dirs, libraries, extra_link_args
+
+
+def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
+    validate_pkg_config_environment()
+    try:
+        output = subprocess.check_output(
+            ["pkg-config", "--cflags", "--libs", *packages],
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "pkg-config failed for " + ", ".join(packages)) from error
+    return parse_pkg_config(output)
+
+
+def pkg_config_optional(*packages: str):
+    """Return pkg-config flags when installed, or None for a core-only host."""
+    validate_pkg_config_environment()
+    try:
+        output = subprocess.check_output(
+            ["pkg-config", "--cflags", "--libs", *packages],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return parse_pkg_config(output)
 
 
 def explicit_ndn_svs_pair():
@@ -313,6 +362,18 @@ def build_extension() -> Extension:
         "libnac-abe",
         "ndnsd",
     )
+    tracking = pkg_config_optional("ndnsf-uav-tracking")
+    tracking_includes: list[str] = []
+    tracking_library_dirs: list[str] = []
+    tracking_libraries: list[str] = []
+    tracking_link_args: list[str] = []
+    if tracking is not None:
+        tracking_includes, tracking_library_dirs, tracking_libraries, tracking_link_args = tracking
+        reject_historical_local_paths([*tracking_includes, *tracking_library_dirs],
+                                      "pkg-config ndnsf-uav-tracking")
+        reject_non_global_dependency_paths([*tracking_includes, *tracking_library_dirs],
+                                           "pkg-config ndnsf-uav-tracking")
+        reject_historical_local_link_flags(tracking_link_args, "pkg-config ndnsf-uav-tracking")
     reject_historical_local_paths([*include_dirs, *library_dirs], "pkg-config")
     reject_non_global_dependency_paths([*include_dirs, *library_dirs], "pkg-config")
     reject_historical_local_link_flags(extra_link_args, "pkg-config")
@@ -371,6 +432,29 @@ def build_extension() -> Extension:
         for header in sorted(header_root.glob(pattern))
     ]
 
+    tracking_api_headers = [
+        str(header)
+        for include_root in tracking_includes
+        for header in sorted(Path(include_root).glob("*.hpp"))
+    ]
+
+    if nix_dependency_roots():
+        helper = _nix_build_helpers()
+        identity = helper["nix_build_identity"]()
+        helper["reject_nix_tool_overrides"](
+            [*extra_link_args, *tracking_link_args,
+                       *shlex.split(os.environ.get("CXXFLAGS", "")),
+                       *shlex.split(os.environ.get("LDFLAGS", ""))])
+        helper["validate_nix_library_selection"](
+            identity, [*tracking_library_dirs, *library_dirs],
+            ["ndn-service-framework", "ndnsf-distributed-inference",
+             *tracking_libraries, *libraries])
+        for path in [*svs_objects, *nac_objects]:
+            key = Path(path).name
+            if (key not in identity["libraries"] or
+                    str(Path(path).resolve()) != identity["libraries"][key]["realpath"]):
+                raise RuntimeError("explicit SDK object differs from the Nix identity: " + path)
+
     return Extension(
         "ndnsf._ndnsf",
         # All DI implementation symbols, including NativeGrantVerifier, come
@@ -380,7 +464,7 @@ def build_extension() -> Extension:
             "src/ndnsf/_ndnsf.cpp",
             "src/ndnsf/di_bindings.cpp",
         ],
-        depends=native_api_headers,
+        depends=[*native_api_headers, *tracking_api_headers],
         include_dirs=[
             *nac_includes,
             *svs_includes,
@@ -388,13 +472,21 @@ def build_extension() -> Extension:
             str(ROOT),
             str(ROOT / "ndn-service-framework"),
             str(ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di"),
+            *tracking_includes,
             *include_dirs,
         ],
-        library_dirs=library_dirs,
-        libraries=["ndn-service-framework", "ndnsf-distributed-inference", *libraries],
+        library_dirs=list(dict.fromkeys([*tracking_library_dirs, *library_dirs])),
+        libraries=[
+            *(["ndnsf-uav-tracking"] if tracking is not None else []),
+            "ndn-service-framework",
+            "ndnsf-distributed-inference",
+            *tracking_libraries,
+            *libraries,
+        ],
+        define_macros=[("NDNSF_HAVE_UAV_TRACKING", "1")] if tracking is not None else [],
         extra_objects=[*svs_objects, *nac_objects],
         extra_compile_args=["-std=c++17"],
-        extra_link_args=extra_link_args,
+        extra_link_args=[*tracking_link_args, *extra_link_args],
         language="c++",
     )
 

@@ -169,7 +169,7 @@ def build(bld):
                     target='UavDroneApp',
                     source=['../NDNSF-UAV-APP/drone/UavDroneApp.cpp'],
                     includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-DistributedRepo/include'],
-                    use='uav-main-common uav-tracking-provider-core ndnsf-distributed-repo '
+                    use='uav-main-common ndnsf-uav-tracking ndnsf-distributed-repo '
                         'ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL gtkmm sqlite3 GSTREAMER',
                     cxxflags=uav_cxxflags,
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
@@ -188,7 +188,7 @@ def build(bld):
                         '../NDNSF-UAV-APP/shared/UavSensorStreams.cpp',
                     ],
                     includes=['..', '../NDNSF-UAV-APP/shared'],
-                    use='uav-tracking-common ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
+                    use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
                     cxxflags=uav_cxxflags)
 
         bld.program(name='UavGroundStationApp',
@@ -196,7 +196,7 @@ def build(bld):
                     source=['../NDNSF-UAV-APP/ground-station/UavGroundStationApp.cpp'],
                     lib=['pangoft2-1.0', 'fontconfig'],
                     includes=['..', '../NDNSF-UAV-APP/shared'],
-                    use='uav-main-common uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
+                    use='uav-main-common ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD gtkmm GSTREAMER',
                     cxxflags=uav_cxxflags,
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
@@ -212,8 +212,11 @@ def build(bld):
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
-        # Shared native tracking owners; CLI and main applications use these objects.
-        bld.objects(name='uav-tracking-provider-core',
+        # One installed implementation shared by the native applications, the
+        # Python host binding and external consumers.  The libraries keep the
+        # original three object-target source closures; they do not add a
+        # second tracking implementation.
+        bld.shlib(name='ndnsf-uav-tracking', target='ndnsf-uav-tracking',
                     source=[
                         '../NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
                         '../NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
@@ -224,15 +227,33 @@ def build(bld):
                         '../NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp',
                         '../NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
                         '../NDNSF-UAV-APP/shared/uav-tracking-worker-process.cpp',
+                        '../NDNSF-UAV-APP/tracking/uav-tracking-config.cpp',
+                        '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-person-published-frame.cpp',
+                        '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
+                        '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-person-computation.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-person-tracking.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-byte-track-state.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-byte-tracker.cpp',
+                        '../NDNSF-UAV-APP/shared/UavWindowBinding.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-person-backend.cpp',
+                        '../NDNSF-UAV-APP/shared/uav-person-onnx.cpp',
+                        '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
+                        '../NDNSF-UAV-APP/tracking/uav-tracking-job.cpp',
+                        '../NDNSF-UAV-APP/tracking/uav-tracking-presentation.cpp',
                     ],
                     includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
-                    use='uav-tracking-common ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL ONNXRUNTIME',
+                    lib=['jpeg'],
                     defines=['NDNSF_UAV_TRACKING_TEST_SEAM'] if bld.env.WITH_TESTS else [],
-                    cxxflags=uav_cxxflags)
+                    cxxflags=uav_cxxflags,
+                    install_path='${LIBDIR}')
         bld.program(name='UavTrackingNode', target='UavTrackingNode',
                     source=['../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp'],
-                    includes=['..', '../NDNSF-UAV-APP/tracking'],
-                    use='uav-tracking-provider-core ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
+                    use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
                     linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path='${BINDIR}')
 
         # Spec191's Python worker and display runner are installed beside the
@@ -255,37 +276,28 @@ def build(bld):
                 'NDNSF-UAV-APP/tracking/motion_schema.py',
             ]])
         bld.install_files('${INCLUDEDIR}/ndnsf/uav', [
-            bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationSource.hpp')])
-
-        bld.objects(name='uav-tracking-common',
-                    source=[
-                        '../NDNSF-UAV-APP/tracking/uav-tracking-config.cpp',
-                        '../NDNSF-UAV-APP/tracking/UavTrackingCoordinator.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-person-published-frame.cpp',
-                        '../NDNSF-UAV-APP/shared/UavProtocol.cpp',
-                        '../NDNSF-UAV-APP/shared/UavTrackingResultVerifier.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-person-computation.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-person-tracking.cpp',
-                        '../NDNSF-UAV-APP/shared/uav-byte-track-state.cpp',
-                        '../NDNSF-UAV-APP/shared/UavSourceGeneration.cpp',
-                    ],
-                    includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
-                    use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                    cxxflags=uav_cxxflags)
-        bld.objects(name='uav-tracking-job-core',
-                    source=['../NDNSF-UAV-APP/tracking/uav-tracking-job.cpp',
-                            '../NDNSF-UAV-APP/tracking/uav-tracking-presentation.cpp'],
-                    includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
-                    use='uav-tracking-common ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
-                    cxxflags=uav_cxxflags)
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavObservationSource.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavSourceGeneration.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-computation.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-tracking.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-onnx.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-byte-tracker.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavWindowBinding.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/uav-person-backend.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavTrackingResultVerifier.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/tracking/uav-tracking-config.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/tracking/uav-tracking-presentation.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/tracking/uav-tracking-job.hpp'),
+            bld.path.parent.find_node('NDNSF-UAV-APP/tracking/uav-tracking-provider.hpp'),
+        ])
 
         bld.program(name='UavTrackingGroundStation',
                     target='UavTrackingGroundStation',
                     source=['../NDNSF-UAV-APP/tracking/UavTrackingGroundStation.cpp'],
                     includes=['..', '../NDNSF-UAV-APP/shared',
                               '../NDNSF-UAV-APP/tracking'],
-                    use='uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 

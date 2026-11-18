@@ -2644,6 +2644,32 @@ class ServiceUser:
         """Complete immutable identity held by the native User owner."""
         return self._native.requester_identity
 
+    def tracking_available(self) -> bool:
+        """Whether this installed binding links the native UAV tracking SDK."""
+        return bool(self._native.tracking_available())
+
+    def start_tracking(self, config_path: Union[str, os.PathLike]) -> dict:
+        """Submit one native tracking job definition; returns admission/snapshot."""
+        return self._native.start_tracking(os.fspath(config_path))
+
+    def cancel_tracking(self, job_id: str) -> str:
+        """Request cancellation of the current native tracking job."""
+        return self._native.cancel_tracking(str(job_id))
+
+    def tracking_snapshot(self) -> dict:
+        """Read the current native job snapshot; never a Python-side state copy."""
+        return self._native.tracking_snapshot()
+
+    def read_tracking_frame(self, job_id: str, generation: int, window_index: int,
+                            result_digest: str, camera_id: str, frame_digest: str) -> bytes:
+        """Read one JPEG from the exact immutable native presentation."""
+        return self._native.read_tracking_frame(
+            job_id, generation, window_index, result_digest, camera_id, frame_digest)
+
+    def stop_tracking(self, timeout_ms: int = 30000) -> dict:
+        """Drain the native tracking job; returns the native cleanup state."""
+        return self._native.stop_tracking(int(timeout_ms))
+
     @staticmethod
     def load_native_request_catalog(
         configuration_json: str,

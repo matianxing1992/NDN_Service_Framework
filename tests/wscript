@@ -255,9 +255,10 @@ def build(bld):
                         bld.srcnode.find_node('NDNSF-UAV-APP/shared/UavSourceGeneration.cpp'),
                         bld.srcnode.find_node('NDNSF-UAV-APP/shared/uav-person-tracking-profile.cpp'),
                         bld.srcnode.find_node('NDNSF-UAV-APP/shared/uav-person-computation.cpp')],
-                includes=['..'], use='NDN_CXX BOOST OPENSSL DL',
+                includes=['..', '../NDNSF-UAV-APP/shared'], use='NDN_CXX BOOST OPENSSL DL',
                 cxxflags=['-std=c++17', '-O0', '-g0'], install_path=None)
     if 'uav' in bld.env.NDNSF_COMPONENTS:
+        tracking_rpath = [bld.bldnode.make_node('examples').abspath(), bld.bldnode.abspath()]
         bld.program(target='../spec228-tracking-main-app-tests',
                     name='spec228-tracking-main-app-tests',
                     lib=['pangoft2-1.0', 'fontconfig'],
@@ -265,12 +266,13 @@ def build(bld):
                             bld.path.find_node('integration-tests/uav-tracking-main-app.t.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-presentation.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
-                    includes=['..', '../ndn-service-framework'],
-                    use='uav-main-common uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
+                    includes=['..', '../ndn-service-framework', '../NDNSF-UAV-APP/shared'],
+                    use='uav-main-common ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL gtkmm GSTREAMER',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                    rpath=tracking_rpath,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec228-tracking-main-drone-tests',
                     name='spec228-tracking-main-drone-tests',
@@ -279,47 +281,51 @@ def build(bld):
                             bld.path.find_node('integration-tests/uav-static-metadata.t.cpp'),
                             bld.path.find_node('integration-tests/uav-vehicle-packet-capacity.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
-                    includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
-                    use='uav-main-common uav-tracking-provider-core uav-tracking-job-core '
+                    includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include', '../NDNSF-UAV-APP/shared'],
+                    use='uav-main-common ndnsf-uav-tracking '
                         'ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL gtkmm sqlite3 GSTREAMER',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                    rpath=tracking_rpath,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec228-tracking-provider-tests',
                     name='spec228-tracking-provider-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-provider.t.cpp'),
                             bld.path.find_node('unit-tests/uav-person-result.t.cpp'),
+                            bld.path.find_node('unit-tests/uav-person-result-v2.t.cpp'),
+                            bld.path.find_node('unit-tests/uav-window-binding.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
-                    includes=['..', '../ndn-service-framework'],
-                    use='uav-tracking-provider-core uav-tracking-job-core ndn-service-framework '
-                        'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                    includes=['..', '../ndn-service-framework', '../NDNSF-UAV-APP/shared'],
+                    use='ndnsf-uav-tracking ndn-service-framework '
+                        'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL ONNXRUNTIME',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+                    defines=['HAVE_TESTS'], rpath=tracking_rpath, install_path=None)
         bld.program(target='../spec228-tracking-job-flow-tests',
                     name='spec228-tracking-job-flow-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-job-flow.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
-                    includes=['..', '../ndn-service-framework'],
-                    use='uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
+                    includes=['..', '../ndn-service-framework', '../NDNSF-UAV-APP/shared'],
+                    use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
+                    rpath=tracking_rpath,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../spec228-tracking-job-tests', name='spec228-tracking-job-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-job.t.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-coordinator.t.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-result-verifier.t.cpp')],
-                    includes=['..', '../ndn-service-framework'],
-                    use='uav-tracking-job-core ndn-service-framework NDN_CXX NDN_SVS '
+                    includes=['..', '../ndn-service-framework', '../NDNSF-UAV-APP/shared'],
+                    use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
-                    defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
+                    defines=['HAVE_TESTS'], rpath=tracking_rpath, install_path=None)
     # SDK capability fixture: no NDNSF services or model weights are required.
     if bld.env.HAVE_ONNXRUNTIME_CPP:
         probe_env = bld.env.derive()
@@ -1882,7 +1888,8 @@ def build(bld):
                 idx=309,
                 # Share the production framework closure.  A hand-maintained
                 # subset silently misses newer framework implementations.
-                source=([bld.path.find_node('main.cpp')] +
+                source=([bld.path.find_node('main.cpp'),
+                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                         bld.path.ant_glob('unit-tests/**/*.cpp',
                             # Packet-level SVS checks have one canonical integration owner below.
                             excl=['unit-tests/sanitizer/**', 'unit-tests/ndn-svs-smoke.t.cpp',
@@ -1939,6 +1946,10 @@ def build(bld):
                             'NDNSF-UAV-APP/tracking/uav-tracking-provider.cpp',
                             'NDNSF-UAV-APP/tracking/uav-vehicle-tracking-engine.cpp',
                             'NDNSF-UAV-APP/shared/uav-person-window-admission.cpp',
+                            'NDNSF-UAV-APP/shared/UavWindowBinding.cpp',
+                            'NDNSF-UAV-APP/shared/uav-byte-tracker.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-backend.cpp',
+                            'NDNSF-UAV-APP/shared/uav-person-onnx.cpp',
                         ]) if 'uav' in bld.env.NDNSF_COMPONENTS else []) +
                         bld.path.parent.ant_glob([
                             'NDNSF-DistributedRepo/src/ArtifactManifest.cpp',
@@ -1950,6 +1961,8 @@ def build(bld):
                             'NDNSF-DistributedRepo/src/backends/FilesystemArtifactStore.cpp',
                             'NDNSF-DistributedRepo/src/backends/FilesystemRepoStoreBackend.cpp',
                             'NDNSF-DistributedRepo/src/RepoClient.cpp',
+                            'NDNSF-DistributedRepo/src/RepoCommitPipeline.cpp',
+                            'NDNSF-DistributedRepo/src/face-data-reference-fetcher.cpp',
                             'NDNSF-DistributedRepo/src/RepoCore.cpp',
                             'NDNSF-DistributedRepo/src/RepoNode.cpp',
                             'NDNSF-DistributedRepo/src/RepoPacketServer.cpp',
@@ -1973,10 +1986,12 @@ def build(bld):
                          bld.path.parent.find_node('examples/spec220-onnx-reference-oracle.cpp')]),
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedRepo/include',
-                          '../NDNSF-DistributedInference/cpp/adapters/onnx'],
+                          '../NDNSF-DistributedInference/cpp/adapters/onnx',
+                          '../NDNSF-UAV-APP/shared'],
                 use=('NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB ONNXRUNTIME '
                      'GSTREAMER GMODULE FFI PCRE DL TOKENIZER_BRIDGE sqlite3'
                      + (' gtkmm' if 'uav' in bld.env.NDNSF_COMPONENTS else '')),
+                lib=['jpeg'] if 'uav' in bld.env.NDNSF_COMPONENTS else [],
                 # NAC-ABE exposes its test-only authority state under
                 # HAVE_TESTS.  The framework's generated config header does
                 # not propagate that macro into NAC-ABE's CMake-style public

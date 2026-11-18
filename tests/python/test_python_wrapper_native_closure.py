@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import runpy
+import subprocess
 from pathlib import Path
 
 import setuptools
@@ -23,8 +24,26 @@ def pkg_config_result(setup_path, includes, directories, libraries, link_args):
 def isolated_build_environment(monkeypatch):
     for name in ("NDNSF_LIBRARY_DIR", "NDNSF_NAC_ABE_PREFIX",
                  "NDNSF_NDN_SVS_SOURCE_TREE", "NDNSF_NDN_SVS_BUILD_TREE",
-                 "NDNSF_RUNTIME_RPATH", "NDNSF_CONTAINER_BUILD", "NDNSF_RUNTIME_PREFIX"):
+                 "NDNSF_RUNTIME_RPATH", "NDNSF_CONTAINER_BUILD", "NDNSF_RUNTIME_PREFIX",
+                 "NDNSF_NIX_BUILD_IDENTITY", "NDNSF_NIX_DEPENDENCY_ROOTS"):
         monkeypatch.delenv(name, raising=False)
+    original_query = subprocess.check_output
+
+    def installed_metadata(command, **kwargs):
+        # These policy tests construct Extensions; they do not compile or qualify an SDK.
+        # Keep the initial setup independent of optional host pkg-config installations.
+        if command[0] != "pkg-config":
+            return original_query(command, **kwargs)
+        if "ndnsf-uav-tracking" in command:
+            raise subprocess.CalledProcessError(1, command)
+        flags = []
+        if "--cflags" in command:
+            flags.append("-I/usr/local/include")
+        if "--libs" in command:
+            flags.extend(["-L/usr/local/lib", "-lndn-cxx", "-lndn-svs", "-lnac-abe"])
+        return " ".join(flags)
+
+    monkeypatch.setattr(subprocess, "check_output", installed_metadata)
     native_libs = {
         name: hashlib.sha256((Path("/usr/local/lib") / name).read_bytes()).hexdigest()
         for name in ("libndn-service-framework.so", "libndnsf-distributed-inference.so",

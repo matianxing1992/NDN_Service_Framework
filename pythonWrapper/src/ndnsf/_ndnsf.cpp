@@ -20,6 +20,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationCoordinator.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "di_bindings.hpp"
+#ifdef NDNSF_HAVE_UAV_TRACKING
+#include "uav-tracking-job.hpp"
+#endif
 
 #include <ndn-cxx/face.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
@@ -36,6 +39,7 @@
 #include <openssl/pem.h>
 
 #include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 
@@ -57,6 +61,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -67,6 +72,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <sys/stat.h>
@@ -4480,7 +4486,7 @@ public:
   std::string m_error;
 };
 
-class NativeServiceUser
+class NativeServiceUser : public std::enable_shared_from_this<NativeServiceUser>
 {
 public:
   NativeServiceUser(const std::string& group,
@@ -4654,6 +4660,235 @@ public:
       ndnsf::di::NativeAuthenticatedGrantClient::publishThroughCore(user));
   }
 
+  bool
+  trackingAvailable() const
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  py::dict
+  startTracking(const std::string& configPath)
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    if (!m_user) throw std::runtime_error("user is not initialized");
+    if (configPath.empty()) throw std::invalid_argument("tracking job config path is required");
+    // Bounded local read and asset verification happen off the Face thread;
+    // admission itself is serialized on the Face thread that owns the Job.
+    auto definition = ndnsf::examples::uav::loadTrackingJobDefinition(configPath);
+    if (!m_tracking || m_tracking->isDrained()) {
+      std::lock_guard<std::mutex> guard(m_trackingStop.mutex);
+      m_trackingStop.pending = false;
+      m_trackingStop.completed = false;
+      m_trackingStop.error.clear();
+      m_trackingStop.result = {};
+      m_stopRequested = false;
+      m_trackingAuthorityLost = false;
+    }
+    struct Outcome
+    {
+      int admission = 0;
+      std::string reason;
+      ndnsf::examples::uav::TrackingSnapshot snapshot;
+    };
+    Outcome outcome;
+    {
+      py::gil_scoped_release release;
+      outcome = runOnFace([this, definition] {
+        if (!m_tracking) {
+          m_tracking = std::make_unique<ndnsf::examples::uav::UavTrackingJob>(
+            *m_user, m_face,
+            [this] (const ndnsf::examples::uav::TrackingJobDefinition&, std::string* reason) {
+              if (!m_running.load() || m_stopRequested.load() || m_trackingAuthorityLost.load()) {
+                if (reason) *reason = "local tracking authority unavailable";
+                return false;
+              }
+              return true;
+            },
+            [] (const ndnsf::examples::uav::TrackingSnapshot&) {});
+        }
+        Outcome value;
+        value.admission = static_cast<int>(m_tracking->start(definition, &value.reason));
+        if (value.admission == static_cast<int>(ndnsf::examples::uav::TrackingAdmission::ACCEPTED)) {
+          releaseTrackingFrameGroup();
+        }
+        value.snapshot = m_tracking->snapshot();
+        return value;
+      });
+    }
+    py::dict output;
+    output["accepted"] = outcome.admission ==
+      static_cast<int>(ndnsf::examples::uav::TrackingAdmission::ACCEPTED);
+    output["admission"] = trackingAdmissionText(outcome.admission);
+    output["reason"] = outcome.reason;
+    output["snapshot"] = trackingSnapshotDict(outcome.snapshot);
+    return output;
+#else
+    (void)configPath;
+    throw std::runtime_error("tracking capability unavailable: ndnsf-uav-tracking is not installed");
+#endif
+  }
+
+  std::string
+  cancelTracking(const std::string& jobId)
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    if (!m_user) throw std::runtime_error("user is not initialized");
+    int result = static_cast<int>(ndnsf::examples::uav::TrackingCancelResult::WRONG_JOB);
+    {
+      py::gil_scoped_release release;
+      result = runOnFace([this, jobId] {
+        return m_tracking
+          ? static_cast<int>(m_tracking->requestCancel(jobId))
+          : static_cast<int>(ndnsf::examples::uav::TrackingCancelResult::WRONG_JOB);
+      });
+    }
+    switch (static_cast<ndnsf::examples::uav::TrackingCancelResult>(result)) {
+      case ndnsf::examples::uav::TrackingCancelResult::REQUESTED: return "REQUESTED";
+      case ndnsf::examples::uav::TrackingCancelResult::ALREADY_REQUESTED: return "ALREADY_REQUESTED";
+      case ndnsf::examples::uav::TrackingCancelResult::ALREADY_TERMINAL: return "ALREADY_TERMINAL";
+      case ndnsf::examples::uav::TrackingCancelResult::UNAUTHORIZED: return "UNAUTHORIZED";
+      case ndnsf::examples::uav::TrackingCancelResult::WRONG_JOB: return "WRONG_JOB";
+    }
+    return "WRONG_JOB";
+#else
+    (void)jobId;
+    throw std::runtime_error("tracking capability unavailable: ndnsf-uav-tracking is not installed");
+#endif
+  }
+
+  py::dict
+  trackingSnapshot()
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    using State = std::pair<ndnsf::examples::uav::TrackingSnapshot,
+      std::vector<ndnsf::examples::uav::UavSourceDescriptor>>;
+    State state;
+    {
+      py::gil_scoped_release release;
+      state = runOnFace([this] {
+        return m_tracking ? State{m_tracking->snapshot(), m_tracking->sourceDescriptors()}
+                          : State{};
+      });
+    }
+    return trackingSnapshotDict(state.first, state.second);
+#else
+    throw std::runtime_error("tracking capability unavailable: ndnsf-uav-tracking is not installed");
+#endif
+  }
+
+  py::dict
+  stopTracking(int timeoutMs = 30000)
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    if (timeoutMs <= 0) throw std::invalid_argument("tracking stop timeout must be positive");
+    const bool present = m_tracking != nullptr;
+    if (!present) {
+      py::dict output;
+      output["present"] = false;
+      output["completed"] = true;
+      output["timedOut"] = false;
+      output["drained"] = true;
+      output["cleanupState"] = "NOT_STARTED";
+      return output;
+    }
+    bool timedOut = false;
+    bool completed = false;
+    bool drained = false;
+    ndnsf::examples::uav::TrackingCleanupResult cleanup;
+    std::string error;
+    {
+      py::gil_scoped_release release;
+      std::tie(completed, timedOut, drained, cleanup, error) =
+        requestTrackingStop(timeoutMs);
+    }
+    if (!error.empty()) throw std::runtime_error(error);
+    if (completed && drained) {
+      m_trackingAuthorityLost = true;
+    }
+    py::dict output;
+    output["present"] = true;
+    output["completed"] = completed;
+    output["timedOut"] = timedOut;
+    output["drained"] = drained;
+    output["jobId"] = cleanup.jobId;
+    output["cancelState"] = cleanup.cancelState;
+    output["cleanupState"] = cleanup.cleanupState;
+    output["reason"] = cleanup.reason;
+    return output;
+#else
+    (void)timeoutMs;
+    throw std::runtime_error("tracking capability unavailable: ndnsf-uav-tracking is not installed");
+#endif
+  }
+
+  py::bytes
+  readTrackingFrame(const std::string& jobId, uint64_t generation, uint64_t windowIndex,
+                    const std::string& resultDigest, const std::string& cameraId,
+                    const std::string& frameDigest)
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    std::shared_ptr<const ndn::Buffer> jpeg;
+    {
+      py::gil_scoped_release release;
+      jpeg = runOnFace([this, jobId, generation, windowIndex, resultDigest, cameraId, frameDigest] {
+        const auto snapshot = m_tracking ? m_tracking->snapshot()
+          : ndnsf::examples::uav::TrackingSnapshot{};
+        if (jobId.empty() || snapshot.jobId != jobId || snapshot.generation != generation) {
+          if (m_trackingFrameGroup && m_trackingFrameGroup->generation != snapshot.generation) {
+            releaseTrackingFrameGroup();
+          }
+          throw std::invalid_argument("tracking job identity changed");
+        }
+        // Retain exactly one in-flight immutable group across subsequent windows.
+        // The timer releases abandoned groups; three distinct reads release sooner.
+        if (!m_trackingFrameGroup) {
+          const auto& display = snapshot.presentation;
+          if (!display || display->generation != generation || display->windowIndex != windowIndex ||
+              display->resultDigest != resultDigest) {
+            throw std::invalid_argument("tracking presentation identity changed");
+          }
+          m_trackingFrameGroup = display;
+          m_trackingFrameTimer.expires_after(std::chrono::seconds(5));
+          m_trackingFrameTimer.async_wait([this] (const boost::system::error_code& error) {
+            if (!error) releaseTrackingFrameGroup();
+          });
+        }
+        const auto& display = m_trackingFrameGroup;
+        if (display->generation != generation || display->windowIndex != windowIndex ||
+            display->resultDigest != resultDigest) {
+          throw std::invalid_argument("another tracking group is still being read");
+        }
+        for (size_t i = 0; i < display->frames.size(); ++i) {
+          const auto& frame = display->frames[i];
+          if (frame.cameraId == cameraId && frame.inputDigest == frameDigest && frame.jpeg) {
+            auto bytes = frame.jpeg;
+            m_trackingFramesRead[i] = true;
+            if (std::all_of(m_trackingFramesRead.begin(), m_trackingFramesRead.end(),
+                            [] (bool read) { return read; })) {
+              releaseTrackingFrameGroup();
+            }
+            return bytes;
+          }
+        }
+        throw std::invalid_argument("tracking frame identity does not match");
+      });
+    }
+    return py::bytes(reinterpret_cast<const char*>(jpeg->data()), jpeg->size());
+#else
+    (void)jobId;
+    (void)generation;
+    (void)windowIndex;
+    (void)resultDigest;
+    (void)cameraId;
+    (void)frameDigest;
+    throw std::runtime_error("tracking capability unavailable: ndnsf-uav-tracking is not installed");
+#endif
+  }
+
   void
   cancelStreamRequest(const std::string& requestId)
   {
@@ -4701,6 +4936,7 @@ public:
       return;
     }
     m_thread = std::thread([this] {
+      m_faceThreadId.store(std::this_thread::get_id());
       while (m_running.load()) {
         try {
           processFaceEvents(m_face, pythonFacePollTimeout());
@@ -4723,7 +4959,15 @@ public:
     // Face::shutdown() concurrently with processEvents() races ndn-cxx's
     // pending-callback teardown; that race was observable as an intermittent
     // SIGSEGV after the Spec175 cancellation oracle had already completed.
-    std::call_once(m_stopOnce, [this] {
+    bool retained = false;
+    std::call_once(m_stopOnce, [this, &retained] {
+      // A live tracking job borrows this Face and ServiceUser. Drain it while
+      // both are still running; an incomplete cleanup retains the whole owner
+      // rather than destroying an undrained Job (whose destructor terminates).
+      retained = stopTrackingForShutdown();
+      if (retained) {
+        return;
+      }
       m_running = false;
       if (m_thread.joinable()) {
         m_thread.join();
@@ -4733,6 +4977,9 @@ public:
       m_face.shutdown();
       m_face.getIoContext().stop();
     });
+    if (retained) {
+      return;
+    }
   }
 
   void
@@ -6176,7 +6423,7 @@ public:
       throw std::runtime_error("user is not initialized");
     }
     if (m_running.load()) {
-      m_face.getIoContext().post([this] {
+      boost::asio::post(m_face.getIoContext(), [this] {
         m_user->fetchPermissionsFromController(m_controller);
       });
       return;
@@ -6545,6 +6792,291 @@ public:
   }
 
 private:
+  template<typename Fn>
+  auto
+  runOnFace(Fn&& fn) -> decltype(fn())
+  {
+    using Result = decltype(fn());
+    if (!m_running.load()) {
+      throw std::runtime_error("service user Face loop is not running");
+    }
+    if (m_faceThreadId.load() == std::this_thread::get_id()) {
+      return fn();
+    }
+    auto promise = std::make_shared<std::promise<Result>>();
+    auto future = promise->get_future();
+    boost::asio::post(m_face.getIoContext(),
+      [promise, fn = std::forward<Fn>(fn)] () mutable {
+        try {
+          if constexpr (std::is_void_v<Result>) {
+            fn();
+            promise->set_value();
+          }
+          else {
+            promise->set_value(fn());
+          }
+        }
+        catch (...) {
+          promise->set_exception(std::current_exception());
+        }
+      });
+    if (future.wait_for(std::chrono::seconds(60)) != std::future_status::ready) {
+      throw std::runtime_error("tracking Face operation timed out");
+    }
+    return future.get();
+  }
+
+#ifdef NDNSF_HAVE_UAV_TRACKING
+  static const char*
+  trackingModeText(ndnsf::examples::uav::TrackingMode mode)
+  {
+    return mode == ndnsf::examples::uav::TrackingMode::PERSON ? "person" : "vehicle";
+  }
+
+  static const char*
+  trackingStateText(ndnsf::examples::uav::TrackingJobState state)
+  {
+    using State = ndnsf::examples::uav::TrackingJobState;
+    switch (state) {
+      case State::IDLE: return "IDLE";
+      case State::PREPARING: return "PREPARING";
+      case State::RUNNING: return "RUNNING";
+      case State::CANCELLING: return "CANCELLING";
+      case State::COMPLETED: return "COMPLETED";
+      case State::FAILED: return "FAILED";
+      case State::CANCELLED: return "CANCELLED";
+    }
+    return "FAILED";
+  }
+
+  static const char*
+  trackingAdmissionText(int value)
+  {
+    using Admission = ndnsf::examples::uav::TrackingAdmission;
+    switch (static_cast<Admission>(value)) {
+      case Admission::ACCEPTED: return "ACCEPTED";
+      case Admission::BUSY: return "BUSY";
+      case Admission::INVALID: return "INVALID";
+      case Admission::UNAUTHORIZED: return "UNAUTHORIZED";
+      case Admission::NOT_READY: return "NOT_READY";
+    }
+    return "INVALID";
+  }
+
+  static py::dict
+  trackingSnapshotDict(const ndnsf::examples::uav::TrackingSnapshot& snapshot,
+    const std::vector<ndnsf::examples::uav::UavSourceDescriptor>& descriptors = {})
+  {
+    py::dict output;
+    output["jobId"] = snapshot.jobId;
+    output["runId"] = snapshot.runId;
+    output["missionId"] = snapshot.missionId;
+    output["wireMissionId"] = snapshot.wireMissionId;
+    output["mode"] = trackingModeText(snapshot.mode);
+    output["generation"] = snapshot.generation;
+    output["state"] = trackingStateText(snapshot.state);
+    output["completedWindows"] = snapshot.completedWindows;
+    output["totalWindows"] = snapshot.totalWindows;
+    output["updatedMonotonicMs"] = snapshot.updatedMonotonicMs;
+    output["sourcePtsUs"] = snapshot.sourcePtsUs;
+    output["activeRequestId"] = snapshot.activeRequestId;
+    output["waitingForWorkDrain"] = snapshot.waitingForWorkDrain;
+    py::list providers;
+    for (const auto& provider : snapshot.selectedProviders) {
+      providers.append(provider.toUri());
+    }
+    output["selectedProviders"] = std::move(providers);
+    py::list sources;
+    for (const auto& descriptor : descriptors) {
+      py::dict source;
+      source["producerIdentity"] = descriptor.producerIdentity.toUri();
+      source["cameraId"] = descriptor.cameraId;
+      source["sourceId"] = descriptor.sourceId;
+      source["sourceEpoch"] = descriptor.sourceEpoch;
+      source["acquisitionKind"] = descriptor.acquisitionKind;
+      source["deliveryMode"] = descriptor.deliveryMode;
+      sources.append(std::move(source));
+    }
+    output["sourceDescriptors"] = std::move(sources);
+    output["lastResultDigest"] = snapshot.lastResultDigest;
+    output["actualDevice"] = snapshot.actualDevice;
+    output["failureStage"] = snapshot.failureStage;
+    output["reason"] = snapshot.reason;
+    output["cancelState"] = snapshot.cancelState;
+    output["cleanupState"] = snapshot.cleanupState;
+    output["hasResult"] = bool(snapshot.latestResult);
+    output["hasPresentation"] = bool(snapshot.presentation);
+    if (snapshot.presentation) {
+      const auto& presentation = *snapshot.presentation;
+      py::dict display;
+      display["generation"] = presentation.generation;
+      display["windowIndex"] = presentation.windowIndex;
+      display["resultDigest"] = presentation.resultDigest;
+      display["resultJson"] = presentation.resultJson ? *presentation.resultJson : std::string{};
+      py::list frames;
+      for (const auto& image : presentation.frames) {
+        py::dict frame;
+        frame["cameraId"] = image.cameraId;
+        frame["sourceId"] = image.sourceId;
+        frame["producerIdentity"] = image.producerIdentity.toUri();
+        frame["sourceEpoch"] = image.sourceEpoch;
+        frame["sequence"] = image.sequence;
+        frame["frameName"] = image.frameName;
+        frame["inputDigest"] = image.inputDigest;
+        frame["width"] = image.width;
+        frame["height"] = image.height;
+        frame["hasJpeg"] = bool(image.jpeg);
+        frame["jpegBytes"] = image.jpeg ? static_cast<uint64_t>(image.jpeg->size()) : 0;
+        frames.append(std::move(frame));
+      }
+      display["frames"] = std::move(frames);
+      output["presentation"] = std::move(display);
+    }
+    return output;
+  }
+#endif
+
+#ifdef NDNSF_HAVE_UAV_TRACKING
+  void
+  releaseTrackingFrameGroup()
+  {
+    m_trackingFrameTimer.cancel();
+    m_trackingFrameGroup.reset();
+    m_trackingFramesRead.fill(false);
+  }
+
+  using TrackingCleanup = ndnsf::examples::uav::TrackingCleanupResult;
+
+  /**
+   * Share one pending native stop across callers.  A timeout keeps the Job and
+   * its Face/User alive; a later call waits on the same completion instead of
+   * invoking Job::stop twice.
+   */
+  std::tuple<bool, bool, bool, TrackingCleanup, std::string>
+  requestTrackingStop(int timeoutMs)
+  {
+    TrackingCleanup cleanup;
+    std::string error;
+    bool completed = false;
+    bool timedOut = false;
+    bool drained = false;
+    if (!m_tracking) return {true, false, true, cleanup, {}};
+
+    {
+      std::unique_lock<std::mutex> lock(m_trackingStop.mutex);
+      if (!m_trackingStop.pending && !m_trackingStop.completed) {
+        m_trackingStop.pending = true;
+        m_trackingStop.completed = false;
+        m_trackingStop.error.clear();
+        m_trackingStop.result = {};
+        lock.unlock();
+        const auto begin = [this] {
+          try {
+            releaseTrackingFrameGroup();
+            m_tracking->stop([this] (const TrackingCleanup& result) {
+              std::lock_guard<std::mutex> guard(m_trackingStop.mutex);
+              m_trackingStop.result = result;
+              m_trackingStop.pending = false;
+              m_trackingStop.completed = true;
+              m_trackingStop.condition.notify_all();
+            });
+          }
+          catch (const std::exception& failure) {
+            std::lock_guard<std::mutex> guard(m_trackingStop.mutex);
+            m_trackingStop.error = failure.what();
+            m_trackingStop.pending = false;
+            m_trackingStop.completed = true;
+            m_trackingStop.condition.notify_all();
+          }
+        };
+        if (m_faceThreadId.load() == std::this_thread::get_id() || !m_running.load()) {
+          begin();
+          // A Face-thread callback must not wait for the loop it is running on.
+          return {false, false, m_tracking->isDrained(), {}, {}};
+        }
+        boost::asio::post(m_face.getIoContext(), begin);
+        lock.lock();
+      }
+
+      const auto ready = [this] { return m_trackingStop.completed; };
+      if (m_faceThreadId.load() == std::this_thread::get_id() && !ready()) {
+        // A stop is already pending; never wait for the loop this callback runs on.
+        return {false, false, m_tracking->isDrained(), {}, {}};
+      }
+      if (timeoutMs == 0) {
+        m_trackingStop.condition.wait(lock, ready);
+        completed = true;
+      }
+      else {
+        completed = m_trackingStop.condition.wait_for(
+          lock, std::chrono::milliseconds(timeoutMs), ready);
+      }
+      timedOut = !completed;
+      if (completed) {
+        cleanup = m_trackingStop.result;
+        error = m_trackingStop.error;
+      }
+    }
+    drained = m_tracking->isDrained();
+    return {completed, timedOut, drained, cleanup, error};
+  }
+#endif
+
+  /** Return true when this object was retained and must not be torn down. */
+  bool
+  stopTrackingForShutdown()
+  {
+#ifdef NDNSF_HAVE_UAV_TRACKING
+    if (!m_tracking || m_tracking->isDrained()) return false;
+    bool completed = false;
+    bool timedOut = false;
+    bool drained = false;
+    TrackingCleanup cleanup;
+    std::string error;
+    if (m_running.load()) {
+      std::tie(completed, timedOut, drained, cleanup, error) = requestTrackingStop(30000);
+    }
+    if (drained) return false;
+
+    // The Job borrows this Face and ServiceUser.  Keep the whole owner alive
+    // rather than destroying an undrained Job or leaking only the Job.
+    auto self = weak_from_this().lock();
+    if (self) {
+      static std::mutex orphanMutex;
+      // Deliberately process-lifetime: destroying the vector at exit would
+      // run this object's destructor with an undrained Job.
+      static auto* orphans = new std::vector<std::shared_ptr<NativeServiceUser>>();
+      static constexpr size_t MAX_RETAINED_ORPHANS = 8;
+      bool atLimit = false;
+      {
+        std::lock_guard<std::mutex> guard(orphanMutex);
+        if (orphans->size() >= MAX_RETAINED_ORPHANS) atLimit = true;
+        else orphans->push_back(std::move(self));
+      }
+      if (atLimit) {
+        // Bound retained owners; wait for this one instead of growing forever.
+        while (!m_tracking->isDrained()) {
+          if (m_running.load()) requestTrackingStop(0);
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+      }
+      std::cerr << "tracking shutdown cleanup INCOMPLETE; retaining owner for process lifetime"
+                << std::endl;
+      return true;
+    }
+    // Destructor path: no shared owner can be retained.  Keep waiting for the
+    // actual drain instead of destroying an undrained Job.
+    while (m_tracking && !m_tracking->isDrained()) {
+      if (m_running.load()) requestTrackingStop(0);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+#else
+    return false;
+#endif
+  }
+
   ndn::Face m_face;
   ndn::KeyChain m_keyChain;
   ndn::Name m_group;
@@ -6562,6 +7094,25 @@ private:
   std::mutex m_callMutex;
   std::mutex m_errorMutex;
   std::string m_error;
+  std::atomic<bool> m_stopRequested{false};
+  std::atomic<bool> m_trackingAuthorityLost{false};
+  std::atomic<std::thread::id> m_faceThreadId{};
+#ifdef NDNSF_HAVE_UAV_TRACKING
+  std::unique_ptr<ndnsf::examples::uav::UavTrackingJob> m_tracking;
+  struct TrackingStopState
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool pending = false;
+    bool completed = false;
+    ndnsf::examples::uav::TrackingCleanupResult result;
+    std::string error;
+  };
+  TrackingStopState m_trackingStop;
+  boost::asio::steady_timer m_trackingFrameTimer{m_face.getIoContext()};
+  std::shared_ptr<const ndnsf::examples::uav::TrackingPresentation> m_trackingFrameGroup;
+  std::array<bool, 3> m_trackingFramesRead{};
+#endif
 };
 
 template<typename T>
@@ -8485,7 +9036,7 @@ PYBIND11_MODULE(_ndnsf, m)
     .def(py::init<>())
     .def_readwrite("redundancy", &nsf::DependencyTransportOptions::redundancy);
 
-  py::class_<NativeServiceUser>(m, "NativeServiceUser")
+  py::class_<NativeServiceUser, std::shared_ptr<NativeServiceUser>>(m, "NativeServiceUser")
     .def_property_readonly("requester_identity", &NativeServiceUser::requesterIdentity)
     .def(py::init<const std::string&,
                   const std::string&,
@@ -8683,6 +9234,17 @@ PYBIND11_MODULE(_ndnsf, m)
       // capsule is only the borrowed native bridge for its lifetime.
       return py::capsule(&self.repoServiceUser(), "ndnsf.ServiceUser.v1");
     })
+    .def("tracking_available", &NativeServiceUser::trackingAvailable)
+    .def("start_tracking", &NativeServiceUser::startTracking,
+         py::arg("config_path"))
+    .def("cancel_tracking", &NativeServiceUser::cancelTracking,
+         py::arg("job_id"))
+    .def("tracking_snapshot", &NativeServiceUser::trackingSnapshot)
+    .def("read_tracking_frame", &NativeServiceUser::readTrackingFrame,
+         py::arg("job_id"), py::arg("generation"), py::arg("window_index"),
+         py::arg("result_digest"), py::arg("camera_id"), py::arg("frame_digest"))
+    .def("stop_tracking", &NativeServiceUser::stopTracking,
+         py::arg("timeout_ms") = 30000)
     .def("start", &NativeServiceUser::start)
     // Stopping may join the Face thread while the last native callback is
     // unwinding into Python.  Release the interpreter lock during the

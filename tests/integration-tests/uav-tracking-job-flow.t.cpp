@@ -8,6 +8,7 @@ BOOST_AUTO_TEST_SUITE(UavTrackingJobCoreFlow)
 BOOST_FIXTURE_TEST_CASE(RealAckSelectionAndSignedResultCompleteWithoutStoppingUserFace, JobFlowFixture)
 {
   install();
+  BOOST_CHECK(job->sourceDescriptors().empty());
   BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
   environment->pumpUntilWithAttributeAuthority([this] { return latest.cleanupState == "CLEAN"; });
   BOOST_REQUIRE(latest.state == TrackingJobState::COMPLETED);
@@ -17,6 +18,16 @@ BOOST_FIXTURE_TEST_CASE(RealAckSelectionAndSignedResultCompleteWithoutStoppingUs
   BOOST_CHECK_EQUAL(latest.missionId, definition.missionId);
   BOOST_CHECK_EQUAL(latest.wireMissionId, "tracking-" + definition.runId);
   BOOST_CHECK(!latest.lastResultDigest.empty());
+  const auto descriptors = job->sourceDescriptors();
+  BOOST_REQUIRE_EQUAL(descriptors.size(), 3);
+  for (size_t i = 0; i < descriptors.size(); ++i) {
+    BOOST_CHECK_EQUAL(descriptors[i].cameraId, definition.sources[i].cameraId);
+    BOOST_CHECK_EQUAL(descriptors[i].sourceId, definition.sources[i].sourceId);
+    BOOST_CHECK(descriptors[i].producerIdentity == definition.sources[i].producerIdentity);
+    BOOST_CHECK_EQUAL(descriptors[i].sourceEpoch, definition.sources[i].sourceEpoch);
+    BOOST_CHECK_EQUAL(descriptors[i].deliveryMode, "replay");
+    BOOST_CHECK_EQUAL(descriptors[i].acquisitionKind, "simulated");
+  }
 }
 
 BOOST_FIXTURE_TEST_CASE(MissingComputeRoleCancelsPendingCallAndLateTimeoutCannotReopenJob,

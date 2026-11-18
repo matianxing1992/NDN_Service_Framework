@@ -1,8 +1,8 @@
 #ifndef NDNSF_UAV_TRACKING_CONFIG_HPP
 #define NDNSF_UAV_TRACKING_CONFIG_HPP
 
-#include "../shared/UavSourceGeneration.hpp"
-#include "../shared/uav-person-computation.hpp"
+#include "UavSourceGeneration.hpp"
+#include "uav-person-computation.hpp"
 
 #include <ndn-cxx/name.hpp>
 

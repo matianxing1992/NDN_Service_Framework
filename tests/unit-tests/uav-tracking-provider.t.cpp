@@ -5,8 +5,13 @@
 #include <csignal>
 #include <iterator>
 #include <future>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <boost/scope_exit.hpp>
 
+#include "NDNSF-UAV-APP/shared/UavObservationSource.hpp"
+#include "NDNSF-UAV-APP/shared/UavWindowBinding.hpp"
 #include "NDNSF-UAV-APP/shared/uav-person-published-frame.hpp"
 #include "NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.hpp"
 #include "NDNSF-UAV-APP/tracking/uav-tracking-provider.hpp"
@@ -18,6 +23,27 @@
 #include <unistd.h>
 
 namespace ndnsf::test {
+using namespace ndnsf::examples::uav;
+
+struct RecordingObservationSource final : IObservationSource
+{
+  void start(IObservationSink&) override { started = true; }
+  void stop() noexcept override { stopped = true; }
+  bool started = false;
+  bool stopped = false;
+};
+struct SingleFrameObservationSource final : IObservationSource
+{
+  CapturedFrame frame;
+  void start(IObservationSink& sink) override
+  {
+    if (!sink.submitFrame(std::move(frame)).accepted()) {
+      throw std::runtime_error("fixture frame was not admitted");
+    }
+  }
+  void stop() noexcept override {}
+};
+
 namespace {
 
 using namespace tracking_flow;
@@ -72,6 +98,150 @@ struct ProviderFixture : JobFlowFixture
     sourceCapabilities.clear();
     if (writer >= 0) ::close(writer);
     if (watch >= 0) ::close(watch);
+  }
+
+  void checkPersonSourceFailure(size_t missingSources)
+  {
+    const auto* assetRoot = std::getenv("NDNSF_SPEC226_PERSON_ASSETS");
+    BOOST_REQUIRE_MESSAGE(assetRoot != nullptr, "set the frozen person asset root for this opt-in flow");
+    const std::filesystem::path assets(assetRoot);
+    BOOST_REQUIRE(assets.is_absolute());
+    const auto asset = [] (const std::filesystem::path& path) {
+      const auto canonical = std::filesystem::canonical(path);
+      std::ifstream input(canonical, std::ios::binary);
+      BOOST_REQUIRE(input.good());
+      const std::string bytes{std::istreambuf_iterator<char>(input), {}};
+      return TrackingAssetReference{canonical, digestOf(bytes)};
+    };
+    const auto model = asset(assets / "yolov8n.onnx");
+    const auto profile = asset(assets / "profile-native.json");
+    const auto reid = asset(assets / "osnet_x1_0_market1501_256x128.onnx");
+    const auto computationPath = root / "person-computation.json";
+    std::ofstream(computationPath) << describeUavPersonNativeComputation(
+      model.path, profile.path, reid.path);
+    const auto computation = asset(computationPath);
+    config["mode"] = "person";
+    config["profile"] = {{"path", profile.path.string()}, {"digest", profile.digest}};
+    config["computationManifest"] = {{"path", computation.path.string()},
+                                     {"digest", computation.digest}};
+    config["deadlineMs"] = 30000;
+    config["requestTimeoutMs"] = 20000;
+    definition = load();
+    const auto base = providerConfig;
+    for (size_t i = 0; i < 3; ++i) {
+      auto sourceConfig = base;
+      sourceConfig.producerIdentity = definition.sources[i].producerIdentity;
+      sourceConfig.ownedWorkspace = root / ("source-work-" + std::to_string(i));
+      auto& run = sourceConfig.runs.front();
+      run.mode = TrackingMode::PERSON;
+      run.cameraId = definition.sources[i].cameraId;
+      std::shared_ptr<IObservationSource> source;
+      if (i < missingSources) source = std::make_shared<RecordingObservationSource>();
+      else {
+        auto one = std::make_shared<SingleFrameObservationSource>();
+        one->frame.key = {definition.sources[i].sourceId, run.cameraId, 1, 1};
+        one->frame.deviceTimeUs = 1000;
+        one->frame.clockBinding = {1, "fixture-clock", 1, 1.0, 0.0, 0, 10000000, 0};
+        one->frame.width = 640;
+        one->frame.height = 480;
+        one->frame.encoding = "image/jpeg";
+        one->frame.imageBytes = tracking_fixture::trackingFixtureJpeg();
+        source = one;
+      }
+      auto owner = std::make_unique<UavTrackingProvider>(sourceConfig, source);
+      owner->registerServices(environment->provider(i));
+      sourceCapabilities.push_back(std::move(owner));
+    }
+    providerConfig.producerIdentity = definition.computeIdentity;
+    auto& run = providerConfig.runs.front();
+    run.mode = TrackingMode::PERSON;
+    run.role = TrackingProviderRole::COMPUTE;
+    run.cameraId.clear();
+    run.observationStreamDirectory.clear();
+    run.acquisitionKind = "measured"; // SourceInfo is simulated; Compute must not guess its digest.
+    run.model = model;
+    run.profile = profile;
+    run.reidModel = reid;
+    run.computationManifest = computation;
+    run.workerPython = asset("/usr/bin/python3");
+    run.workerScript = asset(std::filesystem::absolute("NDNSF-UAV-APP/tracking/tracking_worker.py"));
+    capability = std::make_unique<UavTrackingProvider>(providerConfig);
+    capability->registerServices(environment->provider(3));
+    environment->enableProductionIngressForTest();
+    int savedOut = -1;
+    int savedErr = -1;
+    int capture = -1;
+    BOOST_SCOPE_EXIT_ALL(&) {
+      std::cout.flush();
+      std::cerr.flush();
+      if (savedOut >= 0) { ::dup2(savedOut, STDOUT_FILENO); ::close(savedOut); }
+      if (savedErr >= 0) { ::dup2(savedErr, STDERR_FILENO); ::close(savedErr); }
+      if (capture >= 0) {
+        ::close(capture);
+        // Preserve the first failure boundary before the fixture removes its scratch tree.
+        std::ifstream diagnostic(root / "person-flow.log");
+        if (diagnostic.good()) std::cerr << diagnostic.rdbuf();
+      }
+    };
+    std::cout.flush();
+    std::cerr.flush();
+    savedOut = ::dup(STDOUT_FILENO);
+    BOOST_REQUIRE(savedOut >= 0);
+    savedErr = ::dup(STDERR_FILENO);
+    BOOST_REQUIRE(savedErr >= 0);
+    capture = ::open((root / "person-flow.log").c_str(),
+                     O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    BOOST_REQUIRE(capture >= 0);
+    BOOST_REQUIRE(::dup2(capture, STDOUT_FILENO) >= 0);
+    BOOST_REQUIRE(::dup2(capture, STDERR_FILENO) >= 0);
+    BOOST_REQUIRE(job->start(definition) == TrackingAdmission::ACCEPTED);
+    pumpUntilWithin([this] { return job->isDrained(); }, std::chrono::seconds(30));
+    BOOST_REQUIRE(job->isDrained());
+    BOOST_CHECK(latest.state == TrackingJobState::FAILED);
+    BOOST_CHECK_EQUAL(latest.cleanupState, "CLEAN");
+    BOOST_CHECK_EQUAL(latest.selectedProviders.size(), 4);
+    BOOST_CHECK_EQUAL(latest.completedWindows, 0);
+    BOOST_CHECK(!latest.latestResult);
+    BOOST_CHECK(latest.reason.find("source UAV1: injected source produced no frame for the window") !=
+                std::string::npos);
+    capability->stopAdmission();
+    capability->cancelActiveWork();
+    for (auto& source : sourceCapabilities) {
+      source->stopAdmission();
+      source->cancelActiveWork();
+    }
+    const auto providersDrained = [this] {
+      return capability->isDrained() && std::all_of(sourceCapabilities.begin(),
+        sourceCapabilities.end(), [] (const auto& source) { return source->isDrained(); });
+    };
+    pumpUntilWithin(providersDrained, std::chrono::seconds(10));
+    BOOST_REQUIRE(providersDrained());
+    std::cout.flush();
+    std::cerr.flush();
+    std::ifstream captured(root / "person-flow.log");
+    const std::string output{std::istreambuf_iterator<char>(captured), {}};
+    const auto publications = [&output] (const std::string& marker) {
+      std::multiset<std::string> cameras;
+      const std::regex pattern(marker + " camera=(UAV[123]) window=window-0 name=");
+      for (auto it = std::sregex_iterator(output.begin(), output.end(), pattern);
+           it != std::sregex_iterator(); ++it) cameras.insert((*it)[1].str());
+      return cameras;
+    };
+    std::multiset<std::string> expectedFailures;
+    std::multiset<std::string> expectedReady;
+    for (size_t i = 0; i < 3; ++i) {
+      (i < missingSources ? expectedFailures : expectedReady).insert("UAV" + std::to_string(i + 1));
+    }
+    BOOST_CHECK(publications("SPEC226_WINDOW_FAILURE_PUBLISHED") == expectedFailures);
+    BOOST_CHECK(publications("SPEC226_WINDOW_BINDING_PUBLISHED") == expectedReady);
+    BOOST_CHECK(output.find("SPEC226_NATIVE_BACKEND_INVOKED") == std::string::npos);
+    BOOST_CHECK(output.find("SPEC210_TRACKING_WORKER_INVOKED") == std::string::npos);
+    if (std::filesystem::exists(providerConfig.ownedWorkspace)) {
+      for (const auto& entry : std::filesystem::recursive_directory_iterator(providerConfig.ownedWorkspace)) {
+        BOOST_CHECK_MESSAGE(entry.path().filename() != "manifest.json" ||
+          entry.path().parent_path().filename() != "window-0", "failed window committed " << entry.path());
+      }
+    }
   }
 
   void startProvider()
@@ -244,6 +414,20 @@ struct ProviderFixture : JobFlowFixture
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(UavTrackingProviderLifecycle)
+
+BOOST_FIXTURE_TEST_CASE(InjectedSourceStartsAndStopsWithProvider, ProviderFixture)
+{
+  auto source = std::make_shared<RecordingObservationSource>();
+  auto provider = std::make_unique<UavTrackingProvider>(providerConfig, source);
+  BOOST_CHECK(source->started);
+  BOOST_CHECK(!source->stopped);
+  provider->stopAdmission();
+  BOOST_CHECK(source->stopped);
+  provider->cancelActiveWork();
+  environment->pumpUntilWithAttributeAuthority([&] { return provider->isDrained(); });
+  BOOST_REQUIRE(provider->isDrained());
+  provider.reset();
+}
 
 BOOST_FIXTURE_TEST_CASE(NoncanonicalWindowsCannotAliasAnAdmittedSourceWindow, ProviderFixture)
 {
@@ -540,6 +724,18 @@ BOOST_FIXTURE_TEST_CASE(FirstHandlerInitializationFailurePublishesWorkDrained, P
   environment->user().CancelCollaboration(request);
 }
 
+BOOST_FIXTURE_TEST_CASE(OnePersonSourceFailureDrainsWithoutInference, ProviderFixture,
+                       *boost::unit_test::disabled())
+{
+  checkPersonSourceFailure(1);
+}
+
+BOOST_FIXTURE_TEST_CASE(AllPersonSourceFailuresDrainWithoutInference, ProviderFixture,
+                       *boost::unit_test::disabled())
+{
+  checkPersonSourceFailure(3);
+}
+
 BOOST_FIXTURE_TEST_CASE(InitializationFailureLeavesTheJobFailedButClean, ProviderFixture)
 {
   startFailingCompute();
@@ -579,6 +775,58 @@ BOOST_FIXTURE_TEST_CASE(SourceUsesInjectedProducerAndServesOnlyItsPublishedFrame
   BOOST_REQUIRE(*success);
   const ndn::Buffer expected{0xff, 0xd8, 0xff, 0xd9};
   BOOST_CHECK_EQUAL_COLLECTIONS(received->begin(), received->end(), expected.begin(), expected.end());
+
+  auto infoDone = std::make_shared<bool>(false);
+  auto infoPayload = std::make_shared<std::string>();
+  auto infoSuccess = std::make_shared<bool>(false);
+  const auto infoRequest = renderUavSourceInfoRequest(
+    UavSourceInfoRequest{"UAV1", "", 0});
+  nsf::RequestMessage infoMessage;
+  auto infoBuffer = ndn::Buffer(reinterpret_cast<const uint8_t*>(infoRequest.data()),
+                                infoRequest.size());
+  infoMessage.setPayload(infoBuffer, infoBuffer.size());
+  const auto infoId = environment->user().RequestServiceTargeted(
+    definition.sources[0].producerIdentity, SERVICE_TRACKING_SOURCE, infoMessage, 3000,
+    [infoDone] (const ndn::Name&) { *infoDone = true; },
+    [infoDone, infoPayload, infoSuccess] (const nsf::ResponseMessage& response) {
+      *infoSuccess = response.getStatus();
+      const auto& payload = response.getPayload();
+      infoPayload->assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+      *infoDone = true;
+    });
+  BOOST_REQUIRE(!infoId.empty());
+  environment->pumpUntilWithAttributeAuthority([infoDone] { return *infoDone; });
+  BOOST_REQUIRE(*infoSuccess);
+  const auto info = parseUavSourceInfoResponse(*infoPayload);
+  BOOST_CHECK_EQUAL(info.descriptor.cameraId, "UAV1");
+  BOOST_CHECK_EQUAL(info.descriptor.sourceId, definition.sources[0].sourceId);
+  BOOST_CHECK_EQUAL(info.descriptor.sourceEpoch, definition.sources[0].sourceEpoch);
+  BOOST_CHECK_EQUAL(info.digest, uavSourceDescriptorDigest(info.descriptor));
+
+  const auto expectRejected = [&] (const std::string& requestText) {
+    auto done = std::make_shared<bool>(false);
+    auto success = std::make_shared<bool>(true);
+    nsf::RequestMessage message;
+    auto buffer = ndn::Buffer(reinterpret_cast<const uint8_t*>(requestText.data()),
+                              requestText.size());
+    message.setPayload(buffer, buffer.size());
+    const auto id = environment->user().RequestServiceTargeted(
+      definition.sources[0].producerIdentity, SERVICE_TRACKING_SOURCE, message, 3000,
+      [done] (const ndn::Name&) { *done = true; },
+      [done, success] (const nsf::ResponseMessage& response) {
+        *success = response.getStatus();
+        *done = true;
+      });
+    BOOST_REQUIRE(!id.empty());
+    environment->pumpUntilWithAttributeAuthority([done] { return *done; });
+    return *success;
+  };
+  BOOST_CHECK(!expectRejected(renderUavSourceInfoRequest(
+    UavSourceInfoRequest{"UAV1", "different-source", 0})));
+  BOOST_CHECK(!expectRejected(renderUavSourceInfoRequest(
+    UavSourceInfoRequest{"UAV3", "", 0})));
+  BOOST_CHECK(!expectRejected(renderUavSourceInfoRequest(
+    UavSourceInfoRequest{"UAV1", "", 999})));
 }
 
 BOOST_FIXTURE_TEST_CASE(ShutdownCancelsAnOwnedSourceReaderAndPreservesTheHostFace, ProviderFixture)

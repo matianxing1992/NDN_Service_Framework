@@ -1312,7 +1312,7 @@ def _person_failure_display_presented(text: str, *, run_id: str, window_index: i
     return presented == {"UAV1", "UAV2", "UAV3"}
 
 
-def _provision_run_security(output: Path) -> dict[str, Any]:
+def _provision_run_security(output: Path, *, ndnsec: str | None = None) -> dict[str, Any]:
     """Use ndnsec to provision one fresh, run-owned RSA trust chain."""
     keychain = output / "private/keychain"
     if keychain.exists() and any(keychain.iterdir()):
@@ -1329,7 +1329,7 @@ def _provision_run_security(output: Path) -> dict[str, Any]:
         env.pop("LD_LIBRARY_PATH", None)
     else:
         env["LD_LIBRARY_PATH"] = override
-    ndnsec = shutil.which("ndnsec")
+    ndnsec = ndnsec or shutil.which("ndnsec")
     if ndnsec is None:
         raise RunnerError("installed ndnsec is required for UAV credentials")
     deadline = time.monotonic() + 120
@@ -2334,8 +2334,9 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
     started_ns = time.monotonic_ns()
     person_mode = "personTracking" in plan
     main_mode = plan.get("applicationMode") == "main"
+    dashboard_mode = plan.get("applicationMode") == "installed-dashboard"
     resource_sampler = None
-    if person_mode or main_mode:
+    if person_mode or main_mode or dashboard_mode:
         from person_run_resources import PersonRunResources
         resource_sampler = PersonRunResources(output.name,
             plan["personTracking"]["requestedDevice"] if person_mode else "cpu",
@@ -2360,8 +2361,13 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         log = log_path.open("wb")
         private = spec.private_dir.resolve()
         shared_keychain = (output / "private" / "keychain").resolve()
+        if dashboard_mode:
+            # These actor-specific PIBs were provisioned through native SafeBag
+            # import. Copying SQLite databases would invalidate their TPM locators.
+            shared_keychain = private
         generation_state = (output / "private" / "controller" /
                             "controller-generation.state").resolve()
+        generation_state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         mpl_config = private / "mpl"
         yolo_config = private / "config" / "Ultralytics"
         for name in ("home", "config", "data", "cache", "pib", "tpm"):
@@ -2372,7 +2378,9 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             (shared_keychain / name).mkdir(parents=True, exist_ok=True)
         socket = nfd_sockets[node.name]
         child_ndn_log = os.environ.get("SPEC191_CHILD_NDN_LOG", "*=WARN").strip() or "*=WARN"
-        child_pythonpath = str(DEFAULT_TRACKING_LIBEXEC) if person_mode or main_mode else _child_pythonpath()
+        child_pythonpath = ("" if dashboard_mode else
+                            str(DEFAULT_TRACKING_LIBEXEC) if person_mode or main_mode
+                            else _child_pythonpath())
         env = [
             f"export NDNSF_SPEC191_PRIVATE_DIR={shlex.quote(str(private))}",
             f"export HOME={shlex.quote(str(private / 'home'))}",
@@ -2402,10 +2410,22 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             f"export NDN_LOG={shlex.quote(child_ndn_log)}",
             f"export NDNSF_SPEC191_RUN_ROOT={shlex.quote(str(output))}",
         ]
+        if dashboard_mode:
+            env.extend([
+                "unset PYTHONPATH LD_LIBRARY_PATH",
+                "export PYTHONNOUSERSITE=1",
+                "export NDNSF_CONTROLLER_CERT_FILE=" + shlex.quote(plan["controllerCertificate"]),
+            ])
+            if spec.name == "browser-driver":
+                env.append("export PYTHONPATH=" + shlex.quote(plan["browserPythonPath"]))
+                # Headless Firefox runs as the MiniNDN root actor, independently
+                # of the desktop user's X11/Wayland credentials.
+                env.append("unset XAUTHORITY DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR")
+                env.append("export MOZ_DISABLE_CONTENT_SANDBOX=1")
         if spec.name in {"compute", "uav1-camera", "uav2-camera", "uav3-camera"}:
             env.append("export NDNSF_REQUEST_LARGE_FETCH_TIMEOUT_MS=" +
                        str(plan["settings"]["trackingHostRequestTimeoutMs"]))
-        if main_mode:
+        if main_mode or dashboard_mode:
             # Dedicated replay actors own no desktop bus/portal daemons. Keep GTK
             # local to the explicitly supplied X11 display and local config files.
             env.extend([
@@ -2447,7 +2467,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                  *, same_line: bool = False) -> str:
         path = output / f"{name}.log"
         deadline = time.monotonic() + timeout
-        if person_mode or main_mode:
+        if person_mode or main_mode or dashboard_mode:
             deadline = min(deadline, run_deadline)
         while time.monotonic() < deadline:
             if resource_sampler is not None:
@@ -2573,10 +2593,18 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             transport = f"unix://{nfd_sockets[node.name]}"
             for peer_name in next_hops[node.name]:
                 peer_ip = face_target_ips[(node.name, peer_name)]
-                face_list = node.cmd(f"NDN_CLIENT_TRANSPORT={shlex.quote(transport)} nfdc face list")
-                match = re.search(
-                    rf"faceid=(\d+)\s+remote=(?:udp|udp4)://{re.escape(peer_ip)}:6363",
-                    face_list)
+                deadline = time.monotonic() + 10
+                match = None
+                face_list = ""
+                while time.monotonic() < deadline:
+                    face_list = node.cmd(
+                        f"NDN_CLIENT_TRANSPORT={shlex.quote(transport)} nfdc face list")
+                    match = re.search(
+                        rf"faceid=(\d+)\s+remote=(?:udp|udp4)://{re.escape(peer_ip)}:6363",
+                        face_list)
+                    if match is not None:
+                        break
+                    time.sleep(0.2)
                 if match is None:
                     raise RunnerError(
                         f"NFD face missing node={node.name} peer={peer_name}: {face_list!r}")
@@ -2613,6 +2641,63 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                              Path(item["cwd"]), tuple(item["command"]),
                              Path(item["privateDir"])) for item in plan["processes"]]
         by_name = {spec.name: spec for spec in specs}
+        if dashboard_mode:
+            expectation = plan["settings"].get("dashboardExpectation", "completed")
+            launch(by_name["controller"])
+            wait_for("controller", ("NDNSF_CONTROLLER_READY",), 45)
+            for name in ("uav1-camera", "uav2-camera", "uav3-camera", "compute"):
+                if name not in by_name:
+                    continue  # Explicit missing-source negative case.
+                launch(by_name[name])
+            for name in ("uav1-camera", "uav2-camera", "uav3-camera", "compute"):
+                if name not in by_name:
+                    continue
+                wait_for(name, ("SPEC191_TRACKING_NODE_READY",), 60)
+            dashboard = launch(by_name["ground-station"])
+            wait_for("ground-station", ('"event": "dash.serving"',), 30)
+            browser = launch(by_name["browser-driver"])
+            while browser.poll() is None and time.monotonic() < run_deadline:
+                resource_sampler.sample()
+                time.sleep(.1)
+            if browser.poll() != 0:
+                raise RunnerError("installed dashboard browser assertions failed")
+            compute_log = (output / "compute.log").read_text(errors="replace")
+            if "SPEC210_TRACKING_WORKER_INVOKED" in compute_log:
+                raise RunnerError("person qualification executed the legacy worker")
+            native_windows = re.findall(r"SPEC226_NATIVE_BACKEND_INVOKED window=(window-\d+)", compute_log)
+            if len(native_windows) != len(set(native_windows)):
+                raise RunnerError("native inference executed the same window more than once")
+            if expectation == "unconfigured":
+                if native_windows or "SPEC226_ROLE_START" in compute_log:
+                    raise RunnerError("unconfigured dashboard executed a tracking window")
+            elif plan["settings"]["fault"] == "missing-source":
+                if native_windows or "SPEC226_ROLE_START" in compute_log:
+                    raise RunnerError("missing-source negative executed a compute window")
+            elif expectation == "early-eof":
+                if native_windows != ["window-0", "window-1"]:
+                    raise RunnerError("early EOF advanced computation beyond the two available samples")
+                for index in range(1, 4):
+                    source_log = (output / ("uav" + str(index) + "-camera.log")).read_text()
+                    marker = "MINIMUAS_VIDEO_REPLAY_EOF camera=UAV" + str(index) + " frames=2 rejected=0 skipped=0"
+                    if marker not in source_log:
+                        raise RunnerError("early EOF did not exhaust the two-sample video cleanly")
+            elif not native_windows:
+                raise RunnerError("no actual native person inference was observed")
+            dashboard.send_signal(signal.SIGINT)
+            if dashboard.wait(timeout=60) != 0:
+                raise RunnerError("installed dashboard did not exit cleanly")
+            text = (output / "ground-station.log").read_text(errors="replace")
+            if expectation != "unconfigured" and not any('"event": "dash.tracking.stopped"' in line and
+                       '"cleanupState": "CLEAN"' in line and '"drained": true' in line
+                       for line in text.splitlines()):
+                raise RunnerError("installed main did not report native CLEAN/drained")
+            _write_json(output / "dashboard-run.json", {
+                "schema": "spec226-installed-dashboard-run-v1", "status": "PASS",
+                "browserExit": browser.returncode, "dashboardExit": dashboard.returncode,
+                "controllerCertificate": plan["controllerCertificate"],
+                "nativeWindows": native_windows,
+            })
+            return 0
         launch(by_name["controller"])
         # The process-start marker is not sufficient: App_ServiceController
         # publishes NDNSF_CONTROLLER_READY only after prefix registration and
@@ -2932,8 +3017,18 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
     finally:
         cleanup_started_ns = time.monotonic_ns()
         cleanup_errors = []
+        forced_kills = []
         if resource_sampler is not None:
             resource_sampler.sample(force=True)
+        if dashboard_mode:
+            # Keep Source/Compute and NFD alive while the APP drains remote work.
+            for name, process, _log in processes:
+                if name == "ground-station" and process.poll() is None:
+                    process.send_signal(signal.SIGINT)
+                    try:
+                        process.wait(timeout=60)
+                    except subprocess.TimeoutExpired:
+                        cleanup_errors.append("dashboard drain exceeded 60 seconds")
         for _name, process, _log in reversed(processes):
             if process.poll() is None:
                 try:
@@ -2950,6 +3045,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             if process.poll() is None:
                 try:
                     process.kill()
+                    forced_kills.append(_name)
                 except ProcessLookupError:
                     pass
         reap_deadline = time.monotonic() + 2
@@ -2960,7 +3056,8 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                 pass
         for _name, _process, log in processes:
             log.close()
-        nfd_reap_deadline = cleanup_started_ns / 1_000_000_000 + (16 if main_mode else 9)
+        nfd_reap_deadline = (time.monotonic() + 9 if dashboard_mode else
+                             cleanup_started_ns / 1_000_000_000 + (16 if main_mode else 9))
         for nfd in reversed(nfd_apps):
             process = nfd.process
             if process is not None:
@@ -2979,18 +3076,20 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         except Exception as error:
             cleanup_errors.append(
                 f"NFD socket directory cleanup: {type(error).__name__}: {error}"[:512])
-        if person_mode or main_mode:
+        if person_mode or main_mode or dashboard_mode:
             resources = resource_sampler.finish()
-            _write_json(output / ("main-resources.json" if main_mode else "person-resources.json"), resources)
+            stem = "dashboard" if dashboard_mode else "main" if main_mode else "person"
+            _write_json(output / (stem + "-resources.json"), resources)
             from person_run_receipt import audit_person_processes
             audit = audit_person_processes(output, resources["processes"])
             ended_ns = time.monotonic_ns()
-            _write_json(output / ("main-cleanup.json" if main_mode else "person-cleanup.json"), {
+            _write_json(output / (stem + "-cleanup.json"), {
                 "schema": "uav-person-cleanup-v1", "clockDomain": "CLOCK_MONOTONIC_NS",
                 "runStartedNs": started_ns, "cleanupStartedNs": cleanup_started_ns,
                 "cleanupEndedNs": ended_ns,
                 "cleanupSeconds": (ended_ns - cleanup_started_ns) / 1_000_000_000,
                 "cleanupErrors": cleanup_errors,
+                "forcedKills": forced_kills,
                 "applicationExitCodes": {name: process.poll() for name, process, _ in processes},
                 **audit})
 
@@ -3165,6 +3264,330 @@ def _run_person(plan: dict[str, Any], output: Path, *, headless: bool,
         return code
 
 
+def build_installed_dashboard_plan(*, installations: dict[str, str], tools: dict[str, str],
+                                   output: Path, model: Path, profile: Path, reid: Path,
+                                   source_manifest: Path, computation: Path, source_epoch: int,
+                                   window_count: int = 4, expected: str = "completed",
+                                   media_start_us: int = 60000000,
+                                   check_frame_lease: bool = False,
+                                   check_empty_end: bool = False) -> dict[str, Any]:
+    """Build the software-camera experiment's ordinary installed process plan.
+
+    Production capture, admission, model execution and Job state stay native.
+    The dataset manifest is an input inventory; no frames or results are prepared here.
+    """
+    if (expected not in {"completed", "cancelled", "failed", "unconfigured", "early-eof"} or
+            not 1 <= window_count <= MAX_REPLAY_WINDOWS):
+        raise RunnerError("invalid dashboard qualification case")
+    if expected == "early-eof" and (window_count != 4 or media_start_us != 0):
+        raise RunnerError("early EOF requires four requested windows and a short input starting at zero")
+    if check_frame_lease and (expected != "completed" or window_count < 4):
+        raise RunnerError("frame lease check requires a completed scenario with at least four windows")
+    if check_empty_end and (expected != "completed" or window_count != 4 or
+                            media_start_us != 0 or check_frame_lease):
+        raise RunnerError("empty transition requires its own four-window input starting at zero")
+    output = output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads(source_manifest.read_text())
+    cameras = {item["cameraId"]: item for item in manifest["cameras"]}
+    if set(cameras) != {"UAV1", "UAV2", "UAV3"} or source_epoch <= 0:
+        raise RunnerError("dashboard source manifest requires three named cameras and a positive epoch")
+    for camera in cameras.values():
+        if digest_file(Path(camera["videoPath"])) != camera["videoDigest"]:
+            raise RunnerError("software-camera video digest mismatch")
+    run_id = "run-" + output.name + "-" + str(source_epoch)
+    schedule = output / "source-generations.json"
+    _write_json(schedule, {"schema": "uav-source-generations-v1", "windowCount": window_count,
+                          "generations": [{"firstWindowIndex": 0, "sourceEpoch": source_epoch,
+                                           "sourceIds": {camera: "person-" + camera + "-video"
+                                                         for camera in cameras}}]})
+    runtime = output / "runtime.conf"
+    runtime.write_text("group-prefix=/example/uav\ncontroller-prefix=/example/uav/controller\n"
+                       "ground-station-identity=/example/uav/gs\ndrone-prefix=/example/uav/drone\n")
+    schema = output / "private/config/trust-schema.conf"
+    policy = Path(__file__).with_name("spec226.policies").resolve()
+    job = output / "job.json"
+    definition = {"schema": "uav-tracking-job-v1", "jobId": "job-" + run_id,
+                  "runId": run_id, "missionId": "human-tracking", "mode": "person",
+                  "compute": {"producerIdentity": "/example/uav/compute", "droneId": "compute"},
+                  "sources": [{"cameraId": camera, "sourceId": "person-" + camera + "-video",
+                               "sourceEpoch": source_epoch,
+                               "producerIdentity": "/example/uav/drone/" + camera, "droneId": camera,
+                               "sourceManifest": {"path": str(schedule), "digest": digest_file(schedule)}}
+                              for camera in sorted(cameras)],
+                  "calibrationIdentity": None,
+                  "profile": {"path": str(profile.resolve()), "digest": digest_file(profile)},
+                  "computationManifest": {"path": str(computation.resolve()), "digest": digest_file(computation)},
+                  "outputDirectory": str(output / "job-output"), "windowCount": window_count,
+                  "deadlineMs": 120000, "requestTimeoutMs": 30000}
+    _write_json(job, definition)
+    processes = []
+
+    def actor(name, node, identity, command):
+        processes.append({"name": name, "node": node, "identity": identity, "cwd": "/",
+                          "privateDir": str(output / "private/actors" / name),
+                          "command": [str(value) for value in command]})
+
+    actor("controller", "gs", "/example/uav/controller", [
+        Path(installations["native"]) / "bin/App_ServiceController", "--runtime-config", runtime,
+        "--node", "gs", "--controller-prefix", "/example/uav/controller",
+        "--policy-file", policy, "--trust-schema", schema])
+    common = ["--runtime-config", runtime, "--compute-identity", "/example/uav/compute",
+              "--compatibility", "false", "--run-id", run_id, "--window-count", window_count,
+              "--tracking-profile", profile.resolve(), "--model", model.resolve(),
+              "--source-epoch", source_epoch, "--source-generations", schedule,
+              "--world-frame-id", "uav-world-v1", "--acquisition-kind", "measured",
+              "--delivery-mode", "replay", "--controller", "/example/uav/controller",
+              "--trust-schema", schema]
+    for index, camera in enumerate(sorted(cameras), 1):
+        if expected == "failed" and camera == "UAV3":
+            continue
+        actor("uav" + str(index) + "-camera", "uav" + str(index), "/example/uav/drone/" + camera,
+              [Path(installations["camera"]) / "bin/tracking-camera", "--role", "source",
+               "--camera", camera, "--video-source", cameras[camera]["videoPath"],
+               "--observation-source-id", "person-" + camera + "-video",
+               "--media-start-us", media_start_us, *common])
+    worker = Path(installations["native"]) / "libexec/ndnsf-uav/tracking/tracking_worker.py"
+    actor("compute", "compute", "/example/uav/compute", [
+        Path(installations["native"]) / "bin/UavTrackingNode", "--role", "compute", *common,
+        "--reid-model", reid.resolve(), "--person-computation-manifest", computation.resolve(),
+        "--worker-script", worker])
+    actor("ground-station", "gs", "/example/uav/gs", [
+        Path(installations["dashboard"]) / "bin/tracking-dashboard", "--group", "/example/uav",
+        "--controller", "/example/uav/controller", "--user", "/example/uav/gs",
+        "--trust-schema", schema,
+        *([] if expected == "unconfigured" else ["--tracking-job-config", job]),
+        "--http-host", "127.0.0.1", "--http-port", "8097", "--no-nfd-metrics",
+        "--log-dir", output / "dashboard-journal"])
+    actor("browser-driver", "gs", "", [tools["python"],
+        Path(__file__).with_name("verify_installed_dashboard.py").resolve(),
+        "--url", "http://127.0.0.1:8097/", "--browser-executable", tools["browser"],
+        "--job-config", job, "--expect", expected, "--windows", window_count,
+        *(["--check-frame-lease"] if check_frame_lease else []),
+        *(["--check-empty-end"] if check_empty_end else []),
+        "--output", output / "browser-receipt.json"])
+    paths = {str(path.resolve()) for path in (model, profile, reid, source_manifest, computation,
+                                             schedule, runtime, job, policy)}
+    paths.update(str(Path(camera["videoPath"]).resolve()) for camera in cameras.values())
+    paths.update(str(Path(item["command"][0]).resolve()) for item in processes)
+    paths.add(str(Path(__file__).with_name("verify_installed_dashboard.py").resolve()))
+    paths.add(str(Path(tools["publicTrustInstaller"]).resolve()))
+    # The current CLI fingerprints these legacy assets at startup even for
+    # native computation. They are never executed in the native-person branch.
+    paths.update(str(path.resolve()) for path in (worker, worker.with_name("motion_estimator.py")))
+    return {"applicationMode": "installed-dashboard", "installations": installations,
+            "candidate": {"sourcePath": installations["nativeSource"],
+                          "miniSourcePath": installations["miniSource"],
+                          "narHash": tools["ndnsfNarHash"], "revision": tools["ndnsfRevision"]},
+            "nixExecutable": tools["nix"], "ndnsecExecutable": tools["ndnsec"],
+            "publicTrustInstallerExecutable": tools["publicTrustInstaller"],
+            "browserPythonPath": tools["browserPythonPath"],
+            "settings": {"fault": "missing-source" if expected == "failed" else "none",
+                         "dashboardExpectation": expected,
+                         "windowCount": window_count, "trackingHostRequestTimeoutMs": 30000,
+                         "nfdCsMaxPackets": NFD_CS_MAX_PACKETS},
+            "topology": {"nodes": ["uav1", "uav2", "uav3", "compute", "gs"]},
+            "processes": processes, "controllerCertificate": str(schema.parent / "actor-controller.cert"),
+            "assets": [{"path": path, "digest": digest_file(Path(path))} for path in sorted(paths)]}
+
+
+def _prepare_installed_dashboard_credentials(plan: dict[str, Any], output: Path) -> None:
+    """Reuse native credential tooling; never relocate a live PIB database."""
+    identities = {"controller": "/example/uav/controller", "ground-station": "/example/uav/gs",
+                  "compute": "/example/uav/compute", "uav1-camera": "/example/uav/drone/UAV1",
+                  "uav2-camera": "/example/uav/drone/UAV2", "uav3-camera": "/example/uav/drone/UAV3"}
+    if plan.get("applicationMode") != "installed-dashboard" or not 6 <= len(plan["processes"]) <= 7:
+        raise RunnerError("invalid installed dashboard credential plan")
+    for item in plan["processes"]:
+        if item["name"] != "browser-driver" and item["identity"] != identities.get(item["name"]):
+            raise RunnerError("only the declared non-CA actor identity may be exported")
+    installer = Path(plan["publicTrustInstallerExecutable"])
+    if not installer.is_absolute() or not os.access(installer, os.X_OK):
+        raise RunnerError("installed native public trust provisioner is required")
+    config = output / "private/config"
+    config.mkdir(parents=True, exist_ok=True)
+    tool = plan["ndnsecExecutable"]
+    security = _provision_run_security(output, ndnsec=tool)
+    schema = config / "trust-schema.conf"
+    _write_uav_trust_schema(schema)
+    source = output / "private/keychain"
+    source_env = dict(os.environ, HOME=str(source / "home"),
+                      NDN_CLIENT_PIB="pib-sqlite3:" + str(source / "pib"),
+                      NDN_CLIENT_TPM="tpm-file:" + str(source / "tpm"))
+    source_env.pop("LD_LIBRARY_PATH", None)
+    certificates = {item["identity"]: item for item in security["publicCertificates"]}
+    for item in plan["processes"]:
+        if item["name"] == "browser-driver":
+            continue
+        private = Path(item["privateDir"]).resolve()
+        try:
+            private.relative_to(output / "private/actors")
+        except ValueError as error:
+            raise RunnerError("new actor credentials must stay in this run's private/actors") from error
+        if private.exists() and any(private.iterdir()):
+            raise RunnerError("refusing to overwrite existing actor credentials")
+        for part in ("home", "config", "data", "pib", "tpm"):
+            (private / part).mkdir(parents=True, mode=0o700, exist_ok=True)
+        private.chmod(0o700)
+        password = secrets.token_urlsafe(32)
+        target_env = dict(source_env, HOME=str(private / "home"),
+                          NDN_CLIENT_PIB="pib-sqlite3:" + str(private / "pib"),
+                          NDN_CLIENT_TPM="tpm-file:" + str(private / "tpm"))
+        try:
+            exported = subprocess.run([tool, "export", "-i", item["identity"], "-P", password],
+                                      env=source_env, capture_output=True, timeout=10, check=True)
+            if len(exported.stdout) > 64 * 1024:
+                raise RunnerError("actor SafeBag exceeds byte bound")
+            subprocess.run([tool, "import", "-P", password, "-"], input=exported.stdout,
+                           env=target_env, capture_output=True, timeout=10, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            # Exception argv contain the transient SafeBag password.
+            raise RunnerError("native actor SafeBag export/import failed") from None
+        # cert-install requires the peer identity/key to exist. Reuse the native
+        # test provisioning tool to add public trust without peer private keys.
+        imported = subprocess.run(
+            [plan["publicTrustInstallerExecutable"], str(private / "pib"),
+             "tpm-file:" + str(private / "tpm"),
+             *[entry["path"] for entry in security["publicCertificates"]]],
+            env=target_env, capture_output=True, timeout=10)
+        if imported.returncode:
+            raise RunnerError("native public trust installation failed: " +
+                              imported.stderr.decode(errors="replace")[:1024])
+        subprocess.run([tool, "set-default", item["identity"]], env=target_env,
+                       capture_output=True, timeout=10, check=True)
+        actual = subprocess.check_output([tool, "cert-dump", "-i", item["identity"]],
+                                         env=target_env, timeout=10)
+        expected = Path(certificates[item["identity"]]["path"]).read_bytes()
+        if base64.b64decode(actual) != base64.b64decode(expected):
+            raise RunnerError("imported actor certificate differs from issued certificate")
+        if len([path for path in (private / "tpm").rglob("*") if path.is_file()]) != 1:
+            raise RunnerError("actor must retain exactly its own private key")
+        command = item["command"]
+        if "--trust-schema" in command:
+            command[command.index("--trust-schema") + 1] = str(schema)
+    plan["controllerCertificate"] = str(config / "actor-controller.cert")
+    paths = {asset["path"] for asset in plan["assets"]}
+    paths.update(item["path"] for item in security["publicCertificates"])
+    paths.add(str(schema))
+    plan["assets"] = [{"path": str(Path(path).resolve()), "digest": digest_file(Path(path))}
+                      for path in sorted(paths)]
+
+
+def _read_installed_dashboard_plan(path: Path) -> dict[str, Any]:
+    """Validate experiment inputs without adding a second deployment owner."""
+    if not 0 < path.stat().st_size <= 1024 * 1024:
+        raise RunnerError("installed dashboard plan is outside byte bound")
+    plan = json.loads(path.read_text())
+    if plan.get("applicationMode") != "installed-dashboard":
+        raise RunnerError("expected installed-dashboard applicationMode")
+    nodes = {"uav1", "uav2", "uav3", "compute", "gs"}
+    if set(plan["topology"]["nodes"]) != nodes:
+        raise RunnerError("dashboard plan requires the maintained five-node topology")
+    expected = {"controller", "uav1-camera", "uav2-camera", "uav3-camera",
+                "compute", "ground-station", "browser-driver"}
+    if plan["settings"]["fault"] == "missing-source":
+        expected.remove("uav3-camera")
+    elif plan["settings"]["fault"] != "none":
+        raise RunnerError("unsupported dashboard fault")
+    names = [item["name"] for item in plan["processes"]]
+    if len(names) != len(set(names)) or set(names) != expected:
+        raise RunnerError("dashboard process roles are incomplete or duplicated")
+    expectation = plan["settings"].get("dashboardExpectation", "completed")
+    if expectation not in {"completed", "cancelled", "failed", "unconfigured", "early-eof"}:
+        raise RunnerError("unsupported dashboard expectation")
+    if expectation == "unconfigured":
+        ground_station = next(item for item in plan["processes"] if item["name"] == "ground-station")
+        browser = next(item for item in plan["processes"] if item["name"] == "browser-driver")
+        command = browser["command"]
+        expect_index = command.index("--expect") + 1 if "--expect" in command else len(command)
+        if ("--tracking-job-config" in ground_station["command"] or
+                expect_index >= len(command) or command[expect_index] != "unconfigured" or
+                plan["settings"]["fault"] != "none"):
+            raise RunnerError("unconfigured check must omit tracking configuration and keep its browser oracle")
+    credentials = set()
+    placement = {"controller": "gs", "ground-station": "gs", "browser-driver": "gs",
+                 "compute": "compute", "uav1-camera": "uav1", "uav2-camera": "uav2",
+                 "uav3-camera": "uav3"}
+    roots = plan["installations"]
+    programs = {"controller": Path(roots["native"]) / "bin/App_ServiceController",
+                "compute": Path(roots["native"]) / "bin/UavTrackingNode",
+                "ground-station": Path(roots["dashboard"]) / "bin/tracking-dashboard"}
+    programs.update({"uav" + str(i) + "-camera": Path(roots["camera"]) / "bin/tracking-camera"
+                     for i in range(1, 4)})
+    required_assets = {str(Path(plan["controllerCertificate"]).resolve())}
+    for item in plan["processes"]:
+        command = item["command"]
+        if item["node"] != placement[item["name"]] or not command or not Path(item["cwd"]).is_absolute():
+            raise RunnerError("invalid dashboard process placement or command")
+        executable = Path(command[0])
+        if not executable.is_absolute() or not os.access(executable, os.X_OK):
+            raise RunnerError("dashboard process executable is unavailable")
+        if item["name"] == "browser-driver":
+            driver = Path(__file__).with_name("verify_installed_dashboard.py").resolve()
+            if len(command) < 2 or Path(command[1]).resolve() != driver:
+                raise RunnerError("browser must execute the maintained assertion driver")
+            required_assets.add(str(driver))
+            continue
+        if executable != programs[item["name"]] or not str(executable).startswith("/nix/store/"):
+            raise RunnerError("dashboard actors must use the frozen Nix installation")
+        required_assets.add(str(executable.resolve()))
+        for index, value in enumerate(command[:-1]):
+            if value in {"--model", "--tracking-profile", "--reid-model", "--video-source",
+                         "--runtime-config", "--trust-schema", "--person-computation-manifest",
+                         "--tracking-job-config", "--source-generations", "--policy-file",
+                         "--worker-script"}:
+                required_assets.add(str(Path(command[index + 1]).resolve()))
+                if value == "--worker-script":
+                    required_assets.add(str(Path(command[index + 1]).with_name("motion_estimator.py").resolve()))
+        private = Path(item["privateDir"]).resolve()
+        if private in credentials:
+            raise RunnerError("dashboard actors must have distinct credential roots")
+        credentials.add(private)
+        with sqlite3.connect("file:" + str(private / "pib/pib.db") + "?mode=ro", uri=True) as db:
+            locator = db.execute("SELECT tpm_locator FROM tpmInfo").fetchone()
+        if locator != ("tpm-file:" + str(private / "tpm"),):
+            raise RunnerError("actor PIB/TPM locator mismatch; provision through SafeBag import")
+    required_assets.add(str(Path(plan["publicTrustInstallerExecutable"]).resolve()))
+    for asset in plan["assets"]:
+        source = Path(asset["path"])
+        if not source.is_absolute() or "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest() != asset["digest"]:
+            raise RunnerError("dashboard asset digest mismatch: " + str(source))
+    if not required_assets.issubset({str(Path(asset["path"]).resolve()) for asset in plan["assets"]}):
+        raise RunnerError("dashboard assets omit a required executable/config/model digest")
+    # Match native and binding derivations to the same locked Nix source closure.
+    candidate = plan["candidate"]
+    for component in ("native", "python"):
+        deriver = subprocess.check_output([plan["nixExecutable"], "path-info", "--derivation",
+                                           roots[component]], text=True).strip()
+        descriptions = json.loads(subprocess.check_output(
+            [plan["nixExecutable"], "derivation", "show", deriver], text=True))
+        description = next(iter(descriptions.get("derivations", descriptions).values()))
+        if description["env"]["src"] != candidate["sourcePath"]:
+            raise RunnerError("native/binding derivation source mismatch")
+    info = json.loads(subprocess.check_output(
+        [plan["nixExecutable"], "path-info", "--json", candidate["sourcePath"]], text=True))
+    info = next(iter(info.values())) if isinstance(info, dict) else info[0]
+    if info["narHash"] != candidate["narHash"]:
+        raise RunnerError("candidate source NAR identity mismatch")
+    for component, required in (("dashboard", {roots["python"], roots["native"]}),
+                                ("camera", {roots["native"]})):
+        closure = set(subprocess.check_output(
+            [plan["nixExecutable"], "path-info", "--recursive", roots[component]],
+            text=True).splitlines())
+        if not required.issubset(closure):
+            raise RunnerError("installed " + component + " references a different native/binding closure")
+        deriver = subprocess.check_output([plan["nixExecutable"], "path-info", "--derivation",
+                                           roots[component]], text=True).strip()
+        descriptions = json.loads(subprocess.check_output(
+            [plan["nixExecutable"], "derivation", "show", deriver], text=True))
+        description = next(iter(descriptions.get("derivations", descriptions).values()))
+        if description["env"]["src"] != candidate["miniSourcePath"]:
+            raise RunnerError("camera/dashboard MiniMUAS source mismatch")
+    if not Path(plan["controllerCertificate"]).is_file() or not Path(plan["browserPythonPath"]).is_dir():
+        raise RunnerError("explicit controller certificate and browser environment are required")
+    return plan
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--application-mode", choices=("compat", "main"), default="compat",
@@ -3180,6 +3603,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="explicit installed model interpreter for person or main vehicle mode")
     parser.add_argument("--license", default="")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--installed-dashboard-plan", type=Path,
+                        help="frozen Nix original-APP process plan over the maintained topology")
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--run", action="store_true")
@@ -3209,6 +3634,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not (args.prepare or args.preflight or args.run):
         parser.error("one of --prepare, --preflight, or --run is required")
     try:
+        if args.installed_dashboard_plan:
+            output = args.output_dir.resolve()
+            if args.prepare:
+                with _uav_run_ownership(output):
+                    path = args.installed_dashboard_plan.resolve()
+                    path.relative_to(output)
+                    plan = json.loads(path.read_text())
+                    _prepare_installed_dashboard_credentials(plan, output)
+                    _write_json(path, plan)
+                print(json.dumps({"status": "PREPARED", "actors": len(plan["processes"]) - 1}))
+                return 0
+            plan = _read_installed_dashboard_plan(args.installed_dashboard_plan.resolve())
+            if args.run:
+                if os.geteuid() != 0:
+                    raise RunnerError("MiniNDN requires root")
+                with _uav_run_ownership(output):
+                    _write_json(output / "installed-dashboard-plan.json", plan)
+                    code = _run_minindn(plan, output, wall_timeout_seconds=args.run_seconds)
+                cleanup = json.loads((output / "dashboard-cleanup.json").read_text())
+                if (cleanup["cleanupErrors"] or cleanup["forcedKills"] or cleanup["auditErrors"] or
+                        cleanup["remainingOwnedProcesses"] or cleanup["unreapedOwnedProcesses"]):
+                    return 1
+                return code
+            print(json.dumps({"status": "PREFLIGHT_PASS", "processes": len(plan["processes"])}))
+            return 0
         owner = (nullcontext() if any((args.tracking_profile, args.source_manifest, args.reid_model))
                  else _uav_run_ownership(args.output_dir))
         with owner:
