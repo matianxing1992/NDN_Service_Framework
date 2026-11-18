@@ -1272,6 +1272,25 @@ BOOST_AUTO_TEST_CASE(FileProtectionKeyComesFromConfiguredEnvironment)
   ::unsetenv("NDNSF_DI_FILE_KEY");
 }
 
+BOOST_FIXTURE_TEST_CASE(OpenDispatchesByEnvelopeGeneration, Fixture)
+{
+  const std::vector<std::uint8_t> key(32, 0x3C);
+  const NativeFileProtectionKey protection{"file-key-3", key};
+
+  PrivateFile sealed;
+  nativeExportSealedStoredModelHandle(handle, sealed.path, protection);
+  const auto opened = nativeOpenStoredModelHandle(sealed.path, protection);
+  BOOST_CHECK(opened.masterKey == handle.masterKey);
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, std::nullopt), std::runtime_error);
+  const NativeFileProtectionKey other{"file-key-9", key};
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, other), std::runtime_error);
+
+  PrivateFile legacy;
+  nativeExportStoredModelHandle(handle, legacy.path);
+  const auto imported = nativeOpenStoredModelHandle(legacy.path, std::nullopt);
+  BOOST_CHECK(imported.masterKey == handle.masterKey);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::tests

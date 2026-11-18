@@ -75,6 +75,11 @@ nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
 std::optional<NativeFileProtectionKey>
 nativeFileProtectionKeyFromEnvironment();
 
+/** Open a handle whatever its on-disk generation (v1 legacy import or sealed v2). */
+NativeStoredModelHandle
+nativeOpenStoredModelHandle(const std::filesystem::path& source,
+                            const std::optional<NativeFileProtectionKey>& protection);
+
 /** Load a bounded, current-user-owned regular 0600 file without following a final symlink. */
 NativeStoredModelHandle
 nativeLoadStoredModelHandle(const std::filesystem::path& source);

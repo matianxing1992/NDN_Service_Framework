@@ -314,6 +314,34 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
   OPENSSL_cleanse(body.data(), body.size());
 }
 
+NativeStoredModelHandle
+nativeOpenStoredModelHandle(const std::filesystem::path& source,
+                            const std::optional<NativeFileProtectionKey>& protection)
+{
+  const auto magic = readPrivateFile(source, 65536);
+  const std::string sealedMagic(SEALED_HANDLE_MAGIC);
+  const bool isSealed = magic.size() >= sealedMagic.size() &&
+    std::equal(sealedMagic.begin(), sealedMagic.end(), magic.begin());
+  if (!isSealed)
+    return nativeLoadStoredModelHandle(source);
+  if (!protection)
+    throw std::runtime_error("DI_STORED_MODEL_SEALED_WITHOUT_KEY");
+  const std::string wanted = protection->keyId;
+  const auto resolve = [&protection] (const std::string& keyId)
+      -> std::optional<std::vector<std::uint8_t>> {
+    if (protection->keyId == keyId)
+      return protection->key;
+    return std::nullopt;
+  };
+  try {
+    return nativeLoadSealedStoredModelHandle(source, resolve);
+  }
+  catch (const std::exception& error) {
+    throw std::runtime_error(std::string("DI_STORED_MODEL_SEALED_OPEN_FAILED: key=") +
+                             wanted + ": " + error.what());
+  }
+}
+
 std::optional<NativeFileProtectionKey>
 nativeFileProtectionKeyFromEnvironment()
 {
