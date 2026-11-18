@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -82,6 +83,55 @@ class NfdRibAuthorizationTest(unittest.TestCase):
         self.assertEqual(reporter.failures, [])
         self.assertEqual(len(reporter.warnings), 1)
         self.assertIn("nfdc is unavailable", reporter.warnings[0])
+
+
+class TrustAnchorLocationTest(unittest.TestCase):
+    """A file anchor resolves beside the schema, not at the caller's --root-cert path."""
+
+    def check(self, directory: Path, name: str = "schema.conf"):
+        reporter = RecordingReporter()
+        checker.check_trust_schema(reporter, directory / name)
+        return reporter
+
+    def test_anchor_beside_the_schema_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "schema.conf").write_text(
+                'trust-anchor\n{\n  type file\n  file-name "root.cert"\n}\n', encoding="utf-8")
+            (root / "root.cert").write_bytes(b"certificate")
+            reporter = self.check(root)
+        self.assertEqual(reporter.failures, [])
+        self.assertIn("trust schema uses a file trust anchor", reporter.ok_messages)
+        self.assertTrue(any("trust anchor resolves" in item for item in reporter.ok_messages))
+
+    def test_anchor_elsewhere_is_a_failure_with_the_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "schema.conf").write_text(
+                'trust-anchor\n{\n  type file\n  file-name "root.cert"\n}\n', encoding="utf-8")
+            reporter = self.check(root)
+        self.assertEqual(len(reporter.failures), 1)
+        self.assertIn("resolved relative to the schema directory", reporter.failures[0])
+        self.assertIn("--root-cert", reporter.failures[0])
+
+    def test_type_any_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "schema.conf").write_text(
+                "trust-anchor\n{\n  type any\n}\n", encoding="utf-8")
+            reporter = self.check(root)
+        self.assertEqual(reporter.failures, [])
+        self.assertEqual(len(reporter.warnings), 1)
+        self.assertIn("type any", reporter.warnings[0])
+
+    def test_file_anchor_without_file_name_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "schema.conf").write_text(
+                "trust-anchor\n{\n  type file\n}\n", encoding="utf-8")
+            reporter = self.check(root)
+        self.assertEqual(len(reporter.failures), 1)
+        self.assertIn("without a usable file-name", reporter.failures[0])
 
 
 if __name__ == "__main__":

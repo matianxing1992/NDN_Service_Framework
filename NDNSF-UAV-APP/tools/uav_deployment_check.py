@@ -258,14 +258,39 @@ def identities_from_policy(policy_file: Path) -> set[str]:
     return identities
 
 
+FILE_ANCHOR = re.compile(r"type\s+file\s*;?[\s\S]{0,200}?file-name\s+\"?([^\"\s;]+)\"?", re.IGNORECASE)
+
+
 def check_trust_schema(reporter: Reporter, trust_schema: Path) -> None:
+    """Verify the schema pins a file anchor and that the anchor resolves where the runtime looks.
+
+    A file anchor is resolved relative to the schema's own directory, not relative to the working
+    directory or to a ``--root-cert`` option: an otherwise correct deployment fails with
+    "NDNSF trust anchor is missing, malformed, or outside validity" when ``root.cert`` sits anywhere else.
+    Both facts were observed while deploying the release bundle, so the check reports them together.
+    """
     if not trust_schema.exists():
         return
     text = trust_schema.read_text(errors="replace")
     if "type any" in text:
-        reporter.warn("trust schema uses 'type any'; replace it with a root certificate file for real deployment")
-    if "type file" in text and "file-name" in text:
-        reporter.ok("trust schema uses a file trust anchor")
+        reporter.warn("trust schema uses 'type any'; replace it with a root certificate file for real "
+                      "deployment")
+    match = FILE_ANCHOR.search(text)
+    if match is None:
+        if "type file" in text:
+            reporter.fail("trust schema declares a file anchor without a usable file-name")
+        return
+    reporter.ok("trust schema uses a file trust anchor")
+    anchor_name = match.group(1)
+    anchor_path = Path(anchor_name)
+    if not anchor_path.is_absolute():
+        anchor_path = trust_schema.parent / anchor_path
+    if not anchor_path.is_file():
+        reporter.fail("trust anchor is not readable next to the schema: "
+                      f"{anchor_path}; a file anchor is resolved relative to the schema directory, "
+                      "so an otherwise valid --root-cert path elsewhere does not help")
+        return
+    reporter.ok(f"trust anchor resolves: {anchor_path}")
 
 
 def check_yolo(reporter: Reporter, model: str, worker_script: str) -> None:
