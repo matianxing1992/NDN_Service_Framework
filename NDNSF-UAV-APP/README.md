@@ -685,6 +685,20 @@ trust-anchor
 All controller, ground-station, drone, repo, and provider certificates should
 be signed by this root or by a hierarchical child CA under the same namespace.
 
+Two properties of the anchor are easy to get wrong, because the failure message
+does not name either one:
+
+- A **relative** `file-name` is resolved against the schema's own directory, not
+  against the working directory and not against any `--root-cert` option. With
+  `file-name "root.cert"` the certificate must sit beside the schema file; an
+  absolute `file-name` avoids the question entirely.
+- The runtime identities must be **RSA**, not ECDSA. A provider built from an
+  ECDSA identity stops at
+  `ServiceProvider requires an RSA encryption certificate for NAC-ABE`, because
+  NAC-ABE needs an RSA encryption certificate.
+
+`tools/uav_deployment_check.py` reports both conditions before any actor starts.
+
 ### Network And NFD
 
 Every machine must run NFD, and the machines must have faces/routes that make
@@ -696,6 +710,27 @@ these prefixes reachable:
 /example/uav/gs
 /example/uav/drone/<id>
 ```
+
+NFD must also *authorize* the actors' prefix registrations. A reachable
+forwarder is not enough: with none of the actors granted management privileges,
+the first actor fails after its service container has started with
+
+```text
+ServiceController prefix registration failed:
+/example/uav/controller/NDNSF/RPC/CERTBOOTSTRAP: authorization rejected
+```
+
+Grant the deployment identities the RIB/route management privileges they need in
+the NFD authorization configuration. Do not work around this with a `certfile any`
+grant: that makes the check pass while leaving the deployment unauthenticated.
+`tools/uav_deployment_check.py` probes one unused prefix under the deployment
+namespace and reports a rejected registration instead of letting discovery wait
+for the first actor to fail.
+
+Start order matters as well. The NAC public parameters must be published before a
+drone starts, so bring the deployment up as controller, then ground station, then
+drones; starting a drone first stops at
+`Failed to fetch public parameters after multiple attempts`.
 
 The exact face and routing setup depends on the deployment network. For a first
 private LAN test, configure static UDP faces between the PC and each drone and
