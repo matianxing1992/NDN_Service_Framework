@@ -130,7 +130,9 @@ class PersonModelBackend:
                 raise ValueError("OSNet checkpoint must contain a tensor state_dict")
             body = {}
             for name, tensor in state.items():
-                name = name.removeprefix("module.")
+                # str.removeprefix is 3.9+, and this package declares support for 3.8.
+                if name.startswith("module."):
+                    name = name[len("module."):]
                 if not name.startswith("classifier."):
                     body[name] = tensor
             loaded = model.load_state_dict(body, strict=False)

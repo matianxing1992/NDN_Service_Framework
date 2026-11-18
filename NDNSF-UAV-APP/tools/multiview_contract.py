@@ -146,7 +146,10 @@ def validate_view(view: ViewReference, root: Path | None = None) -> list[str]:
         image = root / view.exact_data_name
         # Local fixture references are checked by validate_fixture_manifest,
         # not by this generic wire contract.
-        if image.exists() and sha256_file(image) != view.content_digest.removeprefix("sha256:"):
+        declared = view.content_digest
+        if declared.startswith("sha256:"):
+            declared = declared[len("sha256:"):]
+        if image.exists() and sha256_file(image) != declared:
             errors.append(f"content digest mismatch for {view.view_id}")
     return errors
 
