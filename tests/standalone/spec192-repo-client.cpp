@@ -531,12 +531,25 @@ private:
   std::thread m_faceThread;
 };
 
+// One admitted ACK, kept per provider so an oracle can check the whole set instead of only the
+// selected candidate. The nsf:: authentication evidence already carries the trust decision, the signer
+// identity and the wire digest, so no packet capture is needed to identify what was admitted.
+struct AdmittedAckRecord
+{
+  std::string provider;
+  std::string signerIdentity;
+  bool trustSchemaValidated = false;
+  std::string wireDigest;
+  std::string capabilityRepoNode;
+};
+
 struct ObjectCapabilityEvidence
 {
   std::string requestId;
   std::string ackWireDigest;
   std::string signerKeyLocator;
   std::vector<uint8_t> response;
+  std::vector<AdmittedAckRecord> admittedAcks;
 };
 
 struct WrapperReply
@@ -641,10 +654,12 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
             candidate.authenticationEvidence.signerIdentity != provider.toUri()) {
           continue;
         }
+        std::string capabilityRepoNode;
         try {
           const auto payload = candidate.ack.getPayload();
           const auto ack = repo::ArtifactCapabilityAck::fromJson(
             std::string(payload.begin(), payload.end()));
+          capabilityRepoNode = ack.capability.repoNode;
           if (ack.capability.repoNode != repoNode ||
               ack.capability.supportsReplicaReceipts) {
             std::lock_guard<std::mutex> guard(mutex);
@@ -660,6 +675,16 @@ probeObjectCapability(PersistentContext& context, const ndn::Name& provider,
           evidence.ackWireDigest = candidate.authenticationEvidence.wireDigest;
           evidence.signerKeyLocator =
             candidate.authenticationEvidence.signerKeyLocator;
+          AdmittedAckRecord record;
+          record.provider = candidate.providerName.toUri();
+          record.signerIdentity = candidate.authenticationEvidence.signerIdentity;
+          record.trustSchemaValidated =
+            candidate.authenticationEvidence.trustSchemaValidated;
+          record.wireDigest = candidate.authenticationEvidence.wireDigest;
+          record.capabilityRepoNode = capabilityRepoNode;
+          if (record.trustSchemaValidated) {
+            evidence.admittedAcks.push_back(std::move(record));
+          }
         }
         selected.push_back(candidate);
       }
@@ -1398,6 +1423,15 @@ run(const Options& options)
               << " ack_digest=" << capability.ackWireDigest
               << " locator=" << capability.signerKeyLocator
               << " receipts=0" << '\n';
+    // One line per admitted provider ACK: an oracle can then require the full set, with the signer and
+    // trust decision the framework recorded, instead of reconstructing them from a packet capture.
+    for (const auto& record : capability.admittedAcks) {
+      std::cout << "SPEC193_OBJECT_CAPABILITY_ACK provider=" << record.provider
+                << " signer=" << record.signerIdentity
+                << " validated=" << (record.trustSchemaValidated ? 1 : 0)
+                << " repo_node=" << record.capabilityRepoNode
+                << " wire_digest=" << record.wireDigest << '\n';
+    }
     const auto stored = repo::parseManifestJson(repo::toString(selected(
       "STORE", repo::encodeStoreRequest(manifest, payload))));
     if (stored.objectName != objectName || stored.sha256 != sha256(payload) ||
