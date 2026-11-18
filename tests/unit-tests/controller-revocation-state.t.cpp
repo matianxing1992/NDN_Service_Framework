@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
+#include "ndn-service-framework/FileKeyRing.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
 #include "ndn-service-framework/utils.hpp"
@@ -761,6 +762,54 @@ BOOST_AUTO_TEST_CASE(ArchivedGenerationDecryptsItsOwnCiphertext)
     rejected = true;
   }
   BOOST_CHECK(rejected);
+}
+
+BOOST_AUTO_TEST_CASE(FileKeyRingResolvesByConfiguredId)
+{
+  DefaultGenerationFiles files;
+  const auto ring = files.root / "keyring";
+  ::unsetenv("NDNSF_FILE_KEYRING");
+  BOOST_CHECK(!fileKeyRingPath());
+  BOOST_CHECK(!loadFileKeyRingEntry("file-key-1"));
+
+  {
+    std::ofstream out(ring);
+    out << "# deployment file keys\n"
+        << "file-key-1 " << std::string(64, 'a') << "\n"
+        << "file-key-2 " << std::string(64, 'b') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  const auto found = loadFileKeyRingEntry("file-key-2");
+  BOOST_REQUIRE(found);
+  BOOST_CHECK_EQUAL(found->keyId, std::string("file-key-2"));
+  BOOST_REQUIRE_EQUAL(found->key.size(), 32u);
+  BOOST_CHECK_EQUAL(found->key.front(), 0xbb);
+  BOOST_CHECK(!loadFileKeyRingEntry("file-key-9"));
+
+  // A readable-by-group ring is not a private key store.
+  std::filesystem::permissions(ring, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
+  BOOST_CHECK_THROW(loadFileKeyRingEntry("file-key-1"), std::runtime_error);
+  std::filesystem::permissions(ring, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::remove);
+
+  // A duplicated ID is ambiguous, not "first wins".
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "file-key-1 " << std::string(64, 'a') << "\n"
+        << "file-key-1 " << std::string(64, 'b') << "\n";
+  }
+  BOOST_CHECK_THROW(loadFileKeyRingEntry("file-key-1"), std::runtime_error);
+
+  // A malformed key rejects the ring even for a different ID.
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "file-key-1 nothex\n";
+  }
+  BOOST_CHECK_THROW(loadFileKeyRingEntry("file-key-2"), std::runtime_error);
+  ::unsetenv("NDNSF_FILE_KEYRING");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
