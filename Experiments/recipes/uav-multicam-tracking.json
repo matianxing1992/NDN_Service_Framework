@@ -1,0 +1,66 @@
+{
+  "assetId": "uav-multicam-tracking",
+  "recipeVersion": 1,
+  "note": "Declared inputs for Experiments/UAV/run_multicamera_tracking_demo.py. The demo distinguishes acquisition from accuracy: these clips carry no synchronized GPS/IMU or camera calibration truth, so a run over them keeps acquisitionKind=simulated and accuracyQualification=unvalidated.",
+  "license": {
+    "identifier": "Apache-2.0",
+    "repository": "jye9/Multi-Camera-Multi-Vehicle-Tracking-System",
+    "fileRole": "dataset-and-model-card"
+  },
+  "sources": [
+    {
+      "role": "detectorCheckpoint",
+      "kind": "model",
+      "repository": "jye9/Multi-Camera-Multi-Vehicle-Tracking-System",
+      "revision": "399589a6e07142f30066940759c8334ba4fd135f",
+      "file": "3UAVs_YOLOv8n.pt",
+      "bytes": 6245849,
+      "sha256": "c51091c489af103ab641c3db0580231b1ed622bfa1f95694ef0fa59607ff1117",
+      "url": "https://huggingface.co/jye9/Multi-Camera-Multi-Vehicle-Tracking-System/resolve/399589a6e07142f30066940759c8334ba4fd135f/3UAVs_YOLOv8n.pt"
+    },
+    {
+      "role": "view0",
+      "kind": "dataset",
+      "repository": "jye9/Multi-Camera-Multi-Vehicle-Tracking-System",
+      "revision": "aa4a657247df1adec2ba976ed07d3992c20ea8c8",
+      "dataset": true,
+      "file": "uav1_1min.mp4",
+      "bytes": 212395845,
+      "sha256": "2b2d88296e6d4a8748956322c14b40b222474f57c3368613d67313762f972999",
+      "url": "https://huggingface.co/datasets/jye9/Multi-Camera-Multi-Vehicle-Tracking-System/resolve/aa4a657247df1adec2ba976ed07d3992c20ea8c8/uav1_1min.mp4"
+    },
+    {
+      "role": "view1",
+      "kind": "dataset",
+      "repository": "jye9/Multi-Camera-Multi-Vehicle-Tracking-System",
+      "revision": "aa4a657247df1adec2ba976ed07d3992c20ea8c8",
+      "dataset": true,
+      "file": "uav2_1min.mp4",
+      "bytes": 211150091,
+      "sha256": "d487e50976e270d8423cdf8b1b125bb25a912e372163935040e988e0e5e053ce",
+      "url": "https://huggingface.co/datasets/jye9/Multi-Camera-Multi-Vehicle-Tracking-System/resolve/aa4a657247df1adec2ba976ed07d3992c20ea8c8/uav2_1min.mp4"
+    },
+    {
+      "role": "view2",
+      "kind": "dataset",
+      "repository": "jye9/Multi-Camera-Multi-Vehicle-Tracking-System",
+      "revision": "aa4a657247df1adec2ba976ed07d3992c20ea8c8",
+      "dataset": true,
+      "file": "uav3_1min.mp4",
+      "bytes": 211333999,
+      "sha256": "8596c2e26c3309cdcbd850a0b5048df371cd3ff891b2504ef08e743bde1c7e97",
+      "url": "https://huggingface.co/datasets/jye9/Multi-Camera-Multi-Vehicle-Tracking-System/resolve/aa4a657247df1adec2ba976ed07d3992c20ea8c8/uav3_1min.mp4"
+    }
+  ],
+  "consumers": [
+    {
+      "entry": "Experiments/UAV/run_multicamera_tracking_demo.py",
+      "args": ["--source", "<prepared root>", "--model", "<prepared root>/3UAVs_YOLOv8n.pt", "--license", "Apache-2.0"]
+    }
+  ],
+  "expectedFiles": {
+    "detectorCheckpoint": "3UAVs_YOLOv8n.pt",
+    "views": ["uav1_1min.mp4", "uav2_1min.mp4", "uav3_1min.mp4"]
+  },
+  "knownGap": "The demo's own DEFAULT_MODEL constant names 3UAVs.pt, while the upstream artifact is 3UAVs_YOLOv8n.pt; a default run therefore reports a missing checkpoint even with the asset present. Pass --model explicitly, which the documented invocation already does."
+}
