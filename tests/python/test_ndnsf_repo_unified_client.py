@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -81,10 +82,18 @@ class UnifiedRepoClientTest(unittest.TestCase):
         )
         # The child is a fresh process: it cannot see this process' in-memory
         # catalog or admission state, so a successful read is a restart oracle.
+        # Give the child the same Python closure as this process. A bare child falls back to whatever
+        # `_py_repoclient` happens to be installed globally, which can be older than the sources under test
+        # and would make this restart oracle measure the installed copy instead of the built one.
+        import py_repoclient as _repo_client
+        wrapper_root = Path(_repo_client.__file__).resolve().parent.parent
+        child_env = dict(os.environ)
+        child_env["PYTHONPATH"] = os.pathsep.join(
+            [str(wrapper_root)] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []))
         completed = subprocess.run(
             [sys.executable, "-c", script,
              json.dumps([self.repo_root, OWNER, reference(), destination])],
-            capture_output=True, text=True, timeout=120, check=False)
+            capture_output=True, text=True, timeout=120, check=False, env=child_env)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertGreater(int(json.loads(completed.stdout)["bytes_written"]), 0)
         with open(destination, "rb") as handle:
