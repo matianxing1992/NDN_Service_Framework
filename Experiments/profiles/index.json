@@ -139,7 +139,13 @@
         "selected build/examples/App_WifiMobilityUser"
       ],
       "preflight": "tests/python/test_four_provider_mobility_profile.py",
-      "oracle": "Experiments/analyze_ndnsf_mobility_lifecycle.py"
+      "oracle": "Experiments/analyze_ndnsf_mobility_lifecycle.py",
+      "systems": [
+        "ndnsf",
+        "grpc",
+        "nsc"
+      ],
+      "qualificationNote": "Only the `ndnsf` system branch exercises NDNSF actors (App_ServiceController / App_WifiMobilityProvider / App_WifiMobilityUser); `grpc` and `nsc` are network-facility baselines and carry no NDNSF claim."
     },
     {
       "id": "qwen36-legacy-python-pipeline-repo",
@@ -351,7 +357,10 @@
       ],
       "installFiles": [],
       "preflight": "current Waf target inventory",
-      "oracle": "none for the archived demo"
+      "oracle": "none for the archived demo",
+      "status": "retired",
+      "retiredReason": "调用的 build/examples/aa-example、drone-example、gs-example 均未在 Waf 注册，所驱动的 NDNSF 应用二进制已不存在",
+      "countsTowardNdnfQualification": false
     }
   ]
 }
