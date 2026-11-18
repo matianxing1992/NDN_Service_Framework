@@ -23,8 +23,19 @@ def native_driver(tmp_path_factory):
     sources = ["tests/fixtures/spec181/native-storage-driver.cpp"] + [
         "NDNSF-DistributedInference/cpp/ndnsf-di/" + name + ".cpp"
         for name in ("NativeProtectedArtifactStore", "ProtectedRuntime", "NativeGrantVerifier")]
+    # The driver calls framework and DI symbols, so the link needs those libraries. Prefer the maintained
+    # build tree, fall back to the installed prefix, and report the prerequisite when neither carries them.
+    library_dir = next((candidate for candidate in (ROOT / "build", Path("/usr/local/lib"))
+                        if (candidate / "libndnsf-distributed-inference.so").is_file()
+                        and (candidate / "libndn-service-framework.so").is_file()), None)
+    if library_dir is None:
+        pytest.skip("requires libndnsf-distributed-inference and libndn-service-framework in build/ or "
+                    "/usr/local/lib")
     subprocess.run(["/usr/bin/g++", "-B/usr/bin", "-std=c++17", "-I.", *sources,
-                    "-lcrypto", "-lndn-cxx", "-pthread", "-o", str(target)], cwd=ROOT,
+                    "-lcrypto", "-lndn-cxx", "-pthread",
+                    "-L", str(library_dir), "-lndnsf-distributed-inference",
+                    "-lndn-service-framework", "-Wl,-rpath," + str(library_dir),
+                    "-o", str(target)], cwd=ROOT,
                    check=True, capture_output=True, text=True, timeout=120)
     return target
 
