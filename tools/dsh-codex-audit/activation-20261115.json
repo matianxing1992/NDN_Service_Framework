@@ -1,0 +1,38 @@
+{
+  "version": "0.1.9",
+  "completedAtUtc": "2026-11-15T20:37:52.819Z",
+  "authorization": "User explicitly approved a safe-window restart and restoration of the original goal.",
+  "oldPid": 120802,
+  "newPid": 177533,
+  "sessionId": "session-8353786a-a967-4e2d-a26e-dead9c1a299d",
+  "goalId": "goal-ff447d2b-6e07-45ab-8407-35649026b4f3",
+  "revisionBeforeMaintenance": 2,
+  "pausedRevision": 3,
+  "restoredRevision": 4,
+  "roundsAtSafePause": 26,
+  "verifiedAdmittedRound": 27,
+  "maxGoalRounds": 256,
+  "phase": "active",
+  "activation": "armed",
+  "dshRunning": true,
+  "guardEnabled": true,
+  "guardStatus": "running",
+  "periodicAuditEnabled": true,
+  "intervalHours": 3,
+  "pluginError": null,
+  "preservedModelSelection": {
+    "provider": "open-design",
+    "model": "deepseek-v4.1-flash"
+  },
+  "checks": [
+    "Normal turn end before maintenance pause",
+    "Native paused goal flushed before shutdown",
+    "All agents idle, no non-goal inputs or audits before restart",
+    "Exact goal ID and revision checked through public RPC",
+    "Graceful SIGTERM; no force kill",
+    "Original launcher and profile used",
+    "Guard configured through public RPC",
+    "Independent state and goal RPC checks after restoration"
+  ],
+  "remainingQualification": "A real blocked event and resulting Codex audit/unblock cycle has not yet been observed."
+}

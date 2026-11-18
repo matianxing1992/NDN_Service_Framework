@@ -1,0 +1,19 @@
+{
+  "name": "dsh-codex-audit",
+  "version": "0.1.17",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": { ".": "./lib/index.js", "./client": "./lib/client.js", "./package.json": "./package.json" },
+  "files": ["lib", "cordis.patch.yml", "README.md"],
+  "dsh": { "client": { "platform": "web" }, "bundle": { "patch": "./cordis.patch.yml" } },
+  "dependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-storage": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.1",
+    "zod": "4.4.3"
+  },
+  "scripts": { "test": "node test/run.js" },
+  "engines": { "node": ">=22" }
+}
