@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
+#include "ndn-service-framework/AbeHistoricalKey.hpp"
 #include "ndn-service-framework/AbePublicParametersArchive.hpp"
 #include "ndn-service-framework/FileKeyRing.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
@@ -862,6 +863,49 @@ BOOST_AUTO_TEST_CASE(ArchivedPublicParametersKeepTheirPublishedName)
   auto empty = entry;
   empty.publicParameters.clear();
   BOOST_CHECK(!buildArchivedPublicParametersData(empty, identity, sign, refused));
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalDecryptionKeyIsMintedInTheLibraryFormat)
+{
+  // A superseded generation must still be able to issue a key for a policy it authorized.
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+
+  HistoricalAbeMaterial material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+
+  const ndn::Buffer plaintext{4, 5, 6, 7};
+  const auto cipherText = abe.kpEncrypt(params, {"attr-a"}, plaintext);
+
+  const auto dkeyWire = issueHistoricalDecryptionKey(material, "attr-a");
+  BOOST_REQUIRE(!dkeyWire.empty());
+  ndn::nacabe::algo::PrivateKey recovered;
+  recovered.fromBuffer(ndn::Buffer(dkeyWire.data(), dkeyWire.size()));
+  const auto decrypted = abe.kpDecrypt(params, recovered, cipherText);
+  BOOST_CHECK(decrypted == plaintext);
+
+  // An unauthorized policy must not yield that plaintext.
+  const auto wrongWire = issueHistoricalDecryptionKey(material, "attr-z");
+  ndn::nacabe::algo::PrivateKey wrong;
+  wrong.fromBuffer(ndn::Buffer(wrongWire.data(), wrongWire.size()));
+  bool rejected = false;
+  try {
+    rejected = abe.kpDecrypt(params, wrong, cipherText) != plaintext;
+  }
+  catch (const std::exception&) {
+    rejected = true;
+  }
+  BOOST_CHECK(rejected);
+
+  // Malformed material is refused rather than silently minted.
+  auto truncated = material;
+  truncated.publicParameters.pop_back();
+  BOOST_CHECK_THROW(issueHistoricalDecryptionKey(truncated, "attr-a"), std::runtime_error);
+  BOOST_CHECK_THROW(issueHistoricalDecryptionKey(material, ""), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
