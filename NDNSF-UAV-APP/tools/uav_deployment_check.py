@@ -16,6 +16,7 @@ import socket
 import stat
 import subprocess
 import sys
+import uuid
 import tempfile
 
 
@@ -105,6 +106,45 @@ def check_nfd(reporter: Reporter) -> None:
         reporter.ok("local NFD is reachable")
     else:
         reporter.fail("local NFD is not reachable; start NFD and check NDN_CLIENT_TRANSPORT")
+
+
+def check_nfd_rib_authorization(reporter: Reporter, namespace: str) -> None:
+    """Verify NFD accepts a prefix registration, before any actor depends on one.
+
+    A reachable forwarder is not enough: without a matching management
+    authorization the first actor fails with
+    "ServiceController prefix registration failed: ...: authorization rejected"
+    after the service container has already started. Probe one unused prefix
+    under the deployment namespace and remove it again; a rejected registration
+    is reported as a deployment failure rather than discovered at runtime.
+    """
+    if not shutil.which("nfdc"):
+        reporter.warn("nfdc is unavailable; NFD RIB authorization was not checked")
+        return
+    probe = namespace.rstrip("/") + "/deployment-check/" + uuid.uuid4().hex
+    added = False
+    try:
+        result = run(["nfdc", "route", "add", probe, "1"], timeout=10)
+        text = result.stdout or ""
+        if result.returncode == 0:
+            added = True
+            reporter.ok("NFD accepts prefix registration under " + namespace)
+        elif "authorization rejected" in text or "403" in text:
+            reporter.fail(
+                "NFD rejects prefix registration under " + namespace +
+                "; grant the deployment identity rib/route management in the NFD "
+                "authorization configuration before starting the actors")
+        else:
+            reporter.warn("NFD prefix-registration probe was inconclusive: " +
+                          text.strip()[:200])
+    except subprocess.TimeoutExpired:
+        reporter.warn("NFD prefix-registration probe timed out")
+    finally:
+        if added:
+            try:
+                run(["nfdc", "route", "remove", probe, "1"], timeout=10)
+            except subprocess.TimeoutExpired:
+                reporter.warn("could not remove the probe route " + probe)
 
 
 def get_ndnsec_list(reporter: Reporter) -> str:
@@ -363,6 +403,8 @@ def main() -> int:
 
     if not args.skip_nfd:
         check_nfd(reporter)
+        check_nfd_rib_authorization(
+            reporter, runtime_fields.get("root-identity", "/example/uav"))
 
     if args.role == "controller":
         identity = args.identity or runtime_fields.get("controller-prefix", "")
