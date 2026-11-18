@@ -1,38 +1,89 @@
 #include "AbePublicParametersArchive.hpp"
 
-#include <ndn-cxx/encoding/buffer-stream.hpp>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <stdexcept>
+#include <string_view>
 
-#include <nac-abe/common.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 namespace ndn_service_framework {
+namespace {
+
+constexpr char ENVELOPE_SCHEMA[] = "NDNSF-HIST-PUBPARAMS-v1";
+
+bool
+isDigestHex(const std::string& value)
+{
+  return value.size() == 64 && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+    return std::isxdigit(ch) != 0;
+  });
+}
+
+std::string
+digestOf(std::string_view bytes)
+{
+  ndn::util::Sha256 digest;
+  if (!bytes.empty())
+    digest << std::string(bytes);
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char value) {
+    return static_cast<char>(std::tolower(value));
+  });
+  return hex;
+}
+
+} // namespace
 
 ndn::Name
-archivedPublicParametersName(const ndn::Name& identity, uint64_t generation, uint64_t epoch)
+historicalPublicParametersName(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
+                               const std::string& digestHex)
 {
   if (generation == 0)
-    throw std::invalid_argument("archived public parameters need a generation");
-  ndn::Name name = identity;
-  name.append(ndn::nacabe::PUBLIC_PARAMS);
-  name.append(ndn::nacabe::ABE_TYPE_KP_ABE);
-  name.appendVersion(generation * 1000ULL + epoch);
+    throw std::invalid_argument("historical public parameters need a generation");
+  if (digestHex.size() != 64)
+    throw std::invalid_argument("historical public parameters need a content digest");
+  ndn::Name name(identity);
+  name.append("NDNSF").append("HISTORY").append("PUBPARAMS");
+  name.append(std::to_string(generation));
+  name.append(std::to_string(epoch));
+  name.append(digestHex);
   return name;
 }
 
 bool
-buildArchivedPublicParametersData(const ControllerGenerationStore::AbeHistoryEntry& entry,
-                                  const ndn::Name& identity,
-                                  const std::function<void(ndn::Data&)>& sign,
-                                  ndn::Data& result)
+buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryEntry& entry,
+                                    const ndn::Name& identity,
+                                    const std::function<void(ndn::Data&)>& sign,
+                                    ndn::Data& result)
 {
-  if (entry.generationTimestamp == 0 || entry.publicParameters.empty())
+  if (entry.generationTimestamp == 0 || entry.publicParameters.empty() ||
+      entry.publicParametersName.empty())
     return false;
-  const auto expected = archivedPublicParametersName(identity, entry.generationTimestamp,
-                                                     entry.epoch);
-  if (entry.publicParametersName != expected.toUri(ndn::name::UriFormat::CANONICAL))
+  const auto stored = entry.publicParametersWireDigest;
+  if (stored.size() != 71 || stored.compare(0, 7, "sha256:") != 0 || !isDigestHex(stored.substr(7)))
     return false;
-  result.setName(expected);
-  result.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(entry.publicParameters.data()),
-                                entry.publicParameters.size()));
+  const auto hex = stored.substr(7);
+  // Bind what we publish to what we archived: a mismatch means the record is damaged, and a proof
+  // that does not match its own digest is worse than no proof.
+  if (digestOf(entry.publicParameters) != hex)
+    return false;
+
+  std::string envelope(ENVELOPE_SCHEMA);
+  envelope += "\noriginal ";
+  envelope += entry.publicParametersName;
+  envelope += "\ndigest ";
+  envelope += stored;
+  envelope += "\nlength ";
+  envelope += std::to_string(entry.publicParameters.size());
+  envelope += "\n";
+  envelope += entry.publicParameters;
+
+  result.setName(historicalPublicParametersName(identity, entry.generationTimestamp, entry.epoch,
+                                                hex));
+  result.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(envelope.data()),
+                                envelope.size()));
   result.setFreshnessPeriod(ndn::time::milliseconds(0));
   if (sign)
     sign(result);
@@ -40,26 +91,22 @@ buildArchivedPublicParametersData(const ControllerGenerationStore::AbeHistoryEnt
 }
 
 std::vector<std::shared_ptr<ndn::Data>>
-collectArchivedPublicParameterAnswers(
+collectHistoricalPublicParameterAnswers(
   const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
   const ndn::Name& identity,
-  const std::function<void(ndn::Data&)>& sign,
-  const ndn::Name& liveName)
+  const std::function<void(ndn::Data&)>& sign)
 {
   std::vector<std::shared_ptr<ndn::Data>> answers;
   answers.reserve(entries.size());
   for (const auto& entry : entries) {
     try {
       auto answer = std::make_shared<ndn::Data>();
-      if (!buildArchivedPublicParametersData(entry, identity, sign, *answer))
-        continue;
-      if (!liveName.empty() && answer->getName() == liveName)
+      if (!buildHistoricalPublicParametersData(entry, identity, sign, *answer))
         continue;
       answers.push_back(std::move(answer));
     }
     catch (const std::exception&) {
-      // One generation that cannot be answered must not stop the others, and must not take the
-      // Controller down at construction time.
+      // One generation that cannot be bound must not stop the others or take the Controller down.
       continue;
     }
   }

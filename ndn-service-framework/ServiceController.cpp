@@ -685,9 +685,10 @@ ServiceController::registerArchivedPublicParameters()
   const auto sign = [this] (ndn::Data& data) {
     m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
   };
-  const auto answers = collectArchivedPublicParameterAnswers(archived, m_aaCert.getIdentity(),
-                                                            sign,
-                                                            currentAbePublicParametersName());
+  // The original PUBPARAMS packet keeps its name and wire; a Controller that no longer holds the
+  // retired key publishes a bound historical proof under a name of its own instead.
+  const auto answers = collectHistoricalPublicParameterAnswers(archived, m_aaCert.getIdentity(),
+                                                               sign);
   for (const auto& answer : answers) {
     m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
       [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {

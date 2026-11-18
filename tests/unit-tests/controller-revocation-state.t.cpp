@@ -18,6 +18,7 @@
 #include <stdexcept>
 
 #include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/util/sha256.hpp>
 
 #include <nac-abe/algo/abe-support.hpp>
 
@@ -816,32 +817,48 @@ BOOST_AUTO_TEST_CASE(FileKeyRingResolvesByConfiguredId)
 
 namespace {
 std::string
-entryName(const ndn::Name& identity, uint64_t generation, uint64_t epoch)
+entryName(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
+          const std::string& digestHex)
 {
-  return archivedPublicParametersName(identity, generation, epoch)
+  return historicalPublicParametersName(identity, generation, epoch, digestHex)
     .toUri(ndn::name::UriFormat::CANONICAL);
+}
+std::string
+digestHexOf(const std::string& bytes)
+{
+  ndn::util::Sha256 digest;
+  if (!bytes.empty())
+    digest << bytes;
+  auto hex = digest.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char value) {
+    return static_cast<char>(std::tolower(value));
+  });
+  return hex;
 }
 } // namespace
 
-BOOST_AUTO_TEST_CASE(ArchivedPublicParametersKeepTheirPublishedName)
+BOOST_AUTO_TEST_CASE(HistoricalPublicParametersBindTheOriginalObject)
 {
   const ndn::Name identity("/controller/a");
-  const auto expected = archivedPublicParametersName(identity, 1002, 3);
-  BOOST_REQUIRE_EQUAL(expected.size(), 5u);
-  BOOST_CHECK_EQUAL(expected.get(2).toUri(), std::string("PUBPARAMS"));
-  BOOST_CHECK_EQUAL(expected.get(3).toUri(), std::string("KP-ABE"));
-  BOOST_CHECK_EQUAL(expected.get(4).toVersion(), 1002003u);
+  const std::string params("params-wire\0", 12);
+  const auto hex = digestHexOf(params);
+  const auto expected = historicalPublicParametersName(identity, 1002, 3, hex);
+  BOOST_CHECK_EQUAL(expected.size(), 8u);
+  BOOST_CHECK_EQUAL(expected.get(4).toUri(), std::string("PUBPARAMS"));
+  BOOST_CHECK_EQUAL(expected.get(5).toUri(), std::string("1002"));
+  BOOST_CHECK_EQUAL(expected.get(6).toUri(), std::string("3"));
+  BOOST_CHECK_EQUAL(expected.get(7).toUri(), hex);
+  BOOST_CHECK_THROW(historicalPublicParametersName(identity, 0, 3, hex), std::invalid_argument);
   BOOST_CHECK_EQUAL(expected.toUri(ndn::name::UriFormat::CANONICAL),
-                    entryName(identity, 1002, 3));
-  BOOST_CHECK_THROW(archivedPublicParametersName(identity, 0, 3), std::invalid_argument);
+                    entryName(identity, 1002, 3, hex));
 
   ControllerGenerationStore::AbeHistoryEntry entry;
   entry.generationTimestamp = 1002;
   entry.epoch = 3;
-  entry.publicParameters = std::string("params-wire\0", 12);
-  entry.publicParametersName = expected.toUri(ndn::name::UriFormat::CANONICAL);
+  entry.publicParameters = params;
+  entry.publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
   entry.masterSecret = "secret";
-  entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
+  entry.publicParametersWireDigest = "sha256:" + hex;
 
   bool signedOnce = false;
   const auto sign = [&signedOnce] (ndn::Data& data) {
@@ -850,19 +867,27 @@ BOOST_AUTO_TEST_CASE(ArchivedPublicParametersKeepTheirPublishedName)
     signedOnce = true;
   };
   ndn::Data answer;
-  BOOST_REQUIRE(buildArchivedPublicParametersData(entry, identity, sign, answer));
+  BOOST_REQUIRE(buildHistoricalPublicParametersData(entry, identity, sign, answer));
   BOOST_CHECK(signedOnce);
   BOOST_CHECK(answer.getName() == expected);
-  BOOST_CHECK_EQUAL(answer.getContent().value_size(), 12u);
+  // The envelope carries the original name and the digest before the parameters themselves.
+  const std::string content(reinterpret_cast<const char*>(answer.getContent().value()),
+                            answer.getContent().value_size());
+  BOOST_CHECK(content.rfind("NDNSF-HIST-PUBPARAMS-v1\noriginal /controller/a/PUBPARAMS", 0) == 0);
+  BOOST_CHECK(content.find("digest sha256:" + hex) != std::string::npos);
+  BOOST_CHECK(content.find("length 12\n" + params) != std::string::npos);
 
-  // A name that does not belong to the artifact is refused rather than served.
-  auto mismatched = entry;
-  mismatched.publicParametersName = "/controller/other/PUBPARAMS/KP-ABE/v=1002003";
+  // A digest that does not match the archived bytes is refused rather than published unbound.
+  auto damaged = entry;
+  damaged.publicParametersWireDigest = "sha256:" + std::string(64, 'd');
   ndn::Data refused;
-  BOOST_CHECK(!buildArchivedPublicParametersData(mismatched, identity, sign, refused));
+  BOOST_CHECK(!buildHistoricalPublicParametersData(damaged, identity, sign, refused));
+  auto unnamed = entry;
+  unnamed.publicParametersName.clear();
+  BOOST_CHECK(!buildHistoricalPublicParametersData(unnamed, identity, sign, refused));
   auto empty = entry;
   empty.publicParameters.clear();
-  BOOST_CHECK(!buildArchivedPublicParametersData(empty, identity, sign, refused));
+  BOOST_CHECK(!buildHistoricalPublicParametersData(empty, identity, sign, refused));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalDecryptionKeyIsMintedInTheLibraryFormat)
@@ -930,28 +955,30 @@ BOOST_AUTO_TEST_CASE(KeyRingKeepsOlderKeysReadableWhileANewOneWrites)
   ::unsetenv("NDNSF_FILE_KEYRING");
 }
 
-BOOST_AUTO_TEST_CASE(CollectArchivedAnswersSkipsUnusableGenerations)
+BOOST_AUTO_TEST_CASE(CollectHistoricalAnswersSkipsUnboundGenerations)
 {
   const ndn::Name identity("/controller/a");
-  const auto makeEntry = [] (uint64_t generation, uint64_t epoch) {
+  const std::string params("wire\0", 5);
+  const auto hex = digestHexOf(params);
+  const auto makeEntry = [&hex] (uint64_t generation, uint64_t epoch) {
     ControllerGenerationStore::AbeHistoryEntry entry;
     entry.generationTimestamp = generation;
     entry.epoch = epoch;
     entry.publicParameters = std::string("wire\0", 5);
     entry.masterSecret = "secret";
-    entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
-    entry.publicParametersName =
-      archivedPublicParametersName(ndn::Name("/controller/a"), generation, epoch)
-        .toUri(ndn::name::UriFormat::CANONICAL);
+    entry.publicParametersWireDigest = "sha256:" + hex;
+    entry.publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=" +
+      std::to_string(generation * 1000 + epoch);
     return entry;
   };
 
   std::vector<ControllerGenerationStore::AbeHistoryEntry> entries;
   entries.push_back(makeEntry(1002, 1));
   entries.push_back(makeEntry(1003, 2));
-  auto mismatched = makeEntry(1004, 3);
-  mismatched.publicParametersName = "/controller/other/PUBPARAMS/KP-ABE/v=1004003";
-  entries.push_back(mismatched);
+  // A record whose digest does not cover its bytes cannot be bound, so it is skipped.
+  auto damaged = makeEntry(1004, 3);
+  damaged.publicParametersWireDigest = "sha256:" + std::string(64, 'd');
+  entries.push_back(damaged);
   auto empty = makeEntry(1005, 4);
   empty.publicParameters.clear();
   entries.push_back(empty);
@@ -962,18 +989,15 @@ BOOST_AUTO_TEST_CASE(CollectArchivedAnswersSkipsUnusableGenerations)
     data.setSignatureValue(ndn::Buffer{9});
     ++signedCount;
   };
-  const auto answers = collectArchivedPublicParameterAnswers(entries, identity, sign);
+  const auto answers = collectHistoricalPublicParameterAnswers(entries, identity, sign);
   BOOST_REQUIRE_EQUAL(answers.size(), 2u);
   BOOST_CHECK_EQUAL(signedCount, 2);
-  // The live generation owns its name; an archived entry that names it must never be served.
-  const auto live = archivedPublicParametersName(identity, 1003, 2);
-  const auto filtered = collectArchivedPublicParameterAnswers(entries, identity, sign, live);
-  BOOST_REQUIRE_EQUAL(filtered.size(), 1u);
-  BOOST_CHECK(filtered.front()->getName() == archivedPublicParametersName(identity, 1002, 1));
-  BOOST_CHECK(answers.front()->getName() == archivedPublicParametersName(identity, 1002, 1));
-  BOOST_CHECK(answers.back()->getName() == archivedPublicParametersName(identity, 1003, 2));
-  // Nothing to answer for is not an error.
-  BOOST_CHECK(collectArchivedPublicParameterAnswers({}, identity, sign).empty());
+  BOOST_CHECK(answers.front()->getName() == historicalPublicParametersName(identity, 1002, 1, hex));
+  BOOST_CHECK(answers.back()->getName() == historicalPublicParametersName(identity, 1003, 2, hex));
+  // Historical names live in their own namespace, so they can never collide with the live one.
+  BOOST_CHECK(!answers.front()->getName().equals(
+    historicalPublicParametersName(identity, 1003, 2, hex)));
+  BOOST_CHECK(collectHistoricalPublicParameterAnswers({}, identity, sign).empty());
 }
 
 BOOST_AUTO_TEST_CASE(ArchivedResponderAnswersARealInterest)
@@ -996,12 +1020,11 @@ BOOST_AUTO_TEST_CASE(ArchivedResponderAnswersARealInterest)
   entry.epoch = 3;
   entry.publicParameters = std::string("wire\0", 5);
   entry.masterSecret = "secret";
-  entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
-  entry.publicParametersName = archivedPublicParametersName(identity, 1002, 3)
-    .toUri(ndn::name::UriFormat::CANONICAL);
+  entry.publicParametersWireDigest = "sha256:" + digestHexOf(entry.publicParameters);
+  entry.publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
 
   const auto sign = [] (ndn::Data& data) { data.setSignatureInfo(ndn::SignatureInfo()); };
-  const auto answers = collectArchivedPublicParameterAnswers({entry}, identity, sign);
+  const auto answers = collectHistoricalPublicParameterAnswers({entry}, identity, sign);
   BOOST_REQUIRE_EQUAL(answers.size(), 1u);
   auto published = answers.front();
 
@@ -1029,7 +1052,12 @@ BOOST_AUTO_TEST_CASE(ArchivedResponderAnswersARealInterest)
 
   BOOST_REQUIRE(arrived);
   BOOST_CHECK(received.getName() == published->getName());
-  BOOST_CHECK_EQUAL(received.getContent().value_size(), 5u);
+  // The answer is a bound envelope, not the original packet: the original wire stays untouched.
+  const std::string receivedContent(reinterpret_cast<const char*>(received.getContent().value()),
+                                     received.getContent().value_size());
+  BOOST_CHECK(receivedContent.rfind("NDNSF-HIST-PUBPARAMS-v1\n", 0) == 0);
+  BOOST_CHECK(receivedContent.find("original /controller/a/PUBPARAMS/KP-ABE/v=1002003") !=
+              std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

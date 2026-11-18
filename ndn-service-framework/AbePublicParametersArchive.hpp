@@ -9,47 +9,49 @@
 #include <vector>
 
 #include <ndn-cxx/data.hpp>
-#include <ndn-cxx/key-locator.hpp>
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/key-chain.hpp>
 
 namespace ndn_service_framework {
 
-/** Name a generation's public parameters were published under.
+/** Name of the historical proof a Controller publishes for an archived generation.
  *
- * The version component is derived from the generation, so an archived generation keeps the
- * exact name a consumer would ask for - which is what makes a historical fetch resolvable.
+ * The original `PUBPARAMS` packet keeps its name and its original wire; a Controller that no longer
+ * holds that key must never sign different bytes under the same name. A historical answer therefore
+ * lives under a name of its own that binds the generation and the digest of the original content:
+ *
+ *   <identity>/NDNSF/HISTORY/PUBPARAMS/<generation>/<epoch>/<sha256-hex>
  */
 ndn::Name
-archivedPublicParametersName(const ndn::Name& identity, uint64_t generation, uint64_t epoch);
+historicalPublicParametersName(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
+                               const std::string& digestHex);
 
-/** Build the Data that answers a historical public-parameter Interest.
+/** Build the historical proof for one archived generation.
  *
- * Returns false when the archived entry does not belong to `identity` or carries no parameters,
- * so a caller never publishes an empty or mismatched answer. The Data is signed by `cert`; no
- * freshness is asserted, because these bytes are immutable for their generation.
+ * The content is a small text envelope so a reader can check the binding before using it:
+ *
+ *   NDNSF-HIST-PUBPARAMS-v1
+ *   original <the name the generation published under>
+ *   digest <sha256 of the original content>
+ *   length <bytes>
+ *   <the archived public parameters>
+ *
+ * Returns false when the entry has no generation, no parameters, no original name, or a digest that
+ * does not match the stored parameters, so a caller never publishes an unbound proof.
  */
-/** The signer is supplied by the caller so the naming and content rules stay testable without
- * a live key chain; the Controller passes a certificate signer. */
 bool
-buildArchivedPublicParametersData(const ControllerGenerationStore::AbeHistoryEntry& entry,
-                                  const ndn::Name& identity,
-                                  const std::function<void(ndn::Data&)>& sign,
-                                  ndn::Data& result);
+buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryEntry& entry,
+                                    const ndn::Name& identity,
+                                    const std::function<void(ndn::Data&)>& sign,
+                                    ndn::Data& result);
 
-/** Build the answers a Controller can serve, skipping entries it cannot answer for.
- *
- * Returns one Data per usable archived generation; a mismatched name or missing parameters drops
- * that generation instead of publishing a wrong answer. A generation whose name equals `liveName`
- * is skipped too: the live authority owns that name, and registering it here would race it.
- */
+/** Build the proofs a Controller can serve, skipping entries it cannot bind. */
 std::vector<std::shared_ptr<ndn::Data>>
-collectArchivedPublicParameterAnswers(
+collectHistoricalPublicParameterAnswers(
   const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
   const ndn::Name& identity,
-  const std::function<void(ndn::Data&)>& sign,
-  const ndn::Name& liveName = {});
+  const std::function<void(ndn::Data&)>& sign);
 
 } // namespace ndn_service_framework
 
