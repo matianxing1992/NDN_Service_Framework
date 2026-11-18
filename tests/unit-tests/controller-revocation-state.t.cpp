@@ -1347,6 +1347,119 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
   BOOST_REQUIRE(verifyHistoricalKeyReply(received, request, now, accepted));
 }
 
+BOOST_AUTO_TEST_CASE(ForwarderDeliversNoKeyToAStrangerOrAnExpiredRequest)
+{
+  std::unique_ptr<ndn::Face> face;
+  try {
+    face = std::make_unique<ndn::Face>();
+    face->processEvents(ndn::time::milliseconds(200));
+  }
+  catch (const std::exception& error) {
+    BOOST_TEST_MESSAGE("no forwarder available, exchange not attempted: " << error.what());
+    return;
+  }
+
+  DefaultGenerationFiles files;
+  const auto requesterDir = files.root / "requester";
+  const auto controllerDir = files.root / "controller";
+  std::filesystem::create_directory(requesterDir);
+  std::filesystem::create_directory(controllerDir);
+  ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
+                          "tpm-file:" + requesterDir.string(), false);
+  ndn::KeyChain controller("pib-sqlite3:" + controllerDir.string(),
+                           "tpm-file:" + controllerDir.string(), false);
+  const ndn::Name requesterIdentity("/user/history");
+  const ndn::Name controllerIdentity("/controller/a");
+  requester.createIdentity(requesterIdentity);
+  controller.createIdentity(controllerIdentity);
+  const auto userCert = requester.getPib().getIdentity(requesterIdentity).getDefaultKey()
+    .getDefaultCertificate();
+  const auto controllerCert = controller.getPib().getIdentity(controllerIdentity).getDefaultKey()
+    .getDefaultCertificate();
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+  HistoricalKeyBroker::Material material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+
+  // The broker only knows the requester's certificate, so anyone else fails to resolve.
+  const auto signerLookup = [userCert] (const ndn::Name& name, ndn::security::Certificate& out) {
+    if (name != userCert.getName())
+      return false;
+    out = userCert;
+    return true;
+  };
+  const auto materialLookup = [&material] (uint64_t generation, uint64_t epoch,
+                                           HistoricalKeyBroker::Material& out) {
+    if (generation != 1002 || epoch != 3)
+      return false;
+    out = material;
+    return true;
+  };
+  const auto replySigner = [&controller, controllerCert] (ndn::Data& data) {
+    controller.sign(data, ndn::security::signingByCertificate(controllerCert));
+  };
+  HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+
+  const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
+    ndn::time::system_clock::now().time_since_epoch()).count());
+  ndn::Name dkeyPrefix(controllerIdentity);
+  dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
+  auto handle = face->setInterestFilter(dkeyPrefix,
+    [face = face.get(), &broker, controllerIdentity, now]
+    (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      const auto reply = broker.answer(interest, controllerIdentity, now);
+      if (reply)
+        face->put(*reply);
+    });
+  face->processEvents(ndn::time::milliseconds(500));
+
+  const auto fetch = [&face] (ndn::Interest& interest) {
+    bool arrived = false;
+    face->expressInterest(interest,
+      [&arrived] (const ndn::Interest&, const ndn::Data&) { arrived = true; },
+      [] (const ndn::Interest&, const ndn::lp::Nack&) {},
+      [] (const ndn::Interest&) {});
+    const auto deadline = ndn::time::steady_clock::now() + ndn::time::seconds(4);
+    while (!arrived && ndn::time::steady_clock::now() < deadline)
+      face->processEvents(ndn::time::milliseconds(100));
+    return arrived;
+  };
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = controllerIdentity;
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "attr-a";
+  request.recipientCertificate = userCert.getName();
+
+  // Signed by someone who is not the named recipient.
+  auto stranger = request;
+  stranger.mintedAtMs = now;
+  stranger.expiresAtMs = now + 60000;
+  ndn::Interest strangerInterest;
+  signHistoricalKeyRequest(strangerInterest, stranger, controller,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      controllerCert.getName()));
+  strangerInterest.setInterestLifetime(ndn::time::milliseconds(3000));
+  BOOST_CHECK(!fetch(strangerInterest));
+
+  // Signed by the recipient, but already expired.
+  auto expired = request;
+  expired.mintedAtMs = now - 120000;
+  expired.expiresAtMs = now - 60000;
+  ndn::Interest expiredInterest;
+  signHistoricalKeyRequest(expiredInterest, expired, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+  expiredInterest.setInterestLifetime(ndn::time::milliseconds(3000));
+  BOOST_CHECK(!fetch(expiredInterest));
+}
+
 BOOST_AUTO_TEST_CASE(ArchivedResponderAnswersARealInterest)
 {
   // Behavioural check of the responder registration shape. It needs a running forwarder; without
