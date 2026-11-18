@@ -2278,6 +2278,23 @@ def run_spec193_object_baseline(ndn, output: Path,
         child_log)
     if capability is None:
         raise RuntimeError("object client lacked authenticated no-receipt capability")
+    # One record per provider ACK the requester admitted. The request and ACKs travel encrypted, so this
+    # evidence -- signer identity, trust decision and wire digest from the admitting process -- is the only
+    # way to identify them.
+    admitted_acks = []
+    for line in child_log.splitlines():
+        if not line.startswith("SPEC193_OBJECT_CAPABILITY_ACK "):
+            continue
+        fields = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
+        admitted_acks.append({
+            "provider": fields.get("provider", ""),
+            "signerIdentity": fields.get("signer", ""),
+            "trustSchemaValidated": fields.get("validated") == "1",
+            "capabilityRepoNode": fields.get("repo_node", ""),
+            "wireDigest": fields.get("wire_digest", ""),
+        })
+    if not admitted_acks:
+        raise RuntimeError("object client published no admitted provider ACK")
     after = {item["repo_node"]: repo_database_state(item["repo_dir"])
              for item in servers}
     before_a, after_a = before[REPO_A_ID], after[REPO_A_ID]
@@ -2302,6 +2319,7 @@ def run_spec193_object_baseline(ndn, output: Path,
             "capability_request_id": capability.group(1),
             "capability_ack_wire_digest": capability.group(2),
             "capability_signer_key_locator": capability.group(3),
+            "capability_admitted_acks": admitted_acks,
             "capture_offsets": capture_offsets,
             "repo_state_before": before, "repo_state_after": after}
 
@@ -8643,7 +8661,7 @@ def main() -> int:
             scenario["signed_packet_oracle"] = verify_object_capability(
                 args.output_dir, SERVICE_PREFIX, USER,
                 REPO_A_PROVIDER, REPO_B_PROVIDER,
-                scenario["capture_offsets"], scenario["capability_request_id"],
+                scenario["capability_admitted_acks"], scenario["capability_request_id"],
                 scenario["capability_ack_wire_digest"],
                 scenario["capability_signer_key_locator"])
             scenario["status"] = "PASS"
