@@ -11,10 +11,9 @@ import pytest
 
 from spec180_yolo_inputs import declared_yolo_checkpoint
 
-# Every case here builds a package from the declared external checkpoint, so without it the module reports an
-# unmet prerequisite rather than a failure. The checkpoint stays an explicit input: this is a skip with the
-# reason named, not a silent pass.
-pytestmark = pytest.mark.skipif(
+# Only the cases that build a package need the declared external checkpoint; the catalogue negative operates
+# on a malformed public key and must keep running without it, so the guard is per case rather than module-wide.
+REQUIRES_CHECKPOINT = pytest.mark.skipif(
     not os.environ.get("SPEC180_YOLO_CHECKPOINT"),
     reason="requires SPEC180_YOLO_CHECKPOINT: the declared external YOLO checkpoint")
 
@@ -39,6 +38,7 @@ def _make_package(tmp_path: Path):
     return package
 
 
+@REQUIRES_CHECKPOINT
 def test_yolo_adapter_enumerates_only_registered_candidates(tmp_path: Path):
     package = _make_package(tmp_path)
     from ndnsf_distributed_inference.adapters.yolo import build_yolo26n_adapter
@@ -68,6 +68,7 @@ def test_yolo_adapter_enumerates_only_registered_candidates(tmp_path: Path):
     assert changed.candidate_digest != candidates[1].candidate_digest
 
 
+@REQUIRES_CHECKPOINT
 def test_tampered_registered_candidate_digest_fails_before_enumeration(tmp_path: Path):
     package = _make_package(tmp_path)
     manifest_path = package / "manifest.json"
@@ -79,6 +80,7 @@ def test_tampered_registered_candidate_digest_fails_before_enumeration(tmp_path:
         build_yolo26n_adapter(package, require_signature=False)
 
 
+@REQUIRES_CHECKPOINT
 def test_signed_catalogue_requires_registered_verification(tmp_path: Path):
     exporter = _load_exporter()
     from cryptography.hazmat.primitives import serialization
@@ -150,6 +152,7 @@ def test_catalogue_digest_mismatch_reports_trust_root_error(tmp_path: Path):
     ("graphRevision", "graph revision"),
     ("weights", "initializer"),
 ])
+@REQUIRES_CHECKPOINT
 def test_package_integrity_failures_stop_before_candidate_use(
         tmp_path: Path, mutation: str, match: str):
     package = _make_package(tmp_path)
@@ -165,6 +168,7 @@ def test_package_integrity_failures_stop_before_candidate_use(
         build_yolo26n_adapter(package, require_signature=False)
 
 
+@REQUIRES_CHECKPOINT
 def test_semantic_partition_is_runtime_bound_not_a_catalogue_hint(tmp_path: Path):
     package = _make_package(tmp_path)
     manifest_path = package / "manifest.json"
