@@ -651,6 +651,18 @@ BOOST_AUTO_TEST_CASE(ArchivedGenerationsAreRetainedAndBounded)
     const auto bounded = store.loadAbeHistory();
     BOOST_REQUIRE_EQUAL(bounded.size(), 2u);
     BOOST_CHECK_EQUAL(bounded.front().generationTimestamp, 1002u);
+    // A retried rotation re-archives the same material; it must not evict a real one.
+    ControllerGenerationStore::AbeHistoryEntry retry;
+    retry.generationTimestamp = 1003;
+    retry.epoch = 3;
+    retry.publicParameters = "params-3";
+    retry.masterSecret = "secret-3";
+    retry.reason = "revocation-rotation";
+    store.recordAbeHistory(retry, 2);
+    const auto afterRetry = store.loadAbeHistory();
+    BOOST_REQUIRE_EQUAL(afterRetry.size(), 2u);
+    BOOST_CHECK_EQUAL(afterRetry.front().generationTimestamp, 1002u);
+    BOOST_CHECK_EQUAL(afterRetry.back().generationTimestamp, 1003u);
   }
   {
     // History is readable without the writer lease; the secrets never leave the file.

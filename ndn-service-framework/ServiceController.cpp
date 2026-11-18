@@ -320,6 +320,7 @@ ServiceController::persistAbeMaterial()
                                    publicParams.size());
   material.masterSecret = m_aa.getMasterSecret();
   m_generationStore->storeAbeMaterial(material);
+  m_abeMaterialVersion = m_controllerVersion;
 }
 
 void
@@ -333,6 +334,8 @@ ServiceController::restoreOrPersistAbeMaterial()
     if (material->signingKeyDigest != "sha256:" + digest.toString())
       throw std::runtime_error("Controller signing identity changed");
     m_aa.restoreKeyGeneration(material->publicParameters, material->masterSecret);
+    if (const auto stored = m_generationStore->load())
+      m_abeMaterialVersion = *stored;
     if (!material->rotationRequired && material->policyDigest == sha256FileDigest(m_configFilePath)) {
       return;
     }
@@ -548,6 +551,21 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
   // attempt reserves a fresh epoch before reaching this function because
   // the previous attempt's status may already have been published.
   if (m_aa.getPublicParametersVersion() != publicParamsVersion) {
+    // Archive the generation that is about to be replaced before it is destroyed.
+    // A failure here stops the rotation: serving a new generation while the old
+    // material is gone makes historical Data permanently unreadable.
+    if (m_abeMaterialVersion.isValid()) {
+      const auto current = m_generationStore->loadAbeMaterial();
+      if (current) {
+        ControllerGenerationStore::AbeHistoryEntry archived;
+        archived.generationTimestamp = m_abeMaterialVersion.controllerGenerationTimestamp;
+        archived.epoch = m_abeMaterialVersion.controllerEpoch;
+        archived.publicParameters = current->publicParameters;
+        archived.masterSecret = current->masterSecret;
+        archived.reason = "revocation-rotation";
+        m_generationStore->recordAbeHistory(archived);
+      }
+    }
     m_aa.rotateKeyGeneration(publicParamsVersion);
   }
   persistAbeMaterial();

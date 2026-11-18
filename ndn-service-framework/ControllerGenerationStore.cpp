@@ -554,6 +554,15 @@ ControllerGenerationStore::recordAbeHistory(const AbeHistoryEntry& entry, size_t
   AbeHistoryEntry archived = entry;
   archived.digest = abeHistoryDigest(archived);
   auto state = loadState();
+  // A retried rotation reaches this point again with the same material; archiving it
+  // twice would push a genuine older generation out of the bounded retention.
+  const auto duplicate = std::find_if(state.abeHistory.begin(), state.abeHistory.end(),
+    [&archived] (const auto& existing) {
+      return existing.generationTimestamp == archived.generationTimestamp &&
+             existing.epoch == archived.epoch && existing.digest == archived.digest;
+    });
+  if (duplicate != state.abeHistory.end())
+    return;
   state.abeHistory.push_back(archived);
   if (state.abeHistory.size() > retention)
     state.abeHistory.erase(state.abeHistory.begin(),

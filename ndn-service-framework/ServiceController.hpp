@@ -259,6 +259,9 @@ private:
   uint64_t m_policyGracePeriodMs = 0;
   uint64_t m_policyValidUntilMs = 0;
   ControllerVersion m_controllerVersion;
+  /** Version of the ABE material currently installed in m_aa.  A rotation archives the
+   * material named here, not the version being advanced to. */
+  ControllerVersion m_abeMaterialVersion;
   std::unique_ptr<ControllerGenerationStore> m_generationStore;
   bool m_generationReady = false;
   std::vector<RevocationTarget> m_revocations;
