@@ -976,6 +976,62 @@ BOOST_AUTO_TEST_CASE(CollectArchivedAnswersSkipsUnusableGenerations)
   BOOST_CHECK(collectArchivedPublicParameterAnswers({}, identity, sign).empty());
 }
 
+BOOST_AUTO_TEST_CASE(ArchivedResponderAnswersARealInterest)
+{
+  // Behavioural check of the responder registration shape. It needs a running forwarder; without
+  // one the case reports and returns instead of pretending to have validated the exchange.
+  std::unique_ptr<ndn::Face> face;
+  try {
+    face = std::make_unique<ndn::Face>();
+    face->processEvents(ndn::time::milliseconds(200));
+  }
+  catch (const std::exception& error) {
+    BOOST_TEST_MESSAGE("no forwarder available, exchange not attempted: " << error.what());
+    return;
+  }
+
+  const ndn::Name identity("/controller/a");
+  ControllerGenerationStore::AbeHistoryEntry entry;
+  entry.generationTimestamp = 1002;
+  entry.epoch = 3;
+  entry.publicParameters = std::string("wire\0", 5);
+  entry.masterSecret = "secret";
+  entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
+  entry.publicParametersName = archivedPublicParametersName(identity, 1002, 3)
+    .toUri(ndn::name::UriFormat::CANONICAL);
+
+  const auto sign = [] (ndn::Data& data) { data.setSignatureInfo(ndn::SignatureInfo()); };
+  const auto answers = collectArchivedPublicParameterAnswers({entry}, identity, sign);
+  BOOST_REQUIRE_EQUAL(answers.size(), 1u);
+  auto published = answers.front();
+
+  auto handle = face->setInterestFilter(published->getName(),
+    [face = face.get(), published] (const ndn::InterestFilter&, const ndn::Interest&) {
+      face->put(*published);
+    });
+  face->processEvents(ndn::time::milliseconds(500));
+
+  ndn::Data received;
+  bool arrived = false;
+  ndn::Interest interest(published->getName());
+  interest.setInterestLifetime(ndn::time::milliseconds(1500));
+  interest.setMustBeFresh(false);
+  face->expressInterest(interest,
+    [&received, &arrived] (const ndn::Interest&, const ndn::Data& data) {
+      received = data;
+      arrived = true;
+    },
+    [] (const ndn::Interest&, const ndn::lp::Nack&) {},
+    [] (const ndn::Interest&) {});
+  const auto deadline = ndn::time::steady_clock::now() + ndn::time::seconds(3);
+  while (!arrived && ndn::time::steady_clock::now() < deadline)
+    face->processEvents(ndn::time::milliseconds(100));
+
+  BOOST_REQUIRE(arrived);
+  BOOST_CHECK(received.getName() == published->getName());
+  BOOST_CHECK_EQUAL(received.getContent().value_size(), 5u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test
