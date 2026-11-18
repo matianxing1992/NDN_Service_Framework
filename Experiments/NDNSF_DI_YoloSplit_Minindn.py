@@ -226,7 +226,13 @@ def main() -> None:
     Minindn.verifyDependencies()
     ndn = Minindn(topoFile=str(TOPO))
     procs = []
-    args = Args(
+    # perf's option surface grows independently of this experiment. Seed the namespace with its declared
+    # defaults and override only what this topology fixes, instead of hand-listing every option: a missing
+    # field surfaced as `AttributeError: 'Args' object has no attribute 'workload_mode'` once perf started
+    # reading it unconditionally.
+    args = Args(**{
+        **vars(perf.build_parser().parse_args([])),
+        **dict(
         controller_node="memphis",
         user_node="memphis",
         providers=2,
@@ -252,7 +258,8 @@ def main() -> None:
         svs_sync_batch_ms=0,
         ack_threads=1,
         performance_mode=False,
-    )
+        ),
+    })
     try:
         ndn.start()
         AppManager(ndn, ndn.net.hosts, Nfd, logLevel="INFO")
