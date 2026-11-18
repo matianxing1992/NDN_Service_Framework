@@ -16,6 +16,8 @@
 
 #include <ndn-cxx/util/random.hpp>
 
+#include <nac-abe/algo/abe-support.hpp>
+
 namespace ndn_service_framework::test {
 namespace {
 
@@ -693,6 +695,65 @@ BOOST_AUTO_TEST_CASE(ArchivedGenerationsAreRetainedAndBounded)
   }
   ControllerGenerationStore tampered(files.legacy);
   BOOST_CHECK_THROW(tampered.loadAbeHistory(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(ArchivedGenerationDecryptsItsOwnCiphertext)
+{
+  // Spec 243 T002 premise: the archived material must be enough to decrypt Data
+  // protected under that generation, using only the NAC-ABE primitives.
+  DefaultGenerationFiles files;
+  const auto owner = ndn::Name("/controller/a").toUri(ndn::name::UriFormat::CANONICAL);
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto paramsWire = params.toBuffer();
+  const std::string publicParameters(paramsWire.begin(), paramsWire.end());
+  const std::string masterSecret = master.m_msk;
+  BOOST_REQUIRE(!publicParameters.empty());
+  BOOST_REQUIRE(!masterSecret.empty());
+
+  const ndn::Buffer plaintext{9, 8, 7, 6, 5};
+  const auto cipherText = abe.kpEncrypt(params, {"attr-a"}, plaintext);
+
+  {
+    ControllerGenerationStore store(files.legacy);
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    store.startGeneration(1000);
+    ControllerGenerationStore::AbeHistoryEntry archived;
+    archived.generationTimestamp = 1000;
+    archived.epoch = 1;
+    archived.publicParameters = publicParameters;
+    archived.masterSecret = masterSecret;
+    archived.reason = "revocation-rotation";
+    store.recordAbeHistory(archived);
+  }
+
+  ControllerGenerationStore store(files.legacy);
+  const auto history = store.loadAbeHistory();
+  BOOST_REQUIRE_EQUAL(history.size(), 1u);
+
+  // Rebuild the generation from the archive alone, then decrypt with it.
+  ndn::nacabe::algo::PublicParams archivedParams;
+  archivedParams.fromBuffer(ndn::Buffer(history.front().publicParameters.begin(),
+                                        history.front().publicParameters.end()));
+  ndn::nacabe::algo::MasterKey archivedMaster;
+  archivedMaster.m_msk = history.front().masterSecret;
+  auto key = abe.kpPrvKeyGen(archivedParams, archivedMaster, "attr-a");
+  const auto decrypted = abe.kpDecrypt(archivedParams, key, cipherText);
+  BOOST_CHECK(decrypted == plaintext);
+
+  // A policy the generation did not authorize must not produce that plaintext.
+  bool rejected = false;
+  try {
+    auto wrong = abe.kpPrvKeyGen(archivedParams, archivedMaster, "attr-z");
+    const auto wrongPlain = abe.kpDecrypt(archivedParams, wrong, cipherText);
+    rejected = wrongPlain != plaintext;
+  }
+  catch (const std::exception&) {
+    rejected = true;
+  }
+  BOOST_CHECK(rejected);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
