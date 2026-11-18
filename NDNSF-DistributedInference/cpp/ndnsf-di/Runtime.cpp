@@ -1878,7 +1878,14 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
     serviceUser->getName(), ndn::Name(repository.repoNode), ndn::Name{}, loadCatalog,
     spec.catalogConfigurationJson, io, statePath);
   current();
-  nativeExportStoredModelHandle(publication.handle, handlePath);
+  // Seal the handle when the deployment configured a file-protection key; otherwise the
+  // unsealed path stays, because pretending to seal would be worse than saying so.
+  if (const auto protection = nativeFileProtectionKeyFromEnvironment()) {
+    nativeExportSealedStoredModelHandle(publication.handle, handlePath, *protection);
+  }
+  else {
+    nativeExportStoredModelHandle(publication.handle, handlePath);
+  }
   current();
 
   NativeStoredModelPreparationReceipt receipt;
@@ -1909,7 +1916,8 @@ User::openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
   const auto deadline = operation.deadline;
   NativeStoredModelHandle loadedHandle;
   try {
-    loadedHandle = nativeLoadStoredModelHandle(privateHandleFile);
+    loadedHandle = nativeOpenStoredModelHandle(privateHandleFile,
+                                               nativeFileProtectionKeyFromEnvironment());
     nativeValidateModelRepositoryTarget(repository, loadedHandle.producer);
     if (ndn::Name(repository.repoNode) != loadedHandle.repository)
       throw DiError("STORED_MODEL_REPOSITORY_MISMATCH", "local", "stored-model-open",
