@@ -42,11 +42,17 @@ constexpr char HANDLE_MAGIC[] = "NDNSF-DI-STORED-MODEL-HANDLE-v1\n";
 constexpr char SEALED_HANDLE_MAGIC[] = "NDNSF-DI-STORED-MODEL-HANDLE-v2\n";
 
 void
-require(bool condition)
+requireImpl(bool condition, const char* file, int line)
 {
-  if (!condition)
-    throw std::runtime_error("DI_STORED_MODEL_REJECTED: invalid capability or object");
+  if (!condition) {
+    // The call site is part of the diagnosis: every check in this module used to throw the same
+    // sentence, which made a failure impossible to place without a debugger.
+    throw std::runtime_error(std::string("DI_STORED_MODEL_REJECTED: invalid capability or object at ") +
+                             file + ":" + std::to_string(line));
+  }
 }
+
+#define require(condition) requireImpl((condition), __FILE__, __LINE__)
 
 struct Cleanse
 {
@@ -277,8 +283,9 @@ decodeHandleBody(const std::vector<std::uint8_t>& body)
     handle.masterKey.assign(newline + 1, body.end());
     handle.validate();
   }
-  catch (...) {
-    require(false);
+  catch (const std::exception& error) {
+    // Keep the parser's own diagnosis; the generic rejection hides which field was wrong.
+    throw std::runtime_error(std::string("DI_STORED_MODEL_HANDLE_BODY: ") + error.what());
   }
   return handle;
 }
@@ -320,12 +327,29 @@ NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,
                             const NativeFileKeyResolver& resolve)
 {
-  const auto magic = readPrivateFile(source, 65536);
+  std::vector<std::uint8_t> magic;
+  try {
+    magic = readPrivateFile(source, 65536);
+  }
+  catch (const std::exception& error) {
+    // The private-file rules (owner, mode, single link, size) are the first thing that can fail,
+    // and a bare "invalid capability" hides which rule it was.
+    throw std::runtime_error(std::string("DI_STORED_MODEL_HANDLE_UNREADABLE: ") +
+                             error.what());
+  }
   const std::string sealedMagic(SEALED_HANDLE_MAGIC);
   const bool isSealed = magic.size() >= sealedMagic.size() &&
     std::equal(sealedMagic.begin(), sealedMagic.end(), magic.begin());
-  if (!isSealed)
+  if (!isSealed) {
+    // A legacy handle still starts with its own magic; anything else is not a handle at all and
+    // must not be read as one.
+    const std::string legacyMagic(HANDLE_MAGIC);
+    const bool isLegacy = magic.size() >= legacyMagic.size() &&
+      std::equal(legacyMagic.begin(), legacyMagic.end(), magic.begin());
+    if (!isLegacy)
+      throw std::runtime_error("DI_STORED_MODEL_HANDLE_UNRECOGNIZED");
     return nativeLoadStoredModelHandle(source);
+  }
   if (!resolve)
     throw std::runtime_error("DI_STORED_MODEL_SEALED_WITHOUT_RESOLVER");
   try {
@@ -392,7 +416,13 @@ nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
   require(key && key->size() == 32);
   const std::vector<std::uint8_t> sealed(end + 1, bytes.end());
   const auto aad = std::string(SEALED_HANDLE_MAGIC) + headerText;
-  const auto body = detail::cryptSymmetric(false, *key, nonce, sealed, aad);
+  std::vector<std::uint8_t> body;
+  try {
+    body = detail::cryptSymmetric(false, *key, nonce, sealed, aad);
+  }
+  catch (const std::exception& error) {
+    throw std::runtime_error(std::string("DI_STORED_MODEL_HANDLE_OPEN: ") + error.what());
+  }
   const auto handle = decodeHandleBody(body);
   OPENSSL_cleanse(key->data(), key->size());
   return handle;
@@ -404,8 +434,9 @@ nativeLoadStoredModelHandle(const std::filesystem::path& source)
   auto bytes = readPrivateFile(source, 32768);
   Cleanse guard{bytes};
   const std::string magic(HANDLE_MAGIC);
-  require(bytes.size() > magic.size() &&
-          std::equal(magic.begin(), magic.end(), bytes.begin()));
+  if (bytes.size() <= magic.size() ||
+      !std::equal(magic.begin(), magic.end(), bytes.begin()))
+    throw std::runtime_error("DI_STORED_MODEL_HANDLE_LEGACY_MAGIC: " + source.string());
   const auto end = std::find(bytes.begin() + magic.size(), bytes.end(), '\n');
   require(end != bytes.end() && static_cast<std::size_t>(bytes.end() - end - 1) == 32);
   NativeStoredModelHandle handle;
