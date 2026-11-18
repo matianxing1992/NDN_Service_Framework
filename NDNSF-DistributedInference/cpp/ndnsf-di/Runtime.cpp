@@ -1852,6 +1852,10 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
                   "blocking model publication cannot run on the Face thread");
   current();
 
+  // Resolve the file-protection configuration before anything is written: a malformed key ring
+  // must fail the preparation, not the export that happens after the Repo already holds objects.
+  const auto fileProtection = nativeFileProtectionKeyFromEnvironment();
+
   auto spec = preparationSpec(frozen, modelKey, state->config.repositorySourceLoader,
                               state->config.repositorySourceProvider);
   NativeAssemblyControl control{deadline, current, spec.maxSourceBytes, spec.maxAssembledBytes};
@@ -1880,8 +1884,8 @@ User::publishStoredModelImpl(detail::StoredModelPreparationOperation& operation,
   current();
   // Seal the handle when the deployment configured a file-protection key; otherwise the
   // unsealed path stays, because pretending to seal would be worse than saying so.
-  if (const auto protection = nativeFileProtectionKeyFromEnvironment()) {
-    nativeExportSealedStoredModelHandle(publication.handle, handlePath, *protection);
+  if (fileProtection) {
+    nativeExportSealedStoredModelHandle(publication.handle, handlePath, *fileProtection);
   }
   else {
     nativeExportStoredModelHandle(publication.handle, handlePath);
