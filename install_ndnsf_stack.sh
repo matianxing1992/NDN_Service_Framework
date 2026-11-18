@@ -2141,7 +2141,7 @@ install_common_system_packages() {
     local packages=(
       build-essential binutils git pkg-config cmake python3 python3-pip wget curl \
       python3-dev python3-setuptools python3-wheel python3-venv \
-      autoconf automake libtool m4 bison flex ninja-build \
+      autoconf automake libtool m4 bison flex libfl-dev ninja-build \
       libgmp-dev libssl-dev \
       libsqlite3-dev libpcap-dev libsodium-dev zlib1g-dev \
       liblog4cxx-dev sqlite3 libprotobuf-dev protobuf-compiler
