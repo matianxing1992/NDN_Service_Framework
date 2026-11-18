@@ -300,6 +300,16 @@ def check_source_contract(project_root: Path) -> list[dict[str, str]]:
             r"maxGeneratedTokens\s*<=\s*(\d+)", qwen_source
         )
     ]
+    # The session now compares against a named limit instead of a literal, so resolve that name rather than
+    # reporting drift for a bound that is still enforced.
+    if not bounds and "MAX_NATIVE_GENERATED_TOKENS" in qwen_source:
+        limits_path = (project_root /
+                       "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp")
+        if limits_path.is_file():
+            named = re.search(r"MAX_NATIVE_GENERATED_TOKENS\s*=\s*(\d+)",
+                              _read(limits_path))
+            if named:
+                bounds.append(int(named.group(1)))
     if not bounds or max(bounds) < 64:
         issues.append(_issue(
             "QWEN_MAX_TOKEN_BOUND_DRIFT",

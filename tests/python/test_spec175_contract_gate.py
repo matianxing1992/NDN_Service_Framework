@@ -261,6 +261,8 @@ def test_spec175_production_path_mutations_fail_closed(tmp_path: Path) -> None:
         "ndn-service-framework/ServiceUser.hpp",
         "ndn-service-framework/ServiceProvider.hpp",
         "NDNSF-DistributedInference/cpp/adapters/qwen/QwenGenerationSession.cpp",
+        # The session compares against this limit by name, so the gate needs the header to resolve it.
+        "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp",
         "NDNSF-DistributedInference/ndnsf_distributed_inference/adapters/qwen/placement.py",
         "tools/ndnsf-di/export_spec175_qwen36_stateful_onnx.py",
         "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py",
