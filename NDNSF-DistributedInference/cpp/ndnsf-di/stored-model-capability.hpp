@@ -66,6 +66,15 @@ NativeStoredModelHandle
 nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
                                   const NativeFileKeyResolver& resolve);
 
+/** File-protection key from the deployment environment.
+ *
+ * `NDNSF_DI_FILE_KEY_ID` names the key and `NDNSF_DI_FILE_KEY` carries its 32 bytes in hex.
+ * An unset pair returns nothing so callers keep the unsealed path instead of pretending to
+ * seal; a half-configured or malformed pair throws rather than silently disabling sealing.
+ */
+std::optional<NativeFileProtectionKey>
+nativeFileProtectionKeyFromEnvironment();
+
 /** Load a bounded, current-user-owned regular 0600 file without following a final symlink. */
 NativeStoredModelHandle
 nativeLoadStoredModelHandle(const std::filesystem::path& source);

@@ -314,6 +314,27 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
   OPENSSL_cleanse(body.data(), body.size());
 }
 
+std::optional<NativeFileProtectionKey>
+nativeFileProtectionKeyFromEnvironment()
+{
+  const char* id = std::getenv("NDNSF_DI_FILE_KEY_ID");
+  const char* key = std::getenv("NDNSF_DI_FILE_KEY");
+  if ((id == nullptr || *id == '\0') && (key == nullptr || *key == '\0'))
+    return std::nullopt;
+  if (id == nullptr || *id == '\0' || key == nullptr || *key == '\0')
+    throw std::runtime_error(
+      "DI_FILE_PROTECTION_KEY_INCOMPLETE: set both NDNSF_DI_FILE_KEY_ID and NDNSF_DI_FILE_KEY");
+  NativeFileProtectionKey protection;
+  protection.keyId = id;
+  protection.key = decodeBytes(key);
+  if (protection.keyId.size() > 64 ||
+      protection.keyId.find_first_of(" \r\n\t") != std::string::npos)
+    throw std::runtime_error("DI_FILE_PROTECTION_KEY_INVALID: key ID is invalid");
+  if (protection.key.size() != 32)
+    throw std::runtime_error("DI_FILE_PROTECTION_KEY_INVALID: key must be 32 bytes of hex");
+  return protection;
+}
+
 NativeStoredModelHandle
 nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
                                   const NativeFileKeyResolver& resolve)

@@ -1245,6 +1245,33 @@ BOOST_FIXTURE_TEST_CASE(SealedHandleRoundtripRequiresTheNamedKey, Fixture)
   BOOST_CHECK_THROW(nativeLoadSealedStoredModelHandle(legacy.path, resolve), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(FileProtectionKeyComesFromConfiguredEnvironment)
+{
+  ::unsetenv("NDNSF_DI_FILE_KEY_ID");
+  ::unsetenv("NDNSF_DI_FILE_KEY");
+  BOOST_CHECK(!nativeFileProtectionKeyFromEnvironment());
+
+  // Half a configuration must fail loudly, not silently disable sealing.
+  ::setenv("NDNSF_DI_FILE_KEY_ID", "file-key-1", 1);
+  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
+  ::setenv("NDNSF_DI_FILE_KEY", "00112233445566778899aabbccddeeff"
+                                "00112233445566778899aabbccddeeff", 1);
+  const auto configured = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(configured);
+  BOOST_CHECK_EQUAL(configured->keyId, std::string("file-key-1"));
+  BOOST_REQUIRE_EQUAL(configured->key.size(), 32u);
+  BOOST_CHECK_EQUAL(configured->key.front(), 0x00);
+  BOOST_CHECK_EQUAL(configured->key.at(1), 0x11);
+
+  ::setenv("NDNSF_DI_FILE_KEY", "00112233", 1);
+  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
+  ::setenv("NDNSF_DI_FILE_KEY", "zz112233445566778899aabbccddeeff"
+                                "00112233445566778899aabbccddeeff", 1);
+  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
+  ::unsetenv("NDNSF_DI_FILE_KEY_ID");
+  ::unsetenv("NDNSF_DI_FILE_KEY");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::tests
