@@ -1,3 +1,5 @@
+#include "AbeHistoricalKey.hpp"
+#include "AbeHistoricalKeyRequest.hpp"
 #include "AbePublicParametersArchive.hpp"
 #include "ServiceController.hpp"
 #include "HybridMessageCrypto.hpp"
@@ -695,6 +697,99 @@ ServiceController::registerArchivedPublicParameters()
         m_face.put(*answer);
       }));
   }
+  // Historical key requests arrive under one prefix and are checked per request.
+  ndn::Name dkeyPrefix(m_controllerPrefix);
+  dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
+  m_historicalKeyFilters.push_back(m_face.setInterestFilter(dkeyPrefix,
+    [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      serveHistoricalKeyRequest(interest);
+    }));
+}
+
+void
+ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
+{
+  if (!m_generationStore)
+    return;
+  const auto parameters = interest.getApplicationParameters();
+  HistoricalKeyRequest request;
+  if (!decodeHistoricalKeyRequest(std::string(reinterpret_cast<const char*>(parameters.value()),
+                                              parameters.value_size()), request))
+    return;
+  // The reply name is the request's own name; a request that does not match it cannot be answered
+  // without publishing under a name the requester never asked for.
+  if (!matchHistoricalKeyRequestName(interest.getName(), m_controllerPrefix, request))
+    return;
+
+  const auto now = nowMilliseconds();
+  constexpr uint64_t MAX_SKEW_MS = 60000;
+  constexpr uint64_t MAX_AGE_MS = 300000;
+  if (request.expiresAtMs <= now || request.mintedAtMs > now + MAX_SKEW_MS ||
+      request.mintedAtMs + MAX_AGE_MS < now)
+    return;
+
+  for (auto it = m_historicalKeyRequests.begin(); it != m_historicalKeyRequests.end();) {
+    if (it->second > now) {
+      ++it;
+      continue;
+    }
+    it = m_historicalKeyRequests.erase(it);
+  }
+  const auto digest = historicalKeyRequestDigest(request);
+  // A replayed request must not mint a second key: the requester already has the one we sent.
+  if (m_historicalKeyRequests.count(digest))
+    return;
+
+  m_validator.validate(interest,
+    [this, request, digest] (const ndn::Interest& validated) {
+      ndn::security::Certificate signer;
+      try {
+        signer = getSignerCertificateFromInterest(validated);
+      }
+      catch (const std::exception&) {
+        return;
+      }
+      // Mint only for the certificate the request named; anyone else is not the asker.
+      if (signer.getName() != request.recipientCertificate)
+        return;
+      std::vector<ControllerGenerationStore::AbeHistoryEntry> archived;
+      try {
+        archived = m_generationStore->loadAbeHistory();
+      }
+      catch (const std::exception&) {
+        return;
+      }
+      const auto entry = std::find_if(archived.begin(), archived.end(),
+        [&request] (const ControllerGenerationStore::AbeHistoryEntry& candidate) {
+          return candidate.generationTimestamp == request.generation &&
+            candidate.epoch == request.epoch;
+        });
+      if (entry == archived.end())
+        return;
+      HistoricalAbeMaterial material{entry->publicParameters, entry->masterSecret};
+      std::vector<std::uint8_t> key;
+      try {
+        key = issueHistoricalDecryptionKey(material, request.policy);
+      }
+      catch (const std::exception& error) {
+        NDN_LOG_WARN("Historical key minting failed: " << error.what());
+        return;
+      }
+      if (key.empty())
+        return;
+      const std::string keyBytes(reinterpret_cast<const char*>(key.data()), key.size());
+      const auto sign = [this] (ndn::Data& data) {
+        m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
+      };
+      ndn::Data reply;
+      if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, sign, reply))
+        return;
+      m_historicalKeyRequests[digest] = request.expiresAtMs;
+      m_face.put(reply);
+    },
+    [] (const ndn::Interest&, const ndn::security::ValidationError& error) {
+      NDN_LOG_WARN("Historical key request rejected: " << error.getInfo());
+    });
 }
 
 bool

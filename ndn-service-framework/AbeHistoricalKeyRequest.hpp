@@ -51,6 +51,16 @@ ndn::Name
 makeHistoricalKeyRequestName(const ndn::Name& controllerPrefix,
                              const HistoricalKeyRequest& request);
 
+/** Check the name a request arrived under against the body that travelled with it.
+ *
+ * A request is usable only when the name names this controller, carries the same generation and
+ * epoch as the body, and ends in the digest of that body. Returns false for a name that does not, so
+ * a reply can never be published under a name the requester did not choose.
+ */
+bool
+matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controllerPrefix,
+                              const HistoricalKeyRequest& request);
+
 /** Build the signed reply for a request.
  *
  * The content is a text envelope binding the request digest, the recipient certificate, the

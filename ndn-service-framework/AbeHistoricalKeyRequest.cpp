@@ -125,6 +125,16 @@ makeHistoricalKeyRequestName(const ndn::Name& controllerPrefix,
 }
 
 bool
+matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controllerPrefix,
+                              const HistoricalKeyRequest& request)
+{
+  if (controllerPrefix.empty() || !name.equals(makeHistoricalKeyRequestName(controllerPrefix,
+                                                                            request)))
+    return false;
+  return name.get(-1).toUri() == historicalKeyRequestDigest(request).substr(7);
+}
+
+bool
 buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& keyBytes,
                         uint64_t replyExpiresAtMs,
                         const std::function<void(ndn::Data&)>& sign, ndn::Data& result)

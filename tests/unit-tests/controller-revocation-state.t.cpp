@@ -985,6 +985,17 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndEx
   auto wrongGeneration = request;
   wrongGeneration.generation = 1003;
   BOOST_CHECK(!verifyHistoricalKeyReply(reply, wrongGeneration, 1'010'000, accepted));
+  // The request name is checked against the body, so a reply cannot land under another name.
+  BOOST_CHECK(matchHistoricalKeyRequestName(name, request.controllerPrefix, request));
+  auto otherController = request;
+  otherController.controllerPrefix = ndn::Name("/controller/b");
+  BOOST_CHECK(!matchHistoricalKeyRequestName(name, request.controllerPrefix, otherController));
+  auto otherScope = request;
+  otherScope.policy = "/SERVICE/Other";
+  BOOST_CHECK(!matchHistoricalKeyRequestName(name, request.controllerPrefix, otherScope));
+  ndn::Name renamed(name);
+  renamed.set(renamed.size() - 1, ndn::name::Component(std::string(64, 'b')));
+  BOOST_CHECK(!matchHistoricalKeyRequestName(renamed, request.controllerPrefix, request));
   // No key material means no reply worth accepting.
   ndn::Data empty;
   BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(), 1'030'000, sign, empty));

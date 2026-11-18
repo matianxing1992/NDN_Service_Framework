@@ -108,6 +108,9 @@ public:
    * published with, so a historical fetch resolves without touching the live authority. */
   void registerArchivedPublicParameters();
 
+  /** Answer a historical key request, minting from the archived generation it names. */
+  void serveHistoricalKeyRequest(const ndn::Interest& interest);
+
   /**
    * Grant one exact service authorization.  Grant-only mutations advance the
    * ControllerVersion but keep the current global ABE generation; the
@@ -269,6 +272,12 @@ private:
   std::unique_ptr<ControllerGenerationStore> m_generationStore;
   /** Responders for superseded generations' public parameters, kept alive with the Controller. */
   std::vector<ndn::ScopedInterestFilterHandle> m_archivedParameterFilters;
+  /** One entry per historical key request seen, kept until the request would expire.
+   *
+   * A Signed Interest that is replayed must not mint a second key, so the digest that names the
+   * request is remembered for exactly as long as that request stays valid. */
+  std::map<std::string, uint64_t> m_historicalKeyRequests;
+  std::vector<ndn::ScopedInterestFilterHandle> m_historicalKeyFilters;
   bool m_generationReady = false;
   std::vector<RevocationTarget> m_revocations;
   // A revocation whose ABE rotation threw is still enforced in memory and in
