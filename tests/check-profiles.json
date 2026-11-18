@@ -207,6 +207,7 @@
     "tests/unit-tests/producer-signer-policy.t.cpp": "core",
     "tests/unit-tests/published-content-name.t.cpp": "core",
     "tests/unit-tests/repo-client-api.t.cpp": "repo",
+    "tests/unit-tests/repo-io-benchmark.t.cpp": "repo",
     "tests/unit-tests/repo-owner-delete-cli.t.cpp": "repo",
     "tests/unit-tests/repo-user-storage-journal.t.cpp": "repo",
     "tests/unit-tests/repo-user-storage-wire.t.cpp": "repo",

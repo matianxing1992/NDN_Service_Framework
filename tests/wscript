@@ -890,6 +890,19 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
+    # Repo I/O benchmark: production in-app publish/fetch of one large object,
+    # reporting write/read MB/s. Size defaults to 64 MiB and is bounded by
+    # REPO_IO_BENCHMARK_BYTES for smaller local runs.
+    bld.program(target='../repo-io-benchmark',
+                name='repo-io-benchmark',
+                source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('unit-tests/repo-io-benchmark.t.cpp')],
+                includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
+                use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
+                    'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
+                cxxflags=['-fPIC', '-O2', '-g0'],
+                rpath=[bld.bldnode.abspath()], install_path=None)
+
     bld.program(target='../spec192-repo-inapp-api',
                 name='spec192-repo-inapp-api',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
@@ -1873,6 +1886,7 @@ def build(bld):
                         bld.path.ant_glob('unit-tests/**/*.cpp',
                             # Packet-level SVS checks have one canonical integration owner below.
                             excl=['unit-tests/sanitizer/**', 'unit-tests/ndn-svs-smoke.t.cpp',
+                                  'unit-tests/repo-io-benchmark.t.cpp',
                                   'unit-tests/model-repository-no-repo.t.cpp'] +
                                  (uav_unit_excludes
                                   if 'uav' not in bld.env.NDNSF_COMPONENTS else [])) +

@@ -289,6 +289,13 @@ private:
   findIndexedOriginalPacket(const ndn::Name& name, const std::string& canonical,
     const std::string& alternate,
     const std::function<bool(const RepoObjectManifest&)>& acceptObject) const;
+  /** Resolves a packet's position inside a set through its cached index proof. */
+  std::optional<size_t> packetPositionIn(const RepoObjectManifest& manifest,
+    const ndn::Name& name, const std::string& canonical,
+    const std::string& alternate) const;
+  /** Extends the built packet-name base index with a freshly committed set. */
+  void extendPacketBaseIndex(const RepoObjectManifest& manifest) const;
+
   mutable std::mutex m_packetBaseIndexMutex;
   mutable std::unordered_map<std::string, std::vector<std::string>> m_packetBaseIndex;
   mutable bool m_packetBaseIndexBuilt = false;

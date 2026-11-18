@@ -35,6 +35,8 @@ public:
     std::error_code error;
     fs::remove_all(m_path, error);
     fs::create_directories(m_path);
+    // The production facade refuses a durable root that group/others can reach;
+    // mkdir honours the caller umask, so pin the fixture itself to owner-only.
     fs::permissions(m_path, fs::perms::owner_all);
   }
 
@@ -112,6 +114,26 @@ isUnsupported(const RepoClientError& error)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec240RepoClientApi)
+
+BOOST_AUTO_TEST_CASE(SqliteRangeReadAfterReopen)
+{
+  TemporaryDirectory directory("sqlite-read");
+  const auto database = (directory.path() / "objects.sqlite3").string();
+  const std::vector<uint8_t> payload{3, 5, 7, 11, 13, 17};
+  RepoObjectManifest manifest;
+  manifest.objectName = "/test/owner/range";
+  manifest.sha256 = sha256Hex(payload);
+  manifest.size = payload.size();
+  manifest.generation = 1;
+  makeSqliteRepoStore(database)->put(manifest, payload);
+
+  const auto reopened = makeSqliteRepoStore(database);
+  const std::vector<uint8_t> expected{7, 11, 13};
+  BOOST_CHECK(reopened->getRange(manifest.objectName, {2, 3}) == expected);
+  BOOST_CHECK(reopened->getRange(manifest.objectName, {6, 0}).empty());
+  BOOST_CHECK_THROW(reopened->getRange(manifest.objectName, {5, 2}), std::out_of_range);
+  BOOST_CHECK_THROW(reopened->getRange("/test/owner/missing", {0, 1}), std::out_of_range);
+}
 
 BOOST_AUTO_TEST_CASE(FacadePublishesFetchesInspectsAndReopens)
 {
