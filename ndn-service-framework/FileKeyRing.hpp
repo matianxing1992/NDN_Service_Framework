@@ -33,6 +33,14 @@ fileKeyRingPath();
 std::optional<FileKeyRingEntry>
 loadFileKeyRingEntry(const std::string& keyId);
 
+/** Every key in the ring, in file order.
+ *
+ * The first line is the write key for new material; the rest keep older material readable, which
+ * is what lets a rotation read the previous generation and write the next one.
+ */
+std::vector<FileKeyRingEntry>
+loadFileKeyRingEntries();
+
 } // namespace ndn_service_framework
 
 #endif // NDNSF_FILE_KEY_RING_HPP

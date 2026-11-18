@@ -82,3 +82,35 @@ loadFileKeyRingEntry(const std::string& keyId)
 }
 
 } // namespace ndn_service_framework
+
+namespace ndn_service_framework {
+
+std::vector<FileKeyRingEntry>
+loadFileKeyRingEntries()
+{
+  std::vector<FileKeyRingEntry> entries;
+  const auto path = fileKeyRingPath();
+  if (!path)
+    return entries;
+  struct stat info{};
+  if (::lstat(path->c_str(), &info) != 0)
+    throw std::runtime_error("NDNSF_FILE_KEYRING_UNREADABLE: cannot stat the configured key ring");
+  if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || (info.st_mode & 0077) != 0)
+    throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: key ring must be a private owned file");
+  std::ifstream input(*path);
+  if (!input)
+    throw std::runtime_error("NDNSF_FILE_KEYRING_UNREADABLE: cannot open the configured key ring");
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty() || line[0] == '#')
+      continue;
+    const auto space = line.find(' ');
+    if (space == std::string::npos || space == 0)
+      throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: each line is '<keyId> <hex>'");
+    entries.push_back(FileKeyRingEntry{line.substr(0, space),
+                                       parseKey(line.substr(space + 1))});
+  }
+  return entries;
+}
+
+} // namespace ndn_service_framework

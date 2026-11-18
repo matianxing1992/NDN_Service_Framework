@@ -908,6 +908,28 @@ BOOST_AUTO_TEST_CASE(HistoricalDecryptionKeyIsMintedInTheLibraryFormat)
   BOOST_CHECK_THROW(issueHistoricalDecryptionKey(material, ""), std::invalid_argument);
 }
 
+BOOST_AUTO_TEST_CASE(KeyRingKeepsOlderKeysReadableWhileANewOneWrites)
+{
+  DefaultGenerationFiles files;
+  const auto ring = files.root / "rotation-ring";
+  {
+    std::ofstream out(ring);
+    out << "old-key " << std::string(64, 'a') << "\n"
+        << "new-key " << std::string(64, 'b') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  const auto entries = loadFileKeyRingEntries();
+  BOOST_REQUIRE_EQUAL(entries.size(), 2u);
+  BOOST_CHECK_EQUAL(entries.front().keyId, std::string("old-key"));
+  BOOST_CHECK_EQUAL(entries.back().keyId, std::string("new-key"));
+  // Both generations stay resolvable by ID, which is what a rotation needs.
+  BOOST_CHECK(loadFileKeyRingEntry("old-key"));
+  BOOST_CHECK(loadFileKeyRingEntry("new-key"));
+  ::unsetenv("NDNSF_FILE_KEYRING");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test
