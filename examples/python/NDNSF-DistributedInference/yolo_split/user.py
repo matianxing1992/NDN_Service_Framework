@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+from pathlib import Path
 
 from ndnsf_distributed_inference.app_sdk import (
     APPClient,
 )
+from ndnsf_distributed_inference.core.contracts import canonical_digest
 
 from yolo_split_lib import (
     CONFIG_FILE,
@@ -64,6 +67,13 @@ def main() -> int:
             adaptive_admission=False,
             test_only_allow_ephemeral_state_root=args.test_only_allow_ephemeral_app_state,
         )
+        # The canonical client requires an immutable deployment revision. For this example the
+        # deployment definition *is* the generated policy document, so its digest names the revision
+        # instead of inventing a constant.
+        policy_path = Path(args.config)
+        deployment_revision = canonical_digest({
+            "policySha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
+        })
         x = make_input(args.input_size)
         client.register_input_encoder(SERVICE, encode_initial_request)
         request_payload = client.encode_input(SERVICE, x)
@@ -78,6 +88,7 @@ def main() -> int:
         result = client.distributed_inference(
             SERVICE,
             request_payload,
+            deployment_revision=deployment_revision,
             ack_timeout_ms=args.ack_timeout_ms,
             timeout_ms=args.timeout_ms,
             dynamic_provisioning=not args.predeployed_artifacts,

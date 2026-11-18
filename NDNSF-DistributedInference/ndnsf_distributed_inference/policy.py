@@ -772,6 +772,10 @@ rule
   }}
 }}
 """)
+        # This catch-all also covers the group namespace, so it cannot use the hierarchical checker:
+        # that requires the signer to be a prefix of the data name, which group data never satisfies
+        # (it is signed by a runtime identity such as .../provider). Anchor it on the root key locator
+        # instead, as the neighbouring runtime and group rules do.
         blocks.append(f"""
 rule
 {{
@@ -782,7 +786,26 @@ rule
     type name
     regex ^{root_regex}<>*$
   }}
-{_hierarchical_checkers()}
+  checker
+  {{
+    type customized
+    sig-type rsa-sha256
+    key-locator
+    {{
+      type name
+      regex {_root_key_locator_regex(root_regex)}
+    }}
+  }}
+  checker
+  {{
+    type customized
+    sig-type ecdsa-sha256
+    key-locator
+    {{
+      type name
+      regex {_root_key_locator_regex(root_regex)}
+    }}
+  }}
 }}
 """)
     if anchor_file:
