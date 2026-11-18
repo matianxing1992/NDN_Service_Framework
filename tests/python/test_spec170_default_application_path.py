@@ -56,6 +56,9 @@ class _V3ServiceUser:
     def __init__(self, *, accepted_roles=("stage-0", "stage-1"),
                  backends=("cpu",),
                  providers=("/provider/a", "/provider/b")):
+        # The V3 requester composes request/ACK/Selection from this identity; the real ServiceUser exposes it,
+        # so the stub must too rather than relying on the coordinator's fallback.
+        self.requester_identity = "/requester/v3-test"
         self.collaboration = None
         self.publish_calls = []
         self.begin_kwargs = None
