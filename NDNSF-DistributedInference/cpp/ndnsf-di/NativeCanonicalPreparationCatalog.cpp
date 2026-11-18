@@ -280,6 +280,15 @@ NativeCanonicalPreparationCatalog::publicationFor(const NativeModelDescriptor& m
   return m_state->find(model).publication;
 }
 
+NativeSourceRegionBoundary
+NativeCanonicalPreparationCatalog::sourceRegion(const NativeInspectedModel& model,
+  const std::vector<std::string>& nodeIds, const std::vector<std::string>& additionalOutputs,
+  const NativeRequestControl& control) const
+{
+  control.requireActive();
+  return m_state->find(model).roles.sourceRegion(nodeIds, additionalOutputs, control);
+}
+
 NativeSplitCandidate NativeCanonicalPreparationCatalog::bindStateContracts(const NativeInspectedModel& model,
   const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
   const NativeRequestControl& control, NativeStateContractBinding binding) const

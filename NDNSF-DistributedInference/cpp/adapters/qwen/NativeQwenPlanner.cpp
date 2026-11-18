@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
 
 #include <algorithm>
 #include <set>
@@ -15,6 +17,12 @@ bool isDigest(const std::string& value)
     std::all_of(value.begin() + 7, value.end(), [] (char c) {
       return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     });
+}
+
+std::string
+hybridRankRole(const std::string& stage, std::uint64_t rank)
+{
+  return stage + "/Tensor/Rank/" + std::to_string(rank);
 }
 
 } // namespace
@@ -81,12 +89,91 @@ NativeQwenLayerSplit::NativeQwenLayerSplit(
   if (m_layerRanges.front().first != 0) {
     throw std::invalid_argument("native transformer splitter must start at layer zero");
   }
+  const bool supportsSourceUnits = m_modelFamily == "qwen" && m_roles.size() > 1 &&
+    std::any_of(m_tensorDegrees.begin(), m_tensorDegrees.end(), [] (auto degree) {
+      return degree > 1;
+    });
+  const auto declaresOwner = [&] (const std::string& name, std::size_t stage) {
+    if (std::find(m_roles.begin(), m_roles.end(), name) != m_roles.end()) return true;
+    if (supportsSourceUnits) {
+      for (std::uint64_t rank = 0; rank < m_tensorDegrees[stage]; ++rank) {
+        if (name == hybridRankRole(m_roles[stage], rank)) return true;
+      }
+    }
+    return false;
+  };
   if (m_inputIngressRole.empty() != m_resultEgressRole.empty() ||
       (!m_inputIngressRole.empty() &&
-       (std::find(m_roles.begin(), m_roles.end(), m_inputIngressRole) == m_roles.end() ||
-        std::find(m_roles.begin(), m_roles.end(), m_resultEgressRole) == m_roles.end()))) {
+       (!declaresOwner(m_inputIngressRole, 0) ||
+        !declaresOwner(m_resultEgressRole, m_roles.size() - 1)))) {
     throw std::invalid_argument("native transformer splitter ingress/egress role is undeclared");
   }
+}
+
+std::pair<NativeSplitCandidate, std::map<std::string, std::string>>
+NativeQwenLayerSplit::lowerSourceHybrid(const NativeModelDescriptor& model,
+  const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+  const std::map<std::string, NativeRoleResourceRequirement>& resources,
+  const NativeOnnxGraphInspection& source, const QwenTpSourceRegionPort& region,
+  const NativeStateTensorMapping& stateMapping, const ExtensionControl& control) const
+{
+  if (m_modelFamily != "qwen" || m_roles.size() < 2 || !region)
+    throw std::invalid_argument("Qwen SOURCE hybrid requires multiple stages and a source region");
+  std::vector<QwenTpStageWindow> windows;
+  std::vector<std::vector<QwenTpUnit>> stageUnits;
+  std::map<std::string, std::string> artifacts;
+  std::map<std::string, std::string> sourceRoleByUnit;
+  std::map<std::string, NativeRoleResourceRequirement> requirements;
+  for (std::size_t stage = 0; stage < m_roles.size(); ++stage) {
+    control.requireActive();
+    const auto& role = m_roles[stage];
+    const auto [begin, end] = m_layerRanges[stage];
+    const auto degree = m_tensorDegrees[stage];
+    const auto profile = resources.find(role);
+    if (profile == resources.end())
+      throw std::invalid_argument("hybrid Qwen catalog has no resource profile for its stage");
+    auto& units = stageUnits.emplace_back();
+    for (std::uint64_t rank = 0; rank < degree; ++rank) {
+      control.requireActive();
+      const auto unit = hybridRankRole(role, rank);
+      if (!sourceRoleByUnit.emplace(unit, role).second)
+        throw std::invalid_argument("hybrid Qwen rank identity is duplicated");
+      artifacts.emplace(unit, degree == 1 ? m_artifactDigestsByRole.at(role)
+                                          : m_rankArtifactDigestsByRole.at(role).at(rank));
+      requirements.emplace(unit, profile->second);
+      units.push_back({unit, rank, begin, end});
+    }
+    auto& window = windows.emplace_back();
+    window.stageId = role;
+    window.layerBegin = begin;
+    window.layerEnd = end;
+    if (stage > 0) {
+      window.upstreamUnit = stageUnits[stage - 1].front().roleId;
+      window.upstreamStepId = window.upstreamUnit + "/MLP/" + std::to_string(begin - 1);
+      window.upstreamSlotId = "post_residual";
+      window.upstreamMlpStepId = window.upstreamUnit + "/SUM_MLP/" + std::to_string(begin - 1);
+      window.upstreamMlpSlotId = "merged";
+    }
+  }
+  const auto resolveOwner = [&] (const std::string& name, std::size_t stage,
+                                  const std::string& defaultUnit) -> std::string {
+    const auto unit = sourceRoleByUnit.find(name);
+    if (unit != sourceRoleByUnit.end() && unit->second == m_roles[stage]) return unit->first;
+    if (unit == sourceRoleByUnit.end() && (name.empty() || name == m_roles[stage]))
+      return defaultUnit;
+    throw std::invalid_argument("hybrid Qwen ingress/egress must belong to its boundary stage");
+  };
+  const auto ingress = resolveOwner(m_inputIngressRole, 0, stageUnits.front().front().roleId);
+  const auto egress = resolveOwner(m_resultEgressRole, m_roles.size() - 1,
+                                   stageUnits.back().back().roleId);
+  const auto unitState = detail::remapNativeStateRoles(stateMapping, sourceRoleByUnit);
+  auto candidate = buildQwenHybridCandidate(graph, shape, windows, stageUnits, "entry", egress,
+    model, artifacts, requirements, source, region, unitState);
+  candidate.inputIngressRole = ingress;
+  candidate.splitter = identity();
+  candidate.candidateDigest = candidate.computedDigest();
+  candidate.validate(graph);
+  return {std::move(candidate), std::move(sourceRoleByUnit)};
 }
 
 NativeStrategyIdentity NativeQwenLayerSplit::identity() const

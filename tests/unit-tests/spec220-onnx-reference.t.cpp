@@ -232,6 +232,159 @@ BOOST_AUTO_TEST_CASE(IndependentTokensAndColdWarmStateProgression)
   }
 }
 
+BOOST_AUTO_TEST_CASE(CompleteProviderKvIsReassembledByRankAndCheckedAtEveryEpoch)
+{
+  ReferenceFixture fixture;
+  auto* graph = fixture.model.mutable_graph();
+  for (auto* value : {graph->mutable_input(3), graph->mutable_output(0)}) {
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    auto* shape = tensor->mutable_shape();
+    const auto sequence = shape->dim(1);
+    shape->clear_dim();
+    shape->add_dim()->set_dim_value(1);
+    shape->add_dim()->set_dim_value(2);
+    *shape->add_dim() = sequence;
+    shape->add_dim()->set_dim_value(1);
+  }
+  auto concat = graph->node(0);
+  graph->mutable_node()->DeleteSubrange(0, 1);
+  auto* axes = graph->add_initializer();
+  axes->set_name("head-axes");
+  axes->set_data_type(onnx::TensorProto::INT64);
+  axes->add_dims(2);
+  axes->add_int64_data(1);
+  axes->add_int64_data(3);
+  auto* expand = graph->add_node();
+  expand->set_op_type("Unsqueeze");
+  expand->add_input("input_ids");
+  expand->add_input("head-axes");
+  expand->add_output("head-integer");
+  auto* cast = graph->add_node();
+  cast->set_op_type("Cast");
+  cast->add_input("head-integer");
+  cast->add_output("head-zero");
+  auto* castType = cast->add_attribute();
+  castType->set_name("to");
+  castType->set_type(onnx::AttributeProto::INT);
+  castType->set_i(onnx::TensorProto::FLOAT);
+  auto* negate = graph->add_node();
+  negate->set_op_type("Neg");
+  negate->add_input("head-zero");
+  negate->add_output("head-one");
+  auto* heads = graph->add_node();
+  heads->set_op_type("Concat");
+  heads->add_input("head-zero");
+  heads->add_input("head-one");
+  heads->add_output("heads");
+  *heads->add_attribute() = concat.attribute(0);
+  concat.set_input(1, "heads");
+  concat.mutable_attribute(0)->set_i(2);
+  *graph->add_node() = concat;
+  fixture.saveModel();
+  auto& catalog = fixture.requester["catalog"];
+  catalog["splitter"]["roles"] = {"role"};
+  catalog["splitter"]["tensor_degrees"] = {2};
+  catalog["recipe"]["layout"] = "BNSH";
+  catalog["state_inputs"]["role"]["state"] = {"past"};
+
+  std::array<std::vector<NativeJson>, 2> statistics;
+  std::vector<spec220::oracle::CompleteKvCapture> captures;
+  for (std::size_t rank = 0; rank < statistics.size(); ++rank) {
+    const auto qualifier = std::to_string(rank);
+    const auto path = fixture.directory / ("provider-" + qualifier);
+    std::filesystem::create_directory(path);
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+    captures.push_back({path, "/provider/" + qualifier, "boot-" + qualifier, statistics[rank]});
+    const std::string role = "role/Tensor/Rank/" + qualifier;
+    const std::vector<std::int64_t> fullPrefix{0, 2, 1, 1, 3, 1, 1};
+    for (std::size_t round = 0; round < 2; ++round) {
+      const std::string request = "request-" + std::to_string(round);
+      const std::string session = "session-" + std::to_string(round);
+      NativeJson row{{"requestId", request}, {"role", role}, {"planDigest", "plan"},
+        {"attemptEpoch", 1}, {"epochsExecuted", 3}, {"eventsPublished", rank == 1 ? 2 : 0}};
+      for (std::size_t epoch = 0; epoch < 3; ++epoch) {
+        const auto prefix = (round == 0 ? 2 : 5) + epoch;
+        row["runtimeMetrics"].push_back({{"lastBackendExecution", {{"sessionId", session}}}});
+        row["cacheObservations"].push_back({{"representedPrefixTokenCount", prefix}});
+        std::vector<double> values(fullPrefix.begin(), fullPrefix.begin() + prefix);
+        if (rank != 0)
+          for (auto& value : values) value = -value;
+        const auto index = std::to_string(round * 3 + epoch);
+        NativeJson document{{"schema", "ndnsf-di-kv-complete-v1"},
+           {"provider", captures.back().provider},
+           {"record", {{"requestId", request}, {"sessionId", session}, {"role", role},
+            {"providerBootId", captures.back().boot}, {"planDigest", "plan"}, {"attemptEpoch", 1},
+            {"inferenceEpoch", epoch}, {"logicalPrefixTokenCount", prefix},
+            {"transitionKind", epoch == 0 ? "PREFILL" : epoch == 1 ? "DECODE" : "CHECKPOINT_FINALIZE"},
+            {"tensors", {{{"inputName", "past"}, {"elementType", "float32"},
+                          {"shape", {1, 1, prefix, 1}}, {"values", values}}}}}}};
+        nativeExportPrivateCheckpoint(path / (index + ".json"), document);
+        if (rank == 1) {
+          document["record"].erase("tensors");
+          document["record"]["logits"] = {{{"inputName", "logits"}, {"elementType", "float32"},
+                                           {"shape", {1, 1, 4}}, {"values", {0, 2, 0, 0}}}};
+          nativeExportPrivateCheckpoint(path / ("logits-" + index + ".json"), document);
+        }
+      }
+      statistics[rank].push_back(std::move(row));
+    }
+  }
+  const auto replay = [&] {
+    return spec220::oracle::validateOnnxReference(fixture.requester, Ort::GetVersionString(),
+                                                captures);
+  };
+  const auto result = replay();
+  BOOST_CHECK_EQUAL(result.at("providerStateValuesCompared"), true);
+  BOOST_CHECK_EQUAL(result.at("providerStateValueCount"), 54);
+  BOOST_CHECK_EQUAL(result.at("providerLogitsValueCount"), 24);
+  BOOST_CHECK_EQUAL(result.at("providerStateMaxAbsoluteError"), 0);
+  const auto logitsPath = captures.back().directory / "logits-5.json";
+  std::ifstream logitFile(logitsPath);
+  NativeJson observedLogits;
+  logitFile >> observedLogits;
+  auto wrongLogits = observedLogits;
+  wrongLogits["record"]["logits"][0]["values"][0] = 1;
+  nativeExportPrivateCheckpoint(logitsPath, wrongLogits);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-logits-value:round=1:epoch=2:index=0");
+  });
+  std::filesystem::remove(logitsPath);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-logits-missing:round=1:epoch=2");
+  });
+  nativeExportPrivateCheckpoint(logitsPath, observedLogits);
+
+  const auto path = captures.back().directory / "5.json";
+  std::ifstream file(path);
+  NativeJson tampered;
+  file >> tampered;
+  auto wrongRole = tampered;
+  wrongRole["record"]["role"] = "role/Tensor/Rank/0";
+  nativeExportPrivateCheckpoint(path, wrongRole);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-request-binding");
+  });
+  auto wrongEpoch = tampered;
+  wrongEpoch["record"]["inferenceEpoch"] = 1;
+  nativeExportPrivateCheckpoint(path, wrongEpoch);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-epoch-binding");
+  });
+  tampered["record"]["tensors"][0]["values"][1] = -2.00005;
+  nativeExportPrivateCheckpoint(path, tampered);
+  BOOST_CHECK_CLOSE(replay().at("providerStateMaxAbsoluteError").get<double>(), 0.00005, 1e-6);
+  tampered["record"]["tensors"][0]["values"][1] = 2;
+  nativeExportPrivateCheckpoint(path, tampered);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-value:round=1:epoch=2:role=role/Tensor/Rank/1");
+  });
+  std::filesystem::remove(path);
+  BOOST_CHECK_EXCEPTION(replay(), std::runtime_error, [](const auto& error) {
+    return reason(error, "complete-kv-missing-shard:round=1:epoch=2:role=role/Tensor/Rank/1");
+  });
+}
+
 BOOST_AUTO_TEST_CASE(IndependentConversationReplayStartsWithEmptyState)
 {
   ReferenceFixture fixture;
@@ -317,10 +470,12 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
       graph->mutable_node()->SwapElements(0, graph->node_size() - 1);
       fixture.saveModel();
     }
-    for (const auto initialSize : {2U, 20U}) {
+    for (const auto& [initialSize, complete] : {std::pair{2U, false}, std::pair{20U, false},
+                                               std::pair{20U, true}}) {
       const auto destination = fixture.directory /
-        ("private-kv-" + std::to_string(initialSize) + ".json");
-      auto probe = std::make_shared<OnnxKvStateProbe>(destination, "/reference-provider");
+        ("private-kv-" + std::to_string(initialSize) + (complete ? ".complete" : ".json"));
+      auto probe = std::make_shared<OnnxKvStateProbe>(destination, "/reference-provider",
+                                                     complete, complete ? "logits" : "");
       RegistryNativeModelRunnerFactory factory;
       registerOnnxRuntimeBackend(factory, nullptr, probe);
       NativeModelRunnerSpec spec;
@@ -335,10 +490,12 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
         {"positionInputPolicy", "qwen-causal-position-v1"}, {"tokenInputName", "input_ids"},
         {"attentionMaskInputName", "attention_mask"}, {"positionIdsInputName", "position_ids"}};
       auto runner = factory.create(spec);
-      BOOST_CHECK(!std::filesystem::exists(destination));
+      BOOST_CHECK_EQUAL(std::filesystem::is_directory(destination), complete);
+      BOOST_CHECK_EQUAL(std::filesystem::exists(destination), complete);
       OnnxRuntimeModelRunner baseline(spec);
       std::vector<std::int64_t> prefix;
-      for (std::uint64_t epoch = 0; epoch < 3; ++epoch) {
+      const auto finalEpoch = complete ? 3u : 2u;
+      for (std::uint64_t epoch = 0; epoch <= finalEpoch; ++epoch) {
         std::vector<std::int64_t> ids(epoch ? 1 : initialSize, 1);
         if (!epoch)
           std::iota(ids.begin(), ids.end(), 0);
@@ -360,8 +517,8 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
         lineage.streamEpoch = epoch + 1;
         lineage.inferenceEpoch = epoch;
         lineage.transitionKind = epoch == 0 ? GenerationEpochLineageV1::PREFILL :
-          epoch == 1 ? GenerationEpochLineageV1::DECODE :
-                       GenerationEpochLineageV1::CHECKPOINT_FINALIZE;
+          epoch == finalEpoch ? GenerationEpochLineageV1::CHECKPOINT_FINALIZE :
+                               GenerationEpochLineageV1::DECODE;
         lineage.logicalPrefixDigest = nativeConversationPrefixDigest(prefix);
         lineage.logicalPrefixTokenCount = prefix.size();
         lineage.positionDigest = "sha256:" + std::string(64, 'c');
@@ -380,11 +537,17 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           BOOST_REQUIRE(expected.count(output.first));
           BOOST_CHECK(output.second.payload == expected.at(output.first).payload);
         }
-        std::ifstream file(destination);
+        const auto recordPath = complete ? destination / (std::to_string(2 * epoch + 1) + ".json") :
+                                           destination;
+        std::ifstream file(recordPath);
         NativeJson samples;
         file >> samples;
-        BOOST_CHECK_EQUAL(samples.at("records").size(), epoch + 1);
-        const auto& record = samples.at("records").back();
+        BOOST_CHECK_EQUAL(samples.at("schema"),
+          complete ? "ndnsf-di-kv-complete-v1" : "ndnsf-di-kv-value-samples-v1");
+        BOOST_CHECK_EQUAL(samples.at("provider"), "/reference-provider");
+        if (!complete)
+          BOOST_CHECK_EQUAL(samples.at("records").size(), epoch + 1);
+        const auto& record = complete ? samples.at("record") : samples.at("records").back();
         BOOST_CHECK_EQUAL(record.at("inferenceEpoch").get<std::uint64_t>(), epoch);
         BOOST_CHECK_EQUAL(record.at("logicalPrefixTokenCount").get<std::uint32_t>(), prefix.size());
         const auto& tensor = record.at("tensors").at(0);
@@ -393,7 +556,7 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           stateType == onnx::TensorProto::FLOAT16 ? "float16" : "int64";
         BOOST_CHECK_EQUAL(tensor.at("elementType").get<std::string>(), expectedType);
         BOOST_CHECK(tensor.at("shape") == NativeJson({1, prefix.size()}));
-        const auto points = std::min<std::size_t>(16, prefix.size());
+        const auto points = complete ? prefix.size() : std::min<std::size_t>(16, prefix.size());
         std::vector<std::uint64_t> indices;
         std::vector<std::int64_t> values;
         for (std::size_t i = 0; i < points; ++i) {
@@ -402,7 +565,38 @@ BOOST_AUTO_TEST_CASE(ActualResidentStateProbeCapturesPrefillDecodeAndFinalize)
           values.push_back(prefix.at(index));
         }
         BOOST_CHECK(tensor.at("values") == NativeJson(values));
-        BOOST_CHECK(tensor.at("indices") == NativeJson(indices));
+        if (complete) {
+          BOOST_CHECK(!tensor.contains("indices"));
+          std::ifstream logitFile(destination / (std::to_string(2 * epoch) + ".json"));
+          NativeJson logitRecord;
+          logitFile >> logitRecord;
+          const auto& logits = logitRecord.at("record").at("logits").at(0);
+          BOOST_CHECK_EQUAL(logits.at("inputName"), "logits");
+          BOOST_CHECK(logits.at("shape") == NativeJson({1, 1, 4}));
+          BOOST_CHECK(logits.at("values") == NativeJson({0, 2, 0, 0}));
+        }
+        else {
+          BOOST_CHECK(tensor.at("indices") == NativeJson(indices));
+        }
+        const auto fileMode = std::filesystem::status(recordPath).permissions();
+        BOOST_CHECK((fileMode & std::filesystem::perms::group_all) == std::filesystem::perms::none);
+        BOOST_CHECK((fileMode & std::filesystem::perms::others_all) == std::filesystem::perms::none);
+        if (complete && epoch == finalEpoch) {
+          const OnnxKvStateSample other{"past-other-layer", "float32", {1, 2}, {0, 1}, {3, 4}};
+          BOOST_CHECK_NO_THROW(probe->record(context, {other}));
+          std::ifstream fragmentFile(destination / "8.json");
+          NativeJson fragment;
+          fragmentFile >> fragment;
+          BOOST_CHECK_EQUAL(fragment.at("record").at("inferenceEpoch"), finalEpoch);
+          BOOST_CHECK_EQUAL(fragment.at("record").at("tensors").at(0).at("inputName"),
+                            "past-other-layer");
+          BOOST_CHECK_THROW(probe->record(context, {other}), std::runtime_error);
+          auto incomplete = other;
+          incomplete.inputName = "past-uncovered";
+          incomplete.shape = {1, 3};
+          BOOST_CHECK_THROW(probe->record(context, {incomplete}), std::runtime_error);
+          BOOST_CHECK(!std::filesystem::exists(destination / "9.json"));
+        }
       }
       const auto mode = std::filesystem::status(destination).permissions();
       BOOST_CHECK((mode & std::filesystem::perms::group_all) == std::filesystem::perms::none);

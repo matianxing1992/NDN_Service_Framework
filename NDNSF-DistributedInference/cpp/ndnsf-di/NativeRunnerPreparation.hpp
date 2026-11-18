@@ -6,6 +6,10 @@
 
 namespace ndnsf::di {
 
+/** Decode the explicit input=successor map, rejecting malformed or duplicate bindings. */
+std::vector<std::pair<std::string, std::string>>
+parseNativeStateSuccessorMap(const std::string& encoded);
+
 /** Provider-owned observations shared by all post-Selection model adapters. */
 struct NativeRunnerPreparationContext
 {

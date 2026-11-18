@@ -239,7 +239,6 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
       ? io.publicationGroupWireBytes : NATIVE_STORED_MODEL_UPLOAD_WIRE);
   io.fetch = [user, target, budget, current, verify, acquireOperationLifetime] (
     const std::vector<ndn::Name>& names) {
-    auto operationLifetime = acquireOperationLifetime ? acquireOperationLifetime() : nullptr;
     // The facade is created for this call only: it borrows the caller's Face and
     // ServiceUser, so holding one across the io lifetime outlives them.
     auto config = repo::PersistentRepoClientConfig{};
@@ -248,6 +247,8 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
     config.ackCollectionTimeMs = 2000;
     auto client = repo::RepoClient::makePersistent(user, std::move(config));
     repo::RepoDataFetch request;
+    if (acquireOperationLifetime)
+      request.operationLifetime = acquireOperationLifetime();
     request.packetNames.reserve(names.size());
     for (const auto& name : names)
       request.packetNames.push_back(name.toUri());
@@ -261,13 +262,15 @@ nativeStoredModelRepositoryIo(std::shared_ptr<ndn_service_framework::ServiceUser
     repo::RepoOperationOptions options;
     options.deadline = std::chrono::steady_clock::now() +
       std::chrono::milliseconds(std::max(1, budget()));
-    // Repo retains this closure through queued Face binding and cancellation,
-    // so the Runtime owner lease must travel with it, not just the blocking wait.
-    options.requireCurrent = [current, operationLifetime = std::move(operationLifetime)] {
-      (void)operationLifetime;
-      current();
-    };
-    return client.fetchData(request, options).packets;
+    options.requireCurrent = [current] { current(); };
+    try {
+      return client.fetchData(request, options).packets;
+    }
+    catch (const repo::RepoClientError& error) {
+      if (error.code() == "DEADLINE_EXPIRED")
+        throw std::runtime_error("DI_NATIVE_PREPARATION_TIMEOUT");
+      throw;
+    }
   };
   if (allowPublication) {
     io.requireCommitted = [user, target, budget, current](const ndn::Name& name,

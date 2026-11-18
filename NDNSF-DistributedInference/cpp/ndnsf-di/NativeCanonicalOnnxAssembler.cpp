@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedArtifactStore.hpp"
@@ -2376,7 +2377,9 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     // whole-role runner whose backend is the assembled one: the steps then executed against a
     // single ONNX graph, which is why a tensor-parallel INIT produced the ONNX runner's own
     // bundle instead of the step's declared slots.
-    if (!projection.plan.steps.empty()) {
+    if (!projection.plan.steps.empty() && !detail::bindNativeWholeRegionEntry(projection, spec)) {
+      if (projection.assemblyContract().adapterId != "qwen")
+        throw std::invalid_argument("step plan has no supported verified material entry contract");
       const auto& contract = projection.assemblyContract();
       const auto rankRole = contract.selectedRole;
       const std::uint64_t layers = contract.layerEnd > contract.layerBegin
@@ -2401,7 +2404,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
                                     contract.tensorParallelRank,
-                                    egressRole, &tableControl);
+                                    egressRole, &tableControl, contract.layerBegin);
       if (options.reportProgress)
         options.reportProgress("ENTRY_TABLE_READY", 0.95);
     }
@@ -4029,14 +4032,12 @@ prepareNativeCanonicalOnnxRole(
     // assembler. Doing it earlier would split a file that is still being
     // finalized; doing it later would hand the Provider a whole-role spec that
     // runs the complete rank graph once per step.
-    if (!projection.plan.steps.empty()) {
+    if (!projection.plan.steps.empty() && !detail::bindNativeWholeRegionEntry(projection, spec)) {
+      if (projection.assemblyContract().adapterId != "qwen")
+        throw std::invalid_argument("step plan has no supported verified material entry contract");
       const auto rankRole = projection.assemblyContract().selectedRole;
-      // The unit's layer range is authoritative for how many layers the rank
-      // graph carries: a sharded unit covers every layer, so the taxonomy must
-      // match that range rather than be inferred from step ids.
-      // The assembly contract's role range is authoritative for how many layers
-      // the rank graph carries: a sharded unit covers every layer, so the entry
-      // taxonomy must match that range rather than be inferred from step ids.
+      // Preserve the sealed global interval. A regional rank graph contains only
+      // its own layers; its exclusive end is not a local layer count.
       const auto& contract = projection.assemblyContract();
       const std::uint64_t layers = contract.layerEnd > contract.layerBegin
         ? contract.layerEnd : 0;
@@ -4070,7 +4071,7 @@ prepareNativeCanonicalOnnxRole(
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
                                     contract.tensorParallelRank,
-                                    egressRole, &tableControl);
+                                    egressRole, &tableControl, contract.layerBegin);
       logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
                               static_cast<std::uint64_t>(layers), "entries");
     }

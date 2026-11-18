@@ -3422,6 +3422,8 @@ RepoClient::fetchData(const RepoDataFetch& input,
     throw RepoClientError("UNSUPPORTED",
                           "original-Data retrieval requires a persistent client",
                           "fetchData");
+  if (input.operationLifetime && (input.ownerClaim || input.manifestBound))
+    throw RepoClientError("UNSUPPORTED", "owner lease requires a named packet read", "fetchData");
   requireWireVerifier(input.verifyWire, "fetchData");
   requireLiveDeadline(options.deadline, "fetchData");
   if (input.ownerClaim) {
@@ -3531,13 +3533,29 @@ RepoClient::fetchData(const RepoDataFetch& input,
     const auto& wire = packet.wireEncode();
     return (*verifier)(std::vector<uint8_t>(wire.begin(), wire.end()));
   };
-  // A cancellation closure may retain the caller's transport owner. Preserve
-  // it through both queued Face binding and fetch callbacks after this wait ends.
-  const auto callbackLifetime = options.requireCurrent
-    ? std::make_shared<std::function<void()>>(options.requireCurrent) : nullptr;
-  auto wires = RepoClientCompat::fetchOriginalDataPackets(
-    m_impl->user, m_impl->target(input.target), names, wireBudget,
-    verifyPacket, remainingMs(options.deadline), options.requireCurrent, callbackLifetime);
+  const auto timeoutMs = remainingMs(options.deadline);
+  if (timeoutMs == 0)
+    throw RepoClientError("DEADLINE_EXPIRED", "named packet read deadline passed", "fetchData");
+  // A cancellation guard can own borrowed transport state independently of the explicit lease.
+  // Both must survive queued Face binding and fetch callbacks after the caller stops waiting.
+  auto callbackLifetime = input.operationLifetime;
+  if (options.requireCurrent) {
+    callbackLifetime = std::make_shared<std::pair<std::function<void()>, std::shared_ptr<void>>>(
+      options.requireCurrent, std::move(callbackLifetime));
+  }
+  std::vector<std::vector<uint8_t>> wires;
+  try {
+    wires = RepoClientCompat::fetchOriginalDataPackets(
+      m_impl->user, m_impl->target(input.target), names, wireBudget,
+      verifyPacket, timeoutMs, options.requireCurrent, std::move(callbackLifetime));
+  }
+  catch (const std::runtime_error& error) {
+    const std::string message(error.what());
+    if (message == "repo-original-packet-fetch-deadline" ||
+        message == "repo-original-packet-set-face-deadline")
+      throw RepoClientError("DEADLINE_EXPIRED", error.what(), "fetchData");
+    throw;
+  }
   RepoDataFetchResult result;
   result.wireBytes = 0;
   ndn::util::Sha256 digest;

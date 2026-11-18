@@ -2,7 +2,7 @@
 #define NDNSF_DI_QWEN_NATIVE_TENSOR_RUNNER_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 
 #include <functional>
@@ -13,7 +13,10 @@
 
 namespace ndnsf::di::qwen {
 
-/** Parent runner for one tensor-parallel unit.
+/** Qwen contract adapter for the shared entry runner.
+ *
+ * Legacy APIs and entry tables remain available; execution and state ownership live in
+ * NativeEntryRunner. Only this adapter resolves Qwen state input/successor names.
  *
  * C4 fixes the division of responsibility. The worker owns dependency
  * admission, readiness, publication and unit completion; this runner executes
@@ -28,7 +31,7 @@ namespace ndnsf::di::qwen {
  * life of this parent, which is what makes warm reuse of the whole group
  * possible without raising the default session-cache capacity.
  */
-class NativeQwenTensorRunner final : public NativeModelRunner
+class NativeQwenTensorRunner final : public NativeEntryRunner
 {
 public:
   using ChildFactory = std::function<std::shared_ptr<NativeModelRunner>(
@@ -160,12 +163,7 @@ public:
   runtimeMetricsSnapshot() const override;
 
 private:
-  const QwenTpEntryContract* findEntry(const std::string& entryId) const;
-
   std::vector<QwenTpEntryContract> m_entries;
-  ChildFactory m_childFactory;
-  std::function<NativeModelRunnerSpec(const QwenTpEntryContract&)> m_specFactory;
-  std::map<std::string, std::shared_ptr<NativeModelRunner>> m_children;
 };
 
 /** Backend name this parent runner registers under.

@@ -2,6 +2,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
@@ -65,6 +66,8 @@ std::string canonicalCore(const NativePlacementPlanCore& core)
     {"ack_closed_digest", core.ackClosedDigest}, {"strategy_digest", strategy},
     {"candidate_digest", core.candidateDigest}, {"request_contract_digest", core.requestContractDigest},
     {"generation_contract", core.generationContract.enabled ? nativeGenerationJson(core.generationContract) : NativeJson(nullptr)}};
+  if (core.executionPlan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
+    value["step_template_v2"] = nativeV2StepTemplateJson(core.executionPlan);
   if (!core.placementObservationSnapshotDigest.empty()) {
     value["placement_observation_snapshot_digest"] = core.placementObservationSnapshotDigest;
   }
@@ -227,8 +230,9 @@ NativeFixedPlacementCoreV1::NativeFixedPlacementCoreV1(const NativePlacementPlan
     m_source(core.sourceContentDigest), m_graph(core.graphDigest), m_candidate(core.candidateDigest)
 {
   ++detail::fixedAssignmentWork().placementBuilds;
+  // V2 step validation uses these scopes to distinguish feedback dependencies.
+  // Fixed-core matching already ignores invocation-specific feedback scopes.
   for (auto& dependency : m_execution.dependencies) {
-    if (dependency.operationKind == "TOKEN_FEEDBACK") dependency.keyScope = "fixed-token-feedback";
     dependency.expectedSegments = dependency.expectedBytes = 0;
   }
   const auto& generation = core.generationContract;
@@ -262,6 +266,12 @@ NativeFixedPlacementCoreV1::NativeFixedPlacementCoreV1(const NativePlacementPlan
 bool NativeFixedPlacementCoreV1::matches(const NativePlacementPlanCore& core) const
 {
   const auto& execution = core.executionPlan;
+  if (m_execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 ||
+      execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+    if (m_execution.stepPlanVersion != execution.stepPlanVersion ||
+        nativeV2StepTemplateJson(m_execution) != nativeV2StepTemplateJson(execution))
+      return false;
+  }
   if (m_model != core.modelDigest || m_source != core.sourceContentDigest || m_graph != core.graphDigest ||
       m_candidate != core.candidateDigest || m_providers != core.assignment.providerByRole ||
       std::tie(m_execution.version, m_execution.serviceName, m_execution.modelName, m_execution.modelFamily,
@@ -621,6 +631,23 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativePlanSealingInputs& inputs)
 {
   auto phaseStarted = detail::nativePhaseStarted();
+  const auto requiredCapabilities = nativePlanRequiredCapabilities(executionPlan);
+  if (proposal.context.requiredExecutionCapabilities != requiredCapabilities)
+    throw std::invalid_argument("V3 placement execution capability requirements differ from plan");
+  if (!requiredCapabilities.empty()) {
+    for (const auto& assignment : proposal.providerByRole) {
+      const auto admitted = std::find_if(offers.begin(), offers.end(), [&assignment] (const auto& item) {
+        return item.observation().provider == assignment.second;
+      });
+      if (admitted == offers.end() ||
+          !std::all_of(requiredCapabilities.begin(), requiredCapabilities.end(),
+            [&admitted] (const auto& capability) {
+              const auto& available = admitted->observation().capabilities;
+              return std::find(available.begin(), available.end(), capability) != available.end();
+            }))
+        throw std::invalid_argument("V3 selected Provider lacks required execution capabilities");
+    }
+  }
   if (inputs.borrowedPreparedRoles && !inputs.assemblyByRole.empty())
     throw std::invalid_argument("sealing inputs mix borrowed and value roles");
   std::vector<NativeSelectionRoleV3> preparedStorage;

@@ -115,6 +115,7 @@
     "tests/unit-tests/dependency-recovery.t.cpp": "core",
     "tests/unit-tests/di-execution-lease-service.t.cpp": "di",
     "tests/unit-tests/di-extension-contract.t.cpp": "di",
+    "tests/unit-tests/di-hybrid-cut.t.cpp": "di",
     "tests/unit-tests/di-native-assembly.t.cpp": "di",
     "tests/unit-tests/di-native-authority.t.cpp": "di",
     "tests/unit-tests/di-native-canonical-json.t.cpp": "di",

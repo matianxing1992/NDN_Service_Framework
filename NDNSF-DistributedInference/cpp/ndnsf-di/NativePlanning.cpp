@@ -519,6 +519,17 @@ std::string NativeSplitCandidate::canonicalJson() const
     executionPlanJson["steps"] = std::move(steps);
     executionPlanJson["step_plan_version"] = executionPlan.stepPlanVersion;
     executionPlanJson["tensor_degree"] = executionPlan.tensorDegree;
+    // Only a v2 plan carries stages, so every v1 candidate's canonical bytes and digest
+    // stay exactly as they were.
+    if (!executionPlan.stageLayout.empty()) {
+      auto stages = NativeJson::array();
+      for (const auto& stage : executionPlan.stageLayout) {
+        stages.push_back(NativeJson{{"stage_id", stage.stageId},
+                                    {"source_region_digest", stage.sourceRegionDigest},
+                                    {"unit_role_ids", stage.unitRoleIds}});
+      }
+      executionPlanJson["stage_layout"] = std::move(stages);
+    }
   }
   return nativeCanonicalJson(NativeJson{
     {"source", source}, {"splitter", {{"name", splitter.name}, {"version", splitter.version},
@@ -619,7 +630,8 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
       throw std::invalid_argument("split candidate state I/O role cover is incomplete");
     for (const auto& role : roles) {
       const auto tensors = contracts.find(role);
-      if (tensors == contracts.end() || tensors->second.empty())
+      if (tensors == contracts.end() ||
+          (tensors->second.empty() && executionPlan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2))
         throw std::invalid_argument("split candidate state I/O is empty or has foreign roles");
       std::set<std::string> names;
       for (const auto& tensor : tensors->second) {
@@ -632,6 +644,16 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
   if (!roleStateInputsByRole.empty() || !roleStateOutputsByRole.empty()) {
     stateValid(roleStateInputsByRole);
     stateValid(roleStateOutputsByRole);
+    for (const auto& role : roles) {
+      if (roleStateInputsByRole.at(role).empty() != roleStateOutputsByRole.at(role).empty())
+        throw std::invalid_argument("split candidate has one-sided stateless state I/O");
+      if (roleStateInputsByRole.at(role).empty() &&
+          std::any_of(executionPlan.steps.begin(), executionPlan.steps.end(),
+            [&role] (const auto& step) {
+              return step.unitId == role && !step.localStateSlots.empty();
+            }))
+        throw std::invalid_argument("split candidate stateless role declares local state slots");
+    }
   }
   const std::set<std::string> cuts(crossPartitionTensors.begin(), crossPartitionTensors.end());
   const std::set<std::string> legal(graph.legalCutEdges.begin(), graph.legalCutEdges.end());
@@ -697,6 +719,26 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
           throw std::invalid_argument("split candidate rank artifact is absent from its role");
     }
   }
+  // A unit's geometry is sealed twice: the recipe reads `tensorIdentityByRole`, the worker
+  // reads the stage layout. If the two disagree, one of them executes a shard it never
+  // assembled, so the candidate is refused here rather than at the Provider.
+  for (const auto& stage : executionPlan.stageLayout) {
+    for (std::size_t index = 0; index < stage.unitRoleIds.size(); ++index) {
+      const auto& unit = stage.unitRoleIds.at(index);
+      const auto identity = tensorIdentityByRole.find(unit);
+      if (identity == tensorIdentityByRole.end()) {
+        if (stage.degree() > 1)
+          throw std::invalid_argument("sharded unit has no tensor identity: " + unit);
+        continue;
+      }
+      if (identity->second.degree != stage.degree())
+        throw std::invalid_argument(
+          "unit tensor degree disagrees with its stage: " + unit);
+      if (identity->second.rank != index)
+        throw std::invalid_argument(
+          "unit tensor rank disagrees with its stage member index: " + unit);
+    }
+  }
   if (hybridPlan) {
     hybridPlan->validate();
     std::vector<std::uint64_t> degrees;
@@ -756,7 +798,9 @@ nativePlanRequiredCapabilities(const NativeExecutionPlan& plan)
   // A plan without a step template needs nothing beyond the legacy path, so an
   // old Provider stays admissible for ordinary pipeline execution.
   if (plan.steps.empty()) return {};
-  std::vector<std::string> required{NATIVE_STEP_PLAN_CAPABILITY_V1};
+  const auto stepCapability = plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2
+    ? NATIVE_STEP_PLAN_CAPABILITY_V2 : NATIVE_STEP_PLAN_CAPABILITY_V1;
+  std::vector<std::string> required{stepCapability};
   // SUM is a distinct local operation: declaring the DAG alone does not imply
   // the provider can also reduce partials.
   if (std::any_of(plan.steps.begin(), plan.steps.end(),

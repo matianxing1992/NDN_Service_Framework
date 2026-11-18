@@ -122,6 +122,11 @@ struct NativeExecutionStepSpec
 inline constexpr const char* NATIVE_STEP_PLAN_VERSION_V1 = "step-plan-v1";
 /** Capability value a Provider must advertise to accept a step plan. */
 inline constexpr const char* NATIVE_STEP_PLAN_CAPABILITY_V1 = "step-plan-v1";
+/** Step-plan version that admits per-stage degrees, including degree-one stages.
+ * It describes the step/layout contract only; it is not the plan's outer version. */
+inline constexpr const char* NATIVE_STEP_PLAN_VERSION_V2 = "step-plan-v2";
+/** Capability value a Provider must advertise to accept a v2 step plan. */
+inline constexpr const char* NATIVE_STEP_PLAN_CAPABILITY_V2 = "step-plan-v2";
 /** Capability value a Provider must advertise to perform a local SUM. */
 inline constexpr const char* NATIVE_SUM_CAPABILITY_V1 = "sum-v1";
 
@@ -320,6 +325,21 @@ struct NativeStepCommunicationCost
   std::uint64_t unknownTransferTensors = 0;
 };
 
+/** One logical pipeline stage and the units that execute it. The stage's degree is
+ * its member count; a unit belongs to exactly one stage.
+ */
+struct NativeStageLayout
+{
+  std::string stageId;
+  /** Digest of the admitted source region this stage covers; opaque to consumers. */
+  std::string sourceRegionDigest;
+  std::vector<std::string> unitRoleIds;
+
+  std::uint64_t degree() const { return unitRoleIds.size(); }
+  void validate() const;
+  std::string canonicalJson() const;
+};
+
 struct NativeExecutionPlan
 {
   int version = 1;
@@ -343,10 +363,19 @@ struct NativeExecutionPlan
   std::string stepPlanVersion;
   // Tensor-parallel degree this plan was sealed for. 1 means pipeline; the
   // value is part of the sealed contract and is never chosen by a Provider.
+  // For a v2 plan this is the derived maximum of the per-stage degrees, not an
+  // execution geometry of its own.
   std::uint64_t tensorDegree = 1;
+  // Per-stage unit membership. Empty for every v1 plan and for legacy whole-role
+  // plans; a v2 plan may leave it empty only when it has a single implied stage.
+  std::vector<NativeStageLayout> stageLayout;
 
   /** Reject malformed step templates, dependency bindings and version skew. */
   void validateSteps() const;
+  /** Sealed tensor degree of the stage that owns `role`; falls back to tensorDegree
+   * for a plan without a stage layout. A unit's geometry must never be read from the
+   * plan-wide maximum, because stages in one plan may have different degrees. */
+  std::uint64_t degreeForRole(const std::string& role) const;
 };
 
 /** Sum every REMOTE_STEP input of a sealed step plan. A plan without steps has

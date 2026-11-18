@@ -39,6 +39,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/native-dependency-bus.hpp"
 
 #include <onnx/onnx_pb.h>
 #include <google/protobuf/text_format.h>
@@ -317,8 +318,10 @@ BOOST_AUTO_TEST_CASE(StepsWithoutVersionOrWithDegreeOneAreRejected)
   degreeOne.tensorDegree = 1;
   BOOST_CHECK_THROW(degreeOne.validateSteps(), std::invalid_argument);
 
+  // Step-plan v2 is a real version now (Spec 242 T001 admits per-stage degrees and
+  // degree-one stages), so the unknown-version case uses a name no reader defines.
   auto unknownVersion = twoRankPlan();
-  unknownVersion.stepPlanVersion = "step-plan-v2";
+  unknownVersion.stepPlanVersion = "step-plan-v3";
   BOOST_CHECK_THROW(unknownVersion.validateSteps(), std::invalid_argument);
 
   auto degreeWithoutSteps = twoRankPlan();
@@ -6369,6 +6372,51 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(GenericStateBindingsDoNotRequireAttentionNames)
+{
+  NativeSubgraphEntryContract recurrent;
+  recurrent.entryId = "recurrent-cell";
+  recurrent.unitId = "arbitrary-unit";
+  recurrent.inputNames = {"input", "carry"};
+  recurrent.outputNames = {"result", "next-carry"};
+  recurrent.stateSuccessorByInputGraphName = {{"carry", "next-carry"}};
+  auto stateless = recurrent;
+  stateless.entryId = "stateless-cell";
+  stateless.stateSuccessorByInputGraphName.clear();
+  std::map<std::string, std::shared_ptr<FakeStatefulRunner>> children;
+  NativeEntryRunner runner({stateless, recurrent},
+    [&children] (const NativeModelRunnerSpec& spec) {
+      auto child = std::make_shared<FakeStatefulRunner>(true);
+      children.emplace(spec.role, child);
+      return child;
+    },
+    [] (const NativeSubgraphEntryContract& entry) {
+      NativeModelRunnerSpec spec;
+      spec.role = entry.entryId;
+      return spec;
+    });
+  BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  BOOST_CHECK(runner.supportsConversationStateTransfer());
+  const auto state = runner.promoteSessionStateToConversation("session", "conversation");
+  BOOST_REQUIRE(state.has_value());
+  BOOST_CHECK_EQUAL(state->logicalBytes, 4096u);
+  BOOST_CHECK_EQUAL(state->opaque.role, "arbitrary-unit");
+  BOOST_CHECK_EQUAL(children.at("stateless-cell")->promoteCalls, 0u);
+  BOOST_CHECK_EQUAL(children.at("recurrent-cell")->promoteCalls, 1u);
+  BOOST_CHECK(runner.restoreConversationState(*state, "restored"));
+  BOOST_CHECK(runner.releaseConversationState(*state));
+  runner.releaseSessionState("restored");
+  BOOST_CHECK_EQUAL(children.at("stateless-cell")->releaseCalls, 1u);
+  BOOST_CHECK_EQUAL(children.at("recurrent-cell")->releaseCalls, 1u);
+
+  auto invalid = recurrent;
+  invalid.stateSuccessorByInputGraphName["carry"] = "missing";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+  invalid = recurrent;
+  invalid.stateSuccessorByInputGraphName["input"] = "next-carry";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
 {
   // C6: INIT/MLP/HEAD cannot answer a state question, and a unit that reported "no
@@ -6386,6 +6434,11 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
     entry.kind = spec.second;
     entry.inputNames = {"in"};
     entry.outputNames = {"out"};
+    if (entry.kind == "ATTN") {
+      const auto layer = entry.entryId.substr(entry.entryId.rfind('/') + 1);
+      entry.inputNames.push_back("past_key_values." + layer + ".key");
+      entry.stateOutputGraphNames.push_back("present." + layer + ".key");
+    }
     entry.relativeGraphPath = "entry.onnx";
     entry.graphDigest = "sha256:" + std::string(64, 'a');
     entry.validate();
@@ -6429,6 +6482,15 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
     // Release reaches every child, including the ones without state.
     runner.releaseSessionState("state-session");
     BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  }
+
+  // A diagnostic kind alone does not establish state ownership.
+  {
+    auto entry = table.front();
+    entry.kind = "ATTN";
+    const auto runner = makeRunner({entry}, true);
+    BOOST_CHECK(!runner.supportsOpaqueStateHandles());
+    BOOST_CHECK(!runner.supportsConversationStateTransfer());
   }
 
   // A non-stateful attention child makes the whole unit non-stateful: a partial
@@ -7492,6 +7554,24 @@ BOOST_AUTO_TEST_CASE(ShardedGenerationContractSatisfiesTheSealerRequirements)
   sealed.tokenizerDigest = "sha256:" + std::string(64, 'b');
   sealed.eosTokenIds = {2};
   const auto contract = qwen::buildQwenTpGenerationContract(plan, shape, sealed);
+
+  // Exercise the actual ordinary-runner consumer, not just the generation wire schema.
+  // A tensor name is not a policy identifier, even when both contracts serialize it.
+  StatefulOnnxIoContractV1 positionIo;
+  positionIo.inputNames = {contract.tokenInputName, contract.attentionMaskInputName,
+                           contract.positionIdsInputName};
+  CausalPositionInputContractV1 position;
+  position.policy = contract.positionInputPolicy;
+  position.attentionMaskInputName = contract.attentionMaskInputName;
+  position.positionIdsInputName = contract.positionIdsInputName;
+  position.cachePositionInputName = contract.cachePositionInputName;
+  BOOST_CHECK_NO_THROW(position.validate(positionIo));
+  auto unknownPolicy = position;
+  unknownPolicy.policy = "position_ids";
+  BOOST_CHECK_THROW(unknownPolicy.validate(positionIo), std::invalid_argument);
+  auto missingPosition = positionIo;
+  missingPosition.inputNames.pop_back();
+  BOOST_CHECK_THROW(position.validate(missingPosition), std::invalid_argument);
 
   BOOST_CHECK(contract.enabled);
   BOOST_CHECK_EQUAL(contract.mode, std::string("TOKEN_STREAMING"));
@@ -9995,108 +10075,8 @@ namespace {
  * at the step that needs it, which is the exchange the coordinator is supposed to enable.
  * A promise per waiter means a late publisher still satisfies an early waiter.
  */
-class PartialBus
-{
-public:
-  std::future<TensorBundle>
-  subscribe(std::string scope)
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    const auto published = m_published.find(scope);
-    std::promise<TensorBundle> promise;
-    auto future = promise.get_future();
-    if (published != m_published.end()) {
-      promise.set_value(published->second);
-    }
-    else {
-      m_waiters[std::move(scope)].push_back(std::move(promise));
-    }
-    return future;
-  }
-
-  void
-  publish(const std::string& scope, const TensorBundle& bundle)
-  {
-    std::vector<std::promise<TensorBundle>> waiters;
-    {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_published[scope] = bundle;
-      const auto found = m_waiters.find(scope);
-      if (found != m_waiters.end()) {
-        waiters = std::move(found->second);
-        m_waiters.erase(found);
-      }
-    }
-    for (auto& waiter : waiters) waiter.set_value(bundle);
-  }
-
-  std::size_t publishedCount() const
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_published.size();
-  }
-
-  /** A copy of what was published under one scope.
-   *
-   * The bus already keeps the latest bundle per scope for late subscribers; returning a copy lets a
-   * test compare an intermediate a step published against the unsplit export's same intermediate,
-   * which is the only way to locate where a chain of steps first diverges from the reference.
-   */
-  std::optional<TensorBundle>
-  published(const std::string& scope) const
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    const auto found = m_published.find(scope);
-    if (found == m_published.end()) return std::nullopt;
-    return found->second;
-  }
-
-  std::vector<std::string>
-  publishedScopes() const
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::vector<std::string> scopes;
-    scopes.reserve(m_published.size());
-    for (const auto& item : m_published) scopes.push_back(item.first);
-    return scopes;
-  }
-
-private:
-  mutable std::mutex m_mutex;
-  std::map<std::string, TensorBundle> m_published;
-  std::map<std::string, std::vector<std::promise<TensorBundle>>> m_waiters;
-};
-
-/** DependencyIo that moves contributions over a shared bus instead of a network. */
-class BusDependencyIo final : public DependencyIo
-{
-public:
-  explicit BusDependencyIo(std::shared_ptr<PartialBus> bus)
-    : m_bus(std::move(bus))
-  {
-  }
-
-  std::future<TensorBundle>
-  prefetchInput(const std::string&, const DependencyEdge& edge) override
-  {
-    ++prefetchCalls;
-    return m_bus->subscribe(edge.scope);
-  }
-
-  void
-  publishOutput(const std::string&, const DependencyEdge& edge,
-                const TensorBundle& bundle) override
-  {
-    ++publishCalls;
-    m_bus->publish(edge.scope, bundle);
-  }
-
-  std::atomic<std::size_t> prefetchCalls{0};
-  std::atomic<std::size_t> publishCalls{0};
-
-private:
-  std::shared_ptr<PartialBus> m_bus;
-};
+using tests::PartialBus;
+using tests::BusDependencyIo;
 
 } // namespace
 
@@ -15851,9 +15831,14 @@ BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
   BOOST_REQUIRE(withoutTable.has_value());
   BOOST_CHECK_EQUAL(*withoutTable, std::string("DI_PROVIDER_ASSEMBLY_RUNNER_MISMATCH"));
 
-  // With a table and its root the same spec is accepted, which is the sharded case.
+  // A production wrapper also binds the admitted child backend and owning adapter.
   retargeted.metadata["tensorParallelEntries"] = R"([{"entryId":"S0R0/ATTN/0"}])";
   retargeted.metadata["tensorParallelEntryRoot"] = "/var/tmp/spec224-publish/S0R0";
+  const auto withoutChild = validateNativePreparedRunnerSpec(projection, retargeted);
+  BOOST_REQUIRE(withoutChild);
+  BOOST_CHECK_EQUAL(*withoutChild, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
+  assembly.adapterId = "qwen";
+  retargeted.metadata["tensorParallelChildBackend"] = assembly.backend;
   BOOST_CHECK_MESSAGE(!validateNativePreparedRunnerSpec(projection, retargeted).has_value(),
     "a sharded spec with an entry table was still refused");
 }
@@ -18922,6 +18907,11 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
     entry.kind = spec.second;
     entry.inputNames = {"in"};
     entry.outputNames = {"out"};
+    if (entry.kind == "ATTN") {
+      const auto layer = entry.entryId.substr(entry.entryId.rfind('/') + 1);
+      entry.inputNames.push_back("past_key_values." + layer + ".key");
+      entry.stateOutputGraphNames.push_back("present." + layer + ".key");
+    }
     entry.relativeGraphPath = "entry.onnx";
     entry.graphDigest = "sha256:" + std::string(64, 'a');
     entry.validate();

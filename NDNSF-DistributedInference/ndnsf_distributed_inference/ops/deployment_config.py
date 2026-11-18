@@ -634,6 +634,7 @@ def _translate_native(config, by_kind, resolve):
                 "artifact-cache-dir", "artifact-cache-max-mib", "statistics-file",
                 "cache-compatibility-source-dir",
                 "allow-selection-generation-options", "sample-kv-state-values",
+                "capture-complete-kv-state", "capture-logits-output",
                 "enable-admission-lease", "require-execution-lease", "execution-policy", "admission-lease-ttl-ms",
                 "grant-authority-public-key", "recipient-key-map", "repo-fetch-timeout-ms",
                 "assembly-timeout-ms", "core-work-timeout-ms", "core-svs-periodic-sync-ms",
@@ -662,9 +663,17 @@ def _translate_native(config, by_kind, resolve):
                 selected = provider_recipient_map(parameters["recipient-key-map"], actor["identity"])
                 resolve(selected[actor["identity"]], "provider.recipient-private-key", exists=True)
             for key in ("offer-can-provision", "offer-has-model", "allow-selection-generation-options",
-                        "enable-admission-lease", "require-execution-lease", "sample-kv-state-values"):
+                        "enable-admission-lease", "require-execution-lease", "sample-kv-state-values",
+                        "capture-complete-kv-state"):
                 if key in parameters:
                     _boolean(parameters[key], "provider.parameters." + key)
+            if parameters.get("sample-kv-state-values") and parameters.get("capture-complete-kv-state"):
+                _fail("provider.parameters", "choose one KV qualification mode")
+            if "capture-logits-output" in parameters:
+                field = "provider.parameters.capture-logits-output"
+                name = _string(parameters["capture-logits-output"], field)
+                if not parameters.get("capture-complete-kv-state") or len(name.encode()) > 1024:
+                    _fail(field, "requires complete KV mode and a tensor name of at most 1024 bytes")
             for key in ("permission-wait-ms", "workers", "handler-threads", "ack-threads",
                         "admission-lease-ttl-ms", "repo-fetch-timeout-ms", "conversation-retention-ms",
                         "assembly-timeout-ms", "artifact-cache-max-mib"):

@@ -17,6 +17,12 @@
 #include <utility>
 #include <vector>
 
+namespace ndnsf::di {
+struct NativeOnnxGraphInspection;
+struct NativeSourceRegionBoundary;
+struct NativeStateTensorMapping;
+}
+
 namespace ndnsf::di::qwen {
 
 /** Block width of the frozen weight-only INT4 export (`MatMulNBits`). */
@@ -104,15 +110,27 @@ struct QwenRankLayerSlices
  * and up), while O and down split the reduction channels and therefore emit a
  * full-width `D` partial that the runtime sums.
  *
- * @param shape  Verified shape facts.
- * @param degree Tensor-parallel degree (first acceptance: 2).
- * @param rank   Rank in `[0, degree)`.
- * @returns The initializer slices this rank owns, in layer order.
- * @throws std::invalid_argument for a shape/degree/rank that cannot split exactly.
+ * @param shape       Verified shape facts.
+ * @param degree      Tensor-parallel degree (first acceptance: 2).
+ * @param rank        Rank in `[0, degree)`.
+ * @param layerBegin  First decoder layer this unit owns, inclusive.
+ * @param layerEnd    One past the last layer this unit owns; must be <= shape.layers.
+ * @returns The initializer slices this rank owns, in layer order. Each entry keeps its
+ *          global layer index, so a caller may address a region of the model without
+ *          renumbering the layers it left out.
+ * @throws std::invalid_argument for a shape/degree/rank/range that cannot split exactly.
  */
 std::vector<QwenRankLayerSlices>
 planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
-                     std::uint64_t rank);
+                     std::uint64_t rank, std::uint64_t layerBegin,
+                     std::uint64_t layerEnd);
+
+/** Whole-model overload: every layer the shape declares. */
+inline std::vector<QwenRankLayerSlices>
+planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree, std::uint64_t rank)
+{
+  return planQwenTensorSlices(shape, degree, rank, 0, shape.layers);
+}
 
 /**
  * Slice one packed INT4 initializer along the plan's axis.
@@ -178,7 +196,8 @@ struct QwenNBitsNode
  * This is the only place TP shape facts come from. It parses the graph on the
  * caller's behalf so `planQwenTensorSlices` never trusts a model name or a
  * hand-written constant: an unsupported export (extra operator, non-INT4
- * bits, block size mismatch, zero-point/g_idx/bias) is rejected by name.
+ * bits, block size mismatch, zero-point/g_idx) is rejected by name. Bias is reported;
+ * sharded entry adaptation rejects it when no partition rule exists for the projection.
  *
  * @param modelBytes Serialized ONNX bytes (external data may stay on disk).
  * @param layers     Expected transformer layer count; 0 disables the check.
@@ -356,6 +375,17 @@ struct QwenTpEntryContract
     return !relativeGraphPath.empty() && !graphDigest.empty();
   }
 };
+
+/** Describe region entry ports from authenticated source inspection, without model files.
+ *
+ * Shares classification and binding with materialization. The returned entries have no
+ * graph path/digest and cannot be loaded by a runner. Restored inspection is supported.
+ */
+std::vector<QwenTpEntryContract>
+describeQwenTpEntryContracts(const NativeOnnxGraphInspection& source, std::uint64_t layers,
+                             const std::vector<QwenTpUnit>& units,
+                             std::uint64_t layerBegin, std::uint64_t layerEnd,
+                             const std::string& egressRole);
 
 /** Generation contract a sharded plan needs so its egress unit can sample.
  *
@@ -591,6 +621,22 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const QwenTpAssemblyControl* control);
 
+/** Assemble only the entries that belong to one stage's layer window.
+ *
+ * Accepts either the complete source or its checked region subgraph, preserving global
+ * layer numbers. Only the window's entries are written and charged to its byte budget:
+ * INIT belongs to the first stage and HEAD to the last stage.
+ *
+ * @param layerBegin First layer the stage owns, inclusive.
+ * @param layerEnd   One past the last layer the stage owns.
+ */
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         std::uint64_t layerBegin, std::uint64_t layerEnd);
+
 /** Assemble a unit's table with a known head owner.
  *
  * Classification is per rank but the head belongs to one unit only. Without knowing which
@@ -717,7 +763,7 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  * directory, which a nested layout would produce.
  *
  * @param spec   Rank spec produced by assembly; rewritten in place.
- * @param layers Number of transformer layers the rank graph carries.
+ * @param layers Exclusive global layer end of the assembled source region.
  * @param steps  Sealed steps this unit must be able to execute.
  * @param rankedByteBudget Total bytes this rank may occupy. It is one budget for
  *        the whole rank, per D6, not a limit applied afresh to each entry.
@@ -726,8 +772,21 @@ verifyQwenTpRankEntries(const std::filesystem::path& root, const std::string& un
  *        pipeline role is unaffected.
  * @param tensorRank Rank of this unit within `tensorDegree`.
  * @param control Existing assembly deadline and cancellation owner, if supplied.
+ * @param layerBegin First global layer in the assembled source region. `layers`
+ *        is its exclusive global end.
  * @throws std::runtime_error when the rank artifact cannot be read or split.
  */
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget,
+                        std::uint64_t tensorDegree,
+                        std::uint64_t tensorRank,
+                        const std::string& egressRole,
+                        const QwenTpAssemblyControl* control,
+                        std::uint64_t layerBegin);
+
+/** Full-model compatibility overload: retains the original API and symbol. */
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::vector<NativeExecutionStepSpec>& steps,
@@ -812,6 +871,23 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
                     const std::string& entryPrefix,
                     const std::vector<QwenTpUnit>& units);
 
+/** Build the template for caller-supplied units that own one layer range.
+ *
+ * A stage of a hybrid layout holds a shard of its own layers, not of every layer, so
+ * the range is explicit: every unit must describe exactly `[layerBegin, layerEnd)`,
+ * the range must be inside the model and non-empty, and the per-rank slice plans then
+ * cover only that window.
+ *
+ * @param layerBegin First layer the units own, inclusive.
+ * @param layerEnd   One past the last layer the units own.
+ * @throws std::invalid_argument when the units or the range are inconsistent.
+ */
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix,
+                    const std::vector<QwenTpUnit>& units,
+                    std::uint64_t layerBegin, std::uint64_t layerEnd);
+
 /**
  * Project one template into sealed execution steps and dependencies.
  *
@@ -826,6 +902,114 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
  * @param entryPrefix Prefix for generated recipe entry ids.
  * @param egressRole  Role that owns the final response.
  */
+/** First and last decoder layer a stage's steps cover.
+ *
+ * Derived from the step ids (`<unit>/<KIND>/<layer>`), which the adapter writes itself, so a
+ * caller wiring two stages together never has to re-derive the window from a parallel
+ * structure that could disagree with the steps.
+ *
+ * @throws std::invalid_argument when the plan has no layer-bearing step.
+ */
+std::pair<std::uint64_t, std::uint64_t>
+stageLayerWindow(const ndnsf::di::NativeExecutionPlan& stage);
+
+/** The unit that publishes a stage's collapsed output for the next stage.
+ *
+ * v1 rule: the first unit of the stage's layout row. A single producer keeps the boundary
+ * activation one object; every unit of the next stage consumes it.
+ *
+ * @throws std::invalid_argument when the plan has no single-row layout.
+ */
+std::string
+boundaryPublisher(const ndnsf::di::NativeExecutionPlan& stage);
+
+/** Merge per-stage projections into one plan.
+ *
+ * Each stage is projected on its own (its units own a layer window and its own degree), and
+ * the layout rows of the merged plan are exactly those stages in order. Roles, steps and
+ * dependencies concatenate in stage order; the plan-wide degree is the widest stage, which
+ * is what `validateSteps()` derives and what a consumer reads as the layout's summary.
+ *
+ * @throws std::invalid_argument when a stage is not a single-row v2 plan, when two stages
+ *         share an id, or when two stages claim the same unit.
+ */
+ndnsf::di::NativeExecutionPlan
+mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages);
+
+/** One stage's sealed window and identity for a hybrid projection.
+ *
+ * `sourceRegionDigest` is the digest of the admitted source region the stage covers; it
+ * takes part in the plan's stage layout, so two layouts over the same units cannot
+ * collide.
+ */
+struct QwenTpStageWindow
+{
+  std::string stageId;
+  std::string sourceRegionDigest;
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+  // A later stage preserves both inputs of the source graph's skip normalization:
+  // the previous layer's post-attention residual and its complete MLP reduction.
+  // Both are published by the declared upstream unit. Empty for the first stage.
+  std::string upstreamUnit;
+  std::string upstreamStepId;
+  std::string upstreamSlotId;
+  std::string upstreamMlpStepId;
+  std::string upstreamMlpSlotId;
+};
+
+/** Build one candidate from several projected stages.
+ *
+ * Each stage is projected with its own window (and, from the second on, its upstream
+ * producer), the plans are merged, and the candidate carries every unit with the geometry of
+ * its own stage. Source-graph ownership follows the windows: a node belongs to the stage whose
+ * layer range contains it.
+ *
+ * @throws std::invalid_argument when the windows are not contiguous from layer zero, a stage
+ *         has no units, a unit has no artifact/requirement, or a source node falls outside
+ *         every stage.
+ */
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
+                         const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit);
+
+/** Build with actual source ports before sealing; preserves the legacy metadata overload. */
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
+                         const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source);
+
+/** Synchronous query of the frozen source owner; never retained by a plan. */
+using QwenTpSourceRegionPort = std::function<NativeSourceRegionBoundary(
+  const std::vector<std::string>&, const std::vector<std::string>&)>;
+
+/** Lower singleton regions as ordinary whole-graph CALLs using checked source boundaries. */
+ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidate(const ndnsf::di::NativeGraphSnapshot& graph,
+                         const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source,
+                         const QwenTpSourceRegionPort& regionPort,
+                         const NativeStateTensorMapping& stateMapping);
+
+
 void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                   std::uint64_t degree, const std::string& entryPrefix,
@@ -844,6 +1028,20 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   const std::string& egressRole,
                   const std::vector<QwenTpUnit>& units);
 
+/** Project one stage of a hybrid layout.
+ *
+ * The units own `window.layerBegin..layerEnd` only, so the template is built for that
+ * window and the plan is sealed as `step-plan-v2` with a single stage layout entry naming
+ * the units. A plan-wide degree remains the stage's own degree: the other stages of the
+ * layout are sealed by their own projections.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const QwenTpStageWindow& window);
+
 /**
  * Project against caller-verified entries.
  *
@@ -861,6 +1059,20 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
                   std::uint64_t degree, const std::string& egressRole,
                   const std::vector<QwenTpUnit>& units,
                   const std::vector<QwenTpEntryContract>& entries);
+
+/** Project a region against verified source or materialized entry bindings.
+ *
+ * Unlike the legacy metadata projection, CALL ports must have actual graph bindings.
+ * A later region may omit INIT when no declared input needs it. Missing producers,
+ * unsupported bindings and unreferenced entries are rejected; inputs are never invented.
+ * The merged plan must be validated when the region has upstream dependencies.
+ */
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const std::vector<QwenTpEntryContract>& entries,
+                  const QwenTpStageWindow& window);
 
 } // namespace ndnsf::di::qwen
 

@@ -1,8 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
@@ -381,7 +383,63 @@ RegistryNativeModelRunnerFactory::create(const NativeModelRunnerSpec& spec) cons
     throw std::out_of_range("no NativeModelRunner backend registered: " +
                             spec.backend);
   }
-  auto runner = found->second(spec);
+  std::shared_ptr<NativeModelRunner> runner;
+  if (spec.entryContract) {
+    const auto& entry = *spec.entryContract;
+    entry.validate();
+    if (entry.unitId != spec.role || entry.relativeGraphPath != "model.onnx" ||
+        std::filesystem::path(spec.path).filename() != entry.relativeGraphPath ||
+        entry.graphDigest != spec.metadata.at("assembledModelDigest"))
+      throw std::invalid_argument("whole-region runner entry differs from its assembled artifact");
+    auto child = spec;
+    child.entryContract.reset();
+    child.role = entry.entryId;
+    child.metadata["forceOutputBundle"] = "true";
+    for (std::size_t i = 0; i < entry.inputNames.size(); ++i) {
+      child.metadata["inputScope." + entry.inputNames[i]] = entry.inputNames[i];
+      child.metadata["inputScope." + std::to_string(i)] = entry.inputNames[i];
+    }
+    for (std::size_t i = 0; i < entry.outputNames.size(); ++i) {
+      child.metadata["outputScope." + entry.outputNames[i]] = entry.outputNames[i];
+      child.metadata["outputScope." + std::to_string(i)] = entry.outputNames[i];
+    }
+    if (!entry.stateSuccessorByInputGraphName.empty()) {
+      std::string inputs;
+      std::string outputs;
+      std::string successors;
+      for (const auto& pair : entry.stateSuccessorByInputGraphName) {
+        if (!inputs.empty()) {
+          inputs += ',';
+          outputs += ',';
+          successors += ',';
+        }
+        inputs += pair.first;
+        outputs += pair.second;
+        successors += pair.first + '=' + pair.second;
+      }
+      child.metadata["statefulModel"] = "true";
+      child.metadata["stateInputNames"] = std::move(inputs);
+      child.metadata["stateOutputNames"] = std::move(outputs);
+      child.metadata["stateSuccessorMap"] = std::move(successors);
+    }
+    else {
+      for (const auto* key : {"statefulModel", "stateInputNames", "stateOutputNames",
+                              "stateSuccessorMap", "kvTensorMap"})
+        child.metadata.erase(key);
+    }
+    runner = std::make_shared<NativeEntryRunner>(
+      std::vector<NativeSubgraphEntryContract>{entry},
+      [creator = found->second] (const NativeModelRunnerSpec& childSpec) {
+        auto childRunner = creator(childSpec);
+        if (!childRunner)
+          throw std::logic_error("NativeModelRunner backend returned null: " + childSpec.backend);
+        return childRunner;
+      },
+      [&child] (const NativeSubgraphEntryContract&) { return child; });
+  }
+  else {
+    runner = found->second(spec);
+  }
   if (!runner) {
     throw std::logic_error("NativeModelRunner backend returned null: " +
                            spec.backend);

@@ -201,11 +201,15 @@ Reuse v4FallbackReuseCost(const NativeSelectionRoleV3& role,
                           double, double, double, std::string, std::string, std::string>;
 
 std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
-  const NativeObservedProviderOfferV3& offer, std::uint64_t nowMs,
+  const NativeObservedProviderOfferV3& offer,
+  const std::vector<std::string>& requiredCapabilities, std::uint64_t nowMs,
   const ExtensionControl* control, const NativeJson* v4FallbackOffer = nullptr)
 {
   std::vector<Cost> choices;
   if (control) control->requireActive();
+  if (!std::all_of(requiredCapabilities.begin(), requiredCapabilities.end(),
+        [&offer] (const auto& capability) { return contains(offer.capabilities, capability); }))
+    return choices;
       if (!contains(offer.acceptedRoles, role.role) ||
           (!contains(offer.backends, role.backend) && !contains(offer.backends, role.backend + "-cpu") &&
            !contains(offer.backends, role.backend + "-cuda"))) return choices;
@@ -372,7 +376,8 @@ NativeFixedProviderPlacement::proposeRolesImpl(
     });
     if (admitted == offers.end())
       throw NativeNoFeasiblePlacement("fixed placement Provider was not admitted: " + fixed->second);
-    const auto choices = feasibleChoices(role, admitted->observation(), nowMs, control);
+    const auto choices = feasibleChoices(role, admitted->observation(),
+      context.requiredExecutionCapabilities, nowMs, control);
     if (choices.empty())
       throw NativeNoFeasiblePlacement("fixed placement Provider is not feasible for role " + key);
     const auto selected = *std::min_element(choices.begin(), choices.end());
@@ -476,7 +481,8 @@ NativeRolePlacementProposalV3 NativePreSplitFirstPlacement::proposeRolesImpl(
       if (control) control->requireActive();
       const auto& offer = admitted.observation();
       const auto v4Offer = v4OfferByProvider.find(offer.provider);
-      const auto eligible = feasibleChoices(role, offer, nowMs, control,
+      const auto eligible = feasibleChoices(role, offer, context.requiredExecutionCapabilities,
+        nowMs, control,
         v4Offer == v4OfferByProvider.end() ? nullptr : v4Offer->second);
       for (const auto& choice : eligible) {
         if (control) control->requireActive();
@@ -584,7 +590,8 @@ void validateRolePlacementReferences(
       return o.observation().provider == assignment->second;
     });
     if (admitted == offers.end()) throw std::invalid_argument("V3 proposal Provider was not admitted");
-    const auto choices = feasibleChoices(**original, admitted->observation(), nowMs, nullptr);
+    const auto choices = feasibleChoices(**original, admitted->observation(),
+      proposal.context.requiredExecutionCapabilities, nowMs, nullptr);
     const auto device = role.deviceSet.empty() ? "cpu" : role.deviceSet.front();
     if (device != "cpu" && !usedDevices.insert(std::make_pair(assignment->second, device)).second)
       throw std::invalid_argument("V3 proposal reuses an exclusive Provider device");
@@ -1691,7 +1698,8 @@ NativeRolePlacementProposalV3 NativeObservationAwarePlacementV4::proposeRolesImp
       for (const auto& admitted : offers) {
         requireV4SearchActive(control);
         const auto& offer = admitted.observation();
-        const auto feasible = feasibleChoices(role, offer, nowMs, nullptr);
+        const auto feasible = feasibleChoices(role, offer,
+          context.requiredExecutionCapabilities, nowMs, nullptr);
         for (const auto& choice : feasible) {
           const auto& device = std::get<9>(choice);
           if (device != "cpu" && state.usedDevices.count(
