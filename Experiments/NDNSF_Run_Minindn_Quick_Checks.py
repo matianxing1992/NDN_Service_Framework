@@ -67,11 +67,6 @@ def fidelity_declaration(check: QuickCheck) -> dict[str, object]:
         "repo-quick",
         "di-minindn-native",
         "di-llama-server-minindn",
-        "di-llm-pipeline-minindn",
-        "di-llm-transformers-minindn",
-        "di-llm-transformers-benchmark",
-        "di-llm-qwen-minindn",
-        "di-llm-qwen-onnx-delta-minindn",
     }:
         # These launch real processes/MiniNDN, but they do not implement the
         # complete Spec 165 multi-prompt/token/lineage evidence contract.
@@ -264,59 +259,6 @@ def checks() -> dict[str, QuickCheck]:
             timeout_s=300,
             description="DI Qwen GGUF + llama-server repo-backed MiniNDN smoke; slower optional check",
         ),
-        "di-llm-pipeline-minindn": QuickCheck(
-            name="di-llm-pipeline-minindn",
-            command=(
-                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
-                "--case", "llm-pipeline-minindn",
-            ),
-            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-minindn",
-            timeout_s=300,
-            description="DI distributed LLM pipeline MiniNDN smoke with local/distributed timing; slower optional check",
-        ),
-        "di-llm-transformers-minindn": QuickCheck(
-            name="di-llm-transformers-minindn",
-            command=(
-                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
-                "--case", "llm-pipeline-transformers-minindn",
-            ),
-            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-transformers-minindn",
-            timeout_s=360,
-            description="DI tiny Transformers block pipeline MiniNDN smoke; slower optional check",
-        ),
-        "di-llm-transformers-benchmark": QuickCheck(
-            name="di-llm-transformers-benchmark",
-            command=(
-                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
-                "--case", "llm-pipeline-transformers-benchmark",
-            ),
-            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-transformers-benchmark",
-            timeout_s=420,
-            description="DI tiny Transformers block pipeline repeated MiniNDN benchmark; slower optional check",
-        ),
-        "di-llm-qwen-minindn": QuickCheck(
-            name="di-llm-qwen-minindn",
-            command=(
-                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
-                "--case", "llm-pipeline-qwen-minindn",
-            ),
-            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-qwen-minindn",
-            timeout_s=720,
-            description="DI real Qwen HF stage-package pipeline MiniNDN proof; slow optional check",
-        ),
-        "di-llm-qwen-onnx-delta-minindn": QuickCheck(
-            name="di-llm-qwen-onnx-delta-minindn",
-            command=(
-                "python3", "Experiments/NDNSF_DI_Run_Minindn_Regressions.py",
-                "--case", "llm-pipeline-qwen-onnx-delta-minindn",
-            ),
-            marker="NDNSF_DI_REGRESSION_SUITE_OK case=llm-pipeline-qwen-onnx-delta-minindn",
-            timeout_s=720,
-            description=(
-                "DI Qwen ONNX context API MiniNDN regression: full context "
-                "then non-empty append delta, checked against local ONNX stages"
-            ),
-        ),
     }
 
 
@@ -383,9 +325,9 @@ def selected_checks(selection: str, include_di_minindn: bool) -> list[QuickCheck
     if include_di_minindn:
         names.append("di-minindn-native")
         names.append("di-llama-server-minindn")
-        names.append("di-llm-pipeline-minindn")
-        names.append("di-llm-transformers-minindn")
-        names.append("di-llm-qwen-onnx-delta-minindn")
+        # The old LlmPipeline MiniNDN cases are retired: that pipeline published through
+        # CollaborationArtifactApiBackend, which now raises SPEC192_COMPATIBILITY_V1, and the
+        # Repo/Qwen rewrites replaced its staging path with the native actors.
     return [all_checks[name] for name in names]
 
 
