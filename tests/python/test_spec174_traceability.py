@@ -6,6 +6,10 @@ from tools.spec174_traceability import build
 
 
 REPO = Path(__file__).resolve().parents[2]
+# The traceability document is local-only Spec material under the ignored `specs/` tree.
+pytestmark = pytest.mark.skipif(
+    not (REPO / "specs/174-ndnsf-di-verified-delivery/traceability.md").is_file(),
+    reason="requires specs/174-ndnsf-di-verified-delivery/traceability.md")
 
 
 def test_spec174_traceability_has_exact_requirement_inventory():

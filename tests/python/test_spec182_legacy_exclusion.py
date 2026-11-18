@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import pytest
 from pathlib import Path
 import json
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# Two cases assert on the local-only Spec 182 contract documents, which live in the git-ignored `specs/`
+# tree and are absent from this checkout. The rest check product behaviour and must keep running.
+MISSING_CONTRACT = not (ROOT / "specs/182-native-di-python-bindings").is_dir()
 
+
+def requires_contract(case):
+    return pytest.mark.skipif(
+        MISSING_CONTRACT, reason="requires the local Spec 182 contract documents")(case)
+
+
+@requires_contract
 def test_legacy_default_routes_are_explicitly_inventory_owned() -> None:
     design = (ROOT / "specs/182-native-di-python-bindings/contracts/code-design.md").read_text(
         encoding="utf-8")
@@ -116,6 +127,7 @@ def test_maintained_yolo_native_route_uses_repository_reference() -> None:
     assert "fetch/decrypt" in native_branch
 
 
+@requires_contract
 def test_legacy_runtime_removal_stays_blocked_by_manifest_consumers() -> None:
     manifest = json.loads(
         (ROOT / "specs/182-native-di-python-bindings/contracts/compatibility-manifest.json")

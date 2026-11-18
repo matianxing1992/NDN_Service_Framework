@@ -11,6 +11,10 @@ import yaml
 
 
 REPO = Path(__file__).resolve().parents[2]
+
+# These cases drive the registration contract and frozen toolchain from the local-only Spec 173
+# evidence tree, which is git-ignored and absent here; the lifecycle cases below need neither.
+MISSING_REGISTRATION = not (REPO / "specs/173-paper-submission-evidence").is_dir()
 RUNNER = REPO / "Experiments" / "paper_submission_campaign.py"
 REGISTRATION = (
     REPO / "specs/173-paper-submission-evidence/contracts/experiment-registration.yaml"
@@ -52,6 +56,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stdout)
         return json.loads((output / "dry-run-plan.json").read_text())
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_pilot_dry_run_expands_frozen_plan_without_execution(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "pilot"
@@ -70,6 +76,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
             )
             self.assertFalse(any(output.rglob("cell-result.json")))
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_confirmatory_dry_run_expands_every_registered_cell_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             plan = self.run_dry_run(Path(temporary) / "confirmatory", "confirmatory")
@@ -91,6 +99,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
                 },
             )
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_confirmatory_block_and_system_order_is_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -111,6 +121,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
                 if block_id.startswith("one-provider-baseline")
             ))
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_commands_preserve_registered_workload_and_mechanism_semantics(self):
         with tempfile.TemporaryDirectory() as temporary:
             plan = self.run_dry_run(Path(temporary) / "confirmatory", "confirmatory")
@@ -150,11 +162,15 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
             self.assertEqual(nsc[nsc.index("--rate-series") + 1], "100.0")
             self.assertEqual(nsc[nsc.index("--request-deadline-ms") + 1], "5000")
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_registration_is_frozen_before_plan_expansion(self):
         registration = yaml.safe_load(REGISTRATION.read_text())
         self.assertEqual(registration["status"], "refrozen-after-preimplementation-audit")
         self.assertIn("frozenAt", registration)
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_preflight_validates_frozen_toolchain_without_starting_minindn(self):
         completed = subprocess.run(
             [
@@ -265,6 +281,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
             self.assertFalse(valid)
             self.assertIn("terminal valid", reason)
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_run_cell_writes_terminal_hashes_and_refuses_overwrite(self):
         runner = load_runner_module()
         toolchain = json.loads(TOOLCHAIN.read_text())
@@ -309,6 +327,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
                     cell, "a" * 64, "b" * 64, toolchain, command_runner=fake_run
                 )
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_failed_member_invalidates_whole_block_without_retry(self):
         runner = load_runner_module()
         toolchain = json.loads(TOOLCHAIN.read_text())
@@ -348,6 +368,8 @@ class PaperSubmissionCampaignTests(unittest.TestCase):
             self.assertEqual(result["rerunScope"], "whole-matched-block")
             self.assertIn("--resume", result["rerunInstruction"])
 
+    @unittest.skipIf(MISSING_REGISTRATION,
+                        "requires specs/173-paper-submission-evidence registration")
     def test_valid_block_is_reusable_only_when_every_member_verifies(self):
         runner = load_runner_module()
         toolchain = json.loads(TOOLCHAIN.read_text())
