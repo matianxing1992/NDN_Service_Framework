@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 
+#include "ndn-service-framework/AbeHistoricalKeyRequest.hpp"
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
 #include "ndn-service-framework/AbePublicParametersArchive.hpp"
@@ -933,6 +934,60 @@ BOOST_AUTO_TEST_CASE(HistoricalPublicParametersBindTheOriginalObject)
   auto empty = entry;
   empty.publicParameters.clear();
   BOOST_CHECK(!buildHistoricalPublicParametersData(empty, identity, sign, refused));
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndExpiry)
+{
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "/SERVICE/ObjectDetection";
+  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+
+  // The canonical body survives a round trip and its digest names the request.
+  const auto body = encodeHistoricalKeyRequest(request);
+  HistoricalKeyRequest parsed;
+  BOOST_REQUIRE(decodeHistoricalKeyRequest(body, parsed));
+  BOOST_CHECK(parsed == request);
+  BOOST_CHECK_EQUAL(historicalKeyRequestDigest(request).size(), 71u);
+
+  const auto name = makeHistoricalKeyRequestName(request.controllerPrefix, request);
+  BOOST_CHECK_EQUAL(name.size(), 8u);
+  BOOST_CHECK_EQUAL(name.get(2).toUri(), std::string("NDNSF"));
+  BOOST_CHECK_EQUAL(name.get(3).toUri(), std::string("HISTORY"));
+  BOOST_CHECK_EQUAL(name.get(4).toUri(), std::string("DKEY"));
+  BOOST_CHECK_EQUAL(name.get(5).toUri(), std::string("1002"));
+  BOOST_CHECK_EQUAL(name.get(6).toUri(), std::string("3"));
+  BOOST_CHECK_EQUAL(name.get(7).toUri(), historicalKeyRequestDigest(request).substr(7));
+
+  const std::string keyBytes("dkey-bytes", 10);
+  const auto sign = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{7});
+  };
+  ndn::Data reply;
+  BOOST_REQUIRE(buildHistoricalKeyReply(request, keyBytes, 1'030'000, sign, reply));
+  BOOST_CHECK(reply.getName() == name);
+
+  HistoricalKeyReply accepted;
+  BOOST_CHECK(verifyHistoricalKeyReply(reply, request, 1'010'000, accepted));
+  BOOST_CHECK_EQUAL(accepted.keyBytes, keyBytes);
+  BOOST_CHECK_EQUAL(accepted.generation, request.generation);
+  BOOST_CHECK_EQUAL(accepted.expiresAtMs, 1'030'000u);   // capped by the reply budget
+  // An expired reply, a different recipient and a different generation must all be refused.
+  BOOST_CHECK(!verifyHistoricalKeyReply(reply, request, 1'030'000, accepted));
+  auto other = request;
+  other.recipientCertificate = ndn::Name("/user/KEY/2/self/v=1");
+  BOOST_CHECK(!verifyHistoricalKeyReply(reply, other, 1'010'000, accepted));
+  auto wrongGeneration = request;
+  wrongGeneration.generation = 1003;
+  BOOST_CHECK(!verifyHistoricalKeyReply(reply, wrongGeneration, 1'010'000, accepted));
+  // No key material means no reply worth accepting.
+  ndn::Data empty;
+  BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(), 1'030'000, sign, empty));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalDecryptionKeyIsMintedInTheLibraryFormat)
