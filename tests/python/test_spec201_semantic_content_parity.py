@@ -12,6 +12,8 @@ from ndnsf_distributed_inference import naming
 
 
 class SemanticContentParity(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("SPEC201_STATIC_PUBLICATION_CPP"),
+                         "requires SPEC201_STATIC_PUBLICATION_CPP: the native publication fixture binary")
     def test_all_content_families(self):
         binary = os.environ["SPEC201_STATIC_PUBLICATION_CPP"]
         result = subprocess.run([binary, "--run_test=PublishedContentNaming/SemanticWireCorpus"],

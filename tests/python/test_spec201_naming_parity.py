@@ -14,6 +14,8 @@ from ndnsf_distributed_inference import naming
 
 
 class NamingParity(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("SPEC201_NAMING_CPP"),
+                         "requires SPEC201_NAMING_CPP: the native naming fixture binary")
     def test_cpp_wire_and_crypto_transcript(self):
         binary = os.environ["SPEC201_NAMING_CPP"]
         result = subprocess.run([binary, "--run_test=ProducerDataNaming/PythonWireCorpus"],
@@ -41,6 +43,8 @@ class NamingParity(unittest.TestCase):
             self.assertIsNotNone(naming.parse_producer_data_name(name, producer))
             self.assertIsNone(naming.parse_producer_data_name(name, "/org/NDNSF"))
 
+    @unittest.skipUnless(os.environ.get("SPEC201_NAMING_CPP"),
+                         "requires SPEC201_NAMING_CPP: the native naming fixture binary")
     def test_readable_semantic_wire(self):
         binary = os.environ["SPEC201_NAMING_CPP"]
         result = subprocess.run([binary, "--run_test=ProducerDataNaming/ReadableSemanticNames"],
