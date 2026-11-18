@@ -318,7 +318,7 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
 
 NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,
-                            const std::optional<NativeFileProtectionKey>& protection)
+                            const NativeFileKeyResolver& resolve)
 {
   const auto magic = readPrivateFile(source, 65536);
   const std::string sealedMagic(SEALED_HANDLE_MAGIC);
@@ -326,21 +326,14 @@ nativeOpenStoredModelHandle(const std::filesystem::path& source,
     std::equal(sealedMagic.begin(), sealedMagic.end(), magic.begin());
   if (!isSealed)
     return nativeLoadStoredModelHandle(source);
-  if (!protection)
-    throw std::runtime_error("DI_STORED_MODEL_SEALED_WITHOUT_KEY");
-  const std::string wanted = protection->keyId;
-  const auto resolve = [&protection] (const std::string& keyId)
-      -> std::optional<std::vector<std::uint8_t>> {
-    if (protection->keyId == keyId)
-      return protection->key;
-    return std::nullopt;
-  };
+  if (!resolve)
+    throw std::runtime_error("DI_STORED_MODEL_SEALED_WITHOUT_RESOLVER");
   try {
     return nativeLoadSealedStoredModelHandle(source, resolve);
   }
   catch (const std::exception& error) {
-    throw std::runtime_error(std::string("DI_STORED_MODEL_SEALED_OPEN_FAILED: key=") +
-                             wanted + ": " + error.what());
+    // The envelope names its key; a resolver that does not know it fails here and says why.
+    throw std::runtime_error(std::string("DI_STORED_MODEL_SEALED_OPEN_FAILED: ") + error.what());
   }
 }
 

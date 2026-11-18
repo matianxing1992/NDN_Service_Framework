@@ -1296,16 +1296,64 @@ BOOST_FIXTURE_TEST_CASE(OpenDispatchesByEnvelopeGeneration, Fixture)
 
   PrivateFile sealed;
   nativeExportSealedStoredModelHandle(handle, sealed.path, protection);
-  const auto opened = nativeOpenStoredModelHandle(sealed.path, protection);
+  const auto resolver = [&protection] (const std::string& keyId)
+      -> std::optional<std::vector<std::uint8_t>> {
+    if (protection.keyId == keyId)
+      return protection.key;
+    return std::nullopt;
+  };
+  const auto opened = nativeOpenStoredModelHandle(sealed.path, resolver);
   BOOST_CHECK(opened.masterKey == handle.masterKey);
-  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, std::nullopt), std::runtime_error);
-  const NativeFileProtectionKey other{"file-key-9", key};
-  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, other), std::runtime_error);
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, NativeFileKeyResolver{}),
+                    std::runtime_error);
+  const auto unknownOnly = [] (const std::string&) -> std::optional<std::vector<std::uint8_t>> {
+    return std::nullopt;
+  };
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(sealed.path, unknownOnly), std::runtime_error);
 
   PrivateFile legacy;
   nativeExportStoredModelHandle(handle, legacy.path);
-  const auto imported = nativeOpenStoredModelHandle(legacy.path, std::nullopt);
+  const auto imported = nativeOpenStoredModelHandle(legacy.path, NativeFileKeyResolver{});
   BOOST_CHECK(imported.masterKey == handle.masterKey);
+}
+
+BOOST_FIXTURE_TEST_CASE(HandleWrittenBeforeAKeyRotationStillOpens, Fixture)
+{
+  // The exact wiring Runtime uses: seal with the ring's write key, open through the ring.
+  PrivateFile file;
+  const auto ring = file.directory / "ring";
+  {
+    std::ofstream out(ring);
+    out << "key-1 " << std::string(64, 'a') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  const auto writeKey = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(writeKey);
+  BOOST_CHECK_EQUAL(writeKey->keyId, std::string("key-1"));
+  nativeExportSealedStoredModelHandle(handle, file.path, *writeKey);
+
+  // Rotate: key-2 becomes the write key and key-1 survives only for reading.
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "key-2 " << std::string(64, 'b') << "\n"
+        << "key-1 " << std::string(64, 'a') << "\n";
+  }
+  BOOST_REQUIRE_EQUAL(nativeFileProtectionKeyFromEnvironment()->keyId, std::string("key-2"));
+  const auto reopened = nativeOpenStoredModelHandle(file.path, nativeFileKeyResolverFromKeyRing());
+  BOOST_CHECK(reopened.masterKey == handle.masterKey);
+  BOOST_CHECK(reopened.rootName == handle.rootName);
+
+  // The same handle opened with a resolver that lost the old key must fail, not fall back.
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "key-2 " << std::string(64, 'b') << "\n";
+  }
+  BOOST_CHECK_THROW(nativeOpenStoredModelHandle(file.path, nativeFileKeyResolverFromKeyRing()),
+                    std::runtime_error);
+  ::unsetenv("NDNSF_FILE_KEYRING");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

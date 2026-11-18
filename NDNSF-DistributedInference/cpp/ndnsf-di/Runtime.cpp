@@ -1916,8 +1916,9 @@ User::openStoredModelImpl(detail::StoredModelPreparationOperation& operation,
   const auto deadline = operation.deadline;
   NativeStoredModelHandle loadedHandle;
   try {
+    // Any generation still in the ring can be opened, which is what a rotation must allow.
     loadedHandle = nativeOpenStoredModelHandle(privateHandleFile,
-                                               nativeFileProtectionKeyFromEnvironment());
+                                               nativeFileKeyResolverFromKeyRing());
     nativeValidateModelRepositoryTarget(repository, loadedHandle.producer);
     if (ndn::Name(repository.repoNode) != loadedHandle.repository)
       throw DiError("STORED_MODEL_REPOSITORY_MISMATCH", "local", "stored-model-open",

@@ -82,7 +82,7 @@ nativeFileKeyResolverFromKeyRing();
 /** Open a handle whatever its on-disk generation (v1 legacy import or sealed v2). */
 NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,
-                            const std::optional<NativeFileProtectionKey>& protection);
+                            const NativeFileKeyResolver& resolve);
 
 /** Load a bounded, current-user-owned regular 0600 file without following a final symlink. */
 NativeStoredModelHandle
