@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 
 import pytest
 
 from spec180_yolo_inputs import declared_yolo_checkpoint
+
+# Every case here builds a package from the declared external checkpoint, so without it the module reports an
+# unmet prerequisite rather than a failure. The checkpoint stays an explicit input: this is a skip with the
+# reason named, not a silent pass.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("SPEC180_YOLO_CHECKPOINT"),
+    reason="requires SPEC180_YOLO_CHECKPOINT: the declared external YOLO checkpoint")
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -71,6 +72,9 @@ def test_shape_annotations_cannot_change_computation(monkeypatch, tmp_path, muta
                              input_size=32, opset=17)
 
 
+@pytest.mark.skipif(
+    not os.environ.get("SPEC180_YOLO_CHECKPOINT"),
+    reason="requires SPEC180_YOLO_CHECKPOINT: the declared external YOLO checkpoint")
 def test_checkpoint_digest_is_pinned_and_wrong_source_fails(tmp_path: Path):
     exporter = load_exporter()
     assert exporter.sha256_file(declared_yolo_checkpoint()) == exporter.EXPECTED_CHECKPOINT_SHA256
@@ -251,6 +255,9 @@ def test_matching_pem_authority_can_sign_catalogue(tmp_path: Path):
     assert signed["signature"]["keyId"] == "registered-key"
 
 
+@pytest.mark.skipif(
+    not os.environ.get("SPEC180_YOLO_CHECKPOINT"),
+    reason="requires SPEC180_YOLO_CHECKPOINT: the declared external YOLO checkpoint")
 def test_real_export_produces_external_initializer_manifest(tmp_path: Path):
     exporter = load_exporter()
     manifest = exporter.build_package(declared_yolo_checkpoint(), tmp_path / "package", input_size=32)
@@ -271,6 +278,9 @@ def test_real_export_produces_external_initializer_manifest(tmp_path: Path):
         "pytorch-reference-compared-with-cpu-onnxruntime")
 
 
+@pytest.mark.skipif(
+    not os.environ.get("SPEC180_YOLO_CHECKPOINT"),
+    reason="requires SPEC180_YOLO_CHECKPOINT: the declared external YOLO checkpoint")
 def test_640_oracle_matches_cpu_onnx_runtime_after_canonical_row_sort(
         tmp_path: Path):
     import onnxruntime as ort
