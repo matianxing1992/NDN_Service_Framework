@@ -754,9 +754,13 @@ public:
       auto deadline = start;
       while (deadline < measuredEnd) {
         std::this_thread::sleep_until(deadline);
-        if (std::chrono::steady_clock::now() >= measuredEnd) {
-          break;
-        }
+        // Slot membership is decided by the deadline, not by when the sleep returned. The loop
+        // condition already restricts this to slots inside the measurement window, so exactly
+        // rate * measure slots belong to it. An earlier form also broke out when the wake-up landed
+        // past measuredEnd, which silently discarded the final slot whenever the last sleep
+        // overran: the exact-count gate then reported 47,998 or 47,997 scheduled against 48,000 and
+        // failed on the harness rather than on the pacer. Lateness is still visible in
+        // attemptedPps and the wall time; it must not delete a slot.
         const bool measured = deadline >= measuredStart;
         if (measured) {
           m_scheduledMeasured.fetch_add(1, std::memory_order_relaxed);
