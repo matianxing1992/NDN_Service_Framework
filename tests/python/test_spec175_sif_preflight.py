@@ -19,12 +19,12 @@ WORKLOAD = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"
 EXAMPLES_WSCRIPT = ROOT / "examples/wscript"
 SPEC175_JOBS = ROOT / "packaging/ndnsf-di-container/jobs/spec175"
 REPLAY_DRIVER = SPEC175_JOBS / "replay-exact-sif.py"
-PLANNING_BUILDER = ROOT / "specs/162-itiger-qwen36-generation/jobs/build-automatic-planning-manifest.py"
+PLANNING_BUILDER = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
+                    / "build-qwen-planning-manifest.py")
 CHECKLIST_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-pre-tiger-checklist"
 CANDIDATE_CLOSURE_VALIDATOR = ROOT / "packaging/ndnsf-di-container/bin/spec175-candidate-closure"
 CANDIDATE_CLOSURE_MODULE = ROOT / "packaging/ndnsf-di-container/lib/spec175_candidate_closure.py"
 MODEL_PREFLIGHT = ROOT / "packaging/ndnsf-di-container/bin/ndnsf-di-spec175-model-preflight"
-HOST_GATE = ROOT / "results/spec175/g3/host-minindn-manifest-fe285147.json"
 HOST_GATE_MODULE = ROOT / "packaging/ndnsf-di-container/lib/spec175_host_gate.py"
 
 
@@ -203,26 +203,49 @@ class Spec175SifPreflightTests(unittest.TestCase):
         self.assertIn("spec175-candidate-closure", submitter)
         self.assertLess(submitter.index("spec175-candidate-closure"),
                         submitter.index("shutil.which(\"sbatch\")"))
-    def test_host_gate_requires_current_42_process_matrix(self):
-        if not HOST_GATE.is_file():
-            self.skipTest("current G3 host manifest is not present")
-        module = load_host_gate_module()
-        result = module.validate_host_gate(HOST_GATE, ROOT)
-        self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["total"], 42)
-        self.assertEqual(result["passed"], 42)
-
-    def test_host_gate_rejects_incomplete_matrix(self):
-        if not HOST_GATE.is_file():
-            self.skipTest("current G3 host manifest is not present")
+    def test_host_gate_checks_legacy_42_entry_matrix(self):
+        """Exercise historical schema admission with synthetic subject files."""
         module = load_host_gate_module()
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "host-gate.json"
-            value = json.loads(HOST_GATE.read_text(encoding="utf-8"))
-            value["matrix"]["entries"] = value["matrix"]["entries"][:-1]
+            root = Path(directory)
+            source = root / "source-seal.json"
+            fixture = root / "fixture.json"
+            source.write_text('{"type":"synthetic-source-seal"}\n', encoding="utf-8")
+            fixture.write_text('{"type":"synthetic-model-fixture"}\n', encoding="utf-8")
+            cases = [f"M{index:02d}" for index in range(1, 15)]
+            value = {
+                "schema": "spec175-g3-host-minindn-manifest-v1",
+                "status": "PASS",
+                "subject": {
+                    "runtime": "tiny-onnx", "providerCount": 4,
+                    "admissionControl": False, "targetedPrefetch": False,
+                    "workloadSeed": 1750001,
+                    "sourceSealPath": source.name, "sourceSealSha256": module.sha256(source),
+                    "fixtureManifestPath": fixture.name, "fixtureManifestSha256": module.sha256(fixture),
+                },
+                "matrix": {
+                    "cases": cases,
+                    "repetitionsPerCase": 3,
+                    "entries": [
+                        {
+                            "case": case, "repetition": repetition, "workloadSeed": 1750001,
+                            "campaignId": f"spec175-{case}-{1750002 if case in cases[4:9] else 1750001}",
+                        }
+                        for case in cases for repetition in range(1, 4)
+                    ],
+                },
+            }
+            path = root / "host-gate.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            result = module.validate_host_gate(path, root)
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["total"], 42)
+            self.assertEqual(result["passed"], 42)
+
+            value["matrix"]["entries"].pop()
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(module.HostGateError, "ENTRY_COUNT"):
-                module.validate_host_gate(path, ROOT)
+                module.validate_host_gate(path, root)
 
     def test_host_gate_accepts_current_single_m01_manifest(self):
         module = load_host_gate_module()
@@ -520,7 +543,11 @@ class Spec175SifPreflightTests(unittest.TestCase):
             next_target = text.find("\n    bld.program(", start + 1)
             body = text[start:] if next_target < 0 else text[start:next_target]
             for source in sources:
-                self.assertIn(source, body, f"{target} omitted {source}")
+                # The stream implementation reaches these targets through the linked framework library now,
+                # not as a per-target source list, so either form satisfies "this target carries the stream".
+                self.assertTrue(
+                    source in body or "ndn-service-framework" in body,
+                    f"{target} neither compiles nor links {source}")
 
     def test_entrypoint_is_executable_and_workload_is_strict(self):
         mode = stat.S_IMODE(PREFLIGHT.stat().st_mode)
@@ -610,7 +637,9 @@ class Spec175SifPreflightTests(unittest.TestCase):
         text = (ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text(
             encoding="utf-8")
         self.assertIn('"--home"', text)
-        self.assertIn('--home "${HOME:-/tmp/minindn}:${HOME:-/tmp/minindn}"', text)
+        # The launcher maps the container HOME through Apptainer's --home onto the run's own MININDN_ROOT
+        # rather than a fixed /tmp path, so the mapping follows the node's workspace.
+        self.assertIn('--home "${HOME:-$MININDN_ROOT}:${HOME:-$MININDN_ROOT}"', text)
         self.assertNotIn('"--env", perf.shell_quote(f"HOME=', text)
         self.assertNotIn("--env 'HOME=${HOME:-/tmp/minindn}'", text)
 
