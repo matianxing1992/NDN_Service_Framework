@@ -3093,6 +3093,16 @@ def main() -> int:
             raise SystemExit(
                 f"--{profile} requires a Qwen Transformers or ONNX runtime")
         if args.runtime != "tiny-onnx":
+            # This mode's publication step constructs CollaborationArtifactApiBackend, a retired
+            # compatibility name that raises on construction, so the run could only fail after
+            # NFD and the actors were already up. Reject it here instead, and point at the
+            # maintained replacement rather than at a missing flag.
+            raise SystemExit(
+                f"--{profile} with a Qwen runtime is retired: its Repo publication used "
+                "CollaborationArtifactApiBackend, which now raises SPEC192_COMPATIBILITY_V1. "
+                "The tiny-onnx fixture path is still supported; for a real model use "
+                "`ndnsf-di cluster up` with the native requester/provider actors.")
+        if args.runtime != "tiny-onnx":
             if not args.qwen_stage_manifest:
                 raise SystemExit(
                     f"--{profile} requires --qwen-stage-manifest")

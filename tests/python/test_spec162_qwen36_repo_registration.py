@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import sys
 import tempfile
@@ -13,18 +14,17 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+# Tracked copies of the historical job scripts. These were read from
+# `specs/162-itiger-qwen36-generation/jobs/`, an ignored Spec directory that does not exist in this
+# checkout, so every case below failed on a missing file rather than on the behaviour it guards.
 BUILDER = (
     ROOT
-    / "specs/162-itiger-qwen36-generation/jobs/"
-    "build-automatic-planning-manifest.py"
+    / "tests/fixtures/legacy-qwen-source-bundle/jobs/"
+    "build-automatic-planning-manifest.py.txt"
 )
-PREPARE = (
-    ROOT
-    / "specs/162-itiger-qwen36-generation/jobs/prepare-qwen36.py"
-)
+PREPARE = ROOT / "tests/fixtures/legacy-exact-sif-gate/prepare-qwen36.py.txt"
 REPO_REGISTER = (
-    ROOT
-    / "specs/162-itiger-qwen36-generation/jobs/register-qwen36-repo.py"
+    ROOT / "tests/fixtures/legacy-exact-sif-gate/register-qwen36-repo.py.txt"
 )
 PROVIDER = (
     ROOT
@@ -33,8 +33,8 @@ PROVIDER = (
 
 
 def load_builder():
-    spec = importlib.util.spec_from_file_location(
-        "spec162_automatic_manifest", BUILDER)
+    spec = importlib.util.spec_from_loader(
+        "spec162_automatic_manifest", SourceFileLoader("spec162_automatic_manifest", str(BUILDER)))
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -42,8 +42,8 @@ def load_builder():
 
 
 def load_prepare():
-    spec = importlib.util.spec_from_file_location(
-        "spec162_prepare_for_repo", PREPARE)
+    spec = importlib.util.spec_from_loader(
+        "spec162_prepare_for_repo", SourceFileLoader("spec162_prepare_for_repo", str(PREPARE)))
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -282,10 +282,20 @@ class Qwen36RepoRegistrationTest(unittest.TestCase):
         from ndnsf_distributed_inference.naming import parse_producer_data_name
         for index, call in enumerate(calls):
             content = parse_producer_data_name(call[1]["name"], "/example/user")
-            self.assertEqual(content.category, "BLOB")
-            self.assertEqual(len(content.suffix), 1)
-            self.assertEqual(bytes(Component.get_value(content.suffix[0])),
-                             bytes.fromhex(stages[index]["sha256"]))
+            # The canonical object category is `model` in the NDNSF-DI namespace; the same value is
+            # what `_publication_idempotency_key` requires before it will publish. This assertion
+            # said `BLOB` and had never run, because the fixture path it loaded did not exist.
+            self.assertEqual(content.category, "model")
+            self.assertEqual(content.name_space, "NDNSF-DI")
+            # The name is content-addressed: it carries the model identity, the layer coordinate of
+            # this stage, and the payload digest as the final component. Asserting a one-component
+            # suffix pinned the retired BLOB layout instead of this contract.
+            labels = [bytes(Component.get_value(c)) for c in content.suffix]
+            self.assertIn(b"name=Qwen/Qwen3-0.6B", labels)
+            start, end = ranges[index]
+            self.assertIn(f"layers={start}-{end - 1}".encode(), labels)
+            self.assertIn(b"file", labels)
+            self.assertIn(bytes.fromhex(stages[index]["sha256"]), labels)
         self.assertTrue(all(item["canonicalName"] for item in result["artifacts"]))
         self.assertEqual(
             [item["objectName"] for item in result["artifacts"]],
@@ -381,3 +391,25 @@ class Qwen36RepoRegistrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_qwen_runtime_selection_dataflow_mode_is_retired_at_argument_time():
+    """The retired Repo publication must fail on the command line, not mid-run.
+
+    `_QwenDeferredRepoPublisher.publish` builds `CollaborationArtifactApiBackend`,
+    which raises `SPEC192_COMPATIBILITY_V1` on construction. A Qwen-runtime run of
+    the selection-dataflow profiles would therefore reach that point only after
+    NFD and the actors were already up. The CLI now refuses the combination and
+    names the maintained replacement.
+    """
+    import subprocess
+
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py"),
+         "--runtime", "qwen-onnx", "--selection-dataflow-v3"],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    combined = completed.stdout + completed.stderr
+    assert "--selection-dataflow-v3 with a Qwen runtime is retired" in combined, combined
+    assert "ndnsf-di cluster up" in combined
+    assert "tiny-onnx fixture path is still supported" in combined
