@@ -30,6 +30,8 @@ OUT = REPO / "results/yolo_split_minindn_auto"
 ARTIFACT_CACHE_ROOT = Path("/var/tmp/ndnsf-di-yolo-split-artifacts")
 PY_DIR = REPO / "examples/python/NDNSF-DistributedInference/yolo_split"
 CONFIG = OUT / "yolo_policy.yaml"
+# Deterministic so the policy can pin the trust anchor before initialize_di_keychains creates it.
+DI_ROOT_CERT = OUT / "security" / "di-root.cert"
 GEN_POLICY = "/tmp/ndnsf-di-yolo-split-policy"
 APP_ROOT = "/NDNSF-DistributeInference/example"
 CONTROLLER_IDENTITY = APP_ROOT + "/controller"
@@ -116,6 +118,11 @@ def generate_auto_split_policy() -> None:
         str(OUT / "model"),
         "--policy",
         str(CONFIG),
+        # The root certificate is created later in the run by initialize_di_keychains, but its path is
+        # fixed, so the policy can pin it now. Without it the generated schema ends in
+        # `trust-anchor { type any }`, which the runtime rejects.
+        "--trust-anchor-file",
+        str(DI_ROOT_CERT),
     ], cwd=str(REPO), env=env, check=True)
 
 

@@ -21,6 +21,8 @@ def main() -> int:
     parser.add_argument("--out-dir", default="/tmp/ndnsf-yolo-split")
     parser.add_argument("--policy", default="",
                         help="Generated yolo_policy.yaml path")
+    parser.add_argument("--trust-anchor-file", default="",
+                        help="root certificate the generated policy pins as its trust anchor")
     parser.add_argument("--auto-split", action="store_true",
                         help="Select the 2-stage split with the ONNX planner")
     parser.add_argument("--provider-profile", default="",
@@ -37,7 +39,7 @@ def main() -> int:
         auto_split=args.auto_split,
         provider_profiles=profiles,
     )
-    splitter_output = yolo_splitter_output(exported)
+    splitter_output = yolo_splitter_output(exported, trust_anchor_file=args.trust_anchor_file)
     policy_path = Path(args.policy) if args.policy else output_dir / "yolo_policy.yaml"
     splitter_output.write_policy_config(policy_path)
 

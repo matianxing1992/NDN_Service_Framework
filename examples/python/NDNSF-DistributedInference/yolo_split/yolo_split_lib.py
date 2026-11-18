@@ -436,7 +436,7 @@ def _module_split_from_cut(node_name: str, *, module_count: int, fallback: int) 
     return max(1, min(module_count - 1, module_index + 1))
 
 
-def yolo_splitter_output(exported: dict) -> SplitterOutput:
+def yolo_splitter_output(exported: dict, *, trust_anchor_file: str = "") -> SplitterOutput:
     """Build NDNSF-DistributedInference policy input from YOLO split output.
 
     This is the example-specific splitter boundary: the YOLO splitter knows the
@@ -535,6 +535,10 @@ def yolo_splitter_output(exported: dict) -> SplitterOutput:
         ],
         services=[service],
         trust_app_roots=["/example"],
+        # The demo root certificate is created later in the run, but its path is fixed, so the
+        # generated policy can name the file anchor up front instead of falling back to `type any`,
+        # which the runtime now refuses.
+        trust_anchor_file=trust_anchor_file,
         metadata=common_metadata,
     )
 

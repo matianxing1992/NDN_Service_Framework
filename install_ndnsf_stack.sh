@@ -2992,6 +2992,9 @@ def generate_cached_policy():
         '--auto-split',
         '--out-dir', str(experiment.OUT / 'model'),
         '--policy', str(experiment.CONFIG),
+        # Pin the file anchor up front. Without it the generated schema falls back to
+        # `trust-anchor { type any }`, which the runtime rejects before the controller can start.
+        '--trust-anchor-file', str(experiment.OUT / 'security' / 'di-root.cert'),
     ], cwd=str(run_dir), env=env, check=True)
 
 experiment.build_python_path = isolated_python_path
