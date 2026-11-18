@@ -25,6 +25,10 @@ namespace {
 
 constexpr char STATE_MAGIC[] = "NDNSFCS2";
 constexpr char ABE_STATE_MAGIC[] = "NDNSFCS3";
+// CS4 = CS3 plus the archive of superseded ABE generations.  It is written only when
+// that archive is non-empty, so a store with no history keeps the older magic and an
+// older binary can still read it.
+constexpr char ABE_HISTORY_MAGIC[] = "NDNSFCS4";
 constexpr size_t STATE_MAGIC_SIZE = sizeof(STATE_MAGIC) - 1;
 constexpr char LOCK_MAGIC[] = "NDNSF-FLOCK-1";
 constexpr size_t MAX_LEASE_BYTES = 16384;
@@ -182,6 +186,20 @@ abeMaterialDigest(const ControllerGenerationStore::AbeMaterial& material)
   return "sha256:" + hash.toString();
 }
 
+std::string
+abeHistoryDigest(const ControllerGenerationStore::AbeHistoryEntry& entry)
+{
+  ndn::util::Sha256 hash;
+  hash << std::string("NDNSF-CONTROLLER-ABE-HISTORY-V1");
+  hash << std::to_string(entry.generationTimestamp);
+  hash << std::to_string(entry.epoch);
+  for (const auto* field : {&entry.publicParameters, &entry.masterSecret}) {
+    hash << (std::to_string(field->size()) + ":");
+    hash << *field;
+  }
+  return "sha256:" + hash.toString();
+}
+
 bool
 sameRevocations(const std::vector<RevocationTarget>& left,
                 const std::vector<RevocationTarget>& right)
@@ -216,6 +234,28 @@ ControllerGenerationStore::AbeMaterial::operator=(const AbeMaterial& other)
 }
 
 ControllerGenerationStore::AbeMaterial::~AbeMaterial()
+{
+  if (!masterSecret.empty())
+    OPENSSL_cleanse(&masterSecret[0], masterSecret.size());
+}
+
+ControllerGenerationStore::AbeHistoryEntry&
+ControllerGenerationStore::AbeHistoryEntry::operator=(const AbeHistoryEntry& other)
+{
+  if (this != &other) {
+    if (!masterSecret.empty())
+      OPENSSL_cleanse(&masterSecret[0], masterSecret.size());
+    generationTimestamp = other.generationTimestamp;
+    epoch = other.epoch;
+    publicParameters = other.publicParameters;
+    masterSecret = other.masterSecret;
+    digest = other.digest;
+    reason = other.reason;
+  }
+  return *this;
+}
+
+ControllerGenerationStore::AbeHistoryEntry::~AbeHistoryEntry()
 {
   if (!masterSecret.empty())
     OPENSSL_cleanse(&masterSecret[0], masterSecret.size());
@@ -411,7 +451,9 @@ ControllerGenerationStore::loadState() const
     throw std::runtime_error("truncated Controller generation state");
 
   PersistedState result;
-  const bool hasAbeMaterial = std::equal(std::begin(magic), std::end(magic), ABE_STATE_MAGIC);
+  const bool hasHistory = std::equal(std::begin(magic), std::end(magic), ABE_HISTORY_MAGIC);
+  const bool hasAbeMaterial = hasHistory ||
+    std::equal(std::begin(magic), std::end(magic), ABE_STATE_MAGIC);
   if (hasAbeMaterial && (info.st_mode & 0077) != 0)
     throw std::runtime_error("Controller ABE state must be private");
   if (hasAbeMaterial || std::equal(std::begin(magic), std::end(magic), STATE_MAGIC)) {
@@ -450,8 +492,27 @@ ControllerGenerationStore::loadState() const
       readStringInto(state, material.masterSecret, MAX_ABE_FIELD_BYTES);
       std::string checksum;
       readStringInto(state, checksum, 71);
-      if (!isValidAbeMaterial(material) || checksum != abeMaterialDigest(material) ||
-          state.peek() != std::char_traits<char>::eof())
+      if (!isValidAbeMaterial(material) || checksum != abeMaterialDigest(material))
+        throw std::runtime_error("invalid Controller ABE state");
+      if (hasHistory) {
+        const auto archived = readU64(state);
+        if (archived > 64)
+          throw std::runtime_error("invalid Controller ABE history length");
+        result.abeHistory.reserve(static_cast<size_t>(archived));
+        for (uint64_t i = 0; i < archived; ++i) {
+          AbeHistoryEntry entry;
+          entry.generationTimestamp = readU64(state);
+          entry.epoch = readU64(state);
+          readStringInto(state, entry.publicParameters, MAX_ABE_FIELD_BYTES);
+          readStringInto(state, entry.masterSecret, MAX_ABE_FIELD_BYTES);
+          readStringInto(state, entry.digest, 71);
+          readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
+          if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
+            throw std::runtime_error("invalid archived Controller ABE generation");
+          result.abeHistory.push_back(std::move(entry));
+        }
+      }
+      if (state.peek() != std::char_traits<char>::eof())
         throw std::runtime_error("invalid Controller ABE state");
     }
   }
@@ -475,6 +536,31 @@ ControllerGenerationStore::loadRevocations() const
   return loadState().revocations;
 }
 
+std::vector<ControllerGenerationStore::AbeHistoryEntry>
+ControllerGenerationStore::loadAbeHistory() const
+{
+  return loadState().abeHistory;
+}
+
+void
+ControllerGenerationStore::recordAbeHistory(const AbeHistoryEntry& entry, size_t retention)
+{
+  requireWriter();
+  if (retention == 0 || retention > 64)
+    throw std::invalid_argument("invalid Controller ABE history retention");
+  if (entry.generationTimestamp == 0 || entry.publicParameters.empty() ||
+      entry.masterSecret.empty())
+    throw std::invalid_argument("invalid archived Controller ABE generation");
+  AbeHistoryEntry archived = entry;
+  archived.digest = abeHistoryDigest(archived);
+  auto state = loadState();
+  state.abeHistory.push_back(archived);
+  if (state.abeHistory.size() > retention)
+    state.abeHistory.erase(state.abeHistory.begin(),
+                           state.abeHistory.end() - static_cast<std::ptrdiff_t>(retention));
+  persist(state.version, state.revocations, state.abeMaterial, state.abeHistory);
+}
+
 std::optional<ControllerGenerationStore::AbeMaterial>
 ControllerGenerationStore::loadAbeMaterial() const
 {
@@ -495,14 +581,15 @@ ControllerGenerationStore::storeAbeMaterial(const AbeMaterial& material)
   if (!current.version.isValid() || (current.abeMaterial && current.abeMaterial->owner != m_owner))
     throw std::runtime_error("Controller ABE state identity mismatch");
   current.abeMaterial = material;
-  persist(current.version, current.revocations, current.abeMaterial);
+  persist(current.version, current.revocations, current.abeMaterial, current.abeHistory);
 }
 
 void
 ControllerGenerationStore::persist(
     const ControllerVersion& version,
     const std::vector<RevocationTarget>& revocations,
-    const std::optional<AbeMaterial>& abeMaterial) const
+    const std::optional<AbeMaterial>& abeMaterial,
+    const std::vector<AbeHistoryEntry>& abeHistory) const
 {
   requireWriter();
   if (!version.isValid())
@@ -513,7 +600,10 @@ ControllerGenerationStore::persist(
   if (fd < 0)
     throw std::runtime_error("cannot create private Controller generation state");
   try {
-    writeAll(fd, abeMaterial ? ABE_STATE_MAGIC : STATE_MAGIC, STATE_MAGIC_SIZE);
+    const char* magic = abeMaterial
+      ? (abeHistory.empty() ? ABE_STATE_MAGIC : ABE_HISTORY_MAGIC)
+      : STATE_MAGIC;
+    writeAll(fd, magic, STATE_MAGIC_SIZE);
     writeU64(fd, version.controllerGenerationTimestamp);
     writeU64(fd, version.controllerEpoch);
     writeU64(fd, revocations.size());
@@ -532,6 +622,19 @@ ControllerGenerationStore::persist(
       writeString(fd, abeMaterial->publicParameters);
       writeString(fd, abeMaterial->masterSecret);
       writeString(fd, abeMaterialDigest(*abeMaterial));
+      if (!abeHistory.empty()) {
+        writeU64(fd, abeHistory.size());
+        for (const auto& entry : abeHistory) {
+          if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
+            throw std::runtime_error("invalid archived Controller ABE generation");
+          writeU64(fd, entry.generationTimestamp);
+          writeU64(fd, entry.epoch);
+          writeString(fd, entry.publicParameters);
+          writeString(fd, entry.masterSecret);
+          writeString(fd, entry.digest);
+          writeString(fd, entry.reason);
+        }
+      }
     }
     if (::fsync(fd) != 0)
       throw std::runtime_error("cannot flush Controller generation state");
@@ -580,7 +683,7 @@ ControllerGenerationStore::startGeneration(
     generation = std::max(generation, previous.version.controllerGenerationTimestamp + 1);
   }
   const ControllerVersion version{generation, 1};
-  persist(version, revocations, previous.abeMaterial);
+  persist(version, revocations, previous.abeMaterial, previous.abeHistory);
   return version;
 }
 
@@ -601,7 +704,7 @@ ControllerGenerationStore::advanceEpoch(
   if (previous.abeMaterial &&
       (requireAbeRotationOnRestart || !sameRevocations(previous.revocations, revocations)))
     previous.abeMaterial->rotationRequired = true;
-  persist(version, revocations, previous.abeMaterial);
+  persist(version, revocations, previous.abeMaterial, previous.abeHistory);
   return version;
 }
 

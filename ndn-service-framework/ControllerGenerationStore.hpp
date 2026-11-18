@@ -39,6 +39,26 @@ public:
     ~AbeMaterial();
   };
 
+  /** One superseded ABE generation, retained so historical Data stays readable.
+   *
+   * Entries are duplicated here rather than referenced, because the current
+   * material is overwritten on rotation and the archive must survive that.
+   */
+  struct AbeHistoryEntry
+  {
+    uint64_t generationTimestamp = 0;
+    uint64_t epoch = 0;
+    std::string publicParameters;
+    std::string masterSecret;
+    std::string digest;
+    std::string reason;
+
+    AbeHistoryEntry() = default;
+    AbeHistoryEntry(const AbeHistoryEntry&) = default;
+    AbeHistoryEntry& operator=(const AbeHistoryEntry& other);
+    ~AbeHistoryEntry();
+  };
+
   explicit ControllerGenerationStore(std::filesystem::path statePath);
   ~ControllerGenerationStore();
 
@@ -65,6 +85,10 @@ public:
   /** Access key material only while the identity-scoped writer lease is held. */
   std::optional<AbeMaterial> loadAbeMaterial() const;
   void storeAbeMaterial(const AbeMaterial& material);
+  /** Superseded generations, oldest first. Readable without the writer lease. */
+  std::vector<AbeHistoryEntry> loadAbeHistory() const;
+  /** Archive the material that is about to be replaced, keeping `retention` entries. */
+  void recordAbeHistory(const AbeHistoryEntry& entry, size_t retention = 8);
   ControllerVersion startGeneration(
       uint64_t nowMs, const std::vector<RevocationTarget>& revocations = {});
   ControllerVersion advanceEpoch(
@@ -77,6 +101,7 @@ private:
     ControllerVersion version;
     std::vector<RevocationTarget> revocations;
     std::optional<AbeMaterial> abeMaterial;
+    std::vector<AbeHistoryEntry> abeHistory;
   };
 
   void requireWriter() const;
@@ -84,7 +109,8 @@ private:
   PersistedState loadState() const;
   void persist(const ControllerVersion& version,
                const std::vector<RevocationTarget>& revocations,
-               const std::optional<AbeMaterial>& abeMaterial) const;
+               const std::optional<AbeMaterial>& abeMaterial,
+               const std::vector<AbeHistoryEntry>& abeHistory) const;
 
   std::filesystem::path m_statePath;
   std::filesystem::path m_lockPath;

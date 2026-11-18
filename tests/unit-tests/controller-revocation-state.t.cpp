@@ -619,6 +619,70 @@ BOOST_AUTO_TEST_CASE(RevocationStateInvalidatesOnlyAcceptedServiceFamilies)
   BOOST_CHECK_EQUAL(otherState.invalidatedCacheCount(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(ArchivedGenerationsAreRetainedAndBounded)
+{
+  DefaultGenerationFiles files;
+  const auto owner = ndn::Name("/controller/a").toUri(ndn::name::UriFormat::CANONICAL);
+  ControllerGenerationStore::AbeMaterial material;
+  material.owner = owner;
+  material.signingKeyDigest = "sha256:" + std::string(64, 'a');
+  material.policyDigest = "sha256:" + std::string(64, 'b');
+  material.publicParameters = "public";
+  material.masterSecret = "private";
+  {
+    ControllerGenerationStore store(files.legacy);
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    store.startGeneration(1000);
+    store.storeAbeMaterial(material);
+    BOOST_CHECK(store.loadAbeHistory().empty());
+    for (uint64_t index = 1; index <= 3; ++index) {
+      ControllerGenerationStore::AbeHistoryEntry entry;
+      entry.generationTimestamp = 1000 + index;
+      entry.epoch = index;
+      entry.publicParameters = "params-" + std::to_string(index);
+      entry.masterSecret = "secret-" + std::to_string(index);
+      entry.reason = "revocation-rotation";
+      store.recordAbeHistory(entry, 2);
+    }
+    ControllerGenerationStore::AbeHistoryEntry invalid;
+    invalid.generationTimestamp = 0;
+    BOOST_CHECK_THROW(store.recordAbeHistory(invalid), std::invalid_argument);
+    // Retention is a bound, not a suggestion: the oldest archive is gone.
+    const auto bounded = store.loadAbeHistory();
+    BOOST_REQUIRE_EQUAL(bounded.size(), 2u);
+    BOOST_CHECK_EQUAL(bounded.front().generationTimestamp, 1002u);
+  }
+  {
+    // History is readable without the writer lease; the secrets never leave the file.
+    ControllerGenerationStore store(files.legacy);
+    const auto history = store.loadAbeHistory();
+    BOOST_REQUIRE_EQUAL(history.size(), 2u);
+    BOOST_CHECK_EQUAL(history.back().generationTimestamp, 1003u);
+    BOOST_CHECK_EQUAL(history.back().epoch, 3u);
+    BOOST_CHECK_EQUAL(history.back().masterSecret, std::string("secret-3"));
+    BOOST_CHECK_EQUAL(history.back().digest.size(), 71u);
+    BOOST_REQUIRE(store.acquireWriter(owner));
+    const auto current = store.loadAbeMaterial();
+    BOOST_REQUIRE(current);
+    // Archiving must not disturb the live generation.
+    BOOST_CHECK_EQUAL(current->masterSecret, material.masterSecret);
+  }
+  {
+    // A rewritten archive secret is detected instead of being served.
+    std::fstream state(files.legacy, std::ios::in | std::ios::out | std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(state)),
+                      std::istreambuf_iterator<char>());
+    const auto at = bytes.find("secret-3");
+    BOOST_REQUIRE(at != std::string::npos);
+    bytes.replace(at, std::string("secret-3").size(), "secret-9");
+    state.seekp(0);
+    state.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    state.flush();
+  }
+  ControllerGenerationStore tampered(files.legacy);
+  BOOST_CHECK_THROW(tampered.loadAbeHistory(), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test
