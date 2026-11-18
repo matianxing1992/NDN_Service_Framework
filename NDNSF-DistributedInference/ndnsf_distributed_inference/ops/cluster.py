@@ -184,6 +184,7 @@ def _environment(home, socket, actor_id, state):
                NDN_CLIENT_PIB='pib-sqlite3:' + str(Path(home) / '.ndn'),
                NDN_CLIENT_TPM='tpm-file:',
                NDN_LOG='*=DEBUG' if state.get('diagnostic_logging') else '*=NONE',
+               **({'NDNSF_FILE_KEYRING': state['file_keyring']} if state.get('file_keyring') else {}),
                NDNSF_DEPLOYMENT_ACTOR_ID=actor_id,
                NDNSF_DEPLOYMENT_BOOT_ID=state['boot_id'],
                NDNSF_DEPLOYMENT_CONFIG_SHA256=state['configuration_sha256'])
@@ -960,6 +961,8 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                  'runtime_timing': timing,
                  'operation': 'prepare' if prepare_only else 'run',
                  'status': 'STARTING', 'launches': [], 'source': str(source)}
+        if config.get('security', {}).get('file_keyring'):
+            state['file_keyring'] = config['security']['file_keyring']
         if repo_benchmark is not None:
             state['operation'] = 'repo-benchmark'
             state['repo_benchmark'] = dict(repo_benchmark)

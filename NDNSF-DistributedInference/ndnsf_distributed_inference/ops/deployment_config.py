@@ -324,8 +324,13 @@ def load_deployment(path, *, prepare_only=False):
         _fail("release.manifest", "unsupported installer ledger")
 
     security = _object(config["security"], "security", {
-        "trust_schema", "controller_certificate", "controller_policy"},
+        "trust_schema", "controller_certificate", "controller_policy", "file_keyring"},
         {"trust_schema", "controller_certificate"})
+    if "file_keyring" in security:
+        # The actors seal local model handles with the deployment key ring; without this the
+        # installed deployment can only ever write the plaintext v1 handle.
+        security["file_keyring"] = resolve(security["file_keyring"], "security.file_keyring",
+                                           control=True, exists=True)
     model = _object(config["model"], "model", {"plan", "manifest", "tokenizer"},
                     () if config.get('operation') in ('prepare', 'repo-benchmark')
                     else {"plan", "manifest", "tokenizer"})
