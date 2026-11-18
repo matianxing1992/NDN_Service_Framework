@@ -1,0 +1,357 @@
+{
+  "schema": "ndnsf-experiment-profile-index-v1",
+  "coverage": "partial",
+  "profiles": [
+    {
+      "id": "qwen06b-tp-cpu-minindn",
+      "entry": "ndnsf-di cluster up --config deployment.json",
+      "kind": "native-inference",
+      "supportedStatus": "supported",
+      "components": [
+        "core",
+        "di",
+        "repo"
+      ],
+      "inputRecipes": [
+        "Experiments/recipes/qwen3-0.6b-int4.json",
+        "Experiments/profiles/qwen06b-tp-cpu.json",
+        "Experiments/prepare-native-deployment.py"
+      ],
+      "tools": [
+        "install_ndnsf_stack.sh --with-qwen-minindn",
+        "ndnsec",
+        "openssl"
+      ],
+      "facilities": [
+        "MiniNDN network namespaces and NFD",
+        "CPU ONNX Runtime",
+        "persistent model cache",
+        "root network setup"
+      ],
+      "installFiles": [
+        "bin/App_ServiceController",
+        "bin/DistributedRepoServer",
+        "bin/DI_NativeArtifactAuthority",
+        "bin/DI_NativeRequester",
+        "bin/di-native-provider",
+        "bin/spec190-multiturn-oracle"
+      ],
+      "preflight": "ndnsf-di cluster check --config deployment.json",
+      "oracle": "spec190-multiturn-oracle --deployment-state state.json --require-multi-token --model-reference"
+    },
+    {
+      "id": "yolo-minindn",
+      "entry": "ndnsf-yolo-minindn",
+      "kind": "inference",
+      "supportedStatus": "supported",
+      "components": [
+        "core",
+        "di"
+      ],
+      "inputRecipes": [
+        "install_ndnsf_stack.sh --with-yolo-minindn"
+      ],
+      "tools": [
+        "MiniNDN",
+        "NFD",
+        "installer-selected Python and CPU PyTorch"
+      ],
+      "facilities": [
+        "root network setup",
+        "fixed YOLO weights prepared by the explicit installer option",
+        "disk-backed run directory"
+      ],
+      "installFiles": [
+        "bin/ndnsf-yolo-minindn",
+        "share/ndnsf/models/yolo26n.pt",
+        "share/ndnsf/yolo-minindn"
+      ],
+      "preflight": "ndnsf-yolo-minindn --preflight-only",
+      "oracle": "NDNSF_DI_YoloSplit_Minindn.py user inference completion"
+    },
+    {
+      "id": "repo-native-minindn",
+      "entry": "tests/minindn/run_spec192_real_cpp_repo.py",
+      "kind": "native-integration",
+      "supportedStatus": "supported",
+      "components": [
+        "core",
+        "di",
+        "repo"
+      ],
+      "inputRecipes": [
+        "tests/minindn/spec202_build_candidate.py",
+        "Experiments/Topology/AI_Lab.conf",
+        "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
+      ],
+      "tools": [
+        "Waf",
+        "GCC 10",
+        "pybind11",
+        "MiniNDN",
+        "ndnsec",
+        "tcpdump",
+        "tshark",
+        "strace"
+      ],
+      "facilities": [
+        "root network setup",
+        "fixed ndn-cxx private SDK headers at 1204b7528986bea82651f3fa9088c165667cd598",
+        "installer-locked external native dependencies",
+        "fresh private build/install/test roots"
+      ],
+      "installFiles": [
+        "candidate/prefix/lib",
+        "candidate/python",
+        "candidate/build/spec192-repo-client",
+        "candidate/spec202-source-build-receipt.json"
+      ],
+      "preflight": "--campaign-case CASE --build-receipt RECEIPT --output-dir NEW_RUN --preflight-only",
+      "oracle": "tests/minindn/spec193_packet_oracle.py and the campaign's native client receipt"
+    },
+    {
+      "id": "wifi-reliability",
+      "entry": "Experiments/WifiRouterMobilityReliability.py",
+      "kind": "network-experiment",
+      "supportedStatus": "supported-with-facilities",
+      "components": [
+        "core"
+      ],
+      "inputRecipes": [
+        "Experiments/run_spec171_provider_transition.py --trace TRACE",
+        "Experiments/four_provider_mobility_repetitions.py",
+        "Experiments/gRPC/requirements-py38.txt"
+      ],
+      "tools": [
+        "Mininet-WiFi",
+        "wmediumd",
+        "MiniNDN",
+        "NFD"
+      ],
+      "facilities": [
+        "root network setup",
+        "selected mobility trace for replay",
+        "selected interpreter with grpcio and protobuf when the gRPC arm is selected"
+      ],
+      "installFiles": [
+        "selected build/examples/App_ServiceController",
+        "selected build/examples/App_WifiMobilityProvider",
+        "selected build/examples/App_WifiMobilityUser"
+      ],
+      "preflight": "tests/python/test_four_provider_mobility_profile.py",
+      "oracle": "Experiments/analyze_ndnsf_mobility_lifecycle.py"
+    },
+    {
+      "id": "qwen36-legacy-python-pipeline-repo",
+      "entry": "Experiments/NDNSF_DI_LlmPipeline_Minindn.py",
+      "kind": "legacy-inference",
+      "supportedStatus": "unresolved",
+      "components": [
+        "core",
+        "di",
+        "repo"
+      ],
+      "inputRecipes": [
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-qwen-onnx-stage-manifest.py",
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/build-qwen-generation-policy.py"
+      ],
+      "tools": [
+        "MiniNDN",
+        "native Repo service and authorized ServiceUser"
+      ],
+      "facilities": [
+        "explicit Qwen3.6 model and tokenizer assets",
+        "retired Python Repo constructor requires a native publication/fetch port"
+      ],
+      "installFiles": [],
+      "preflight": "tests/python/test_spec162_t009_live_source_bundle.py",
+      "oracle": "tests/python/test_spec161_qwen_generation.py retains the failed publication check"
+    },
+    {
+      "id": "concurrent-fault-confirmation-v2",
+      "entry": "Experiments/run_spec130_concurrent_fault_matrix.py",
+      "kind": "historical-campaign",
+      "supportedStatus": "original-input-unavailable",
+      "components": [
+        "core",
+        "di"
+      ],
+      "inputRecipes": [
+        "explicit --manifest and prior evidence inputs"
+      ],
+      "tools": [
+        "MiniNDN",
+        "native binding",
+        "ndnsec"
+      ],
+      "facilities": [
+        "original v2 campaign manifest and frozen prior evidence"
+      ],
+      "installFiles": [],
+      "preflight": "tests/python/test_spec130_concurrent_fault_runner.py",
+      "oracle": "campaign analyzer rejects synthetic input for live execution"
+    },
+    {
+      "id": "go-svs-comparison",
+      "entry": "Experiments/GoExperiment_AutoConfig.py",
+      "kind": "network-comparison",
+      "supportedStatus": "supported-with-facilities",
+      "components": [],
+      "inputRecipes": [
+        "Experiments/syncps.go",
+        "Experiments/go.mod",
+        "Experiments/go.sum",
+        "Experiments/Topology/testbed(loss=0%).conf"
+      ],
+      "tools": [
+        "MiniNDN",
+        "NFD",
+        "NLSR",
+        "Go 1.23 for recompilation"
+      ],
+      "facilities": [
+        "root network setup",
+        "default tracked ELF is Linux x86_64 with glibc",
+        "new output directory"
+      ],
+      "installFiles": [],
+      "preflight": "python3 Experiments/GoExperiment_AutoConfig.py --preflight-only",
+      "oracle": "both peers' logs contain a publication received from the other peer"
+    },
+    {
+      "id": "ndn-svs-bidirectional-comparison",
+      "entry": "Experiments/NDN_SVS_PubSub_Commit_Latency_Minindn.py",
+      "kind": "network-comparison",
+      "supportedStatus": "supported-with-facilities",
+      "components": [],
+      "inputRecipes": [
+        "Experiments/build_svs_pubsub_commit_bench.py --svs-source SVS_CLONE --output SUBJECT_ROOT",
+        "Experiments/ndn-svs-pubsub-benchmark/README.md"
+      ],
+      "tools": [
+        "Git",
+        "C++17 system toolchain",
+        "Boost 1.71",
+        "ndn-cxx",
+        "OpenSSL",
+        "pkg-config",
+        "MiniNDN",
+        "NFD",
+        "nfdc",
+        "ndndump",
+        "infoconv",
+        "tc"
+      ],
+      "facilities": [
+        "root network setup",
+        "four available CPUs",
+        "pinned NDN-SVS commits",
+        "new output directory"
+      ],
+      "installFiles": [],
+      "preflight": "plan and seal with the explicit subjects.json build authority",
+      "oracle": "Experiments/analyze_svs_pubsub_commit_latency.py",
+      "status": "retired",
+      "retiredReason": "NDN-SVS 库实验，subject 显式断言不链接 libndnsf；不对应 NDNSF 生产行为",
+      "countsTowardNdnfQualification": false
+    },
+    {
+      "id": "ndn-svs-synchronous-stage-profile",
+      "entry": "Experiments/NDN_SVS_Sync_Stage_Profile_Minindn.py",
+      "kind": "network-experiment",
+      "supportedStatus": "supported-with-facilities",
+      "components": [],
+      "inputRecipes": [
+        "Experiments/build_svs_sync_stage_profile.py rebuild-frozen --svs-source SVS_CLONE --output SUBJECT_ROOT",
+        "Experiments/ndn-svs-pubsub-benchmark/synchronous-stage-measurement.patch"
+      ],
+      "tools": [
+        "Git",
+        "C++17 system toolchain",
+        "Boost 1.71",
+        "ndn-cxx",
+        "OpenSSL",
+        "pkg-config",
+        "MiniNDN",
+        "NFD",
+        "nfdc",
+        "ndndump",
+        "tc"
+      ],
+      "facilities": [
+        "pinned NDN-SVS commit",
+        "root network setup for a campaign",
+        "explicit --subject-manifest"
+      ],
+      "installFiles": [],
+      "preflight": "rebuild-frozen self-tests; select the resulting manifest via NDNSF_SVS_STAGE_PROFILE_MANIFEST to run the profiler contract tests",
+      "oracle": "Experiments/analyze_svs_sync_stage_profile.py",
+      "status": "retired",
+      "retiredReason": "NDN-SVS 库实验，subject 显式断言不链接 libndnsf；不对应 NDNSF 生产行为",
+      "countsTowardNdnfQualification": false
+    },
+    {
+      "id": "uav-drone-and-ground-station",
+      "entry": "packaging/uav-release/create-portable-release.sh",
+      "kind": "native-uav-deployment",
+      "supportedStatus": "supported-with-facilities",
+      "components": [
+        "core",
+        "uav"
+      ],
+      "inputRecipes": [
+        "NDNSF-UAV-APP/configs/drone-A.conf",
+        "NDNSF-UAV-APP/videos/drone.mp4",
+        "NDNSF-UAV-APP/configs/ground-station.conf",
+        "install_ndnsf_stack.sh --with-yolo-minindn"
+      ],
+      "tools": [
+        "Waf",
+        "NFD",
+        "ndnsec",
+        "FFmpeg",
+        "host Python with Ultralytics and CPU PyTorch for ground-station object detection"
+      ],
+      "facilities": [
+        "deployment trust and identities",
+        "V4L2 capture or readable config-relative video",
+        "explicitly prepared YOLO26n weights when object detection is selected"
+      ],
+      "installFiles": [
+        "bin/ndnsf-uav-drone",
+        "bin/ndnsf-uav-gs",
+        "config/drone-A.conf",
+        "share/ndnsf-uav/videos/drone.mp4",
+        "scripts/yolo_detect_once.py",
+        "scripts/yolo_detect_worker.py"
+      ],
+      "preflight": "scripts/ndnsf-uav-preflight --role ROLE --app-config CONFIG",
+      "oracle": "real Drone camera source selection and Ground Station detection results"
+    },
+    {
+      "id": "historical-wired-drone-example",
+      "entry": "Experiments/NDNSFExperiment.py",
+      "kind": "historical-demo",
+      "supportedStatus": "unresolved",
+      "components": [
+        "core"
+      ],
+      "inputRecipes": [
+        "Experiments/Topology/wired_12nodes(loss=5%).conf"
+      ],
+      "tools": [
+        "MiniNDN",
+        "NDNsec",
+        "NFD",
+        "NLSR"
+      ],
+      "facilities": [
+        "legacy example binaries are no longer Waf targets",
+        "manual X11 terminal dependency and hardcoded credential paths remain"
+      ],
+      "installFiles": [],
+      "preflight": "current Waf target inventory",
+      "oracle": "none for the archived demo"
+    }
+  ]
+}
