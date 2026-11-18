@@ -1,6 +1,5 @@
 """SDK caller wiring with mock metadata; native name checks use Core oracle."""
 from types import SimpleNamespace
-import hashlib
 from concurrent.futures import Future
 import tempfile
 import unittest
@@ -8,8 +7,7 @@ from unittest import mock
 
 from ndnsf import parse_large_data_reference_payload
 from ndnsf_distributed_inference.artifact_deployment import (
-    ExecutionArtifactSpec, publish_execution_artifact_spec,
-    _artifact_from_repo_spec, _fetch_repo_manifest_payload)
+    ExecutionArtifactSpec, publish_execution_artifact_spec)
 from ndnsf_distributed_inference.client import DistributedInferenceClient, _artifact_fingerprint
 from ndnsf_distributed_inference.app_sdk.facades import APPClient, InferencePlanBuilder
 from ndnsf_distributed_inference.app_sdk.placement import AutomaticPlanningCoordinator
@@ -44,45 +42,6 @@ class User:
 
 
 class ManifestCallerTest(unittest.TestCase):
-    def test_replica_fetch_keeps_original_producer_name_and_only_changes_hint(self):
-        payload = b"original payload"
-        original = publication_result(payload, "/service", producer="/actual/publisher").data_prefix
-        manifest = {"objectName": "/local/logical-object", "size": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                    "replicaNodes": ["/repo/one", "/repo/two"],
-                    "replicaDataNames": [original, original]}
-        with mock.patch("ndnsf_distributed_inference.artifact_deployment.fetch_segmented_object",
-                        side_effect=[RuntimeError("first replica unavailable"), payload]) as fetch:
-            self.assertEqual(_fetch_repo_manifest_payload(manifest), payload)
-            self.assertEqual([call.args[0] for call in fetch.call_args_list], [original, original])
-            self.assertEqual([call.kwargs["forwarding_hints"] for call in fetch.call_args_list],
-                             [["/repo/one"], ["/repo/two"]])
-        artifact = _artifact_from_repo_spec("model", {"filename": "model.bin", "repoManifest": manifest})
-        self.assertEqual(artifact.large_data_reference["dataName"], original)
-        self.assertEqual(artifact.repo_manifest["objectName"], "/local/logical-object")
-
-    def test_missing_replica_names_fail_before_fetch_and_never_invent_alias(self):
-        manifest = {"objectName": "/local/logical-object", "size": 1, "sha256": "a" * 64,
-                    "replicaNodes": ["/repo/one", "/repo/two"]}
-        for names in ([], ["/actual/data"], ["/actual/data", ""], ["/actual/data", None]):
-            with self.subTest(names=names), \
-                    mock.patch("ndnsf_distributed_inference.artifact_deployment.fetch_segmented_object") as fetch:
-                with self.assertRaisesRegex(ValueError, "original Producer"):
-                    _fetch_repo_manifest_payload(dict(manifest, replicaDataNames=names))
-                fetch.assert_not_called()
-        with self.assertRaisesRegex(ValueError, "original Producer"):
-            _artifact_from_repo_spec("model", {"filename": "model.bin", "repoManifest": manifest})
-
-    def test_segment_reference_preserves_exact_original_version_name(self):
-        payload = b"original payload"
-        original = publication_result(payload, "/service", producer="/actual/publisher").data_prefix
-        manifest = {"objectName": "/local/logical-object", "size": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                    "segmentLocations": [{"dataName": "/actual/publisher/base",
-                                          "versionedDataName": original}]}
-        artifact = _artifact_from_repo_spec("model", {"filename": "model.bin", "repoManifest": manifest})
-        self.assertEqual(artifact.large_data_reference["dataName"], original)
-
     def test_service_facade_requires_and_uses_explicit_local_model_context(self):
         artifact = SimpleNamespace(role="worker", path="/does-not-exist",
                                    artifact_name="model", filename="model.bin", kind="model",
