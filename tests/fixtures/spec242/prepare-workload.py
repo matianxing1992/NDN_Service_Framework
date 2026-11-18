@@ -21,7 +21,8 @@ def write_json(path, value):
 
 
 def prepare(output, requester, protection_epoch, source=None, source_sha256=None,
-            tokenizer=None, layer_cut=None, rank_weights=None):
+            tokenizer=None, layer_cut=None, rank_weights=None, max_new_tokens=None,
+            layer_cuts=None, tensor_degrees=None, weighted_stage=0):
     repo = Path(__file__).resolve().parents[3]
     # Use the maintained host-side encoder and semantic graph identity.
     sys.path.insert(0, str(repo / "Experiments"))
@@ -42,14 +43,43 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
     layers = {int(match[1]) for value in graph.input
               if (match := re.fullmatch(r"past_key_values\.(\d+)\.key", value.name))}
     layer_count = len(layers)
-    cut = layer_cut if real_model else 1
-    if layers != set(range(layer_count)) or not 0 < cut < layer_count:
-        raise ValueError("expected contiguous decoder layers and a strict interior layer cut")
-    partition = [[0, cut], [cut, layer_count]]
+    if layers != set(range(layer_count)):
+        raise ValueError("expected contiguous decoder layers")
+    if layer_cuts is not None:
+        cuts = sorted(int(value) for value in layer_cuts)
+        if (len(set(cuts)) != len(cuts) or any(not 0 < cut < layer_count for cut in cuts)):
+            raise ValueError("layer cuts must be distinct strict interior positions")
+        partition = [[begin, end] for begin, end in zip([0, *cuts], [*cuts, layer_count])]
+    elif layer_cut is None:
+        partition = [[0, layer_count]]
+    else:
+        cut = layer_cut if real_model else 1
+        if not 0 < cut < layer_count:
+            raise ValueError("expected contiguous decoder layers and a strict interior layer cut")
+        partition = [[0, cut], [cut, layer_count]]
     # The Controller represents each absolute role as an NDN hierarchy.
     # Relative ranks with embedded slashes would become one escaped component.
-    stages = ["/Stage/First", "/Stage/Last"]
-    degrees = [len(rank_weights) if rank_weights is not None else 2, 1]
+    stage_count = len(partition)
+    def stage_name(index):
+        if stage_count == 1:
+            return "/Stage/All"
+        if index == 0:
+            return "/Stage/First"
+        if index == stage_count - 1:
+            return "/Stage/Last"
+        return "/Stage/Middle" if stage_count == 3 else "/Stage/" + str(index)
+    stages = [stage_name(index) for index in range(stage_count)]
+    if tensor_degrees is not None:
+        degrees = [int(value) for value in tensor_degrees]
+        if len(degrees) != stage_count or any(value <= 0 for value in degrees):
+            raise ValueError("tensor degrees must be one positive value per stage")
+    elif rank_weights is not None:
+        degrees = [1] * stage_count
+        degrees[weighted_stage] = len(rank_weights)
+    elif stage_count == 2:
+        degrees = [2, 1]
+    else:
+        degrees = [1] * stage_count
     schema_digest = digest(b"spec242-planning-graph")
     manifest_digest = (digest(b"spec234-qwen3-0.6b-int4:" + source_digest.encode())
                        if real_model else digest(b"spec242-four-layer-conversation:" + source.read_bytes()))
@@ -79,7 +109,11 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
                     resources_by_role=profiles, input_ingress_role=stages[0],
                     result_egress_role=stages[-1])
     if rank_weights is not None:
-        splitter["tensor_rank_weights_by_role"] = {stages[0]: rank_weights}
+        splitter["tensor_rank_weights_by_role"] = {stages[weighted_stage]: rank_weights}
+    for stage, degree in zip(stages, degrees):
+        if degree > 1 and stage not in splitter["rank_artifact_digests_by_role"]:
+            splitter["rank_artifact_digests_by_role"][stage] = [
+                digest(f"{stage}-r{rank}".encode()) for rank in range(degree)]
     node_labels = []
     consumers = {}
     for index, node in enumerate(graph.node):
@@ -165,7 +199,9 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
     (output / "delta.bin").write_bytes(tensor_bundle([4]))
     write_json(output / "generation.json", dict(
         sampling=dict(mode="Greedy", repetitionPenalty=1.0),
-        maxNewTokens=9 if real_model else 32, outputMode="TOKEN_STREAMING", useCache=True,
+        maxNewTokens=(max_new_tokens if max_new_tokens is not None
+                      else (9 if real_model else 32)),
+        outputMode="TOKEN_STREAMING", useCache=True,
         tokenizerDigest=digest(tokenizer_path.read_bytes()),
         tokenInputName="input_ids", logitsOutputName="logits",
         eosTokenIds=[151645] if real_model else [63], stopStrings=[], attentionMaskInputName="attention_mask",
@@ -185,16 +221,26 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=Path)
     parser.add_argument("--layer-cut", type=int)
     parser.add_argument("--rank-weights", nargs="+", type=int)
+    parser.add_argument("--max-new-tokens", type=int,
+                        help="generation length; defaults to 9 for the real model")
+    parser.add_argument("--layer-cuts", nargs="+", type=int,
+                        help="Strict interior layer cuts for a multi-stage PP partition")
+    parser.add_argument("--tensor-degrees", nargs="+", type=int,
+                        help="Tensor-parallel degree per stage")
+    parser.add_argument("--weighted-stage", type=int, default=0,
+                        help="Zero-based stage index that receives --rank-weights")
     args = parser.parse_args()
     if not args.requester.startswith("/") or args.requester.endswith("/"):
         parser.error("--requester must be an absolute non-root NDN name")
-    source_options = (args.source_sha256, args.tokenizer, args.layer_cut)
-    if args.source and any(value is None for value in source_options):
-        parser.error("--source requires --source-sha256, --tokenizer and --layer-cut")
-    if not args.source and (any(value is not None for value in source_options) or args.rank_weights):
+    if args.source and (args.source_sha256 is None or args.tokenizer is None):
+        parser.error("--source requires --source-sha256 and --tokenizer")
+    if not args.source and (args.source_sha256 is not None or args.tokenizer is not None or
+                            args.layer_cut is not None or args.layer_cuts is not None or
+                            args.rank_weights is not None or args.tensor_degrees is not None):
         parser.error("model source options require --source")
     if args.rank_weights is not None and len(args.rank_weights) not in (2, 3):
         parser.error("the MiniNDN qualification layout requires two or three rank weights")
     prepare(args.output.resolve(), args.requester, args.protection_epoch,
             args.source.resolve(strict=True) if args.source else None, args.source_sha256,
-            args.tokenizer, args.layer_cut, args.rank_weights)
+            args.tokenizer, args.layer_cut, args.rank_weights, args.max_new_tokens,
+            args.layer_cuts, args.tensor_degrees, args.weighted_stage)

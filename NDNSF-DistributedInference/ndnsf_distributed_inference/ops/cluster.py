@@ -430,6 +430,11 @@ def _probe_environment(config, directory, state, facility, children, guard, dead
         pid = child.pid
         entry = {'kind': actor.get('kind', row.get('kind', 'unknown')),
                  'node': actor.get('node', row.get('node')), 'pid': pid}
+        # The owner applied the declared CPU slice at spawn time; the kernel's
+        # /proc status is the authoritative read-back. taskset inside the node
+        # namespace cannot see the host pid reliably, so it is kept only as a
+        # secondary observation.
+        entry['affinityApplied'] = row.get('affinity')
         entry['affinity'] = _probe_capture(['taskset', '-pc', str(pid)])
         try:
             entry['cgroup'] = {'file': f'/proc/{pid}/cgroup',
@@ -483,7 +488,7 @@ def _probe_environment(config, directory, state, facility, children, guard, dead
 
 
 def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
-           network_namespace=None):
+           network_namespace=None, cpus=None, slot=None):
     row = {'id': actor_id, 'kind': kind, 'argv': argv, 'expected_exe': str(Path(argv[0]).resolve()),
            'bindings': {key: env[key] for key in (
                'NDNSF_DEPLOYMENT_ACTOR_ID', 'NDNSF_DEPLOYMENT_BOOT_ID',
@@ -506,6 +511,19 @@ def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
             row['spawn_failed'] = True
             write_json(root / 'state.json', state)
             raise
+        if cpus:
+            # Apply the actor's declared CPU quota as an affinity slice. The
+            # placement cells distinguish a heavy rank on a two-CPU position
+            # from the same rank on a one-CPU position; the probes read the
+            # effective mask back so the cell stays auditable.
+            available = sorted(os.sched_getaffinity(0))
+            base = int(slot or 0) * 2
+            chosen = available[base:base + int(cpus)] or available[:int(cpus)]
+            try:
+                os.sched_setaffinity(child.pid, chosen)
+                row['affinity'] = sorted(chosen)
+            except OSError:
+                row['affinity'] = None
         capture_deadline = time.monotonic() + _PROCESS_IDENTITY_CAPTURE_SECONDS
         while True:
             guard()
@@ -1112,11 +1130,22 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                 facility.start(guard)
 
             def spawn(actor_id, kind, argv, env, node_id):
+                actor = next((item for item in config['actors']
+                              if item['id'] == actor_id), {})
+                cpus = (actor.get('resources') or {}).get('cpus') if kind == 'provider' else None
+                # The slice is indexed by provider ordinal, not by the actor's
+                # position among all actors (which would push later providers
+                # past the end of the available CPU list).
+                providers = [item['id'] for item in config['actors']
+                             if item['kind'] == 'provider']
+                slot = providers.index(actor_id) if actor_id in providers else 0
                 if facility is None:
-                    return _spawn(state, root, actor_id, kind, argv, env, guard)
+                    return _spawn(state, root, actor_id, kind, argv, env, guard,
+                                  cpus=cpus, slot=slot)
                 return _spawn(state, root, actor_id, kind, argv, env, guard,
                               launcher=facility.launcher(node_id),
-                              network_namespace=facility.namespace(node_id))
+                              network_namespace=facility.namespace(node_id),
+                              cpus=cpus, slot=slot)
 
             launches = []
             for actor in config['actors']:

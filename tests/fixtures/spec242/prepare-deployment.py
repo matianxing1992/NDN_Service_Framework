@@ -88,9 +88,24 @@ def secure_random(path):
         stream.write(os.urandom(32))
 
 
+def topology_hosts(path):
+    hosts = []
+    section = None
+    for line in Path(path).read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped
+            continue
+        if section == "[nodes]" and stripped.endswith(":") and stripped[:-1]:
+            hosts.append(stripped[:-1])
+    return hosts
+
+
 def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_sha256=None,
                        tokenizer=None, layer_cut=None, rank_weights=None,
-                       prepared_workload=None, link_bw=None, link_delay=None, probe=True):
+                       prepared_workload=None, link_bw=None, link_delay=None, probe=True,
+                       link_loss=None, max_new_tokens=None, kv_capture=True,
+                       storage_budget=None, provider_cpus=None):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import (
@@ -137,6 +152,8 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
                             "--tokenizer", str(tokenizer), "--layer-cut", str(layer_cut)]
                 if rank_weights is not None:
                     prepare += ["--rank-weights", *map(str, rank_weights)]
+                if max_new_tokens is not None:
+                    prepare += ["--max-new-tokens", str(max_new_tokens)]
             subprocess.run(prepare, env=env, check=True, timeout=300 if source else 30)
     catalog = json.loads((bundle / "catalog.json").read_bytes())
     options = json.loads((bundle / "generation.json").read_bytes())
@@ -149,9 +166,15 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
                    ("repo", "repo", "h242repo"),
                    ("requester", "requester", "h242user")]
     actor_nodes += [(f"provider-{rank}", "provider", f"h242p{rank}") for rank in range(len(roles))]
-    actors = [dict(id=name, kind=kind, identity=namespace + "/" + name, node=node,
-                   resources=dict(cpus=2 if kind == "provider" else 1), parameters={})
-              for name, kind, node in actor_nodes]
+    if provider_cpus is not None and len(provider_cpus) != len(actor_nodes) - 4:
+        raise ValueError("provider CPU quotas must match the provider count")
+    actors = []
+    for index, (name, kind, node) in enumerate(actor_nodes):
+        cpus = 2 if kind == "provider" else 1
+        if kind == "provider" and provider_cpus is not None:
+            cpus = provider_cpus[index - 4]
+        actors.append(dict(id=name, kind=kind, identity=namespace + "/" + name, node=node,
+                           resources=dict(cpus=cpus), parameters={}))
     providers = actors[4:]
     environments, certificates, trust = prepare_identities(root, prefix, namespace, group, actors)
     by_id = {actor["id"]: actor for actor in actors}
@@ -215,11 +238,12 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
             "roles": role, "offer-backend": "onnxruntime-cpu", "offer-can-provision": True,
             "selection-offer-key-file": str(offer_private), "grant-authority-public-key": str(auth_public),
             "recipient-key-map": str(recipient_map), "allow-selection-generation-options": True,
-            "capture-complete-kv-state": True,
+            "capture-complete-kv-state": kv_capture,
             "assembly-timeout-ms": 600000 if real_model else 120000,
             "repo-fetch-timeout-ms": 480000 if real_model else 60000,
             "conversation-retention-ms": retention_ms}
-    providers[-1]["parameters"]["capture-logits-output"] = "logits"
+    if kv_capture:
+        providers[-1]["parameters"]["capture-logits-output"] = "logits"
     by_id["repo"]["parameters"]["request-timeout-ms"] = 480000 if real_model else 60000
 
     source = catalog["source"]
@@ -271,14 +295,31 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
         topology.write_text(topology_text.replace("\n[links]", "h242p3:\n\n[links]")
                             .replace("\n[faces]", "h242relay:h242p3 delay=2ms bw=1000\n\n[faces]")
                             + "h242relay:h242p3 cost=10\n", encoding="utf-8")
-    if link_bw is not None or link_delay is not None:
-        text = Path(topology).read_text()
-        if link_bw is not None:
-            text = re.sub(r"bw=[0-9.]+", f"bw={link_bw:g}", text)
-        if link_delay is not None:
-            text = re.sub(r"delay=[0-9.]+ms", f"delay={link_delay:g}ms", text)
+    if link_bw is not None or link_delay is not None or link_loss is not None:
+        # E2 shapes the Provider data links; control/Repo budget links keep the
+        # baseline. Rewriting every link would throttle the source publication
+        # and control plane as well, which N1's 10 Mbps PROVIDER profile must
+        # not do.
+        provider_nodes = {actor['node'] for actor in actors if actor['kind'] == 'provider'}
+        lines = []
+        for line in Path(topology).read_text().splitlines():
+            stripped = line.strip()
+            shaped = (':' in stripped and 'delay=' in stripped and
+                      any(node in stripped.split()[0].split(':') for node in provider_nodes))
+            if shaped:
+                if link_bw is not None:
+                    line = re.sub(r"bw=[0-9.]+", f"bw={link_bw:g}", line)
+                if link_delay is not None:
+                    line = re.sub(r"delay=[0-9.]+ms", f"delay={link_delay:g}ms", line)
+                if link_loss is not None:
+                    if re.search(r"loss=[0-9.]+", line):
+                        line = re.sub(r"loss=[0-9.]+", f"loss={link_loss:g}", line)
+                    else:
+                        # MiniNDN link parameters accept an optional loss percentage.
+                        line = re.sub(r"(delay=[0-9.]+ms)", r"\1 loss=" + f"{link_loss:g}", line)
+            lines.append(line)
         topology = root / "minindn-topology.conf"
-        topology.write_text(text, encoding="utf-8")
+        topology.write_text("\n".join(lines) + "\n", encoding="utf-8")
     config = {
         "schema": "ndnsf-di-deployment-v1",
         "probes": {"enabled": bool(probe), "ping_count": 3},
@@ -286,9 +327,13 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
         "release": {"prefix": str(prefix), "manifest": str(ledger)},
         "platform": {"kind": "minindn", "topology": str(topology),
                      "topology_sha256": digest(topology.read_bytes())},
-        "nodes": [dict(id=node, host=node, cpus=3, nfd=dict(mode="managed", address="127.0.0.1",
-                         port=6363, socket=str(root / (node + ".sock"))))
-                  for node in ["h242relay", *(actor["node"] for actor in actors)]],
+        # Every host the topology declares must be present, including a
+        # forwarding-only host that no actor uses (for example the third rank
+        # host in a two-provider layout).
+        "nodes": [dict(id=host, host=host, cpus=3,
+                       nfd=dict(mode="managed", address="127.0.0.1", port=6363,
+                                socket=str(root / (host + ".sock"))))
+                  for host in topology_hosts(topology)],
         "actors": actors,
         "network": dict(group=group, service=service, artifact_service=grant_service,
                         repo_service=repo_service, routes=[]),
@@ -296,7 +341,8 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
                          controller_policy=str(policy), trust_schema=str(trust)),
         "storage": {**{key + "_root": str(root / key) for key in
                        ("cache", "repo", "scratch", "state", "evidence")},
-                    "max_bytes": (8 << 30) if real_model else (128 << 20)},
+                    "max_bytes": (storage_budget if storage_budget is not None
+                                  else ((8 << 30) if real_model else (128 << 20)))},
         "model": dict(manifest=str(manifest), plan=str(plan), tokenizer=str(bundle / "tokenizer.json")),
         "requester": dict(
             catalog=catalog, fixed_placement={"role_providers": placement},
@@ -358,6 +404,16 @@ if __name__ == "__main__":
     parser.add_argument("--link-delay", type=float, help="Per-link one-way delay ms for every topology link")
     parser.add_argument("--no-probe", action="store_false", dest="probe",
                         help="Skip the post-READY datapath/CPU probes")
+    parser.add_argument("--link-loss", type=float,
+                        help="Per-link loss percentage for every topology link")
+    parser.add_argument("--max-new-tokens", type=int,
+                        help="Generation length recorded in the workload options")
+    parser.add_argument("--no-kv-capture", action="store_false", dest="kv_capture",
+                        help="Disable the complete KV/logits capture for timed matrix runs")
+    parser.add_argument("--storage-budget", type=int,
+                        help="Deployment storage budget in bytes (default 8 GiB real model)")
+    parser.add_argument("--provider-cpus", nargs="+", type=int,
+                        help="Per-provider CPU quota for placement-interaction cells")
     args = parser.parse_args()
     source_options = (args.source_sha256, args.tokenizer, args.layer_cut)
     if args.source and any(value is None for value in source_options):
@@ -370,4 +426,6 @@ if __name__ == "__main__":
                        args.release_manifest.resolve(strict=True), args.journal_root.resolve(),
                        args.source, args.source_sha256, args.tokenizer, args.layer_cut,
                        args.rank_weights, args.prepared_workload,
-                       args.link_bw, args.link_delay, args.probe)
+                       args.link_bw, args.link_delay, args.probe,
+                       args.link_loss, args.max_new_tokens, args.kv_capture,
+                       args.storage_budget, args.provider_cpus)
