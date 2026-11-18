@@ -301,6 +301,15 @@ def main() -> None:
         initialize_di_keychains(ndn, OUT)
         session = int(time.time()) + os.getpid()
         env = perf.app_env(OUT, session, args)
+        # Keep the controller generation state inside this run. The default legacy path is shared
+        # across runs and held by whoever created it, so a later run finds the writer unavailable and
+        # the controller cannot start.
+        env["NDNSF_CONTROLLER_GENERATION_STATE"] = str(OUT / "controller-generation.state")
+        # The app client refuses to run without an explicit operator state root; keep it inside the run
+        # so repeated runs cannot share or inherit one another's journal.
+        app_state_root = OUT / "app-state"
+        app_state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        env["NDNSF_DI_STATE_ROOT"] = str(app_state_root)
         env["NDNSF_HANDLER_THREADS"] = "1"
         env["NDNSF_ACK_THREADS"] = "1"
         env["NDNSF_SVS_ASYNC_PUBLISH"] = "0"
@@ -338,6 +347,9 @@ def main() -> None:
                                         "--timeout-ms", "60000",
                                         "--input-size", "32",
                                         "--predeployed-artifacts",
+                                        # This MiniNDN run keeps its app state under the volatile run
+                                        # directory; the client requires that acknowledgement explicitly.
+                                        "--test-only-allow-ephemeral-app-state",
                                     ]),
                                     env, procs)
         user_proc.wait(timeout=90)

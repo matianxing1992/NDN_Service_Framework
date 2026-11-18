@@ -41,6 +41,7 @@ GROUP = "/NDNSF-DistributeInference/example/group"
 CONTROLLER = "/NDNSF-DistributeInference/example/controller"
 USER = "/NDNSF-DistributeInference/example/user"
 PROVIDER_PREFIX = "/NDNSF-DistributeInference/example/provider"
+APP_ROOT = "/" + CONTROLLER.strip("/").split("/")[0]
 POLICY_FILE = "examples/yolo_collaboration.policies"
 TRUST_SCHEMA = "examples/trust-schema.conf"
 CONFIG_FILE = str(Path(__file__).with_name("yolo_policy.yaml"))
@@ -534,7 +535,11 @@ def yolo_splitter_output(exported: dict, *, trust_anchor_file: str = "") -> Spli
             PROVIDER_PREFIX + "/A",
         ],
         services=[service],
-        trust_app_roots=["/example"],
+        # The app-root rule regex is built from these roots, so they must be the *first* component of
+        # the identities above. "/example" is the second component: it produced rules like
+        # ^<example>... that match no real name, leaving the application namespace (and the public
+        # parameters under it) without a validation rule.
+        trust_app_roots=[APP_ROOT],
         # The demo root certificate is created later in the run, but its path is fixed, so the
         # generated policy can name the file anchor up front instead of falling back to `type any`,
         # which the runtime now refuses.

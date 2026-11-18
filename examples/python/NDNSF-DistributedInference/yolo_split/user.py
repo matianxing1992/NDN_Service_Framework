@@ -41,6 +41,8 @@ def main() -> int:
                         help="Directory for generated trust schema and policy files")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--start-local-nfd", action="store_true")
+    parser.add_argument("--test-only-allow-ephemeral-app-state", action="store_true",
+                        help="acknowledge that this MiniNDN run uses a volatile app-state root")
     parser.add_argument("--predeployed-artifacts", action="store_true",
                         help="Use model shard paths recorded in the policy instead of "
                              "publishing artifacts with each request")
@@ -60,6 +62,7 @@ def main() -> int:
             group=args.group,
             permission_wait_ms=args.permission_wait_ms,
             adaptive_admission=False,
+            test_only_allow_ephemeral_state_root=args.test_only_allow_ephemeral_app_state,
         )
         x = make_input(args.input_size)
         client.register_input_encoder(SERVICE, encode_initial_request)
