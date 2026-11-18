@@ -355,6 +355,12 @@ def main() -> None:
         user_proc.wait(timeout=90)
         user_text = user_log.read_text(errors="replace")
         print(user_text)
+        # A substrings-only check would accept a case that printed the line and then exited non-zero, so the
+        # exit status is part of the verdict rather than only part of the error message.
+        if user_proc.returncode != 0:
+            raise RuntimeError(
+                f"YOLO split auto MiniNDN smoke failed rc={user_proc.returncode}; "
+                f"log={user_log}")
         if "YOLO_SPLIT_RESULT" not in user_text or "ok=true" not in user_text:
             raise RuntimeError(
                 f"YOLO split auto MiniNDN smoke failed rc={user_proc.returncode}; "

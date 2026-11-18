@@ -99,6 +99,18 @@ def main() -> int:
             return 2
 
         actual_np = decode_onnx_output(result.payload)
+        # Compare only identical shapes: NumPy would broadcast a differing trailing dimension, and a
+        # broadcast result can look close while the provider returned the wrong tensor.
+        if tuple(expected_np.shape) != tuple(actual_np.shape):
+            print(
+                "YOLO_SPLIT_RESULT "
+                f"status=true backend=onnxruntime expected={expected_source} "
+                f"input={args.input_size}x{args.input_size} "
+                f"shape={tuple(actual_np.shape)} "
+                f"expected_shape={tuple(expected_np.shape)} "
+                "max_abs_diff=nan mean_abs_diff=nan ok=false"
+            )
+            return 4
         diff = abs(expected_np - actual_np)
         max_diff = float(diff.max())
         mean_diff = float(diff.mean())
