@@ -26,6 +26,10 @@
 #include <unistd.h>
 #include <utility>
 
+#include <ndn-cxx/util/random.hpp>
+
+#include "detail/native-symmetric-crypto.hpp"
+
 namespace ndnsf::di {
 namespace {
 
@@ -33,6 +37,7 @@ using Bytes = std::vector<std::uint8_t>;
 constexpr std::uint64_t MAX_OBJECT_BYTES = 1ULL << 30;
 constexpr std::uint64_t MAX_INDEX_BYTES = 16ULL << 20;
 constexpr char HANDLE_MAGIC[] = "NDNSF-DI-STORED-MODEL-HANDLE-v1\n";
+constexpr char SEALED_HANDLE_MAGIC[] = "NDNSF-DI-STORED-MODEL-HANDLE-v2\n";
 
 void
 require(bool condition)
@@ -204,6 +209,140 @@ nativeExportStoredModelHandle(const NativeStoredModelHandle& handle,
     writeAll(fd, reinterpret_cast<const std::uint8_t*>(prefix.data()), prefix.size());
     writeAll(fd, handle.masterKey.data(), handle.masterKey.size());
   });
+}
+
+namespace {
+
+std::string
+encodeBytes(const std::vector<std::uint8_t>& bytes)
+{
+  static const char* digits = "0123456789abcdef";
+  std::string out;
+  out.reserve(bytes.size() * 2);
+  for (const auto byte : bytes) {
+    out.push_back(digits[byte >> 4]);
+    out.push_back(digits[byte & 0x0F]);
+  }
+  return out;
+}
+
+std::vector<std::uint8_t>
+decodeBytes(const std::string& text)
+{
+  require(text.size() % 2 == 0);
+  auto value = [] (char c) -> unsigned {
+    if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<unsigned>(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return static_cast<unsigned>(c - 'A' + 10);
+    require(false);
+    return 0;
+  };
+  std::vector<std::uint8_t> out;
+  out.reserve(text.size() / 2);
+  for (std::size_t index = 0; index < text.size(); index += 2)
+    out.push_back(static_cast<std::uint8_t>((value(text[index]) << 4) | value(text[index + 1])));
+  return out;
+}
+
+/** The v1 body: canonical metadata, a newline, then the raw 32-byte key. */
+std::vector<std::uint8_t>
+sealableHandleBody(const NativeStoredModelHandle& handle)
+{
+  const auto metadata = nativeCanonicalJson(NativeJson{
+    {"producer", handle.producer.toUri(ndn::name::UriFormat::CANONICAL)},
+    {"repository", handle.repository.toUri(ndn::name::UriFormat::CANONICAL)},
+    {"rootName", handle.rootName.toUri(ndn::name::UriFormat::CANONICAL)},
+    {"rootWireDigest", handle.rootWireDigest}});
+  std::vector<std::uint8_t> body(metadata.begin(), metadata.end());
+  body.push_back('\n');
+  body.insert(body.end(), handle.masterKey.begin(), handle.masterKey.end());
+  return body;
+}
+
+NativeStoredModelHandle
+decodeHandleBody(const std::vector<std::uint8_t>& body)
+{
+  const auto newline = std::find(body.begin(), body.end(), '\n');
+  require(newline != body.end() && static_cast<std::size_t>(body.end() - newline - 1) == 32);
+  NativeStoredModelHandle handle;
+  try {
+    const auto metadata = nativeParseJson(std::string(body.begin(), newline));
+    require(metadata.is_object() && metadata.size() == 4);
+    handle.producer = ndn::Name(metadata.at("producer").get<std::string>());
+    handle.repository = ndn::Name(metadata.at("repository").get<std::string>());
+    handle.rootName = ndn::Name(metadata.at("rootName").get<std::string>());
+    handle.rootWireDigest = metadata.at("rootWireDigest").get<std::string>();
+    handle.masterKey.assign(newline + 1, body.end());
+    handle.validate();
+  }
+  catch (...) {
+    require(false);
+  }
+  return handle;
+}
+
+} // namespace
+
+void
+nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
+                                    const std::filesystem::path& destination,
+                                    const NativeFileProtectionKey& protection)
+{
+  handle.validate();
+  require(!protection.keyId.empty() && protection.keyId.size() <= 64 &&
+          protection.keyId.find_first_of("\r\n\t ") == std::string::npos);
+  require(protection.key.size() == 32);
+  std::vector<std::uint8_t> nonce(12);
+  const auto first = ndn::random::generateSecureWord64();
+  const auto second = ndn::random::generateSecureWord64();
+  std::memcpy(nonce.data(), &first, 8);
+  std::memcpy(nonce.data() + 8, &second, 4);
+  const auto header = nativeCanonicalJson(NativeJson{
+    {"algorithm", "AES-256-GCM"},
+    {"keyId", protection.keyId},
+    {"nonce", encodeBytes(nonce)},
+    {"version", 1}});
+  const auto aad = std::string(SEALED_HANDLE_MAGIC) + header;
+  auto body = sealableHandleBody(handle);
+  const auto sealed = detail::cryptSymmetric(true, protection.key, nonce, body, aad);
+  const auto prefix = aad + '\n';
+  require(prefix.size() + sealed.size() <= 65536);
+  detail::writePrivateCheckpointFile(destination, {}, [&] (int fd) {
+    writeAll(fd, reinterpret_cast<const std::uint8_t*>(prefix.data()), prefix.size());
+    writeAll(fd, sealed.data(), sealed.size());
+  });
+  OPENSSL_cleanse(body.data(), body.size());
+}
+
+NativeStoredModelHandle
+nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
+                                  const NativeFileKeyResolver& resolve)
+{
+  require(static_cast<bool>(resolve));
+  auto bytes = readPrivateFile(source, 65536);
+  Cleanse guard{bytes};
+  const std::string magic(SEALED_HANDLE_MAGIC);
+  // A v1 file stays a deliberate import; never read it as if it were sealed.
+  require(bytes.size() > magic.size() &&
+          std::equal(magic.begin(), magic.end(), bytes.begin()));
+  const auto end = std::find(bytes.begin() + magic.size(), bytes.end(), '\n');
+  require(end != bytes.end());
+  const auto headerText = std::string(bytes.begin() + magic.size(), end);
+  const auto header = nativeParseJson(headerText);
+  require(header.is_object() && header.size() == 4);
+  require(header.at("version").get<std::uint64_t>() == 1);
+  require(header.at("algorithm").get<std::string>() == "AES-256-GCM");
+  const auto keyId = header.at("keyId").get<std::string>();
+  const auto nonce = decodeBytes(header.at("nonce").get<std::string>());
+  require(nonce.size() == 12);
+  auto key = resolve(keyId);
+  require(key && key->size() == 32);
+  const std::vector<std::uint8_t> sealed(end + 1, bytes.end());
+  const auto aad = std::string(SEALED_HANDLE_MAGIC) + headerText;
+  const auto body = detail::cryptSymmetric(false, *key, nonce, sealed, aad);
+  const auto handle = decodeHandleBody(body);
+  OPENSSL_cleanse(key->data(), key->size());
+  return handle;
 }
 
 NativeStoredModelHandle

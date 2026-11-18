@@ -1203,6 +1203,48 @@ BOOST_AUTO_TEST_CASE(CloseAfterFetchOrSourceReadDoesNotAdmitWork)
   BOOST_CHECK(interrupted.writes.empty());
 }
 
+BOOST_FIXTURE_TEST_CASE(SealedHandleRoundtripRequiresTheNamedKey, Fixture)
+{
+  PrivateFile file;
+  const std::vector<std::uint8_t> key(32, 0x5A);
+  nativeExportSealedStoredModelHandle(handle, file.path,
+                                      NativeFileProtectionKey{"file-key-7", key});
+  struct stat status{};
+  BOOST_REQUIRE_EQUAL(::stat(file.path.c_str(), &status), 0);
+  BOOST_CHECK_EQUAL(status.st_mode & 07777, 0600);
+
+  // Nothing identifying the model may survive in the clear.
+  {
+    std::ifstream input(file.path, std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+    BOOST_CHECK(bytes.find(handle.rootName.toUri(ndn::name::UriFormat::CANONICAL)) ==
+                std::string::npos);
+    BOOST_CHECK(bytes.find(std::string(reinterpret_cast<const char*>(key.data()), 32)) ==
+                std::string::npos);
+  }
+
+  const auto resolve = [&key] (const std::string& keyId) -> std::optional<std::vector<std::uint8_t>> {
+    if (keyId == "file-key-7")
+      return key;
+    return std::nullopt;
+  };
+  const auto loaded = nativeLoadSealedStoredModelHandle(file.path, resolve);
+  BOOST_CHECK(loaded.masterKey == handle.masterKey);
+  BOOST_CHECK(loaded.rootName == handle.rootName);
+  BOOST_CHECK_EQUAL(loaded.rootWireDigest, handle.rootWireDigest);
+
+  // An unknown key ID is a rejection, never a plaintext fallback.
+  BOOST_CHECK_THROW(nativeLoadSealedStoredModelHandle(file.path,
+    [] (const std::string&) { return std::optional<std::vector<std::uint8_t>>{}; }),
+    std::runtime_error);
+
+  // A v1 file stays an explicit import; the sealed loader must not read it.
+  PrivateFile legacy;
+  nativeExportStoredModelHandle(handle, legacy.path);
+  BOOST_CHECK_THROW(nativeLoadSealedStoredModelHandle(legacy.path, resolve), std::runtime_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::tests

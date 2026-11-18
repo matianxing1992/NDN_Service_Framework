@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,29 @@ struct NativeStoredModelHandle : NativeStoredModelReference
 void
 nativeExportStoredModelHandle(const NativeStoredModelHandle& handle,
                               const std::filesystem::path& destination);
+
+/** Dedicated file-protection key, addressed by the ID recorded in a sealed envelope. */
+struct NativeFileProtectionKey
+{
+  std::string keyId;
+  std::vector<std::uint8_t> key;
+};
+
+/** Resolve a recorded key ID to its key. An empty result means "unknown" and must be
+ * rejected rather than falling back to a plaintext read. */
+using NativeFileKeyResolver =
+  std::function<std::optional<std::vector<std::uint8_t>>(const std::string& keyId)>;
+
+/** Seal the handle so no key material is written in the clear. */
+void
+nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
+                                    const std::filesystem::path& destination,
+                                    const NativeFileProtectionKey& protection);
+
+/** Open a sealed handle with the key its envelope names. */
+NativeStoredModelHandle
+nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
+                                  const NativeFileKeyResolver& resolve);
 
 /** Load a bounded, current-user-owned regular 0600 file without following a final symlink. */
 NativeStoredModelHandle
