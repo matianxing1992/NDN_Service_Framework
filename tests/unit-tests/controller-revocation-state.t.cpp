@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
+#include "ndn-service-framework/AbePublicParametersArchive.hpp"
 #include "ndn-service-framework/FileKeyRing.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
@@ -810,6 +811,57 @@ BOOST_AUTO_TEST_CASE(FileKeyRingResolvesByConfiguredId)
   }
   BOOST_CHECK_THROW(loadFileKeyRingEntry("file-key-2"), std::runtime_error);
   ::unsetenv("NDNSF_FILE_KEYRING");
+}
+
+namespace {
+std::string
+entryName(const ndn::Name& identity, uint64_t generation, uint64_t epoch)
+{
+  return archivedPublicParametersName(identity, generation, epoch)
+    .toUri(ndn::name::UriFormat::CANONICAL);
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(ArchivedPublicParametersKeepTheirPublishedName)
+{
+  const ndn::Name identity("/controller/a");
+  const auto expected = archivedPublicParametersName(identity, 1002, 3);
+  BOOST_REQUIRE_EQUAL(expected.size(), 5u);
+  BOOST_CHECK_EQUAL(expected.get(2).toUri(), std::string("PUBPARAMS"));
+  BOOST_CHECK_EQUAL(expected.get(3).toUri(), std::string("KP-ABE"));
+  BOOST_CHECK_EQUAL(expected.get(4).toVersion(), 1002003u);
+  BOOST_CHECK_EQUAL(expected.toUri(ndn::name::UriFormat::CANONICAL),
+                    entryName(identity, 1002, 3));
+  BOOST_CHECK_THROW(archivedPublicParametersName(identity, 0, 3), std::invalid_argument);
+
+  ControllerGenerationStore::AbeHistoryEntry entry;
+  entry.generationTimestamp = 1002;
+  entry.epoch = 3;
+  entry.publicParameters = std::string("params-wire\0", 12);
+  entry.publicParametersName = expected.toUri(ndn::name::UriFormat::CANONICAL);
+  entry.masterSecret = "secret";
+  entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
+
+  bool signedOnce = false;
+  const auto sign = [&signedOnce] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1, 2, 3});
+    signedOnce = true;
+  };
+  ndn::Data answer;
+  BOOST_REQUIRE(buildArchivedPublicParametersData(entry, identity, sign, answer));
+  BOOST_CHECK(signedOnce);
+  BOOST_CHECK(answer.getName() == expected);
+  BOOST_CHECK_EQUAL(answer.getContent().value_size(), 12u);
+
+  // A name that does not belong to the artifact is refused rather than served.
+  auto mismatched = entry;
+  mismatched.publicParametersName = "/controller/other/PUBPARAMS/KP-ABE/v=1002003";
+  ndn::Data refused;
+  BOOST_CHECK(!buildArchivedPublicParametersData(mismatched, identity, sign, refused));
+  auto empty = entry;
+  empty.publicParameters.clear();
+  BOOST_CHECK(!buildArchivedPublicParametersData(empty, identity, sign, refused));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
