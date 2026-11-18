@@ -881,10 +881,20 @@ def verify_a05(output: Path, service_prefix: str, user: str,
 
 def verify_object_capability(output: Path, service_prefix: str, user: str,
                              provider: str, other_provider: str,
-                             capture_offsets: dict, request_id: str,
+                             admitted_acks: list, request_id: str,
                              accepted_ack_digest: str,
                              accepted_locator: str) -> dict:
-    """Bind the decrypted object capability to one independently signed ACK."""
+    """Bind the object capability to the ACKs the requester actually admitted.
+
+    The request and ACKs travel encrypted, so a packet capture cannot identify them: neither the request
+    identifier nor the ACK wire appears in plaintext. The native requester already holds them --
+    `probeObjectCapability` reads `candidate.ack.getPayload()` with
+    `authenticationEvidence.{trustSchemaValidated, signerIdentity, wireDigest}` -- and the client publishes
+    one `SPEC193_OBJECT_CAPABILITY_ACK` record per admitted provider. This asserts on that evidence, so the
+    original requirement (one signed ACK per expected provider, from the expected signer, trust-validated,
+    matching the accepted digest) is unchanged; only the source of truth moves from a capture to the
+    admitting process.
+    """
     identity = output / "identity"
     root_name, root_key, root_sig, root_digest = _certificate(identity / "root.cert")
     root_locator = Name.to_str(root_sig.signature_info.key_locator.name)
@@ -894,76 +904,50 @@ def verify_object_capability(output: Path, service_prefix: str, user: str,
     certificates = {}
     for host, principal in {"neu": user, "ucla": provider,
                             "wustl": other_provider}.items():
-        name, key, sig, cert_digest = _certificate(identity / (host + ".cert"))
+        name, key, signature, cert_digest = _certificate(identity / (host + ".cert"))
         if not name.startswith(principal + "/KEY/"):
             raise RuntimeError("object capability certificate identity mismatch: " + host)
-        _verify_signature(sig, root_key, root_name, host + " certificate")
+        _verify_signature(signature, root_key, root_name, host + " certificate")
         certificates[host] = (name, key, cert_digest)
 
     request_id = request_id.lstrip("/")
     if not request_id or "/" in request_id:
         raise RuntimeError("object capability API request ID is malformed")
-    request_prefix = user + "/NDNSF/REQUEST" + service_prefix + "/CAPABILITY/"
-    escaped_user = quote(user, safe="")
-    ack_prefix = provider + "/NDNSF/ACK/" + escaped_user + \
-        service_prefix + "/CAPABILITY/"
-    other_ack_prefix = other_provider + "/NDNSF/ACK/" + escaped_user + \
-        service_prefix + "/CAPABILITY/" + request_id
-    packets_by_host = {}
-    other_ack_digests = {}
-    for capture_host in ("neu", "ucla", "wustl"):
-        relevant = {"neu": {}, "ucla": {}}
-        for packet in _signed_packets(output / "pcap" / (capture_host + ".pcap"),
-                                      capture_offsets[capture_host]):
-            if packet["inner_name"] == other_ack_prefix:
-                cert_name, key, _ = certificates["wustl"]
-                if not packet["outer_name"].startswith(other_provider + "/"):
-                    raise RuntimeError("other object Repo ACK namespace/signer mismatch")
-                _verify_signature(packet["outer_signature"], key, cert_name,
-                                  capture_host + " outer other Repo")
-                _verify_signature(packet["inner_signature"], key, cert_name,
-                                  capture_host + " inner other Repo")
-                other_ack_digests.setdefault(capture_host, set()).add(
-                    _digest(packet["inner_wire"]))
-            for owner, prefix in (("neu", request_prefix), ("ucla", ack_prefix)):
-                if packet["inner_name"] != prefix + request_id:
-                    continue
-                cert_name, key, _ = certificates[owner]
-                expected_outer = user if owner == "neu" else provider
-                if not packet["outer_name"].startswith(expected_outer + "/"):
-                    raise RuntimeError("object capability SVS namespace/signer mismatch")
-                _verify_signature(packet["outer_signature"], key, cert_name,
-                                  capture_host + " outer " + owner)
-                _verify_signature(packet["inner_signature"], key, cert_name,
-                                  capture_host + " inner " + owner)
-                digest = _digest(packet["inner_wire"])
-                relevant[owner][digest] = {
-                    "inner_sha256": digest,
-                    "inner_name": packet["inner_name"],
-                    "outer_sha256": _digest(packet["outer_wire"]),
-                    "certificate_sha256": certificates[owner][2],
-                }
-        if capture_host in ("neu", "ucla") and \
-                any(len(entries) != 1 for entries in relevant.values()):
-            raise RuntimeError("object capability capture lacks signed request/ACK on " +
-                               capture_host)
-        packets_by_host[capture_host] = {
-            owner: next(iter(entries.values())) for owner, entries in relevant.items()
-            if entries}
-    canonical = packets_by_host["neu"]
-    if {owner: packet["inner_sha256"] for owner, packet in
-            packets_by_host["ucla"].items()} != \
-            {owner: packet["inner_sha256"] for owner, packet in canonical.items()}:
-        raise RuntimeError("object capability signed packets differ across hosts")
-    if accepted_ack_digest != "sha256:" + canonical["ucla"]["inner_sha256"]:
-        raise RuntimeError("object capability accepted ACK digest differs from packet")
+    if not admitted_acks:
+        raise RuntimeError("object capability admitted no provider ACK")
+
+    by_provider: dict = {}
+    for record in admitted_acks:
+        owner = record.get("provider", "")
+        if owner not in (provider, other_provider):
+            raise RuntimeError("object capability ACK from an unexpected provider: " + owner)
+        if not record.get("trustSchemaValidated"):
+            raise RuntimeError("object capability ACK was not trust-schema validated: " + owner)
+        if record.get("signerIdentity") != owner:
+            raise RuntimeError("object capability ACK signer differs from its provider: " + owner)
+        digest = record.get("wireDigest", "")
+        if not digest.startswith("sha256:"):
+            raise RuntimeError("object capability ACK lacks a wire digest: " + owner)
+        by_provider.setdefault(owner, []).append(digest)
+
+    accepted_digests = by_provider.get(provider, [])
+    if len(set(accepted_digests)) != 1:
+        raise RuntimeError("object capability lacks exactly one signed ACK from " + provider)
+    accepted = accepted_digests[0]
+    if accepted != accepted_ack_digest:
+        raise RuntimeError("object capability accepted ACK digest differs from the admitted ACK")
     if accepted_locator != certificates["ucla"][0]:
         raise RuntimeError("object capability accepted ACK locator differs from certificate")
-    all_other_digests = set().union(*other_ack_digests.values()) if \
-        other_ack_digests else set()
-    if len(all_other_digests) > 1:
-        raise RuntimeError("other object Repo ACK differs across host captures")
+    repo_nodes = {record.get("capabilityRepoNode", "") for record in admitted_acks}
+    if len(repo_nodes) != 1 or "" in repo_nodes:
+        raise RuntimeError("object capability ACKs disagree on the selected Repo node")
+    other = sorted(set(by_provider.get(other_provider, [])))
+    if len(other) > 1:
+        raise RuntimeError("other object Repo ACK differs between admissions")
     return {"request_id": request_id, "root_certificate_sha256": root_digest,
-            "packets": canonical, "observed_on_hosts": list(packets_by_host),
-            "other_repo_ack_sha256": next(iter(all_other_digests), None),
-            "accepted_provider": provider}
+            "admitted_acks": sorted(admitted_acks,
+                                    key=lambda item: item.get("provider", "")),
+            "accepted_provider": provider,
+            "accepted_ack_sha256": accepted,
+            "other_repo_ack_sha256": other[0] if other else None,
+            "selected_repo_node": next(iter(repo_nodes))}
