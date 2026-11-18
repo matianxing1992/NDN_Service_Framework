@@ -19,6 +19,7 @@
 #include <stdexcept>
 
 #include <ndn-cxx/util/random.hpp>
+#include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <nac-abe/algo/abe-support.hpp>
@@ -934,6 +935,53 @@ BOOST_AUTO_TEST_CASE(HistoricalPublicParametersBindTheOriginalObject)
   auto empty = entry;
   empty.publicParameters.clear();
   BOOST_CHECK(!buildHistoricalPublicParametersData(empty, identity, sign, refused));
+}
+
+BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
+{
+  // A consumer signs the request itself: the signature must cover the name and the body, so neither
+  // can be swapped for another requester's or another scope's.
+  DefaultGenerationFiles files;
+  const auto identityDir = files.root / "requester";
+  std::filesystem::create_directory(identityDir);
+  ndn::KeyChain keyChain("pib-sqlite3:" + identityDir.string(),
+                         "tpm-file:" + identityDir.string(), false);
+  const ndn::Name identity("/user/history");
+  keyChain.createIdentity(identity);
+  const auto certificate = keyChain.getPib().getIdentity(identity).getDefaultKey()
+    .getDefaultCertificate();
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "/SERVICE/ObjectDetection";
+  request.recipientCertificate = certificate.getName();
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+
+  ndn::Interest interest;
+  signHistoricalKeyRequest(interest, request, keyChain,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      certificate.getName()));
+  const auto requestName = makeHistoricalKeyRequestName(request.controllerPrefix, request);
+  BOOST_CHECK(interest.getName().getSubName(0, requestName.size()) == requestName);
+  HistoricalKeyRequest carried;
+  const auto parameters = interest.getApplicationParameters();
+  BOOST_REQUIRE(decodeHistoricalKeyRequest(std::string(
+    reinterpret_cast<const char*>(parameters.value()), parameters.value_size()), carried));
+  BOOST_CHECK(carried == request);
+
+  const auto& publicKey = certificate.getPublicKey();
+  BOOST_CHECK(ndn::security::verifySignature(interest, publicKey));
+  // Changing the body without re-signing must invalidate that signature.
+  ndn::Interest tampered = interest;
+  HistoricalKeyRequest widened = request;
+  widened.policy = "/SERVICE/Everything";
+  const auto otherBody = encodeHistoricalKeyRequest(widened);
+  tampered.setApplicationParameters(ndn::Buffer(
+    reinterpret_cast<const uint8_t*>(otherBody.data()), otherBody.size()));
+  BOOST_CHECK(!ndn::security::verifySignature(tampered, publicKey));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndExpiry)

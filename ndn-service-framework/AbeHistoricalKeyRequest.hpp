@@ -6,7 +6,10 @@
 #include <string>
 
 #include <ndn-cxx/data.hpp>
+#include <ndn-cxx/interest.hpp>
 #include <ndn-cxx/name.hpp>
+#include <ndn-cxx/security/key-chain.hpp>
+#include <ndn-cxx/security/signing-info.hpp>
 
 namespace ndn_service_framework {
 
@@ -50,6 +53,16 @@ historicalKeyRequestDigest(const HistoricalKeyRequest& request);
 ndn::Name
 makeHistoricalKeyRequestName(const ndn::Name& controllerPrefix,
                              const HistoricalKeyRequest& request);
+
+/** Build and sign the Interest that carries a request.
+ *
+ * The body travels as the Interest parameters, so the signature covers it together with the name.
+ * The caller supplies the signing parameters; a consumer signs with the certificate the request
+ * names as the recipient, which is the only certificate the Controller will mint for.
+ */
+void
+signHistoricalKeyRequest(ndn::Interest& interest, const HistoricalKeyRequest& request,
+                         ndn::KeyChain& keyChain, const ndn::security::SigningInfo& signing);
 
 /** Check the name a request arrived under against the body that travelled with it.
  *

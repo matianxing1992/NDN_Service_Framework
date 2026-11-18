@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include <ndn-cxx/security/interest-signer.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 
 namespace ndn_service_framework {
@@ -124,14 +125,30 @@ makeHistoricalKeyRequestName(const ndn::Name& controllerPrefix,
   return name;
 }
 
+void
+signHistoricalKeyRequest(ndn::Interest& interest, const HistoricalKeyRequest& request,
+                         ndn::KeyChain& keyChain, const ndn::security::SigningInfo& signing)
+{
+  const auto body = encodeHistoricalKeyRequest(request);
+  interest.setName(makeHistoricalKeyRequestName(request.controllerPrefix, request));
+  interest.setApplicationParameters(ndn::Buffer(reinterpret_cast<const uint8_t*>(body.data()),
+                                                body.size()));
+  ndn::security::InterestSigner signer(keyChain);
+  signer.makeSignedInterest(interest, signing);
+}
+
 bool
 matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controllerPrefix,
                               const HistoricalKeyRequest& request)
 {
-  if (controllerPrefix.empty() || !name.equals(makeHistoricalKeyRequestName(controllerPrefix,
-                                                                            request)))
+  if (controllerPrefix.empty())
     return false;
-  return name.get(-1).toUri() == historicalKeyRequestDigest(request).substr(7);
+  // A Signed Interest appends its signature components to the name, so the request name is the
+  // prefix and the trailing signature must not be read as part of it.
+  const auto expected = makeHistoricalKeyRequestName(controllerPrefix, request);
+  if (name.size() < expected.size() || name.getSubName(0, expected.size()) != expected)
+    return false;
+  return expected.get(-1).toUri() == historicalKeyRequestDigest(request).substr(7);
 }
 
 bool
