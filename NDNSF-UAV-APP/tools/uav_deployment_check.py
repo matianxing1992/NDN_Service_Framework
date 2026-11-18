@@ -17,7 +17,6 @@ import stat
 import subprocess
 import sys
 import uuid
-import tempfile
 
 
 def run(cmd: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -128,7 +127,10 @@ def check_nfd_rib_authorization(reporter: Reporter, namespace: str) -> None:
         text = result.stdout or ""
         if result.returncode == 0:
             added = True
-            reporter.ok("NFD accepts prefix registration under " + namespace)
+            # This proves the forwarder accepts registration from the invoking identity. It does not prove a
+            # specific role identity is authorised; that needs the role's own credential home.
+            reporter.ok("NFD accepts prefix registration under " + namespace +
+                        " from the invoking identity")
         elif "authorization rejected" in text or "403" in text:
             reporter.fail(
                 "NFD rejects prefix registration under " + namespace +
@@ -291,37 +293,33 @@ def check_trust_schema(reporter: Reporter, trust_schema: Path) -> None:
                       "so an otherwise valid --root-cert path elsewhere does not help")
         return
     reporter.ok(f"trust anchor resolves: {anchor_path}")
+    # Only existence is checked here. Multi-anchor schemas, paths containing spaces and certificate validity
+    # windows are decided by the native validator, so a deployment that passes this check can still be
+    # refused there.
 
 
 def check_yolo(reporter: Reporter, model: str, worker_script: str) -> None:
-    worker = check_file(reporter, worker_script, "YOLO worker script")
-    if not worker.exists():
+    model_path = Path(model)
+    worker = Path(worker_script)
+    if not model_path.is_file():
+        reporter.fail(f"YOLO model file not found: {model_path}")
+        return
+    if not worker.is_file():
+        reporter.fail(f"YOLO worker script not found: {worker}")
         return
     check_binary(reporter, "python3")
     if not shutil.which("python3"):
         return
     try:
-        with tempfile.NamedTemporaryFile(suffix=".jpg") as image:
-            # A tiny invalid file is enough to test import/model load readiness:
-            # the worker prints ready before reading image paths.
-            image.write(b"not-a-real-image")
-            image.flush()
-            proc = subprocess.Popen(
-                ["python3", str(worker), "--model", model, "--classes", "car,truck"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True)
-            try:
-                line = proc.stdout.readline().strip() if proc.stdout else ""
-                if line.startswith("ready=true"):
-                    reporter.ok(f"YOLO worker can load model: {model}")
-                else:
-                    reporter.fail(f"YOLO worker did not become ready: {line}")
-            finally:
-                if proc.stdin:
-                    proc.stdin.write("__quit__\n")
-                    proc.stdin.flush()
-                proc.wait(timeout=5)
-    except Exception as exc:  # pragma: no cover - deployment helper
+        result = subprocess.run(
+            ["python3", str(worker), "--model", str(model_path), "--classes", "car,truck"],
+            input="__quit__\n", capture_output=True, text=True, timeout=35, check=False)
+        line = result.stdout.partition("\n")[0]
+        if result.returncode == 0 and line.startswith("ready=true"):
+            reporter.ok(f"YOLO worker can load model: {model_path}")
+        else:
+            reporter.fail(f"YOLO worker did not become ready (exit {result.returncode}): {line}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
         reporter.fail(f"YOLO worker check failed: {exc}")
 
 
@@ -402,9 +400,9 @@ def main() -> int:
     parser.add_argument("--allow-multiple-certs", action="store_true",
                         help="warn instead of failing when an identity has multiple keys")
     parser.add_argument("--skip-nfd", action="store_true")
-    parser.add_argument("--video-source", default="NDNSF-UAV-APP/videos/drone.mp4")
-    parser.add_argument("--yolo-model", default="yolo26n.pt")
-    parser.add_argument("--yolo-worker-script", default="NDNSF-UAV-APP/tools/yolo_detect_worker.py")
+    parser.add_argument("--video-source")
+    parser.add_argument("--yolo-model")
+    parser.add_argument("--yolo-worker-script")
     parser.add_argument("--flight-controller-backend",
                         choices=["mock", "udp", "mavlink-router", "serial"],
                         default="mock")
@@ -474,9 +472,14 @@ def main() -> int:
     check_binary(reporter, "ffmpeg")
     if args.role == "drone":
         check_recording_config(reporter, app_fields)
-        video_source = app_fields.get("video-source", args.video_source)
+        video_source = args.video_source or app_fields.get("video-source", "auto")
         if video_source == "auto":
-            reporter.ok("video source is auto; runtime will select a V4L2 camera or fallback file")
+            video_fallback = app_fields.get("video-fallback")
+            if video_fallback:
+                check_file(reporter, str(resolve_path(video_fallback, app_config.parent)),
+                           "video fallback")
+            else:
+                reporter.ok("video source is auto; no sample is configured if V4L2 is unavailable")
         else:
             check_file(reporter, str(resolve_path(video_source, cwd)), "video source")
         backend = app_fields.get("flight-controller-backend", args.flight_controller_backend)
@@ -492,8 +495,9 @@ def main() -> int:
                                 app_fields.get("mavlink-serial-device", args.mavlink_serial_device),
                                 app_fields.get("mavlink-serial-baud", args.mavlink_serial_baud))
     elif args.role == "ground-station":
-        yolo_model = app_fields.get("yolo-model", args.yolo_model)
-        yolo_worker = app_fields.get("yolo-worker-script", args.yolo_worker_script)
+        yolo_model = args.yolo_model or app_fields.get("yolo-model", "yolo26n.pt")
+        yolo_worker = args.yolo_worker_script or app_fields.get(
+            "yolo-worker-script", "NDNSF-UAV-APP/tools/yolo_detect_worker.py")
         check_yolo(reporter, yolo_model, yolo_worker)
 
     print()

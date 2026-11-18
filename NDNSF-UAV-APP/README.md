@@ -725,7 +725,10 @@ the NFD authorization configuration. Do not work around this with a `certfile an
 grant: that makes the check pass while leaving the deployment unauthenticated.
 `tools/uav_deployment_check.py` probes one unused prefix under the deployment
 namespace and reports a rejected registration instead of letting discovery wait
-for the first actor to fail.
+for the first actor to fail. The probe runs as the **invoking** process, so it
+proves the forwarder accepts registration from that identity — not that a specific
+role identity is authorised; verifying a role needs its own credential home and a
+probe issued as that identity.
 
 Start order matters as well. The NAC public parameters must be published before a
 drone starts, so bring the deployment up as controller, then ground station, then
@@ -1166,8 +1169,10 @@ drone video-control response reports the effective `capture`, `recording`,
 
 For real deployment, `UavDroneApp` reads `video-source auto` from the drone
 config by default. In this mode it selects the first local V4L2 capture device
-such as `/dev/video0`; if no usable camera is present, it falls back to the
-sample video `videos/drone.mp4` for local troubleshooting. A deployment can
+such as `/dev/video0`. If no usable camera is present, it uses `video-fallback`,
+resolved relative to the drone config file. The checked-in configs select the
+tracked sample video. Without a configured fallback, camera operations report
+that no source is available. A deployment can
 force a specific USB camera or file by setting `video-source /dev/videoX` or a
 file path in the drone config. USB UVC camera capture uses adaptive defaults:
 `camera-v4l2-input-format auto`, `camera-v4l2-input-size auto`, and
