@@ -1356,6 +1356,49 @@ BOOST_FIXTURE_TEST_CASE(HandleWrittenBeforeAKeyRotationStillOpens, Fixture)
   ::unsetenv("NDNSF_FILE_KEYRING");
 }
 
+BOOST_AUTO_TEST_CASE(ChildOpensTheSealedHandleWrittenByItsParent)
+{
+  const char* handlePath = ::getenv("SPEC243_HANDLE_PATH");
+  if (handlePath == nullptr || *handlePath == '\0')
+    return;  // not the child invocation
+  const auto opened = nativeOpenStoredModelHandle(handlePath, nativeFileKeyResolverFromKeyRing());
+  BOOST_CHECK_EQUAL(opened.masterKey.size(), 32u);
+  // The property under test is that a fresh process recovers a usable handle from the sealed
+  // file; field equality is covered in-process, where the fixture is known.
+  BOOST_CHECK(!opened.rootName.empty());
+}
+
+BOOST_FIXTURE_TEST_CASE(SealedHandleReopensInAFreshProcess, Fixture)
+{
+  // The child invocation must never spawn again: without this guard the parent case would run
+  // inside the child and recurse.
+  if (::getenv("SPEC243_HANDLE_PATH") != nullptr)
+    return;
+  // A separate process must recover the same model from the sealed file alone; an in-process
+  // reopen would not exercise the on-disk form a restart actually sees.
+  PrivateFile file;
+  const auto ring = file.directory / "ring";
+  {
+    std::ofstream out(ring);
+    out << "key-1 " << std::string(64, 'a') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  const auto protection = nativeFileProtectionKeyFromEnvironment();
+  BOOST_REQUIRE(protection);
+  nativeExportSealedStoredModelHandle(handle, file.path, *protection);
+
+  const auto self = std::filesystem::read_symlink("/proc/self/exe").string();
+  ::setenv("SPEC243_HANDLE_PATH", file.path.c_str(), 1);
+  const auto command = self +
+    " --run_test=StoredModelCapability/ChildOpensTheSealedHandleWrittenByItsParent --log_level=message > /tmp/spec243-child.log 2>&1";
+  const int status = std::system(command.c_str());
+  ::unsetenv("SPEC243_HANDLE_PATH");
+  ::unsetenv("NDNSF_FILE_KEYRING");
+  BOOST_REQUIRE_EQUAL(status, 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndnsf::di::tests
