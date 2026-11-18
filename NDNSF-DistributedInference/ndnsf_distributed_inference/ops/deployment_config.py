@@ -194,11 +194,20 @@ def load_deployment(path, *, prepare_only=False):
     config = _object(_read_json(source), "deployment", {
         "schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority", "operation",
-        "repo_benchmark",
+        "repo_benchmark", "probes",
     }, {"schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority"})
     if config["schema"] != "ndnsf-di-deployment-v1":
         _fail("schema", "unsupported schema")
+    if "probes" in config:
+        probes = _object(config["probes"], "probes", {"enabled", "ping_count"},
+                         {"enabled"})
+        _boolean(probes["enabled"], "probes.enabled")
+        if "ping_count" in probes:
+            _integer(probes["ping_count"], "probes.ping_count", 1)
+            if probes["ping_count"] > 10:
+                _fail("probes.ping_count", "at most 10 ping probes are supported")
+
     _identifier(config["deployment_id"], "deployment_id")
     if prepare_only:
         config = preparation_deployment(config)
@@ -372,8 +381,11 @@ def load_deployment(path, *, prepare_only=False):
                     _fail("node.gpu_devices", "allocation-relative index exceeds reservation")
         if len(set(devices)) != len(devices):
             _fail("node.gpu_devices", "duplicate device")
-        nfd = _object(node["nfd"], "node.nfd", {"mode", "socket", "address", "port"},
+        nfd = _object(node["nfd"], "node.nfd", {"mode", "socket", "address", "port", "log_level"},
                       {"mode", "socket", "address", "port"})
+        if "log_level" in nfd and nfd["log_level"] not in {
+                "NONE", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"}:
+            _fail("node.nfd.log_level", "expected NONE, ERROR, WARN, INFO, DEBUG or TRACE")
         if not isinstance(nfd["mode"], str) or nfd["mode"] not in {"managed", "external"}:
             _fail("node.nfd.mode", "expected managed or external")
         nfd["socket"] = resolve(nfd["socket"], "node.nfd.socket")

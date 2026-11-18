@@ -5,6 +5,8 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import re
+import site
 from pathlib import Path
 import stat
 import subprocess
@@ -14,6 +16,13 @@ import uuid
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def child_pythonpath():
+    """Python search path that survives an isolated HOME for child processes."""
+    user_site = site.getusersitepackages()
+    inherited = os.environ.get("PYTHONPATH", "")
+    return os.pathsep.join(value for value in (user_site, inherited) if value)
 
 
 def capture(command, env=None):
@@ -27,10 +36,16 @@ def prepare_identities(root, prefix, namespace, group, actors):
     environments = {}
     certificates = {}
 
+    # The fixture isolates each actor's HOME for ndnsec; that also disables the
+    # invoking user's site-packages, so carry the effective Python search path
+    # (and runtime library path) into the child processes explicitly.
     def environment(home):
-        return dict(PATH=os.environ["PATH"], HOME=str(home),
-                    NDN_CLIENT_PIB="pib-sqlite3:" + str(home / ".ndn"),
-                    NDN_CLIENT_TPM="tpm-file:")
+        env = dict(PATH=os.environ["PATH"], HOME=str(home),
+                   NDN_CLIENT_PIB="pib-sqlite3:" + str(home / ".ndn"),
+                   NDN_CLIENT_TPM="tpm-file:", PYTHONPATH=child_pythonpath())
+        if os.environ.get("LD_LIBRARY_PATH"):
+            env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
+        return env
 
     ca_env = environment(ca)
     capture(["ndnsec", "key-gen", "-t", "e", namespace], ca_env)
@@ -75,7 +90,7 @@ def secure_random(path):
 
 def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_sha256=None,
                        tokenizer=None, layer_cut=None, rank_weights=None,
-                       prepared_workload=None):
+                       prepared_workload=None, link_bw=None, link_delay=None, probe=True):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import (
@@ -113,7 +128,7 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
         with tempfile.TemporaryDirectory(dir=root, prefix="catalog-home-") as home:
             env = os.environ.copy()
             env.update(HOME=home, NDN_CLIENT_PIB="pib-sqlite3:" + str(Path(home) / ".ndn"),
-                       NDN_CLIENT_TPM="tpm-file:")
+                       NDN_CLIENT_TPM="tpm-file:", PYTHONPATH=child_pythonpath())
             prepare = [sys.executable, str(Path(__file__).with_name("prepare-workload.py")),
                        "--output", str(bundle), "--requester", namespace + "/requester",
                        "--protection-epoch", epoch]
@@ -256,8 +271,17 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
         topology.write_text(topology_text.replace("\n[links]", "h242p3:\n\n[links]")
                             .replace("\n[faces]", "h242relay:h242p3 delay=2ms bw=1000\n\n[faces]")
                             + "h242relay:h242p3 cost=10\n", encoding="utf-8")
+    if link_bw is not None or link_delay is not None:
+        text = Path(topology).read_text()
+        if link_bw is not None:
+            text = re.sub(r"bw=[0-9.]+", f"bw={link_bw:g}", text)
+        if link_delay is not None:
+            text = re.sub(r"delay=[0-9.]+ms", f"delay={link_delay:g}ms", text)
+        topology = root / "minindn-topology.conf"
+        topology.write_text(text, encoding="utf-8")
     config = {
         "schema": "ndnsf-di-deployment-v1",
+        "probes": {"enabled": bool(probe), "ping_count": 3},
         "deployment_id": "spec234-qwen-int4" if real_model else "spec242-hybrid",
         "release": {"prefix": str(prefix), "manifest": str(ledger)},
         "platform": {"kind": "minindn", "topology": str(topology),
@@ -330,6 +354,10 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=Path)
     parser.add_argument("--layer-cut", type=int)
     parser.add_argument("--rank-weights", nargs="+", type=int)
+    parser.add_argument("--link-bw", type=float, help="Per-link bandwidth Mbps for every topology link")
+    parser.add_argument("--link-delay", type=float, help="Per-link one-way delay ms for every topology link")
+    parser.add_argument("--no-probe", action="store_false", dest="probe",
+                        help="Skip the post-READY datapath/CPU probes")
     args = parser.parse_args()
     source_options = (args.source_sha256, args.tokenizer, args.layer_cut)
     if args.source and any(value is None for value in source_options):
@@ -341,4 +369,5 @@ if __name__ == "__main__":
     prepare_deployment(args.output.resolve(), args.prefix.resolve(strict=True),
                        args.release_manifest.resolve(strict=True), args.journal_root.resolve(),
                        args.source, args.source_sha256, args.tokenizer, args.layer_cut,
-                       args.rank_weights, args.prepared_workload)
+                       args.rank_weights, args.prepared_workload,
+                       args.link_bw, args.link_delay, args.probe)

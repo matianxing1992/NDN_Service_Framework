@@ -1513,6 +1513,27 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
     for (const auto& output : node.output())
       if (!output.empty()) referenced.insert(output);
   }
+  // A shape or scalar supplied by a Constant node is part of the entry's own
+  // parameters, not an external boundary: without the producer the copied
+  // Reshape references a name no initializer or Constant provides. Only
+  // Constant nodes are absorbed; any other producer stays a boundary input.
+  // Absorbed parameter outputs are never exposed as boundary outputs: the
+  // sibling entries that share the operand carry their own copy, so publishing
+  // it would offer another entry's parameter as this entry's activation.
+  std::set<std::string> absorbedOutputs;
+  for (std::uint64_t index = 0; index < nodeCount; ++index) {
+    if (owned.count(index) != 0)
+      continue;
+    const auto& node = graph.node(static_cast<int>(index));
+    if (node.op_type() != "Constant")
+      continue;
+    for (const auto& output : node.output()) {
+      if (!output.empty() && referenced.count(output) != 0) {
+        owned.insert(index);
+        absorbedOutputs.insert(output);
+      }
+    }
+  }
   std::set<std::string> initializerNames;
   for (int i = 0; i < graph.initializer_size(); ++i)
     initializerNames.insert(graph.initializer(i).name());
@@ -1599,6 +1620,7 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
       for (const auto& output : graph.node(static_cast<int>(index)).output())
         if (output == name) producedInside = true;
     if (!producedInside) continue;
+    if (absorbedOutputs.count(name) != 0) continue;
     // A tensor consumed outside this entry, or one the source declares as a
     // model output, must be exposed; anything else internal stays internal.
     const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
@@ -3022,8 +3044,71 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
       changed = true;
       break;
     }
-    if (range && !changed)
-      throw std::invalid_argument("tensor shard Reshape is missing its inline INT64 shape");
+    // This export keeps the shape operands as Constant nodes instead of
+    // top-level initializers; rewrite the same trailing width slot there.
+    if (!changed) {
+      for (auto& constant : *graph->mutable_node()) {
+        if (constant.op_type() != "Constant" || constant.output_size() != 1 ||
+            constant.output(0) != targetName)
+          continue;
+        for (auto& attribute : *constant.mutable_attribute()) {
+          if (attribute.name() != "value" || !attribute.has_t())
+            continue;
+          auto* tensor = attribute.mutable_t();
+          if (tensor->data_type() != onnx::TensorProto::INT64 ||
+              tensor->data_location() != onnx::TensorProto::DEFAULT ||
+              tensor->raw_data().empty() ||
+              tensor->raw_data().size() % sizeof(std::int64_t) != 0)
+            break;
+          std::string bytes = tensor->raw_data();
+          const auto offset = bytes.size() - sizeof(std::int64_t);
+          if (range) {
+            std::int64_t width = 0;
+            std::memcpy(&width, bytes.data() + offset, sizeof(width));
+            if (width <= 0 || static_cast<std::uint64_t>(width) != sourceWidth)
+              throw std::invalid_argument("tensor shard Reshape has an unexpected source width");
+          }
+          std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
+          tensor->set_raw_data(bytes.data(), bytes.size());
+          ++changes;
+          changed = true;
+          break;
+        }
+        if (changed)
+          break;
+      }
+    }
+    if (range && !changed) {
+      std::string detail = "no initializer or Constant names the shape operand";
+      detail += " operand=" + targetName + " reshape=" + node.name();
+      for (const auto& init : graph->initializer()) {
+        if (init.name() != targetName)
+          continue;
+        detail = "initializer dtype=" + std::to_string(init.data_type()) +
+                 " location=" + std::to_string(init.data_location()) +
+                 " raw=" + std::to_string(init.raw_data().size()) +
+                 " int64=" + std::to_string(init.int64_data_size());
+        break;
+      }
+      for (const auto& constant : graph->node()) {
+        if (constant.op_type() != "Constant" || constant.output_size() != 1 ||
+            constant.output(0) != targetName)
+          continue;
+        for (const auto& attribute : constant.attribute()) {
+          if (!attribute.has_t())
+            continue;
+          const auto& tensor = attribute.t();
+          detail = "constant attribute=" + attribute.name() +
+                   " dtype=" + std::to_string(tensor.data_type()) +
+                   " location=" + std::to_string(tensor.data_location()) +
+                   " raw=" + std::to_string(tensor.raw_data().size()) +
+                   " int64=" + std::to_string(tensor.int64_data_size());
+        }
+        break;
+      }
+      throw std::invalid_argument(
+        "tensor shard Reshape is missing its inline INT64 shape: " + detail);
+    }
   }
 
   // 3. KV state dimensions, matched by name. These are the only value constraints

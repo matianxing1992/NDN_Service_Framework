@@ -1270,6 +1270,12 @@ run(int argc, char** argv)
     std::size_t observedEvents = 0;
     bool terminalSeen = false;
     bool checkpointWritten = false;
+    // Bounded per-token monotonic timestamps for the formal statistics row:
+    // E3 needs token order and delivery times, and the array stops growing
+    // after MAX_STATISTICS_EVENTS so a runaway stream cannot bloat the file.
+    static constexpr std::size_t MAX_STATISTICS_EVENTS = 4096;
+    std::vector<std::int64_t> eventSteadyNs;
+    std::int64_t terminalSteadyNs = 0;
     options.workStatistics = statisticsOutput
       ? makeNativeWorkStatistics() : nullptr;
     std::int64_t requestSubmittedSteadyNs = 0;
@@ -1292,6 +1298,18 @@ run(int argc, char** argv)
             {"planDigest", result.planDigest}, {"completed", statisticsCompleted},
             {"streaming", streaming}, {"observedEvents", observedEvents},
             {"terminalSeen", terminalSeen}, {"checkpointWritten", checkpointWritten},
+            {"firstEventSteadyNs", eventSteadyNs.empty()
+              ? NativeJson(nullptr) : NativeJson(eventSteadyNs.front())},
+            {"lastEventSteadyNs", eventSteadyNs.empty()
+              ? NativeJson(nullptr) : NativeJson(eventSteadyNs.back())},
+            {"terminalSteadyNs", terminalSteadyNs == 0
+              ? NativeJson(nullptr) : NativeJson(terminalSteadyNs)},
+            {"eventsSteadyNs", [&] {
+              NativeJson values = NativeJson::array();
+              for (const auto value : eventSteadyNs) values.push_back(value);
+              return values;
+            }()},
+            {"eventsSteadyNsTruncated", observedEvents > eventSteadyNs.size()},
             {"startedSteadyNs", statisticsStarted}, {"finishedSteadyNs", finished},
             {"requestSubmittedSteadyNs", requestSubmittedSteadyNs == 0
               ? NativeJson(nullptr) : NativeJson(requestSubmittedSteadyNs)},
@@ -1394,6 +1412,8 @@ run(int argc, char** argv)
         }
         if (event->terminal) {
           terminalSeen = true;
+          terminalSteadyNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
           if (diagnosticOutputEnabled())
             std::cout << "NATIVE_STREAM_TERMINAL index=" << turnIndex
                     << " request=" << handle.id() << std::endl;
@@ -1413,6 +1433,11 @@ run(int argc, char** argv)
           validateStreamEvent(streamExpected, *event, observedEvents);
         }
         const bool firstEvent = observedEvents == 0;
+        if (eventSteadyNs.size() < MAX_STATISTICS_EVENTS) {
+          eventSteadyNs.push_back(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count());
+        }
         std::cout << streamEventText(*event);
         ++observedEvents;
         // NativeInferenceClient records API queue delivery separately.  This

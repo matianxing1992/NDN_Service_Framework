@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 from collections import deque
 import fcntl
 import hashlib
@@ -253,6 +254,34 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         # The native applications require their schema marker in the written config.
         native.setdefault('schema', 'ndnsf-di-native-requester-v1'
                           if kind == 'requester' else 'ndnsf-di-native-authority-v1')
+        if kind == 'requester' and native.get('per_boot_identities', True):
+            # One independent deployment boot is the statistical unit. Fresh
+            # conversation and journal identities keep the previous boot's
+            # Provider state from being read as this boot's continuation, and
+            # the generated names are recorded so the evidence stays auditable.
+            # A deployment that needs the exact frozen identity (for example an
+            # external reference oracle that rebinds the configuration) sets
+            # per_boot_identities=false.
+            native = copy.deepcopy(native)
+            conversation = native.get('conversation')
+            if isinstance(conversation, dict):
+                journal = conversation.get('journal')
+                if isinstance(journal, dict) and isinstance(journal.get('identity'), str):
+                    journal['identity'] = 'boot-' + uuid.uuid4().hex
+                    state.setdefault('boot_identifiers', {})[
+                        'conversationJournal'] = journal['identity']
+            turns = native.get('turns')
+            if isinstance(turns, list):
+                # Turns that shared a conversation in the frozen deployment stay
+                # one conversation; only its identity is regenerated per boot.
+                mapping = {}
+                for turn in turns:
+                    if not isinstance(turn, dict):
+                        continue
+                    original = turn.get('conversation_id')
+                    if isinstance(original, str):
+                        turn['conversation_id'] = mapping.setdefault(
+                            original, uuid.uuid4().hex)
         source_cache = kind == 'requester' and native.get('model_input', {}).get('mode') == 'source-cache'
         if source_cache:
             model_input = native.pop('model_input')
@@ -357,6 +386,100 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
                     '-ex', 'run', '-ex', 'thread apply all bt full',
                     '--args'] + argv
     return argv, env
+
+
+def _probe_capture(argv, launcher=None, timeout=5.0):
+    """Run one bounded probe command and keep a bounded text result."""
+    try:
+        child = (launcher or subprocess.Popen)(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, start_new_session=True)
+        output, _ = child.communicate(timeout=timeout)
+        return {'argv': argv, 'exit_code': child.returncode,
+                'output': output.decode('utf-8', 'replace')[-8192:]}
+    except Exception as error:  # probes must never fail the deployment
+        return {'argv': argv, 'error': str(error)}
+
+
+def _probe_environment(config, directory, state, facility, children, guard, deadline):
+    """Record the effective datapath, CPU and route state after READY.
+
+    E4 requires the post-READY, pre-submit probes: link/qdisc counters, FIB and
+    faces, the CPU affinity and cgroup quota of every managed actor, and a
+    short RTT/loss probe on the requester-to-provider paths.
+    """
+    probes = config.get('probes')
+    if not isinstance(probes, dict) or not probes.get('enabled', False):
+        return
+    started = time.monotonic()
+    record = {'schema': 'ndnsf-di-minindn-probes-v1',
+              'startedUnixSeconds': time.time(), 'nodes': {}, 'processes': {},
+              'ping': []}
+    for node in config['nodes']:
+        guard()
+        launcher = facility.launcher(node['id']) if facility is not None else None
+        entry = {}
+        for name, argv in (('links', ['ip', '-s', 'link']),
+                           ('qdisc', ['tc', '-s', 'qdisc']),
+                           ('routes', ['nfdc', 'route', 'list']),
+                           ('faces', ['nfdc', 'face', 'list'])):
+            entry[name] = _probe_capture(argv, launcher)
+        record['nodes'][node['id']] = entry
+    for actor, child, row in children:
+        guard()
+        pid = child.pid
+        entry = {'kind': actor.get('kind', row.get('kind', 'unknown')),
+                 'node': actor.get('node', row.get('node')), 'pid': pid}
+        entry['affinity'] = _probe_capture(['taskset', '-pc', str(pid)])
+        try:
+            entry['cgroup'] = {'file': f'/proc/{pid}/cgroup',
+                               'content': Path(f'/proc/{pid}/cgroup').read_text(
+                                   encoding='utf-8', errors='replace')[:2048]}
+            for line in entry['cgroup']['content'].splitlines():
+                if 'cpu' in line and ':/' in line:
+                    path = line.rsplit(':', 1)[-1].strip()
+                    if path and path != '/':
+                        entry.setdefault('cgroupCpuQuota', {})[path] = {
+                            'cpu.max': _probe_capture(
+                                ['cat', f'/sys/fs/cgroup{path}/cpu.max'])['output'].strip()
+                            if Path(f'/sys/fs/cgroup{path}/cpu.max').exists() else None}
+        except OSError as error:
+            entry['cgroupError'] = str(error)
+        try:
+            status = Path(f'/proc/{pid}/status').read_text(encoding='utf-8', errors='replace')
+            for line in status.splitlines():
+                if line.startswith(('VmRSS:', 'VmPeak:', 'Cpus_allowed_list:')):
+                    key, _, value = line.partition(':')
+                    entry[key.strip()] = value.strip()
+        except OSError:
+            pass
+        record['processes'][actor['id']] = entry
+
+    ping_count = int(probes.get('ping_count', 3))
+    if facility is not None and ping_count > 0:
+        # Probe every topology link from both ends. A star has one peer per
+        # node, so this measures each directed link's RTT/loss without needing
+        # an end-to-end IP route between two leaf namespaces.
+        ids = {node['host']: node['id'] for node in config['nodes']}
+        for node in config['nodes']:
+            host = facility.hosts[node['host']]
+            for interface in host.intfList():
+                if interface.link is None:
+                    continue
+                other = interface.link.intf2 if interface.link.intf1 is interface else interface.link.intf1
+                peer_id = ids.get(other.node.name)
+                guard()
+                result = _probe_capture(
+                    ['ping', '-c', str(ping_count), '-i', '0.2', '-W', '1', '-q', other.IP()],
+                    facility.launcher(node['id']), timeout=ping_count * 2.0 + 2.0)
+                result.update(source=node['id'], target=peer_id, address=other.IP())
+                record['ping'].append(result)
+    record['finishedSteadyNs'] = time.monotonic()
+    record['wallSeconds'] = time.monotonic() - started
+    write_json(directory / 'probes.json', record)
+    state['probes'] = {'status': 'RECORDED', 'path': str(directory / 'probes.json'),
+                       'nodes': len(record['nodes']), 'processes': len(record['processes']),
+                       'ping': len(record['ping']), 'wallSeconds': record['wallSeconds']}
 
 
 def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
@@ -662,10 +785,10 @@ def _cancelled(root, state):
         raise ClusterError('DEPLOYMENT_CANCELLED')
 
 
-def _nfd_config(socket, port):
+def _nfd_config(socket, port, level='NONE'):
     if any(char in str(socket) for char in ('"', '\\', '\n', '\r')):
         raise ClusterError('NFD socket contains unsupported configuration characters')
-    return (f'general {{}}\nlog {{ default_level NONE }}\n'
+    return (f'general {{}}\nlog {{ default_level {level} }}\n'
             f'tables {{ cs_max_packets 0 }}\n'
             f'face_system {{ unix {{ path "{socket}" }} '
             f'tcp {{ listen yes port {port} enable_v4 yes enable_v6 no }} '
@@ -826,7 +949,8 @@ def _start_forwarder(config, node, state, root, directory, children, deadline, g
             raise ClusterError('managed NFD socket already exists; refusing to replace it')
         Path(nfd['socket']).parent.mkdir(parents=True, exist_ok=True)
         path = directory / 'nfd.conf'
-        path.write_text(_nfd_config(nfd['socket'], nfd['port']))
+        path.write_text(_nfd_config(nfd['socket'], nfd['port'],
+                               nfd.get('log_level', 'NONE')))
         child, row = spawn('nfd.' + node['id'], 'nfd',
                            [shutil.which('nfd'), '--config', str(path)], env, node['id'])
         children.append(({'id': row['id'], 'kind': 'nfd'}, child, row))
@@ -1044,6 +1168,7 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                         time.sleep(0.1)
             guard()
             state['status'] = 'SERVICES_READY'
+            _probe_environment(config, directory, state, facility, children, guard, deadline)
             if pending == [] and any(a['kind'] in ('provider', 'artifact-authority', 'repo')
                                      for a, _, _ in children):
                 for reference in state['external_references']:

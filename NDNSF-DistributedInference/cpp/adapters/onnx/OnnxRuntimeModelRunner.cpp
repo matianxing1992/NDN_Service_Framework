@@ -996,12 +996,19 @@ tensorForInput(const TensorBundle& bundle,
                const std::string& inputName,
                const std::vector<int64_t>& fallbackShape)
 {
+  // The session's input names come from the ONNX file; the bundle carries the
+  // contract's graph/-scoped names. Accept the same three spellings used for
+  // passthrough tensors so a graph-scoped sibling still satisfies the input.
+  const auto matchesInput = [&inputName] (const std::string& name) {
+    return name == inputName || name == "graph/" + inputName ||
+           name == "graph" + inputName;
+  };
   if (bundle.localTensors) {
     // A local value is read through the same view entry as an encoded one, so a bundle that
     // arrived by either route is handled identically here. ORT binds its own input buffer, so
     // this is a copy of the values, not a re-encoding of a bundle: no framing, no decode.
     for (const auto& view : decodeTensorBundleViews(bundle)) {
-      if (view.name != inputName) continue;
+      if (!matchesInput(view.name)) continue;
       NamedTensor tensor;
       tensor.name = view.name;
       tensor.elementType = view.elementType;
@@ -1009,10 +1016,25 @@ tensorForInput(const TensorBundle& bundle,
       tensor.payload.assign(view.payload.begin(), view.payload.end());
       return tensor;
     }
-    throw std::out_of_range("tensor bundle has no tensor: " + inputName);
+    std::string names;
+    for (const auto& view : decodeTensorBundleViews(bundle)) {
+      if (names.size() > 600) break;
+      names += " [" + view.name + "]";
+    }
+    throw std::out_of_range("tensor bundle has no tensor: " + inputName + " bundle=" + names);
   }
   if (isEncodedTensorBundle(bundle.payload)) {
-    return takeOwnedInputTensor(decodeTensorBundle(bundle.payload), inputName);
+    auto tensors = decodeTensorBundle(bundle.payload);
+    const auto selected = std::find_if(tensors.begin(), tensors.end(),
+      [&] (const NamedTensor& tensor) { return matchesInput(tensor.name); });
+    if (selected != tensors.end())
+      return std::move(*selected);
+    std::string names;
+    for (const auto& tensor : tensors) {
+      if (names.size() > 600) break;
+      names += " [" + tensor.name + "]";
+    }
+    throw std::out_of_range("tensor bundle has no tensor: " + inputName + " bundle=" + names);
   }
   return makeFloat32Tensor(inputName, fallbackShape, bundle.payload);
 }
