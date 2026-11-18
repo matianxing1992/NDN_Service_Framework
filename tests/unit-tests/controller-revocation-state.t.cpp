@@ -937,6 +937,89 @@ BOOST_AUTO_TEST_CASE(HistoricalPublicParametersBindTheOriginalObject)
   BOOST_CHECK(!buildHistoricalPublicParametersData(empty, identity, sign, refused));
 }
 
+BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
+{
+  DefaultGenerationFiles files;
+  const auto requesterDir = files.root / "requester";
+  const auto controllerDir = files.root / "controller";
+  std::filesystem::create_directory(requesterDir);
+  std::filesystem::create_directory(controllerDir);
+  ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
+                          "tpm-file:" + requesterDir.string(), false);
+  ndn::KeyChain controller("pib-sqlite3:" + controllerDir.string(),
+                           "tpm-file:" + controllerDir.string(), false);
+  const ndn::Name requesterIdentity("/user/history");
+  const ndn::Name controllerIdentity("/controller/a");
+  requester.createIdentity(requesterIdentity);
+  controller.createIdentity(controllerIdentity);
+  const auto userCert = requester.getPib().getIdentity(requesterIdentity).getDefaultKey()
+    .getDefaultCertificate();
+  const auto controllerCert = controller.getPib().getIdentity(controllerIdentity).getDefaultKey()
+    .getDefaultCertificate();
+
+  // A real archived generation: the key minted for it must decrypt what it protected.
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+  const auto cipher = abe.kpEncrypt(params, {"attr-a"}, ndn::Buffer{9, 8, 7});
+
+  HistoricalKeyBroker::Material material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+  const auto signerLookup = [userCert] (const ndn::Name& name, ndn::security::Certificate& out) {
+    if (name != userCert.getName())
+      return false;
+    out = userCert;
+    return true;
+  };
+  const auto materialLookup = [&material] (uint64_t generation, uint64_t epoch,
+                                           HistoricalKeyBroker::Material& out) {
+    if (generation != 1002 || epoch != 3)
+      return false;
+    out = material;
+    return true;
+  };
+  const auto replySigner = [&controller, controllerCert] (ndn::Data& data) {
+    controller.sign(data, ndn::security::signingByCertificate(controllerCert));
+  };
+  HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = controllerIdentity;
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "attr-a";
+  request.recipientCertificate = userCert.getName();
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+  ndn::Interest interest;
+  signHistoricalKeyRequest(interest, request, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+
+  const auto reply = broker.answer(interest, controllerIdentity, 1'000'000);
+  BOOST_REQUIRE(reply);
+  HistoricalKeyReply accepted;
+  BOOST_REQUIRE(verifyHistoricalKeyReply(*reply, request, 1'000'000, accepted));
+  // The minted key really decrypts the archived generation's ciphertext.
+  ndn::nacabe::algo::PrivateKey key;
+  key.fromBuffer(ndn::Buffer(reinterpret_cast<const uint8_t*>(accepted.keyBytes.data()),
+                             accepted.keyBytes.size()));
+  BOOST_CHECK(abe.kpDecrypt(params, key, cipher) == ndn::Buffer({9, 8, 7}));
+  // The same request must not mint twice.
+  BOOST_CHECK(!broker.answer(interest, controllerIdentity, 1'000'000));
+  // A request naming someone else's certificate gets nothing.
+  auto stranger = request;
+  stranger.recipientCertificate = controllerCert.getName();
+  ndn::Interest strangerInterest;
+  signHistoricalKeyRequest(strangerInterest, stranger, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+  BOOST_CHECK(!broker.answer(strangerInterest, controllerIdentity, 1'000'000));
+}
+
 BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
 {
   // A consumer signs the request itself: the signature must cover the name and the body, so neither

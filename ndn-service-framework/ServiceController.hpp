@@ -13,6 +13,7 @@
 #include <nac-abe/attribute-authority.hpp>
 
 #include "NDNSFMessages.hpp"
+#include "AbeHistoricalKeyRequest.hpp"
 #include "ControllerGenerationStore.hpp"
 #include "PolicyStatus.hpp"
 
@@ -276,7 +277,7 @@ private:
    *
    * A Signed Interest that is replayed must not mint a second key, so the digest that names the
    * request is remembered for exactly as long as that request stays valid. */
-  std::map<std::string, uint64_t> m_historicalKeyRequests;
+  std::unique_ptr<HistoricalKeyBroker> m_historicalKeyBroker;
   std::vector<ndn::ScopedInterestFilterHandle> m_historicalKeyFilters;
   bool m_generationReady = false;
   std::vector<RevocationTarget> m_revocations;

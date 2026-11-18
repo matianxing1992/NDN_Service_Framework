@@ -1,8 +1,13 @@
 #include "AbeHistoricalKeyRequest.hpp"
 
+#include "AbeHistoricalKey.hpp"
+
+#include <ndn-cxx/security/verification-helpers.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <regex>
 #include <stdexcept>
 #include <vector>
 
@@ -240,6 +245,124 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
   catch (const std::exception&) {
     return false;
   }
+}
+
+std::optional<ndn::Data>
+HistoricalKeyBroker::answerValidated(const ndn::Interest& interest,
+                                     const ndn::Name& controllerPrefix, uint64_t nowMs,
+                                     const ndn::security::Certificate& signer)
+{
+  const auto parameters = interest.getApplicationParameters();
+  HistoricalKeyRequest request;
+  if (!decodeHistoricalKeyRequest(std::string(reinterpret_cast<const char*>(parameters.value()),
+                                              parameters.value_size()), request))
+    return std::nullopt;
+  if (!matchHistoricalKeyRequestName(interest.getName(), controllerPrefix, request))
+    return std::nullopt;
+  constexpr uint64_t MAX_SKEW_MS = 60000;
+  constexpr uint64_t MAX_AGE_MS = 300000;
+  if (request.expiresAtMs <= nowMs || request.mintedAtMs > nowMs + MAX_SKEW_MS ||
+      request.mintedAtMs + MAX_AGE_MS < nowMs)
+    return std::nullopt;
+  // Mint only for the certificate the request named.
+  if (signer.getName() != request.recipientCertificate)
+    return std::nullopt;
+  return finish(request, nowMs);
+}
+
+std::optional<ndn::Data>
+HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs)
+{
+  for (auto it = m_seen.begin(); it != m_seen.end();) {
+    if (it->second > nowMs) {
+      ++it;
+      continue;
+    }
+    it = m_seen.erase(it);
+  }
+  const auto digest = historicalKeyRequestDigest(request);
+  if (m_seen.count(digest))
+    return std::nullopt;
+  Material material;
+  if (!m_materialLookup || !m_materialLookup(request.generation, request.epoch, material))
+    return std::nullopt;
+  HistoricalAbeMaterial keyMaterial{material.publicParameters, material.masterSecret};
+  std::vector<std::uint8_t> key;
+  try {
+    key = issueHistoricalDecryptionKey(keyMaterial, request.policy);
+  }
+  catch (const std::exception&) {
+    return std::nullopt;
+  }
+  if (key.empty())
+    return std::nullopt;
+  const std::string keyBytes(reinterpret_cast<const char*>(key.data()), key.size());
+  ndn::Data reply;
+  if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, m_replySigner, reply))
+    return std::nullopt;
+  m_seen[digest] = request.expiresAtMs;
+  return reply;
+}
+
+std::optional<ndn::Data>
+HistoricalKeyBroker::answer(const ndn::Interest& interest, const ndn::Name& controllerPrefix,
+                            uint64_t nowMs)
+{
+  const auto parameters = interest.getApplicationParameters();
+  HistoricalKeyRequest request;
+  if (!decodeHistoricalKeyRequest(std::string(reinterpret_cast<const char*>(parameters.value()),
+                                              parameters.value_size()), request))
+    return std::nullopt;
+  if (!matchHistoricalKeyRequestName(interest.getName(), controllerPrefix, request))
+    return std::nullopt;
+
+  constexpr uint64_t MAX_SKEW_MS = 60000;
+  constexpr uint64_t MAX_AGE_MS = 300000;
+  if (request.expiresAtMs <= nowMs || request.mintedAtMs > nowMs + MAX_SKEW_MS ||
+      request.mintedAtMs + MAX_AGE_MS < nowMs)
+    return std::nullopt;
+
+  for (auto it = m_seen.begin(); it != m_seen.end();) {
+    if (it->second > nowMs) {
+      ++it;
+      continue;
+    }
+    it = m_seen.erase(it);
+  }
+  const auto digest = historicalKeyRequestDigest(request);
+  // A replay must not mint a second key.
+  if (m_seen.count(digest))
+    return std::nullopt;
+
+  ndn::security::Certificate signer;
+  if (!m_signerLookup || !m_signerLookup(request.recipientCertificate, signer))
+    return std::nullopt;
+  if (signer.getName() != request.recipientCertificate)
+    return std::nullopt;
+  // The request must be signed by the certificate it names.
+  if (!ndn::security::verifySignature(interest, signer.getPublicKey()))
+    return std::nullopt;
+
+  Material material;
+  if (!m_materialLookup || !m_materialLookup(request.generation, request.epoch, material))
+    return std::nullopt;
+  HistoricalAbeMaterial keyMaterial{material.publicParameters, material.masterSecret};
+  std::vector<std::uint8_t> key;
+  try {
+    key = issueHistoricalDecryptionKey(keyMaterial, request.policy);
+  }
+  catch (const std::exception&) {
+    return std::nullopt;
+  }
+  if (key.empty())
+    return std::nullopt;
+  const std::string keyBytes(reinterpret_cast<const char*>(key.data()), key.size());
+
+  ndn::Data reply;
+  if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, m_replySigner, reply))
+    return std::nullopt;
+  m_seen[digest] = request.expiresAtMs;
+  return reply;
 }
 
 } // namespace ndn_service_framework

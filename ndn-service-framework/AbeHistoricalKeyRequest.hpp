@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <optional>
 #include <string>
 
 #include <ndn-cxx/data.hpp>
@@ -103,6 +105,60 @@ struct HistoricalKeyReply
 bool
 verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& request,
                          uint64_t nowMs, HistoricalKeyReply& accepted);
+
+/** The decision part of a historical key responder, with no face of its own.
+ *
+ * Everything that can be wrong about a request is decided here - name binding, freshness, replay,
+ * signer, archived generation - so the Controller and a test drive the same code instead of two
+ * copies of the same conditions.
+ */
+class HistoricalKeyBroker
+{
+public:
+  struct Material
+  {
+    std::string publicParameters;
+    std::string masterSecret;
+  };
+
+  using SignerLookup = std::function<bool(const ndn::Name&, ndn::security::Certificate&)>;
+  using MaterialLookup = std::function<bool(uint64_t, uint64_t, Material&)>;
+  using ReplySigner = std::function<void(ndn::Data&)>;
+
+  HistoricalKeyBroker(SignerLookup signerLookup, MaterialLookup materialLookup,
+                      ReplySigner replySigner)
+    : m_signerLookup(std::move(signerLookup))
+    , m_materialLookup(std::move(materialLookup))
+    , m_replySigner(std::move(replySigner))
+  {
+  }
+
+  /** Decide one request and produce the reply, or nothing when it must not be answered.
+   *
+   * `nowMs` is passed in so a test can place itself on either side of an expiry.
+   */
+  std::optional<ndn::Data>
+  answer(const ndn::Interest& interest, const ndn::Name& controllerPrefix, uint64_t nowMs);
+
+  /** The same decisions, for a caller that has already validated the signature.
+   *
+   * The Controller validates through its trust anchors, which is asynchronous; it hands the result
+   * here so there is still one place that decides freshness, replay and which generation to mint
+   * from.
+   */
+  std::optional<ndn::Data>
+  answerValidated(const ndn::Interest& interest, const ndn::Name& controllerPrefix, uint64_t nowMs,
+                  const ndn::security::Certificate& signer);
+
+private:
+  std::optional<ndn::Data>
+  finish(const HistoricalKeyRequest& request, uint64_t nowMs);
+
+  SignerLookup m_signerLookup;
+  MaterialLookup m_materialLookup;
+  ReplySigner m_replySigner;
+  std::map<std::string, uint64_t> m_seen;
+};
 
 } // namespace ndn_service_framework
 
