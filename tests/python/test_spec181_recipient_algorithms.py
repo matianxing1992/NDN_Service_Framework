@@ -90,12 +90,19 @@ def test_runner_preserves_separate_recipient_map(monkeypatch, tmp_path, config_r
     authority.parent.mkdir(parents=True)
     authority.write_text("not consumed: test stops before network startup")
     expected_config = authority.parent
+    # `default` resolves to the home config root above, which needs the public key as well.
+    (expected_config / "artifact-policy-authority.pub").write_text(
+        "explicit fixture; not consumed")
     monkeypatch.delenv("NDNSF_SPEC180_CONFIG_ROOT", raising=False)
     if config_root != "default":
         expected_config = tmp_path / "explicit-config"
         if config_root != "missing":
             expected_config.mkdir()
             (expected_config / authority.name).write_text("explicit fixture; not consumed")
+            # The live case now refuses before startup unless the authority public key it derives from
+            # SPEC181_GRANT_AUTHORITY_PUBLIC_KEY is present, so the fixture must provide it too.
+            (expected_config / "artifact-policy-authority.pub").write_text(
+                "explicit fixture; not consumed")
         if config_root == "relative":
             monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("NDNSF_SPEC180_CONFIG_ROOT",
