@@ -533,21 +533,31 @@ _ASSEMBLED_ENTRY_KINDS = ("MODEL_PROTO", "EXTERNAL_DATA")
 
 def assembled_kdf_context(*, model_manifest_digest: str,
                           role_assembly_spec_digest: str,
-                          storage_profile_digest: str) -> bytes:
-    """Deterministic KDF info bytes for the assembled-bundle key."""
+                          storage_profile_digest: str,
+                          key_reference_digest: str = "") -> bytes:
+    """Deterministic KDF info bytes for the assembled-bundle key.
+
+    The native writer appends `keyReferenceDigest` to the same info string, so it is part of the key
+    derivation rather than a cosmetic manifest field; omitting it here would derive a different key for any
+    entry that carries a key reference.
+    """
     for name in ("model_manifest_digest", "role_assembly_spec_digest",
                  "storage_profile_digest"):
         _require_digest(str(locals()[name]), name)
+    if key_reference_digest:
+        _require_digest(key_reference_digest, "key_reference_digest")
     return (_ASSEMBLED_KDF_PREFIX
             + model_manifest_digest.encode("utf-8")
             + role_assembly_spec_digest.encode("utf-8")
-            + storage_profile_digest.encode("utf-8"))
+            + storage_profile_digest.encode("utf-8")
+            + key_reference_digest.encode("utf-8"))
 
 
 def derive_assembled_bundle_key(epoch_content_key: bytes, *,
                                 model_manifest_digest: str,
                                 role_assembly_spec_digest: str,
-                                storage_profile_digest: str) -> bytes:
+                                storage_profile_digest: str,
+                                key_reference_digest: str = "") -> bytes:
     """K_bundle = HKDF(epochContentKey, assembled-kdf-context)."""
     if not epoch_content_key or len(epoch_content_key) > 256:
         raise ValueError("epoch content key is empty or oversized")
@@ -556,7 +566,8 @@ def derive_assembled_bundle_key(epoch_content_key: bytes, *,
         info=assembled_kdf_context(
             model_manifest_digest=model_manifest_digest,
             role_assembly_spec_digest=role_assembly_spec_digest,
-            storage_profile_digest=storage_profile_digest),
+            storage_profile_digest=storage_profile_digest,
+            key_reference_digest=key_reference_digest),
         backend=default_backend(),
     ).derive(epoch_content_key)
 
@@ -590,6 +601,7 @@ class AssembledCiphertextV1:
     role_assembly_spec_digest: str
     storage_profile_digest: str
     nonce: str
+    key_reference_digest: str = ""
     ciphertext: bytes = b""
 
     def __post_init__(self) -> None:
@@ -601,6 +613,8 @@ class AssembledCiphertextV1:
         for name in ("model_manifest_digest", "role_assembly_spec_digest",
                      "storage_profile_digest"):
             _require_digest(str(getattr(self, name)), name)
+        if self.key_reference_digest:
+            _require_digest(self.key_reference_digest, "key_reference_digest")
         bytes.fromhex(self.nonce)
         if not self.ciphertext:
             raise ValueError("assembled ciphertext is empty")
@@ -620,13 +634,25 @@ class AssembledCiphertextV1:
             "modelManifestDigest": self.model_manifest_digest,
             "roleAssemblySpecDigest": self.role_assembly_spec_digest,
             "storageProfileDigest": self.storage_profile_digest,
+            "keyReferenceDigest": self.key_reference_digest,
             "nonce": self.nonce,
             "ciphertextLength": len(self.ciphertext),
             "ciphertextDigest": self.ciphertext_digest,
         }
 
+    # The sealed wire is written by `NativeProtectedArtifactStore.cpp` with a fixed field order, not a sorted
+    # one; readers compare the manifest bytes verbatim, so this class must reproduce that exact order. The
+    # dict from `manifest()` stays order-insensitive; only the serialisation is pinned.
+    _WIRE_FIELD_ORDER = (
+        "aead", "ciphertextDigest", "ciphertextLength", "entryKind", "keyReferenceDigest",
+        "kdf", "kdfContextDigest", "modelManifestDigest", "nonce",
+        "roleAssemblySpecDigest", "schema", "storageProfileDigest",
+    )
+
     def manifest_bytes(self) -> bytes:
-        return _canonical_bytes(self.manifest())
+        value = self.manifest()
+        ordered = {name: value[name] for name in self._WIRE_FIELD_ORDER}
+        return json.dumps(ordered, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
     def to_bytes(self) -> bytes:
         """Deterministic framing: 8-byte big-endian manifest length, manifest
@@ -657,6 +683,7 @@ class AssembledCiphertextV1:
                 role_assembly_spec_digest=str(payload["roleAssemblySpecDigest"]),
                 storage_profile_digest=str(payload["storageProfileDigest"]),
                 nonce=str(payload["nonce"]),
+                key_reference_digest=str(payload.get("keyReferenceDigest", "")),
                 ciphertext=ciphertext,
             )
         except KeyError as exc:
@@ -673,7 +700,8 @@ def encrypt_assembled_entry(epoch_content_key: bytes, plaintext: bytes, *,
                             entry_kind: str,
                             model_manifest_digest: str,
                             role_assembly_spec_digest: str,
-                            storage_profile_digest: str) -> AssembledCiphertextV1:
+                            storage_profile_digest: str,
+                            key_reference_digest: str = "") -> AssembledCiphertextV1:
     """AEAD-seal one assembled entry under the derived entry key."""
     if not plaintext:
         raise ValueError("assembled entry plaintext is empty")
@@ -684,7 +712,8 @@ def encrypt_assembled_entry(epoch_content_key: bytes, plaintext: bytes, *,
     bundle_key = derive_assembled_bundle_key(
         epoch_content_key, model_manifest_digest=model_manifest_digest,
         role_assembly_spec_digest=role_assembly_spec_digest,
-        storage_profile_digest=storage_profile_digest)
+        storage_profile_digest=storage_profile_digest,
+        key_reference_digest=key_reference_digest)
     entry_key = derive_assembled_entry_key(bundle_key, entry_kind)
     nonce = os.urandom(12)
     ciphertext = AESGCM(entry_key).encrypt(nonce, plaintext, associated_data=context)
@@ -695,6 +724,7 @@ def encrypt_assembled_entry(epoch_content_key: bytes, plaintext: bytes, *,
         model_manifest_digest=model_manifest_digest,
         role_assembly_spec_digest=role_assembly_spec_digest,
         storage_profile_digest=storage_profile_digest,
+        key_reference_digest=key_reference_digest,
         nonce=nonce.hex(),
         ciphertext=ciphertext,
     )
