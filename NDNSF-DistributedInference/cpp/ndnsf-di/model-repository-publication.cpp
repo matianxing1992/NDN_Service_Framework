@@ -103,11 +103,10 @@ commitPacketGroup(ndn_service_framework::ServiceUser& writer,
     static_cast<std::uint64_t>(timeout);
   const auto grantStarted = std::chrono::steady_clock::now();
   const auto encoded = request.toJson();
-  const auto replyWire = repo::RepoClientCompat::requestSelectedService(writer,
+  const auto replyWire = repo::RepoClientCompat::requestTargeted(writer,
     ndn::Name(target.providerIdentity), repo::makeRepoServiceName(
       ndn::Name(target.servicePrefix), "USER_STORAGE_GRANT"),
-    std::vector<std::uint8_t>(encoded.begin(), encoded.end()),
-    std::min(MAX_ACK_COLLECTION_MS, std::max(1, timeout / 2)), timeout, {}, current);
+    std::vector<std::uint8_t>(encoded.begin(), encoded.end()), timeout);
   const auto reply = repo::RepoUserStorageGrantReply::fromJson(
     std::string(replyWire.begin(), replyWire.end()));
   reply.validateExpected(target, request.writerIdentity, request);

@@ -1361,6 +1361,14 @@ runSelectedRepoRequest(ndn_service_framework::ServiceUser& serviceUser,
     throw RepoRequestTimeoutError(
       "repo-request-timeout: remaining deadline cannot exceed the selected request ACK window");
   }
+  // A deployment that names the provider is already addressed to one target, and the maintained
+  // Repo answers targeted requests without running the ACK/Selection exchange. Asking it to
+  // select first costs the ACK window and, for a mutating request, the whole deadline without a
+  // retry: the selection path only replays read-only operations after a timeout.
+  if (!target.providerIdentity.empty()) {
+    return detail::requestTargetedReply(
+      serviceUser, target.providerIdentity, serviceName, requestBytes, timeoutMs, {});
+  }
   try {
     return RepoClientCompat::requestSelectedService(
       serviceUser, target.providerIdentity, serviceName, requestBytes,

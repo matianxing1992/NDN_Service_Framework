@@ -11,6 +11,19 @@ namespace ndnsf_distributed_repo {
 class RepoClientCompat
 {
 public:
+  /** Send one request straight to the named Provider and wait for its signed response.
+   *
+   * The maintained Repo answers targeted requests and never runs the ACK/Selection exchange, so a
+   * caller that already knows its Provider must not pay the ACK window first - and, for a mutating
+   * request, must not lose the whole deadline when the selection path declines to replay it.
+   */
+  static std::vector<uint8_t> requestTargeted(
+    ndn_service_framework::ServiceUser& user,
+    const ndn::Name& providerIdentity,
+    const ndn::Name& serviceName,
+    const std::vector<uint8_t>& payload,
+    int timeoutMs);
+public:
   static ndn::Name requestUserStorageGrant(
     ndn_service_framework::ServiceUser& user, const RepoArtifactTarget& target,
     const RepoUserStorageGrantRequest& request, int timeoutMs,

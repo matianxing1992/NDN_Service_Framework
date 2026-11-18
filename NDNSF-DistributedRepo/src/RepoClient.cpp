@@ -4075,4 +4075,15 @@ canonicalSha256Digest(std::string digest)
   return digest;
 }
 
+std::vector<uint8_t>
+RepoClientCompat::requestTargeted(ndn_service_framework::ServiceUser& user,
+                                  const ndn::Name& providerIdentity,
+                                  const ndn::Name& serviceName,
+                                  const std::vector<uint8_t>& payload,
+                                  int timeoutMs)
+{
+  return requestTargetedReply(user, providerIdentity, serviceName, payload,
+                                      timeoutMs, {});
+}
+
 } // namespace ndnsf_distributed_repo
