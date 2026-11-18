@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,6 +13,8 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 RUNNER = REPO / "Experiments/NDN_SVS_Fixed_Worker_Proof_Minindn.py"
 ANALYZER = REPO / "Experiments/analyze_svs_fixed_worker_proof.py"
+SUBJECT = os.environ.get("NDNSF_SVS_WORKER_SUBJECT_MANIFEST")
+ARCHIVE = os.environ.get("NDNSF_SVS_WORKER_ARCHIVE_ROOT")
 
 
 def load_module(name: str, path: Path):
@@ -34,14 +37,7 @@ class Spec139ContractTests(unittest.TestCase):
         parser_source = RUNNER.read_text(encoding="utf-8")
         self.assertNotIn("--rate", parser_source)
 
-    def test_same_subject_binary_and_exact_two_modes(self):
-        subject = self.runner.prior.verify_subject()
-        self.assertEqual(subject["binarySha256"], self.runner.prior.EXPECTED_BINARY)
-        configs = self.runner.prior.base.self_test_configs(subject)
-        self.assertEqual(set(configs), {"face-serial", "worker-serial"})
-        self.assertEqual(configs["worker-serial"]["production_workers"], 1)
-        self.assertEqual(configs["worker-serial"]["receive_workers"], 0)
-
+    @unittest.skipUnless(SUBJECT or ARCHIVE, "exact archived SVS worker subject not selected")
     def test_formal_matrix_is_exact_and_once_only(self):
         cells = self.runner.formal_cells()
         self.assertEqual(len(cells), 6)

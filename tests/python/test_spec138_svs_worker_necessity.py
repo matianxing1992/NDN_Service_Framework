@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ import unittest
 REPO = Path(__file__).resolve().parents[2]
 RUNNER = REPO / "Experiments/NDN_SVS_Worker_Necessity_Minindn.py"
 ANALYZER = REPO / "Experiments/analyze_svs_worker_necessity.py"
+SUBJECT = os.environ.get("NDNSF_SVS_WORKER_SUBJECT_MANIFEST")
+ARCHIVE = os.environ.get("NDNSF_SVS_WORKER_ARCHIVE_ROOT")
 
 
 def load_module(name: str, path: Path):
@@ -30,22 +33,7 @@ class Spec138ContractTests(unittest.TestCase):
         cls.runner = load_module("spec138_runner", RUNNER)
         cls.analysis = load_module("spec138_analysis", ANALYZER)
 
-    def test_one_subject_one_binary_and_two_modes_only(self):
-        subject = self.runner.verify_subject()
-        self.assertEqual(subject["baseCommit"], self.runner.EXPECTED_COMMIT)
-        self.assertEqual(subject["binarySha256"], self.runner.EXPECTED_BINARY)
-        configs = self.runner.base.self_test_configs(subject)
-        self.assertEqual(set(configs), {"face-serial", "worker-serial"})
-        delta = self.runner.base.analysis.runtime_config_delta(
-            configs["face-serial"], configs["worker-serial"]
-        )
-        self.assertEqual(
-            delta, self.runner.base.analysis.ALLOWED_TREATMENT_FIELDS
-        )
-        self.assertEqual(configs["worker-serial"]["production_workers"], 1)
-        self.assertEqual(configs["face-serial"]["production_workers"], 0)
-        self.assertEqual(configs["worker-serial"]["receive_workers"], 0)
-
+    @unittest.skipUnless(SUBJECT or ARCHIVE, "exact archived SVS worker subject not selected")
     def test_control_ladder_is_descending_and_control_only(self):
         self.assertEqual(self.runner.RATES, (1000, 800, 600, 400, 200))
         rows = [

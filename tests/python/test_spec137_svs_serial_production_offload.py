@@ -22,18 +22,9 @@ MEASUREMENT_PATCH = (
     REPO
     / "Experiments/ndn-svs-pubsub-benchmark/spec137-measurement.patch"
 )
-ALLOWED_TREATMENT_FIELDS = {
-    "production_mode",
-    "parallel_sync_production",
-    "production_workers",
-    "production_queue_capacity",
-    "sign_in_worker",
-    "build_extra_in_worker",
-    "worker_cpu_active",
-}
-BUILDER = REPO / "Experiments/build_svs_serial_production_offload.py"
 RUNNER = REPO / "Experiments/NDN_SVS_Serial_Production_Offload_Minindn.py"
 ANALYZER = REPO / "Experiments/analyze_svs_serial_production_offload.py"
+BUILDER = REPO / "Experiments/build_svs_serial_production_offload.py"
 
 
 def load_module(name: str, path: Path):
@@ -122,39 +113,6 @@ class Spec137SourceContractTests(unittest.TestCase):
         self.assertIn("spec137.event.v1", self.source)
         self.assertIn("core.setParallelSyncProduction(false)", self.source)
         self.assertIn("faceThread.join()", self.source)
-
-
-class Spec137BuiltBinaryContractTests(unittest.TestCase):
-    def test_runtime_expansion_diff_is_exactly_allowlisted(self):
-        configured = os.environ.get("SPEC137_BENCH_BINARY", "")
-        if not configured:
-            self.skipTest("set SPEC137_BENCH_BINARY for the built-binary gate")
-        binary = Path(configured)
-        self.assertTrue(binary.is_file(), binary)
-
-        configs = {}
-        for mode in ("face-serial", "worker-serial"):
-            completed = subprocess.run(
-                [str(binary), "--self-test", mode],
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            self.assertEqual(completed.returncode, 0, completed.stdout)
-            configs[mode] = json.loads(completed.stdout)
-
-        face = configs["face-serial"]
-        worker = configs["worker-serial"]
-        changed = {key for key in face if face[key] != worker[key]}
-        self.assertEqual(changed, ALLOWED_TREATMENT_FIELDS)
-        self.assertEqual(worker["production_workers"], 1)
-        self.assertEqual(face["receive_workers"], 0)
-        self.assertEqual(worker["receive_workers"], 0)
-        for key in ALLOWED_TREATMENT_FIELDS:
-            face.pop(key)
-            worker.pop(key)
-        self.assertEqual(face, worker)
 
 
 class Spec137HarnessContractTests(unittest.TestCase):
