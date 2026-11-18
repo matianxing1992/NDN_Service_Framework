@@ -15,6 +15,8 @@ REPO = Path(__file__).resolve().parents[2]
 BUILDER_PATH = REPO / "Experiments/build_svs_sync_stage_profile.py"
 RUNNER_PATH = REPO / "Experiments/NDN_SVS_Sync_Stage_Profile_Minindn.py"
 ANALYZER_PATH = REPO / "Experiments/analyze_svs_sync_stage_profile.py"
+PROFILE_MANIFEST = os.environ.get("NDNSF_SVS_STAGE_PROFILE_MANIFEST")
+STAGE_CONTRACT = REPO / "tests/fixtures/svs-stage-profile/stage-measurement-contract.md"
 
 
 def load_builder():
@@ -136,7 +138,8 @@ class Spec133SubjectBuilderContractTests(unittest.TestCase):
             root = Path(directory)
             library = root / "libndn-svs.so"
             library.write_bytes(b"clean-library")
-            profile = REPO / "build/spec133/worktrees/sync-stage-profile"
+            profile = root / "profile"
+            subprocess.run(["git", "init", "-q", str(profile)], check=True)
             foundation = {
                 "schemaVersion": self.builder.FOUNDATION_SCHEMA,
                 "baseCommit": self.builder.BASE_COMMIT,
@@ -161,11 +164,13 @@ class Spec133SubjectBuilderContractTests(unittest.TestCase):
         self.assertNotIn('worktree", "prune"', source)
 
 
+@unittest.skipUnless(PROFILE_MANIFEST, "isolated SVS stage profile build not selected")
 class Spec133ProfilerPrimitiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.builder = load_builder()
-        cls.profile_root = REPO / "build/spec133/worktrees/sync-stage-profile"
+        cls.subject = load_runner().load_subject(Path(PROFILE_MANIFEST))
+        cls.profile_root = Path(cls.subject["profileWorktree"])
 
     def test_fixed_registry_covers_contract_and_has_no_worker(self):
         header = (self.profile_root / "ndn-svs/profile.hpp").read_text(encoding="utf-8")
@@ -188,8 +193,7 @@ class Spec133ProfilerPrimitiveTests(unittest.TestCase):
 
     def test_runtime_registry_exactly_matches_frozen_stage_contract(self):
         header = (self.profile_root / "ndn-svs/profile.hpp").read_text(encoding="utf-8")
-        contract = (REPO / "specs/133-svs-sync-stage-profiling/contracts/"
-                    "stage-measurement-contract.md").read_text(encoding="utf-8")
+        contract = STAGE_CONTRACT.read_text(encoding="utf-8")
         runtime = set(re.findall(r'X\([A-Z0-9_]+, "([A-Z]+\.[A-Z0-9_.]+)"', header))
         frozen = set(re.findall(r'^\| `([A-Z]+\.[A-Z0-9_.]+)` \|', contract, re.M))
         self.assertEqual(runtime, frozen)
@@ -569,11 +573,8 @@ int main()
         self.assertLess(source.index("profile::Profiler::get().flush();"),
                         source.index("flushEvents();"))
 
-        foundation = json.loads(
-            (REPO / "build/spec133/subject-foundation.json").read_text(encoding="utf-8")
-        )
         subjects = (
-            ("clean", Path(foundation["cleanWorktree"]), 0),
+            ("clean", Path(self.subject["cleanWorktree"]), 0),
             ("profile", self.profile_root, 1),
         )
         pkg = shlex.split(
@@ -735,6 +736,39 @@ class Spec133RunnerContractTests(unittest.TestCase):
         bad["C-profiled-enabled"]["profileComplete"] = False
         self.assertFalse(self.runner.compare_overhead(bad)["admitted"])
 
+    def test_overhead_ratio_floor_reports_undefined_instead_of_an_astronomical_multiple(self):
+        # The archived receipt carried deliveryRatioRelativeDelta = 2.3e11 for A-vs-B because the
+        # reference arm had 0/4719 in-window deliveries and the divisor floored at 1e-12. That number
+        # is arithmetically derived and operationally meaningless: it must read as undefined and must
+        # still reject the pair.
+        base = {"attemptedPpsPerPeer": 1000.0, "deliveryRatio": 0.0,
+                "aggregateCpuPercent": 100.0, "profileComplete": True, "invalid": 0,
+                "deliveredAllPhases": 1}
+        metrics = {
+            "A-clean-control": dict(base),
+            "B-profiled-disabled": dict(base, deliveryRatio=0.2338),
+            "C-profiled-enabled": dict(base, deliveryRatio=0.0032),
+        }
+        result = self.runner.compare_overhead(metrics)
+        self.assertFalse(result["admitted"])
+        pair = result["comparisons"]["A-vs-B"]
+        self.assertTrue(pair["deliveryRatioDeltaUndefined"])
+        self.assertEqual(pair["deliveryRatioRelativeDelta"], float("inf"))
+        self.assertEqual(pair["deliveryRatioReference"], 0.0)
+
+        # A pair whose reference arm does deliver keeps a proportional number and can still admit.
+        healthy = {
+            "A-clean-control": dict(base, deliveryRatio=0.99),
+            "B-profiled-disabled": dict(base, deliveryRatio=0.98, aggregateCpuPercent=102.0),
+            "C-profiled-enabled": dict(base, deliveryRatio=0.97, aggregateCpuPercent=103.0),
+        }
+        healthy_result = self.runner.compare_overhead(healthy)
+        self.assertTrue(healthy_result["admitted"])
+        self.assertFalse(healthy_result["comparisons"]["A-vs-B"]["deliveryRatioDeltaUndefined"])
+        self.assertAlmostEqual(
+            healthy_result["comparisons"]["A-vs-B"]["deliveryRatioRelativeDelta"],
+            0.01 / 0.99, places=9)
+
     def test_t007_profile_environment_binds_cell_peer_and_formal_logger(self):
         subject = {"profileConfig": {"sampleModulus": 100,
                                      "logger": "ndn_svs.Profile=TRACE"}}
@@ -782,9 +816,11 @@ class Spec133AnalyzerContractTests(unittest.TestCase):
             self.analyzer.parse_profile_record(
                 "schema=spec133-stage-span-v1 event=stage-span stage=A stage=B")
 
+    @unittest.skipUnless(PROFILE_MANIFEST, "isolated SVS stage profile build not selected")
     def test_t010_registry_and_required_output_contract_are_frozen(self):
+        subject = load_runner().load_subject(Path(PROFILE_MANIFEST))
         registry = self.analyzer.parse_registry(
-            REPO / "build/spec133/worktrees/sync-stage-profile/ndn-svs/profile.hpp")
+            Path(subject["profileWorktree"]) / "ndn-svs/profile.hpp")
         self.assertEqual(len(registry), 81)
         self.assertEqual(registry["PUB.INNER_SIGN"]["kind"], "leaf-cpu")
         self.assertEqual(registry["MAP.NETWORK_WAIT"]["kind"], "external-wait")

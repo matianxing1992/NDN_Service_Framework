@@ -19,7 +19,6 @@ from typing import Any
 
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_SUBJECT = REPO / "build/spec133/subject-manifest-io.json"
 DRIVER = REPO / "Experiments/ndn-svs-pubsub-benchmark/svs-sync-stage-profile.cpp"
 RATES = (200, 400, 600, 800, 1000)
 PEERS = ("peer-a", "peer-b")
@@ -479,6 +478,22 @@ def relative_delta(left: float, right: float) -> float:
     return 0.0 if left == right == 0 else abs(right - left) / max(abs(left), 1e-12)
 
 
+# A ratio whose denominator is at the floor carries no proportional meaning: dividing by 1e-12 turns
+# "nearly none" into 2.3e11 and reads like a measurement. The gate still rejects such a pair -- a
+# reference arm with no in-window delivery cannot admit anything -- but the receipt says so in a form
+# an operator can act on, instead of printing an astronomical multiple.
+DELIVERY_RATIO_FLOOR = 1e-6
+
+
+def delivery_ratio_delta(left: float, right: float) -> tuple[float, bool]:
+    """Return (relative delta, denominator-too-small). `delta` is `inf` in the second case."""
+    if left == right == 0:
+        return 0.0, False
+    if abs(left) < DELIVERY_RATIO_FLOOR:
+        return float("inf"), True
+    return relative_delta(left, right), False
+
+
 def compare_overhead(metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
     comparisons = {}
     admitted = True
@@ -486,12 +501,18 @@ def compare_overhead(metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
                                ("B-vs-C", "B-profiled-disabled", "C-profiled-enabled"),
                                ("A-vs-C", "A-clean-control", "C-profiled-enabled")):
         a, b = metrics[left], metrics[right]
+        ratio_delta, ratio_undefined = delivery_ratio_delta(a["deliveryRatio"], b["deliveryRatio"])
         result = {
             "attemptedRateRelativeDelta": relative_delta(a["attemptedPpsPerPeer"], b["attemptedPpsPerPeer"]),
-            "deliveryRatioRelativeDelta": relative_delta(a["deliveryRatio"], b["deliveryRatio"]),
+            "deliveryRatioRelativeDelta": ratio_delta,
+            "deliveryRatioDeltaUndefined": ratio_undefined,
+            "deliveryRatioReference": a["deliveryRatio"],
             "cpuPercentagePointDelta": abs(b["aggregateCpuPercent"] - a["aggregateCpuPercent"]),
         }
-        result["admitted"] = result["attemptedRateRelativeDelta"] <= 0.05 and \
+        # An undefined ratio is a rejection, not a pass: the reference arm delivered nothing in the
+        # measured window, so no proportional overhead claim can be made from this pair.
+        result["admitted"] = not ratio_undefined and \
+            result["attemptedRateRelativeDelta"] <= 0.05 and \
             result["deliveryRatioRelativeDelta"] <= 0.05 and result["cpuPercentagePointDelta"] <= 5.0
         admitted &= result["admitted"]
         comparisons[label] = result
@@ -578,13 +599,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     overhead = sub.add_parser("overhead-preflight")
-    overhead.add_argument("--subject-manifest", type=Path, default=DEFAULT_SUBJECT)
+    overhead.add_argument("--subject-manifest", type=Path, required=True)
     overhead.add_argument("--output", type=Path, required=True)
     reanalyze = sub.add_parser("reanalyze-preflight")
     reanalyze.add_argument("--output", type=Path, required=True)
     plan = sub.add_parser("plan")
     plan.add_argument("--campaign-id", required=True)
-    plan.add_argument("--subject-manifest", type=Path, default=DEFAULT_SUBJECT)
+    plan.add_argument("--subject-manifest", type=Path, required=True)
     plan.add_argument("--overhead-receipt", type=Path, required=True)
     plan.add_argument("--output", type=Path, required=True)
     seal = sub.add_parser("seal")
