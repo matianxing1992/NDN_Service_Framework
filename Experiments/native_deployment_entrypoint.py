@@ -18,11 +18,14 @@ def run_deployment(argv):
     parser.add_argument('--verify', action='store_true',
                         help='verify first/warm dependency and namespace evidence with the C++ oracle')
     parser.add_argument('--oracle', type=Path, help='explicit native oracle candidate for qualification')
+    parser.add_argument('--complete-model-reference', action='store_true',
+                        help='compare captured logits and KV with the original ONNX model')
     args = parser.parse_args(argv)
     if args.debug and args.action != 'run':
         parser.error('--debug only applies to run')
-    if (args.verify and args.action != 'run') or (args.oracle and not args.verify):
-        parser.error('--verify applies to run; --oracle requires --verify')
+    if (args.verify and args.action != 'run') or (
+            (args.oracle or args.complete_model_reference) and not args.verify):
+        parser.error('--verify applies to run; oracle options require --verify')
     from ndnsf_distributed_inference.ops.cli import main
     oracle = None
     if args.verify:
@@ -43,7 +46,9 @@ def run_deployment(argv):
         return result
     from ndnsf_distributed_inference.ops.cluster import _locator
     _, root = _locator(args.deployment)
-    completed = subprocess.run([str(oracle), '--deployment-state',
-                               str(root / 'state.json'), '--require-multi-token'],
-                              stdin=subprocess.DEVNULL, timeout=60)
+    command = [str(oracle), '--deployment-state', str(root / 'state.json'), '--require-multi-token']
+    if args.complete_model_reference:
+        command.extend(['--model-reference', '--complete-model-reference'])
+    completed = subprocess.run(command, stdin=subprocess.DEVNULL,
+                               timeout=args.timeout if args.complete_model_reference else 60)
     return completed.returncode

@@ -18,6 +18,8 @@ namespace ndnsf::di {
 class OnnxRuntimeSessionCache;
 struct AutomaticOnnxGenerationProbe;
 
+inline constexpr std::size_t ONNX_CPU_COMPLETE_OBSERVATION_MAX_ELEMENTS = 512 * 1024;
+
 /** Bounded scalar observations of one actual resident KV tensor, for qualification only. */
 struct OnnxKvStateSample
 {
@@ -39,8 +41,8 @@ public:
 };
 
 /** Optional diagnostic capability; existing observers retain their 16-point contract.
- * Complete observation is limited to tensors of at most 4096 elements. Consumers must
- * check coverage when a larger tensor falls back to scalar samples. No observer is
+ * Complete observation has bounded device-specific limits. Consumers must check
+ * coverage when a larger tensor falls back to scalar samples. No observer is
  * installed by default. A separate interface preserves the existing observer vtable.
  */
 class OnnxCompleteKvStateObserver

@@ -572,6 +572,22 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     split.at("roles").size() > 1 &&
     std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
       [] (const auto& degree) { return degree.template get<std::uint64_t>() > 1; });
+  std::map<std::string, std::vector<std::uint64_t>> rankWeights;
+  if (const auto weights = split.find("tensor_rank_weights_by_role"); weights != split.end()) {
+    if (!sourceBoundHybrid || !weights->is_object() || weights->empty())
+      throw std::invalid_argument("tensor rank weights require a source-bound Qwen hybrid");
+    for (const auto& stage : weights->items()) {
+      if (!stage.value().is_array() || stage.value().empty())
+        throw std::invalid_argument("tensor rank weights require a nonempty array per stage");
+      auto& values = rankWeights[stage.key()];
+      for (const auto& weight : stage.value()) {
+        if (!weight.is_number_integer() || weight < 1 ||
+            weight > std::numeric_limits<std::int32_t>::max())
+          throw std::invalid_argument("tensor rank weights must be bounded positive integers");
+        values.push_back(weight.get<std::uint64_t>());
+      }
+    }
+  }
   std::optional<qwen::QwenTpShape> hybridColdShape;
   if (sourceBoundHybrid && !source.modelBytes.empty()) {
     // Preserve full byte-based operator/quantization admission before releasing the bytes.
@@ -633,7 +649,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       };
       auto [candidate, unitStages] = transformerStrategy->lowerSourceHybrid(
         result.model.descriptor, result.model.graph, hybridShape, resourceProfiles,
-        *planningGraphInspection, region, result.stateMapping, extensionControl);
+        *planningGraphInspection, region, result.stateMapping, extensionControl, rankWeights);
       projectedCandidate = std::move(candidate);
       sourceRoleByUnit = std::move(unitStages);
     }

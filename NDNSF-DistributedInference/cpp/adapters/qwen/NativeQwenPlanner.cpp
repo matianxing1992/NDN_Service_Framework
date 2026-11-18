@@ -115,7 +115,8 @@ NativeQwenLayerSplit::lowerSourceHybrid(const NativeModelDescriptor& model,
   const NativeGraphSnapshot& graph, const QwenTpShape& shape,
   const std::map<std::string, NativeRoleResourceRequirement>& resources,
   const NativeOnnxGraphInspection& source, const QwenTpSourceRegionPort& region,
-  const NativeStateTensorMapping& stateMapping, const ExtensionControl& control) const
+  const NativeStateTensorMapping& stateMapping, const ExtensionControl& control,
+  const std::map<std::string, std::vector<std::uint64_t>>& rankWeights) const
 {
   if (m_modelFamily != "qwen" || m_roles.size() < 2 || !region)
     throw std::invalid_argument("Qwen SOURCE hybrid requires multiple stages and a source region");
@@ -124,6 +125,7 @@ NativeQwenLayerSplit::lowerSourceHybrid(const NativeModelDescriptor& model,
   std::map<std::string, std::string> artifacts;
   std::map<std::string, std::string> sourceRoleByUnit;
   std::map<std::string, NativeRoleResourceRequirement> requirements;
+  std::size_t resolvedStages = 0;
   for (std::size_t stage = 0; stage < m_roles.size(); ++stage) {
     control.requireActive();
     const auto& role = m_roles[stage];
@@ -147,6 +149,18 @@ NativeQwenLayerSplit::lowerSourceHybrid(const NativeModelDescriptor& model,
     window.stageId = role;
     window.layerBegin = begin;
     window.layerEnd = end;
+    if (const auto weights = rankWeights.find(role); weights != rankWeights.end()) {
+      if (degree < 2 || weights->second.size() != degree)
+        throw std::invalid_argument("tensor rank weights disagree with stage degree");
+      auto ranges = resolveQwenTpRankRanges(shape, weights->second);
+      const bool equal = std::all_of(ranges.begin(), ranges.end(), [&](const auto& range) {
+        return range.kvEnd - range.kvBegin == ranges.front().kvEnd &&
+               range.ffnEnd - range.ffnBegin == ranges.front().ffnEnd;
+      });
+      if (!equal)
+        window.rankRanges = std::move(ranges);
+      ++resolvedStages;
+    }
     if (stage > 0) {
       window.upstreamUnit = stageUnits[stage - 1].front().roleId;
       window.upstreamStepId = window.upstreamUnit + "/MLP/" + std::to_string(begin - 1);
@@ -155,6 +169,8 @@ NativeQwenLayerSplit::lowerSourceHybrid(const NativeModelDescriptor& model,
       window.upstreamMlpSlotId = "merged";
     }
   }
+  if (resolvedStages != rankWeights.size())
+    throw std::invalid_argument("tensor rank weights name an unknown stage");
   const auto resolveOwner = [&] (const std::string& name, std::size_t stage,
                                   const std::string& defaultUnit) -> std::string {
     const auto unit = sourceRoleByUnit.find(name);

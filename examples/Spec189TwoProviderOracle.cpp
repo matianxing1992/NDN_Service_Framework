@@ -1304,7 +1304,8 @@ NativeJson
 validateDeployment(const std::filesystem::path& statePath, bool requireMultiToken,
                    bool requireDistributedGpu = false, bool modelReference = false,
                    const std::filesystem::path& referenceSourcePath = {},
-                   const std::optional<ExactConversation>& exact = {})
+                   const std::optional<ExactConversation>& exact = {},
+                   bool completeModelReference = false)
 {
   const auto state = readJson(statePath);
   const bool slurm = state.contains("job_id");
@@ -1527,7 +1528,7 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
       : (actorRoot(id) / (id + "-statistics.jsonl")).string();
     providers.push_back(readStatistics(statisticsPath,
       "ndnsf-di-native-request-statistics-v1", rounds, true, automaticPlacement));
-    if (exact)
+    if (exact || completeModelReference)
       providerKvDirectories.emplace_back(statisticsPath + ".kv-complete");
     providers.back().actor = id;
     if (slurm) {
@@ -1917,15 +1918,18 @@ validateDeployment(const std::filesystem::path& statePath, bool requireMultiToke
         ndnsf::di::nativeCanonicalJson(expectedIdentity));
     }
     std::vector<spec220::oracle::CompleteKvCapture> captures;
-    if (exact) {
+    if (exact || completeModelReference) {
       for (std::size_t i = 0; i < providers.size(); ++i) {
         const auto& provider = providers[i];
         captures.push_back({providerKvDirectories.at(i), provider.provider,
                             provider.boot, provider.requests});
       }
     }
+    // Use the calibrated tolerance for the opt-in full partitioned CPU replay.
+    // The existing exact-conversation checks keep their tighter absolute term.
+    const double absoluteTolerance = completeModelReference && !exact ? 1e-4 : 1e-5;
     receipt["modelReference"] = spec220::oracle::validateOnnxReference(
-      referenceRequester, *versions.begin(), captures);
+      referenceRequester, *versions.begin(), captures, absoluteTolerance);
     receipt["checkpointAuthentication"] = receipt.at("modelReference").at("checkpointAuthentication");
     receipt["scope"] = "deployment-unsplit-model-reference";
   }
@@ -2337,7 +2341,7 @@ main(int argc, char** argv)
                  " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
                  " --run-root DIRECTORY\n"
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
-                 " [--require-distributed-gpu] [--model-reference]"
+                 " [--require-distributed-gpu] [--model-reference [--complete-model-reference]]"
                  " [--model-reference-source FILE]"
                  " [--require-exact-conversation TOKENS PROVIDERS]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
@@ -2345,7 +2349,8 @@ main(int argc, char** argv)
   }
   bool placementOnly = false, cacheCompatibility = false, expectedRevocationFailure = false,
        multiToken = false, repoLifecycle = false, invalidOptions = false,
-       quietPerformance = false, distributedGpu = false, modelReference = false;
+       quietPerformance = false, distributedGpu = false, modelReference = false,
+       completeModelReference = false;
   unsigned rounds = 1;
   bool roundsSeen = false;
   std::optional<ExactConversation> exact;
@@ -2363,6 +2368,8 @@ main(int argc, char** argv)
     else if (option == "--require-multi-token" && !multiToken) multiToken = true;
     else if (option == "--require-distributed-gpu" && !distributedGpu) distributedGpu = true;
     else if (option == "--model-reference" && !modelReference) modelReference = true;
+    else if (option == "--complete-model-reference" && !completeModelReference)
+      completeModelReference = true;
     else if (option == "--model-reference-source" && !referenceSourceArg && i + 1 < argc)
       referenceSourceArg = argv[++i];
     else if (option == "--require-exact-conversation" && !exact && i + 2 < argc) {
@@ -2396,7 +2403,7 @@ main(int argc, char** argv)
   }
   if (invalidOptions || ((distributedGpu || modelReference) && !deploymentStateArg) ||
       (referenceSourceArg && (!modelReference || !deploymentStateArg)) ||
-      (exact && (!modelReference || distributedGpu)) ||
+      ((exact || completeModelReference) && (!modelReference || distributedGpu)) ||
       (deploymentStateArg && (repoLifecycle || repoRootArg || runRootArg || placementOnly ||
         cacheCompatibility || expectedRevocationFailure || quietPerformance || roundsSeen)) ||
       (repoLifecycle && (repoRootArg == nullptr || runRootArg != nullptr ||
@@ -2412,7 +2419,7 @@ main(int argc, char** argv)
                  " --quiet-performance] [--require-multi-token] [--rounds 1..8]"
                  " --run-root DIRECTORY\n"
               << "       " << argv[0] << " --deployment-state FILE [--require-multi-token]"
-                 " [--require-distributed-gpu] [--model-reference]"
+                 " [--require-distributed-gpu] [--model-reference [--complete-model-reference]]"
                  " [--model-reference-source FILE]"
                  " [--require-exact-conversation TOKENS PROVIDERS]\n"
               << "       " << argv[0] << " --repo-lifecycle --repo-root DIRECTORY\n";
@@ -2423,7 +2430,7 @@ main(int argc, char** argv)
       const auto receipt = validateDeployment(
         std::filesystem::absolute(deploymentStateArg), multiToken, distributedGpu, modelReference,
         referenceSourceArg ? std::filesystem::absolute(referenceSourceArg) : std::filesystem::path{},
-        exact);
+        exact, completeModelReference);
       std::cout << (modelReference ? "SPEC220_CPP_MODEL_REFERENCE_PASS " :
                                     "SPEC217_CPP_DEPLOYMENT_EXECUTION_PASS ")
                 << ndnsf::di::nativeCanonicalJson(receipt) << '\n';

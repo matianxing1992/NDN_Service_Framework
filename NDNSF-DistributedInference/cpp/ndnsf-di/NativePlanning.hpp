@@ -321,6 +321,7 @@ struct NativeSplitCandidate
   {
     std::uint64_t degree = 0;
     std::uint64_t rank = 0;
+    std::string tensorShardV1;
   };
   std::map<std::string, RoleTensorIdentity> tensorIdentityByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
@@ -338,6 +339,16 @@ private:
   // every candidate contract/digest check still run.
   void validateImpl(const NativeGraphSnapshot& graph, bool reuseCheckedGraph) const;
 };
+
+/** Parse and validate the canonical per-rank shard carried by the recipe. */
+NativeJson
+parseNativeTensorShardV1(const std::string& wire);
+
+/** Bind the ordered role/axis table to its source stage and adapter. */
+std::string
+nativeTensorStageLayoutDigest(const std::string& adapter, const std::string& graphDigest,
+                              const std::string& stage, const std::string& sourceRegionDigest,
+                              const NativeJson& rankedAxes);
 
 struct NativePlacementProposal
 {

@@ -61,6 +61,8 @@ inline constexpr const char* kNativeOnnxCertifiedRecipeSchema =
   "ndnsf-di-certified-onnx-assembly-v1";
 inline constexpr const char* NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA =
   "ndnsf-di-certified-onnx-assembly-v2";
+inline constexpr const char* NATIVE_ONNX_TENSOR_SHARD_CERTIFIED_RECIPE_SCHEMA =
+  "ndnsf-di-certified-onnx-assembly-v3";
 
 /** Parsed request frame header (all lengths little-endian on the wire). */
 struct NativeOnnxRequestHeader

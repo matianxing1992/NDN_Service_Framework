@@ -170,7 +170,7 @@ private:
       const NativeJson document{{"schema", "ndnsf-di-kv-complete-v1"},
         {"provider", m_provider}, {"record", std::move(observation)}};
       const auto bytes = nativeCanonicalJson(document).size();
-      if (bytes > MAX_COMPLETE_BYTES - m_completeBytes)
+      if (bytes > MAX_COMPLETE_RECORD_BYTES || bytes > MAX_COMPLETE_BYTES - m_completeBytes)
         throw std::runtime_error("complete qualification KV directory byte bound exceeded");
       auto [seen, inserted] = m_completeKeys.try_emplace(key);
       try {
@@ -197,10 +197,12 @@ private:
     nativeExportPrivateCheckpoint(m_destination, document);
   }
 
-  static constexpr std::size_t MAX_COMPLETE_TENSOR_ELEMENTS = 4096;
-  static constexpr std::size_t MAX_COMPLETE_RECORD_ELEMENTS = 16384;
-  static constexpr std::size_t MAX_COMPLETE_RECORDS = 512;
-  static constexpr std::size_t MAX_COMPLETE_BYTES = 16 * 1024 * 1024;
+  static constexpr std::size_t MAX_COMPLETE_TENSOR_ELEMENTS =
+    ONNX_CPU_COMPLETE_OBSERVATION_MAX_ELEMENTS;
+  static constexpr std::size_t MAX_COMPLETE_RECORD_ELEMENTS = 1U << 20;
+  static constexpr std::size_t MAX_COMPLETE_RECORD_BYTES = 16U << 20;
+  static constexpr std::size_t MAX_COMPLETE_RECORDS = 2048;
+  static constexpr std::size_t MAX_COMPLETE_BYTES = 256U << 20;
   using EpochKey = std::tuple<std::string, std::uint64_t, std::string, std::uint64_t, bool>;
 
   const std::filesystem::path m_destination;

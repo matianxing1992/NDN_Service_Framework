@@ -13,6 +13,7 @@
 #include <functional>
 #include <filesystem>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -101,6 +102,22 @@ struct QwenRankLayerSlices
   std::uint64_t layer = 0;
   std::vector<QwenInitializerSlice> initializers;
 };
+
+/** Half-open intervals in global KV heads and logical FFN channels. */
+struct QwenTpRankRange
+{
+  std::uint64_t kvBegin = 0;
+  std::uint64_t kvEnd = 0;
+  std::uint64_t ffnBegin = 0;
+  std::uint64_t ffnEnd = 0;
+};
+
+std::vector<QwenTpRankRange>
+resolveQwenTpRankRanges(const QwenTpShape& shape, const std::vector<std::uint64_t>& weights);
+
+std::vector<QwenRankLayerSlices>
+planQwenTensorSlices(const QwenTpShape& shape, const QwenTpRankRange& range,
+                     std::uint64_t layerBegin, std::uint64_t layerEnd);
 
 /**
  * Derive the exact per-rank slice list for one tensor-parallel degree.
@@ -489,6 +506,7 @@ struct QwenTpRankGeometry
   std::uint64_t kvWidth = 0;
   std::uint64_t hidden = 0;
   std::uint64_t ffn = 0;
+  std::optional<QwenTpRankRange> range;
 
   void validate() const;
 };
@@ -786,6 +804,15 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const QwenTpAssemblyControl* control,
                         std::uint64_t layerBegin);
 
+/** Materialize an authenticated explicit shard of a source region. */
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget, std::uint64_t tensorDegree,
+                        std::uint64_t tensorRank, const std::string& egressRole,
+                        const QwenTpAssemblyControl* control, std::uint64_t layerBegin,
+                        const std::string& tensorShardV1);
+
 /** Full-model compatibility overload: retains the original API and symbol. */
 void
 configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
@@ -956,6 +983,7 @@ struct QwenTpStageWindow
   std::string upstreamSlotId;
   std::string upstreamMlpStepId;
   std::string upstreamMlpSlotId;
+  std::vector<QwenTpRankRange> rankRanges;
 };
 
 /** Build one candidate from several projected stages.

@@ -479,6 +479,7 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
         if (shardDegree != 0) {
           role.tensorParallelDegree = shardDegree;
           role.tensorParallelRank = shardRank;
+          role.tensorShardV1 = tensorIdentity->second.tensorShardV1;
         }
         else if (degree > 1) {
           role.tensorParallelDegree = degree;

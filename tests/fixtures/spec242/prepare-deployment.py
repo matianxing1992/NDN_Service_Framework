@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -72,27 +73,56 @@ def secure_random(path):
         stream.write(os.urandom(32))
 
 
-def prepare_deployment(root, prefix, ledger, journal_root):
+def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_sha256=None,
+                       tokenizer=None, layer_cut=None, rank_weights=None,
+                       prepared_workload=None):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
-    from NDNSF_DI_Qwen06B_Native_Minindn import digest_bytes as digest, make_external_key
+    from NDNSF_DI_Qwen06B_Native_Minindn import (
+        digest_bytes as digest, make_external_key, preparation_cache_budget,
+    )
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, load_pem_public_key
 
     root.mkdir(mode=0o700)
-    namespace = "/spec242"
+    real_model = source is not None or prepared_workload is not None
+    request_timeout_ms = 900000 if real_model else 240000
+    # Leave room for both turns and strictly outlive either signed Selection.
+    retention_ms = 2 * request_timeout_ms + 300000 if real_model else 600000
+    namespace = "/spec234" if real_model else "/spec242"
     group = namespace + "/group"
     service = namespace + "/Infer"
     grant_service = namespace + "/ArtifactGrant"
     repo_service = "/NDNSF/DistributedRepo/Object/v1"
     epoch = "spec242-epoch"
     bundle = root / "workload"
-    with tempfile.TemporaryDirectory(dir=root, prefix="catalog-home-") as home:
-        env = os.environ.copy()
-        env.update(HOME=home, NDN_CLIENT_PIB="pib-sqlite3:" + str(Path(home) / ".ndn"),
-                   NDN_CLIENT_TPM="tpm-file:")
-        capture([sys.executable, str(Path(__file__).with_name("prepare-workload.py")),
-                 "--output", str(bundle), "--requester", namespace + "/requester",
-                 "--protection-epoch", epoch], env)
+    if prepared_workload:
+        bundle.mkdir(mode=0o700)
+        for name in ("catalog.json", "generation.json", "tokenizer.json", "prompt.bin", "delta.bin"):
+            path = prepared_workload / name
+            limit = 32 << 20
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit:
+                    raise ValueError(f"invalid prepared workload file: {name}")
+                data = stream.read(limit + 1)
+                if len(data) != info.st_size:
+                    raise ValueError(f"prepared workload file size changed: {name}")
+            (bundle / name).write_bytes(data)
+    else:
+        with tempfile.TemporaryDirectory(dir=root, prefix="catalog-home-") as home:
+            env = os.environ.copy()
+            env.update(HOME=home, NDN_CLIENT_PIB="pib-sqlite3:" + str(Path(home) / ".ndn"),
+                       NDN_CLIENT_TPM="tpm-file:")
+            prepare = [sys.executable, str(Path(__file__).with_name("prepare-workload.py")),
+                       "--output", str(bundle), "--requester", namespace + "/requester",
+                       "--protection-epoch", epoch]
+            if source:
+                prepare += ["--source", str(source), "--source-sha256", source_sha256,
+                            "--tokenizer", str(tokenizer), "--layer-cut", str(layer_cut)]
+                if rank_weights is not None:
+                    prepare += ["--rank-weights", *map(str, rank_weights)]
+            subprocess.run(prepare, env=env, check=True, timeout=300 if source else 30)
     catalog = json.loads((bundle / "catalog.json").read_bytes())
     options = json.loads((bundle / "generation.json").read_bytes())
     split = catalog["splitter"]
@@ -137,7 +167,7 @@ def prepare_deployment(root, prefix, ledger, journal_root):
     conversation_id = "spec242-" + uuid.uuid4().hex
     secure_random(content)
     secure_random(journal)
-    model_uri = "/Model/Spec242/Qwen"
+    model_uri = "/Model/Spec234/Qwen" if real_model else "/Model/Spec242/Qwen"
     write_json(key_root / "trust-root-registry-v1.json", {
         "schemaVersion": 1, "status": "CONFIGURED",
         "artifactPolicyAuthority": {
@@ -170,12 +200,16 @@ def prepare_deployment(root, prefix, ledger, journal_root):
             "roles": role, "offer-backend": "onnxruntime-cpu", "offer-can-provision": True,
             "selection-offer-key-file": str(offer_private), "grant-authority-public-key": str(auth_public),
             "recipient-key-map": str(recipient_map), "allow-selection-generation-options": True,
-            "capture-complete-kv-state": True, "assembly-timeout-ms": 120000,
-            "repo-fetch-timeout-ms": 60000, "conversation-retention-ms": 600000}
+            "capture-complete-kv-state": True,
+            "assembly-timeout-ms": 600000 if real_model else 120000,
+            "repo-fetch-timeout-ms": 480000 if real_model else 60000,
+            "conversation-retention-ms": retention_ms}
     providers[-1]["parameters"]["capture-logits-output"] = "logits"
-    by_id["repo"]["parameters"]["request-timeout-ms"] = 60000
+    by_id["repo"]["parameters"]["request-timeout-ms"] = 480000 if real_model else 60000
 
     source = catalog["source"]
+    max_source = catalog["recipe"]["max_source_bytes"]
+    max_assembled = catalog["recipe"]["max_assembled_bytes"]
     service_fields = dict(dependencies=[], dtype="int4", model=model_uri, modelFamily="qwen",
                           modelFormat="onnx", modelRepository=catalog["model"]["model_name"],
                           modelRevision=catalog["model"]["source_revision"],
@@ -194,14 +228,37 @@ def prepare_deployment(root, prefix, ledger, journal_root):
     requester = by_id["requester"]["identity"]
     security_digest = digest(policy.read_bytes())
     options_file = str(bundle / "generation.json")
+    inputs = ("prompt.bin", "delta.bin")
     turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
                   output_file=str(root / f"output-{i}.json"),
                   checkpoint_output_file=str(root / f"checkpoint-{i}.json"))
-             for i, input_name in enumerate(("prompt.bin", "delta.bin"))]
+             for i, input_name in enumerate(inputs * (2 if real_model else 1))]
+    turn_options = dict(mode="FULL_CONTEXT", generation_id=uuid.uuid4().hex,
+                        parent_context_epoch=0, retention_duration_ms=retention_ms)
+    if real_model:
+        # The maintained requester opens independent conversations as pairs.
+        # Turns 0 and 2 both start from the same prompt with empty KV.
+        continuation_options = bundle / "continuation.json"
+        write_json(continuation_options, {**options, "maxNewTokens": 2})
+        for first in range(0, len(turns), 2):
+            own_id = uuid.uuid4().hex
+            for turn in turns[first:first + 2]:
+                turn["conversation_id"] = own_id
+            turns[first + 1]["options_file"] = str(continuation_options)
+    else:
+        turn_options["conversation_id"] = conversation_id
     placement = {role: actor["identity"] for role, actor in zip(roles, providers)}
     topology = checkout / "tests/fixtures/spec242/minindn-topology.conf"
+    if len(providers) == 4:
+        # The three-rank TP stage and singleton PP stage need four distinct hosts.
+        topology_text = topology.read_text()
+        topology = root / "minindn-topology.conf"
+        topology.write_text(topology_text.replace("\n[links]", "h242p3:\n\n[links]")
+                            .replace("\n[faces]", "h242relay:h242p3 delay=2ms bw=1000\n\n[faces]")
+                            + "h242relay:h242p3 cost=10\n", encoding="utf-8")
     config = {
-        "schema": "ndnsf-di-deployment-v1", "deployment_id": "spec242-hybrid",
+        "schema": "ndnsf-di-deployment-v1",
+        "deployment_id": "spec234-qwen-int4" if real_model else "spec242-hybrid",
         "release": {"prefix": str(prefix), "manifest": str(ledger)},
         "platform": {"kind": "minindn", "topology": str(topology),
                      "topology_sha256": digest(topology.read_bytes())},
@@ -214,7 +271,8 @@ def prepare_deployment(root, prefix, ledger, journal_root):
         "security": dict(controller_certificate=certificates["controller"],
                          controller_policy=str(policy), trust_schema=str(trust)),
         "storage": {**{key + "_root": str(root / key) for key in
-                       ("cache", "repo", "scratch", "state", "evidence")}, "max_bytes": 128 << 20},
+                       ("cache", "repo", "scratch", "state", "evidence")},
+                    "max_bytes": (8 << 30) if real_model else (128 << 20)},
         "model": dict(manifest=str(manifest), plan=str(plan), tokenizer=str(bundle / "tokenizer.json")),
         "requester": dict(
             catalog=catalog, fixed_placement={"role_providers": placement},
@@ -227,20 +285,22 @@ def prepare_deployment(root, prefix, ledger, journal_root):
             offer_admission=dict(candidate_digest=candidate_digest, public_key_files=offer_keys,
                 policy=dict(candidateDigest=candidate_digest, candidateId=candidate_digest[7:],
                             trustSchema=namespace + "/trust", entries=offer_entries)),
-            limits=dict(bootstrap_ms=120000, max_source_bytes=8 << 20,
-                        max_assembled_bytes=8 << 20),
+            limits=dict(bootstrap_ms=600000 if real_model else 120000,
+                        max_source_bytes=max_source, max_assembled_bytes=max_assembled,
+                        max_prepared_bytes=preparation_cache_budget(max_source, max_assembled)),
             request=dict(service=service, task="text-generation", generation_mode="TOKEN_STREAMING",
                          tokenizer_digest=options["tokenizerDigest"], security_policy_digest=security_digest,
                          options_file=options_file, provider_names=list(placement.values()),
-                         timeout_ms=240000, ack_timeout_ms=5000, no_progress_ms=120000,
-                         max_candidates=1, max_policy_ms=5000),
+                         timeout_ms=request_timeout_ms, ack_timeout_ms=5000,
+                         no_progress_ms=600000 if real_model else 120000,
+                         max_candidates=1, max_policy_ms=5000,
+                         **({"interest_lifetime_ms": 5000, "max_event_retries": 8}
+                            if real_model else {})),
             conversation=dict(journal=dict(identity=conversation_id, state_root=str(journal_root),
                 keys=[dict(id="active", file=str(journal))]),
                 owner=dict(requester_identity=requester, service_name=service,
                            security_domain_digest=security_digest),
-                turn=dict(mode="FULL_CONTEXT", conversation_id=conversation_id,
-                          generation_id=uuid.uuid4().hex, parent_context_epoch=0,
-                          retention_duration_ms=600000)),
+                turn=turn_options),
             turns=turns),
         "artifact_authority": dict(authority=dict(authority_private_key_file=str(auth_private),
             requester_public_key_files={requester: str(requester_public)},
@@ -250,7 +310,7 @@ def prepare_deployment(root, prefix, ledger, journal_root):
                 artifact_profile_digest=catalog["recipe"]["artifact_profile_digest"],
                 canonical_source_digest=source["digest"],
                 model_content_digest=catalog["model"]["content_digest"],
-                model_name=catalog["model"]["model_name"])}), max_grant_ttl_ms=600000)}
+                model_name=catalog["model"]["model_name"])}), max_grant_ttl_ms=retention_ms)}
     write_json(root / "deployment.json", config)
     print(root / "deployment.json")
 
@@ -262,6 +322,23 @@ if __name__ == "__main__":
     parser.add_argument("--release-manifest", required=True, type=Path)
     parser.add_argument("--journal-root", required=True, type=Path,
                         help="Durable target filesystem directory for the native journal")
+    workload = parser.add_mutually_exclusive_group()
+    workload.add_argument("--source", type=Path)
+    workload.add_argument("--prepared-workload", type=Path,
+                          help="Model inputs produced by prepare-workload.py before root deployment")
+    parser.add_argument("--source-sha256")
+    parser.add_argument("--tokenizer", type=Path)
+    parser.add_argument("--layer-cut", type=int)
+    parser.add_argument("--rank-weights", nargs="+", type=int)
     args = parser.parse_args()
+    source_options = (args.source_sha256, args.tokenizer, args.layer_cut)
+    if args.source and any(value is None for value in source_options):
+        parser.error("--source requires --source-sha256, --tokenizer and --layer-cut")
+    if not args.source and (any(value is not None for value in source_options) or args.rank_weights):
+        parser.error("model source options require --source")
+    if args.rank_weights is not None and len(args.rank_weights) not in (2, 3):
+        parser.error("the MiniNDN qualification layout requires two or three rank weights")
     prepare_deployment(args.output.resolve(), args.prefix.resolve(strict=True),
-                       args.release_manifest.resolve(strict=True), args.journal_root.resolve())
+                       args.release_manifest.resolve(strict=True), args.journal_root.resolve(),
+                       args.source, args.source_sha256, args.tokenizer, args.layer_cut,
+                       args.rank_weights, args.prepared_workload)

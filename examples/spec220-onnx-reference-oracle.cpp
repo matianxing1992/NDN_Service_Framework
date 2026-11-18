@@ -1,5 +1,6 @@
 #include "spec220-onnx-reference-oracle.hpp"
 
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeGenerationLimits.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -144,13 +145,18 @@ stateShape(const Ort::ConstTensorTypeAndShapeInfo& info, std::uint64_t prefix)
 class CompleteKvReplay
 {
 public:
-  CompleteKvReplay(const NativeJson& catalog, const std::vector<CompleteKvCapture>& captures)
+  CompleteKvReplay(const NativeJson& catalog, const std::vector<CompleteKvCapture>& captures,
+                   double absoluteTolerance)
+    : m_absoluteTolerance(absoluteTolerance)
   {
+    if (!std::isfinite(absoluteTolerance) || absoluteTolerance < 0)
+      reject("complete-reference-tolerance");
     if (captures.empty())
       return;
     const auto& splitter = catalog.at("splitter");
     const auto& stages = splitter.at("roles");
     const auto& degrees = splitter.at("tensor_degrees");
+    const auto weights = splitter.value("tensor_rank_weights_by_role", NativeJson::object());
     const auto& stateInputs = catalog.at("state_inputs");
     if (!stages.is_array() || !degrees.is_array() || stages.empty() ||
         stages.size() != degrees.size() || !stateInputs.is_object() ||
@@ -174,6 +180,8 @@ public:
         for (const auto& input : group) {
           if (!m_owners.emplace(input.get<std::string>(), roles).second)
             reject("complete-kv-duplicate-owner");
+          if (weights.contains(stageName))
+            m_weightedInputs.insert(input.get<std::string>());
         }
       }
     }
@@ -191,14 +199,14 @@ public:
       std::size_t files = 0;
       for (const auto& file : std::filesystem::directory_iterator(path)) {
         struct stat info{};
-        if (++files > 512 || ::lstat(file.path().c_str(), &info) != 0 ||
+        if (++files > 2048 || ::lstat(file.path().c_str(), &info) != 0 ||
             !S_ISREG(info.st_mode) || info.st_uid != ::getuid() ||
             (info.st_mode & 0777) != 0600 || info.st_size <= 0)
           reject("complete-kv-private-record");
         const auto size = static_cast<std::uintmax_t>(info.st_size);
         bytes += size;
         totalBytes += size;
-        if (bytes > 16U * 1024U * 1024U || totalBytes > 64U * 1024U * 1024U)
+        if (bytes > (256U << 20) || totalBytes > (768U << 20))
           reject("complete-kv-record-budget");
         load(nativeParseJson(readSmall(file.path())), capture);
       }
@@ -216,15 +224,14 @@ public:
     if (owner == m_owners.end())
       reject("complete-kv-missing-owner:" + input);
     const auto info = value.GetTensorTypeAndShapeInfo();
-    auto shape = info.GetShape();
+    const auto shape = info.GetShape();
     const auto degree = static_cast<std::int64_t>(owner->second.size());
-    if (degree > 1) {
-      if (shape.size() != 4 || shape.front() != 1 || shape.at(1) % degree != 0)
-        reject("complete-kv-head-cover:" + input);
-      shape.at(1) /= degree;
-    }
-    const auto extent = info.GetElementCount() / owner->second.size();
-    if (extent == 0 || extent > 4096)
+    const bool weighted = m_weightedInputs.count(input) != 0;
+    if (degree > 1 && (shape.size() != 4 || shape.front() != 1 || shape[1] < degree ||
+                       (!weighted && shape[1] % degree != 0)))
+      reject("complete-kv-head-cover:" + input);
+    const auto total = info.GetElementCount();
+    if (total == 0)
       reject("complete-kv-value-bound");
     const auto type = info.GetElementType();
     const char* elementType = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ? "float32" :
@@ -233,6 +240,7 @@ public:
       type == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ? "int32" : nullptr;
     if (!elementType)
       reject("complete-kv-type");
+    std::size_t offset = 0;
     for (std::size_t rank = 0; rank < owner->second.size(); ++rank) {
       const auto context = ":round=" + std::to_string(round) + ":epoch=" +
         std::to_string(epoch) + ":role=" + owner->second[rank] + ":tensor=" + input;
@@ -241,11 +249,29 @@ public:
         reject("complete-kv-missing-shard" + context);
       const auto& tensor = found->second;
       const auto& scalars = tensor.at("values");
-      if (tensor.at("shape") != NativeJson(shape) || tensor.at("elementType") != elementType ||
+      auto rankShape = shape;
+      auto extent = total;
+      if (degree > 1) {
+        const auto& dimensions = tensor.at("shape");
+        if (!dimensions.is_array() || dimensions.size() != 4 ||
+            !dimensions.at(1).is_number_unsigned() || dimensions.at(1) == 0 ||
+            dimensions.at(1) > shape[1])
+          reject("complete-kv-head-count" + context);
+        const auto heads = dimensions.at(1).get<std::int64_t>();
+        if (!weighted && heads != shape[1] / degree)
+          reject("complete-kv-equal-head-count" + context);
+        const auto [known, inserted] = shardHeads.emplace(owner->second[rank], heads);
+        if (!inserted && known->second != heads)
+          reject("complete-kv-changing-head-count" + context);
+        rankShape[1] = heads;
+        extent = total / shape[1] * heads;
+      }
+      if (extent > total - offset || extent > ONNX_CPU_COMPLETE_OBSERVATION_MAX_ELEMENTS ||
+          tensor.at("shape") != NativeJson(rankShape) || tensor.at("elementType") != elementType ||
           !scalars.is_array() || scalars.size() != extent)
         reject("complete-kv-shape-or-type" + context);
       for (std::size_t i = 0; i < extent; ++i) {
-        const auto index = rank * extent + i;
+        const auto index = offset + i;
         if (!scalars[i].is_number())
           reject("complete-kv-scalar" + context);
         const double actual = scalars[i].get<double>();
@@ -269,14 +295,18 @@ public:
           reject("complete-kv-inexact-int64" + context);
         const auto error = std::abs(reference - actual);
         const double tolerance = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
-          type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 ? 1e-5 + 1e-4 * std::abs(reference) : 0;
+          type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16
+            ? m_absoluteTolerance + RELATIVE_TOLERANCE * std::abs(reference) : 0;
         if (!std::isfinite(error) || error > tolerance)
           reject("complete-kv-value" + context + ":index=" + std::to_string(index));
         maxError = std::max(maxError, error);
         ++valuesCompared;
       }
+      offset += extent;
       m_tensors.erase(found);
     }
+    if (offset != total)
+      reject("complete-kv-head-cover:" + input);
   }
 
   void
@@ -305,7 +335,8 @@ public:
       const double reference = type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
         ? value.GetTensorData<float>()[index] : value.GetTensorData<Ort::Float16_t>()[index].ToFloat();
       const double error = std::abs(reference - scalars[index].get<double>());
-      if (!std::isfinite(error) || error > 1e-5 + 1e-4 * std::abs(reference))
+      const auto tolerance = m_absoluteTolerance + RELATIVE_TOLERANCE * std::abs(reference);
+      if (!std::isfinite(error) || error > tolerance)
         reject("complete-logits-value" + context + ":index=" + std::to_string(index));
       maxLogitsError = std::max(maxLogitsError, error);
       ++logitsCompared;
@@ -323,11 +354,15 @@ public:
   }
 
   std::size_t valuesCompared = 0;
+  static constexpr double RELATIVE_TOLERANCE = 1e-4;
   double maxError = 0;
   std::size_t logitsCompared = 0;
   double maxLogitsError = 0;
+  std::map<std::string, std::int64_t> shardHeads;
 
 private:
+  const double m_absoluteTolerance;
+
   void
   load(const NativeJson& document, const CompleteKvCapture& capture)
   {
@@ -359,7 +394,8 @@ private:
           !logits.is_array() || logits.size() != 1)
         reject("complete-logits-publisher");
       const auto& values = logits.at(0).at("values");
-      if (!values.is_array() || values.empty() || values.size() > 4096)
+      if (!values.is_array() || values.empty() ||
+          values.size() > ONNX_CPU_COMPLETE_OBSERVATION_MAX_ELEMENTS)
         reject("complete-logits-value-bound");
       if (!m_logits.emplace(std::make_pair(round, epoch), logits.at(0)).second)
         reject("complete-logits-duplicate");
@@ -371,7 +407,8 @@ private:
     for (const auto& tensor : tensors) {
       const auto input = tensor.at("inputName").get<std::string>();
       const auto& values = tensor.at("values");
-      if (!values.is_array() || values.empty() || values.size() > 4096)
+      if (!values.is_array() || values.empty() ||
+          values.size() > ONNX_CPU_COMPLETE_OBSERVATION_MAX_ELEMENTS)
         reject("complete-kv-value-bound");
       const auto owner = m_owners.find(input);
       if (owner == m_owners.end())
@@ -387,6 +424,7 @@ private:
 
   using TensorKey = std::tuple<std::size_t, std::size_t, std::string, std::size_t>;
   std::map<std::string, std::vector<std::string>> m_owners;
+  std::set<std::string> m_weightedInputs;
   std::map<TensorKey, NativeJson> m_tensors;
   std::map<std::pair<std::size_t, std::size_t>, NativeJson> m_logits;
 };
@@ -395,7 +433,7 @@ private:
 
 NativeJson
 validateOnnxReference(const NativeJson& requester, const std::string& expectedRuntimeVersion,
-                      const std::vector<CompleteKvCapture>& captures)
+                      const std::vector<CompleteKvCapture>& captures, double absoluteTolerance)
 {
   if (expectedRuntimeVersion.empty() || expectedRuntimeVersion != Ort::GetVersionString())
     reject("runtime-version");
@@ -483,7 +521,7 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     admittedCheckpoints.push_back(std::move(checkpoint));
   }
   const auto& catalog = requester.at("catalog");
-  CompleteKvReplay completeKv(catalog, captures);
+  CompleteKvReplay completeKv(catalog, captures, absoluteTolerance);
   const auto& source = catalog.at("source");
   const auto sourceBound = requester.at("limits").at("max_source_bytes").get<std::uint64_t>();
   const std::filesystem::path modelPath = source.at("file").get<std::string>();
@@ -746,8 +784,11 @@ validateOnnxReference(const NativeJson& requester, const std::string& expectedRu
     {"providerStateValuesCompared", completeKv.valuesCompared != 0},
     {"providerStateValueCount", completeKv.valuesCompared},
     {"providerStateMaxAbsoluteError", completeKv.maxError},
+    {"providerKvHeadsByShard", completeKv.shardHeads},
     {"providerLogitsValueCount", completeKv.logitsCompared},
     {"providerLogitsMaxAbsoluteError", completeKv.maxLogitsError},
+    {"providerComparisonAbsoluteTolerance", absoluteTolerance},
+    {"providerComparisonRelativeTolerance", CompleteKvReplay::RELATIVE_TOLERANCE},
     {"checkpointAuthentication", "VERIFIED"},
     {"performanceQualification", "NOT_RUN"}};
 }

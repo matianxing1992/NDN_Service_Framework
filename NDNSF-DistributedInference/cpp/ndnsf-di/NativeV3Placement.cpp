@@ -42,6 +42,9 @@ bool samePreparedAssemblyMetadata(const NativeSelectionRoleV3& prepared,
     prepared.requiredDeviceMemoryMb == proposed.requiredDeviceMemoryMb &&
     prepared.artifactDigest == proposed.artifactDigest &&
     prepared.recipeDigest == proposed.recipeDigest && prepared.roleKind == proposed.roleKind &&
+    prepared.tensorParallelDegree == proposed.tensorParallelDegree &&
+    prepared.tensorParallelRank == proposed.tensorParallelRank &&
+    prepared.tensorShardV1 == proposed.tensorShardV1 &&
     prepared.adapterId == proposed.adapterId && prepared.adapterVersion == proposed.adapterVersion &&
     prepared.modelManifestDigest == proposed.modelManifestDigest &&
     prepared.artifactProfileDigest == proposed.artifactProfileDigest &&
