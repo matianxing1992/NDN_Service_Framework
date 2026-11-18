@@ -61,6 +61,10 @@ class Spec168DeferredPlanningTest(unittest.TestCase):
             "application": {"identity": "/spec168/user"},
             "controller": "/spec168/controller",
             "service": "/Inference/Generate",
+            # The runtime identity now binds a group prefix and trust schema as well; without them the
+            # identity check fires first and hides what this case is about.
+            "group": "/spec168/group",
+            "trust_schema": "tests/fixtures/trust.conf",
             "ack_timeout_ms": 500,
             "hard_deadline_ms": 900_000,
             "progress_idle_ms": 30_000,
@@ -72,6 +76,8 @@ class Spec168DeferredPlanningTest(unittest.TestCase):
                 "application": {"identity": "/spec168/user"},
                 "controller": "/spec168/controller",
                 "service": "/Inference/Generate",
+                "group": "/spec168/group",
+                "trust_schema": "tests/fixtures/trust.conf",
                 field: [],
             }
             with self.subTest(field=field), self.assertRaisesRegex(
