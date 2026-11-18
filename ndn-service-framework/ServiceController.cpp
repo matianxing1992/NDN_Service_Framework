@@ -1258,6 +1258,9 @@ void ServiceController::addAttributesForUsersAccordingToServicePolicy()
       // Explicit public anchors also let NAC-ABE encrypt DKEYs when the
       // recipient's private identity belongs exclusively to another process.
       m_aa.addNewPolicy(getTargetIdentityCertificate(ndn::Name(identity)), abePolicy);
+      // This branch registers from a public anchor instead of the local keychain and used to be
+      // silent, which made "did this identity get a usable policy?" unanswerable from a log.
+      NDN_LOG_INFO("Add ABE policy (anchor) for identity: " << identity);
       continue;
     }
     catch (const std::exception&) {
