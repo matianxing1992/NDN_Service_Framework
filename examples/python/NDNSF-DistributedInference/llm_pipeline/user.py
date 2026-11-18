@@ -735,13 +735,10 @@ class _QwenDeferredRepoPublisher:
         remaining_ms = int(deadline_ms) - int(time.time() * 1000)
         if remaining_ms <= 0:
             raise TimeoutError("deferred Qwen Repo publication deadline expired")
-        self._output_path.parent.mkdir(parents=True, exist_ok=True)
-        print(
-            "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_START",
-            f"candidateDigest={candidate.candidate_digest}",
-            f"remainingMs={remaining_ms}",
-            flush=True,
-        )
+        # Resolve the backend before touching the filesystem. `CollaborationArtifactApiBackend`
+        # is a retired compatibility name that raises on construction, so this deferred
+        # publication path can no longer run; constructing it first makes the retirement the
+        # first boundary and leaves no output directory or start marker behind.
         from py_repoclient import CollaborationArtifactApiBackend
         backend = CollaborationArtifactApiBackend(
             None,
@@ -750,6 +747,13 @@ class _QwenDeferredRepoPublisher:
             ack_timeout_ms=3000,
             packet_payload_bytes=7600,
             chunk_bytes=16 * 1024 * 1024,
+        )
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        print(
+            "LLM_PIPELINE_QWEN_DEFERRED_REPO_PUBLISH_START",
+            f"candidateDigest={candidate.candidate_digest}",
+            f"remainingMs={remaining_ms}",
+            flush=True,
         )
         publish_qwen_stage_manifest(
             backend=backend,

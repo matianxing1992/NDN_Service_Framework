@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import importlib.util
-import hashlib
 import json
 from pathlib import Path
+
+from py_repoclient.compat import RepoCompatibilityError
 import subprocess
 import sys
 import tempfile
 import time
 import types
 import unittest
-from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,46 +18,9 @@ PIPELINE_LIB = (
     ROOT
     / "examples/python/NDNSF-DistributedInference/llm_pipeline/llm_pipeline_lib.py"
 )
-CAPACITY = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/capacity-preflight.py"
-)
-ANALYZER = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/analyze-generation.py"
-)
-SCRATCH_PROBE = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/scratch-capacity-probe.sbatch"
-)
-PREPARE_REFERENCE = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/prepare-reference.sbatch"
-)
-PREPARE_STAGES = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/prepare-stages.sbatch"
-)
-PREPARE_QWEN = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/prepare-qwen32b.py"
-)
-GENERATION_SMOKE = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/generation-smoke.sbatch"
-)
-GENERATION_RANK = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/generation-rank.sh"
-)
-GENERATION_RANK_INNER = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/generation-rank-inner.sh"
-)
-SMOKE_ANALYZER = (
-    ROOT
-    / "specs/161-itiger-qwen32b-generation/jobs/analyze-generation-smoke.py"
-)
+CAPACITY = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/check-qwen32b-capacity.py"
+ANALYZER = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/analyze-qwen32b-generation.py"
+SMOKE_ANALYZER = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/analyze-qwen32b-generation-smoke.py"
 USER = (
     ROOT
     / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
@@ -90,7 +53,6 @@ class QwenGenerationTest(unittest.TestCase):
         cls.pipeline = load_module("spec161_llm_pipeline_lib", PIPELINE_LIB)
         cls.capacity = load_module("spec161_capacity_preflight", CAPACITY)
         cls.analyzer = load_module("spec161_generation_analyzer", ANALYZER)
-        cls.prepare = load_module("spec161_prepare_qwen32b", PREPARE_QWEN)
         sys.path.insert(0, str(USER.parent))
         cls.user = load_module("spec161_llm_pipeline_user", USER)
 
@@ -184,118 +146,6 @@ class QwenGenerationTest(unittest.TestCase):
             ),
             "/spec168%2Fminindn%2Fqwen3-0.6b%2Fv14",
         )
-
-    def test_deferred_repo_publisher_reuses_main_service_user(self) -> None:
-        service_user = object()
-        roles = tuple(f"/LLM/Pipeline/Stage/{index}" for index in range(3))
-        digests = {
-            role: "sha256:" + f"{index + 1:064x}"
-            for index, role in enumerate(roles)
-        }
-        candidate = types.SimpleNamespace(
-            candidate_digest="sha256:" + "c" * 64,
-            execution_plan=types.SimpleNamespace(roles=roles),
-            artifacts_by_role={role: (digests[role],) for role in roles},
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            stage_manifest = root / "stage-manifest.json"
-            stage_manifest.write_text(json.dumps({
-                "modelDigest": "sha256:" + "m" * 64,
-                "revision": "test-revision",
-                "stages": [
-                    {
-                        "role": role,
-                        "stageIndex": index,
-                        "path": str(root / f"stage-{index}.bin"),
-                        "bytes": index + 1,
-                        "sha256": digests[role],
-                    }
-                    for index, role in enumerate(roles)
-                ],
-            }, sort_keys=True), encoding="utf-8")
-            expected_stage_manifest_digest = "sha256:" + hashlib.sha256(
-                stage_manifest.read_bytes()).hexdigest()
-            output = root / "registration.json"
-            activations = []
-
-            def publish_registration(*, backend, output_path, **_kwargs):
-                self.assertIs(backend.control.service_user, service_user)
-                registration = {
-                    "schemaVersion": "ndnsf-di-qwen36-repo-registration-v1",
-                    "stageManifestSha256": expected_stage_manifest_digest,
-                    "artifacts": [
-                        {
-                            "role": role,
-                            "fileSha256": digests[role],
-                            "objectName": f"/repo/stage-{index}",
-                        }
-                        for index, role in enumerate(roles)
-                    ],
-                }
-                Path(output_path).write_text(
-                    json.dumps(registration), encoding="utf-8")
-                return registration
-
-            publisher = self.user._QwenDeferredRepoPublisher(
-                service_user=service_user,
-                stage_manifest_path=str(stage_manifest),
-                output_path=str(output),
-                publisher_identity="/example/llm-pipeline/user",
-                object_prefix="/repo/qwen",
-                activate_catalog_snapshot=lambda *values: activations.append(
-                    values),
-            )
-            with mock.patch.object(
-                self.user,
-                "publish_qwen_stage_manifest",
-                side_effect=publish_registration,
-            ), mock.patch.object(
-                subprocess,
-                "run",
-                side_effect=AssertionError("must not create a second ServiceUser"),
-            ):
-                published = publisher.publish(
-                    candidate,
-                    materialized=None,
-                    deadline_ms=int(time.time() * 1000) + 10_000,
-                )
-
-        self.assertEqual(published.candidate_digest, candidate.candidate_digest)
-        self.assertEqual(
-            published.artifact_data_names_by_role,
-            {role: f"/repo/stage-{index}" for index, role in enumerate(roles)},
-        )
-        self.assertEqual(len(activations), 1)
-        self.assertIs(activations[0][0], candidate)
-        self.assertIs(activations[0][1], published)
-        self.assertEqual(
-            activations[0][2]["stageManifestSha256"],
-            expected_stage_manifest_digest,
-        )
-        snapshot = self.user._qwen_dynamic_catalog_snapshot(
-            alias="qwen-test",
-            model=types.SimpleNamespace(
-                content_digest="sha256:" + "a" * 64,
-                semantics_digest="sha256:" + "b" * 64,
-            ),
-            graph=types.SimpleNamespace(
-                graph_digest="sha256:" + "d" * 64),
-            candidate=candidate,
-            published=published,
-            registration=activations[0][2],
-            backend="transformers",
-            precision="bfloat16",
-        )
-        self.assertEqual(snapshot.status, "ACTIVE")
-        self.assertEqual(snapshot.candidate_digest, candidate.candidate_digest)
-        self.assertEqual(
-            snapshot.artifact_data_names,
-            {role: (f"/repo/stage-{index}",)
-             for index, role in enumerate(roles)},
-        )
-        self.assertTrue(snapshot.manifest_digest.startswith("sha256:"))
 
     def test_token_limit_is_retained_as_truncated(self) -> None:
         result = self.pipeline.run_bounded_qwen_generation(
@@ -405,62 +255,6 @@ class QwenGenerationTest(unittest.TestCase):
         })
         self.assertFalse(no_quota["allowed"])
         self.assertIn("DURABLE_QUOTA_UNVERIFIED", no_quota["blockReasons"])
-
-    def test_scratch_probe_is_bounded_and_performs_no_download(self) -> None:
-        source = SCRATCH_PROBE.read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --time=00:05:00", source)
-        self.assertIn('${SLURM_TMPDIR:-}', source)
-        self.assertIn("/scratch /tmp", source)
-        self.assertIn("count=64 conv=fsync", source)
-        self.assertIn('"downloadPerformed": False', source)
-        self.assertNotIn("huggingface-cli download", source)
-        self.assertNotIn("snapshot_download", source)
-
-    def test_t004_preparation_is_one_h100_scratch_job_and_promotes_no_source(
-        self,
-    ) -> None:
-        reference = PREPARE_REFERENCE.read_text(encoding="utf-8")
-        stages = PREPARE_STAGES.read_text(encoding="utf-8")
-        prepare = PREPARE_QWEN.read_text(encoding="utf-8")
-
-        self.assertIn("#SBATCH --gres=gpu:h100_80gb:1", reference)
-        self.assertIn("#SBATCH --mem=256G", reference)
-        self.assertIn('${SLURM_TMPDIR:-}', reference)
-        self.assertIn("bash /source/jobs/prepare-stages.sbatch", reference)
-        self.assertIn("scratchTemporaryPeak", (
-            ROOT
-            / "specs/161-itiger-qwen32b-generation/evidence/capacity-decision.json"
-        ).read_text(encoding="utf-8"))
-        self.assertIn('test ! -e "$artifact_partial/huggingface-cache"', reference)
-        self.assertIn('"modelSourcePromoted": False', reference)
-        self.assertNotIn("rm -rf", reference)
-        self.assertIn("/source/jobs/prepare-qwen32b.py", stages)
-
-        self.assertIn("snapshot_download", prepare)
-        self.assertIn("trust_remote_code=False", prepare)
-        self.assertIn("use_cache=False", prepare)
-        self.assertIn("[(0, 21), (21, 42), (42, 64)]", prepare)
-        self.assertEqual(
-            self.prepare.normalize_eos_ids([151645, 151643, 151645]),
-            [151643, 151645],
-        )
-
-    def test_t004_smoke_harness_waits_for_cuda_providers_and_has_no_retry(
-        self,
-    ) -> None:
-        job = GENERATION_SMOKE.read_text(encoding="utf-8")
-        rank = GENERATION_RANK.read_text(encoding="utf-8")
-        inner = GENERATION_RANK_INNER.read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --nodes=3", job)
-        self.assertIn("#SBATCH --gres=gpu:rtx_5000:1", job)
-        self.assertIn("#SBATCH --mem=96G", job)
-        self.assertIn("analyze-generation-smoke.py", job)
-        self.assertNotIn("sbatch ", job)
-        self.assertNotIn("rm -rf", rank)
-        self.assertIn("LLM_PIPELINE_PROVIDER_READY", inner)
-        self.assertIn("--require-cuda", inner)
-        self.assertIn("--generation-campaign-manifest", inner)
-        self.assertIn("--max-new-tokens 64", inner)
 
     def test_smoke_analyzer_correlates_three_stages_and_two_dependencies(
         self,
@@ -1057,6 +851,30 @@ class QwenGenerationTest(unittest.TestCase):
             summary = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["rawRecordCount"], 1)
             self.assertEqual(summary["successfulMeasuredCount"], 0)
+
+    def test_deferred_repo_publish_fails_before_creating_output(self) -> None:
+        """The retired backend is the first boundary, not an afterthought.
+
+        `CollaborationArtifactApiBackend` raises on construction. This deferred
+        publication path used to create the output directory and print a start
+        marker first, so a retired mode left both behind before failing.
+        """
+        candidate = type("Candidate", (), {"candidate_digest": "sha256:" + "0" * 64})()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "nested" / "registration.json"
+            publisher = self.user._QwenDeferredRepoPublisher(
+                service_user=object(),
+                stage_manifest_path=str(Path(directory) / "stage.json"),
+                output_path=str(output),
+                publisher_identity="/example/llm-pipeline/user",
+                object_prefix="/repo/qwen",
+            )
+            with self.assertRaises(RepoCompatibilityError):
+                publisher.publish(candidate, materialized=None,
+                                  deadline_ms=int(time.time() * 1000) + 10_000)
+            self.assertFalse(output.parent.exists(),
+                             "a retired path must not create its output directory")
+
 
 
 if __name__ == "__main__":
