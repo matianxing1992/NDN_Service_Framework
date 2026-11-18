@@ -28,6 +28,8 @@
 
 #include <ndn-cxx/util/random.hpp>
 
+#include "ndn-service-framework/FileKeyRing.hpp"
+
 #include "detail/native-symmetric-crypto.hpp"
 
 namespace ndnsf::di {
@@ -345,22 +347,31 @@ nativeOpenStoredModelHandle(const std::filesystem::path& source,
 std::optional<NativeFileProtectionKey>
 nativeFileProtectionKeyFromEnvironment()
 {
-  const char* id = std::getenv("NDNSF_DI_FILE_KEY_ID");
-  const char* key = std::getenv("NDNSF_DI_FILE_KEY");
-  if ((id == nullptr || *id == '\0') && (key == nullptr || *key == '\0'))
+  const auto path = ndn_service_framework::fileKeyRingPath();
+  if (!path)
     return std::nullopt;
-  if (id == nullptr || *id == '\0' || key == nullptr || *key == '\0')
-    throw std::runtime_error(
-      "DI_FILE_PROTECTION_KEY_INCOMPLETE: set both NDNSF_DI_FILE_KEY_ID and NDNSF_DI_FILE_KEY");
+  const auto entries = ndn_service_framework::readKeyRingFile(*path);
+  if (entries.empty())
+    return std::nullopt;
+  // The first line is the write key for new material; older lines stay resolvable by ID.
   NativeFileProtectionKey protection;
-  protection.keyId = id;
-  protection.key = decodeBytes(key);
-  if (protection.keyId.size() > 64 ||
-      protection.keyId.find_first_of(" \r\n\t") != std::string::npos)
-    throw std::runtime_error("DI_FILE_PROTECTION_KEY_INVALID: key ID is invalid");
-  if (protection.key.size() != 32)
-    throw std::runtime_error("DI_FILE_PROTECTION_KEY_INVALID: key must be 32 bytes of hex");
+  protection.keyId = entries.front().keyId;
+  protection.key = entries.front().key;
   return protection;
+}
+
+NativeFileKeyResolver
+nativeFileKeyResolverFromKeyRing()
+{
+  return [] (const std::string& keyId) -> std::optional<std::vector<std::uint8_t>> {
+    const auto path = ndn_service_framework::fileKeyRingPath();
+    if (!path)
+      return std::nullopt;
+    for (auto& entry : ndn_service_framework::readKeyRingFile(*path))
+      if (entry.keyId == keyId)
+        return entry.key;
+    return std::nullopt;
+  };
 }
 
 NativeStoredModelHandle

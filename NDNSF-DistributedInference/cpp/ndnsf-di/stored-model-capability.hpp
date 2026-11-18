@@ -75,6 +75,10 @@ nativeLoadSealedStoredModelHandle(const std::filesystem::path& source,
 std::optional<NativeFileProtectionKey>
 nativeFileProtectionKeyFromEnvironment();
 
+/** Resolve any recorded key ID from the same ring, so a rotation can still open old material. */
+NativeFileKeyResolver
+nativeFileKeyResolverFromKeyRing();
+
 /** Open a handle whatever its on-disk generation (v1 legacy import or sealed v2). */
 NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,

@@ -1245,31 +1245,48 @@ BOOST_FIXTURE_TEST_CASE(SealedHandleRoundtripRequiresTheNamedKey, Fixture)
   BOOST_CHECK_THROW(nativeLoadSealedStoredModelHandle(legacy.path, resolve), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(FileProtectionKeyComesFromConfiguredEnvironment)
+BOOST_AUTO_TEST_CASE(FileProtectionKeyComesFromTheKeyRing)
 {
-  ::unsetenv("NDNSF_DI_FILE_KEY_ID");
-  ::unsetenv("NDNSF_DI_FILE_KEY");
+  PrivateFile file;
+  const auto ring = file.directory / "ring";
+  ::unsetenv("NDNSF_FILE_KEYRING");
   BOOST_CHECK(!nativeFileProtectionKeyFromEnvironment());
 
-  // Half a configuration must fail loudly, not silently disable sealing.
-  ::setenv("NDNSF_DI_FILE_KEY_ID", "file-key-1", 1);
-  BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
-  ::setenv("NDNSF_DI_FILE_KEY", "00112233445566778899aabbccddeeff"
-                                "00112233445566778899aabbccddeeff", 1);
+  {
+    std::ofstream out(ring);
+    out << "old-key " << std::string(64, 'a') << "\n"
+        << "new-key " << std::string(64, 'b') << "\n";
+  }
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  // The first line is the write key; older lines remain resolvable for reading.
   const auto configured = nativeFileProtectionKeyFromEnvironment();
   BOOST_REQUIRE(configured);
-  BOOST_CHECK_EQUAL(configured->keyId, std::string("file-key-1"));
-  BOOST_REQUIRE_EQUAL(configured->key.size(), 32u);
-  BOOST_CHECK_EQUAL(configured->key.front(), 0x00);
-  BOOST_CHECK_EQUAL(configured->key.at(1), 0x11);
+  BOOST_CHECK_EQUAL(configured->keyId, std::string("old-key"));
+  const auto resolver = nativeFileKeyResolverFromKeyRing();
+  const auto old = resolver("old-key");
+  const auto fresh = resolver("new-key");
+  BOOST_REQUIRE(old);
+  BOOST_REQUIRE(fresh);
+  BOOST_CHECK_EQUAL(old->at(0), 0xaa);
+  BOOST_CHECK_EQUAL(fresh->at(0), 0xbb);
+  BOOST_CHECK(!resolver("absent-key"));
 
-  ::setenv("NDNSF_DI_FILE_KEY", "00112233", 1);
+  // A readable-by-group ring is not a private key store.
+  std::filesystem::permissions(ring, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
   BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
-  ::setenv("NDNSF_DI_FILE_KEY", "zz112233445566778899aabbccddeeff"
-                                "00112233445566778899aabbccddeeff", 1);
+  std::filesystem::permissions(ring, std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::remove);
+
+  // A malformed line rejects the ring instead of being skipped.
+  {
+    std::ofstream out(ring, std::ios::trunc);
+    out << "old-key nothex\n";
+  }
   BOOST_CHECK_THROW(nativeFileProtectionKeyFromEnvironment(), std::runtime_error);
-  ::unsetenv("NDNSF_DI_FILE_KEY_ID");
-  ::unsetenv("NDNSF_DI_FILE_KEY");
+  ::unsetenv("NDNSF_FILE_KEYRING");
 }
 
 BOOST_FIXTURE_TEST_CASE(OpenDispatchesByEnvelopeGeneration, Fixture)

@@ -7,6 +7,12 @@
 #include <string>
 #include <vector>
 
+#include <cerrno>
+#include <fstream>
+#include <stdexcept>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace ndn_service_framework {
 
 /** One named file-protection key. */
@@ -40,6 +46,64 @@ loadFileKeyRingEntry(const std::string& keyId);
  */
 std::vector<FileKeyRingEntry>
 loadFileKeyRingEntries();
+
+/** Parse the ring text. Every line is validated even when the caller wants one ID, and a
+ * duplicate ID rejects the whole ring rather than letting "first one wins" pick a key. */
+inline std::vector<FileKeyRingEntry>
+parseKeyRingText(const std::string& text)
+{
+  auto value = [] (char ch) -> unsigned {
+    if (ch >= '0' && ch <= '9') return static_cast<unsigned>(ch - '0');
+    if (ch >= 'a' && ch <= 'f') return static_cast<unsigned>(ch - 'a' + 10);
+    if (ch >= 'A' && ch <= 'F') return static_cast<unsigned>(ch - 'A' + 10);
+    throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: key is not hexadecimal");
+  };
+  std::vector<FileKeyRingEntry> entries;
+  std::size_t begin = 0;
+  while (begin <= text.size()) {
+    auto end = text.find('\n', begin);
+    if (end == std::string::npos)
+      end = text.size();
+    std::string line = text.substr(begin, end - begin);
+    begin = end + 1;
+    if (line.empty() || line[0] == '#')
+      continue;
+    const auto space = line.find(' ');
+    if (space == std::string::npos || space == 0)
+      throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: each line is '<keyId> <hex>'");
+    FileKeyRingEntry entry;
+    entry.keyId = line.substr(0, space);
+    const auto hex = line.substr(space + 1);
+    if (hex.size() != 64)
+      throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: key must be 64 hex characters");
+    entry.key.reserve(32);
+    for (std::size_t index = 0; index < hex.size(); index += 2)
+      entry.key.push_back(static_cast<std::uint8_t>((value(hex[index]) << 4) |
+                                                    value(hex[index + 1])));
+    for (const auto& existing : entries)
+      if (existing.keyId == entry.keyId)
+        throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: duplicate key ID in the key ring");
+    entries.push_back(std::move(entry));
+  }
+  return entries;
+}
+
+/** Read the configured ring with the private-file checks a key store needs. */
+inline std::vector<FileKeyRingEntry>
+readKeyRingFile(const std::filesystem::path& path)
+{
+  struct stat info{};
+  if (::lstat(path.c_str(), &info) != 0)
+    throw std::runtime_error("NDNSF_FILE_KEYRING_UNREADABLE: cannot stat the configured key ring");
+  if (!S_ISREG(info.st_mode) || info.st_uid != ::geteuid() || (info.st_mode & 0077) != 0)
+    throw std::runtime_error("NDNSF_FILE_KEYRING_INVALID: key ring must be a private owned file");
+  std::ifstream input(path);
+  if (!input)
+    throw std::runtime_error("NDNSF_FILE_KEYRING_UNREADABLE: cannot open the configured key ring");
+  const std::string text((std::istreambuf_iterator<char>(input)),
+                         std::istreambuf_iterator<char>());
+  return parseKeyRingText(text);
+}
 
 } // namespace ndn_service_framework
 
