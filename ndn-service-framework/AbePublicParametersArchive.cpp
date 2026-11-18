@@ -39,4 +39,28 @@ buildArchivedPublicParametersData(const ControllerGenerationStore::AbeHistoryEnt
   return true;
 }
 
+std::vector<std::shared_ptr<ndn::Data>>
+collectArchivedPublicParameterAnswers(
+  const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
+  const ndn::Name& identity,
+  const std::function<void(ndn::Data&)>& sign)
+{
+  std::vector<std::shared_ptr<ndn::Data>> answers;
+  answers.reserve(entries.size());
+  for (const auto& entry : entries) {
+    try {
+      auto answer = std::make_shared<ndn::Data>();
+      if (!buildArchivedPublicParametersData(entry, identity, sign, *answer))
+        continue;
+      answers.push_back(std::move(answer));
+    }
+    catch (const std::exception&) {
+      // One generation that cannot be answered must not stop the others, and must not take the
+      // Controller down at construction time.
+      continue;
+    }
+  }
+  return answers;
+}
+
 } // namespace ndn_service_framework

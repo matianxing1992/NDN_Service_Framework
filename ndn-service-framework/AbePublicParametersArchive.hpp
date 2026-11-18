@@ -4,7 +4,9 @@
 #include "ControllerGenerationStore.hpp"
 
 #include <functional>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <ndn-cxx/data.hpp>
 #include <ndn-cxx/key-locator.hpp>
@@ -35,6 +37,18 @@ buildArchivedPublicParametersData(const ControllerGenerationStore::AbeHistoryEnt
                                   const ndn::Name& identity,
                                   const std::function<void(ndn::Data&)>& sign,
                                   ndn::Data& result);
+
+/** Build the answers a Controller can serve, skipping entries it cannot answer for.
+ *
+ * Returns one Data per usable archived generation; a mismatched name or missing parameters drops
+ * that generation instead of publishing a wrong answer. The count is the caller's evidence that
+ * something was actually registered.
+ */
+std::vector<std::shared_ptr<ndn::Data>>
+collectArchivedPublicParameterAnswers(
+  const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
+  const ndn::Name& identity,
+  const std::function<void(ndn::Data&)>& sign);
 
 } // namespace ndn_service_framework
 

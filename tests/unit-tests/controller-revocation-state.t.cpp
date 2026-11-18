@@ -930,6 +930,47 @@ BOOST_AUTO_TEST_CASE(KeyRingKeepsOlderKeysReadableWhileANewOneWrites)
   ::unsetenv("NDNSF_FILE_KEYRING");
 }
 
+BOOST_AUTO_TEST_CASE(CollectArchivedAnswersSkipsUnusableGenerations)
+{
+  const ndn::Name identity("/controller/a");
+  const auto makeEntry = [] (uint64_t generation, uint64_t epoch) {
+    ControllerGenerationStore::AbeHistoryEntry entry;
+    entry.generationTimestamp = generation;
+    entry.epoch = epoch;
+    entry.publicParameters = std::string("wire\0", 5);
+    entry.masterSecret = "secret";
+    entry.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
+    entry.publicParametersName =
+      archivedPublicParametersName(ndn::Name("/controller/a"), generation, epoch)
+        .toUri(ndn::name::UriFormat::CANONICAL);
+    return entry;
+  };
+
+  std::vector<ControllerGenerationStore::AbeHistoryEntry> entries;
+  entries.push_back(makeEntry(1002, 1));
+  entries.push_back(makeEntry(1003, 2));
+  auto mismatched = makeEntry(1004, 3);
+  mismatched.publicParametersName = "/controller/other/PUBPARAMS/KP-ABE/v=1004003";
+  entries.push_back(mismatched);
+  auto empty = makeEntry(1005, 4);
+  empty.publicParameters.clear();
+  entries.push_back(empty);
+
+  int signedCount = 0;
+  const auto sign = [&signedCount] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{9});
+    ++signedCount;
+  };
+  const auto answers = collectArchivedPublicParameterAnswers(entries, identity, sign);
+  BOOST_REQUIRE_EQUAL(answers.size(), 2u);
+  BOOST_CHECK_EQUAL(signedCount, 2);
+  BOOST_CHECK(answers.front()->getName() == archivedPublicParametersName(identity, 1002, 1));
+  BOOST_CHECK(answers.back()->getName() == archivedPublicParametersName(identity, 1003, 2));
+  // Nothing to answer for is not an error.
+  BOOST_CHECK(collectArchivedPublicParameterAnswers({}, identity, sign).empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

@@ -682,23 +682,16 @@ ServiceController::registerArchivedPublicParameters()
     NDN_LOG_ERROR("Controller archived public parameters unavailable: " << error.what());
     return;
   }
-  for (const auto& entry : archived) {
-    try {
-      auto answer = std::make_shared<ndn::Data>();
-      const auto sign = [this] (ndn::Data& data) {
-        m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
-      };
-      if (!buildArchivedPublicParametersData(entry, m_aaCert.getIdentity(), sign, *answer))
-        continue;
-      m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
-        [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {
-          m_face.put(*answer);
-        }));
-    }
-    catch (const std::exception& error) {
-      NDN_LOG_ERROR("Controller archived public parameters skipped one generation: "
-                    << error.what());
-    }
+  const auto sign = [this] (ndn::Data& data) {
+    m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
+  };
+  const auto answers = collectArchivedPublicParameterAnswers(archived, m_aaCert.getIdentity(),
+                                                            sign);
+  for (const auto& answer : answers) {
+    m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
+      [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {
+        m_face.put(*answer);
+      }));
   }
 }
 
