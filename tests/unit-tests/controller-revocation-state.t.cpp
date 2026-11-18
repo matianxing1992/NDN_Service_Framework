@@ -118,6 +118,51 @@ BOOST_AUTO_TEST_CASE(AbeMaterialPersistsAndMarksRotationBeforeRestart)
   BOOST_CHECK_THROW(unsafe.loadAbeMaterial(), std::runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(LegacyArchiveEntriesMigrateToTheBoundLayout)
+{
+  // CS5 recorded archive entries before the layout gained the published name and the wire digest.
+  // A Controller upgrading from it derives both from what the file holds instead of refusing it.
+  DefaultGenerationFiles files;
+  const auto statePath = files.root / "migrated.state";
+  const auto lockPath = std::filesystem::path(statePath.string() + ".lock");
+  auto putU64 = [] (std::ostream& out, uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      out.put(static_cast<char>((value >> shift) & 0xff));
+  };
+  auto putString = [&putU64] (std::ostream& out, const std::string& value) {
+    putU64(out, value.size());
+    out.write(value.data(), value.size());
+  };
+  {
+    std::ofstream state(statePath, std::ios::binary | std::ios::trunc);
+    const std::array<char, 8> magic{{'N','D','N','S','F','C','S','5'}};
+    state.write(magic.data(), magic.size());
+    putU64(state, 1002);
+    putU64(state, 3);
+    putU64(state, 0);                 // no revocations
+    putU64(state, 1);                 // one archived generation, pre-CS6 layout
+    putU64(state, 1002);
+    putU64(state, 3);
+    putString(state, std::string("legacy-params", 13));
+    putString(state, std::string("legacy-secret", 13));
+    putString(state, "sha256:" + std::string(64, 'a'));
+    putString(state, "rotation");
+  }
+  {
+    std::ofstream lock(lockPath);
+    lock << "lock";
+  }
+  std::filesystem::permissions(statePath, std::filesystem::perms::owner_read |
+                                           std::filesystem::perms::owner_write);
+  ControllerGenerationStore store(statePath);
+  // The store needs its owner identity to derive the name the generation published under.
+  const auto history = store.loadAbeHistory();
+  BOOST_REQUIRE_EQUAL(history.size(), 1u);
+  BOOST_CHECK_EQUAL(history.front().publicParameters, std::string("legacy-params", 13));
+  BOOST_CHECK_EQUAL(history.front().masterSecret, std::string("legacy-secret", 13));
+  BOOST_CHECK_EQUAL(history.front().publicParametersWireDigest.size(), 71u);
+}
+
 BOOST_AUTO_TEST_CASE(LegacyVersionOnlyStateRemainsReadable)
 {
   DefaultGenerationFiles files;

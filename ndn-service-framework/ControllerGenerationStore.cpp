@@ -28,10 +28,17 @@ constexpr char ABE_STATE_MAGIC[] = "NDNSFCS3";
 // CS4 = CS3 plus the archive of superseded ABE generations.  It is written only when
 // that archive is non-empty, so a store with no history keeps the older magic and an
 // older binary can still read it.
-constexpr char ABE_HISTORY_MAGIC[] = "NDNSFCS4";
+constexpr char ABE_HISTORY_MAGIC[] = "NDNSFCS6";
 // CS5 = CS4 without a live generation: the archive outlives the current material, so a
 // failed rotation that left no material must not silently drop it.
-constexpr char HISTORY_ONLY_MAGIC[] = "NDNSFCS5";
+// CS7 keeps the same entry layout as CS6 but carries no live material, so the two writers stay
+// distinguishable in the file itself.
+constexpr char HISTORY_ONLY_MAGIC[] = "NDNSFCS7";
+// CS4/CS5 recorded archive entries before the layout gained the published name and the wire
+// digest.  They are read explicitly and upgraded on the next write; reusing either magic for the
+// newer layout would make an old file parse as garbage.
+constexpr char LEGACY_HISTORY_MAGIC[] = "NDNSFCS4";
+constexpr char LEGACY_HISTORY_ONLY_MAGIC[] = "NDNSFCS5";
 constexpr size_t STATE_MAGIC_SIZE = sizeof(STATE_MAGIC) - 1;
 constexpr char LOCK_MAGIC[] = "NDNSF-FLOCK-1";
 constexpr size_t MAX_LEASE_BYTES = 16384;
@@ -202,6 +209,19 @@ abeHistoryDigest(const ControllerGenerationStore::AbeHistoryEntry& entry)
     hash << *field;
   }
   return "sha256:" + hash.toString();
+}
+
+std::string
+sha256Hex(const std::string& bytes)
+{
+  ndn::util::Sha256 hash;
+  if (!bytes.empty())
+    hash << bytes;
+  auto hex = hash.toString();
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char value) {
+    return static_cast<char>(std::tolower(value));
+  });
+  return hex;
 }
 
 bool
@@ -458,12 +478,18 @@ ControllerGenerationStore::loadState() const
 
   PersistedState result;
   const bool hasHistory = std::equal(std::begin(magic), std::end(magic), ABE_HISTORY_MAGIC);
-  const bool hasAbeMaterial = hasHistory ||
+  const bool hasLegacyHistory = std::equal(std::begin(magic), std::end(magic),
+                                           LEGACY_HISTORY_MAGIC) ||
+    std::equal(std::begin(magic), std::end(magic), LEGACY_HISTORY_ONLY_MAGIC);
+  const bool legacyHistoryOnly = std::equal(std::begin(magic), std::end(magic),
+                                            LEGACY_HISTORY_ONLY_MAGIC);
+  // A history-only record carries no live material, so it must not be parsed as if it did.
+  const bool hasAbeMaterial = hasHistory || (hasLegacyHistory && !legacyHistoryOnly) ||
     std::equal(std::begin(magic), std::end(magic), ABE_STATE_MAGIC);
   const bool hasHistoryOnly = std::equal(std::begin(magic), std::end(magic), HISTORY_ONLY_MAGIC);
   if (hasAbeMaterial && (info.st_mode & 0077) != 0)
     throw std::runtime_error("Controller ABE state must be private");
-  if (hasAbeMaterial || hasHistoryOnly ||
+  if (hasAbeMaterial || hasHistoryOnly || hasLegacyHistory ||
       std::equal(std::begin(magic), std::end(magic), STATE_MAGIC)) {
     result.version.controllerGenerationTimestamp = readU64(state);
     result.version.controllerEpoch = readU64(state);
@@ -502,7 +528,8 @@ ControllerGenerationStore::loadState() const
       readStringInto(state, checksum, 71);
       if (!isValidAbeMaterial(material) || checksum != abeMaterialDigest(material))
         throw std::runtime_error("invalid Controller ABE state");
-      if (!hasHistory && state.peek() != std::char_traits<char>::eof())
+      if (!hasHistory && !hasLegacyHistory &&
+          state.peek() != std::char_traits<char>::eof())
         throw std::runtime_error("invalid Controller ABE state");
     }
   }
@@ -517,7 +544,7 @@ ControllerGenerationStore::loadState() const
     if (!result.version.isValid() || state.peek() != std::char_traits<char>::eof())
       throw std::runtime_error("invalid Controller generation state");
   }
-    if (hasHistory || hasHistoryOnly) {
+    if (hasHistory || hasHistoryOnly || hasLegacyHistory) {
       const auto archived = readU64(state);
       if (archived > 64)
         throw std::runtime_error("invalid Controller ABE history length");
@@ -528,12 +555,29 @@ ControllerGenerationStore::loadState() const
         entry.epoch = readU64(state);
         readStringInto(state, entry.publicParameters, MAX_ABE_FIELD_BYTES);
         readStringInto(state, entry.masterSecret, MAX_ABE_FIELD_BYTES);
-        readStringInto(state, entry.publicParametersName, MAX_LEASE_BYTES - 64);
-        readStringInto(state, entry.publicParametersWireDigest, 71);
-        readStringInto(state, entry.digest, 71);
-        readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
-        if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
-          throw std::runtime_error("invalid archived Controller ABE generation");
+        if (hasLegacyHistory) {
+          // The old layout recorded neither the name the generation published under nor the digest
+          // of those bytes.  Derive both from what it did record, then re-seal the entry with the
+          // current digest so the next write stores the bound form.
+          readStringInto(state, entry.digest, 71);
+          readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
+          if (entry.generationTimestamp == 0 || entry.publicParameters.empty())
+            throw std::runtime_error("invalid legacy archived Controller ABE generation");
+          entry.publicParametersWireDigest = "sha256:" + sha256Hex(entry.publicParameters);
+          ndn::Name original(m_owner);
+          original.append("PUBPARAMS").append("KP-ABE")
+            .appendVersion(entry.generationTimestamp * 1000ULL + entry.epoch);
+          entry.publicParametersName = original.toUri(ndn::name::UriFormat::CANONICAL);
+          entry.digest = abeHistoryDigest(entry);
+        }
+        else {
+          readStringInto(state, entry.publicParametersName, MAX_LEASE_BYTES - 64);
+          readStringInto(state, entry.publicParametersWireDigest, 71);
+          readStringInto(state, entry.digest, 71);
+          readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
+          if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
+            throw std::runtime_error("invalid archived Controller ABE generation");
+        }
         result.abeHistory.push_back(std::move(entry));
       }
     }
