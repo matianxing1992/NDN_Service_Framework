@@ -49,6 +49,8 @@ def test_python_fixed_assembly_vector(case):
 def test_native_production_entry_matches_fixed_vector_and_python(case, tmp_path):
     binary = os.environ.get("SPEC181_ASSEMBLY_PARITY_BINARY", "")
     assert binary and Path(binary).is_file(), "build and set SPEC181_ASSEMBLY_PARITY_BINARY; no mock fallback"
+    # The binary is a declared external native fixture: `./waf build --targets=spec181-assembly-parity`
+    # produces build/spec181-assembly-parity, and SPEC181_ASSEMBLY_PARITY_BINARY selects it.
     request = tmp_path / "case.json"
     request.write_text(json.dumps(case))
     cache = tmp_path / "cache"
@@ -58,7 +60,9 @@ def test_native_production_entry_matches_fixed_vector_and_python(case, tmp_path)
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "NDNSF-DistributedInference"),
         str(ROOT / "pythonWrapper"), str(ROOT / "NDNSF-DistributedRepo/pythonWrapper"),
         env.get("PYTHONPATH", "")])
-    completed = subprocess.run([binary, str(request), str(cache), sys.executable],
+    # The driver's interface is `case.json cache`; the helper interpreter argument it once accepted was
+    # removed when the assembler moved to the native worker path.
+    completed = subprocess.run([binary, str(request), str(cache)],
         cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
     assert completed.stdout.strip(), completed.stderr
     result = json.loads(completed.stdout)
