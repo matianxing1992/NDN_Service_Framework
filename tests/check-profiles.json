@@ -275,6 +275,7 @@
     "tests/unit-tests/uav-person-profile.t.cpp": "uav",
     "tests/unit-tests/uav-person-published-frame.t.cpp": "uav",
     "tests/unit-tests/uav-person-result.t.cpp": "uav",
+    "tests/unit-tests/uav-person-result-v2.t.cpp": "uav",
     "tests/unit-tests/uav-person-sequence.t.cpp": "uav",
     "tests/unit-tests/uav-person-tracking.t.cpp": "uav",
     "tests/unit-tests/uav-protocol-state.t.cpp": "uav",
@@ -289,7 +290,8 @@
     "tests/unit-tests/uav-tracking-worker-process.t.cpp": "uav",
     "tests/unit-tests/uav-tracking-worker-transaction.t.cpp": "uav",
     "tests/unit-tests/uav-two-lifecycle.t.cpp": "uav",
-    "tests/unit-tests/uav-vehicle-tracking-engine.t.cpp": "uav"
+    "tests/unit-tests/uav-vehicle-tracking-engine.t.cpp": "uav",
+    "tests/unit-tests/uav-window-binding.t.cpp": "uav"
   },
   "profiles": {
     "unit": {
