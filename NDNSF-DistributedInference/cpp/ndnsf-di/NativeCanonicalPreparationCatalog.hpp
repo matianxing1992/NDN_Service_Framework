@@ -9,7 +9,7 @@ namespace ndnsf::di {
 
 struct AutomaticOnnxContract;
 
-struct Spec185PreparedModelTestAccess;
+struct DiPreparedModelTestAccess;
 struct NativeModelObjectKeyIndexV1;
 
 /** Bootstrap supplies authenticated catalog facts and pinned source bytes.
@@ -72,7 +72,7 @@ public:
 private:
   friend class ModelPreparationCache;
   friend class NativeCanonicalCatalogTestAccess;
-  friend struct Spec185PreparedModelTestAccess;
+  friend struct DiPreparedModelTestAccess;
   using PublisherFactory = std::function<NativeCanonicalArtifactPublisher(
     NativeCanonicalPublicationOptions, NativeCanonicalArtifactPublisher::SourcePort)>;
   std::shared_ptr<NativeRequestPreparation> makePreparation(PublisherFactory factory) const;

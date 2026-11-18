@@ -74,7 +74,7 @@ class BuildComponentContractTest(unittest.TestCase):
     def test_di_roster_retains_unique_provider_cases_and_model_owner(self):
         roster = json.loads((TESTS / 'check-profiles.json').read_text())
         selected = components.configured_roster(roster, ['core', 'repo', 'di'])
-        self.assertIn('spec185-provider-assembly',
+        self.assertIn('di-provider-assembly',
                       [row['target'] for row in selected['profiles']['integration']['targets']])
         self.assertEqual(len(selected['profiles']['model']['targets']), 1)
 

@@ -24,7 +24,7 @@ public:
 
 } // namespace
 
-int spec185_extension_header_consumer_fixture()
+int di_extension_header_consumer_fixture()
 {
   HeaderOnlyPlacement placement;
   placement.identity().validate();
@@ -34,6 +34,6 @@ int spec185_extension_header_consumer_fixture()
 #ifdef SPEC185_EXTENSION_CONSUMER_MAIN
 int main()
 {
-  return spec185_extension_header_consumer_fixture();
+  return di_extension_header_consumer_fixture();
 }
 #endif

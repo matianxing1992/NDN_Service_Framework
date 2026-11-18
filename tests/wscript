@@ -649,9 +649,9 @@ def build(bld):
     # path is used solely to compile this in-tree executable; the external
     # install-prefix check in the batch evidence repeats the same source with
     # pkg-config and no repository -I path.
-    bld.program(target='../spec185-installed-consumer',
-                name='spec185-installed-consumer',
-                source=[bld.path.find_node('installed-api/spec185-installed-consumer.cpp')],
+    bld.program(target='../di-installed-consumer',
+                name='di-installed-consumer',
+                source=[bld.path.find_node('installed-api/di-installed-consumer.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 linkflags=['-Wl,--no-relax'],
@@ -660,8 +660,8 @@ def build(bld):
     # Spec185 T001 standalone Runtime.hpp consumer.  The external script
     # repeats this source against an install prefix with pkg-config and no
     # source-tree include path, proving the stable Runtime symbol boundary.
-    bld.program(target='../spec185-runtime-consumer',
-                name='spec185-runtime-consumer',
+    bld.program(target='../di-runtime-consumer',
+                name='di-runtime-consumer',
                 source=[bld.path.find_node('installed-api/runtime-api-consumer.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
@@ -670,8 +670,8 @@ def build(bld):
 
     # Spec185 B0C Core-only operation selector.  It links only the framework
     # library so the ownership boundary cannot be satisfied by DI/Python.
-    bld.program(target='../spec185-core-operation',
-                name='spec185-core-operation',
+    bld.program(target='../di-core-operation-unit',
+                name='di-core-operation-unit',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/core-operation-runtime.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
@@ -681,10 +681,10 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # In-tree smoke consumer; PO-C1's installed-boundary consumer is compiled
-    # by tests/installed-api/run-spec185-core-operation-consumer.sh with only
+    # by tests/installed-api/run-di-core-operation-consumer.sh with only
     # libndn-service-framework.pc from an install prefix.
-    bld.program(target='../spec185-core-operation-consumer',
-                name='spec185-core-operation-consumer',
+    bld.program(target='../di-core-operation-consumer',
+                name='di-core-operation-consumer',
                 source=[bld.path.find_node('installed-api/core-operation-consumer.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
@@ -696,8 +696,8 @@ def build(bld):
     # limits, and deferred source loading before T002 adds shutdown owners.
     runtime_probe_sanitize = (['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
                               if bld.env.sanitize_di else [])
-    bld.program(target='../spec185-runtime',
-                name='spec185-runtime',
+    bld.program(target='../di-runtime',
+                name='di-runtime',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-runtime.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -707,8 +707,8 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec185 B2E cooperative extension registry and control contract.
-    bld.program(target='../spec185-extension-registry',
-                name='spec185-extension-registry',
+    bld.program(target='../di-extension-header-consumer',
+                name='di-extension-header-consumer',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-extension-contract.t.cpp'),
                         bld.path.find_node('installed-api/extension-header-consumer.cpp')],
@@ -721,8 +721,8 @@ def build(bld):
     # Spec185 B2 verified package preparation.  The selector exercises the
     # native source/content oracle and immutable Package boundary; shared
     # single-flight waiters and refresh generations are owned by T004.
-    bld.program(target='../spec185-preparation',
-                name='spec185-preparation',
+    bld.program(target='../di-preparation',
+                name='di-preparation',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-preparation.t.cpp'),
                         bld.path.find_node('unit-tests/di-runtime.t.cpp')],
@@ -734,8 +734,8 @@ def build(bld):
 
     # T004 has an explicit selector/binary so cache, waiter, lease, and
     # Core-worker boundary evidence cannot be mistaken for the T003 cold path.
-    bld.program(target='../spec185-preparation-t004',
-                name='spec185-preparation-t004',
+    bld.program(target='../di-preparation-variant',
+                name='di-preparation-variant',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-preparation.t.cpp'),
                         bld.path.find_node('unit-tests/di-runtime.t.cpp'),
@@ -1461,8 +1461,8 @@ def build(bld):
     # NativeInferenceClient through the maintained production DI library. The target
     # includes the Core-only fail-closed checks plus real Provider-backed ACK,
     # durable-cancel, and conversation-commit-failure fixtures.
-    bld.program(target='../spec185-di-core-operation',
-                name='spec185-di-core-operation',
+    bld.program(target='../di-core-operation-closure',
+                name='di-core-operation-closure',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-core-operation.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
@@ -1478,8 +1478,8 @@ def build(bld):
     # PreparedModel request path in its own C++ binary so package reuse,
     # request identity allocation, input/reference validation, and native
     # cancellation are observed independently of the larger Core flow.
-    bld.program(target='../spec185-prepared-request',
-                name='spec185-prepared-request',
+    bld.program(target='../di-prepared-request',
+                name='di-prepared-request',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1555,8 +1555,8 @@ def build(bld):
     # opaque-checkpoint API boundary cases from their dedicated translation
     # unit.  The complete DI source closure is shared with the installable
     # native library through di_integration_sources.
-    bld.program(target='../spec185-prepared-conversation',
-                name='spec185-prepared-conversation',
+    bld.program(target='../di-prepared-conversation',
+                name='di-prepared-conversation',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-conversation.t.cpp'),
@@ -1575,8 +1575,8 @@ def build(bld):
     # idempotent drain/close against the complete DI source closure.
     provider_assembly_sanitize = (['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
                                   if bld.env.sanitize_di else [])
-    bld.program(target='../spec185-provider-assembly',
-                name='spec185-provider-assembly',
+    bld.program(target='../di-provider-assembly',
+                name='di-provider-assembly',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-provider.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
@@ -1610,8 +1610,8 @@ def build(bld):
 
     # Spec185 B6 public caller/compatibility selector. It includes no test
     # seam or private DI header; dynamic protocol qualification is owned by B7.
-    bld.program(target='../spec185-compatibility',
-                name='spec185-compatibility',
+    bld.program(target='../di-prepared-compatibility',
+                name='di-prepared-compatibility',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-compatibility.t.cpp')],
                 includes=framework_includes,
@@ -1624,9 +1624,9 @@ def build(bld):
     # Same public short umbrellas, consumed as a standalone-style binary.
     # The batch repeats this source against the installed prefix without any
     # repository include path.
-    bld.program(target='../spec185-caller-consumer',
-                name='spec185-caller-consumer',
-                source=[bld.path.find_node('installed-api/spec185-caller-consumer.cpp')],
+    bld.program(target='../di-caller-consumer',
+                name='di-caller-consumer',
+                source=[bld.path.find_node('installed-api/di-caller-consumer.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
@@ -1635,8 +1635,8 @@ def build(bld):
     # Spec185 B7 native process qualification. The C++ selector owns the
     # assertions and invokes the existing Python files only as lifecycle
     # orchestrators for isolated NFD/PIB/TPM child processes.
-    bld.program(target='../spec185-process',
-                name='spec185-process',
+    bld.program(target='../di-prepared-process',
+                name='di-prepared-process',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-process.t.cpp')],
                 includes=framework_includes,
@@ -2054,14 +2054,6 @@ def build(bld):
     # Its remote-public-certificate fixture needs the pinned PIB backend header:
     # ndnsec cert-install cannot add a key that is absent from the local PIB.
     ndn_cxx_source_tree = os.environ.get('NDNSF_NDN_CXX_SOURCE_TREE', '')
-    if not ndn_cxx_source_tree:
-        for candidate in ('../deps/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598',
-                          '../dependencies/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598'):
-            candidate_path = os.path.join(bld.path.abspath(), candidate)
-            if os.path.isfile(os.path.join(candidate_path,
-                                           'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
-                ndn_cxx_source_tree = candidate_path
-                break
     if not ndn_cxx_source_tree or not os.path.isfile(
             os.path.join(ndn_cxx_source_tree,
                          'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
@@ -2071,7 +2063,7 @@ def build(bld):
             bld.msg('Skipping spec192-repo-client',
                     'the requested target does not need its unavailable pinned ndn-cxx source tree')
         else:
-            bld.fatal('spec192-repo-client requires the pinned ndn-cxx source tree '
+            bld.fatal('spec192-repo-client requires NDNSF_NDN_CXX_SOURCE_TREE '
                       'for its remote public-certificate PIB fixture')
     else:
         bld.program(target='../spec192-repo-client',
@@ -2089,9 +2081,8 @@ def build(bld):
     bld.program(target='../spec193-object-repo-server',
                 name='spec193-object-repo-server',
                 source=[bld.path.find_node('standalone/spec193-object-repo-server.cpp')],
-                includes=['..', '../ndn-service-framework',
-                          '../NDNSF-DistributedRepo/include',
-                          '../dependencies/ndn-cxx-1204b7528986bea82651f3fa9088c165667cd598'],
+                    includes=['..', '../ndn-service-framework',
+                              '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -2312,7 +2303,7 @@ def build(bld):
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
     driver_names = (['run-spec182-native-grant-process.py',
                      'run-spec182-native-unary-process.py',
-                     'run-spec182-native-stream-process.py', 'spec185_native_fixture.py']
+                     'run-spec182-native-stream-process.py', 'di_native_fixture.py']
                     if 'di' in bld.env.NDNSF_COMPONENTS else [])
     bld.env.NDNSF_TEST_DRIVER_FILES = driver_names
     if driver_names:

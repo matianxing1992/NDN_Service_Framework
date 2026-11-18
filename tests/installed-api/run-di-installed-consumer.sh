@@ -9,15 +9,15 @@ if [[ "${1:-}" == --single ]]; then
     enabled|disabled) ;;
     *) echo "BACKEND_VARIANT_INVALID:$single_backend" >&2; exit 2 ;;
   esac
-  output_dir=${4:-"${TMPDIR:-/tmp}/spec185-installed-api"}
+  output_dir=${4:-"${TMPDIR:-/tmp}/di-installed-api"}
 else
   disabled_normal=${1:?usage: $0 <disabled-normal-prefix> <disabled-asan-prefix> <enabled-normal-prefix> <enabled-asan-prefix> [output-dir]}
   disabled_asan=${2:?usage: $0 <disabled-normal-prefix> <disabled-asan-prefix> <enabled-normal-prefix> <enabled-asan-prefix> [output-dir]}
   enabled_normal=${3:?usage: $0 <disabled-normal-prefix> <disabled-asan-prefix> <enabled-normal-prefix> <enabled-asan-prefix> [output-dir]}
   enabled_asan=${4:?usage: $0 <disabled-normal-prefix> <disabled-asan-prefix> <enabled-normal-prefix> <enabled-asan-prefix> [output-dir]}
-  output_dir=${5:-"${TMPDIR:-/tmp}/spec185-installed-api"}
+  output_dir=${5:-"${TMPDIR:-/tmp}/di-installed-api"}
 fi
-source_file=$(cd "$(dirname "$0")" && pwd)/spec185-installed-consumer.cpp
+source_file=$(cd "$(dirname "$0")" && pwd)/di-installed-consumer.cpp
 repo_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel 2>/dev/null || true)
 
 # The header roster comes from the install prefix's own manifest, not from an ignored Spec file and

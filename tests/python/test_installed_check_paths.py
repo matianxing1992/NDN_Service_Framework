@@ -11,12 +11,12 @@ import unittest
 class InstalledCheckPaths(unittest.TestCase):
     def invoke(self, root, manifest):
         root = Path(root)
-        script = root / 'checks/run-spec185-installed-consumer.sh'
+        script = root / 'checks/run-di-installed-consumer.sh'
         script.parent.mkdir()
         source = Path(__file__).resolve().parents[1] / 'installed-api'
         shutil.copyfile(source / script.name, script)
-        shutil.copyfile(source / 'spec185-installed-consumer.cpp',
-                        script.parent / 'spec185-installed-consumer.cpp')
+        shutil.copyfile(source / 'di-installed-consumer.cpp',
+                        script.parent / 'di-installed-consumer.cpp')
         prefix = root / 'prefix'
         prefix.mkdir()
         if manifest:
@@ -48,7 +48,7 @@ class InstalledCheckPaths(unittest.TestCase):
             manifest.write_text(json.dumps({'files': {
                 str(prefix / 'include/ndn-service-framework/ServiceUser.hpp'): {}}}))
             result = subprocess.run([
-                'bash', str(Path(root) / 'checks/run-spec185-installed-consumer.sh'),
+                'bash', str(Path(root) / 'checks/run-di-installed-consumer.sh'),
                 *([str(prefix)] * 4), str(Path(root) / 'output')], cwd=root,
                 capture_output=True, text=True,
                 env={k: v for k, v in os.environ.items() if k != 'NDNSF_INSTALL_MANIFEST'})
@@ -60,7 +60,7 @@ class InstalledCheckPaths(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='ndnsf-sdk-path-check-') as root:
             _, prefix = self.invoke(root, False)
             result = subprocess.run([
-                'bash', str(Path(root) / 'checks/run-spec185-installed-consumer.sh'),
+                'bash', str(Path(root) / 'checks/run-di-installed-consumer.sh'),
                 '--single', str(prefix), 'cuda', str(Path(root) / 'output')],
                 cwd=root, capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)

@@ -84,7 +84,7 @@ if args.replacement and not args.replacement_no_backup:
 # metadata; the process driver must not import the native Python wrapper when
 # the selected C++ binaries are sanitizer-instrumented.
 sys.path.insert(0, str(ROOT/'tests/standalone'))
-from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
+from di_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
 def dg(x): return 'sha256:'+hashlib.sha256(x.encode()).hexdigest()
 src=fixture_path('spec175/tiny-causal-lm-v1/one-role/role-0.onnx').read_bytes(); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
 stream_role='/LLM/Pipeline/Stage/0'

@@ -19,16 +19,16 @@
 
 namespace ndnsf::di::tests {
 
-void spec185RunRealProviderUnary();
-void spec185RunRealProviderCancellationRace();
-void spec185RunRealProviderCommitFailure();
+void diRunRealProviderUnary();
+void diRunRealProviderCancellationRace();
+void diRunRealProviderCommitFailure();
 
 namespace {
 
 class CoreDelegationAdapter final : public NativeModelAdapter
 {
 public:
-  std::string adapterId() const override { return "spec185-core-delegation"; }
+  std::string adapterId() const override { return "di-core-delegation"; }
   std::string adapterVersion() const override { return "1"; }
 
   NativeModelDescriptor inspect(const std::string& modelName,
@@ -37,8 +37,8 @@ public:
     NativeModelDescriptor descriptor;
     descriptor.modelName = modelName;
     descriptor.contentDigest = modelDigest;
-    descriptor.semanticsDigest = nativePlanningDigest("spec185-semantics");
-    descriptor.graphDigest = nativePlanningDigest("spec185-graph");
+    descriptor.semanticsDigest = nativePlanningDigest("di-semantics");
+    descriptor.graphDigest = nativePlanningDigest("di-graph");
     descriptor.modelFormat = "onnx";
     descriptor.precision = "float32";
     descriptor.adapterId = adapterId();
@@ -67,7 +67,7 @@ class CoreDelegationSplit final : public NativeModelSplitStrategy
 public:
   NativeStrategyIdentity identity() const override
   {
-    return {"spec185-core-delegation-split", "1", nativePlanningDigest("{}")};
+    return {"di-core-delegation-split", "1", nativePlanningDigest("{}")};
   }
 
   std::vector<NativeSplitCandidate> enumerate(
@@ -96,12 +96,12 @@ struct ClientFixture
     const auto cert = makeRsaIdentity(keyChain, ndn::Name("/spec185/user"));
     const auto aa = makeRsaIdentity(keyChain, ndn::Name("/spec185/aa"));
     auto pattern = (std::filesystem::temp_directory_path() /
-                    "ndnsf-spec185-client-trust-XXXXXX").string();
+                    "ndnsf-di-client-trust-XXXXXX").string();
     std::vector<char> directoryName(pattern.begin(), pattern.end());
     directoryName.push_back('\0');
     const char* directory = ::mkdtemp(directoryName.data());
     if (directory == nullptr)
-      throw std::runtime_error("cannot create isolated Spec185 test trust directory");
+      throw std::runtime_error("cannot create isolated Di test trust directory");
     trustDirectory = directory;
     ndn::io::save(cert, (trustDirectory / "user.cert").string());
     ndn::io::save(aa, (trustDirectory / "aa.cert").string());
@@ -109,14 +109,14 @@ struct ClientFixture
     std::ofstream schema(schemaPath);
     schema << R"SCHEMA(rule
 {
-  id "Spec185 isolated test data"
+  id "Di isolated test data"
   for data
   filter { type name regex ^<>*$ }
   checker { type customized sig-type rsa-sha256 key-locator { type name regex ^<>*$ } }
 }
 rule
 {
-  id "Spec185 isolated test interests"
+  id "Di isolated test interests"
   for interest
   filter { type name regex ^<>*$ }
   checker { type customized sig-type rsa-sha256 key-locator { type name regex ^<>*$ } }
@@ -127,16 +127,16 @@ trust-anchor { type file file-name "aa.cert" }
     schema.close();
     if (!schema) {
       std::filesystem::remove_all(trustDirectory);
-      throw std::runtime_error("cannot write isolated Spec185 test trust schema");
+      throw std::runtime_error("cannot write isolated Di test trust schema");
     }
     user = std::make_shared<LocalServiceUser>(face, ndn::Name("/spec185"), cert, aa,
                                                schemaPath.string());
     adapters->registerAdapter(adapter);
     adapters->freeze();
-    model.modelName = "spec185-model";
-    model.contentDigest = nativePlanningDigest("spec185-model");
-    model.semanticsDigest = nativePlanningDigest("spec185-semantics");
-    model.graphDigest = nativePlanningDigest("spec185-graph");
+    model.modelName = "di-model";
+    model.contentDigest = nativePlanningDigest("di-model");
+    model.semanticsDigest = nativePlanningDigest("di-semantics");
+    model.graphDigest = nativePlanningDigest("di-graph");
     model.modelFormat = "onnx";
     model.precision = "float32";
     model.adapterId = adapter->adapterId();
@@ -170,7 +170,7 @@ submitUnlinkedRequest(NativeInferenceClient& client, const NativeModelRef& model
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(Spec185DiCoreOperation)
+BOOST_AUTO_TEST_SUITE(DiDiCoreOperation)
 
 BOOST_AUTO_TEST_CASE(ProductionClientUsesCoreCompletionAndObservation)
 {
@@ -219,21 +219,21 @@ BOOST_AUTO_TEST_CASE(ProductionClientDelegatesAckCommitResponseToCore)
 {
   // This production-backed fixture drives ACK closure, native planning,
   // CommitCollaborationPlan, Provider response, and the Core-owned result.
-  spec185RunRealProviderUnary();
+  diRunRealProviderUnary();
 }
 
 BOOST_AUTO_TEST_CASE(ProductionClientPreservesTerminalStateAcrossLateCancel)
 {
   // The Provider blocks during FINALIZE after durable commit.  A concurrent
   // cancel is a late callback race and must not downgrade the committed turn.
-  spec185RunRealProviderCancellationRace();
+  diRunRealProviderCancellationRace();
 }
 
 BOOST_AUTO_TEST_CASE(ProductionClientRejectsConversationCommitFailure)
 {
   // A Provider commit ACK with committed=false must fail the DI operation and
   // leave no conversation checkpoint, while Core owns the terminal result.
-  spec185RunRealProviderCommitFailure();
+  diRunRealProviderCommitFailure();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -105,7 +105,7 @@ trustSchema()
 
 ProviderConfig
 makeConfig(const std::string& providerName = "/spec185/provider",
-           const std::string& serviceName = "/Inference/Spec185Provider",
+           const std::string& serviceName = "/Inference/DiProvider",
            const std::string& artifactCacheDir = {},
            const std::filesystem::path& configuredTrust = {})
 {
@@ -142,7 +142,7 @@ makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
       evidence.deviceKind = "cpu";
       evidence.deviceId = "0";
       evidence.deviceIds = {"0"};
-      evidence.runtimeVersion = "spec185-provider-oracle";
+      evidence.runtimeVersion = "di-provider-oracle";
       evidence.modelDigest = spec.metadata.at("artifact");
       evidence.planDigest = spec.metadata.at("plan");
       evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
@@ -154,7 +154,7 @@ makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
       return makeNativeModelRunner(
         [runs] (const RoleExecutionContext&) {
           runs->fetch_add(1, std::memory_order_relaxed);
-          const std::string response = "spec185-provider-response";
+          const std::string response = "di-provider-response";
           return std::map<std::string, TensorBundle>{
             {"final-response", TensorBundle{
               "final-response",
@@ -481,7 +481,7 @@ makeProviderPublication(const ndn::Name& messageName,
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(Spec185ProviderAssembly)
+BOOST_AUTO_TEST_SUITE(DiProviderAssembly)
 
 BOOST_AUTO_TEST_CASE(ActorInputsCannotFallBackToDefaultIdentities)
 {
@@ -553,7 +553,7 @@ BOOST_AUTO_TEST_CASE(ProviderConfigUsesOneValidatedCppGrammar)
   BOOST_REQUIRE(config.valid());
 
   const auto path = std::filesystem::temp_directory_path() /
-                    "spec185-provider-launch-test.json";
+                    "di-provider-launch-test.json";
   {
     std::ofstream output(path);
     output << "{\n"
@@ -563,7 +563,7 @@ BOOST_AUTO_TEST_CASE(ProviderConfigUsesOneValidatedCppGrammar)
               "    \"--group\", \"/spec185/group\",\n"
               "    \"--controller\", \"/spec185/controller\",\n"
               "    \"--trust-schema\", \"" << trustSchema().string() << "\",\n"
-              "    \"--service\", \"/Inference/Spec185Provider\",\n"
+              "    \"--service\", \"/Inference/DiProvider\",\n"
               "    \"--role\", \"/Backbone\"\n"
               "  ],\n"
               "  \"cache\": {\"max_artifact_entries\": 2}\n"
@@ -603,14 +603,14 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
   profile.userIdentity = ndn::Name("/spec185/user");
   profile.providerIdentity = ndn::Name("/spec185/provider");
   profile.attributeAuthority = ndn::Name("/spec185/aa");
-  profile.serviceName = ndn::Name("/Inference/Spec185Provider");
+  profile.serviceName = ndn::Name("/Inference/DiProvider");
   profile.providerRoles = {"/Backbone"};
   profile.providerFacesHaveDedicatedIoWorkers = true;
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
   environment.enableProviderProductionIngressForTest();
   const auto pinnedTrust = std::filesystem::path(environment.profile().trustSchemaPath);
-  const auto config = makeConfig("/spec185/provider", "/Inference/Spec185Provider", {}, pinnedTrust);
+  const auto config = makeConfig("/spec185/provider", "/Inference/DiProvider", {}, pinnedTrust);
   auto runtime = Runtime::open(config);
   BOOST_REQUIRE(runtime);
   const auto providerIdentity = environment.keyChain().getPib().getIdentity(
@@ -635,7 +635,7 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
   BOOST_CHECK_EQUAL(beforeSelection.sourceFetches, 0U);
   BOOST_CHECK_EQUAL(beforeSelection.assemblies, 0U);
   BOOST_CHECK_EQUAL(beforeSelection.runnersCreated, 0U);
-  auto conflicting = makeConfig("/spec185/other-provider", "/Inference/Spec185Provider", {},
+  auto conflicting = makeConfig("/spec185/other-provider", "/Inference/DiProvider", {},
                                 pinnedTrust);
   BOOST_CHECK_EXCEPTION(runtime->provider(conflicting), DiError,
                         [](const DiError& error) {
@@ -643,7 +643,7 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
                                  error.boundary() == "provider";
                         });
   const ServiceDefinition definition{
-    "/Inference/Spec185Provider", {"/Backbone"}};
+    "/Inference/DiProvider", {"/Backbone"}};
   auto registration = provider.serve(definition);
   BOOST_REQUIRE(registration.valid());
   BOOST_CHECK(!registration.closed());
@@ -695,7 +695,7 @@ BOOST_AUTO_TEST_CASE(ProviderOnlyRuntimeServesAndDrainsNativeRegistration)
 }
 
 // Keep the real Provider::serve -> authenticated Selection -> runner path in
-// the Spec188 selector as well as the older Spec185 regression suite.  The
+// the Spec188 selector as well as the older Di regression suite.  The
 // body remains shared so this task cannot accidentally replace the production
 // ingress with a direct assembler-only fixture.
 BOOST_AUTO_TEST_SUITE(Spec188ProviderReferenceAssembly)
@@ -720,7 +720,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   // deterministic runner factory; Selection, registration, preparation and
   // Response still traverse the production CollaborationContext.
   ndn_service_framework::test::BootstrapProfile profile;
-  profile.serviceName = ndn::Name("/Inference/Spec185ProviderOracle");
+  profile.serviceName = ndn::Name("/Inference/DiProviderOracle");
   profile.providerRoles = {"/Backbone"};
   profile.deferBridgeDelivery = true;
   profile.providerFacesHaveDedicatedIoWorkers = true;
@@ -733,13 +733,13 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   const auto serviceName = environment.profile().serviceName;
   const auto providerName = environment.provider().getName();
   const auto requesterName = environment.user().getName();
-  auto requestId = ndn::Name("/spec185-provider-positive");
+  auto requestId = ndn::Name("/di-provider-positive");
   const NativeJson fixtureModel{{"schema", "spec201-fixed-source-oracle-model"},
                                {"modelName", "provider-fixed-source-oracle"}};
   const auto planDigest = nativePlanningDigest(nativeCanonicalJson(fixtureModel));
   const auto artifactDigest = std::string("sha256:") + std::string(64, 'b');
   const auto bootId = environment.provider().getProviderBootEpoch();
-  const auto protectionEpoch = std::string("spec185-provider-protected-v1");
+  const auto protectionEpoch = std::string("di-provider-protected-v1");
   const auto authorityPrivate = makeEd25519Key('a');
   const auto requesterPrivate = makeEd25519Key('b');
   const auto recipientPrivate = makeEd25519Key('c');
@@ -747,7 +747,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   issuerConfig.authorityIdentity = "/spec185/authority";
   issuerConfig.requesterIdentity = requesterName.toUri();
   issuerConfig.protectionEpoch = protectionEpoch;
-  issuerConfig.keyId = "spec185-provider-grant";
+  issuerConfig.keyId = "di-provider-grant";
   issuerConfig.authorityPrivateKey = authorityPrivate;
   issuerConfig.requesterPublicKey = publicKey(requesterPrivate);
   issuerConfig.allowedModelManifests = {planDigest};
@@ -1471,12 +1471,12 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     // Keep the request ID in one NDN name component.  RequestService uses
     // the final component boundary when deriving the service name; an
     // appended component would be interpreted as a service suffix.
-    requestId = ndn::Name("/spec185-provider-reject-" + std::to_string(mutation));
+    requestId = ndn::Name("/di-provider-reject-" + std::to_string(mutation));
     const auto requestIdForCall = requestId;
     const auto projectionProvider = mutation == 0
       ? ndn::Name("/spec185/other-provider") : providerName;
     const auto projectionEpoch = (mutation == 1 || mutation == 4)
-      ? std::string("spec185-other-epoch") : protectionEpoch;
+      ? std::string("di-other-epoch") : protectionEpoch;
     const auto projectionGrantDigest = mutation == 2
       ? std::string("sha256:") + std::string(64, 'e') : issuedGrant.grantDigest;
     assignmentProjection = providerProjection(
@@ -1504,7 +1504,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
       const auto recipientCertificate = providerCertificate.getName();
       const auto recipientKeyDigest = std::string("sha256:") + std::string(64, 'c');
       auto keyTableName = requesterName;
-      keyTableName.append("NDNSF").append("LARGE-DATA").append("spec185-key-table");
+      keyTableName.append("NDNSF").append("LARGE-DATA").append("di-key-table");
       auto context = nativeModelObjectKeyContext(
         projection, requesterName, serviceName, bootId,
         recipientCertificate, recipientKeyDigest, projection.deadlineMs, contextNowMs);
@@ -1515,7 +1515,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
       if (mutation == 14)
         context["recipientCertificate"] = "/foreign/KEY/offer/ID-CERT/0";
       if (mutation == 13)
-        keyTableName = ndn::Name("/foreign/provider/NDNSF/LARGE-DATA/spec185-key-table");
+        keyTableName = ndn::Name("/foreign/provider/NDNSF/LARGE-DATA/di-key-table");
       auto withWrongContext = nativeParseJson(assignmentProjection);
       withWrongContext["model_object_keys"] = NativeJson{
         {"schema", "ndnsf-di-stored-model-object-keys-reference-v1"},
@@ -1873,13 +1873,13 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerFetchesCanonicalSourceAfterSelection)
   };
   NativeCanonicalOnnxAssemblerOptions options;
   options.cacheDir = (std::filesystem::temp_directory_path() /
-                      "spec185-provider-production-assembler").string();
+                      "di-provider-production-assembler").string();
   std::error_code cleanupError;
   std::filesystem::remove_all(options.cacheDir, cleanupError);
   options.providerIdentity = projection.provider;
   options.workerLocation = providerAssemblyWorker();
   options.signManifest = [] (const std::string& manifest) {
-    return "spec185-provider-signature-" + providerAssemblyDigest(
+    return "di-provider-signature-" + providerAssemblyDigest(
       std::vector<std::uint8_t>(manifest.begin(), manifest.end()));
   };
   const auto prepared = prepareNativeCanonicalOnnxRole(fetchers, projection, options);
@@ -2695,7 +2695,7 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheColdHitUsesExactArtifact)
     sourceIdentity.initializerDigest);
   projection.canonicalArtifactName = rootName.toUri();
   const auto cacheDir = (std::filesystem::temp_directory_path() /
-                         "spec185-provider-assembler-cache").string();
+                         "di-provider-assembler-cache").string();
   std::error_code cleanupError;
   std::filesystem::remove_all(cacheDir, cleanupError);
   NativeCanonicalOnnxFetchers fetchers;
@@ -2781,6 +2781,9 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   projection.plan.modelName = "spec189-cache-fixture";
   projection.assembly.artifactDigest = zeroDigest('e');
   projection.assembly.protectionEpoch = "plaintext-v1";
+  projection.assembly.recipeDigest = nativePlanningDigest(
+    canonicalNativeOnnxRecipeJson(projection.assembly));
+  projection.selectedRole = projection.assembly;
 
   const auto root = std::filesystem::temp_directory_path() /
                     "spec189-stable-provider-cache";
@@ -2795,7 +2798,7 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
     .write(reinterpret_cast<const char*>(modelBytes.data()),
            static_cast<std::streamsize>(modelBytes.size()));
   std::ofstream(roleDirectory / "manifest.json")
-    << "{\"assembledModelDigest\":\"" << modelDigest
+    << "{\"schema\":\"ndnsf-di-assembled-onnx-v1\",\"assembledModelDigest\":\"" << modelDigest
     << "\",\"modelName\":\"" << projection.plan.modelName
     << "\",\"modelDigest\":\"" << zeroDigest('4')
     << "\",\"canonicalSourceDigest\":\"" << zeroDigest('3')
@@ -2849,6 +2852,7 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   republished.assembly.modelManifestDigest = nativePlanningDigest(rootWire);
   republished.assembly.recipeDigest = nativePlanningDigest(
     canonicalNativeOnnxRecipeJson(republished.assembly));
+  republished.selectedRole = republished.assembly;
   BOOST_REQUIRE_NE(republished.assembly.recipeDigest, projection.assembly.recipeDigest);
   BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(republished, options));
   const auto rebound = tryLoadNativeCanonicalOnnxRoleFromCache(
@@ -2864,11 +2868,13 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   changedNodes.assembly.nodeIndices.pop_back();
   changedNodes.assembly.recipeDigest = nativePlanningDigest(
     canonicalNativeOnnxRecipeJson(changedNodes.assembly));
+  changedNodes.selectedRole = changedNodes.assembly;
   BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, changedNodes, options));
   auto changedInputs = republished;
   changedInputs.assembly.expectedInputs.front().name = "foreign_input";
   changedInputs.assembly.recipeDigest = nativePlanningDigest(
     canonicalNativeOnnxRecipeJson(changedInputs.assembly));
+  changedInputs.selectedRole = changedInputs.assembly;
   BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, changedInputs, options));
   auto changedProfile = republished;
   changedProfile.assembly.artifactProfileDigest = zeroDigest('1');
@@ -2878,6 +2884,7 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
   changedProfile.assembly.modelManifestDigest = nativePlanningDigest(rootWire);
   changedProfile.assembly.recipeDigest = nativePlanningDigest(
     canonicalNativeOnnxRecipeJson(changedProfile.assembly));
+  changedProfile.selectedRole = changedProfile.assembly;
   BOOST_CHECK(!tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, changedProfile, options));
   const auto checkRoot = [&] (const NativeJson& root) {
     rootWire = nativeCanonicalJson(root);
@@ -2885,6 +2892,7 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerCacheScansStableRootAndVerifiesFileDiges
     bound.assembly.modelManifestDigest = nativePlanningDigest(rootWire);
     bound.assembly.recipeDigest = nativePlanningDigest(
       canonicalNativeOnnxRecipeJson(bound.assembly));
+    bound.selectedRole = bound.assembly;
     return tryLoadNativeCanonicalOnnxRoleFromCache(cacheFetchers, bound, options);
   };
   newRoot = currentRoot;
@@ -3290,7 +3298,7 @@ BOOST_AUTO_TEST_CASE(ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthoriza
   BOOST_REQUIRE(child >= 0);
   if (child == 0) {
     ::execl(executable, executable,
-            "--run_test=Spec185ProviderAssembly/Spec188ProviderReferenceAssembly/ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthorization",
+            "--run_test=DiProviderAssembly/Spec188ProviderReferenceAssembly/ProtectedAssembledCacheUsesStablePlaintextAfterNewAuthorization",
             "--log_level=error", static_cast<char*>(nullptr));
     ::_exit(127);
   }
@@ -3388,7 +3396,7 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
   const auto text = providerProjection(
     ndn::Name("/spec185/provider"), ndn::Name("/spec185/request"),
     planDigest, std::string("sha256:") + std::string(64, 'b'),
-    "spec185-provider-protected-v1", "/spec185/grants/one", grantDigest);
+    "di-provider-protected-v1", "/spec185/grants/one", grantDigest);
   std::istringstream input(text);
   const auto projection = nativeSelectionProjectionV3FromJson(input, "/Backbone");
 
@@ -3403,7 +3411,7 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
   binding.protectionEpoch = projection.selectedRole.protectionEpoch;
   binding.grantName = projection.grantName;
   binding.grantDigest = projection.grantDigest;
-  binding.providerBootId = "spec185-provider-boot";
+  binding.providerBootId = "di-provider-boot";
   binding.fencingToken = nativeProtectedFencingToken(
     projection, binding.providerBootId, {});
   binding.expiresAtMs = projection.deadlineMs;
@@ -3419,7 +3427,7 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
   wrongProvider.provider = "/spec185/other-provider";
   expectMismatch(wrongProvider);
   auto wrongEpoch = projection;
-  wrongEpoch.selectedRole.protectionEpoch = "spec185-other-epoch";
+  wrongEpoch.selectedRole.protectionEpoch = "di-other-epoch";
   expectMismatch(wrongEpoch);
   auto wrongGrant = projection;
   wrongGrant.grantDigest = std::string("sha256:") + std::string(64, 'e');
@@ -3429,7 +3437,7 @@ BOOST_AUTO_TEST_CASE(ProtectedSelectionBindingRejectsProviderEpochAndGrantSubsti
 BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcrossIndependentGrants)
 {
   auto pattern = (std::filesystem::temp_directory_path() /
-    "ndnsf-spec185-protected-cache-XXXXXX").string();
+    "ndnsf-di-protected-cache-XXXXXX").string();
   std::vector<char> directoryPattern(pattern.begin(), pattern.end());
   directoryPattern.push_back('\0');
   const auto directory = ::mkdtemp(directoryPattern.data());
@@ -3449,7 +3457,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   // C++ oracle so this selector measures preparation and cache behavior without
   // requiring a local ONNX Runtime model execution.
   ndn_service_framework::test::BootstrapProfile profile;
-  profile.serviceName = ndn::Name("/Inference/Spec185ProviderCache");
+  profile.serviceName = ndn::Name("/Inference/DiProviderCache");
   profile.providerRoles = {"/Backbone"};
   profile.deferBridgeDelivery = true;
   profile.providerFacesHaveDedicatedIoWorkers = true;
@@ -3465,7 +3473,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   const auto requesterPrivate = makeEd25519Key('q');
   const auto recipientPrivate = makeEd25519Key('r');
   const auto providerBootId = environment.provider().getProviderBootEpoch();
-  const auto protectionEpoch = std::string("spec185-provider-cache-protected-v1");
+  const auto protectionEpoch = std::string("di-provider-cache-protected-v1");
 
   const auto fixture = providerAssemblyFixture();
   BOOST_REQUIRE(!fixture.empty());
@@ -3495,7 +3503,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     publications.push_back(std::move(published));
     return name;
   };
-  const auto sourceName = publishLarge("spec185-provider-cache-source", source);
+  const auto sourceName = publishLarge("di-provider-cache-source", source);
   const auto rootText = std::string(
     "{\"artifactProfileDigest\":\"") + profileDigest +
     "\",\"metadata\":{\"canonicalSourceBytes\":" +
@@ -3517,7 +3525,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
   issuerConfig.authorityIdentity = "/spec185/cache-authority";
   issuerConfig.requesterIdentity = requesterName.toUri();
   issuerConfig.protectionEpoch = protectionEpoch;
-  issuerConfig.keyId = "spec185-provider-cache-grant";
+  issuerConfig.keyId = "di-provider-cache-grant";
   issuerConfig.authorityPrivateKey = authorityPrivate;
   issuerConfig.requesterPublicKey = publicKey(requesterPrivate);
   issuerConfig.allowedModelManifests = {rootDigest};
@@ -3543,8 +3551,8 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
       request.sign(*requesterPrivate), now, now + 60000), now};
   };
 
-  const auto requestOne = ndn::Name("/spec185-provider-cache-one");
-  const auto requestTwo = ndn::Name("/spec185-provider-cache-two");
+  const auto requestOne = ndn::Name("/di-provider-cache-one");
+  const auto requestTwo = ndn::Name("/di-provider-cache-two");
   const auto firstGrant = issueGrant(requestOne);
   const auto independentGrant = issueGrant(requestTwo);
   BOOST_REQUIRE_NE(firstGrant.grant.grantDigest, independentGrant.grant.grantDigest);
@@ -3566,7 +3574,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
       evidence.deviceKind = "cpu";
       evidence.deviceId = "0";
       evidence.deviceIds = {"0"};
-      evidence.runtimeVersion = "spec185-provider-cache-oracle";
+      evidence.runtimeVersion = "di-provider-cache-oracle";
       evidence.modelDigest = spec.metadata.at("evidence.modelDigest");
       evidence.planDigest = spec.metadata.at("evidence.planDigest");
       evidence.artifactDigests[spec.role] = spec.metadata.at("evidence.artifactDigest");
@@ -3578,7 +3586,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
       return makeNativeModelRunner(
         [runnerRuns] (const RoleExecutionContext&) {
           runnerRuns->fetch_add(1, std::memory_order_relaxed);
-          const std::string response = "spec185-provider-cache-response";
+          const std::string response = "di-provider-cache-response";
           return std::map<std::string, TensorBundle>{{
             "final-response", TensorBundle{
               "final-response",
@@ -3756,7 +3764,7 @@ BOOST_AUTO_TEST_CASE(ProductionProtectedProviderCacheReusesStableCiphertextAcros
     const auto projectionText = nativeSelectionProjectionV3ToJson(projection);
     BOOST_TEST_MESSAGE("protected-cache assignment bytes=" << projectionText.size());
     const auto rootDataName = publishLarge(
-      "spec185-provider-cache-root-" + std::to_string(publications.size()), rootPayload);
+      "di-provider-cache-root-" + std::to_string(publications.size()), rootPayload);
     auto probe = std::make_shared<Probe>();
     {
       std::lock_guard<std::mutex> lock(probeMutex);

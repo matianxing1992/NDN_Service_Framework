@@ -35,8 +35,8 @@
     "tests/installed-api/installed-runtime-consumer.cpp": "core",
     "tests/installed-api/installed-worker-consumer.cpp": "di",
     "tests/installed-api/runtime-api-consumer.cpp": "di",
-    "tests/installed-api/spec185-caller-consumer.cpp": "di",
-    "tests/installed-api/spec185-installed-consumer.cpp": "di",
+    "tests/installed-api/di-caller-consumer.cpp": "di",
+    "tests/installed-api/di-installed-consumer.cpp": "di",
     "tests/installed-api/tokenizer-stable-probe.cpp": "core",
     "tests/integration-tests/collaboration-input-admission.t.cpp": "core",
     "tests/integration-tests/control-authorization-names.t.cpp": "core",
@@ -394,14 +394,14 @@
           }
         },
         {
-          "target": "spec185-provider-assembly",
+          "target": "di-provider-assembly",
           "requiresComponents": ["di"],
           "selector": {
             "include": ["*"]
           }
         },
         {
-          "target": "spec185-prepared-request",
+          "target": "di-prepared-request",
           "requiresComponents": ["di"],
           "selector": {"include": ["*"]}
         },
@@ -507,13 +507,9 @@
   },
   "assets": {
     "qwen3-0.6b-int4-frozen-export": {
-      "kind": "external-model-cache",
-      "note": "Prepared outside Git by the maintained preparation recipe; a missing directory is PREREQUISITE_MISSING, never a pass.",
-      "env": "NDNSF_DI_MODEL_CACHE",
-      "default": "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b",
-      "requiredFiles": [
-        "canonical-source.onnx"
-      ]
+      "kind": "sealed-model-assets",
+      "recipe": "qwen3-0.6b-int4",
+      "note": "Only the pinned SEALED manifest is admissible; it binds raw automatic and canonical TP representations separately. Missing or changed files are PREREQUISITE_MISSING."
     }
   }
 }

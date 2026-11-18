@@ -142,7 +142,7 @@ public:
 
 private:
   friend class User;
-  friend struct Spec185PreparationTestAccess;
+  friend struct DiPreparationTestAccess;
 
   class MemoryReservation
   {

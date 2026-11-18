@@ -43,7 +43,7 @@ public:
 
 // Test-only access keeps the production cache owner private while allowing
 // deterministic C++ fixtures to hold a job at its source barrier.
-struct Spec185PreparationTestAccess
+struct DiPreparationTestAccess
 {
   static std::size_t reserveMemory(ModelPreparationCache& cache,
                                    const PreparationSpec& spec)
@@ -194,7 +194,7 @@ struct Fixture
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(Spec185Preparation)
+BOOST_AUTO_TEST_SUITE(DiPreparation)
 
 BOOST_AUTO_TEST_CASE(ColdPreparationPublishesOnlyVerifiedImmutablePackage)
 {
@@ -811,7 +811,7 @@ BOOST_AUTO_TEST_CASE(StoredPublicationUsesThePreparationMemoryAdmission)
 {
   Fixture fixture;
   ModelPreparationCache tooSmall(1U << 20, 1, std::chrono::seconds(5));
-  BOOST_CHECK_EXCEPTION(Spec185PreparationTestAccess::reserveMemory(tooSmall, fixture.spec),
+  BOOST_CHECK_EXCEPTION(DiPreparationTestAccess::reserveMemory(tooSmall, fixture.spec),
                         std::runtime_error, [] (const std::runtime_error& error) {
     return std::string(error.what()).find("CACHE_BUDGET_EXCEEDED") != std::string::npos;
   });
@@ -819,17 +819,17 @@ BOOST_AUTO_TEST_CASE(StoredPublicationUsesThePreparationMemoryAdmission)
   BOOST_CHECK_EQUAL(fixture.fetches, 0U);
 
   ModelPreparationCache sufficient(4U << 20, 1, std::chrono::seconds(5));
-  auto reservation = Spec185PreparationTestAccess::holdMemoryReservation(sufficient, fixture.spec);
+  auto reservation = DiPreparationTestAccess::holdMemoryReservation(sufficient, fixture.spec);
   const auto reserved = reservation.bytes();
   BOOST_CHECK(reserved > fixture.spec.maxSourceBytes);
   BOOST_CHECK_EQUAL(sufficient.chargedBytes(), 0U);
   BOOST_CHECK_EXCEPTION(
-    Spec185PreparationTestAccess::reserveMemory(sufficient, fixture.spec),
+    DiPreparationTestAccess::reserveMemory(sufficient, fixture.spec),
     std::runtime_error, [] (const std::runtime_error& error) {
       return std::string(error.what()).find("CACHE_BUDGET_EXCEEDED") != std::string::npos;
     });
   reservation.release();
-  BOOST_CHECK_EQUAL(Spec185PreparationTestAccess::reserveMemory(sufficient, fixture.spec),
+  BOOST_CHECK_EQUAL(DiPreparationTestAccess::reserveMemory(sufficient, fixture.spec),
                     reserved);
 
   auto stored = fixture.spec;
@@ -837,7 +837,7 @@ BOOST_AUTO_TEST_CASE(StoredPublicationUsesThePreparationMemoryAdmission)
   stored.maxSourceBytes = 50ULL << 30;
   stored.maxAssembledBytes = 100ULL << 30;
   ModelPreparationCache storedCache(512ULL << 20, 1, std::chrono::seconds(5));
-  const auto metadataAdmission = Spec185PreparationTestAccess::reserveMemory(storedCache, stored);
+  const auto metadataAdmission = DiPreparationTestAccess::reserveMemory(storedCache, stored);
   BOOST_CHECK(metadataAdmission < (512ULL << 20));
   BOOST_CHECK(metadataAdmission < stored.maxSourceBytes);
   BOOST_CHECK(metadataAdmission < stored.maxAssembledBytes);
@@ -928,7 +928,7 @@ BOOST_AUTO_TEST_CASE(EightConcurrentPreparationsUseOneFetchAndInspection)
   BOOST_CHECK_EQUAL(fixture.fetches, 0U);
 }
 
-BOOST_AUTO_TEST_SUITE(Spec185PreparationT004)
+BOOST_AUTO_TEST_SUITE(DiPreparationT004)
 
 BOOST_AUTO_TEST_CASE(RefreshFailureRetainsThePreviouslyPublishedReadyPackage)
 {
@@ -1074,7 +1074,7 @@ BOOST_AUTO_TEST_CASE(AsyncWaiterTimeoutUsesASeparateGateAndAllowsReentrantCancel
     fireTimer = std::move(task);
     return [&fireTimer] { fireTimer = {}; };
   };
-  auto handle = Spec185PreparationTestAccess::prepareAsync(cache, spec);
+  auto handle = DiPreparationTestAccess::prepareAsync(cache, spec);
   std::promise<std::string> timeoutCode;
   auto future = timeoutCode.get_future();
   auto subscription = handle.resultAsync(std::chrono::milliseconds(1),
@@ -1116,7 +1116,7 @@ BOOST_AUTO_TEST_CASE(AsyncCompletionCapacityIsExactlyBoundedAtSixtyFour)
     sourceCondition.wait(lock, [&] { return releaseSource; });
     return fixture.source;
   };
-  auto handle = Spec185PreparationTestAccess::prepareAsync(cache, spec);
+  auto handle = DiPreparationTestAccess::prepareAsync(cache, spec);
   std::vector<Subscription> subscriptions;
   subscriptions.reserve(64);
   for (unsigned i = 0; i < 64; ++i)
@@ -1161,7 +1161,7 @@ BOOST_AUTO_TEST_CASE(DispatchQueueThenThrowStillDeliversExactlyOnce)
     dispatchCondition.notify_one();
     throw std::runtime_error("dispatch failure after queue");
   };
-  auto handle = Spec185PreparationTestAccess::prepareAsync(cache, spec);
+  auto handle = DiPreparationTestAccess::prepareAsync(cache, spec);
   std::atomic<unsigned> callbackCount{0};
   std::promise<std::string> callbackError;
   auto subscription = handle.onCompletion(

@@ -364,7 +364,7 @@ int runProcessCase(const std::string& name, const std::vector<std::string>& argu
 
   static unsigned sequence = 0;
   const auto runRoot = std::filesystem::temp_directory_path() /
-    ("spec185-b7-" + name + "-" + std::to_string(static_cast<unsigned long>(::getpid())) +
+    ("di-b7-" + name + "-" + std::to_string(static_cast<unsigned long>(::getpid())) +
      "-" + std::to_string(++sequence));
   std::filesystem::create_directories(runRoot);
   const auto log = runRoot / "cpp-driver.log";
@@ -501,7 +501,7 @@ void runNativeSelector(const std::string& target, const std::string& filter,
 
   static unsigned selectorSequence = 0;
   const auto log = std::filesystem::temp_directory_path() /
-    ("spec185-b7-selector-" + target + "-" +
+    ("di-b7-selector-" + target + "-" +
      std::to_string(static_cast<unsigned long>(::getpid())) + "-" +
      std::to_string(++selectorSequence) + ".log");
   std::string libraryPath = build.string();
@@ -552,13 +552,13 @@ void runTwice(const std::string& name, const std::vector<std::string>& arguments
   runProcessCase(name, arguments, markers, requireRevocationQualification);
 }
 
-BOOST_AUTO_TEST_SUITE(Spec185Process)
+BOOST_AUTO_TEST_SUITE(DiProcess)
 
 BOOST_AUTO_TEST_CASE(NativeRuntimeConfigurationRemainsCxxOwned)
 {
   RuntimeConfig config;
   config.nativeConfigPath =
-    (std::filesystem::temp_directory_path() / "spec185-b7-missing-runtime.json").string();
+    (std::filesystem::temp_directory_path() / "di-b7-missing-runtime.json").string();
   BOOST_CHECK_EXCEPTION(
     Runtime::open(config), DiError,
     [] (const DiError& error) {
@@ -615,7 +615,7 @@ BOOST_AUTO_TEST_CASE(NativeNegativeCacheDeadlineRevokeAndCleanupMatrix)
   // These selectors keep the business oracle in C++ and are invoked here as
   // native child processes.  The process scripts above supply only external
   // NFD/PIB/TPM lifecycle; they do not replace these C++ assertions.
-  runNativeCasesTwice("spec185-prepared-request", "Spec185PreparedRequest", {
+  runNativeCasesTwice("di-prepared-request", "DiPreparedRequest", {
     "StreamingRequestReaderPreservesTerminalEventAcrossCancel",
     "PreparedRequestRejectsUnsupportedTextBeforeNativeSubmission",
     "PreparedRequestRejectsUnsupportedGenerationContract",
@@ -626,7 +626,7 @@ BOOST_AUTO_TEST_CASE(NativeNegativeCacheDeadlineRevokeAndCleanupMatrix)
     "RuntimeDrainAsyncTracksMultiplePreparedClients",
     "RuntimeDrainAsyncWakesAfterLastClientTimerRetires",
     "RuntimeDrainAsyncIncludesNativeClientWork"});
-  runNativeCasesTwice("spec185-provider-assembly", "Spec185ProviderAssembly/Spec188ProviderReferenceAssembly", {
+  runNativeCasesTwice("di-provider-assembly", "DiProviderAssembly/Spec188ProviderReferenceAssembly", {
     "AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse",
     "ProductionAssemblerFetchesCanonicalSourceAfterSelection",
     "ProviderArtifactCachePinsEvictsAndSeparatesIdentity",
@@ -637,7 +637,7 @@ BOOST_AUTO_TEST_CASE(NativeNegativeCacheDeadlineRevokeAndCleanupMatrix)
     "ProviderArtifactCacheStopCancelsInFlightBuild",
     "ProviderArtifactCacheStopPreservesActiveLeaseUntilRelease",
     "MemoryLifecycleAlternatesModelsAndReclaimsEvictedArtifacts"});
-  runNativeCasesTwice("spec185-provider-assembly", "Spec185ProviderAssembly", {
+  runNativeCasesTwice("di-provider-assembly", "DiProviderAssembly", {
     "ProviderOnlyRuntimeServesAndDrainsNativeRegistration"});
   // Controller revocation and deadline/cleanup cases are already registered
   // in the complete C++ integration target; run their named cases through a

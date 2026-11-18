@@ -2,7 +2,7 @@
 set -euo pipefail
 
 prefix=${1:?usage: $0 <installed-prefix> [output-dir]}
-output_dir=${2:-"${TMPDIR:-/tmp}/spec185-runtime-consumer"}
+output_dir=${2:-"${TMPDIR:-/tmp}/di-runtime-consumer"}
 prefix=$(cd "$prefix" && pwd)
 source_file=$(cd "$(dirname "$0")" && pwd)/runtime-api-consumer.cpp
 repo_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
@@ -82,15 +82,15 @@ cat > "$fixture_dir/requester.json" <<EOF
 EOF
 g++ -std=c++17 -Wall -Wextra -Werror "${cflags[@]}" "$source_file" "${libs[@]}" \
   -I"$prefix_include" \
-  -Wl,-rpath,"$package_libdir" -o "$pkg_root/spec185-runtime-consumer"
-readelf -d "$pkg_root/spec185-runtime-consumer" > "$pkg_root/readelf"
+  -Wl,-rpath,"$package_libdir" -o "$pkg_root/di-runtime-consumer"
+readelf -d "$pkg_root/di-runtime-consumer" > "$pkg_root/readelf"
 LD_LIBRARY_PATH="$package_libdir:${LD_LIBRARY_PATH:-}" \
-  ldd "$pkg_root/spec185-runtime-consumer" > "$pkg_root/ldd"
+  ldd "$pkg_root/di-runtime-consumer" > "$pkg_root/ldd"
 grep -F 'NEEDED' "$pkg_root/readelf" | grep -F 'libndnsf-distributed-inference.so' >/dev/null
 loaded=$(awk -v dir="$package_libdir/" \
   '$1 ~ /^libndnsf-distributed-inference\.so/ && $2 == "=>" && index($3, dir) == 1 { print $3; exit }' \
   "$pkg_root/ldd")
 test -n "$loaded" && test "$(readlink -f "$library")" = "$(readlink -f "$loaded")"
 LD_LIBRARY_PATH="$package_libdir:${LD_LIBRARY_PATH:-}" \
-  "$pkg_root/spec185-runtime-consumer" "$fixture_dir/requester.json" > "$pkg_root/run.log" 2>&1
+  "$pkg_root/di-runtime-consumer" "$fixture_dir/requester.json" > "$pkg_root/run.log" 2>&1
 echo "Spec185RuntimeConsumer PASS prefix=$prefix include=$runtime_header library=$loaded"

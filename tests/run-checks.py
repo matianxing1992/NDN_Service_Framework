@@ -20,6 +20,7 @@ import argparse
 from contextlib import contextmanager
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -69,6 +70,10 @@ def verify_installed_files(prefix, roster, profiles):
                 prefix / 'share/ndnsf/tests/check-profiles.json'}
     required.update(prefix / 'libexec/ndnsf-tests' / row['target']
                     for profile in profiles for row in roster['profiles'][profile]['targets'])
+    if any(row.get('assets') for profile in profiles
+           for row in roster['profiles'][profile]['targets']):
+        required.update(prefix / 'share/ndnsf' / name for name in (
+            'Experiments/model_assets.py', 'Experiments/recipes/qwen3-0.6b-int4.json'))
     if any('identity-check' in row.get('facilities', [])
            for profile in profiles for row in roster['profiles'][profile]['targets']):
         required.add(prefix / 'bin/ndnsf-identity-check')
@@ -108,7 +113,7 @@ def verify_installed_files(prefix, roster, profiles):
     process_profile = any('native-process-python' in row.get('facilities', [])
                           for profile in profiles for row in roster['profiles'][profile]['targets'])
     if process_profile:
-        required.add(prefix / 'libexec/ndnsf-tests/spec185-prepared-request')
+        required.add(prefix / 'libexec/ndnsf-tests/di-prepared-request')
         required.update(Path(name) for name in data['files'] if python_root in Path(name).parents)
         required.update(prefix / 'bin' / name for name in (
             'App_ServiceController', 'DI_NativeArtifactAuthority', 'DI_NativeRequester',
@@ -338,7 +343,8 @@ def isolated_native_environment(environ):
         native_env = environ.copy()
         for key in ('NDN_CLIENT_PIB', 'NDN_CLIENT_TPM', 'NDNSF_CONTROLLER_CERT_FILE'):
             native_env.pop(key, None)
-        for key, name in (('HOME', 'home'), ('NDNSF_REQUEST_LARGE_DATA_DIR', 'large-data')):
+        for key, name in (('HOME', 'home'), ('NDNSF_REQUEST_LARGE_DATA_DIR', 'large-data'),
+                          ('TMPDIR', 'scratch')):
             directory = Path(result_root) / name
             directory.mkdir(mode=0o700)
             native_env[key] = str(directory)
@@ -447,23 +453,38 @@ def read_case_results(path):
     return results
 
 
-def check_assets(roster, selected, manifest_path):
-    """Report every asset the selected profiles need, and whether it is present."""
+def check_assets(roster, selected, manifest_path, bindings=None):
+    """Admit pinned SEALED assets and pass their exact files to native consumers."""
     missing = []
-    for name in selected:
-        profile = roster['profiles'][name]
-        for target in profile.get('targets', []):
-            for asset_name in target.get('assets', []):
-                asset = roster['assets'][asset_name]
-                root = os.environ.get(asset['env']) or asset.get('default', '')
-                if manifest_path:
-                    root = str(Path(manifest_path).parent / asset_name)
-                if not root or not Path(root).is_dir():
-                    missing.append((asset_name, root or '(unset)'))
-                    continue
-                for required in asset.get('requiredFiles', []):
-                    if not list(Path(root).rglob(required)):
-                        missing.append((asset_name, '%s lacks %s' % (root, required)))
+    names = sorted({asset_name for name in selected
+                    for target in roster['profiles'][name].get('targets', [])
+                    for asset_name in target.get('assets', [])})
+    for asset_name in names:
+        try:
+            asset = roster['assets'][asset_name]
+            path = manifest_path or os.environ.get('NDNSF_MODEL_ASSET_MANIFEST')
+            if not path:
+                raise ValueError('SEALED manifest required: use --asset-manifest FILE; '
+                                 'prepare with prepare-model-assets.py --recipe ' + asset['recipe'])
+            if asset['recipe'] != 'qwen3-0.6b-int4':
+                raise ValueError('ASSET_RECIPE_UNSUPPORTED: ' + asset['recipe'])
+            experiment_root = Path(__file__).resolve().parent.parent / 'Experiments'
+            spec = importlib.util.spec_from_file_location(
+                'ndnsf_asset_admission', experiment_root / 'model_assets.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            recipe = module.read_json(experiment_root / 'recipes/qwen3-0.6b-int4.json')
+            if recipe['assetId'] != asset_name:
+                raise ValueError('ASSET_ROSTER_RECIPE_MISMATCH')
+            files = module.validate_manifest(Path(path).absolute(), recipe)
+            if bindings is not None:
+                bindings[asset_name] = {
+                    'NDNSF_TEST_CANONICAL_MODEL_DIR': str(files['canonicalGraph'].parent),
+                    'NDNSF_SPEC233_REAL_MODEL': str(files['sourceModel']),
+                    'NDNSF_SPEC233_REAL_GENERATION_ROW': 'Q06-I4',
+                }
+        except (OSError, ValueError, KeyError, TypeError, ImportError) as error:
+            missing.append((asset_name, str(error)))
     return missing
 
 
@@ -523,6 +544,9 @@ def run_target(binary, target, environ, timeout, arguments, listing=None):
         if re.search(r'\bNOT_RUN\s*:', combined):
             report_error = ((report_error + '; ') if report_error else '') + \
                 'NATIVE_NOT_RUN_MARKER: selected native checks did not execute their oracle'
+        if re.search(r'\bdid not check any assertions\b', combined):
+            report_error = ((report_error + '; ') if report_error else '') + \
+                'NATIVE_ASSERTION_FREE_CASE: selected native check has no assertions'
         if arguments.report and xml_path.exists():
             xml_copy = str(Path(arguments.report).with_suffix('')) + '.' + run_name + '.xml'
             shutil.copyfile(xml_path, xml_copy)
@@ -551,7 +575,7 @@ def main(argv=None):
     parser.add_argument('--fixture-root', default=os.environ.get('NDNSF_TEST_FIXTURE_ROOT'),
                         help='declared fixture root; passed through to every check')
     parser.add_argument('--asset-manifest', default=None,
-                        help='directory holding prepared assets, one subdirectory per asset id')
+                        help='SEALED asset-manifest.json from the pinned model preparation recipe')
     parser.add_argument('--build-root', default=None,
                         help='directory holding the built check binaries')
     parser.add_argument('--report', default=None, help='write the JSON report here')
@@ -657,8 +681,9 @@ def main(argv=None):
                                      % (binary, line.strip()))
                     return EXIT_ROSTER
 
+    asset_bindings = {}
     missing = check_facilities(roster, selected, environ, prefix, build_root) + \
-        check_assets(roster, selected, arguments.asset_manifest)
+        check_assets(roster, selected, arguments.asset_manifest, asset_bindings)
     if missing:
         for asset_name, detail in missing:
             sys.stderr.write('PREREQUISITE_MISSING: %s (%s)\n' % (asset_name, detail))
@@ -690,6 +715,8 @@ def main(argv=None):
                 continue
             try:
                 target_env = target_environment(target, environ, prefix, build_root)
+                for asset_name in target.get('assets', []):
+                    target_env.update(asset_bindings[asset_name])
                 listing = enumerate_cases(binary, target_env)
                 suites, cases, disabled = listing
                 if not cases:

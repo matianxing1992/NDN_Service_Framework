@@ -36,9 +36,9 @@ class IncrementalBuildGraph(unittest.TestCase):
         if not lock.is_file():
             self.skipTest('requires the configured sanitizer build')
         expected = {
-            'spec185-provider-assembly': {'main.cpp', 'di-prepared-provider.t.cpp',
+            'di-provider-assembly': {'main.cpp', 'di-prepared-provider.t.cpp',
                                         'ndnsf-integration-fixture.cpp', 'Provider.cpp'},
-            'spec185-runtime': {'main.cpp', 'di-runtime.t.cpp'},
+            'di-runtime': {'main.cpp', 'di-runtime.t.cpp'},
         }
         build = CLOSURE.load_build_graph(ROOT, lock, list(expected), 'build')
         self.assertTrue(build.env.sanitize_di)

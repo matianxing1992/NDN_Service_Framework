@@ -270,7 +270,7 @@ private:
   std::shared_ptr<State> m_state;
   friend class User;
   friend class ModelPreparationCache;
-  friend struct Spec185PreparationTestAccess;
+  friend struct DiPreparationTestAccess;
 };
 
 /**

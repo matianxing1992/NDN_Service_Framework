@@ -91,7 +91,7 @@ public:
 
   TempRuntimeConfig()
     : m_root(std::filesystem::temp_directory_path() /
-             ("spec185-runtime-" + std::to_string(::getpid()) + "-" +
+             ("di-runtime-" + std::to_string(::getpid()) + "-" +
               std::to_string(++s_sequence)))
   {
     std::filesystem::create_directories(m_root);
@@ -392,7 +392,7 @@ private:
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(Spec185Runtime)
+BOOST_AUTO_TEST_SUITE(DiRuntime)
 
 BOOST_AUTO_TEST_CASE(MissingControllerCertificateDoesNotMintForeignIdentity)
 {
@@ -1658,7 +1658,7 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncDoesNotImplicitlyClose)
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
-BOOST_AUTO_TEST_SUITE(Spec185RuntimeT004)
+BOOST_AUTO_TEST_SUITE(DiRuntimeT004)
 
 BOOST_AUTO_TEST_CASE(BlockingPrepareFromCoreWorkerReturnsWouldDeadlock)
 {

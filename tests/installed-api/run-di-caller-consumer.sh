@@ -2,10 +2,10 @@
 set -euo pipefail
 
 prefix=${1:?usage: $0 <installed-prefix> [output-dir]}
-output_dir=${2:-"${TMPDIR:-/tmp}/spec185-caller-consumer"}
+output_dir=${2:-"${TMPDIR:-/tmp}/di-caller-consumer"}
 prefix=$(cd "$prefix" && pwd)
 repo_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
-source_file=$(cd "$(dirname "$0")" && pwd)/spec185-caller-consumer.cpp
+source_file=$(cd "$(dirname "$0")" && pwd)/di-caller-consumer.cpp
 pkg_root="$output_dir/installed"
 mkdir -p "$pkg_root"
 
@@ -30,16 +30,16 @@ test -n "$library"
 
 /usr/bin/g++ -B/usr/bin -std=c++17 -Wall -Wextra -Werror \
   "${cflags[@]}" "$source_file" "${libs[@]}" \
-  -Wl,-rpath,"$package_libdir" -o "$pkg_root/spec185-caller-consumer"
-readelf -d "$pkg_root/spec185-caller-consumer" > "$pkg_root/readelf"
+  -Wl,-rpath,"$package_libdir" -o "$pkg_root/di-caller-consumer"
+readelf -d "$pkg_root/di-caller-consumer" > "$pkg_root/readelf"
 grep -F 'NEEDED' "$pkg_root/readelf" | grep -F 'libndnsf-distributed-inference.so' >/dev/null
 LD_LIBRARY_PATH="$package_libdir:${LD_LIBRARY_PATH:-}" \
-  ldd "$pkg_root/spec185-caller-consumer" > "$pkg_root/ldd"
+  ldd "$pkg_root/di-caller-consumer" > "$pkg_root/ldd"
 loaded=$(awk -v dir="$package_libdir/" \
   '$1 ~ /^libndnsf-distributed-inference\.so/ && $2 == "=>" && index($3, dir) == 1 { print $3; exit }' \
   "$pkg_root/ldd")
 test -n "$loaded" && test "$(readlink -f "$library")" = "$(readlink -f "$loaded")"
 LD_LIBRARY_PATH="$package_libdir:${LD_LIBRARY_PATH:-}" \
-  "$pkg_root/spec185-caller-consumer" > "$pkg_root/run.log" 2>&1
+  "$pkg_root/di-caller-consumer" > "$pkg_root/run.log" 2>&1
 grep -F 'SPEC185_INSTALLED_CALLER_CONSUMER_OK' "$pkg_root/run.log" >/dev/null
 echo "Spec185CallerConsumer PASS prefix=$prefix library=$loaded"

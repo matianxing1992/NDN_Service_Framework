@@ -213,7 +213,7 @@ struct ConversationResultObservation
     if (state->error)
       std::rethrow_exception(state->error);
     if (!state->value)
-      throw std::runtime_error("Spec185 conversation result observation is empty");
+      throw std::runtime_error("Di conversation result observation is empty");
     return std::move(*state->value);
   }
 };
@@ -249,7 +249,7 @@ struct PreparedRunObservation
     if (state->error)
       std::rethrow_exception(state->error);
     if (!state->value)
-      throw std::runtime_error("Spec185 prepared run observation is empty");
+      throw std::runtime_error("Di prepared run observation is empty");
     return std::move(*state->value);
   }
 };
@@ -339,7 +339,7 @@ struct BooleanResultObservation
     if (state->error)
       std::rethrow_exception(state->error);
     if (!state->value)
-      throw std::runtime_error("Spec185 boolean observation is empty");
+      throw std::runtime_error("Di boolean observation is empty");
     return *state->value;
   }
 };
@@ -378,7 +378,7 @@ pumpUntilBooleanResultReady(
     environment.pumpUntil([] { return false; });
   }
   if (!observation->state->ready.load(std::memory_order_acquire))
-    throw std::runtime_error("Spec185 boolean result pump deadline expired");
+    throw std::runtime_error("Di boolean result pump deadline expired");
 }
 
 struct PreparedModelState
@@ -484,7 +484,7 @@ pumpUntilConversationResultReady(
     environment.pumpUntil([] { return false; });
   }
   if (!observation->state->ready.load(std::memory_order_acquire))
-    throw std::runtime_error("Spec185 conversation result pump deadline expired");
+    throw std::runtime_error("Di conversation result pump deadline expired");
 }
 
 void
@@ -497,7 +497,7 @@ pumpUntilRequestTerminal(
          std::chrono::steady_clock::now() < deadline)
     environment.pumpUntil([] { return false; });
   if (handle.status() == RequestStatus::Pending)
-    throw std::runtime_error("Spec185 request terminal pump deadline expired");
+    throw std::runtime_error("Di request terminal pump deadline expired");
 }
 
 // Hold a public completion callback while a Conversation failure becomes
@@ -559,7 +559,7 @@ pumpUntilPreparedRunReady(
     environment.pumpUntil([] { return false; });
   }
   if (!observation->state->ready.load(std::memory_order_acquire))
-    throw std::runtime_error("Spec185 prepared run pump deadline expired");
+    throw std::runtime_error("Di prepared run pump deadline expired");
 }
 
 void
@@ -580,7 +580,7 @@ pumpUntilConversationResultsReady(
   }
   if (!first->state->ready.load(std::memory_order_acquire) ||
       !second->state->ready.load(std::memory_order_acquire))
-    throw std::runtime_error("Spec185 conversation result pair pump deadline expired");
+    throw std::runtime_error("Di conversation result pair pump deadline expired");
 }
 
 // Keep the synchronous busy-turn exception boundary out of the large
@@ -710,7 +710,7 @@ public:
   explicit RuntimeFixture(bool streaming = false, bool qwenStreaming = false,
                           std::size_t maxPayloadBytes = 32)
     : root(std::filesystem::temp_directory_path() /
-           ("spec185-prepared-request-" + std::to_string(::getpid()) + "-" +
+           ("di-prepared-request-" + std::to_string(::getpid()) + "-" +
             std::to_string(++sequence)))
   {
     std::filesystem::create_directories(root);
@@ -746,7 +746,7 @@ public:
       source.modelBytes.assign(qwenBytes.begin(), qwenBytes.end());
       const auto sourceIdentity = canonicalOnnxSourceIdentity(source, control);
       const std::string role = "/LLM/Pipeline/Stage/0";
-      const std::string manifestDigest = nativePlanningDigest("spec185-qwen-manifest");
+      const std::string manifestDigest = nativePlanningDigest("di-qwen-manifest");
       const std::string protectionEpoch = "epoch-1";
       // The provider fixture's grant publication source intentionally binds the
       // shared fixture profile; keep the Qwen source/model identity distinct
@@ -755,8 +755,8 @@ public:
       const std::string qwenGraphDigest =
         "sha256:8f901f484f07440aef844373c95d64b6462bcbc90c0070087b4c85c78a0de2b2";
       descriptor = fixture::completeModel({
-        "QwenFixture", nativePlanningDigest("spec185-qwen-content"),
-        nativePlanningDigest("spec185-qwen-semantics"), qwenGraphDigest,
+        "QwenFixture", nativePlanningDigest("di-qwen-content"),
+        nativePlanningDigest("di-qwen-semantics"), qwenGraphDigest,
         "onnx", "float32", "qwen", "1"});
       descriptor.sourceRevision = "pinned-r1";
       const std::string sourceDigest = nativePlanningDigest(
@@ -774,7 +774,7 @@ public:
           {"digest", sourceDigest}, {"model_manifest_digest", manifestDigest},
           {"canonical_graph_digest", sourceIdentity.graphDigest}}},
         {"recipe", {{"artifact_profile_digest", artifactProfileDigest},
-          {"assembler_descriptor_digest", nativePlanningDigest("spec185-qwen-assembler")},
+          {"assembler_descriptor_digest", nativePlanningDigest("di-qwen-assembler")},
           {"backend_abi", "fixture-abi"}, {"precision", "float32"},
           {"quantization", "none"}, {"layout", "native"}, {"padding", "none"},
           {"protection_epoch", protectionEpoch}, {"max_source_bytes", 1 << 20},
@@ -787,7 +787,7 @@ public:
         {"conversation_input", {{"kind", "OPAQUE_BYTE_TOKEN_IDS"}}},
         {"splitter", {{"kind", "QWEN"},
           {"layer_ranges", NativeJson::array({NativeJson::array({0, 2})})},
-          {"artifact_digests_by_role", {{role, nativePlanningDigest("spec185-qwen-artifact")}}},
+          {"artifact_digests_by_role", {{role, nativePlanningDigest("di-qwen-artifact")}}},
           {"weight_bytes_by_role", {{role, 1}}}, {"roles", {role}},
           {"resources_by_role", {{role, nativeParseJson(NativeRoleResourceRequirement{
             {"onnxruntime"}, 1U << 20, 0, 0, 0, 0, 1.0}.canonicalJson())}}},
@@ -902,7 +902,7 @@ public:
       {"generation_mode", streaming ? "TOKEN_STREAMING" : "TOKEN_DIAGNOSTIC"},
       {"timeout_ms", 30000}, {"ack_timeout_ms", 5000}};
     if (streaming) {
-      const auto tokenizerDigest = nativePlanningDigest("spec185-fixture-tokenizer");
+      const auto tokenizerDigest = nativePlanningDigest("di-fixture-tokenizer");
       request["tokenizer_digest"] = tokenizerDigest;
       request["generation_defaults"] = {
         {"useCache", true}, {"outputMode", "TOKEN_STREAMING"},
@@ -974,7 +974,7 @@ PreparedModel prepareWithInProcessPump(
   ndn_service_framework::test::NdnsfIntegrationEnvironment& environment)
 {
   if (!runtime)
-    throw std::invalid_argument("Spec185 prepared model requires Runtime");
+    throw std::invalid_argument("Di prepared model requires Runtime");
   std::atomic<bool> pumping{true};
   std::thread pump([&] {
     while (pumping.load(std::memory_order_acquire)) {
@@ -1009,7 +1009,7 @@ std::string readTextFile(const std::filesystem::path& path)
 {
   std::ifstream input(path, std::ios::binary);
   if (!input.good())
-    throw std::runtime_error("cannot read Spec185 fixture file: " + path.string());
+    throw std::runtime_error("cannot read Di fixture file: " + path.string());
   return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
@@ -1039,7 +1039,7 @@ bindInProcessRuntime(
   std::shared_ptr<ndn_service_framework::test::NdnsfIntegrationEnvironment> environment = nullptr)
 {
   if (!runtime)
-    throw std::invalid_argument("Spec185 in-process binding requires Runtime");
+    throw std::invalid_argument("Di in-process binding requires Runtime");
 
   if (!environment)
     environment = makeInProcessRuntimeEnvironment();
@@ -1068,20 +1068,20 @@ bindInProcessRuntime(
   std::shared_ptr<EVP_PKEY> requesterPrivate(
     PEM_read_bio_PrivateKey(requesterBio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
   if (!requesterPrivate)
-    throw std::runtime_error("cannot load Spec185 requester fixture key");
+    throw std::runtime_error("cannot load Di requester fixture key");
   const auto authorityPublicPem = readTextFile(fixture.root / "authority-public.pem");
   std::unique_ptr<BIO, decltype(&BIO_free)> authorityBio(
     BIO_new_mem_buf(authorityPublicPem.data(), static_cast<int>(authorityPublicPem.size())), BIO_free);
   std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> authorityPublic(
     PEM_read_bio_PUBKEY(authorityBio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
   if (!authorityPublic)
-    throw std::runtime_error("cannot load Spec185 authority fixture key");
+    throw std::runtime_error("cannot load Di authority fixture key");
   std::string authorityPublicRaw(32, '\0');
   std::size_t authorityPublicSize = authorityPublicRaw.size();
   if (EVP_PKEY_get_raw_public_key(
         authorityPublic.get(), reinterpret_cast<unsigned char*>(authorityPublicRaw.data()),
         &authorityPublicSize) != 1 || authorityPublicSize != authorityPublicRaw.size())
-    throw std::runtime_error("Spec185 authority fixture key is not Ed25519");
+    throw std::runtime_error("Di authority fixture key is not Ed25519");
   const auto protectionEpoch = config.at("grant").at("protection_epoch").get<std::string>();
   NativeAuthenticatedGrantClient::Issue issue = [] (
     const NativeSignedGrantRequest&, const std::string&, std::uint64_t,
@@ -1143,7 +1143,7 @@ bool waitForInProcessDrainNotification(
     binding.environment->pumpUntil([] { return false; });
   }
   if (!state->ready.load(std::memory_order_acquire))
-    throw std::runtime_error("Spec185 drainAsync notification pump deadline expired");
+    throw std::runtime_error("Di drainAsync notification pump deadline expired");
   std::lock_guard<std::mutex> lock(state->mutex);
   return state->value.value_or(false);
 }
@@ -1220,7 +1220,7 @@ public:
   run(const RoleExecutionContext&) final
   {
     m_runs->fetch_add(1, std::memory_order_relaxed);
-    const std::string response = "spec185-provider-response";
+    const std::string response = "di-provider-response";
     const std::vector<std::uint8_t> responseBytes(response.begin(), response.end());
     return {{"final-response", TensorBundle{
       "final-response",
@@ -1377,7 +1377,7 @@ makePreparedServedProviderPreparation()
              const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
     if (!protectedRuntime ||
         protectedRuntime->state() != ProtectedRuntimeState::GrantVerified)
-      throw std::runtime_error("Spec185 served Provider did not verify grant");
+      throw std::runtime_error("Di served Provider did not verify grant");
     const auto& assembly = projection.assemblyContract();
     NativeModelRunnerSpec spec;
     spec.role = assembly.selectedRole;
@@ -1434,7 +1434,7 @@ makePreparedServedProviderPreparation()
 
 namespace ndnsf::di {
 
-struct Spec185PreparedModelTestAccess
+struct DiPreparedModelTestAccess
 {
   static std::shared_ptr<const PreparedModelPackage>
   package(const PreparedModel& model)
@@ -1482,7 +1482,7 @@ BOOST_AUTO_TEST_SUITE(Spec188YoloRepeat)
 #elif defined(SPEC187_YOLO_SELECTOR)
 BOOST_AUTO_TEST_SUITE(Spec187YoloMiniNdn)
 #else
-BOOST_AUTO_TEST_SUITE(Spec185PreparedRequest)
+BOOST_AUTO_TEST_SUITE(DiPreparedRequest)
 #endif
 
 #if defined(SPEC187_YOLO_SELECTOR) || defined(SPEC188_YOLO_SELECTOR)
@@ -1782,7 +1782,7 @@ BOOST_AUTO_TEST_CASE(NativeRequesterThroughMiniNdn)
   BOOST_REQUIRE_MESSAGE(prepareManifest.size > 0,
                         "Spec188 prepared source manifest is empty");
   const auto sourceLifetime =
-    ndnsf::di::Spec185PreparedModelTestAccess::source(prepared);
+    ndnsf::di::DiPreparedModelTestAccess::source(prepared);
   BOOST_REQUIRE_MESSAGE(sourceLifetime.expired(),
                         "Spec188 receipt-backed prepare retained canonical source bytes");
 #endif
@@ -1951,7 +1951,7 @@ BOOST_AUTO_TEST_CASE(StreamingRequestReaderPreservesTerminalEventAcrossCancel)
   InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
   binding = bindInProcessRuntime(fixture, runtime);
-  auto prepared = runtime->user().prepare();
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
   RequestOptions options;
   options.timeout = std::chrono::milliseconds(500);
   options.ackTimeout = std::chrono::milliseconds(50);
@@ -2015,7 +2015,7 @@ BOOST_AUTO_TEST_CASE(VerifiedStreamingDefaultsMaterializeWithoutExplicitOptions)
   InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
   binding = bindInProcessRuntime(fixture, runtime);
-  auto prepared = runtime->user().prepare();
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
   BOOST_REQUIRE(prepared.capabilities().streaming);
   BOOST_CHECK(std::find(prepared.capabilities().outputModes.begin(),
                         prepared.capabilities().outputModes.end(),
@@ -2058,10 +2058,10 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   const auto providerName = environment->provider().getName().toUri();
   const auto offerKey = deterministicEd25519Key(0x31);
   const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
-  const auto candidatePolicyDigest = nativePlanningDigest("spec185-t005-provider-policy");
+  const auto candidatePolicyDigest = nativePlanningDigest("di-t005-provider-policy");
   const auto policy = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
-    {"candidateId", "spec185-t005"}, {"candidateDigest", candidatePolicyDigest},
+    {"candidateId", "di-t005"}, {"candidateDigest", candidatePolicyDigest},
     {"trustSchema", "/spec185/t005/trust"},
     {"entries", NativeJson::array({NativeJson{
       {"provider", providerName}, {"service", serviceName},
@@ -2103,7 +2103,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     runtime, environmentUser, earlyGrants, admission);
   auto prepared = prepareWithInProcessPump(runtime, *environment);
-  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto package = ndnsf::di::DiPreparedModelTestAccess::package(prepared);
 
   const auto model = package->catalog.model.descriptor;
   const auto candidates = package->catalog.splitter->enumerate(
@@ -2131,7 +2131,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   issuerConfig.authorityIdentity = authorityName;
   issuerConfig.requesterIdentity = requesterName;
   issuerConfig.protectionEpoch = protectionEpoch;
-  issuerConfig.keyId = "spec185-t005-grant-key";
+  issuerConfig.keyId = "di-t005-grant-key";
   issuerConfig.authorityPrivateKey = authorityKey;
   issuerConfig.requesterPublicKey = requesterKey;
   issuerConfig.allowedModelManifests = {package->catalog.model.modelManifestDigest};
@@ -2174,7 +2174,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   auto ackRequestIds = std::make_shared<std::set<std::string>>();
   auto selectionByRequest = std::make_shared<std::map<std::string, std::string>>();
   auto grantRequestIds = std::make_shared<std::map<std::string, std::set<std::string>>>();
-  const auto acceptedRepositoryDigest = nativePlanningDigest("spec185-t005-repository-ciphertext");
+  const auto acceptedRepositoryDigest = nativePlanningDigest("di-t005-repository-ciphertext");
   environment->provider().addCollaborationHandler(
     ndn::Name(serviceName),
     [offerConfig, acceptedRepositoryDigest, wrongDigestRejected, ackCount,
@@ -2232,7 +2232,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
         firstResponseForRequest = selectionByRequest->emplace(requestId, selectionDigest).second;
         (*grantRequestIds)[requestId].insert(grantRequestId);
       }
-      const std::string responseText = "spec185-provider-response";
+      const std::string responseText = "di-provider-response";
       const ndn::Buffer payload(reinterpret_cast<const std::uint8_t*>(responseText.data()),
                                 responseText.size());
       context.publishFinalResponse(payload);
@@ -2369,12 +2369,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   BOOST_CHECK_EQUAL(observedTerminals->load(std::memory_order_relaxed), 1U);
   BOOST_CHECK_EQUAL(cancelledObservations->load(std::memory_order_relaxed), 0U);
   BOOST_CHECK_EQUAL(std::string(firstResult.payload.begin(), firstResult.payload.end()),
-                    "spec185-provider-response");
+                    "di-provider-response");
   BOOST_CHECK_EQUAL(firstResult.requestId, firstId);
   BOOST_CHECK_EQUAL(firstResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!firstResult.planDigest.empty());
   BOOST_CHECK_EQUAL(std::string(secondResult.payload.begin(), secondResult.payload.end()),
-                    "spec185-provider-response");
+                    "di-provider-response");
   BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!secondResult.planDigest.empty());
   BOOST_CHECK_EQUAL(ackCount->load(std::memory_order_relaxed), 2U);
@@ -2401,7 +2401,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   pumpUntilPreparedRunReady(*environment, runObservation, std::chrono::seconds(10));
   const auto runResult = runObservation->get();
   BOOST_CHECK_EQUAL(std::string(runResult.payload.begin(), runResult.payload.end()),
-                    "spec185-provider-response");
+                    "di-provider-response");
   BOOST_REQUIRE(!runResult.requestId.empty());
   BOOST_CHECK_EQUAL(runResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!runResult.planDigest.empty());
@@ -2423,7 +2423,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   const NativeJson wrongReference = {
     {"authorizationScope", "/group/di"},
     {"ciphertextDigest", "sha256:" + std::string(64, 'b')},
-    {"dataName", "/group/data/spec185-t005"}, {"encrypted", true},
+    {"dataName", "/group/data/di-t005"}, {"encrypted", true},
     {"manifestDigest", "sha256:" + std::string(64, 'c')},
     {"plaintextSize", 3}, {"protectionEpoch", "fixture-epoch"} };
   auto wrongDigestRequest = providerPrepared.request(
@@ -2631,10 +2631,10 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto offerKey = deterministicEd25519Key(0x31);
   const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
   const auto candidatePolicyDigest = nativePlanningDigest(
-    "spec185-served-provider-policy");
+    "di-served-provider-policy");
   const auto policy = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
-    {"candidateId", "spec185-served-provider"},
+    {"candidateId", "di-served-provider"},
     {"candidateDigest", candidatePolicyDigest},
     {"trustSchema", "/group/trust"},
     {"entries", NativeJson::array({NativeJson{
@@ -2700,7 +2700,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
       return manifest.objectType == "encrypted-large-data-envelope";
     }));
 #endif
-  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto package = ndnsf::di::DiPreparedModelTestAccess::package(prepared);
   const auto model = package->catalog.model.descriptor;
   const auto candidates = package->catalog.splitter->enumerate(
     model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
@@ -2746,7 +2746,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   issuerConfig.authorityIdentity = authorityName;
   issuerConfig.requesterIdentity = requesterName;
   issuerConfig.protectionEpoch = protectionEpoch;
-  issuerConfig.keyId = "spec185-served-provider-grant";
+  issuerConfig.keyId = "di-served-provider-grant";
   issuerConfig.authorityPrivateKey = authorityKey;
   issuerConfig.requesterPublicKey = requesterKey;
   issuerConfig.allowedModelManifests = {package->catalog.model.modelManifestDigest};
@@ -2935,7 +2935,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     while (!state->done) {
       if (cancelled && cancelled()) {
         face->getIoContext().post([state] { state->pending.cancel(); });
-        throw std::runtime_error("Spec185 served Provider grant fetch cancelled");
+        throw std::runtime_error("Di served Provider grant fetch cancelled");
       }
       if (state->condition.wait_until(lock, deadline) == std::cv_status::timeout)
         break;
@@ -2943,7 +2943,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     if (!state->done || !state->received) {
       face->getIoContext().post([state] { state->pending.cancel(); });
       throw std::runtime_error(
-        "Spec185 served Provider exact grant Data fetch failed" +
+        "Di served Provider exact grant Data fetch failed" +
         std::string(" publications=") + std::to_string(
           grantPublications->load(std::memory_order_relaxed)) +
         " dispatches=" + std::to_string(
@@ -3103,7 +3103,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK(!result.payload.empty());
 #else
   BOOST_CHECK_EQUAL(std::string(result.payload.begin(), result.payload.end()),
-                    "spec185-provider-response");
+                    "di-provider-response");
 #endif
   BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
   BOOST_CHECK(!result.planDigest.empty());
@@ -3143,7 +3143,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK(!secondResult.payload.empty());
 #else
   BOOST_CHECK_EQUAL(std::string(secondResult.payload.begin(), secondResult.payload.end()),
-                    "spec185-provider-response");
+                    "di-provider-response");
 #endif
   BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!secondResult.planDigest.empty());
@@ -3289,10 +3289,10 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   const auto offerKey = deterministicEd25519Key(0x71);
   const auto offerKeyId = nativePlanningDigest(rawPublicKey(offerKey));
   const auto candidatePolicyDigest = nativePlanningDigest(
-    "spec185-t007-provider-policy");
+    "di-t007-provider-policy");
   const auto policy = nativeCanonicalJson(NativeJson{
     {"schema", "spec180-provider-offer-trust-v1"},
-    {"candidateId", "spec185-t007"}, {"candidateDigest", candidatePolicyDigest},
+    {"candidateId", "di-t007"}, {"candidateDigest", candidatePolicyDigest},
     {"trustSchema", "/spec185/t007/trust"},
     {"entries", NativeJson::array({NativeJson{
       {"provider", providerName}, {"service", serviceName},
@@ -3338,7 +3338,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   ndnsf::di::detail::RuntimeTestAccess::bindProviderFixture(
     runtime, environmentUser, earlyGrants, admission);
   auto prepared = prepareWithInProcessPump(runtime, environment);
-  const auto package = ndnsf::di::Spec185PreparedModelTestAccess::package(prepared);
+  const auto package = ndnsf::di::DiPreparedModelTestAccess::package(prepared);
   const auto model = package->catalog.model.descriptor;
   const auto candidates = package->catalog.splitter->enumerate(
     model, package->catalog.model.graph, NativeCandidateBudget{1, 1000, 1});
@@ -3369,7 +3369,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   issuerConfig.authorityIdentity = "/aa";
   issuerConfig.requesterIdentity = requesterName;
   issuerConfig.protectionEpoch = protectionEpoch;
-  issuerConfig.keyId = "spec185-t007-grant-key";
+  issuerConfig.keyId = "di-t007-grant-key";
   issuerConfig.authorityPrivateKey = authorityKey;
   issuerConfig.requesterPublicKey = requesterKey;
   issuerConfig.allowedModelManifests = {package->catalog.model.modelManifestDigest};
@@ -3451,13 +3451,13 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
               }) ||
               header.contains("roles") || header.contains("assembly") ||
               header.contains("assembly_same_as_role"))
-            throw std::runtime_error("Spec185 fixed invocation ingress differs");
+            throw std::runtime_error("Di fixed invocation ingress differs");
           const auto steadyNow = std::chrono::steady_clock::now();
           const auto epochNow = static_cast<std::uint64_t>(std::chrono::duration_cast<
             std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
           const auto expiry = header.at("deadline_ms").get<std::uint64_t>();
           if (expiry <= epochNow || context.assignment().workDeadline <= steadyNow)
-            throw std::runtime_error("Spec185 fixed invocation expired");
+            throw std::runtime_error("Di fixed invocation expired");
           const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             context.assignment().workDeadline - steadyNow).count();
           const auto deadline = std::min(steadyNow + std::chrono::milliseconds(
@@ -3465,10 +3465,10 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
             steadyNow + context.streamRemainingDeadline());
           const auto& source = header.at("fixed_role_source");
           if (!source.at("plaintext_size").is_number_unsigned())
-            throw std::runtime_error("Spec185 fixed source size is invalid");
+            throw std::runtime_error("Di fixed source size is invalid");
           const auto bytes = source.at("plaintext_size").get<std::uint64_t>();
           if (bytes == 0 || bytes > (4U << 20))
-            throw std::runtime_error("Spec185 fixed source exceeds bound");
+            throw std::runtime_error("Di fixed source exceeds bound");
           const auto name = source.at("data_name").get<std::string>();
           const auto digest = source.at("plaintext_digest").get<std::string>();
           nativeValidateFixedRoleSourceProducer({name, digest, bytes, {}},
@@ -3476,17 +3476,17 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
           const auto data = context.fetchEncryptedLargeDataCurrent(ndn::Name(name), deadline);
           if (!data || data->size() != bytes ||
               nativePlanningDigest(data->data(), data->size()) != digest)
-            throw std::runtime_error("Spec185 fixed source commitment differs");
+            throw std::runtime_error("Di fixed source commitment differs");
           std::istringstream fixedInput(std::string(data->begin(), data->end()));
           const auto fixed = nativeFixedRoleAssignmentV1FromJson(fixedInput);
           if (fixed->digest() != reference ||
               fixed->provider() != context.localProvider().toUri() ||
               fixed->roleOwner()->selectedRole != context.role())
-            throw std::runtime_error("Spec185 fixed source owner differs");
+            throw std::runtime_error("Di fixed source owner differs");
           return nativeSelectionInvocationV1FromJson(input, context.role(), *fixed);
         }();
         if (!context.isStreamed() || !projection.conversationTurnBinding)
-          throw std::runtime_error("Spec185 T007 conversation stream projection missing");
+          throw std::runtime_error("Di T007 conversation stream projection missing");
         const auto binding = *projection.conversationTurnBinding;
         const bool terminal = context.role() == terminalRole;
         const auto publishToken = [&context, &projection] (std::int64_t token,
@@ -3501,7 +3501,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
             {"generationId", projection.generationContract.generationId},
             {"samplingDigest", projection.generationContract.samplingDigest}});
           if (!context.publishStreamEvent(ndn::Buffer(wire.begin(), wire.end())))
-            throw std::runtime_error("Spec185 T007 token publication failed");
+            throw std::runtime_error("Di T007 token publication failed");
         };
         const bool append = binding.parentContextEpoch != 0;
         const auto nextToken = static_cast<std::int64_t>(binding.parentContextEpoch + 2);
@@ -3554,9 +3554,9 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
           fullTokens = {1, 2, 3, 1, 2, 4, 5, 6, 3, 7, 8, 9, 4};
         receipt.prefixDigest = nativeConversationPrefixDigest(fullTokens);
         receipt.prefixTokenCount = static_cast<std::uint32_t>(fullTokens.size());
-        receipt.positionDigest = nativePlanningDigest("spec185-t007-position");
-        receipt.stateSchemaDigest = nativePlanningDigest("spec185-t007-state-schema");
-        receipt.stateComponentDigests = {nativePlanningDigest("spec185-t007-state")};
+        receipt.positionDigest = nativePlanningDigest("di-t007-position");
+        receipt.stateSchemaDigest = nativePlanningDigest("di-t007-state-schema");
+        receipt.stateComponentDigests = {nativePlanningDigest("di-t007-state")};
         receipt.expiresAtMs = binding.retentionDeadlineMs;
         receipt.validate();
         const auto receiptJson = receipt.toJson();
@@ -3598,18 +3598,18 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
               if (!context.finishStream(
                     ndn::Buffer(finalPayload.begin(), finalPayload.end()),
                     ndn_service_framework::StreamFinishReason::ApplicationComplete))
-                throw std::runtime_error("Spec185 T007 final publication failed");
+                throw std::runtime_error("Di T007 final publication failed");
               completedTurns->fetch_add(1, std::memory_order_relaxed);
             }
             else if (!context.completeRole())
-              throw std::runtime_error("Spec185 T007 non-terminal role completion failed");
+              throw std::runtime_error("Di T007 non-terminal role completion failed");
             return;
           }
         }
-        throw std::runtime_error("Spec185 T007 conversation control timeout");
+        throw std::runtime_error("Di T007 conversation control timeout");
       }
       catch (const std::exception& error) {
-        context.fail(std::string("Spec185 T007 handler failure: ") + error.what());
+        context.fail(std::string("Di T007 handler failure: ") + error.what());
       }
     });
   environment.enableProductionIngressForTest();
@@ -3624,16 +3624,16 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
 
   for (const auto& invalid : NativeJson::array({nullptr, true, false, 0, -1, 1.5,
                                                "600000", 3600001})) {
-    const auto corrupted = ndnsf::di::Spec185PreparedModelTestAccess::withConversationTurn(
+    const auto corrupted = ndnsf::di::DiPreparedModelTestAccess::withConversationTurn(
       prepared, NativeJson{{"retention_duration_ms", invalid}});
     BOOST_CHECK_EXCEPTION(corrupted.openConversation(), DiError,
       [] (const DiError& error) { return error.code() == "INVALID_RUNTIME_CONFIGURATION"; });
   }
-  const auto conflicting = ndnsf::di::Spec185PreparedModelTestAccess::withConversationTurn(
+  const auto conflicting = ndnsf::di::DiPreparedModelTestAccess::withConversationTurn(
     prepared, NativeJson{{"retention_duration_ms", 600000}, {"retention_deadline_ms", 1}});
   BOOST_CHECK_EXCEPTION(conflicting.openConversation(), DiError,
     [] (const DiError& error) { return error.code() == "INVALID_RUNTIME_CONFIGURATION"; });
-  const auto expired = ndnsf::di::Spec185PreparedModelTestAccess::withConversationTurn(
+  const auto expired = ndnsf::di::DiPreparedModelTestAccess::withConversationTurn(
     prepared, NativeJson{{"retention_deadline_ms", 1}});
   BOOST_CHECK_EXCEPTION(expired.openConversation(), DiError,
     [] (const DiError& error) { return error.code() == "CONVERSATION_RETENTION_EXPIRED"; });
@@ -3813,7 +3813,7 @@ BOOST_AUTO_TEST_CASE(PlacementHandlesAreRuntimeBound)
   auto prepared = firstRuntime->user().prepare();
   auto placement = secondRuntime->placementStrategy("native-pre-split-first");
   auto materializations = std::make_shared<std::atomic<unsigned>>(0);
-  auto instrumented = ndnsf::di::Spec185PreparedModelTestAccess::bind(
+  auto instrumented = ndnsf::di::DiPreparedModelTestAccess::bind(
     prepared, [materializations] (const std::shared_ptr<const PreparedModelPackage>&) {
       materializations->fetch_add(1, std::memory_order_relaxed);
       return std::shared_ptr<NativeInferenceClient>{};
@@ -3846,7 +3846,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestFactoryErrorsMapAtPublicBoundary)
   RuntimeFixture fixture;
   auto runtime = Runtime::open(runtimeConfig(fixture));
   auto prepared = runtime->user().prepare();
-  auto throwing = ndnsf::di::Spec185PreparedModelTestAccess::bind(
+  auto throwing = ndnsf::di::DiPreparedModelTestAccess::bind(
     prepared, [] (const std::shared_ptr<const PreparedModelPackage>&) ->
       std::shared_ptr<NativeInferenceClient> {
       throw std::runtime_error("injected client factory failure");
@@ -3913,7 +3913,7 @@ BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedSourceAlive)
 
   std::optional<PreparedModel> first;
   first.emplace(runtime->user().prepare("default"));
-  auto source = ndnsf::di::Spec185PreparedModelTestAccess::source(*first);
+  auto source = ndnsf::di::DiPreparedModelTestAccess::source(*first);
   BOOST_REQUIRE(!source.expired());
   {
     RequestOptions options;
@@ -4314,7 +4314,7 @@ BOOST_AUTO_TEST_CASE(Spec190PrepareReusesCommittedReceiptAcrossProcessRestart)
     ::setenv("SPEC190_PROCESS_RESTART_ROOT", rootText.c_str(), 1);
     ::setenv("SPEC190_PROCESS_RESTART_FD", fdText.c_str(), 1);
     ::execl("/proc/self/exe", "/proc/self/exe",
-            "--run_test=Spec185PreparedRequest/Spec190PrepareReusesCommittedReceiptAcrossProcessRestartChild",
+            "--run_test=DiPreparedRequest/Spec190PrepareReusesCommittedReceiptAcrossProcessRestartChild",
             "--log_level=message", static_cast<char*>(nullptr));
     ::_exit(127);
   }
@@ -4389,7 +4389,7 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   pumpUntilPreparedModelReady(*binding.environment, firstPreparation,
                               std::chrono::seconds(30));
   auto prepared = firstPreparation->get();
-  const auto package = Spec185PreparedModelTestAccess::package(prepared);
+  const auto package = DiPreparedModelTestAccess::package(prepared);
   BOOST_REQUIRE(package);
   BOOST_REQUIRE(package->preparedPublication.has_value());
   const auto& publication = *package->preparedPublication;
@@ -4412,7 +4412,7 @@ BOOST_AUTO_TEST_CASE(Spec189RuntimeUsesProtectedEncryptedRepoPublication)
   // not commit a duplicate full source or initializer object.
   BOOST_CHECK(publication.sourceDataName.empty());
   BOOST_CHECK(publication.initializerDataName.empty());
-  BOOST_CHECK(Spec185PreparedModelTestAccess::source(prepared).expired());
+  BOOST_CHECK(DiPreparedModelTestAccess::source(prepared).expired());
   BOOST_REQUIRE_MESSAGE(repo->has(publication.rootDataName),
                         "protected root envelope was not committed to Repo");
   const auto rootManifest = repo->getManifest(publication.rootDataName);

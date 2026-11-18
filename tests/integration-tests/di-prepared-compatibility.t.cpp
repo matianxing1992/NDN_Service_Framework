@@ -12,7 +12,7 @@ namespace {
 
 using namespace ndnsf::di;
 
-BOOST_AUTO_TEST_SUITE(Spec185Compatibility)
+BOOST_AUTO_TEST_SUITE(DiCompatibility)
 
 BOOST_AUTO_TEST_CASE(PublicUmbrellasExposeOwningRequestValues)
 {
@@ -33,7 +33,7 @@ BOOST_AUTO_TEST_CASE(RuntimeOpenRejectsMissingNativeConfiguration)
 {
   RuntimeConfig config;
   config.nativeConfigPath =
-    (std::filesystem::temp_directory_path() / "spec185-missing-requester.json").string();
+    (std::filesystem::temp_directory_path() / "di-missing-requester.json").string();
   BOOST_CHECK_EXCEPTION(
     Runtime::open(config), DiError,
     [] (const DiError& error) {

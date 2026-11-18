@@ -30,7 +30,7 @@ CONTROLLER=b.native_program(BUILD, 'App_ServiceController'); AUTHORITY=b.native_
 # metadata; the process driver must not import the native Python wrapper when
 # the selected C++ binaries are sanitizer-instrumented.
 sys.path.insert(0, str(ROOT/'tests/standalone'))
-from spec185_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
+from di_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
 def dg(x): return 'sha256:'+hashlib.sha256(x.encode()).hexdigest()
 yolo=json.loads(fixture_path('spec182/yolo-semantic-oracle.json').read_text())
 src=bytes.fromhex(yolo['model_hex']); src_digest='sha256:'+hashlib.sha256(src).hexdigest()
@@ -98,7 +98,10 @@ rc['oracle']={'tensor':'predictions','float32':[4.0,0.0,12.0],'tolerance':1e-5};
 # input bundle
 vals=[1.,-2.,3.]; payload=b''.join(struct.pack('<f',v) for v in vals); outb=b'NDITB001'+struct.pack('<I',1)+struct.pack('<I',6)+b'images'+struct.pack('<I',1)+struct.pack('<I',2)+struct.pack('<q',1)+struct.pack('<q',3)+struct.pack('<Q',len(payload))+payload;(run_root/'requester/input.bin').write_bytes(outb)
 # launch env
-base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDN_LOG':'ndn_service_framework.*=TRACE:ndnsf.di.NativeRequester=WARN','NDNSF_DI_RUNTIME_TIMING':'1'})
+base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_socket),'PATH':'/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin','NDNSF_CONTROLLER_GENERATION_STATE':str(run_root/'shared/controller-generation.state'),'NDNSF_DI_RUNTIME_TIMING':'1'})
+base.setdefault('NDN_LOG', 'ndn_service_framework.*=TRACE:ndnsf.di.NativeRequester=WARN')
+# The process oracle reads readiness and execution evidence from this logger.
+base['NDN_LOG'] += ':ndnsf.di.RuntimeEvidence=WARN'
 def launch(cmd,env,name):
  p=b.run(cmd,env,run_root/(name+'.log'),wait=False)
  (run_root/(name+'.pid')).write_text(str(p.pid)+'\n')

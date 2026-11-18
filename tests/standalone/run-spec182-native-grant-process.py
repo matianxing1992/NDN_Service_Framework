@@ -22,7 +22,7 @@ import tempfile
 import time
 
 
-from spec185_native_fixture import fixture_path
+from di_native_fixture import fixture_path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BUILD = Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build"))
@@ -126,6 +126,7 @@ def actor_environment(base, store):
     result.update(HOME=str(store / 'home'),
                   NDN_CLIENT_PIB='pib-sqlite3:' + str(store / 'pib'),
                   NDN_CLIENT_TPM='tpm-file:' + str(store / 'tpm'),
+                  NDNSF_REQUEST_LARGE_DATA_DIR=str(store / 'large-data'),
                   NDNSF_CONFIG=str(store / 'ndnsf-session.conf'))
     return result
 
@@ -404,6 +405,7 @@ def probe_command(probe, config, requester_dir, requester_store, nfd_socket, bui
         # private files cannot become writable through the probe namespace.
         "--setenv", "HOME", "/tmp",
         "--setenv", "NDNSF_CONFIG", "/tmp/ndnsf-session.conf",
+        "--setenv", "NDNSF_REQUEST_LARGE_DATA_DIR", "/tmp/ndnsf-large-data",
         "--setenv", "NDN_CLIENT_PIB", "pib-sqlite3:/run/requester-store/pib",
         "--setenv", "NDN_CLIENT_TPM", "tpm-file:/run/requester-store/tpm",
         "--setenv", "NDN_CLIENT_TRANSPORT", "unix:///run/nfd.sock",

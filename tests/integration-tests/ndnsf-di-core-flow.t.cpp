@@ -10647,26 +10647,26 @@ BOOST_AUTO_TEST_CASE(Spec231DiAdmissionRevokedUpstreamCannotPublishNextEpoch)
   runSpec231DiAdmissionCase(Spec231DiFault::REVOKE_NEXT_INPUT);
 }
 
-// Keep the Spec185 entry points outside the legacy Boost suite namespace so
+// Keep the Di entry points outside the legacy Boost suite namespace so
 // the separate integration translation unit can link them by stable names.
 BOOST_AUTO_TEST_SUITE_END()
 
 void
-spec185RunRealProviderUnary()
+diRunRealProviderUnary()
 {
   Spec170NdnsfDiCoreFlow::runR4B6RealProviderConversationCase(
     false, false, false, true, false);
 }
 
 void
-spec185RunRealProviderCancellationRace()
+diRunRealProviderCancellationRace()
 {
   Spec170NdnsfDiCoreFlow::runR4B6RealProviderConversationCase(
     false, false, false, false, true, false, false, true);
 }
 
 void
-spec185RunRealProviderCommitFailure()
+diRunRealProviderCommitFailure()
 {
   Spec170NdnsfDiCoreFlow::runR4B6RealProviderConversationCase(
     false, false, false, false, true, false, false, false, true);
