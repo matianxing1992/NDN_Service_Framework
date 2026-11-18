@@ -732,6 +732,19 @@ drone starts, so bring the deployment up as controller, then ground station, the
 drones; starting a drone first stops at
 `Failed to fetch public parameters after multiple attempts`.
 
+Finally, note what cannot be tightened here. NFD's own bootstrap registration is not
+authenticated by a provisioned certificate: replacing `authorizations { authorize {
+certfile any … } }` with any concrete certificate list — including one created
+specifically for NFD — makes NFD fail to start with `Could not add FIB entry
+/localhost/nfd (error 10021: … Validator/policy did not invoke success or failure
+callback)`, and the same happens when `rib.localhost_security`'s `type any` is replaced
+by a file anchor, with or without a `rule` set. Only the permissive grant lets this NFD
+build (24.07-14) start. Treat that as a property of the forwarder rather than something
+the deployment can fix, keep the permissive grant confined to a deployment whose
+forwarder socket is not reachable from untrusted hosts, and compensate with the
+application-layer checks (`ServiceProvider` trust schema, per-object signatures and
+permissions) that run above it.
+
 The exact face and routing setup depends on the deployment network. For a first
 private LAN test, configure static UDP faces between the PC and each drone and
 advertise the UAV namespace toward the PC/controller.
