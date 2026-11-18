@@ -26,6 +26,20 @@ MAX_TOTAL_BYTES = 4 * MAX_FILE_BYTES
 CHUNK_BYTES = 65536
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    """Path.is_relative_to without requiring Python 3.9.
+
+    This host and the installer both support Python 3.8, where the method does not exist; the escaped-path
+    checks below are security-relevant, so they must run on every supported interpreter rather than raise
+    AttributeError on the older one.
+    """
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 class _BoundedDistribution(importlib.metadata.PathDistribution):
     """Admit bytes and record counts before stdlib metadata materializes entries."""
 
@@ -38,7 +52,7 @@ class _BoundedDistribution(importlib.metadata.PathDistribution):
         if filename not in ("METADATA", "RECORD"):
             return None
         path = self.info_path / filename
-        if not path.resolve(strict=True).is_relative_to(self.info_path):
+        if not _is_relative_to(path.resolve(strict=True), self.info_path):
             raise ValueError("runtime metadata escapes distribution directory")
         if not path.is_file():
             raise ValueError("missing or nonregular runtime metadata")
@@ -75,7 +89,7 @@ def _discover_distributions(prefix: Path):
                 if not entry.name.endswith(".dist-info"):
                     continue
                 path = Path(entry.path).resolve(strict=True)
-                if not path.is_relative_to(prefix) or not path.is_dir():
+                if not _is_relative_to(path, prefix) or not path.is_dir():
                     raise ValueError("runtime distribution escapes isolated environment")
                 yield _BoundedDistribution(path, record_budget)
 
@@ -138,7 +152,7 @@ def _hash_file(path: Path, budget: list[int], *, prefix: Path | None = None) -> 
             resolved = Path(os.readlink("/proc/self/fd/" + str(descriptor)))
             if str(resolved).endswith(" (deleted)"):
                 raise ValueError("runtime artifact was removed during inspection")
-            if not resolved.is_absolute() or not resolved.is_relative_to(prefix):
+            if not resolved.is_absolute() or not _is_relative_to(resolved, prefix):
                 raise ValueError("runtime file escapes isolated environment")
         digest = hashlib.sha256()
         size = 0

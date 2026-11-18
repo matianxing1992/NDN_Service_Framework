@@ -577,6 +577,8 @@ class PersonBackendTest(unittest.TestCase):
         self.assertEqual(int(output[0, 4]), 513)
         self.assertEqual(state, original)
 
+    @unittest.skipUnless(os.environ.get("NDNSF_PERSON_MODEL_ROOT"),
+                         "model bundle required for compact allocator fixture")
     def test_production_compact_allocator_is_camera_local_and_replayable(self):
         from itertools import permutations
         from byte_track_state import ByteTrackStateCodec, MAX_STOCK_TRACK_ID

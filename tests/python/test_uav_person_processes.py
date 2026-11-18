@@ -34,7 +34,7 @@ class PersonProcessTest(unittest.TestCase):
 
     def specs(self, **overrides):
         return {s.name: s for s in _process_specs(
-            ROOT, self.output, **(self.kwargs | overrides), person_tracking=self.person)}
+            ROOT, self.output, **{**self.kwargs, **overrides}, person_tracking=self.person)}
 
     def test_sources_receive_observation_inputs_without_models_or_raw_fallbacks(self):
         specs = self.specs()
@@ -101,7 +101,7 @@ class PersonProcessTest(unittest.TestCase):
             self.assertEqual(command[command.index("--fault") + 1], fault)
         self.assertNotIn(fault, specs["ground-station-display"].command)
         with self.assertRaisesRegex(RunnerError, "requires person tracking"):
-            _process_specs(ROOT, self.output, **(self.kwargs | dict(fault=fault)))
+            _process_specs(ROOT, self.output, **{**self.kwargs, **dict(fault=fault)})
 
     def test_person_binding_faults_only_reach_request_writer(self):
         for fault in ("wrong-person-profile-binding", "wrong-person-computation-binding"):
@@ -113,7 +113,7 @@ class PersonProcessTest(unittest.TestCase):
                     if name != "ground-station":
                         self.assertNotIn("--fault", spec.command)
                 with self.assertRaisesRegex(RunnerError, "requires person tracking"):
-                    _process_specs(ROOT, self.output, **(self.kwargs | dict(fault=fault)))
+                    _process_specs(ROOT, self.output, **{**self.kwargs, **dict(fault=fault)})
                 with self.assertRaisesRegex(RunnerError, "requires person tracking"):
                     build_plan(source=Path("/missing/source"), model=Path("/missing/model"),
                                output=self.output, license_text="", fault=fault)
@@ -121,8 +121,7 @@ class PersonProcessTest(unittest.TestCase):
     def test_incompatible_inputs_and_incomplete_person_paths_fail(self):
         for overrides in (dict(observation_enabled=False), dict(motion_dir=Path("/motion")),
                           dict(external_source_adapter=Path("/adapter")),
-                          dict(observation_profile=self.kwargs["observation_profile"] |
-                               dict(deliveryMode="live-push"))):
+                          dict(observation_profile={**self.kwargs["observation_profile"], **dict(deliveryMode="live-push")})):
             with self.subTest(overrides=overrides), self.assertRaises(RunnerError):
                 self.specs(**overrides)
         for key in self.person:
