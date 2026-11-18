@@ -23,6 +23,12 @@ class DeploymentConfigError(ValueError):
     pass
 
 
+# A controller accepts a run-scoped revocation, which is how a qualification run turns a rollover
+# from a unit-test scenario into something a deployment actually performs.
+ROLLOVER_PARAMETERS = ('revoke-trigger-file', 'revoke-kind', 'revoke-identity',
+                       'revoke-service', 'revoke-attribute')
+
+
 def _fail(field, reason):
     raise DeploymentConfigError(f"DEPLOYMENT_CONFIG_INVALID:{field}:{reason}")
 
@@ -721,7 +727,7 @@ def _translate_native(config, by_kind, resolve):
                                    'repo.parameters.request-timeout-ms', 251)
                 if timeout > 2147483647:
                     _fail('repo.parameters.request-timeout-ms', 'exceeds native signed int')
-        elif parameters.keys() - {periodic}:
+        elif parameters.keys() - {periodic, *ROLLOVER_PARAMETERS}:
             _fail("actor.parameters", "role parameters belong in common/native configuration")
     barrier_outputs = {requester[key][field]
                        for key in ('test_stream_barrier', 'test_handoff_barrier') if key in requester

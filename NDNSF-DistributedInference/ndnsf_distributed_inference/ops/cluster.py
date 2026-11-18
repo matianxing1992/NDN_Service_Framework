@@ -249,6 +249,14 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
         argv = [str(prefix / 'App_ServiceController'), '--controller-prefix', actor['identity'],
                 '--no-demo-identities', '--policy-file', security['controller_policy'],
                 '--trust-schema', security['trust_schema']]
+        # A run-scoped revocation is the qualification trigger for a real rollover; it is declared
+        # per controller actor and forwarded only when configured.
+        for option in ('revoke-trigger-file', 'revoke-kind', 'revoke-identity', 'revoke-service',
+                       'revoke-attribute'):
+            value = params.get(option)
+            if value is None:
+                continue
+            argv += ['--' + option, str(value)]
     elif kind in ('requester', 'artifact-authority'):
         native = dict(config['requester' if kind == 'requester' else 'artifact_authority'])
         # The native applications require their schema marker in the written config.
