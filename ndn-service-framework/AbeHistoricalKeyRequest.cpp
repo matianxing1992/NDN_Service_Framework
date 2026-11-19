@@ -45,6 +45,25 @@ parseU64(const std::string& text, uint64_t& value)
 
 } // namespace
 
+namespace {
+
+/** A policy is an attribute expression, never a place to smuggle envelope fields.
+ *
+ * The canonical body is line oriented, so a control character inside a field would move the parse to
+ * another field. Rejecting them here keeps the encoding unambiguous for every reader.
+ */
+bool
+isSafePolicy(const std::string& policy)
+{
+  if (policy.empty() || policy.size() > 512)
+    return false;
+  return std::all_of(policy.begin(), policy.end(), [] (unsigned char ch) {
+    return ch >= 0x20 && ch != 0x7f;
+  });
+}
+
+} // namespace
+
 bool
 HistoricalKeyRequest::operator==(const HistoricalKeyRequest& other) const
 {
@@ -57,6 +76,8 @@ HistoricalKeyRequest::operator==(const HistoricalKeyRequest& other) const
 std::string
 encodeHistoricalKeyRequest(const HistoricalKeyRequest& request)
 {
+  if (!isSafePolicy(request.policy))
+    throw std::invalid_argument("historical key request policy is not a plain attribute expression");
   std::string body(BODY_SCHEMA);
   body += "\ncontroller " + request.controllerPrefix.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\ngeneration " + std::to_string(request.generation);
@@ -99,7 +120,7 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
     parsed.recipientCertificate = ndn::Name(field(lines[4], "recipient "));
     parsed.policy = field(lines[5], "policy ");
     if (parsed.controllerPrefix.empty() || parsed.generation == 0 ||
-        parsed.recipientCertificate.empty() || parsed.policy.empty())
+        parsed.recipientCertificate.empty() || !isSafePolicy(parsed.policy))
       return false;
     request = std::move(parsed);
     return true;
@@ -162,7 +183,8 @@ buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& 
                         const std::function<void(ndn::Data&)>& sign, ndn::Data& result,
                         const ndn::Name& replyName)
 {
-  if (request.generation == 0 || keyBytes.empty() || request.expiresAtMs == 0)
+  if (request.generation == 0 || keyBytes.empty() || request.expiresAtMs == 0 ||
+      !isSafePolicy(request.policy))
     return false;
   // A reply may not outlive the request that asked for it.
   const auto expires = std::min(replyExpiresAtMs, request.expiresAtMs);

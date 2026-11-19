@@ -1309,6 +1309,35 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalKeyPolicyCannotSmuggleEnvelopeFields)
+{
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+
+  // A newline in the policy would start a new field in the line-oriented body.
+  request.policy = "attr-a\nlength 999";
+  BOOST_CHECK_THROW(encodeHistoricalKeyRequest(request), std::invalid_argument);
+  BOOST_CHECK(!decodeHistoricalKeyRequest(
+    std::string("ndnsf-abe-history-dkey-request-v1\ncontroller /controller/a\ngeneration 1002\n"
+                "epoch 3\nrecipient /user/KEY/1/self/v=1\npolicy attr-a\nlength 999\n"
+                "minted 1000000\nexpires 1060000"), request));
+
+  const auto sign = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  ndn::Data reply;
+  BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(4, 'k'), 1'030'000, sign, reply));
+  // The same request with a plain expression is served.
+  request.policy = "attr-a";
+  BOOST_CHECK(buildHistoricalKeyReply(request, std::string(4, 'k'), 1'030'000, sign, reply));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalKeyReplyRefusesAnOversizedKey)
 {
   // The length field is attacker-controlled; a consumer must not allocate or accept whatever it says.
