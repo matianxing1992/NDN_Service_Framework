@@ -501,13 +501,14 @@ ServiceController::initializeAbeGenerationIdentity()
   m_abePublicParametersName = currentAbePublicParametersName();
   m_abePublicParametersDigest = abePublicParametersDigest(
       m_aa.getPublicParametersWire());
-  // The stored material must carry the version the Authority is advertising. When it does not, the next
-  // rotation archives the retired generation under a label no reader was ever given, and a reader that
-  // asks for the generation it actually used finds the archive empty.
+  // The Authority must never advertise a version whose key material was not generated for it. Relabelling
+  // the restored material would answer a new authorization version with the previous generation's
+  // parameters - the failure the audit calls out - so a version change goes through the same rotation path
+  // a revocation uses: archive the outgoing generation, then replace the keys.
   if (!m_abeMaterialVersion.isValid() ||
       m_abeMaterialVersion.controllerGenerationTimestamp != generation ||
       m_abeMaterialVersion.controllerEpoch != epoch) {
-    persistAbeMaterial();
+    rotateAbeGenerationAndReissuePolicies();
   }
 }
 
