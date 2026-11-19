@@ -41,7 +41,7 @@ main(int argc, char** argv)
 {
   if (argc != 2) {
     std::cerr << "usage: ndnsf-historical-fixture <config.json>\n"
-                 "  keys: pib, identity, controller, service, attribute, payload\n";
+                 "  keys: pib, identity, controller, service, attributes (comma separated), payload\n";
     return 2;
   }
   try {
@@ -57,7 +57,16 @@ main(int argc, char** argv)
     const ndn::Name identity(field("identity"));
     const ndn::Name controller(field("controller"));
     const ndn::Name service(field("service"));
-    const std::string attribute = field("attribute");
+    // One or more attributes, comma separated: each becomes its own object under the same generation, so a
+    // run can check both a permission that survives the rotation and one that does not.
+    std::vector<std::string> attributes;
+    {
+      std::stringstream list(field("attributes"));
+      std::string item;
+      while (std::getline(list, item, ','))
+        if (!item.empty())
+          attributes.push_back(item);
+    }
     const std::string payload = field("payload");
 
     ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:", false);
@@ -107,72 +116,70 @@ main(int argc, char** argv)
     ndn::nacabe::algo::PublicParams params;
     params.fromBuffer(ndn::Buffer(reinterpret_cast<const uint8_t*>(paramsWire.data()),
                                   paramsWire.size()));
-    const auto contentKey = abe.kpContentKeyGen(params, {attribute});
-    const auto cipher = abe.encrypt(contentKey,
-      ndn::Buffer(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()));
-
-    const auto ckName = ndn_service_framework::makeHybridMessageKeyDataName(service, identity,
-                                                                            attribute, "fixture-1");
-    const ndn::Name payloadRoot = [&identity] {
-      ndn::Name root = ndn_service_framework::makeProducerDataPrefix(identity, "OBJECT");
-      root.append("fixture-1");
-      return root;
-    }();
-    // The object is one packet under segment zero, while the reader is told the object's root: it appends
-    // the segment component itself.
-    ndn::Name payloadName(payloadRoot);
-    payloadName.appendSegment(0);
-
-    // The envelopes the reader parses: CK as outer 0x15 with 0x0259, payload with 0x025A/0x025B.
-    ndn::Data ck(ckName);
-    {
-      ndn::Block outer(0x15);
-      outer.push_back(ndn::encoding::makeBinaryBlock(0x0259,
-        ndn::span<const uint8_t>(contentKey->m_encAesKey.data(), contentKey->m_encAesKey.size())));
-      outer.encode();
-      ck.setContent(ndn::Buffer(outer.begin(), outer.end()));
-      ck.setFreshnessPeriod(ndn::time::milliseconds(0));
-      keyChain.sign(ck, ndn::security::signingByCertificate(certificate));
-    }
-    ndn::Data object(payloadName);
-    {
-      const uint8_t sizeByte = static_cast<uint8_t>(cipher.m_plainTextSize);
-      ndn::Block outer(0x15);
-      outer.push_back(ndn::encoding::makeBinaryBlock(0x025A,
-        ndn::span<const uint8_t>(cipher.m_content.data(), cipher.m_content.size())));
-      outer.push_back(ndn::encoding::makeBinaryBlock(0x025B,
-        ndn::span<const uint8_t>(&sizeByte, 1)));
-      outer.encode();
-      object.setContent(ndn::Buffer(outer.begin(), outer.end()));
-      object.setFreshnessPeriod(ndn::time::milliseconds(0));
-      keyChain.sign(object, ndn::security::signingByCertificate(certificate));
-    }
-
-    // Only the two exact names are served: the fixture is a producer for one object, not a namespace.
-    // A failed registration must be visible, or the fixture looks alive while serving nothing.
+    // Only the two exact names per object are served: the fixture is a producer for these objects, not a
+    // namespace. A failed registration must be visible, or the fixture looks alive while serving nothing.
     const auto onFailure = [] (const ndn::Name& name, const std::string& reason) {
       std::cout << "FIXTURE_REGISTER_FAILED name=" << name.toUri() << " reason=" << reason
                 << std::endl << std::flush;
     };
-    face.setInterestFilter(ck.getName(),
-      [&face, ck] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(ck); }, onFailure);
-    face.setInterestFilter(payloadName,
-      [&face, object] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(object); },
-      onFailure);
-
     ndn::util::Sha256 hash;
     hash << payload;
-    std::cout << "FIXTURE_READY ck=" << ck.getName().toUri()
-              << " payload=" << payloadRoot.toUri()
-              << " service=" << service.toUri()
-              << " attribute=" << attribute
-              << " producer=" << identity.toUri()
-              << " paramsName=" << paramsDataName.toUri()
-              << " generation=" << paramsVersion / 1000
-              << " epoch=" << paramsVersion % 1000
-              << " plaintextDigest=sha256:" << hash.toString()
-              << " bytes=" << payload.size() << std::endl
-              << std::flush;
+    std::size_t index = 0;
+    for (const auto& attribute : attributes) {
+      ++index;
+      const auto suffix = "fixture-" + std::to_string(index);
+      const auto contentKey = abe.kpContentKeyGen(params, {attribute});
+      const auto cipher = abe.encrypt(contentKey,
+        ndn::Buffer(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()));
+      const auto ckName = ndn_service_framework::makeHybridMessageKeyDataName(
+        service, identity, attribute, suffix);
+      ndn::Name payloadRoot = ndn_service_framework::makeProducerDataPrefix(identity, "OBJECT");
+      payloadRoot.append(suffix);
+      ndn::Name payloadName(payloadRoot);
+      payloadName.appendSegment(0);
+
+      // The envelopes the reader parses: CK as outer 0x15 with 0x0259, payload with 0x025A/0x025B.
+      ndn::Data ck(ckName);
+      {
+        ndn::Block outer(0x15);
+        outer.push_back(ndn::encoding::makeBinaryBlock(0x0259,
+          ndn::span<const uint8_t>(contentKey->m_encAesKey.data(), contentKey->m_encAesKey.size())));
+        outer.encode();
+        ck.setContent(ndn::Buffer(outer.begin(), outer.end()));
+        ck.setFreshnessPeriod(ndn::time::milliseconds(0));
+        keyChain.sign(ck, ndn::security::signingByCertificate(certificate));
+      }
+      ndn::Data object(payloadName);
+      {
+        const uint8_t sizeByte = static_cast<uint8_t>(cipher.m_plainTextSize);
+        ndn::Block outer(0x15);
+        outer.push_back(ndn::encoding::makeBinaryBlock(0x025A,
+          ndn::span<const uint8_t>(cipher.m_content.data(), cipher.m_content.size())));
+        outer.push_back(ndn::encoding::makeBinaryBlock(0x025B,
+          ndn::span<const uint8_t>(&sizeByte, 1)));
+        outer.encode();
+        object.setContent(ndn::Buffer(outer.begin(), outer.end()));
+        object.setFreshnessPeriod(ndn::time::milliseconds(0));
+        keyChain.sign(object, ndn::security::signingByCertificate(certificate));
+      }
+      face.setInterestFilter(ck.getName(),
+        [&face, ck] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(ck); }, onFailure);
+      face.setInterestFilter(payloadName,
+        [&face, object] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(object); },
+        onFailure);
+
+      std::cout << "FIXTURE_OBJECT ck=" << ck.getName().toUri()
+                << " payload=" << payloadRoot.toUri()
+                << " service=" << service.toUri()
+                << " attribute=" << attribute
+                << " producer=" << identity.toUri()
+                << " generation=" << paramsVersion / 1000
+                << " epoch=" << paramsVersion % 1000
+                << " plaintextDigest=sha256:" << hash.toString()
+                << " bytes=" << payload.size() << std::endl;
+    }
+    std::cout << "FIXTURE_READY objects=" << attributes.size()
+              << " paramsName=" << paramsDataName.toUri() << std::endl << std::flush;
     face.processEvents();
     return 0;
   }
