@@ -21717,6 +21717,19 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                           << response.getPolicyEpoch());
             return;
         }
+        {
+          // On stdout, because this deployment filters framework loggers: the question is whether a refreshed
+          // provider record still lists the inference service after its revocation.
+          std::size_t inference = 0;
+          for (const auto& record : records) {
+            if (record.serviceName.find("DI") != std::string::npos &&
+                record.serviceName.find("Infer") != std::string::npos)
+              ++inference;
+          }
+          std::cout << "NDNSF_PROVIDER_PERMISSIONS_INSTALLED services=" << records.size()
+                    << " inference=" << inference
+                    << " epoch=" << response.getPolicyEpoch() << std::endl;
+        }
         // Permission responses are scoped to this identity, but their
         // records are service-level.  Detect an actual table change before
         // requesting a replacement DKEY; a newer ControllerVersion caused by
