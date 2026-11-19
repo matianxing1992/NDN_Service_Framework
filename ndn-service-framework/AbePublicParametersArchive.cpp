@@ -199,4 +199,56 @@ parseHistoricalPublicParametersIndex(const std::string& content,
   return !records.empty();
 }
 
+bool
+parseHistoricalPublicParameters(const std::string& content, HistoricalPublicParameters& proof)
+{
+  std::size_t begin = 0;
+  std::vector<std::string> lines;
+  while (begin <= content.size() && lines.size() < 4) {
+    const auto end = content.find('\n', begin);
+    if (end == std::string::npos)
+      return false;
+    lines.push_back(content.substr(begin, end - begin));
+    begin = end + 1;
+  }
+  if (lines.size() != 4 || lines[0] != "NDNSF-HIST-PUBPARAMS-v1")
+    return false;
+  const auto field = [] (const std::string& line, const char* prefix) -> std::string {
+    const std::string head(prefix);
+    if (line.compare(0, head.size(), head) != 0)
+      throw std::runtime_error("missing field");
+    return line.substr(head.size());
+  };
+  try {
+    HistoricalPublicParameters parsed;
+    parsed.originalName = field(lines[1], "original ");
+    parsed.digest = field(lines[2], "digest ");
+    const auto lengthText = field(lines[3], "length ");
+    if (parsed.digest.size() != 71 || parsed.digest.rfind("sha256:", 0) != 0 ||
+        parsed.originalName.empty() || parsed.originalName.front() != '/')
+      return false;
+    char* stop = nullptr;
+    parsed.length = std::strtoull(lengthText.c_str(), &stop, 10);
+    if (stop == lengthText.c_str() || *stop != '\0')
+      return false;
+    parsed.publicParameters = content.substr(begin, parsed.length);
+    if (parsed.publicParameters.size() != parsed.length)
+      return false;
+    // The digest binds the bytes; a mismatch means the proof and its content disagree.
+    ndn::util::Sha256 hash;
+    hash << parsed.publicParameters;
+    auto hex = hash.toString();
+    std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char value) {
+      return static_cast<char>(std::tolower(value));
+    });
+    if (parsed.digest.substr(7) != hex)
+      return false;
+    proof = std::move(parsed);
+    return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 } // namespace ndn_service_framework

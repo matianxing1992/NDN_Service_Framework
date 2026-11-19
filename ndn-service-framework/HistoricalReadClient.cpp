@@ -2,6 +2,7 @@
 
 #include "AbeHistoricalContent.hpp"
 #include "AbeHistoricalKeyRequest.hpp"
+#include "AbePublicParametersArchive.hpp"
 
 #include <chrono>
 #include <memory>
@@ -146,6 +147,66 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
                                 request.recipientCertificate.getName(), keyBytes))
     return std::nullopt;
   return std::vector<uint8_t>(keyBytes.begin(), keyBytes.end());
+}
+
+std::optional<std::string>
+fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPrefix, uint64_t generation,
+                                uint64_t epoch, const ndn::security::Certificate& controllerCertificate,
+                                uint32_t timeoutMs)
+{
+  if (controllerPrefix.empty() || controllerCertificate.getName().empty())
+    return std::nullopt;
+  ndn::Name indexName(controllerPrefix);
+  indexName.append("NDNSF").append("HISTORY").append("PUBPARAMS");
+  ndn::Interest indexInterest(indexName);
+  indexInterest.setCanBePrefix(true);
+  indexInterest.setMustBeFresh(false);
+  indexInterest.setInterestLifetime(ndn::time::milliseconds(timeoutMs));
+
+  struct State
+  {
+    std::optional<ndn::Data> index;
+  };
+  auto state = std::make_shared<State>();
+  face.expressInterest(indexInterest,
+    [state] (const ndn::Interest&, const ndn::Data& data) { state->index = data; },
+    [] (const ndn::Interest&, const ndn::lp::Nack&) {},
+    [] (const ndn::Interest&) {});
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (!state->index && std::chrono::steady_clock::now() < deadline)
+    face.processEvents(ndn::time::milliseconds(10));
+  if (!state->index)
+    return std::nullopt;
+  try {
+    if (!ndn::security::verifySignature(*state->index, controllerCertificate.getPublicKey()))
+      return std::nullopt;
+  }
+  catch (const std::exception&) {
+    return std::nullopt;
+  }
+  const std::string indexText(reinterpret_cast<const char*>(state->index->getContent().value()),
+                              state->index->getContent().value_size());
+  std::vector<std::tuple<uint64_t, uint64_t, std::string, std::string>> records;
+  if (!parseHistoricalPublicParametersIndex(indexText, records))
+    return std::nullopt;
+  const auto found = std::find_if(records.begin(), records.end(),
+    [generation, epoch] (const auto& record) {
+      return std::get<0>(record) == generation && std::get<1>(record) == epoch;
+    });
+  if (found == records.end())
+    return std::nullopt;
+
+  const auto proofWire = fetchSingleData(
+    face, historicalPublicParametersName(controllerPrefix, generation, epoch, std::get<2>(*found)),
+    controllerCertificate, timeoutMs);
+  if (!proofWire)
+    return std::nullopt;
+  HistoricalPublicParameters proof;
+  if (!parseHistoricalPublicParameters(std::string(proofWire->begin(), proofWire->end()), proof))
+    return std::nullopt;
+  if (proof.digest.substr(7) != std::get<2>(*found) || proof.originalName != std::get<3>(*found))
+    return std::nullopt;
+  return proof.publicParameters;
 }
 
 std::optional<std::string>

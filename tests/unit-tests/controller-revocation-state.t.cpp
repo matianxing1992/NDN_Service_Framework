@@ -1352,6 +1352,58 @@ BOOST_AUTO_TEST_CASE(SealedFieldsRoundTripAndRefuseTampering)
   BOOST_CHECK(!isSealedField(plain));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalReadClientDiscoversParametersThroughTheIndex)
+{
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "index", ndn::Name("/controller/probe"));
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto paramsWire = params.toBuffer();
+  const std::string publicParameters(reinterpret_cast<const char*>(paramsWire.data()),
+                                     paramsWire.size());
+  ndn::util::Sha256 hash;
+  hash << publicParameters;
+  auto digestHex = hash.toString();
+  std::transform(digestHex.begin(), digestHex.end(), digestHex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+
+  ControllerGenerationStore::AbeHistoryEntry entry;
+  entry.generationTimestamp = 1002;
+  entry.epoch = 3;
+  entry.publicParameters = publicParameters;
+  entry.publicParametersName = "/controller/probe/PUBPARAMS/KP-ABE/v=1002003";
+  entry.publicParametersWireDigest = "sha256:" + digestHex;
+
+  auto face = std::make_shared<ndn::DummyClientFace>(ndn::DummyClientFace::Options{});
+  const auto sign = [&keys] (ndn::Data& data) {
+    keys.keyChain.sign(data, ndn::security::signingByCertificate(keys.certificate));
+  };
+  ndn::Data listing;
+  BOOST_REQUIRE(buildHistoricalPublicParametersIndex({entry}, ndn::Name("/controller/probe"), sign,
+                                                     listing));
+  ndn::Data proof;
+  BOOST_REQUIRE(buildHistoricalPublicParametersData(entry, ndn::Name("/controller/probe"), sign, proof));
+  face->setInterestFilter(ndn::Name("/controller/probe/NDNSF/HISTORY/PUBPARAMS"),
+    [face, listing, proof] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      if (interest.getName() == listing.getName())
+        face->put(listing);
+      else if (interest.getName() == proof.getName())
+        face->put(proof);
+    });
+
+  const auto parameters = fetchHistoricalPublicParameters(*face, ndn::Name("/controller/probe"), 1002, 3,
+                                                          keys.certificate, 1000);
+  BOOST_REQUIRE(parameters);
+  BOOST_CHECK_EQUAL(*parameters, publicParameters);
+  // A generation the index does not list is not served.
+  BOOST_CHECK(!fetchHistoricalPublicParameters(*face, ndn::Name("/controller/probe"), 1009, 1,
+                                               keys.certificate, 200));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
 {
   DefaultGenerationFiles files;

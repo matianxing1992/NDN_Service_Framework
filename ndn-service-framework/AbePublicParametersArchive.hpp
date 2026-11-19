@@ -66,6 +66,23 @@ parseHistoricalPublicParametersIndex(const std::string& content,
                                      std::vector<std::tuple<uint64_t, uint64_t, std::string,
                                                             std::string>>& records);
 
+/** The parsed proof envelope. */
+struct HistoricalPublicParameters
+{
+  std::string originalName;
+  std::string digest;
+  uint64_t length = 0;
+  std::string publicParameters;
+};
+
+/** Parse and check a proof: the digest must match the bytes it claims to describe.
+ *
+ * A reader can then use the parameters only if the envelope is self-consistent and the Data that carried
+ * it was signed by the Controller.
+ */
+bool
+parseHistoricalPublicParameters(const std::string& content, HistoricalPublicParameters& proof);
+
 /** Build the proofs a Controller can serve, skipping entries it cannot bind. */
 std::vector<std::shared_ptr<ndn::Data>>
 collectHistoricalPublicParameterAnswers(

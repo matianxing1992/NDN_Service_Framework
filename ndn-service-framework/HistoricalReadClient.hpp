@@ -59,6 +59,16 @@ std::optional<std::vector<uint8_t>>
 fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalReadRequest& request,
                    uint32_t timeoutMs);
 
+/** Discover a retired generation's public parameters through the Controller's signed index and proof.
+ *
+ * The proof name carries a digest a reader cannot guess, so the index is what makes a cold read possible:
+ * index -> bound proof -> parameters, each step signed by the Controller and each digest checked.
+ */
+std::optional<std::string>
+fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPrefix, uint64_t generation,
+                                uint64_t epoch, const ndn::security::Certificate& controllerCertificate,
+                                uint32_t timeoutMs);
+
 /** The whole read: fetch, verify, request the key, unseal, reassemble and decrypt. */
 std::optional<std::string>
 readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalReadRequest& request);
