@@ -243,6 +243,12 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
     periodic = params.pop('core-svs-periodic-sync-ms', None)
     if periodic is not None:
         env['NDNSF_SVS_PERIODIC_SYNC_MS'] = str(periodic)
+    # A short revalidation period lets a qualification run observe a Controller-side revocation inside
+    # a bounded window instead of waiting for a status to near its expiry.
+    revalidation = config.get('requester', {}).get('request', {}).get(
+        'policy_revalidation_period_ms')
+    if revalidation is not None and kind in ('requester', 'provider'):
+        env['NDNSF_POLICY_REVALIDATION_PERIOD_MS'] = str(revalidation)
     if kind == 'controller':
         env['NDNSF_CONTROLLER_GENERATION_STATE'] = str(
             Path(actor['credential_home']) / '.ndn' / 'controller-generation.state')
