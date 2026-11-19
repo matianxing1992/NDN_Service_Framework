@@ -493,6 +493,14 @@ ServiceController::initializeAbeGenerationIdentity()
   m_abePublicParametersName = currentAbePublicParametersName();
   m_abePublicParametersDigest = abePublicParametersDigest(
       m_aa.getPublicParametersWire());
+  // The stored material must carry the version the Authority is advertising. When it does not, the next
+  // rotation archives the retired generation under a label no reader was ever given, and a reader that
+  // asks for the generation it actually used finds the archive empty.
+  if (!m_abeMaterialVersion.isValid() ||
+      m_abeMaterialVersion.controllerGenerationTimestamp != generation ||
+      m_abeMaterialVersion.controllerEpoch != epoch) {
+    persistAbeMaterial();
+  }
 }
 
 bool
@@ -735,12 +743,46 @@ ServiceController::registerArchivedPublicParameters()
     indexName.append("NDNSF").append("HISTORY").append("PUBPARAMS");
     if (m_archivedParameterNames.insert(indexName.toUri(ndn::name::UriFormat::CANONICAL)).second) {
       m_archivedParameterFilters.push_back(m_face.setInterestFilter(indexName,
-        [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+        [this, indexName] (const ndn::InterestFilter&, const ndn::Interest& interest) {
           std::vector<ControllerGenerationStore::AbeHistoryEntry> current;
           try {
             current = m_generationStore->loadAbeHistory();
           }
-          catch (const std::exception&) {
+          catch (const std::exception& error) {
+            NDN_LOG_ERROR("Historical parameters request failed: " << error.what());
+            return;
+          }
+          const auto sign = [this] (ndn::Data& data) {
+            m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
+          };
+          // A reader that already knows a bound proof name asks for it here; serving it from the same
+          // handler keeps the answer in step with the archive even when the name was registered after
+          // startup, and avoids relying on per-generation filter registration order.
+          const auto depth = interest.getName().size() - indexName.size();
+          NDN_LOG_INFO("NDNSF_HISTORY_REQUEST name=" << interest.getName()
+                       << " depth=" << depth << " archived=" << current.size());
+          if (depth >= 3) {
+            const auto generationText = interest.getName().get(-3).toUri();
+            const auto epochText = interest.getName().get(-2).toUri();
+            const auto digestText = interest.getName().get(-1).toUri();
+            const auto generation = std::strtoull(generationText.c_str(), nullptr, 10);
+            const auto epoch = std::strtoull(epochText.c_str(), nullptr, 10);
+            for (const auto& entry : current) {
+              if (entry.generationTimestamp != generation || entry.epoch != epoch ||
+                  entry.publicParametersWireDigest.substr(7) != digestText)
+                continue;
+              ndn::Data proof;
+              if (buildHistoricalPublicParametersData(entry, m_aaCert.getIdentity(), sign, proof)) {
+                NDN_LOG_INFO("Historical proof served for generation=" << generation
+                             << " epoch=" << epoch);
+                m_face.put(proof);
+              }
+              else {
+                NDN_LOG_ERROR("Historical proof could not be built for generation=" << generation
+                              << " epoch=" << epoch);
+              }
+              return;
+            }
             return;
           }
           ndn::Data listing;
@@ -748,7 +790,7 @@ ServiceController::registerArchivedPublicParameters()
                                                     std::function<void(ndn::Data&)>(), listing))
             return;
           listing.setName(interest.getName());
-          m_keyChain.sign(listing, ndn::security::signingByCertificate(m_aaCert));
+          sign(listing);
           m_face.put(listing);
         }));
     }
