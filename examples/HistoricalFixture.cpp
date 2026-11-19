@@ -9,6 +9,8 @@
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/utils.hpp"
 
+#include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -58,14 +60,17 @@ main(int argc, char** argv)
     const std::string attribute = field("attribute");
     const std::string payload = field("payload");
 
-    ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:" + pib, false);
+    ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:", false);
     const auto certificate = keyChain.getPib().getIdentity(identity).getDefaultKey()
       .getDefaultCertificate();
     ndn::Face face;
 
     // The current generation's public parameters, published by the Controller under its own name.
     std::string paramsWire;
-    {
+    ndn::Name paramsDataName;
+    uint64_t paramsVersion = 0;
+    // The Controller may still be in readiness when this starts, so keep asking for a bounded while.
+    for (int attempt = 0; attempt < 30 && paramsWire.empty(); ++attempt) {
       ndn::Name paramsName(controller);
       paramsName.append("PUBPARAMS").append("KP-ABE");
       ndn::Interest interest(paramsName);
@@ -76,11 +81,22 @@ main(int argc, char** argv)
       face.expressInterest(interest, [&] (const ndn::Interest&, const ndn::Data& data) {
         paramsWire.assign(reinterpret_cast<const char*>(data.getContent().value()),
                           data.getContent().value_size());
+        // The generation is the version component of the PUBPARAMS name: generation*1000 + epoch.
+        paramsDataName = data.getName();
+        if (!data.getName().empty()) {
+          auto versionText = data.getName().get(-1).toUri();
+          if (versionText.rfind("v=", 0) == 0)
+            versionText = versionText.substr(2);
+          paramsVersion = std::strtoull(versionText.c_str(), nullptr, 10);
+        }
         done = true;
       }, [&] (const ndn::Interest&, const ndn::lp::Nack&) { done = true; },
          [&] (const ndn::Interest&) { done = true; });
-      while (!done)
+      const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+      while (!done && std::chrono::steady_clock::now() < until)
         face.processEvents(ndn::time::milliseconds(50));
+      if (paramsWire.empty())
+        face.processEvents(ndn::time::milliseconds(1000));
     }
     if (paramsWire.empty()) {
       std::cout << "FIXTURE_FAILED stage=params" << std::endl;
@@ -138,6 +154,9 @@ main(int argc, char** argv)
               << " service=" << service.toUri()
               << " attribute=" << attribute
               << " producer=" << identity.toUri()
+              << " paramsName=" << paramsDataName.toUri()
+              << " generation=" << paramsVersion / 1000
+              << " epoch=" << paramsVersion % 1000
               << " plaintextDigest=sha256:" << hash.toString()
               << " bytes=" << payload.size() << std::endl
               << std::flush;
