@@ -1174,14 +1174,23 @@ void ServiceController::start()
       state->inFlight = true;
       nextAttempt = now + std::chrono::milliseconds(100);
       const bool parameters = state->challengeReady;
-      ndn::Interest interest = parameters ? ndn::Interest(paramsName) : preparedProbe;
+      // A revocation can rotate the generation while readiness is still running. Re-read the current
+      // parameters for each attempt, otherwise the probe keeps asking for the generation that was
+      // current when the Controller started and never sees the new one.
+      auto liveParamsName = paramsName;
+      auto liveParamsWire = paramsWire;
+      if (parameters) {
+        liveParamsName = currentAbePublicParametersName();
+        liveParamsWire = m_aa.getPublicParametersWire();
+      }
+      ndn::Interest interest = parameters ? ndn::Interest(liveParamsName) : preparedProbe;
       interest.setMustBeFresh(true);
       interest.setCanBePrefix(false);
       interest.setHopLimit(1);
       interest.setInterestLifetime(ndn::time::milliseconds(250));
       pending = probeFace.expressInterest(
         interest,
-        [state, cert = m_aaCert, parameters, paramsName, paramsWire,
+        [state, cert = m_aaCert, parameters, liveParamsName, liveParamsWire,
          probeName, challengeContent](const ndn::Interest&, const ndn::Data& data) {
           if (!state->finished) {
             state->inFlight = false;
@@ -1194,9 +1203,9 @@ void ServiceController::start()
             }
             else if (parameters) {
               const auto& content = data.getContent();
-              if (data.getName() != paramsName ||
-                  content.value_size() != paramsWire.size() ||
-                  !std::equal(content.value_begin(), content.value_end(), paramsWire.begin())) {
+              if (data.getName() != liveParamsName ||
+                  content.value_size() != liveParamsWire.size() ||
+                  !std::equal(content.value_begin(), content.value_end(), liveParamsWire.begin())) {
                 state->error = "ServiceController PUBPARAMS probe returned invalid current parameters";
               }
               else {
