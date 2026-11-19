@@ -1260,6 +1260,33 @@ def build(bld):
             ONNXRUNTIME_LIBS=package_onnxruntime_libs,
         **package_install_paths)
 
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        asset_tools = [
+            'Experiments/prepare-model-assets.py',
+            'Experiments/prepare-native-deployment.py',
+            'Experiments/model_assets.py',
+            'Experiments/native_probe_validation_links.py',
+            'Experiments/TigerCluster/runtime/processes.py',
+            'Experiments/profiles/qwen06b-tp-cpu.json',
+            'Experiments/profiles/requirements-cpu-ops-py38.txt',
+            'Experiments/fixtures/native-deployment/qwen06b-catalog.json',
+            'Experiments/fixtures/native-deployment/qwen06b-catalog.provenance.json',
+            'Experiments/fixtures/native-deployment/qwen06b-generation-options.json',
+            'Experiments/fixtures/native-deployment/two-provider.conf',
+            'Experiments/recipes/qwen3-0.6b-int4.json',
+            'Experiments/recipes/model-tools-py38.txt',
+            'Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-qwen-model.py',
+            'tools/ndnsf-di/normalize_onnx_constants.py',
+        ]
+        for relative in asset_tools:
+            bld.install_as('${PREFIX}/share/ndnsf/' + relative, bld.srcnode.find_node(relative))
+
+        bld.program(name='ndnsf-di-tokenize-input', target='ndnsf-di-tokenize-input',
+                    source=['examples/di-tokenize-input.cpp'], includes=['.'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'BOOST NAC-ABE NDNSD OPENSSL DL',
+                    cxxflags=['-std=c++17'], rpath=[bld.env.LIBDIR], install_path='${BINDIR}')
+
     if bld._ndnsf_default_scope:
         # Select installable products and metadata, retaining every test target
         # for explicit --targets=NAME or --targets=* qualification.

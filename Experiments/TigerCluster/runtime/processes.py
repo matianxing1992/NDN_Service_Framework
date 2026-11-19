@@ -86,7 +86,7 @@ class Processes:
 
 
 def run_finite_application(name, argv, log_path, cleanup, seconds=60,
-                           allowed_exits=(0,), env=None, stdout=None):
+                           allowed_exits=(0,), env=None, stdout=None, cwd=None):
     """Own a finite group; optional caller-owned streams remain open after cleanup."""
     log_context = (contextlib.nullcontext(log_path) if hasattr(log_path, 'write') else
                    Path(log_path).open('wb'))
@@ -94,7 +94,7 @@ def run_finite_application(name, argv, log_path, cleanup, seconds=60,
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
                                 stdout=log if stdout is None else stdout,
                                 stderr=subprocess.STDOUT if stdout is None else log,
-                                start_new_session=True, env=env)
+                                start_new_session=True, env=env, cwd=cwd)
         forced = False
         primary_failure = False
         try:

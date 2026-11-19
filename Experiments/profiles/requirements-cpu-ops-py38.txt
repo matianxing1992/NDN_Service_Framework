@@ -1,0 +1,6 @@
+# Pinned transitive dependencies of the host CPU cluster-management owner wheel.
+# Install ndnsf-di-ops from this checkout's wheel, in an isolated Python 3.8 environment.
+python-ndn==0.3
+aenum==3.1.17
+pycryptodomex==3.24.2
+pygtrie==2.5.0
