@@ -33,6 +33,11 @@ struct HistoricalKeyRequest
    * of against a scope the requester chose for itself.
    */
   ndn::Name objectName;
+  /** The producer that published the object, and the service scope it was published for. */
+  ndn::Name producerName;
+  ndn::Name serviceName;
+  /** The content key the object's payload names, which is what the Controller checks the scope against. */
+  ndn::Name ckName;
   std::string policy;
   ndn::Name recipientCertificate;
   uint64_t mintedAtMs = 0;

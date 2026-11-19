@@ -1,5 +1,6 @@
 #include "AbeHistoricalKeyRequest.hpp"
 
+#include "AbeHistoricalAuthorization.hpp"
 #include "AbeHistoricalKey.hpp"
 
 #include <nac-abe/ndn-crypto/data-enc-dec.hpp>
@@ -18,7 +19,7 @@
 namespace ndn_service_framework {
 namespace {
 
-constexpr char BODY_SCHEMA[] = "ndnsf-abe-history-dkey-request-v2";
+constexpr char BODY_SCHEMA[] = "ndnsf-abe-history-dkey-request-v3";
 constexpr char REPLY_SCHEMA[] = "ndnsf-abe-history-dkey-reply-v2";
 
 std::string
@@ -84,6 +85,9 @@ encodeHistoricalKeyRequest(const HistoricalKeyRequest& request)
   body += "\ngeneration " + std::to_string(request.generation);
   body += "\nepoch " + std::to_string(request.epoch);
   body += "\nobject " + request.objectName.toUri(ndn::name::UriFormat::CANONICAL);
+  body += "\nproducer " + request.producerName.toUri(ndn::name::UriFormat::CANONICAL);
+  body += "\nservice " + request.serviceName.toUri(ndn::name::UriFormat::CANONICAL);
+  body += "\nck " + request.ckName.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\nrecipient " + request.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\npolicy " + request.policy;
   body += "\nminted " + std::to_string(request.mintedAtMs);
@@ -104,7 +108,7 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
         break;
       begin = end + 1;
     }
-    if (lines.size() != 9 || lines[0] != BODY_SCHEMA)
+    if (lines.size() != 12 || lines[0] != BODY_SCHEMA)
       return false;
     const auto field = [] (const std::string& line, const char* prefix) -> std::string {
       const std::string head(prefix);
@@ -116,8 +120,8 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
     parsed.controllerPrefix = ndn::Name(field(lines[1], "controller "));
     if (!parseU64(field(lines[2], "generation "), parsed.generation) ||
         !parseU64(field(lines[3], "epoch "), parsed.epoch) ||
-        !parseU64(field(lines[7], "minted "), parsed.mintedAtMs) ||
-        !parseU64(field(lines[8], "expires "), parsed.expiresAtMs))
+        !parseU64(field(lines[10], "minted "), parsed.mintedAtMs) ||
+        !parseU64(field(lines[11], "expires "), parsed.expiresAtMs))
       return false;
     const auto objectText = field(lines[4], "object ");
     if (objectText.empty() || objectText.front() != '/')
@@ -125,7 +129,20 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
     parsed.objectName = ndn::Name(objectText);
     if (parsed.objectName.toUri(ndn::name::UriFormat::CANONICAL) != objectText)
       return false;
-    const auto recipientText = field(lines[5], "recipient ");
+    const auto producerText = field(lines[5], "producer ");
+    const auto serviceText = field(lines[6], "service ");
+    const auto ckText = field(lines[7], "ck ");
+    if (producerText.empty() || producerText.front() != '/' || serviceText.empty() ||
+        serviceText.front() != '/' || ckText.empty() || ckText.front() != '/')
+      return false;
+    parsed.producerName = ndn::Name(producerText);
+    parsed.serviceName = ndn::Name(serviceText);
+    parsed.ckName = ndn::Name(ckText);
+    if (parsed.producerName.toUri(ndn::name::UriFormat::CANONICAL) != producerText ||
+        parsed.serviceName.toUri(ndn::name::UriFormat::CANONICAL) != serviceText ||
+        parsed.ckName.toUri(ndn::name::UriFormat::CANONICAL) != ckText)
+      return false;
+    const auto recipientText = field(lines[8], "recipient ");
     // A certificate name is absolute and round-trips to the text it was written as; anything else
     // would let the body and the name disagree about who is asking.
     if (recipientText.empty() || recipientText.front() != '/' ||
@@ -135,9 +152,10 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
     parsed.recipientCertificate = ndn::Name(recipientText);
     if (parsed.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL) != recipientText)
       return false;
-    parsed.policy = field(lines[6], "policy ");
+    parsed.policy = field(lines[9], "policy ");
     if (parsed.controllerPrefix.empty() || parsed.generation == 0 ||
         parsed.recipientCertificate.empty() || parsed.objectName.empty() ||
+        parsed.producerName.empty() || parsed.serviceName.empty() || parsed.ckName.empty() ||
         !isSafePolicy(parsed.policy))
       return false;
     request = std::move(parsed);
@@ -407,6 +425,11 @@ HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs,
   if (!m_authorizationCheck ||
       !m_authorizationCheck(ndn::security::extractIdentityFromCertName(request.recipientCertificate),
                             request.generation, request.epoch, request.policy))
+    return std::nullopt;
+  // The key may only be one that belongs to the object's own scope, so a requester cannot borrow a key
+  // minted for a different service, producer or attribute and point it at something else.
+  if (!historicalCkBindsAttribute(request.ckName, request.producerName, request.serviceName,
+                                  request.policy))
     return std::nullopt;
   Material material;
   if (!m_materialLookup || !m_materialLookup(request.generation, request.epoch, material))

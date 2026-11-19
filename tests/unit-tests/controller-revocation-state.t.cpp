@@ -107,6 +107,40 @@ struct ReplyKeys
 };
 } // namespace
 
+
+namespace {
+/** The CK name a producer publishes for these scope fields (see makeHybridMessageKeyDataName). */
+ndn::Name
+makeHistoricalCkName(const ndn::Name& producer, const ndn::Name& service,
+                     const std::string& attribute)
+{
+  const auto bytes = [] (const ndn::Name& value) {
+    const auto& wire = value.wireEncode();
+    return std::vector<uint8_t>(wire.data(), wire.data() + wire.size());
+  };
+  const auto scope = makeNamingDigestComponent(computeNamingDigest(
+    "ndnsf-naming/hybrid-key-scope",
+    {{1, 1, bytes(service)}, {2, 1, bytes(producer)},
+     {3, 2, std::vector<uint8_t>(attribute.begin(), attribute.end())}}));
+  ndn::Name name = makeProducerDataPrefix(producer, "KEY");
+  name.append("kind=HYBRID-MESSAGE").append("SCOPE").append("SERVICE").append(scope)
+    .append("EPOCH")
+    .append(makeNamingDigestComponent(computeNamingDigest(
+      "ndnsf-naming/opaque/protection-epoch", {{1, 4, std::vector<uint8_t>{'e', '1'}}})))
+    .append("OBJECT").append(makeNamingDigestComponent(std::string(64, 'a')));
+  return name;
+}
+
+/** Give a request the producer, service and CK that match its own attribute. */
+void
+applyHistoricalScope(HistoricalKeyRequest& request)
+{
+  request.producerName = ndn::Name("/producer/p1");
+  request.serviceName = ndn::Name("/service/inference");
+  request.ckName = makeHistoricalCkName(request.producerName, request.serviceName, request.policy);
+}
+} // namespace
+
 BOOST_AUTO_TEST_CASE(AbeMaterialPersistsAndMarksRotationBeforeRestart)
 {
   DefaultGenerationFiles files;
@@ -1088,6 +1122,7 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
   request.recipientCertificate = userCert.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
   ndn::Interest interest;
   signHistoricalKeyRequest(interest, request, requester,
                            ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
@@ -1139,6 +1174,7 @@ BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
   request.recipientCertificate = certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
 
   ndn::Interest interest;
   signHistoricalKeyRequest(interest, request, keyChain,
@@ -1251,6 +1287,68 @@ BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding
   BOOST_CHECK(!historicalAttributeIsAuthorized("", then, now));
 }
 
+BOOST_AUTO_TEST_CASE(BrokerRefusesAKeyForAnotherScope)
+{
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "scope", ndn::Name("/user/scope"));
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+  HistoricalKeyBroker::Material material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+
+  const auto signerLookup = [&keys] (const ndn::Name& name, ndn::security::Certificate& out) {
+    if (name != keys.certificate.getName())
+      return false;
+    out = keys.certificate;
+    return true;
+  };
+  const auto materialLookup = [&material] (uint64_t generation, uint64_t epoch,
+                                           HistoricalKeyBroker::Material& out) {
+    if (generation != 1002 || epoch != 3)
+      return false;
+    out = material;
+    return true;
+  };
+  const auto replySigner = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+    return true;   // permission alone would allow it; the scope check must still refuse
+  });
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "/PERMISSION/A";
+  request.recipientCertificate = keys.certificate.getName();
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
+  // A key minted for another attribute cannot be pointed at this request.
+  request.ckName = makeHistoricalCkName(request.producerName, request.serviceName, "/PERMISSION/B");
+  ndn::Interest interest;
+  signHistoricalKeyRequest(interest, request, keys.keyChain,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      keys.certificate.getName()));
+  BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
+  // With its own scope it is answered.
+  applyHistoricalScope(request);
+  ndn::Interest own;
+  signHistoricalKeyRequest(own, request, keys.keyChain,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      keys.certificate.getName()));
+  BOOST_CHECK(broker.answer(own, request.controllerPrefix, 1'000'000));
+}
+
 BOOST_AUTO_TEST_CASE(BrokerRefusesWhenThePermissionDecisionSaysNo)
 {
   DefaultGenerationFiles files;
@@ -1293,6 +1391,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesWhenThePermissionDecisionSaysNo)
   request.recipientCertificate = keys.certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
   ndn::Interest interest;
   signHistoricalKeyRequest(interest, request, keys.keyChain,
                            ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
@@ -1338,6 +1437,7 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndEx
   request.recipientCertificate = certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
 
   // The canonical body survives a round trip and its digest names the request.
   const auto body = encodeHistoricalKeyRequest(request);
@@ -1637,6 +1737,7 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   request.recipientCertificate = userCert.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
   ndn::Interest interest;
   signHistoricalKeyRequest(interest, request, requester,
                            ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
@@ -1716,6 +1817,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestThatClaimsTooLongAValidity)
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
   // The same request with a sane lifetime is answered.
   request.expiresAtMs = 1'000'000 + 60'000;
+  applyHistoricalScope(request);
   ndn::Interest sane;
   signHistoricalKeyRequest(sane, request, requester,
                            ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
@@ -1779,6 +1881,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
   request.recipientCertificate = userCert.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
   ndn::Interest interest;
   signHistoricalKeyRequest(interest, request, requester,
                            ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
@@ -1807,6 +1910,7 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyRecipientMustBeAnAbsoluteCertificateName)
   request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
   const auto body = encodeHistoricalKeyRequest(request);
 
   const auto replaceRecipient = [] (const std::string& source, const std::string& value) {
@@ -1837,6 +1941,7 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyPolicyCannotSmuggleEnvelopeFields)
   request.recipientCertificate = keys.certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
 
   // A newline in the policy would start a new field in the line-oriented body.
   request.policy = "attr-a\nlength 999";
@@ -1873,6 +1978,7 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyRefusesAnOversizedKey)
   request.recipientCertificate = keys.certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
+  applyHistoricalScope(request);
 
   const auto sign = [] (ndn::Data& data) {
     data.setSignatureInfo(ndn::SignatureInfo());
@@ -1971,6 +2077,7 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
   request.recipientCertificate = userCert.getName();
   request.mintedAtMs = now;
   request.expiresAtMs = now + 60000;
+  applyHistoricalScope(request);
 
   ndn::Name dkeyPrefix(controllerIdentity);
   dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
