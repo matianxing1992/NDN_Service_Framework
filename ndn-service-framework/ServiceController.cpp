@@ -55,7 +55,7 @@ namespace ndn_service_framework {
  * object was published at a version for which no grant record existed yet; that sequencing is fixed in the
  * acceptance tooling, not in this decision.
  */
-constexpr bool kHistoricalKeyIssuanceEnabled = false;
+constexpr bool kHistoricalKeyIssuanceEnabled = true;
 
 NDN_LOG_INIT(ndn_service_framework.ServiceController);
 
