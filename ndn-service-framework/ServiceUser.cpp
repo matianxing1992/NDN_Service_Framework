@@ -6774,6 +6774,9 @@ namespace ndn_service_framework
 
         std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
         const auto it = m_revocationStates.find(serviceName.toUri());
+        NDN_LOG_INFO("NDNSF_CONTROLLER_GATE service=" << serviceName.toUri()
+                     << " hasStatus=" << (it != m_revocationStates.end())
+                     << " controllerPrefix=" << m_controllerPrefix.toUri());
         if (it == m_revocationStates.end()) {
             // Once permissions were obtained from a Controller, a missing
             // per-service signed status is fail-closed.  The empty-prefix
