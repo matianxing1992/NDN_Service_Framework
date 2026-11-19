@@ -1163,6 +1163,41 @@ BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
   BOOST_CHECK(!ndn::security::verifySignature(tampered, publicKey));
 }
 
+BOOST_AUTO_TEST_CASE(AttributeSnapshotsRoundTripPerGeneration)
+{
+  DefaultGenerationFiles files;
+  auto bootstrap = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+  BOOST_REQUIRE(bootstrap);
+  const auto path = bootstrap->statePath();
+  ControllerGenerationStore store(path);
+
+  const std::map<std::string, std::set<std::string>> first{
+    {"/user/one", {"/PERMISSION/A", "/PERMISSION/B"}},
+    {"/user/two", {"/PERMISSION/B"}}};
+  const std::map<std::string, std::set<std::string>> second{
+    {"/user/one", {"/PERMISSION/A"}}};
+  store.recordAttributeSnapshot(1002, 3, first);
+  store.recordAttributeSnapshot(1003, 1, second);
+
+  const auto loadedFirst = store.loadAttributeSnapshot(1002, 3);
+  const auto loadedSecond = store.loadAttributeSnapshot(1003, 1);
+  BOOST_REQUIRE(loadedFirst);
+  BOOST_REQUIRE(loadedSecond);
+  BOOST_CHECK(*loadedFirst == first);
+  BOOST_CHECK(*loadedSecond == second);
+  // A generation that was never recorded is unknown, not empty-everything.
+  BOOST_CHECK(!store.loadAttributeSnapshot(1004, 1));
+  // Writing the same generation again replaces it instead of duplicating it.
+  store.recordAttributeSnapshot(1002, 3, second);
+  BOOST_CHECK(*store.loadAttributeSnapshot(1002, 3) == second);
+  // Retention keeps the newest entries and drops the oldest.
+  for (uint64_t i = 0; i < 10; ++i) {
+    store.recordAttributeSnapshot(2000 + i, 1, second);
+  }
+  BOOST_CHECK(!store.loadAttributeSnapshot(1002, 3));
+  BOOST_CHECK(store.loadAttributeSnapshot(2009, 1));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding)
 {
   const std::set<std::string> then = {"/PERMISSION/A", "/PERMISSION/B"};

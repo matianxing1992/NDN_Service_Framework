@@ -1,4 +1,5 @@
 #include "AbeHistoricalKey.hpp"
+#include "AbeHistoricalAuthorization.hpp"
 #include "AbeHistoricalKeyRequest.hpp"
 #include "AbePublicParametersArchive.hpp"
 #include "ServiceController.hpp"
@@ -586,6 +587,10 @@ ServiceController::rotateAbeGenerationAndReissuePolicies()
           ndn::Buffer(current->publicParameters.begin(), current->publicParameters.end()));
         archived.reason = "revocation-rotation";
         m_generationStore->recordAbeHistory(archived);
+        // Capture what each identity held while these parameters were current: a later historical
+        // request has to be judged against this generation's authority, not today's.
+        m_generationStore->recordAttributeSnapshot(archived.generationTimestamp, archived.epoch,
+                                                   m_attributesMap);
       }
     }
     m_aa.rotateKeyGeneration(publicParamsVersion);
@@ -758,6 +763,28 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
     };
     m_historicalKeyBroker = std::make_unique<HistoricalKeyBroker>(
       HistoricalKeyBroker::SignerLookup{}, materialLookup, replySigner);
+    // The decision is the intersection of what the identity held when the generation was published
+    // and what it holds now. Without a recorded snapshot the answer is no.
+    const auto authorization = [this] (const ndn::Name& identity, uint64_t generation,
+                                       uint64_t epoch, const std::string& policy) {
+      std::optional<std::map<std::string, std::set<std::string>>> snapshot;
+      try {
+        snapshot = m_generationStore->loadAttributeSnapshot(generation, epoch);
+      }
+      catch (const std::exception&) {
+        return false;
+      }
+      if (!snapshot)
+        return false;
+      const auto held = snapshot->find(identity.toUri(ndn::name::UriFormat::CANONICAL));
+      if (held == snapshot->end())
+        return false;
+      const auto current = m_attributesMap.find(identity.toUri(ndn::name::UriFormat::CANONICAL));
+      const std::set<std::string> now = current == m_attributesMap.end()
+        ? std::set<std::string>{} : current->second;
+      return historicalAttributeIsAuthorized(policy, held->second, now);
+    };
+    m_historicalKeyBroker->setAuthorizationCheck(authorization);
   }
   // The broker decides freshness, replay and the generation to mint from; the validator decides who
   // asked, and its answer is what the broker is allowed to trust.

@@ -608,6 +608,137 @@ ControllerGenerationStore::loadRevocations() const
   return loadState().revocations;
 }
 
+namespace {
+
+constexpr char ATTRIBUTE_SNAPSHOT_SCHEMA[] = "ndnsf-controller-attribute-snapshot-v1";
+
+/** One generation's block: a header line and one line per identity. */
+struct AttributeSnapshotBlock
+{
+  uint64_t generation = 0;
+  uint64_t epoch = 0;
+  std::map<std::string, std::set<std::string>> attributes;
+};
+
+std::vector<AttributeSnapshotBlock>
+parseAttributeSnapshot(const std::string& text)
+{
+  std::vector<AttributeSnapshotBlock> blocks;
+  std::size_t begin = 0;
+  bool sawSchema = false;
+  while (begin <= text.size()) {
+    const auto end = text.find('\n', begin);
+    const std::string line = text.substr(begin, end == std::string::npos ? std::string::npos
+                                                                        : end - begin);
+    if (end == std::string::npos)
+      begin = text.size() + 1;
+    else
+      begin = end + 1;
+    if (line.empty())
+      continue;
+    if (!sawSchema) {
+      if (line != ATTRIBUTE_SNAPSHOT_SCHEMA)
+        return {};
+      sawSchema = true;
+      continue;
+    }
+    if (line.rfind("generation ", 0) == 0) {
+      AttributeSnapshotBlock block;
+      block.generation = std::strtoull(line.c_str() + 11, nullptr, 10);
+      blocks.push_back(std::move(block));
+      continue;
+    }
+    if (line.rfind("epoch ", 0) == 0) {
+      if (blocks.empty())
+        return {};
+      blocks.back().epoch = std::strtoull(line.c_str() + 6, nullptr, 10);
+      continue;
+    }
+    if (line.front() != '/' || blocks.empty())
+      return {};
+    std::istringstream fields(line);
+    std::string identity;
+    fields >> identity;
+    std::string attribute;
+    std::set<std::string> values;
+    while (fields >> attribute) {
+      values.insert(attribute);
+    }
+    blocks.back().attributes[identity] = std::move(values);
+  }
+  return blocks;
+}
+
+} // namespace
+
+void
+ControllerGenerationStore::recordAttributeSnapshot(
+  uint64_t generation, uint64_t epoch,
+  const std::map<std::string, std::set<std::string>>& attributes, size_t retention)
+{
+  std::vector<AttributeSnapshotBlock> blocks;
+  {
+    std::ifstream existing(attributeSnapshotPath());
+    if (existing) {
+      std::ostringstream buffer;
+      buffer << existing.rdbuf();
+      blocks = parseAttributeSnapshot(buffer.str());
+    }
+  }
+  blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                              [generation, epoch] (const AttributeSnapshotBlock& block) {
+                                return block.generation == generation && block.epoch == epoch;
+                              }),
+               blocks.end());
+  blocks.push_back(AttributeSnapshotBlock{generation, epoch, attributes});
+  while (blocks.size() > std::max<size_t>(1, retention))
+    blocks.erase(blocks.begin());
+
+  std::string text(ATTRIBUTE_SNAPSHOT_SCHEMA);
+  text += "\n";
+  for (const auto& block : blocks) {
+    if (block.generation == 0)
+      continue;
+    text += "generation " + std::to_string(block.generation) + "\n";
+    text += "epoch " + std::to_string(block.epoch) + "\n";
+    for (const auto& item : block.attributes) {
+      text += item.first;
+      for (const auto& attribute : item.second) {
+        text += " " + attribute;
+      }
+      text += "\n";
+    }
+  }
+  const auto path = attributeSnapshotPath();
+  const auto temporary = std::filesystem::path(path).concat(".tmp");
+  {
+    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+    if (!out)
+      throw std::runtime_error("cannot write the Controller attribute snapshot");
+    out.write(text.data(), text.size());
+    if (!out)
+      throw std::runtime_error("cannot write the Controller attribute snapshot");
+  }
+  std::filesystem::permissions(temporary, std::filesystem::perms::owner_read |
+                                          std::filesystem::perms::owner_write);
+  std::filesystem::rename(temporary, path);
+}
+
+std::optional<std::map<std::string, std::set<std::string>>>
+ControllerGenerationStore::loadAttributeSnapshot(uint64_t generation, uint64_t epoch) const
+{
+  std::ifstream input(attributeSnapshotPath());
+  if (!input)
+    return std::nullopt;
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  for (const auto& block : parseAttributeSnapshot(buffer.str())) {
+    if (block.generation == generation && block.epoch == epoch)
+      return block.attributes;
+  }
+  return std::nullopt;
+}
+
 std::vector<ControllerGenerationStore::AbeHistoryEntry>
 ControllerGenerationStore::loadAbeHistory() const
 {

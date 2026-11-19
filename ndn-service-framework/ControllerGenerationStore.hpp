@@ -92,6 +92,28 @@ public:
   void storeAbeMaterial(const AbeMaterial& material);
   /** Superseded generations, oldest first. Readable without the writer lease. */
   std::vector<AbeHistoryEntry> loadAbeHistory() const;
+
+  /** Record which attributes each identity held while a generation was current.
+   *
+   * A historical read has to be judged against what the object's generation actually allowed, so the
+   * answer is captured at rotation instead of reconstructed later. Kept beside the state file: it is
+   * authorization evidence, not key material, and it must not change the key-bearing layout.
+   */
+  void
+  recordAttributeSnapshot(uint64_t generation, uint64_t epoch,
+                          const std::map<std::string, std::set<std::string>>& attributes,
+                          size_t retention = 8);
+
+  /** The recorded snapshot for one generation, or nothing when it predates recording. */
+  std::optional<std::map<std::string, std::set<std::string>>>
+  loadAttributeSnapshot(uint64_t generation, uint64_t epoch) const;
+
+  /** Where the attribute snapshots live: beside the state file, never inside it. */
+  std::filesystem::path
+  attributeSnapshotPath() const
+  {
+    return std::filesystem::path(m_statePath).concat(".attributes");
+  }
   /** Archive the material that is about to be replaced, keeping `retention` entries. */
   void recordAbeHistory(const AbeHistoryEntry& entry, size_t retention = 8);
   ControllerVersion startGeneration(
