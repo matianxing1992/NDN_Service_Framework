@@ -2902,6 +2902,10 @@ namespace ndn_service_framework{
             }
             ndn::Face& m_face;
             ndn::Scheduler m_scheduler;
+            /** Re-fetch this provider's permissions on the configured period, so a withdrawal reaches a
+             *  Provider that has already been provisioned. */
+            void scheduleProviderPermissionRefresh();
+            bool m_providerPermissionRefreshScheduled = false;
             ndn::Name identity;
             ndn::KeyChain m_keyChain;
             ndn::KeyChain* m_testSigningKeyChain = nullptr;

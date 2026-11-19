@@ -21579,6 +21579,26 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
           });
     }
 
+    void ServiceProvider::scheduleProviderPermissionRefresh()
+    {
+        const auto period = policyRevalidationPeriodMs();
+        if (period == 0 || m_providerPermissionRefreshScheduled)
+            return;
+        m_providerPermissionRefreshScheduled = true;
+        m_scheduler.schedule(ndn::time::milliseconds(period), [this, period] {
+            m_providerPermissionRefreshScheduled = false;
+            ndn::Name prefix;
+            {
+                std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                prefix = m_controllerPrefix;
+            }
+            if (prefix.empty())
+                return;
+            NDN_LOG_INFO("NDNSF_PROVIDER_PERMISSION_REVALIDATION periodMs=" << period);
+            fetchPermissionsFromController(prefix);
+        });
+    }
+
     void ServiceProvider::fetchPermissionsFromController(const ndn::Name& controllerPrefix)
     {
         {
@@ -21586,6 +21606,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             m_controllerPrefix = controllerPrefix;
         }
         fetchPolicyManifestFromController(controllerPrefix);
+        scheduleProviderPermissionRefresh();
 
         const auto prepared = prepareControllerControlQuery(controllerPrefix, "PROVIDER-PERMISSIONS",
             encodeControlQueryParameters({identity, ndn::Name(), 0, 0}), 1);
