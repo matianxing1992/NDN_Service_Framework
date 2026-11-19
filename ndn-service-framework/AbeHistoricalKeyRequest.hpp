@@ -27,6 +27,12 @@ struct HistoricalKeyRequest
   ndn::Name controllerPrefix;
   uint64_t generation = 0;
   uint64_t epoch = 0;
+  /** The protected object the requester wants to read, not just a policy it would like to have.
+   *
+   * Naming the object is what lets the Controller decide against the object's own authorization instead
+   * of against a scope the requester chose for itself.
+   */
+  ndn::Name objectName;
   std::string policy;
   ndn::Name recipientCertificate;
   uint64_t mintedAtMs = 0;
@@ -84,6 +90,7 @@ matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controller
  */
 bool
 buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& keyBytes,
+                        const ndn::security::Certificate& recipient,
                         uint64_t replyExpiresAtMs,
                         const std::function<void(ndn::Data&)>& sign, ndn::Data& result,
                         const ndn::Name& replyName = {});
@@ -92,7 +99,13 @@ buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& 
 struct HistoricalKeyReply
 {
   ndn::Name requestName;
-  std::string keyBytes;
+  ndn::Name objectName;
+  /** The key, encrypted to the recipient certificate the request named.
+   *
+   * Nothing here is readable without the recipient's private key, so a reply in transit or in a cache is
+   * not a key hand-out.
+   */
+  std::string sealedKey;
   uint64_t generation = 0;
   uint64_t epoch = 0;
   uint64_t expiresAtMs = 0;
@@ -115,6 +128,15 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
 bool
 verifyHistoricalKeyReplySignature(const ndn::Data& reply,
                                   const ndn::security::Certificate& controllerCertificate);
+
+/** Open the key a verified reply carries, with the certificate the request named.
+ *
+ * Returns false when the reply was sealed to someone else or the local key cannot open it, which is
+ * exactly the case an observer of the same reply hits.
+ */
+bool
+unsealHistoricalKeyReply(const HistoricalKeyReply& reply, const ndn::security::Tpm& tpm,
+                         const ndn::Name& certificateName, std::string& keyBytes);
 
 /** The decision part of a historical key responder, with no face of its own.
  *
@@ -162,7 +184,8 @@ public:
 
 private:
   std::optional<ndn::Data>
-  finish(const HistoricalKeyRequest& request, uint64_t nowMs, const ndn::Name& replyName);
+  finish(const HistoricalKeyRequest& request, uint64_t nowMs, const ndn::Name& replyName,
+                  const ndn::security::Certificate& recipient);
 
   SignerLookup m_signerLookup;
   MaterialLookup m_materialLookup;

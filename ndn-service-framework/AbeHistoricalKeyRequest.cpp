@@ -2,6 +2,7 @@
 
 #include "AbeHistoricalKey.hpp"
 
+#include <nac-abe/ndn-crypto/data-enc-dec.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 
 #include <algorithm>
@@ -17,8 +18,8 @@
 namespace ndn_service_framework {
 namespace {
 
-constexpr char BODY_SCHEMA[] = "ndnsf-abe-history-dkey-request-v1";
-constexpr char REPLY_SCHEMA[] = "ndnsf-abe-history-dkey-reply-v1";
+constexpr char BODY_SCHEMA[] = "ndnsf-abe-history-dkey-request-v2";
+constexpr char REPLY_SCHEMA[] = "ndnsf-abe-history-dkey-reply-v2";
 
 std::string
 sha256Hex(const std::string& bytes)
@@ -82,6 +83,7 @@ encodeHistoricalKeyRequest(const HistoricalKeyRequest& request)
   body += "\ncontroller " + request.controllerPrefix.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\ngeneration " + std::to_string(request.generation);
   body += "\nepoch " + std::to_string(request.epoch);
+  body += "\nobject " + request.objectName.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\nrecipient " + request.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\npolicy " + request.policy;
   body += "\nminted " + std::to_string(request.mintedAtMs);
@@ -102,7 +104,7 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
         break;
       begin = end + 1;
     }
-    if (lines.size() != 8 || lines[0] != BODY_SCHEMA)
+    if (lines.size() != 9 || lines[0] != BODY_SCHEMA)
       return false;
     const auto field = [] (const std::string& line, const char* prefix) -> std::string {
       const std::string head(prefix);
@@ -114,10 +116,16 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
     parsed.controllerPrefix = ndn::Name(field(lines[1], "controller "));
     if (!parseU64(field(lines[2], "generation "), parsed.generation) ||
         !parseU64(field(lines[3], "epoch "), parsed.epoch) ||
-        !parseU64(field(lines[6], "minted "), parsed.mintedAtMs) ||
-        !parseU64(field(lines[7], "expires "), parsed.expiresAtMs))
+        !parseU64(field(lines[7], "minted "), parsed.mintedAtMs) ||
+        !parseU64(field(lines[8], "expires "), parsed.expiresAtMs))
       return false;
-    const auto recipientText = field(lines[4], "recipient ");
+    const auto objectText = field(lines[4], "object ");
+    if (objectText.empty() || objectText.front() != '/')
+      return false;
+    parsed.objectName = ndn::Name(objectText);
+    if (parsed.objectName.toUri(ndn::name::UriFormat::CANONICAL) != objectText)
+      return false;
+    const auto recipientText = field(lines[5], "recipient ");
     // A certificate name is absolute and round-trips to the text it was written as; anything else
     // would let the body and the name disagree about who is asking.
     if (recipientText.empty() || recipientText.front() != '/' ||
@@ -127,9 +135,10 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
     parsed.recipientCertificate = ndn::Name(recipientText);
     if (parsed.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL) != recipientText)
       return false;
-    parsed.policy = field(lines[5], "policy ");
+    parsed.policy = field(lines[6], "policy ");
     if (parsed.controllerPrefix.empty() || parsed.generation == 0 ||
-        parsed.recipientCertificate.empty() || !isSafePolicy(parsed.policy))
+        parsed.recipientCertificate.empty() || parsed.objectName.empty() ||
+        !isSafePolicy(parsed.policy))
       return false;
     request = std::move(parsed);
     return true;
@@ -188,28 +197,46 @@ matchHistoricalKeyRequestName(const ndn::Name& name, const ndn::Name& controller
 
 bool
 buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& keyBytes,
+                        const ndn::security::Certificate& recipient,
                         uint64_t replyExpiresAtMs,
                         const std::function<void(ndn::Data&)>& sign, ndn::Data& result,
                         const ndn::Name& replyName)
 {
   if (request.generation == 0 || keyBytes.empty() || request.expiresAtMs == 0 ||
-      !isSafePolicy(request.policy))
+      !isSafePolicy(request.policy) || request.objectName.empty())
+    return false;
+  // The reply must be readable only by the certificate the request named. Refusing here when the
+  // caller hands over a different certificate keeps the seal and the claim from disagreeing.
+  if (recipient.getName() != request.recipientCertificate)
     return false;
   // A reply may not outlive the request that asked for it.
   const auto expires = std::min(replyExpiresAtMs, request.expiresAtMs);
   if (expires == 0)
     return false;
 
+  ndn::Block sealed;
+  try {
+    const auto& publicKey = recipient.getPublicKey();
+    sealed = ndn::nacabe::encryptDataContentWithCK(
+      ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(keyBytes.data()), keyBytes.size()),
+      ndn::span<const uint8_t>(publicKey.data(), publicKey.size()));
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+  if (sealed.size() == 0)
+    return false;
+
   std::string envelope(REPLY_SCHEMA);
   envelope += "\nrequest " + historicalKeyRequestDigest(request);
+  envelope += "\nobject " + request.objectName.toUri(ndn::name::UriFormat::CANONICAL);
   envelope += "\nrecipient " + request.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL);
   envelope += "\ngeneration " + std::to_string(request.generation);
   envelope += "\nepoch " + std::to_string(request.epoch);
   envelope += "\npolicy " + request.policy;
   envelope += "\nexpires " + std::to_string(expires);
-  envelope += "\nlength " + std::to_string(keyBytes.size());
+  envelope += "\nsealed " + std::to_string(sealed.size());
   envelope += "\n";
-  envelope += keyBytes;
 
   const auto requestName = makeHistoricalKeyRequestName(request.controllerPrefix, request);
   // The reply answers the Interest that was expressed, whose name carries the requester's signature
@@ -222,8 +249,9 @@ buildHistoricalKeyReply(const HistoricalKeyRequest& request, const std::string& 
     result.setName(replyName);
   else
     return false;
-  result.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(envelope.data()),
-                                envelope.size()));
+  ndn::Buffer content(reinterpret_cast<const uint8_t*>(envelope.data()), envelope.size());
+  content.insert(content.end(), sealed.begin(), sealed.end());
+  result.setContent(content);
   result.setFreshnessPeriod(ndn::time::milliseconds(0));
   if (sign)
     sign(result);
@@ -237,16 +265,19 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
   try {
     const std::string content(reinterpret_cast<const char*>(reply.getContent().value()),
                               reply.getContent().value_size());
+    // The envelope is nine lines and the sealed key follows them as bytes.
     std::vector<std::string> lines;
     std::size_t begin = 0;
-    while (begin <= content.size()) {
+    std::size_t envelopeEnd = std::string::npos;
+    while (lines.size() < 9) {
       const auto end = content.find('\n', begin);
-      lines.push_back(content.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
       if (end == std::string::npos)
-        break;
+        return false;
+      lines.push_back(content.substr(begin, end - begin));
       begin = end + 1;
+      envelopeEnd = end;
     }
-    if (lines.size() != 9 || lines[0] != REPLY_SCHEMA)
+    if (lines[0] != REPLY_SCHEMA)
       return false;
     const auto field = [] (const std::string& line, const char* prefix) -> std::string {
       const std::string head(prefix);
@@ -256,37 +287,61 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
     };
     if (field(lines[1], "request ") != historicalKeyRequestDigest(request))
       return false;
+    if (field(lines[2], "object ") !=
+        request.objectName.toUri(ndn::name::UriFormat::CANONICAL))
+      return false;
     const auto requestName = makeHistoricalKeyRequestName(request.controllerPrefix, request);
     if (reply.getName().size() < requestName.size() ||
         reply.getName().getSubName(0, requestName.size()) != requestName)
       return false;
-    if (field(lines[2], "recipient ") !=
+    if (field(lines[3], "recipient ") !=
         request.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL))
       return false;
     uint64_t generation = 0;
     uint64_t epoch = 0;
     uint64_t expires = 0;
-    uint64_t length = 0;
-    if (!parseU64(field(lines[3], "generation "), generation) ||
-        !parseU64(field(lines[4], "epoch "), epoch) ||
-        !parseU64(field(lines[6], "expires "), expires) ||
-        !parseU64(field(lines[7], "length "), length))
+    uint64_t sealedBytes = 0;
+    if (!parseU64(field(lines[4], "generation "), generation) ||
+        !parseU64(field(lines[5], "epoch "), epoch) ||
+        !parseU64(field(lines[7], "expires "), expires) ||
+        !parseU64(field(lines[8], "sealed "), sealedBytes))
       return false;
     if (generation != request.generation || epoch != request.epoch ||
-        field(lines[5], "policy ") != request.policy)
+        field(lines[6], "policy ") != request.policy)
       return false;
     if (expires <= nowMs || expires > request.expiresAtMs)
       return false;
-    // Bound what a consumer will accept: a key is small, and a claimed length is attacker-controlled.
-    constexpr uint64_t MAX_KEY_BYTES = 8192;
-    if (length == 0 || length > MAX_KEY_BYTES || length != lines[8].size())
+    // A sealed key is small and its claimed length is attacker-controlled, so bound it and require the
+    // bytes to match exactly what the envelope promises.
+    constexpr uint64_t MAX_SEALED_BYTES = 65536;
+    if (sealedBytes == 0 || sealedBytes > MAX_SEALED_BYTES ||
+        content.size() != static_cast<std::size_t>(envelopeEnd) + 1 + sealedBytes)
       return false;
     accepted.requestName = reply.getName();
-    accepted.keyBytes = lines[8];
+    accepted.objectName = request.objectName;
+    accepted.sealedKey = content.substr(envelopeEnd + 1, sealedBytes);
     accepted.generation = generation;
     accepted.epoch = epoch;
     accepted.expiresAtMs = expires;
     return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
+bool
+unsealHistoricalKeyReply(const HistoricalKeyReply& reply, const ndn::security::Tpm& tpm,
+                         const ndn::Name& certificateName, std::string& keyBytes)
+{
+  if (reply.sealedKey.empty())
+    return false;
+  try {
+    const ndn::Block block(ndn::span<const uint8_t>(
+      reinterpret_cast<const uint8_t*>(reply.sealedKey.data()), reply.sealedKey.size()));
+    const auto plain = ndn::nacabe::decryptDataContent(block, tpm, certificateName);
+    keyBytes.assign(reinterpret_cast<const char*>(plain.data()), plain.size());
+    return !keyBytes.empty();
   }
   catch (const std::exception&) {
     return false;
@@ -329,12 +384,13 @@ HistoricalKeyBroker::answerValidated(const ndn::Interest& interest,
   // Mint only for the certificate the request named.
   if (signer.getName() != request.recipientCertificate)
     return std::nullopt;
-  return finish(request, nowMs, interest.getName());
+  return finish(request, nowMs, interest.getName(), signer);
 }
 
 std::optional<ndn::Data>
 HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs,
-                            const ndn::Name& replyName)
+                            const ndn::Name& replyName,
+                            const ndn::security::Certificate& recipient)
 {
   for (auto it = m_seen.begin(); it != m_seen.end();) {
     if (it->second > nowMs) {
@@ -361,8 +417,8 @@ HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs,
     return std::nullopt;
   const std::string keyBytes(reinterpret_cast<const char*>(key.data()), key.size());
   ndn::Data reply;
-  if (!buildHistoricalKeyReply(request, keyBytes, request.expiresAtMs, m_replySigner, reply,
-                               replyName))
+  if (!buildHistoricalKeyReply(request, keyBytes, recipient, request.expiresAtMs, m_replySigner,
+                               reply, replyName))
     return std::nullopt;
   m_seen[digest] = request.expiresAtMs;
   return reply;
@@ -397,7 +453,7 @@ HistoricalKeyBroker::answer(const ndn::Interest& interest, const ndn::Name& cont
     return std::nullopt;
   if (!ndn::security::verifySignature(interest, signer.getPublicKey()))
     return std::nullopt;
-  return finish(request, nowMs, interest.getName());
+  return finish(request, nowMs, interest.getName(), signer);
 }
 
 } // namespace ndn_service_framework

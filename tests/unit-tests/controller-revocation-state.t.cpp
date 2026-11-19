@@ -74,6 +74,37 @@ makeRefreshStatus(const ControllerVersion& version,
 
 BOOST_AUTO_TEST_SUITE(ControllerRevocationState)
 
+namespace {
+/** A throwaway RSA identity whose certificate can seal and open a historical key reply.
+ *
+ * The sealing primitive is RSA-only, and the directory is cleared before the PIB is opened - deleting it
+ * afterwards would remove the store the key chain is still using.
+ */
+struct ReplyKeys
+{
+  ReplyKeys(const std::filesystem::path& root, const std::string& tag, const ndn::Name& identity)
+    : dir(prepare(root, tag))
+    , keyChain("pib-sqlite3:" + dir.string(), "tpm-file:" + dir.string(), false)
+  {
+    keyChain.createIdentity(identity, ndn::RsaKeyParams());
+    certificate = keyChain.getPib().getIdentity(identity).getDefaultKey().getDefaultCertificate();
+  }
+
+  static std::filesystem::path
+  prepare(const std::filesystem::path& root, const std::string& tag)
+  {
+    auto dir = std::filesystem::path(root) / ("reply-keys-" + tag);
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directory(dir);
+    return dir;
+  }
+
+  std::filesystem::path dir;
+  ndn::KeyChain keyChain;
+  ndn::security::Certificate certificate;
+};
+} // namespace
+
 BOOST_AUTO_TEST_CASE(AbeMaterialPersistsAndMarksRotationBeforeRestart)
 {
   DefaultGenerationFiles files;
@@ -1005,8 +1036,8 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
                            "tpm-file:" + controllerDir.string(), false);
   const ndn::Name requesterIdentity("/user/history");
   const ndn::Name controllerIdentity("/controller/a");
-  requester.createIdentity(requesterIdentity);
-  controller.createIdentity(controllerIdentity);
+  requester.createIdentity(requesterIdentity, ndn::RsaKeyParams());
+  controller.createIdentity(controllerIdentity, ndn::RsaKeyParams());
   const auto userCert = requester.getPib().getIdentity(requesterIdentity).getDefaultKey()
     .getDefaultCertificate();
   const auto controllerCert = controller.getPib().getIdentity(controllerIdentity).getDefaultKey()
@@ -1043,6 +1074,7 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
 
   HistoricalKeyRequest request;
   request.controllerPrefix = controllerIdentity;
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
@@ -1058,10 +1090,12 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
   BOOST_REQUIRE(reply);
   HistoricalKeyReply accepted;
   BOOST_REQUIRE(verifyHistoricalKeyReply(*reply, request, 1'000'000, accepted));
-  // The minted key really decrypts the archived generation's ciphertext.
+  // The minted key really decrypts the archived generation's ciphertext. The reply is sealed to the
+  // requester, so the key has to be opened with that requester's own key first.
+  std::string opened;
+  BOOST_REQUIRE(unsealHistoricalKeyReply(accepted, requester.getTpm(), userCert.getName(), opened));
   ndn::nacabe::algo::PrivateKey key;
-  key.fromBuffer(ndn::Buffer(reinterpret_cast<const uint8_t*>(accepted.keyBytes.data()),
-                             accepted.keyBytes.size()));
+  key.fromBuffer(ndn::Buffer(reinterpret_cast<const uint8_t*>(opened.data()), opened.size()));
   BOOST_CHECK(abe.kpDecrypt(params, key, cipher) == ndn::Buffer({9, 8, 7}));
   // The same request must not mint twice.
   BOOST_CHECK(!broker.answer(interest, controllerIdentity, 1'000'000));
@@ -1085,12 +1119,13 @@ BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
   ndn::KeyChain keyChain("pib-sqlite3:" + identityDir.string(),
                          "tpm-file:" + identityDir.string(), false);
   const ndn::Name identity("/user/history");
-  keyChain.createIdentity(identity);
+  keyChain.createIdentity(identity, ndn::RsaKeyParams());
   const auto certificate = keyChain.getPib().getIdentity(identity).getDefaultKey()
     .getDefaultCertificate();
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "/SERVICE/ObjectDetection";
@@ -1124,12 +1159,18 @@ BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
 
 BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndExpiry)
 {
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "reply", ndn::Name("/user/reply"));
+  auto& keyChain = keys.keyChain;
+  const auto& certificate = keys.certificate;
+
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "/SERVICE/ObjectDetection";
-  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.recipientCertificate = certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
 
@@ -1155,14 +1196,27 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndEx
     data.setSignatureValue(ndn::Buffer{7});
   };
   ndn::Data reply;
-  BOOST_REQUIRE(buildHistoricalKeyReply(request, keyBytes, 1'030'000, sign, reply));
+  BOOST_REQUIRE(buildHistoricalKeyReply(request, keyBytes, certificate, 1'030'000, sign, reply));
   BOOST_CHECK(reply.getName() == name);
 
   HistoricalKeyReply accepted;
   BOOST_CHECK(verifyHistoricalKeyReply(reply, request, 1'010'000, accepted));
-  BOOST_CHECK_EQUAL(accepted.keyBytes, keyBytes);
   BOOST_CHECK_EQUAL(accepted.generation, request.generation);
   BOOST_CHECK_EQUAL(accepted.expiresAtMs, 1'030'000u);   // capped by the reply budget
+
+  // The recipient opens it; a bystander holding the identical reply cannot.
+  std::string opened;
+  BOOST_REQUIRE(unsealHistoricalKeyReply(accepted, keyChain.getTpm(), certificate.getName(), opened));
+  BOOST_CHECK_EQUAL(opened, keyBytes);
+  {
+    ReplyKeys bystanderKeys(files.root, "bystander", ndn::Name("/user/bystander"));
+    const auto& bystander = bystanderKeys.keyChain;
+    const auto& bystanderCert = bystanderKeys.certificate;
+    std::string stolen;
+    BOOST_CHECK(!unsealHistoricalKeyReply(accepted, bystander.getTpm(), bystanderCert.getName(),
+                                          stolen));
+  }
+
   // An expired reply, a different recipient and a different generation must all be refused.
   BOOST_CHECK(!verifyHistoricalKeyReply(reply, request, 1'030'000, accepted));
   auto other = request;
@@ -1171,6 +1225,9 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndEx
   auto wrongGeneration = request;
   wrongGeneration.generation = 1003;
   BOOST_CHECK(!verifyHistoricalKeyReply(reply, wrongGeneration, 1'010'000, accepted));
+  auto wrongObject = request;
+  wrongObject.objectName = ndn::Name("/object/other");
+  BOOST_CHECK(!verifyHistoricalKeyReply(reply, wrongObject, 1'010'000, accepted));
   // The request name is checked against the body, so a reply cannot land under another name.
   BOOST_CHECK(matchHistoricalKeyRequestName(name, request.controllerPrefix, request));
   auto otherController = request;
@@ -1184,7 +1241,12 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndEx
   BOOST_CHECK(!matchHistoricalKeyRequestName(renamed, request.controllerPrefix, request));
   // No key material means no reply worth accepting.
   ndn::Data empty;
-  BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(), 1'030'000, sign, empty));
+  BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(), certificate, 1'030'000, sign, empty));
+  // A certificate the request did not name is not accepted as the sealing recipient either.
+  auto mismatch = request;
+  mismatch.recipientCertificate = ndn::Name("/user/KEY/2/self/v=1");
+  ndn::Data wrongSeal;
+  BOOST_CHECK(!buildHistoricalKeyReply(mismatch, keyBytes, certificate, 1'030'000, sign, wrongSeal));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalProofAcceptsAnUpperCaseRecordedDigest)
@@ -1363,7 +1425,7 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
                           "tpm-file:" + requesterDir.string(), false);
   const ndn::Name identity("/user/history");
-  requester.createIdentity(identity);
+  requester.createIdentity(identity, ndn::RsaKeyParams());
   const auto userCert = requester.getPib().getIdentity(identity).getDefaultKey()
     .getDefaultCertificate();
 
@@ -1398,6 +1460,7 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
@@ -1430,7 +1493,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestThatClaimsTooLongAValidity)
   ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
                           "tpm-file:" + requesterDir.string(), false);
   const ndn::Name identity("/user/history");
-  requester.createIdentity(identity);
+  requester.createIdentity(identity, ndn::RsaKeyParams());
   const auto userCert = requester.getPib().getIdentity(identity).getDefaultKey()
     .getDefaultCertificate();
 
@@ -1464,6 +1527,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestThatClaimsTooLongAValidity)
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
@@ -1494,7 +1558,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
   ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
                           "tpm-file:" + requesterDir.string(), false);
   const ndn::Name identity("/user/history");
-  requester.createIdentity(identity);
+  requester.createIdentity(identity, ndn::RsaKeyParams());
   const auto userCert = requester.getPib().getIdentity(identity).getDefaultKey()
     .getDefaultCertificate();
 
@@ -1528,6 +1592,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
@@ -1555,6 +1620,7 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyRecipientMustBeAnAbsoluteCertificateName)
 {
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
@@ -1581,11 +1647,14 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyRecipientMustBeAnAbsoluteCertificateName)
 
 BOOST_AUTO_TEST_CASE(HistoricalKeyPolicyCannotSmuggleEnvelopeFields)
 {
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "policy", ndn::Name("/user/policy"));
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
-  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.recipientCertificate = keys.certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
 
@@ -1602,21 +1671,26 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyPolicyCannotSmuggleEnvelopeFields)
     data.setSignatureValue(ndn::Buffer{1});
   };
   ndn::Data reply;
-  BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(4, 'k'), 1'030'000, sign, reply));
+  BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(4, 'k'), keys.certificate, 1'030'000,
+                                       sign, reply));
   // The same request with a plain expression is served.
   request.policy = "attr-a";
-  BOOST_CHECK(buildHistoricalKeyReply(request, std::string(4, 'k'), 1'030'000, sign, reply));
+  BOOST_CHECK(buildHistoricalKeyReply(request, std::string(4, 'k'), keys.certificate, 1'030'000,
+                                      sign, reply));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalKeyReplyRefusesAnOversizedKey)
 {
   // The length field is attacker-controlled; a consumer must not allocate or accept whatever it says.
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "oversize", ndn::Name("/user/oversize"));
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
-  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.recipientCertificate = keys.certificate.getName();
   request.mintedAtMs = 1'000'000;
   request.expiresAtMs = 1'060'000;
 
@@ -1625,17 +1699,18 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyRefusesAnOversizedKey)
     data.setSignatureValue(ndn::Buffer{1});
   };
   ndn::Data reply;
-  BOOST_REQUIRE(buildHistoricalKeyReply(request, std::string(10, 'k'), 1'030'000, sign, reply));
+  BOOST_REQUIRE(buildHistoricalKeyReply(request, std::string(10, 'k'), keys.certificate, 1'030'000,
+                                        sign, reply));
 
   // Rewrite the length field to a large value without touching name or binding fields.
   std::string content(reinterpret_cast<const char*>(reply.getContent().value()),
                       reply.getContent().value_size());
-  const auto marker = content.find("\nlength ");
+  const auto marker = content.find("\nsealed ");
   BOOST_REQUIRE(marker != std::string::npos);
   const auto end = content.find('\n', marker + 1);
   const auto declared = content.substr(marker + 1, end - marker - 1);
-  BOOST_REQUIRE_EQUAL(declared, std::string("length 10"));
-  content.replace(marker + 1, end - marker - 1, "length 9000");
+  BOOST_REQUIRE_EQUAL(declared, "sealed " + std::to_string(content.size() - end - 1));
+  content.replace(marker + 1, end - marker - 1, "sealed 9000");
   ndn::Data forged(reply);
   forged.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(content.data()), content.size()));
 
@@ -1666,8 +1741,8 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
                            "tpm-file:" + controllerDir.string(), false);
   const ndn::Name requesterIdentity("/user/history");
   const ndn::Name controllerIdentity("/controller/a");
-  requester.createIdentity(requesterIdentity);
-  controller.createIdentity(controllerIdentity);
+  requester.createIdentity(requesterIdentity, ndn::RsaKeyParams());
+  controller.createIdentity(controllerIdentity, ndn::RsaKeyParams());
   const auto userCert = requester.getPib().getIdentity(requesterIdentity).getDefaultKey()
     .getDefaultCertificate();
   const auto controllerCert = controller.getPib().getIdentity(controllerIdentity).getDefaultKey()
@@ -1704,6 +1779,7 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
     ndn::time::system_clock::now().time_since_epoch()).count());
   HistoricalKeyRequest request;
   request.controllerPrefix = controllerIdentity;
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
@@ -1773,8 +1849,8 @@ BOOST_AUTO_TEST_CASE(ForwarderDeliversNoKeyToAStrangerOrAnExpiredRequest)
                            "tpm-file:" + controllerDir.string(), false);
   const ndn::Name requesterIdentity("/user/history");
   const ndn::Name controllerIdentity("/controller/a");
-  requester.createIdentity(requesterIdentity);
-  controller.createIdentity(controllerIdentity);
+  requester.createIdentity(requesterIdentity, ndn::RsaKeyParams());
+  controller.createIdentity(controllerIdentity, ndn::RsaKeyParams());
   const auto userCert = requester.getPib().getIdentity(requesterIdentity).getDefaultKey()
     .getDefaultCertificate();
   const auto controllerCert = controller.getPib().getIdentity(controllerIdentity).getDefaultKey()
@@ -1835,6 +1911,7 @@ BOOST_AUTO_TEST_CASE(ForwarderDeliversNoKeyToAStrangerOrAnExpiredRequest)
 
   HistoricalKeyRequest request;
   request.controllerPrefix = controllerIdentity;
+  request.objectName = ndn::Name("/object/protected");
   request.generation = 1002;
   request.epoch = 3;
   request.policy = "attr-a";
