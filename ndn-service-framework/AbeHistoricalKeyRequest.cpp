@@ -402,6 +402,12 @@ HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs,
   const auto digest = historicalKeyRequestDigest(request);
   if (m_seen.count(digest))
     return std::nullopt;
+  // Without a decision the broker must not mint: a Controller that cannot check the object's
+  // authorization has no basis for handing out a key to a retired generation.
+  if (!m_authorizationCheck ||
+      !m_authorizationCheck(ndn::security::extractIdentityFromCertName(request.recipientCertificate),
+                            request.generation, request.epoch, request.policy))
+    return std::nullopt;
   Material material;
   if (!m_materialLookup || !m_materialLookup(request.generation, request.epoch, material))
     return std::nullopt;

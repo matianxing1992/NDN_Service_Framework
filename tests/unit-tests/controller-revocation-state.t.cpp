@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 
+#include "ndn-service-framework/AbeHistoricalAuthorization.hpp"
 #include "ndn-service-framework/AbeHistoricalKeyRequest.hpp"
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
@@ -1071,6 +1072,11 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
     controller.sign(data, ndn::security::signingByCertificate(controllerCert));
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  // These cases are about delivery and binding, so the permission decision is granted here; the
+  // decision itself has its own cases.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+    return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
+  });
 
   HistoricalKeyRequest request;
   request.controllerPrefix = controllerIdentity;
@@ -1155,6 +1161,97 @@ BOOST_AUTO_TEST_CASE(SignedHistoricalKeyRequestCoversNameAndBody)
   tampered.setApplicationParameters(ndn::Buffer(
     reinterpret_cast<const uint8_t*>(otherBody.data()), otherBody.size()));
   BOOST_CHECK(!ndn::security::verifySignature(tampered, publicKey));
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding)
+{
+  const std::set<std::string> then = {"/PERMISSION/A", "/PERMISSION/B"};
+  const std::set<std::string> now = {"/PERMISSION/B", "/PERMISSION/C"};
+
+  // Held at publication and still held now: the intersection is exactly this attribute.
+  BOOST_CHECK(historicalAttributeIsAuthorized("/PERMISSION/B", then, now));
+  // Dropped since publication.
+  BOOST_CHECK(!historicalAttributeIsAuthorized("/PERMISSION/A", then, now));
+  // Gained since publication: the object's generation never allowed it.
+  BOOST_CHECK(!historicalAttributeIsAuthorized("/PERMISSION/C", then, now));
+  // Never granted at all.
+  BOOST_CHECK(!historicalAttributeIsAuthorized("/PERMISSION/D", then, now));
+  // A compound expression would let the requester widen its own scope.
+  BOOST_CHECK(!historicalAttributeIsAuthorized("/PERMISSION/B OR /PERMISSION/C", then, now));
+  BOOST_CHECK(!historicalAttributeIsAuthorized("/PERMISSION/B AND /PERMISSION/A", then, now));
+  BOOST_CHECK(!historicalAttributeIsAuthorized("/PERMISSION/B|/PERMISSION/C", then, now));
+  BOOST_CHECK(!historicalAttributeIsAuthorized("", then, now));
+}
+
+BOOST_AUTO_TEST_CASE(BrokerRefusesWhenThePermissionDecisionSaysNo)
+{
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "denied", ndn::Name("/user/denied"));
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+  HistoricalKeyBroker::Material material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+
+  const auto signerLookup = [&keys] (const ndn::Name& name, ndn::security::Certificate& out) {
+    if (name != keys.certificate.getName())
+      return false;
+    out = keys.certificate;
+    return true;
+  };
+  const auto materialLookup = [&material] (uint64_t generation, uint64_t epoch,
+                                           HistoricalKeyBroker::Material& out) {
+    if (generation != 1002 || epoch != 3)
+      return false;
+    out = material;
+    return true;
+  };
+  const auto replySigner = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "/PERMISSION/A";
+  request.recipientCertificate = keys.certificate.getName();
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+  ndn::Interest interest;
+  signHistoricalKeyRequest(interest, request, keys.keyChain,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      keys.certificate.getName()));
+
+  // No decision supplied at all: nothing is minted.
+  BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
+  // A decision that refuses: still nothing.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+    return false;
+  });
+  BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
+  // The decision sees the verified identity, generation and policy, not whatever the caller claims.
+  ndn::Name seenIdentity;
+  uint64_t seenGeneration = 0;
+  std::string seenPolicy;
+  broker.setAuthorizationCheck([&] (const ndn::Name& identity, uint64_t generation, uint64_t,
+                                    const std::string& policy) {
+    seenIdentity = identity;
+    seenGeneration = generation;
+    seenPolicy = policy;
+    return true;
+  });
+  BOOST_REQUIRE(broker.answer(interest, request.controllerPrefix, 1'000'000));
+  BOOST_CHECK(seenIdentity == ndn::security::extractIdentityFromCertName(keys.certificate.getName()));
+  BOOST_CHECK_EQUAL(seenGeneration, 1002u);
+  BOOST_CHECK_EQUAL(seenPolicy, "/PERMISSION/A");
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndExpiry)
@@ -1457,6 +1554,11 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
     data.setSignatureValue(ndn::Buffer{1});
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  // These cases are about delivery and binding, so the permission decision is granted here; the
+  // decision itself has its own cases.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+    return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
+  });
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
@@ -1524,6 +1626,11 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestThatClaimsTooLongAValidity)
     data.setSignatureValue(ndn::Buffer{1});
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  // These cases are about delivery and binding, so the permission decision is granted here; the
+  // decision itself has its own cases.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+    return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
+  });
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
@@ -1589,6 +1696,11 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
     data.setSignatureValue(ndn::Buffer{1});
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  // These cases are about delivery and binding, so the permission decision is granted here; the
+  // decision itself has its own cases.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+    return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
+  });
 
   HistoricalKeyRequest request;
   request.controllerPrefix = ndn::Name("/controller/a");
@@ -1774,6 +1886,11 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
     controller.sign(data, ndn::security::signingByCertificate(controllerCert));
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  // These cases are about delivery and binding, so the permission decision is granted here; the
+  // decision itself has its own cases.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+    return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
+  });
 
   const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
     ndn::time::system_clock::now().time_since_epoch()).count());
@@ -1883,6 +2000,11 @@ BOOST_AUTO_TEST_CASE(ForwarderDeliversNoKeyToAStrangerOrAnExpiredRequest)
     controller.sign(data, ndn::security::signingByCertificate(controllerCert));
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+  // These cases are about delivery and binding, so the permission decision is granted here; the
+  // decision itself has its own cases.
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+    return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
+  });
 
   const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
     ndn::time::system_clock::now().time_since_epoch()).count());

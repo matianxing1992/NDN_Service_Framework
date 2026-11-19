@@ -138,6 +138,16 @@ bool
 unsealHistoricalKeyReply(const HistoricalKeyReply& reply, const ndn::security::Tpm& tpm,
                          const ndn::Name& certificateName, std::string& keyBytes);
 
+/** Decides whether a requester may still read one object of a retired generation.
+ *
+ * It receives the verified signer identity, the generation the object was published under, and the
+ * attribute the requester asked for. Returning false makes the broker answer nothing, so a Controller
+ * that cannot decide fails closed by leaving the hook unset.
+ */
+using HistoricalKeyAuthorizationCheck =
+  std::function<bool(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
+                     const std::string& policy)>;
+
 /** The decision part of a historical key responder, with no face of its own.
  *
  * Everything that can be wrong about a request is decided here - name binding, freshness, replay,
@@ -165,6 +175,13 @@ public:
   {
   }
 
+  /** Supply the permission decision. Without it the broker answers nothing. */
+  void
+  setAuthorizationCheck(HistoricalKeyAuthorizationCheck check)
+  {
+    m_authorizationCheck = std::move(check);
+  }
+
   /** Decide one request and produce the reply, or nothing when it must not be answered.
    *
    * `nowMs` is passed in so a test can place itself on either side of an expiry.
@@ -187,6 +204,7 @@ private:
   finish(const HistoricalKeyRequest& request, uint64_t nowMs, const ndn::Name& replyName,
                   const ndn::security::Certificate& recipient);
 
+  HistoricalKeyAuthorizationCheck m_authorizationCheck;
   SignerLookup m_signerLookup;
   MaterialLookup m_materialLookup;
   ReplySigner m_replySigner;
