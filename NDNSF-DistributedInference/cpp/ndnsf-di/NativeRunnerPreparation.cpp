@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
@@ -11,6 +14,25 @@
 #include <unistd.h>
 
 namespace ndnsf::di {
+
+void
+registerMaintainedNativeProviderBackends(RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver> stateObserver)
+{
+  registerOnnxRuntimeBackend(factory, std::move(sessionCache), std::move(stateObserver));
+  factory.registerBackend("native-yolo-postprocess", makeNativeYoloMergeRunner);
+  qwen::registerQwenTensorBackend(factory);
+}
+
+NativeModelRunnerSpec
+prepareMaintainedNativeRole(const NativeSelectionProjectionV3& projection,
+  const std::function<NativeModelRunnerSpec()>& prepareOnnxRole)
+{
+  if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
+    return nativeYoloMergeRunnerSpecFromProjection(projection);
+  return prepareOnnxRole();
+}
 
 std::vector<std::pair<std::string, std::string>>
 parseNativeStateSuccessorMap(const std::string& encoded)

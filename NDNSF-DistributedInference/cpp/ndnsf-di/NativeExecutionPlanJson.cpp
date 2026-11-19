@@ -3561,6 +3561,19 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
       std::move(executionTemplate)));
 }
 
+std::string
+detail::nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::string_view role)
+{
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == role) steps.push_back(step);
+  if (steps.empty())
+    throw std::invalid_argument("selected role has no sealed execution steps");
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"version", plan.stepPlanVersion}, {"tensor_degree", plan.tensorDegree},
+    {"steps", nativeStepsJson(steps)}}));
+}
+
 bool nativeSelectionRoleContractsEqualV3(
   const NativeSelectionRoleV3& left, const NativeSelectionRoleV3& right)
 {

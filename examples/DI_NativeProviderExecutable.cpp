@@ -1348,25 +1348,6 @@ main(int argc, char** argv)
     auto specs = withExecutionEvidenceContext(loadManifestSpecs(options), options,
                                               providerBootId, providerStartedAtMs);
     const auto allowedRoles = allowedRolesForOptions(plan, options);
-    if (options.serve) {
-      // A request-scoped serving manifest intentionally carries role names but
-      // no preassembled artifact paths. Keep one metadata-only runner slot per
-      // advertised role so ordered registration can complete; the authenticated
-      // Selection projection replaces each slot with its certified ONNX or
-      // native postprocess runner before execution.
-      for (const auto& role : allowedRoles) {
-        if (specs.find(role) != specs.end()) {
-          continue;
-        }
-        NativeModelRunnerSpec spec;
-        spec.role = role;
-        spec.kind = role == "Merge" ? "native-yolo-postprocess" : "onnx-model";
-        spec.backend = role == "Merge" ? "native-yolo-postprocess" : options.offerBackend;
-        specs.emplace(role, std::move(spec));
-      }
-      specs = withExecutionEvidenceContext(
-        std::move(specs), options, providerBootId, providerStartedAtMs);
-    }
     std::optional<NativeProviderOfferV3Config> nativeOfferConfig;
     if (!options.selectionOfferKeyFile.empty()) {
       auto signer = loadNativeOfferSigner(options.selectionOfferKeyFile);
@@ -1453,15 +1434,7 @@ main(int argc, char** argv)
           (options.captureCompleteKvState ? ".kv-complete" : ".kv-samples.json")),
         options.providerName, options.captureCompleteKvState, options.captureLogitsOutput);
     }
-    registerOnnxRuntimeBackend(*factory, sessionCache, std::move(stateProbe));
-    factory->registerBackend(
-      "native-yolo-postprocess",
-      [] (const NativeModelRunnerSpec& spec) {
-        return makeNativeYoloMergeRunner(spec);
-      });
-    // Same registration as the library factory: the tensor-parallel parent
-    // runner needs the ONNX backend above, and every other role is unaffected.
-    ndnsf::di::qwen::registerQwenTensorBackend(*factory);
+    registerMaintainedNativeProviderBackends(*factory, sessionCache, std::move(stateProbe));
     if (options.wiringCheckOnly || options.tracerDeterministicRunner) {
       factory->registerBackend(
         "onnxruntime",
@@ -2177,18 +2150,13 @@ main(int argc, char** argv)
               logRuntimeEvidence(record.str());
             }
 
-            // Formal serving never reads a ready-made role file at startup.
-            // The metadata-only specs are used only for the ordered role set;
-            // the exact model path is produced after Selection by the factory.
-            auto metadataSpecs = withExecutionEvidenceContext(
-              specs, options, providerBootId, providerStartedAtMs);
             // The post-Selection factory reconstructs a role spec from the
             // canonical assembly cache. Preserve the validated resident
             // opt-in across that reconstruction; otherwise the preparation
             // context adds a request profile and disables the ORT session
             // cache even though the service manifest requested residency.
             std::map<std::string, bool> residentSessionByRole;
-            for (const auto& item : metadataSpecs) {
+            for (const auto& item : specs) {
               const auto found = item.second.metadata.find("residentSession");
               const bool resident =
                 found != item.second.metadata.end() &&
@@ -2199,15 +2167,11 @@ main(int argc, char** argv)
                      << " manifestResident=" << (resident ? "true" : "false");
               logRuntimeEvidence(record.str());
             }
-            auto materializedSpecs = metadataSpecs;
-            auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
             {
               std::ostringstream record;
               record << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
                        << plan.roles.size()
-                       << " artifacts=" << materializedSpecs.size()
-                       << " activeRoles=" << allowedRoles.size()
-                       << " runners=" << runners.size();
+                       << " activeRoles=" << allowedRoles.size();
               logRuntimeEvidence(record.str());
             }
 
@@ -2217,7 +2181,6 @@ main(int argc, char** argv)
             config.plan = plan;
             config.assignment = defaultAssignment(plan, options.providerName, allowedRoles);
             config.runnerFactory = factory;
-            config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
             config.protectedResidentAuthority = protectedResidentAuthority;
@@ -2318,11 +2281,8 @@ main(int argc, char** argv)
                 ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                 const NativeSelectionProjectionV3& projection,
                 const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
-                NativeModelRunnerSpec spec;
-                if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS") {
-                  spec = nativeYoloMergeRunnerSpecFromProjection(projection);
-                }
-                else {
+                auto spec = prepareMaintainedNativeRole(projection, [&] {
+                  NativeModelRunnerSpec spec;
                   NativeCanonicalOnnxAssemblerOptions assemblyOptions;
                   assemblyOptions.cacheDir = assemblyCacheDir;
                   assemblyOptions.persistentRecipeResidencyIndex =
@@ -2468,7 +2428,7 @@ main(int argc, char** argv)
                         projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");
                     }
                     else {
-                      artifactCache->invalidate(key);
+                      artifactCache->invalidate(key, projection);
                       throw std::runtime_error(
                         "DI_PROVIDER_ARTIFACT_TEMPLATE_REBIND_MISSING");
                     }
@@ -2497,7 +2457,8 @@ main(int argc, char** argv)
                     std::move(lease));
                   lifetime->plaintext = std::move(plaintextLease);
                   spec.lifetime = std::move(lifetime);
-                }
+                  return spec;
+                });
                 const auto resident = residentSessionByRole.find(spec.role);
                 const bool residentRequested =
                   resident != residentSessionByRole.end() && resident->second;

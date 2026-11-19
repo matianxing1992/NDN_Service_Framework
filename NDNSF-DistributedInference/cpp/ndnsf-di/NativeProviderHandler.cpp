@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp"
@@ -1883,6 +1884,16 @@ validateNativeProviderRuntimeReadiness(
   return std::nullopt;
 }
 
+static std::optional<std::string>
+validateExpectedRuntimeReadiness(const ExecutionEvidence& evidence, bool expectNativePostprocess,
+  const std::string& role, const std::string& backend, const std::string& device,
+  const std::string& artifactDigest)
+{
+  if (expectNativePostprocess != (evidence.runnerKind == RunnerKind::NativeYoloPostprocess))
+    return "DI_RUNTIME_RUNNER_KIND_MISMATCH";
+  return validateNativeProviderRuntimeReadiness(evidence, role, backend, device, artifactDigest);
+}
+
 std::optional<std::string>
 validateNativePreparedRunnerSpec(
   const NativeSelectionProjectionV3& projection,
@@ -1957,6 +1968,12 @@ validateNativePreparedRunnerSpec(
         (childBackend != "onnxruntime" && childBackend != "onnxruntime-cpu" &&
          childBackend != "onnxruntime-cuda"))
       return "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH";
+    std::vector<NativeExecutionStepSpec> roleSteps;
+    for (const auto& step : projection.plan.steps)
+      if (step.unitId == assembly.selectedRole) roleSteps.push_back(step);
+    if (roleSteps.empty() || spec.entryContract ||
+        metadataValue(spec, {"tensorParallelSteps"}) != qwen::qwenTpStepDeclarationJson(roleSteps))
+      return "DI_PROVIDER_ASSEMBLY_STEP_CONTRACT_MISMATCH";
   }
   if (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend)) {
     try {
@@ -3315,10 +3332,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         publishConversationStateReady(ctx, *selectionProjection, *roleSpec.conversationStateBinding,
           config.conversationStateKeyScope, workStatistics, "state-hit");
       }
-      // DATA_DRIVEN_V2 serving deliberately keeps metadata-only runner slots
-      // until authenticated Selection.  Do not validate those empty slots as
-      // if they were the prepared ONNX runner; the preparation factory will
-      // return and validate the certified spec immediately before execution.
+      // Request-scoped serving prepares its runner after authenticated Selection.
       const auto* readinessRunnerSpec = config.runnerPreparationFactory
         ? nullptr : runnerSpecForRole(state->runnerSpecs, role);
       const auto deploymentRevision = nativeProviderFieldValue(
@@ -3478,8 +3492,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 if (!evidence) {
                   throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
                 }
-                if (const auto error = validateNativeProviderRuntimeReadiness(
-                      *evidence, role, expectedBackend, expectedDevice,
+                if (const auto error = validateExpectedRuntimeReadiness(
+                      *evidence, projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS",
+                      role, expectedBackend, expectedDevice,
                       expectedArtifact)) {
                   throw std::runtime_error(*error);
                 }
@@ -3517,8 +3532,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             if (!evidence) {
               throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
             }
-            if (const auto error = validateNativeProviderRuntimeReadiness(
-                  *evidence, role, expectedBackend, expectedDevice,
+            if (const auto error = validateExpectedRuntimeReadiness(
+                  *evidence, projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS",
+                  role, expectedBackend, expectedDevice,
                   expectedArtifact)) {
               throw std::runtime_error(*error);
             }
@@ -3546,8 +3562,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             failInvocation("DI_RUNTIME_EVIDENCE_MISSING");
             return;
           }
-          const auto readinessError = validateNativeProviderRuntimeReadiness(
-            *evidence, role, expectedBackend, expectedDevice, expectedArtifact);
+          if (readinessRunnerSpec == nullptr) {
+            completeExecutionLease();
+            failInvocation("DI_RUNTIME_ASSIGNMENT_INCOMPLETE");
+            return;
+          }
+          const bool nativePostprocess = readinessRunnerSpec->kind == "native-yolo-postprocess";
+          if (selectionProjection && nativePostprocess !=
+              (selectionProjection->assemblyContract().mergeKind == "NATIVE_POSTPROCESS")) {
+            completeExecutionLease();
+            failInvocation("DI_RUNTIME_RUNNER_KIND_MISMATCH");
+            return;
+          }
+          const auto readinessError = validateExpectedRuntimeReadiness(
+            *evidence, nativePostprocess, role, expectedBackend, expectedDevice, expectedArtifact);
           if (readinessError) {
             completeExecutionLease();
             failInvocation(*readinessError);

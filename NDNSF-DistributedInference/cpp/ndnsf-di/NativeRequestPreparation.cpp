@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-backend-variant.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -455,7 +456,7 @@ void NativeRequestPreparation::validateRoleBindingsForCheckedCandidate(
     if (role.requiredDeviceMemoryMb < requiredMb)
       throw std::runtime_error("DI_NATIVE_ROLE_BINDING_MISMATCH");
     if (std::none_of(backends.begin(), backends.end(), [&](const auto& backend) {
-          return role.backend == backend || role.backend == backend + "-cpu" || role.backend == backend + "-cuda";
+          return matchesNativeBackendVariant(backend, role.backend);
         }) || std::any_of(role.nodeIndices.begin(), role.nodeIndices.end(), [&](auto index) {
           // ONNX source indices and semantic planning ordinals are different
           // coordinate spaces. The source owner/assembler checks actual cover.

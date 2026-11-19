@@ -230,25 +230,30 @@ NativeEntryRunner::executionEvidenceSnapshot() const
   std::string artifactDigest;
   for (const auto& entry : m_entries) {
     const auto child = m_children.find(entry.entryId);
-    if (child == m_children.end() || !child->second) continue;
+    if (child == m_children.end() || !child->second) return std::nullopt;
     const auto evidence = child->second->executionEvidenceSnapshot();
-    if (!evidence) continue;
+    if (!evidence || !evidence->loadCompleted || !evidence->realCompute ||
+        evidence->cpuFallbackUsed ||
+        (!evidence->warmupCompleted &&
+         !(evidence->runnerKind == RunnerKind::OnnxRuntimeCpu &&
+           evidence->warmupSkippedUnrankedInput)) ||
+        std::find(evidence->roles.begin(), evidence->roles.end(), entry.entryId) ==
+          evidence->roles.end())
+      return std::nullopt;
     const auto artifact = evidence->artifactDigests.find(entry.entryId);
+    if (artifact == evidence->artifactDigests.end() || artifact->second.empty())
+      return std::nullopt;
     if (!unit) {
       unit = *evidence;
-      artifactDigest = artifact == evidence->artifactDigests.end()
-        ? std::string{} : artifact->second;
+      artifactDigest = artifact->second;
       continue;
     }
-    // Load and warmup are the conjunction over the entries: a unit whose INIT ran but whose
-    // attention entry did not load is not ready, and reporting the first child's answer
-    // would let one successful entry speak for the whole rank.
-    unit->loadCompleted = unit->loadCompleted && evidence->loadCompleted;
+    if (unit->runnerKind != evidence->runnerKind || unit->deviceKind != evidence->deviceKind ||
+        unit->deviceId != evidence->deviceId || artifactDigest != artifact->second)
+      return std::nullopt;
     unit->warmupCompleted = unit->warmupCompleted && evidence->warmupCompleted;
     unit->warmupSkippedUnrankedInput =
       unit->warmupSkippedUnrankedInput || evidence->warmupSkippedUnrankedInput;
-    if (artifactDigest.empty() && artifact != evidence->artifactDigests.end())
-      artifactDigest = artifact->second;
   }
   if (!unit) return std::nullopt;
   // The Provider assigned a unit role, not an entry id, so the aggregate answers under the

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-backend-variant.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
@@ -215,11 +216,17 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
   if (!std::all_of(requiredCapabilities.begin(), requiredCapabilities.end(),
         [&offer] (const auto& capability) { return contains(offer.capabilities, capability); }))
     return choices;
+      const auto offersVariant = [&] (const std::string& variant) {
+        return matchesNativeBackendVariant(role.backend, variant) &&
+               contains(offer.backends, variant);
+      };
+      const bool offersCpuVariant = offersVariant("onnxruntime-cpu");
+      const bool offersCudaVariant = offersVariant("onnxruntime-cuda");
+      const bool offersExactBackend = contains(offer.backends, role.backend);
       if (!contains(offer.acceptedRoles, role.role) ||
-          (!contains(offer.backends, role.backend) && !contains(offer.backends, role.backend + "-cpu") &&
-           !contains(offer.backends, role.backend + "-cuda"))) return choices;
+          (!offersExactBackend && !offersCpuVariant && !offersCudaVariant)) return choices;
       auto devices = offer.devices;
-      const bool cpu = cpuBackend(role.backend) || contains(offer.backends, role.backend + "-cpu");
+      const bool cpu = cpuBackend(role.backend) || offersCpuVariant;
       if (devices.empty() && cpu) devices.push_back("cpu");
       for (const auto& device : devices) {
         if (control) control->requireActive();
@@ -232,12 +239,12 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
             if (control) control->requireActive();
             if (it->device == device) { r = it; break; }
           }
-          if ((!contains(offer.backends, role.backend) && !contains(offer.backends, role.backend + "-cuda")) ||
+          if ((!offersExactBackend && !offersCudaVariant) ||
               r == offer.resources.end() || r->freeMemoryMb < role.requiredDeviceMemoryMb) continue;
         }
         auto backend = role.backend;
-        if (device == "cpu" && contains(offer.backends, backend + "-cpu")) backend += "-cpu";
-        else if (device != "cpu" && contains(offer.backends, backend + "-cuda")) backend += "-cuda";
+        if (device == "cpu" && offersCpuVariant) backend = "onnxruntime-cpu";
+        else if (device != "cpu" && offersCudaVariant) backend = "onnxruntime-cuda";
         const auto reuse = v4FallbackOffer == nullptr ?
           reuseCost(role, offer, device, backend, nowMs, control) :
           v4FallbackReuseCost(role, offer, device, backend, *v4FallbackOffer,

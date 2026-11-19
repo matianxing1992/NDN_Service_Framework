@@ -6,6 +6,17 @@
 
 namespace ndnsf::di {
 
+class OnnxKvStateObserver;
+class OnnxRuntimeSessionCache;
+
+void registerMaintainedNativeProviderBackends(RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver> stateObserver = {});
+
+/** Choose the admitted native postprocessing or synchronous assembled-model path. */
+NativeModelRunnerSpec prepareMaintainedNativeRole(const NativeSelectionProjectionV3& projection,
+  const std::function<NativeModelRunnerSpec()>& prepareOnnxRole);
+
 /** Decode the explicit input=successor map, rejecting malformed or duplicate bindings. */
 std::vector<std::pair<std::string, std::string>>
 parseNativeStateSuccessorMap(const std::string& encoded);

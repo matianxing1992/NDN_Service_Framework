@@ -534,16 +534,7 @@ makeProviderRunnerFactory(const std::shared_ptr<ProviderMetrics>& metrics,
                           std::shared_ptr<OnnxRuntimeSessionCache> sessionCache)
 {
   auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
-  registerOnnxRuntimeBackend(*factory, std::move(sessionCache));
-  factory->registerBackend("native-yolo-postprocess",
-                           [] (const NativeModelRunnerSpec& spec) {
-                             return makeNativeYoloMergeRunner(spec);
-                           });
-  // The tensor-parallel parent runner builds its children through this same
-  // registry, so it is registered after the ONNX backend it depends on. A
-  // role that names this backend gets a parent holding its entries; every other
-  // role keeps its ordinary single-session runner.
-  qwen::registerQwenTensorBackend(*factory);
+  registerMaintainedNativeProviderBackends(*factory, std::move(sessionCache));
   factory->freeze();
   return std::make_shared<CountingProviderRunnerFactory>(std::move(factory), metrics);
 }
@@ -1761,11 +1752,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           projection.assemblyContract().modelManifestDigest != expectedManifestDigest) {
         throw std::runtime_error("DI_PROVIDER_MANIFEST_BINDING_MISMATCH");
       }
-      NativeModelRunnerSpec spec;
-      if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS") {
-        spec = nativeYoloMergeRunnerSpecFromProjection(projection);
-      }
-      else {
+      auto spec = prepareMaintainedNativeRole(projection, [&] {
+        NativeModelRunnerSpec spec;
         logProviderPreparationProgress(projection, "FACTORY_ENTER", "onnx");
         NativeCanonicalOnnxAssemblerOptions options;
         options.cacheDir = cacheDir;
@@ -1952,7 +1940,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");
             }
             else {
-              artifactCache->invalidate(key);
+              artifactCache->invalidate(key, projection);
               throw std::runtime_error(
                 "DI_PROVIDER_ARTIFACT_TEMPLATE_REBIND_MISSING");
             }
@@ -1972,7 +1960,7 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
                 spec, projection, options, control);
             }
             catch (...) {
-              artifactCache->invalidate(key);
+              artifactCache->invalidate(key, projection);
               if (protectedPlaintextCache) {
                 const auto digest = spec.metadata.find("encryptedArtifactDigest");
                 if (digest != spec.metadata.end()) {
@@ -2025,7 +2013,8 @@ ProviderRegistration Provider::serve(const ServiceDefinition& service)
           lifetime->plaintext = std::move(plaintextLease);
           spec.lifetime = std::move(lifetime);
         }
-      }
+        return spec;
+      });
       if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
         metrics->assemblies.fetch_add(1, std::memory_order_relaxed);
       const auto resident = residentSessionByRole.find(spec.role);

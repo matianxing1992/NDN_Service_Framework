@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include <boost/property_tree/ptree_fwd.hpp>
+#include <string_view>
 
 namespace ndnsf::di {
 NativeJson nativeAssemblyJson(const NativeSelectionRoleV3& role);
@@ -25,6 +26,8 @@ validateNativeQwenTensorAssembly(const NativeSelectionRoleV3& role,
  * Source-envelope reconstruction and object admission remain with the adapter. */
 void validateNativeAutomaticSelectionBinding(const NativeSelectionProjectionV3& projection);
 namespace detail {
+/** Stable identity of the selected role's sealed entry and step bindings. */
+std::string nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::string_view role);
 // Reuse the complete endpoint admission contract at the naming leaf.
 void validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint);
 // Internal wire path. root must be the unchanged read_json result of this exact
