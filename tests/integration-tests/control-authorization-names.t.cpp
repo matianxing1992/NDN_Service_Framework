@@ -14,6 +14,7 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
+#include <nac-abe/algo/abe-support.hpp>
 #include <nac-abe/attribute-authority.hpp>
 #include <ndn-cxx/util/io.hpp>
 #include <ndn-cxx/util/time-unit-test-clock.hpp>
@@ -169,6 +170,45 @@ struct InvocationNamesOracle {
 }
 
 namespace {
+
+/** Read one TLV out of a block's value, by type, for the ABE content envelopes.
+ *
+ * The library writes its envelope with NDN TLV types in the long form (`0xFD` + two bytes), so this
+ * walks both the type and the length encodings instead of assuming one byte each.
+ */
+std::optional<ndn::Buffer>
+abeTlvField(const ndn::Block& block, std::uint32_t wanted)
+{
+  const std::vector<uint8_t> bytes(block.value_begin(), block.value_end());
+  std::size_t offset = 0;
+  const auto readNumber = [&bytes, &offset] (std::uint32_t& value) {
+    if (offset >= bytes.size())
+      return false;
+    const auto first = bytes[offset++];
+    if (first < 0xfd) {
+      value = first;
+      return true;
+    }
+    const std::size_t extra = first == 0xfd ? 2 : first == 0xfe ? 4 : 8;
+    if (bytes.size() - offset < extra)
+      return false;
+    value = 0;
+    for (std::size_t i = 0; i < extra; ++i)
+      value = (value << 8) | bytes[offset++];
+    return true;
+  };
+  while (offset < bytes.size()) {
+    std::uint32_t type = 0;
+    std::uint32_t length = 0;
+    if (!readNumber(type) || !readNumber(length) || bytes.size() - offset < length)
+      return std::nullopt;
+    if (type == wanted)
+      return ndn::Buffer(bytes.data() + offset, length);
+    offset += length;
+  }
+  return std::nullopt;
+}
+
 using namespace ndn_service_framework;
 using namespace ndn_service_framework::test;
 using namespace ndn_service_framework::test::naming_oracle;
@@ -1146,6 +1186,35 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
   BOOST_REQUIRE_EQUAL(successes, 1U);
   BOOST_REQUIRE_GT(ckRequests, 0U);
   BOOST_REQUIRE_GT(authorizations, 0U);
+
+  // Reassemble the same packets the Consumer just decrypted, from only what a receiver can see, and
+  // require the same plaintext. This is the Core-side path historical reads would use.
+  {
+    const auto& ckPacket = *originalCk.front();
+    const auto ckContent = ndn::Block(ndn::span<const uint8_t>(ckPacket.getContent().value(),
+                                                               ckPacket.getContent().value_size()));
+    const auto wrapped = abeTlvField(ckContent, 0x0259);
+    BOOST_REQUIRE(wrapped);
+    const auto payloadContent = ndn::Block(ndn::span<const uint8_t>(encoded.data(),
+                                                                    encoded.size()));
+    const auto content = abeTlvField(payloadContent, 0x025A);
+    const auto sizeField = abeTlvField(payloadContent, 0x025B);
+    BOOST_REQUIRE(content);
+    BOOST_REQUIRE(sizeField);
+    BOOST_REQUIRE_EQUAL(sizeField->size(), 1u);
+    ndn::nacabe::algo::CipherText rebuilt;
+    rebuilt.m_contentKey = std::make_shared<ndn::nacabe::algo::ContentKey>(
+      std::string(), *wrapped);
+    rebuilt.m_content = *content;
+    rebuilt.m_plainTextSize = (*sizeField)[0];
+    // Mint the key the policy allows directly from the authority's own material (HAVE_TESTS exposes
+    // it), which is the same key the Consumer received over the network.
+    const auto dkey = ndn::nacabe::algo::ABESupport::getInstance().kpPrvKeyGen(
+      authority.m_pubParams, authority.m_masterKey, "attr1 AND attr2");
+    const auto corePlaintext = ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(
+      authority.m_pubParams, dkey, rebuilt);
+    BOOST_CHECK(corePlaintext == expected);
+  }
   const auto authorizedBefore = authorizations;
   const auto requestedBefore = ckRequests;
   for (const auto& original : originalCk) {
