@@ -248,7 +248,7 @@ def build(bld):
                         bld.srcnode.find_node('NDNSF-UAV-APP/shared/uav-byte-track-state.cpp'),
                         bld.srcnode.find_node('NDNSF-UAV-APP/shared/UavTrackingWorkerTransaction.cpp')],
                 includes=['..'], use='NDN_CXX BOOST', install_path=None)
-    bld.program(target='../spec228-tracking-config-tests', name='spec228-tracking-config-tests',
+    bld.program(target='../uav-tracking-config-tests', name='uav-tracking-config-tests',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/uav-tracking-config.t.cpp'),
                         bld.srcnode.find_node('NDNSF-UAV-APP/tracking/uav-tracking-config.cpp'),
@@ -258,8 +258,8 @@ def build(bld):
                 includes=['..'], use='NDN_CXX BOOST OPENSSL DL',
                 cxxflags=['-std=c++17', '-O0', '-g0'], install_path=None)
     if 'uav' in bld.env.NDNSF_COMPONENTS:
-        bld.program(target='../spec228-tracking-main-app-tests',
-                    name='spec228-tracking-main-app-tests',
+        bld.program(target='../uav-tracking-main-app-tests',
+                    name='uav-tracking-main-app-tests',
                     lib=['pangoft2-1.0', 'fontconfig'],
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-main-app.t.cpp'),
@@ -272,8 +272,8 @@ def build(bld):
                     defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                     install_path='${PREFIX}/libexec/ndnsf-tests')
-        bld.program(target='../spec228-tracking-main-drone-tests',
-                    name='spec228-tracking-main-drone-tests',
+        bld.program(target='../uav-tracking-main-drone-tests',
+                    name='uav-tracking-main-drone-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-main-drone.t.cpp'),
                             bld.path.find_node('integration-tests/uav-static-metadata.t.cpp'),
@@ -287,8 +287,8 @@ def build(bld):
                     defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                     install_path='${PREFIX}/libexec/ndnsf-tests')
-        bld.program(target='../spec228-tracking-provider-tests',
-                    name='spec228-tracking-provider-tests',
+        bld.program(target='../uav-tracking-provider-tests',
+                    name='uav-tracking-provider-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-provider.t.cpp'),
                             bld.path.find_node('unit-tests/uav-person-result.t.cpp'),
@@ -298,8 +298,8 @@ def build(bld):
                         'NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
-        bld.program(target='../spec228-tracking-job-flow-tests',
-                    name='spec228-tracking-job-flow-tests',
+        bld.program(target='../uav-tracking-job-flow-tests',
+                    name='uav-tracking-job-flow-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('integration-tests/uav-tracking-job-flow.t.cpp'),
                             bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
@@ -310,7 +310,7 @@ def build(bld):
                     defines=['HAVE_TESTS',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
                     install_path='${PREFIX}/libexec/ndnsf-tests')
-        bld.program(target='../spec228-tracking-job-tests', name='spec228-tracking-job-tests',
+        bld.program(target='../uav-tracking-job-tests', name='uav-tracking-job-tests',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-job.t.cpp'),
                             bld.path.find_node('unit-tests/uav-tracking-coordinator.t.cpp'),
@@ -1601,8 +1601,8 @@ def build(bld):
             sources.append(bld.path.parent.find_node('ndn-service-framework/ServiceProvider.cpp'))
             flags += ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
             links += ['-fsanitize=address,undefined']
-        bld.program(target='../spec228-large-fetch-lifetime' + suffix,
-                    name='spec228-large-fetch-lifetime' + suffix,
+        bld.program(target='../uav-large-fetch-lifetime' + suffix,
+                    name='uav-large-fetch-lifetime' + suffix,
                     source=sources, includes=framework_includes,
                     use='ndn-service-framework ' + framework_use,
                     defines=['HAVE_TESTS'], cxxflags=flags, linkflags=links,

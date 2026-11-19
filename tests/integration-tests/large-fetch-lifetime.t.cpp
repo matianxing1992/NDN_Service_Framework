@@ -98,7 +98,7 @@ checkFetchLifetime(FetchFault fault)
   BOOST_CHECK(lifetime.expired());
 }
 
-BOOST_AUTO_TEST_SUITE(Spec228LargeFetchLifetime)
+BOOST_AUTO_TEST_SUITE(UavLargeFetchLifetime)
 
 BOOST_AUTO_TEST_CASE(SuccessReleasesExactFetch)
 {

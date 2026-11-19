@@ -192,7 +192,7 @@ def _main_process_specs(root: Path, output: Path, *, model: Path, headless: bool
     main_node = _installed_program('UavDroneApp')
     main_gs = _installed_program('UavGroundStationApp')
     controller_binary = _installed_program('App_ServiceController')
-    policy = root / 'Experiments/UAV/spec228.policies'
+    policy = root / 'Experiments/UAV/uav-tracking.policies'
     if not policy.is_file():
         raise RunnerError('maintained main tracking policy is unavailable')
     specs = [_actor_spec('controller', root, output,
@@ -248,7 +248,7 @@ def _main_plan_metadata(specs: Sequence[ProcessSpec], output: Path) -> dict[str,
     job_path = Path(gs.command[gs.command.index('--tracking-job-config') + 1])
     job = json.loads(job_path.read_bytes())
     providers = {}
-    files = {job_path, TOPOLOGY, Path(__file__).resolve(), ROOT / 'Experiments/UAV/spec228.policies',
+    files = {job_path, TOPOLOGY, Path(__file__).resolve(), ROOT / 'Experiments/UAV/uav-tracking.policies',
              Path(__file__).with_name('person_run_receipt.py'),
              Path(__file__).with_name('person_run_resources.py')}
     for name in ('uav1-camera', 'uav2-camera', 'uav3-camera', 'compute'):
@@ -1218,7 +1218,7 @@ def _build_person_plan(person: dict[str, Any], model: Path, output: Path, *, hea
     files = [receipt_path, Path(person["profile"]), Path(person["computationManifest"]),
              observation_path, generations_path, sampling_path, model.resolve(),
              Path(person["reidModel"]), TOPOLOGY,
-             ROOT / ("Experiments/UAV/spec228.policies" if application_mode == "main" else "Experiments/UAV/spec191.policies")]
+             ROOT / ("Experiments/UAV/uav-tracking.policies" if application_mode == "main" else "Experiments/UAV/spec191.policies")]
     files.extend(Path(__file__).with_name(name) for name in (
         "run_multicamera_tracking_demo.py", "person_run_receipt.py", "person_run_resources.py", "tracking_artifacts.py",
         "tracking_topology.py", "motion_fixture.py"))
@@ -1764,7 +1764,7 @@ def _verify_main_plan(plan: dict[str, Any], *, prepared: bool = False) -> None:
     if trust is not None and any(argument(item['command'], '--trust-schema') != trust
                                  for item in processes.values()):
         raise RunnerError('main command trust-schema mismatch')
-    if argument(controller_command, '--policy-file') != str(ROOT / 'Experiments/UAV/spec228.policies'):
+    if argument(controller_command, '--policy-file') != str(ROOT / 'Experiments/UAV/uav-tracking.policies'):
         raise RunnerError('main controller policy mismatch')
     for item in [*main['frozenFiles'], *main['sourceFiles']]:
         path = Path(item['path'])

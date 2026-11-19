@@ -406,12 +406,12 @@
           "selector": {"include": ["*"]}
         },
         {
-          "target": "spec228-tracking-main-drone-tests",
+          "target": "uav-tracking-main-drone-tests",
           "requiresComponents": ["uav"],
           "selector": {"include": ["*"]}
         },
         {
-          "target": "spec228-tracking-job-flow-tests",
+          "target": "uav-tracking-job-flow-tests",
           "requiresComponents": ["uav"],
           "selector": {"include": ["*"]}
         }
@@ -429,7 +429,7 @@
     "gui": {
       "description": "Native GTK presentation checks; require an existing display or installed Xvfb.",
       "targets": [{
-        "target": "spec228-tracking-main-app-tests",
+        "target": "uav-tracking-main-app-tests",
         "requiresComponents": ["uav"],
         "facilities": ["display"],
         "selector": {"include": ["*"]}
