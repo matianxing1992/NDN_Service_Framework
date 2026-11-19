@@ -35,6 +35,9 @@ struct HistoricalReadRequest
   ndn::Name payloadName;
   std::string policy;
   ndn::security::Certificate recipientCertificate;
+  /** The Controller whose signature the key reply must carry. Verification is not optional: an envelope
+   *  that names the right generation proves nothing about who wrote it. */
+  ndn::security::Certificate controllerCertificate;
   /** The producer certificate the CK and payload Data must be signed by. */
   ndn::security::Certificate producerCertificate;
   /** The retired generation's public parameter wire, as published under its bound proof. */

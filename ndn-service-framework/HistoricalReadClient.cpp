@@ -112,7 +112,8 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
                    uint32_t timeoutMs)
 {
   if (request.generation == 0 || request.ckName.empty() ||
-      request.recipientCertificate.getName().empty())
+      request.recipientCertificate.getName().empty() ||
+      request.controllerCertificate.getName().empty())
     return std::nullopt;
 
   HistoricalKeyRequest keyRequest;
@@ -159,8 +160,15 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
     return std::nullopt;
 
   HistoricalKeyReply accepted;
-  if (!verifyHistoricalKeyReply(*state->reply, keyRequest, nowMs(), accepted))
+  if (!verifyHistoricalKeyReply(*state->reply, keyRequest, nowMs(), accepted)) {
+    HISTORICAL_READ_DEBUG("historical read: key reply does not match this request\n");
     return std::nullopt;
+  }
+  // The envelope can be forged; only the Controller's signature says who wrote it.
+  if (!verifyHistoricalKeyReplySignature(*state->reply, request.controllerCertificate)) {
+    HISTORICAL_READ_DEBUG("historical read: key reply is not signed by the Controller\n");
+    return std::nullopt;
+  }
   std::string keyBytes;
   if (!unsealHistoricalKeyReply(accepted, keyChain.getTpm(),
                                 request.recipientCertificate.getName(), keyBytes))

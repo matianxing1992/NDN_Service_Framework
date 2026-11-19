@@ -88,6 +88,7 @@ main(int argc, char** argv)
     const auto controllerCertificate =
       loadCertificate(field(text, "controller_pib"), field(text, "controller"));
     request.recipientCertificate = loadCertificate(pib, field(text, "identity"));
+    request.controllerCertificate = controllerCertificate;
 
     const auto parameters = ndn_service_framework::fetchHistoricalPublicParameters(
       face, request.controllerPrefix, request.generation, request.epoch, controllerCertificate, 5000);

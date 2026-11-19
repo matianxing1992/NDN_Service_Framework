@@ -1352,6 +1352,69 @@ BOOST_AUTO_TEST_CASE(SealedFieldsRoundTripAndRefuseTampering)
   BOOST_CHECK(!isSealedField(plain));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalReadRefusesAKeyReplyNotSignedByTheController)
+{
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "forged", ndn::Name("/user/reader"));
+  // A second identity signs the reply: everything else about it is correct.
+  DefaultGenerationFiles otherFiles;
+  ReplyKeys other(otherFiles.root, "signer", ndn::Name("/controller/impostor"));
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto paramsWire = params.toBuffer();
+  const std::string publicParameters(reinterpret_cast<const char*>(paramsWire.data()),
+                                     paramsWire.size());
+
+  auto face = std::make_shared<ndn::DummyClientFace>(ndn::DummyClientFace::Options{});
+  HistoricalKeyBroker::Material material;
+  material.publicParameters = publicParameters;
+  material.masterSecret = master.m_msk;
+  HistoricalKeyBroker broker(
+    [&keys, &other] (const ndn::Name& name, ndn::security::Certificate& out) {
+      if (name == keys.certificate.getName()) { out = keys.certificate; return true; }
+      if (name == other.certificate.getName()) { out = other.certificate; return true; }
+      return false;
+    },
+    [&material] (uint64_t, uint64_t, HistoricalKeyBroker::Material& out) {
+      out = material;
+      return true;
+    },
+    [&other] (ndn::Data& data) {
+      other.keyChain.sign(data, ndn::security::signingByCertificate(other.certificate));
+    });
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+    return true;
+  });
+  ndn::Name dkeyPrefix("/controller/a/NDNSF/HISTORY/DKEY");
+  face->setInterestFilter(dkeyPrefix,
+    [face, &broker] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
+        ndn::time::system_clock::now().time_since_epoch()).count());
+      const auto reply = broker.answer(interest, ndn::Name("/controller/a"), now);
+      if (reply)
+        face->put(*reply);
+    });
+
+  HistoricalReadRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.objectName = ndn::Name("/object/protected");
+  request.producerName = ndn::Name("/producer/p1");
+  request.serviceName = ndn::Name("/service/inference");
+  request.ckName = makeHistoricalCkName(request.producerName, request.serviceName, "/PERMISSION/A");
+  request.policy = "/PERMISSION/A";
+  request.recipientCertificate = keys.certificate;
+  // The reader trusts the real Controller, not whoever answered.
+  request.controllerCertificate = keys.certificate;
+  request.fetchTimeoutMs = 1000;
+
+  BOOST_CHECK(!fetchHistoricalKey(*face, keys.keyChain, request, 2000));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalReadClientDiscoversParametersThroughTheIndex)
 {
   DefaultGenerationFiles files;
@@ -1500,6 +1563,7 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
   request.policy = "/PERMISSION/A";
   request.recipientCertificate = keys.certificate;
   request.producerCertificate = keys.certificate;
+  request.controllerCertificate = keys.certificate;
   request.publicParameters = publicParameters;
   request.fetchTimeoutMs = 1000;
 
@@ -1550,7 +1614,20 @@ BOOST_AUTO_TEST_CASE(HistoricalProofIndexListsWhatAColdReaderCannotGuess)
   entries[0].epoch = 3;
   entries[0].publicParameters = std::string("params", 6);
   entries[0].publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
-  entries[0].publicParametersWireDigest = "sha256:" + std::string(64, 'a');
+  std::string lowerDigest;
+  {
+    // A digest that really matches the bytes, written upper case like the store writes it.
+    ndn::util::Sha256 hash;
+    hash << entries[0].publicParameters;
+    auto hex = hash.toString();
+    lowerDigest = hex;
+    std::transform(lowerDigest.begin(), lowerDigest.end(), lowerDigest.begin(),
+                   [] (unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char ch) {
+      return static_cast<char>(std::toupper(ch));
+    });
+    entries[0].publicParametersWireDigest = "sha256:" + hex;
+  }
   entries[1].generationTimestamp = 1003;
   entries[1].epoch = 1;
   entries[1].publicParameters = std::string("params2", 7);
@@ -1559,6 +1636,16 @@ BOOST_AUTO_TEST_CASE(HistoricalProofIndexListsWhatAColdReaderCannotGuess)
 
   ndn::Data listing;
   BOOST_REQUIRE(buildHistoricalPublicParametersIndex(entries, ndn::Name("/controller/a"), {}, listing));
+  // The index must name the digest exactly as the proof does, or a reader asks a name nothing answers.
+  {
+    ndn::Data proof;
+    BOOST_REQUIRE(buildHistoricalPublicParametersData(entries[0], ndn::Name("/controller/a"), {}, proof));
+    const auto proofDigest = proof.getName().get(-1).toUri();
+    BOOST_CHECK(!proofDigest.empty());
+    const std::string content(reinterpret_cast<const char*>(listing.getContent().value()),
+                              listing.getContent().value_size());
+    BOOST_CHECK(content.find(" " + proofDigest + " ") != std::string::npos);
+  }
   BOOST_CHECK_EQUAL(listing.getName().toUri(),
                     std::string("/controller/a/NDNSF/HISTORY/PUBPARAMS"));
 
@@ -1569,7 +1656,7 @@ BOOST_AUTO_TEST_CASE(HistoricalProofIndexListsWhatAColdReaderCannotGuess)
   BOOST_REQUIRE_EQUAL(records.size(), 2u);
   BOOST_CHECK_EQUAL(std::get<0>(records[0]), 1002u);
   BOOST_CHECK_EQUAL(std::get<1>(records[0]), 3u);
-  BOOST_CHECK_EQUAL(std::get<2>(records[0]), std::string(64, 'a'));
+  BOOST_CHECK_EQUAL(std::get<2>(records[0]), lowerDigest);
   BOOST_CHECK_EQUAL(std::get<3>(records[0]),
                     std::string("/controller/a/PUBPARAMS/KP-ABE/v=1002003"));
 
