@@ -1258,6 +1258,48 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
                         "Expected Validator to reject the rogue CK certificate chain, got: " << failure);
   BOOST_REQUIRE_MESSAGE(failure.find("certification chain") != std::string::npos,
                         "Expected a certificate-chain validation error, got: " << failure);
+  // A rotation afterwards must not take the old packets away: the archived material still issues a
+  // key that opens them, and the current generation no longer does.
+  {
+    ndn_service_framework::HistoricalAbeMaterial archivedBeforeRotation;
+    const auto oldWire = authority.getPublicParametersWire();
+    archivedBeforeRotation.publicParameters.assign(oldWire.begin(), oldWire.end());
+    archivedBeforeRotation.masterSecret = authority.m_masterKey.m_msk;
+
+    authority.rotateKeyGeneration(2);
+    const auto& currentParams = authority.m_pubParams;
+    const auto historicalWire =
+      ndn_service_framework::issueHistoricalDecryptionKey(archivedBeforeRotation, "attr1 AND attr2");
+    ndn::nacabe::algo::PrivateKey historicalKey;
+    historicalKey.fromBuffer(ndn::Buffer(historicalWire.data(), historicalWire.size()));
+
+    const auto& ckPacket = *originalCk.front();
+    const auto ckContent = ndn::Block(ndn::span<const uint8_t>(ckPacket.getContent().value(),
+                                                               ckPacket.getContent().value_size()));
+    const auto wrapped = abeTlvField(ckContent, 0x0259);
+    const auto payloadContent = ndn::Block(ndn::span<const uint8_t>(encoded.data(),
+                                                                    encoded.size()));
+    const auto content = abeTlvField(payloadContent, 0x025A);
+    const auto sizeField = abeTlvField(payloadContent, 0x025B);
+    BOOST_REQUIRE(wrapped && content && sizeField);
+    ndn::nacabe::algo::CipherText rebuilt;
+    rebuilt.m_contentKey = std::make_shared<ndn::nacabe::algo::ContentKey>(std::string(), *wrapped);
+    rebuilt.m_content = *content;
+    rebuilt.m_plainTextSize = (*sizeField)[0];
+
+    auto archivedParams = ndn::nacabe::algo::PublicParams{};
+    archivedParams.fromBuffer(ndn::Buffer(
+      reinterpret_cast<const uint8_t*>(archivedBeforeRotation.publicParameters.data()),
+      archivedBeforeRotation.publicParameters.size()));
+    BOOST_CHECK(ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(
+      archivedParams, historicalKey, rebuilt) == expected);
+
+    const auto currentKey = ndn::nacabe::algo::ABESupport::getInstance().kpPrvKeyGen(
+      authority.m_pubParams, authority.m_masterKey, "attr1 AND attr2");
+    BOOST_CHECK_THROW(ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(
+      currentParams, currentKey, rebuilt), std::exception);
+  }
+
   consumer.stop();
   producer.stop();
   io.poll(); io.restart();
