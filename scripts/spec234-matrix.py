@@ -11,6 +11,7 @@ probe summary and failure boundary.
 import argparse
 import json
 import shutil
+import signal
 import os
 import subprocess
 import sys
@@ -66,6 +67,104 @@ def generate(root, workload, layout, network, journal, storage_budget,
     run(argv)
 
 
+def _prune_boot_dirs(root, archive_dir=None):
+    """Archive the small receipt files, then drop the boot's disposable dirs.
+
+    The layout root keeps the Provider identities, Repo source and the
+    assembled slice cache; the per-boot evidence and operation state are
+    archived (small files) and removed so later boots stay inside the storage
+    budget (E6.2/E6.4).
+    """
+    try:
+        deployment = json.loads((root / 'deployment.json').read_text())
+        storage = deployment['storage']
+        state_file = Path(storage['state_root']) / deployment['deployment_id'] / 'state.json'
+        if not state_file.exists():
+            return
+        state = json.loads(state_file.read_text())
+        boot = state.get('boot_id')
+        evidence = Path(storage['evidence_root']) / deployment['deployment_id'] / (boot or '')
+        if archive_dir is not None and evidence.exists() and boot:
+            # Keep only the small receipts: the per-turn requester statistics,
+            # the probe snapshots and the shaping applications. Provider and
+            # requester diagnostic logs stay disposable.
+            target = archive_dir / boot
+            target.mkdir(parents=True, exist_ok=True)
+            for name in ('requester-statistics.jsonl', 'probes.json',
+                         'probes-after.json', 'cells.jsonl'):
+                path = evidence / name
+                if path.is_file():
+                    shutil.copy2(path, target / name)
+            for path in evidence.glob('shaping-*.json'):
+                if path.is_file():
+                    shutil.copy2(path, target / path.name)
+        shutil.rmtree(evidence, ignore_errors=True)
+        shutil.rmtree(Path(storage['state_root']) / deployment['deployment_id'],
+                        ignore_errors=True)
+    except Exception:
+        return
+
+
+def _start_hang(root):
+    """True when the last boot stopped inside startup instead of the request."""
+    try:
+        deployment = json.loads((root / 'deployment.json').read_text())
+        state = json.loads((Path(deployment['storage']['state_root']) /
+                            deployment['deployment_id'] / 'state.json').read_text())
+        failure = state.get('failure') or ''
+        return state.get('status') == 'STOPPED' and (
+            'STARTING' in failure or 'MININDN_HOST_ALREADY_ACTIVE' in failure)
+    except Exception:
+        return False
+
+
+def _cleanup_hosts():
+    """Drop leftover MiniNDN host shells and NFDs before a retry."""
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(
+                'utf-8', 'replace')
+            comm = (entry / 'comm').read_text().strip()
+        except OSError:
+            continue
+        if cmdline.startswith('bash --norc --noediting -is mininet:') or comm == 'nfd':
+            try:
+                os.kill(int(entry.name), signal.SIGKILL)
+            except OSError:
+                pass
+    for socket in Path('/run/nfd').glob('*.sock'):
+        try:
+            socket.unlink()
+        except OSError:
+            pass
+
+
+def _compare_reference(root, reference):
+    """Compare every archived round token vector with the frozen reference."""
+    matched = True
+    observed = []
+    for index, expected in enumerate(reference['rounds']):
+        path = root / f'output-{index}.json'
+        if not path.exists():
+            return None, [None] * len(reference['rounds'])
+        ids = json.loads(path.read_text()).get('tokenIds', [])
+        observed.append(len(ids))
+        if ids != expected['tokenIds']:
+            matched = False
+    return matched, observed
+
+
+def _archive_outputs(root, outputs_dir, block):
+    if outputs_dir is None:
+        return
+    directory = outputs_dir / f'block-{block}'
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in sorted(root.glob('output-*.json')):
+        shutil.copy2(path, directory / path.name)
+
+
 def boot(root, timeout):
     log = root / 'boot.log'
     env = dict(os.environ, PYTHONPATH=str(REPO / 'NDNSF-DistributedInference'),
@@ -87,11 +186,14 @@ def close(root, timeout=120):
 
 
 def summarize(root, code, wall, layout, network, block, result_path,
-              cell=None, provider_cpus=None, reference=None, outputs_dir=None):
+              cell=None, provider_cpus=None, reference=None, outputs_dir=None,
+              attempt=None):
     row = dict(layout=layout, network=network, block=block, exit_code=code,
                wall_seconds=round(wall, 2))
     if cell is not None:
         row['cell'] = cell
+    if attempt is not None:
+        row['attempt'] = attempt
     if provider_cpus:
         row['provider_cpus'] = list(provider_cpus)
     try:
@@ -161,6 +263,14 @@ def main():
                         help='Frozen reference token vectors (JSON) for per-round comparison')
     parser.add_argument('--outputs-dir', type=Path,
                         help='Archive each block token outputs under this directory')
+    parser.add_argument('--retry-failures', type=int, default=0,
+                        help='Retry a boot that stopped inside startup (attempts kept as rows)')
+    parser.add_argument('--prune-boot-dirs', action='store_true',
+                        help='Archive small receipts and drop per-boot evidence/state dirs')
+    parser.add_argument('--archive-dir', type=Path,
+                        help='Receipt archive for --prune-boot-dirs')
+    parser.add_argument('--cell-label',
+                        help='Row cell label (defaults to the root name)')
     parser.add_argument('--timeout', type=int, default=2400)
     args = parser.parse_args()
     args.root.parent.mkdir(parents=True, exist_ok=True)
@@ -171,13 +281,24 @@ def main():
     for block in range(args.blocks):
         close(args.root)
         code, wall, log = boot(args.root, args.timeout)
+        attempt = 0
+        while (code != 0 and attempt < args.retry_failures and _start_hang(args.root)):
+            attempt += 1
+            print(json.dumps({'cell': args.cell_label or args.root.name,
+                              'retry_after_start_hang': attempt}, sort_keys=True))
+            _cleanup_hosts()
+            time.sleep(2)
+            close(args.root)
+            code, wall, log = boot(args.root, args.timeout)
         reference = None
         if args.reference is not None:
             reference = json.loads(args.reference.read_text())
         row = summarize(args.root, code, wall, args.layout, args.network, block, args.results,
-                        cell=args.root.name, provider_cpus=args.provider_cpus,
-                        reference=reference, outputs_dir=args.outputs_dir)
+                        cell=args.cell_label or args.root.name, provider_cpus=args.provider_cpus,
+                        reference=reference, outputs_dir=args.outputs_dir, attempt=attempt)
         print(json.dumps(row, sort_keys=True))
+        if code == 0 and args.prune_boot_dirs:
+            _prune_boot_dirs(args.root, args.archive_dir)
         if code != 0:
             close(args.root)
             return 1

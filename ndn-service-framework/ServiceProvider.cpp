@@ -14380,14 +14380,10 @@ namespace ndn_service_framework
                     !slot->recoveryAttempted.load(std::memory_order_acquire)) {
                     slot->recoveryTrigger = reason;
                 }
-                // Readiness renewals precede publication and use the operation's
-                // original deadline. The six-attempt repair budget is for Data
-                // that has already been published.
-                if (state->strict && phase == ExactDataFetchPhase::Published && expectedAttempt >= 6) {
-                    if (std::string_view(reason) != "publication-refresh")
-                        finish({}, "strict exact Data attempt budget exhausted for " + dataName.toUri());
-                    return;
-                }
+                // Published Data retries are bounded by the operation deadline,
+                // not by an attempt count: a single lost Data packet must not
+                // end an inference. The per-attempt interest lifetime and the
+                // retry delay rate-limit the re-expressions.
                 if (recoveryEnabled && !inBandRecovery && state->strict &&
                     !slot->recoveryAttempted.load(std::memory_order_acquire)) {
                     // Match the streaming retry policy: make one bounded
@@ -14458,8 +14454,6 @@ namespace ndn_service_framework
                     finish({}, "hard deadline for " + dataName.toUri());
                     return;
                 }
-                if (state->strict && phase == ExactDataFetchPhase::Published &&
-                    slot->attempts.load(std::memory_order_relaxed) >= 6) return;
                 const auto attempt = slot->attempts.load(std::memory_order_relaxed) + 1;
                 if (attempt > 1 && state->strict && slot->recoveryAttempted.load() &&
                     !slot->recovered.load() && !slot->arqFallbackRecorded.exchange(true)) {
@@ -14493,20 +14487,16 @@ namespace ndn_service_framework
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             state->deadline - std::chrono::steady_clock::now()).count()))
                     : retryIntervalMs;
-                // Keep recovery inside the original operation deadline. The
-                // final bounded ARQ interest yields a small validation grace
-                // only when this operation actually owns a repair callback.
-                if (recoverMissing && state->strict && attempt == 6) {
-                    constexpr int RECOVERY_GRACE_MS = 250;
+                // Keep every attempt inside the original operation deadline; a
+                // last-second attempt still gets the ordinary interest lifetime
+                // because the deadline callback ends the fetch.
+                {
                     const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                         state->deadline - std::chrono::steady_clock::now()).count();
-                    if (remainingMs <= RECOVERY_GRACE_MS) {
-                        finish({}, "strict exact Data recovery grace unavailable for " +
-                                   dataName.toUri());
-                        return;
+                    if (remainingMs > 0) {
+                        issuedLifetimeMs = std::min<int64_t>(
+                            issuedLifetimeMs, std::max<int64_t>(1, remainingMs));
                     }
-                    issuedLifetimeMs = std::min<int64_t>(issuedLifetimeMs,
-                        remainingMs - RECOVERY_GRACE_MS);
                 }
                 interest.setInterestLifetime(
                     ndn::time::milliseconds(issuedLifetimeMs));
