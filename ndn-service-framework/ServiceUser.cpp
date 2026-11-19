@@ -6039,6 +6039,17 @@ namespace ndn_service_framework
                     status.getControllerVersion(),
                     abeGenerationChanged, grantOnlyDkeyRefresh);
             }
+            // A status that no longer authorizes this identity ends the refresh chain for the service:
+            // continuing would keep asking a Controller that has withdrawn the permission, and every answer
+            // would be refused. Scope expiry lands here too, which is the same stop.
+            if (!authorizeControllerTransition(status.getServiceName(), ProtectedTransition::DISCOVERY)) {
+                {
+                    std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+                    m_policyStatusRefreshScheduled.erase(serviceKey);
+                }
+                NDN_LOG_WARN("NDNSF_REFRESH_CHAIN_STOPPED service=" << serviceKey);
+                return accepted;
+            }
             scheduleControllerStatusRefresh(status.getServiceName(), status);
         }
         return accepted;
