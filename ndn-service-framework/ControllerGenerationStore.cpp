@@ -1,5 +1,7 @@
 #include "ControllerGenerationStore.hpp"
 
+#include "SealedField.hpp"
+
 #include <ndn-cxx/name.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <openssl/crypto.h>
@@ -22,6 +24,20 @@
 
 namespace ndn_service_framework {
 namespace {
+
+/** A context string binds a sealed secret to the slot it belongs in. */
+std::string
+materialSealContext()
+{
+  return "ndnsf/controller/abe-material";
+}
+
+std::string
+historySealContext(uint64_t generation, uint64_t epoch)
+{
+  return "ndnsf/controller/abe-history/" + std::to_string(generation) + "/" +
+         std::to_string(epoch);
+}
 
 constexpr char STATE_MAGIC[] = "NDNSFCS2";
 constexpr char ABE_STATE_MAGIC[] = "NDNSFCS3";
@@ -524,6 +540,13 @@ ControllerGenerationStore::loadState() const
       readStringInto(state, material.policyDigest, 71);
       readStringInto(state, material.publicParameters, MAX_ABE_FIELD_BYTES);
       readStringInto(state, material.masterSecret, MAX_ABE_FIELD_BYTES);
+      if (isSealedField(material.masterSecret)) {
+        std::string opened;
+        if (m_secretKey.empty() || !openField(m_secretKey, material.masterSecret,
+                                              materialSealContext(), opened))
+          throw std::runtime_error("Controller ABE state is sealed and cannot be opened");
+        material.masterSecret = std::move(opened);
+      }
       std::string checksum;
       readStringInto(state, checksum, 71);
       if (!isValidAbeMaterial(material) || checksum != abeMaterialDigest(material))
@@ -555,6 +578,14 @@ ControllerGenerationStore::loadState() const
         entry.epoch = readU64(state);
         readStringInto(state, entry.publicParameters, MAX_ABE_FIELD_BYTES);
         readStringInto(state, entry.masterSecret, MAX_ABE_FIELD_BYTES);
+        if (isSealedField(entry.masterSecret)) {
+          std::string opened;
+          if (m_secretKey.empty() ||
+              !openField(m_secretKey, entry.masterSecret,
+                         historySealContext(entry.generationTimestamp, entry.epoch), opened))
+            throw std::runtime_error("archived Controller ABE generation is sealed and cannot be opened");
+          entry.masterSecret = std::move(opened);
+        }
         if (hasLegacyHistory) {
           // Two writers used CS4/CS5: the original layout, which recorded neither the published name
           // nor the wire digest, and the intermediate one, which recorded both.  The next field
@@ -670,6 +701,15 @@ parseAttributeSnapshot(const std::string& text)
 }
 
 } // namespace
+
+void
+ControllerGenerationStore::setSecretSeal(std::vector<uint8_t> key, std::string keyId)
+{
+  if (!key.empty() && key.size() != 32)
+    throw std::invalid_argument("the Controller secret key must be 32 bytes");
+  m_secretKey = std::move(key);
+  m_secretKeyId = std::move(keyId);
+}
 
 void
 ControllerGenerationStore::recordAttributeSnapshot(
@@ -833,7 +873,9 @@ ControllerGenerationStore::persist(
       writeString(fd, abeMaterial->signingKeyDigest);
       writeString(fd, abeMaterial->policyDigest);
       writeString(fd, abeMaterial->publicParameters);
-      writeString(fd, abeMaterial->masterSecret);
+      writeString(fd, m_secretKey.empty()
+        ? abeMaterial->masterSecret
+        : sealField(m_secretKey, abeMaterial->masterSecret, materialSealContext()));
       writeString(fd, abeMaterialDigest(*abeMaterial));
     }
     if (!abeHistory.empty()) {
@@ -844,7 +886,10 @@ ControllerGenerationStore::persist(
         writeU64(fd, entry.generationTimestamp);
         writeU64(fd, entry.epoch);
         writeString(fd, entry.publicParameters);
-        writeString(fd, entry.masterSecret);
+        writeString(fd, m_secretKey.empty()
+          ? entry.masterSecret
+          : sealField(m_secretKey, entry.masterSecret,
+                      historySealContext(entry.generationTimestamp, entry.epoch)));
         writeString(fd, entry.publicParametersName);
         writeString(fd, entry.publicParametersWireDigest);
         writeString(fd, entry.digest);

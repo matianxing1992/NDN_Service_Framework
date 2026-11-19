@@ -93,6 +93,16 @@ public:
   /** Superseded generations, oldest first. Readable without the writer lease. */
   std::vector<AbeHistoryEntry> loadAbeHistory() const;
 
+  /** Seal master secrets at rest with this key. Without it they stay readable as before. */
+  void
+  setSecretSeal(std::vector<uint8_t> key, std::string keyId);
+
+  bool
+  sealedSecrets() const noexcept
+  {
+    return !m_secretKey.empty();
+  }
+
   /** Record which attributes each identity held while a generation was current.
    *
    * A historical read has to be judged against what the object's generation actually allowed, so the
@@ -140,6 +150,8 @@ private:
                const std::vector<AbeHistoryEntry>& abeHistory) const;
 
   std::filesystem::path m_statePath;
+  std::vector<uint8_t> m_secretKey;
+  std::string m_secretKeyId;
   std::filesystem::path m_lockPath;
   std::string m_owner;
   uint64_t m_fence = 0;

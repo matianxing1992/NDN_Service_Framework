@@ -1268,6 +1268,57 @@ BOOST_AUTO_TEST_CASE(HistoricalCkNameMustBindTheAskedAttribute)
   BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name(), producer, service, attribute));
 }
 
+BOOST_AUTO_TEST_CASE(ControllerStateSealsArchivedMasterSecrets)
+{
+  DefaultGenerationFiles files;
+  auto bootstrap = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+  BOOST_REQUIRE(bootstrap);
+  const auto path = bootstrap->statePath();
+  bootstrap->releaseWriter();
+
+  ControllerGenerationStore::AbeHistoryEntry archived;
+  archived.generationTimestamp = 1002;
+  archived.epoch = 3;
+  archived.publicParameters = std::string("old-params", 10);
+  archived.masterSecret = std::string("old-master-secret", 16);
+  archived.publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
+  archived.publicParametersWireDigest = "sha256:" + std::string(64, 'c');
+  archived.reason = "rotation";
+
+  {
+    ControllerGenerationStore store(path);
+    BOOST_REQUIRE(store.acquireWriter("/controller/a"));
+    store.startGeneration(1000);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0x11), "test-key");
+    store.recordAbeHistory(archived);
+  }
+  std::string bytes;
+  {
+    std::ifstream input(path, std::ios::binary);
+    bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  }
+  BOOST_CHECK(bytes.find("old-master-secret") == std::string::npos);
+  BOOST_CHECK(bytes.find("ndnsf-sealed-1:") != std::string::npos);
+
+  // The same key reads it back; without the key the store refuses instead of returning ciphertext.
+  {
+    ControllerGenerationStore store(path);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0x11), "test-key");
+    const auto history = store.loadAbeHistory();
+    BOOST_REQUIRE_EQUAL(history.size(), 1u);
+    BOOST_CHECK_EQUAL(history.front().masterSecret, archived.masterSecret);
+  }
+  {
+    ControllerGenerationStore store(path);
+    BOOST_CHECK_THROW(store.loadAbeHistory(), std::runtime_error);
+  }
+  {
+    ControllerGenerationStore store(path);
+    store.setSecretSeal(std::vector<uint8_t>(32, 0x22), "other-key");
+    BOOST_CHECK_THROW(store.loadAbeHistory(), std::runtime_error);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(SealedFieldsRoundTripAndRefuseTampering)
 {
   const std::vector<uint8_t> key(32, 0x5a);
