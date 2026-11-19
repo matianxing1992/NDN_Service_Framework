@@ -17341,10 +17341,6 @@ namespace ndn_service_framework
                                          parsedV2->serviceName.toUri());
             }
             if (!hasProviderPermission(identity, parsedV2->serviceName, m_authorizations)) {
-                // On stdout: this deployment filters framework loggers, and a Provider that has already
-                // provisioned refuses per request rather than exiting, so this line is the observable stop.
-                std::cout << "NDNSF_PROVIDER_REQUEST_DENIED service="
-                          << parsedV2->serviceName.toUri() << " reason=permission" << std::endl;
                 return makeErrorResponse("Permission denied for " +
                                          parsedV2->serviceName.toUri());
             }
@@ -21586,9 +21582,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::scheduleProviderPermissionRefresh()
     {
         const auto period = policyRevalidationPeriodMs();
-        // Printed before any early return, so "the refresh never ran" can be told apart from "the period is
-        // zero" without another build.
-        std::cout << "NDNSF_PROVIDER_PERMISSION_BOOTSTRAP periodMs=" << period << std::endl;
         if (period == 0 || m_providerPermissionRefreshScheduled)
             return;
         m_providerPermissionRefreshScheduled = true;
@@ -21721,19 +21714,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             NDN_LOG_ERROR("Rejected invalid or stale provider PermissionResponse epoch="
                           << response.getPolicyEpoch());
             return;
-        }
-        {
-          // On stdout, because this deployment filters framework loggers: the question is whether a refreshed
-          // provider record still lists the inference service after its revocation.
-          std::size_t inference = 0;
-          for (const auto& record : records) {
-            if (record.serviceName.find("DI") != std::string::npos &&
-                record.serviceName.find("Infer") != std::string::npos)
-              ++inference;
-          }
-          std::cout << "NDNSF_PROVIDER_PERMISSIONS_INSTALLED services=" << records.size()
-                    << " inference=" << inference
-                    << " epoch=" << response.getPolicyEpoch() << std::endl;
         }
         // Permission responses are scoped to this identity, but their
         // records are service-level.  Detect an actual table change before
