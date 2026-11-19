@@ -21617,7 +21617,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             m_controllerPrefix = controllerPrefix;
         }
         fetchPolicyManifestFromController(controllerPrefix);
-        scheduleProviderPermissionRefresh();
+        // Disabled until the refresh is safe to re-enter: repeating this call on a timer replaced in-flight
+        // fetches and corrupted the heap (`corrupted size vs. prev_size` in provider-c). See evidence/t004.
 
         const auto prepared = prepareControllerControlQuery(controllerPrefix, "PROVIDER-PERMISSIONS",
             encodeControlQueryParameters({identity, ndn::Name(), 0, 0}), 1);
