@@ -765,6 +765,46 @@ BOOST_FIXTURE_TEST_CASE(PrivateHandleRoundtripRejectsPublicPermissionsAndSymlink
   BOOST_CHECK_THROW(nativeLoadStoredModelHandle(file.path), std::runtime_error);
 }
 
+BOOST_FIXTURE_TEST_CASE(LegacyHandleMigratesWhenAKeyRingIsPresent, Fixture)
+{
+  PrivateFile file;
+  nativeExportStoredModelHandle(handle, file.path);
+
+  // Without a resolver the legacy file is what it is: readable, unsealed.
+  auto legacy = nativeOpenStoredModelHandle(file.path, {});
+  BOOST_CHECK(legacy.masterKey == handle.masterKey);
+  std::string magic(40, '\0');
+  {
+    std::ifstream input(file.path, std::ios::binary);
+    input.read(magic.data(), magic.size());
+  }
+  BOOST_CHECK_EQUAL(magic.rfind("NDNSF-DI-STORED-MODEL-HANDLE-v1", 0), 0u);
+
+  // With a key ring the same open migrates it in place; the plaintext layout must be gone afterwards.
+  const auto ring = file.directory / "ring";
+  std::ofstream(ring, std::ios::binary | std::ios::trunc)
+    << "migrate-key " << std::string(64, '5') << "\n";
+  std::filesystem::permissions(ring, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  struct ScopedEnv
+  {
+    explicit ScopedEnv(const std::filesystem::path& path) { ::setenv("NDNSF_FILE_KEYRING", path.c_str(), 1); }
+    ~ScopedEnv() { ::unsetenv("NDNSF_FILE_KEYRING"); }
+  } env(ring);
+  const auto resolver = nativeFileKeyResolverFromKeyRing();
+  const auto migrated = nativeOpenStoredModelHandle(file.path, resolver);
+  BOOST_CHECK(migrated.masterKey == handle.masterKey);
+  {
+    std::ifstream input(file.path, std::ios::binary);
+    input.read(magic.data(), magic.size());
+  }
+  BOOST_CHECK_EQUAL(magic.rfind("NDNSF-DI-STORED-MODEL-HANDLE-v2", 0), 0u);
+  // And it still opens sealed, with the same key.
+  const auto reopened = nativeOpenStoredModelHandle(file.path, resolver);
+  BOOST_CHECK(reopened.masterKey == handle.masterKey);
+  BOOST_CHECK(reopened.rootName == handle.rootName);
+}
+
 BOOST_AUTO_TEST_CASE(PublishThenReadWithoutPreparationOrWriteCapability)
 {
   PacketRepository repository;

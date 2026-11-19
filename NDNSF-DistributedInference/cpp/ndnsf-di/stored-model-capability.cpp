@@ -324,6 +324,9 @@ nativeExportSealedStoredModelHandle(const NativeStoredModelHandle& handle,
   OPENSSL_cleanse(body.data(), body.size());
 }
 
+std::optional<NativeFileProtectionKey>
+nativeFileProtectionKeyFromEnvironment();
+
 NativeStoredModelHandle
 nativeOpenStoredModelHandle(const std::filesystem::path& source,
                             const NativeFileKeyResolver& resolve)
@@ -349,7 +352,21 @@ nativeOpenStoredModelHandle(const std::filesystem::path& source,
       std::equal(legacyMagic.begin(), legacyMagic.end(), magic.begin());
     if (!isLegacy)
       throw std::runtime_error("DI_STORED_MODEL_HANDLE_UNRECOGNIZED");
-    return nativeLoadStoredModelHandle(source);
+    auto handle = nativeLoadStoredModelHandle(source);
+    // An unsealed handle is readable by anyone who can read the file, so with a protection key at hand
+    // it is migrated in place once instead of being left behind as a permanent second format. The
+    // rewrite is atomic, so an interrupted migration leaves the legacy file intact.
+    if (resolve) {
+      try {
+        if (const auto protection = nativeFileProtectionKeyFromEnvironment()) {
+          nativeExportSealedStoredModelHandle(handle, source, *protection);
+        }
+      }
+      catch (const std::exception&) {
+        // A migration that cannot be written must not make the model unopenable.
+      }
+    }
+    return handle;
   }
   if (!resolve)
     throw std::runtime_error("DI_STORED_MODEL_SEALED_WITHOUT_RESOLVER");
@@ -691,7 +708,8 @@ public:
           (sealed || std::equal(magic.begin(), magic.end(), bytes.begin())));
         const auto magicSize = sealed ? sealedMagic.size() : magic.size();
         const auto keyBytes = sealed ? SEALED_FIELD_BYTES : std::size_t{32};
-        const auto bodySize = bytes.size() - 32;
+        // The trailing checksum is a `sha256:` digest, 71 characters, not the raw 32 bytes.
+        const auto bodySize = bytes.size() - 71;
         require(digest(bytes.data(), bodySize) ==
                 std::string(bytes.begin() + bodySize, bytes.end()));
         const auto metadataEnd = bodySize - keyBytes;
@@ -982,6 +1000,7 @@ private:
       nativeCanonicalJson(m_metadata);
     require(prefix.size() + (protection.empty() ? 103 : 103 - 32 + SEALED_FIELD_BYTES) <=
             MAX_JOURNAL_BYTES);
+    // 103 = 32-byte secret + 71-character digest; the sealed layout replaces 32 with its field length.
     Bytes bytes(prefix.begin(), prefix.end());
     bytes.reserve(prefix.size() + 103);
     Cleanse guard{bytes};
