@@ -556,11 +556,27 @@ ControllerGenerationStore::loadState() const
         readStringInto(state, entry.publicParameters, MAX_ABE_FIELD_BYTES);
         readStringInto(state, entry.masterSecret, MAX_ABE_FIELD_BYTES);
         if (hasLegacyHistory) {
-          // The old layout recorded neither the name the generation published under nor the digest
-          // of those bytes.  Derive both from what it did record, then re-seal the entry with the
-          // current digest so the next write stores the bound form.
-          readStringInto(state, entry.digest, 71);
-          readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
+          // Two writers used CS4/CS5: the original layout, which recorded neither the published name
+          // nor the wire digest, and the intermediate one, which recorded both.  The next field
+          // separates them - the original stores a `sha256:` digest, the intermediate a name.
+          std::string next;
+          readStringInto(state, next, MAX_LEASE_BYTES - 64);
+          const bool intermediate = next.rfind("/", 0) == 0;
+          if (!intermediate) {
+            // Original layout: derive the missing fields, then re-seal so the next write is bound.
+            entry.digest = next;
+            readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
+          }
+          else {
+            entry.publicParametersName = next;
+            readStringInto(state, entry.publicParametersWireDigest, 71);
+            readStringInto(state, entry.digest, 71);
+            readStringInto(state, entry.reason, MAX_LEASE_BYTES - 64);
+            if (entry.digest != abeHistoryDigest(entry))
+              throw std::runtime_error("invalid archived Controller ABE generation");
+            result.abeHistory.push_back(std::move(entry));
+            continue;
+          }
           if (entry.generationTimestamp == 0 || entry.publicParameters.empty())
             throw std::runtime_error("invalid legacy archived Controller ABE generation");
           entry.publicParametersWireDigest = "sha256:" + sha256Hex(entry.publicParameters);

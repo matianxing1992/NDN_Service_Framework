@@ -165,6 +165,61 @@ BOOST_AUTO_TEST_CASE(LegacyArchiveEntriesMigrateToTheBoundLayout)
   BOOST_CHECK_EQUAL(history.front().publicParametersWireDigest.size(), 71u);
 }
 
+BOOST_AUTO_TEST_CASE(IntermediateArchiveLayoutStaysReadable)
+{
+  // CS4 was also written by the version that already stored the published name and the wire digest,
+  // so a reader must tell that layout from the original one instead of assuming the older shape.
+  DefaultGenerationFiles files;
+  std::filesystem::path path;
+  {
+    auto bootstrap = ControllerGenerationStore::openDefault("/controller/a", files.legacy);
+    BOOST_REQUIRE(bootstrap);
+    path = bootstrap->statePath();
+  }
+  auto putU64 = [] (std::ostream& out, uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8)
+      out.put(static_cast<char>((value >> shift) & 0xff));
+  };
+  auto putString = [&putU64] (std::ostream& out, const std::string& value) {
+    putU64(out, value.size());
+    out.write(value.data(), value.size());
+  };
+  const std::string params("intermediate-params", 19);
+  const std::string name = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
+  const std::string wireDigest =
+    "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  {
+    std::ofstream state(path, std::ios::binary | std::ios::trunc);
+    // CS5 keeps the same entry layout while carrying no live material, which is what makes this a
+    // history-only record on both the old and the intermediate writer.
+    const std::array<char, 8> magic{{'N','D','N','S','F','C','S','5'}};
+    state.write(magic.data(), magic.size());
+    putU64(state, 1002);
+    putU64(state, 3);
+    putU64(state, 0);
+    putU64(state, 1);
+    putU64(state, 1002);
+    putU64(state, 3);
+    putString(state, params);
+    putString(state, std::string("secret", 6));
+    putString(state, name);
+    putString(state, wireDigest);
+    putString(state, "sha256:" + std::string(64, 'a'));   // deliberately wrong digest
+    putString(state, "rotation");
+  }
+  std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+  ControllerGenerationStore store(path);
+  // The record carries a deliberately wrong digest. Being told the record is invalid means the reader
+  // consumed the intermediate field order correctly; a misaligned parse would instead report a
+  // truncated or unreadable state.
+  BOOST_CHECK_EXCEPTION(store.loadAbeHistory(), std::runtime_error,
+    [] (const std::runtime_error& error) {
+      const std::string what = error.what();
+      return what.find("invalid archived Controller ABE generation") != std::string::npos;
+    });
+}
+
 BOOST_AUTO_TEST_CASE(LegacyVersionOnlyStateRemainsReadable)
 {
   DefaultGenerationFiles files;
