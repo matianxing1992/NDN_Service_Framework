@@ -5814,9 +5814,30 @@ namespace ndn_service_framework
         for (const auto& record : records) {
             currentServices.insert(ndn::Name(record.serviceName).toUri(ndn::name::UriFormat::CANONICAL));
         }
+        // Service URIs may carry canonical component types (`/8=Spec225/8=DI/8=Infer`), so a plain substring
+        // search for "DI/Infer" misses them. Strip numeric type prefixes before looking.
+        const auto plainService = [] (const std::string& uri) {
+          std::string result;
+          std::size_t begin = 0;
+          while (begin < uri.size()) {
+            const auto end = uri.find('/', begin + 1);
+            std::string component = uri.substr(begin + 1, end == std::string::npos
+                                                        ? std::string::npos : end - begin - 1);
+            const auto equals = component.find('=');
+            if (equals != std::string::npos && equals > 0 &&
+                std::all_of(component.begin(), component.begin() + equals,
+                            [] (unsigned char ch) { return std::isdigit(ch) != 0; }))
+              component = component.substr(equals + 1);
+            result += "/" + component;
+            if (end == std::string::npos)
+              break;
+            begin = end;
+          }
+          return result;
+        };
         const bool carriesInference = std::any_of(
-          currentServices.begin(), currentServices.end(), [] (const std::string& service) {
-            return service.find("DI/Infer") != std::string::npos;
+          currentServices.begin(), currentServices.end(), [&plainService] (const std::string& service) {
+            return plainService(service).find("DI/Infer") != std::string::npos;
           });
         NDN_LOG_WARN("NDNSF_USER_PERMISSIONS_INSTALLED services=" << currentServices.size()
                      << " previous=" << previouslyKnownServices.size()
