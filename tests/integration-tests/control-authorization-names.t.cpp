@@ -14,6 +14,7 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
+#include "ndn-service-framework/AbeHistoricalContent.hpp"
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
 #include <nac-abe/algo/abe-support.hpp>
 #include <nac-abe/attribute-authority.hpp>
@@ -1215,6 +1216,29 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
     const auto corePlaintext = ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(
       authority.m_pubParams, dkey, rebuilt);
     BOOST_CHECK(corePlaintext == expected);
+
+    // The same packets through the library-facing helpers a historical read would use.
+    ndn_service_framework::HistoricalCkContent parsedCk;
+    ndn_service_framework::HistoricalPayloadContent parsedPayload;
+    const std::string ckText(reinterpret_cast<const char*>(ckPacket.getContent().value()),
+                             ckPacket.getContent().value_size());
+    const std::string payloadText(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    BOOST_REQUIRE(ndn_service_framework::parseHistoricalCkContent(ckText, parsedCk));
+    BOOST_REQUIRE(ndn_service_framework::parseHistoricalPayloadContent(payloadText, parsedPayload));
+    BOOST_CHECK(parsedCk.wrappedKey == std::string(reinterpret_cast<const char*>(wrapped->data()),
+                                                   wrapped->size()));
+    BOOST_CHECK(parsedPayload.plainTextSize == (*sizeField)[0]);
+    const auto paramsWire = authority.getPublicParametersWire();
+    const std::string paramsText(reinterpret_cast<const char*>(paramsWire.data()),
+                                 paramsWire.size());
+    const auto wireKey = ndn_service_framework::issueHistoricalDecryptionKey(
+      ndn_service_framework::HistoricalAbeMaterial{paramsText, authority.m_masterKey.m_msk},
+      "attr1 AND attr2");
+    const auto viaHelpers = ndn_service_framework::decryptHistoricalPayload(
+      paramsText, parsedCk, parsedPayload, wireKey);
+    BOOST_REQUIRE(viaHelpers);
+    BOOST_CHECK_EQUAL(viaHelpers->size(), expected.size());
+    BOOST_CHECK(std::equal(viaHelpers->begin(), viaHelpers->end(), expected.begin()));
 
     // And through the historical issuance path: material captured as an archive, a key minted from it,
     // and the same rebuilt object decrypted with that key.
