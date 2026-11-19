@@ -7,6 +7,7 @@
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
 #include "ndn-service-framework/AbePublicParametersArchive.hpp"
 #include "ndn-service-framework/FileKeyRing.hpp"
+#include "ndn-service-framework/HistoricalReadClient.hpp"
 #include "ndn-service-framework/SealedField.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
@@ -21,9 +22,12 @@
 #include <string>
 #include <stdexcept>
 
+#include <ndn-cxx/util/dummy-client-face.hpp>
 #include <ndn-cxx/util/random.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/sha256.hpp>
+
+#include <ndn-cxx/encoding/block-helpers.hpp>
 
 #include <nac-abe/algo/abe-support.hpp>
 
@@ -1346,6 +1350,111 @@ BOOST_AUTO_TEST_CASE(SealedFieldsRoundTripAndRefuseTampering)
   // An unmarked field is not silently accepted as sealed.
   BOOST_CHECK(!openField(key, plain, aad, opened));
   BOOST_CHECK(!isSealedField(plain));
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
+{
+  DefaultGenerationFiles files;
+  ReplyKeys keys(files.root, "read", ndn::Name("/user/reader"));
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto paramsWire = params.toBuffer();
+  const std::string publicParameters(reinterpret_cast<const char*>(paramsWire.data()),
+                                     paramsWire.size());
+
+  // A real protected object: the content key and the payload, as a Producer would publish them.
+  const auto contentKey = abe.kpContentKeyGen(params, {"/PERMISSION/A"});
+  const ndn::Buffer plaintext{1, 2, 3};
+  const auto cipher = abe.encrypt(contentKey, plaintext);
+  const std::string ckWrapped(reinterpret_cast<const char*>(contentKey->m_encAesKey.data()),
+                              contentKey->m_encAesKey.size());
+  const std::string content(cipher.m_content.begin(), cipher.m_content.end());
+
+  // Serve what the client will fetch through a dummy face.
+  auto face = std::make_shared<ndn::DummyClientFace>(ndn::DummyClientFace::Options{});
+  face->setInterestFilter(ndn::Name("/producer/p1"),
+    [face, ckWrapped, content, &keys] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      const auto name = interest.getName();
+      ndn::Data data(name);
+      if (name.toUri().find("/KEY/") != std::string::npos) {
+        // CK envelope: outer TLV 0x15 with field 0x0259 holding the wrapped key.
+        const auto wrappedSpan = ndn::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(ckWrapped.data()), ckWrapped.size());
+        ndn::Block outer(0x15);
+        outer.push_back(ndn::encoding::makeBinaryBlock(0x0259, wrappedSpan));
+        outer.encode();
+        data.setContent(ndn::Buffer(outer.begin(), outer.end()));
+      }
+      else {
+        const auto contentSpan = ndn::span<const uint8_t>(
+          reinterpret_cast<const uint8_t*>(content.data()), content.size());
+        const uint8_t sizeByte = 3;
+        ndn::Block outer(0x15);
+        outer.push_back(ndn::encoding::makeBinaryBlock(0x025A, contentSpan));
+        outer.push_back(ndn::encoding::makeBinaryBlock(0x025B, ndn::span<const uint8_t>(&sizeByte, 1)));
+        outer.encode();
+        data.setContent(ndn::Buffer(outer.begin(), outer.end()));
+      }
+      keys.keyChain.sign(data, ndn::security::signingByCertificate(keys.certificate));
+      face->put(data);
+    });
+  // The Controller answers the historical key request from the archived material.
+  HistoricalKeyBroker::Material material;
+  material.publicParameters = publicParameters;
+  material.masterSecret = master.m_msk;
+  HistoricalKeyBroker broker(
+    [&keys] (const ndn::Name& name, ndn::security::Certificate& out) {
+      if (name != keys.certificate.getName())
+        return false;
+      out = keys.certificate;
+      return true;
+    },
+    [&material] (uint64_t generation, uint64_t epoch, HistoricalKeyBroker::Material& out) {
+      if (generation != 1002 || epoch != 3)
+        return false;
+      out = material;
+      return true;
+    },
+    [&keys] (ndn::Data& data) {
+      keys.keyChain.sign(data, ndn::security::signingByCertificate(keys.certificate));
+    });
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+    return true;
+  });
+  ndn::Name dkeyPrefix("/controller/a/NDNSF/HISTORY/DKEY");
+  face->setInterestFilter(dkeyPrefix,
+    [face, &broker] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+      // The client mints its request from the real clock, so the responder must judge it the same way.
+      const auto now = static_cast<uint64_t>(ndn::time::duration_cast<ndn::time::milliseconds>(
+        ndn::time::system_clock::now().time_since_epoch()).count());
+      const auto reply = broker.answer(interest, ndn::Name("/controller/a"), now);
+      if (reply)
+        face->put(*reply);
+    });
+
+  HistoricalReadRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.objectName = ndn::Name("/object/protected");
+  request.producerName = ndn::Name("/producer/p1");
+  request.serviceName = ndn::Name("/service/inference");
+  request.ckName = makeHistoricalCkName(request.producerName, request.serviceName,
+                                        "/PERMISSION/A");
+  request.payloadName = ndn::Name("/producer/p1/payload");
+  request.policy = "/PERMISSION/A";
+  request.recipientCertificate = keys.certificate;
+  request.producerCertificate = keys.certificate;
+  request.publicParameters = publicParameters;
+  request.fetchTimeoutMs = 1000;
+
+  const auto read = readHistoricalObject(*face, keys.keyChain, request);
+  BOOST_REQUIRE(read);
+  BOOST_CHECK_EQUAL(read->size(), plaintext.size());
+  BOOST_CHECK(std::equal(read->begin(), read->end(), plaintext.begin()));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding)
