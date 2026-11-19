@@ -5,6 +5,8 @@
 #include "AbePublicParametersArchive.hpp"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -13,6 +15,17 @@
 
 namespace ndn_service_framework {
 namespace {
+
+/** Opt-in diagnostics: unset in production, set only while a qualification run is being explained. */
+bool
+historicalReadDebug()
+{
+  static const bool enabled = std::getenv("NDNSF_HISTORICAL_READ_DEBUG") != nullptr;
+  return enabled;
+}
+
+#define HISTORICAL_READ_DEBUG(...) \
+  do { if (historicalReadDebug()) std::fprintf(stderr, __VA_ARGS__); } while (false)
 
 uint64_t
 nowMs()
@@ -175,37 +188,58 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
   while (!state->index && std::chrono::steady_clock::now() < deadline)
     face.processEvents(ndn::time::milliseconds(10));
-  if (!state->index)
+  if (!state->index) {
+    HISTORICAL_READ_DEBUG("historical read: no index answer for %s\n", indexName.toUri().c_str());
     return std::nullopt;
+  }
   try {
     if (!ndn::security::verifySignature(*state->index, controllerCertificate.getPublicKey()))
       return std::nullopt;
   }
   catch (const std::exception&) {
+    HISTORICAL_READ_DEBUG("historical read: index signature did not verify\n");
     return std::nullopt;
   }
   const std::string indexText(reinterpret_cast<const char*>(state->index->getContent().value()),
                               state->index->getContent().value_size());
   std::vector<std::tuple<uint64_t, uint64_t, std::string, std::string>> records;
-  if (!parseHistoricalPublicParametersIndex(indexText, records))
+  if (!parseHistoricalPublicParametersIndex(indexText, records)) {
+    HISTORICAL_READ_DEBUG("historical read: index did not parse: %s\n", indexText.c_str());
     return std::nullopt;
+  }
   const auto found = std::find_if(records.begin(), records.end(),
     [generation, epoch] (const auto& record) {
       return std::get<0>(record) == generation && std::get<1>(record) == epoch;
     });
-  if (found == records.end())
+  if (found == records.end()) {
+    HISTORICAL_READ_DEBUG("historical read: generation %llu (epoch %llu) not in index; it lists:\n",
+                          static_cast<unsigned long long>(generation),
+                          static_cast<unsigned long long>(epoch));
+    for (const auto& record : records) {
+      HISTORICAL_READ_DEBUG("  generation=%llu epoch=%llu digest=%.16s...\n",
+                            static_cast<unsigned long long>(std::get<0>(record)),
+                            static_cast<unsigned long long>(std::get<1>(record)),
+                            std::get<2>(record).c_str());
+    }
     return std::nullopt;
+  }
 
   const auto proofWire = fetchSingleData(
     face, historicalPublicParametersName(controllerPrefix, generation, epoch, std::get<2>(*found)),
     controllerCertificate, timeoutMs);
-  if (!proofWire)
+  if (!proofWire) {
+    HISTORICAL_READ_DEBUG("historical read: proof fetch failed\n");
     return std::nullopt;
+  }
   HistoricalPublicParameters proof;
-  if (!parseHistoricalPublicParameters(std::string(proofWire->begin(), proofWire->end()), proof))
+  if (!parseHistoricalPublicParameters(std::string(proofWire->begin(), proofWire->end()), proof)) {
+    HISTORICAL_READ_DEBUG("historical read: proof did not parse\n");
     return std::nullopt;
-  if (proof.digest.substr(7) != std::get<2>(*found) || proof.originalName != std::get<3>(*found))
+  }
+  if (proof.digest.substr(7) != std::get<2>(*found) || proof.originalName != std::get<3>(*found)) {
+    HISTORICAL_READ_DEBUG("historical read: proof does not match the index entry\n");
     return std::nullopt;
+  }
   return proof.publicParameters;
 }
 
