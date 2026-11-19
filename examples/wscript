@@ -418,6 +418,15 @@ def build(bld):
                     use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL ONNXRUNTIME',
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
+        # Host-side transcript tokenizer for the frozen Spec 234 load: the four
+        # rounds are encoded by the same pinned engine the runtime verifies.
+        bld.program(name='spec234-transcript',
+                    target='spec234-transcript',
+                    source=['spec234-transcript.cpp'],
+                    rpath=[runtime_libdir],
+                    includes=['..'],
+                    use='ndnsf-distributed-inference NDN_CXX OPENSSL DL',
+                    linkflags=['-Wl,-rpath,$ORIGIN/..'])
 
     if not bld.env.WITH_EXAMPLES:
         return

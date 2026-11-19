@@ -46,7 +46,7 @@ def run(argv, **kwargs):
 
 
 def generate(root, workload, layout, network, journal, storage_budget,
-             provider_cpus=None):
+             provider_cpus=None, dynamic_shaping=False):
     spec = LAYOUTS[layout]
     link = NETWORKS[network]
     # The prepared workload already froze the layer cut and rank weights in its
@@ -59,6 +59,8 @@ def generate(root, workload, layout, network, journal, storage_budget,
             '--no-kv-capture', '--storage-budget', str(storage_budget)]
     if provider_cpus:
         argv += ['--provider-cpus', *[str(value) for value in provider_cpus]]
+    if dynamic_shaping:
+        argv += ['--dynamic-shaping']
     if link['loss'] is not None:
         argv += ['--link-loss', str(link['loss'])]
     run(argv)
@@ -85,7 +87,7 @@ def close(root, timeout=120):
 
 
 def summarize(root, code, wall, layout, network, block, result_path,
-              cell=None, provider_cpus=None):
+              cell=None, provider_cpus=None, reference=None, outputs_dir=None):
     row = dict(layout=layout, network=network, block=block, exit_code=code,
                wall_seconds=round(wall, 2))
     if cell is not None:
@@ -125,6 +127,11 @@ def summarize(root, code, wall, layout, network, block, result_path,
                                       (entry.get('startedProcessCpuNs') or 0) / 1e9, 3)
                     if entry.get('startedProcessCpuNs') is not None else None))
         row['turns'] = turns
+        if reference is not None and code == 0:
+            matched, observed = _compare_reference(root, reference)
+            row['referenceMatch'] = matched
+            row['referenceObserved'] = observed
+        _archive_outputs(root, outputs_dir, block)
     except Exception as error:  # a failed cell still produces a row
         row['result_error'] = str(error)
     with open(result_path, 'a') as output:
@@ -148,18 +155,28 @@ def main():
                         help='Keep the cell root after a successful cell')
     parser.add_argument('--provider-cpus', nargs='+', type=int,
                         help='Per-provider CPU quota (placement-interaction cells)')
+    parser.add_argument('--dynamic-shaping', action='store_true',
+                        help='Shape Provider data links after material assembly')
+    parser.add_argument('--reference', type=Path,
+                        help='Frozen reference token vectors (JSON) for per-round comparison')
+    parser.add_argument('--outputs-dir', type=Path,
+                        help='Archive each block token outputs under this directory')
     parser.add_argument('--timeout', type=int, default=2400)
     args = parser.parse_args()
     args.root.parent.mkdir(parents=True, exist_ok=True)
     args.journal.mkdir(parents=True, exist_ok=True)
     if not (args.root / 'deployment.json').exists():
         generate(args.root, args.workload, args.layout, args.network, args.journal,
-                 args.storage_budget, args.provider_cpus)
+                 args.storage_budget, args.provider_cpus, args.dynamic_shaping)
     for block in range(args.blocks):
         close(args.root)
         code, wall, log = boot(args.root, args.timeout)
+        reference = None
+        if args.reference is not None:
+            reference = json.loads(args.reference.read_text())
         row = summarize(args.root, code, wall, args.layout, args.network, block, args.results,
-                        cell=args.root.name, provider_cpus=args.provider_cpus)
+                        cell=args.root.name, provider_cpus=args.provider_cpus,
+                        reference=reference, outputs_dir=args.outputs_dir)
         print(json.dumps(row, sort_keys=True))
         if code != 0:
             close(args.root)

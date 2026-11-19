@@ -105,7 +105,7 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
                        tokenizer=None, layer_cut=None, rank_weights=None,
                        prepared_workload=None, link_bw=None, link_delay=None, probe=True,
                        link_loss=None, max_new_tokens=None, kv_capture=True,
-                       storage_budget=None, provider_cpus=None):
+                       storage_budget=None, provider_cpus=None, dynamic_shaping=False):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import (
@@ -115,9 +115,14 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
 
     root.mkdir(mode=0o700)
     real_model = source is not None or prepared_workload is not None
-    request_timeout_ms = 900000 if real_model else 240000
+    # The frozen N6 cell assembles the model material under 1% loss (>15 min),
+    # so the request window covers the lossy assembly plus all four rounds.
+    # The native conversation retention is capped at one hour and must not be
+    # shorter than the request window; 27 minutes covers the lossy N6 assembly
+    # (about 18 minutes) plus all four rounds with the 3.54 M ms retention.
+    request_timeout_ms = 1620000 if real_model else 240000
     # Leave room for both turns and strictly outlive either signed Selection.
-    retention_ms = 2 * request_timeout_ms + 300000 if real_model else 600000
+    retention_ms = min(3600000, 2 * request_timeout_ms + 300000) if real_model else 600000
     namespace = "/spec234" if real_model else "/spec242"
     group = namespace + "/group"
     service = namespace + "/Infer"
@@ -127,7 +132,17 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
     bundle = root / "workload"
     if prepared_workload:
         bundle.mkdir(mode=0o700)
-        for name in ("catalog.json", "generation.json", "tokenizer.json", "prompt.bin", "delta.bin"):
+        # A frozen multi-round transcript adds one delta-<n>.bin per later round
+        # and a transcript digest file; copy every maintained input present.
+        names = ["catalog.json", "generation.json", "tokenizer.json", "prompt.bin",
+                 "delta.bin", "frozen-transcript.json"]
+        names += sorted(path.name for path in prepared_workload.glob("delta-*.bin"))
+        for name in names:
+            path = prepared_workload / name
+            if not path.exists():
+                if name in ("delta.bin", "frozen-transcript.json"):
+                    continue
+                raise ValueError(f"prepared workload file is missing: {name}")
             path = prepared_workload / name
             limit = 32 << 20
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -239,7 +254,11 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
             "selection-offer-key-file": str(offer_private), "grant-authority-public-key": str(auth_public),
             "recipient-key-map": str(recipient_map), "allow-selection-generation-options": True,
             "capture-complete-kv-state": kv_capture,
-            "assembly-timeout-ms": 600000 if real_model else 120000,
+            # The N6 provider link carries the model material under the frozen
+            # packet loss; the lossy fetch legitimately exceeds ten minutes, so
+            # the assembly budget covers the shaped transfer (still bounded by
+            # the request deadline).
+            "assembly-timeout-ms": 2400000 if real_model else 120000,
             "repo-fetch-timeout-ms": 480000 if real_model else 60000,
             "conversation-retention-ms": retention_ms}
     if kv_capture:
@@ -267,14 +286,33 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
     requester = by_id["requester"]["identity"]
     security_digest = digest(policy.read_bytes())
     options_file = str(bundle / "generation.json")
-    inputs = ("prompt.bin", "delta.bin")
-    turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
-                  output_file=str(root / f"output-{i}.json"),
-                  checkpoint_output_file=str(root / f"checkpoint-{i}.json"))
-             for i, input_name in enumerate(inputs * (2 if real_model else 1))]
+    transcript = catalog.get("transcript")
+    if transcript and real_model:
+        # One frozen conversation: round 1 opens it and every later round adds
+        # exactly its delta tokens because the runtime keeps the historical KV.
+        inputs = tuple(transcript["inputFiles"])
+        turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
+                      output_file=str(root / f"output-{i}.json"),
+                      checkpoint_output_file=str(root / f"checkpoint-{i}.json"))
+                 for i, input_name in enumerate(inputs)]
+    else:
+        inputs = ("prompt.bin", "delta.bin")
+        turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
+                      output_file=str(root / f"output-{i}.json"),
+                      checkpoint_output_file=str(root / f"checkpoint-{i}.json"))
+                 for i, input_name in enumerate(inputs * (2 if real_model else 1))]
     turn_options = dict(mode="FULL_CONTEXT", generation_id=uuid.uuid4().hex,
                         parent_context_epoch=0, retention_duration_ms=retention_ms)
-    if real_model:
+    if transcript and real_model:
+        # One frozen conversation keeps appending: the Maintained Requester
+        # continues an opened conversation across turns, so the per-turn
+        # conversation_id grouping (two turns each) must not be used here.
+        continuation_options = bundle / "continuation.json"
+        write_json(continuation_options, {**options,
+                                          "maxNewTokens": transcript.get("tokensPerRound", 32)})
+        for turn in turns[1:]:
+            turn["options_file"] = str(continuation_options)
+    elif real_model:
         # The maintained requester opens independent conversations as pairs.
         # Turns 0 and 2 both start from the same prompt with empty KV.
         continuation_options = bundle / "continuation.json"
@@ -295,7 +333,19 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
         topology.write_text(topology_text.replace("\n[links]", "h242p3:\n\n[links]")
                             .replace("\n[faces]", "h242relay:h242p3 delay=2ms bw=1000\n\n[faces]")
                             + "h242relay:h242p3 cost=10\n", encoding="utf-8")
-    if link_bw is not None or link_delay is not None or link_loss is not None:
+    shaping_block = None
+    if dynamic_shaping:
+        # The Provider data links are shaped after the model material was
+        # fetched and assembled; the topology itself keeps the baseline so the
+        # 919 MB fetch is not throttled (E2 pressure applies to the inference
+        # window, not to the setup transfer).
+        shaping_block = dict(bandwidth_mbps=link_bw if link_bw is not None else 100,
+                             delay_ms=link_delay if link_delay is not None else 2,
+                             marker='NDNSF_DI_ONNX_TIMING',
+                             timeout_seconds=900)
+        if link_loss is not None:
+            shaping_block['loss_percent'] = link_loss
+    if not dynamic_shaping and (link_bw is not None or link_delay is not None or link_loss is not None):
         # E2 shapes the Provider data links; control/Repo budget links keep the
         # baseline. Rewriting every link would throttle the source publication
         # and control plane as well, which N1's 10 Mbps PROVIDER profile must
@@ -323,6 +373,7 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
     config = {
         "schema": "ndnsf-di-deployment-v1",
         "probes": {"enabled": bool(probe), "ping_count": 3},
+        **({"shaping": shaping_block} if shaping_block is not None else {}),
         "deployment_id": "spec234-qwen-int4" if real_model else "spec242-hybrid",
         "release": {"prefix": str(prefix), "manifest": str(ledger)},
         "platform": {"kind": "minindn", "topology": str(topology),
@@ -414,6 +465,8 @@ if __name__ == "__main__":
                         help="Deployment storage budget in bytes (default 8 GiB real model)")
     parser.add_argument("--provider-cpus", nargs="+", type=int,
                         help="Per-provider CPU quota for placement-interaction cells")
+    parser.add_argument("--dynamic-shaping", action="store_true",
+                        help="Shape the Provider data links after material assembly instead of at topology creation")
     args = parser.parse_args()
     source_options = (args.source_sha256, args.tokenizer, args.layer_cut)
     if args.source and any(value is None for value in source_options):
@@ -428,4 +481,4 @@ if __name__ == "__main__":
                        args.rank_weights, args.prepared_workload,
                        args.link_bw, args.link_delay, args.probe,
                        args.link_loss, args.max_new_tokens, args.kv_capture,
-                       args.storage_budget, args.provider_cpus)
+                       args.storage_budget, args.provider_cpus, args.dynamic_shaping)

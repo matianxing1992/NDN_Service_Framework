@@ -194,11 +194,28 @@ def load_deployment(path, *, prepare_only=False):
     config = _object(_read_json(source), "deployment", {
         "schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority", "operation",
-        "repo_benchmark", "probes",
+        "repo_benchmark", "probes", "shaping",
     }, {"schema", "deployment_id", "release", "platform", "nodes", "actors",
         "network", "security", "storage", "model", "requester", "artifact_authority"})
     if config["schema"] != "ndnsf-di-deployment-v1":
         _fail("schema", "unsupported schema")
+    if "shaping" in config:
+        shaping = _object(config["shaping"], "shaping",
+                          {"bandwidth_mbps", "delay_ms", "loss_percent", "marker",
+                           "timeout_seconds"},
+                          {"bandwidth_mbps", "delay_ms"})
+        if (type(shaping["bandwidth_mbps"]) not in (int, float) or
+                shaping["bandwidth_mbps"] < 1):
+            _fail("shaping.bandwidth_mbps", "expected a positive number")
+        if type(shaping["delay_ms"]) not in (int, float) or shaping["delay_ms"] < 0:
+            _fail("shaping.delay_ms", "expected a non-negative number")
+        if "loss_percent" in shaping:
+            if type(shaping["loss_percent"]) not in (int, float) or not 0 <= shaping["loss_percent"] <= 100:
+                _fail("shaping.loss_percent", "expected a percentage between 0 and 100")
+        if "timeout_seconds" in shaping:
+            _integer(shaping["timeout_seconds"], "shaping.timeout_seconds", 1)
+            if shaping["timeout_seconds"] > 3600:
+                _fail("shaping.timeout_seconds", "at most 3600 seconds")
     if "probes" in config:
         probes = _object(config["probes"], "probes", {"enabled", "ping_count"},
                          {"enabled"})

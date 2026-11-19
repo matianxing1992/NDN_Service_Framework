@@ -401,6 +401,78 @@ def _probe_capture(argv, launcher=None, timeout=5.0):
         return {'argv': argv, 'error': str(error)}
 
 
+def _apply_pending_shaping(config, directory, state, facility, children, guard, applied, offsets):
+    """Shape a Provider data link once that Provider finished material assembly.
+
+    The E2 pressure describes the inference window, not the setup transfer: the
+    topology keeps the baseline until the Provider reports role_preparation_done
+    (runner assembly complete), then both ends of its link receive the netem
+    rate/delay/loss of the cell. Each application is recorded in step evidence.
+    """
+    shaping = config.get('shaping')
+    if not isinstance(shaping, dict) or facility is None:
+        return
+    nodes = {node['id']: node for node in config['nodes']}
+    host_to_node = {node['host']: node['id'] for node in config['nodes']}
+    marker = shaping.get('marker', 'NDNSF_DI_ONNX_TIMING')
+    for actor, child, row in children:
+        if actor.get('kind') != 'provider' or actor['id'] in applied:
+            continue
+        guard()
+        log_path = directory / (actor['id'] + '.log')
+        try:
+            with open(log_path, 'rb') as log:
+                log.seek(offsets.get(actor['id'], 0))
+                fresh = log.read().decode('utf-8', 'replace')
+                offsets[actor['id']] = log.tell()
+        except OSError:
+            continue
+        if marker not in fresh:
+            continue
+        provider_node = actor['node']
+        provider_host = nodes[provider_node]['host']
+        pairs = []
+        for interface in facility.hosts[provider_host].intfList():
+            if interface.link is None:
+                continue
+            other = (interface.link.intf2 if interface.link.intf1 is interface
+                     else interface.link.intf1)
+            peer_id = host_to_node.get(other.node.name)
+            if peer_id is None or peer_id == provider_node:
+                continue
+            pairs.append((provider_node, interface.name, peer_id, other.name))
+        commands = []
+        for node_id, local_interface, peer_id, peer_interface in pairs:
+            for end_node, end_interface in ((node_id, local_interface), (peer_id, peer_interface)):
+                argv = ['tc', 'qdisc', 'replace', 'dev', end_interface, 'root', 'netem',
+                        'rate', str(shaping['bandwidth_mbps']) + 'mbit',
+                        'delay', str(shaping['delay_ms']) + 'ms']
+                if shaping.get('loss_percent'):
+                    argv += ['loss', str(shaping['loss_percent']) + '%']
+                result = _probe_capture(argv, facility.launcher(end_node))
+                result['node'] = end_node
+                commands.append(result)
+        write_json(directory / ('shaping-' + actor['id'] + '.json'),
+                   {'provider': actor['id'], 'marker': marker,
+                    'bandwidth_mbps': shaping['bandwidth_mbps'],
+                    'delay_ms': shaping['delay_ms'],
+                    'loss_percent': shaping.get('loss_percent'),
+                    'commands': commands})
+        applied[actor['id']] = 'APPLIED'
+        state.setdefault('shaping', {})[actor['id']] = 'APPLIED'
+
+
+def _sample_links(config, facility, guard):
+    """Capture the per-node link and qdisc counters for a before/after delta."""
+    record = {}
+    for node in config['nodes']:
+        guard()
+        launcher = facility.launcher(node['id']) if facility is not None else None
+        record[node['id']] = {'links': _probe_capture(['ip', '-s', 'link'], launcher),
+                              'qdisc': _probe_capture(['tc', '-s', 'qdisc'], launcher)}
+    return record
+
+
 def _probe_environment(config, directory, state, facility, children, guard, deadline):
     """Record the effective datapath, CPU and route state after READY.
 
@@ -1220,9 +1292,13 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                 children.append((actor, child, row))
                 state['status'] = 'PREPARING' if prepare_only else 'REQUEST_RUNNING'
                 write_json(root / 'state.json', state)
+                shaping_applied = {}
+                shaping_offsets = {}
                 while child.poll() is None:
                     guard()
                     _check_running(children)
+                    _apply_pending_shaping(config, directory, state, facility, children,
+                                           guard, shaping_applied, shaping_offsets)
                     if repo_benchmark is not None and time.monotonic() - last_sample >= 1:
                         _sample_repo_benchmark(directory, children, 'running')
                         last_sample = time.monotonic()
@@ -1236,6 +1312,14 @@ def _up(source, root, timeout, debug=False, timing=False, prepare_only=False, re
                 if child.returncode:
                     raise ClusterError('REQUESTER_EXIT:' + str(child.returncode))
                 state['requester']['cleanup'] = stop_owned(row['proof'])
+                # Link counters after the request window let the reduction take
+                # a per-node/per-link delta against probes.json (E3 link data).
+                if config.get('probes', {}).get('enabled', False):
+                    after = _sample_links(config, facility, guard)
+                    write_json(directory / 'probes-after.json', {'nodes': after})
+                    state['probesAfter'] = {'status': 'RECORDED',
+                                            'path': str(directory / 'probes-after.json')}
+                    write_json(root / 'state.json', state)
                 terminal = state['requester']['cleanup']
                 if terminal['status'] != 'ZERO' or terminal['forced']:
                     raise ClusterError('REQUESTER_GROUP_CLEANUP:' + terminal['status'])

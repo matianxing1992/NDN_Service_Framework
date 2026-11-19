@@ -13583,6 +13583,27 @@ namespace ndn_service_framework
                     return;
                 }
                 if (index >= state->slots.size()) {
+                    // The batch-level terminal (hard deadline or cancellation)
+                    // reaches this branch instead of a per-slot error. Record the
+                    // attempt history of the owned slots once, so a lossy first
+                    // failure can be attributed without TRACE builds.
+                    if (!error.empty()) {
+                        std::string history;
+                        std::size_t recorded = 0;
+                        for (const auto& slot : state->slots) {
+                            if (recorded++ >= 8) break;
+                            if (!history.empty()) history += ',';
+                            history += std::to_string(
+                                slot.attempts.load(std::memory_order_relaxed));
+                        }
+                        NDN_LOG_WARN("[NDNSF_TRACE] role=provider event=COLLAB_DATA_BATCH_FAILURE"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " firstName=" << firstName.toUri()
+                                     << " slots=" << state->slots.size()
+                                     << " attempts=" << history
+                                     << " cause=" << error);
+                    }
                     state->error = error.empty() ? "invalid exact Data slot" : std::move(error);
                     completed = true;
                 }
@@ -13596,6 +13617,25 @@ namespace ndn_service_framework
                         --state->inFlight;
                     }
                     slot.retryQueued = false;
+                    // Bounded first-failure record for the bounded dependency
+                    // delivery: one line per failed slot names the object, the
+                    // phase, the attempt history and the effective deadline so
+                    // a lossy run can be diagnosed after the fact.
+                    if (index < ownedDataNames->size()) {
+                        const auto remainingMs = std::chrono::duration_cast<
+                            std::chrono::milliseconds>(
+                            state->deadline - std::chrono::steady_clock::now()).count();
+                        NDN_LOG_WARN("[NDNSF_TRACE] role=provider event=COLLAB_DATA_FAILURE"
+                                     << " requestId=" << requestId.toUri()
+                                     << " keyScope=" << keyScope
+                                     << " dataName=" << (*ownedDataNames)[index].toUri()
+                                     << " attempts=" << slot.attempts.load(std::memory_order_relaxed)
+                                     << " retryQueued=" << (slot.retryQueued ? 1 : 0)
+                                     << " networkCompleted=" << (slot.networkCompleted ? 1 : 0)
+                                     << " networkExhausted=" << (slot.networkExhausted ? 1 : 0)
+                                     << " remainingMs=" << remainingMs
+                                     << " cause=" << error);
+                    }
                     const bool recoveryExpired =
                         error.find("expired") != std::string::npos ||
                         error.find("deadline") != std::string::npos;

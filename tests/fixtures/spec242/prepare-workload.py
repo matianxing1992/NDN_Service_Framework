@@ -22,7 +22,7 @@ def write_json(path, value):
 
 def prepare(output, requester, protection_epoch, source=None, source_sha256=None,
             tokenizer=None, layer_cut=None, rank_weights=None, max_new_tokens=None,
-            layer_cuts=None, tensor_degrees=None, weighted_stage=0):
+            layer_cuts=None, tensor_degrees=None, weighted_stage=0, transcript=None):
     repo = Path(__file__).resolve().parents[3]
     # Use the maintained host-side encoder and semantic graph identity.
     sys.path.insert(0, str(repo / "Experiments"))
@@ -97,7 +97,11 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
                  model_format="onnx", precision="int4", quantization_subtype="weight_only_int4",
                  adapter=adapter)
     bound = source_bytes + (128 << 20) if real_model else 8 << 20
-    state_budget = 16 << 20 if real_model else 128 << 10
+    # The frozen four-round load grows the logical prefix to 256 tokens and then
+    # generates 32 more; the whole-model KV at that length is about 132 MB, so a
+    # conservative per-stage budget keeps the reference replay and the runtime
+    # state admission above it.
+    state_budget = 256 << 20 if real_model else 128 << 10
     profiles = {stage: dict(backends=["onnxruntime"], weight_bytes=bound, workspace_bytes=bound,
                             kv_bytes=state_budget, activation_bytes=state_budget, transient_bytes=bound,
                             safety_margin=1.0) for stage in stages}
@@ -157,6 +161,32 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
                 state_input_names.append(state_input)
                 state_output_names.append(state_output)
                 successors.append(f"{state_input}={state_output}")
+    transcript_block = None
+    transcript_rounds = None
+    transcript_names = None
+    if transcript is not None:
+        # The frozen four-round transcript: every round adds exactly 32 new
+        # input tokens to the same conversation. Round 1 is the opening prompt;
+        # each later round carries only its own delta because the runtime keeps
+        # the historical KV.
+        frozen = json.loads(Path(transcript).read_text())
+        rounds = frozen["rounds"]
+        per_round = int(frozen.get("tokensPerRound", 32))
+        if (frozen.get("schema") != "ndnsf-spec234-transcript-v1" or not rounds or
+                any(len(entry["ids"]) != per_round for entry in rounds)):
+            raise ValueError("transcript rounds must each carry exactly the frozen token count")
+        transcript_names = ["prompt.bin"] + [
+            "delta-%d.bin" % index for index in range(1, len(rounds))]
+        transcript_rounds = rounds
+        transcript_block = dict(file="frozen-transcript.json",
+                                digest="sha256:" + hashlib.sha256(
+                                    Path(transcript).read_bytes()).hexdigest(),
+                                tokensPerRound=per_round,
+                                rounds=len(rounds), inputFiles=transcript_names)
+    if transcript_block is not None:
+        catalog_extra = dict(transcript=transcript_block)
+    else:
+        catalog_extra = {}
     model_prefix = "/Model/Spec234" if real_model else "/Model/Spec242"
     catalog = dict(schema="ndnsf-di-native-request-catalog-v1", model=model, splitter=splitter,
                    source=dict(file=str(source), bytes=source_bytes, initializer_bytes=0,
@@ -174,7 +204,7 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
                                     max_publication_bytes=2 * bound if real_model else bound),
                    node_mapping=node_mapping, state_inputs=state_inputs, state_outputs=state_outputs,
                    conversation_input=dict(kind="TENSOR_BUNDLE_TOKEN_IDS", tensor_name="input_ids"),
-                   input_format="OPAQUE", max_payload_bytes=1024 * 1024)
+                   input_format="OPAQUE", max_payload_bytes=1024 * 1024, **catalog_extra)
     if not real_model:
         from ndnsf import _ndnsf
 
@@ -195,8 +225,13 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
             pre_tokenizer={"type": "Whitespace"}, post_processor=None, decoder=None,
             model=dict(type="WordLevel", vocab={f"token{i}": i for i in range(64)},
                        unk_token="token0")))
-    (output / "prompt.bin").write_bytes(tensor_bundle([1, 2, 3]))
-    (output / "delta.bin").write_bytes(tensor_bundle([4]))
+    if transcript_rounds is not None:
+        for name, entry in zip(transcript_names, transcript_rounds):
+            (output / name).write_bytes(tensor_bundle(entry["ids"]))
+        (output / "frozen-transcript.json").write_bytes(Path(transcript).read_bytes())
+    else:
+        (output / "prompt.bin").write_bytes(tensor_bundle([1, 2, 3]))
+        (output / "delta.bin").write_bytes(tensor_bundle([4]))
     write_json(output / "generation.json", dict(
         sampling=dict(mode="Greedy", repetitionPenalty=1.0),
         maxNewTokens=(max_new_tokens if max_new_tokens is not None
@@ -229,6 +264,8 @@ if __name__ == "__main__":
                         help="Tensor-parallel degree per stage")
     parser.add_argument("--weighted-stage", type=int, default=0,
                         help="Zero-based stage index that receives --rank-weights")
+    parser.add_argument("--transcript", type=Path,
+                        help="Frozen four-round transcript JSON (32 new tokens per round)")
     args = parser.parse_args()
     if not args.requester.startswith("/") or args.requester.endswith("/"):
         parser.error("--requester must be an absolute non-root NDN name")
@@ -243,4 +280,4 @@ if __name__ == "__main__":
     prepare(args.output.resolve(), args.requester, args.protection_epoch,
             args.source.resolve(strict=True) if args.source else None, args.source_sha256,
             args.tokenizer, args.layer_cut, args.rank_weights, args.max_new_tokens,
-            args.layer_cuts, args.tensor_degrees, args.weighted_stage)
+            args.layer_cuts, args.tensor_degrees, args.weighted_stage, args.transcript)

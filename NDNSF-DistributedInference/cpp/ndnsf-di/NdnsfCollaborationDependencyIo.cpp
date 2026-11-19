@@ -519,8 +519,13 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           // consume the post-publication no-progress window.  Once the
           // manifest is available, every segment fetch is subject to the
           // ordinary no-progress bound.
+          // The producer's first manifest only appears after it fetched and
+          // assembled the model material; on a lossy Provider link that can
+          // legitimately outlive the ordinary fetch budget. The readiness wait
+          // is therefore bounded by the request hard deadline only, while the
+          // post-publication segment fetches keep the no-progress bound.
           const auto fetchBudget = initialProducerReadiness
-            ? static_cast<std::uint64_t>(m_fetchTimeoutMs)
+            ? static_cast<std::uint64_t>(remaining)
             : std::min<std::uint64_t>(
                 edge.noProgressDeadlineMs,
                 static_cast<std::uint64_t>(m_fetchTimeoutMs));
