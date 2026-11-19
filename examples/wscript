@@ -446,8 +446,8 @@ def build(bld):
     # Spec189 full-path C++ oracle.  The MiniNDN runner supplies process logs;
     # this selector owns the product assertion over the native provider stages
     # and links the same canonical-JSON boundary as the DI production path.
-    bld.program(name='spec189-two-provider-oracle',
-                target='spec189-two-provider-oracle',
+    bld.program(name='di-two-provider-oracle',
+                target='di-two-provider-oracle',
                 # The selector calls spec220::oracle::validateOnnxReference, so that translation
                 # unit has to be here. It was missing, and the target only failed to link -- which
                 # nothing noticed because `waf install` stops at the first failing install task and
@@ -460,14 +460,14 @@ def build(bld):
 
     # Parser counterexamples share the exact checker used by the experiment CLI.
     # This target proves log validation only, never model/network qualification.
-    bld.program(name='spec189-material-oracle-tests',
-                target='spec189-material-oracle-tests',
+    bld.program(name='di-material-oracle-tests',
+                target='di-material-oracle-tests',
                 source=[bld.path.parent.find_node('tests/fixtures/spec189/material-fetch-oracle.cpp')],
                 includes=['..'],
                 install_path=None)
 
-    bld.program(name='spec189-provider-stage-oracle-tests',
-                target='spec189-provider-stage-oracle-tests',
+    bld.program(name='di-provider-stage-oracle-tests',
+                target='di-provider-stage-oracle-tests',
                 source=[bld.path.parent.find_node('tests/fixtures/spec189/provider-stage-oracle.cpp')],
                 includes=['..'],
                 install_path=None)

@@ -187,7 +187,7 @@ def build(bld):
                 cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
     # Keep the CLI fixture reachable in native-only builds; preserve its output path.
-    bld.program(target='../examples/spec189-cli-oracle-tests', name='spec189-cli-oracle-tests',
+    bld.program(target='../examples/di-cli-oracle-tests', name='di-cli-oracle-tests',
                 source=[bld.path.find_node('fixtures/spec189/cli-oracle.cpp')],
                 includes=['..'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
@@ -777,8 +777,8 @@ def build(bld):
     # from the historical Spec188 projection selector so its oversized and
     # arbitrary-model-reference negatives have an independent source/build
     # identity.  It does not claim PreparedModel/Repo runtime reuse.
-    bld.program(target='../spec189-request-wire',
-                name='spec189-request-wire',
+    bld.program(target='../di-request-wire',
+                name='di-request-wire',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/spec189-request-reference.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
@@ -787,8 +787,8 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec189-encrypted-repo',
-                name='spec189-encrypted-repo',
+    bld.program(target='../di-encrypted-repo',
+                name='di-encrypted-repo',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/spec189-encrypted-repo-publication.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -801,8 +801,8 @@ def build(bld):
     # deterministic fsync/close failures into the production backend and
     # checks the old/new manifest boundary without relying on permissions or
     # disk exhaustion.
-    bld.program(target='../spec189-repo-fd-owner',
-                name='spec189-repo-fd-owner',
+    bld.program(target='../di-repo-fd-owner',
+                name='di-repo-fd-owner',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/spec189-repo-fd-owner.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -814,8 +814,8 @@ def build(bld):
     # Spec189 T003-R2 unified quota selector.  An outstanding range
     # reservation must reduce admission capacity for both vector objects and
     # exact NDN Data packets until that reservation is committed or aborted.
-    bld.program(target='../spec189-repo-quota',
-                name='spec189-repo-quota',
+    bld.program(target='../di-repo-quota',
+                name='di-repo-quota',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/spec189-repo-quota.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -985,8 +985,8 @@ def build(bld):
     # source/material/publication categories, the conservative ORT budget and
     # terminal cleanup on a cancellation boundary through the production
     # ModelPreparationCache path.
-    bld.program(target='../spec189-preparation-memory',
-                name='spec189-preparation-memory',
+    bld.program(target='../di-preparation-memory',
+                name='di-preparation-memory',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-preparation.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -1056,8 +1056,8 @@ def build(bld):
     # Run publication counterexamples against the complete production DI
     # library. Compiling every DI source again per selector duplicates large
     # sanitizer objects and tests a different compilation of the runtime.
-    bld.program(target='../spec189-canonical-publisher',
-                name='spec189-canonical-publisher',
+    bld.program(target='../di-canonical-publisher',
+                name='di-canonical-publisher',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/di-native-canonical-publisher.t.cpp')],
                 includes=framework_includes,
@@ -1127,7 +1127,7 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise the real shared logging sink without model or network fixtures.
-    bld.program(target='../spec189-evidence-lines', name='spec189-evidence-lines',
+    bld.program(target='../di-evidence-lines', name='di-evidence-lines',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/spec189-evidence-lines.t.cpp')],
                 includes=framework_includes,
@@ -1225,7 +1225,7 @@ def build(bld):
                 install_path=None)
 
     # Exercise the real native coordinator/sampler with typed logits fixtures.
-    bld.program(target='../spec189-logits-dtype', name='spec189-logits-dtype',
+    bld.program(target='../di-logits-dtype', name='di-logits-dtype',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/spec189-logits-dtype.t.cpp'),
                         bld.path.find_node('unit-tests/di-qwen-generation-session.t.cpp'),
@@ -1249,7 +1249,7 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Sealer/group-builder/serialized V3 epoch contract, linked to production.
-    bld.program(target='../spec189-epoch-projection', name='spec189-epoch-projection',
+    bld.program(target='../di-epoch-projection', name='di-epoch-projection',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp'),
@@ -1275,8 +1275,8 @@ def build(bld):
     # Spec189 output-contract regression: keep the passthrough-aware runner
     # preparation assertion independently runnable when the aggregate unit
     # target is blocked by unrelated dirty-tree tests.
-    bld.program(target='../spec189-preparation-alias',
-                name='spec189-preparation-alias',
+    bld.program(target='../di-preparation-alias',
+                name='di-preparation-alias',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-preparation-context.t.cpp')] +
                        di_integration_sources,
@@ -1354,8 +1354,8 @@ def build(bld):
     # Spec189 provider failure-cleanup selector: stale .staging/protected
     # assembly trees are reclaimable, live PID leases and valid assembled cache
     # entries are not.
-    bld.program(target='../spec189-provider-staging-cleanup',
-                name='spec189-provider-staging-cleanup',
+    bld.program(target='../di-provider-staging-cleanup',
+                name='di-provider-staging-cleanup',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/spec189-provider-staging-cleanup.t.cpp'),
                         bld.path.parent.find_node(
@@ -1370,8 +1370,8 @@ def build(bld):
     # Spec189 selection-status negative-cache regression: an unbound status
     # query must not publish a service-less Data packet that can mask the
     # authenticated assembly heartbeat after Selection admission.
-    bld.program(target='../spec189-selection-status',
-                name='spec189-selection-status',
+    bld.program(target='../di-selection-status',
+                name='di-selection-status',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/spec189-selection-status.t.cpp')] +
                        framework_sources,
@@ -1386,8 +1386,8 @@ def build(bld):
     # in-process Runtime fixture; the wire-only selector above remains the
     # direct envelope oracle.  Keep this after the complete DI source closure
     # is defined so Waf configuration is deterministic.
-    bld.program(target='../spec189-prepared-request',
-                name='spec189-prepared-request',
+    bld.program(target='../di-prepared-request-oracle',
+                name='di-prepared-request-oracle',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1404,8 +1404,8 @@ def build(bld):
     # production placement strategy and ProviderArtifactCache; it proves that
     # two distinct provider assignments exist and that no fetch/assembly
     # builder runs before an authenticated Selection projection is present.
-    bld.program(target='../spec189-placement-oracle',
-                name='spec189-placement-oracle',
+    bld.program(target='../di-placement-oracle',
+                name='di-placement-oracle',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/spec189-placement-oracle.t.cpp')] +
                        di_integration_sources,
@@ -1418,7 +1418,7 @@ def build(bld):
 
     # Core assignment regression links the production shared libraries;
     # do not compile a second copy of all DI sources into this focused driver.
-    bld.program(target='../spec189-core-assignment', name='spec189-core-assignment',
+    bld.program(target='../di-core-assignment', name='di-core-assignment',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-di-core-flow.t.cpp'),
                         bld.path.find_node('integration-tests/di-native-requester-grant.t.cpp'),
