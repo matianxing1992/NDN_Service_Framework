@@ -16,6 +16,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlan.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanProjectionBuilder.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderRoleWorker.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
@@ -711,6 +713,38 @@ BOOST_AUTO_TEST_CASE(FixedAssignmentCarriesSealedStepsAndTheirDependencies)
   BOOST_REQUIRE_EQUAL(templateAfter->dependencies.size(), plan.dependencies.size());
   BOOST_CHECK_EQUAL(templateAfter->dependencies[0].consumerSlotId,
                     plan.dependencies[0].consumerSlotId);
+
+  auto shared = first;
+  shared.fixedProviderByRole.emplace("S0R2", "/provider/2");
+  shared.plan.roles.push_back("S0R2");
+  shared.plan.tensorDegree = 3;
+  auto otherSum = shared.plan.steps[2];
+  otherSum.stepId = "S0R2/SUM_ATTN/0";
+  otherSum.unitId = "S0R2";
+  auto local = shared.plan.steps[0];
+  local.stepId = "S0R2/ATTN/0";
+  local.unitId = "S0R2";
+  otherSum.inputSlots.front().producerStepId = local.stepId;
+  shared.plan.steps.push_back(std::move(local));
+  shared.plan.steps.push_back(std::move(otherSum));
+  auto& dependency = shared.plan.dependencies.front();
+  dependency.consumers.push_back("S0R2");
+  dependency.consumerStepId.clear();
+  dependency.consumerSlotId.clear();
+  BOOST_REQUIRE_NO_THROW(shared.plan.validateSteps());
+  const auto sharedFixed = nativeFixedRoleAssignmentV1FromProjection(shared);
+  std::istringstream sharedSource(nativeFixedRoleAssignmentV1ToJson(*sharedFixed));
+  const auto sharedRestored = nativeFixedRoleAssignmentV1FromJson(sharedSource);
+  BOOST_REQUIRE_EQUAL(sharedRestored->digest(), sharedFixed->digest());
+  BOOST_CHECK(sharedRestored->matchesExecutionTemplate(shared));
+  BOOST_CHECK(!restored->matchesExecutionTemplate(shared));
+  const auto& sharedDependency = sharedRestored->executionTemplate()->dependencies.front();
+  BOOST_CHECK(sharedDependency.consumers == dependency.consumers);
+  BOOST_CHECK(sharedDependency.consumerStepId.empty());
+  BOOST_CHECK(sharedDependency.consumerSlotId.empty());
+  auto changedSlot = shared;
+  changedSlot.plan.steps.back().inputSlots.back().slotId = "new-remote-slot";
+  BOOST_CHECK(!sharedRestored->matchesExecutionTemplate(changedSlot));
 }
 
 BOOST_AUTO_TEST_CASE(CapabilityRequirementsFollowTheSealedStepPlan)
@@ -19324,6 +19358,307 @@ BOOST_AUTO_TEST_CASE(AUnitHandsLocalValuesBetweenItsOwnStepsWithoutEncodingThem)
   BOOST_CHECK_EQUAL(countOf(after, "codec.materialize.calls"), 0U);
 
   std::filesystem::remove_all(root, cleanupError);
+}
+
+BOOST_AUTO_TEST_CASE(SharedTpPartialBindsBothDeclaredInputsAndRejectsForeignSlots)
+{
+  qwen::QwenTpShape shape;
+  shape.hidden = 2048; shape.layers = 1; shape.queryHeads = 48;
+  shape.kvHeads = 12; shape.headDim = 128; shape.ffn = 3072;
+  shape.vocab = 151936;
+  NativeExecutionPlan perPair;
+  qwen::projectQwenTpPlan(perPair, shape, 3, "entry", "S0R0");
+  BOOST_REQUIRE_NO_THROW(perPair.validateSteps());
+  BOOST_REQUIRE_EQUAL(perPair.dependencies.size(), 12U);
+  auto sharedPlan = perPair;
+  BOOST_REQUIRE_NO_THROW(ndnsf::di::detail::coalesceSharedTensorPartials(sharedPlan));
+  BOOST_REQUIRE_NO_THROW(sharedPlan.validateSteps());
+  BOOST_REQUIRE_EQUAL(sharedPlan.dependencies.size(), 6U);
+  BOOST_CHECK_EQUAL(nativeStepCommunicationCost(sharedPlan).remoteEdges, 12U);
+
+  // Different transport bounds must retain the pairwise objects for that producer slot.
+  auto incompatible = perPair;
+  incompatible.dependencies.front().expectedSegments = 1;
+  BOOST_REQUIRE_NO_THROW(ndnsf::di::detail::coalesceSharedTensorPartials(incompatible));
+  BOOST_CHECK_EQUAL(incompatible.dependencies.size(), 7U);
+  BOOST_CHECK_EQUAL(nativeStepCommunicationCost(incompatible).remoteEdges, 12U);
+
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = 3;
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  environment.enableProductionIngressForTest();
+  environment.disconnectProviderPeerTransportForTest();
+
+  const ndn::Name requestId("/request/shared-tp");
+  const auto planDigest = nativePlanningDigest("shared-tp");
+  const std::string groupId = "shared-tp-fixture";
+  const auto layout = nativePlanningDigest("layout");
+  NativeProviderAssignment assignment;
+  std::map<std::string, std::size_t> providerRank;
+  std::vector<GroupMemberV1> members;
+  for (std::size_t rank = 0; rank < profile.providerCount; ++rank) {
+    const auto role = "S0R" + std::to_string(rank);
+    const auto provider = environment.provider(rank).getName().toUri();
+    assignment.providerByRole.emplace(role, provider);
+    providerRank.emplace(role, rank);
+    members.push_back({provider, rank, "offer-" + role, provider});
+  }
+  std::vector<ndn::signal::ScopedConnection> bridges;
+  for (std::size_t rank = 0; rank < members.size(); ++rank) {
+    auto& face = environment.providerFace(rank);
+    for (std::size_t peer = 0; peer < members.size(); ++peer) {
+      if (rank == peer) continue;
+      auto& destination = environment.providerFace(peer);
+      const auto producerPrefix = ndn::Name(environment.provider(peer).getName());
+      bridges.emplace_back(face.onSendInterest.connect(
+        [&destination, producerPrefix] (const ndn::Interest& interest) {
+          if (producerPrefix.isPrefixOf(interest.getName()))
+            destination.receive(interest);
+        }));
+      bridges.emplace_back(face.onSendData.connect(
+        [&destination] (const ndn::Data& data) { destination.receive(data); }));
+    }
+  }
+  std::vector<NativeSelectionProjectionV3> projections;
+  for (const auto& [role, provider] : assignment.providerByRole) {
+    auto& projection = projections.emplace_back();
+    projection.plan = sharedPlan;
+    projection.fixedProviderByRole = assignment.providerByRole;
+    projection.provider = provider;
+    projection.requestId = projection.dataflow.requestId = requestId.toUri();
+    projection.attempt = projection.dataflow.attempt = 1;
+    projection.planDigest = projection.dataflow.planDigest = planDigest;
+    projection.executionRole.roleId = projection.dataflow.role = role;
+    projection.selectedRole.role = projection.selectedRole.selectedRole = role;
+    projection.dataflow.terminalResponseOwner = role == "S0R0";
+  }
+  std::vector<GroupOperationV1> operations;
+  for (std::size_t round = 0; round < sharedPlan.dependencies.size(); ++round) {
+    const auto& dependency = sharedPlan.dependencies[round];
+    NativeTensorEndpointV3 endpoint;
+    endpoint.requester = profile.userIdentity.toUri();
+    endpoint.requestId = requestId.toUri();
+    endpoint.attempt = 1;
+    endpoint.planDigest = planDigest;
+    endpoint.sourceKind = "ROLE";
+    endpoint.producerRole = dependency.producers.front();
+    endpoint.producerNamespace = assignment.providerByRole.at(endpoint.producerRole);
+    endpoint.producerRank = providerRank.at(endpoint.producerRole);
+    endpoint.groupId = groupId;
+    endpoint.groupEpoch = "3";
+    endpoint.round = round;
+    endpoint.operation = dependency.operationKind;
+    endpoint.dependencyId = dependency.dependencyId;
+    endpoint.consumerRoles = dependency.consumers;
+    endpoint.tensorId = dependency.tensors.front();
+    endpoint.tensorDigest = nativePlanningDigest("partial");
+    endpoint.layoutDigest = endpoint.targetLayoutDigest = layout;
+    endpoint.securityProfile = "NDNSF_DATA_V1";
+    endpoint.segmentCount = 4;
+    endpoint.noProgressDeadlineMs = 1000;
+    endpoint.hardDeadlineMs = 5000;
+    endpoint.consumerRole = endpoint.consumerRoles.front();
+    NativePlanProjectionBuilder::certifyEndpoint(endpoint);
+    auto& operation = operations.emplace_back();
+    operation.operationIndex = round;
+    operation.kind = endpoint.operation;
+    operation.producerRanks = {std::to_string(endpoint.producerRank)};
+    for (const auto& role : endpoint.consumerRoles)
+      operation.consumerRanks.push_back(std::to_string(providerRank.at(role)));
+    operation.tensorLayoutDigest = layout;
+    operation.maxBytes = 64U << 10;
+    operation.maxSegments = endpoint.segmentCount;
+    for (auto& projection : projections) {
+      const auto& role = projection.executionRole.roleId;
+      if (role == endpoint.producerRole) {
+        projection.dataflow.mayPublish.push_back(endpoint);
+      }
+      else {
+        auto read = endpoint;
+        read.consumerRole = role;
+        projection.dataflow.mustFetch.push_back(std::move(read));
+      }
+    }
+  }
+  BOOST_REQUIRE_NO_THROW(validateNativeSelectionProjectionSetV3(projections));
+  std::size_t admitted = 0;
+  std::map<std::string, std::string> manifests;
+  for (const auto& projection : projections) {
+    const auto role = roleSpecFromSelectionProjectionV3(projection, projection.provider);
+    for (const auto& edge : role.outputs)
+      BOOST_CHECK(manifests.emplace(edge.scope, edge.manifestDataName).second);
+    admitted += role.inputs.size();
+  }
+  BOOST_REQUIRE_EQUAL(admitted, 12U);
+  BOOST_REQUIRE_EQUAL(manifests.size(), 6U);
+  for (const auto& projection : projections) {
+    const auto role = roleSpecFromSelectionProjectionV3(projection, projection.provider);
+    for (const auto& edge : role.inputs) {
+      BOOST_CHECK_EQUAL(edge.manifestDataName, manifests.at(edge.scope));
+      const auto matched = std::find_if(perPair.dependencies.begin(), perPair.dependencies.end(),
+        [&](const auto& dependency) {
+          return dependency.producerStepId == edge.producerStepId &&
+                 dependency.consumers == std::vector<std::string>{role.role};
+        });
+      BOOST_REQUIRE(matched != perPair.dependencies.end());
+      BOOST_CHECK_EQUAL(edge.consumerStepId, matched->consumerStepId);
+      BOOST_CHECK_EQUAL(edge.consumerSlotId, matched->consumerSlotId);
+    }
+  }
+
+  // The same projected scopes must drive the real Worker reduction on each unit.
+  // Rank order gives (2^24 + -2^24) + 1 = 1 in FP32.
+  auto owner = std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+  const auto capability = owner->createCapability(
+    requestId.toUri(), "attempt-1", planDigest, groupId, 3, members, operations,
+    1U << 20, 1000, 5000);
+  using Context = ndn_service_framework::ServiceProvider::CollaborationContext;
+  std::vector<std::unique_ptr<Context>> contexts;
+  std::vector<std::shared_ptr<NdnsfCollaborationDependencyIo>> transport;
+  std::vector<std::shared_ptr<NativeWorkStatistics>> statistics;
+  std::vector<std::future<ProviderRoleResult>> computations;
+  std::array<std::atomic<unsigned>, 3> attentionSums{};
+  std::atomic<unsigned> finalSums{0};
+  const auto values = [] (const NativeStepSlotSpec& slot, float value) {
+    NamedTensor tensor;
+    tensor.name = slot.slotId;
+    tensor.elementType = tensorElementTypeFromName(slot.dtype);
+    for (const auto& extent : slot.shape) {
+      const auto* fixed = std::get_if<std::int64_t>(&extent);
+      tensor.shape.push_back(fixed ? *fixed : 1);
+    }
+    const auto bytes = tensorStorageByteSize(tensor.elementType, tensor.shape);
+    tensor.payload.resize(bytes);
+    if (tensor.elementType == TensorElementType::Float32) {
+      const auto scalar = float32Payload({value});
+      for (std::size_t offset = 0; offset < bytes; offset += scalar.size())
+        std::memcpy(tensor.payload.data() + offset, scalar.data(), scalar.size());
+    }
+    return makeEncodedTensorBundle(slot.slotId, {std::move(tensor)});
+  };
+  ProviderRoleWorker worker(1, 3, 16, std::chrono::seconds(5));
+  for (std::size_t rank = 0; rank < projections.size(); ++rank) {
+    const auto& projection = projections[rank];
+    auto role = roleSpecFromSelectionProjectionV3(projection, projection.provider);
+    GenerationEpochLineageV1 lineage;
+    lineage.requestId = projection.requestId;
+    lineage.generationId = "0123456789abcdef0123456789abcdef";
+    lineage.streamEpoch = 1;
+    lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+    lineage.positionDigest = nativePlanningDigest("shared-tp-position");
+    lineage.planDigest = projection.planDigest;
+    lineage.attemptEpoch = projection.attempt;
+    lineage.logicalPrefixTokenCount = 1;
+    lineage.logicalPrefixDigest = nativePlanningDigest("shared-tp-prefix");
+    role.generationLineage = lineage;
+    std::map<std::string, TensorBundle> initial;
+    for (const auto& step : *role.steps)
+      for (const auto& slot : step.inputSlots)
+        if (slot.source == "EPOCH_INPUT")
+          initial.emplace(slot.slotId, values(slot, 0));
+    auto check = [&, rank] (const RoleExecutionContext& context) {
+      const auto& step = *context.activeStep;
+      const bool mlp = step.stepId.find("/MLP/") != std::string::npos;
+      const bool head = step.stepId.find("/HEAD") != std::string::npos;
+      if (mlp || head) {
+        const auto tensors = decodeTensorBundleViews(context.stepInputsBySlot.at("merged"));
+        const auto count = static_cast<std::size_t>(shape.hidden);
+        if (tensors.size() != 1 || tensors.front().elementType != TensorElementType::Float32 ||
+            tensors.front().payload.size() != count * sizeof(float))
+          throw std::runtime_error("unexpected TP3 SUM tensor");
+        std::vector<float> actual(count);
+        std::memcpy(actual.data(), tensors.front().payload.data(), count * sizeof(float));
+        if (!std::all_of(actual.begin(), actual.end(), [] (float value) { return value == 1.0f; }))
+          throw std::runtime_error("TP3 SUM differs from the independent FP32 expectation");
+        if (mlp) ++attentionSums[rank];
+        if (head) ++finalSums;
+      }
+      constexpr std::array<float, 3> contributions{16777216.0f, -16777216.0f, 1.0f};
+      std::map<std::string, TensorBundle> outputs;
+      for (const auto& slot : step.outputSlots)
+        outputs.emplace(slot.slotId, values(slot, contributions[rank]));
+      return outputs;
+    };
+    auto coordinator = std::make_shared<ProviderGroupCoordinator>(makeSpec224CoordinatorOptions());
+    coordinator->installCapability(capability, owner->epochKeyForProvider(projection.provider),
+                                   true);
+    ndn_service_framework::ServiceProvider::CollaborationAssignment local;
+    local.role = role.role;
+    local.service = profile.serviceName;
+    local.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    local.workCurrent = [] { return true; };
+    contexts.push_back(std::make_unique<Context>(environment.provider(rank),
+      profile.userIdentity, requestId, ndn_service_framework::RequestMessage(), local));
+    statistics.push_back(makeNativeWorkStatistics());
+    auto io = std::make_shared<NdnsfCollaborationDependencyIo>(
+      *contexts.back(), 5000, 4096, 60000, coordinator, nullptr, 0, statistics.back());
+    transport.push_back(io);
+    const auto workerSession = projection.requestId + "/" + role.role;
+    computations.push_back(worker.executeAsync(workerSession, std::move(role), io, check, initial));
+  }
+  environment.pumpUntil([&] {
+    return std::all_of(computations.begin(), computations.end(), [] (const auto& result) {
+      return result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+    });
+  });
+  for (std::size_t rank = 0; rank < computations.size(); ++rank) {
+    BOOST_REQUIRE(computations[rank].wait_for(std::chrono::milliseconds(0)) ==
+                  std::future_status::ready);
+    try {
+      (void)computations[rank].get();
+    }
+    catch (const std::exception& error) {
+      BOOST_FAIL("shared partial on rank " + std::to_string(rank) + ": " + error.what());
+    }
+  }
+  for (std::size_t rank = 0; rank < transport.size(); ++rank) {
+    BOOST_CHECK_EQUAL(statistics[rank]->snapshot().counts.at("tensor.objectManifestCalls"), 2U);
+    BOOST_CHECK_EQUAL(attentionSums[rank].load(), 1U);
+  }
+  BOOST_CHECK_EQUAL(finalSums.load(), 1U);
+
+  auto missingRead = projections;
+  missingRead.front().dataflow.mustFetch.pop_back();
+  BOOST_CHECK_THROW(validateNativeSelectionProjectionSetV3(missingRead), std::invalid_argument);
+  auto invalidRead = projections.front();
+  invalidRead.dataflow.mustFetch.front().dependencyId = "wrong-dependency";
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(invalidRead, invalidRead.provider),
+                    std::invalid_argument);
+  invalidRead = projections.front();
+  invalidRead.dataflow.mustFetch.front().consumerRoles = {invalidRead.executionRole.roleId};
+  BOOST_CHECK_THROW(roleSpecFromSelectionProjectionV3(invalidRead, invalidRead.provider),
+                    std::invalid_argument);
+
+  const auto expectRejected = [&](auto mutate) {
+    auto invalid = sharedPlan;
+    mutate(invalid);
+    BOOST_CHECK_THROW(invalid.validateSteps(), std::invalid_argument);
+  };
+  expectRejected([] (auto& plan) { plan.dependencies.pop_back(); });
+  expectRejected([] (auto& plan) {
+    auto& edge = plan.dependencies.front();
+    edge.consumers.back() = edge.consumers.front();
+  });
+  expectRejected([] (auto& plan) {
+    auto& edge = plan.dependencies.front();
+    edge.consumers.back() = edge.producers.front();
+    std::sort(edge.consumers.begin(), edge.consumers.end());
+  });
+  expectRejected([] (auto& plan) { plan.dependencies.front().consumerSlotId = "foreign-slot"; });
+  expectRejected([] (auto& plan) { plan.dependencies.front().producerSlotId = "foreign-slot"; });
+  expectRejected([] (auto& plan) { plan.dependencies.front().useNdnsfDataV1 = false; });
+  expectRejected([&] (auto& plan) { plan.dependencies.push_back(perPair.dependencies.front()); });
+
+  const auto& firstProvider = assignment.providerByRole.at("S0R0");
+  BOOST_CHECK_THROW(roleSpecFor(sharedPlan, "S0R0", "shared-fixture", assignment, firstProvider),
+                    std::invalid_argument);
+  BOOST_CHECK_NO_THROW(roleSpecFor(perPair, "S0R0", "pair-fixture", assignment, firstProvider));
+  NativeExecutionPlan tp2;
+  qwen::projectQwenTpPlan(tp2, shape, 2, "entry", "S0R0");
+  BOOST_REQUIRE_NO_THROW(ndnsf::di::detail::coalesceSharedTensorPartials(tp2));
+  BOOST_CHECK_EQUAL(tp2.dependencies.size(), 4U);
+  BOOST_CHECK(std::none_of(tp2.dependencies.begin(), tp2.dependencies.end(), isSharedTensorPartial));
 }
 
 BOOST_AUTO_TEST_CASE(AStepWithTwoRemoteContributionsKeepsBothAcrossItsWaits)

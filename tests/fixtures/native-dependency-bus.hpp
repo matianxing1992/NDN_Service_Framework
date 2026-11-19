@@ -152,7 +152,8 @@ class CancellableBusDependencyIo final : public BusDependencyIo,
                                         public PromptCancellableDependencyIo
 {
 public:
-  using PublicationMutation = std::function<void(const DependencyEdge&, TensorBundle&)>;
+  // Return false to model a Producer whose exact object never becomes available.
+  using PublicationMutation = std::function<bool(const DependencyEdge&, TensorBundle&)>;
 
   explicit CancellableBusDependencyIo(std::shared_ptr<PartialBus> bus,
                                       PublicationMutation mutation = {})
@@ -170,8 +171,8 @@ public:
       return;
     }
     auto changed = bundle;
-    m_mutation(edge, changed);
-    BusDependencyIo::publishOutput(sessionId, edge, changed);
+    if (m_mutation(edge, changed))
+      BusDependencyIo::publishOutput(sessionId, edge, changed);
   }
 
   bool

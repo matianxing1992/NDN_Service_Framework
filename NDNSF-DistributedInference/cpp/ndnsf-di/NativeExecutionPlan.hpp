@@ -13,6 +13,8 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -129,6 +131,8 @@ inline constexpr const char* NATIVE_STEP_PLAN_VERSION_V2 = "step-plan-v2";
 inline constexpr const char* NATIVE_STEP_PLAN_CAPABILITY_V2 = "step-plan-v2";
 /** Capability value a Provider must advertise to perform a local SUM. */
 inline constexpr const char* NATIVE_SUM_CAPABILITY_V1 = "sum-v1";
+inline constexpr const char* NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1 = "tp-shared-partial-v1";
+inline constexpr const char* NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1 = "tp-receiving-stage-sum-v1";
 
 struct NativeDependencySpec
 {
@@ -377,6 +381,18 @@ struct NativeExecutionPlan
    * plan-wide maximum, because stages in one plan may have different degrees. */
   std::uint64_t degreeForRole(const std::string& role) const;
 };
+
+/** Identify the multi-consumer representation. Full validation is owned by the plan. */
+bool isSharedTensorPartial(const NativeDependencySpec& dependency) noexcept;
+
+/** Resolve the unique sealed SUM input for this consumer. The views borrow from plan. */
+std::pair<std::string_view, std::string_view>
+findSharedPartialInput(const NativeExecutionPlan& plan, const NativeDependencySpec& dependency,
+                       std::string_view consumerRole);
+
+/** Reduce the two raw boundary contributions on the result stage and keep upstream SUMs in use. */
+std::optional<NativeExecutionPlan>
+makeReceivingStageReduction(const NativeExecutionPlan& plan, std::string_view resultRole);
 
 /** Sum every REMOTE_STEP input of a sealed step plan. A plan without steps has
  * no inter-unit step traffic and yields an all-zero cost.

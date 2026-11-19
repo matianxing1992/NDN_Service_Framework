@@ -72,7 +72,7 @@ def secure_random(path):
         stream.write(os.urandom(32))
 
 
-def prepare_deployment(root, prefix, ledger, journal_root):
+def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
     checkout = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import digest_bytes as digest, make_external_key
@@ -92,7 +92,7 @@ def prepare_deployment(root, prefix, ledger, journal_root):
                    NDN_CLIENT_TPM="tpm-file:")
         capture([sys.executable, str(Path(__file__).with_name("prepare-workload.py")),
                  "--output", str(bundle), "--requester", namespace + "/requester",
-                 "--protection-epoch", epoch], env)
+                 "--protection-epoch", epoch, "--scenario", scenario], env)
     catalog = json.loads((bundle / "catalog.json").read_bytes())
     options = json.loads((bundle / "generation.json").read_bytes())
     split = catalog["splitter"]
@@ -201,7 +201,7 @@ def prepare_deployment(root, prefix, ledger, journal_root):
     placement = {role: actor["identity"] for role, actor in zip(roles, providers)}
     topology = checkout / "tests/fixtures/spec242/minindn-topology.conf"
     config = {
-        "schema": "ndnsf-di-deployment-v1", "deployment_id": "spec242-hybrid",
+        "schema": "ndnsf-di-deployment-v1", "deployment_id": f"spec242-{scenario}",
         "release": {"prefix": str(prefix), "manifest": str(ledger)},
         "platform": {"kind": "minindn", "topology": str(topology),
                      "topology_sha256": digest(topology.read_bytes())},
@@ -262,6 +262,8 @@ if __name__ == "__main__":
     parser.add_argument("--release-manifest", required=True, type=Path)
     parser.add_argument("--journal-root", required=True, type=Path,
                         help="Durable target filesystem directory for the native journal")
+    parser.add_argument("--scenario", choices=("hybrid", "tp3"), default="hybrid")
     args = parser.parse_args()
     prepare_deployment(args.output.resolve(), args.prefix.resolve(strict=True),
-                       args.release_manifest.resolve(strict=True), args.journal_root.resolve())
+                       args.release_manifest.resolve(strict=True), args.journal_root.resolve(),
+                       args.scenario)

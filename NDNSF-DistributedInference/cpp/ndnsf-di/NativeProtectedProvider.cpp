@@ -163,6 +163,65 @@ void installNativeProviderGroupCoordinatorFactory(
   config.overlapGroupCoordinatorFactory = true;
 }
 
+std::shared_ptr<ProtectedRuntime>
+detail::verifySelectedProviderGrant(const NativeSelectionProjectionV3& projection,
+                                    const std::shared_ptr<ProviderGroupCoordinator>& group,
+                                    const std::map<std::string, std::string>& fields,
+                                    const std::string& boot,
+                                    NativeProtectedGrantConfig keys,
+                                    const NativeProviderHandlerConfig::ProtectedGrantFetcher& fetch,
+                                    const std::shared_ptr<NativeWorkStatistics>& statistics)
+{
+  NativeWorkScope bindingWork(statistics, "protected-binding-build", NativeWorkKind::LOCAL);
+  keys.modelManifestDigest = projection.selectedRoleContract().modelManifestDigest;
+  if (keys.modelManifestDigest.empty())
+    throw reject("sealed current grant lacks model commitment");
+  ProtectedRuntimeBindingV1 binding;
+  binding.provider = projection.provider;
+  binding.role = projection.executionRole.roleId;
+  binding.requestId = projection.requestId;
+  binding.attempt = projection.attempt;
+  binding.planCoreDigest = projection.planCoreDigest;
+  binding.planDigest = projection.planDigest;
+  if (projection.grantLeaseScope) {
+    binding.grantRequestId = projection.grantLeaseScope->requestId;
+    binding.grantAttempt = projection.grantLeaseScope->attempt;
+    binding.grantPlanCoreDigest = projection.grantLeaseScope->planCoreDigest;
+    binding.grantExpiresAtMs = projection.grantLeaseScope->expiresAtMs;
+  }
+  binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
+  binding.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
+  binding.grantName = projection.grantName;
+  binding.grantDigest = projection.grantDigest;
+  binding.providerBootId = boot;
+  binding.fencingToken = nativeProtectedFencingToken(projection, boot, fields);
+  binding.expiresAtMs = projection.deadlineMs;
+  if (projection.dataflow.endpointRange)
+    binding.compactDataflow = projection.dataflow;
+  for (const auto& endpoint : projection.dataflow.mayPublish) {
+    binding.mayPublishEndpointDigests.insert(endpoint.endpointDigest);
+    binding.mayPublishConsumerByEndpoint[endpoint.endpointDigest] = endpoint.consumerRole;
+  }
+  for (const auto& endpoint : projection.dataflow.mustFetch) {
+    if (endpoint.sourceKind == "APPLICATION_INPUT" || endpoint.operation == "APPLICATION_INPUT") continue;
+    binding.mustFetchEndpointDigests.insert(endpoint.endpointDigest);
+    binding.mustFetchProducerByEndpoint[endpoint.endpointDigest] = endpoint.producerRole;
+  }
+  bindGroupMetadataFromSelection(binding, projection, fields, group);
+  const auto now = nowMs();
+  if (now >= projection.deadlineMs) throw reject("request expired before grant acquisition");
+  keys.fetchGrant = [limit = static_cast<int>(std::min<std::uint64_t>(
+                      30000, projection.deadlineMs - now)),
+                     cancelled = keys.shouldCancel, fetch] (const std::string& name) {
+    if (fetch) return fetch(name, limit, cancelled);
+    return fetchNativeProtectedGrant(name, limit, cancelled);
+  };
+  auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(keys));
+  bindingWork.finish();
+  runtime->verifyGrant(binding, now, statistics);
+  return runtime;
+}
+
 void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
 {
   const auto boot = config.providerBootId;
@@ -178,59 +237,12 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config)
       return loadNativeProtectedGrantConfig(ctx.localProvider().toUri(), modelFamily,
                                             projection.selectedRoleContract().protectionEpoch);
     }();
-    NativeWorkScope bindingWork(statistics, "protected-binding-build", NativeWorkKind::LOCAL);
-    keys.modelManifestDigest = projection.selectedRoleContract().modelManifestDigest;
     keys.publicationIdentity = ctx.requesterName().toUri(ndn::name::UriFormat::CANONICAL);
-    if (keys.modelManifestDigest.empty())
-      throw reject("sealed current grant lacks model commitment");
+    keys.shouldCancel = [&ctx] { return ctx.isStreamed() && ctx.streamCancelled(); };
     const auto fields = parseNativeProviderAssignmentFields(
       ctx.assignment().assignmentPayload, projection.executionRole.roleId, &projection);
-    ProtectedRuntimeBindingV1 binding;
-    binding.provider = projection.provider;
-    binding.role = projection.executionRole.roleId;
-    binding.requestId = projection.requestId;
-    binding.attempt = projection.attempt;
-    binding.planCoreDigest = projection.planCoreDigest;
-    binding.planDigest = projection.planDigest;
-    if (projection.grantLeaseScope) {
-      binding.grantRequestId = projection.grantLeaseScope->requestId;
-      binding.grantAttempt = projection.grantLeaseScope->attempt;
-      binding.grantPlanCoreDigest = projection.grantLeaseScope->planCoreDigest;
-      binding.grantExpiresAtMs = projection.grantLeaseScope->expiresAtMs;
-    }
-    binding.securityPolicySnapshotDigest = projection.securityPolicySnapshotDigest;
-    binding.protectionEpoch = projection.selectedRoleContract().protectionEpoch;
-    binding.grantName = projection.grantName;
-    binding.grantDigest = projection.grantDigest;
-    binding.providerBootId = boot;
-    binding.fencingToken = nativeProtectedFencingToken(projection, boot, fields);
-    binding.expiresAtMs = projection.deadlineMs;
-    if (projection.dataflow.endpointRange)
-      binding.compactDataflow = projection.dataflow;
-    for (const auto& endpoint : projection.dataflow.mayPublish) {
-      binding.mayPublishEndpointDigests.insert(endpoint.endpointDigest);
-      binding.mayPublishConsumerByEndpoint[endpoint.endpointDigest] = endpoint.consumerRole;
-    }
-    for (const auto& endpoint : projection.dataflow.mustFetch) {
-      if (endpoint.sourceKind == "APPLICATION_INPUT" || endpoint.operation == "APPLICATION_INPUT") continue;
-      binding.mustFetchEndpointDigests.insert(endpoint.endpointDigest);
-      binding.mustFetchProducerByEndpoint[endpoint.endpointDigest] = endpoint.producerRole;
-    }
-    bindGroupMetadataFromSelection(binding, projection, fields, group);
-    const auto now = nowMs();
-    if (now >= projection.deadlineMs) throw reject("request expired before grant acquisition");
-    keys.shouldCancel = [&ctx] { return ctx.isStreamed() && ctx.streamCancelled(); };
-    keys.fetchGrant = [limit = static_cast<int>(std::min<std::uint64_t>(
-                        30000, projection.deadlineMs - now)),
-                       cancelled = keys.shouldCancel, grantFetcher] (const std::string& name) {
-      if (grantFetcher)
-        return grantFetcher(name, limit, cancelled);
-      return fetchNativeProtectedGrant(name, limit, cancelled);
-    };
-    auto runtime = std::make_shared<ProtectedRuntime>(binding, std::move(keys));
-    bindingWork.finish();
-    runtime->verifyGrant(binding, now, statistics);
-    return runtime;
+    return detail::verifySelectedProviderGrant(projection, group, fields, boot,
+      std::move(keys), grantFetcher, statistics);
   };
 }
 } // namespace ndnsf::di

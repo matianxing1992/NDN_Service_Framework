@@ -477,6 +477,20 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
         capability, edge.collectiveOperationIndex, m_workStatistics);
       if (operation.kind != edge.operationKind)
         throw std::invalid_argument("tensor operation differs from the signed capability");
+      if (edge.operationKind == "TENSOR_PARTIAL" && edge.consumerRoles.size() > 1) {
+        const auto receiver = std::find_if(capability.orderedMembers.begin(),
+          capability.orderedMembers.end(), [&](const auto& member) {
+            return member.provider == m_ctx.localProvider().toUri();
+          });
+        if (edge.consumerRole != m_ctx.assignment().role ||
+            receiver == capability.orderedMembers.end() ||
+            std::find(operation.consumerRanks.begin(), operation.consumerRanks.end(),
+                      std::to_string(receiver->rank)) == operation.consumerRanks.end() ||
+            std::find(edge.consumerRoles.begin(), edge.consumerRoles.end(), edge.consumerRole) ==
+              edge.consumerRoles.end()) {
+          throw std::invalid_argument("shared TP partial receiver is not in the signed audience");
+        }
+      }
       const auto producerRank = producerRankForEdge(capability, edge);
       const auto* producerMember = memberForRank(capability, producerRank);
       if (producerMember == nullptr)

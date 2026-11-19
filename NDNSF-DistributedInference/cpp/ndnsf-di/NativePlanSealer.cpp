@@ -266,6 +266,8 @@ NativeFixedPlacementCoreV1::NativeFixedPlacementCoreV1(const NativePlacementPlan
 bool NativeFixedPlacementCoreV1::matches(const NativePlacementPlanCore& core) const
 {
   const auto& execution = core.executionPlan;
+  if (!nativeStepContractsEqualV1(execution, m_execution.stepPlanVersion,
+                                  m_execution.tensorDegree, m_execution.steps)) return false;
   if (m_execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 ||
       execution.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
     if (m_execution.stepPlanVersion != execution.stepPlanVersion ||
@@ -624,6 +626,82 @@ void NativePlanSealer::validateObservationSnapshotBinding(
 }
 
 
+bool
+selectedProvidersSupportCapability(const NativeRolePlacementProposalV3& proposal,
+                                   const std::vector<NativeAdmittedOfferV3>& offers,
+                                   std::string_view capability)
+{
+  return !proposal.providerByRole.empty() &&
+    std::all_of(proposal.providerByRole.begin(), proposal.providerByRole.end(),
+      [&] (const auto& assignment) {
+        const auto digest = proposal.offerDigestByProvider.find(assignment.second);
+        return digest != proposal.offerDigestByProvider.end() &&
+          std::any_of(offers.begin(), offers.end(), [&] (const auto& admitted) {
+            const auto& offer = admitted.observation();
+            return offer.provider == assignment.second && offer.offerDigest == digest->second &&
+              contains(offer.capabilities, std::string(capability));
+          });
+      });
+}
+
+namespace {
+
+void
+validateDerivedExecutionPlan(const NativeExecutionPlan& execution,
+                             const NativeExecutionPlan& candidate, bool exactDependencies = false)
+{
+  execution.validateSteps();
+  if (std::set<std::string>(execution.roles.begin(), execution.roles.end()) !=
+        std::set<std::string>(candidate.roles.begin(), candidate.roles.end()) ||
+      !nativeStepContractsEqualV1(execution, candidate.stepPlanVersion, candidate.tensorDegree,
+                                  candidate.steps) ||
+      execution.stageLayout.size() != candidate.stageLayout.size() ||
+      !std::equal(execution.stageLayout.begin(), execution.stageLayout.end(),
+                  candidate.stageLayout.begin(), [](const auto& lhs, const auto& rhs) {
+                    return lhs.canonicalJson() == rhs.canonicalJson();
+                  })) {
+    throw std::invalid_argument("derived TP plan changed the prepared steps");
+  }
+  std::set<std::size_t> consumed;
+  const auto bindOriginal = [&](const NativeDependencySpec& edge, bool shared) {
+    for (std::size_t index = 0; index < candidate.dependencies.size(); ++index) {
+      const auto& original = candidate.dependencies[index];
+      if (consumed.count(index) != 0) continue;
+      auto matched = edge;
+      if (shared) {
+        matched.keyScope = original.keyScope;
+        matched.dependencyId = original.dependencyId;
+      }
+      if (matched.expectedBytes == original.expectedBytes &&
+          matched.expectedSegments == original.expectedSegments &&
+          nativeFixedDependencyContractsEqualV1(matched, original)) {
+        consumed.insert(index);
+        return;
+      }
+    }
+    throw std::invalid_argument("derived TP plan changed a prepared dependency");
+  };
+  for (const auto& edge : execution.dependencies) {
+    if (edge.operationKind == "TOKEN_FEEDBACK") continue;
+    if (exactDependencies || !isSharedTensorPartial(edge)) {
+      bindOriginal(edge, false);
+      continue;
+    }
+    auto pair = edge;
+    for (const auto& role : edge.consumers) {
+      const auto [step, slot] = findSharedPartialInput(execution, edge, role);
+      pair.consumers = {role};
+      pair.consumerStepId = step;
+      pair.consumerSlotId = slot;
+      bindOriginal(pair, true);
+    }
+  }
+  if (consumed.size() != candidate.dependencies.size())
+    throw std::invalid_argument("derived TP plan omitted a prepared dependency");
+}
+
+} // namespace
+
 NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativeInspectedModel& model, const NativeSplitCandidate& candidate,
   const NativeRolePlacementProposalV3& proposal, const NativeExecutionPlan& executionPlan,
@@ -632,6 +710,31 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
 {
   auto phaseStarted = detail::nativePhaseStarted();
   const auto requiredCapabilities = nativePlanRequiredCapabilities(candidate);
+  const bool hasSharedPartials = std::any_of(executionPlan.dependencies.begin(),
+    executionPlan.dependencies.end(), isSharedTensorPartial);
+  if (hasSharedPartials) {
+    if (!inputs.generationContract.enabled ||
+        !selectedProvidersSupportCapability(proposal, offers,
+                                            NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1)) {
+      throw std::invalid_argument("shared TP partial plan lacks required authenticated capabilities");
+    }
+  }
+  const auto& baseline = candidate.executionPlan;
+  if (baseline.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2 &&
+      baseline.stageLayout.size() == 2 && baseline.stageLayout.front().degree() == 2 &&
+      baseline.stageLayout.back().degree() == 1 &&
+      !nativeStepContractsEqualV1(executionPlan, baseline.stepPlanVersion,
+                                  baseline.tensorDegree, baseline.steps)) {
+    if (!inputs.generationContract.enabled ||
+        !selectedProvidersSupportCapability(proposal, offers,
+                                            NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1))
+      throw std::invalid_argument("receiving stage SUM lacks authenticated capability");
+    const auto expected = makeReceivingStageReduction(baseline, candidate.resultEgressRole);
+    if (!expected)
+      throw std::invalid_argument("receiving stage SUM differs from the prepared boundary");
+    validateDerivedExecutionPlan(executionPlan, *expected, true);
+  }
+  else if (hasSharedPartials) validateDerivedExecutionPlan(executionPlan, baseline);
   if (proposal.context.requiredExecutionCapabilities != requiredCapabilities)
     throw std::invalid_argument("V3 placement execution capability requirements differ from plan");
   if (!requiredCapabilities.empty()) {

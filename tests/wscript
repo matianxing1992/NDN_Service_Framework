@@ -1270,6 +1270,7 @@ def build(bld):
     # Sealer/group-builder/serialized V3 epoch contract, linked to production.
     bld.program(target='../spec189-epoch-projection', name='spec189-epoch-projection',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
+                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-plan-sealer.t.cpp'),

@@ -165,10 +165,12 @@ namespace {
 std::pair<const NativeStepSlotSpec*, const NativeStepSlotSpec*>
 exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& dependency)
 {
-  if (dependency.producers.size() != 1 || dependency.consumers.size() != 1 ||
+  const bool shared = isSharedTensorPartial(dependency);
+  if (dependency.producers.size() != 1 || dependency.consumers.empty() ||
+      (!shared && dependency.consumers.size() != 1) ||
       dependency.tensors.size() != 1 || !dependency.redistributions.empty())
     throw std::invalid_argument("v2 endpoint requires one replicated step tensor");
-  const auto step = [&] (const std::string& id, const std::string& unit)
+  const auto step = [&] (std::string_view id, const std::string& unit)
     -> const NativeExecutionStepSpec& {
     const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
       [&] (const auto& value) { return value.stepId == id && value.unitId == unit; });
@@ -176,7 +178,7 @@ exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& depe
       throw std::invalid_argument("v2 endpoint has no matching step owner");
     return *found;
   };
-  const auto slot = [] (const auto& values, const std::string& id)
+  const auto slot = [] (const auto& values, std::string_view id)
     -> const NativeStepSlotSpec& {
     const auto found = std::find_if(values.begin(), values.end(),
       [&] (const auto& value) { return value.slotId == id; });
@@ -186,8 +188,11 @@ exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& depe
   };
   const auto& output = slot(step(dependency.producerStepId, dependency.producers.front()).outputSlots,
                             dependency.producerSlotId);
-  const auto& input = slot(step(dependency.consumerStepId, dependency.consumers.front()).inputSlots,
-                           dependency.consumerSlotId);
+  const auto& consumer = dependency.consumers.front();
+  const auto binding = shared ? findSharedPartialInput(plan, dependency, consumer) :
+    std::pair<std::string_view, std::string_view>{dependency.consumerStepId,
+                                                 dependency.consumerSlotId};
+  const auto& input = slot(step(binding.first, consumer).inputSlots, binding.second);
   if (output.source != "LOCAL_STEP" || input.source != "REMOTE_STEP" ||
       input.producerStepId != dependency.producerStepId ||
       input.producerSlotId != dependency.producerSlotId || output.dtype != input.dtype ||

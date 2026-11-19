@@ -2272,7 +2272,11 @@ std::optional<std::string> validateFixedProviderOwnership(
   const NativeSelectionProjectionV3& projection,
   const std::shared_ptr<ProviderGroupCoordinator>& coordinator)
 {
-  if (projection.providerOwnership().empty()) return std::nullopt;
+  if (projection.providerOwnership().empty()) {
+    if (std::any_of(projection.plan.dependencies.begin(), projection.plan.dependencies.end(),
+                    isSharedTensorPartial)) return "DI_FIXED_PROVIDER_OWNERSHIP_MISMATCH";
+    return std::nullopt;
+  }
   const auto& owners = projection.providerOwnership();
   const auto local = owners.find(projection.executionRole.roleId);
   if (local == owners.end() || local->second != projection.provider ||
@@ -2290,11 +2294,30 @@ std::optional<std::string> validateFixedProviderOwnership(
       if (member == members.end() || member->rank != endpoint.producerRank ||
           member->endpointPrefix != endpoint.producerNamespace)
         return "DI_FIXED_PROVIDER_ENDPOINT_MISMATCH";
+      const bool shared = endpoint.operation == "TENSOR_PARTIAL" &&
+                          endpoint.consumerRoles.size() > 1;
+      std::set<std::string> consumerRanks;
       for (const auto& consumer : endpoint.consumerRoles) {
         const auto owner = owners.find(consumer);
-        if (owner == owners.end() || std::none_of(members.begin(), members.end(),
-            [&](const auto& item) { return item.provider == owner->second; }))
-          return "DI_FIXED_PROVIDER_OWNERSHIP_MISMATCH";
+        if (owner == owners.end()) return "DI_FIXED_PROVIDER_OWNERSHIP_MISMATCH";
+        const auto receiver = std::find_if(members.begin(), members.end(),
+          [&](const auto& item) { return item.provider == owner->second; });
+        if (receiver == members.end()) return "DI_FIXED_PROVIDER_OWNERSHIP_MISMATCH";
+        if (shared) consumerRanks.insert(std::to_string(receiver->rank));
+      }
+      if (shared) {
+        try {
+          const auto operation = coordinator->capability().operation(endpoint.round);
+          if (operation.kind != endpoint.operation ||
+              operation.producerRanks != std::vector<std::string>{std::to_string(member->rank)} ||
+              std::set<std::string>(operation.consumerRanks.begin(),
+                                    operation.consumerRanks.end()) != consumerRanks) {
+            return "DI_FIXED_PROVIDER_ENDPOINT_MISMATCH";
+          }
+        }
+        catch (const std::exception&) {
+          return "DI_FIXED_PROVIDER_ENDPOINT_MISMATCH";
+        }
       }
     }
   }
@@ -4240,8 +4263,30 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           const auto providerName = ctx.localProvider().toUri();
           const auto roleFactory = std::make_shared<
             NativeSelectionProjectionRoleFactory>(projection, providerName);
+          const bool sharedPartials = std::any_of(projection.plan.dependencies.begin(),
+            projection.plan.dependencies.end(), isSharedTensorPartial);
+          NativeExecutionPlan controlPlan;
+          if (sharedPartials) {
+            controlPlan.streamingOperationStride = projection.plan.streamingOperationStride;
+            controlPlan.roles = {projection.executionRole.roleId};
+            for (const auto& dependency : projection.plan.dependencies) {
+              if (dependency.operationKind == "TOKEN_FEEDBACK" &&
+                  dependency.producers == controlPlan.roles &&
+                  dependency.consumers == controlPlan.roles) {
+                controlPlan.dependencies.push_back(dependency);
+              }
+            }
+            const auto expected = projection.dataflow.terminalResponseOwner ? 1U : 0U;
+            if (controlPlan.dependencies.size() != expected)
+              throw std::invalid_argument("shared TP partial plan has invalid local token feedback");
+          }
+          else {
+            controlPlan = projection.plan;
+          }
           coordinatorConfig.roleSpecFactory =
-            [projection, assignmentForCoordinator, roleFactory, workStatistics]
+            [controlPlan = std::move(controlPlan), assignmentForCoordinator, roleFactory,
+             workStatistics, roleId = projection.executionRole.roleId,
+             request = projection.requestId, generation = projection.generationContract.enabled]
             (std::size_t sequence) {
               auto projected = (*roleFactory)(sequence, workStatistics);
               // Cross-role feedback is a signed C04 endpoint in the role factory; only an
@@ -4250,13 +4295,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
               // terminal response owner -- not when the whole plan happens to have one role.
               // Requiring one role dropped the sampler's own loop in a sharded plan, and the
               // next epoch then had no lineage because nothing could carry the token back.
-              if (!projection.generationContract.enabled) {
+              if (!generation || controlPlan.dependencies.empty()) {
                 return projected;
               }
-              const auto control = roleSpecFor(
-                projection.plan, projection.executionRole.roleId,
-                projection.requestId, assignmentForCoordinator, "",
-                sequence);
+              const auto control = roleSpecFor(controlPlan, roleId, request,
+                                              assignmentForCoordinator, "", sequence);
               const bool isSampler = std::any_of(
                 control.outputs.begin(), control.outputs.end(),
                 [&projected] (const DependencyEdge& edge) {

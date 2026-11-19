@@ -12,6 +12,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace ndnsf::di {
@@ -571,13 +572,220 @@ NativeStageLayout::canonicalJson() const
   return value.dump();
 }
 
+bool
+isSharedTensorPartial(const NativeDependencySpec& dependency) noexcept
+{
+  return dependency.operationKind == "TENSOR_PARTIAL" && dependency.consumers.size() > 1;
+}
+
+std::pair<std::string_view, std::string_view>
+findSharedPartialInput(const NativeExecutionPlan& plan, const NativeDependencySpec& dependency,
+                       std::string_view consumerRole)
+{
+  if (!isSharedTensorPartial(dependency) ||
+      std::find(dependency.consumers.begin(), dependency.consumers.end(), consumerRole) ==
+        dependency.consumers.end()) {
+    throw std::invalid_argument("shared TP partial names an unauthorized consumer");
+  }
+  const auto producer = std::find_if(plan.steps.begin(), plan.steps.end(),
+    [&] (const auto& step) { return step.stepId == dependency.producerStepId; });
+  if (dependency.producers.size() != 1 || producer == plan.steps.end() ||
+      producer->unitId != dependency.producers.front() || producer->unitId == consumerRole ||
+      producer->operation != "CALL_SUBGRAPH") {
+    throw std::invalid_argument("shared TP partial has an invalid producing step");
+  }
+  const auto output = std::find_if(producer->outputSlots.begin(), producer->outputSlots.end(),
+    [&] (const auto& slot) { return slot.slotId == dependency.producerSlotId; });
+  if (output == producer->outputSlots.end()) {
+    throw std::invalid_argument("shared TP partial has an undeclared output slot");
+  }
+  std::pair<std::string_view, std::string_view> result;
+  for (const auto& step : plan.steps) {
+    if (step.unitId != consumerRole || step.operation != "SUM") continue;
+    for (const auto& input : step.inputSlots) {
+      if (input.source != "REMOTE_STEP" || input.producerStepId != producer->stepId ||
+          input.producerSlotId != output->slotId) continue;
+      if (!result.first.empty() || input.dtype != output->dtype ||
+          input.shape != output->shape || input.layoutDigest != output->layoutDigest) {
+        throw std::invalid_argument("shared TP partial SUM input is ambiguous or mismatched");
+      }
+      result = {step.stepId, input.slotId};
+    }
+  }
+  if (result.first.empty()) {
+    throw std::invalid_argument("shared TP partial has no sealed SUM input");
+  }
+  return result;
+}
+
+std::optional<NativeExecutionPlan>
+makeReceivingStageReduction(const NativeExecutionPlan& plan, std::string_view resultRole)
+{
+  if (plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 || plan.stageLayout.size() != 2)
+    return std::nullopt;
+  const auto& ranks = plan.stageLayout.front().unitRoleIds;
+  const auto& receiver = plan.stageLayout.back().unitRoleIds;
+  if (ranks.size() != 2 || receiver.size() != 1 || receiver.front() != resultRole)
+    return std::nullopt;
+  plan.validateSteps();
+
+  const auto findStep = [&](const std::string& id) {
+    return std::find_if(plan.steps.begin(), plan.steps.end(),
+      [&](const auto& step) { return step.stepId == id; });
+  };
+  const NativeDependencySpec* boundary = nullptr;
+  for (const auto& edge : plan.dependencies) {
+    if (edge.consumers != receiver || edge.producers.size() != 1 ||
+        std::find(ranks.begin(), ranks.end(), edge.producers.front()) == ranks.end() ||
+        edge.operationKind != "ACTIVATION" || !edge.useNdnsfDataV1 ||
+        edge.tensors.size() != 1 || !edge.redistributions.empty()) continue;
+    const auto producer = findStep(edge.producerStepId);
+    if (producer == plan.steps.end() || producer->operation != "SUM") continue;
+    boundary = &edge;
+    break;
+  }
+  if (!boundary || boundary->dependencyId.empty()) return std::nullopt;
+  const auto original = findStep(boundary->producerStepId);
+  const auto downstream = findStep(boundary->consumerStepId);
+  if (downstream == plan.steps.end() || downstream->operation != "CALL_SUBGRAPH" ||
+      original->inputSlots.size() != ranks.size() || original->outputSlots.size() != 1)
+    return std::nullopt;
+  if (std::count_if(plan.steps.begin(), plan.steps.end(), [&](const auto& step) {
+        return step.unitId == receiver.front() && step.operation == "CALL_SUBGRAPH";
+      }) != 1) return std::nullopt;
+  const auto port = std::find_if(downstream->inputSlots.begin(), downstream->inputSlots.end(),
+    [&](const auto& slot) { return slot.slotId == boundary->consumerSlotId; });
+  if (port == downstream->inputSlots.end() || port->source != "REMOTE_STEP" ||
+      port->dtype != "float32")
+    return std::nullopt;
+
+  using Port = std::pair<std::string, std::string>;
+  const auto operands = [](const NativeExecutionStepSpec& step) {
+    std::set<Port> result;
+    for (const auto& slot : step.inputSlots)
+      result.emplace(slot.producerStepId, slot.producerSlotId);
+    return result;
+  };
+  const auto required = operands(*original);
+  const auto sameTensor = [](const auto& a, const auto& b) {
+    return a.dtype == b.dtype && a.shape == b.shape && a.layoutDigest == b.layoutDigest;
+  };
+  if (required.size() != ranks.size() || !sameTensor(original->outputSlots.front(), *port))
+    return std::nullopt;
+  std::set<std::string> upstreamSums;
+  for (const auto& step : plan.steps) {
+    if (step.operation == "SUM" &&
+        std::find(ranks.begin(), ranks.end(), step.unitId) != ranks.end() &&
+        step.inputSlots.size() == ranks.size() && step.outputSlots.size() == 1 &&
+        sameTensor(step.outputSlots.front(), *port) && operands(step) == required) {
+      upstreamSums.insert(step.stepId);
+    }
+  }
+  auto removed = upstreamSums;
+  for (const auto& step : plan.steps) {
+    for (const auto& slot : step.inputSlots) {
+      if (upstreamSums.count(slot.producerStepId) == 0) continue;
+      if (std::find(ranks.begin(), ranks.end(), step.unitId) != ranks.end()) {
+        removed.erase(slot.producerStepId);
+        continue;
+      }
+      if (step.stepId != downstream->stepId || slot.slotId != port->slotId)
+        return std::nullopt;
+    }
+  }
+
+  NativeExecutionStepSpec sum;
+  sum.stepId = downstream->stepId + "/sum/" + port->slotId;
+  if (findStep(sum.stepId) != plan.steps.end()) return std::nullopt;
+  sum.unitId = receiver.front();
+  sum.operation = "SUM";
+  sum.outputSlots = original->outputSlots;
+  sum.outputSlots.front().slotId = port->slotId;
+  std::vector<NativeDependencySpec> contributions;
+  std::set<std::size_t> replacedRaw;
+  for (std::size_t rank = 0; rank < ranks.size(); ++rank) {
+    const auto& input = original->inputSlots[rank];
+    const auto producer = findStep(input.producerStepId);
+    if (producer == plan.steps.end() || producer->unitId != ranks[rank] ||
+        producer->operation != "CALL_SUBGRAPH" || !sameTensor(input, *port))
+      return std::nullopt;
+    const auto fromOperand = [&](const auto& edge) {
+      return edge.producerStepId == input.producerStepId &&
+             edge.producerSlotId == input.producerSlotId;
+    };
+    const auto raw = std::find_if(plan.dependencies.begin(), plan.dependencies.end(), fromOperand);
+    if (raw != plan.dependencies.end() &&
+        (raw->operationKind != "TENSOR_PARTIAL" || !raw->useNdnsfDataV1 ||
+         raw->tensors != boundary->tensors || raw->consumers.size() != 1 ||
+         !raw->redistributions.empty()))
+      return std::nullopt;
+    if (raw != plan.dependencies.end() &&
+        (upstreamSums.count(raw->consumerStepId) == 0 ||
+         std::any_of(std::next(raw), plan.dependencies.end(), fromOperand)))
+      return std::nullopt;
+    auto& slot = sum.inputSlots.emplace_back(input);
+    slot.source = "REMOTE_STEP";
+    slot.slotId = "rank-" + std::to_string(rank);
+    // A rank with only a local operand in the old DAG had no outgoing raw edge.
+    // The old cut supplies its DATA_V1 contract for the same typed graph value.
+    auto& edge = contributions.emplace_back(raw == plan.dependencies.end() ? *boundary : *raw);
+    edge.operationKind = "TENSOR_PARTIAL";
+    edge.producers = {producer->unitId};
+    edge.producerStepId = input.producerStepId;
+    edge.producerSlotId = input.producerSlotId;
+    edge.keyScope = boundary->keyScope + "-partial-" + std::to_string(rank);
+    edge.dependencyId = edge.keyScope;
+    if (std::any_of(plan.dependencies.begin(), plan.dependencies.end(), [&](const auto& existing) {
+          return existing.dependencyId == edge.dependencyId || existing.keyScope == edge.keyScope;
+        })) return std::nullopt;
+    if (raw != plan.dependencies.end() && removed.count(raw->consumerStepId) == 0) {
+      replacedRaw.insert(static_cast<std::size_t>(std::distance(plan.dependencies.begin(), raw)));
+      edge.consumers.push_back(receiver.front());
+      std::sort(edge.consumers.begin(), edge.consumers.end());
+      edge.consumerStepId.clear();
+      edge.consumerSlotId.clear();
+    }
+    else {
+      edge.consumers = receiver;
+      edge.consumerStepId = sum.stepId;
+      edge.consumerSlotId = slot.slotId;
+    }
+  }
+
+  NativeExecutionPlan result = plan;
+  const auto downstreamIndex = std::distance(plan.steps.begin(), downstream);
+  const auto portIndex = std::distance(downstream->inputSlots.begin(), port);
+  auto& rebound = result.steps[downstreamIndex].inputSlots[portIndex];
+  rebound.source = "LOCAL_STEP";
+  rebound.producerStepId = sum.stepId;
+  rebound.producerSlotId = sum.outputSlots.front().slotId;
+  result.steps.erase(std::remove_if(result.steps.begin(), result.steps.end(),
+    [&](const auto& step) { return removed.count(step.stepId) != 0; }), result.steps.end());
+  const auto next = std::find_if(result.steps.begin(), result.steps.end(),
+    [&](const auto& step) { return step.stepId == downstream->stepId; });
+  result.steps.insert(next, std::move(sum));
+  result.dependencies.clear();
+  for (std::size_t index = 0; index < plan.dependencies.size(); ++index) {
+    const auto& edge = plan.dependencies[index];
+    if (edge.dependencyId != boundary->dependencyId &&
+        removed.count(edge.consumerStepId) == 0 && replacedRaw.count(index) == 0) {
+      result.dependencies.push_back(edge);
+    }
+  }
+  result.dependencies.insert(result.dependencies.end(),
+                             contributions.begin(), contributions.end());
+  result.validateSteps();
+  return result;
+}
+
 void
 NativeExecutionPlan::validateSteps() const
 {
   const std::set<std::string> roleSet(roles.begin(), roles.end());
   if (stepPlanVersion.empty()) {
-    if (!steps.empty()) {
-      throw std::invalid_argument("execution plan carries steps without a step plan version");
+    if (!steps.empty() ||
+        std::any_of(dependencies.begin(), dependencies.end(), isSharedTensorPartial)) {
+      throw std::invalid_argument("execution plan carries step bindings without a step plan version");
     }
     if (tensorDegree != 1) {
       throw std::invalid_argument("execution plan tensor degree requires a step plan");
@@ -741,12 +949,46 @@ NativeExecutionPlan::validateSteps() const
   // Dependency identity is the existing keyScope and must be unique; the
   // group label is never a lookup key. Step-bound dependencies must agree with
   // the template on both ends.
+  using StepSlot = std::pair<std::string_view, std::string_view>;
+  std::map<StepSlot, unsigned> remoteBindings;
+  std::map<StepSlot, bool> partialOutputs;
   std::set<std::string> dependencyIds;
   for (const auto& dependency : dependencies) {
     const auto& id = dependency.dependencyId.empty() ? dependency.keyScope
                                                      : dependency.dependencyId;
     if (id.empty() || !dependencyIds.insert(id).second) {
       throw std::invalid_argument("execution plan dependency identity is missing or duplicated");
+    }
+    const bool shared = isSharedTensorPartial(dependency);
+    if (dependency.operationKind == "TENSOR_PARTIAL" && !dependency.producerStepId.empty()) {
+      const auto [it, inserted] = partialOutputs.emplace(
+        StepSlot{dependency.producerStepId, dependency.producerSlotId}, shared);
+      if (!inserted && (it->second || shared))
+        throw std::invalid_argument("shared TP partial duplicates a producing slot");
+    }
+    if (shared) {
+      const auto& audience = dependency.consumers;
+      const bool stageHandoff = stageLayout.size() == 2 &&
+        stageLayout.front().degree() == 2 && stageLayout.back().degree() == 1 &&
+        dependency.producers.size() == 1 && audience.size() == 2 &&
+        std::find(stageLayout.front().unitRoleIds.begin(), stageLayout.front().unitRoleIds.end(),
+                  dependency.producers.front()) != stageLayout.front().unitRoleIds.end() &&
+        std::find(audience.begin(), audience.end(), stageLayout.back().unitRoleIds.front()) !=
+          audience.end();
+      if ((!stageHandoff && (tensorDegree < 3 || stageLayout.size() > 1)) ||
+          !dependency.useNdnsfDataV1 || dependency.dependencyId.empty() ||
+          dependency.producers.size() != 1 || dependency.producerStepId.empty() ||
+          dependency.producerSlotId != "partial" || dependency.tensors.size() != 1 ||
+          dependency.tensors.front().empty() || !dependency.redistributions.empty() ||
+          !dependency.consumerStepId.empty() || !dependency.consumerSlotId.empty() ||
+          !std::is_sorted(audience.begin(), audience.end()) ||
+          std::adjacent_find(audience.begin(), audience.end()) != audience.end()) {
+        throw std::invalid_argument("invalid shared TP partial dependency");
+      }
+      for (const auto& role : audience) {
+        ++remoteBindings[findSharedPartialInput(*this, dependency, role)];
+      }
+      continue;
     }
     const bool bound = !dependency.producerStepId.empty() ||
                        !dependency.producerSlotId.empty() ||
@@ -808,6 +1050,9 @@ NativeExecutionPlan::validateSteps() const
     // A remote producer and a local one must be distinguishable, otherwise the
     // runtime cannot tell which contributions travel over Named Data.
     const bool sameUnit = producer->second->unitId == consumer->second->unitId;
+    if (consumerSlot.source == "REMOTE_STEP") {
+      ++remoteBindings[{dependency.consumerStepId, dependency.consumerSlotId}];
+    }
     if (sameUnit != (consumerSlot.source == "LOCAL_STEP")) {
       throw std::invalid_argument(
         "execution plan step dependency source disagrees with its unit placement");
@@ -820,13 +1065,7 @@ NativeExecutionPlan::validateSteps() const
   for (const auto& step : steps) {
     for (const auto& slot : step.inputSlots) {
       if (slot.producerStepId.empty() || slot.source != "REMOTE_STEP") continue;
-      const auto matched = std::count_if(dependencies.begin(), dependencies.end(),
-        [&step, &slot] (const auto& dependency) {
-          return dependency.consumerStepId == step.stepId &&
-                 dependency.consumerSlotId == slot.slotId &&
-                 dependency.producerStepId == slot.producerStepId;
-        });
-      if (matched != 1) {
+      if (remoteBindings[{step.stepId, slot.slotId}] != 1) {
         throw std::invalid_argument(
           "execution plan step input has no unique admitting dependency");
       }
@@ -1029,6 +1268,9 @@ roleSpecFor(const NativeExecutionPlan& plan,
             const std::string& localProvider,
             std::size_t sequence)
 {
+  if (std::any_of(plan.dependencies.begin(), plan.dependencies.end(), isSharedTensorPartial)) {
+    throw std::invalid_argument("shared TP partials require an authenticated role projection");
+  }
   RoleSpec spec;
   spec.role = role;
   bool knownRole = false;
