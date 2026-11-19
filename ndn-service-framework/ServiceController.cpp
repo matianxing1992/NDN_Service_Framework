@@ -1829,8 +1829,25 @@ ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) 
         continue;
       }
 
-      if (isRevoked(targetIdentity, ndn::Name(service), {},
-                    makeAuthorizationAttribute("/PERMISSION", service)))
+      const auto permissionAttribute = makeAuthorizationAttribute("/PERMISSION", service);
+      const bool serviceRevoked =
+        isRevoked(targetIdentity, ndn::Name(service), {}, permissionAttribute);
+      if (service.find("Spec225") != std::string::npos) {
+        // WARN so a deployment run that does not enable diagnostic logging still shows why a service stays in
+        // the record after a revocation named it.
+        NDN_LOG_WARN("NDNSF_USER_PERMISSION_FILTER identity=" << targetIdentity
+                     << " service=" << service << " attribute=" << permissionAttribute
+                     << " revocations=" << m_revocations.size()
+                     << " revoked=" << (serviceRevoked ? 1 : 0));
+        for (const auto& target : m_revocations) {
+          if (target.kind != RevocationKind::SERVICE_AUTHORIZATION)
+            continue;
+          NDN_LOG_WARN("NDNSF_USER_PERMISSION_REVOCATION identity=" << target.targetIdentity
+                       << " service=" << target.serviceName
+                       << " attribute=" << target.authorizationAttribute);
+        }
+      }
+      if (serviceRevoked)
         continue;
 
       PermissionEntry entry;
