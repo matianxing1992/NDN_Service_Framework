@@ -124,6 +124,26 @@ public:
   {
     return std::filesystem::path(m_statePath).concat(".attributes");
   }
+  /** Directory holding one signed grant record per identity and version. */
+  std::filesystem::path grantRecordDirectory() const
+  {
+    return std::filesystem::path(m_statePath).concat(".grants");
+  }
+
+  /** Persist the signed record of what one identity was granted at one version.
+   *
+   * A historical decision needs what the identity held when the object was published. The retirement-time
+   * attribute snapshot cannot prove that, and the Controller does not keep the signed permission responses
+   * it issued (they are encrypted to the identity anyway). This record is that evidence: the Controller's
+   * own signature over the identity, the version and the attributes it granted.
+   */
+  void recordGrant(const std::string& identity, uint64_t generation, uint64_t epoch,
+                   const std::string& signedContent);
+
+  /** Read back the record for one identity at exactly one version, if it exists. */
+  std::optional<std::string> loadGrant(const std::string& identity, uint64_t generation,
+                                       uint64_t epoch) const;
+
   /** Archive the material that is about to be replaced, keeping `retention` entries. */
   void recordAbeHistory(const AbeHistoryEntry& entry, size_t retention = 8);
   ControllerVersion startGeneration(

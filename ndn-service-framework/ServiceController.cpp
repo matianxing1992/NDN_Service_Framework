@@ -2272,6 +2272,32 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
       ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
     publishOriginalControlReply(interest, data);
 
+    try {
+      // Keep the signed evidence of what this identity was granted at this version. A later historical
+      // decision must be based on what it held when the object was published, not on what a retirement
+      // snapshot happens to remember.
+      std::string record("NDNSF-GRANT-v1\n");
+      record += "identity " + targetIdentity.toUri(ndn::name::UriFormat::CANONICAL) + "\n";
+      record += "generation " + std::to_string(response.getControllerVersion().controllerGenerationTimestamp) + "\n";
+      record += "epoch " + std::to_string(response.getControllerVersion().controllerEpoch) + "\n";
+      for (const auto& entry : response.getEntries())
+        record += "granted " + entry.getServiceName() + "\n";
+      ndn::Data signedRecord;
+      signedRecord.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(record.data()),
+                                          record.size()));
+      m_keyChain.sign(signedRecord, ndn::security::signingByCertificate(m_aaCert));
+      const auto recordWire = signedRecord.wireEncode();
+      m_generationStore->recordGrant(
+        targetIdentity.toUri(ndn::name::UriFormat::CANONICAL),
+        response.getControllerVersion().controllerGenerationTimestamp,
+        response.getControllerVersion().controllerEpoch,
+        std::string(reinterpret_cast<const char*>(recordWire.data()), recordWire.size()));
+    }
+    catch (const std::exception& error) {
+      NDN_LOG_WARN("[PERMISSIONS/USER] Grant record not written for " << targetIdentity
+                   << ": " << error.what());
+    }
+
     NDN_LOG_INFO("[PERMISSIONS/USER] Encrypted reply target="
               << targetIdentity
               << " data=" << data.getName()

@@ -785,6 +785,72 @@ ControllerGenerationStore::loadAbeHistory() const
   return loadState().abeHistory;
 }
 
+namespace {
+
+/** One file per identity and version, named so a lookup needs no index. */
+std::string
+grantRecordName(const std::string& identity, uint64_t generation, uint64_t epoch)
+{
+  ndn::util::Sha256 digest;
+  digest << identity;
+  return digest.toString() + "." + std::to_string(generation) + "." + std::to_string(epoch);
+}
+
+} // namespace
+
+void
+ControllerGenerationStore::recordGrant(const std::string& identity, uint64_t generation,
+                                       uint64_t epoch, const std::string& signedContent)
+{
+  requireWriter();
+  if (identity.empty() || generation == 0 || signedContent.empty())
+    throw std::invalid_argument("invalid Controller grant record");
+  const auto directory = grantRecordDirectory();
+  std::error_code error;
+  std::filesystem::create_directory(directory, error);
+  if (error)
+    throw std::runtime_error("cannot create Controller grant record directory");
+  std::filesystem::permissions(directory, std::filesystem::perms::owner_all,
+                              std::filesystem::perm_options::add, error);
+  const auto path = directory / grantRecordName(identity, generation, epoch);
+  const auto temporary = path.string() + ".tmp." + std::to_string(m_fence);
+  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (fd < 0)
+    throw std::runtime_error("cannot create private Controller grant record");
+  try {
+    writeAll(fd, signedContent.data(), signedContent.size());
+    if (::fsync(fd) != 0)
+      throw std::runtime_error("cannot flush Controller grant record");
+    if (::close(fd) != 0)
+      throw std::runtime_error("cannot close Controller grant record");
+    if (::rename(temporary.c_str(), path.c_str()) != 0)
+      throw std::runtime_error("cannot publish Controller grant record");
+  }
+  catch (...) {
+    ::close(fd);
+    ::unlink(temporary.c_str());
+    throw;
+  }
+}
+
+std::optional<std::string>
+ControllerGenerationStore::loadGrant(const std::string& identity, uint64_t generation,
+                                     uint64_t epoch) const
+{
+  requireWriter();
+  if (identity.empty() || generation == 0)
+    return std::nullopt;
+  const auto path = grantRecordDirectory() / grantRecordName(identity, generation, epoch);
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    return std::nullopt;
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  if (buffer.str().empty())
+    return std::nullopt;
+  return buffer.str();
+}
+
 void
 ControllerGenerationStore::recordAbeHistory(const AbeHistoryEntry& entry, size_t retention)
 {

@@ -1574,6 +1574,25 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
   BOOST_CHECK(std::equal(read->begin(), read->end(), plaintext.begin()));
 }
 
+BOOST_AUTO_TEST_CASE(GrantRecordsRoundTripPerIdentityAndVersion)
+{
+  DefaultGenerationFiles files;
+  auto store = std::make_unique<ControllerGenerationStore>(files.root / "state.bin");
+  store->acquireWriter("owner");
+  store->startGeneration(1000);
+
+  const std::string identity("/user/reader");
+  BOOST_CHECK(!store->loadGrant(identity, 1000, 1));
+  store->recordGrant(identity, 1000, 1, "NDNSF-GRANT-v1\nidentity /user/reader\n");
+  const auto loaded = store->loadGrant(identity, 1000, 1);
+  BOOST_REQUIRE(loaded);
+  BOOST_CHECK(loaded->find("NDNSF-GRANT-v1") == 0);
+
+  // The record is versioned: another version is a different record, not a fallback to this one.
+  BOOST_CHECK(!store->loadGrant(identity, 1000, 2));
+  BOOST_CHECK(!store->loadGrant("/user/other", 1000, 1));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalProofRoundTripsThroughItsEnvelope)
 {
   const std::string parameters("public-parameters-bytes-v1");
