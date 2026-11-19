@@ -1132,6 +1132,33 @@ BOOST_AUTO_TEST_CASE(HistoricalKeyReplyBindsRequestRecipientGenerationScopeAndEx
   BOOST_CHECK(!buildHistoricalKeyReply(request, std::string(), 1'030'000, sign, empty));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalProofAcceptsAnUpperCaseRecordedDigest)
+{
+  // The Controller records the wire digest in upper case with its own helper. Comparing against a
+  // lower-case recomputation silently dropped every entry, so this pins both cases.
+  const ndn::Name identity("/controller/a");
+  const std::string params("params-wire\0", 12);
+  auto upper = digestHexOf(params);
+  std::transform(upper.begin(), upper.end(), upper.begin(), [] (unsigned char value) {
+    return static_cast<char>(std::toupper(value));
+  });
+
+  ControllerGenerationStore::AbeHistoryEntry entry;
+  entry.generationTimestamp = 1002;
+  entry.epoch = 3;
+  entry.publicParameters = params;
+  entry.publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
+  entry.publicParametersWireDigest = "sha256:" + upper;
+
+  const auto sign = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  ndn::Data answer;
+  BOOST_CHECK(buildHistoricalPublicParametersData(entry, identity, sign, answer));
+  BOOST_CHECK_EQUAL(collectHistoricalPublicParameterAnswers({entry}, identity, sign).size(), 1u);
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalDecryptionKeyIsMintedInTheLibraryFormat)
 {
   // A superseded generation must still be able to issue a key for a policy it authorized.
