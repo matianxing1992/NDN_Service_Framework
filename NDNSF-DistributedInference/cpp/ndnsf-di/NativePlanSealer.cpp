@@ -631,7 +631,7 @@ NativePlacementPlanCore NativePlanSealer::sealCore(
   const NativePlanSealingInputs& inputs)
 {
   auto phaseStarted = detail::nativePhaseStarted();
-  const auto requiredCapabilities = nativePlanRequiredCapabilities(executionPlan);
+  const auto requiredCapabilities = nativePlanRequiredCapabilities(candidate);
   if (proposal.context.requiredExecutionCapabilities != requiredCapabilities)
     throw std::invalid_argument("V3 placement execution capability requirements differ from plan");
   if (!requiredCapabilities.empty()) {

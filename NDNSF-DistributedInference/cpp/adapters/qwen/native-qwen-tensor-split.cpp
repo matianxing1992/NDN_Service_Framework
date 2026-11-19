@@ -10,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 
@@ -166,8 +168,8 @@ QwenTpShape::validate() const
   // residual width: the frozen export uses headDim 128 over a hidden width of
   // 1024, so the Q/O projections are twice as wide as the residual stream.
   // Only overflow is common to every accepted geometry.
-  if (queryHeads * headDim < queryHeads ||
-      kvHeads * headDim < kvHeads) {
+  if (queryHeads > std::numeric_limits<std::uint64_t>::max() / headDim ||
+      kvHeads > std::numeric_limits<std::uint64_t>::max() / headDim) {
     throw std::overflow_error("tensor-parallel head geometry exceeds uint64");
   }
   // The residual stream is the hidden width; every projection that produces a
@@ -206,34 +208,103 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
   if (rank >= degree) {
     throw std::invalid_argument("tensor-parallel rank is outside its degree");
   }
-  // A unit owns a contiguous region of the decoder stack. The range is explicit rather
-  // than implied by the shape so that one stage's ranks slice only their own layers.
-  if (layerEnd > shape.layers) {
-    throw std::invalid_argument("tensor-parallel layer range exceeds the model");
-  }
-  if (layerBegin >= layerEnd) {
-    throw std::invalid_argument("tensor-parallel layer range is empty");
-  }
-
-  // Whole heads split; a partial head is never acceptable.
-  const auto queryHeadsPerRank = checkedPart(shape.queryHeads, degree, "query heads");
   const auto kvHeadsPerRank = checkedPart(shape.kvHeads, degree, "kv heads");
   const auto ffnPerRank = checkedPart(shape.ffn, degree, "ffn width");
+  return planQwenTensorSlices(shape,
+    {rank * kvHeadsPerRank, (rank + 1) * kvHeadsPerRank,
+     rank * ffnPerRank, (rank + 1) * ffnPerRank}, layerBegin, layerEnd);
+}
 
-  const auto queryBegin = rank * queryHeadsPerRank * shape.headDim;
-  const auto queryEnd = queryBegin + queryHeadsPerRank * shape.headDim;
-  const auto kvBegin = rank * kvHeadsPerRank * shape.headDim;
-  const auto kvEnd = kvBegin + kvHeadsPerRank * shape.headDim;
-  const auto ffnBegin = rank * ffnPerRank;
-  const auto ffnEnd = ffnBegin + ffnPerRank;
+std::vector<QwenTpRankRange>
+resolveQwenTpRankRanges(const QwenTpShape& shape, const std::vector<std::uint64_t>& weights)
+{
+  shape.validate();
+  if (weights.size() < 2 || weights.size() > shape.kvHeads) {
+    throw std::invalid_argument("invalid tensor-parallel weight count");
+  }
+  std::uint64_t divisor = 0;
+  for (const auto weight : weights) {
+    if (weight == 0 || weight > std::numeric_limits<std::int32_t>::max())
+      throw std::invalid_argument("invalid tensor-parallel rank weight");
+    divisor = std::gcd(divisor, weight);
+  }
+  constexpr auto limit = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t sum = 0;
+  for (const auto weight : weights) {
+    if (weight / divisor > limit - sum)
+      throw std::overflow_error("tensor-parallel weight sum overflow");
+    sum += weight / divisor;
+  }
+  const auto allocate = [&](std::uint64_t extent, std::uint64_t quantum) {
+    const auto total = extent / quantum;
+    if (extent % quantum != 0 || total < weights.size())
+      throw std::invalid_argument("tensor-parallel axis cannot cover all ranks");
+    std::vector<std::uint64_t> counts(weights.size());
+    if (sum == weights.size()) {
+      std::fill(counts.begin(), counts.end(), checkedPart(total, sum, "aligned units") * quantum);
+      return counts;
+    }
+    std::vector<std::uint64_t> remainders(weights.size());
+    std::vector<std::size_t> order(weights.size());
+    std::iota(order.begin(), order.end(), 0);
+    auto remaining = total;
+    for (const auto rank : order) {
+      const auto weight = weights[rank] / divisor;
+      if (weight > limit / total)
+        throw std::overflow_error("tensor-parallel quota overflow");
+      const auto product = total * weight;
+      counts[rank] = product / sum;
+      remainders[rank] = product % sum;
+      remaining -= counts[rank];
+    }
+    std::stable_sort(order.begin(), order.end(), [&](auto lhs, auto rhs) {
+      return remainders[lhs] > remainders[rhs];
+    });
+    for (std::size_t index = 0; index < remaining; ++index)
+      ++counts[order[index]];
+    for (auto& count : counts) {
+      if (count == 0)
+        throw std::invalid_argument("tensor-parallel rank has an empty slice");
+      count *= quantum;
+    }
+    return counts;
+  };
+  const auto groupWidth = shape.queryWidth() / shape.kvHeads;
+  const auto groupQuantum = QWEN_INT4_BLOCK_SIZE / std::gcd(QWEN_INT4_BLOCK_SIZE, groupWidth);
+  const auto heads = allocate(shape.kvHeads, groupQuantum);
+  const auto channels = allocate(shape.ffn, QWEN_INT4_BLOCK_SIZE);
+  std::vector<QwenTpRankRange> result;
+  std::uint64_t kvBegin = 0;
+  std::uint64_t ffnBegin = 0;
+  for (std::size_t rank = 0; rank < weights.size(); ++rank) {
+    result.push_back({kvBegin, kvBegin + heads[rank], ffnBegin, ffnBegin + channels[rank]});
+    kvBegin += heads[rank];
+    ffnBegin += channels[rank];
+  }
+  return result;
+}
 
-  // The frozen export's K width must let the O projection be cut on blocks.
-  if (shape.queryWidth() % degree != 0 || (shape.queryWidth() / degree) % QWEN_INT4_BLOCK_SIZE != 0) {
-    throw std::invalid_argument("tensor-parallel O reduction width is not block aligned");
+std::vector<QwenRankLayerSlices>
+planQwenTensorSlices(const QwenTpShape& shape, const QwenTpRankRange& range,
+                     std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  shape.validate();
+  if (layerBegin >= layerEnd || layerEnd > shape.layers ||
+      range.kvBegin >= range.kvEnd || range.kvEnd > shape.kvHeads ||
+      range.ffnBegin >= range.ffnEnd || range.ffnEnd > shape.ffn) {
+    throw std::invalid_argument("tensor-parallel slice is outside the source");
   }
-  if ((shape.ffn / degree) % QWEN_INT4_BLOCK_SIZE != 0) {
-    throw std::invalid_argument("tensor-parallel down reduction width is not block aligned");
-  }
+  const auto groupWidth = shape.queryWidth() / shape.kvHeads;
+  const auto queryBegin = range.kvBegin * groupWidth;
+  const auto queryEnd = range.kvEnd * groupWidth;
+  const auto kvBegin = range.kvBegin * shape.headDim;
+  const auto kvEnd = range.kvEnd * shape.headDim;
+  const auto ffnBegin = range.ffnBegin;
+  const auto ffnEnd = range.ffnEnd;
+  const auto ffnPerRank = ffnEnd - ffnBegin;
+  if (queryBegin % QWEN_INT4_BLOCK_SIZE != 0 || queryEnd % QWEN_INT4_BLOCK_SIZE != 0 ||
+      ffnBegin % QWEN_INT4_BLOCK_SIZE != 0 || ffnEnd % QWEN_INT4_BLOCK_SIZE != 0)
+    throw std::invalid_argument("tensor-parallel range is not block aligned");
 
   std::vector<QwenRankLayerSlices> result;
   result.reserve(layerEnd - layerBegin);
@@ -244,15 +315,15 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
 
     // Q/K/V: whole heads, output-channel slices.
     addSlice(slices, prefix + "attn.q_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
-             queryBegin, queryEnd, shape.hidden, queryHeadsPerRank * shape.headDim);
+             queryBegin, queryEnd, shape.hidden, queryEnd - queryBegin);
     addSlice(slices, prefix + "attn.k_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
-             kvBegin, kvEnd, shape.hidden, kvHeadsPerRank * shape.headDim);
+             kvBegin, kvEnd, shape.hidden, kvEnd - kvBegin);
     addSlice(slices, prefix + "attn.v_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
-             kvBegin, kvEnd, shape.hidden, kvHeadsPerRank * shape.headDim);
+             kvBegin, kvEnd, shape.hidden, kvEnd - kvBegin);
 
     // O: reduction over the same attention channels, producing a full-D partial.
     addSlice(slices, prefix + "attn.o_proj.MatMul.weight", QwenSliceAxis::InputChannels,
-             queryBegin, queryEnd, shape.queryWidth() / degree, shape.hidden);
+             queryBegin, queryEnd, queryEnd - queryBegin, shape.hidden);
 
     // gate/up share one FFN interval; down reduces over it.
     addSlice(slices, prefix + "mlp.gate_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
@@ -260,7 +331,7 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
     addSlice(slices, prefix + "mlp.up_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
              ffnBegin, ffnEnd, shape.hidden, ffnPerRank);
     addSlice(slices, prefix + "mlp.down_proj.MatMul.weight", QwenSliceAxis::InputChannels,
-             ffnBegin, ffnEnd, shape.ffn / degree, shape.hidden);
+             ffnBegin, ffnEnd, ffnPerRank, shape.hidden);
 
     // Norm weights stay replicated: splitting a normalization axis would add a
     // second cross-rank reduction, so each rank keeps the full vector.
@@ -1442,6 +1513,27 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
     for (const auto& output : node.output())
       if (!output.empty()) referenced.insert(output);
   }
+  // A shape or scalar supplied by a Constant node is part of the entry's own
+  // parameters, not an external boundary: without the producer the copied
+  // Reshape references a name no initializer or Constant provides. Only
+  // Constant nodes are absorbed; any other producer stays a boundary input.
+  // Absorbed parameter outputs are never exposed as boundary outputs: the
+  // sibling entries that share the operand carry their own copy, so publishing
+  // it would offer another entry's parameter as this entry's activation.
+  std::set<std::string> absorbedOutputs;
+  for (std::uint64_t index = 0; index < nodeCount; ++index) {
+    if (owned.count(index) != 0)
+      continue;
+    const auto& node = graph.node(static_cast<int>(index));
+    if (node.op_type() != "Constant")
+      continue;
+    for (const auto& output : node.output()) {
+      if (!output.empty() && referenced.count(output) != 0) {
+        owned.insert(index);
+        absorbedOutputs.insert(output);
+      }
+    }
+  }
   std::set<std::string> initializerNames;
   for (int i = 0; i < graph.initializer_size(); ++i)
     initializerNames.insert(graph.initializer(i).name());
@@ -1528,6 +1620,7 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
       for (const auto& output : graph.node(static_cast<int>(index)).output())
         if (output == name) producedInside = true;
     if (!producedInside) continue;
+    if (absorbedOutputs.count(name) != 0) continue;
     // A tensor consumed outside this entry, or one the source declares as a
     // model output, must be exposed; anything else internal stays internal.
     const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
@@ -2192,8 +2285,12 @@ bindHybridSourcePorts(std::vector<NativeExecutionPlan>& plans,
               if (boundaries[previous].outputs.count(name) == 0) continue;
               const auto& owner = valuesByUnit.at(units[previous].front().roleId);
               const auto value = owner.find(name);
-              if (value == owner.end() || !producer.step.empty())
-                throw std::invalid_argument("source hybrid boundary has no unique complete producer");
+              if (value == owner.end())
+                throw std::invalid_argument("source hybrid boundary value " + name +
+                  " has no complete producer on " + units[previous].front().roleId);
+              if (!producer.step.empty())
+                throw std::invalid_argument("source hybrid boundary value " + name +
+                  " has multiple complete producers");
               producer = value->second;
             }
             if (producer.step.empty())
@@ -2235,6 +2332,76 @@ bindHybridSourcePorts(std::vector<NativeExecutionPlan>& plans,
   }
 }
 
+void
+validateWeightedQwenRegion(const NativeOnnxGraphInspection& source, const NativeJson& metadata,
+                           const QwenTpShape& shape, const QwenTpStageWindow& window)
+{
+  const auto& nodes = metadata.at("nodes");
+  if (nodes.size() != source.graph.nodes.size())
+    throw std::invalid_argument("weighted Qwen source metadata has incomplete node coverage");
+  std::vector<std::string> nodeNames;
+  nodeNames.reserve(nodes.size());
+  for (const auto& node : nodes) {
+    // Prepared metadata restores semantic IDs separately from the original ONNX names.
+    if (node.at("index") != nodeNames.size())
+      throw std::invalid_argument("weighted Qwen source metadata is out of node order");
+    nodeNames.push_back(node.at("name").get<std::string>());
+  }
+  const auto entries = classifyQwenRegionNodes(nodeNames, shape.layers,
+                                               window.layerBegin, window.layerEnd);
+  const auto layers = planQwenTensorSlices(shape, {0, shape.kvHeads, 0, shape.ffn},
+                                           window.layerBegin, window.layerEnd);
+  const auto& tensors = metadata.at("tensors");
+  for (const auto& layer : layers) {
+    for (const auto* kind : {"ATTN", "MLP"}) {
+      const auto entry = std::find_if(entries.begin(), entries.end(), [&] (const auto& item) {
+        return item.layer == layer.layer && item.kind == kind;
+      });
+      if (entry == entries.end())
+        throw std::invalid_argument("weighted Qwen source has a missing decoder entry");
+      const bool attention = entry->kind == "ATTN";
+      std::set<std::uint64_t> projections;
+      std::size_t gqaCount = 0;
+      for (const auto index : entry->nodeIndices) {
+        const auto& node = nodes.at(index);
+        if (node.at("opType") == "MatMulNBits") projections.insert(index);
+        if (node.at("opType") == "GroupQueryAttention") {
+          ++gqaCount;
+          const auto& attrs = node.at("integerAttributes");
+          if (attrs.at("num_heads") != shape.queryHeads || attrs.at("kv_num_heads") != shape.kvHeads)
+            throw std::invalid_argument("weighted Qwen source has inconsistent per-layer heads");
+        }
+      }
+      if (gqaCount != (attention ? 1U : 0U) || projections.size() != (attention ? 4U : 3U))
+        throw std::invalid_argument("weighted Qwen source has incomplete per-layer projections");
+      for (const auto& slice : layer.initializers) {
+        if ((slice.name.find(".attn.") != std::string::npos) != attention) continue;
+        const auto weight = slice.name + "_Q4";
+        const auto scale = slice.name + "_scales";
+        const auto weightOwners = source.initializerConsumers.find(weight);
+        const auto scaleOwners = source.initializerConsumers.find(scale);
+        if (weightOwners == source.initializerConsumers.end() ||
+            scaleOwners == source.initializerConsumers.end() || weightOwners->second.size() != 1 ||
+            weightOwners->second != scaleOwners->second ||
+            projections.erase(weightOwners->second.front()) != 1)
+          throw std::invalid_argument("weighted Qwen source has a missing or mispaired projection: " +
+                                      slice.name);
+        const auto& attrs = nodes.at(weightOwners->second.front()).at("integerAttributes");
+        const auto blocks = slice.slicedK / QWEN_INT4_BLOCK_SIZE;
+        const auto scaleCount = packedInt4Bytes(slice.slicedN, slice.slicedK) / QWEN_INT4_BLOB_BYTES;
+        if (attrs.at("K") != slice.slicedK || attrs.at("N") != slice.slicedN ||
+            attrs.at("bits") != QWEN_INT4_BITS || attrs.at("block_size") != QWEN_INT4_BLOCK_SIZE ||
+            tensors.at(weight).at("dtype") != "uint8" || tensors.at(scale).at("dtype") != "float32" ||
+            tensors.at(weight).at("shape") != NativeJson::array({
+              slice.slicedN, blocks, QWEN_INT4_BLOB_BYTES}) ||
+            tensors.at(scale).at("shape") != NativeJson::array({scaleCount}))
+          throw std::invalid_argument("weighted Qwen source has inconsistent projection facts: " +
+                                      slice.name);
+      }
+    }
+  }
+}
+
 } // namespace
 
 static ndnsf::di::NativeSplitCandidate
@@ -2260,6 +2427,7 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
   std::vector<ndnsf::di::NativeExecutionPlan> plans;
   plans.reserve(windows.size());
   std::vector<QwenTpUnit> units;
+  std::map<std::string, std::string> shardByUnit;
   for (std::size_t index = 0; index < windows.size(); ++index) {
     auto window = windows.at(index);
     const auto& list = stageUnits.at(index);
@@ -2299,6 +2467,32 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
         throw std::invalid_argument("source hybrid region is missing its checked identity");
       window.sourceRegionDigest =
         nativePlanningDigest("qwen-hybrid-source-v2|" + boundaries[index].identityDigest);
+    }
+    if (!window.rankRanges.empty()) {
+      if (regionPort == nullptr || list.size() < 2 || window.rankRanges.size() != list.size())
+        throw std::invalid_argument("explicit tensor ranges need a source-bound sharded stage");
+      if (sourceMetadata.is_null())
+        sourceMetadata = nativeParseJson(source->graphMetadataJson);
+      validateWeightedQwenRegion(*source, sourceMetadata, shape, window);
+      auto rankedAxes = NativeJson::array();
+      for (std::size_t rank = 0; rank < list.size(); ++rank) {
+        const auto& range = window.rankRanges[rank];
+        // Validate the physical geometry before sealing; derive entry slices at assembly.
+        QwenTpRankGeometry{list.size(), rank, shape.headDim, shape.queryWidth(),
+          shape.kvWidth(), shape.hidden, shape.ffn, range}.validate();
+        rankedAxes.push_back({{"role", list[rank].roleId}, {"axes", NativeJson::array({
+          {{"axis", "ffn-channel"}, {"begin", range.ffnBegin}, {"end", range.ffnEnd},
+           {"extent", shape.ffn}},
+          {{"axis", "kv-group"}, {"begin", range.kvBegin}, {"end", range.kvEnd},
+           {"extent", shape.kvHeads}}
+        })}});
+      }
+      const auto digest = nativeTensorStageLayoutDigest(model.adapter.descriptorDigest(),
+        graph.graphDigest, window.stageId, window.sourceRegionDigest, rankedAxes);
+      for (const auto& member : rankedAxes) {
+        shardByUnit.emplace(member.at("role").get<std::string>(), nativeCanonicalJson(NativeJson{
+          {"stage_layout_digest", digest}, {"axes", member.at("axes")}}));
+      }
     }
     if (regionPort != nullptr && list.size() == 1) {
       const auto& unit = list.front();
@@ -2340,8 +2534,16 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
       if (regionPort != nullptr) {
         if (sourceMetadata.is_null())
           sourceMetadata = nativeParseJson(source->graphMetadataJson);
-        auto tp = buildQwenTpTemplate(shape, list.size(), "/verified", list,
-                                      window.layerBegin, window.layerEnd);
+        QwenTpTemplate tp;
+        if (window.rankRanges.empty()) {
+          tp = buildQwenTpTemplate(shape, list.size(), "/verified", list,
+                                  window.layerBegin, window.layerEnd);
+        }
+        else {
+          validateTemplateInputs(shape, list.size(), "/verified");
+          tp.degree = list.size();
+          tp.units = list;
+        }
         tp.entries = tables[index];
         std::set<std::string> ids;
         for (const auto& contract : tp.entries) {
@@ -2401,7 +2603,8 @@ buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape
     // Singleton stages retain the ordinary, unsharded recipe identity. Their degree and
     // membership remain sealed by stageLayout; only actual shards need a TP recipe binding.
     if (stageDegree > 1)
-      candidate.tensorIdentityByRole[unit.roleId] = {stageDegree, unit.rank};
+      candidate.tensorIdentityByRole[unit.roleId] = {
+        stageDegree, unit.rank, std::move(shardByUnit[unit.roleId])};
     candidate.rankArtifactDigestsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
     candidate.artifactsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
     candidate.requirementsByRole[unit.roleId] = requirementByUnit.at(unit.roleId);
@@ -2633,7 +2836,21 @@ QwenTpRankGeometry::validate() const
   if (headDim == 0 || queryWidth == 0 || kvWidth == 0 || hidden == 0 || ffn == 0) {
     throw std::invalid_argument("tensor-parallel geometry is incomplete");
   }
-  if (queryWidth % degree != 0 || kvWidth % degree != 0 || ffn % degree != 0) {
+  if (range) {
+    if (kvWidth % headDim != 0 || queryWidth % kvWidth != 0 ||
+        range->kvBegin >= range->kvEnd || range->kvEnd > kvWidth / headDim ||
+        range->ffnBegin >= range->ffnEnd || range->ffnEnd > ffn) {
+      throw std::invalid_argument("invalid explicit tensor-parallel geometry");
+    }
+    const auto groupWidth = queryWidth / (kvWidth / headDim);
+    if ((range->kvBegin * groupWidth) % QWEN_INT4_BLOCK_SIZE != 0 ||
+        (range->kvEnd * groupWidth) % QWEN_INT4_BLOCK_SIZE != 0 ||
+        range->ffnBegin % QWEN_INT4_BLOCK_SIZE != 0 ||
+        range->ffnEnd % QWEN_INT4_BLOCK_SIZE != 0) {
+      throw std::invalid_argument("unaligned explicit tensor-parallel geometry");
+    }
+  }
+  else if (queryWidth % degree != 0 || kvWidth % degree != 0 || ffn % degree != 0) {
     throw std::invalid_argument(
       "tensor-parallel geometry does not divide evenly by its degree");
   }
@@ -2645,9 +2862,13 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   geometry.validate();
   auto* graph = entry.mutable_graph();
   const auto shard = [&] (std::uint64_t width) { return width / geometry.degree; };
-  const auto queryShard = shard(geometry.queryWidth);
-  const auto kvShard = shard(geometry.kvWidth);
-  const auto ffnShard = shard(geometry.ffn);
+  const auto& range = geometry.range;
+  const auto sourceHeads = geometry.kvWidth / geometry.headDim;
+  const auto kvShard = range ? (range->kvEnd - range->kvBegin) * geometry.headDim
+                             : shard(geometry.kvWidth);
+  const auto queryShard = range ? kvShard * (geometry.queryWidth / geometry.kvWidth)
+                                : shard(geometry.queryWidth);
+  const auto ffnShard = range ? range->ffnEnd - range->ffnBegin : shard(geometry.ffn);
 
   std::uint64_t changes = 0;
 
@@ -2672,11 +2893,32 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
         auto* attr = node->mutable_attribute(a);
         if (!attr->has_i()) continue;
         if (attr->name() == "N" && outputSharded) {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range) {
+            const auto& name = node->name();
+            const bool query = name.find("q_proj") != std::string::npos;
+            const bool kv = name.find("k_proj") != std::string::npos ||
+                            name.find("v_proj") != std::string::npos;
+            const auto width = query ? geometry.queryWidth : kv ? geometry.kvWidth : geometry.ffn;
+            if (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) != width)
+              throw std::invalid_argument("unexpected source projection N");
+            attr->set_i(query ? queryShard : kv ? kvShard : ffnShard);
+          }
+          else {
+            attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          }
           ++changes;
         }
         else if (attr->name() == "K" && inputSharded) {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range) {
+            const bool attention = node->name().find("o_proj") != std::string::npos;
+            if (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) !=
+                (attention ? geometry.queryWidth : geometry.ffn))
+              throw std::invalid_argument("unexpected source projection K");
+            attr->set_i(attention ? queryShard : ffnShard);
+          }
+          else {
+            attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          }
           ++changes;
         }
       }
@@ -2686,11 +2928,18 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
         auto* attr = node->mutable_attribute(a);
         if (!attr->has_i()) continue;
         if (attr->name() == "num_heads") {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range && (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) !=
+                        geometry.queryWidth / geometry.headDim))
+            throw std::invalid_argument("unexpected source query heads");
+          attr->set_i(range ? queryShard / geometry.headDim :
+                      attr->i() / static_cast<std::int64_t>(geometry.degree));
           ++changes;
         }
         else if (attr->name() == "kv_num_heads") {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range && (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) != sourceHeads))
+            throw std::invalid_argument("unexpected source KV heads");
+          attr->set_i(range ? kvShard / geometry.headDim :
+                      attr->i() / static_cast<std::int64_t>(geometry.degree));
           ++changes;
         }
       }
@@ -2700,7 +2949,24 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
       const auto narrowState = [&] (const std::string& name) {
         for (int i = 0; i < graph->initializer_size(); ++i) {
           auto* state = graph->mutable_initializer(i);
-          if (state->name() != name || state->dims_size() != 4) continue;
+          if (state->name() != name) continue;
+          if (range) {
+            if (state->dims_size() != 4 || state->dims(0) != 1 ||
+                state->dims(1) != static_cast<std::int64_t>(sourceHeads) ||
+                state->dims(2) != 0 ||
+                state->dims(3) != static_cast<std::int64_t>(geometry.headDim) ||
+                state->data_type() != onnx::TensorProto::FLOAT ||
+                state->data_location() != onnx::TensorProto::DEFAULT ||
+                !state->raw_data().empty() || state->float_data_size() != 0 ||
+                state->int32_data_size() != 0 || state->int64_data_size() != 0 ||
+                state->double_data_size() != 0 || state->uint64_data_size() != 0 ||
+                state->string_data_size() != 0 || state->external_data_size() != 0)
+              throw std::invalid_argument("unsupported explicit shard KV initializer");
+            state->set_dims(1, static_cast<std::int64_t>(kvShard / geometry.headDim));
+            ++changes;
+            return;
+          }
+          if (state->dims_size() != 4) continue;
           const auto heads = static_cast<std::uint64_t>(state->dims(1));
           if (geometry.degree == 0 || heads % geometry.degree != 0) return;
           const auto perRank = heads / geometry.degree;
@@ -2732,14 +2998,29 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     const auto& node = graph->node(i);
     if (node.op_type() != "Reshape") continue;
     std::optional<std::int64_t> target;
+    std::uint64_t sourceWidth = 0;
     if (node.name().find("q_norm/Reshape_2") != std::string::npos) {
       target = static_cast<std::int64_t>(queryShard);
+      sourceWidth = geometry.queryWidth;
     }
     else if (node.name().find("k_norm/Reshape_2") != std::string::npos) {
       target = static_cast<std::int64_t>(kvShard);
+      sourceWidth = geometry.kvWidth;
     }
-    if (!target || node.input_size() < 2) continue;
+    if (!target) continue;
+    if (node.input_size() < 2) {
+      if (range) throw std::invalid_argument("tensor shard Reshape has no shape operand");
+      continue;
+    }
     const auto& targetName = node.input(1);
+    if (range) {
+      std::size_t users = 0;
+      for (const auto& consumer : graph->node())
+        users += std::count(consumer.input().begin(), consumer.input().end(), targetName);
+      if (users != 1)
+        throw std::invalid_argument("tensor shard Reshape shares its shape operand");
+    }
+    bool changed = false;
     for (int j = 0; j < graph->initializer_size(); ++j) {
       auto* init = graph->mutable_initializer(j);
       if (init->name() != targetName) continue;
@@ -2748,20 +3029,85 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
       if (init->raw_data().empty() || init->raw_data().size() % sizeof(std::int64_t) != 0)
         break;
       std::string bytes = init->raw_data();
-      bool changed = false;
       // The shape is [batch, sequence, width]; only the last entry is the sharded
       // one. Rewriting every slot would corrupt the batch and sequence markers.
-      const auto slots = bytes.size() / sizeof(std::int64_t);
-      if (slots >= 1) {
-        const auto offset = (slots - 1) * sizeof(std::int64_t);
-        std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
-        changed = true;
+      const auto offset = bytes.size() - sizeof(std::int64_t);
+      if (range) {
+        std::int64_t width = 0;
+        std::memcpy(&width, bytes.data() + offset, sizeof(width));
+        if (width <= 0 || static_cast<std::uint64_t>(width) != sourceWidth)
+          throw std::invalid_argument("tensor shard Reshape has an unexpected source width");
       }
-      if (changed) {
-        init->set_raw_data(bytes.data(), bytes.size());
-        ++changes;
-      }
+      std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
+      init->set_raw_data(bytes.data(), bytes.size());
+      ++changes;
+      changed = true;
       break;
+    }
+    // This export keeps the shape operands as Constant nodes instead of
+    // top-level initializers; rewrite the same trailing width slot there.
+    if (!changed) {
+      for (auto& constant : *graph->mutable_node()) {
+        if (constant.op_type() != "Constant" || constant.output_size() != 1 ||
+            constant.output(0) != targetName)
+          continue;
+        for (auto& attribute : *constant.mutable_attribute()) {
+          if (attribute.name() != "value" || !attribute.has_t())
+            continue;
+          auto* tensor = attribute.mutable_t();
+          if (tensor->data_type() != onnx::TensorProto::INT64 ||
+              tensor->data_location() != onnx::TensorProto::DEFAULT ||
+              tensor->raw_data().empty() ||
+              tensor->raw_data().size() % sizeof(std::int64_t) != 0)
+            break;
+          std::string bytes = tensor->raw_data();
+          const auto offset = bytes.size() - sizeof(std::int64_t);
+          if (range) {
+            std::int64_t width = 0;
+            std::memcpy(&width, bytes.data() + offset, sizeof(width));
+            if (width <= 0 || static_cast<std::uint64_t>(width) != sourceWidth)
+              throw std::invalid_argument("tensor shard Reshape has an unexpected source width");
+          }
+          std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
+          tensor->set_raw_data(bytes.data(), bytes.size());
+          ++changes;
+          changed = true;
+          break;
+        }
+        if (changed)
+          break;
+      }
+    }
+    if (range && !changed) {
+      std::string detail = "no initializer or Constant names the shape operand";
+      detail += " operand=" + targetName + " reshape=" + node.name();
+      for (const auto& init : graph->initializer()) {
+        if (init.name() != targetName)
+          continue;
+        detail = "initializer dtype=" + std::to_string(init.data_type()) +
+                 " location=" + std::to_string(init.data_location()) +
+                 " raw=" + std::to_string(init.raw_data().size()) +
+                 " int64=" + std::to_string(init.int64_data_size());
+        break;
+      }
+      for (const auto& constant : graph->node()) {
+        if (constant.op_type() != "Constant" || constant.output_size() != 1 ||
+            constant.output(0) != targetName)
+          continue;
+        for (const auto& attribute : constant.attribute()) {
+          if (!attribute.has_t())
+            continue;
+          const auto& tensor = attribute.t();
+          detail = "constant attribute=" + attribute.name() +
+                   " dtype=" + std::to_string(tensor.data_type()) +
+                   " location=" + std::to_string(tensor.data_location()) +
+                   " raw=" + std::to_string(tensor.raw_data().size()) +
+                   " int64=" + std::to_string(tensor.int64_data_size());
+        }
+        break;
+      }
+      throw std::invalid_argument(
+        "tensor shard Reshape is missing its inline INT64 shape: " + detail);
     }
   }
 
@@ -2777,6 +3123,14 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     if (!isState) return;
     auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
     // [batch, kvHeads, sequence, headDim]
+    if (range && (shape->dim_size() != 4 ||
+                  value->type().tensor_type().elem_type() != onnx::TensorProto::FLOAT ||
+                  !shape->dim(1).has_dim_value() ||
+                  shape->dim(1).dim_value() != static_cast<std::int64_t>(sourceHeads) ||
+                  !shape->dim(3).has_dim_value() ||
+                  shape->dim(3).dim_value() != static_cast<std::int64_t>(geometry.headDim))) {
+      throw std::invalid_argument("unexpected explicit shard KV port");
+    }
     if (shape->dim_size() < 4) return;
     auto* heads = shape->mutable_dim(1);
     if (!heads->has_dim_value()) return;
@@ -2830,7 +3184,7 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   };
   const auto rewriteProducerWidth = [&] (onnx::ValueInfoProto* value) {
     const auto width = widthOfProducer(value->name());
-    if (!width) return;
+    if (!width || (range && *width <= 0)) return;
     auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
     if (shape->dim_size() == 0) return;
     auto* last = shape->mutable_dim(shape->dim_size() - 1);
@@ -2891,6 +3245,163 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
 
   return changes;
 }
+
+namespace {
+
+void
+validateShardTensorStorage(const std::filesystem::path& root, const onnx::TensorProto& tensor,
+                           std::uint64_t bytes)
+{
+  if (tensor.data_location() == onnx::TensorProto::DEFAULT &&
+      tensor.external_data_size() == 0 && tensor.raw_data().size() == bytes)
+    return;
+  if (tensor.data_location() != onnx::TensorProto::EXTERNAL || !tensor.raw_data().empty())
+    throw std::invalid_argument("invalid packed tensor storage: " + tensor.name());
+  std::map<std::string, std::string> fields;
+  for (const auto& field : tensor.external_data()) {
+    if (!fields.emplace(field.key(), field.value()).second)
+      throw std::invalid_argument("duplicate sidecar metadata: " + tensor.name());
+  }
+  const auto decimal = [&] (const char* key) {
+    const auto& text = fields.at(key);
+    std::uint64_t value = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size())
+      throw std::invalid_argument("invalid sidecar interval: " + tensor.name());
+    return value;
+  };
+  const auto& location = fields.at("location");
+  const auto expectedLocation = std::filesystem::is_regular_file(root / "model.onnx.data")
+    ? "model.onnx.data" : "model.onnx_data";
+  if (location != expectedLocation)
+    throw std::invalid_argument("unexpected sidecar location: " + tensor.name());
+  const auto offset = decimal("offset");
+  const auto length = decimal("length");
+  const auto fileBytes = std::filesystem::file_size(root / location);
+  if (length != bytes || offset > fileBytes || length > fileBytes - offset ||
+      offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+      length > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
+      length > std::numeric_limits<std::size_t>::max() ||
+      length > std::numeric_limits<std::uint64_t>::max() - offset)
+    throw std::invalid_argument("packed tensor interval is outside its sidecar: " + tensor.name());
+}
+
+void
+requireShardOpAttribute(const onnx::NodeProto& node, const char* name, std::uint64_t expected)
+{
+  bool found = false;
+  for (const auto& attr : node.attribute()) {
+    if (attr.name() != name) continue;
+    if (found || !attr.has_i() || attr.i() <= 0 ||
+        static_cast<std::uint64_t>(attr.i()) != expected)
+      throw std::invalid_argument("invalid " + std::string(name) + " on " + node.name());
+    found = true;
+  }
+  if (!found) throw std::invalid_argument("missing " + std::string(name) + " on " + node.name());
+}
+
+void
+verifyExplicitShardEntry(const std::filesystem::path& root, const onnx::GraphProto& graph,
+                         const QwenRankLayerSlices& owned, const QwenTpRankGeometry& geometry,
+                         bool attention, bool narrowed)
+{
+  std::map<std::string, const onnx::TensorProto*> tensors;
+  for (const auto& tensor : graph.initializer()) {
+    if (!tensors.emplace(tensor.name(), &tensor).second)
+      throw std::invalid_argument("duplicate tensor shard initializer: " + tensor.name());
+  }
+  std::map<std::string, std::size_t> consumers;
+  std::map<std::string, const onnx::NodeProto*> projections;
+  std::size_t gqaCount = 0;
+  const auto sourceHeads = geometry.kvWidth / geometry.headDim;
+  const auto localHeads = geometry.range->kvEnd - geometry.range->kvBegin;
+  for (const auto& node : graph.node()) {
+    for (const auto& input : node.input()) ++consumers[input];
+    if (node.op_type() == "GroupQueryAttention") {
+      ++gqaCount;
+      if (node.domain() != "com.microsoft" || node.input_size() < 5 || node.output_size() != 3)
+        throw std::invalid_argument("unsupported tensor shard attention operator");
+      const auto heads = narrowed ? localHeads : sourceHeads;
+      requireShardOpAttribute(node, "kv_num_heads", heads);
+      requireShardOpAttribute(node, "num_heads", heads * (geometry.queryWidth / geometry.kvWidth));
+      const auto portIsValid = [&] (const auto& ports, const std::string& name) {
+        const auto port = std::find_if(ports.begin(), ports.end(),
+          [&] (const auto& info) { return info.name() == name; });
+        if (port == ports.end() || !port->type().has_tensor_type()) return false;
+        const auto& type = port->type().tensor_type();
+        const auto& shape = type.shape();
+        return type.elem_type() == onnx::TensorProto::FLOAT && shape.dim_size() == 4 &&
+          shape.dim(1).has_dim_value() && shape.dim(1).dim_value() == static_cast<std::int64_t>(heads) &&
+          shape.dim(3).has_dim_value() &&
+          shape.dim(3).dim_value() == static_cast<std::int64_t>(geometry.headDim);
+      };
+      const auto layer = std::to_string(owned.layer);
+      for (int i = 0; i < 2; ++i) {
+        const auto suffix = layer + (i == 0 ? ".key" : ".value");
+        const auto& past = node.input(3 + i);
+        const auto& present = node.output(1 + i);
+        const auto initial = tensors.find(past);
+        if (initial == tensors.end()) {
+          if (past != "past_key_values." + suffix || !portIsValid(graph.input(), past))
+            throw std::invalid_argument("tensor shard attention past port is not bound");
+        }
+        else {
+          const auto& tensor = *initial->second;
+          if (tensor.dims_size() != 4 || tensor.dims(0) != 1 || tensor.dims(2) != 0 ||
+              tensor.dims(1) != static_cast<std::int64_t>(heads) ||
+              tensor.dims(3) != static_cast<std::int64_t>(geometry.headDim) ||
+              tensor.data_type() != onnx::TensorProto::FLOAT)
+            throw std::invalid_argument("tensor shard attention initial state has invalid shape");
+        }
+        if (present != "present." + suffix || !portIsValid(graph.output(), present))
+          throw std::invalid_argument("tensor shard attention present port is not bound");
+      }
+    }
+    if (node.op_type() != "MatMulNBits") continue;
+    if (node.domain() != "com.microsoft" || node.input_size() < 3 ||
+        !projections.emplace(node.input(1), &node).second ||
+        std::any_of(node.input().begin() + 3, node.input().end(),
+                    [] (const std::string& input) { return !input.empty(); }))
+      throw std::invalid_argument("unsupported tensor shard projection: " + node.name());
+  }
+  if (gqaCount != (attention ? 1U : 0U) || projections.size() != (attention ? 4U : 3U))
+    throw std::invalid_argument("tensor shard entry has the wrong operators");
+  for (const auto& slice : owned.initializers) {
+    if ((slice.name.find(".attn.") != std::string::npos) != attention) continue;
+    const auto weightName = slice.name + "_Q4";
+    const auto scaleName = slice.name + "_scales";
+    if (!projections.count(weightName) || !tensors.count(weightName) || !tensors.count(scaleName) ||
+        consumers[weightName] != 1 || consumers[scaleName] != 1 ||
+        projections.at(weightName)->input(2) != scaleName)
+      throw std::invalid_argument("missing, shared or mispaired tensor shard: " + slice.name);
+    const auto k = narrowed ? slice.slicedK :
+      slice.axis == QwenSliceAxis::OutputChannels ? geometry.hidden :
+      attention ? geometry.queryWidth : geometry.ffn;
+    const auto n = narrowed ? slice.slicedN :
+      slice.axis == QwenSliceAxis::InputChannels ? geometry.hidden :
+      !attention ? geometry.ffn :
+      slice.name.find(".q_proj.") != std::string::npos ? geometry.queryWidth : geometry.kvWidth;
+    const auto bytes = packedInt4Bytes(n, k);
+    const auto scalesCount = bytes / QWEN_INT4_BLOB_BYTES;
+    const auto& node = *projections.at(weightName);
+    const auto& weight = *tensors.at(weightName);
+    const auto& scales = *tensors.at(scaleName);
+    requireShardOpAttribute(node, "K", k);
+    requireShardOpAttribute(node, "N", n);
+    requireShardOpAttribute(node, "bits", QWEN_INT4_BITS);
+    requireShardOpAttribute(node, "block_size", QWEN_INT4_BLOCK_SIZE);
+    if (weight.data_type() != onnx::TensorProto::UINT8 || weight.dims_size() != 3 ||
+        weight.dims(0) != static_cast<std::int64_t>(n) ||
+        weight.dims(1) != static_cast<std::int64_t>(k / QWEN_INT4_BLOCK_SIZE) ||
+        weight.dims(2) != QWEN_INT4_BLOB_BYTES || scales.data_type() != onnx::TensorProto::FLOAT ||
+        scales.dims_size() != 1 || scales.dims(0) != static_cast<std::int64_t>(scalesCount))
+      throw std::invalid_argument("invalid packed tensor shard shape: " + slice.name);
+    validateShardTensorStorage(root, weight, bytes);
+    validateShardTensorStorage(root, scales, scalesCount * sizeof(float));
+  }
+}
+
+} // namespace
 
 std::uint64_t
 applyQwenTpRankSlices(onnx::ModelProto& entry,
@@ -3186,6 +3697,18 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::string& egressRole,
                         const QwenTpAssemblyControl* control, std::uint64_t layerBegin)
 {
+  configureQwenTpRankSpec(spec, layers, steps, rankedByteBudget, tensorDegree,
+                         tensorRank, egressRole, control, layerBegin, {});
+}
+
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget, std::uint64_t tensorDegree,
+                        std::uint64_t tensorRank, const std::string& egressRole,
+                        const QwenTpAssemblyControl* control, std::uint64_t layerBegin,
+                        const std::string& tensorShardV1)
+{
   requireRankAssemblyActive(control);
   const auto savedBackend = spec.metadata.find("tensorParallelChildBackend");
   const auto childBackend = spec.backend == "native-qwen-tensor"
@@ -3209,14 +3732,14 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   // from the graph rather than from a caller constant, so the slice cannot
   // disagree with the export it is cutting. A pipeline role keeps full width.
   QwenTpAssemblyShards shards;
+  if (!tensorShardV1.empty() && tensorDegree < 2)
+    throw std::invalid_argument("explicit tensor shard needs tensor degree >= 2");
   if (tensorDegree > 1) {
     if (tensorRank >= tensorDegree) {
       throw std::invalid_argument(
         "tensor-parallel rank is outside the sealed degree");
     }
     const auto shape = deriveQwenTpRegionShape(graphBytes, layerBegin, layers);
-    shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank,
-                                               layerBegin, layers);
     // The operators must describe the narrowed weights, or ORT rejects the entry
     // at load; the geometry is read from the same shape the slices came from.
     shards.geometry.degree = tensorDegree;
@@ -3226,6 +3749,22 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
     shards.geometry.kvWidth = shape.kvWidth();
     shards.geometry.hidden = shape.hidden;
     shards.geometry.ffn = shape.ffn;
+    if (!tensorShardV1.empty()) {
+      const auto shard = parseNativeTensorShardV1(tensorShardV1);
+      const auto& axes = shard.at("axes");
+      if (axes.size() != 2 || axes[0].at("axis") != "ffn-channel" ||
+          axes[0].at("extent") != shape.ffn || axes[1].at("axis") != "kv-group" ||
+          axes[1].at("extent") != shape.kvHeads)
+        throw std::invalid_argument("tensor shard axes disagree with the assembled Qwen region");
+      shards.geometry.range = QwenTpRankRange{
+        axes[1].at("begin").get<std::uint64_t>(), axes[1].at("end").get<std::uint64_t>(),
+        axes[0].at("begin").get<std::uint64_t>(), axes[0].at("end").get<std::uint64_t>()};
+      shards.geometry.validate();
+      shards.slicesByLayer = planQwenTensorSlices(shape, *shards.geometry.range, layerBegin, layers);
+    }
+    else {
+      shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank, layerBegin, layers);
+    }
     // The sidecar sits beside the rank file; only a non-contiguous slice needs it
     // in memory, and only for that entry's own weight.
     const auto sidecar = modelPath.parent_path() / "model.onnx.data";
@@ -3882,7 +4421,14 @@ finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId
         break;
       }
     }
-    if (owned != nullptr && (entry.kind == "ATTN" || entry.kind == "MLP")) {
+    const bool attention = entry.kind == "ATTN";
+    const bool tracedEntry = attention || entry.kind == "MLP";
+    const bool explicitShard = shards->geometry.range.has_value();
+    if (tracedEntry && explicitShard && owned == nullptr)
+      throw std::invalid_argument("tensor shard has no ranges for an owned entry");
+    if (owned != nullptr && tracedEntry) {
+      if (explicitShard)
+        verifyExplicitShardEntry(root, model.graph(), *owned, shards->geometry, attention, false);
       // Matching nothing is legal: an entry can hold only normalizations, and a
       // layer may have no sharded projection in a small fixture. The caller that
       // needs to know a real shard was narrowed asserts the resulting sizes, which
@@ -3896,6 +4442,8 @@ finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId
       if (shards->geometry.degree > 1) {
         (void)adaptQwenTpEntryParameters(model, shards->geometry);
       }
+      if (explicitShard)
+        verifyExplicitShardEntry(root, model.graph(), *owned, shards->geometry, attention, true);
     }
   }
 

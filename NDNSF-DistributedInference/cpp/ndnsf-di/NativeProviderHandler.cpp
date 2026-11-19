@@ -224,7 +224,9 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
       (schema == "ndnsf-di-selection-invocation-v3" && schemaVersion == 3) ||
       (schema == "ndnsf-di-selection-invocation-v4" && schemaVersion == 4);
     if (!referenced && !((schema == "ndnsf-di-selection-v3" && schemaVersion == 3) ||
-                         (schema == "ndnsf-di-selection-v4" && schemaVersion == 4))) {
+                         (schema == "ndnsf-di-selection-v4" && schemaVersion == 4) ||
+                         (schema == NATIVE_TENSOR_SHARD_SELECTION_SCHEMA &&
+                          schemaVersion == NATIVE_TENSOR_SHARD_SELECTION_VERSION))) {
       throw std::invalid_argument(
         "V3 Selection projection schema mismatch: schema=" + schema +
         " schema_version=" + std::to_string(schemaVersion));

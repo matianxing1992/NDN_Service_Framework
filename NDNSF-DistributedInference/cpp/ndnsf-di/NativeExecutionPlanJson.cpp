@@ -130,6 +130,8 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
     sink("tensor_parallel_degree", value.tensorParallelDegree);
     sink("tensor_parallel_rank", value.tensorParallelRank);
   }
+  if (!value.tensorShardV1.empty())
+    sink("tensor_shard_v1", value.tensorShardV1);
   sink("merge_kind", value.mergeKind);
   sink("postprocess_identity", value.postprocessIdentity);
   sink("postprocess_output_name", value.postprocessOutputName);
@@ -721,6 +723,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     "protection_epoch", "plaintext-v1");
   role.tensorParallelDegree = node.get<std::uint64_t>("tensor_parallel_degree", 0);
   role.tensorParallelRank = node.get<std::uint64_t>("tensor_parallel_rank", 0);
+  role.tensorShardV1 = node.get<std::string>("tensor_shard_v1", "");
   role.mergeKind = node.get<std::string>("merge_kind", "");
   role.postprocessIdentity = node.get<std::string>(
     "postprocess_identity", "");
@@ -749,6 +752,9 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.protectionEpoch == right.protectionEpoch &&
          left.requiredDeviceMemoryMb == right.requiredDeviceMemoryMb &&
          left.artifactDigest == right.artifactDigest &&
+         left.tensorParallelDegree == right.tensorParallelDegree &&
+         left.tensorParallelRank == right.tensorParallelRank &&
+         left.tensorShardV1 == right.tensorShardV1 &&
          left.automaticContractDigest == right.automaticContractDigest &&
           (!compareRecipe || left.recipeDigest == right.recipeDigest) &&
          left.roleKind == right.roleKind && left.adapterId == right.adapterId &&
@@ -1676,6 +1682,9 @@ NativeSelectionRoleV3 checkedGeneratedRole(const NativeSelectionRoleV3& source,
 
 void restoreSelectionRoleShapes(NativeSelectionRoleV3& role, const NativeJson& node)
 {
+    if (node.contains("tensor_shard_v1") &&
+        (!node.at("tensor_shard_v1").is_string() || role.tensorShardV1.empty()))
+      throw std::invalid_argument("missing or invalid typed tensor_shard_v1");
     const auto restore = [&node] (auto& contracts, const char* key) {
       if (contracts.empty()) return;
       if (!node.contains(key) || !node.at(key).is_array() ||
@@ -1767,6 +1776,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   bool allowCompactProjection = false)
 {
   const auto schema = typedRoot.value("schema", std::string{});
+  const bool explicitShard = schema == NATIVE_TENSOR_SHARD_SELECTION_SCHEMA;
   const bool automatic = schema == "ndnsf-di-selection-v4" ||
     schema == "ndnsf-di-selection-invocation-v4";
   if (automatic && (!typedRoot.contains("schema_version") ||
@@ -1832,8 +1842,9 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
         (automatic ? (fixedAssignment ? "ndnsf-di-selection-invocation-v4" : "ndnsf-di-selection-v4") :
          fixedAssignment ? (rangeInvocation ? "ndnsf-di-selection-invocation-v3" :
                                              "ndnsf-di-selection-invocation-v1") :
-                           "ndnsf-di-selection-v3") ||
-      root.get<int>("schema_version", 0) != (automatic ? 4 : fixedAssignment ? invocationVersion : 3)) {
+         explicitShard ? NATIVE_TENSOR_SHARD_SELECTION_SCHEMA : "ndnsf-di-selection-v3") ||
+      root.get<int>("schema_version", 0) != (automatic ? 4 : fixedAssignment ? invocationVersion :
+        explicitShard ? NATIVE_TENSOR_SHARD_SELECTION_VERSION : 3)) {
     throw std::invalid_argument("V3 Selection projection schema mismatch");
   }
 
@@ -2189,6 +2200,12 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     restoreSelectionRoleShapes(projection.selectedRole, typedRoot.at("roles").at(0));
     restoreSelectionRoleShapes(projection.assembly, typedRoot.at("assembly"));
   }
+  if (!fixedAssignment &&
+      (explicitShard != !projection.selectedRoleContract().tensorShardV1.empty() ||
+       explicitShard != !projection.assemblyContract().tensorShardV1.empty()))
+    throw std::invalid_argument("Selection tensor shard version mismatch");
+  if (!fixedAssignment)
+    validateNativeQwenTensorAssembly(projection.assemblyContract(), projection.plan.stageLayout);
   projection.dataflow = fixedAssignment
     ? bindFixedTemplateDataflow(typedDataflow, projection, *fixedAssignment->executionTemplate())
     : dataflowFromV3Json(*dataflow);
@@ -3352,6 +3369,10 @@ NativeJson
 selectionProjectionValue(const NativeSelectionProjectionV3& value)
 {
   auto root = selectionInvocationFields(value);
+  if (!value.assemblyContract().tensorShardV1.empty()) {
+    root["schema"] = NATIVE_TENSOR_SHARD_SELECTION_SCHEMA;
+    root["schema_version"] = NATIVE_TENSOR_SHARD_SELECTION_VERSION;
+  }
   if (value.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
     root["step_template_v2"] = nativeV2StepTemplateJson(value.plan);
   root["roles"] = NativeJson::array({jsonValue(value.selectedRoleContract())});
@@ -3526,6 +3547,7 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
     throw std::invalid_argument("fixed role source contains a noncanonical role contract");
   auto executionTemplate = std::make_shared<const NativeFixedExecutionTemplateV1>(
     fixedTemplateFromJson(root.at("execution_template")));
+  validateNativeQwenTensorAssembly(role, executionTemplate->stageLayout);
   validateFixedTemplateProviderCover(*executionTemplate, selected, provider);
   const auto digest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
     {"schema", automatic ? "ndnsf-di-fixed-assignment-v2" : "ndnsf-di-fixed-assignment-v1"},
@@ -3997,11 +4019,21 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
-  if (!role.automaticContractDigest.empty()) {
+  if (!role.tensorShardV1.empty()) {
+    if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
+        role.tensorParallelRank >= role.tensorParallelDegree ||
+        !role.automaticContractDigest.empty())
+      throw std::invalid_argument("tensor_shard_v1 requires a source-bound Qwen rank");
+    (void)parseNativeTensorShardV1(role.tensorShardV1);
+  }
+  // Authenticate the equal-Qwen case too. Otherwise removing both the shard
+  // field and its Selection version can retain an explicit recipe's cache key.
+  if (!role.automaticContractDigest.empty() ||
+      (role.adapterId == "qwen" && role.tensorParallelDegree >= 2)) {
     const auto canonical = canonicalNativeOnnxRecipeJson(role);
     const auto canonicalDigest = nativePlanningDigest(canonical);
     if (canonicalDigest != role.recipeDigest)
-      throw std::invalid_argument("automatic role recipe digest differs from its canonical contract: role=" +
+      throw std::invalid_argument("role recipe digest differs from its canonical contract: role=" +
         role.role + " recipe=" + role.recipeDigest + " canonical=" + canonicalDigest +
         " canonicalJson=" + canonical.substr(0, 512));
   }
@@ -4020,6 +4052,28 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   const auto confidence = legacyTreeFromValue(NativeJson(role.postprocessConfidenceThreshold))
     .get_value<double>(0.0);
   validateSelectionRoleFields(role, confidence);
+}
+
+void
+validateNativeQwenTensorAssembly(const NativeSelectionRoleV3& role,
+                                 const std::vector<NativeStageLayout>& stages)
+{
+  if (role.adapterId != "qwen" && role.tensorShardV1.empty()) return;
+  bool found = false;
+  for (const auto& stage : stages) {
+    const auto member = std::find(stage.unitRoleIds.begin(), stage.unitRoleIds.end(),
+                                  role.selectedRole);
+    if (member == stage.unitRoleIds.end()) continue;
+    const auto degree = stage.degree() > 1 ? stage.degree() : 0;
+    const auto rank = static_cast<std::uint64_t>(std::distance(stage.unitRoleIds.begin(), member));
+    if (found || role.tensorParallelDegree != degree || role.tensorParallelRank != rank)
+      throw std::invalid_argument("Qwen tensor recipe disagrees with its stage member");
+    found = true;
+  }
+  if (!found && !role.tensorShardV1.empty())
+    throw std::invalid_argument("explicit Qwen tensor recipe has no bound stage");
+  if (role.tensorParallelDegree >= 2 || !role.tensorShardV1.empty())
+    validateNativeAssembly(role);
 }
 
 void

@@ -24,6 +24,10 @@
 
 namespace ndnsf::di {
 
+inline constexpr const char* NATIVE_TENSOR_SHARD_SELECTION_SCHEMA = "ndnsf-di-selection-v5";
+inline constexpr int NATIVE_TENSOR_SHARD_SELECTION_VERSION = 5;
+inline constexpr const char* NATIVE_TENSOR_SHARD_CAPABILITY_V1 = "tensor-shard-v1";
+
 class NativeWorkStatistics;
 
 struct NativeAssemblyTensorContractV3
@@ -85,6 +89,7 @@ struct NativeSelectionRoleV3
   // its legacy digest bytes.
   std::uint64_t tensorParallelDegree = 0;
   std::uint64_t tensorParallelRank = 0;
+  std::string tensorShardV1;
   std::string automaticContractDigest;
 };
 

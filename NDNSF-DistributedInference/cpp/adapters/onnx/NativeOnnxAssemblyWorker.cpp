@@ -721,8 +721,9 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
     {"precision", '"' + jsonString(recipe.precision) + '"'},
     {"quantization", '"' + jsonString(recipe.quantization) + '"'},
     {"roleKind", '"' + jsonString(recipe.roleKind) + '"'},
-    {"schema", '"' + std::string(recipe.automaticContractDigest.empty()
-      ? kNativeOnnxCertifiedRecipeSchema : NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA) + '"'},
+    {"schema", '"' + std::string(!recipe.tensorShardV1.empty()
+      ? NATIVE_ONNX_TENSOR_SHARD_CERTIFIED_RECIPE_SCHEMA : recipe.automaticContractDigest.empty()
+        ? kNativeOnnxCertifiedRecipeSchema : NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA) + '"'},
   };
   // Keep the legacy recipe digest unchanged for ordinary full-source roles.
   // A materialized role is a different authenticated worker input and must
@@ -740,6 +741,8 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
   if (!recipe.automaticContractDigest.empty())
     members.emplace_back("automaticContractDigest",
       '"' + jsonString(recipe.automaticContractDigest) + '"');
+  if (!recipe.tensorShardV1.empty())
+    members.emplace_back("tensorShardV1", '"' + jsonString(recipe.tensorShardV1) + '"');
   return jsonSortedObject(std::move(members));
 }
 
@@ -759,7 +762,8 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
   }
   if (schema->type != JsonNode::Type::String ||
       (schema->text != kNativeOnnxCertifiedRecipeSchema &&
-       schema->text != NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA)) {
+       schema->text != NATIVE_ONNX_AUTOMATIC_CERTIFIED_RECIPE_SCHEMA &&
+       schema->text != NATIVE_ONNX_TENSOR_SHARD_CERTIFIED_RECIPE_SCHEMA)) {
     failure = "certified recipe schema mismatch";
     return false;
   }
@@ -840,6 +844,20 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
       failure = "certified tensor-parallel rank identity is invalid";
       return false;
     }
+  }
+  const auto* shard = requireObjectMember(recipeNode, "tensorShardV1");
+  if (schema->text == NATIVE_ONNX_TENSOR_SHARD_CERTIFIED_RECIPE_SCHEMA) {
+    if (out.tensorParallelDegree < 2 || shard == nullptr ||
+        shard->type != JsonNode::Type::String || shard->text.empty() || shard->text.size() > 2048) {
+      failure = "certified tensor shard is invalid";
+      return false;
+    }
+    // The parent validates shard geometry and applies it to the extracted region.
+    out.tensorShardV1 = shard->text;
+  }
+  else if (shard != nullptr) {
+    failure = "unexpected tensor shard in a legacy certified recipe";
+    return false;
   }
 
   const char* kDigestKeys[] = {

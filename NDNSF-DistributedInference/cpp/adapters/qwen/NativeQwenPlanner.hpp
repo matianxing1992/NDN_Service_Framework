@@ -59,7 +59,8 @@ public:
     const NativeOnnxGraphInspection& source,
     const std::function<NativeSourceRegionBoundary(
       const std::vector<std::string>&, const std::vector<std::string>&)>& region,
-    const NativeStateTensorMapping& stateMapping, const ExtensionControl& control) const;
+    const NativeStateTensorMapping& stateMapping, const ExtensionControl& control,
+    const std::map<std::string, std::vector<std::uint64_t>>& rankWeights = {}) const;
   /** Build the maintained semantic graph from pinned model metadata. This is
    * not a mapping from decoder layers to canonical ONNX node indices. */
   NativeGraphSnapshot inspectGraph(const NativeModelDescriptor& model,

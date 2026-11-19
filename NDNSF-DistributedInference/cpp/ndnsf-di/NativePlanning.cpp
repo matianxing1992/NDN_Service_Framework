@@ -1,3 +1,4 @@
+#include "NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
@@ -52,9 +53,11 @@ bool contains(const std::vector<std::string>& values, const std::string& value)
 
 bool canPlaceRole(const NativeProviderPlanningView& offer, const std::string& role,
                   const NativeRoleResourceRequirement& requirement,
-                  const NativeExecutionPlan& plan)
+                  const std::vector<std::string>& required)
 {
-  if (!nativeProviderCanExecute(offer, plan)) return false;
+  if (!std::all_of(required.begin(), required.end(),
+      [&offer] (const auto& capability) { return contains(offer.capabilities, capability); }))
+    return false;
   if (!contains(offer.acceptedRoles, role) ||
       std::none_of(requirement.backends.begin(), requirement.backends.end(),
                    [&offer] (const auto& backend) { return contains(offer.backends, backend); })) {
@@ -84,6 +87,47 @@ NativeJson tensorJson(const NativeTensorContract& tensor)
 }
 
 } // namespace
+
+NativeJson
+parseNativeTensorShardV1(const std::string& wire)
+{
+  if (wire.empty() || wire.size() > 2048)
+    throw std::invalid_argument("invalid tensor_shard_v1 size");
+  auto shard = nativeParseJson(wire);
+  if (!shard.is_object() || shard.size() != 2 ||
+      !shard.contains("stage_layout_digest") || !shard.at("stage_layout_digest").is_string() ||
+      !shard.contains("axes") || !shard.at("axes").is_array() ||
+      shard.at("axes").empty() || shard.at("axes").size() > 8 ||
+      nativeCanonicalJson(shard) != wire)
+    throw std::invalid_argument("noncanonical tensor_shard_v1");
+  requireDigest(shard.at("stage_layout_digest").get<std::string>(), "tensor stage layout");
+  std::string previous;
+  for (const auto& axis : shard.at("axes")) {
+    if (!axis.is_object() || axis.size() != 4 ||
+        !axis.contains("axis") || !axis.at("axis").is_string() ||
+        !axis.contains("begin") || !axis.at("begin").is_number_unsigned() ||
+        !axis.contains("end") || !axis.at("end").is_number_unsigned() ||
+        !axis.contains("extent") || !axis.at("extent").is_number_unsigned())
+      throw std::invalid_argument("invalid tensor shard axis");
+    const auto id = axis.at("axis").get<std::string>();
+    if (id <= previous || id.size() > 64 ||
+        axis.at("begin") >= axis.at("end") || axis.at("end") > axis.at("extent"))
+      throw std::invalid_argument("invalid tensor shard axis order or interval");
+    previous = id;
+  }
+  return shard;
+}
+
+std::string
+nativeTensorStageLayoutDigest(const std::string& adapter, const std::string& graphDigest,
+                              const std::string& stage, const std::string& sourceRegionDigest,
+                              const NativeJson& rankedAxes)
+{
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"schema", "ndnsf-di-tensor-stage-layout-v1"}, {"adapter", adapter},
+    {"graph_digest", graphDigest}, {"stage", stage}, {"source_region_digest", sourceRegionDigest},
+    {"ranks", rankedAxes}}));
+}
 
 void ExtensionControl::requireActive() const
 {
@@ -488,6 +532,8 @@ std::string NativeSplitCandidate::canonicalJson() const
     for (const auto& item : tensorIdentityByRole) {
       identities[item.first] = NativeJson{{"degree", item.second.degree},
                                           {"rank", item.second.rank}};
+      if (!item.second.tensorShardV1.empty())
+        identities[item.first]["tensor_shard_v1"] = item.second.tensorShardV1;
     }
     executionPlanJson["tensor_identity"] = identities;
   }
@@ -723,6 +769,8 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
   // reads the stage layout. If the two disagree, one of them executes a shard it never
   // assembled, so the candidate is refused here rather than at the Provider.
   for (const auto& stage : executionPlan.stageLayout) {
+    auto rankedAxes = NativeJson::array();
+    std::string layoutDigest;
     for (std::size_t index = 0; index < stage.unitRoleIds.size(); ++index) {
       const auto& unit = stage.unitRoleIds.at(index);
       const auto identity = tensorIdentityByRole.find(unit);
@@ -737,7 +785,31 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
       if (identity->second.rank != index)
         throw std::invalid_argument(
           "unit tensor rank disagrees with its stage member index: " + unit);
+      if (identity->second.tensorShardV1.empty())
+        continue;
+      const auto shard = parseNativeTensorShardV1(identity->second.tensorShardV1);
+      const auto digest = shard.at("stage_layout_digest").get<std::string>();
+      if (index == 0) layoutDigest = digest;
+      if (digest != layoutDigest)
+        throw std::invalid_argument("tensor shards disagree with their stage layout");
+      const auto& axes = shard.at("axes");
+      if (index != 0 && rankedAxes.back().at("axes").size() != axes.size())
+        throw std::invalid_argument("tensor shards disagree on the stage axes");
+      for (std::size_t i = 0; i < axes.size(); ++i) {
+        const auto& axis = axes[i];
+        const auto& before = index == 0 ? axis : rankedAxes.back().at("axes")[i];
+        if (axis.at("axis") != before.at("axis") || axis.at("extent") != before.at("extent") ||
+            (index == 0 ? axis.at("begin") != 0 : axis.at("begin") != before.at("end")) ||
+            (index + 1 == stage.degree() && axis.at("end") != axis.at("extent")))
+          throw std::invalid_argument("tensor shard axes do not cover the stage");
+      }
+      rankedAxes.push_back({{"role", unit}, {"axes", axes}});
     }
+    if (!rankedAxes.empty() &&
+        (stage.degree() < 2 || rankedAxes.size() != stage.degree() ||
+         layoutDigest != nativeTensorStageLayoutDigest(model.adapter.descriptorDigest(), graphDigest,
+           stage.stageId, stage.sourceRegionDigest, rankedAxes)))
+      throw std::invalid_argument("incomplete or misbound tensor stage layout");
   }
   if (hybridPlan) {
     hybridPlan->validate();
@@ -783,7 +855,7 @@ void NativePlacementProposal::validate(const NativePlanningSnapshot& snapshot,
     if (offer == snapshot.offers.end() || !peak || alreadyReserved > offer->freeBytes ||
         *peak > offer->freeBytes - alreadyReserved ||
         !canPlaceRole(*offer, role, candidate.requirementsByRole.at(role),
-                      candidate.executionPlan)) {
+                      nativePlanRequiredCapabilities(candidate))) {
       throw std::invalid_argument("placement proposal requires feasible Providers");
     }
     if (alreadyReserved > std::numeric_limits<std::uint64_t>::max() - *peak)
@@ -806,6 +878,17 @@ nativePlanRequiredCapabilities(const NativeExecutionPlan& plan)
   if (std::any_of(plan.steps.begin(), plan.steps.end(),
                   [] (const auto& step) { return step.operation == "SUM"; })) {
     required.emplace_back(NATIVE_SUM_CAPABILITY_V1);
+  }
+  return required;
+}
+
+std::vector<std::string>
+nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
+{
+  auto required = nativePlanRequiredCapabilities(candidate.executionPlan);
+  if (std::any_of(candidate.tensorIdentityByRole.begin(), candidate.tensorIdentityByRole.end(),
+                  [] (const auto& item) { return !item.second.tensorShardV1.empty(); })) {
+    required.emplace_back(NATIVE_TENSOR_SHARD_CAPABILITY_V1);
   }
   return required;
 }
@@ -868,6 +951,7 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
   result.executionPlan = candidate.executionPlan;
   std::set<std::string> usedProviders;
   std::map<std::string, std::uint64_t> reservedBytes;
+  const auto requiredCapabilities = nativePlanRequiredCapabilities(candidate);
   auto roles = candidate.executionPlan.roles;
   std::sort(roles.begin(), roles.end());
   for (const auto& role : roles) {
@@ -880,7 +964,7 @@ NativePreSplitFirstPlacement::propose(const NativePlanningSnapshot& snapshot,
       const bool fits = peak && alreadyReserved <= offer.freeBytes &&
         *peak <= offer.freeBytes - alreadyReserved;
       if (fits && canPlaceRole(offer, role, candidate.requirementsByRole.at(role),
-                               candidate.executionPlan)) {
+                               requiredCapabilities)) {
         eligible.push_back(&offer);
         if (!usedProviders.count(offer.provider)) distinct.push_back(&offer);
       }

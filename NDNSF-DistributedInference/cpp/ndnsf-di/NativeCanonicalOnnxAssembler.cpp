@@ -749,6 +749,12 @@ protectedAssembledCacheKey(const NativeSelectionProjectionV3& projection,
   return sha256Hex(bytes).substr(7);
 }
 
+std::string
+assembledCacheLeaf(const NativeSelectionRoleV3& role, const std::string& key)
+{
+  return role.tensorShardV1.empty() ? key : "tp-shard-v1-" + key;
+}
+
 /**
  * Bind the runner's output metadata to the same runtime scope that the
  * production V3 role selector installs in ProviderRoleWorker.  The
@@ -2080,6 +2086,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   static_cast<void>(canonicalSourceDigest);
   if (!isSha256Digest(projection.assemblyContract().recipeDigest))
     return std::nullopt;
+  validateNativeQwenTensorAssembly(projection.assemblyContract(), projection.plan.stageLayout);
 
   if (options.assemblyTimeoutMs == 0 || options.assemblyTimeoutMs > 3600000)
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
@@ -2110,8 +2117,10 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   const auto cacheRoot = std::filesystem::path(options.cacheDir);
   const auto roleRoot = cacheRoot / (protectedRole ? "protected" : "assembled") / safeRole(
     projection.assemblyContract().selectedRole);
+  const auto& assemblyRole = projection.assemblyContract();
+  const auto plaintextLeaf = assembledCacheLeaf(assemblyRole, assemblyRole.recipeDigest.substr(7));
   const auto stablePlaintextDirectory = cacheRoot / "assembled" / safeRole(
-    projection.assemblyContract().selectedRole) / projection.assemblyContract().recipeDigest.substr(7);
+    assemblyRole.selectedRole) / plaintextLeaf;
   bool persistentPlaintextArtifact = false;
   std::filesystem::path directory;
   if (protectedRole && std::filesystem::is_directory(stablePlaintextDirectory)) {
@@ -2125,9 +2134,9 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
   else {
     directory = roleRoot /
       (protectedRole
-         ? protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
-                                      keyReferenceDigest)
-         : projection.assemblyContract().recipeDigest.substr(7));
+         ? assembledCacheLeaf(assemblyRole, protectedAssembledCacheKey(
+             projection, options.roleAssemblySpecDigest, keyReferenceDigest))
+         : plaintextLeaf);
   }
   std::error_code error;
   bool reboundPublication = false;
@@ -2177,7 +2186,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
             firstString(manifest, {"modelName"}) != modelName ||
             firstString(manifest, {"modelDigest"}) != modelDigest ||
             firstString(manifest, {"canonicalSourceDigest"}) != currentSourceDigest ||
-            candidate.filename() != previousRecipe.substr(7))
+            candidate.filename() != assembledCacheLeaf(currentRecipe, previousRecipe.substr(7)))
           continue;
         auto equivalentRecipe = currentRecipe;
         equivalentRecipe.modelManifestDigest = previousRoot;
@@ -2235,6 +2244,7 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
     const auto manifest = readJson(manifestPath);
     const auto assembledDigest = firstString(manifest, {"assembledModelDigest"});
     if (firstString(manifest, {"recipeDigest"}) != cachedRecipeDigest ||
+        firstString(manifest, {"tensorShardV1"}) != assemblyRole.tensorShardV1 ||
         firstString(manifest, {"modelManifestDigest"}) != cachedManifestDigest ||
         firstString(manifest, {"artifactProfileDigest"}) != projection.assemblyContract().artifactProfileDigest ||
         firstString(manifest, {"graphDigest"}) != projection.assemblyContract().graphDigest ||
@@ -2404,7 +2414,8 @@ tryLoadNativeCanonicalOnnxRoleFromCache(
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
                                     contract.tensorParallelRank,
-                                    egressRole, &tableControl, contract.layerBegin);
+                                    egressRole, &tableControl, contract.layerBegin,
+                                    contract.tensorShardV1);
       if (options.reportProgress)
         options.reportProgress("ENTRY_TABLE_READY", 0.95);
     }
@@ -2687,6 +2698,7 @@ prepareNativeCanonicalOnnxRole(
     throw std::runtime_error("DI_NATIVE_ASSEMBLY_LIMITS_INVALID");
   requireActiveAssembly(options, projection.deadlineMs);
   validateNativeAutomaticSelectionBinding(projection);
+  validateNativeQwenTensorAssembly(projection.assemblyContract(), projection.plan.stageLayout);
   if (projection.automaticShapeSeed)
     (void)automaticOnnxIoContractForProjection(projection);
   if (options.providerIdentity.empty() || !options.signManifest) {
@@ -3767,6 +3779,8 @@ prepareNativeCanonicalOnnxRole(
              << ",\"nodeCount\":" << assembled.nodeCount
              << ",\"onnxChecker\":\"NATIVE_STRUCTURAL_CHECK\",\"onnxRuntimeLoad\":\"PENDING_NATIVE_PROVIDER\",\"signer\":"
              << jsonEscape(options.providerIdentity);
+    if (!projection.assemblyContract().tensorShardV1.empty())
+      manifest << ",\"tensorShardV1\":" << jsonEscape(projection.assemblyContract().tensorShardV1);
     if (hasExternalInitializer) {
       manifest << ",\"assembledModelBytes\":" << graphBytes
                << ",\"externalInitializerBytes\":" << materializedFiles.initializerBytes
@@ -3812,7 +3826,7 @@ prepareNativeCanonicalOnnxRole(
     finalDir = std::filesystem::path(options.cacheDir) /
       (persistentPlaintextArtifact || !protectedRole ? "assembled" : "protected") /
       safeRole(projection.assemblyContract().selectedRole) /
-      (persistentPlaintextArtifact || !protectedRole
+      assembledCacheLeaf(projection.assemblyContract(), persistentPlaintextArtifact || !protectedRole
          ? persistentCacheKey.substr(7)
          : protectedAssembledCacheKey(projection, options.roleAssemblySpecDigest,
                                       protectedKeyReferenceDigest));
@@ -4071,7 +4085,8 @@ prepareNativeCanonicalOnnxRole(
                                     contract.maxAssembledBytes,
                                     contract.tensorParallelDegree,
                                     contract.tensorParallelRank,
-                                    egressRole, &tableControl, contract.layerBegin);
+                                    egressRole, &tableControl, contract.layerBegin,
+                                    contract.tensorShardV1);
       logAssemblyProgressLine(projection, "ENTRY_TABLE_READY", 0.99,
                               static_cast<std::uint64_t>(layers), "entries");
     }

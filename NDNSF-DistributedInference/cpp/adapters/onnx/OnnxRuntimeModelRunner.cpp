@@ -994,23 +994,32 @@ tensorForInput(const TensorBundle& bundle,
                const std::string& inputName,
                const std::vector<int64_t>& fallbackShape)
 {
-  if (bundle.localTensors) {
-    // A local value is read through the same view entry as an encoded one, so a bundle that
-    // arrived by either route is handled identically here. ORT binds its own input buffer, so
-    // this is a copy of the values, not a re-encoding of a bundle: no framing, no decode.
-    for (const auto& view : decodeTensorBundleViews(bundle)) {
-      if (view.name != inputName) continue;
-      NamedTensor tensor;
-      tensor.name = view.name;
-      tensor.elementType = view.elementType;
-      tensor.shape = view.shape;
-      tensor.payload.assign(view.payload.begin(), view.payload.end());
-      return tensor;
+  const auto select = [&inputName] (auto& tensors) {
+    const auto find = [&tensors] (const std::string& name) {
+      return std::find_if(tensors.begin(), tensors.end(),
+        [&name] (const auto& tensor) { return tensor.name == name; });
+    };
+    auto selected = find(inputName);
+    if (selected == tensors.end()) selected = find("graph/" + inputName);
+    if (selected == tensors.end()) selected = find("graph" + inputName);
+    if (selected == tensors.end()) {
+      throw std::out_of_range("tensor bundle has no tensor: " + inputName);
     }
-    throw std::out_of_range("tensor bundle has no tensor: " + inputName);
+    return selected;
+  };
+  if (bundle.localTensors) {
+    const auto views = decodeTensorBundleViews(bundle);
+    const auto& view = *select(views);
+    NamedTensor tensor;
+    tensor.name = view.name;
+    tensor.elementType = view.elementType;
+    tensor.shape = view.shape;
+    tensor.payload.assign(view.payload.begin(), view.payload.end());
+    return tensor;
   }
   if (isEncodedTensorBundle(bundle.payload)) {
-    return takeOwnedInputTensor(decodeTensorBundle(bundle.payload), inputName);
+    auto tensors = decodeTensorBundle(bundle.payload);
+    return std::move(*select(tensors));
   }
   return makeFloat32Tensor(inputName, fallbackShape, bundle.payload);
 }

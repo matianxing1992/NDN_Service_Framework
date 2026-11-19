@@ -18,6 +18,7 @@
 #include <exception>
 #include <future>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -513,19 +514,13 @@ NdnsfCollaborationDependencyIo::prefetchInputWithFirstReadBarrier(
           if (remaining == 0) {
             throw std::runtime_error("NDNSF_DATA_V1 hard deadline expired");
           }
-          // Before the producer publishes its first manifest, no transport
-          // progress can be observed by the consumer.  That readiness wait is
-          // bounded by the request hard deadline and fetch budget, but must not
-          // consume the post-publication no-progress window.  Once the
-          // manifest is available, every segment fetch is subject to the
-          // ordinary no-progress bound.
+          // Give the producer until the hard deadline to publish its manifest.
+          // Once published, segment reads retain their own no-progress budget.
           const auto fetchBudget = initialProducerReadiness
-            ? static_cast<std::uint64_t>(m_fetchTimeoutMs)
-            : std::min<std::uint64_t>(
-                edge.noProgressDeadlineMs,
-                static_cast<std::uint64_t>(m_fetchTimeoutMs));
+            ? static_cast<std::uint64_t>(remaining)
+            : std::min<std::uint64_t>(edge.noProgressDeadlineMs, m_fetchTimeoutMs);
           const auto bounded = static_cast<int>(std::min<std::uint64_t>(
-            remaining, fetchBudget));
+            {remaining, fetchBudget, std::numeric_limits<int>::max()}));
           CollaborationTransferMetrics segmentMetrics;
           segmentMetrics.localWorkObserver =
             detail::makeCollaborationWorkObserver(m_workStatistics, inferenceEpochForEdge(edge));

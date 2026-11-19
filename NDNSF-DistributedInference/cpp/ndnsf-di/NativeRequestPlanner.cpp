@@ -1673,7 +1673,7 @@ NativePlannedRequest planNativeRequestImpl(
       roles = preparation.prepareRoles(model, candidate, control);
     }
     logPlanPhase(control.requestId, "candidate_role_copy", candidateCopyTiming);
-    context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(candidate.executionPlan);
+    context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(candidate);
     NativeRolePlacementProposalV3 proposal;
     auto expectedPlacementIdentity = ports.placementIdentity;
     const auto placementStart = std::chrono::steady_clock::now();

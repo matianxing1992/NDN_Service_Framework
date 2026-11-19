@@ -20081,6 +20081,64 @@ findSlice(const qwen::QwenRankLayerSlices& layer, const std::string& suffix)
 
 BOOST_AUTO_TEST_SUITE(ShardMath)
 
+BOOST_AUTO_TEST_CASE(WeightedShardsKeepWholeGroupsAndAlignedColumns)
+{
+  const auto shape = frozenShape();
+  const auto ranges = qwen::resolveQwenTpRankRanges(shape, {6, 2});
+  BOOST_REQUIRE_EQUAL(ranges.size(), 2U);
+  BOOST_CHECK_EQUAL(ranges[0].kvEnd, 6U);
+  BOOST_CHECK_EQUAL(ranges[0].ffnEnd, 2304U);
+  BOOST_CHECK_EQUAL(ranges[1].kvBegin, 6U);
+  const auto slices = qwen::planQwenTensorSlices(shape, ranges[1], 3, 4);
+  BOOST_REQUIRE_EQUAL(slices.size(), 1U);
+  BOOST_CHECK_EQUAL(slices.front().layer, 3U);
+  const auto* out = findSlice(slices.front(), "attn.o_proj.MatMul.weight");
+  const auto* down = findSlice(slices.front(), "mlp.down_proj.MatMul.weight");
+  BOOST_REQUIRE(out != nullptr);
+  BOOST_REQUIRE(down != nullptr);
+  BOOST_CHECK_EQUAL(out->begin, 1536U);
+  BOOST_CHECK_EQUAL(out->slicedK, 512U);
+  BOOST_CHECK_EQUAL(down->begin, 2304U);
+  BOOST_CHECK_EQUAL(down->slicedK, 768U);
+  BOOST_CHECK_EQUAL(down->slicedN, 1024U);
+  const auto triple = qwen::resolveQwenTpRankRanges(shape, {2, 1, 1});
+  BOOST_REQUIRE_EQUAL(triple.size(), 3U);
+  BOOST_CHECK_EQUAL(triple[1].kvBegin, 4U);
+  BOOST_CHECK_EQUAL(triple[2].kvBegin, 6U);
+  const auto mixed = qwen::resolveQwenTpRankRanges(shape, {3, 1, 2});
+  BOOST_REQUIRE_EQUAL(mixed.size(), 3U);
+  BOOST_CHECK_EQUAL(mixed[0].kvEnd, 4U);
+  BOOST_CHECK_EQUAL(mixed[1].kvEnd, 5U);
+  BOOST_CHECK_EQUAL(mixed[2].kvEnd, 8U);
+  BOOST_CHECK_EQUAL(mixed[0].ffnEnd, 1536U);
+  BOOST_CHECK_EQUAL(mixed[1].ffnEnd, 2048U);
+  BOOST_CHECK_EQUAL(mixed[2].ffnEnd, 3072U);
+  BOOST_CHECK_THROW(qwen::resolveQwenTpRankRanges(shape, {1, 1, 1}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(WeightedShardsRespectGroupedBlockGranularity)
+{
+  auto shape = frozenShape();
+  shape.headDim = 104;
+  const auto even = qwen::resolveQwenTpRankRanges(shape, {1, 1, 1, 1});
+  BOOST_REQUIRE_EQUAL(even.size(), 4U);
+  BOOST_CHECK_EQUAL(even[1].kvBegin, 2U);
+  BOOST_CHECK_EQUAL(even[1].ffnBegin, 768U);
+  shape.queryHeads = 12;
+  shape.kvHeads = 6;
+  shape.headDim = 24;
+  const auto ranges = qwen::resolveQwenTpRankRanges(shape, {2, 1});
+  BOOST_REQUIRE_EQUAL(ranges.size(), 2U);
+  BOOST_CHECK_EQUAL(ranges[1].kvBegin, 4U);
+  const auto slices = qwen::planQwenTensorSlices(shape, ranges[1], 0, 1);
+  const auto* out = findSlice(slices.at(0), "attn.o_proj.MatMul.weight");
+  BOOST_REQUIRE(out != nullptr);
+  BOOST_CHECK_EQUAL(out->begin, 192U);
+  BOOST_CHECK_EQUAL(out->slicedK, 96U);
+  BOOST_CHECK_THROW(qwen::resolveQwenTpRankRanges(shape, {100, 1}), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::resolveQwenTpRankRanges(shape, {0, 1}), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(PlanSplitsFrozenShapeByWholeHeads)
 {
   const auto shape = frozenShape();

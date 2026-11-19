@@ -297,6 +297,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
             std::size_t repeatedFetches = 0, std::size_t prefetchWorkerCount = 0,
             bool checkpointFinalize = false)
 {
+  const bool manifestLate = mode == "manifest-late";
+  const bool manifestTimeout = mode == "manifest-timeout";
+  const bool segmentTimeout = mode == "segment-timeout";
+  const bool shortDeadline = manifestLate || manifestTimeout || segmentTimeout;
   const bool inlineDelivery = mode.rfind("inline", 0) == 0;
   const bool observedSizing = mode.rfind("inline-observed", 0) == 0;
   const bool windowCancellation = mode == "inline-window-cancel";
@@ -378,6 +382,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         if ((interest.getName().size() >= 2 && interest.getName().get(-2) == ndn::name::Component("DATA") && interest.getName().get(-1).isSegment())) {
           ++segmentInterests;
           requestedSegments.insert(interest.getName());
+          if (segmentTimeout) return;
           if (observedSizing && holdObservedManifest) {
             if (mode == "inline-observed-cancel") {
               cancelWindowFetch();
@@ -590,7 +595,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
        {consumer.getName().toUri(), 1, "offer-consumer",
         consumer.getName().toUri()}},
       permittedOperations, inflightBudget,
-      5000, 30000);
+      shortDeadline ? 700 : 5000, shortDeadline ? 1800 : 30000);
   auto consumerCoordinator =
       std::make_shared<ProviderGroupCoordinator>(options);
   consumerCoordinator->installCapability(
@@ -739,7 +744,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   NdnsfCollaborationDependencyIo producerIo(
       producerContext, 5000, chunkSize, 60000, producerCoordinator, nullptr, 0, producerWork);
   NdnsfCollaborationDependencyIo consumerIo(
-      consumerContext, 5000, chunkSize, 60000, consumerCoordinator,
+      consumerContext, shortDeadline && !segmentTimeout ? 250 : 5000,
+      chunkSize, 60000, consumerCoordinator,
       nullptr, prefetchWorkerCount, consumerWork);
   cancelWindowFetch = [&consumerIo] { consumerIo.cancelPendingPrefetches(); };
   if (mode == "inline-packed-publish-bounds" || mode == "inline-packed-publish-inflight") {
@@ -798,7 +804,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     if (mode == "prefetch-bytes") --edge.prefetchBundleBytes;
     if (mode == "prefetch-chunk") --edge.prefetchSegmentBytes;
   }
-  if (cancellation) {
+  if (cancellation || manifestLate || manifestTimeout) {
     // Leave the authorized exact manifest absent so cancellation must stop a
     // real production adapter fetch rather than a completed/local fast path.
   }
@@ -1230,7 +1236,37 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     return;
   }
 
+  const auto fetchStarted = std::chrono::steady_clock::now();
   auto fetched = consumerIo.prefetchInput("session-v3", edge);
+  if (manifestLate) {
+    environment.pumpUntil([&] { return manifestInterests.load() != 0; });
+    BOOST_REQUIRE_NE(manifestInterests.load(), 0U);
+    const auto publishAfter = std::chrono::steady_clock::now() + 450ms;
+    environment.pumpUntil([&] { return std::chrono::steady_clock::now() >= publishAfter; });
+    BOOST_CHECK(fetched.wait_for(0ms) != std::future_status::ready);
+    BOOST_REQUIRE_NO_THROW(producerIo.publishOutput("session-v3", edge, original));
+  }
+  if (shortDeadline) {
+    environment.pumpUntil([&] { return fetched.wait_for(0ms) == std::future_status::ready; });
+    BOOST_REQUIRE(fetched.wait_for(0ms) == std::future_status::ready);
+    const auto elapsed = std::chrono::steady_clock::now() - fetchStarted;
+    BOOST_CHECK_GT(manifestInterests.load(), 0U);
+    if (manifestLate) {
+      BOOST_CHECK(fetched.get().payload == original.payload);
+    }
+    else {
+      BOOST_CHECK_THROW(fetched.get(), std::runtime_error);
+      if (manifestTimeout) {
+        BOOST_CHECK(elapsed >= 1500ms);
+        BOOST_CHECK_EQUAL(segmentInterests, 0U);
+      }
+      else {
+        BOOST_CHECK(elapsed < 1600ms);
+        BOOST_CHECK_GT(segmentInterests, 0U);
+      }
+    }
+    return;
+  }
   if (mode == "prefetch-renewals") {
     // Only the initial window is issued before any Data exists. Later slots
     // receive credit as validated replies arrive, even before the manifest.
@@ -1863,6 +1899,18 @@ BOOST_AUTO_TEST_CASE(InlineManifestFramingRejectsTruncationAndBounds)
 }
 BOOST_AUTO_TEST_CASE(AllThirteenSegmentsAreRequestedBeforeManifest) { runTransfer("prefetch"); }
 BOOST_AUTO_TEST_CASE(ReadinessRenewalsSendOneDataPerObject) { runTransfer("prefetch-renewals"); }
+BOOST_AUTO_TEST_CASE(ManifestCanArriveAfterOrdinaryFetchBudget)
+{
+  runTransfer("manifest-late", false);
+}
+BOOST_AUTO_TEST_CASE(MissingManifestReachesHardDeadline)
+{
+  runTransfer("manifest-timeout", false);
+}
+BOOST_AUTO_TEST_CASE(MissingSegmentRetainsNoProgressDeadline)
+{
+  runTransfer("segment-timeout", false);
+}
 BOOST_AUTO_TEST_CASE(WrongPrefetchCountFallsBackToAuthenticatedManifest) { runTransfer("prefetch-count"); }
 BOOST_AUTO_TEST_CASE(AdvisoryByteVariationReusesAuthenticatedPrefetch) { runTransfer("prefetch-bytes"); }
 BOOST_AUTO_TEST_CASE(AdvisoryChunkVariationReusesAuthenticatedPrefetch) { runTransfer("prefetch-chunk"); }

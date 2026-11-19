@@ -1,3 +1,4 @@
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "tests/fixtures/test-resource-paths.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeV3Placement.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.hpp"
@@ -4483,6 +4484,29 @@ BOOST_AUTO_TEST_CASE(ConversationAffinityPrecedesCostButNotFeasibility)
   input.roles.front().backend = "unsupported";
   BOOST_CHECK_THROW(strategy.proposeRoles(input.context, input.ackDigest,
     input.roles, input.offers, 200), NativeNoFeasiblePlacement);
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitShardPlacementRequiresAnAdmittedCapability)
+{
+  const auto f = oracle();
+  auto sample = f.at("cases")[0];
+  Input baseline(f, sample);
+  auto& role = baseline.roles.front();
+  baseline.context.requiredExecutionCapabilities = {NATIVE_TENSOR_SHARD_CAPABILITY_V1};
+  const NativePreSplitFirstPlacement placement;
+  BOOST_CHECK_THROW(placement.proposeRoles(baseline.context, baseline.ackDigest,
+    baseline.roles, baseline.offers, 200), NativeNoFeasiblePlacement);
+  for (auto& wire : sample.at("offers")) {
+    auto offer = nativeParseJson(wire.get<std::string>());
+    if (offer.at("provider") != "/provider/b") continue;
+    offer["capabilities"] = {NATIVE_TENSOR_SHARD_CAPABILITY_V1};
+    wire = resignOfferAcceptingRole(nativeCanonicalJson(offer), role.role);
+  }
+  Input mixed(f, sample);
+  mixed.context.requiredExecutionCapabilities = baseline.context.requiredExecutionCapabilities;
+  mixed.context.preferredProvidersByRole[role.role] = "/provider/a";
+  BOOST_CHECK_EQUAL(placement.proposeRoles(mixed.context, mixed.ackDigest,
+    mixed.roles, mixed.offers, 200).providerByRole.at(role.role), "/provider/b");
 }
 
 BOOST_AUTO_TEST_CASE(ConversationAffinityPrecedesSpreadingAndPreservesDeviceExclusion)

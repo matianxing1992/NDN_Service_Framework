@@ -42,6 +42,9 @@ bool samePreparedAssemblyMetadata(const NativeSelectionRoleV3& prepared,
     prepared.requiredDeviceMemoryMb == proposed.requiredDeviceMemoryMb &&
     prepared.artifactDigest == proposed.artifactDigest &&
     prepared.recipeDigest == proposed.recipeDigest && prepared.roleKind == proposed.roleKind &&
+    prepared.tensorParallelDegree == proposed.tensorParallelDegree &&
+    prepared.tensorParallelRank == proposed.tensorParallelRank &&
+    prepared.tensorShardV1 == proposed.tensorShardV1 &&
     prepared.adapterId == proposed.adapterId && prepared.adapterVersion == proposed.adapterVersion &&
     prepared.modelManifestDigest == proposed.modelManifestDigest &&
     prepared.artifactProfileDigest == proposed.artifactProfileDigest &&
@@ -207,6 +210,8 @@ std::vector<Cost> feasibleChoices(const NativeSelectionRoleV3& role,
 {
   std::vector<Cost> choices;
   if (control) control->requireActive();
+  if (!role.tensorShardV1.empty() && !contains(offer.capabilities, NATIVE_TENSOR_SHARD_CAPABILITY_V1))
+    return choices;
   if (!std::all_of(requiredCapabilities.begin(), requiredCapabilities.end(),
         [&offer] (const auto& capability) { return contains(offer.capabilities, capability); }))
     return choices;

@@ -17,6 +17,10 @@ void
 validateNativeRoleDataflowContractV3(const NativeRoleDataflowContractV3& dataflow);
 NativeJson nativeDeviceBindingJson(const NativeDeviceBindingV3& binding);
 void validateNativeAssembly(const NativeSelectionRoleV3& role);
+/** Check Qwen rank membership and authenticate the original recipe before assembly. */
+void
+validateNativeQwenTensorAssembly(const NativeSelectionRoleV3& role,
+                                 const std::vector<NativeStageLayout>& stages);
 /** Check request-local automatic metadata before decoding or cache use.
  * Source-envelope reconstruction and object admission remain with the adapter. */
 void validateNativeAutomaticSelectionBinding(const NativeSelectionProjectionV3& projection);
