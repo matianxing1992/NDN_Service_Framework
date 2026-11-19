@@ -1,0 +1,55 @@
+{
+  "assetId": "qwen3-0.6b-int4-frozen-export",
+  "recipeVersion": 1,
+  "repository": "onnx-community/Qwen3-0.6B-ONNX",
+  "revision": "58ca03a5e7b354b480b1a82b34bde8dc7b854cc0",
+  "license": {
+    "identifier": "Apache-2.0",
+    "repository": "Qwen/Qwen3-0.6B",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "fileRole": "license"
+  },
+  "toolVersions": {"onnx": "1.17.0", "numpy": "1.24.4", "protobuf": "5.29.6"},
+  "transforms": [
+    {"tool": "tools/ndnsf-di/normalize_onnx_constants.py", "sha256": "18b5d51fbc93490dd5fe414e786ac6d2954beef7973a8a65720ed9ebedc90d57", "outputBytes": 919095720, "outputSha256": "5c014f5e3cd2571273f725e417717510a5bee01ae20edcea6a19cf06ca602d08"},
+    {"tool": "onnx.save_model", "save_as_external_data": true, "all_tensors_to_one_file": true, "location": "model.onnx_data", "size_threshold": 1024, "convert_attribute": false}
+  ],
+  "sourceFiles": {
+    "sourceModel": "onnx/model_q4.onnx",
+    "config": "config.json",
+    "generationConfig": "generation_config.json",
+    "tokenizer": "tokenizer.json",
+    "tokenizerConfig": "tokenizer_config.json",
+    "specialTokens": "special_tokens_map.json",
+    "addedTokens": "added_tokens.json",
+    "chatTemplate": "chat_template.jinja",
+    "modelCard": "README.md"
+  },
+  "files": {
+    "sourceModel": {"path": "source/onnx/model_q4.onnx", "bytes": 919096585, "sha256": "d43d836fc5e240df9013733ccd214972c5d21bd9ec47e574e4f1e359cf90aed0"},
+    "canonicalGraph": {"path": "canonical/canonical-source.onnx", "bytes": 338681, "sha256": "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5"},
+    "canonicalWeights": {"path": "canonical/model.onnx_data", "bytes": 918786048, "sha256": "30f28d298cb7b414399d6221c99f4d67857a247244b3fbafcb020587402244c1"},
+    "config": {"path": "source/config.json", "bytes": 912, "sha256": "8a04114ba59cc42b47d804d35d1d5c61d746ae4634f41f796768c6e302d39b9e"},
+    "generationConfig": {"path": "source/generation_config.json", "bytes": 219, "sha256": "9e9e031ae8bca36eefcdcdd0b35d83c61baa01e31d68d5f5a961c9ca1a4b95bf"},
+    "tokenizer": {"path": "source/tokenizer.json", "bytes": 9117040, "sha256": "e7a95fce95bf5b0946d0ddb3f9d7caa030b7e850bbe92b0edb26bcf563e9f3d5"},
+    "tokenizerConfig": {"path": "source/tokenizer_config.json", "bytes": 10369, "sha256": "7c5194eecfd95a4dcbd6b4b502af785d2541fd65a388d1cae7ad43693c67b802"},
+    "specialTokens": {"path": "source/special_tokens_map.json", "bytes": 613, "sha256": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd"},
+    "addedTokens": {"path": "source/added_tokens.json", "bytes": 707, "sha256": "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680"},
+    "chatTemplate": {"path": "source/chat_template.jinja", "bytes": 4116, "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5"},
+    "modelCard": {"path": "source/README.md", "bytes": 1539, "sha256": "beaa8a192155bed882b8bd44e130ff07b4484bf33b17b164401d26c3d3051d9c"},
+    "license": {"path": "license/LICENSE", "bytes": 11343, "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"}
+  },
+  "modelContract": {
+    "nodes": 603,
+    "matMulNBits": {"count": 196, "bits": 4, "block_size": 32},
+    "inputs": 59,
+    "outputs": 57,
+    "layers": 28,
+    "kvHeads": 8,
+    "headDimension": 128,
+    "inputIds": "input_ids",
+    "attentionMask": "attention_mask",
+    "positionIds": "position_ids",
+    "logits": "logits"
+  }
+}

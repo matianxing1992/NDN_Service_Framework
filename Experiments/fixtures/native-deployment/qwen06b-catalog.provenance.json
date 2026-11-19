@@ -1,0 +1,9 @@
+{
+  "binding": "All Producer names, paths, keys, package-manifest bindings and native lifecycle state are provisioned afresh. Node mapping and graph/state contracts are frozen model inputs, validated by native preparation.",
+  "canonicalGraphSha256": "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5",
+  "canonicalWeightsSha256": "30f28d298cb7b414399d6221c99f4d67857a247244b3fbafcb020587402244c1",
+  "schema": "ndnsf-profile-template-provenance-v1",
+  "scope": "Frozen model-specific metadata for the pinned 603-node Qwen3-0.6B canonical export. Native catalog admission remains authoritative; this is not a previous-deployment state copy or fresh inference evidence.",
+  "sourceRecord": "specs/224-tensor-parallel/evidence/cpu-acceptance/deployment.json",
+  "sourceRecordSha256": "89a07741e0eff0eefebaa3ea91fe268730c70ef3b863569a60b0e6369c55ef1b"
+}

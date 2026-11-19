@@ -1,0 +1,53 @@
+{
+  "schema": "ndnsf-experiment-profile-v1",
+  "id": "qwen06b-tp-cpu",
+  "assetRecipe": "qwen3-0.6b-int4",
+  "catalog": "fixtures/native-deployment/qwen06b-catalog.json",
+  "generationOptions": "fixtures/native-deployment/qwen06b-generation-options.json",
+  "platform": "minindn",
+  "providers": 2,
+  "tensorDegree": 2,
+  "backend": "onnxruntime-cpu",
+  "canonicalGraphIdentity": "sha256:69961535e27887f186c0a11e11c8efd4ee2d611da7155957dc98e3dc039ccf71",
+  "requestIdentities": {
+    "taskDescriptor": "sha256:106f6f837af9ec755f99c8384ed1e7ffb42522e9ab3a750583efcb414eab8204",
+    "adapterComposition": "sha256:48c0771d0af27bc38470507ac7bf95934f024d256c39f1c35151ffb7aac38684",
+    "inputLayout": "sha256:6f0bbde1e819b7efb279b9260a5748a32215df92315e31d1ac6d5176c92f9293"
+  },
+  "model": {
+    "name": "/Model/Qwen3/0.6B",
+    "family": "qwen",
+    "repository": "Qwen/Qwen3-0.6B",
+    "revision": "58ca03a5e7b354b480b1a82b34bde8dc7b854cc0",
+    "precision": "float32",
+    "quantization": "weight_only_int4"
+  },
+  "turns": [
+    "Explain in detail why the sky appears blue during daylight.",
+    "Explain carefully why a metal spoon feels cold.",
+    "Explain carefully how a rainbow forms after rain."
+  ],
+  "rendering": {
+    "priorTurnSuffix": "<|im_end|>\n",
+    "userPrefix": "<|im_start|>user\n",
+    "assistantSuffix": "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+    "addSpecialTokens": false,
+    "bos": "none",
+    "inputTokens": [24, 24, 24],
+    "maxNewTokens": [32, 32, 32],
+    "expectedCommittedPrefix": [56, 112, 168],
+    "sampling": "Greedy"
+  },
+  "budgets": {
+    "bootstrapMs": 1800000,
+    "requestTimeoutMs": 900000,
+    "noProgressMs": 600000,
+    "permissionWaitMs": 120000,
+    "conversationRetentionMs": 3600000,
+    "largeDataImsLimit": 141893,
+    "publicationMarginBytes": 16777216,
+    "storageBytes": 25769803776,
+    "journalBytes": 67108864
+  },
+  "qualification": "Two Provider CPU TP, three consecutive turns, 96 independently checked generated tokens. CUDA and saved-KV restore are outside this profile."
+}
