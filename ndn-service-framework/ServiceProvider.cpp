@@ -17341,6 +17341,10 @@ namespace ndn_service_framework
                                          parsedV2->serviceName.toUri());
             }
             if (!hasProviderPermission(identity, parsedV2->serviceName, m_authorizations)) {
+                // On stdout: this deployment filters framework loggers, and a Provider that has already
+                // provisioned refuses per request rather than exiting, so this line is the observable stop.
+                std::cout << "NDNSF_PROVIDER_REQUEST_DENIED service="
+                          << parsedV2->serviceName.toUri() << " reason=permission" << std::endl;
                 return makeErrorResponse("Permission denied for " +
                                          parsedV2->serviceName.toUri());
             }
