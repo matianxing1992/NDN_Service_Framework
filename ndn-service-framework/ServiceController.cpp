@@ -48,9 +48,12 @@ namespace ndn_service_framework {
  *      on its own prove what the identity held when the object was published, and it does not check the
  *      revocation state of the certificate the request actually presents.
  *
- * Reopen only when the reply is verified end to end by the reader and the decision is derived from the
- * signed original publication record. Until then the filter stays unregistered and a request times out,
- * which is the safe direction.
+ * Both conditions are now implemented - the reader verifies the Authority's signature over the reply before
+ * unsealing, and the decision is taken from the signed grant record for the exact (identity, generation,
+ * epoch) with the presented certificate's revocation state checked - but the gate stays closed until a
+ * deployment acceptance exercises the new decision. The last runs refused a legitimate request because the
+ * object was published at a version for which no grant record existed yet; that sequencing is fixed in the
+ * acceptance tooling, not in this decision.
  */
 constexpr bool kHistoricalKeyIssuanceEnabled = false;
 
