@@ -4,6 +4,8 @@
 #include <set>
 #include <string>
 
+#include <ndn-cxx/name.hpp>
+
 namespace ndn_service_framework {
 
 /** The attributes an identity held when a generation was current, by identity.
@@ -24,6 +26,17 @@ bool
 historicalAttributeIsAuthorized(const std::string& policy,
                                 const std::set<std::string>& heldAtPublication,
                                 const std::set<std::string>& heldNow);
+
+/** Check that a CK name was published for this producer, service and attribute.
+ *
+ * A NAC-ABE content key is named `<producer>/KEY/kind=HYBRID-MESSAGE/SCOPE/SERVICE/<digest>/EPOCH/...`
+ * where the digest covers exactly the service, the producer and the attribute. Recomputing it is how a
+ * Controller tells "a key for the object I want" from "a key for something else" without trusting either
+ * the requester's claim or the CK's bytes.
+ */
+bool
+historicalCkBindsAttribute(const ndn::Name& ckName, const ndn::Name& producer,
+                           const ndn::Name& service, const std::string& attribute);
 
 } // namespace ndn_service_framework
 

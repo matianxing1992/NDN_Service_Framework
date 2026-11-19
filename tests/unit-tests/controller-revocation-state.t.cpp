@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "ndn-service-framework/AbeHistoricalAuthorization.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "ndn-service-framework/AbeHistoricalKeyRequest.hpp"
 #include "ndn-service-framework/ControllerGenerationStore.hpp"
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
@@ -1196,6 +1197,38 @@ BOOST_AUTO_TEST_CASE(AttributeSnapshotsRoundTripPerGeneration)
   }
   BOOST_CHECK(!store.loadAttributeSnapshot(1002, 3));
   BOOST_CHECK(store.loadAttributeSnapshot(2009, 1));
+}
+
+BOOST_AUTO_TEST_CASE(HistoricalCkNameMustBindTheAskedAttribute)
+{
+  const ndn::Name producer("/producer/p1");
+  const ndn::Name service("/service/inference");
+  const std::string attribute = "/PERMISSION/A";
+  // The same construction the producer uses: see makeHybridMessageKeyDataName.
+  const auto bytes = [] (const ndn::Name& value) {
+    const auto& wire = value.wireEncode();
+    return std::vector<uint8_t>(wire.data(), wire.data() + wire.size());
+  };
+  const auto scope = makeNamingDigestComponent(computeNamingDigest(
+    "ndnsf-naming/hybrid-key-scope",
+    {{1, 1, bytes(service)}, {2, 1, bytes(producer)},
+     {3, 2, std::vector<uint8_t>(attribute.begin(), attribute.end())}}));
+  ndn::Name ckName = makeProducerDataPrefix(producer, "KEY");
+  ckName.append("kind=HYBRID-MESSAGE").append("SCOPE").append("SERVICE").append(scope)
+    .append("EPOCH").append(makeNamingDigestComponent(computeNamingDigest(
+      "ndnsf-naming/opaque/protection-epoch",
+      {{1, 4, std::vector<uint8_t>{'e', '1'}}})))
+    .append("OBJECT").append(makeNamingDigestComponent(std::string(64, 'a')));
+
+  BOOST_CHECK(historicalCkBindsAttribute(ckName, producer, service, attribute));
+  // Another attribute, service or producer does not match the digest the name carries.
+  BOOST_CHECK(!historicalCkBindsAttribute(ckName, producer, service, "/PERMISSION/B"));
+  BOOST_CHECK(!historicalCkBindsAttribute(ckName, producer, ndn::Name("/service/other"), attribute));
+  BOOST_CHECK(!historicalCkBindsAttribute(ckName, ndn::Name("/producer/p2"), service, attribute));
+  // A name that does not even have the shape is refused rather than guessed at.
+  BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name("/producer/p1/KEY/other"), producer, service,
+                                          attribute));
+  BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name(), producer, service, attribute));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding)
