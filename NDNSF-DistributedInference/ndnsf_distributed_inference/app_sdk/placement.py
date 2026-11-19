@@ -2366,6 +2366,7 @@ class AutomaticPlanningCoordinator:
         collaboration = self.service_user.begin_collaboration(
             self.service_name,
             request_payload,
+            **self._request_discovery_kwargs(request_payload),
             **collaboration_kwargs,
         )
         print(
@@ -3095,6 +3096,7 @@ class AutomaticPlanningCoordinator:
             ack_timeout_ms=self.ack_timeout_ms, timeout_ms=timeout_ms,
             request_id=request_id, fail_fast_terminal_selection=True,
             request_capabilities={"NDNSF_DATA_V1": "required"},
+            **self._request_discovery_kwargs(request_payload),
             **({"ack_coverage_predicate": ack_coverage_predicate}
                if ack_coverage_predicate is not None else {}),
             **({"stream_options": stream_options,
@@ -4595,6 +4597,13 @@ class AutomaticPlanningCoordinator:
             "input_reference": application_input.repo_reference or {},
             "options_digest": hashlib.sha256(options_payload).hexdigest(),
         })
+
+    def _request_discovery_kwargs(self, request_payload: bytes) -> dict:
+        if not getattr(self.service_user, "has_request_scoped_default", False):
+            return {}
+        envelope = DIRequestEnvelopeV2.from_bytes(request_payload)
+        discovery = replace(envelope, input_payload_b64="").to_bytes()
+        return {"discovery_payload": discovery}
 
     @staticmethod
     def _encode_request(

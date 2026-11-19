@@ -4005,6 +4005,18 @@ canonicalOnnxSourceIdentity(const NativeCanonicalSource& source,
   return identity;
 }
 
+/** Bind already inspected graph facts to the adapter snapshot without loading model bytes. */
+static std::string
+planningGraphDigestFromMetadata(const NativeJson& metadata, const std::string& adapterDigest)
+{
+  const NativeJson identity{{"adapter_descriptor_digest", adapterDigest},
+    {"inputs", metadata.at("inputs")}, {"outputs", metadata.at("outputs")},
+    {"initializers", metadata.at("initializers")}, {"tensors", metadata.at("tensors")},
+    {"nodes", metadata.at("nodes")}, {"tensor_producers", metadata.at("tensorProducers")},
+    {"tensor_consumers", metadata.at("tensorConsumers")}};
+  return nativePlanningDigest(nativeCanonicalJson(identity));
+}
+
 static NativeOnnxGraphInspection
 inspectSourceGraphFacts(const NativeCanonicalSource& source,
                         const NativeModelDescriptor& expectedModel,
@@ -4289,16 +4301,15 @@ inspectSourceGraphFacts(const NativeCanonicalSource& source,
   for (const auto& name : inputs) result.graph.modelInputs.push_back(contract(name));
   for (const auto& name : outputs) result.graph.modelOutputs.push_back(contract(name));
   const std::vector<std::string> initializerNames(initializers.begin(), initializers.end());
-  const NativeJson identity{{"adapter_descriptor_digest", expectedModel.adapter.descriptorDigest()},
+  const NativeJson metadata{
     {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
-    {"nodes", nodes}, {"tensor_producers", producers}, {"tensor_consumers", consumers}};
-  result.graph.graphDigest = nativePlanningDigest(nativeCanonicalJson(identity));
+    {"nodes", nodes}, {"tensorProducers", producers}, {"tensorConsumers", consumers}};
+  result.graph.graphDigest = planningGraphDigestFromMetadata(
+    metadata, expectedModel.adapter.descriptorDigest());
   auto sourceModel = expectedModel;
   sourceModel.graphDigest = result.graph.graphDigest;
   result.graph.validate(sourceModel);
-  result.graphMetadataJson = nativeCanonicalJson(NativeJson{
-    {"inputs", inputs}, {"outputs", outputs}, {"initializers", initializerNames}, {"tensors", tensors},
-    {"nodes", nodes}, {"tensorProducers", producers}, {"tensorConsumers", consumers}});
+  result.graphMetadataJson = nativeCanonicalJson(metadata);
   checkActive(control);
   return result;
 }
@@ -5076,8 +5087,11 @@ inspectAutomaticOnnxModel(OpenedAutomaticOnnxSource opened,
   // task, otherwise preparation rejects the request task as unsupported.
   if (result.contract.generation &&
       std::find(descriptor.adapter.tasks.begin(), descriptor.adapter.tasks.end(),
-                "text-generation") == descriptor.adapter.tasks.end())
+                "text-generation") == descriptor.adapter.tasks.end()) {
     descriptor.adapter.tasks.push_back("text-generation");
+    result.inspection.graph.graphDigest = planningGraphDigestFromMetadata(
+      nativeParseJson(result.inspection.graphMetadataJson), descriptor.adapter.descriptorDigest());
+  }
   descriptor.graphDigest = result.inspection.graph.graphDigest;
   descriptor.validate();
   checkActive(control);

@@ -69,7 +69,7 @@ def _config(*, session_epoch: int = 17, mapping_version: int = 23,
         mapping_version=mapping_version,
         block_capacity=4,
         expected_provider="/uav/7",
-        mapping_root=make_stream_name_map_root("/uav/7", "front-camera"),
+        mapping_root=make_stream_name_map_root("/uav/7", "front-camera", session_epoch),
         payload_prefix=payload_prefix,
         max_verified_blocks=8,
         max_quarantine_blocks=4,
@@ -93,7 +93,7 @@ def _admit(resolver: StreamNameResolver, block: StreamNameMapBlock, *,
            content_type: int = 4, has_final_block: bool = False):
     content = block.canonical_content() if content is None else bytes(content)
     exact_name = make_stream_name_map_block_name(
-        make_stream_name_map_root("/uav/7", block.stream_id),
+        make_stream_name_map_root("/uav/7", block.stream_id, block.session_epoch),
         block.mapping_version,
         block.block_number,
     )
@@ -718,7 +718,7 @@ class CoreStreamingTest(unittest.TestCase):
 
         resolver = fresh()
         exact = make_stream_name_map_block_name(
-            make_stream_name_map_root("/uav/7", block0.stream_id), 23, 0)
+            make_stream_name_map_root("/uav/7", block0.stream_id, block0.session_epoch), 23, 0)
         result = _admit(resolver, block0, data_name=f"{exact}/wrong")
         observed["wrong-control-name"] = (result.reason, result.fatal)
 

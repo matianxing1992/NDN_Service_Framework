@@ -9,11 +9,12 @@ export const DEFAULT_PROMPT = '重点审计插件指定窗口内 DSH 围绕用�
   '允许回溯窗口外决定和证据，但区分本期新增、原有内容和来源不明变化，不声称全面审计历史。' +
   '输出本期进展、按影响排序的问题及证据、最小下一步与验证方法；无实质问题直接说明，不扩大目标。' +
   '只提出有据文档修正，不修改产品代码、不构建或实验；目标、范围和验收条件变更仅作建议。';
-// One place names the audit selection. The previous form repeated the literal in the default, the
-// guard and the error message, so updating the model meant finding all three and the GUI label still
-// drifted. Raising it is a deliberate act: the guard exists so a silent downgrade cannot happen.
 export const AUDIT_MODEL = 'gpt-6.2-sol';
 export const AUDIT_EFFORT = 'xhigh';
+export const AUDIT_EFFORTS = Object.freeze(['medium', 'high', 'xhigh', 'ultra']);
+export const DEFAULT_MODELS = Object.freeze([
+  Object.freeze({ id: AUDIT_MODEL, efforts: AUDIT_EFFORTS, defaultEffort: AUDIT_EFFORT }),
+]);
 
 const HOUR = 3600000;
 const MAX_RECORDS = 200;
@@ -28,18 +29,23 @@ export class AuditError extends Error {
   }
 }
 
-export function validateSettings(settings) {
+export function validateSettings(settings, model) {
   if (!Number.isInteger(settings.intervalHours) || settings.intervalHours < 1 ||
       settings.intervalHours > 5) {
     throw new AuditError('INVALID_INTERVAL', '审计周期必须为 1–5 小时的整数。', '请修改周期设置。');
   }
   if (typeof settings.enabled !== 'boolean') throw new Error('enabled must be boolean');
+  if (model !== undefined && !model?.efforts.includes(settings.effort)) {
+    throw new AuditError('UNSUPPORTED_SELECTION', '当前模型与思考强度组合不可用。',
+      '请选择面板列出的模型和该模型支持的思考强度。');
+  }
 }
 
 // The host supplies durable storage and DSH/Codex adapters. No agent callback awaits an audit.
 export class AuditManager {
-  constructor({ load, save, snapshot, captureBaseline, run, deliver, active, now = Date.now, notify = () => {} }) {
-    Object.assign(this, { load, save, snapshot, captureBaseline, run, deliver, active, now, notify });
+  constructor({ load, save, snapshot, captureBaseline, run, deliver, active,
+    models = DEFAULT_MODELS, now = Date.now, notify = () => {} }) {
+    Object.assign(this, { load, save, snapshot, captureBaseline, run, deliver, active, models, now, notify });
     this.state = { version: 1, sessions: {}, records: [] };
     this.running = new Map();
     this.configurationRequests = new Map();
@@ -57,8 +63,13 @@ export class AuditManager {
     }
     for (const settings of Object.values(this.state.sessions)) {
       if (settings.prompt === LEGACY_PROMPT) settings.prompt = DEFAULT_PROMPT;
-      settings.model = AUDIT_MODEL;
-      settings.effort = AUDIT_EFFORT;
+      const legacyModelMissing = typeof settings.model !== 'string' || !settings.model;
+      settings.model = legacyModelMissing ? AUDIT_MODEL : settings.model;
+      const option = this.models.find(model => model.id === settings.model);
+      if ((legacyModelMissing && !option?.efforts.includes(settings.effort)) ||
+          typeof settings.effort !== 'string' || !settings.effort) {
+        settings.effort = option?.defaultEffort ?? AUDIT_EFFORT;
+      }
     }
     for (const record of this.state.records) {
       if (record.status === 'running') {
@@ -79,8 +90,10 @@ export class AuditManager {
   }
 
   settings(sessionId) {
+    const model = this.models.find(option => option.id === AUDIT_MODEL) ?? this.models[0];
     return this.state.sessions[sessionId] ?? { enabled: false, intervalHours: 3,
-      nextDue: null, model: AUDIT_MODEL, effort: AUDIT_EFFORT, prompt: DEFAULT_PROMPT };
+      nextDue: null, model: model.id,
+      effort: model.efforts.includes(AUDIT_EFFORT) ? AUDIT_EFFORT : model.defaultEffort, prompt: DEFAULT_PROMPT };
   }
 
   publicSettings(sessionId) {
@@ -93,22 +106,23 @@ export class AuditManager {
   async configure(sessionId, patch) {
     if (this.disposed) throw new Error('Audit manager disposed');
     if (!sessionId) throw new Error('sessionId required');
-    const token = Symbol();
-    this.configurationRequests.set(sessionId, token);
     const previous = this.settings(sessionId);
     const value = { ...previous, ...patch };
-    validateSettings(value);
-    if (value.model !== AUDIT_MODEL || value.effort !== AUDIT_EFFORT) {
-      throw new AuditError('UNSUPPORTED_SELECTION', `审计固定使用 ${AUDIT_MODEL} / ${AUDIT_EFFORT}。`,
-        '不可静默更换模型或降低思考等级。');
-    }
-    if (value.enabled && (!previous.enabled || !previous.auditPeriod)) {
+    const selectionChanged = Object.hasOwn(patch, 'model') || Object.hasOwn(patch, 'effort');
+    const model = this.models.find(option => option.id === value.model);
+    if (Object.hasOwn(patch, 'model') && !Object.hasOwn(patch, 'effort') &&
+        model && !model.efforts.includes(value.effort)) value.effort = model.defaultEffort;
+    validateSettings(value, selectionChanged ? model ?? null : undefined);
+    const token = Symbol();
+    this.configurationRequests.set(sessionId, token);
+    const selectionOnly = selectionChanged && Object.keys(patch).every(key => key === 'model' || key === 'effort');
+    if (!selectionOnly && value.enabled && (!previous.enabled || !previous.auditPeriod)) {
       value.auditPeriod = await this.newPeriod(sessionId);
     }
     if (this.disposed) throw new Error('Audit manager disposed');
     if (this.configurationRequests.get(sessionId) !== token) throw new AuditError(
       'CONFIGURATION_SUPERSEDED', '设置已被后续操作替代。', '以面板当前显示的设置为准。');
-    value.nextDue = value.enabled ? this.now() + value.intervalHours * HOUR : null;
+    if (!selectionOnly) value.nextDue = value.enabled ? this.now() + value.intervalHours * HOUR : null;
     this.state.sessions[sessionId] = value;
     await this.persist();
     return structuredClone(this.publicSettings(sessionId));

@@ -774,7 +774,7 @@ def execute(args):
     if oracle:
         if args.command not in ([], ['--']):
             raise cluster.ClusterError('CONTAINER_ORACLE_WORKLOAD_FIXED')
-        workload = [str(Path(config['release']['prefix']) / 'bin/spec190-multiturn-oracle'),
+        workload = [str(Path(config['release']['prefix']) / 'bin/multiturn-oracle'),
                     '--deployment-state', str(args.deployment.parent / 'allocation.json'),
                     '--require-multi-token']
         workload += reference_command

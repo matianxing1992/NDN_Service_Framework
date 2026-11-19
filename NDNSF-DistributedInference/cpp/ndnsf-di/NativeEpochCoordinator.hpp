@@ -56,6 +56,7 @@ struct NativeEpochCoordinatorConfig
   std::string sessionId;
   std::string requestId;
   std::uint64_t attemptEpoch = 1;
+  std::optional<std::chrono::steady_clock::time_point> executionDeadline;
   // Request-scoped stream incarnation. This is distinct from the retry
   // attempt and remains constant across all token epochs in one stream.
   std::uint64_t streamEpoch = 1;

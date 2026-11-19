@@ -89,6 +89,12 @@ Parameter Review 必须回答：
 
 检查每个实参与形参一致；字段在首次使用前由明确步骤产生；每个新增方法至少有可达调用方。新旧调用路径并存时说明路由和退出条件。
 
+对于跨组件或状态相关流程，在同一表中按
+[Concrete Walkthrough](review-gate.md#concrete-walkthrough)携带一个具体输入/状态
+走到最终结果，复用场景再走后续操作；按需用简短账本核对计数、版本和容量。
+标明每跳的就绪条件、发布/提交边界及观测点；只补会改变设计的反例，不为表格另建
+模拟器或复制一套契约。现有helper是否经真实工厂、安装入口或子进程被调用，须单独核实。
+
 ## 7. Reuse And Variation
 
 | Capability | Existing implementation / consumers | Shared invariant | Actual variation | Shared API / owner | Adapter input / hook | Migration and regression coverage |

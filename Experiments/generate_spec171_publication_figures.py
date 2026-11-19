@@ -33,6 +33,10 @@ def load_work_efficiency(path: Path) -> dict:
     success = report["success"]
     work = report["provider_work"]
     requests = int(report["requests_per_system"])
+    if requests <= 0:
+        raise ValueError("requests_per_system must be positive")
+    if "nsc_provider_executions" not in work:
+        raise ValueError("aggregate must supply measured nsc_provider_executions")
     return {
         "requests": requests,
         "systems": ["NDNSF", "gRPC-PAR-4", "NSC-4"],
@@ -44,9 +48,7 @@ def load_work_efficiency(path: Path) -> dict:
         "executions_per_request": [
             work["ndnsf_provider_executions"] / requests,
             work["grpc_server_handler_executions_snapshot_exact"] / requests,
-            # The combined aggregate does not include a pooled NSC attempt
-            # count.  The six-seed paper table reports 1,804 attempts.
-            1804 / requests,
+            work["nsc_provider_executions"] / requests,
         ],
         "execution_ratio": work["ndnsf_to_grpc_execution_ratio"],
         "success_ci_pp": success["bootstrap_95_percent_points"],
@@ -69,7 +71,7 @@ def write_figure(report: dict, output_dir: Path) -> list[Path]:
                   edgecolor="#222222", linewidth=0.6)
     ax.set_title("Logical success", fontsize=12)
     ax.set_ylabel("Success rate (%)")
-    ax.set_ylim(98.8, 100.12)
+    ax.set_ylim(max(0, min(report["success_pct"]) - 1.1), 100.12)
     ax.set_xticks(x, systems, rotation=18, ha="right")
     ax.grid(axis="y", color="#d8dce3", linewidth=0.7)
     ax.set_axisbelow(True)
@@ -86,7 +88,7 @@ def write_figure(report: dict, output_dir: Path) -> list[Path]:
                   edgecolor="#222222", linewidth=0.6)
     ax.set_title("Provider/server execution work", fontsize=12)
     ax.set_ylabel("Executions per logical request")
-    ax.set_ylim(0, 4.35)
+    ax.set_ylim(0, max(report["executions_per_request"]) * 1.1)
     ax.set_xticks(x, systems, rotation=18, ha="right")
     ax.grid(axis="y", color="#d8dce3", linewidth=0.7)
     ax.set_axisbelow(True)
@@ -99,7 +101,8 @@ def write_figure(report: dict, output_dir: Path) -> list[Path]:
 
     fig.text(
         0.5, -0.015,
-        "Six paired seeds (20–25), 1,800 requests/system; no latency claim.",
+        "{} paired seeds ({}), {:,} requests/system; no latency claim.".format(
+            len(report["seeds"]), ", ".join(map(str, report["seeds"])), report["requests"]),
         ha="center", va="bottom", fontsize=9, color="#444444")
 
     paths = []

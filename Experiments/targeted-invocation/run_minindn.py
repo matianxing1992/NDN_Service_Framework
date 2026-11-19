@@ -89,7 +89,7 @@ def candidate_identity(policy=None, trust=None, tls=None, seed=None):
             'ndn_certificates': {p.name: digest(p) for p in sorted(seed.glob('leaf-*.cert'))},
             'ndn_runtime_signing': json.loads((seed / 'complete.json').read_text()).get(
                 'runtime_signing', 'RSA'),
-            'contract': digest(REPO / 'specs/203-targeted-invocation-evaluation/contracts/experiment.md'),
+            'contract': digest(HERE / 'experiment-contract.md'),
             'inherited_environment': {k: v for k, v in os.environ.items()
                 if k.startswith(('NDNSF_', 'NDN_')) and k != 'NDNSF_CONFIG'}}
 
@@ -510,7 +510,7 @@ def run_cell(args, parser):
             for word in line.split():
                 if word.startswith('/') and Path(word).is_file():
                     manifest['loaded_library_sha256'][str(Path(word).resolve())] = digest(word)
-    manifest['contract_sha256'] = digest(REPO / 'specs/203-targeted-invocation-evaluation/contracts/experiment.md')
+    manifest['contract_sha256'] = digest(HERE / 'experiment-contract.md')
     git_command = ['git', '-C', str(REPO)]
     if os.geteuid() == 0 and REPO.stat().st_uid != 0:
         owner = pwd.getpwuid(REPO.stat().st_uid).pw_name

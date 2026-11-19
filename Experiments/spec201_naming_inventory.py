@@ -38,7 +38,7 @@ def naming_inventory(root: Path):
     add("C02", ["Fixed assignment logical prefix A"],
         "NativeInferenceClient; nativeFixedRoleSourceContentName", "NativeExecutionPlanJson fixed-role parser",
         "PublishedContentName/ProtectedBlobManifest", "NativeFixedRoleAssignmentCache",
-        "spec181-native-plan-closure", [native + name for name in
+        "native-plan-closure", [native + name for name in
         ("NativeInferenceClient.cpp", "NativeExecutionPlanJson.cpp", "NativeExecutionPlanJson.hpp")])
     add("C02", ["Root/artifact/material manifest page, only if independently published"],
         "network_artifact_backend::_PreparedArtifactSource._prepare_manifest/start; FileSegmentedObjectProducer",

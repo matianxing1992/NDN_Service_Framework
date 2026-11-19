@@ -46,7 +46,7 @@ class RootlessBuildRenderTests(unittest.TestCase):
             self.assertNotIn("sbatch ", text)
             self.assertIn("--mode diagnostic", text)
             self.assertIn("--builder-mode auto", text)
-            self.assertIn("--foundation-image docker.io/library/ubuntu@sha256:", text)
+            self.assertIn("--foundation-base docker.io/library/ubuntu@sha256:", text)
             self.assertIn(
                 "--gpu-build-base docker.io/nvidia/cuda@sha256:f18cf1a9ac2842e59f13b0d0729594da8cbd68cadd2379308cdd98c0374dbd80",
                 text,

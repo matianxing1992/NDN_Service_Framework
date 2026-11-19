@@ -551,6 +551,28 @@ BOOST_AUTO_TEST_CASE(StreamEventConsumerReordersDeduplicatesAndClosesOnMatchingR
   BOOST_CHECK_EQUAL(silentErrors, 0);
   BOOST_CHECK_EQUAL(silentRetries.size(), 3);
 
+  auto replaceOptions = silentOptions;
+  replaceOptions.allowReplacement = true;
+  replaceOptions.maxReplacements = 1;
+  std::vector<StreamedInvocationError> replaceErrors;
+  std::vector<ndn::Name> replaceRetries;
+  StreamEventConsumer replaceConsumer(
+    binding, replaceOptions, eventKey, std::make_shared<StreamInvocationLifecycle>(),
+    [] (const ndn::Data&) { return true; },
+    [] (const InvocationEventMessage&) {},
+    [] (const ResponseMessage&) {},
+    [&] (const StreamedInvocationError& error) { replaceErrors.push_back(error); },
+    [&] (const ndn::Name& name) { replaceRetries.push_back(name); });
+  replaceConsumer.start();
+  replaceConsumer.onInactivityTimeout(silentTimeout);
+  BOOST_REQUIRE_EQUAL(replaceRetries.size(), 1);
+  replaceConsumer.onRetryTimeout(replaceRetries.front(), silentTimeout);
+  BOOST_REQUIRE_EQUAL(replaceErrors.size(), 1);
+  BOOST_CHECK(replaceErrors.front().code == StreamedInvocationErrorCode::EventTimeout);
+  BOOST_CHECK_EQUAL(replaceErrors.front().providerName, provider);
+  BOOST_CHECK_EQUAL(replaceErrors.front().requestId, requestId);
+  BOOST_CHECK_EQUAL(replaceRetries.size(), 1);
+
   // An authenticated post-Selection RUNNING status re-arms the bounded retry
   // budget for the same Provider operation, including a repeated status while
   // a long assembly worker is busy. A mismatched request or another Provider

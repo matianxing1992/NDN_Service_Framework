@@ -33,7 +33,7 @@ def test_minindn_selected_provider_rejects_authorized_camera_calibration():
         pytest.skip("set NDNSF_SPEC210_CALIBRATION_PROVIDER_HELPER to the built Spec210 test provider")
 
     wrapper = ROOT / "tests/minindn/fixtures/run_spec210_external_provider.py"
-    adapter = ROOT / "tests/minindn/fixtures/spec210-external-calibration-source.py"
+    adapter = ROOT / "tests/minindn/fixtures/external-calibration-source.py"
     with tempfile.TemporaryDirectory(prefix="s210-provider-") as directory:
         temporary_root = Path(directory)
         output = temporary_root / "run"

@@ -8,7 +8,7 @@
 namespace ndn_service_framework::test {
 using namespace naming_oracle;
 
-BOOST_AUTO_TEST_SUITE(Spec201ControlAuthorization)
+BOOST_AUTO_TEST_SUITE(NamingControlAuthorization)
 
 BOOST_AUTO_TEST_CASE(GrantNamesMatchIndependentPaperComponentWire)
 {

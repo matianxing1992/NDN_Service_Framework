@@ -344,6 +344,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--mode", required=True, choices=("centralized", "lease-only"))
     value.add_argument("--fault", required=True)
     value.add_argument("--manifest-digest", required=True)
+    value.add_argument("--experiment-manifest", type=Path)
     value.add_argument("--seed", type=int, default=0)
     value.add_argument("--output", type=Path, required=True)
     value.add_argument("--preflight", action="store_true")
@@ -432,6 +433,22 @@ def process_record(name: str, node: str, identity: str, process) -> dict[str, An
 
 
 def run_cell(args) -> int:
+    from run_spec130_concurrent_fault_matrix import frozen_cells, validate_manifest
+
+    if args.experiment_manifest is None:
+        raise ValueError("--experiment-manifest is required for a campaign cell")
+    manifest_bytes = args.experiment_manifest.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != args.manifest_digest:
+        raise ValueError("experiment manifest SHA-256 differs from --manifest-digest")
+    manifest = json.loads(manifest_bytes)
+    validate_manifest(manifest)
+    if manifest.get("synthetic"):
+        raise ValueError("SYNTHETIC_MANIFEST_NOT_EXECUTABLE")
+    cell = next((value for value in frozen_cells(manifest) if value["id"] == args.scenario), None)
+    if cell is None or any(cell.get(key, 0 if key == "seed" else None) != getattr(args, key)
+                           for key in ("graph", "mode", "fault", "seed")):
+        raise ValueError("requested cell does not match the experiment manifest")
+    expected = cell["expectedAvailability"]
     output = args.output.resolve()
     if output.exists() and any(output.iterdir()):
         raise RuntimeError("cell output reuse is forbidden")
@@ -557,9 +574,6 @@ def run_cell(args) -> int:
 
         start_at = int(time.time() * 1000) + 1200
         requester_processes = {}
-        expected = next(cell.get("expectedAvailability", "available")
-                        for cell in json.loads((ROOT / "specs/130-concurrent-fault-boundaries/experiment-manifest.json").read_text())["cells"]
-                        if cell["id"] == args.scenario) if args.seed == 0 else "measured"
         for value in active_requesters(args.graph):
             requester_processes[value] = start(
                 f"requester{value.lower()}", f"requester-{value}", "requester",
@@ -734,10 +748,6 @@ def run_cell(args) -> int:
         "eventCount": len(all_events) + len((authority_data.get("snapshot") or {}).get("events", [])),
         "packetPlaintextMatches": int(PRIVATE_INPUT in pcap),
     }
-    expected = "measured" if args.seed else next(
-        value["expectedAvailability"] for value in json.loads(
-            (ROOT / "specs/130-concurrent-fault-boundaries/experiment-manifest.json").read_text())["cells"]
-        if value["id"] == args.scenario)
     observed = "unavailable" if unavailable else "available"
     passed = (not error and metrics["safetyViolationCount"] == 0
               and metrics["orphanBeyondBoundCount"] == 0

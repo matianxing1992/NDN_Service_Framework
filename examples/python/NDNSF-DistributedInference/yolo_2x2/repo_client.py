@@ -10,6 +10,7 @@ import tempfile
 
 from ndnsf import ServiceUser
 from ndnsf_distributed_inference.app_sdk import APPDeployment
+from ndnsf_distributed_inference.naming import canonical_name_uri, make_producer_data_prefix
 from py_repoclient import (
     ArtifactCapabilityRequirements,
     ArtifactReference,
@@ -20,7 +21,7 @@ from py_repoclient import (
 )
 
 
-CONFIG_FILE = "examples/python/NDNSF-DistributedInference/yolo_2x2/yolo_policy.yaml"
+CONFIG_FILE = Path(__file__).with_name("yolo_policy.yaml")
 REPO_SERVICE = "/NDNSF/DistributedRepo"
 
 
@@ -29,7 +30,8 @@ def main() -> int:
     parser.add_argument("--config", default=CONFIG_FILE)
     parser.add_argument("--generated-policy-dir",
                         default="/tmp/ndnsf-di-yolo-2x2-policy")
-    parser.add_argument("--model", default="yolo26n.pt")
+    parser.add_argument("--model", type=Path, required=True,
+                        help="explicit path to prepared YOLO weights")
     parser.add_argument("--replication-factor", type=int, default=2)
     parser.add_argument("--max-bytes", type=int, default=0,
                         help="Optional smoke-test limit; 0 stores the full file")
@@ -39,6 +41,9 @@ def main() -> int:
 
     if args.replication_factor <= 0:
         raise ValueError("replication-factor must be positive")
+    source = args.model.resolve(strict=True)
+    if not source.is_file():
+        raise ValueError(f"model must be a regular file: {source}")
     deployment = APPDeployment.from_config(
         args.config,
         generated_policy_dir=args.generated_policy_dir,
@@ -57,19 +62,20 @@ def main() -> int:
         ack_timeout_ms=args.ack_timeout_ms,
         timeout_ms=args.timeout_ms,
     )
-    source = Path(args.model)
     payload = source.read_bytes()
     if args.max_bytes > 0:
         payload = payload[:args.max_bytes]
     digest = hashlib.sha256(payload).hexdigest()
-    logical_name = f"/NDNSF-DI/ARTIFACT/AI/YOLO/2x2/real-model/{digest}"
+    prefix = canonical_name_uri(make_producer_data_prefix(deployment.user, "MODEL"))
+    logical_name = f"{prefix}/YOLO/2x2/{digest}"
     reference = ArtifactReference(
         logical_name=logical_name,
         content_digest=digest,
         size_bytes=len(payload),
-        root_manifest_name=logical_name + "/root",
+        root_manifest_name="",
+        format_version="raw-file-v1",
         publisher_identity=deployment.user,
-        policy_epoch="/Policy/yolo-2x2/v1",
+        policy_epoch="repo-policy-v1",
     )
     requirements = ArtifactCapabilityRequirements()
     requirements.artifact = reference
@@ -82,14 +88,15 @@ def main() -> int:
             f"need {args.replication_factor}"
         )
     selected = SelectedRepoSet()
-    selected.targets = []
+    targets = []
     for candidate in candidates[:args.replication_factor]:
         target = SelectedRepoTarget()
         target.repo_node = candidate.repo_node
         target.provider_identity = candidate.provider_identity
         target.service_prefix = candidate.service_prefix
-        selected.targets.append(target)
-    selected.seed_repo_id = selected.targets[0].repo_node
+        targets.append(target)
+    selected.targets = targets
+    selected.seed_repo_id = targets[0].repo_node
     selected.consistency = RepoWriteConsistency.ALL
 
     with tempfile.TemporaryDirectory(prefix="ndnsf-yolo-repo-publish-") as temp:
@@ -97,7 +104,7 @@ def main() -> int:
         source_path.write_bytes(payload)
         result = repo.publish_file(
             source_path, reference, selected, timeout_ms=args.timeout_ms)
-        if not result.success or result.handle is None:
+        if result.handle is None or result.achieved_replicas != args.replication_factor:
             raise RuntimeError("native Repo publication failed")
         destination = Path(temp) / "fetched.bin"
         repo.fetch_file(result.handle, destination, timeout_ms=args.timeout_ms)

@@ -14,16 +14,15 @@ redaction_impl = load_impl("redaction")
 
 
 class CommonCoreTest(unittest.TestCase):
-    def test_runtime_contracts_are_exact_spec_copies(self) -> None:
-        pairs = (
-            ("contracts/node-profile.schema.json", "schemas/deployment-profile.schema.json"),
-            ("contracts/container-evidence.schema.json", "schemas/deployment-evidence.schema.json"),
-        )
-        spec = REPO / "specs" / "108-ndnsf-di-container-deployment"
-        package = REPO / "packaging" / "ndnsf-di-container"
-        for source, target in pairs:
-            with self.subTest(target=target):
-                self.assertEqual((spec / source).read_bytes(), (package / target).read_bytes())
+    def test_runtime_contracts_preserve_the_frozen_base(self) -> None:
+        archived = FIXTURES / "legacy-contracts"
+        schemas = REPO / "packaging/ndnsf-di-container/schemas"
+        self.assertEqual((archived / "container-evidence.schema.json").read_bytes(),
+                         (schemas / "deployment-evidence.schema.json").read_bytes())
+        profile = json.loads((schemas / "deployment-profile.schema.json").read_text())
+        role_references = profile["properties"]["identity"]["properties"].pop("roleReferences")
+        self.assertEqual(role_references["required"], ["controller", "user", "providers"])
+        self.assertEqual(profile, json.loads((archived / "node-profile.schema.json").read_text()))
 
     def test_environment_expansion_is_allowlisted(self) -> None:
         source = (FIXTURES / "profiles" / "cloud-cpu-valid.yaml").read_text(encoding="utf-8")

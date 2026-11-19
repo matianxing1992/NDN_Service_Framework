@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import hashlib
 import json
 import subprocess
 import sys
@@ -99,19 +100,27 @@ class Spec128RunnerTest(unittest.TestCase):
 
     def test_dry_run_freezes_unique_paths_and_spec127_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "spec128-dry-run"
+            root = Path(directory)
+            output = root / "spec128-dry-run"
+            baseline = root / "synthetic-127"
+            baseline.mkdir()
+            marker = b'{"fixture":127}'
+            (baseline / "marker.json").write_bytes(marker)
             completed = subprocess.run([
                 sys.executable,
                 str(EXPERIMENTS / "run_spec128_generic_recovery_matrix.py"),
                 "--output-root", str(output), "--duration-seconds", "60",
-                "--dry-run"], cwd=REPO, text=True, capture_output=True)
+                "--dry-run", "--spec127-evidence", str(baseline)],
+                cwd=root, text=True, capture_output=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((output / "campaign-summary.json").read_text())
             manifest = json.loads((output / "campaign-manifest.json").read_text())
         self.assertEqual(summary["status"], "DRY_RUN")
         self.assertEqual(len(manifest), 16)
         self.assertEqual(len({entry["cell"]["outputPath"] for entry in manifest}), 16)
-        self.assertTrue(summary["spec127Hashes"])
+        self.assertEqual(summary["spec127Hashes"], {
+            "results/synthetic-127/marker.json": hashlib.sha256(marker).hexdigest(),
+        })
         self.assertTrue(all(entry["invocationCount"] == 0 for entry in manifest))
 
     def test_spec127_destination_is_rejected(self):

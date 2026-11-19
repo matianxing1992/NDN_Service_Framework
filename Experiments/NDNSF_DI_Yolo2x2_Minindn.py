@@ -113,12 +113,12 @@ def python_cmd(script: str, argv: list[str], *, repo: Path = REPO,
                py_dir: Path = PY_DIR) -> str:
     args = " ".join([perf.shell_quote(str(py_dir / script))] +
                     [perf.shell_quote(arg) for arg in argv])
-    return f"cd {perf.shell_quote(repo)} && exec python3 {args}"
+    return f"cd {perf.shell_quote(repo)} && exec {perf.shell_quote(sys.executable)} {args}"
 
 
 def run_user_python_step(command: list[str], *, cwd: str, env: dict[str, str],
                          writable_path: Path, writable_outputs: tuple[Path, ...] = ()) -> None:
-    """Run pre-MiniNDN Python generation in the invoking user's Python env."""
+    """Run the selected interpreter with the invoking user's filesystem identity."""
     sudo_user = os.environ.get("SUDO_USER", "")
     sudo_uid = os.environ.get("SUDO_UID", "")
     sudo_gid = os.environ.get("SUDO_GID", "")
@@ -134,7 +134,7 @@ def run_user_python_step(command: list[str], *, cwd: str, env: dict[str, str],
         user_home = pwd.getpwnam(sudo_user).pw_dir
         env = {**env, "HOME": user_home}
         env_args = []
-        for key in ("PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "HOME"):
+        for key in ("PYTHONPATH", "PYTHONNOUSERSITE", "LD_LIBRARY_PATH", "PATH", "HOME"):
             value = env.get(key, os.environ.get(key))
             if value:
                 env_args.append(f"{key}={value}")
@@ -6049,7 +6049,7 @@ def main() -> None:
     else:
         model_source = None
     split_command = [
-        "python3",
+        sys.executable,
         str(PY_DIR / "split_model.py"),
         "--auto-split",
         "--layout",
@@ -6077,7 +6077,7 @@ def main() -> None:
         split_command.append("--auto-parallel-detect-plan")
     run_user_python_step(split_command,
                          cwd=str(REPO),
-                         env={**os.environ, "PYTHONPATH": py_path},
+                         env={**os.environ, "PYTHONPATH": py_path, "PYTHONNOUSERSITE": "1"},
                          writable_path=OUT,
                          writable_outputs=(OUT / "model", CONFIG))
     apply_yolo_repo_operation_policy(CONFIG, PY_DIR / "yolo_policy.yaml")
@@ -6430,15 +6430,13 @@ def main() -> None:
             str(REPO / "NDNSF-DistributedInference"),
             str(REPO / "pythonWrapper"),
             str(PY_DIR),
-            "/home/tianxing/.local/lib/python3.8/site-packages",
-            "/usr/local/lib/python3.8/dist-packages",
-            "/usr/lib/python3/dist-packages",
             os.environ.get("PYTHONPATH", ""),
         ]
         if args_cli.native_providers:
             assert installed_package is not None
             python_path_parts.insert(1, str(installed_package.parent))
         env["PYTHONPATH"] = ":".join(python_path_parts)
+        env["PYTHONNOUSERSITE"] = "1"
         print(
             "YOLO_LAYOUT_RUN_CONFIG "
             f"layout={layout} model={args_cli.model} input_size={args_cli.input_size} "

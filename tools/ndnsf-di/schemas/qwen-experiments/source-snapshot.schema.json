@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec109/source-snapshot.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["headCommit", "treeDigest", "capturedAt", "worktreeState", "binaryDiffDigest", "untrackedManifestDigest", "untrackedArchiveDigest", "includedPaths", "excludedPaths", "snapshotDigest"],
+  "properties": {
+    "headCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "treeDigest": {"$ref": "#/$defs/digest"},
+    "capturedAt": {"type": "string", "format": "date-time"},
+    "worktreeState": {"enum": ["CLEAN", "SEALED_DIRTY"]},
+    "binaryDiffDigest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "untrackedManifestDigest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "untrackedArchiveDigest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "includedPaths": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "excludedPaths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "snapshotDigest": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {"if": {"properties": {"worktreeState": {"const": "CLEAN"}}}, "then": {"properties": {"binaryDiffDigest": {"type": "null"}, "untrackedManifestDigest": {"type": "null"}, "untrackedArchiveDigest": {"type": "null"}}}},
+    {"if": {"properties": {"worktreeState": {"const": "SEALED_DIRTY"}}}, "then": {"properties": {"binaryDiffDigest": {"$ref": "#/$defs/digest"}, "untrackedManifestDigest": {"$ref": "#/$defs/digest"}, "untrackedArchiveDigest": {"$ref": "#/$defs/digest"}}}}
+  ],
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

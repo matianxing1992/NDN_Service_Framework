@@ -87,7 +87,7 @@ if __name__ == '__main__':
         print('MISSING: ' + message)
     if errors and args.sdk_only:
         print('These SDKs are prerequisites, not installed by --source. '
-              'See docs/unified-stack-install.md#explicit-limitations')
+              'See Experiments/guides/installation.md#sdk-closure')
     if not errors:
         print('Inventory passed; Waf must still validate versions, ABI and link closure.')
     raise SystemExit(bool(errors))

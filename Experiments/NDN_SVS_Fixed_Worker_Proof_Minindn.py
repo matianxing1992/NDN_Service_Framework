@@ -87,15 +87,15 @@ class ReceiptLedger:
         return path
 
 
-def protected_digest() -> dict[str, Any]:
+def protected_digest(archive_root: Path) -> dict[str, Any]:
     return prior.tree_digest(
         [
-            REPO / "specs/137-svs-serial-production-offload",
-            REPO
+            archive_root / "specs/137-svs-serial-production-offload",
+            archive_root
             / "results/spec137-svs-serial-production-offload/"
             "t003-four-core-20260723-03",
-            REPO / "specs/138-svs-worker-necessity",
-            REPO
+            archive_root / "specs/138-svs-worker-necessity",
+            archive_root
             / "results/spec138-svs-worker-necessity/"
             "confirmation01-20260723",
         ]
@@ -128,14 +128,18 @@ def formal_cells() -> list[dict[str, Any]]:
     ]
 
 
-def qualify(campaign: Path) -> dict[str, Any]:
+def qualify(campaign: Path, subject_path: Path, archive_root: Path) -> dict[str, Any]:
     campaign = campaign.resolve()
+    subject_path = subject_path.resolve(strict=True)
+    archive_root = archive_root.resolve(strict=True)
     if campaign.exists():
         raise RuntimeError(f"fresh campaign path required: {campaign}")
+    if archive_root == campaign or archive_root in campaign.parents:
+        raise RuntimeError("campaign output must be outside the read-only archive")
+    subject = prior.verify_subject(subject_path, archive_root)
+    protected = protected_digest(archive_root)
     campaign.mkdir(parents=True)
     with CampaignLock(campaign):
-        subject = prior.verify_subject()
-        protected = protected_digest()
         cpu_map, initial_busy = prior.choose_cpu_map()
         configs = prior.base.self_test_configs(subject)
         results: list[dict[str, Any]] = []
@@ -191,8 +195,9 @@ def qualify(campaign: Path) -> dict[str, Any]:
             "campaignId": campaign.name,
             "rate": RATE,
             "timing": list(QUALIFICATION_TIMING),
-            "subjectManifest": str(prior.SUBJECT.resolve()),
-            "subjectManifestSha256": prior.sha256_file(prior.SUBJECT),
+            "subjectManifest": str(subject_path),
+            "subjectManifestSha256": prior.sha256_file(subject_path),
+            "archiveRoot": str(archive_root),
             "subject": subject,
             "protectedPredecessors": protected,
             "cpuMap": cpu_map,
@@ -215,10 +220,14 @@ def verify_qualification(campaign: Path) -> dict[str, Any]:
         or not all(summary.get("checks", {}).values())
     ):
         raise RuntimeError("qualification is not admitted")
-    prior.verify_subject()
-    if protected_digest()["digest"] != summary["protectedPredecessors"]["digest"]:
+    subject_path = Path(summary["subjectManifest"])
+    archive_root = Path(summary["archiveRoot"])
+    subject = prior.verify_subject(subject_path, archive_root)
+    if subject != summary["subject"]:
+        raise RuntimeError("qualification subject differs from its checked manifest")
+    if protected_digest(archive_root)["digest"] != summary["protectedPredecessors"]["digest"]:
         raise RuntimeError("protected predecessor evidence changed")
-    if prior.sha256_file(prior.SUBJECT) != summary["subjectManifestSha256"]:
+    if prior.sha256_file(subject_path) != summary["subjectManifestSha256"]:
         raise RuntimeError("subject manifest changed")
     if summary["runnerSha256"] != prior.sha256_file(Path(__file__)):
         raise RuntimeError("Spec 139 runner changed after qualification")
@@ -287,7 +296,8 @@ def run_formal(campaign: Path) -> list[dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
     with CampaignLock(campaign):
         manifest = verify_seal(campaign)
-        subject = prior.verify_subject()
+        qualification = verify_qualification(campaign)
+        subject = qualification["subject"]
         ledger = ReceiptLedger(campaign / "receipts")
         for config in manifest["cells"]:
             verify_seal(campaign)
@@ -335,13 +345,17 @@ def run_formal(campaign: Path) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--campaign", type=Path, required=True)
+    parser.add_argument("--subject-manifest", type=Path)
+    parser.add_argument("--archive-root", type=Path)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--qualify", action="store_true")
     actions.add_argument("--seal", action="store_true")
     actions.add_argument("--run-formal", action="store_true")
     args = parser.parse_args(argv)
     if args.qualify:
-        result: Any = qualify(args.campaign)
+        if args.subject_manifest is None or args.archive_root is None:
+            parser.error("--qualify requires --subject-manifest and --archive-root")
+        result: Any = qualify(args.campaign, args.subject_manifest, args.archive_root)
     elif args.seal:
         result = seal_campaign(args.campaign)
     else:

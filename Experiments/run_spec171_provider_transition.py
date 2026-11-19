@@ -15,9 +15,6 @@ from typing import Sequence
 
 REPO = Path(__file__).resolve().parents[1]
 HARNESS = REPO / "Experiments/WifiRouterMobilityReliability.py"
-DEFAULT_TRACE = (
-    REPO / "specs/171-four-provider-mobility-advantage/evidence/"
-    "provider-transition-registration-20260809/trace.csv")
 CELLS = (
     ("ndnsf", "ndnsf", ""),
     ("grpc-static-3", "grpc", "ucla,wustl,uiuc"),
@@ -118,9 +115,9 @@ def run_replay(
         output_root: Path, trace: Path, build_dir: Path, seed: int,
         replay: int, ndnsf_response_retry: bool = False) -> int:
     replay_root = output_root / f"replay-{replay}"
-    replay_root.mkdir(parents=True, exist_ok=True)
     manifest = build_manifest(
         output_root, trace, build_dir, seed, replay, ndnsf_response_retry)
+    replay_root.mkdir(parents=True, exist_ok=True)
     manifest_path = replay_root / "campaign-manifest.json"
     if manifest_path.exists():
         retained = json.loads(manifest_path.read_text())
@@ -151,10 +148,11 @@ def run_replay(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--trace", type=Path, default=DEFAULT_TRACE)
+    parser.add_argument("--trace", type=Path, required=True,
+                        help="mobility trace selected for this replay")
     parser.add_argument(
         "--build-dir", type=Path,
-        default=REPO / "build-new-svs-20260808")
+        default=REPO / "build")
     parser.add_argument("--seed", type=int, default=171)
     parser.add_argument("--replay", type=int, required=True)
     parser.add_argument(

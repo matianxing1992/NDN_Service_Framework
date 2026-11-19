@@ -63,18 +63,18 @@ class AppSdkCompatibilityTest(unittest.TestCase):
             with self.assertRaisesRegex(
                     RuntimeJournalUnsafeRootError, "persistent state root"):
                 APPDeployment.from_config("policy.yaml")
-            with tempfile.TemporaryDirectory(dir=Path.home()) as state_root:
-                with self.assertRaisesRegex(
-                        RuntimeJournalKeyError, "key provider"):
+            with tempfile.TemporaryDirectory(dir="/tmp") as state_root:
+                with self.assertRaisesRegex(RuntimeJournalUnsafeRootError, "volatile"):
                     APPClient.from_config(
-                        "policy.yaml", state_root=state_root)
-                client = APPClient.from_config(
-                    "policy.yaml",
-                    state_root=state_root,
-                    envelope_key_provider=provider,
-                )
-                deployment = APPDeployment.from_config(
-                    "policy.yaml", state_root=state_root)
+                        "policy.yaml", state_root=state_root, envelope_key_provider=provider)
+                with mock.patch(
+                        "ndnsf_distributed_inference.app_sdk.runtime_journal._is_volatile_state_root",
+                        return_value=False):
+                    with self.assertRaisesRegex(RuntimeJournalKeyError, "key provider"):
+                        APPClient.from_config("policy.yaml", state_root=state_root)
+                    client = APPClient.from_config(
+                        "policy.yaml", state_root=state_root, envelope_key_provider=provider)
+                    deployment = APPDeployment.from_config("policy.yaml", state_root=state_root)
 
         self.assertIsInstance(client, APPClient)
         self.assertIsInstance(deployment, APPDeployment)

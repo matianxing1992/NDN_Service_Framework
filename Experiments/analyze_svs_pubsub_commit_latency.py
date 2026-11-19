@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and summarize Spec 131 pure NDN-SVS PubSub evidence."""
+"""Validate and summarize one-way historical and bidirectional SVS evidence."""
 
 from __future__ import annotations
 
@@ -12,9 +12,16 @@ from pathlib import Path
 import statistics
 from typing import Any, Iterable
 
+if __name__ == "__main__" and not __package__:
+    from build_svs_pubsub_commit_bench import SUBJECTS as PINNED_SUBJECTS
+else:
+    from Experiments.build_svs_pubsub_commit_bench import SUBJECTS as PINNED_SUBJECTS
+
 
 RATES = (200, 400, 600, 800, 1000)
 SUBJECTS = ("baseline-sync-serial", "latest-async-parallel")
+BIDIRECTIONAL_SUBJECTS = tuple(subject for subject, _, _ in PINNED_SUBJECTS)
+PEERS = ("peer-a", "peer-b")
 
 
 def sha256_file(path: Path) -> str:
@@ -56,10 +63,10 @@ def parse_network(path: Path) -> dict[str, int]:
     return result
 
 
-def resource_metrics(cell: Path) -> dict[str, Any]:
+def resource_metrics(cell: Path, roles=("publisher", "subscriber")) -> dict[str, Any]:
     samples = read_jsonl(cell / "resource-samples.jsonl")
     processes = {}
-    for role in ("publisher", "subscriber"):
+    for role in roles:
         entries = [sample.get("processes", {}).get(role, {}) for sample in samples]
         resolved = [entry for entry in entries if entry.get("peerResolved")]
         rss = [int(entry["VmRSS"].split()[0]) for entry in resolved if "VmRSS" in entry]
@@ -68,14 +75,86 @@ def resource_metrics(cell: Path) -> dict[str, Any]:
                            "peakRssKb": max(rss) if rss else None,
                            "cpuTicksDelta": max(ticks) - min(ticks) if ticks else None}
     network = {}
-    for role in ("publisher", "subscriber"):
+    for role in roles:
         before = parse_network(cell / f"{role}-network-before.txt")
         after = parse_network(cell / f"{role}-network-final.txt")
         network[role] = {key: after[key] - before.get(key, 0) for key in after}
     return {"processes": processes, "network": network}
 
 
+def summarize_direction(sender: str, sent: list[dict], received: list[dict],
+                        expected: int, drain_ms: int) -> dict[str, Any]:
+    streams = {kind: {e["logicalId"]: e for e in sent if e["event"] == kind}
+               for kind in ("deadline", "api-enter", "api-return")}
+    deadlines, enters, returned = (streams[k] for k in ("deadline", "api-enter", "api-return"))
+    for kind, stream in streams.items():
+        if len(stream) != sum(e["event"] == kind for e in sent):
+            raise ValueError(f"duplicate sender event: {sender} {kind}")
+    if not returned.keys() <= enters.keys() <= deadlines.keys():
+        raise ValueError(f"unmatched sender events: {sender}")
+
+    delivered = {}
+    duplicates = invalid = 0
+    for e in sorted(received, key=lambda item: item["monotonicRawNs"]):
+        if e["event"] == "invalid":
+            invalid += 1
+        if e["event"] not in ("delivery", "duplicate"):
+            continue
+        logical = e["logicalId"]
+        details = e["details"]
+        if (logical not in returned or e["svsSeqNo"] != returned[logical]["svsSeqNo"]
+                or details.get("senderPeer") != sender or details.get("payloadValid") is not True
+                or details.get("scheduledNs") != deadlines[logical]["monotonicRawNs"]
+                or e["monotonicRawNs"] < details["scheduledNs"]):
+            invalid += 1
+            continue
+        if logical in delivered:
+            duplicates += 1
+        else:
+            delivered[logical] = (e["monotonicRawNs"] - details["scheduledNs"]) / 1e6
+
+    missing = len(returned) - len(delivered)
+    order = list(delivered)
+    delay = list(delivered.values())
+    return {"expected": expected, "scheduled": len(deadlines), "apiEntered": len(enters),
+            "apiReturned": len(returned), "delivered": len(delivered), "missing": missing,
+            "deliveryReturnRatio": len(delivered) / len(returned) if returned else 0,
+            "apiErrors": sum(e["event"] == "api-error" for e in sent),
+            "invalid": invalid, "duplicates": duplicates,
+            "reorderTransitions": sum(b < a for a, b in zip(order, order[1:])),
+            "deliveredDelayMs": percentile_triplet(delay),
+            "deadlineCappedDelayMs": percentile_triplet([min(v, drain_ms) for v in delay]
+                                                        + [drain_ms] * missing)}
+
+
+def summarize_bidirectional_cell(cell: Path, config: dict[str, Any]) -> dict[str, Any]:
+    streams = {}
+    for peer in PEERS:
+        event_file = cell / f"{peer}.jsonl"
+        if not event_file.is_file():
+            raise ValueError(f"missing event stream: {event_file}")
+        events = read_jsonl(event_file)
+        if any((e.get("schemaVersion"), e.get("cellId"), e.get("peerId")) !=
+               ("spec132-event-v1", config["cellId"], peer) for e in events):
+            raise ValueError(f"foreign event in {peer} stream for {config['cellId']}")
+        streams[peer] = [e for e in events if e["phase"] == "measured" or e["event"] == "invalid"]
+    expected = config["ratePpsPerPeer"] * config["measureSeconds"]
+    directions = {f"{sender}-to-{receiver}": summarize_direction(
+        sender, streams[sender], streams[receiver], expected, config["drainSeconds"] * 1000)
+        for sender, receiver in (PEERS, PEERS[::-1])}
+    sustainable = all(d["apiReturned"] >= expected and d["missing"] == 0
+                      and d["invalid"] == 0 and d["apiErrors"] == 0
+                      for d in directions.values())
+    return {"schemaVersion": "spec132-cell-summary-v1", "cellId": config["cellId"],
+            "subject": config["subject"], "ratePpsPerPeer": config["ratePpsPerPeer"],
+            "aggregateTargetPps": config["aggregateTargetPps"],
+            "directions": directions, "sustainable": sustainable,
+            "resources": resource_metrics(cell, PEERS)}
+
+
 def summarize_cell(cell: Path, config: dict[str, Any]) -> dict[str, Any]:
+    if "ratePpsPerPeer" in config:
+        return summarize_bidirectional_cell(cell, config)
     pub = read_jsonl(cell / "publisher.jsonl")
     sub = read_jsonl(cell / "subscriber.jsonl")
     attempted = {int(e["logicalId"]): e for e in pub
@@ -196,6 +275,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise ValueError("formal manifest must contain 10 unique cells")
     if any(cell["attempt"] != 1 for cell in cells):
         raise ValueError("formal cells must have exactly one attempt")
+    if manifest.get("schemaVersion") == "spec132-campaign-v1":
+        expected = [(i, subject, rate, 2 * rate, 1)
+                    for i, (subject, rate) in enumerate(
+                        ((subject, rate) for subject in BIDIRECTIONAL_SUBJECTS for rate in RATES), 1)]
+        observed = [(c.get("ordinal"), c.get("subject"), c.get("ratePpsPerPeer"),
+                     c.get("aggregateTargetPps"), c.get("repetition")) for c in cells]
+        if expected != observed or manifest.get("automaticRetry") is not False:
+            raise ValueError("invalid bidirectional subject/rate grid or retry policy")
+        return
     if [cell["subject"] for cell in cells[:5]] != [SUBJECTS[0]] * 5 or \
        [cell["subject"] for cell in cells[5:]] != [SUBJECTS[1]] * 5:
         raise ValueError("formal order must be 5 baseline then 5 treatment")
@@ -322,9 +410,31 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     if args.cell:
+        if args.config is None:
+            parser.error("--cell requires --config")
         config = json.loads(args.config.read_text(encoding="utf-8"))
         print(json.dumps(summarize_cell(args.cell, config), sort_keys=True))
         return 0
+    manifest = json.loads((args.campaign / "campaign-manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("schemaVersion") == "spec132-campaign-v1":
+        validate_manifest(manifest)
+        summaries = []
+        for config in manifest["cells"]:
+            cell = args.campaign / "cells" / config["cellId"]
+            receipt = json.loads((cell / "attempt-receipt.json").read_text(encoding="utf-8"))
+            if (receipt.get("schemaVersion"), receipt.get("cellId"), receipt.get("subject"),
+                    receipt.get("attempt")) != ("spec132-attempt-v1", config["cellId"],
+                                                  config["subject"], 1):
+                raise ValueError(f"invalid attempt receipt: {cell}")
+            summaries.append({"receipt": receipt, "measurements": summarize_cell(cell, config)
+                              if receipt["status"] == "COMPLETE" else None})
+        target = args.campaign / "campaign-summary.json"
+        complete = all(item["measurements"] is not None for item in summaries)
+        target.write_text(json.dumps({"schemaVersion": "spec132-campaign-summary-v1",
+                                      "status": "COMPLETE" if complete else "INCOMPLETE",
+                                      "cells": summaries}, indent=2) + "\n", encoding="utf-8")
+        print(target)
+        return 0 if complete else 1
     summaries, rows = aggregate(args.campaign)
     write_outputs(args.campaign, summaries, rows)
     print(args.campaign / "rate-comparison.md")

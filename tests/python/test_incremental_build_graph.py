@@ -55,7 +55,7 @@ class IncrementalBuildGraph(unittest.TestCase):
                             for task in core.compiled_tasks))
 
     def test_adding_a_fixture_preserves_native_object_paths(self):
-        targets = ['unit-tests', 'integration-tests', 'spec224-tp-tests']
+        targets = ['unit-tests', 'integration-tests', 'tp-tests']
 
         def object_paths(build):
             post_selected(build)
@@ -103,12 +103,12 @@ class IncrementalBuildGraph(unittest.TestCase):
         self.assertTrue(build.get_tgen_by_name('ndnsf-distributed-inference').posted)
         self.assertFalse(getattr(build.get_tgen_by_name('unit-tests'), 'posted', False))
         self.assertFalse(getattr(build.get_tgen_by_name('integration-tests'), 'posted', False))
-        self.assertFalse(getattr(build.get_tgen_by_name('spec220-tensor-work-asan'),
+        self.assertFalse(getattr(build.get_tgen_by_name('tensor-work-asan'),
                                  'posted', False))
 
     def test_normal_transport_tests_link_production_di(self):
-        build = load_graph(['spec181-exact-tensor-transport',
-                            'spec181-protected-runtime-closure'])
+        build = load_graph(['exact-tensor-transport',
+                            'protected-runtime-closure'])
         post_selected(build)
         for name in build.targets.split(','):
             generator = build.get_tgen_by_name(name)
@@ -139,14 +139,14 @@ class IncrementalBuildGraph(unittest.TestCase):
         self.assertTrue(all(getattr(g, 'posted', False) for g in packages))
 
     def test_special_test_compilations_are_retained(self):
-        build = load_graph(['spec190-live-turns', 'spec220-tensor-work-asan'])
+        build = load_graph(['live-turns', 'tensor-work-asan'])
         post_selected(build)
-        seam = build.get_tgen_by_name('spec190-live-turns')
+        seam = build.get_tgen_by_name('live-turns')
         handler = [t for t in seam.compiled_tasks
                    if t.inputs[0].name == 'NativeProviderHandler.cpp']
         self.assertEqual(len(handler), 1)
         self.assertIn('NDNSF_DI_PROVIDER_TEST_SEAM', handler[0].env.DEFINES)
-        sanitizer = build.get_tgen_by_name('spec220-tensor-work-asan')
+        sanitizer = build.get_tgen_by_name('tensor-work-asan')
         self.assertTrue(any('-fsanitize=address,undefined' in t.env.CXXFLAGS
                             for t in sanitizer.compiled_tasks))
 

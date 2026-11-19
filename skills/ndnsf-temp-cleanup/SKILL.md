@@ -30,6 +30,12 @@ or a past cleanup authorization valid for a new run.
   `(device, inode)`; reclaimable blocks require all links to be selected and no live open file.
   Do not add overlapping directory totals or treat logical model sizes as independent copies.
   `/dev/shm`, RAM, swap, filesystem reserved blocks and ordinary disk free space are distinct.
+- When explaining recent growth, confirm the actual resize time from system records when
+  available and scan the underlying filesystem once across bind aliases. Use birth time,
+  modification time and metadata-change time separately. Count current allocated bytes of
+  new inodes, record traversal races and unsupported timestamps, and distinguish this from
+  net growth against an earlier snapshot. A touched Git pack or database's full size does
+  not measure newly allocated bytes.
 
 ## Classify and verify candidates
 
@@ -70,9 +76,26 @@ Use CodeGraph for code references only when an index exists, then confirm agains
   invalidated contents selectively after active-use checks while retaining useful incremental
   caches. The bootstrap installer's out-of-checkout scratch remains temporary, not a third
   persistent NDNSF tree.
+  Repeated incremental builds typically replace the same output paths. New targets, debug
+  sections, generated artifacts and link-time temporaries can raise the steady size or peak.
+  Record the two trees as retained capacity and budget the next build against their filesystem.
 - Inspect review snapshots for nested `candidate/repo/build`, private installs and earlier
   review packages. Preserve unique source/config/measurement content without copying the
   whole tree again. Distinguish real duplicate content from hardlinks before estimating gain.
+- For completed promotions, compare the disposable stage with the retained prefix by relative
+  path, file hash and symlink target. Retain unique files and the promotion receipt before
+  removing the stage. For superseded candidates, remove regenerable objects and binaries
+  selectively when evidence or inputs still live alongside them. Keep the candidate required
+  by the current runtime or preflight and any distinct comparison baseline.
+  Routine host installation staging belongs under the checkout's ordinary `build/`.
+  Historical receipts preserve provenance. They do not by themselves require keeping an
+  external install, experiment Repo payloads, or Provider caches. Check for a current
+  consumer or explicitly named warm baseline, preserve compact evidence, and retire
+  reproducible derivatives when the owning run closes.
+- Measure Git objects, LFS cache and materialized files in each linked checkout separately.
+  Review existing maintenance errors and dry-run LFS pruning. Preserve refs, reflogs and
+  dirty worktrees during storage cleanup. Keep source-only disposable worktrees free of
+  unnecessary LFS downloads when the verification can run with pointer files.
 - For each data purpose, retain only the latest usable version: once a newer SIF/cache/release
   manifest is qualified, old candidate SIFs (about 4.3GB each), old caches and superseded
   intermediates go through an explicit allowlist; keep build records, runtime definitions and
@@ -146,7 +169,3 @@ purpose workspaces and keeping durable inputs/evidence outside scratch.
 For the concrete 2026-11-07 case and known pitfalls, read
 [references/2026-11-07-case.md](references/2026-11-07-case.md) when useful. Its sizes and paths
 are historical evidence, not current inventory or an executable deletion list.
-
-For the repeated-build and nested-review failure observed on 2026-11-10, read
-[references/2026-11-10-build-retirement.md](references/2026-11-10-build-retirement.md).
-Use its distinctions and closeout method, never its historical paths as a new allowlist.

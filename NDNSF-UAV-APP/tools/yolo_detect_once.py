@@ -19,7 +19,7 @@ def encode_fields(fields: dict[str, str]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="yolo26n.pt")
+    parser.add_argument("--model", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--classes", default="car,truck")
@@ -29,6 +29,10 @@ def main() -> int:
     if not image.exists():
       print(encode_fields({"ok": "false", "error": f"image not found: {image}"}))
       return 2
+    model_path = Path(args.model)
+    if not model_path.is_file():
+        print(encode_fields({"ok": "false", "error": f"model file not found: {model_path}"}))
+        return 2
 
     try:
         from ultralytics import YOLO
@@ -38,7 +42,7 @@ def main() -> int:
 
     wanted = {item.strip().lower() for item in args.classes.split(",") if item.strip()}
     try:
-        model = YOLO(args.model)
+        model = YOLO(str(model_path.resolve()))
         results = model.predict(str(image), conf=args.conf, verbose=False, device="cpu")
     except Exception as exc:
         print(encode_fields({"ok": "false", "error": f"yolo failed: {exc}"}))

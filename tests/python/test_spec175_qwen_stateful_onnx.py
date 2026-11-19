@@ -26,11 +26,6 @@ from ndnsf_distributed_inference.adapters.qwen.stateful_onnx import (  # noqa: E
     StatefulOnnxIOContractV1,
     StateComponent,
 )
-from ndnsf_distributed_inference.adapters.qwen.placement import (  # noqa: E402
-    QWEN36_27B_PRECISION,
-    QWEN36_STAGE_ROLES,
-    build_qwen36_27b_three_stage_adapter,
-)
 
 
 def load_exporter():
@@ -44,7 +39,7 @@ def load_exporter():
 
 def load_stage_manifest_builder():
     path = ROOT / (
-        "specs/175-ndnsf-di-streamed-invocation/jobs/"
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
         "build-qwen-onnx-stage-manifest.py")
     spec = importlib.util.spec_from_file_location(
         "spec175_qwen_stage_manifest_builder", path)
@@ -56,7 +51,7 @@ def load_stage_manifest_builder():
 
 def load_artifact_copier():
     path = ROOT / (
-        "specs/175-ndnsf-di-streamed-invocation/jobs/"
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
         "copy-qwen-onnx-artifact.py")
     spec = importlib.util.spec_from_file_location(
         "spec175_qwen_artifact_copier", path)
@@ -68,7 +63,7 @@ def load_artifact_copier():
 
 def load_reference_generator():
     path = ROOT / (
-        "specs/175-ndnsf-di-streamed-invocation/jobs/"
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
         "generate-qwen-onnx-reference.py")
     spec = importlib.util.spec_from_file_location(
         "spec175_qwen_reference_generator", path)
@@ -80,7 +75,7 @@ def load_reference_generator():
 
 def load_stage_readiness_runner():
     path = ROOT / (
-        "specs/175-ndnsf-di-streamed-invocation/jobs/"
+        "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
         "run-qwen-stage-readiness.py")
     spec = importlib.util.spec_from_file_location(
         "spec175_qwen_stage_readiness_runner", path)
@@ -293,6 +288,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
         the exporter SIF where the Qwen3.5 implementation is available.
         """
         try:
+            import onnx
             import torch
             from transformers.models.qwen3_5.configuration_qwen3_5 import (
                 Qwen3_5TextConfig,
@@ -636,7 +632,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
 
     def test_stage_readiness_runner_is_onnx_only_and_paired(self) -> None:
         runner = ROOT / (
-            "specs/175-ndnsf-di-streamed-invocation/jobs/"
+            "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
             "run-qwen-stage-readiness.py")
         text = runner.read_text(encoding="utf-8")
         self.assertIn("onnxruntime", text)
@@ -657,7 +653,7 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
 
     def test_reference_generator_keeps_observed_ort_token_as_oracle(self) -> None:
         generator = ROOT / (
-            "specs/175-ndnsf-di-streamed-invocation/jobs/"
+            "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
             "generate-qwen-onnx-reference.py")
         text = generator.read_text(encoding="utf-8")
         self.assertIn('"referenceTopToken": generated_first', text)
@@ -670,6 +666,10 @@ class Spec175StatefulOnnxTests(unittest.TestCase):
         )
 
     def test_pinned_qwen_profile_is_fp16_text_only_single_token(self) -> None:
+        # This adapter API case requires the matching native bindings. Offline
+        # state-contract cases above do not, so do not load them at collection.
+        from ndnsf_distributed_inference.adapters.qwen.placement import (
+            QWEN36_27B_PRECISION, QWEN36_STAGE_ROLES, build_qwen36_27b_three_stage_adapter)
         adapter = build_qwen36_27b_three_stage_adapter(
             artifact_digests_by_role={
                 role: digest(str(index + 1))

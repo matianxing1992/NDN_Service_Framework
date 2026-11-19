@@ -308,11 +308,11 @@ class Spec107ArtifactsTest(unittest.TestCase):
                 REPO / "examples/python/NDNSF-DistributedInference/llm_pipeline/"
                 "plan_pipeline.py")
             env = dict(os.environ)
-            env["PYTHONPATH"] = ":".join((
-                str(REPO / "NDNSF-DistributedInference"),
-                str(REPO / "pythonWrapper"),
-                str(script.parent),
-            ))
+            paths = [str(REPO / "NDNSF-DistributedInference"), str(script.parent)]
+            if env.get("NDNSF_PREFER_INSTALLED_NATIVE") != "1":
+                paths.append(str(REPO / "pythonWrapper"))
+            env["PYTHONPATH"] = os.pathsep.join(
+                filter(None, [*paths, env.get("PYTHONPATH")]))
             result = subprocess.run([
                 sys.executable, str(script), "--policy", str(policy),
                 "--runtime", "qwen-onnx", "--stages", "3", "--layers", "24",

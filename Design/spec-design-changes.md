@@ -671,7 +671,7 @@
 
 ### 2026-09-15 — Spec187 Two-layer Packaging
 
-- **NO_DESIGN_CHANGE / product APIs; PARTIAL / packaging**：用户确认 `base SIF + NDNSF`，外部依赖和 SDK 在现有 base 上增建，本仓库各模块归统一 NDNSF 层。此次改动仅构建脚本、技能与交付归属，不改变 C++/Python 产品 API、请求协议或对象生命周期，因此不刷新产品 API/PDF 快照。实现和验收见 [two-layer delivery](../Experiments/TigerCluster/docs/two-layer-delivery.md)、[Spec187 tasks](../specs/187-yolo-minindn-sif-app/tasks.md) 和 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)；base SDK 已真实验收并封存，NDNSF candidate 仍保持 PARTIAL。
+- **NO_DESIGN_CHANGE / product APIs; PARTIAL / packaging**：用户确认 `base SIF + NDNSF`，外部依赖和 SDK 在现有 base 上增建，本仓库各模块归统一 NDNSF 层。此次改动仅构建脚本、技能与交付归属，不改变 C++/Python 产品 API、请求协议或对象生命周期，因此不刷新产品 API/PDF 快照。原验收见 [Spec187 tasks](../specs/187-yolo-minindn-sif-app/tasks.md) 和 [candidate evidence](../specs/187-yolo-minindn-sif-app/evidence/b187-complete-candidate.md)；当时base SDK已验收，NDNSF candidate仍为PARTIAL。现行操作已迁至 [SIF指南](../Experiments/TigerCluster/docs/sif-build.md)，不改写原资格结论。
 
 ### 2026-09-12 — Spec185 Prepared Model Runtime
 
@@ -714,7 +714,7 @@
 
 - **Status**: PARTIAL（environment-input unit `CLOSED_FOR_VALIDATION`）；T007 qualification remains IN_PROGRESS / PARTIAL。
 - **Before/after**: MiniNDN runner 的 topology、Provider node、MiniNDN root、content store、app state 和 native executable 依赖分散在默认值与硬编码中；现在由 `ndnsf-di-minindn-environment-v1` profile 提供机器差异，显式 CLI 覆盖，启动前完成节点/binary preflight，并记录解析 profile identity。协议、ACK/Selection、Provider assembly 和 C++ API/wire 未改变。
-- **Source / evidence**: source checkpoints `689cca00d40b1e2bf241aff4e7d14b0204a7c892`, `90dc8785` and `15c8abb1`; [Spec184 profile evidence](../specs/184-native-di-closure/evidence/minindn-environment-profile-20260912.md)、[environment profile guide](../docs/ndnsf-di-minindn-environment.md)。
+- **Source / evidence**: source checkpoints `689cca00d40b1e2bf241aff4e7d14b0204a7c892`, `90dc8785` and `15c8abb1`; [Spec184 profile evidence](../specs/184-native-di-closure/evidence/minindn-environment-profile-20260912.md)；当前 [本地环境指南](../Experiments/guides/local-validation.md) 已收敛为统一部署入口。
 - **PDF boundary**: no current/target API or architecture change; PDFs were not regenerated. Actual remote/Tiger and Qwen3.6-27B evidence remains external。
 
 ### 2026-09-12 — Spec184 Native MiniNDN requester route

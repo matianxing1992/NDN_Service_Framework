@@ -15,7 +15,8 @@ class HybridEpochRecoveryContractTest(unittest.TestCase):
         end = text.index("bool ServiceUser::decryptHybridMessage(", start)
         body = text[start:end]
         self.assertIn("getWrappedSendKey", body)
-        self.assertIn("cacheWrappedSendKey", body)
+        self.assertIn("cacheWrappedSendPackets", body)
+        self.assertIn("getWrappedSendPackets", body)
         # A new epoch carries the wrapped key on its first packet so a cold
         # receiver does not depend on a named-key fetch racing SVS delivery.
         # Later packets remain compact and recover the epoch key by name.

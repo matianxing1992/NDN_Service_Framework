@@ -8,7 +8,7 @@
 
 using namespace ndnsf::di;
 
-BOOST_AUTO_TEST_SUITE(Spec185PreparedConversationApi)
+BOOST_AUTO_TEST_SUITE(DiPreparedConversationApi)
 
 BOOST_AUTO_TEST_CASE(ConversationCheckpointRejectsUnauthenticatedBytes)
 {

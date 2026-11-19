@@ -4289,6 +4289,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.attemptEpoch = executionAttempt
           ? executionAttempt->attemptEpoch : streamAttemptEpoch;
         coordinatorConfig.streamEpoch = 1;
+        coordinatorConfig.executionDeadline = ctx.assignment().workDeadline;
         coordinatorConfig.lineagePlanDigest = selectionProjection->planDigest;
         coordinatorConfig.localProvider = ctx.localProvider().toUri();
         coordinatorConfig.role = role;

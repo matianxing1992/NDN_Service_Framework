@@ -10,4 +10,5 @@ package-dir = {"" = "../../.."}
 packages = [
   "ndnsf_distributed_inference.sdk",
   "ndnsf_distributed_inference.adapters",
+  "ndnsf_distributed_inference.adapters.yolo",
 ]

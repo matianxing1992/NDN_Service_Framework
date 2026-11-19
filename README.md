@@ -229,13 +229,12 @@ for a complete stack/dependency refresh; routine source changes should select
 one affected target from the already configured build tree:
 
 ```bash
-scripts/install-global-target.sh \
-  --build-dir /absolute/path/to/build-spec189-b189-3-global-r3 \
-  --target ndnsf-distributed-inference
+scripts/install-global-target.sh --target ndnsf-distributed-inference
 ```
 
-The target helper first checks the installed global dependency receipt and the
-configured Waf cache/RPATH, then builds one target. It does not install Python
+The target helper reuses the ordinary `build/` tree configured for `/usr/local`.
+It checks the installed dependency receipt and Waf cache/RPATH before building
+one target, then promotes and verifies it through the owned install stage. It does not install Python
 bindings or run the Repo editable-install hook. It does not rebuild ONNX Runtime.
 `libonnxruntime.so` is the
 external versioned SDK under `/opt/onnxruntime`; it is installed or replaced

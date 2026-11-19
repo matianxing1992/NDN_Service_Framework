@@ -2895,7 +2895,10 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
       };
       ndn_service_framework::RequestCapabilities capabilities;
       capabilities.setField("NDNSF_DATA_V1", "required");
-      if (operation->encodedRequest && operation->encodedRequest->discoveryPayload)
+      const bool supplyDiscovery = operation->encodedRequest && operation->encodedRequest->discoveryPayload &&
+        (operation->encodedRequest->automaticShapeSeed ||
+         operation->user->hasRequestScopedDefault());
+      if (supplyDiscovery)
         capabilities.setField("RequestScopedConfidentialityV1", "required");
       if (!operation->options.providerNames.empty() &&
           operation->options.providerNames.size() <= 16 &&
@@ -3028,7 +3031,7 @@ void beginCoreRequest(const std::shared_ptr<NativeInferenceHandle::Operation>& o
         }, "stream-error");
       };
       std::optional<ndn::Buffer> discoveryPayload;
-      if (operation->encodedRequest->discoveryPayload)
+      if (supplyDiscovery)
         discoveryPayload.emplace(operation->encodedRequest->discoveryPayload->begin(),
                                  operation->encodedRequest->discoveryPayload->end());
       operation->user->BeginCollaborationWithProviders(ndn::Name(operation->runtime->contract.serviceName),

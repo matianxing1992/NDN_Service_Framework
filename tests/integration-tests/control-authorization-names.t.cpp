@@ -206,7 +206,7 @@ void pump(boost::asio::io_context& io, const std::function<bool()>& finished,
 }
 }
 
-BOOST_AUTO_TEST_SUITE(Spec201ControlAuthorization)
+BOOST_AUTO_TEST_SUITE(NamingControlAuthorization)
 
 BOOST_AUTO_TEST_CASE(StatusQueryLifetimePreservesOtherRpcAndClockSkewBoundaries)
 {
@@ -937,15 +937,9 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   const auto owner = makeRsaIdentity(keys, ndn::Name("/spec201/wrapper/owner"));
   const auto foreign = makeRsaIdentity(keys, ndn::Name("/spec201/wrapper/foreign"));
-  ndn::io::save(owner, "spec201-wrapper-owner.cert");
-  ndn::io::save(foreign, "spec201-wrapper-foreign.cert");
-  {
-    std::ofstream schema("spec201-wrapper.conf");
-    schema << "rule { id wrapper for data checker { type customized sig-type rsa-sha256 "
-              "key-locator { type name regex ^<>*$ } } }\n"
-              "trust-anchor { type file file-name spec201-wrapper-owner.cert }\n"
-              "trust-anchor { type file file-name spec201-wrapper-foreign.cert }\n";
-  }
+  IsolatedTestTrust trust({owner, foreign},
+    "rule { id wrapper for data checker { type customized sig-type rsa-sha256 "
+    "key-locator { type name regex ^<>*$ } } }");
   const ndn::Name service("/service"), producer = owner.getIdentity();
   const auto attribute = makeAbeServiceAttribute(service, "SERVICE");
   const auto locator = makeHybridMessageKeyDataName(service, producer, attribute, "epoch");
@@ -965,7 +959,7 @@ BOOST_AUTO_TEST_CASE(WrappedKeySingleFetchRejectsSignerGeometryAndMalformedBlock
     boost::asio::io_context io;
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
-    validator.load("spec201-wrapper.conf");
+    validator.load(trust.schemaPath());
     Bytes plaintext(9000, 0x33);
     ndn::Block envelope(128);
     envelope.push_back(ndn::makeBinaryBlock(129, plaintext.begin(), plaintext.end()));
@@ -1189,12 +1183,7 @@ BOOST_AUTO_TEST_CASE(WrappedKeyOperationFenceCancelsBeforeStartAndDuringFetch)
 {
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");
   const auto owner = makeRsaIdentity(keys, ndn::Name("/spec210/wrapper/owner"));
-  ndn::io::save(owner, "spec210-wrapper-owner.cert");
-  {
-    std::ofstream schema("spec210-wrapper.conf");
-    schema << HIERARCHICAL_TEST_RULE
-           << "trust-anchor { type file file-name spec210-wrapper-owner.cert }\n";
-  }
+  IsolatedTestTrust trust({owner}, HIERARCHICAL_TEST_RULE);
   const ndn::Name service("/service"), producer = owner.getIdentity();
   const auto attribute = makeAbeServiceAttribute(service, "SERVICE");
   const auto locator = makeHybridMessageKeyDataName(service, producer, attribute, "epoch");
@@ -1210,7 +1199,7 @@ BOOST_AUTO_TEST_CASE(WrappedKeyOperationFenceCancelsBeforeStartAndDuringFetch)
     boost::asio::io_context io;
     ndn::DummyClientFace face(io, keys);
     ndn::ValidatorConfig validator(face);
-    validator.load("spec210-wrapper.conf");
+    validator.load(trust.schemaPath());
     bool current = cancelAt != 0;
     unsigned interests = 0, successes = 0, failures = 0;
     ndn::signal::ScopedConnection connection = face.onSendInterest.connect([&](const ndn::Interest& interest) {
@@ -1245,19 +1234,12 @@ BOOST_AUTO_TEST_CASE(ActualReadyHandlerReplaysAuthenticatedQueryWithoutNonceReva
   const auto owner = makeRsaIdentity(keys, ndn::Name("/spec201/ack/user"));
   const auto provider = makeRsaIdentity(keys, ndn::Name("/spec201/ack/provider"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/ack/authority"));
-  ndn::io::save(owner, "spec201-ack-user.cert");
-  ndn::io::save(provider, "spec201-ack-provider.cert");
-  {
-    std::ofstream schema("spec201-ack.conf");
-    schema << "rule { id signed-call for interest checker { type customized sig-type rsa-sha256 "
-              "key-locator { type name regex ^<>*$ } } }\n"
-           << HIERARCHICAL_TEST_RULE <<
-              "trust-anchor { type file file-name spec201-ack-user.cert }\n"
-              "trust-anchor { type file file-name spec201-ack-provider.cert }\n";
-  }
+  IsolatedTestTrust trust({owner, provider},
+    std::string("rule { id signed-call for interest checker { type customized sig-type rsa-sha256 "
+                "key-locator { type name regex ^<>*$ } } }\n") + HIERARCHICAL_TEST_RULE);
   boost::asio::io_context io;
   ndn::DummyClientFace face(io, keys);
-  LocalServiceUser user(face, ndn::Name("/spec201/ack/group"), owner, authority, "spec201-ack.conf");
+  LocalServiceUser user(face, ndn::Name("/spec201/ack/group"), owner, authority, trust.schemaPath());
   user.useSigningKeyChainForTest(keys);
   const ndn::Name id = ndn::Name("/request/tail").appendVersion(257);
   const auto handle = makeOpaqueControlHandle(16);
@@ -1330,23 +1312,16 @@ BOOST_AUTO_TEST_CASE(ActualActivationHandlerExecutesOnceAndReplaysOriginalAuthen
   const auto user = makeRsaIdentity(keys, ndn::Name("/spec201/activate/user"));
   const auto actor = makeRsaIdentity(keys, ndn::Name("/spec201/activate/provider"));
   const auto aa = makeRsaIdentity(keys, ndn::Name("/spec201/activate/authority"));
-  ndn::io::save(user, "spec201-activate-user.cert");
-  ndn::io::save(actor, "spec201-activate-provider.cert");
-  {
-    std::ofstream schema("spec201-activate.conf");
-    schema << "rule { id call for interest checker { type customized sig-type rsa-sha256 "
-              "key-locator { type name regex ^<>*$ } } }\n"
-           << HIERARCHICAL_TEST_RULE <<
-              "trust-anchor { type file file-name spec201-activate-user.cert }\n"
-              "trust-anchor { type file file-name spec201-activate-provider.cert }\n";
-  }
+  IsolatedTestTrust trust({user, actor},
+    std::string("rule { id call for interest checker { type customized sig-type rsa-sha256 "
+                "key-locator { type name regex ^<>*$ } } }\n") + HIERARCHICAL_TEST_RULE);
   boost::asio::io_context io;
   ndn::DummyClientFace face(io, keys);
   const ndn::Name service("/service"), id("/activate/request/tail");
   size_t prepared = 0, ready = 0;
   std::atomic<size_t> executed{0};
   LocalServiceProvider provider(face, ndn::Name("/spec201/activate/group"), actor, aa,
-                                "spec201-activate.conf");
+                                trust.schemaPath());
   provider.useSigningKeyChainForTest(keys);
   provider.setUseTokens(false);
   provider.addService(service, ServiceProvider::RequestHandler(
@@ -1454,20 +1429,16 @@ BOOST_AUTO_TEST_CASE(CertificatePublisherServesOriginalControllerIssuedSubjectWi
   ndn::DummyClientFace::Options options; options.enableRegistrationReply = true;
   ndn::DummyClientFace publisherFace(io, keys, options), consumerFace(io, keys, options);
   publisherFace.linkTo(consumerFace);
-  ndn::io::save(controller.getDefaultKey().getDefaultCertificate(), "spec201-certificate-controller.cert");
-  ndn::io::save(foreign.getDefaultKey().getDefaultCertificate(), "spec201-certificate-foreign.cert");
-  {
-    std::ofstream schema("spec201-issued-certificate.conf");
-    schema << "rule { id issued-certificate for data filter { type name name \""
-           << certificate.getName().toUri(ndn::name::UriFormat::CANONICAL)
-           << "\" relation equal } checker { type customized sig-type rsa-sha256 "
-              "key-locator { type name name \""
-           << controller.getName().toUri(ndn::name::UriFormat::CANONICAL)
-           << "\" relation equal } } }\n"
-              "trust-anchor { type file file-name spec201-certificate-controller.cert }\n"
-              "trust-anchor { type file file-name spec201-certificate-foreign.cert }\n";
-  }
-  auto configured = std::make_shared<MessageValidator>("spec201-issued-certificate.conf",
+  std::ostringstream rules;
+  rules << "rule { id issued-certificate for data filter { type name name \""
+        << certificate.getName().toUri(ndn::name::UriFormat::CANONICAL)
+        << "\" relation equal } checker { type customized sig-type rsa-sha256 "
+           "key-locator { type name name \""
+        << controller.getName().toUri(ndn::name::UriFormat::CANONICAL)
+        << "\" relation equal } } }";
+  IsolatedTestTrust trust({controller.getDefaultKey().getDefaultCertificate(),
+                           foreign.getDefaultKey().getDefaultCertificate()}, rules.str());
+  auto configured = std::make_shared<MessageValidator>(trust.schemaPath(),
                                                        std::nullopt, &consumerFace);
   size_t rejected = 0;
   auto forged = certificate;

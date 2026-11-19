@@ -529,6 +529,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
 
     def test_model_task_first_request_plans_after_signed_ack_snapshot(self):
         service_user = _AutomaticServiceUser(self.events)
+        service_user.has_request_scoped_default = True
         lifecycle_events = []
         adapter = build_object_detection_adapter()
         task = InferenceTaskRef.from_adapter(adapter)
@@ -589,6 +590,9 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
         self.assertEqual(service, "/inference")
         self.assertEqual(kwargs["mode"], "DEFERRED")
         request = json.loads(wire)
+        self.assertTrue(request["input_payload_b64"])
+        self.assertEqual(json.loads(kwargs["discovery_payload"]),
+                         {**request, "input_payload_b64": ""})
         self.assertEqual(request["request_id"], "/request%2Fautomatic-1")
         self.assertEqual(kwargs["request_id"], "/request%2Fautomatic-1")
         self.assertEqual(request["model"]["name"], "example/detector")
@@ -607,7 +611,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
             set(commit["key_scopes"]),
         )
         self.assertTrue(all(
-            name.startswith("/8=encrypted/8=NDNSF/8=BLOB/") and "/8=MANIFEST/" in name
+            name.startswith("/8=encrypted/8=NDNSF/8=blob/") and "/8=MANIFEST/" in name
             for name in commit["scope_key_data_names"].values()
         ))
         self.assertEqual(
@@ -1030,10 +1034,7 @@ class AutomaticCollaborationPlanTest(unittest.TestCase):
         self.assertEqual(planner.generation_calls, [generation, generation])
 
     def test_app_yaml_is_digest_pinned_and_rejects_deployment_or_secrets(self):
-        root = Path(__file__).resolve().parents[2]
-        contracts = (
-            root / "specs" / "163-di-collaboration-planning" / "contracts"
-        )
+        contracts = Path(__file__).resolve().parent / "support/fixtures/automatic-planning"
         schema = json.loads(
             (contracts / "app-config.schema.json").read_text())
         config = yaml.safe_load(

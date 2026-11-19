@@ -1,6 +1,6 @@
 {
   "name": "dsh-tps-window",
-  "version": "0.5.2",
+  "version": "0.5.10",
   "description": "DSH 60-second output speed: root includes descendants, child measures itself; provider quota retained.",
   "keywords": [
     "deepseek",
@@ -24,7 +24,11 @@
     "README.md"
   ],
   "license": "MIT",
-  "dependencies": { "@deepseek-ai/dsh-llm": "0.2.2-rc.1" },
+  "dependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1"
+  },
+  "peerDependencies": { "@deepseek-ai/cordis": "4.1.0" },
+  "engines": { "node": ">=22" },
   "scripts": { "test": "node test/run.js" },
   "dsh": {
     "client": {

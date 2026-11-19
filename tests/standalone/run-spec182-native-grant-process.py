@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BUILD = Path(os.environ.get("SPEC185_BUILD_DIR", ROOT / "build"))
 CONTROLLER = "App_ServiceController"
 AUTHORITY = "DI_NativeArtifactAuthority"
-PROBE = "spec182-native-grant-requester-process"
+PROBE = "native-grant-requester-process"
 
 
 def install_termination_handlers():

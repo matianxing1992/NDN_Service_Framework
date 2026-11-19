@@ -19,7 +19,7 @@
 
 #include <fcntl.h>
 #define SPEC202_DEFINE_SYSCALL_WRAPPERS
-#include "tests/fixtures/spec202-syscall-fault.hpp"
+#include "tests/fixtures/syscall-fault.hpp"
 
 #define SPEC202_DEFINE_IMPORT_LOCK_WRAPPER
-#include "tests/fixtures/spec202-import-lock.hpp"
+#include "tests/fixtures/import-lock.hpp"

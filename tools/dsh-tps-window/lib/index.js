@@ -16,6 +16,8 @@
 //                 The control key comes from `OPEN_DESIGN_CONTROL_KEY` or, when the
 //                 OpenDesign desktop app has signed in, `~/.amr/config.json`
 //                 (`profiles.prod.controlKey`). Without it there is no reading.
+//   open-design-2 Queries only the workspace and control key configured for the
+//                 second account. It never falls back to the first account.
 //   command-code  GET https://api.commandcode.ai/alpha/billing/credits,
 //                 .../alpha/usage/summary and .../alpha/billing/subscriptions
 //                 (Bearer COMMANDCODE_API_KEY) -> windowLimits.fiveHour/weekly
@@ -29,6 +31,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { SpeedCollector } from './speed.js'
+import { AMR_API, OpenDesignLogin, openDesignBindingRef, validControlKey, validWorkspaceId } from './open-design-login.js'
 
 export const name = 'dsh-tps-window'
 
@@ -36,7 +39,6 @@ export const inject = ['credentials', 'webServer', 'agents', 'sessionQuery', 'co
 
 const ROUTE_PREFIX = '/tps-window'
 const OPENCODE_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage'
-const AMR_API = 'https://amr-api.open-design.ai/api/v1'
 const COMMANDCODE_BASE = 'https://api.commandcode.ai'
 const HTTP_TIMEOUT_MS = 8000
 const CODEX_TIMEOUT_MS = 12000
@@ -47,6 +49,7 @@ const OPENCODE_TTL_MS = 120000
 const CODEX_TTL_MS = 300000
 const COMMANDCODE_TTL_MS = 300000
 const OPENDESIGN_TTL_MS = 120000
+const OPENDESIGN_RETRY_MS = 15000
 
 // #region quota-math
 const QUOTA_MATH = {
@@ -135,6 +138,7 @@ const QUOTA_MATH = {
       if (percent === null) continue
       windows.push({
         label: QUOTA_MATH.windowLabel(bucket.windowDurationMins) === null ? '限额' : QUOTA_MATH.windowLabel(bucket.windowDurationMins),
+        durationMinutes: bucket.windowDurationMins,
         percent: Math.max(0, Math.min(100, Math.round(percent))),
         resetsAt: QUOTA_MATH.secondsToEpochMs(bucket.resetsAt)
       })
@@ -263,6 +267,24 @@ const QUOTA_MATH = {
     return { amounts: amounts, detail: detail }
   },
 
+  openDesignWindows: function (body, workspaceId) {
+    const plan = body?.codingPlan
+    if (plan?.eligible === false || !Array.isArray(plan?.windows)) return []
+    if ([body.workspaceId, plan.workspaceId].some(id => id !== undefined && id !== workspaceId)) return []
+    const windows = new Map()
+    for (const entry of plan.windows) {
+      const seconds = QUOTA_MATH.number(entry?.durationSeconds)
+      const label = seconds === 18000 ? '5h' : seconds === 604800 ? '7天' : null
+      const used = QUOTA_MATH.number(entry?.usedCredits)
+      const limit = QUOTA_MATH.number(entry?.limitCredits)
+      if (label === null || used === null || used < 0 || limit === null || limit <= 0) continue
+      const percent = Math.min(100, used / limit * 100)
+      const resetsAt = QUOTA_MATH.timeToEpochMs(entry.resetsAt)
+      windows.set(seconds, { label, durationMinutes: seconds / 60, percent, resetsAt })
+    }
+    return [...windows.entries()].sort(([a], [b]) => a - b).map(([, window]) => window)
+  },
+
   /**
    * Depth-first search for a top/premium credit or USD field. Returns the raw
    * value and the field path, or null when the payload carries none.
@@ -329,11 +351,13 @@ async function readAmrProfile() {
 }
 
 /** One AMR account read. Accepts a direct object or a `data` envelope. */
-async function amrJson(path, key) {
+async function amrJson(path, key, workspaceId) {
+  const headers = { authorization: `Bearer ${key}`, accept: 'application/json' }
+  if (workspaceId !== undefined) headers['x-vela-workspace-id'] = workspaceId
   let response
   try {
     response = await fetch(AMR_API + path, {
-      headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
+      headers,
       redirect: 'error',
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
     })
@@ -359,7 +383,47 @@ async function amrJson(path, key) {
  * `OPEN_DESIGN_CONTROL_KEY` reference, or the one the desktop app saved in
  * `~/.amr/config.json`.
  */
-async function readOpenDesign(ctx) {
+async function readOpenDesignWorkspace(provider, key, workspaceId) {
+  if (!validWorkspaceId(workspaceId)) return { status: 'unavailable', reason: 'invalid-workspace-id' }
+  const prefix = `/workspaces/${workspaceId}`
+  const [wallet, billing] = await Promise.all([
+    amrJson(`${prefix}/wallet/balance`, key, workspaceId),
+    amrJson(`${prefix}/billing/preflight`, key, workspaceId)
+  ])
+  const label = provider === 'open-design-2' ? 'OD 2' : 'OD'
+  const windows = billing.ok ? QUOTA_MATH.openDesignWindows(billing.body, workspaceId) : []
+  const mapped = QUOTA_MATH.opendesignAmounts(wallet.ok ? wallet.body : null, null)
+  if (windows.length > 0) {
+    return { ...QUOTA_MATH.reading(label, windows, mapped.detail), amounts: mapped.amounts }
+  }
+  if (!wallet.ok) {
+    const unauthorized = wallet.status === 401 || wallet.status === 403
+    return { status: 'unavailable', reason: unauthorized ? 'unauthorized' : 'unreachable' }
+  }
+  if (mapped.amounts.length === 0) return { status: 'unavailable', reason: 'no-fields' }
+  return QUOTA_MATH.amountsReading(label, mapped.amounts, { ...mapped.detail,
+    windowStatus: billing.ok ? 'no-windows' : 'unavailable' })
+}
+
+async function readOpenDesign(ctx, provider = 'open-design') {
+  const ref = openDesignBindingRef(provider)
+  if (ref === null) return { status: 'unavailable', reason: 'no-adapter' }
+  const saved = (await ctx.credentials.resolve(ref))?.value
+  if (typeof saved === 'string' && saved.length > 0) {
+    let binding
+    try { binding = JSON.parse(saved) } catch { /* A malformed binding must not fall back. */ }
+    if (!validControlKey(binding?.controlKey) || !validWorkspaceId(binding?.workspaceId)) {
+      return { status: 'unavailable', reason: 'invalid-binding' }
+    }
+    return readOpenDesignWorkspace(provider, binding.controlKey, binding.workspaceId)
+  }
+  if (provider === 'open-design-2') {
+    const key = await resolveReference(ctx, ['OPEN_DESIGN_2_CONTROL_KEY'])
+    if (key === undefined) return { status: 'unavailable', reason: 'no-control-key' }
+    const workspaceId = await resolveReference(ctx, ['OPEN_DESIGN_2_WORKSPACE_ID'])
+    if (workspaceId === undefined) return { status: 'unavailable', reason: 'no-workspace-id' }
+    return readOpenDesignWorkspace(provider, key, workspaceId)
+  }
   const explicit = await resolveReference(ctx, ['OPEN_DESIGN_CONTROL_KEY', 'OPENDESIGN_CONTROL_KEY'])
   let controlKey = explicit
   if (controlKey === undefined) {
@@ -592,9 +656,13 @@ class QuotaService {
     this.inflight = new Map()
   }
 
-  ttlOf(provider) {
+  ttlOf(provider, value) {
     if (provider === 'openai-codex') return CODEX_TTL_MS
-    if (provider === 'open-design') return OPENDESIGN_TTL_MS
+    if (openDesignBindingRef(provider) !== null) {
+      if (value.reason === 'unreachable' || value.reason === 'error' ||
+          value.detail?.windowStatus === 'unavailable') return OPENDESIGN_RETRY_MS
+      return OPENDESIGN_TTL_MS
+    }
     if (provider === 'command-code' || provider === 'commandcode') return COMMANDCODE_TTL_MS
     return OPENCODE_TTL_MS
   }
@@ -602,7 +670,9 @@ class QuotaService {
   async read(provider) {
     if (provider === 'opencode-go') return readOpencodeGo(this.ctx)
     if (provider === 'openai-codex') return codexRateLimits()
-    if (provider === 'open-design') return readOpenDesign(this.ctx)
+    if (provider === 'open-design' || provider === 'open-design-2') {
+      return readOpenDesign(this.ctx, provider)
+    }
     // The provider id is whatever the profile named it; Command Code is not a
     // shipped pi-ai provider, so both spellings a user may choose are accepted.
     if (provider === 'command-code' || provider === 'commandcode') return readCommandCode(this.ctx)
@@ -614,7 +684,9 @@ class QuotaService {
   /** Cached reading for one provider, or an "unavailable" answer. */
   async quotaFor(provider) {
     const cached = this.entries.get(provider)
-    if (cached !== undefined && Date.now() - cached.at < this.ttlOf(provider)) return cached.value
+    if (cached !== undefined && Date.now() - cached.at < this.ttlOf(provider, cached.value)) {
+      return cached.value
+    }
     const inFlight = this.inflight.get(provider)
     if (inFlight !== undefined) return await inFlight
     const run = (async () => {
@@ -625,8 +697,10 @@ class QuotaService {
         this.log?.warn?.(`tps-window: quota read failed for ${provider}: ${String(error && error.message)}`)
         value = { status: 'unavailable', reason: 'error' }
       }
-      this.entries.set(provider, { at: Date.now(), value })
-      this.inflight.delete(provider)
+      if (this.inflight.get(provider) === run) {
+        this.entries.set(provider, { at: Date.now(), value })
+        this.inflight.delete(provider)
+      }
       return value
     })()
     this.inflight.set(provider, run)
@@ -652,6 +726,11 @@ class QuotaService {
 
 export async function apply(ctx) {
   const service = new QuotaService(ctx, ctx.logger)
+  const login = new OpenDesignLogin(ctx.credentials, provider => {
+    service.entries.delete(provider)
+    service.inflight.delete(provider)
+  })
+  ctx.effect(() => () => login.close())
   const speed = new SpeedCollector(ctx)
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     speed.safely(() => speed.frame(agent, frame), agent.session)
@@ -663,17 +742,42 @@ export async function apply(ctx) {
   const timer = setInterval(() => speed.gc(), 1000)
   timer.unref?.()
   ctx.effect(() => () => clearInterval(timer))
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_PREFIX + '/open-design-login',
+    // DSH Web resources only admit GET/HEAD. This handler owns the POST.
+    handler: async (req, res) => {
+      const url = new URL(req.url, 'http://localhost')
+      const headers = new Headers()
+      for (const [name, value] of Object.entries(req.headers)) {
+        for (const part of typeof value === 'string' ? [value] : value ?? []) headers.append(name, part)
+      }
+      const auth = ctx.connection.requestRejection(new Request(url, { method: 'POST', headers }))
+      const rejection = auth ?? (req.method !== 'POST' ? 405 :
+        headers.get('x-dsh-tps-window') !== 'device-login' ? 403 :
+        headers.has('transfer-encoding') || Number(headers.get('content-length')) !== 0 ? 400 : null)
+      if (rejection !== null) {
+        res.writeHead(rejection, { 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      const value = await login.handle(url.searchParams.get('provider'),
+        url.searchParams.get('action'), url.searchParams.get('id'))
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify(value))
+    }
+  }), 'tps-window: OpenDesign login route')
   ctx.effect(
     () =>
       ctx.webServer.register({
         kind: 'prefix',
         path: ROUTE_PREFIX,
         resource: (request) => {
-          const url = new URL(request.url, 'http://localhost')
-          if (url.pathname !== ROUTE_PREFIX + '/speed') return service.handle(request)
           const rejection = ctx.connection.requestRejection(request)
           if (rejection !== undefined) return new Response(null, { status: rejection })
           if (request.method !== 'GET') return new Response(null, { status: 405 })
+          const url = new URL(request.url, 'http://localhost')
+          if (url.pathname !== ROUTE_PREFIX + '/speed') return service.handle(request)
           const id = url.searchParams.get('sessionId')
           if (!id || id.length > 256) return new Response(null, { status: 400 })
           return Response.json(speed.snapshot(id), { headers: { 'cache-control': 'no-store' } })

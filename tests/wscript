@@ -9,8 +9,8 @@ import runpy
 def build(bld):
     if 'di' in bld.env.NDNSF_COMPONENTS and bld.env.HAVE_ONNXRUNTIME_CPP:
         spec233_has_repo = 'repo' in bld.env.NDNSF_COMPONENTS
-        bld.program(target='../spec233-automatic-source-probe',
-                    name='spec233-automatic-source-probe',
+        bld.program(target='../automatic-source-probe',
+                    name='automatic-source-probe',
                     source=['installed-api/installed-automatic-source-probe.cpp'],
                     includes=['..', '../ndn-service-framework'],
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
@@ -18,33 +18,33 @@ def build(bld):
                     cxxflags=['-std=c++17', '-O0', '-g0'], rpath=[bld.env.LIBDIR],
                     linkflags=['-lz'],
                     install_path='${PREFIX}/libexec/ndnsf-tests')
-        bld.program(target='../spec233-automatic-catalog',
-                    name='spec233-automatic-catalog',
+        bld.program(target='../automatic-catalog',
+                    name='automatic-catalog',
                     source=['installed-api/installed-automatic-catalog-probe.cpp'],
                     includes=['..', '../ndn-service-framework'],
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
                     cxxflags=['-std=c++17', '-O0', '-g0'], rpath=[bld.env.LIBDIR],
                     install_path='${PREFIX}/libexec/ndnsf-tests')
-        bld.program(target='../spec233-onnx-source', name='spec233-onnx-source',
-                    source=['main.cpp', 'unit-tests/spec233-onnx-source.t.cpp',
-                            'unit-tests/spec233-automatic-shapes.t.cpp',
-                            'unit-tests/spec233-automatic-generation.t.cpp',
-                            'unit-tests/spec233-automatic-split.t.cpp',
-                            'unit-tests/spec233-prepared-metadata.t.cpp',
-                            'unit-tests/spec233-automatic-io.t.cpp',
+        bld.program(target='../onnx-source', name='onnx-source',
+                    source=['main.cpp', 'unit-tests/onnx-source.t.cpp',
+                            'unit-tests/automatic-shapes.t.cpp',
+                            'unit-tests/automatic-generation.t.cpp',
+                            'unit-tests/automatic-split.t.cpp',
+                            'unit-tests/prepared-metadata.t.cpp',
+                            'unit-tests/automatic-io.t.cpp',
                             'unit-tests/distributed-inference-native-plan.t.cpp',
                             'unit-tests/di-native-onnx-recipe.t.cpp',
                             'unit-tests/di-native-client.t.cpp',
                             'unit-tests/distributed-inference-protected-runtime-grant.t.cpp',
                             'unit-tests/distributed-inference-async-runtime.t.cpp',
-                            'unit-tests/spec189-logits-dtype.t.cpp',
-                            'unit-tests/spec194-v4-offer.t.cpp',
+                            'unit-tests/logits-dtype.t.cpp',
+                            'unit-tests/v4-offer.t.cpp',
                             'unit-tests/stream-owner-lease.t.cpp',
                             'unit-tests/di-native-planning.t.cpp',
                             'unit-tests/di-native-canonical-publisher.t.cpp',
                             'unit-tests/di-native-assembly.t.cpp'] +
-                           (['unit-tests/spec190-repo-lookup-reuse.t.cpp'] if spec233_has_repo else []),
+                           (['unit-tests/repo-lookup-reuse.t.cpp'] if spec233_has_repo else []),
                     includes=['..', '../ndn-service-framework'] +
                              (['../NDNSF-DistributedRepo/include'] if spec233_has_repo else []),
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
@@ -52,24 +52,24 @@ def build(bld):
                         (' ndnsf-distributed-repo sqlite3' if spec233_has_repo else ''),
                     cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
                     rpath=[bld.env.LIBDIR], install_path='${PREFIX}/libexec/ndnsf-tests')
-        bld.program(target='../spec233-onnx-source-asan', name='spec233-onnx-source-asan',
-                    source=['main.cpp', 'unit-tests/spec233-onnx-source.t.cpp',
-                            'unit-tests/spec233-automatic-shapes.t.cpp',
-                            'unit-tests/spec233-automatic-generation.t.cpp',
-                            'unit-tests/spec233-automatic-split.t.cpp',
-                            'unit-tests/spec233-prepared-metadata.t.cpp',
-                            'unit-tests/spec233-automatic-io.t.cpp',
+        bld.program(target='../onnx-source-asan', name='onnx-source-asan',
+                    source=['main.cpp', 'unit-tests/onnx-source.t.cpp',
+                            'unit-tests/automatic-shapes.t.cpp',
+                            'unit-tests/automatic-generation.t.cpp',
+                            'unit-tests/automatic-split.t.cpp',
+                            'unit-tests/prepared-metadata.t.cpp',
+                            'unit-tests/automatic-io.t.cpp',
                             'unit-tests/distributed-inference-native-plan.t.cpp',
                             'unit-tests/di-native-onnx-recipe.t.cpp',
                             'unit-tests/di-native-client.t.cpp',
                             'unit-tests/distributed-inference-protected-runtime-grant.t.cpp',
                             'unit-tests/distributed-inference-async-runtime.t.cpp',
-                            'unit-tests/spec189-logits-dtype.t.cpp',
-                            'unit-tests/spec194-v4-offer.t.cpp',
+                            'unit-tests/logits-dtype.t.cpp',
+                            'unit-tests/v4-offer.t.cpp',
                             'unit-tests/di-native-planning.t.cpp',
                             'unit-tests/di-native-canonical-publisher.t.cpp',
                             'unit-tests/di-native-assembly.t.cpp',
-                            'unit-tests/spec233-tensor-types.t.cpp',
+                            'unit-tests/tensor-types.t.cpp',
                             '../NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp',
                             '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.cpp',
                             '../NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanSealer.cpp',
@@ -105,7 +105,7 @@ def build(bld):
                             '../NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-inference.cpp',
                             '../NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.cpp',
                             '../NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.cpp'] +
-                           (['unit-tests/spec190-repo-lookup-reuse.t.cpp'] if spec233_has_repo else []),
+                           (['unit-tests/repo-lookup-reuse.t.cpp'] if spec233_has_repo else []),
                     includes=['..', '../ndn-service-framework'] +
                              (['../NDNSF-DistributedRepo/include'] if spec233_has_repo else []),
                     use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME' +
@@ -118,21 +118,21 @@ def build(bld):
                     linkflags=['-fsanitize=address,undefined'],
                     defines=['HAVE_TESTS'], install_path=None)
         # Session/kernel preflight only; it does not qualify inference or generation.
-        bld.program(target='../spec233-onnx-model-preflight', name='spec233-onnx-model-preflight',
+        bld.program(target='../onnx-model-preflight', name='onnx-model-preflight',
                     source=['installed-api/installed-onnx-model-load-probe.cpp'],
                     use='ONNXRUNTIME', cxxflags=['-std=c++17', '-O0', '-g0'],
                     rpath=bld.env.LIBPATH_ONNXRUNTIME,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         # Independent uncut numerical reference; frozen names are test data only.
-        bld.program(target='../spec233-onnx-reference', name='spec233-onnx-reference',
+        bld.program(target='../onnx-reference', name='onnx-reference',
                     source=['installed-api/installed-onnx-reference-probe.cpp'],
                     includes=['..'], use='ONNXRUNTIME OPENSSL',
                     cxxflags=['-std=c++17', '-O2', '-g0'],
                     rpath=bld.env.LIBPATH_ONNXRUNTIME,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         # Installed-path oracle: exercise the production codec, never a fixture reimplementation.
-        bld.program(target='../spec233-tensor-types', name='spec233-tensor-types',
-                    source=['main.cpp', 'unit-tests/spec233-tensor-types.t.cpp'],
+        bld.program(target='../tensor-types', name='tensor-types',
+                    source=['main.cpp', 'unit-tests/tensor-types.t.cpp'],
                     includes=['..', '../ndn-service-framework'],
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
                         'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
@@ -140,8 +140,8 @@ def build(bld):
                     rpath=[bld.env.LIBDIR], install_path='${PREFIX}/libexec/ndnsf-tests')
         # Run only codec cases in isolated scratch after installing the normal DI library.
         # The executable owns the instrumented production codec; other DI code is uninstrumented.
-        bld.program(target='../spec233-tensor-types-asan', name='spec233-tensor-types-asan',
-                    source=['main.cpp', 'unit-tests/spec233-tensor-types.t.cpp',
+        bld.program(target='../tensor-types-asan', name='tensor-types-asan',
+                    source=['main.cpp', 'unit-tests/tensor-types.t.cpp',
                             '../NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.cpp'],
                     includes=['..', '../ndn-service-framework'],
                     use='NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL ZLIB DL ONNX ONNXRUNTIME',
@@ -150,7 +150,7 @@ def build(bld):
                               '-fsanitize=address,undefined'],
                     linkflags=['-fsanitize=address,undefined'], defines=['HAVE_TESTS'],
                     rpath=[bld.env.LIBDIR], install_path=None)
-    bld.program(target='../spec226-nac-transport', name='spec226-nac-transport',
+    bld.program(target='../nac-transport', name='nac-transport',
                 source=['main.cpp', 'unit-tests/nac-consumer-transport.t.cpp',
                         '../ndn-service-framework/nac-consumer-transport.cpp'],
                 includes=['..', '../ndn-service-framework'],
@@ -158,19 +158,19 @@ def build(bld):
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 defines=['HAVE_TESTS'], install_path=None)
     # MiniNDN test actors need public peer certificates in each isolated PIB.
-    bld.program(target='../spec226-public-trust-installer',
-                name='spec226-public-trust-installer',
-                source=['minindn/spec226-public-trust-installer.cpp'],
+    bld.program(target='../public-trust-installer',
+                name='public-trust-installer',
+                source=['minindn/public-trust-installer.cpp'],
                 defines=['NDN_CXX_WITH_TESTS'],
                 use='NDN_CXX', install_path='${BINDIR}')
-    bld.program(target='../spec226-input-identity', name='spec226-input-identity',
+    bld.program(target='../input-identity', name='input-identity',
                 source=['main.cpp', 'unit-tests/collaboration-input-identity.t.cpp',
                         'integration-tests/ndnsf-integration-fixture.cpp'],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 defines=['HAVE_TESTS'], rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec226-dependency-recovery', name='spec226-dependency-recovery',
+    bld.program(target='../dependency-recovery', name='dependency-recovery',
                 source=['main.cpp', 'unit-tests/dependency-recovery.t.cpp',
                         'unit-tests/stream.t.cpp', 'unit-tests/stream-facade.t.cpp',
                         'unit-tests/stream-predictive.t.cpp',
@@ -179,7 +179,7 @@ def build(bld):
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-std=c++17', '-O0', '-g0'], defines=['HAVE_TESTS'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec226-input-admission', name='spec226-input-admission',
+    bld.program(target='../input-admission', name='input-admission',
                 source=['main.cpp', 'integration-tests/collaboration-input-admission.t.cpp',
                         'integration-tests/ndnsf-integration-fixture.cpp'],
                 includes=['..', '../ndn-service-framework'],
@@ -192,7 +192,7 @@ def build(bld):
                 includes=['..'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL',
                 linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path=None)
-    bld.program(target='../spec222-repo-owner-cli', name='spec222-repo-owner-cli',
+    bld.program(target='../repo-owner-cli', name='repo-owner-cli',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/repo-owner-delete-cli.t.cpp')],
                 includes=['..', '../NDNSF-DistributedRepo/include'],
@@ -207,8 +207,8 @@ def build(bld):
         if suffix:
             flags += ['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
             links += ['-fsanitize=address,undefined']
-        bld.program(target='../spec222-stored-model-capability' + suffix,
-                    name='spec222-stored-model-capability' + suffix,
+        bld.program(target='../stored-model-capability' + suffix,
+                    name='stored-model-capability' + suffix,
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/stored-model-capability.t.cpp'),
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/stored-model-capability.cpp'),
@@ -218,7 +218,7 @@ def build(bld):
                     use='ndnsf-distributed-repo NDN_CXX BOOST OPENSSL DL',
                     cxxflags=flags, linkflags=links, install_path=None)
     # Revalidate the restored Controller baseline without linking the inference backend.
-    bld.program(target='../spec222-controller-baseline', name='spec222-controller-baseline',
+    bld.program(target='../controller-baseline', name='controller-baseline',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/controller-revocation-state.t.cpp'),
                         bld.path.find_node('unit-tests/controller-revocation-policy.t.cpp'),
@@ -230,7 +230,7 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
     if 'repo' in bld.env.NDNSF_COMPONENTS:
         # Instrument the changed asynchronous fetcher, reusing its native lifecycle fixtures.
-        bld.program(target='../spec222-repo-fetcher-asan', name='spec222-repo-fetcher-asan',
+        bld.program(target='../repo-fetcher-asan', name='repo-fetcher-asan',
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/face-data-reference-fetcher.t.cpp'),
                             bld.srcnode.find_node(
@@ -339,8 +339,8 @@ def build(bld):
             probe_env.INCLUDES_ONNXRUNTIME = [os.path.join(probe_sdk, 'include')]
             probe_env.LIBPATH_ONNXRUNTIME = [os.path.join(probe_sdk, 'lib')]
             probe_rpath = probe_env.LIBPATH_ONNXRUNTIME
-        bld.program(target='../spec220-ort-required-operators',
-                    name='spec220-ort-required-operators',
+        bld.program(target='../ort-required-operators',
+                    name='ort-required-operators',
                     source=[bld.path.find_node('fixtures/spec220/ort-required-operators.cpp')],
                     env=probe_env, use='ONNX ONNXRUNTIME PROTOBUF', cxxflags=['-std=c++17'],
                     rpath=probe_rpath,
@@ -348,8 +348,8 @@ def build(bld):
     # Sanitize the production collector itself, not just a fixture linked to
     # an unsanitized shared library. These are lifecycle checks, not inference.
     for suffix, sanitizer in (('asan', 'address,undefined'), ('tsan', 'thread')):
-        bld.program(target='../spec220-work-statistics-' + suffix,
-                    name='spec220-work-statistics-' + suffix,
+        bld.program(target='../work-statistics-' + suffix,
+                    name='work-statistics-' + suffix,
                     source=[bld.path.find_node('main.cpp'),
                             bld.path.find_node('unit-tests/request-work-statistics.t.cpp'),
                             bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
@@ -358,53 +358,50 @@ def build(bld):
                     cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer',
                               '-fsanitize=' + sanitizer],
                     linkflags=['-fsanitize=' + sanitizer], install_path=None)
-    bld.program(target='../spec219-cached-signer-fixture',
-                name='spec219-cached-signer-fixture',
-                source=['standalone/spec219-cached-signer-fixture.cpp'],
+    bld.program(target='../cached-signer-fixture',
+                name='cached-signer-fixture',
+                source=['standalone/cached-signer-fixture.cpp'],
                 use='NDN_CXX BOOST OPENSSL', cxxflags=['-O0', '-g0'],
                 install_path='${LIBEXECDIR}/ndnsf-tests')
-    offer_source = bld.srcnode.find_node(
-        'NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp')
-    bld.program(target='../spec217-provider-offer-tests', name='spec217-provider-offer-tests',
-                source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/native-provider-offer-gpu.t.cpp'),
-                        offer_source,
-                        bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
-                includes=['..'], use='BOOST OPENSSL DL',
-                cxxflags=['-std=c++17', '-O0', '-g0', '-pthread'],
-                linkflags=['-pthread'], install_path=None)
-    for suffix, sanitizer in (('asan', 'address,undefined'), ('tsan', 'thread')):
-        bld.program(target='../spec220-provider-query-' + suffix,
-                    name='spec220-provider-query-' + suffix,
-                    source=[bld.path.find_node('main.cpp'),
-                            bld.path.find_node('unit-tests/native-provider-offer-gpu.t.cpp'),
-                            offer_source,
-                            bld.srcnode.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp')],
-                    includes=['..'], use='BOOST OPENSSL DL',
-                    cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer', '-pthread',
-                              '-fsanitize=' + sanitizer],
-                    linkflags=['-pthread', '-fsanitize=' + sanitizer], install_path=None)
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        offer_test_sources = ['main.cpp', 'unit-tests/native-provider-offer-gpu.t.cpp']
+        offer_use = 'ndnsf-distributed-inference NAC-ABE BOOST OPENSSL DL'
+        bld.program(target='../provider-offer-tests', name='provider-offer-tests',
+                    source=offer_test_sources, includes=['..'], use=offer_use,
+                    cxxflags=['-std=c++17', '-O0', '-g0', '-pthread'],
+                    linkflags=['-pthread'], rpath=[bld.bldnode.abspath()], install_path=None)
+        for suffix, sanitizer in (('asan', 'address,undefined'), ('tsan', 'thread')):
+            bld.program(target='../provider-query-' + suffix,
+                        name='provider-query-' + suffix,
+                        source=offer_test_sources + [
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV3.cpp',
+                            '../NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.cpp'],
+                        includes=['..'], use=offer_use,
+                        cxxflags=['-std=c++17', '-O1', '-g1', '-fno-omit-frame-pointer', '-pthread',
+                                  '-fsanitize=' + sanitizer],
+                        linkflags=['-pthread', '-fsanitize=' + sanitizer],
+                        rpath=[bld.bldnode.abspath()], install_path=None)
     for name, library, version in (('cuda', 'cudart', '12'), ('driver', 'cuda', '1'),
                                    ('nvml', 'nvidia-ml', '1')):
-        bld.shlib(name='spec217-' + name + '-query-fixture',
+        bld.shlib(name='' + name + '-query-fixture',
                   target='../spec217-gpu-fixtures/' + library, vnum=version,
-                  source=['fixtures/spec217-gpu-query.cpp'],
+                  source=['fixtures/gpu-query.cpp'],
                   install_path='${PREFIX}/libexec/ndnsf-tests/vendor-gpu')
-    bld.program(target='../spec217-device-query-tests', name='spec217-device-query-tests',
-                source=['main.cpp', 'unit-tests/spec217-device-query.t.cpp'],
+    bld.program(target='../device-query-tests', name='device-query-tests',
+                source=['main.cpp', 'unit-tests/device-query.t.cpp'],
                 includes=['..'], use='BOOST', cxxflags=['-std=c++17', '-O0', '-g0'],
                 install_path=None)
-    bld.program(target='../spec217-credentials-tests', name='spec217-credentials-tests',
+    bld.program(target='../credentials-tests', name='credentials-tests',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec217-controller-certificate.t.cpp')],
+                        bld.path.find_node('unit-tests/controller-certificate.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX BOOST OPENSSL',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec217-identity-tests', name='spec217-identity-tests',
+    bld.program(target='../identity-tests', name='identity-tests',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec217-identity-check.t.cpp'),
-                        bld.path.find_node('unit-tests/spec217-deployment-readiness.t.cpp')],
+                        bld.path.find_node('unit-tests/identity-check.t.cpp'),
+                        bld.path.find_node('unit-tests/deployment-readiness.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX BOOST OPENSSL',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
@@ -418,36 +415,36 @@ def build(bld):
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec205-profile-tests', name='spec205-profile-tests',
+    bld.program(target='../profile-tests', name='profile-tests',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec205-security-profile.t.cpp'),
-                        bld.path.find_node('unit-tests/spec223-svs-loss.t.cpp')],
+                        bld.path.find_node('unit-tests/security-profile.t.cpp'),
+                        bld.path.find_node('unit-tests/svs-loss.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec205-carrier-tests', name='spec205-carrier-tests',
+    bld.program(target='../carrier-tests', name='carrier-tests',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec205-protected-carrier.t.cpp')],
+                        bld.path.find_node('unit-tests/protected-carrier.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
     # Small installed closure oracle. Reuse the independent production-linked
     # corpora; tensor/control/stream receipts remain separate existing targets.
-    bld.program(target='../spec201-candidate-closure',
-                name='spec201-candidate-closure',
+    bld.program(target='../naming-candidate-closure',
+                name='naming-candidate-closure',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/producer-data-naming.t.cpp'),
                         bld.path.find_node('unit-tests/published-content-name.t.cpp'),
-                        bld.path.find_node('unit-tests/spec201-transparent-repo.t.cpp'),
-                        bld.path.find_node('unit-tests/spec201-probe-names.t.cpp')],
+                        bld.path.find_node('unit-tests/transparent-repo.t.cpp'),
+                        bld.path.find_node('unit-tests/probe-names.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndn-service-framework ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path='${BINDIR}')
-    bld.program(target='../spec201-uav-naming',
-                name='spec201-uav-naming',
+    bld.program(target='../naming-uav',
+                name='naming-uav',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/uav-protocol-state.t.cpp'),
                         bld.path.parent.find_node('NDNSF-UAV-APP/shared/UavProtocol.cpp'),
@@ -458,14 +455,14 @@ def build(bld):
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec201-stream-transport',
-                name='spec201-stream-transport',
+    bld.program(target='../naming-stream-transport',
+                name='naming-stream-transport',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/stream.t.cpp'),
                         bld.path.find_node('unit-tests/stream-predictive.t.cpp'),
                         bld.path.find_node('unit-tests/stream-facade.t.cpp'),
-                        bld.path.find_node('unit-tests/spec201-collaboration-names.t.cpp'),
-                        bld.path.find_node('unit-tests/spec201-collaboration-crypto.t.cpp')],
+                        bld.path.find_node('unit-tests/collaboration-names.t.cpp'),
+                        bld.path.find_node('unit-tests/collaboration-crypto.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 defines=['HAVE_TESTS'],
@@ -473,13 +470,13 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
     # Explicit development proof only; installed binding closure belongs to
     # the maintained pythonWrapper packaging flow.
-    if 'spec201-python-binding' in (bld.targets or '').split(','):
+    if 'naming-python-binding' in (bld.targets or '').split(','):
         import sysconfig
         import pybind11
         binding_env = bld.env.derive()
         binding_env.cxxshlib_PATTERN = '%s' + sysconfig.get_config_var('EXT_SUFFIX')
-        bld.shlib(target='../spec201-python/_ndnsf',
-                  name='spec201-python-binding',
+        bld.shlib(target='../naming-python/_ndnsf',
+                  name='naming-python-binding',
                   env=binding_env,
                   source=[bld.path.parent.find_node('pythonWrapper/src/ndnsf/_ndnsf.cpp'),
                           bld.path.parent.find_node('pythonWrapper/src/ndnsf/di_bindings.cpp')],
@@ -490,8 +487,8 @@ def build(bld):
                   cxxflags=['-fPIC', '-O0', '-g0'],
                   rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec201-control-authorization',
-                name='spec201-control-authorization',
+    bld.program(target='../naming-control-authorization',
+                name='naming-control-authorization',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/control-authorization-names.t.cpp'),
                         bld.path.find_node('integration-tests/request-scoped-response-confidentiality.t.cpp'),
@@ -506,35 +503,35 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec201-invocation-names',
-                name='spec201-invocation-names',
+    bld.program(target='../naming-invocation-names',
+                name='naming-invocation-names',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
-                        bld.path.find_node('integration-tests/spec201-invocation-names.t.cpp')],
+                        bld.path.find_node('integration-tests/invocation-names.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedInference/cpp/ndnsf-di'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 defines=['HAVE_TESTS', 'NDN_SVS_HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec201-transparent-repo',
-                name='spec201-transparent-repo',
+    bld.program(target='../naming-transparent-repo',
+                name='naming-transparent-repo',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec201-transparent-repo.t.cpp'),
+                        bld.path.find_node('unit-tests/transparent-repo.t.cpp'),
                         bld.path.find_node('unit-tests/repo-user-storage-journal.t.cpp'),
                         bld.path.find_node('unit-tests/repo-user-storage-wire.t.cpp')],
                 includes=['..', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec201-original-packet-publication',
-                name='spec201-original-packet-publication',
+    bld.program(target='../naming-original-packet-publication',
+                name='naming-original-packet-publication',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec201-original-packet-publication.t.cpp')],
+                        bld.path.find_node('integration-tests/original-packet-publication.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndn-service-framework ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC'], rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../spec201-static-publication',
-                name='spec201-static-publication',
+    bld.program(target='../naming-static-publication',
+                name='naming-static-publication',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/original-packet-store-contract.t.cpp'),
                         bld.path.find_node('unit-tests/published-content-name.t.cpp'),
@@ -545,15 +542,15 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec201-naming-installed-consumer',
-                name='spec201-naming-installed-consumer',
-                source=[bld.path.find_node('fixtures/spec201-naming-installed-consumer.cpp')],
+    bld.program(target='../naming-installed-consumer',
+                name='naming-installed-consumer',
+                source=[bld.path.find_node('fixtures/naming-installed-consumer.cpp')],
                 includes=[os.environ.get('NDNSF_NAMING_HEADER_STAGE', '..')],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec201-naming-codec',
-                name='spec201-naming-codec',
+    bld.program(target='../naming-codec',
+                name='naming-codec',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/producer-data-naming.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
@@ -561,10 +558,10 @@ def build(bld):
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec181-exact-data-wire',
-                name='spec181-exact-data-wire',
+    bld.program(target='../exact-data-wire',
+                name='exact-data-wire',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec181-exact-data-wire.t.cpp'),
+                        bld.path.find_node('integration-tests/exact-data-wire.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
@@ -573,8 +570,8 @@ def build(bld):
 
     # Reuse framework contract tests against the production shared library.
     # Keep source-closure diagnostics independent of DI adapter build inputs.
-    bld.program(target='../spec181-framework-closure',
-                name='spec181-framework-closure',
+    bld.program(target='../framework-closure',
+                name='framework-closure',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/invocation-stream-lifecycle.t.cpp'),
                         bld.path.find_node('unit-tests/opaque-selection-lifecycle.t.cpp')],
@@ -590,8 +587,8 @@ def build(bld):
         'NDNSF-DistributedInference/cpp/ndnsf-di/ProtectedRuntime.cpp',
         'NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp',
     ])
-    for target, sanitize in [('spec181-native-grant-integration', False),
-                             ('spec181-native-grant-asan', True)]:
+    for target, sanitize in [('native-grant-integration', False),
+                             ('native-grant-asan', True)]:
         flags = ['-fsanitize=address', '-fno-omit-frame-pointer'] if sanitize else []
         bld.program(target='../' + target, name=target, source=grant_sources,
                     includes=['..', '../ndn-service-framework'],
@@ -600,8 +597,8 @@ def build(bld):
 
     # Focused production-entry parity; use the configured native dependency
     # closure instead of maintaining a second hand-written compiler command.
-    bld.program(target='../spec181-assembly-parity',
-                name='spec181-assembly-parity',
+    bld.program(target='../assembly-parity',
+                name='assembly-parity',
                 source=[bld.path.find_node('fixtures/spec181/assembly-parity-driver.cpp')] +
                        bld.path.parent.ant_glob([
                            'NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.cpp',
@@ -638,13 +635,14 @@ def build(bld):
                            for path in getattr(bld.env, 'INCLUDES_NAC_ABE', [])
                            if os.path.isdir(os.path.join(path, 'nac-abe'))]
     framework_use = 'NDN_CXX NDN_SVS PROTOBUF ONNX NAC-ABE NDNSD BOOST OPENSSL ZLIB DL TOKENIZER_BRIDGE'
+    focused_framework_objects = 'focused-framework-test-objects'
 
     # Link a clean external-style consumer against the installable DI library
     # boundary.  The program performs no network work; it only proves that the
     # public native header and shared-library symbols resolve together.
-    bld.program(target='../spec182-installed-consumer',
-                name='spec182-installed-consumer',
-                source=[bld.path.find_node('standalone/spec182-installed-consumer.cpp')],
+    bld.program(target='../installed-consumer',
+                name='installed-consumer',
+                source=[bld.path.find_node('standalone/installed-consumer.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 linkflags=['-Wl,--no-relax'],
@@ -756,10 +754,10 @@ def build(bld):
     # drives the production publisher through its native transport seam and
     # keeps source verification/publication counters independent from request
     # orchestration.
-    bld.program(target='../spec188-model-preparation-publication',
-                name='spec188-model-preparation-publication',
+    bld.program(target='../model-preparation-publication',
+                name='model-preparation-publication',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec188-model-preparation-publication.t.cpp')],
+                        bld.path.find_node('integration-tests/model-preparation-publication.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -769,10 +767,10 @@ def build(bld):
     # Spec188 B188-4 request projection selector.  It parses the exact native
     # envelope and checks that model references remain distinct from input
     # DataRefs without copying model payload bytes into the request.
-    bld.program(target='../spec188-prepared-request-projection',
-                name='spec188-prepared-request-projection',
+    bld.program(target='../prepared-request-projection',
+                name='prepared-request-projection',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec188-prepared-request-projection.t.cpp')],
+                        bld.path.find_node('integration-tests/prepared-request-projection.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -786,7 +784,7 @@ def build(bld):
     bld.program(target='../di-request-wire',
                 name='di-request-wire',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec189-request-reference.t.cpp')],
+                        bld.path.find_node('integration-tests/request-reference.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -796,7 +794,7 @@ def build(bld):
     bld.program(target='../di-encrypted-repo',
                 name='di-encrypted-repo',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec189-encrypted-repo-publication.t.cpp')],
+                        bld.path.find_node('integration-tests/encrypted-repo-publication.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndn-service-framework ndnsf-distributed-repo ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -810,7 +808,7 @@ def build(bld):
     bld.program(target='../di-repo-fd-owner',
                 name='di-repo-fd-owner',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-repo-fd-owner.t.cpp')],
+                        bld.path.find_node('unit-tests/repo-fd-owner.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -823,17 +821,17 @@ def build(bld):
     bld.program(target='../di-repo-quota',
                 name='di-repo-quota',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-repo-quota.t.cpp')],
+                        bld.path.find_node('unit-tests/repo-quota.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec193-original-data-receipt',
-                name='spec193-original-data-receipt',
+    bld.program(target='../original-data-receipt',
+                name='original-data-receipt',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec193-original-data-receipt.t.cpp')],
+                        bld.path.find_node('unit-tests/original-data-receipt.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -843,10 +841,10 @@ def build(bld):
     # Spec190 T004 stable per-node Repo owner/restart selector.  This stays a
     # small native storage proof: three new processes reopen one fixed root,
     # while the active-owner and corrupt-sidecar negatives remain fail-closed.
-    bld.program(target='../spec190-repo-restart',
-                name='spec190-repo-restart',
+    bld.program(target='../repo-restart',
+                name='repo-restart',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-repo-restart.t.cpp')],
+                        bld.path.find_node('unit-tests/repo-restart.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -857,22 +855,22 @@ def build(bld):
     # keeps the Repo lookup identity and publication counter independent from
     # the larger Runtime integration target. Include the prepared object/ref
     # corpus so adapter changes cover initializer, layer and material reuse.
-    bld.program(target='../spec190-repo-lookup-reuse',
-                name='spec190-repo-lookup-reuse',
+    bld.program(target='../repo-lookup-reuse',
+                name='repo-lookup-reuse',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-repo-lookup-reuse.t.cpp'),
-                        bld.path.find_node('unit-tests/spec189-repo-publication.t.cpp')],
+                        bld.path.find_node('unit-tests/repo-lookup-reuse.t.cpp'),
+                        bld.path.find_node('unit-tests/repo-publication.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3 ONNXRUNTIME',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec202-repo-conformance',
-                name='spec202-repo-conformance',
+    bld.program(target='../repo-conformance',
+                name='repo-conformance',
                 source=[bld.path.parent.find_node('tests/main.cpp')] +
                        bld.path.ant_glob(['unit-tests/distributed-repo-*.t.cpp',
-                                          'unit-tests/spec193-original-data-receipt.t.cpp']),
+                                          'unit-tests/original-data-receipt.t.cpp']),
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS '
                     'PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
@@ -885,8 +883,8 @@ def build(bld):
     # of this focused lifecycle gate.
     # Spec240 T001 focused facade selector: file publish/fetch, inspection and
     # the honest UNSUPPORTED paths, against the production Repo library.
-    bld.program(target='../spec240-repo-client-api',
-                name='spec240-repo-client-api',
+    bld.program(target='../repo-client-api',
+                name='repo-client-api',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/repo-client-api.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -909,8 +907,8 @@ def build(bld):
                 cxxflags=['-fPIC', '-O2', '-g0'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec192-repo-inapp-api',
-                name='spec192-repo-inapp-api',
+    bld.program(target='../repo-inapp-api',
+                name='repo-inapp-api',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-inapp-artifact-api.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-filesystem-artifact-store.t.cpp')],
@@ -923,11 +921,11 @@ def build(bld):
     # Spec192 T002/T004 C++ Persistent Repo service, receipt, migration, and location
     # selectors. They inspect production RepoNode handlers without starting
     # an NFD/network runtime.
-    bld.program(target='../spec192-repo-persistent-service',
-                name='spec192-repo-persistent-service',
+    bld.program(target='../repo-persistent-service',
+                name='repo-persistent-service',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-persistent-service.t.cpp'),
-                        bld.path.find_node('unit-tests/spec229-repo-ack-window.t.cpp'),
+                        bld.path.find_node('unit-tests/repo-ack-window.t.cpp'),
                         bld.path.find_node('unit-tests/face-data-reference-fetcher.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-artifact-receipt.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-filesystem-artifact-store.t.cpp')],
@@ -948,15 +946,15 @@ def build(bld):
         elif suffix == '-tsan':
             flags += ['-g1', '-fno-omit-frame-pointer', '-fsanitize=thread']
             links += ['-fsanitize=thread']
-        bld.program(target='../spec192-repo-persistent-api' + suffix,
-                name='spec192-repo-persistent-api' + suffix,
+        bld.program(target='../repo-persistent-api' + suffix,
+                name='repo-persistent-api' + suffix,
                 # T011: the REPO-side registration referenced
                 # integration-tests/controller-bootstrap-lifetime.t.cpp, which
                 # exists in no branch of this repository. Keep the target and
                 # its real sources; the dangling reference would make
                 # configure fail before any target builds.
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec192-persistent-artifact-api.t.cpp'),
+                        bld.path.find_node('integration-tests/persistent-artifact-api.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF ONNX ONNXRUNTIME NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
@@ -967,8 +965,8 @@ def build(bld):
     # Spec192 T007 offline legacy import: the unit target validates source
     # profile gating and native artifact/Repo storage; the integration target
     # exercises full source snapshot, WAL, provenance, and retry behavior.
-    bld.program(target='../spec192-repo-legacy-import-unit',
-                name='spec192-repo-legacy-import-unit',
+    bld.program(target='../repo-legacy-import-unit',
+                name='repo-legacy-import-unit',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-repo-legacy-import.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
@@ -977,10 +975,10 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'],
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec192-repo-legacy-import-integration',
-                name='spec192-repo-legacy-import-integration',
+    bld.program(target='../repo-legacy-import-integration',
+                name='repo-legacy-import-integration',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec192-legacy-repo-import.t.cpp')],
+                        bld.path.find_node('integration-tests/legacy-repo-import.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -990,10 +988,10 @@ def build(bld):
     # Spec190 T006 first atomic gate: explicit transient/durable encrypted
     # Repo retention and generation-fenced source release.  This selector does
     # not exercise protected key recovery or remove the assembler miss gate.
-    bld.program(target='../spec190-protected-material-reuse',
-                name='spec190-protected-material-reuse',
+    bld.program(target='../protected-material-reuse',
+                name='protected-material-reuse',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-protected-material-reuse.t.cpp')],
+                        bld.path.find_node('unit-tests/protected-material-reuse.t.cpp')],
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1017,10 +1015,10 @@ def build(bld):
     # Spec188 B188-4 bounded file-backed large-data serving.  The selector
     # exercises the production ServiceUser interest path, exact signed
     # segments, retransmission window and publication-file cleanup.
-    bld.program(target='../spec188-bounded-large-data-publisher',
-                name='spec188-bounded-large-data-publisher',
+    bld.program(target='../bounded-large-data-publisher',
+                name='bounded-large-data-publisher',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec188-bounded-large-data-publisher.t.cpp')],
+                        bld.path.find_node('integration-tests/bounded-large-data-publisher.t.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework ndnsf-distributed-inference NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
@@ -1033,10 +1031,10 @@ def build(bld):
     # referenced by production code.  Each tool is a dependency-free libc
     # binary so it stays isolated from the framework in its own process group.
     for role in ['block', 'sigkill', 'silent0', 'silent7', 'garbage']:
-        target = 'spec182-worker-tool-' + role
+        target = 'worker-tool-' + role
         bld.program(target='../' + target,
                     name=target,
-                    source=[bld.path.find_node('standalone/spec182-worker-tools/' + role + '.cpp')],
+                    source=[bld.path.find_node('standalone/worker-tools/' + role + '.cpp')],
                     cxxflags=['-fPIC', '-O0', '-g0'],
                     install_path=('${PREFIX}/libexec/ndnsf-tests'
                                   if 'di' in bld.env.NDNSF_COMPONENTS else None))
@@ -1106,14 +1104,14 @@ def build(bld):
                    bld.path.find_node('integration-tests/ndnsf-di-native-assembly.t.cpp'),
                    bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
                    bld.path.find_node('unit-tests/di-native-planning.t.cpp'),
-                   bld.path.find_node('unit-tests/spec220-onnx-reference.t.cpp'),
+                   bld.path.find_node('unit-tests/onnx-reference.t.cpp'),
                    bld.srcnode.find_node('examples/spec220-onnx-reference-oracle.cpp')]
         if suffix:
             flags += ['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
             links += ['-fsanitize=address,undefined']
             sources += [bld.srcnode.find_node(name) for name in model_contract_sources]
-        bld.program(target='../spec220-model-contracts' + suffix,
-                    name='spec220-model-contracts' + suffix,
+        bld.program(target='../model-contracts' + suffix,
+                    name='model-contracts' + suffix,
                     source=sources, includes=framework_includes,
                     use='ndnsf-distributed-inference ndnsf-distributed-repo ' +
                         'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1122,8 +1120,8 @@ def build(bld):
 
     # C05 names and lifecycle use the actual Core publishers/consumers and
     # existing Face/SVS harness, including original signed-packet serving.
-    bld.program(target='../spec201-event-conversation',
-                name='spec201-event-conversation',
+    bld.program(target='../naming-event-conversation',
+                name='naming-event-conversation',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/invocation-stream-message.t.cpp'),
                         bld.path.find_node('unit-tests/invocation-stream-lifecycle.t.cpp'),
@@ -1137,9 +1135,9 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Native warm evidence aggregation/readiness, including an opt-in copy probe.
-    bld.program(target='../spec216-warm-evidence', name='spec216-warm-evidence',
+    bld.program(target='../warm-evidence', name='warm-evidence',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec216-warm-evidence.t.cpp')],
+                        bld.path.find_node('unit-tests/warm-evidence.t.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
@@ -1148,7 +1146,7 @@ def build(bld):
     # Exercise the real shared logging sink without model or network fixtures.
     bld.program(target='../di-evidence-lines', name='di-evidence-lines',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-evidence-lines.t.cpp')],
+                        bld.path.find_node('unit-tests/evidence-lines.t.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use,
                 cxxflags=['-fPIC'], linkflags=['-Wl,--no-relax'],
@@ -1157,9 +1155,9 @@ def build(bld):
     # Spec190 phase timing parser and canonical evidence record.  The test
     # uses the production native timing sink and does not substitute a Python
     # parser or a fake runtime event source.
-    bld.program(target='../spec190-latency-tests', name='spec190-latency-tests',
+    bld.program(target='../latency-tests', name='latency-tests',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-timing.t.cpp'),
+                        bld.path.find_node('unit-tests/timing.t.cpp'),
                         bld.path.parent.find_node('NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.cpp')],
                 includes=framework_includes, use='NDN_CXX BOOST',
                 cxxflags=['-fPIC', '-O0', '-g0'], install_path=None)
@@ -1167,9 +1165,9 @@ def build(bld):
     # Spec190 resident-session owner gate.  The fixture creates a tiny ONNX
     # graph and exercises the real ORT adapter plus the production cache owner;
     # the generic cache cases remain meaningful when ORT is unavailable.
-    bld.program(target='../spec190-resident-session', name='spec190-resident-session',
+    bld.program(target='../resident-session', name='resident-session',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-resident-session.t.cpp')],
+                        bld.path.find_node('unit-tests/resident-session.t.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'],
@@ -1181,9 +1179,9 @@ def build(bld):
     # ProviderRoleWorker/tensor selection path and keeps transport observations
     # separate from decoded tensor bytes; it is not a Python-only accounting
     # test.
-    bld.program(target='../spec190-stage-transfer', name='spec190-stage-transfer',
+    bld.program(target='../stage-transfer', name='stage-transfer',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-stage-transfer.t.cpp')],
+                        bld.path.find_node('unit-tests/stage-transfer.t.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndn-service-framework ' +
                     framework_use + ' ONNXRUNTIME',
@@ -1195,9 +1193,9 @@ def build(bld):
     # Spec190 T009 terminal/FINALIZE lifecycle.  The fixture keeps durable
     # commit ordering and Face publication completion on native owners; it does
     # not replace the Provider control path with a Python timing simulation.
-    bld.program(target='../spec190-terminal-drain', name='spec190-terminal-drain',
+    bld.program(target='../terminal-drain', name='terminal-drain',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-terminal-drain.t.cpp')] +
+                        bld.path.find_node('unit-tests/terminal-drain.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ' + di_integration_use +
@@ -1212,11 +1210,10 @@ def build(bld):
     # deferred-collaboration path with real ACK authentication/admission,
     # deadline scheduling, duplicate/unauthorized/negative ACK handling, and
     # immutable ACK_CLOSED state; it is not a Python timing simulation.
-    bld.program(target='../spec190-ack-window', name='spec190-ack-window',
+    bld.program(target='../ack-window', name='ack-window',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-ack-window.t.cpp')] +
-                       framework_sources,
-                includes=framework_includes, use=framework_use,
+                        bld.path.find_node('unit-tests/ack-window.t.cpp')],
+                includes=framework_includes, use=focused_framework_objects,
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'], install_path=None)
@@ -1226,9 +1223,9 @@ def build(bld):
     # events before terminal; without them the expensive model qualification
     # remains explicitly unobserved rather than being replaced by a fake
     # EventReader fixture.
-    bld.program(target='../spec190-live-turns', name='spec190-live-turns',
+    bld.program(target='../live-turns', name='live-turns',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec190-live-turns.t.cpp'),
+                        bld.path.find_node('unit-tests/live-turns.t.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-conversation.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1246,11 +1243,11 @@ def build(bld):
     # Exercise the real native coordinator/sampler with typed logits fixtures.
     bld.program(target='../di-logits-dtype', name='di-logits-dtype',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-logits-dtype.t.cpp'),
+                        bld.path.find_node('unit-tests/logits-dtype.t.cpp'),
                         bld.path.find_node('unit-tests/di-qwen-generation-session.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-conversation.t.cpp'),
-                        bld.path.find_node('unit-tests/spec189-conversation-retention.t.cpp'),
-                        bld.path.find_node('unit-tests/spec189-epoch-finalization.t.cpp')],
+                        bld.path.find_node('unit-tests/conversation-retention.t.cpp'),
+                        bld.path.find_node('unit-tests/epoch-finalization.t.cpp')],
                 includes=framework_includes,
                 defines=['SPEC189_CONVERSATION_ONLY'],
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1258,7 +1255,7 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Request-owned observations exercise the same collector as installed providers.
-    bld.program(target='../spec220-work-statistics', name='spec220-work-statistics',
+    bld.program(target='../work-statistics', name='work-statistics',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/request-work-statistics.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-client.t.cpp')],
@@ -1267,24 +1264,29 @@ def build(bld):
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
+    di_fixture_sources = [bld.path.find_node('main.cpp'),
+                          bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')]
+    di_fixture_use = 'ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME'
+    di_fixture_objects = 'di-test-fixture-objects ' if repo_enabled else ''
+    di_fixture_local_sources = [] if repo_enabled else di_fixture_sources
+
     # Sealer/group-builder/serialized V3 epoch contract, linked to production.
     bld.program(target='../di-epoch-projection', name='di-epoch-projection',
-                source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp'),
-                        bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
+                source=di_fixture_local_sources +
+                       [bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-plan-sealer.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-v3-placement.t.cpp')],
                 includes=framework_includes,
-                use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
+                use=di_fixture_use + ' ' + di_fixture_objects,
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise the same calibration functions used by the installed tool;
     # exclude only its runtime entry point and retain the Core estimator.
-    bld.program(target='../spec197-probe-calibration', name='spec197-probe-calibration',
+    bld.program(target='../probe-calibration', name='probe-calibration',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec197-probe-calibration.t.cpp'),
+                        bld.path.find_node('unit-tests/probe-calibration.t.cpp'),
                         bld.path.parent.find_node('examples/DI_NetworkProbeCalibration.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use,
@@ -1311,8 +1313,8 @@ def build(bld):
     # Spec190 readiness-progress regression.  Keep the cross-Provider group
     # oracle independently runnable so the maintained all-unit target's
     # unrelated Spec182 fixture failure cannot hide this T003 gate.
-    bld.program(target='../spec190-readiness-progress',
-                name='spec190-readiness-progress',
+    bld.program(target='../readiness-progress',
+                name='readiness-progress',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-cross-provider-group.t.cpp')],
                 includes=framework_includes,
@@ -1329,7 +1331,7 @@ def build(bld):
         'ProviderGroupCoordinator.cpp', 'NativeExecutionPlanJson.cpp',
         'NativePlanProjectionBuilder.cpp', 'NativeGroupProjectionBuilder.cpp',
         'ProtectedRuntime.cpp', 'NativeProtectedProvider.cpp', 'NativeRequestEnvelope.cpp']
-    bld.program(target='../spec220-compact-control-asan', name='spec220-compact-control-asan',
+    bld.program(target='../compact-control-asan', name='compact-control-asan',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-cross-provider-group.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
@@ -1353,7 +1355,7 @@ def build(bld):
     # target.
     for suffix in ('', '-asan'):
         sources = [bld.path.parent.find_node('tests/main.cpp'),
-                   bld.path.find_node('unit-tests/spec190-materialized-role.t.cpp'),
+                   bld.path.find_node('unit-tests/materialized-role.t.cpp'),
                    bld.path.find_node('unit-tests/di-native-onnx-recipe.t.cpp')]
         flags = ['-fPIC', '-O0', '-g0', '-fno-inline']
         links = ['-Wl,--no-relax']
@@ -1363,8 +1365,8 @@ def build(bld):
                 'NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.cpp'))
             flags += ['-fno-omit-frame-pointer', '-fsanitize=address,undefined']
             links += ['-fsanitize=address,undefined']
-        bld.program(target='../spec190-materialized-role' + suffix,
-                    name='spec190-materialized-role' + suffix,
+        bld.program(target='../materialized-role' + suffix,
+                    name='materialized-role' + suffix,
                     source=sources, includes=framework_includes,
                     use='ndnsf-distributed-inference ndn-service-framework ' +
                         framework_use + ' ONNXRUNTIME',
@@ -1377,7 +1379,7 @@ def build(bld):
     bld.program(target='../di-provider-staging-cleanup',
                 name='di-provider-staging-cleanup',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-provider-staging-cleanup.t.cpp'),
+                        bld.path.find_node('unit-tests/provider-staging-cleanup.t.cpp'),
                         bld.path.parent.find_node(
                             'NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactStaging.cpp')],
                 includes=framework_includes,
@@ -1393,10 +1395,8 @@ def build(bld):
     bld.program(target='../di-selection-status',
                 name='di-selection-status',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec189-selection-status.t.cpp')] +
-                       framework_sources,
-                includes=framework_includes,
-                use=framework_use,
+                        bld.path.find_node('unit-tests/selection-status.t.cpp')],
+                includes=framework_includes, use=focused_framework_objects,
                 defines=['HAVE_TESTS'],
                 cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'],
                 linkflags=['-Wl,--no-relax'],
@@ -1427,7 +1427,7 @@ def build(bld):
     bld.program(target='../di-placement-oracle',
                 name='di-placement-oracle',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec189-placement-oracle.t.cpp')] +
+                        bld.path.find_node('integration-tests/placement-oracle.t.cpp')] +
                        di_integration_sources,
                 includes=framework_includes,
                 use=di_integration_use + 'ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1449,7 +1449,7 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Small production-estimator oracle; avoids compiling unrelated suites.
-    bld.program(target='../spec197-network-rate', name='spec197-network-rate',
+    bld.program(target='../network-rate', name='network-rate',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/network-probe-rate.t.cpp'),
                         bld.path.parent.find_node('ndn-service-framework/NetworkProbeRate.cpp')],
@@ -1458,19 +1458,19 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Spec194 T001 native two-provider RTT and dedicated goodput probe oracle.
-    bld.program(target='../spec201-probe-names', name='spec201-probe-names',
+    bld.program(target='../naming-probe-names', name='naming-probe-names',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/spec201-probe-names.t.cpp'),
-                        bld.path.find_node('integration-tests/spec194-peer-probe.t.cpp'),
+                        bld.path.find_node('unit-tests/probe-names.t.cpp'),
+                        bld.path.find_node('integration-tests/peer-probe.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec194-peer-probe', name='spec194-peer-probe',
+    bld.program(target='../peer-probe', name='peer-probe',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec194-peer-probe.t.cpp'),
+                        bld.path.find_node('integration-tests/peer-probe.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1514,8 +1514,8 @@ def build(bld):
     # Spec194 T008 full-path V4 composition oracle.  It shares the maintained
     # served-Provider fixture but has a distinct binary, suite, and test case;
     # the runner selects only FullPathV4PlacementCompletesThroughServedProvider.
-    bld.program(target='../spec194-placement-composition',
-                name='spec194-placement-composition',
+    bld.program(target='../placement-composition',
+                name='placement-composition',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1532,8 +1532,8 @@ def build(bld):
     # Provider fixture, but gives it an independent binary and suite identity.
     # The Python MiniNDN harness may launch this selector as a child; all
     # ACK/Selection/Provider/Response assertions remain in this C++ source.
-    bld.program(target='../spec187-yolo-minindn',
-                name='spec187-yolo-minindn',
+    bld.program(target='../yolo-minindn',
+                name='yolo-minindn',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1555,8 +1555,8 @@ def build(bld):
     # maintained MiniNDN runner.  Keep a distinct selector/suite identity so
     # its two-run evidence cannot be confused with the Spec187 qualification;
     # the production DI source closure and C++ assertions remain shared.
-    bld.program(target='../spec188-yolo-repeat',
-                name='spec188-yolo-repeat',
+    bld.program(target='../yolo-repeat',
+                name='yolo-repeat',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('integration-tests/di-prepared-request.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
@@ -1667,10 +1667,10 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise the shared native projection and model-specific merge contract
-    bld.program(target='../spec181-exact-tensor-transport',
-                name='spec181-exact-tensor-transport',
+    bld.program(target='../exact-tensor-transport',
+                name='exact-tensor-transport',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
+                        bld.path.find_node('integration-tests/exact-tensor-transport.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1678,8 +1678,8 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # This profile links the real unavailable-component implementation without Repo.
-    bld.program(target='../spec220-model-repository-no-repo',
-                name='spec220-model-repository-no-repo',
+    bld.program(target='../model-repository-no-repo',
+                name='model-repository-no-repo',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/model-repository-no-repo.t.cpp'),
                         bld.path.parent.find_node(
@@ -1690,10 +1690,10 @@ def build(bld):
                 install_path='${PREFIX}/libexec/ndnsf-tests')
 
     # The same wire/lifetime oracle linked directly to the production DI target.
-    bld.program(target='../spec199-prefetch-transport', name='spec199-prefetch-transport',
+    bld.program(target='../prefetch-transport', name='prefetch-transport',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/exact-data-congestion-window.t.cpp'),
-                        bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
+                        bld.path.find_node('integration-tests/exact-tensor-transport.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
@@ -1702,18 +1702,18 @@ def build(bld):
 
     # Spec201 C04 collective contributions/results use the production endpoint
     # codec and actual SVS/exact transport; coordination manifests stay embedded.
-    bld.program(target='../spec201-collective-names', name='spec201-collective-names',
+    bld.program(target='../naming-collective-names', name='naming-collective-names',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-cross-provider-group.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-data-v1-svs-flow.t.cpp'),
-                        bld.path.find_node('integration-tests/spec181-exact-tensor-transport.t.cpp'),
+                        bld.path.find_node('integration-tests/exact-tensor-transport.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' + framework_use + ' ONNXRUNTIME',
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
-    bld.program(target='../spec199-native-publisher', name='spec199-native-publisher',
+    bld.program(target='../native-publisher', name='native-publisher',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-native-canonical-publisher.t.cpp')],
                 includes=framework_includes,
@@ -1723,8 +1723,8 @@ def build(bld):
 
     # Exercise the shared native projection and model-specific merge contract
     # with existing unit cases, linked against the configured framework.
-    bld.program(target='../spec181-native-plan-closure',
-                name='spec181-native-plan-closure',
+    bld.program(target='../native-plan-closure',
+                name='native-plan-closure',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-plan.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-native-yolo-merge.t.cpp')],
@@ -1734,8 +1734,8 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Keep real grant and fail-closed lifecycle regressions independently runnable.
-    bld.program(target='../spec181-protected-runtime-closure',
-                name='spec181-protected-runtime-closure',
+    bld.program(target='../protected-runtime-closure',
+                name='protected-runtime-closure',
                 source=[bld.path.parent.find_node('tests/main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime.t.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-protected-runtime-grant.t.cpp')],
@@ -1746,10 +1746,10 @@ def build(bld):
 
     # Spec194 T002's independent V4 issuer/decoder/admission oracle.  Keep the
     # selector small and link the same production shared-library boundary.
-    bld.program(target='../spec194-v4-offer',
-                name='spec194-v4-offer',
+    bld.program(target='../v4-offer',
+                name='v4-offer',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec194-v4-offer.t.cpp')],
+                        bld.path.find_node('unit-tests/v4-offer.t.cpp')],
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
@@ -1769,10 +1769,10 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Keep the conversation restore runner-lifetime regression independently runnable.
-    bld.program(target='../spec194-conversation-session-runner',
-                name='spec194-conversation-session-runner',
+    bld.program(target='../conversation-session-runner',
+                name='conversation-session-runner',
                 source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/spec194-conversation-session-runner.t.cpp')],
+                        bld.path.find_node('unit-tests/conversation-session-runner.t.cpp')],
                 includes=['..', '../ndn-service-framework',
                           '../NDNSF-DistributedInference/cpp/adapters/onnx'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS BOOST OPENSSL PROTOBUF NAC-ABE NDNSD DL',
@@ -1783,8 +1783,8 @@ def build(bld):
 
     # Compile the Core ACK lifetime selectors without rebuilding the full
     # unit-test translation unit set.
-    bld.program(target='../spec194-async-ack-lifecycle',
-                name='spec194-async-ack-lifecycle',
+    bld.program(target='../async-ack-lifecycle',
+                name='async-ack-lifecycle',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-native-provider-host.t.cpp')],
                 includes=['..', '../ndn-service-framework',
@@ -1796,8 +1796,8 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise the real protected Targeted ingress using the production Core.
-    bld.program(target='../spec200-targeted-boot',
-                name='spec200-targeted-boot',
+    bld.program(target='../targeted-boot',
+                name='targeted-boot',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('integration-tests/request-scoped-selection.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
@@ -1810,8 +1810,8 @@ def build(bld):
 
     # Keep the Core request-scope probe authorization oracle independently
     # runnable without rebuilding the full unit-test translation unit set.
-    bld.program(target='../spec194-network-telemetry',
-                name='spec194-network-telemetry',
+    bld.program(target='../network-telemetry',
+                name='network-telemetry',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/network-telemetry.t.cpp')],
                 includes=['..', '../ndn-service-framework',
@@ -1823,7 +1823,7 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Reuse the coordinator driver and sampling contracts without shadowing DI.
-    bld.program(target='../spec199-native-sampling', name='spec199-native-sampling',
+    bld.program(target='../native-sampling', name='native-sampling',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/distributed-inference-async-runtime.t.cpp'),
                         bld.path.find_node('unit-tests/di-native-conversation.t.cpp'),
@@ -1835,8 +1835,8 @@ def build(bld):
                 linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Offline assertions against actual native handoff failure journals and Repo.
-    bld.program(target='../spec221-handoff-failure-oracle',
-                name='spec221-handoff-failure-oracle',
+    bld.program(target='../handoff-failure-oracle',
+                name='handoff-failure-oracle',
                 source=[bld.path.find_node('fixtures/spec221/kv-failure-oracle.cpp')],
                 includes=framework_includes,
                 use='ndnsf-distributed-inference ndnsf-distributed-repo ndn-service-framework ' +
@@ -1845,8 +1845,8 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Exercise ORT conversion/state behavior through the production DI library.
-    bld.program(target='../spec199-activation-conversion',
-                name='spec199-activation-conversion',
+    bld.program(target='../activation-conversion',
+                name='activation-conversion',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-onnxruntime-gpu-evidence.t.cpp'),
                         bld.path.find_node('unit-tests/native-portable-kv.t.cpp'),
@@ -1861,11 +1861,11 @@ def build(bld):
                 rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Request tensor-work scopes must run in the instrumented production owners.
-    bld.program(target='../spec220-tensor-work-asan', name='spec220-tensor-work-asan',
+    bld.program(target='../tensor-work-asan', name='tensor-work-asan',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-onnxruntime-gpu-evidence.t.cpp'),
-                        bld.path.find_node('unit-tests/spec189-logits-dtype.t.cpp'),
-                        bld.path.find_node('unit-tests/spec189-epoch-finalization.t.cpp'),
+                        bld.path.find_node('unit-tests/logits-dtype.t.cpp'),
+                        bld.path.find_node('unit-tests/epoch-finalization.t.cpp'),
                         bld.srcnode.find_node(
                             'NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.cpp'),
                         bld.srcnode.find_node(
@@ -2084,16 +2084,16 @@ def build(bld):
                          'ndn-cxx/security/pib/impl/pib-sqlite3.hpp')):
         if (bld.cmd == 'list' or 'repo' not in bld.env.NDNSF_COMPONENTS or
                 getattr(bld, '_ndnsf_default_scope', False) or
-                (bld.targets and 'spec192-repo-client' not in bld.targets.split(','))):
-            bld.msg('Skipping spec192-repo-client',
+                (bld.targets and 'repo-client' not in bld.targets.split(','))):
+            bld.msg('Skipping repo-client',
                     'the requested target does not need its unavailable pinned ndn-cxx source tree')
         else:
-            bld.fatal('spec192-repo-client requires NDNSF_NDN_CXX_SOURCE_TREE '
+            bld.fatal('repo-client requires NDNSF_NDN_CXX_SOURCE_TREE '
                       'for its remote public-certificate PIB fixture')
     else:
-        bld.program(target='../spec192-repo-client',
-                    name='spec192-repo-client',
-                    source=[bld.path.find_node('standalone/spec192-repo-client.cpp')],
+        bld.program(target='../repo-client',
+                    name='repo-client',
+                    source=[bld.path.find_node('standalone/repo-client.cpp')],
                     includes=['..', '../ndn-service-framework',
                               '../NDNSF-DistributedRepo/include',
                               ndn_cxx_source_tree],
@@ -2103,9 +2103,9 @@ def build(bld):
                     rpath=[bld.bldnode.abspath()], install_path=None)
 
     # Separate test process for the original RepoNode object protocol.
-    bld.program(target='../spec193-object-repo-server',
-                name='spec193-object-repo-server',
-                source=[bld.path.find_node('standalone/spec193-object-repo-server.cpp')],
+    bld.program(target='../object-repo-server',
+                name='object-repo-server',
+                source=[bld.path.find_node('standalone/object-repo-server.cpp')],
                     includes=['..', '../ndn-service-framework',
                               '../NDNSF-DistributedRepo/include'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
@@ -2117,9 +2117,9 @@ def build(bld):
     # The surrounding launcher may create a private NFD/Controller runtime,
     # but this binary owns the signed request, Core targeted transport and
     # grant verification; it contains no Python oracle or local issuer.
-    bld.program(target='../spec182-native-grant-requester-process',
-                name='spec182-native-grant-requester-process',
-                source=[bld.path.find_node('standalone/spec182-native-grant-requester-process.cpp')],
+    bld.program(target='../native-grant-requester-process',
+                name='native-grant-requester-process',
+                source=[bld.path.find_node('standalone/native-grant-requester-process.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 install_path='${PREFIX}/libexec/ndnsf-tests')
@@ -2128,9 +2128,9 @@ def build(bld):
     if repo_enabled:
         bld.get_tgen_by_name('integration-tests').linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink']
-    for name in (('unit-tests', 'spec202-repo-conformance', 'spec192-repo-inapp-api',
-                 'spec192-repo-persistent-api', 'spec192-repo-persistent-api-asan',
-                 'spec192-repo-legacy-import-unit') if repo_enabled else ()):
+    for name in (('unit-tests', 'repo-conformance', 'repo-inapp-api',
+                 'repo-persistent-api', 'repo-persistent-api-asan',
+                 'repo-legacy-import-unit') if repo_enabled else ()):
         bld.get_tgen_by_name(name).linkflags += [
             '-Wl,--wrap=fsync', '-Wl,--wrap=rename', '-Wl,--wrap=unlink',
             '-Wl,--wrap=flock']
@@ -2171,9 +2171,9 @@ def build(bld):
                 defines=bld.env['DEFINES_NAC-ABE'],
                 use='NDN_CXX BOOST', install_path=None)
     # Focused external-library ownership oracle; no Core objects or copied DSO.
-    bld.program(target='../spec202-openabe-policy-lifecycle',
-                name='spec202-openabe-policy-lifecycle',
-                source=[bld.path.find_node('standalone/spec202-openabe-policy-lifecycle.cpp')],
+    bld.program(target='../openabe-policy-lifecycle',
+                name='openabe-policy-lifecycle',
+                source=[bld.path.find_node('standalone/openabe-policy-lifecycle.cpp')],
                 includes=['/usr/local/include'], lib=['openabe'],
                 libpath=['/usr/local/lib'], rpath=['/usr/local/lib'],
                 install_path=None)
@@ -2181,9 +2181,9 @@ def build(bld):
     # MiniNDN-only provider fixture for the Spec210 selected-calibration-role
     # ownership regression. It publishes immutable test calibration bytes
     # through the same Core role-dispatch and protected-publication path.
-    bld.program(target='../spec210-calibration-provider',
-                name='spec210-calibration-provider',
-                source=[bld.path.find_node('standalone/spec210-calibration-provider.cpp')],
+    bld.program(target='../calibration-provider',
+                name='calibration-provider',
+                source=[bld.path.find_node('standalone/calibration-provider.cpp')],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
                 cxxflags=['-fPIC', '-O0', '-g0'],
@@ -2284,13 +2284,12 @@ def build(bld):
     # linked here rather than duplicated: two Providers exchanging partials over
     # Named Data cannot be simulated with a single-process fake, and a second
     # test-only transport would prove nothing about the production one.
-    bld.program(target='../spec224-tp-tests', name='spec224-tp-tests',
-                source=[bld.path.find_node('main.cpp'),
-                        bld.path.find_node('unit-tests/di-native-tensor-parallel.t.cpp'),
-                        bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
+    bld.program(target='../tp-tests', name='tp-tests',
+                source=di_fixture_local_sources +
+                       [bld.path.find_node('unit-tests/di-native-tensor-parallel.t.cpp')],
                 includes=framework_includes,
                 use=di_integration_use + 'ndnsf-distributed-inference ndn-service-framework ' +
-                    framework_use + ' ONNXRUNTIME',
+                    framework_use + ' ONNXRUNTIME ' + di_fixture_objects,
                 defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
                 linkflags=['-Wl,--no-relax'],
                 # No build-tree RPATH on this target: it is the one installed for an out-of-tree
@@ -2304,7 +2303,7 @@ def build(bld):
     # and lifetime, so a whole-suite run under instrumentation would cost hours to cover paths
     # that never touch a local value. The library it links is the same one the product uses, so a
     # defect in the codec or the adapter's owner is visible here.
-    bld.program(target='../spec224-tp-tests-asan', name='spec224-tp-tests-asan',
+    bld.program(target='../tp-tests-asan', name='tp-tests-asan',
                 source=[bld.path.find_node('main.cpp'),
                         bld.path.find_node('unit-tests/di-native-tensor-parallel.t.cpp'),
                         bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')],
@@ -2363,3 +2362,15 @@ def build(bld):
         source=bld.srcnode.find_node('tests/check-profiles.json'), target='check-profiles.json',
         vars=['NDNSF_COMPONENTS', 'NDNSF_TEST_FIXTURE_FILES', 'NDNSF_TEST_DRIVER_FILES'],
         install_path=tests_share)
+
+    # Keep existing generator indices so introducing reuse doesn't invalidate later targets.
+    bld.objects(name=focused_framework_objects, source=framework_sources,
+                includes=framework_includes, use=framework_use, defines=['HAVE_TESTS'],
+                cxxflags=['-fPIC', '-O0', '-g0', '-fno-inline'])
+    if repo_enabled:
+        di_fixture_defines = ['HAVE_TESTS',
+                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath(),
+                              'NDNSF_TEST_BINARY_DIR="%s"' % bld.bldnode.abspath()]
+        bld.objects(name='di-test-fixture-objects', source=di_fixture_sources,
+                    includes=framework_includes, use=di_fixture_use, defines=di_fixture_defines,
+                    cxxflags=['-fPIC', '-O0', '-g0'])

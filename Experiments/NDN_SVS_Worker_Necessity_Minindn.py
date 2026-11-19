@@ -23,12 +23,10 @@ import NDN_SVS_Serial_Production_Offload_Minindn as base  # noqa: E402
 import analyze_svs_worker_necessity as analysis  # noqa: E402
 
 
-SUBJECT = REPO / "build/spec137-four-core/source-manifest.json"
 EXPECTED_COMMIT = "6bb34545b4f89f1f6c265a68c18f1a40ade413eb"
 EXPECTED_BINARY = (
     "c4f3b296137033eb82d0e888bd2cacdf492a0e06609de12c3e1e301547e435ac"
 )
-SVS_REPO = Path("/home/tianxing/NDN/ndn-svs")
 RATES = analysis.RATES
 CALIBRATION_TIMING = (5, 15, 5)
 FORMAL_TIMING = (10, 60, 10)
@@ -81,11 +79,11 @@ def tree_digest(roots: list[Path]) -> dict[str, Any]:
     }
 
 
-def spec137_protected_digest() -> dict[str, Any]:
+def spec137_protected_digest(archive_root: Path) -> dict[str, Any]:
     return tree_digest(
         [
-            REPO / "specs/137-svs-serial-production-offload",
-            REPO
+            archive_root / "specs/137-svs-serial-production-offload",
+            archive_root
             / "results/spec137-svs-serial-production-offload/"
             "t003-four-core-20260723-03",
         ]
@@ -277,20 +275,21 @@ def formal_cells(rate: int) -> list[dict[str, Any]]:
     ]
 
 
-def verify_subject() -> dict[str, Any]:
-    subject = base.subject_builder.load_subject(SUBJECT)
+def verify_subject(path: Path, archive_root: Path) -> dict[str, Any]:
+    subject = base.subject_builder.load_subject(path, archive_root=archive_root)
     if subject["baseCommit"] != EXPECTED_COMMIT:
         raise RuntimeError("subject commit changed")
     if subject["binarySha256"] != EXPECTED_BINARY:
         raise RuntimeError("subject binary authority changed")
     if sha256_file(Path(subject["binary"])) != EXPECTED_BINARY:
         raise RuntimeError("subject binary bytes changed")
+    source = subject["sourceRepository"]
     head = subprocess.run(
-        ["git", "-C", str(SVS_REPO), "rev-parse", "HEAD"],
+        ["git", "-C", source, "rev-parse", "HEAD"],
         check=True, text=True, stdout=subprocess.PIPE
     ).stdout.strip()
     status = subprocess.run(
-        ["git", "-C", str(SVS_REPO), "status", "--porcelain"],
+        ["git", "-C", source, "status", "--porcelain"],
         check=True, text=True, stdout=subprocess.PIPE
     ).stdout
     if head != EXPECTED_COMMIT or status:
@@ -315,14 +314,18 @@ def run_one(
     return terminal, metrics
 
 
-def run_preflight(campaign: Path) -> dict[str, Any]:
+def run_preflight(campaign: Path, subject_path: Path, archive_root: Path) -> dict[str, Any]:
     campaign = campaign.resolve()
+    subject_path = subject_path.resolve(strict=True)
+    archive_root = archive_root.resolve(strict=True)
     if campaign.exists():
         raise RuntimeError(f"fresh campaign path required: {campaign}")
+    if archive_root == campaign or archive_root in campaign.parents:
+        raise RuntimeError("campaign output must be outside the read-only archive")
+    subject = verify_subject(subject_path, archive_root)
+    protected = spec137_protected_digest(archive_root)
     campaign.mkdir(parents=True)
     with CampaignLock(campaign):
-        subject = verify_subject()
-        protected = spec137_protected_digest()
         cpu_map, initial_busy = choose_cpu_map()
         configs = base.self_test_configs(subject)
         smokes: list[dict[str, Any]] = []
@@ -382,8 +385,9 @@ def run_preflight(campaign: Path) -> dict[str, Any]:
         summary = {
             "schema": "spec138.preflight.v1",
             "campaignId": campaign.name,
-            "subjectManifest": str(SUBJECT.resolve()),
-            "subjectManifestSha256": sha256_file(SUBJECT),
+            "subjectManifest": str(subject_path),
+            "subjectManifestSha256": sha256_file(subject_path),
+            "archiveRoot": str(archive_root),
             "subject": subject,
             "protectedSpec137": protected,
             "cpuMap": cpu_map,
@@ -405,11 +409,15 @@ def verify_preflight(campaign: Path) -> dict[str, Any]:
         raise RuntimeError("preflight schema mismatch")
     if not summary.get("admitted") or not all(summary.get("checks", {}).values()):
         raise RuntimeError("preflight is not admitted")
-    verify_subject()
-    current = spec137_protected_digest()
+    subject_path = Path(summary["subjectManifest"])
+    archive_root = Path(summary["archiveRoot"])
+    subject = verify_subject(subject_path, archive_root)
+    if subject != summary["subject"]:
+        raise RuntimeError("preflight subject differs from its checked manifest")
+    current = spec137_protected_digest(archive_root)
     if current["digest"] != summary["protectedSpec137"]["digest"]:
         raise RuntimeError("protected Spec 137 evidence changed")
-    if sha256_file(SUBJECT) != summary["subjectManifestSha256"]:
+    if sha256_file(subject_path) != summary["subjectManifestSha256"]:
         raise RuntimeError("subject manifest changed")
     return summary
 
@@ -554,7 +562,8 @@ def run_formal(campaign: Path) -> list[dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
     with CampaignLock(campaign):
         manifest = verify_seal(campaign)
-        subject = verify_subject()
+        preflight = verify_preflight(campaign)
+        subject = preflight["subject"]
         ledger = ReceiptLedger(campaign / "receipts")
         for config in manifest["cells"]:
             verify_seal(campaign)
@@ -602,6 +611,8 @@ def run_formal(campaign: Path) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--campaign", type=Path, required=True)
+    parser.add_argument("--subject-manifest", type=Path)
+    parser.add_argument("--archive-root", type=Path)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--preflight", action="store_true")
     actions.add_argument("--calibrate-and-qualify", action="store_true")
@@ -609,7 +620,9 @@ def main(argv: list[str] | None = None) -> int:
     actions.add_argument("--run-formal", action="store_true")
     args = parser.parse_args(argv)
     if args.preflight:
-        result = run_preflight(args.campaign)
+        if args.subject_manifest is None or args.archive_root is None:
+            parser.error("--preflight requires --subject-manifest and --archive-root")
+        result = run_preflight(args.campaign, args.subject_manifest, args.archive_root)
     elif args.calibrate_and_qualify:
         result = calibrate_and_qualify(args.campaign)
     elif args.seal:

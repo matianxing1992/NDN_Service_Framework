@@ -8,11 +8,13 @@ SOURCE = ROOT / "ndn-service-framework/CertificateBootstrap.cpp"
 def test_certificate_bootstrap_signed_interest_keeps_parameters_digest_last() -> None:
     source = SOURCE.read_text(encoding="utf-8")
     start = source.index(
-        "ndn::Interest interest(makeCertificateBootstrapName(controllerPrefix, bootstrapIdentity));"
+        'ndn::Interest interest(makeControlRpcName(controllerPrefix, "CERTBOOTSTRAP", parameters,'
     )
     end = source.index("bool done = false;", start)
     snippet = source[start:end]
 
-    assert "interest.setApplicationParameters(encryptedRequest.wireEncode());" in snippet
-    assert "signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);" in snippet
-    assert "keyChain.sign(interest, signingInfo);" in snippet
+    parameters = snippet.index("interest.setApplicationParameters(parameters);")
+    version = snippet.index(
+        "signingInfo.setSignedInterestFormat(ndn::security::SignedInterestFormat::V03);"
+    )
+    assert parameters < version < snippet.index("keyChain.sign(interest, signingInfo);")

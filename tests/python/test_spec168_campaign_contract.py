@@ -10,7 +10,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "specs/168-itiger-di-deployment-fidelity/jobs/spec168_campaign.py"
+SCRIPT = (ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
+          / "freeze-tiger-campaign.py")
 
 
 def digest(character: str) -> str:

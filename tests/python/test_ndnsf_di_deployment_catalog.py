@@ -31,24 +31,29 @@ from test_ndnsf_di_user_journey import definition
 class _SignedDataBusUser:
     def __init__(self, identity, records, hints=()):
         self.identity = identity
+        self.requester_identity = identity
         self.records = records
         self.hints = list(hints)
 
     def publish_signed_app_data(self, name, payload, *, freshness_ms):
+        from ndn.encoding import Name
+
         del freshness_ms
-        prefix = self.identity.rstrip("/") + "/NDNSF/DI/"
-        if not name.startswith(prefix):
+        prefix = Name.from_str(self.identity.rstrip("/") + "/NDNSF/DEPLOYMENT")
+        if not Name.is_prefix(prefix, Name.from_str(name)):
             return SignedAppDataResult(False, error="wrong publisher prefix")
         self.records[name] = (self.identity, bytes(payload))
         return SignedAppDataResult(True, data_name=name)
 
     def fetch_signed_app_data(self, name, expected_signer, *, timeout_ms):
+        from ndn.encoding import Name
+
         del timeout_ms
         value = self.records.get(name)
         if value is None:
             return SignedAppDataResult(False, error="not found")
         signer, payload = value
-        if signer != expected_signer:
+        if Name.from_str(signer) != Name.from_str(expected_signer):
             return SignedAppDataResult(False, error="signer mismatch")
         return SignedAppDataResult(
             True, data_name=name,
@@ -165,9 +170,9 @@ class DeploymentCatalogTest(unittest.TestCase):
             signer = ApplicationDefinitionSigner.generate("/app/creator")
             value = definition(signer)
             creator_transport = NetworkDeploymentCatalogTransport(
-                _SignedDataBusUser("/app/creator", records))
+                _SignedDataBusUser(value.deployment_owner, records))
             creator = DeploymentCatalog(
-                owner_identity="/app/creator",
+                owner_identity=value.deployment_owner,
                 journal=RuntimeJournal.for_test(root, "creator"),
                 definition_publisher=creator_transport.publish_definition)
             creator.authorize_application(
@@ -193,6 +198,9 @@ class DeploymentCatalogTest(unittest.TestCase):
                 definition_fetcher=transport.fetch_definition,
                 activation_fetcher=transport.fetch_activation,
                 discovery_hints=transport.discovery_hints)
+            self.assertEqual(remote.discover(service=value.service), ())
+            remote.authorize_application(
+                signer.application_identity, signer.key_id, signer.public_key)
             values = remote.discover(service=value.service)
             self.assertEqual(len(values), 1)
             self.assertEqual(values[0].state, "ON_DEMAND")
@@ -204,6 +212,8 @@ class DeploymentCatalogTest(unittest.TestCase):
                 definition_fetcher=transport.fetch_definition,
                 activation_fetcher=transport.fetch_activation,
                 discovery_hints=transport.discovery_hints)
+            isolated.authorize_application(
+                signer.application_identity, signer.key_id, signer.public_key)
             self.assertEqual(isolated.discover(service=value.service), ())
 
     def test_remote_active_requires_owner_signed_activation_and_exact_revision(self):
@@ -212,9 +222,9 @@ class DeploymentCatalogTest(unittest.TestCase):
             signer = ApplicationDefinitionSigner.generate("/app/creator")
             value = definition(signer)
             creator_transport = NetworkDeploymentCatalogTransport(
-                _SignedDataBusUser("/app/creator", records))
+                _SignedDataBusUser(value.deployment_owner, records))
             creator = DeploymentCatalog(
-                owner_identity="/app/creator",
+                owner_identity=value.deployment_owner,
                 definition_publisher=creator_transport.publish_definition)
             creator.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
@@ -226,6 +236,8 @@ class DeploymentCatalogTest(unittest.TestCase):
                 owner_identity=value.deployment_owner,
                 definition_fetcher=owner_transport.fetch_definition,
                 activation_publisher=owner_transport.publish_activation)
+            owner.authorize_application(
+                signer.application_identity, signer.key_id, signer.public_key)
             owner.resolve_definition(ref)
             active_ref = owner.publish_activation(
                 value, DeploymentStatus(
@@ -253,6 +265,8 @@ class DeploymentCatalogTest(unittest.TestCase):
                 definition_fetcher=transport.fetch_definition,
                 activation_fetcher=transport.fetch_activation,
                 discovery_hints=transport.discovery_hints)
+            remote.authorize_application(
+                signer.application_identity, signer.key_id, signer.public_key)
             values = remote.discover(service=value.service)
             self.assertEqual(len(values), 1)
             self.assertEqual(values[0].state, "ACTIVE")
@@ -316,9 +330,9 @@ class DeploymentCatalogTest(unittest.TestCase):
             signer = ApplicationDefinitionSigner.generate("/app/creator")
             first = definition(signer)
             creator_transport = NetworkDeploymentCatalogTransport(
-                _SignedDataBusUser(first.application_identity, records))
+                _SignedDataBusUser(first.deployment_owner, records))
             creator = DeploymentCatalog(
-                owner_identity=first.application_identity,
+                owner_identity=first.deployment_owner,
                 definition_publisher=creator_transport.publish_definition)
             creator.authorize_application(
                 signer.application_identity, signer.key_id, signer.public_key)
@@ -347,6 +361,8 @@ class DeploymentCatalogTest(unittest.TestCase):
                 owner_identity=first.deployment_owner, journal=journal,
                 definition_fetcher=owner_transport.fetch_definition,
                 activation_publisher=owner_transport.publish_activation)
+            owner.authorize_application(
+                signer.application_identity, signer.key_id, signer.public_key)
             owner.resolve_definition(first_ref)
             active_first = owner.publish_activation(
                 first, DeploymentStatus(

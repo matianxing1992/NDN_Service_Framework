@@ -4,13 +4,13 @@
 Use the same Python, cwd and environment as the later LOCAL tests, for example::
 
     export PYTHONPATH="$PWD/pythonWrapper${PYTHONPATH:+:$PYTHONPATH}"
-    python3 scripts/spec180_native_build.py build --build-dir build-system-j2
-    python3 scripts/spec180_native_build.py verify --build-dir build-system-j2
+    python3 scripts/spec180_native_build.py build --build-dir build
+    python3 scripts/spec180_native_build.py verify --build-dir build
 
 The Waf directory must already be configured and its Core/DI outputs must have
 been installed under the host global `/usr/local/lib` root. This tool does not
-configure or install dependencies; run `sudo -n ./waf install` from the same
-configured tree first. It does not run a Provider/model or qualify SIF/Tiger
+configure or install dependencies; use the stack or target installer to refresh
+the global native outputs first. It does not run a Provider/model or qualify SIF/Tiger
 artifacts. Waf and setup.py remain the build authorities. Commands run
 sequentially; a lock prevents two instances of this entry point from
 building/verifying concurrently.
@@ -64,7 +64,7 @@ SVS_BUILD_ENV = "NDNSF_NDN_SVS_BUILD_TREE"
 NAC_PREFIX_ENV = "NDNSF_NAC_ABE_PREFIX"
 PKG_CONFIG_ENV = "PKG_CONFIG_PATH"
 RUNTIME_RPATH_ENV = "NDNSF_RUNTIME_RPATH"
-DEFAULT_MANIFEST = "build-system-j2/spec180-native-build.json"
+DEFAULT_MANIFEST = "build/spec180-native-build.json"
 MANIFEST_ENV = "SPEC180_NATIVE_BUILD_MANIFEST"
 SOURCE_TREES = (
     "ndn-service-framework", "NDNSF-DistributedInference/cpp",
@@ -913,7 +913,7 @@ def build(root, build_dir, manifest, python, env, jobs=1, binding="auto"):
             previous = read_manifest(manifest)
         except (IdentityError, ValueError, OSError):
             pass  # A bad/old receipt can never authorize extension reuse.
-    command = [str(root / "waf"), "-o", str(build_dir), "build",
+    command = [str(root / "scripts/build-safe.sh"), "build",
                "-j" + str(jobs), "--targets=" + TARGETS]
     # These optional overrides belong to setup's glue compilation only. Waf
     # continues to use its recorded configuration, including its optimization.
@@ -1081,7 +1081,7 @@ def verify_local_runtime(project_root, manifest_path=None, *,
     """Runner API: read-only, before MiniNDN side effects; raise IdentityError.
 
     Selection: explicit manifest_path > SPEC180_NATIVE_BUILD_MANIFEST >
-    ROOT/build-system-j2/spec180-native-build.json. Relative overrides are
+    ROOT/build/spec180-native-build.json. Relative overrides are
     relative to project_root. Pass the *actual later child environment* here;
     no import or loader path is added. The caller selects this API only for a
     host checkout (ROOT/.git exists); containers use their sealed closure.
@@ -1124,7 +1124,7 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=("build", "verify", "preflight"))
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--build-dir", type=Path, default=Path("build-system-j2"))
+    parser.add_argument("--build-dir", type=Path, default=Path("build"))
     parser.add_argument("--manifest", type=Path,
                         help="Override SPEC180_NATIVE_BUILD_MANIFEST; default: BUILD_DIR/spec180-native-build.json")
     parser.add_argument("--python", default=sys.executable, help="Python used by the later local tests")
@@ -1149,6 +1149,8 @@ def main(argv=None):
             raise IdentityError("PYTHON_NOT_FOUND")
         env = dict(os.environ)
         if args.command == "build":
+            if build_dir != root / "build":
+                raise IdentityError("HOST_BUILD_REQUIRES_MAINTAINED_BUILD_DIR")
             with local_lock(build_dir):
                 build(root, build_dir, manifest, python, env, args.jobs, args.binding)
         elif args.command == "verify":

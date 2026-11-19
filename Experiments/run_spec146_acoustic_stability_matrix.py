@@ -21,7 +21,7 @@ import run_spec144_uav_sensor_stream_matrix as support
 
 
 GLOBAL_LOCK = Path("/tmp/ndnsf-spec146-acoustic-stability.lock")
-PREDECESSOR_ROOT = REPO / "results/spec144-uav-sensor-stream-20260724T165132Z"
+FORMAL_CONTRACT = "Experiments/profiles/acoustic-stability-contract.md"
 PREDECESSOR_HASHES = {
     "campaign-summary.json":
         "01e95d9e79ccf879829a02d981d451e1cd35582aca86b57944330b2cdc2df738",
@@ -50,10 +50,7 @@ HASHED_INPUTS = (
     "NDNSF-UAV-APP/configs/uav_demo.policies",
     "examples/trust-any.conf",
     "examples/trust-schema.conf",
-    "specs/146-acoustic-impaired-stability/spec.md",
-    "specs/146-acoustic-impaired-stability/plan.md",
-    "specs/146-acoustic-impaired-stability/tasks.md",
-    "specs/146-acoustic-impaired-stability/contracts/formal-evidence-contract.md",
+    FORMAL_CONTRACT,
 )
 HASHED_BINARIES = (
     "build/libndn-service-framework.so",
@@ -70,11 +67,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verify_predecessor() -> None:
+def verify_predecessor(predecessor_root: Path) -> None:
     for name, expected in PREDECESSOR_HASHES.items():
-        path = PREDECESSOR_ROOT / name
-        if not path.is_file() or sha256(path) != expected:
-            raise RuntimeError(f"frozen Spec 144 predecessor drift: {name}")
+        path = predecessor_root / name
+        if not path.is_file():
+            raise RuntimeError(f"missing frozen Spec 144 predecessor: {path}")
+        if sha256(path) != expected:
+            raise RuntimeError(f"frozen Spec 144 predecessor drift: {path}")
 
 
 def frozen_cells() -> list[dict]:
@@ -108,7 +107,7 @@ def validate_manifest(manifest: dict) -> None:
             raise ValueError("cell invocation count exceeds one")
 
 
-def freeze_manifest(output_root: Path) -> dict:
+def freeze_manifest(output_root: Path, predecessor_root: Path) -> dict:
     inputs = {name: sha256(REPO / name) for name in HASHED_INPUTS}
     for name in HASHED_BINARIES:
         path = REPO / name
@@ -128,14 +127,13 @@ def freeze_manifest(output_root: Path) -> dict:
         "inputs": inputs,
         "environment": support.environment_identity(),
         "predecessor": {
-            "root": str(PREDECESSOR_ROOT),
+            "root": str(predecessor_root),
             "hashes": PREDECESSOR_HASHES,
         },
         "cells": frozen_cells(),
         "automaticRetry": False,
         "rerunAllowed": False,
-        "thresholdSource":
-            "specs/146-acoustic-impaired-stability/spec.md",
+        "thresholdSource": FORMAL_CONTRACT,
     }
 
 
@@ -169,23 +167,23 @@ def _write_json(path: Path, value: dict) -> None:
         encoding="utf-8")
 
 
-def _run_campaign_locked(output_root: Path) -> dict:
+def _run_campaign_locked(output_root: Path, predecessor_root: Path) -> dict:
     if "spec144" in str(output_root).lower():
         raise RuntimeError("Spec 146 refuses every Spec 144 destination")
     if output_root.exists() and any(output_root.iterdir()):
         raise RuntimeError("refusing reused formal output root")
-    verify_predecessor()
+    verify_predecessor(predecessor_root)
+    manifest = freeze_manifest(output_root, predecessor_root)
+    validate_manifest(manifest)
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "cells").mkdir()
-    manifest = freeze_manifest(output_root)
-    validate_manifest(manifest)
     manifest_path = output_root / "campaign-manifest.json"
     _write_json(manifest_path, manifest)
     receipt = output_root / "campaign-invocations.jsonl"
     receipt.write_text("", encoding="utf-8")
 
     for cell in manifest["cells"]:
-        verify_predecessor()
+        verify_predecessor(predecessor_root)
         verify_frozen(manifest)
         if cell["invocations"] != 0 or cell["terminal"]:
             raise RuntimeError("formal cell mutation/retry rejected")
@@ -230,7 +228,7 @@ def _run_campaign_locked(output_root: Path) -> dict:
         cell["finishedUnixNs"] = time.time_ns()
         _write_json(manifest_path, manifest)
 
-    verify_predecessor()
+    verify_predecessor(predecessor_root)
     verify_frozen(manifest)
     analysis = analyze_root(output_root)
     terminal = sum(bool(cell["terminal"]) for cell in manifest["cells"])
@@ -265,12 +263,12 @@ def _run_campaign_locked(output_root: Path) -> dict:
     return result
 
 
-def run_campaign(output_root: Path) -> dict:
+def run_campaign(output_root: Path, predecessor_root: Path) -> dict:
     if output_root.exists() and any(output_root.iterdir()):
         raise RuntimeError("refusing reused formal output root")
     global_lock = acquire_campaign_lock()
     try:
-        return _run_campaign_locked(output_root)
+        return _run_campaign_locked(output_root, predecessor_root.resolve())
     finally:
         fcntl.flock(global_lock, fcntl.LOCK_UN)
         global_lock.close()
@@ -279,9 +277,13 @@ def run_campaign(output_root: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--predecessor-root", type=Path,
+                        help="directory containing the exact Spec 144 predecessor files")
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
     if args.check_only:
+        if args.predecessor_root is not None:
+            verify_predecessor(args.predecessor_root)
         manifest = {
             "formalFrozen": True,
             "cells": frozen_cells(),
@@ -290,9 +292,11 @@ def main() -> int:
         validate_manifest(manifest)
         print(json.dumps(manifest, sort_keys=True))
         return 0
-    result = run_campaign(args.output_root.resolve())
+    if args.predecessor_root is None:
+        parser.error("--predecessor-root is required for a formal run")
+    result = run_campaign(args.output_root.resolve(), args.predecessor_root)
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["complete"] else 2
+    return 0 if result["passed"] else 2
 
 
 if __name__ == "__main__":

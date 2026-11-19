@@ -52,6 +52,7 @@ class ComposeAdapterTest(unittest.TestCase):
         identity.chmod(0o700)
         nfd_run.chmod(0o770)
         profile["identity"]["reference"] = str(identity)
+        profile["releaseManifest"] = str(FIXTURES / "releases/release-valid.json")
         profile["storage"]["projectRoot"] = str(project)
         profile["compose"]["nfdSocket"] = str(nfd_run / "nfd.sock")
         profile["network"]["localEndpoint"] = "unix://" + str(nfd_run / "nfd.sock")

@@ -3,8 +3,8 @@ from waflib import Utils
 top = '..'
 
 def build(bld):
-    bld.program(name='spec226-input-admission-actor',
-                target='spec226-input-admission-actor',
+    bld.program(name='input-admission-actor',
+                target='input-admission-actor',
                 source=['Spec226InputAdmissionActor.cpp'],
                 includes=['..', '../ndn-service-framework'],
                 use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
@@ -366,8 +366,8 @@ def build(bld):
 
         # Installed: the acceptance driver is meant to be run from the prefix against the
         # installed stack, not only from the build tree.
-        bld.program(name='spec240-facade-wire',
-                    target='spec240-facade-wire',
+        bld.program(name='facade-wire',
+                    target='facade-wire',
                     source=['spec240-facade-wire.cpp'],
                     rpath=[runtime_libdir],
                     includes=['..', '../NDNSF-DistributedRepo/include', '../ndn-service-framework'],
@@ -375,16 +375,16 @@ def build(bld):
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
-        bld.program(name='spec240-seed-store',
-                    target='spec240-seed-store',
+        bld.program(name='seed-store',
+                    target='seed-store',
                     source=['spec240-seed-store.cpp'],
                     rpath=[runtime_libdir],
                     includes=['..', '../NDNSF-DistributedRepo/include', '../ndn-service-framework'],
                     use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL DL sqlite3',
                     install_path=None)
 
-        bld.program(name='spec240-facade-overhead',
-                    target='spec240-facade-overhead',
+        bld.program(name='facade-overhead',
+                    target='facade-overhead',
                     source=['spec240-facade-overhead.cpp'],
                     rpath=[runtime_libdir],
                     includes=['..', '../NDNSF-DistributedRepo/include'],
@@ -425,8 +425,8 @@ def build(bld):
                     install_path='${BINDIR}')
 
         # Native qualification is part of the installed DI closure.
-        bld.program(name='spec190-multiturn-oracle',
-                    target='spec190-multiturn-oracle',
+        bld.program(name='multiturn-oracle',
+                    target='multiturn-oracle',
                     source=['Spec189TwoProviderOracle.cpp', 'spec220-onnx-reference-oracle.cpp'],
                     rpath=[runtime_libdir],
                     includes=['..', '../NDNSF-DistributedRepo/include'],

@@ -6,7 +6,8 @@ set -euo pipefail
 # dependency repair, configure, and Python binding installation.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${NDNSF_BUILD_DIR:-}"
+STORAGE="$ROOT/scripts/build-storage.py"
+BUILD_DIR="$ROOT/build"
 TARGET=""
 JOBS="${NDNSF_BUILD_JOBS:-4}"
 SYSTEM_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -16,15 +17,14 @@ SEEN_JOBS=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-global-target.sh --build-dir PATH --target NAME [--jobs N]
+Usage: scripts/install-global-target.sh --target NAME [--build-dir PATH] [--jobs N]
 
 Build and install exactly one target from an already configured, verified Waf
 tree. This command does not install external dependencies, configure Waf, or
 install Python bindings.
 
 Options:
-  --build-dir PATH  Existing Waf build directory (required unless
-                    NDNSF_BUILD_DIR is set).
+  --build-dir PATH  Existing ordinary Waf tree (default: checkout/build).
   --target NAME     One Waf target name; commas are rejected.
   --jobs N          Build parallelism (default: NDNSF_BUILD_JOBS or 4).
   -h, --help        Show this help.
@@ -87,11 +87,41 @@ esac
 
 BUILD_DIR="$(readlink -f "$BUILD_DIR" 2>/dev/null || true)"
 [[ -n "$BUILD_DIR" && -d "$BUILD_DIR" ]] || die "build directory does not exist"
+[[ "$BUILD_DIR" == "$ROOT/build" ]] || die "global installs use the ordinary build/ tree"
 [[ -f "$BUILD_DIR/.lock-waf_linux_build" ]] || \
   die "build directory is not a configured Waf tree: $BUILD_DIR"
 
 WAF="$ROOT/waf"
 [[ -x "$WAF" ]] || die "missing executable Waf entry point: $WAF"
+
+exec 7>"$BUILD_DIR/.ndnsf-install.lock"
+flock -n 7 || { echo "Native install already active: $BUILD_DIR" >&2; exit 75; }
+storage=(/usr/bin/python3 "$STORAGE" run --build-dir "$BUILD_DIR"
+  --targets "$TARGET" --jobs "$JOBS" --prefix /usr/local)
+/usr/bin/python3 "$STORAGE" stage --build-dir "$BUILD_DIR" retire
+"${storage[@]}" --profile target-build
+
+install_targets="$TARGET"
+waf_test_mode="$(/usr/bin/python3 - "$BUILD_DIR" <<'PY'
+import ast
+from pathlib import Path
+import sys
+cache = Path(sys.argv[1]) / "c4che/_cache.py"
+values = {node.targets[0].id: ast.literal_eval(node.value)
+          for node in ast.parse(cache.read_text()).body
+          if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+          and node.targets[0].id in ("PREFIX", "LIBDIR", "WITH_TESTS", "sanitize_di")}
+if values.get("PREFIX") != "/usr/local" or values.get("LIBDIR") != "/usr/local/lib":
+    sys.exit("Global install requires Waf configured for /usr/local and /usr/local/lib")
+if values.get("sanitize_di"):
+    sys.exit("Global install requires a non-instrumented Waf configuration")
+print("with-tests" if values.get("WITH_TESTS") else "without-tests")
+PY
+)"
+if [[ "$waf_test_mode" == with-tests ]]; then
+  # Waf stages the test launcher and its static resources even for a selected target.
+  [[ "$TARGET" == ndnsf-test-roster ]] || install_targets+=,ndnsf-test-roster
+fi
 
 clean_env=(
   env
@@ -120,14 +150,19 @@ echo "==> Checking the configured Waf dependency paths and RPATH"
   --root "$ROOT" --build-dir "$BUILD_DIR")
 
 echo "==> Building one global target: $TARGET"
-(cd "$BUILD_DIR" && "${clean_env[@]}" "$WAF" build --targets="$TARGET" -j"$JOBS")
+(cd "$BUILD_DIR" && "$ROOT/scripts/build-safe.sh" run -- \
+  "${storage[@]}" --profile target-build -- "${clean_env[@]}" \
+  env WAFLOCK=.lock-waf_linux_build "$WAF" --out="$BUILD_DIR" \
+  build --targets="$TARGET" -j"$JOBS")
 
 echo "==> Installing one global target: $TARGET"
-if [[ "${EUID}" -eq 0 ]]; then
-  (cd "$BUILD_DIR" && "${clean_env[@]}" "$WAF" install --targets="$TARGET" -j"$JOBS")
-else
-  (cd "$BUILD_DIR" && sudo -n "${clean_env[@]}" "$WAF" install --targets="$TARGET" -j"$JOBS")
-fi
+"${storage[@]}" --profile target-stage
+/usr/bin/python3 "$STORAGE" stage --build-dir "$BUILD_DIR" prepare
+(cd "$BUILD_DIR" && "$ROOT/scripts/build-safe.sh" run -- \
+  "${storage[@]}" --profile target-stage -- "${clean_env[@]}" \
+  env WAFLOCK=.lock-waf_linux_build "$WAF" --out="$BUILD_DIR" \
+  install --destdir="$BUILD_DIR/install-stage" --targets="$install_targets" -j"$JOBS")
+"$ROOT/install_ndnsf_stack.sh" --promote-native-stage --prefix /usr/local --python /usr/bin/python3
 
 echo "==> Installed target: $TARGET"
 echo "==> Python bindings were not rebuilt; use install_ndnsf_stack.sh only when their ABI/input changed"

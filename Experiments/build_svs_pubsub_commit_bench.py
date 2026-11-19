@@ -15,8 +15,6 @@ from typing import Any
 
 
 REPO = Path(__file__).resolve().parents[1]
-SVS_REPO = Path("/home/tianxing/NDN/ndn-svs")
-BUILD_ROOT = REPO / "build/spec132"
 DRIVER = REPO / "Experiments/ndn-svs-pubsub-benchmark/svs-pubsub-bench.cpp"
 SUBJECTS = (
     ("sync-publish-no-internal-parallelism", "a9944019f76791773604999f00128057b9534ace", 0),
@@ -50,15 +48,14 @@ def canonical_patch_bytes() -> bytes:
             f"{OLD_MESSAGE}\n{NEW_MESSAGE}\n").encode()
 
 
-def verify_base(commit: str) -> None:
-    actual = run(["git", "rev-parse", f"{commit}^{{commit}}"], cwd=SVS_REPO).strip()
+def verify_base(commit: str, source: Path) -> None:
+    actual = run(["git", "rev-parse", f"{commit}^{{commit}}"], cwd=source).strip()
     if actual != commit:
         raise RuntimeError(f"subject commit did not resolve exactly: {commit} -> {actual}")
 
 
-def ensure_worktree(subject: str, commit: str, root: Path) -> Path:
+def ensure_worktree(subject: str, commit: str, root: Path, source: Path) -> Path:
     worktree = root / "worktrees" / subject
-    branch = f"spec132-build-{subject}"
     if worktree.exists():
         head = run(["git", "rev-parse", "HEAD"], cwd=worktree).strip()
         base = run(["git", "rev-parse", "HEAD^"], cwd=worktree).strip()
@@ -68,11 +65,7 @@ def ensure_worktree(subject: str, commit: str, root: Path) -> Path:
             raise RuntimeError(f"existing build worktree is dirty: {worktree}")
         return worktree
     worktree.parent.mkdir(parents=True, exist_ok=True)
-    branch_exists = subprocess.run(["git", "show-ref", "--verify", "--quiet",
-                                    f"refs/heads/{branch}"], cwd=SVS_REPO).returncode == 0
-    if branch_exists:
-        raise RuntimeError(f"temporary branch exists without its worktree: {branch}")
-    run(["git", "worktree", "add", "-b", branch, str(worktree), commit], cwd=SVS_REPO,
+    run(["git", "worktree", "add", "--detach", str(worktree), commit], cwd=source,
         capture=False)
     wscript = worktree / "wscript"
     original = wscript.read_text(encoding="utf-8")
@@ -90,9 +83,8 @@ def ensure_worktree(subject: str, commit: str, root: Path) -> Path:
     return worktree
 
 
-def build_subject(subject: str, commit: str, latest: int, root: Path) -> dict[str, Any]:
-    verify_base(commit)
-    worktree = ensure_worktree(subject, commit, root)
+def build_subject(subject: str, commit: str, latest: int, root: Path, source: Path) -> dict[str, Any]:
+    worktree = ensure_worktree(subject, commit, root, source)
     head = run(["git", "rev-parse", "HEAD"], cwd=worktree).strip()
     tree = run(["git", "rev-parse", "HEAD^{tree}"], cwd=worktree).strip()
     parent = run(["git", "rev-parse", "HEAD^"], cwd=worktree).strip()
@@ -129,8 +121,9 @@ def build_subject(subject: str, commit: str, latest: int, root: Path) -> dict[st
                        stderr=subprocess.STDOUT, check=True)
     ldd = run(["ldd", str(binary)])
     (root / f"{subject}-ldd.txt").write_text(ldd, encoding="utf-8")
-    lowered = ldd.lower()
-    if "ndnsf" in lowered or "boost_" in lowered and ("1.74" in lowered or "1.74.0" in lowered):
+    libraries = [words[0] for line in ldd.splitlines() if (words := line.split())]
+    if any(name.startswith("libndnsf") or
+           (name.startswith("libboost_") and name.endswith(".1.74.0")) for name in libraries):
         raise RuntimeError(f"forbidden runtime dependency for {subject}")
     self_test = run([str(binary), "--self-test"]).strip()
     if self_test != f"SPEC132_SELF_TEST_OK subject={subject}":
@@ -150,22 +143,27 @@ def build_subject(subject: str, commit: str, latest: int, root: Path) -> dict[st
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=BUILD_ROOT)
+    parser.add_argument("--svs-source", type=Path, required=True,
+                        help="NDN-SVS Git checkout containing both pinned commits")
+    parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    source = args.svs_source.resolve()
+    for _, commit, _ in SUBJECTS:
+        verify_base(commit, source)
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=True)
     patch = canonical_patch_bytes()
     (root / "boost171-build.patch.identity").write_bytes(patch)
-    active_before = run(["git", "symbolic-ref", "-q", "HEAD"], cwd=SVS_REPO).strip()
-    head_before = run(["git", "rev-parse", "HEAD"], cwd=SVS_REPO).strip()
-    records = [build_subject(*subject, root) for subject in SUBJECTS]
-    if run(["git", "symbolic-ref", "-q", "HEAD"], cwd=SVS_REPO).strip() != active_before or \
-       run(["git", "rev-parse", "HEAD"], cwd=SVS_REPO).strip() != head_before:
+    active_before = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=source).strip()
+    head_before = run(["git", "rev-parse", "HEAD"], cwd=source).strip()
+    records = [build_subject(*subject, root, source) for subject in SUBJECTS]
+    if run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=source).strip() != active_before or \
+       run(["git", "rev-parse", "HEAD"], cwd=source).strip() != head_before:
         raise RuntimeError("active NDN-SVS ref moved during build")
     manifest = {
         "schemaVersion": "spec132-subjects-v1",
         "canonicalPatchSha256": hashlib.sha256(patch).hexdigest(),
-        "sourceRepository": str(SVS_REPO), "activeRefUnchanged": active_before,
+        "sourceRepository": str(source), "activeRefUnchanged": active_before,
         "activeHeadUnchanged": head_before, "compiler": run(["g++", "--version"]).splitlines()[0],
         "pkgConfig": run(["pkg-config", "--cflags", "--libs", "libndn-cxx"]).strip(),
         "subjects": records,

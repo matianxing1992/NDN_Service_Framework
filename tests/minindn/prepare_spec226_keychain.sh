@@ -42,7 +42,7 @@ identities=(
   /example/uav/compute/display
   /example/uav/gs
 )
-public_trust_installer=${NDNSF_SPEC226_PUBLIC_TRUST_INSTALLER:-spec226-public-trust-installer}
+public_trust_installer=${NDNSF_SPEC226_PUBLIC_TRUST_INSTALLER:-public-trust-installer}
 if ! command -v "$public_trust_installer" >/dev/null 2>&1; then
   echo "public trust installer is unavailable: $public_trust_installer" >&2
   exit 1

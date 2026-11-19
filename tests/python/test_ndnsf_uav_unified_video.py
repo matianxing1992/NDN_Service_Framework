@@ -154,7 +154,7 @@ class UnifiedVideoImplementationContractTest(unittest.TestCase):
         self.assertIn("type=int, default=50", launcher)
         self.assertIn('env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = str(', launcher)
         evidence = json.loads((
-            ROOT / "specs/120-uav-unified-video-object/trace-matrix-summary.json"
+            ROOT / "tests/fixtures/uav-video/trace-matrix-summary.json"
         ).read_text())
         self.assertEqual(evidence["sample_denominator"], 50)
         self.assertEqual(len(evidence["pairs"]), 5)

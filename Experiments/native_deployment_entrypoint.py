@@ -33,7 +33,7 @@ def run_deployment(argv):
         if config['platform']['kind'] != 'minindn':
             parser.error('this local qualification requires platform.kind=minindn')
         oracle = (args.oracle or Path(config['release']['prefix']) /
-                  'bin/spec190-multiturn-oracle').resolve(strict=True)
+                  'bin/multiturn-oracle').resolve(strict=True)
     action = 'up' if args.action == 'run' else args.action
     command = ['cluster', action, '--config', args.deployment]
     if action != 'check':

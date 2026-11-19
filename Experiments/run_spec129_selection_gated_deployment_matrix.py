@@ -18,9 +18,6 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "Experiments/NDNSF_DI_SelectionGatedDeployment_Minindn.py"
-FORMAL_FREEZE_MARKER = ROOT / "specs/129-selection-gated-deployment/FROZEN.md"
-SPEC128_SPEC = ROOT / "specs/128-generic-multiloss-recovery"
-SPEC128_RESULTS = tuple(sorted((ROOT / "results").glob("spec128-*")))
 FROZEN_SOURCES = tuple(ROOT / value for value in (
     "ndn-service-framework/NDNSFMessages.hpp",
     "ndn-service-framework/NDNSFMessages.cpp",
@@ -100,19 +97,17 @@ def hash_files(paths: Iterable[Path]) -> dict[str, str]:
     return output
 
 
-def hash_tree(path: Path) -> dict[str, str]:
+def hash_tree(path: Path, label: str) -> dict[str, str]:
     if not path.is_dir():
         raise RuntimeError(f"missing immutable tree: {path}")
-    return {str(item.relative_to(ROOT)): digest_path(item)
+    return {str(Path(label) / item.relative_to(path)): digest_path(item)
             for item in sorted(path.rglob("*")) if item.is_file()}
 
 
-def hash_spec128_evidence() -> dict[str, str]:
-    hashes = hash_tree(SPEC128_SPEC)
-    if not SPEC128_RESULTS:
-        raise RuntimeError("missing immutable Spec 128 result evidence")
-    for result in SPEC128_RESULTS:
-        hashes.update(hash_tree(result))
+def hash_spec128_evidence(definition: Path, results: list[Path]) -> dict[str, str]:
+    hashes = hash_tree(definition, "prior-definition")
+    for index, result in enumerate(results, 1):
+        hashes.update(hash_tree(result, f"prior-evidence-{index}"))
     return hashes
 
 
@@ -151,7 +146,7 @@ def process_ancestry(pid: int | None = None) -> set[int]:
     return result
 
 
-def build_identity() -> dict[str, Any]:
+def build_identity(library: Path, binding: Path) -> dict[str, Any]:
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
         capture_output=True, check=False).stdout.strip()
@@ -161,8 +156,8 @@ def build_identity() -> dict[str, Any]:
             ["git", "status", "--porcelain"], cwd=ROOT, text=True,
             capture_output=True, check=False).stdout),
         "python": sys.version,
-        "librarySha256": digest_path(ROOT / "build/libndn-service-framework.so"),
-        "bindingSha256": digest_path(next((ROOT / "pythonWrapper/ndnsf").glob("_ndnsf*.so"))),
+        "librarySha256": digest_path(library),
+        "bindingSha256": digest_path(binding),
     }
 
 
@@ -172,7 +167,7 @@ def validate_live_invoker(euid: int | None = None) -> None:
 
 
 def validate_campaign_not_frozen(*, dry_run: bool) -> None:
-    if FORMAL_FREEZE_MARKER.is_file() and not dry_run:
+    if not dry_run:
         raise RuntimeError(
             "Spec 129 formal matrix is frozen and must not be rerun; "
             "define a new Spec for further evidence")
@@ -225,11 +220,18 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", required=True)
+    parser.add_argument("--prior-definition", type=Path, required=True)
+    parser.add_argument("--prior-evidence", type=Path, action="append", required=True)
+    parser.add_argument("--framework-library", type=Path, required=True)
+    parser.add_argument("--python-binding", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     validate_campaign_not_frozen(dry_run=args.dry_run)
     output = Path(args.output_root).resolve()
-    if "spec128" in output.name.lower():
+    definition = args.prior_definition.resolve()
+    results = [path.resolve() for path in args.prior_evidence]
+    if any(output == path or path in output.parents or output in path.parents
+           for path in [definition, *results]):
         raise RuntimeError("Spec 128 evidence is immutable and cannot be a destination")
     if output.exists():
         raise RuntimeError("output reuse is forbidden for exact-once Spec 129 confirmation")
@@ -237,8 +239,8 @@ def main() -> int:
     cells = frozen_cells()
     validate_manifest(cells)
     source_hashes = hash_files(FROZEN_SOURCES)
-    spec128_before = hash_spec128_evidence()
-    identity = build_identity()
+    spec128_before = hash_spec128_evidence(definition, results)
+    identity = build_identity(args.framework_library, args.python_binding)
     output.mkdir(parents=True)
     lock_file = (output / ".campaign.lock").open("x+")
     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -284,7 +286,7 @@ def main() -> int:
         raw = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
         rows.append(analyze_cell(entry["cell"], raw, completed.returncode))
 
-    spec128_after = hash_spec128_evidence()
+    spec128_after = hash_spec128_evidence(definition, results)
     spec128_unchanged = spec128_before == spec128_after
     write_csv(output / "campaign-runs.csv", rows)
     write_csv(output / "campaign-cells.csv", rows)

@@ -25,7 +25,7 @@ class NativeExternalRunnerFixtureTest(unittest.TestCase):
     def test_missing_public_header_dependency_fails_closed(self):
         with tempfile.TemporaryDirectory() as output:
             completed = subprocess.run(
-                ["g++", "-std=c++17", "-c", str(SOURCE),
+                ["g++", "-std=c++17", "-nostdinc", "-c", str(SOURCE),
                  "-o", str(Path(output) / "external-runner.o")],
                 cwd=output, text=True, capture_output=True, check=False,
             )

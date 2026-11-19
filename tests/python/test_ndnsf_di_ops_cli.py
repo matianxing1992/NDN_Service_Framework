@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from ndnsf_distributed_inference.app_sdk import (
     DeploymentRevision, ProviderActionReceipt, ProviderEvidenceSigner,
@@ -45,7 +46,10 @@ main(['--help'])
         self.assertIn("usage: ndnsf-di", result.stdout)
 
     def test_validate_resolve_apply_status_delegate_to_app(self):
-        with tempfile.TemporaryDirectory(dir=Path.home()) as root:
+        with tempfile.TemporaryDirectory() as root, mock.patch(
+            "ndnsf_distributed_inference.app_sdk.runtime_journal._is_volatile_state_root",
+            return_value=False,
+        ):
             definition=Path(root)/"deployment.json"
             definition.write_text(json.dumps({"deploymentId":"d","modelId":"qwen","roles":["r"],"artifacts":[{"uri":"file:///m","digest":"sha256:"+"a"*64,"size_bytes":1}]}))
             resolved = DeploymentRevision.resolve(definition_from_json(definition))

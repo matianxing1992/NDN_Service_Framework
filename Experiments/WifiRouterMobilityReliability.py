@@ -26,13 +26,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from mininet.log import info, setLogLevel
-from mn_wifi.link import wmediumd
-from mn_wifi.wmediumdConnector import interference
 from minindn.apps.app_manager import AppManager
 from minindn.apps.nfd import Nfd
 from minindn.helpers.nfdc import Nfdc
 from minindn.minindn import Minindn
-from minindn.wifi.minindnwifi import MinindnWifi
 from minindn.util import getPopen
 
 import NDNSF_NewAPI_Minindn_Perf as perf
@@ -1232,6 +1229,10 @@ def configure_ndn_multicast(nodes, target_names=None, recreate_faces=False):
 
 
 def build_wifi_topology(ap_range, seed):
+    from minindn.wifi.minindnwifi import MinindnWifi
+    from mn_wifi.link import wmediumd
+    from mn_wifi.wmediumdConnector import interference
+
     Minindn.cleanUp()
     original_argv = sys.argv[:]
     try:
@@ -1622,12 +1623,13 @@ def run_grpc(ndn, output_dir, args):
     gate_thread = None
     server_commands = {}
     try:
+        python = perf.shell_quote(sys.executable)
         selected_providers = configured_provider_nodes(args)
         servers = {}
         for node_name in provider_nodes():
             service_workers = max(1, int(getattr(args, "service_workers", 4)))
             server_command = (
-                f"cd {perf.shell_quote(REPO_ROOT)} && exec python3 "
+                f"cd {perf.shell_quote(REPO_ROOT)} && exec env PYTHONNOUSERSITE=1 {python} "
                 f"{perf.shell_quote(GRPC_DIR / 'greeter_server.py')} "
                 f"--bind 0.0.0.0:50051 --provider-id {node_name} "
                 f"--delay-ms {args.processing_delay_ms} "
@@ -1660,7 +1662,7 @@ def run_grpc(ndn, output_dir, args):
             f"--target {name}={PROVIDER_ENDPOINTS[name]}" for name in provider_nodes())
         smoke_flag = " --smoke" if args.smoke else ""
         client_command = (
-            f"cd {perf.shell_quote(REPO_ROOT)} && exec python3 "
+            f"cd {perf.shell_quote(REPO_ROOT)} && exec env PYTHONNOUSERSITE=1 {python} "
             f"{perf.shell_quote(GRPC_FAILOVER_CLIENT)} {workload_targets} "
             f"--rate-rps {args.rate_rps} --duration-s {args.duration_s} "
             f"--global-deadline-s {args.timeout_ms / 1000.0} "
@@ -1716,7 +1718,7 @@ def run_grpc(ndn, output_dir, args):
         gate_thread = None
         time.sleep(0.2)
         stats_command = (
-            f"cd {perf.shell_quote(REPO_ROOT)} && exec python3 "
+            f"cd {perf.shell_quote(REPO_ROOT)} && exec env PYTHONNOUSERSITE=1 {python} "
             f"{perf.shell_quote(GRPC_FAILOVER_CLIENT)} {stats_targets} "
             "--stats-only --stats-timeout-s 2 --quiet")
         runtime_commands["stats_client"] = stats_command
@@ -2038,6 +2040,16 @@ def validate_preflight(systems):
                 errors.append(f"Python syntax error in {path}: {error}")
     if errors:
         raise RuntimeError("preflight failed:\n  " + "\n  ".join(errors))
+    if any(base_system_id(system) == "grpc" for system in systems):
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", "import greeter_server, greeter_failover_client"],
+            cwd=GRPC_DIR, env={**os.environ, "PYTHONNOUSERSITE": "1"},
+            capture_output=True, text=True, timeout=10)
+        if result.returncode:
+            raise RuntimeError(
+                "gRPC preflight could not load the selected runtime. "
+                f"Install {GRPC_DIR / 'requirements-py38.txt'} with {sys.executable}.\n"
+                + result.stderr.strip())
     return [
         {
             "kind": kind,

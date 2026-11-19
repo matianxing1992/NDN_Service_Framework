@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from ndnsf import (
@@ -400,7 +401,6 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         env = os.environ.copy()
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
-            str(REPO / "pythonWrapper"),
             str(REPO),
             env.get("PYTHONPATH", ""),
         ])
@@ -507,12 +507,12 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
 
     def test_plan_tracer_materializes_relative_artifacts_into_bundle(self) -> None:
         plan_tracer = load_plan_tracer_module()
-        with tempfile.TemporaryDirectory(prefix="spec170-bundle-artifacts-") as tmp:
-            bundle = Path(tmp)
-            plan_tracer.ensure_qwen_artifacts(plan_tracer.CONFIG_FILE)
-            plan_tracer.write_policy_bundle(plan_tracer.CONFIG_FILE, bundle)
-            copied = plan_tracer.materialize_bundle_artifacts(bundle)
-            summary = plan_tracer.validate_bundle(bundle)
+        config_file = plan_tracer.CONFIG_FILE
+        with tempfile.TemporaryDirectory(prefix="tracer-bundle-artifacts-") as tmp:
+            root = Path(tmp)
+            bundle = root / "bundle"
+            artifacts = root / "inputs" / "artifacts"
+            artifacts.mkdir(parents=True)
 
             expected = {
                 "qwen-native-tracer-backbone.onnx",
@@ -520,6 +520,19 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
                 "qwen-native-tracer-head1.onnx",
                 "qwen-native-tracer-merge.onnx",
             }
+            # The bundle contract copies and hashes opaque files. It does not
+            # parse ONNX or require weights from the optional model exporter.
+            for filename in sorted(expected):
+                source = artifacts / filename
+                payload = f"tracer test fixture for {filename}\n".encode()
+                source.write_bytes(payload)
+                source.with_suffix(".onnx.sha256").write_text(hashlib.sha256(payload).hexdigest())
+
+            plan_tracer.write_policy_bundle(config_file, bundle)
+            with mock.patch.object(plan_tracer, "ROOT", artifacts.parent):
+                copied = plan_tracer.materialize_bundle_artifacts(bundle)
+                summary = plan_tracer.validate_bundle(bundle)
+
             self.assertEqual({Path(path).name for path in copied}, expected)
             self.assertEqual(
                 {Path(path).name for path in summary["bundleArtifacts"]},
@@ -527,7 +540,7 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
             )
             for filename in expected:
                 artifact = bundle / "artifacts" / filename
-                self.assertTrue(artifact.is_file())
+                self.assertEqual(artifact.read_bytes(), (artifacts / filename).read_bytes())
                 self.assertTrue(
                     artifact.with_suffix(artifact.suffix + ".sha256").is_file())
 
@@ -1167,7 +1180,6 @@ class RuntimeAwareCampaignTest(unittest.TestCase):
         env = dict(os.environ)
         env["PYTHONPATH"] = ":".join([
             str(REPO / "NDNSF-DistributedInference"),
-            str(REPO / "pythonWrapper"),
             str(REPO / "Experiments"),
             env.get("PYTHONPATH", ""),
         ])

@@ -87,9 +87,16 @@ fi
 cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.conf "$stage/config/"
 cp -a "$repo_root/NDNSF-UAV-APP/configs/"*.policies "$stage/config/" 2>/dev/null || true
 cp -a "$repo_root/examples/trust-schema.conf" "$stage/config/trust-schema.conf"
-cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/share/ndnsf-uav/videos/" 2>/dev/null || true
+cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/share/ndnsf-uav/videos/"
 cp -a "$repo_root/NDNSF-UAV-APP/videos/drone.mp4" "$stage/videos/" 2>/dev/null || true
 cp -a "$repo_root/NDNSF-UAV-APP/tools/uav_deployment_check.py" "$stage/scripts/ndnsf-uav-preflight.py"
+cp -a "$repo_root/NDNSF-UAV-APP/tools/"yolo_detect_{once,worker}.py "$stage/scripts/"
+
+sed -i \
+  -e 's|^yolo-model .*|yolo-model share/ndnsf/models/yolo26n.pt|' \
+  -e 's|^yolo-script .*|yolo-script scripts/yolo_detect_once.py|' \
+  -e 's|^yolo-worker-script .*|yolo-worker-script scripts/yolo_detect_worker.py|' \
+  "$stage/config/ground-station.conf"
 
 sed -i \
   -e 's|^trust-schema .*|trust-schema config/trust-schema.conf|' \
@@ -100,6 +107,7 @@ for cfg in "$stage/config"/drone-*.conf; do
   sed -i \
     -e 's|^runtime-config .*|runtime-config config/uav_runtime.conf|' \
     -e 's|^video-source .*|video-source auto|' \
+    -e 's|^video-fallback .*|video-fallback ../share/ndnsf-uav/videos/drone.mp4|' \
     "$cfg"
 done
 
@@ -331,6 +339,8 @@ if [[ "${NDNSF_UAV_PREFLIGHT:-0}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
     --runtime-config "$(arg_value --runtime-config "$config_dir/uav_runtime.conf")" \
     --app-config "$(arg_value --app-config "$config_dir/ground-station.conf")" \
     --trust-schema "$(arg_value --trust-schema "$config_dir/trust-schema.conf")" \
+    --yolo-model "$(arg_value --yolo-model "")" \
+    --yolo-worker-script "$(arg_value --yolo-worker-script "")" \
     "${preflight_extra[@]}"
 fi
 exec "$here/bin/UavGroundStationApp" "${defaults[@]}" "${args[@]}"
@@ -392,6 +402,7 @@ if [[ "${NDNSF_UAV_PREFLIGHT:-0}" =~ ^(1|true|TRUE|yes|YES)$ ]]; then
     --runtime-config "$(arg_value --runtime-config "$config_dir/uav_runtime.conf")" \
     --app-config "$(arg_value --app-config "$config_dir/drone-A.conf")" \
     --trust-schema "$(arg_value --trust-schema "$config_dir/trust-schema.conf")" \
+    --video-source "$(arg_value --video-source "")" \
     "${preflight_extra[@]}"
 fi
 exec "$here/bin/UavDroneApp" "${defaults[@]}" "${args[@]}"

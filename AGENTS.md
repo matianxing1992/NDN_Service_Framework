@@ -357,6 +357,152 @@ approval again or hide an exception in a special-case branch.
   boundaries. Revise the affected check before retrying; do not silently change
   model, resource limits, timeout or workload to manufacture a passing result.
 
+### Test and experiment completeness and portability
+
+- Define acceptance by observable behavior, not by a passing command or task
+  status. Trace the maintained entry point through its actual producers,
+  consumers, serialization, admission and backend execution to the asserted
+  result. A helper test or reconstructed pipeline does not cover a different
+  production boundary. Cover applicable failure, timeout, cancellation, retry
+  and cleanup behavior; do not add unrelated platform/model matrices merely
+  for completeness. Concurrent agents share this contract: the coordinator
+  verifies delivered evidence before declaring their assigned work complete.
+- Put deterministic contract and state-transition checks in unit cases. Use
+  integration cases for interactions across actual component, wire,
+  persistence or process boundaries. Use experiments for questions that depend
+  on deployment, workload or measured performance. Use tiny generated inputs
+  and controllable clocks or events where practical. An expected failure must
+  assert the specific rejection and any required absence of side effects.
+  Initialization failure, fixture absence and zero assertions cannot satisfy
+  an expected failure. Record the scope of any fake device or service used.
+- Use an independent oracle with explicit coverage and comparison semantics.
+  Freeze model/tokenizer revision, quantization, runtime/operator settings,
+  prompt/BOS policy, input tokens, generation length, seeds and provider split
+  where they affect the result. Record actual values and artifact identities;
+  do not merge receipts from different workloads into one acceptance claim.
+  For continuous generation, check every required turn and its state/lineage,
+  not just the first token or final aggregate. Missing reference tensors,
+  shape/length mismatches and incomplete comparisons must fail explicitly.
+  Token agreement, internal-state numerical agreement and performance are
+  separate claims. Do not loosen tolerances, delete assertions or replace the
+  oracle to obtain PASS; any approved criterion change needs a stated rationale
+  and new evidence, retaining the original failure and its qualification scope.
+
+- Organize new test and experiment files by behavior and by the entry point that
+  consumes them. Reuse the existing owner directory. Check Git visibility for
+  each required input and register it with the corresponding build or install
+  target when that entry point needs it.
+  - Put native unit cases in `tests/unit-tests/`, native integration cases in
+    `tests/integration-tests/`, installed SDK consumers in `tests/installed-api/`,
+    and MiniNDN regression launchers in `tests/minindn/`. Register native targets
+    in the owning `wscript` and map cases to `tests/check-profiles.json` as
+    applicable. Embed small, case-specific configuration, schemas and input
+    values in the owning test fixture. Put shared read-only schemas, small
+    datasets, test configuration and generators in
+    `tests/fixtures/<behavior>/`, or in the owning suite's existing `fixtures/`
+    directory when only that suite consumes them.
+  - Put cross-experiment presets in `Experiments/profiles/`, reusable topologies
+    in `Experiments/Topology/`, and model/data preparation recipes and their
+    tool version pins in `Experiments/recipes/`. Keep platform-specific inputs
+    with the owning platform or adapter, such as `Experiments/TigerCluster/`.
+    Keep an experiment's small inputs, topology or templates used only by that
+    experiment together under its owning directory. The preset references those
+    inputs and the maintained preparation and run entry points. Keep shared
+    preparation tools under `Experiments/` and reuse them across presets.
+  - Generate per-run configuration, credentials, Repo state and temporary data
+    in the explicit work root. Keep downloaded model weights and other large
+    assets in the declared cache root and pass their paths explicitly to
+    consumers. Keep run results in the selected output location. Track the
+    recipe, template or generator that reconstructs the inputs.
+- Treat tracked inputs and declared preparation steps as input authorities.
+  `results/`, ignored Specs/docs, another checkout, user HOME, temporary files
+  and a developer's cache are outputs or caches, never hidden input authorities.
+  Move the minimum reusable input or its generator to its owning directory;
+  preserve original research evidence in place. A pipeline may consume output
+  from an earlier declared step if it can regenerate or verify that output and
+  records its producer and identity. Apply the same rule to the independent
+  reference and to CI jobs that consume artifacts from earlier jobs.
+- Tests own isolated keys, certificates, PIB/TPM, trust anchors and writable
+  directories, and release them after workers/callbacks drain. Generate
+  test certificates, trust configurations and other writable test artifacts in
+  a fixture-owned temporary directory. Pass its paths explicitly, including
+  when a test executable is invoked directly from the checkout root. The
+  checkout root and the tracked test input directories must stay read-only
+  during tests. When changing a fixture's file lifecycle, invoke the affected
+  case from the checkout root and check where it writes. Reuse the existing
+  native security fixtures, using in-memory KeyChain and scoped
+  certificate-file pattern. Embed only test-only key material or generate it in
+  the fixture; never import personal/production credentials or enable trust-any
+  to make tests run. Resolve read-only fixtures from an explicit source/install
+  fixture root, independently of cwd, username, UID and previous runs. Reject an
+  invalid explicit root, missing required files and canonical path or symlink
+  escapes from the declared root. Keep inputs read-only and give concurrent runs
+  separate writable roots and identities. Isolate the working directory,
+  HOME, TMPDIR and credential settings for test listing, preflight, execution
+  and their children. Drain owned children before removing their state.
+- Declare tool/SDK/ABI, package-data, dynamic-plugin, submodule and symlink-target
+  dependencies alongside each supported test or experiment entry. Installed
+  launchers must consume their declared prefix resources, independently of the
+  source checkout. Trace each required input to its producer through actual
+  consumers, including dynamic imports, native library/plugin lookup, schema
+  includes, registry references and model sidecars. Check the selected package
+  and its actual entry point against the install manifest. Declare required
+  system libraries, privileges, network, hardware and other facilities per
+  profile. Validate required inputs and conflicting options before starting
+  actors or changing system state. Report the affected profile, the missing or
+  invalid prerequisite and how to supply it.
+- On the development host, run real model-backed tests only with the Qwen
+  0.6B or 4B checkpoints. Use TigerCluster for larger-model runs and keep
+  their original and prepared weights there. Local unit tests can use
+  generated tiny fixtures and metadata-only cluster contract checks.
+- Large models and datasets may use an external, explicitly selected cache.
+  Their versioned download/preparation recipe, source/revision, integrity checks,
+  license, tool versions and expected outputs belong in `Experiments/` (or
+  `tests/` for test assets). The maintained installer must expose that preparation
+  path. Never require a developer's populated cache or download models implicitly
+  during a unit test or ordinary installation. Offline preparation must report
+  what is missing. Verify the complete prepared asset, including referenced
+  weights and tokenizer files where applicable, before marking it ready. Failed
+  or interrupted preparation leaves no ready marker. Rebuild the deployment
+  from the tracked preset, verified assets, an explicit namespace and a new
+  writable root. Generate or provision its own credentials and regenerate
+  derived handles, Repo contents and runtime state through maintained entry
+  points. Keep deployment credentials separate from test-only fixtures.
+- Fresh-clone qualification uses the documented installer and tracked inputs,
+  an empty isolated HOME and owned work directories, with developer caches and
+  historical results unavailable. Separate the asset-free default test set from
+  explicitly selected model/resource tests. Reconcile full suite/case identities
+  from native discovery against the tracked profile for the selected build
+  configuration. Give each case one execution owner, including cases unique to
+  focused targets, and account for conditions that disable cases. Fail an
+  unexpectedly empty selection and derive execution counts from actual results.
+  Report missing resources for a selected check as unmet prerequisites. Preserve
+  genuine wire, authorization, lifecycle and numerical failures. Establish
+  fresh source build and installed execution separately. Run the actual installed
+  entry outside the checkout with source/build paths unavailable and without
+  inherited developer library, package discovery or Python paths. Vary cwd, HOME
+  and UID where applicable. When qualifying asset preparation, demonstrate
+  success from an empty cache and test rejection of missing or corrupted inputs.
+  Preserve original negative evidence.
+  Report selected, executed, passed, failed, skipped, prerequisite-blocked
+  and unavailable checks separately. A timed-out or interrupted executable
+  without final case results leaves unaccounted cases unavailable. Retain its
+  first observed assertion failure and last reached case. Preserve the actual
+  subprocess exit status through wrappers and log filters. For background work,
+  check the owned process or job's final status and receipt even when the
+  monitoring command ends. Report opt-in coverage only for selected cases.
+  Keep rerunnable commands and compact receipts for verification-only work so
+  another maintainer can reproduce the result.
+- Name maintained classes, helpers, test suites, targets and launchers by their
+  behavior/component rather than a Spec number. Keep Spec IDs as provenance;
+  migrate all callers and installed/package entry points together. Published
+  wire/schema/digest identities and historical receipts need an explicit
+  compatibility migration, not textual search-and-replace.
+  Check source-file paths, concrete Waf targets and case selectors separately
+  before building a rename batch. For a name-only change, compare the same case
+  on both names with the same inputs. A reproduced baseline failure establishes
+  parity only for that failure and leaves the check unqualified.
+
 ### Review and completion
 
 - Pin the scope and baseline before reviewing: use the requested branch's
@@ -411,6 +557,21 @@ approval again or hide an exception in a special-case branch.
 
 ## NDNSF-DI experiment storage
 
+- Portable operating guides live under `Experiments/`, alongside the maintained
+  experiment tools: use `Experiments/TigerCluster/README.md` for Tiger/SIF,
+  `Experiments/guides/local-validation.md` for installed MiniNDN checks, and
+  `Experiments/guides/installation.md` plus `local-development.md` in the same
+  directory for installation and builds. Keep operating instructions there
+  rather than in ignored root `docs/` or duplicated skill reference bodies.
+  Specs, paper projects and original evidence keep their existing owners.
+- Tiger login nodes are for light editing, control-input preparation, submission
+  and status queries. Run builds, model processing, bulk hashing and inference
+  through Slurm. Before each allocation, inspect all nodes, reservations and
+  own jobs; choose any eligible node. CPU work does not wait for free GPUs.
+  Recheck within the authorized window, normally every 600 seconds, without
+  duplicate submissions. Reuse unchanged qualified SIFs, models and matching
+  persistent Controller state; verify actual container mounts and account quota
+  separately from global disk space and application cache limits.
 - Current Qwen3-0.6B MiniNDN execution uses the same installed native Controller,
   ArtifactAuthority, Repo, Provider and Requester applications and deployment
   configuration schema as host/Tiger execution. Use `ndnsf-di cluster up --config
@@ -434,31 +595,112 @@ approval again or hide an exception in a special-case branch.
   `python3 scripts/ndnsf-di-workspace.py --root /tmp/ndnsf-di-workspaces-$(id -u) PURPOSE -- COMMAND {workspace}`;
   it resets only its marked scratch directory under an exclusive lock.
   Commands run inside that directory and receive `TMPDIR` and
-  `NDNSF_DI_WORKSPACE`. Use absolute command/source paths. This bounds retained
-  scratch history to the latest run per purpose, not a per-run byte quota.
-  For new host-side disposable compilation objects, installation staging,
-  temporary builds and transport duplicates, use an explicitly owned purpose
-  directory under `/tmp`, not `/var/tmp`. Verify that the actual filesystem is
+  `NDNSF_DI_WORKSPACE`. Supply the explicit root even if an installed helper
+  defaults elsewhere. Use absolute command/source paths. A workspace lock
+  protects that workspace only. The host build and native install entries
+  check free space by filesystem before compilation, then recheck before
+  staging and promotion. Count shared build, compiler scratch, staging and
+  destination mounts together, with room for concurrent links, replacements,
+  backups and a reserve. If capacity is insufficient, report the largest
+  consumers and stop. The default reserve is 2 GiB per filesystem and
+  `NDNSF_DISK_RESERVE_BYTES` sets an explicit reserve. Use sampled peak growth
+  from the same build profile
+  to improve future estimates. Record observed peak, retained outputs and
+  the reason for retention once in the existing task record for a heavy build.
+  Prevent unnecessary outputs before allocating scratch: an audit, source read,
+  small edit or focused test does not justify a fresh full build, SDK export,
+  checkout copy, installation prefix or model export. Reuse existing qualified
+  inputs and build only the affected targets. Use stable purpose names across
+  Specs and retries; a new timestamp or Spec number is not a new storage purpose.
+  Host NDNSF compilation belongs in the two maintained build trees below;
+  `/tmp` is not permission to create a third disposable host build tree.
+  Keep host NDNSF installation staging in a stable owned subdirectory of the
+  checkout's ordinary `build/` tree. Promote to the selected install prefix and
+  retire the stage when promotion is verified. An external private install is
+  a time-bounded installed-consumer check with a named owner and retirement
+  condition, not a routine build or an extra retained install.
+  Necessary isolated dependency/container builds and transport intermediates
+  use an owned, reusable purpose directory under `/tmp`, not `/var/tmp`.
+  Verify that the actual filesystem is
   disk-backed and has enough capacity; `/tmp` can be RAM-backed on other hosts
   or inside containers. Set `TMPDIR` and explicit build/staging paths accordingly;
   do not assume that `TMPDIR` overrides a tool's configured output directory.
   Keep model caches, original Repo Data, retained experiment workspaces,
   credentials and durable evidence outside automatically cleaned scratch.
+  For routine local model work, retain one verified reusable prepared cache
+  for the selected Qwen3-0.6B INT4 and YOLO asset identities. Declare its
+  location and recipe. Repo publications and per-Provider material and
+  assemblies created by a test are run-owned derivatives. Retain them for a
+  named live consumer or an explicitly selected warm-reuse baseline. Retain
+  compact model, configuration and measurement evidence when retiring a run.
+  Historical timing or qualification receipts alone do not require its bulk
+  payloads, former install prefixes or regenerated Provider caches.
   Preserve `/var/tmp` itself and existing required contents; do not migrate or
-  delete them merely to adopt this convention. Close each task by removing its own
-  purpose directories and staging outputs from `/tmp` once their outputs are archived
-  or superseded; a finished build or test run must not leave tens of gigabytes behind. Remove idle regenerable outputs
-  after use through an explicit allowlist, retaining required build configuration
-  and active outputs. `/tmp` permits system cleanup but does not guarantee timed
-  cleanup: check the host policy and perform task closeout instead of relying on
-  automatic deletion. Never enable blanket cleanup of active temporary trees.
+  delete them merely to adopt this convention. Close each task by inventorying
+  every output it owns, including failed retries, linked worktrees, private and
+  staged prefixes, wheels, model/Repo copies and test environments. Verify the
+  promoted artifact and its consumers before retiring the superseded stage and
+  redundant install copies. Retain at most one current reusable copy per
+  purpose plus any explicitly required comparison baseline. Preserve minimum
+  reproducible evidence, then remove idle regenerable outputs through an
+  explicit allowlist. Keep required build configuration and active outputs.
+  Record what remains, why it remains and when it can be retired. Measure the
+  resulting free space on the output filesystem. Resume interrupted closeout
+  before adding another heavyweight candidate for the same purpose. Check
+  the actual host cleanup policy. Never enable blanket cleanup of active trees.
+- Budget large writes by actual filesystem, including bind-mounted paths on the
+  same device. Use `findmnt -T` and `df -B1` on the destination or its existing
+  parent. Record the owner, reuse key, output roots, additional peak bytes,
+  minimum free-space reserve and release condition in the existing task record.
+  Include concurrent work and temporary overlap among source/build products,
+  install stages, private prefixes, model/Repo data, archives and logs. Count
+  shared physical blocks only once. Relocating output within one filesystem
+  does not add capacity. Coordinate the budget across agents and worktrees.
+  A start check must reject the operation if the remaining space cannot cover
+  its estimated additional peak plus the reserve. A warning from an installed
+  launcher is a failed admission check. Verify the actual installed entry point
+  and its configured output roots.
+- For unattended builds, transfers and deployments capable of large growth,
+  enforce a finite output budget and the free-space reserve through the existing
+  launcher, resource quota or an owned monitor with a defined cancellation path.
+  Stop only the operation's owned work and drain its processes if the limit is
+  reached. If neither a provable upper bound nor enforcement is available, stop
+  at planning until a bounded path is available. After failure or cancellation,
+  retain the smallest reproducible evidence and retire the rest of the
+  operation's disposable material. Keep identity history as commits,
+  configuration, hashes and compact measurements. Moving a whole obsolete
+  tree into `results/` on the same filesystem does not reclaim space.
+- Bound agent-generated storage as well as experiment outputs. Return targeted
+  source ranges and derived summaries instead of entire environments, Waf lock
+  environments, recursive dumps or repeated full logs. When delegation is
+  authorized, do not fork the full history of a large, long-lived conversation
+  into each helper. Start from a fresh scoped handoff with paths, pinned commits
+  and necessary facts; select the client's no-history mode when available.
+  Full-history forks can copy gigabytes of stored transcripts per helper even
+  when each helper performs little new work. This rule does not authorize
+  delegation. Keep debug logs bounded and
+  disabled after diagnosis. Codex/DSH conversation history, databases and their
+  backups remain protected; use client-supported retention or an explicitly
+  authorized archive policy, not automatic deletion by age. Agent instructions
+  cannot impose a quota on history that the host records automatically.
 - Create host control environments from a resolved, stable base interpreter,
   never another disposable environment. Verify interpreter links and `pyvenv.cfg`
   before retiring older environments. Reuse the current validated environment
   for unchanged control code; archive receipts rather than keeping every old
   installed environment or duplicate source/build input.
-- Keep model sources, shared content-identity caches, and durable experiment
-  logs/receipts outside scratch. Qwen's default `--fixed-work-root` already
+- Keep model sources, shared content-identity caches and bulky model/runtime
+  copies or raw traces in stable artifact storage outside both the source
+  checkout and scratch. Keep only the Qwen 0.6B and 4B original checkpoints on
+  this development host. Keep the 27B checkpoint and prepared weights on
+  TigerCluster, and record their revision, integrity information and preparation
+  recipe in the owning experiment. Small generated fixtures follow the test
+  portability rules above. Keep compact reports, statistics and manifests in
+  `specs/` and `results/`; reference required bulk artifacts by stable location
+  and content identity. Git-ignored paths still consume disk space: do not put
+  full models, installed runtime libraries or archives of compiled objects there
+  merely to retain a run. This policy does not authorize deleting or migrating
+  existing evidence without checking its consumers and reproduction needs.
+  Keep durable logs/receipts outside scratch. Qwen's default `--fixed-work-root` already
   reuses one locked workspace; explicit `--run-root` is durable evidence.
   YOLO's default result/cache paths are stable; use a fixed `--results-dir`
   for disposable retries and archive required results separately.
@@ -485,8 +727,11 @@ approval again or hide an exception in a special-case branch.
   counts and evidence sources. Keep an additive end-to-end partition separate
   from overlapping/nested step measurements; do not label all non-ONNX time or
   wall-minus-CPU as network time. Mark missing measurements and the first
-  failure explicitly. Compare matched conditions and use the measured breakdown
-  to select the next optimization before changing code or running another trial.
+  failure explicitly. Compare matched conditions. Identify the intended change,
+  actual work completed and comparable samples on each side. Report failed and
+  interrupted samples alongside the comparison, with any exclusions and their
+  reasons. Use the measured breakdown to select the next optimization before
+  changing code or retrying.
   Store readable tables and structured summary data with the run report.
   Do not copy whole temporary run trees into
   the archive merely to relocate their disk consumption.
@@ -496,9 +741,14 @@ approval again or hide an exception in a special-case branch.
   temporary Repo stores, scratch build/install trees and other reproducible
   intermediate files that are no longer required. This is the normal experiment
   closeout, not permission for blanket cleanup of `/var/tmp` or old runs of
-  uncertain ownership. For each required model and shared-cache purpose, retain
-  only the latest usable version; remove superseded versions after confirming
-  that active deployments no longer reference them. Preserve active workspaces,
+  uncertain ownership. Retain the latest usable Repo for the current deployment.
+  Before retiring an older Repo, archive its experiment summary, configuration,
+  model identity and restoration instructions. Check maintained test and
+  experiment consumers and migrate them to tracked fixtures or a supported
+  preparation path before removing the store. Preserve any exact packets still
+  required to reproduce a result until those consumers are resolved. Retain the
+  latest usable shared cache for each required purpose after checking active
+  deployments. Preserve active workspaces,
   mounted trees and archived summaries. If an artifact is needed to investigate
   a failure, retain only the necessary subset and record its path, size and
   reason in the run report. Record what was archived, removed or retained;
@@ -513,23 +763,12 @@ approval again or hide an exception in a special-case branch.
 
 ## Host build stability
 
-- The host C++ toolchain is GCC 10: `/usr/bin/gcc-10` and `/usr/bin/g++-10`,
-  pinned explicitly by `install_ndnsf_stack.sh` (and by any `CC`/`CXX` override
-  that bypasses it). Do not build this tree with the GCC 9.4 default: on this
-  host it raises non-deterministic internal compiler errors (`ggc_set_mark, at
-  ggc-page.c:1547` and `instantiate_decl, at cp/pt.c:24765`) on large
-  translation units and even on small ndn-cxx/Boost probes, at one job as well
-  as at six. Switching compilers changes artifact identity, so re-baseline any
-  measurement that is compared across the switch.
-- With GCC 10 the six-job default above applies again: the earlier one-job
-  retries were only a workaround attempt for the GCC 9 ICEs, which are not a
-  concurrency limit (they occurred at one job too). Do not cite serial
-  compilation as a fix, and do not lower the job count without an observed OOM.
-  On the 9.7 GB development VM the current Core/DI translation units do not fit
-  six at once: measured six `cc1plus` processes held about 7.0 GB, free memory
-  fell to 199 MB and swap rose to 4.3 GB with no OOM kill. Four jobs is the
-  measured fit for this tree on that host; record the measurement when changing
-  it.
+- Use a compatible local GCC/G++ pair without pinning a particular GCC major
+  version. For incremental builds, reuse the compiler paths and versions in
+  the configured Waf tree. Keep local build, install and retry steps on the
+  same toolchain. If a toolchain change is necessary, reconfigure the same
+  maintained tree, rebuild the affected targets and record the new artifact
+  identity. Re-baseline measurements compared across the change.
 - For host compilation on the six-core development host, default to six jobs
   without an artificial compiler memory cap or a desktop-headroom admission gate.
   Do not serialize large source units: Waf's requested job count controls all
@@ -537,9 +776,12 @@ approval again or hide an exception in a special-case branch.
   user's explicit request; do not silently restore the old two-job default.
   Keep compiler processes under the invoking user in an isolated resource group.
   Preserve `WAFLOCK` when using an existing configured build directory.
-  `scripts/build-safe.sh build` defaults to six jobs and serializes launchers
-  sharing a Waf output tree; it imposes no memory limit. The invoking launcher
-  supplies the isolated resource group and its OOM cleanup policy.
+  `scripts/build-safe.sh build` and `scripts/build-safe.sh asan` select the
+  ordinary and diagnostic trees. They default to six jobs, serialize Waf
+  launchers and perform disk admission without imposing a memory limit.
+  Ordinary GCC builds default to `-g1` for source locations. Use
+  `--host-debug-info=full` when debugging requires full symbols.
+  The invoking launcher supplies the isolated resource group and OOM cleanup.
 - Preserve isolated process ownership, build locking and OOM termination so a
   failed compiler does not leave other workers running. Inherit the host's swap
   configuration; do not set MemorySwap/MemorySwapMax or change system settings.
@@ -550,6 +792,11 @@ approval again or hide an exception in a special-case branch.
   `build-ASAN-UBSAN/` for ASAN/UBSAN diagnostics and tests. Reuse one tree per
   mode across Specs and retries; do not switch `build/` into sanitizer mode or
   create per-Spec, timestamped or repeated temporary build/install copies.
+  Count build and install outputs across linked worktrees on the shared disk.
+  A linked checkout is a source boundary and does not acquire its own routine
+  build-tree allowance. When a required isolated candidate cannot use the
+  maintained trees, identify the specific verification gap, bound its single
+  temporary build/install closure, and retire it at task closeout.
   Each tree must own separate Waf configuration/signature state, object files
   and generated headers; diagnostic executables must resolve the instrumented
   libraries from their own tree. Select the intended tree explicitly through
@@ -558,10 +805,42 @@ approval again or hide an exception in a special-case branch.
   is broken, repair that path before the affected build instead of bypassing it.
   Only ordinary `build/` artifacts may be globally installed or promoted as
   release candidates; reject global installation from `build-ASAN-UBSAN/`.
+  `install_ndnsf_stack.sh` and `scripts/install-global-target.sh` own the
+  shared `build/install-stage` under the native install lock. Verify promoted
+  files and run supported installed entry points from outside the checkout
+  before retiring the stage. On failure, retain the owned stage and first
+  error. The next install retires that stage before creating a new one.
+  Ordinary unit and integration tests use the existing build products.
+  Reserve a private install prefix for checks of the installed contract and
+  remove its managed files when those checks finish.
   Preserve both trees' configured state and incrementally build only required
-  targets. Keep generated outputs untracked, check available disk capacity, and
-  remove idle obsolete outputs through an explicit allowlist without deleting
-  active artifacts or the reusable configuration. Legacy installer code may
+  targets. Do not clean or reconfigure as a routine preflight: require a concrete
+  configuration, ABI or stale-output defect before invalidating reusable state.
+  Host setup and installation reuse a matching `build/` Waf configuration.
+  Reconfigure in place when the requested profile, compiler or Waf configuration
+  inputs change, or when explicitly requested. Keep external Waf dependencies
+  in stable, per-project SDK cache directories and retire their install stage
+  after verification.
+  When configuring, pass the intended `--out` explicitly and verify the output
+  path recorded by the selected lock before compiling. `--prefix` sets the
+  install destination. Build the concrete targets required by the affected
+  test profiles and changed cases. Run the relevant `unit` or `integration`
+  profile with `python3 tests/run-checks.py --profile PROFILE --build-root build`
+  and the Waf-generated roster from that same build. The default delivery build
+  may omit test targets. Compile common test sources once when compile flags,
+  defines and dependencies match. Preserve instrumentation boundaries and
+  existing object identities. Distinguish Waf's
+  task counter from actual compiler and linker invocations. When repairing
+  incremental behavior, repeat the same build without edits and verify that it
+  does not compile or link again.
+  An audit or documentation-only change creates no host build tree. Keep
+  generated outputs untracked. Preserve the Waf target/output identity for
+  display-only changes. When an executable output must move, list the retired
+  name, old digest and replacement if any in the change. Use
+  `scripts/build-safe.sh run -- python3 scripts/build-storage.py retire-output`
+  with the ordinary tree and those exact identities. Check the idle tree,
+  configured targets and tracked references before deleting the executable.
+  A disk-versus-Waf difference is inventory only. Legacy installer code may
   still default to temporary output or reject in-checkout output; do not invoke
   that legacy path blindly. Use the maintained configured Waf/target-install
   path with explicit `build/`, or repair the installer within the authorized
@@ -591,11 +870,31 @@ approval again or hide an exception in a special-case branch.
 - Preserve documentation and Spec ignore rules; do not force-add unrelated
   files. Keep local Codex state and scratch out
   of commits; this tracked `AGENTS.md` and bundled `skills/` are repository files.
+- The narrow `Experiments/TigerCluster/docs/*.md` exception permits portable
+  experiment manuals in Git. It does not expose root `docs/`, Specs, paper
+  repositories, model/cache files, credentials or raw experiment logs.
 - Put durable implementation changes in source and tests. Keep planning and
   Spec Kit artifacts in the local `specs/` tree.
 
 ## Manuscript evidence and revision
 
+- In the NDNSF-REPO and NDNSF-DI manuscripts, Section III is **Current
+  Design** (当前设计) and the following section is **Target Design** (目标设计).
+  Current Design must reflect the behavior of the committed `Experimental`
+  code. Pin the checked branch commit in each manuscript's README and trace
+  affected claims through the production entry points, owners, and consumers.
+  Code on other branches, uncommitted changes, and proposed changes belong
+  outside Current Design until they are present in the pinned Experimental
+  snapshot. Runtime and measurement claims still require their own evidence.
+  Target Design describes the intended architecture based on Current Design
+  and the agreed changes. Initialize Target Design with a separately editable
+  copy of the complete Current Design, including its figures, tables, and
+  inline or included subsections. Use distinct labels for its references.
+  Each Current Design update must reconcile Target Design against the new baseline
+  in the same revision, retaining agreed changes that are still pending and
+  incorporating changes now present in Experimental. An edit confined to
+  Target Design must leave Current Design and its pinned source basis intact.
+  Apply the same rule to both the English and Chinese manuscripts.
 - Make the smallest change that explains the mechanism, contribution, method,
   result or necessary limitation. Preserve correct baseline text and organization;
   do not rewrite for style alone. Keep debugging history, task progress and
@@ -622,6 +921,15 @@ approval again or hide an exception in a special-case branch.
   requested concision takes precedence over fixed paragraph-count preferences.
   Keep these passes within the existing revision, without a separate report
   process. They do not replace citation, experiment or submission checks.
+- For scientific figures and charts, consult the target journal's official
+  figure guidelines. When no venue is specified, use a published guide such as
+  the Nature Research Figure Guide
+  (https://research-figure-guide.nature.com/figures/). Let geometry, visual
+  encodings and arrows convey the mechanism or result. Keep labels short and
+  put explanations and qualifications in the caption or main text. Use
+  accessible colors alongside labels or line styles, preserve editable vector
+  sources where appropriate, and proof the rendered figure at publication size
+  for legibility, contrast and correspondence with its caption and source.
 
 ## NDNSF paper source and compilation
 
@@ -726,7 +1034,3 @@ and task context. Report a blocker only after bounded retries fail.
 This instruction cannot intercept failures that occur before a model turn is
 created. For those host-side failures, the Codex IDE/CLI itself must provide
 retry or model fallback; never claim that an agent instruction can catch them.
-
-<!-- SPEC_KIT_PLAN_START -->
-Active implementation plan is at specs/241-ndn-name-authority/plan.md.
-<!-- SPEC_KIT_PLAN_END -->

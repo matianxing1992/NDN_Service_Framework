@@ -245,7 +245,7 @@ def main():
             if result.get('execution') != 'COMPLETE':
                 raise RuntimeError('NATIVE_EXECUTION_NOT_COMPLETE:' + str(result.get('failure')))
             _, root = cluster._locator(args.deployment)
-            command = [str(Path(config['release']['prefix']) / 'bin/spec190-multiturn-oracle'),
+            command = [str(Path(config['release']['prefix']) / 'bin/multiturn-oracle'),
                        '--deployment-state', str(root / 'state.json'), '--require-multi-token']
             check = subprocess.run(command, capture_output=True, text=True, timeout=60)
             oracle = dict(command=command, exit_code=check.returncode, stdout=check.stdout, stderr=check.stderr)

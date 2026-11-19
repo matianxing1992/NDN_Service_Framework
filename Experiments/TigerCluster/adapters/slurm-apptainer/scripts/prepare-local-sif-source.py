@@ -22,6 +22,8 @@ FILES = (
     "install_ndnsf_stack.sh",
     "configure.sh",
     "scripts/build-safe.sh",
+    "scripts/build-storage.py",
+    "scripts/ndnsf-di-workspace.py",
     "scripts/host_profile.py",
     "scripts/configure_dependencies.py",
     "scripts/stack_sources.py",

@@ -41,16 +41,23 @@ class StreamFacadePythonContractTest(unittest.TestCase):
         checkpoint = NativePredictiveStreamCheckpoint()
         checkpoint.latest_produced_sample_id = 2
         checkpoint.next_expected_sample_id = 3
+        # Native makePredictiveFrontierName for this exact mapping root and epoch.
+        frontier = ("/provider/NDNSF/RPC/FRONTIER/"
+                    "%23%C9R%B8%10%02%097%E8%E8%F7%91%01%85%20%C0%3Ei%60Rl"
+                    "%FA%07C%FD.%09%C1%FC%C9%0F%BE")
         native = NativePredictiveStreamDescriptor(
             definition._to_native(),
             checkpoint,
-            "/provider/NDNSF/STREAM-MAP/round-trip/frontier",
+            frontier,
             20.0,
         )
         descriptor = PredictiveStreamDescriptor(native)
         encoded = descriptor.to_dict()
         restored = PredictiveStreamDescriptor.from_dict(encoded)
         self.assertEqual(restored.to_dict(), encoded)
+        with self.assertRaisesRegex(ValueError, "frontier name is not canonical"):
+            PredictiveStreamDescriptor.from_dict(
+                {**encoded, "frontierName": "/provider/NDNSF/STREAM-MAP/round-trip/frontier"})
 
     def test_recovery_control_status_surface_is_explicit(self):
         for field in (

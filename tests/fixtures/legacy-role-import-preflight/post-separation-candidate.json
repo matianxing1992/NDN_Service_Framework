@@ -1,0 +1,73 @@
+{
+  "authorization": {
+    "MiniNDN": true,
+    "containerRuntime": false,
+    "iTigerSlurm": false,
+    "localStatic": true
+  },
+  "candidateId": "spec111-local-0d80d27b786f-51c95c7ec519",
+  "configuration": {
+    "distributedRuntime": "MiniNDN",
+    "modelRuntime": "fake-deterministic-3-stage-24-layer",
+    "modelWeightsIncluded": false,
+    "policySuite": "ndnsf-di-default-v1"
+  },
+  "containerBuildDigest": "DEFERRED_TO_SPEC110",
+  "dependencies": {
+    "manifestSha256": "sha256:320ef6db0819019112df4c3c7cc4b386edfc9a35ef9d8b5a42aaeb801e931e8d",
+    "manifests": [
+      {
+        "path": "wscript",
+        "sha256": "sha256:efc411a786fdbdfdeecf64bd942ab9ebc87d1ecfc68e843171f57412d3c2441c"
+      },
+      {
+        "path": "NDNSF-DistributedInference/setup.py",
+        "sha256": "sha256:4e871aac1d260ed443228238f64be5d8a0cfbe7badc71054821c08cdfd9ba3d9"
+      },
+      {
+        "path": "NDNSF-DistributedInference/packaging/python/core/pyproject.toml",
+        "sha256": "sha256:ab2793d7eeb357208c701060f1a784ef23248d80985d029e1f45e359e5bd1dc8"
+      },
+      {
+        "path": "NDNSF-DistributedInference/packaging/python/sdk/pyproject.toml",
+        "sha256": "sha256:97dee5410c5d83c880911d306097351fe78ef41b0198e89f87730d9fc9f1f8e1"
+      },
+      {
+        "path": "NDNSF-DistributedInference/packaging/python/app/pyproject.toml",
+        "sha256": "sha256:55d0c9328cae7efeb198b86e359395d2d761f76569ac2eb16f5e1c0e40798847"
+      },
+      {
+        "path": "NDNSF-DistributedInference/packaging/python/planner/pyproject.toml",
+        "sha256": "sha256:31fb26828b1291ff84a3a330fb78fd80e998ff5374e5924220c59f469e78d5ab"
+      }
+    ],
+    "platform": "Linux-5.15.0-139-generic-x86_64-with-glibc2.29",
+    "python": "3.8.10"
+  },
+  "itigerExecutionDigest": "DEFERRED_TO_SPEC110",
+  "lineage": {
+    "evidenceEpoch": "spec111-post-separation-local-v1",
+    "externalOptimizerMiniNdnSummarySha256": "sha256:24d1d0bf86c38f5d4b39ac27d13049411b2f2cec42cbaa676120dd31279069cd",
+    "historicalClaimsInherited": false,
+    "promotedFrom": "",
+    "workflowGateSha256": "sha256:b2cf0994438b1369803bbab970f54e823ee060dbe04525871c6c97d5e4442b7f"
+  },
+  "localBuild": {
+    "nativeExtension": "pythonWrapper/ndnsf/_ndnsf.cpython-38-x86_64-linux-gnu.so",
+    "nativeExtensionSha256": "sha256:51c95c7ec5190daecd16e2b0054a92f283314fb41b193fa8910c6393eeca0580",
+    "wafBuildResult": "PASS_334_ACTIONS"
+  },
+  "ociDigest": "DEFERRED_TO_SPEC110",
+  "releaseDigest": "DEFERRED_TO_SPEC110",
+  "schema": "ndnsf-di-spec111-candidate-identity-v1",
+  "sifDigest": "DEFERRED_TO_SPEC110",
+  "source": {
+    "baseCommit": "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6",
+    "branch": "Experimental",
+    "repository": "/home/tianxing/NDN/ndn-service-framework",
+    "runtimeFileCount": 585,
+    "runtimeManifestGenerator": "tools/spec111/generate_candidate_identity.py",
+    "runtimeTreeSha256": "sha256:0d80d27b786fc092ac9c5ed5cf466271f9975a5c3cfb42f587732a0a7279997e"
+  },
+  "sourceSpec": "111"
+}

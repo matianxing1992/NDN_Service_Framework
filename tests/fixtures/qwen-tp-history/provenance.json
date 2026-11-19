@@ -1,0 +1,33 @@
+{
+  "schema": "ndnsf-test-fixture-provenance-v1",
+  "source": "/var/tmp/spec224-inputs",
+  "recoveredDate": "2026-11-17",
+  "scope": "Historical CPU TP numerical diagnostics only. Original 25/24-token inputs are preserved; these files do not qualify the fresh 24/24/24 deployment workload. Recorded outputs are inputs to diagnostic context reconstruction, not an independent inference oracle.",
+  "files": [
+    {
+      "path": "turn-0-input.bin.hex",
+      "originalBytes": 257,
+      "originalSha256": "278f9eeedf242fc047635699df132dcd89ec488584cce3038de3553d7526e310"
+    },
+    {
+      "path": "turn-1-input.bin.hex",
+      "originalBytes": 249,
+      "originalSha256": "48fbc9e02a20e9709f94d393037373dcd8ba80815cd02aab85a2c4a93dca7e34"
+    },
+    {
+      "path": "turn-0-output.json",
+      "originalBytes": 445,
+      "originalSha256": "e6a2b470768c4466e739290ba035452bbccf0a7b89f9e733b2d4801ffc4931f5"
+    },
+    {
+      "path": "turn-1-output.json",
+      "originalBytes": 423,
+      "originalSha256": "17eee7107616dce5f931d14032fe83431775e8eac05ed7418851a10f406a7483"
+    },
+    {
+      "path": "turn-2-output.json",
+      "originalBytes": 412,
+      "originalSha256": "52d98042b52059a497304e7e308e4176ec494731f57d214f44c26cf6ce15ec22"
+    }
+  ]
+}

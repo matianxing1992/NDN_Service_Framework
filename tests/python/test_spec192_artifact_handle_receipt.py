@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from py_repoclient import (
     RepoClient,
 )
 import py_repoclient
+from native_service_fixture import provision_native_identities
 
 
 FIXTURE = b"spec192 native Python binding fixture"
@@ -37,6 +39,22 @@ def fixture_reference() -> ArtifactReference:
 
 
 class Spec192ArtifactBindingTest(unittest.TestCase):
+    def make_service_user(self, domain):
+        directory = tempfile.TemporaryDirectory(prefix="ndnsf-repo-binding-")
+        self.addCleanup(directory.cleanup)
+        controller = domain + "/controller"
+        user = domain + "/user"
+        environment, trust_schema = provision_native_identities(
+            Path(directory.name), controller, user)
+        isolate = patch.dict(os.environ, environment)
+        isolate.start()
+        self.addCleanup(isolate.stop)
+        return ServiceUser(
+            group=domain + "/group", controller=controller, user=user,
+            trust_schema=str(trust_schema), permission_wait_ms=0,
+            serve_certificates=False,
+        )
+
     def test_native_reference_receipt_handle_lookup_and_fetch(self):
         with tempfile.TemporaryDirectory(prefix="spec192-inapp-binding-") as tmp:
             root = Path(tmp)
@@ -83,15 +101,7 @@ class Spec192ArtifactBindingTest(unittest.TestCase):
             )
 
     def test_persistent_api_retains_native_service_user_owner(self):
-        trust_schema = Path("examples/trust-schema.conf").resolve()
-        service_user = ServiceUser(
-            group="/spec192/binding/group",
-            controller="/spec192/binding/controller",
-            user="/spec192/binding/user",
-            trust_schema=str(trust_schema),
-            permission_wait_ms=0,
-            serve_certificates=False,
-        )
+        service_user = self.make_service_user("/spec192/binding")
         owner = service_user._native
         initial_references = sys.getrefcount(owner)
         config = PersistentRepoClientConfig()
@@ -119,14 +129,7 @@ class Spec192ArtifactBindingTest(unittest.TestCase):
         self.assertEqual(sys.getrefcount(owner), initial_references - 1)
 
     def test_repo_client_is_a_thin_native_artifact_api_facade(self):
-        service_user = ServiceUser(
-            group="/spec192/repo-client/group",
-            controller="/spec192/repo-client/controller",
-            user="/spec192/repo-client/user",
-            trust_schema=str(Path("examples/trust-schema.conf").resolve()),
-            permission_wait_ms=0,
-            serve_certificates=False,
-        )
+        service_user = self.make_service_user("/spec192/repo-client")
         native_factory = ArtifactRepositoryApi.make_persistent
         captured_configs = []
 
@@ -196,14 +199,7 @@ class Spec192ArtifactBindingTest(unittest.TestCase):
     def test_native_fetch_error_keeps_structured_result(self):
         with tempfile.TemporaryDirectory(prefix="spec192-fetch-error-") as tmp:
             root = Path(tmp)
-            service_user = ServiceUser(
-                group="/spec192/fetch-error/group",
-                controller="/spec192/fetch-error/controller",
-                user="/spec192/fetch-error/user",
-                trust_schema=str(Path("examples/trust-schema.conf").resolve()),
-                permission_wait_ms=0,
-                serve_certificates=False,
-            )
+            service_user = self.make_service_user("/spec192/fetch-error")
             api = ArtifactRepositoryApi.make_persistent(service_user)
             reference = fixture_reference()
             handle = ArtifactHandle.from_json(json.dumps({

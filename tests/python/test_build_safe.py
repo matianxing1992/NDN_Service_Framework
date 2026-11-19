@@ -1,4 +1,4 @@
-"""The normal build launcher must not inherit the root's last ASAN configure lock."""
+"""Select the maintained Waf tree independently of the root configure lock."""
 import os
 from pathlib import Path
 import shutil
@@ -14,10 +14,11 @@ class BuildTreeSelection(unittest.TestCase):
         (root / 'build').mkdir()
         (root / 'build/.lock-waf_linux_build').touch()
         (root / '.lock-waf_linux_build').write_text('out_dir = "build-ASAN-UBSAN"\n')
-        shutil.copyfile(Path(__file__).resolve().parents[2] / 'scripts/build-safe.sh',
-                        root / 'scripts/build-safe.sh')
+        scripts = Path(__file__).resolve().parents[2] / 'scripts'
+        for name in ('build-safe.sh', 'build-storage.py'):
+            shutil.copyfile(scripts / name, root / 'scripts' / name)
         waf = root / 'waf'
-        waf.write_text('#!/bin/sh\npwd\nprintf "%s\\n" "$@"\n')
+        waf.write_text('#!/bin/sh\npwd\nprintf "%s\\n" "$WAFLOCK" "$@"\n')
         waf.chmod(0o755)
         return root
 
@@ -29,8 +30,23 @@ class BuildTreeSelection(unittest.TestCase):
                                text=True, env={**os.environ, 'XDG_RUNTIME_DIR':str(root)})
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn(str(root / 'build'), r.stdout.splitlines())
+            self.assertIn('.lock-waf_linux_build', r.stdout.splitlines())
             self.assertIn('--targets=unit-tests', r.stdout.splitlines())
             self.assertIn('-j4', r.stdout.splitlines())
+
+    def test_asan_selects_only_the_diagnostic_tree(self):
+        with tempfile.TemporaryDirectory(prefix='ndnsf-build-launcher-') as temp:
+            root = self.fixture(temp)
+            diagnostic = root / 'build-ASAN-UBSAN'
+            diagnostic.mkdir()
+            (diagnostic / '.lock-waf_build_asan').touch()
+            r = subprocess.run(['bash', str(root / 'scripts/build-safe.sh'), 'asan',
+                                '--targets=tp-tests-asan', '-j4'], cwd=root, capture_output=True,
+                               text=True, env={**os.environ, 'XDG_RUNTIME_DIR':str(root)})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(str(diagnostic), r.stdout.splitlines())
+            self.assertIn('.lock-waf_build_asan', r.stdout.splitlines())
+            self.assertIn('--targets=tp-tests-asan', r.stdout.splitlines())
 
     def test_explicit_run_preserves_callers_working_directory(self):
         with tempfile.TemporaryDirectory(prefix='ndnsf-build-launcher-') as temp:

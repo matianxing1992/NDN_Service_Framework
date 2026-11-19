@@ -27,6 +27,7 @@ from ndnsf import (
     encode_ack_metadata,
 )
 from .core.contracts import ProviderResidencyIdentity
+from .repo_reference import publication_manifest_name
 
 
 @dataclass(frozen=True)

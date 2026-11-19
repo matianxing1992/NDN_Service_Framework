@@ -9571,60 +9571,21 @@ namespace ndn_service_framework
 
     namespace
     {
-        // Keep the canonical DI envelope visible during discovery so a
-        // Provider can issue a V3 offer, but remove inline application bytes.
-        // The original payload remains in requestScopedPlaintext and is
-        // published only after Selection.
-        std::optional<ndn::Buffer>
-        makeRequestScopedDiscoveryPayload(const ndn::Buffer& original)
-        {
-            if (original.empty()) {
-                return std::nullopt;
-            }
-            const std::string wire(reinterpret_cast<const char*>(original.data()),
-                                   original.size());
-            if (wire.find("\"schema\":\"ndnsf-di-request-envelope-v2\"") ==
-                std::string::npos) {
-                return std::nullopt;
-            }
-            const std::string marker = "\"input_payload_b64\":\"";
-            const auto valueStart = wire.find(marker);
-            if (valueStart == std::string::npos) {
-                return std::nullopt;
-            }
-            const auto contentStart = valueStart + marker.size();
-            const auto contentEnd = wire.find('"', contentStart);
-            if (contentEnd == std::string::npos) {
-                return std::nullopt;
-            }
-            std::string discovery = wire;
-            discovery.erase(contentStart, contentEnd - contentStart);
-            return ndn::Buffer(reinterpret_cast<const uint8_t*>(discovery.data()),
-                               discovery.size());
-        }
-
         void
         recordRequestInputMode(const std::shared_ptr<ControlByteStatistics>& statistics,
-                               const RequestMessage& prepared, bool scoped,
-                               bool explicitDiscovery, std::size_t originalBytes) noexcept
+                               bool scoped, bool explicitDiscovery) noexcept
         {
             if (!statistics) return;
             auto kind = ControlByteKind::REQUEST_INPUT_INLINE_MODE;
-            std::uint64_t removedBytes = 0;
             if (scoped) {
                 if (explicitDiscovery) {
                     kind = ControlByteKind::REQUEST_INPUT_EXPLICIT_DISCOVERY_MODE;
-                }
-                else if (prepared.getPayloadSize() != 0) {
-                    kind = ControlByteKind::REQUEST_INPUT_SANITIZED_MODE;
-                    if (prepared.getPayloadSize() > originalBytes) statistics->invalidate();
-                    else removedBytes = originalBytes - prepared.getPayloadSize();
                 }
                 else {
                     kind = ControlByteKind::REQUEST_INPUT_EMPTY_DISCOVERY_MODE;
                 }
             }
-            statistics->record(kind, removedBytes);
+            statistics->record(kind, 0);
         }
     }
 
@@ -9695,9 +9656,6 @@ namespace ndn_service_framework
         if (requestMessage.hasDiscoveryPayload()) {
             auto discovery = requestMessage.getDiscoveryPayload();
             requestMessage.setPayload(discovery, discovery.size());
-        }
-        else if (auto discovery = makeRequestScopedDiscoveryPayload(plaintext)) {
-            requestMessage.setPayload(*discovery, discovery->size());
         }
         else {
             ndn::Buffer empty;
@@ -10791,7 +10749,6 @@ namespace ndn_service_framework
             return ndn::Name();
         }
         const bool explicitDiscovery = requestMessage.hasDiscoveryPayload();
-        const auto originalPayloadBytes = requestMessage.getPayloadSize();
         ndn::Buffer requestScopedPlaintext;
         const bool requestScopedConfidentiality = prepareRequestScopedRequest(
             requestMessage, serviceName, requestId, requestScopedPlaintext);
@@ -10904,8 +10861,8 @@ namespace ndn_service_framework
         pendingCall.providers = {provider};
         pendingCall.serviceName = serviceName;
         pendingCall.controlStatistics = std::move(controlStatistics);
-        recordRequestInputMode(pendingCall.controlStatistics, requestMessage,
-                               requestScopedConfidentiality, explicitDiscovery, originalPayloadBytes);
+        recordRequestInputMode(pendingCall.controlStatistics,
+                               requestScopedConfidentiality, explicitDiscovery);
         pendingCall.requestMessage = requestMessage;
         pendingCall.requestScopedPlaintext = std::move(requestScopedPlaintext);
         pendingCall.requestScopedConfidentiality = requestScopedConfidentiality;
@@ -11643,15 +11600,14 @@ namespace ndn_service_framework
                 "deferred collaboration ControllerVersion is not ready");
         }
         const bool explicitDiscovery = requestMessage.hasDiscoveryPayload();
-        const auto originalPayloadBytes = requestMessage.getPayloadSize();
         ndn::Buffer requestScopedPlaintext;
         const bool requestScopedConfidentiality = prepareRequestScopedRequest(
             requestMessage, service, requestId, requestScopedPlaintext);
 
         PendingCall pendingCall;
         pendingCall.controlStatistics = std::move(controlStatistics);
-        recordRequestInputMode(pendingCall.controlStatistics, requestMessage,
-                               requestScopedConfidentiality, explicitDiscovery, originalPayloadBytes);
+        recordRequestInputMode(pendingCall.controlStatistics,
+                               requestScopedConfidentiality, explicitDiscovery);
         pendingCall.providers = providerNames;
         pendingCall.serviceName = service;
         pendingCall.requestMessage = std::move(requestMessage);

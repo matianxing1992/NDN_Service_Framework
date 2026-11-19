@@ -156,13 +156,6 @@ hasOption(int argc, char** argv, const std::string& option)
   return false;
 }
 
-bool
-fileExists(const std::string& path)
-{
-  struct stat st {};
-  return !path.empty() && stat(path.c_str(), &st) == 0;
-}
-
 std::string
 findCaptureDevice()
 {
@@ -196,7 +189,8 @@ findCaptureDevice()
 }
 
 std::string
-resolveVideoSource(int argc, char** argv, const Fields& config)
+resolveVideoSource(int argc, char** argv, const Fields& config,
+                   const std::filesystem::path& configPath)
 {
   std::string configured;
   if (hasOption(argc, argv, "--video-source")) {
@@ -218,20 +212,20 @@ resolveVideoSource(int argc, char** argv, const Fields& config)
     return device;
   }
 
-  for (const auto& fallback : {
-         std::string("videos/drone.mp4"),
-         std::string("NDNSF-UAV-APP/videos/drone.mp4")
-       }) {
-    if (fileExists(fallback)) {
-      std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=" << fallback
-                << " reason=no-capture-device" << std::endl;
-      return fallback;
+  auto fallback = std::filesystem::path(fieldOr(config, "video-fallback", ""));
+  if (!fallback.empty()) {
+    fallback = std::filesystem::absolute(configPath.parent_path() / fallback).lexically_normal();
+    if (!std::filesystem::is_regular_file(fallback) || access(fallback.c_str(), R_OK) != 0) {
+      throw std::runtime_error("video-fallback is not a readable file: " + fallback.string());
     }
+    std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=" << fallback.string()
+              << " reason=no-capture-device" << std::endl;
+    return fallback.string();
   }
 
-  std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=videos/drone.mp4"
-            << " reason=no-capture-device-no-sample-found" << std::endl;
-  return "videos/drone.mp4";
+  std::cout << "DRONE_CAMERA_SOURCE_AUTO selected=none"
+            << " reason=no-capture-device-no-fallback-configured" << std::endl;
+  return "";
 }
 
 bool

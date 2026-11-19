@@ -1,5 +1,8 @@
+"""Check the archived Qwen preparation policy without launching cluster jobs."""
+
 from __future__ import annotations
 
+from importlib.machinery import SourceFileLoader
 import importlib.util
 from pathlib import Path
 import sys
@@ -7,16 +10,17 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-JOBS = ROOT / "specs/162-itiger-qwen36-generation/jobs"
-PREPARE = JOBS / "prepare-qwen36.py"
-PREPARE_REFERENCE = JOBS / "prepare-reference.sbatch"
-PREPARE_STAGES = JOBS / "prepare-stages.sh"
-CAPACITY = JOBS / "capacity-preflight.py"
-GENERATION_SMOKE = JOBS / "generation-smoke.sbatch"
-GENERATION_RANK = JOBS / "generation-rank.sh"
-GENERATION_RANK_INNER = JOBS / "generation-rank-inner.sh"
-SMOKE_ANALYZER = JOBS / "analyze-generation-smoke.py"
-FORMAL_ANALYZER = JOBS / "analyze-generation-formal.py"
+FIXTURES = ROOT / "tests/fixtures"
+JOBS = FIXTURES / "legacy-qwen-source-bundle/jobs"
+PREPARE = FIXTURES / "legacy-exact-sif-gate/prepare-qwen36.py.txt"
+PREPARE_REFERENCE = JOBS / "prepare-reference.sbatch.txt"
+PREPARE_STAGES = JOBS / "prepare-stages.sh.txt"
+CAPACITY = JOBS / "capacity-preflight.py.txt"
+GENERATION_SMOKE = JOBS / "generation-smoke.sbatch.txt"
+GENERATION_RANK = JOBS / "generation-rank.sh.txt"
+GENERATION_RANK_INNER = FIXTURES / "legacy-tiger-three-node/generation-rank-inner.sh.txt"
+SMOKE_ANALYZER = JOBS / "analyze-generation-smoke.py.txt"
+FORMAL_ANALYZER = JOBS / "analyze-generation-formal.py.txt"
 QWEN_USER = (
     ROOT / "examples/python/NDNSF-DistributedInference/llm_pipeline/user.py"
 )
@@ -27,7 +31,7 @@ QWEN_PIPELINE = (
 
 
 def load_module(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = importlib.util.spec_from_loader(name, SourceFileLoader(name, str(path)))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -306,7 +310,9 @@ class Qwen36PreparationContractTest(unittest.TestCase):
         self.assertNotIn("SPEC162_PROVIDER_SETTLE_SECONDS", inner)
         self.assertNotIn('sleep "$provider_settle_seconds"', inner)
         self.assertIn('face_scheme="${SPEC162_FACE_SCHEME:-tcp4}"', inner)
-        self.assertIn('uri="${face_scheme}://${peer_ip}:${SPEC162_PORT}"', inner)
+        self.assertIn('peer_port="${SPEC162_PORT}"', inner)
+        self.assertIn('peer_port=$(</shared/node-${peer_rank}/port.txt)', inner)
+        self.assertIn('uri="${face_scheme}://${peer_ip}:${peer_port}"', inner)
         self.assertIn("the first planning trigger", inner)
         self.assertIn("NDNSF_DI_AUTOPLANNING_ACK_CLOSED", analyzer)
         self.assertIn("NDNSF_DI_AUTOPLANNING_GRAPH_READY", analyzer)
@@ -317,10 +323,11 @@ class Qwen36PreparationContractTest(unittest.TestCase):
         self.assertIn('manifest.get("runtimeSifSha256", "")', smoke)
         self.assertIn("SPEC162_STAGE_PATH_MISMATCH", smoke)
         self.assertIn("SPEC162_STAGE_PATH_MISSING", smoke)
-        self.assertIn('stage_root = (artifact_dir / "qwen-transformers-stage-artifacts").resolve()', smoke)
+        self.assertIn('else "qwen-transformers-stage-artifacts"', smoke)
+        self.assertIn('stage_root = (artifact_dir / stage_dir).resolve()', smoke)
         self.assertIn("SPEC162_POLICY_STAGE_PATH_MISMATCH", smoke)
         self.assertIn("yaml.safe_load", smoke)
-        self.assertIn('artifact.get("kind") != "llm-stage-weights"', smoke)
+        self.assertIn('artifact.get("kind") not in {"llm-stage-weights", "onnx-model"}', smoke)
         self.assertIn("SPEC162_FIXED_SETTLE_FORBIDDEN", smoke)
         self.assertIn("SPEC162_REQUEST_GATE_OPEN", inner)
         self.assertIn("mode=REQUEST_FIRST", inner)

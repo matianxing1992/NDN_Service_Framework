@@ -1,0 +1,3 @@
+- insert:
+    - id: validation-queue
+      name: dsh-validation-queue

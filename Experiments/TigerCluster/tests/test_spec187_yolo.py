@@ -28,7 +28,7 @@ def test_spec187_selector_has_independent_cpp_suite_and_waf_target():
     assert "Spec187 native stage evidence is out of order" in source
     assert "spec187FieldPosition" in source
     wscript = (ROOT.parent.parent / "tests/wscript").read_text()
-    assert "name='spec187-yolo-minindn'" in wscript
+    assert "name='yolo-minindn'" in wscript
     assert "'SPEC187_YOLO_SELECTOR'" in wscript
     runner_source = SCRIPT.read_text()
     assert 'SPEC187_NATIVE_MODE' in runner_source

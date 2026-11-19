@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -45,7 +46,15 @@ class ArchitectureImportsTest(unittest.TestCase):
 
     def test_fixture_is_bound_to_normative_contract(self) -> None:
         self.assertEqual(self.matrix["schema"], "ndnsf-di-spec111-ownership-matrix-v1")
-        self.assertTrue((ROOT / self.matrix["source"]).is_file())
+        self.assertEqual(
+            self.matrix["source"],
+            "specs/111-ndnsf-di-core-app-separation/contracts/ownership-matrix.md",
+        )
+        contract = FIXTURE.with_suffix(".md")
+        self.assertEqual(
+            hashlib.sha256(contract.read_bytes()).hexdigest(),
+            "8fc2e269bb44e93d05337e437e0054f779008245dfef97c75e2631fbbe8b3eef",
+        )
         self.assertEqual(
             set(self.matrix["phases"]),
             {"legacy", "core", "sdk", "planner", "requestScopedAssignment"},

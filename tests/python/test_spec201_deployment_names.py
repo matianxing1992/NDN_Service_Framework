@@ -5,24 +5,13 @@ signature validation or network retrieval, which the native/runtime gates do.
 """
 from dataclasses import replace
 import hashlib
-import importlib.util
 import os
 from pathlib import Path
-import sys
 from types import SimpleNamespace
 
 import pytest
 from ndn.encoding import Component, Name
-
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "pythonWrapper/src"))
-sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
-binary = Path(os.environ["SPEC201_PYTHON_BINDING"]).resolve(strict=True)
-spec = importlib.util.spec_from_file_location("_ndnsf", binary)
-native = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(native)
-assert Path(native.__file__).resolve() == binary
-sys.modules["ndnsf._ndnsf"] = native
+from ndnsf import _ndnsf as native
 
 from ndnsf_distributed_inference.app_sdk.application import ApplicationDefinitionSigner
 from ndnsf_distributed_inference.app_sdk.contracts import (
@@ -37,6 +26,14 @@ PRODUCER = "/owner/final"
 APPLICATION = "/app/creator"
 SHA_A = "sha256:" + "a" * 64
 SHA_B = "sha256:" + "b" * 64
+
+
+@pytest.fixture(scope="module", autouse=True)
+def verify_selected_binding():
+    binding = os.environ.get("SPEC201_PYTHON_BINDING")
+    if binding:
+        assert Path(native.__file__).resolve() == Path(binding).resolve(strict=True), (
+            "use the interpreter that owns the requested NDNSF binding")
 
 
 def wire(name):

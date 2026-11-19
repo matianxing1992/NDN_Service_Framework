@@ -2060,7 +2060,7 @@ def main(argv=None, *, _supervised=False) -> int:
                               else (build / "DI_NativeOnnxAssemblyWorker").resolve())
     oracle_binary = (args.oracle_binary.expanduser().resolve()
                      if args.oracle_binary is not None
-                     else (build / "examples/spec190-multiturn-oracle").resolve())
+                     else (build / "examples/multiturn-oracle").resolve())
     receipt = build / "spec180-native-build.json"
     # Verify the complete runtime identity before copying the canonical graph
     # or external initializer into the run directory.  The same checks are

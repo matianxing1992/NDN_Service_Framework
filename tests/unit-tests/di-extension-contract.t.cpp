@@ -167,7 +167,7 @@ std::string qwenFixtureGraphDigest(const std::string& modelName,
 
 } // namespace
 
-BOOST_AUTO_TEST_SUITE(Spec185ExtensionRegistry)
+BOOST_AUTO_TEST_SUITE(DiExtensionRegistry)
 
 BOOST_AUTO_TEST_CASE(ExtensionControlStopsCancellationAndDeadline)
 {

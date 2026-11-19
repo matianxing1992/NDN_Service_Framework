@@ -33,10 +33,10 @@ NFD_TEMPLATE = (
 )
 WORKLOADS = {
     "spec170-d0-current-sif-workload.sh": (
-        ROOT / "tests/fixtures/spec174/spec174-d0-sif-workload.sh"
+        ROOT / "tests/fixtures/spec174/d0-sif-workload.sh"
     ),
     "spec170-d1-current-sif-workload.sh": (
-        ROOT / "tests/fixtures/spec174/spec174-d1-sif-workload.sh"
+        ROOT / "tests/fixtures/spec174/d1-sif-workload.sh"
     ),
 }
 

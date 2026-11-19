@@ -29,7 +29,8 @@ class CollaborationScopeKeyFetchContractTest(unittest.TestCase):
             "bool ServiceProvider::maybeFetchCollaborationScopeKey")
 
         self.assertIn("fetchAndDecryptLargeData", body)
-        self.assertIn("std::thread", body)
+        self.assertIn("m_fetchPool.post", body)
+        self.assertLess(body.index("m_fetchPool.post"), body.index("fetchAndDecryptLargeData"))
         self.assertIn("boost::asio::post(m_face.getIoContext()", body)
         self.assertNotIn("nacConsumer.consume", body)
 

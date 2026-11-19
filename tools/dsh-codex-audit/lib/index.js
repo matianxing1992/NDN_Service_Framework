@@ -2,7 +2,7 @@ import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { AuditManager, AuditError } from './audit-manager.js';
-import { runCodex, resolveCodex } from './codex-runner.js';
+import { runCodex, resolveCodex, readAuditModels } from './codex-runner.js';
 import { createSnapshot, checkSnapshotCurrent, describeBasis } from './snapshot.js';
 import { reviewDocumentChanges, applyDocumentChange } from './document-changes.js';
 import { serializeConversation } from './conversation.js';
@@ -42,6 +42,7 @@ export default class CodexAudit extends TypertRemoteService {
     this.domain = await this.ctx.storageDomain.open(spec);
     const table = this.domain.table('state');
     this.manager = new AuditManager({
+      models: await readAuditModels(),
       load: async () => table.get('history'), save: value => table.put('history', value),
       active: id => this.auditEligible(id),
       captureBaseline: async id => {
@@ -369,7 +370,9 @@ export default class CodexAudit extends TypertRemoteService {
         if (changed) await this.manager.persist();
       } finally { cut[Symbol.dispose](); }
     }
-    return { settings: this.manager.publicSettings(sessionId),
+    const settings = this.manager.publicSettings(sessionId);
+    return { settings, models: this.manager.models,
+      efforts: this.manager.models.find(model => model.id === settings.model)?.efforts ?? [],
       guard: await this.guard.view(sessionId),
       records, total: all.length, offset,
       running: this.manager.running.has(sessionId), error: this.lastError ?? null };
@@ -399,7 +402,7 @@ export default class CodexAudit extends TypertRemoteService {
       await this.guard.resume(sessionId, request.goalRef);
     } else if (action === 'configure') {
       const patch = {};
-      for (const key of ['enabled', 'intervalHours', 'codexPath']) {
+      for (const key of ['enabled', 'intervalHours', 'codexPath', 'model', 'effort']) {
         if (Object.hasOwn(request, key)) patch[key] = request[key];
       }
       if (patch.codexPath !== undefined && typeof patch.codexPath !== 'string') throw new Error('Invalid Codex path');

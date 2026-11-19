@@ -207,6 +207,9 @@ struct RoleSpec
   // Request-scoped inference epoch. Epoch zero is prefill; every later epoch
   // must consume the Provider-owned state committed by its direct predecessor.
   std::uint64_t inferenceEpoch = 0;
+  // Local monotonic deadline admitted by the invocation owner. Never serialized
+  // or included in plan/cache identity; unchanged across token epochs/resumes.
+  std::optional<std::chrono::steady_clock::time_point> executionDeadline;
   // Observation owner only; never serialized or included in execution/cache identity.
   std::shared_ptr<class NativeWorkStatistics> workStatistics;
   // Canonical model-token lineage shared by every role in this inference

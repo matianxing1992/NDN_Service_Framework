@@ -2,8 +2,8 @@
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/LegacyRepoImporter.hpp"
 #include "tests/boost-test.hpp"
-#include "tests/fixtures/spec202-syscall-fault.hpp"
-#include "tests/fixtures/spec202-import-lock.hpp"
+#include "tests/fixtures/syscall-fault.hpp"
+#include "tests/fixtures/import-lock.hpp"
 
 #include <openssl/evp.h>
 #include <sqlite3.h>

@@ -221,6 +221,22 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
       )
     },
 
+    durationMinutes: function (window, label) {
+      if (Number.isFinite(window.durationMinutes) && window.durationMinutes > 0) return window.durationMinutes
+      return { '5h': 300, '天': 1440, '周': 10080, '7天': 10080, '月': 43200 }[label]
+    },
+
+    /** Normalize the longest window's usage to a day at the time of observation. */
+    dailyAverage: function (window, minutes, updatedAt) {
+      var day = 24 * 60
+      if (minutes >= day) {
+        if (!Number.isFinite(updatedAt) || !Number.isFinite(window.resetsAt)) return null
+        minutes -= (window.resetsAt - updatedAt) / 60000
+        if (updatedAt > window.resetsAt || minutes <= 0) return null
+      }
+      return (window.percent * day / minutes).toLocaleString('en-US', { maximumFractionDigits: 2 })
+    },
+
     /**
      * Host payload -> what the pill shows. Anything other than a reading hides the
      * control: a provider without a readable limit API must not invent one.
@@ -248,6 +264,8 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
         for (var f = 0; f < amounts.length; f++) figures.push(amounts[f].label === '' ? amounts[f].value : amounts[f].label + ' ' + amounts[f].value)
         var amountLines = []
         for (var l = 0; l < amounts.length; l++) amountLines.push((amounts[l].label === '' ? '金额' : amounts[l].label) + ' ' + amounts[l].value)
+        if (detail.windowStatus === 'unavailable') amountLines.push('周期用量暂不可用')
+        if (detail.windowStatus === 'no-windows') amountLines.push('未返回周期用量')
         if (typeof detail.plan === 'string') amountLines.push('plan ' + detail.plan + (typeof detail.status === 'string' ? ' (' + detail.status + ')' : ''))
         if (typeof detail.creditsPerUsd === 'number') amountLines.push('creditsPerUsd ' + String(detail.creditsPerUsd))
         var periodEnd = QUOTA_VIEW.stamp(typeof detail.periodEnd === 'number' ? detail.periodEnd : null)
@@ -271,6 +289,9 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
       var reset = QUOTA_VIEW.clock(tightest.resetsAt)
       var text = label + ' ' + tightest.label + ' ' + String(Math.round(tightest.percent)) + '%' + (reset === null ? '' : ' · ' + reset)
       var lines = []
+      var summaries = []
+      var longest = null
+      var longestMinutes = 0
       for (var i = 0; i < windows.length; i++) {
         var window = windows[i]
         if (window === null || typeof window !== 'object') continue
@@ -278,7 +299,27 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
         if (percent === null) continue
         var windowLabel = typeof window.label === 'string' && window.label.length > 0 ? window.label : '限额'
         var when = typeof window.resetsAt === 'number' && isFinite(window.resetsAt) ? QUOTA_VIEW.stamp(window.resetsAt) : null
+        summaries.push(windowLabel + ' ' + String(percent) + '%')
         lines.push(windowLabel + ' ' + String(percent) + '%' + (when === null ? '' : ' · 重置 ' + when))
+        var duration = QUOTA_VIEW.durationMinutes(window, windowLabel)
+        if (duration > longestMinutes) {
+          longestMinutes = duration
+          longest = window
+        }
+      }
+      if (longest !== null) {
+        var average = QUOTA_VIEW.dailyAverage(longest, longestMinutes, payload.updatedAt)
+        if (average !== null) lines.push('Averaging ' + average + '% a day')
+      }
+      if (Array.isArray(payload.amounts)) {
+        for (var j = 0; j < payload.amounts.length; j++) {
+          var figure = payload.amounts[j]
+          if (typeof figure?.value !== 'string' || figure.value.length === 0) continue
+          var summary = (figure.label || '金额') + ' ' + figure.value
+          summaries.push(summary)
+          lines.push(summary)
+        }
+        text = label + ' ' + summaries.join(' · ')
       }
       if (typeof detail.planType === 'string' && detail.planType.length > 0) lines.push('plan ' + detail.planType)
       if (typeof detail.credits === 'string' && detail.credits.length > 0) lines.push('余额 ' + detail.credits)
@@ -298,11 +339,25 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
   // #endregion quota-view
 
   var QUOTA_REFRESH_MS = 300000
+  var QUOTA_RETRY_MS = 15000
   var QUOTA_TICK_MS = 250
+  var QUOTA_AUTH_READY = {}
+
+  function isOpenDesign(provider) {
+    return provider === 'open-design' || provider === 'open-design-2'
+  }
+
+  function shouldRetryQuota(payload) {
+    return payload?.reason === 'transport' || payload?.reason === 'unreachable' ||
+      payload?.reason === 'error' || payload?.detail?.windowStatus === 'unavailable'
+  }
 
   /** Same-origin URL of the host half's quota route, honouring a served base path. */
   function quotaUrl(provider) {
-    var relative = 'tps-window/quota?provider=' + encodeURIComponent(provider)
+    return ownUrl('tps-window/quota?provider=' + encodeURIComponent(provider))
+  }
+
+  function ownUrl(relative) {
     if (typeof document !== 'undefined' && typeof document.baseURI === 'string') {
       try {
         return new URL(relative, document.baseURI).href
@@ -328,9 +383,12 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
     this.unsubscribe = null
     this.provider = null
     this.payload = null
-    this.fetchedAt = 0
-    this.inflight = false
+    this.refreshAt = 0
+    this.request = null
     this.timer = null
+    this.authorization = null
+    this.authRequest = null
+    this.nextAuthPoll = 0
   }
 
   QuotaStore.prototype.getSnapshot = function () {
@@ -348,10 +406,99 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
 
   QuotaStore.prototype.publish = function () {
     var next = this.payload === null ? QUOTA_VIEW.EMPTY : QUOTA_VIEW.view(this.payload)
+    var canAuthorize = isOpenDesign(this.provider)
+    var reason = this.payload?.reason
+    var missing = reason === 'no-control-key' || reason === 'no-workspace-id'
+    var rejected = reason === 'unauthorized' || reason === 'invalid-binding' || reason === 'invalid-workspace-id'
+    if (canAuthorize && (this.authorization || missing || rejected)) {
+      var self = this
+      var provider = this.provider
+      next = Object.assign({}, next, { visible: true, provider: this.provider,
+        authorization: this.authorization || QUOTA_AUTH_READY,
+        authorizationLabel: rejected ? '重新连接额度' : '连接 OpenDesign 额度', authorize: function (action) {
+        if (self.provider === provider) self.authorize(action)
+      } })
+    } else if (canAuthorize && !next.visible && shouldRetryQuota(this.payload)) {
+      next = Object.assign({}, next, { visible: true, provider: this.provider,
+        text: '额度暂不可用，正在重试', title: '将使用已保存的凭据重新读取额度。' })
+    }
     var previous = this.value
-    if (previous.visible === next.visible && previous.text === next.text && previous.title === next.title) return
+    if (previous.visible === next.visible && previous.text === next.text && previous.title === next.title &&
+        previous.provider === next.provider && previous.authorizationLabel === next.authorizationLabel &&
+        previous.authorization === next.authorization) return
     this.value = next
     for (var i = 0; i < this.listeners.length; i++) this.listeners[i]()
+  }
+
+  QuotaStore.prototype.clearAuthorization = function () {
+    if (this.authRequest) this.authRequest.abort()
+    this.authRequest = null
+    var id = this.authorization?.id
+    this.authorization = null
+    if (id && this.provider) {
+      fetch(loginUrl(this.provider, 'cancel', id), loginOptions(AbortSignal.timeout(5000))).catch(function () {})
+    }
+  }
+
+  function loginUrl(provider, action, id) {
+    return ownUrl('tps-window/open-design-login?provider=' + encodeURIComponent(provider) +
+      '&action=' + encodeURIComponent(action) + (id ? '&id=' + encodeURIComponent(id) : ''))
+  }
+
+  function loginOptions(signal) {
+    return { method: 'POST', credentials: 'same-origin', headers: { 'x-dsh-tps-window': 'device-login' }, signal: signal }
+  }
+
+  QuotaStore.prototype.authorize = function (action) {
+    var self = this
+    if (action === 'cancel') {
+      this.clearAuthorization()
+      this.publish()
+      return
+    }
+    if (this.authRequest || !this.provider) return
+    var controller = new AbortController()
+    this.authRequest = controller
+    var current = this.authorization || {}
+    if (action === 'start') {
+      current = { status: 'starting', id: crypto.randomUUID() }
+      this.authorization = current
+    }
+    if (action === 'confirm') this.authorization = Object.assign({}, current, { status: 'saving' })
+    this.publish()
+    fetch(loginUrl(this.provider, action, current.id), loginOptions(
+      AbortSignal.any([controller.signal, AbortSignal.timeout(20000)])))
+      .then(function (response) {
+        if (!response.ok) throw new Error('Login request failed')
+        return response.json()
+      })
+      .then(function (answer) {
+        if (self.authRequest !== controller) return
+        if (answer.status === 'saved') {
+          self.authorization = null
+          self.cancelRead()
+          self.payload = null
+          self.refreshAt = 0
+        } else if (answer.status === 'pending' || answer.status === 'confirm') {
+          self.authorization = Object.assign({}, current, answer)
+          self.nextAuthPoll = Date.now() + Math.max(2000, answer.pollAfterMs || 2000)
+        } else {
+          self.authorization = { status: answer.status === 'expired' ? 'expired' : 'error' }
+        }
+      })
+      .catch(function () {
+        if (self.authRequest !== controller) return
+        if (action === 'poll' && current.status === 'pending') {
+          self.nextAuthPoll = Date.now() + 5000
+          return
+        }
+        self.authorization = { status: 'error' }
+      })
+      .finally(function () {
+        if (self.authRequest !== controller) return
+        self.authRequest = null
+        self.publish()
+      })
   }
 
   QuotaStore.prototype.attach = function () {
@@ -402,51 +549,55 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
   QuotaStore.prototype.fetch = function () {
     var self = this
     var provider = this.provider
-    this.inflight = true
+    var controller = new AbortController()
+    this.request = controller
     Promise.resolve()
       .then(function () {
-        if (typeof fetch !== 'function') return null
-        return fetch(quotaUrl(provider), { headers: { accept: 'application/json' }, credentials: 'same-origin' })
+        return fetch(quotaUrl(provider), { headers: { accept: 'application/json' },
+          credentials: 'same-origin', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) })
       })
       .then(function (response) {
-        if (response === null || response === undefined) return null
-        if (!response.ok) return null
+        if (!response.ok) throw new Error('Quota request failed')
         return response.json()
       })
-      .then(function (payload) {
-        if (self.provider !== provider) return
-        self.payload = payload !== null && typeof payload === 'object' ? payload : { status: 'unavailable' }
-        self.fetchedAt = Date.now()
-        self.publish()
-      })
       .catch(function () {
-        // A failed read is held for the same TTL as a successful one: the next tick
-        // must not hammer a route that just failed.
-        if (self.provider !== provider) return
-        self.payload = { status: 'unavailable' }
-        self.fetchedAt = Date.now()
+        return { status: 'unavailable', reason: 'transport' }
+      })
+      .then(function (payload) {
+        if (self.request !== controller) return
+        self.request = null
+        self.payload = payload !== null && typeof payload === 'object' ? payload :
+          { status: 'unavailable', reason: 'transport' }
+        var retry = isOpenDesign(provider) && shouldRetryQuota(self.payload)
+        self.refreshAt = Date.now() + (retry ? QUOTA_RETRY_MS : QUOTA_REFRESH_MS)
         self.publish()
       })
-      .then(function () {
-        self.inflight = false
-      })
+  }
+
+  QuotaStore.prototype.cancelRead = function () {
+    this.request?.abort()
+    this.request = null
   }
 
   QuotaStore.prototype.tick = function () {
     this.attach()
     var provider = this.currentProvider()
-    if (provider === null) {
-      this.provider = null
-      this.payload = null
-      this.publish()
-      return
-    }
     if (provider !== this.provider) {
+      if (this.authorization) this.clearAuthorization()
+      this.cancelRead()
       this.provider = provider
       this.payload = null
-      this.fetchedAt = 0
+      this.refreshAt = 0
     }
-    if (!this.inflight && (this.payload === null || Date.now() - this.fetchedAt >= QUOTA_REFRESH_MS)) this.fetch()
+    if (this.authorization?.status === 'pending') {
+      if (Date.now() >= this.authorization.expiresAt) {
+        this.clearAuthorization()
+        this.authorization = { status: 'expired' }
+      } else if (Date.now() >= this.nextAuthPoll) {
+        this.authorize('poll')
+      }
+    }
+    if (provider !== null && this.request === null && Date.now() >= this.refreshAt) this.fetch()
     this.publish()
   }
 
@@ -464,14 +615,17 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
   }
 
   QuotaStore.prototype.stop = function () {
+    if (this.authorization) this.clearAuthorization()
     if (this.timer !== null) {
       window.clearInterval(this.timer)
       this.timer = null
     }
     this.detachSource()
+    this.binding = undefined
     this.listeners = []
-    this.inflight = false
+    this.cancelRead()
     this.payload = null
+    this.refreshAt = 0
   }
 
   var quotaStores = new WeakMap()
@@ -495,6 +649,38 @@ window.__ModuleLoader__.load({ id: 'dsh-tps-window', factory: (require) => {
       return value
     })
     if (state === null || state === undefined || state.visible !== true) return null
+    if (state.authorization) {
+      var info = state.authorization
+      var button = function (action, label) {
+        return React.createElement('button', { type: 'button', key: action,
+          onClick: function () { state.authorize(action) } }, label)
+      }
+      var items
+      if (info.status === 'starting' || info.status === 'saving') {
+        items = [info.status === 'starting' ? '正在创建授权…' : '正在保存授权…']
+      } else if (info.status === 'pending') {
+        items = [React.createElement('a', { key: 'open', href: info.url, target: '_blank',
+          rel: 'noopener noreferrer', onClick: function (event) {
+            // The VS Code panel bridges window.open, not ordinary iframe links.
+            if (typeof window.open !== 'function') return
+            event.preventDefault()
+            window.open(info.url, '_blank', 'noopener,noreferrer')
+          } }, '在浏览器授权'), '验证码 ' + info.code,
+          React.createElement('details', { key: 'manual' },
+            React.createElement('summary', null, '手动打开'),
+            React.createElement('input', { readOnly: true, value: info.url, 'aria-label': 'OpenDesign 授权链接',
+              onFocus: function (event) { event.currentTarget.select() } })),
+          button('cancel', '取消')]
+      } else if (info.status === 'confirm') {
+        items = [state.provider + ' · ' + info.account + ' · ' + info.workspaceId,
+          button('confirm', '确认绑定'), button('cancel', '取消')]
+      } else {
+        items = [info.status === 'expired' ? '授权已过期' : info.status === 'error' ? '授权未完成' : null,
+          button('start', state.authorizationLabel + ' · ' + state.provider)]
+      }
+      return React.createElement('span', { style: PILL_STYLE, 'data-composer-stat': 'tps-quota-auth',
+        title: state.provider }, ...items)
+    }
     return React.createElement(
       'span',
       {

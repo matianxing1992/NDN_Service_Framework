@@ -705,19 +705,20 @@ validateDataWire(const fs::path& wirePath, const std::string& declaredName,
 {
   const auto bytes = readFileVector(wirePath, maxWireBytes);
   if (bytes.empty()) throw LegacyRepoImportError("legacy-import-data-wire-malformed");
-  std::string encodedName;
+  ndn::Name encodedName;
   ndn::Block content;
   try {
     ndn::Block block(ndn::span<const uint8_t>(bytes.data(), bytes.size()));
     block.parse();
     const ndn::Data data(block);
-    encodedName = data.getName().toUri();
+    encodedName = data.getName();
     content = data.getContent();
   }
   catch (const std::exception&) {
     throw LegacyRepoImportError("legacy-import-data-wire-malformed");
   }
-  if (encodedName != declaredName) {
+  if (encodedName.toUri(ndn::name::UriFormat::CANONICAL) != declaredName &&
+      encodedName.toUri(ndn::name::UriFormat::ALTERNATE) != declaredName) {
     throw LegacyRepoImportError("legacy-import-data-wire-name-mismatch");
   }
   if (!contentPath.empty()) {
@@ -860,6 +861,19 @@ struct ImportPlan
   std::vector<LegacyImportClaim> legacyClaims;
 };
 
+std::map<std::string, PacketPlan>::const_iterator
+findPacketByName(const ImportPlan& plan, const std::string& name)
+{
+  auto found = plan.packets.find(name);
+  if (found != plan.packets.end()) {
+    return found;
+  }
+  const ndn::Name typedName(name);
+  const auto canonical = typedName.toUri(ndn::name::UriFormat::CANONICAL);
+  return plan.packets.find(name == canonical
+    ? typedName.toUri(ndn::name::UriFormat::ALTERNATE) : canonical);
+}
+
 void
 writeEmptyFile(const fs::path& path)
 {
@@ -925,7 +939,7 @@ addPacket(ImportPlan& plan, sqlite3* db, const std::string& table,
           uint64_t maxWireBytes, uint64_t serial)
 {
   auto packet = loadPacket(db, table, name, scratch, maxWireBytes, serial);
-  auto existing = plan.packets.find(name);
+  const auto existing = findPacketByName(plan, name);
   if (existing != plan.packets.end()) {
     if (existing->second.sha256 != packet.sha256 ||
         existing->second.sizeBytes != packet.sizeBytes ||
@@ -1128,12 +1142,12 @@ buildImportPlan(sqlite3* db, const std::vector<std::string>& tables,
         Digest reconstructedDigest;
         uint64_t reconstructedSize = 0;
         for (const auto& name : packetNames) {
-          auto packet = plan.packets.find(name);
-          if (packet == plan.packets.end()) {
+          // An alias must still exist under its exact key in the legacy index.
+          if (plan.packets.count(name) == 0) {
             addPacket(plan, db, "data_packets", name, scratch,
                       config.maxDataWireBytes, serial++);
-            packet = plan.packets.find(name);
           }
+          const auto packet = findPacketByName(plan, name);
           if (packet == plan.packets.end()) {
             throw LegacyRepoImportError("legacy-import-data-wire-missing");
           }
@@ -1200,7 +1214,7 @@ buildImportPlan(sqlite3* db, const std::vector<std::string>& tables,
       action.item.nativeGeneration = nativeManifest.generation;
       action.item.packetNames = packetNames;
       for (const auto& name : packetNames) {
-        action.item.packetSha256.push_back(plan.packets.at(name).sha256);
+        action.item.packetSha256.push_back(findPacketByName(plan, name)->second.sha256);
       }
       action.item.legacyClaims.push_back({
         "objects", "objects:[" + quoteJson(objectName) + "]",

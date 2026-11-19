@@ -28,11 +28,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE_ROOT = Path("/tmp/spec111-baseline-4d695ce8")
-CANDIDATE_PATH = ROOT / (
-    "specs/111-ndnsf-di-core-app-separation/evidence/"
-    "post-separation-candidate.json"
-)
 BASE_COMMIT = "4d695ce8b7ffe2c79465dc1f3db649a5a65806a6"
 PAIR_SEEDS = tuple(range(11101, 11111))
 DEFERRED = "DEFERRED_TO_SPEC110"
@@ -502,7 +497,7 @@ def parse_cell(output: Path, returncode: int, peak_rss_kib: int,
         not fatal_log_findings
     )
     try:
-        metrics_name = str(metrics.relative_to(ROOT))
+        metrics_name = str(metrics.relative_to(ROOT) if ROOT in metrics.parents else metrics)
     except ValueError:
         metrics_name = str(metrics)
     return {
@@ -529,7 +524,8 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def run_cell(campaign_root: Path, pair: int, seed: int, variant: str) -> dict[str, object]:
+def run_cell(campaign_root: Path, pair: int, seed: int, variant: str,
+             baseline_root: Path, candidate_id: str) -> dict[str, object]:
     cell_id = f"spec111-pair-{pair:02d}-{variant}"
     output = campaign_root / "cells" / cell_id
     start_path = campaign_root / "journal" / f"{cell_id}.started.json"
@@ -548,7 +544,7 @@ def run_cell(campaign_root: Path, pair: int, seed: int, variant: str) -> dict[st
         write_json(result_path, result)
         return result
     facts = preflight(output)
-    source_root = BASELINE_ROOT if variant == "baseline" else ROOT
+    source_root = baseline_root if variant == "baseline" else ROOT
     state_root = ephemeral_app_state_for(output)
     if variant == "treatment" and state_root.exists():
         raise RuntimeError(f"SPEC111_APP_STATE_ALREADY_EXISTS:{state_root}")
@@ -599,10 +595,11 @@ def run_cell(campaign_root: Path, pair: int, seed: int, variant: str) -> dict[st
         "variant": variant,
         "candidateId": (
             f"baseline-{BASE_COMMIT[:12]}" if variant == "baseline" else
-            json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))["candidateId"]
+            candidate_id
         ),
         "commandDigest": command_digest,
-        "commandLog": str(command_log.relative_to(ROOT)),
+        "commandLog": str(
+            command_log.relative_to(ROOT) if ROOT in command_log.parents else command_log),
         "commandLogSha256": sha256_file(command_log),
         "finishedAtUnixNs": time.time_ns(),
         "cleanup": {
@@ -671,6 +668,12 @@ def write_diagnostic_continuation_marker(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--campaign-root", type=Path, required=True)
+    parser.add_argument("--baseline-root", type=Path, required=True,
+                        help="prepared source checkout for the frozen baseline")
+    parser.add_argument("--candidate-report", type=Path, required=True,
+                        help="materialized candidate identity report")
+    parser.add_argument("--baseline-recipe", type=Path, required=True,
+                        help="frozen recipe used to prepare the baseline")
     parser.add_argument(
         "--continue-diagnostic-after-terminal-failure",
         action="store_true",
@@ -681,11 +684,14 @@ def main() -> int:
     )
     args = parser.parse_args()
     campaign_root = args.campaign_root.resolve()
+    baseline_root = args.baseline_root.resolve()
+    candidate_bytes = args.candidate_report.read_bytes()
+    candidate = json.loads(candidate_bytes)
+    recipe_digest = sha256_file(args.baseline_recipe)
     role_import_preflight = {
         "treatment": run_role_import_preflight(ROOT),
-        "baseline": run_role_import_preflight(BASELINE_ROOT),
+        "baseline": run_role_import_preflight(baseline_root),
     }
-    candidate = json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))
     for field in ("ociDigest", "sifDigest", "containerBuildDigest", "itigerExecutionDigest"):
         if candidate[field] != DEFERRED:
             raise SystemExit(f"SPEC111_REMOTE_IDENTITY_FORBIDDEN:{field}")
@@ -700,7 +706,7 @@ def main() -> int:
         "treatment": ensure_runtime_readiness_preflight(
             ROOT, "treatment", treatment_readiness_root),
         "baseline": ensure_runtime_readiness_preflight(
-            BASELINE_ROOT, "baseline", readiness_root / "baseline"),
+            baseline_root, "baseline", readiness_root / "baseline"),
     }
     campaign_root.mkdir(parents=True, exist_ok=True)
     (campaign_root / "journal").mkdir(exist_ok=True)
@@ -716,11 +722,11 @@ def main() -> int:
         manifest = {
             "schema": "ndnsf-di-spec111-non-regression-campaign-v1",
             "candidateId": candidate["candidateId"],
-            "candidateSha256": sha256_file(CANDIDATE_PATH),
+            "candidateSha256": sha256_bytes(candidate_bytes),
             "baselineCommit": BASE_COMMIT,
-            "baselineWorktree": str(BASELINE_ROOT),
+            "baselineWorktree": str(baseline_root),
             "baselineNativeExtensionSha256": sha256_file(next(
-                (BASELINE_ROOT / "pythonWrapper/ndnsf").glob("_ndnsf*.so")
+                (baseline_root / "pythonWrapper/ndnsf").glob("_ndnsf*.so")
             )),
             "treatmentNativeExtensionSha256": candidate["localBuild"][
                 "nativeExtensionSha256"
@@ -730,14 +736,11 @@ def main() -> int:
                 BASELINE_MEASUREMENT_PATCH_PATHS),
             "baselineMeasurementPatchSha256": sha256_bytes(
                 subprocess.check_output([
-                    "git", "-C", str(BASELINE_ROOT), "diff", "--",
+                    "git", "-C", str(baseline_root), "diff", "--",
                     *BASELINE_MEASUREMENT_PATCH_PATHS,
                 ])
             ),
-            "recipeSha256": sha256_file(ROOT / (
-                "specs/111-ndnsf-di-core-app-separation/evidence/"
-                "performance-baseline-recipe.md"
-            )),
+            "recipeSha256": recipe_digest,
             "orderedCells": order,
             "orderedCellsSha256": canonical_digest(order),
             "roleImportPreflight": role_import_preflight,
@@ -766,7 +769,8 @@ def main() -> int:
                 campaign_root, candidate)
         results = []
         for pair, seed, variant in cell_order():
-            result = run_cell(campaign_root, pair, seed, variant)
+            result = run_cell(campaign_root, pair, seed, variant,
+                              baseline_root, candidate["candidateId"])
             results.append(result)
             print(
                 "SPEC111_CELL_TERMINAL",

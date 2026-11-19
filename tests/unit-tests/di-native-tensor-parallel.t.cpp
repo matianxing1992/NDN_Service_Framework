@@ -41,6 +41,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/frozen-binary-fixture.hpp"
 #include "tests/fixtures/native-dependency-bus.hpp"
 
 #include <onnx/onnx_pb.h>
@@ -65,11 +66,117 @@
 #include <utility>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace {
 
 using namespace ndnsf::di;
+
+std::string
+configuredFrozenModelDirectory()
+{
+  const auto* directory = std::getenv("NDNSF_TEST_CANONICAL_MODEL_DIR");
+  const auto* legacy = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const bool hasDirectory = directory != nullptr && *directory != '\0';
+  const bool hasLegacy = legacy != nullptr && *legacy != '\0';
+  if (!hasDirectory && !hasLegacy) {
+    throw std::runtime_error("MODEL_ASSET_REQUIRED: set NDNSF_TEST_CANONICAL_MODEL_DIR "
+                             "from the validated asset manifest");
+  }
+  const auto root = hasDirectory ? std::filesystem::path(directory)
+                                : std::filesystem::path(legacy).parent_path();
+  if (!root.is_absolute() || !std::filesystem::is_directory(root)) {
+    throw std::runtime_error("MODEL_ASSET_DIRECTORY_INVALID: " + root.string());
+  }
+  if (hasLegacy && (!std::filesystem::path(legacy).is_absolute() ||
+      !std::filesystem::equivalent(root, std::filesystem::path(legacy).parent_path()) ||
+      (hasDirectory && !std::filesystem::equivalent(
+        std::filesystem::path(root) / "canonical-source.onnx", legacy)))) {
+    throw std::runtime_error("MODEL_ASSET_ENVIRONMENT_CONFLICT");
+  }
+  return root.string();
+}
+
+std::string
+configuredFrozenModelPath()
+{
+  const auto root = configuredFrozenModelDirectory();
+  const auto* legacy = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
+  const auto path = legacy != nullptr && *legacy != '\0'
+    ? std::filesystem::path(legacy) : std::filesystem::path(root) / "canonical-source.onnx";
+  if (!std::filesystem::is_regular_file(path)) {
+    throw std::runtime_error("MODEL_ASSET_GRAPH_MISSING: " + path.string());
+  }
+  return path.string();
+}
+
+/** Own one reusable sidecar on the test filesystem; ORT requires a local regular file. */
+class FrozenQwenModelFixture
+{
+public:
+  FrozenQwenModelFixture()
+  {
+    const std::filesystem::path graph(configuredFrozenModelPath());
+    const auto weights = graph.parent_path() / "model.onnx_data";
+    const auto weightBytes = std::filesystem::file_size(weights);
+    if (weightBytes > (2ULL << 30) || std::filesystem::file_size(graph) > (8ULL << 20))
+      throw std::runtime_error("MODEL_FIXTURE_SIZE_BOUND_EXCEEDED");
+    auto pattern = (std::filesystem::temp_directory_path() /
+                    "ndnsf-qwen-fixture-XXXXXX").string();
+    const auto* directory = ::mkdtemp(pattern.data());
+    if (!directory)
+      throw std::runtime_error("MODEL_FIXTURE_DIRECTORY_CREATION_FAILED");
+    m_root = directory;
+    try {
+      std::error_code error;
+      std::filesystem::create_hard_link(weights, m_root / "model.onnx_data", error);
+      if (error == std::errc::cross_device_link) {
+        // Cross-device qualification needs one physical copy, shared by all
+        // cases/ranks in this process rather than another copy for each graph.
+        if (std::filesystem::space(m_root).available < weightBytes + (64ULL << 20))
+          throw std::runtime_error("MODEL_FIXTURE_CAPACITY_INSUFFICIENT");
+        std::filesystem::copy_file(weights, m_root / "model.onnx_data");
+      }
+      else if (error) {
+        throw std::filesystem::filesystem_error("model fixture hard link", weights, m_root, error);
+      }
+      std::filesystem::copy_file(graph, m_root / "canonical-source.onnx");
+    }
+    catch (...) {
+      std::error_code error;
+      std::filesystem::remove_all(m_root, error);
+      throw;
+    }
+  }
+
+  ~FrozenQwenModelFixture()
+  {
+    std::error_code error;
+    std::filesystem::remove_all(m_root, error);
+  }
+
+  FrozenQwenModelFixture(const FrozenQwenModelFixture&) = delete;
+  FrozenQwenModelFixture& operator=(const FrozenQwenModelFixture&) = delete;
+
+  std::string directory() const { return m_root.string(); }
+
+private:
+  std::filesystem::path m_root;
+};
+
+std::string
+frozenModelDirectory()
+{
+  static const FrozenQwenModelFixture fixture;
+  return fixture.directory();
+}
+
+std::string
+frozenModelPath()
+{
+  return (std::filesystem::path(frozenModelDirectory()) / "canonical-source.onnx").string();
+}
 
 
 /** One int64 tensor as a bundle would carry it. Four cases had their own copy of this. */
@@ -281,15 +388,23 @@ parsePlan(const std::string& wire)
 
 } // namespace
 
-// The deployment-file reader is defined beside the cases that use it, and declared at global scope
-// so a case above its definition can call it. Declaring it inside the anonymous namespace made the
-// declaration and the definition different entities, which turned every call into an undefined
-// reference -- the failure this replaces.
+BOOST_AUTO_TEST_SUITE(TensorParallel)
+BOOST_AUTO_TEST_SUITE(PlanAndPlacement)
+
+// Keep the reader declaration in the same Boost suite namespace as its definition.
 std::vector<std::int64_t>
 readDeploymentTokens(const std::string& path);
 
-BOOST_AUTO_TEST_SUITE(TensorParallel)
-BOOST_AUTO_TEST_SUITE(PlanAndPlacement)
+std::vector<std::int64_t>
+readFrozenDeploymentTokens(const std::string& basename)
+{
+  const auto resource = "qwen-tp-history/" + basename;
+  if (std::filesystem::path(basename).extension() == ".bin") {
+    const ndnsf::test::FrozenBinaryFixture fixture(resource + ".hex");
+    return readDeploymentTokens(fixture.path());
+  }
+  return readDeploymentTokens(ndnsf::test::testFixturePath(resource).string());
+}
 
 BOOST_AUTO_TEST_CASE(StepTemplateAcceptsTwoRankExchange)
 {
@@ -1350,13 +1465,10 @@ BOOST_AUTO_TEST_CASE(TheEntryBoundaryNamesAreWhatTheProbeNeeds)
   // without knowing the exact graph input and output names produced two failed rounds: one filled
   // token ids where an embedding was expected, another read a post-projection tensor as the GQA
   // output. Both were interface guesses, and both would have been answered by printing this.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream in(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
                                               std::istreambuf_iterator<char>());
@@ -1406,15 +1518,12 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
   // 16 heads x 128), N=1024 (the hidden width), INT4 with block size 32. This is the one reduction in
   // the attention block whose two halves are summed, so it is where a split can change the arithmetic;
   // the random-weight case at K=64 cannot speak for this width or these bytes.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source) ||
-      !std::filesystem::is_regular_file(sidecar)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export or its sidecar is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source) ||
+      !std::filesystem::is_regular_file(sidecar)),
+    "required fixture unavailable: frozen export or its sidecar is absent");
   std::ifstream in(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
                                               std::istreambuf_iterator<char>());
@@ -1463,7 +1572,9 @@ BOOST_AUTO_TEST_CASE(TheRealOProjectionAgreesWithItsTwoShards)
   std::vector<float> downActivation;
   std::vector<float> originalDownProjection;
   {
-    std::ifstream inputFile("/var/tmp/spec224-inputs/turn-1-input.bin", std::ios::binary);
+    const ndnsf::test::FrozenBinaryFixture inputFixture(
+      "qwen-tp-history/turn-1-input.bin.hex");
+    std::ifstream inputFile(inputFixture.path(), std::ios::binary);
     BOOST_REQUIRE(inputFile.good());
     const std::vector<std::uint8_t> inputBytes((std::istreambuf_iterator<char>(inputFile)),
                                              std::istreambuf_iterator<char>());
@@ -2818,12 +2929,7 @@ BOOST_AUTO_TEST_CASE(FrozenExportPackingMatchesTheSliceAssumptions)
   // block-aligned column copy. One counter-example anywhere in the export would
   // make those helpers silently wrong for that tensor, so the whole graph is
   // checked rather than a sample.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
     "frozen export is required at " + path +
@@ -4340,30 +4446,36 @@ BOOST_AUTO_TEST_CASE(LatePartialFailsTheUnitInsteadOfReducingASubset)
     }
   }
 
-  auto io = std::make_shared<NeverReadyDependencyIo>();
-  // Two compute workers so the queue itself is not the limiter; the wait
-  // scheduler deadline is what must end the unit.
-  ProviderRoleWorker worker(2, 1, 16, std::chrono::milliseconds(150));
-  auto future = worker.executeAsync("late-partial-session", std::move(role), io,
-                                    runner, initial);
-  try {
-    (void)future.get();
-    BOOST_FAIL("a unit with a missing peer partial completed");
+  for (const bool admittedDeadline : {false, true}) {
+    auto io = std::make_shared<NeverReadyDependencyIo>();
+    // Preserve the compatibility timeout negative and independently prove that
+    // a step cannot extend the invocation's shorter admitted deadline.
+    ProviderRoleWorker worker(2, 1, 16, admittedDeadline
+      ? std::chrono::milliseconds(5000) : std::chrono::milliseconds(150));
+    if (admittedDeadline)
+      role.executionDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    auto future = worker.executeAsync("late-partial-session", role, io,
+                                      runner, initial);
+    BOOST_REQUIRE(future.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    try {
+      (void)future.get();
+      BOOST_FAIL("a unit with a missing peer partial completed");
+    }
+    catch (const std::exception& error) {
+      // The failure must be the wait, not a silent subset reduction.
+      const std::string message = error.what();
+      BOOST_TEST_MESSAGE("late partial failure: " << message);
+      BOOST_CHECK(message.find("dependency wait") != std::string::npos ||
+                  message.find("deadline") != std::string::npos ||
+                  message.find("timed out") != std::string::npos);
+    }
+    // The unit may legitimately have published partials from the local-only steps it
+    // completed before the missing contribution blocked it -- that is what lets a
+    // peer make progress. What must not happen is publishing something it never
+    // computed, so the published count cannot exceed the steps that actually ran.
+    BOOST_CHECK(io->publishCalls.load() <= io->prefetchCalls.load() + 1);
+    BOOST_TEST_MESSAGE("late partial: publishes=" << io->publishCalls.load());
   }
-  catch (const std::exception& error) {
-    // The failure must be the wait, not a silent subset reduction.
-    const std::string message = error.what();
-    BOOST_TEST_MESSAGE("late partial failure: " << message);
-    BOOST_CHECK(message.find("dependency wait") != std::string::npos ||
-                message.find("deadline") != std::string::npos ||
-                message.find("timed out") != std::string::npos);
-  }
-  // The unit may legitimately have published partials from the local-only steps it
-  // completed before the missing contribution blocked it -- that is what lets a
-  // peer make progress. What must not happen is publishing something it never
-  // computed, so the published count cannot exceed the steps that actually ran.
-  BOOST_CHECK(io->publishCalls.load() <= io->prefetchCalls.load() + 1);
-  BOOST_TEST_MESSAGE("late partial: publishes=" << io->publishCalls.load());
 }
 
 
@@ -4644,12 +4756,7 @@ BOOST_AUTO_TEST_CASE(FrozenGraphClassifiesIntoTheEntryTaxonomy)
   // Classification is by the export's own naming, because the graph interleaves
   // preprocessing nodes with layer nodes. This case runs against the frozen
   // export so the taxonomy is checked on the graph that will actually execute.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
     "frozen export is required at " + path +
@@ -4733,12 +4840,7 @@ BOOST_AUTO_TEST_CASE(ExtractedEntryGraphIsSelfContainedAndLoadable)
   // its nodes reference, and a boundary computed from membership rather than
   // from names. This case extracts layer 0's attention entry from the frozen
   // export and checks those properties, then confirms ORT accepts it.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
     "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
@@ -4828,12 +4930,7 @@ BOOST_AUTO_TEST_CASE(WrittenEntryIsVerifiableAndStaysInsideItsRoot)
   // actually on disk. This writes one entry, re-reads it, and checks the digest
   // matches the bytes -- then confirms the path rules that keep an entry from
   // writing outside the assembly root.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
     "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
@@ -4986,12 +5083,7 @@ BOOST_AUTO_TEST_CASE(UnitEntryTableAssemblesFromOneRankArtifact)
   // The whole chain in one call: classify, extract, write, return the table. This
   // is the artifact a rank actually produces, so the case checks the properties a
   // consumer depends on rather than any internal step.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
     "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
@@ -5251,12 +5343,7 @@ BOOST_AUTO_TEST_CASE(RankSpecIsRewrittenIntoALoadableEntryTable)
   // whose entries ORT can actually load. This is the only case that proves the
   // external-data layout works, because ORT refuses a sidecar path that resolves
   // outside the model's own directory.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string source = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string source = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(source, statusError) && !statusError,
     "frozen export is required at " + source + " (set NDNSF_SPEC224_FROZEN_MODEL)");
@@ -5993,13 +6080,10 @@ BOOST_AUTO_TEST_CASE(TheDeclaredBoundaryEqualsTheOneExtractionProduces)
   // input and output list before extraction happens -- extraction consumes the source, and the
   // worker needs the list in its certified recipe. Two implementations of that boundary would drift,
   // so this asserts the declared one equals what extraction actually emits, on the frozen export.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream in(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(in)),
                                               std::istreambuf_iterator<char>());
@@ -6351,12 +6435,7 @@ BOOST_AUTO_TEST_CASE(ShapeIsDerivedFromTheGraphNotFromCallerConstants)
   // geometry has to come from the export. If it were passed in, a stale constant
   // would slice weights that no longer match the graph while everything looked
   // consistent.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   std::error_code statusError;
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path, statusError) && !statusError,
     "frozen export is required at " + path + " (set NDNSF_SPEC224_FROZEN_MODEL)");
@@ -6771,9 +6850,7 @@ AttentionEntryFixture
 makeShardedEntry(std::uint64_t degree, std::uint64_t rank, const char* kind,
                  std::uint64_t layer)
 {
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   std::ifstream in(path, std::ios::binary);
   if (!in) return {};
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
@@ -7024,9 +7101,7 @@ BOOST_AUTO_TEST_CASE(ThePlannerHasNoGraphFactsToProjectFrom)
 
   // The three facts are exactly what deriveQwenTpShape reads, and it takes the
   // serialized graph as its argument -- not a snapshot.
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   std::ifstream in(path, std::ios::binary);
   BOOST_REQUIRE(static_cast<bool>(in));
   const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
@@ -8201,9 +8276,7 @@ BOOST_AUTO_TEST_CASE(LayerOneUsesTheSkipNormFormAndStillReconstructs)
   // Layer 1's MLP is compared here because it is the block that carries the skip
   // form on its own input side: post_attention_layernorm is a skip normalization for
   // every layer, and layer 1's input_layernorm switches to it too.
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
     "frozen export is required at " + path);
   const auto reference = makeShardedEntry(1, 0, "MLP", 1);
@@ -8303,9 +8376,7 @@ BOOST_AUTO_TEST_CASE(HeadIsNeverShardedSoItsLogitsMatchTheUnsplitHead)
   // C6: "本方案 head 不切分". The head owns the final normalization and the vocabulary
   // projection. A sharded vocabulary would give rank 0, which samples, only part of
   // the distribution -- and the graph would still load and run.
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
     "frozen export is required at " + path);
   const auto reference = makeShardedEntry(1, 0, "HEAD", 28);
@@ -8387,9 +8458,7 @@ BOOST_AUTO_TEST_CASE(ShardedAttentionAndMlpComposeThroughTheSharedResidual)
   //   a = attention(post_input_norm(x0));  r = post_attention_norm(x0 + a)
   //   y = n + down(act(n gate)(n up))  where n = r.normalized, and r.residual is the
   //   value the MLP adds back.
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
     "frozen export is required at " + path);
   const std::uint64_t hidden = 1024;
@@ -8520,9 +8589,7 @@ BOOST_AUTO_TEST_CASE(ShardedMlpPartialsSumToTheUnsplitExport)
   // equals the unsplit block. The down projection is the part that can silently go
   // wrong: it reduces over a channel range that must match the shard's own gate/up
   // interval, not the source's.
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
     "frozen export is required at " + path);
   const auto reference = makeShardedEntry(1, 0, "MLP", 0);
@@ -8625,9 +8692,7 @@ BOOST_AUTO_TEST_CASE(ShardedAttentionPartialsSumToTheUnsplitExport)
   // projection reduces over the same channels, so
   //   Y = SUM_r( attn_r @ W_O,r^T ).
   // Rank 0 and rank 1 partials must therefore add up to the unsplit output.
-  const std::string path = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-    "canonical-source.onnx";
+  const std::string path = frozenModelPath();
   BOOST_REQUIRE_MESSAGE(std::filesystem::is_regular_file(path),
     "frozen export is required at " + path);
   const auto reference = makeShardedEntry(1, 0, "ATTN", 0);
@@ -9137,16 +9202,11 @@ BOOST_AUTO_TEST_CASE(TwoProvidersRunTheFullStackOverNamedDataAndSample)
   auto secondData = secondFace.onSendData.connect(
       [&] (const ndn::Data& data) { firstFace.receive(data); });
 
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -10029,16 +10089,11 @@ BOOST_AUTO_TEST_CASE(ProviderCreatesTheParentRunnerFromARealAssembledTable)
   // when it loads one of these specs. Until now every runner in this suite was built from a
   // table a test assembled by hand; here the table comes from the assembler's own entry
   // point and the runner's consistency check is the sealed template's.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -10254,16 +10309,11 @@ BOOST_AUTO_TEST_CASE(AConversationRestoreFeedsTheSuccessorToTheNextEpoch)
   // restore into a new session. This drives exactly those three calls and checks that the
   // restored epoch's successor spans the restored prefix plus its own token -- which can only
   // happen if the restore actually installed the past.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -10469,16 +10519,11 @@ BOOST_AUTO_TEST_CASE(ASecondEpochOfOneUnitReusesTheKvTheFirstEpochProduced)
   // Two epochs of the same assembled unit, the second given no past tensors at all: if the
   // worker still produced successors, it must have taken them from the first epoch rather than
   // requiring them as inputs.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -10674,16 +10719,11 @@ BOOST_AUTO_TEST_CASE(CoordinatorSamplesTheTokenTheRanksProduced)
   // already sampled by hand from the same numbers, so this checks that the production sampler
   // reads the same tensor and agrees -- a difference would mean the coordinator reads logits
   // differently from the way they arrive.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -11121,16 +11161,11 @@ BOOST_AUTO_TEST_CASE(MetadataDerivationAgreesWithTheGraphDerivation)
   // of the serialized graph, and the tensor-parallel shape derivation used to require the
   // bytes. The metadata route must therefore produce exactly the geometry the byte route
   // produces -- a difference would silently slice the wrong weights.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -11228,15 +11263,10 @@ BOOST_AUTO_TEST_CASE(UnsplitReferenceAgreesWithTheDistributedFirstToken)
     29728, 3922, 44378, 13, 151645, 198, 151644, 77091, 198, 151667, 271,
     151668, 271};
 
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   const auto root = std::filesystem::temp_directory_path() /
     ("spec224-oracle-" + std::to_string(getpid()));
   std::error_code cleanupError;
@@ -11520,20 +11550,13 @@ BOOST_AUTO_TEST_CASE(TheWholeStackProducesTheSameKvAsTheUnsplitExportOnOneContex
   // The unsplit export is run once over the deployment's second-turn context with its KV output
   // exposed, and both rank entries are run over the same context; each rank's slice must match the
   // window its KV heads occupy, for every layer.
-  const auto prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
-  if (prompt.size() != 24U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
-    return;
-  }
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const auto prompt = readFrozenDeploymentTokens("turn-1-input.bin");
+  BOOST_REQUIRE_MESSAGE(!(prompt.size() != 24U),
+    "required fixture unavailable: the deployment's turn-1 input copy is absent");
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -11714,19 +11737,15 @@ BOOST_AUTO_TEST_CASE(TheFirstTurnContinuesFromAnEmptyPrefixInTheUnsplitReference
   // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
   // question, which is the mistake this case made in its first form (its argmax was the last
   // prompt token instead of the turn's first output).
-  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
-  if (turn0Prompt.size() != 25U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
-    return;
-  }
+  const auto turn0Prompt = readFrozenDeploymentTokens("turn-0-input.bin");
+  BOOST_REQUIRE_MESSAGE(!(turn0Prompt.size() != 25U),
+    "required fixture unavailable: the deployment's turn-0 input copy is absent");
   // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
   // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
   // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
-  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
-  if (turn0Generated.size() != 32U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
-    return;
-  }
+  const auto turn0Generated = readFrozenDeploymentTokens("turn-0-output.json");
+  BOOST_REQUIRE_MESSAGE(!(turn0Generated.size() != 32U),
+    "required fixture unavailable: the deployment's turn-0 result copy is absent");
   // Read from the deployment's own input file rather than transcribed by hand. The first
   // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
   // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
@@ -11747,15 +11766,10 @@ BOOST_AUTO_TEST_CASE(TheFirstTurnContinuesFromAnEmptyPrefixInTheUnsplitReference
   // each other, not where two computations of the model disagreed.
   const auto expected = turn0Generated;
 
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   const auto root = std::filesystem::temp_directory_path() /
     ("spec224-turn0-oracle-" + std::to_string(getpid()));
   std::error_code cleanupError;
@@ -11941,40 +11955,32 @@ BOOST_AUTO_TEST_CASE(AThirdTurnContinuesFromTheSecondTurnsCommittedPrefix)
   // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
   // question, which is the mistake this case made in its first form (its argmax was the last
   // prompt token instead of the turn's first output).
-  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
-  if (turn0Prompt.size() != 25U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
-    return;
-  }
+  const auto turn0Prompt = readFrozenDeploymentTokens("turn-0-input.bin");
+  BOOST_REQUIRE_MESSAGE(!(turn0Prompt.size() != 25U),
+    "required fixture unavailable: the deployment's turn-0 input copy is absent");
   // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
   // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
   // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
-  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
-  if (turn0Generated.size() != 32U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
-    return;
-  }
+  const auto turn0Generated = readFrozenDeploymentTokens("turn-0-output.json");
+  BOOST_REQUIRE_MESSAGE(!(turn0Generated.size() != 32U),
+    "required fixture unavailable: the deployment's turn-0 result copy is absent");
   // Read from the deployment's own input file rather than transcribed by hand. The first
   // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
   // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
   // property of the wrong prompt, not of the model.
   // The deployment's input directory is root-owned, so the file is read from a readable copy of
   // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
-  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
-  const auto turn1Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
-  if (turn1Prompt.size() != 24U || turn1Generated.size() != 32U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 copies are absent; skipping");
-    return;
-  }
+  const auto turn1Prompt = readFrozenDeploymentTokens("turn-1-input.bin");
+  const auto turn1Generated = readFrozenDeploymentTokens("turn-1-output.json");
+  BOOST_REQUIRE_MESSAGE(!(turn1Prompt.size() != 24U || turn1Generated.size() != 32U),
+    "required fixture unavailable: the deployment's turn-1 copies are absent");
   // The third turn's prompt is the first 24 tokens the second turn generated, which is how the
   // deployment's third turn was built. It is derived rather than transcribed, so it cannot disagree
   // with the run it is meant to describe.
   const std::vector<std::int64_t> turn2Prompt(turn1Generated.begin(), turn1Generated.begin() + 24);
-  const auto turn2Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-2-output.json");
-  if (turn2Generated.size() != 32U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-2 result copy is absent; skipping");
-    return;
-  }
+  const auto turn2Generated = readFrozenDeploymentTokens("turn-2-output.json");
+  BOOST_REQUIRE_MESSAGE(!(turn2Generated.size() != 32U),
+    "required fixture unavailable: the deployment's turn-2 result copy is absent");
   // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
   // appended to it. Both facts come from the deployment's own checkpoint counts (57 then 113).
   std::vector<std::int64_t> turnContext = turn0Prompt;
@@ -11993,15 +11999,10 @@ BOOST_AUTO_TEST_CASE(AThirdTurnContinuesFromTheSecondTurnsCommittedPrefix)
   // each other, not where two computations of the model disagreed.
   const auto expected = turn2Generated;
 
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   const auto root = std::filesystem::temp_directory_path() /
     ("spec224-turn1-oracle-" + std::to_string(getpid()));
   std::error_code cleanupError;
@@ -12187,30 +12188,24 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // unsplit reference must recompute; feeding only the 24-token prompt would answer a different
   // question, which is the mistake this case made in its first form (its argmax was the last
   // prompt token instead of the turn's first output).
-  const auto turn0Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-input.bin");
-  if (turn0Prompt.size() != 25U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 input copy is absent; skipping");
-    return;
-  }
+  const auto turn0Prompt = readFrozenDeploymentTokens("turn-0-input.bin");
+  BOOST_REQUIRE_MESSAGE(!(turn0Prompt.size() != 25U),
+    "required fixture unavailable: the deployment's turn-0 input copy is absent");
   // The first turn's 32 generated tokens, read from the same frozen run's result file. A literal
   // here was how the earlier comparison went wrong twice: once as a mistyped prompt, once as a
   // mistyped expected sequence. Every token in this context now comes from a recorded artifact.
-  const auto turn0Generated = readDeploymentTokens("/var/tmp/spec224-inputs/turn-0-output.json");
-  if (turn0Generated.size() != 32U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-0 result copy is absent; skipping");
-    return;
-  }
+  const auto turn0Generated = readFrozenDeploymentTokens("turn-0-output.json");
+  BOOST_REQUIRE_MESSAGE(!(turn0Generated.size() != 32U),
+    "required fixture unavailable: the deployment's turn-0 result copy is absent");
   // Read from the deployment's own input file rather than transcribed by hand. The first
   // transcription took the bundle's trailing payload-length field (192 = 24 * 8) for the first
   // token and dropped the last one, and the resulting "matches four tokens then diverges" was a
   // property of the wrong prompt, not of the model.
   // The deployment's input directory is root-owned, so the file is read from a readable copy of
   // that exact file rather than from a re-typed vector: 249 bytes, 24 int64 tokens.
-  const auto turn1Prompt = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
-  if (turn1Prompt.size() != 24U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
-    return;
-  }
+  const auto turn1Prompt = readFrozenDeploymentTokens("turn-1-input.bin");
+  BOOST_REQUIRE_MESSAGE(!(turn1Prompt.size() != 24U),
+    "required fixture unavailable: the deployment's turn-1 input copy is absent");
   // The restored prefix is exactly what the first turn committed, and the second turn's prompt is
   // appended to it. Both facts come from the deployment's own checkpoint counts (57 then 113).
   std::vector<std::int64_t> turnContext = turn0Prompt;
@@ -12223,21 +12218,14 @@ BOOST_AUTO_TEST_CASE(ARestoredPrefixContinuesTheDeploymentTurnInTheUnsplitRefere
   // reference was being compared against numbers no run had ever emitted, and its "first
   // divergence at step 4" was the point where my transcription and the reference disagreed with
   // each other, not where two computations of the model disagreed.
-  const auto expected = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
-  if (expected.size() < 32U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 result is absent; skipping");
-    return;
-  }
+  const auto expected = readFrozenDeploymentTokens("turn-1-output.json");
+  BOOST_REQUIRE_MESSAGE(!(expected.size() < 32U),
+    "required fixture unavailable: the deployment's turn-1 result is absent");
 
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   const auto root = std::filesystem::temp_directory_path() /
     ("spec224-turn1-oracle-" + std::to_string(getpid()));
   std::error_code cleanupError;
@@ -12419,15 +12407,10 @@ BOOST_AUTO_TEST_CASE(UnsplitReferenceSamplesThroughTheProductionRunner)
   // round: it derives each KV input's shape from the graph, keeps a dynamic sequence axis at
   // zero for a prefill, and fills the buffer. Reimplementing that is what crashed a hand-rolled
   // attempt, so the reference reuses it instead.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   const auto  root = std::filesystem::temp_directory_path() /
     ("spec224-unsplit-" + std::to_string(getpid()));
   std::error_code cleanupError;
@@ -12592,16 +12575,11 @@ BOOST_AUTO_TEST_CASE(TwoCoordinatorsRunTheFullStackAndOneSamples)
   // each unit publishing its own partial and awaiting the peer's at the reduction that needs
   // it. Last round's all-28-layers version hung; this one is small enough that completing
   // means the wait-all gate is gone rather than that the machine was fast.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -12951,16 +12929,11 @@ BOOST_AUTO_TEST_CASE(CoordinatorDrivesOneEpochWithARealAssembledStepTemplate)
   // steps or was fed a hand-built runner. This one hands it a spec whose table came out of the
   // assembler and whose template came out of the runtime projection, which is what a Provider
   // actually receives.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -13322,16 +13295,11 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // other the partials they actually computed. Every earlier execution in this suite either
   // ran one rank or fed the peer a seeded value, so none of them could fail if the exchange
   // were broken.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -13592,11 +13560,9 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
   // The deployment's real second-turn prompt, 24 tokens, so the KV this case produces is state
   // for a real context rather than for one token. A single-token run cannot be compared with the
   // unsplit export's prefill state at all: it keeps one position.
-  const auto promptTokens = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-input.bin");
-  if (promptTokens.size() != 24U) {
-    BOOST_TEST_MESSAGE("NOT_RUN: the deployment's turn-1 input copy is absent; skipping");
-    return;
-  }
+  const auto promptTokens = readFrozenDeploymentTokens("turn-1-input.bin");
+  BOOST_REQUIRE_MESSAGE(!(promptTokens.size() != 24U),
+    "required fixture unavailable: the deployment's turn-1 input copy is absent");
   // The reference the KV is compared against: the unsplit export over the same 24-token context,
   // with its 28-layer state exposed. Built here rather than in a separate case so the two sides
   // cannot drift apart -- they share the prompt, the graph and the shape facts.
@@ -14188,7 +14154,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         {
           const auto initIt = capturedStepInputs.find("S0R0/INIT");
           if (initIt == capturedStepInputs.end()) {
-            BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's INIT");
+            BOOST_FAIL("required oracle capture missing for the rank's INIT");
           }
           else {
             const auto& initInputs = initIt->second;
@@ -14256,7 +14222,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
         }
         const auto layer0It = capturedStepInputs.find("S0R0/ATTN/0");
         if (layer0It == capturedStepInputs.end()) {
-          BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-0 attention");
+          BOOST_FAIL("required oracle capture missing for the rank's layer-0 attention");
         }
         else {
           const auto& layer0Inputs = layer0It->second;
@@ -14550,7 +14516,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       }
       const auto rankInputIt = capturedStepInputs.find("S0R0/ATTN/1");
       if (rankInputIt == capturedStepInputs.end()) {
-        BOOST_TEST_MESSAGE("NOT_RUN: no captured inputs for the rank's layer-1 attention");
+        BOOST_FAIL("required oracle capture missing for the rank's layer-1 attention");
       }
       else {
         const auto& rankInputs = rankInputIt->second;
@@ -15272,7 +15238,7 @@ BOOST_AUTO_TEST_CASE(TwoWorkersRunAllLayersAndSampleAToken)
       // The recorded first token of the deployment's second turn. This is the whole point of
       // running the real prompt: the distributed stack, over a real 24-token prefill with KV
       // state on two ranks, must pick the token the deployment picked.
-      const auto recorded = readDeploymentTokens("/var/tmp/spec224-inputs/turn-1-output.json");
+      const auto recorded = readFrozenDeploymentTokens("turn-1-output.json");
       BOOST_REQUIRE(!recorded.empty());
       BOOST_TEST_MESSAGE("distributed first token=" << best << " recorded=" << recorded.front());
       BOOST_CHECK_EQUAL(static_cast<std::int64_t>(best), recorded.front());
@@ -15585,16 +15551,11 @@ BOOST_AUTO_TEST_CASE(WorkerDrivesAllTwentyEightLayersOnOneRank)
   // table, driven by the production worker over the sealed template, with the reduction the
   // worker performs itself. Only one layer's attention block runs -- INIT, ATTN, SUM_ATTN --
   // because the case proves the wiring, not the 28-layer numerics.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -15923,7 +15884,7 @@ BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
   spec.role = "S0R0";
   spec.kind = "onnx";
   spec.backend = "onnxruntime";
-  spec.path = "/var/tmp/spec224-publish/S0R0/model.onnx";
+  spec.path = "/unavailable-test-models/tp-rank/model.onnx";
   spec.metadata = {
     {"fragmentDigest", assembly.artifactDigest},
     {"recipeDigest", assembly.recipeDigest},
@@ -15955,7 +15916,7 @@ BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
 
   // A production wrapper also binds the admitted child backend and owning adapter.
   retargeted.metadata["tensorParallelEntries"] = R"([{"entryId":"S0R0/ATTN/0"}])";
-  retargeted.metadata["tensorParallelEntryRoot"] = "/var/tmp/spec224-publish/S0R0";
+  retargeted.metadata["tensorParallelEntryRoot"] = "/unavailable-test-models/tp-rank";
   const auto withoutChild = validateNativePreparedRunnerSpec(projection, retargeted);
   BOOST_REQUIRE(withoutChild);
   BOOST_CHECK_EQUAL(*withoutChild, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
@@ -15971,16 +15932,11 @@ BOOST_AUTO_TEST_CASE(AssemblerTablesSurviveTheArtifactFileValidation)
   // Provider runs on the finished artifact before it may announce readiness. A table whose
   // files are outside that validator's view would pass assembly and fail publication, so the
   // two are checked together here rather than separately.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -16125,16 +16081,11 @@ BOOST_AUTO_TEST_CASE(RankSpecEntryIdentityFollowsTheEgressOwner)
   // Provider gets them: `configureQwenTpRankSpec` reads the rank file, slices it, assembles
   // both tables and verifies each against the steps that will run. The head owner decides
   // which table keeps HEAD, and both must pass the strict verifier.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -16258,15 +16209,10 @@ BOOST_AUTO_TEST_CASE(ProjectedEntryIdsMatchWhatTheAssemblerWrites)
   // a plan referenced entries no artifact contains and the mismatch only surfaced inside
   // the worker. This checks the two names agree by comparing them, not by reading either
   // one's construction.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string graphPath = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(graphPath)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(graphPath)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(graphPath, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -16410,15 +16356,10 @@ BOOST_AUTO_TEST_CASE(ConsecutiveLayersCarryResidualAndKvAcrossTheStepChain)
   // one. This checks what the step template wires against what the assembled entry
   // actually declares, so a missing residual shows up as a named input nobody feeds
   // instead of as a wrong number.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string graphPath = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(graphPath)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(graphPath)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(graphPath, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -16578,17 +16519,12 @@ BOOST_AUTO_TEST_CASE(AssembledRankTablesRunThroughTheRealRunnerAndSumToTheRefere
   // This is where a table that is structurally right but numerically wrong shows up. The
   // earlier numeric cases built entries directly from the source graph; this one uses the
   // files the assembler wrote, through the spec the assembler produces.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string graphPath = modelDir + "/canonical-source.onnx";
   const std::string sidecarPath = modelDir + "/model.onnx.data";
   const std::string sidecarFrozen = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(graphPath)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(graphPath)),
+    "required fixture unavailable: frozen export is absent");
   const auto sidecar = std::filesystem::exists(sidecarPath) ? sidecarPath : sidecarFrozen;
 
   std::ifstream graphIn(graphPath, std::ios::binary);
@@ -17353,8 +17289,7 @@ BOOST_AUTO_TEST_CASE(FrozenExportAssemblesTwoDistinctRankEntryTables)
   // export and check that the two differ as weight slices rather than only in identity.
   // Role preparation can produce two correctly named roles while both still assemble the
   // same full-width weights, and that has to be caught here rather than at inference.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string graphPath = modelDir + "/canonical-source.onnx";
   const std::string sidecarPath = modelDir + "/model.onnx_data";
   {
@@ -17457,14 +17392,11 @@ BOOST_AUTO_TEST_CASE(TwoRanksCommitAndRestoreTheirOwnHalvesOfTheState)
   // Both units hold four of the eight KV heads, so each keeps its own successor half. The point of
   // the round trip is that both halves survive promotion and come back on restore -- a restore that
   // rebound only one unit would still pass a single-unit test.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -17624,13 +17556,10 @@ BOOST_AUTO_TEST_CASE(AnAddedGraphOutputReachesTheEntryBoundary)
   // boundary. The tensor chosen is `v_proj`'s output, which is in `value_info` with a real type, so
   // the assembler has what it needs to declare the boundary -- and if this works, the executed
   // projection can be compared without touching product code.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream in(source, std::ios::binary);
   const std::string wire((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   onnx::ModelProto model;
@@ -17699,13 +17628,10 @@ BOOST_AUTO_TEST_CASE(TheValueProjectionShardCoversWholeHeadsAndOwnsItsScales)
   // it selects, and both are checkable without running the model: an off-by-one in the N range, or
   // a weight cut without its scales, would shift a rank's output by far more than the 1.5e-4 being
   // investigated.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -17970,8 +17896,7 @@ BOOST_AUTO_TEST_CASE(FrozenShardedCatalogLoadPreparesTwoRankRoles)
   // splitter replaced by one global tensor-parallel stage of degree two. A sharded plan
   // is one global stage -- every unit executes every layer with a different weight slice
   // -- so the layer-parallel two-stage topology cannot also be tensor-parallel.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string configPath = "specs/220-warm-path-reuse/evidence/"
     "b220-05-q4-catalog-r3/catalog.json";
   {
@@ -19157,15 +19082,10 @@ BOOST_AUTO_TEST_CASE(ASecondTurnRunsOnThePreparedRunnerWithoutPreparingAgain)
   // The runner is a real tensor-parallel parent over one assembled unit, and both turns run the
   // same sealed template. The counters are the evidence: preparations must stay at one,
   // executions must reach two.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -19286,16 +19206,11 @@ BOOST_AUTO_TEST_CASE(AUnitHandsLocalValuesBetweenItsOwnStepsWithoutEncodingThem)
   // One unit, two layers, real assembled entries, and a statistics record attached. The values
   // travel child -> parent -> worker -> SUM -> child inside this process, so the only codec
   // operations left should be the ones at the boundary the fixture itself performs.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -20340,14 +20255,11 @@ BOOST_AUTO_TEST_CASE(ASecondEpochConsumesTheKvTheFirstEpochCommitted)
   // the configuration the deployment runs. With it, the adapter keeps the KV in its own session map
   // and the next epoch rebinds it, and the successor length is the evidence that the rebind
   // happened.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -20852,12 +20764,7 @@ BOOST_AUTO_TEST_CASE(FrozenExportMatchesTheRecordedShapeFacts)
   // required input, so a missing file fails instead of skipping. The graph is
   // 338 KB of metadata (weights stay in the sidecar), so this costs a file read
   // and no model load, and it can run in a normal check.
-  const auto* raw = std::getenv("NDNSF_SPEC224_FROZEN_MODEL");
-  const std::string path = raw != nullptr && *raw != '\0'
-    ? std::string(raw)
-    : std::string("/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-                  "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5/"
-                  "canonical-source.onnx");
+  const std::string path = frozenModelPath();
   // A directory opens successfully on Linux and only fails during the read, so
   // presence is tested as a regular file rather than through stream state.
   std::error_code statusError;
@@ -21090,16 +20997,11 @@ BOOST_AUTO_TEST_CASE(ASecondTurnReusesThePreparedUnitAndItsChildSessions)
   // Two prepared runs over the same assembled unit. The second is given the runner the first
   // produced, which is what the Provider's reuse cache does; the check is that the second run
   // executes steps without loading a session again.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -21187,16 +21089,11 @@ BOOST_AUTO_TEST_CASE(ASecondTurnFindsThePublishedRunnerAndReusesEveryChildSessio
   //
   // The runner is the real tensor-parallel parent over one assembled unit, not a stub: a stub
   // would prove the cache stores pointers, not that a reusable unit exists.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
   const std::string sidecar = modelDir + "/model.onnx_data";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());
@@ -21282,15 +21179,10 @@ BOOST_AUTO_TEST_CASE(AUnitWithoutKvChildrenStillReportsItsOwnState)
   // The parent aggregates state over its KV-holding children. A unit whose only entries are
   // stateless must say so rather than claim a handle: a caller that restored one would get an
   // empty checkpoint that looks complete.
-  const std::string modelDir = "/var/tmp/ndnsf-di-model-cache-1000/qwen3-0.6b/"
-    "8eb17a80e52cbf79110c881ecf0fcaa5df36304792666e0a50381333f28a6ad5";
+  const std::string modelDir = frozenModelDirectory();
   const std::string source = modelDir + "/canonical-source.onnx";
-  if (!std::filesystem::is_regular_file(source)) {
-    // Record that this case did not run. A skip that only prints a message looks identical to a
-    // pass in the summary line, and a qualification record must not count it as either.
-    BOOST_TEST_MESSAGE("NOT_RUN: frozen export is absent; skipping");
-    return;
-  }
+  BOOST_REQUIRE_MESSAGE(!(!std::filesystem::is_regular_file(source)),
+    "required fixture unavailable: frozen export is absent");
   std::ifstream graphIn(source, std::ios::binary);
   const std::vector<std::uint8_t> graphBytes((std::istreambuf_iterator<char>(graphIn)),
                                               std::istreambuf_iterator<char>());

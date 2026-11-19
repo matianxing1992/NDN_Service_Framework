@@ -56,47 +56,9 @@ class Spec170ExactSifGateTest(unittest.TestCase):
 class Spec170SifBuildBoundaryTest(unittest.TestCase):
     @staticmethod
     def valid_definition(base: Path, source: Path) -> str:
-        return f"""Bootstrap: localimage
-From: {base}
-Stage: builder
-
-%files
-    {source} /build/source.tar
-
-%post
-    export NDNSF_CONTAINER_BUILD=1
-    ./waf --targets=di-native-provider
-    /opt/venv/bin/pip install ./pythonWrapper
-    touch /opt/ndnsf-stage/manifest/container-configure-closure.json
-    touch /opt/ndnsf-stage/manifest/container-native-build.json
-
-Bootstrap: localimage
-From: {base}
-Stage: final
-
-%files from builder
-    /opt/ndnsf-stage/bin/di-native-provider /opt/ndnsf-di/current/bin/di-native-provider
-    /opt/ndnsf-stage/lib/libndn-service-framework.so.0.1.0 /opt/ndnsf-di/current/lib/libndn-service-framework.so.0.1.0
-    /opt/ndnsf-stage/python /opt/venv/lib/python3.10/site-packages
-    /opt/ndnsf-stage/manifest/container-native-build.json /opt/ndnsf-di/current/manifest/container-native-build.json
-
-%post
-    export NDNSF_REPLACE_STALE_NATIVE=1
-    rm -f /opt/ndnsf-di/current/bin/di-native-provider
-    rm -f /opt/ndnsf-di/current/lib/libndn-service-framework.so*
-    rm -f /opt/venv/lib/python3.10/site-packages/ndnsf/_ndnsf*.so
-    for path in /opt/venv/lib/python3.10/site-packages/torch* \\
-                /opt/venv/lib/python3.10/site-packages/transformers* \\
-                /opt/venv/lib/python3.10/site-packages/functorch*; do
-        if [ -e "$path" ]; then rm -rf "$path"; fi
-    done
-    find /opt/venv/lib/python3.10/site-packages/ndnsf -name '_ndnsf*.so'
-    sha256sum -c /opt/ndnsf-di/current/manifest/container-native-build.json
-
-%labels
-    org.ndnsf.di.build-boundary container-runtime-in-sif
-    org.ndnsf.di.native-build-manifest /opt/ndnsf-di/current/manifest/container-native-build.json
-"""
+        template = REPO / "tests/container/fixtures/legacy-contracts/development-runtime.def.in.txt"
+        return template.read_text().replace("@BASE_SIF@", str(base)).replace(
+            "@BUNDLE@/source/workspace.tar", str(source))
 
     def test_multistage_container_build_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -167,10 +129,10 @@ Stage: final
             source = root / "source.tar"
             source.write_bytes(b"sealed source")
             text = self.valid_definition(root / "base.sif", source)
-            text = text.replace(
-                "./waf --targets=di-native-provider",
-                "./waf --targets=di-native-provider,di-native-fault-provider",
-            )
+            transfer = ("    /opt/ndnsf-stage/bin/di-native-fault-provider "
+                        "/opt/ndnsf-candidate/bin/di-native-fault-provider\n")
+            self.assertIn(transfer, text)
+            text = text.replace(transfer, "")
             definition.write_text(text, encoding="utf-8")
             with self.assertRaisesRegex(
                 build_boundary.Spec170BuildBoundaryError,

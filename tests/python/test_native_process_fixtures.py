@@ -25,6 +25,8 @@ class NativeProcessFixtureTest(unittest.TestCase):
             self.assertEqual(selected['NDNSF_CONFIG'],
                              str(Path(directory) / 'ndnsf-session.conf'))
             self.assertEqual(selected['HOME'], str(Path(directory) / 'home'))
+            self.assertEqual(selected['NDNSF_REQUEST_LARGE_DATA_DIR'],
+                             str(Path(directory) / 'large-data'))
             self.assertEqual(base['NDNSF_CONFIG'], '/etc/ndn/ndnsf.conf')
             with self.assertRaises(ValueError):
                 support.actor_environment(base, Path('relative-store'))

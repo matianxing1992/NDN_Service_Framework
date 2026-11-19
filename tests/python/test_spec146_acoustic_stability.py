@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -146,7 +148,20 @@ class Spec146AcousticStabilityTest(unittest.TestCase):
             self.assertEqual(recovery["algorithmInvocations"], 1)
 
     def test_predecessor_hashes_and_freeze_scope_are_enforced(self) -> None:
-        matrix.verify_predecessor()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = {name: f"synthetic parser fixture for {name}".encode()
+                      for name in matrix.PREDECESSOR_HASHES}
+            expected = {name: hashlib.sha256(body).hexdigest() for name, body in actual.items()}
+            with patch.object(matrix, "PREDECESSOR_HASHES", expected):
+                with self.assertRaisesRegex(RuntimeError, "missing frozen"):
+                    matrix.verify_predecessor(root)
+                for name, body in actual.items():
+                    (root / name).write_bytes(body)
+                matrix.verify_predecessor(root)
+                (root / "campaign-summary.json").write_bytes(b"changed")
+                with self.assertRaisesRegex(RuntimeError, "predecessor drift"):
+                    matrix.verify_predecessor(root)
         self.assertIn(
             "Experiments/NDNSF_Acoustic_Stability_Minindn.py",
             matrix.HASHED_INPUTS)

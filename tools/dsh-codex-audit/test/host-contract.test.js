@@ -23,7 +23,7 @@ test('real host enable captures a baseline and dispatches only the new focus wit
     await execute('git', ['-C', root, '-c', 'user.name=Test', '-c', 'user.email=t@example.invalid',
       '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture']);
     ctx.provide('logger', { error() {} });
-    ctx.provide('agents', { get: () => undefined });
+    ctx.provide('agents', { get: id => id === 's' ? { status: 'idle' } : undefined });
     ctx.provide('sessionQuery', { observeSession: async () => {
       leases++;
       return { header: { cwd: root }, cursor, events: events.slice(),
@@ -35,12 +35,32 @@ test('real host enable captures a baseline and dispatches only the new focus wit
     host = new CodexAudit(ctx);
     await host.ready;
     assert.equal(host.bootError, undefined);
+    host.manager.models = [
+      { id: 'gpt-6.2-sol', efforts: ['medium', 'high', 'xhigh', 'ultra'], defaultEffort: 'xhigh' },
+      { id: 'gpt-6.2-astra', efforts: ['medium', 'high'], defaultEffort: 'medium' },
+    ];
     await host.manager.configure('s', { enabled: true });
     assert.equal(host.manager.settings('s').auditPeriod.baseline.basis.seq, 10);
+    const due = host.manager.settings('s').nextDue;
+    const options = await host.control({ sessionId: 's', action: 'configure', effort: 'ultra' });
+    assert.deepEqual(options.efforts, ['medium', 'high', 'xhigh', 'ultra']);
+    assert.equal(options.settings.effort, 'ultra');
+    assert.equal(options.settings.nextDue, due);
+    assert.equal(durable.sessions.s.effort, 'ultra');
+    await assert.rejects(host.control({ sessionId: 's', action: 'configure', effort: 'max' }),
+      { code: 'UNSUPPORTED_SELECTION' });
+    const switched = await host.control({ sessionId: 's', action: 'configure', model: 'gpt-6.2-astra' });
+    assert.deepEqual(switched.efforts, ['medium', 'high']);
+    assert.equal(switched.settings.effort, 'medium');
+    const chosen = await host.control({ sessionId: 's', action: 'configure', effort: 'high' });
+    assert.equal(chosen.settings.nextDue, due);
+    assert.equal(durable.sessions.s.model, 'gpt-6.2-astra');
     cursor = 11;
     events.push({ seq: 11, time: Date.now(), type: 'tool/result', data: 'new work since activation' });
     await writeFile(join(root, 'source.cpp'), 'after enable');
-    host.manager.run = async ({ snapshot }) => {
+    host.manager.run = async ({ snapshot, settings }) => {
+      assert.equal(settings.model, 'gpt-6.2-astra');
+      assert.equal(settings.effort, 'high');
       assert.equal(snapshot.basis.scope.kind, 'since-enable');
       assert.equal(snapshot.basis.scope.sourceChangeCount, 1);
       const focus = await readFile(join(snapshot.path, '__audit_input__/focus-0000.jsonl'), 'utf8');
@@ -52,6 +72,7 @@ test('real host enable captures a baseline and dispatches only the new focus wit
     host.manager.deliver = async () => ({ messageId: 'fixture-delivery' });
     const record = await host.manager.start('s');
     assert.equal(record.status, 'completed');
+    assert.equal(record.effort, 'high');
     assert.equal(host.manager.settings('s').auditPeriod.checkpoint.basis.seq, 11);
     const view = await host.view({ sessionId: 's' });
     assert.equal(view.settings.auditPeriod, undefined);

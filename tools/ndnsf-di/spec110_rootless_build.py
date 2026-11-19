@@ -176,7 +176,7 @@ def render_rootless_build_job(
         "RELEASE_ID": release_id,
         "EVIDENCE_DIR": shlex.quote(str(evidence)),
         "PROBE_BASE": shlex.quote(probe_base),
-        "FOUNDATION_IMAGE": shlex.quote(foundation_image),
+        "FOUNDATION_BASE": shlex.quote(foundation_image),
         "GPU_BUILD_BASE": shlex.quote(gpu_build_base),
         "GPU_RUNTIME_BASE": shlex.quote(gpu_runtime_base),
         "BUILDER_MODE": builder_mode,

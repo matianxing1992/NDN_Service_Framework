@@ -1,7 +1,6 @@
 {
   "schemaVersion": "1.0",
   "releaseId": "mismatch",
-  "candidateId": "candidate",
   "sourceRevision": "0123456",
   "createdAt": "2026-07-12T12:00:00Z",
   "images": {"cpu": {"reference": "registry.example/ndnsf-di@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "platform": "linux/amd64", "backend": "cpu"}},

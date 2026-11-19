@@ -20,19 +20,10 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
-from ndnsf_distributed_inference.plan import PlannerKind
-from ndnsf_distributed_inference.splitter import (
-    SplitArtifact,
-    SplitServiceSpec,
-    SplitterOutput,
-)
-from ndnsf_distributed_inference.llm_stub_planner import (
-    llm_planner_registry,
-    llm_planner_request,
-    llm_splitter_output_from_result,
-)
+if TYPE_CHECKING:
+    from ndnsf_distributed_inference.splitter import SplitArtifact, SplitServiceSpec, SplitterOutput
 
 
 SERVICE = "/AI/LLM/Pipeline/Fake"
@@ -753,6 +744,8 @@ def write_tiny_transformer_stage_artifacts(
     layer_count: int,
     content_store: str | Path = "",
 ) -> list[SplitArtifact]:
+    from ndnsf_distributed_inference.splitter import SplitArtifact
+
     import torch
 
     root = Path(output_dir) / "tiny-transformers-stage-artifacts"
@@ -820,6 +813,8 @@ def with_tiny_transformer_artifacts(
     layer_count: int,
     content_store: str | Path = "",
 ) -> SplitterOutput:
+    from ndnsf_distributed_inference.splitter import SplitServiceSpec, SplitterOutput
+
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
         if service.name != SERVICE:
@@ -876,6 +871,8 @@ def with_tiny_onnx_artifacts(
     session loading and stateful stage boundary as the later sealed runtime.
     No framework model package is imported by this path.
     """
+    from ndnsf_distributed_inference.splitter import SplitArtifact, SplitServiceSpec, SplitterOutput
+
     root = Path(fixture_root).expanduser().resolve()
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
@@ -1320,6 +1317,8 @@ def write_tiny_qwen3_transformer_stage_artifacts(
     it is not a pretrained quality or GPU-capacity subject.  Its distinct model
     identity prevents the local fixture from being confused with Qwen3-0.6B.
     """
+    from ndnsf_distributed_inference.splitter import SplitArtifact
+
 
     import torch
     from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
@@ -1432,6 +1431,8 @@ def write_qwen_transformer_stage_artifacts(
     dtype: str = "float32",
     content_store: str | Path = "",
 ) -> list[SplitArtifact]:
+    from ndnsf_distributed_inference.splitter import SplitArtifact
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -1552,6 +1553,8 @@ def with_qwen_transformer_artifacts(
     dtype: str = "float32",
     content_store: str | Path = "",
 ) -> SplitterOutput:
+    from ndnsf_distributed_inference.splitter import SplitServiceSpec, SplitterOutput
+
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
         if service.name != SERVICE:
@@ -2825,6 +2828,8 @@ def write_qwen_onnx_stage_artifacts(
     stateful: bool = False,
     model_family: str = "qwen",
 ) -> list[SplitArtifact]:
+    from ndnsf_distributed_inference.splitter import SplitArtifact
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -3092,6 +3097,8 @@ def with_qwen_onnx_artifacts(
     model_family: str = "qwen",
     target_service: str | None = None,
 ) -> SplitterOutput:
+    from ndnsf_distributed_inference.splitter import SplitServiceSpec, SplitterOutput
+
     target_service = target_service or SERVICE
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
@@ -3158,6 +3165,8 @@ def reuse_qwen_onnx_stage_artifacts(
     expected_stage_count: int | None = None,
 ) -> list[SplitArtifact]:
     """Bind reviewed Qwen metadata to a verified read-only Spec 107 store."""
+    from ndnsf_distributed_inference.splitter import SplitArtifact
+
 
     model_family = str(model_family or "qwen").strip().lower()
     if model_family not in {"qwen", "llama"}:
@@ -3318,6 +3327,8 @@ def with_reused_qwen_onnx_artifacts(
     expected_model_revision: str | None = None,
     expected_stage_count: int | None = None,
 ) -> SplitterOutput:
+    from ndnsf_distributed_inference.splitter import SplitServiceSpec, SplitterOutput
+
     target_service = target_service or SERVICE
     services: list[SplitServiceSpec] = []
     for service in splitter.services:
@@ -5009,6 +5020,11 @@ def write_policy(
     qwen_runtime_manifest: str = "",
     tiny_onnx_fixture_root: str = "",
 ) -> Path:
+    from ndnsf_distributed_inference.plan import PlannerKind
+    from ndnsf_distributed_inference.llm_stub_planner import (
+        llm_planner_registry, llm_planner_request, llm_splitter_output_from_result
+    )
+
     if qwen_model_family not in {"qwen", "llama"}:
         raise ValueError(f"unsupported ONNX model family: {qwen_model_family}")
     if qwen_model_family == "llama":

@@ -7,14 +7,15 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
-JOBS = ROOT / "specs/168-itiger-di-deployment-fidelity/jobs"
-ANALYZER = JOBS / "spec168-cold-warm-analyzer.py"
+SCRIPTS = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
+ANALYZER = SCRIPTS / "analyze-tiger-cold-warm.py"
 
 
 def load_module():
@@ -355,7 +356,8 @@ class Spec168ColdWarmRemoteGateTest(unittest.TestCase):
                 cold_warm.analyze(args)
 
     def test_repeated_job_is_one_allocation_without_retry_or_model_prepare(self):
-        source = (JOBS / "gate-e-small-repeated.sbatch").read_text(
+        source = (ROOT / "tests/fixtures/legacy-tiger-cold-warm"
+                  / "gate-e-small-repeated.sbatch.txt").read_text(
             encoding="utf-8")
         self.assertIn("#SBATCH --nodes=3", source)
         self.assertIn("spec168-cold-warm-analyzer.py", source)
@@ -366,28 +368,29 @@ class Spec168ColdWarmRemoteGateTest(unittest.TestCase):
         self.assertNotRegex(source, r"\bsbatch\b")
         self.assertNotRegex(source, r"\bsleep\s+300(?:\.0+)?\b")
 
-    def test_exact_frozen_formal_manifest_satisfies_repetition_contract(self):
-        path = (
-            ROOT / "results/spec168-container-candidate/"
-            "20260804T095113Z-v63-analyzer-score-evidence/"
-            "formal-campaign.json"
-        )
-        formal = json.loads(path.read_text(encoding="utf-8"))
-        repetitions = formal["repetitions"]
-        self.assertEqual(repetitions["warmupPerPrompt"], 1)
-        self.assertEqual(repetitions["measuredPerPrompt"], 5)
-        self.assertIs(repetitions["sequential"], True)
-        self.assertEqual(len(formal["prompts"]), 5)
-        self.assertEqual(formal["generation"]["maxNewTokens"], 64)
-        completed = subprocess.run(
-            [
-                "python3", str(JOBS / "spec168_cold_warm_contract.py"),
+    def test_synthetic_formal_manifest_exercises_repetition_contract(self):
+        formal = {
+            "schemaVersion": "ndnsf-di-qwen-generation-campaign-v1",
+            "campaignId": "synthetic-formal-workload",
+            "prompts": [f"test prompt {index}" for index in range(5)],
+            "repetitions": {"warmupPerPrompt": 1, "measuredPerPrompt": 5, "sequential": True},
+            "generation": {"maxNewTokens": 64, "strategy": "greedy"},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "formal-campaign.json"
+            command = [
+                sys.executable, str(SCRIPTS / "check-tiger-cold-warm-contract.py"),
                 "--manifest", str(path),
-            ],
-            check=False, capture_output=True, text=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stdout)
-        self.assertIn("requests=30", completed.stdout)
+            ]
+            path.write_text(json.dumps(formal), encoding="utf-8")
+            completed = subprocess.run(command, check=False, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("requests=30", completed.stdout)
+            formal["repetitions"]["measuredPerPrompt"] = 4
+            path.write_text(json.dumps(formal), encoding="utf-8")
+            rejected = subprocess.run(command, check=False, capture_output=True, text=True)
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("SPEC168_FORMAL_REPETITIONS_REQUIRED", rejected.stdout)
 
 
 if __name__ == "__main__":

@@ -218,7 +218,9 @@ def _group_members(record):
             os.killpg(record['pid'], 0)
         except ProcessLookupError:
             return members
-        raise RuntimeError('process group exists but cannot be audited')
+        # The group can still exist in the kernel while a member is leaving
+        # /proc. Retry that observation within the existing closeout deadline.
+        raise OSError('process group exists but cannot be audited')
     return members
 
 

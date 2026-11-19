@@ -26,7 +26,7 @@
     "sourceCommit": "recorded per dispatch via git rev-parse HEAD"
   },
   "l0": {
-    "consumer": "tests/standalone/spec182-installed-consumer.cpp",
+    "consumer": "tests/standalone/installed-consumer.cpp",
     "command": "fresh staging prefix; consume installed ndnsf-distributed-inference via pkg-config include/link; compile with /usr/bin/g++ -B/usr/bin; no DI source copy, no Python link",
     "executor": "T002-A",
     "gate": "NAC-ABE ABI closure (5 symbols) is the prerequisite of the first successful L0"
@@ -84,7 +84,7 @@
   "systemEntries": [
     {"card": "T014/T016", "file": "tests/standalone/run-spec182-native-closure.py", "existing": true, "command": "python3 tests/standalone/run-spec182-native-closure.py --manifest <case-manifest> --case <case-id> --output <new-run-dir>", "owner": "T014 write / T016 execute"},
     {"card": "T014/T016", "file": "Experiments/NDNSF_DI_NativeClosure_Minindn.py", "existing": true, "command": "python3 Experiments/NDNSF_DI_NativeClosure_Minindn.py --manifest <case-manifest> --output <new-run-dir>", "owner": "T014 review + collector unit / T016 execute L3/4/5"},
-    {"card": "T002-A", "file": "tests/standalone/spec182-installed-consumer.cpp", "existing": true, "owner": "T002-A; L0"}
+    {"card": "T002-A", "file": "tests/standalone/installed-consumer.cpp", "existing": true, "owner": "T002-A; L0"}
   ],
   "qualification": {
     "schema": "spec182-native-qualification-v1",

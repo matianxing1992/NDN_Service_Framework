@@ -2,7 +2,7 @@
 
 The model-backed equivalence cases were retired with the two-stage Python YOLO
 inference path; the C++ merge contract itself stays covered by
-`distributed-inference-native-yolo-merge.t.cpp` in `spec181-native-plan-closure`.
+`distributed-inference-native-yolo-merge.t.cpp` in `native-plan-closure`.
 """
 
 from __future__ import annotations

@@ -2194,15 +2194,13 @@ StreamEventConsumer::requestGapRetry()
       return;
     }
     if (retryCount_ >= options_.maxEventRetries) {
-      if (retryBudgetArmed_) {
+      if (retryBudgetArmed_ || options_.allowReplacement) {
         exhausted = true;
       }
       else {
-        // No application event has been published yet.  This is the normal
-        // post-Selection assembly window for a large native model, not a
-        // missing retained event.  Keep polling until the enclosing request
-        // deadline cancels the operation; once the first event is observed,
-        // the existing bounded gap budget applies unchanged.
+        // Without replacement, initial silence may be a cold assembly.
+        // Poll until the request deadline or authenticated progress arms
+        // the usual bounded gap budget.
         retryCount_ = 0;
       }
     }

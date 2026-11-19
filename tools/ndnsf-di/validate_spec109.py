@@ -96,7 +96,7 @@ def validate_evidence(value:Mapping[str,object])->dict[str,Any]:
 
 def schema_validator(schema_name:str):
     from jsonschema import Draft202012Validator,RefResolver
-    root=Path(__file__).resolve().parents[2]/"specs/109-ndnsf-di-itiger-qwen-scaling/contracts"
+    root=Path(__file__).resolve().parent/"schemas/qwen-experiments"
     path=root/schema_name; schema=json.loads(path.read_text())
     store={}
     for item in root.glob("*.json"):

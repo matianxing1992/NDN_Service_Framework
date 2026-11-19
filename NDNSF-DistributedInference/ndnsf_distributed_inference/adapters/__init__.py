@@ -2,25 +2,14 @@
 
 from importlib import import_module
 
-from .base import (
-    AdapterPortDescriptor,
-    ApplicationInput,
-    InputTransportMode,
-    GraphAdapter,
-    InferenceStateClass,
-    InferenceStateContract,
-    InferenceTaskDescriptor,
-    ModelFamilyAdapter,
-    ModelSplitter,
-    RunnerAdapter,
-    StateAdapter,
-    TaskAdapter,
-)
-from .builtin import (
-    build_llm_text_adapter,
-    build_object_detection_adapter,
-    build_opaque_container_adapter,
-)
+_CONTRACT_EXPORTS = dict.fromkeys((
+    "AdapterPortDescriptor", "ApplicationInput", "InputTransportMode", "GraphAdapter",
+    "InferenceStateClass", "InferenceStateContract", "InferenceTaskDescriptor",
+    "ModelFamilyAdapter", "ModelSplitter", "RunnerAdapter", "StateAdapter", "TaskAdapter",
+), ".base")
+_CONTRACT_EXPORTS.update(dict.fromkeys((
+    "build_llm_text_adapter", "build_object_detection_adapter", "build_opaque_container_adapter",
+), ".builtin"))
 _MODEL_EXPORTS = {
     "QWEN36_27B_LAYER_RANGES": ".qwen",
     "QWEN36_27B_MODEL": ".qwen",
@@ -36,7 +25,7 @@ _MODEL_EXPORTS = {
 
 
 def __getattr__(name):
-    module = _MODEL_EXPORTS.get(name)
+    module = _MODEL_EXPORTS.get(name) or _CONTRACT_EXPORTS.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     value = getattr(import_module(module, __name__), name)

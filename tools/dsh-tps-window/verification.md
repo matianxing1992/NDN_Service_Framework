@@ -84,3 +84,68 @@ subagents/listDescendants RPC lookup was not exposed (404); child identity was
 instead read from the maintained parent catalog cache without changing it.
 The speed API itself returned status ok in both views. No extra model call or
 service restart was used. No LLM Vitals/Codex extension file was changed.
+## Clean-directory delivery check — 2026-11-18
+
+Version `0.5.3` was tested from a copy containing only the Git-visible plugin
+files and its new lockfile, with an empty HOME and no inherited DSH, Codex or
+Node module paths. `npm ci --ignore-scripts` and `npm test` passed 10/10.
+`npm pack --ignore-scripts` produced `dsh-tps-window-0.5.3.tgz` (SHA-256
+`53f898b1777e99b45da8b1a3e65af02f6c8d455ad2c23e5f32c50d65a84f5a9e`).
+Installed that tarball alone with `dsh plugin --profile web add` in a fresh DSH
+`0.2.2-rc.1` Web profile. The real speed endpoint rejected an unauthenticated
+request and reported zero for an authenticated idle session with no provider
+credentials. No external quota provider was queried.
+
+## OpenDesign device authorization — 2026-11-18
+
+Version `0.5.6` passed 13/13 tests, including cross-route rejection, confirmation
+before persistence, cancellation, disposal and the composer authorization UI.
+The installed package in a clean DSH Web profile passed a real HTTP POST flow
+with a fixture OpenDesign provider. The host saved the second route's binding
+only after confirmation and refreshed its wallet without changing the first
+route. The initial installed probe found that a Web resource rejected POST with
+405; the final package uses DSH's exact HTTP handler for the authorization
+route and kept quota GET as a resource.
+
+Archive SHA-256:
+`288ec4a8cdf6bb448a52b64c4821f73abaf8d63c3bdb3554558fc67f06637b44`.
+The same package was installed in the local Web profile and activated through
+the plugin manager. The DSH service PID stayed unchanged and the new live
+authorization route rejected an unauthenticated request with 401. No personal
+OpenDesign login, key write, or provider query was used in these checks.
+
+## OpenDesign quota windows — 2026-11-18
+
+Version `0.5.8` passed 13/13 tests. Fixtures distinguish a 7-day-only plan,
+a plan with both 5-hour and 7-day windows, and a mismatched workspace. The
+client renders one daily pace from the longest window. The exact installed
+tarball completed device binding and showed the fixture workspace's wallet
+and 7-day usage in a clean DSH Web profile without inventing a 5-hour window.
+The fixture did not query a personal OpenDesign account.
+
+## Quota recovery after a DSH Web restart — 2026-11-18
+
+Version `0.5.10` passed 14/14 tests. The new regression cases failed on
+`0.5.9`: the composer hid quota after a Web HTTP 401 and the Host kept a
+temporary provider HTTP 503 cached after the provider recovered. The Git
+`origin/KVCache` tree at `8027f6c6b5e9c339e809da24a85661c183cbb421`
+contains no corresponding plugin.
+
+The installed tarball was exercised across two fresh DSH Web processes with
+the same isolated credential store. The first read after restart returned
+unavailable while the fixture provider returned 503. The plugin retried at
+15 seconds. Both routes then reported their respective 7-day usage, and both
+stored references were unchanged. No personal account was queried.
+
+The local Web profile now contains the same eight-file tarball with SHA-256
+`78976133e9b3527965bdc2745888010a1aae0024fa348fa71cd6e2b4ad06eb3a`.
+The installed files were compared with the archive.
+
+An isolated 0.5.9 → 0.5.10 upgrade exercised the DSH profile watcher.
+After reload, the original DSH process recovered from a fixture 503 on the
+new retry interval. The local profile was then reloaded through the same
+watcher. Its unauthenticated quota endpoint went from HTTP 401 to 404 and
+back to 401, with the DSH service PID and active test processes retained.
+The first OpenDesign quota reference was removed with DSH's native
+credential writer. The second reference and the other saved references were
+verified against their prior values.

@@ -306,8 +306,26 @@ def explicit_ndn_svs_pair():
     return source, build
 
 
-def explicit_nac_abe_prefix():
+def native_nac_abe_prefix(library_dir: str):
     value = os.environ.get("NDNSF_NAC_ABE_PREFIX", "")
+    metadata = Path(library_dir) / "pkgconfig/libndn-service-framework.pc"
+    if metadata.is_file():
+        # Waf advertises its NAC-ABE include roots as Core's system includes.
+        # Select those before the same-named headers from the ambient pkg-config.
+        # ServiceUser is allocated here and constructed by Core, so its ABI
+        # must come from exactly the same NAC-ABE header and library pair.
+        flags = next((line.partition(":")[2] for line in metadata.read_text().splitlines()
+                      if line.startswith("Cflags:")), "")
+        tokens = shlex.split(flags)
+        recorded = {Path(path).parent.resolve() for flag, path in zip(tokens, tokens[1:])
+                    if flag == "-isystem" and Path(path).is_absolute()}
+        if len(recorded) > 1:
+            raise RuntimeError("installed Core lists conflicting NAC-ABE SDK prefixes")
+        if recorded:
+            prefix = recorded.pop()
+            if value and Path(value).expanduser().resolve() != prefix:
+                raise RuntimeError("NDNSF_NAC_ABE_PREFIX differs from the installed Core SDK")
+            value = str(prefix)
     if not value:
         return None
     prefix = Path(value).expanduser().resolve()
@@ -323,7 +341,9 @@ def build_extension() -> Extension:
     import pybind11
 
     svs_pair = explicit_ndn_svs_pair()
-    nac_prefix = explicit_nac_abe_prefix()
+    candidate_dirs = native_library_dirs()
+    validate_native_library_digests(candidate_dirs)
+    nac_prefix = native_nac_abe_prefix(candidate_dirs[0])
     include_dirs, library_dirs, libraries, extra_link_args = pkg_config(
         "libndn-cxx",
         *([] if svs_pair else ["libndn-svs"]),
@@ -347,9 +367,6 @@ def build_extension() -> Extension:
     reject_historical_local_link_flags(extra_link_args, "pkg-config")
     reject_non_global_dependency_paths(linker_path_values(extra_link_args),
                                        "pkg-config linker paths")
-
-    candidate_dirs = native_library_dirs()
-    validate_native_library_digests(candidate_dirs)
 
     library_dirs = list(dict.fromkeys([*candidate_dirs, *library_dirs]))
     runtime_rpath = os.environ.get("NDNSF_RUNTIME_RPATH")

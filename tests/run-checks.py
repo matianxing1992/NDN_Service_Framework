@@ -249,13 +249,13 @@ def signal_owned_session(session, sig):
             pass
 
 
-def native_process(argv, environ, timeout):
+def native_process(argv, environ, timeout, *, cwd=None):
     """Bound output and reclaim the session created for this native invocation."""
     buffers = {'stdout': bytearray(), 'stderr': bytearray()}
     total = 0
     status = None
     boundary = None
-    process = subprocess.Popen(argv, env=environ, stdin=subprocess.DEVNULL,
+    process = subprocess.Popen(argv, env=environ, cwd=cwd, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
     try:
@@ -365,9 +365,9 @@ def enumerate_cases(binary, environ):
     Both streams are read because Boost.Test writes this listing to stderr; parsing only stdout
     reports a binary with thousands of cases as having none.
     """
-    with isolated_native_environment(environ) as (_, native_env):
+    with isolated_native_environment(environ) as (result_root, native_env):
         completed = subprocess.run([str(binary), '--list_content'], capture_output=True, text=True,
-                                   env=native_env, timeout=300)
+                                   env=native_env, cwd=result_root / 'scratch', timeout=300)
     if completed.returncode != 0:
         raise ValueError('CASE_ENUMERATION_FAILED: %s\n%s'
                          % (binary, completed.stderr[-2000:]))
@@ -520,7 +520,7 @@ def run_target(binary, target, environ, timeout, arguments, listing=None):
         xml_path = Path(result_root) / 'result.xml'
         argv.append('--report_sink=' + str(xml_path))
         try:
-            completed = native_process(argv, native_env, timeout)
+            completed = native_process(argv, native_env, timeout, cwd=result_root / 'scratch')
             status = completed.returncode
             native_exit = getattr(completed, 'nativeExit', completed.returncode)
             process_boundary = getattr(completed, 'boundary', None)

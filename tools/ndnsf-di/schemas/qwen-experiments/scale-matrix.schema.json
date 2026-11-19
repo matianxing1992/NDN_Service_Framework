@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec109/scale-matrix.schema.json",
+  "title": "Spec 109 Keyed Scale Matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "campaignId", "campaignGateDigest", "locked", "finalized", "models", "cells", "runs", "physicalProduction"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "campaignId": {"type": "string", "minLength": 1},
+    "campaignGateDigest": {"$ref": "#/$defs/digest"},
+    "locked": {"const": true},
+    "finalized": {"type": "boolean"},
+    "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["0.5B", "1.5B", "3B", "7B", "14B", "32B", "72B"]}},
+    "cells": {
+      "type": "object", "minProperties": 1,
+      "propertyNames": {"pattern": "^[A-Za-z0-9._-]+$"},
+      "additionalProperties": {"$ref": "#/$defs/cell"}
+    },
+    "runs": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Za-z0-9._-]+$"},
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["cellId", "jobId", "submissionDigest"],
+        "properties": {
+          "cellId": {"type": "string", "minLength": 1},
+          "jobId": {"type": ["string", "null"]},
+          "submissionDigest": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "physicalProduction": {"const": "DEFERRED"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"finalized": {"const": true}}},
+      "then": {"properties": {"cells": {"additionalProperties": {"properties": {"state": {"enum": ["PASS", "FAIL", "BLOCKED", "DEFERRED", "CANCELLED"]}}}}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "cell": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidateId", "modelSize", "mode", "repetition", "state", "reasonCode", "runId", "evidenceDigest", "gateScope", "gateId", "gateDigest"],
+      "properties": {
+        "candidateId": {"type": "string", "minLength": 1},
+        "modelSize": {"enum": ["0.5B", "1.5B", "3B", "7B", "14B", "32B", "72B"]},
+        "mode": {"enum": ["diagnostic", "full-model-oracle", "artifact", "staged-onnx-baseline", "ndnsf-di-correctness", "ndnsf-di-performance"]},
+        "repetition": {"type": "integer", "minimum": 0, "maximum": 3},
+        "state": {"enum": ["NOT_STARTED", "SUBMITTED", "RUNNING", "PASS", "FAIL", "BLOCKED", "DEFERRED", "CANCELLED"]},
+        "reasonCode": {"type": "string"},
+        "runId": {"type": ["string", "null"]},
+        "evidenceDigest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "gateScope": {"enum": ["none", "systemic", "model-local", "placement-local"]},
+        "gateId": {"type": ["string", "null"]},
+        "gateDigest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"enum": ["PASS", "FAIL", "CANCELLED"]}}}, "then": {"properties": {"runId": {"type": "string", "minLength": 1}, "evidenceDigest": {"$ref": "#/$defs/digest"}}}},
+        {"if": {"properties": {"state": {"enum": ["BLOCKED", "DEFERRED"]}}}, "then": {"properties": {"reasonCode": {"type": "string", "minLength": 1}, "gateScope": {"enum": ["systemic", "model-local", "placement-local"]}, "gateId": {"type": "string", "minLength": 1}, "gateDigest": {"$ref": "#/$defs/digest"}}}},
+        {"if": {"properties": {"state": {"const": "NOT_STARTED"}}}, "then": {"properties": {"runId": {"type": "null"}, "evidenceDigest": {"type": "null"}}}}
+      ]
+    }
+  }
+}

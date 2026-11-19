@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "tests/fixtures/frozen-binary-fixture.hpp"
+#include "tests/fixtures/test-resource-paths.hpp"
 #include "tests/fixtures/spec182/native-sampling-epoch.hpp"
 
 #include <cstdint>
@@ -1270,6 +1271,50 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerDoesNotOccupyComputeWorkerWhileWaitingFor
   BOOST_CHECK_GE(durationMs(consumerResult.inputTimings[0].prefetchStartedAt,
                             consumerResult.inputTimings[0].fetchCompletedAt),
                  0.0);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerUsesTheAdmittedAbsoluteDependencyDeadline)
+{
+  RoleSpec role{"/Consumer",
+    {DependencyEdge{"input", "/Producer", "/Consumer", "/deadline/input", 1}},
+    {}};
+  auto io = std::make_shared<BlockingDependencyIo>();
+  ProviderRoleWorker worker(1, 1, 8, std::chrono::milliseconds(20));
+  role.executionDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  std::atomic<unsigned> calls{0};
+  auto future = worker.executeAsync("admitted-deadline", role, io,
+    [&] (const RoleExecutionContext& context) {
+      ++calls;
+      BOOST_CHECK_EQUAL(payloadText(context.inputsByScope.at("input")), "peer-ready");
+      return std::map<std::string, TensorBundle>{};
+    });
+  // A slower peer remains allowed by the request even after the worker's
+  // compatibility fallback has elapsed. No compute starts without its input.
+  BOOST_CHECK(future.wait_for(std::chrono::milliseconds(60)) == std::future_status::timeout);
+  BOOST_CHECK_EQUAL(calls.load(), 0U);
+  io->publishOutput("admitted-deadline", role.inputs.front(), bundle("input", "peer-ready"));
+  BOOST_REQUIRE(future.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+  BOOST_CHECK_NO_THROW(future.get());
+  BOOST_CHECK_EQUAL(calls.load(), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(ProviderRoleWorkerCannotExtendAnExpiredRequestForMissingInput)
+{
+  RoleSpec role{"/Consumer",
+    {DependencyEdge{"input", "/Producer", "/Consumer", "/deadline/missing", 1}},
+    {}};
+  auto io = std::make_shared<BlockingDependencyIo>();
+  ProviderRoleWorker worker(1, 1, 8, std::chrono::seconds(5));
+  role.executionDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
+  std::atomic<unsigned> calls{0};
+  auto future = worker.executeAsync("expired-deadline", role, io,
+    [&] (const RoleExecutionContext&) {
+      ++calls;
+      return std::map<std::string, TensorBundle>{};
+    });
+  BOOST_REQUIRE(future.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready);
+  BOOST_CHECK_THROW(future.get(), std::runtime_error);
+  BOOST_CHECK_EQUAL(calls.load(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(ProviderRoleWorkerEnqueuesImmediatelyWhenInputsAreReady)
@@ -6536,11 +6581,10 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanJsonDrivesAsyncFrontierRuntime)
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
 {
-  const char* planPath = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
-  if (planPath == nullptr || std::string(planPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_NATIVE_PLAN_JSON not set; generated-plan smoke skipped");
-    return;
-  }
+  const char* requestedPlan = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
+  const auto planPath = requestedPlan != nullptr && *requestedPlan != '\0'
+    ? std::filesystem::path(requestedPlan)
+    : ndnsf::test::testFixturePath("native-plan/parallel-frontier.json");
 
   const std::string serviceName = [] {
     const char* value = std::getenv("NDNSF_DI_NATIVE_PLAN_SERVICE");
@@ -6672,11 +6716,10 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesAsyncFrontierRuntime)
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
 {
-  const char* planPath = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
-  if (planPath == nullptr || std::string(planPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_NATIVE_PLAN_JSON not set; generated provider-role smoke skipped");
-    return;
-  }
+  const char* requestedPlan = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
+  const auto planPath = requestedPlan != nullptr && *requestedPlan != '\0'
+    ? std::filesystem::path(requestedPlan)
+    : ndnsf::test::testFixturePath("native-plan/parallel-frontier.json");
 
   const std::string serviceName = [] {
     const char* value = std::getenv("NDNSF_DI_NATIVE_PLAN_SERVICE");
@@ -6804,11 +6847,10 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
 
 BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderSessionSkeleton)
 {
-  const char* planPath = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
-  if (planPath == nullptr || std::string(planPath).empty()) {
-    BOOST_TEST_MESSAGE("NDNSF_DI_NATIVE_PLAN_JSON not set; generated provider-session smoke skipped");
-    return;
-  }
+  const char* requestedPlan = std::getenv("NDNSF_DI_NATIVE_PLAN_JSON");
+  const auto planPath = requestedPlan != nullptr && *requestedPlan != '\0'
+    ? std::filesystem::path(requestedPlan)
+    : ndnsf::test::testFixturePath("native-plan/parallel-frontier.json");
 
   const std::string serviceName = [] {
     const char* value = std::getenv("NDNSF_DI_NATIVE_PLAN_SERVICE");

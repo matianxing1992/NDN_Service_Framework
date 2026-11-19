@@ -1,6 +1,6 @@
 ---
 name: speckit-code-design
-description: Define reviewable code design and coherent implementation tasks, then review source against design before meaningful runtime validation. Keep one concise completion record and reuse contracts instead of duplicating rules.
+description: Write and revise source-grounded Spec Kit designs and tasks, walk concrete operations through the production call chain, and review implementation against the design. Reuse contracts and existing work units without speculative scope.
 ---
 
 # Spec Kit Code Design
@@ -8,7 +8,10 @@ description: Define reviewable code design and coherent implementation tasks, th
 ## Repository Context
 
 在目标仓库工作目录运行 `git rev-parse --show-toplevel` 确定 repo root。
-仓库文件路径从该 root 解析；本 skill 的 `references/` 链接从本目录解析，安装到个人 skills 后仍适用。
+仓库文件路径从该 root 解析。本技能的说明、模板参考和自带脚本以本技能目录为根解析，
+复制和安装时一同交付。设计与审计使用随包的规则，能直接核查目标仓库的生产链路。
+目标仓库的源码、Spec、模板和测试仍由目标项目提供。仓库特有的入口同步或正式验收按
+该项目的设施执行，安装技能时一并核对随包链接和脚本是否齐全。
 读取 root 的 `AGENTS.md`、`.specify/feature.json`、`.specify/memory/constitution.md`
 和 `docs/architecture-reading-guide.md`；活动 feature 以指针及当前用户授权为准，不固定旧 Spec。
 
@@ -73,13 +76,21 @@ FR/SC 或任务中已经写入某项工作，并不自动证明它必要。审�
    按 [Call-Chain Design Review](references/review-gate.md#call-chain-design-review)
    从具体业务入口沿真实调用、数据/状态传递、异步/消息边追到结果消费与失败收尾；
    逐跳说明关键机制，先建立现状链，再定位目标改动，不以类/API 清单代替设计。
+   对跨组件或状态相关设计，在现有FLOW中按该参考的
+   [Concrete Walkthrough](references/review-gate.md#concrete-walkthrough)携带具体输入、
+   身份和状态手推一次主链及影响设计的分支。写spec时用它核对目标/边界，写plan和
+   修订设计时落到源码与契约；不把全部实现细节复制进需求文档，不为小局部改动造流程表。
 2. 明确成果、架构所有权、兼容/退出路径；优先复用共享 API。
-3. 用 [symbol-contract.md](references/symbol-contract.md) 描述受影响类、方法、重要字段：
-   责任、输入来源、返回/失败、所有权/寿命、并发、使用示例和必要英文注释。
-   已有契约通过 ID 引用；纯局部编码细节由实现者决定。
+3. 在写 plan 或审计修订设计时，按 [symbol-contract.md](references/symbol-contract.md)
+   从已证实的 FLOW 编制受影响类、方法和字段的增改删移/复用清单。在同一契约里写
+   前后签名、实际调用边、关键分支、状态与失败收尾。生成 tasks 前必须完成
+   [Class-Level Design Review](references/review-gate.md#class-level-design-review)，
+   检查每项类级改动的必要性和任务归属。需求文档引用契约，纯局部编码细节由实现者决定。
 4. 用 [design-template.md](references/design-template.md) 按需要组织设计；不适用的章节省略。
 5. 用 [work-unit-contract.md](references/work-unit-contract.md) 拆成可独立审阅和验证的工作单元。
    明确真实入口、可观察结果、独立判据和必要负例，不以测试数量代替行为。
+   将手推断点归入已有行为owner；检查每项验收所需能力在该任务或其前置内产生，
+   局部检查与后续端到端资格分开，不让前置任务依赖尚未实现的后续闭环。
 6. 用 [review-gate.md](references/review-gate.md) 检查设计是否可实施。
    未知项只阻塞受影响范围，不能以文档结构检查 PASS 宣称整个设计就绪。
 

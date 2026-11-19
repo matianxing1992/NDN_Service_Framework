@@ -23,7 +23,7 @@ class InstallationProfilesTest(unittest.TestCase):
         owned={}; wheels={}; console_owners=[]
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
-            source_root = temporary_root / "source"
+            source_root = temporary_root / "NDNSF-DistributedInference"
             shutil.copytree(
                 ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference",
                 source_root / "ndnsf_distributed_inference",
@@ -62,8 +62,10 @@ class InstallationProfilesTest(unittest.TestCase):
             for name in names:
                 # Match the installer's declared PEP 517 build dependencies.
                 # Host setuptools can predate PEP 621 and ignore pyproject scripts.
-                subprocess.run([sys.executable,"-m","pip","wheel","--no-deps",
-                                str(profiles/name),"-w",output],check=True,capture_output=True,text=True)
+                built = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps",
+                                        str(profiles / name), "-w", output],
+                                       capture_output=True, text=True)
+                self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             subprocess.run([sys.executable,"-m","pip","wheel","--no-deps","--no-build-isolation",
                             str(ROOT/"tests/fixtures/ndnsf-di-external-optimizer"),"-w",output],
                            check=True,capture_output=True,text=True)

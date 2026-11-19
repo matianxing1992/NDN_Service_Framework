@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec109/qwen-experiment-profile.schema.json",
+  "title": "Spec 109 Qwen Experiment Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "candidateId", "sourceSnapshot", "predecessorGate", "deploymentBinding", "model", "workload", "stages", "fallbackPolicy"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "candidateId": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "sourceSnapshot": {"$ref": "source-snapshot.schema.json"},
+    "predecessorGate": {"$ref": "predecessor-gate.schema.json"},
+    "deploymentBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["spec108ProfileDigest", "releaseDigest", "resolvedResourceFingerprint"],
+      "properties": {
+        "spec108ProfileDigest": {"$ref": "#/$defs/digest"},
+        "releaseDigest": {"$ref": "#/$defs/digest"},
+        "resolvedResourceFingerprint": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "revision", "sizeClass", "tokenizerDigest", "licenseDigest", "dtype", "quantization", "artifactSetDigest"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^Qwen/Qwen2\\.5-(0\\.5B|1\\.5B|3B|7B|14B|32B|72B)-Instruct$"},
+        "revision": {"type": "string", "minLength": 7},
+        "sizeClass": {"enum": ["0.5B", "1.5B", "3B", "7B", "14B", "32B", "72B"]},
+        "tokenizerDigest": {"$ref": "#/$defs/digest"},
+        "licenseDigest": {"$ref": "#/$defs/digest"},
+        "dtype": {"const": "float16"},
+        "quantization": {"const": "none"},
+        "artifactSetDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "workload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["promptSetDigest", "promptCount", "contextTokens", "maxNewTokens", "decode", "arrivalMode", "targetRps", "maxInFlight", "requestTimeoutMs", "cacheState", "warmupRequests", "measurementSeconds", "repetitions", "loggingProfile", "runOrderSeed"],
+      "properties": {
+        "promptSetDigest": {"$ref": "#/$defs/digest"},
+        "promptCount": {"type": "integer", "minimum": 1},
+        "contextTokens": {"type": "integer", "minimum": 1},
+        "maxNewTokens": {"type": "integer", "enum": [1, 2, 32]},
+        "decode": {"const": "greedy"},
+        "arrivalMode": {"enum": ["open-loop", "closed-loop"]},
+        "targetRps": {"type": "number", "exclusiveMinimum": 0},
+        "maxInFlight": {"type": "integer", "minimum": 1},
+        "requestTimeoutMs": {"type": "integer", "minimum": 1},
+        "cacheState": {"enum": ["cold", "warm", "controlled-reset"]},
+        "warmupRequests": {"type": "integer", "minimum": 0},
+        "measurementSeconds": {"type": "integer", "enum": [0, 60]},
+        "repetitions": {"type": "integer", "minimum": 1, "maximum": 3},
+        "loggingProfile": {"type": "string", "minLength": 1},
+        "runOrderSeed": {"type": "integer", "minimum": 0}
+      }
+    },
+    "stages": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["role", "artifactDigest", "logicalGpu", "sessionOptionsDigest"],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "artifactDigest": {"$ref": "#/$defs/digest"},
+          "logicalGpu": {"type": "integer", "minimum": 0},
+          "sessionOptionsDigest": {"$ref": "#/$defs/digest"}
+        }
+      }
+    },
+    "fallbackPolicy": {"enum": ["disabled", "explicit-degraded"]}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

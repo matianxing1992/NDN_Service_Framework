@@ -13,14 +13,9 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PREFLIGHT_PATH = (
-    ROOT / "specs/168-itiger-di-deployment-fidelity/jobs/"
-    "spec168_exact_sif_cuda_preflight.py"
-)
-BUILDER_PATH = (
-    ROOT / "specs/168-itiger-di-deployment-fidelity/jobs/"
-    "build-gate-c-source-bundle.py"
-)
+FIXTURES = ROOT / "tests/fixtures/legacy-exact-sif-gate"
+PREFLIGHT_PATH = FIXTURES / "spec168_exact_sif_cuda_preflight.py"
+BUILDER_PATH = FIXTURES / "build-gate-c-source-bundle.py"
 
 
 def load_module(name: str, path: Path):
@@ -172,8 +167,7 @@ class ExactSifCudaPreflightTest(unittest.TestCase):
 
     def test_source_bundle_closure_rejects_missing_with_name_dependency(self):
         selected = {
-            "jobs/owner.py": ROOT / "specs/162-itiger-qwen36-generation/jobs/"
-            "build-generation-policy.py",
+            "jobs/owner.py": FIXTURES / "build-generation-policy.py.txt",
         }
         with self.assertRaisesRegex(ValueError, "prepare-qwen36.py"):
             builder.validate_bundle_closure(selected)

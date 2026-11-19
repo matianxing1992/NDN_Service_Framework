@@ -2,8 +2,13 @@
 
 Development version. The host independently schedules read-only Codex audits while
 DSH continues its task. The conversation composer provides an audit-history panel.
-Default model/effort are `gpt-6.2-sol` / `xhigh`, defined once as `AUDIT_MODEL` / `AUDIT_EFFORT`;
-no silent fallback is permitted.
+Select **审计模型** and **思考强度** in the automatic audit card. The host reads
+listed models and their supported effort levels from the local Codex model
+cache at plugin startup. Without a readable catalog the panel offers the
+existing `gpt-6.2-sol` settings. Changing models keeps the previous effort if
+supported, otherwise it uses the new model's default. Both selections are
+saved per session for future manual, scheduled, and blocked-goal audits.
+Changing either preserves the next scheduled audit time.
 
 Click **Codex 审计** beside the conversation composer to open the side panel and
 use its automatic-audit switch. **立即审计** first opens a dialog with the configured
@@ -180,9 +185,28 @@ automatic audit requests. Transient Codex failures have at most three attempts.
 
 ## Development verification
 
-Use the Node runtime belonging to the DSH installation, keeping the system Node
-unchanged. Resolve the declared runtime dependencies from that installation or an
-isolated development environment, then run `node test/run.js`.
+This directory can be copied or cloned on its own. Use Node 22 or newer, npm
+10 or newer, and Git. From a clean copy of this directory, run:
+
+```sh
+npm ci --ignore-scripts
+npm test
+npm pack --ignore-scripts
+```
+
+Install the resulting tarball with `dsh plugin --profile web add /absolute/path/to/the.tgz`.
+Verify that `dsh-codex-audit` occurs once in the Web profile's `dsh.profile.bundles`
+and restart the service through its existing owner. The supported host is DSH
+`0.2.2-rc.1` with Cordis `4.1.0`. The host supplies Agent, query, storage and
+gateway services. Its Web loader supplies React, React DOM and the DSH Markdown
+renderer. The plugin does not need the rest of the NDNSF checkout or TPS Window.
+
+Actual audits require Git, a Git workspace with a commit, and an authenticated
+Codex CLI that supports the requested model and effort. Set the CLI's absolute
+path in the panel or put its executable on the DSH host's `PATH`. Linux and
+macOS also support discovery through a local VS Code installation. Codex reads
+its own authentication state, with optional `CODEX_HOME` for an explicit profile.
+The bundled tests use isolated fixtures and make no model requests.
 
 Reply collection materializes each session observation once and indexes report
 admissions before scanning assistant messages. It must not search the complete

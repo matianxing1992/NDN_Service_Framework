@@ -19,6 +19,24 @@ from run_spec129_selection_gated_deployment_matrix import (
 
 
 class Spec129RunnerTest(unittest.TestCase):
+    def dry_run(self, root, output):
+        definition = root / "prior-definition"
+        evidence = root / "prior-evidence"
+        definition.mkdir(exist_ok=True)
+        evidence.mkdir(exist_ok=True)
+        (definition / "request.json").write_text("synthetic prior definition")
+        (evidence / "result.json").write_text("synthetic prior result")
+        library = root / "library.fixture"
+        binding = root / "binding.fixture"
+        library.write_bytes(b"synthetic stand-in for a library identity")
+        binding.write_bytes(b"synthetic stand-in for a binding identity")
+        return subprocess.run([
+            sys.executable, str(EXPERIMENTS / "run_spec129_selection_gated_deployment_matrix.py"),
+            "--output-root", str(output), "--dry-run",
+            "--prior-definition", str(definition), "--prior-evidence", str(evidence),
+            "--framework-library", str(library), "--python-binding", str(binding),
+        ], cwd=root, text=True, capture_output=True)
+
     def test_manifest_is_exactly_twelve_unique_nonrerunnable_cells(self):
         cells = frozen_cells()
         validate_manifest(cells)
@@ -71,12 +89,9 @@ class Spec129RunnerTest(unittest.TestCase):
 
     def test_dry_run_freezes_paths_hashes_and_zero_invocations(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "spec129-dry-run"
-            completed = subprocess.run([
-                sys.executable,
-                str(EXPERIMENTS / "run_spec129_selection_gated_deployment_matrix.py"),
-                "--output-root", str(output), "--dry-run",
-            ], cwd=REPO, text=True, capture_output=True)
+            root = Path(directory)
+            output = root / "spec129-dry-run"
+            completed = self.dry_run(root, output)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((output / "campaign-summary.json").read_text())
             manifest = json.loads((output / "campaign-manifest.json").read_text())
@@ -87,20 +102,15 @@ class Spec129RunnerTest(unittest.TestCase):
 
     def test_output_reuse_and_spec128_destination_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "spec129-existing"
+            root = Path(directory)
+            output = root / "spec129-existing"
             output.mkdir()
-            completed = subprocess.run([
-                sys.executable,
-                str(EXPERIMENTS / "run_spec129_selection_gated_deployment_matrix.py"),
-                "--output-root", str(output), "--dry-run",
-            ], cwd=REPO, text=True, capture_output=True)
+            completed = self.dry_run(root, output)
             self.assertNotEqual(completed.returncode, 0)
-        completed = subprocess.run([
-            sys.executable,
-            str(EXPERIMENTS / "run_spec129_selection_gated_deployment_matrix.py"),
-            "--output-root", "/tmp/spec128-forbidden", "--dry-run",
-        ], cwd=REPO, text=True, capture_output=True)
-        self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("output reuse is forbidden", completed.stderr)
+            completed = self.dry_run(root, root / "prior-evidence" / "forbidden")
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("cannot be a destination", completed.stderr)
 
 
 if __name__ == "__main__":

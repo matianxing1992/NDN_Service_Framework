@@ -5,43 +5,34 @@ the real binding has copied and validated semantic metadata. Packet generation
 and decryption are covered by the native publication selectors.
 """
 import gc
-import importlib.util
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from native_service_fixture import provision_native_identities
 
 
 class NativeContentBinding(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        binary = Path(os.environ["SPEC201_PYTHON_BINDING"]).resolve(strict=True)
+        from ndnsf import _ndnsf
+        binding = os.environ.get("SPEC201_PYTHON_BINDING")
+        if binding and Path(_ndnsf.__file__).resolve() != Path(binding).resolve(strict=True):
+            raise AssertionError("use the interpreter that owns the requested NDNSF binding")
+        cls.native = _ndnsf
         cls.directory = tempfile.TemporaryDirectory(prefix="spec201-native-binding-")
         cls.addClassCleanup(cls.directory.cleanup)
-        cls.old_environment = {key: os.environ.get(key) for key in
-                               ("NDN_CLIENT_PIB", "NDN_CLIENT_TPM")}
-        cls.addClassCleanup(cls.restore_environment)
-        os.environ["NDN_CLIENT_PIB"] = "pib-sqlite3:" + cls.directory.name + "/pib"
-        os.environ["NDN_CLIENT_TPM"] = "tpm-file:" + cls.directory.name + "/tpm"
-        # Provision fixture identities with the installed ndnsec utility.
-        # The native binding and its tests retain their sanitizer settings.
-        setup_environment = dict(os.environ)
-        setup_environment.pop("LD_PRELOAD", None)
-        for identity in ("/spec201/binding/user", "/spec201/binding/controller"):
-            subprocess.run(["ndnsec", "key-gen", "-t", "r", identity],
-                           env=setup_environment, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.PIPE, check=True, timeout=15)
-        spec = importlib.util.spec_from_file_location("_ndnsf", binary)
-        cls.native = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.native)
-        if Path(cls.native.__file__).resolve() != binary:
-            raise AssertionError("loaded a different native binding")
+        environment, trust_schema = provision_native_identities(
+            Path(cls.directory.name), "/spec201/binding/controller", "/spec201/binding/user")
+        isolate = patch.dict(os.environ, environment)
+        isolate.start()
+        cls.addClassCleanup(isolate.stop)
         print("SOURCE_BINDING_LOADED", flush=True)
-        root = Path(__file__).resolve().parents[2]
         cls.user = cls.native.NativeServiceUser(
             group="/spec201/binding/group", controller="/spec201/binding/controller",
-            user="/spec201/binding/user", trust_schema=str(root / "examples/trust-any.conf"),
+            user="/spec201/binding/user", trust_schema=str(trust_schema),
             permission_wait_ms=0, handler_threads=1, ack_threads=1,
             serve_certificates=False)
         cls.addClassCleanup(cls.stop_user)
@@ -53,17 +44,7 @@ class NativeContentBinding(unittest.TestCase):
         del cls.user
         gc.collect()
 
-    @classmethod
-    def restore_environment(cls):
-        for key, value in cls.old_environment.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
     def test_requester_identity_is_native_owned_and_readonly(self):
-        import sys
-        sys.modules["ndnsf._ndnsf"] = self.native
         from ndnsf.service import ServiceUser
         facade = ServiceUser.__new__(ServiceUser)
         facade._native = self.user

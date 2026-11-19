@@ -203,6 +203,10 @@ roleSpecForEpoch(const NativeEpochCoordinatorConfig& config, std::size_t sequenc
     role.automaticBinding = config.automaticBinding;
   }
   role.workStatistics = config.workStatistics;
+  if (config.executionDeadline) {
+    role.executionDeadline = role.executionDeadline
+      ? std::min(*role.executionDeadline, *config.executionDeadline) : *config.executionDeadline;
+  }
   const auto bindFeedback = [&](DependencyEdge& edge) {
     if (edge.operationKind != "TOKEN_FEEDBACK") return;
     // Plan-owned feedback is appended to the sealed projection. Bind its

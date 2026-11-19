@@ -12,7 +12,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 ANALYZER = (
     ROOT
-    / "specs/162-itiger-qwen36-generation/jobs/analyze-generation-formal.py"
+    / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
+    "analyze-qwen36-generation-formal.py"
 )
 
 

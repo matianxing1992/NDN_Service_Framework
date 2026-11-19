@@ -3059,12 +3059,11 @@ standalone GPU oracle、candidate correctness/performance、overhead、scaling �
 reproduction PASS。72B 还因为 200 GB project allocation 的容量门禁而阻塞，
 multi-node 则等待 Spec 108 T134 network evidence。
 
-模型传输、license、quota 和 cleanup 操作见
-`packaging/ndnsf-di-container/docs/itiger-qwen-models.md`；standalone、artifact、
-staged-baseline 和 candidate 的权威边界见 `itiger-qwen-evidence.md`。物理生产验证
-仍由 Spec 106 负责。
+上述是历史规模实验快照。当前模型传输、quota、复用与清理操作见
+[Tiger指南](../Experiments/TigerCluster/docs/portable-deployment.md)；
+后续已核实结果及资格范围见[证据汇总](../Experiments/TigerCluster/docs/lessons-and-evidence.md)。
 
-该操作手册现在也记录了后续 Spec 160/161 的经验：先用受内存限制的小型 Docker
+历史操作手册还记录了 Spec 160/161 的经验：先用受内存限制的小型 Docker
 collaboration smoke 检查安全与 binding，再在计算节点验证单一 coherent SIF；加载
 模型前先验证跨节点 NFD；完整模型的临时峰值放到 allocation scratch；正式重复实验前
 先跑一次完整答案 generation smoke。手册还严格区分 Slurm 终态与不可变 workload

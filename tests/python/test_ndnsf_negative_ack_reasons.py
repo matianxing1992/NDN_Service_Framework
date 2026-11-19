@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from ndnsf import (
+    CollaborationRole,
     NEGATIVE_ACK_REASON_GPU_BUSY,
     NEGATIVE_ACK_REASON_INTERNAL_ERROR,
     NEGATIVE_ACK_REASON_MODEL_UNAVAILABLE,
@@ -16,6 +17,7 @@ from ndnsf import (
     RECOMMENDED_NEGATIVE_ACK_REASONS,
     decode_provider_capability_ack,
 )
+from ndnsf.service import _role_to_dict
 from ndnsf_distributed_inference.artifact_deployment import ArtifactProvisioningState
 from ndnsf_distributed_inference.provider import (
     DistributedInferenceProvider,
@@ -26,7 +28,6 @@ from ndnsf_distributed_inference.runtime_v1 import RuntimeTelemetryV1
 from Experiments.NDNSF_DI_NativeTracer_Minindn import (
     build_failure_breakdown,
     collect_negative_ack_reason_counters,
-    user_driver_command,
 )
 
 
@@ -39,16 +40,12 @@ class _FakeProvider:
 
 
 class NegativeAckReasonContractTest(unittest.TestCase):
-    def test_native_tracer_forwards_only_explicit_input_admission_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            policy_dir = Path(tmp)
-            legacy = user_driver_command(policy_dir, 1, 1, 0)
-            strict = user_driver_command(
-                policy_dir, 1, 1, 0,
-                input_admission_profile="data-admission-v1")
-
-        self.assertNotIn("--input-admission-profile", legacy)
-        self.assertIn("--input-admission-profile data-admission-v1", strict)
+    def test_input_admission_profile_is_selected_per_collaboration_role(self) -> None:
+        default_role = _role_to_dict(CollaborationRole(role="/default"))
+        strict_role = _role_to_dict(CollaborationRole(
+            role="/strict", input_admission_profile="data-admission-v1"))
+        self.assertFalse(default_role.get("input_admission_profile"))
+        self.assertEqual(strict_role["input_admission_profile"], "data-admission-v1")
 
     def test_artifact_readiness_uses_recommended_reason_codes(self) -> None:
         state = ArtifactProvisioningState(

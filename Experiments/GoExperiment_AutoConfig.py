@@ -1,221 +1,174 @@
-from subprocess import PIPE
+#!/usr/bin/env python3
+"""Run the two-peer Go SVS comparison with explicit binary and topology inputs."""
 
-from mininet.log import setLogLevel, info
-
-from minindn.minindn import Minindn
-from minindn.wifi.minindnwifi import MinindnAdhoc
-from minindn.util import MiniNDNCLI, getPopen
-from minindn.apps.app_manager import AppManager
-from minindn.apps.nfd import Nfd
-from minindn.apps.nlsr import Nlsr
-from minindn.helpers.ndnping import NDNPing
-from minindn.helpers.nfdc import Nfdc
-
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import subprocess
+import sys
+import tempfile
 import time
 
-def printOutput(output):
-    _out = output.decode("utf-8").split("\n")
-    for _line in _out:
-        info(_line + "\n")
 
-def generateAndSignCertificates(ndn: Minindn):
-    # delete identities
+HERE = Path(__file__).resolve().parent
+DEFAULT_BINARY = HERE / "syncps"
+DEFAULT_BINARY_SHA256 = "049534b35fae3c08a2e34d6ec9c023e6572764ae1c161e3f0a47369378fb8f54"
+DEFAULT_TOPOLOGY = HERE / "Topology/testbed(loss=0%).conf"
+PEERS = ("memphis", "ucla")
+
+
+def sha256(path):
+    with path.open("rb") as stream:
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def input_identity(binary, expected_digest, topology):
+    if platform.system() != "Linux":
+        raise ValueError("MiniNDN requires Linux")
+    if binary == DEFAULT_BINARY and platform.machine() != "x86_64":
+        raise ValueError("the tracked syncps binary requires x86_64; build syncps.go for this machine")
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError(f"syncps executable is missing: {binary}")
+    actual_digest = sha256(binary)
+    if actual_digest != expected_digest:
+        raise ValueError(f"syncps SHA-256 mismatch: {binary}")
+    nodes = set()
+    in_nodes = False
+    for line in topology.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            in_nodes = line == "[nodes]"
+        elif in_nodes and ":" in line and not line.startswith("#"):
+            nodes.add(line.split(":", 1)[0])
+    missing = {"memphis", "csu", "ucla"} - nodes
+    if missing:
+        raise ValueError("topology lacks required nodes: " + ", ".join(sorted(missing)))
+    return {"binary": str(binary), "binarySha256": actual_digest,
+            "topology": str(topology), "topologySha256": sha256(topology)}
+
+
+def configure_routes(ndn, nfdc):
     for node in ndn.net.hosts:
-        node.cmd('ndnsec delete /muas')
-        node.cmd('ndnsec delete /muas/aa')
-        for node2 in ndn.net.hosts:
-            node.cmd('ndnsec delete /muas/{}'.format(node2.name))
-
-    # generate trust anchor on the first node
-    controller_node = ndn.net.hosts[0]
-    controller_node.cmd('ndnsec key-gen -t r /muas > /tmp/muas.key')
-    controller_node.cmd('ndnsec cert-dump -i /muas > /tmp/muas.cert')
-    controller_node.cmd('ndnsec-export -P 123456 -o /tmp/muas.ndnkey -i /muas')
-
-    info('Generating certificates for /muas/aa\n')
-
-    controller_node.cmd('ndnsec key-gen -t r /muas/aa > /tmp/aa.key')
-    controller_node.cmd('ndnsec cert-gen -s /muas -i default /tmp/aa.key > /tmp/aa.cert')
-    controller_node.cmd('ndnsec-export -P 123456 -o /tmp/aa.ndnkey -i /muas/aa')
-    
-    # controller_node.cmd('ndnsec cert-install -f /tmp/muas.key')
-    # controller_node.cmd('ndnsec cert-dump -i /muas > /tmp/muas.cert')
-
-    info('Generating keys for other nodes\n')
-    # generate key on controller_node
-    for node in ndn.net.hosts:
-        controller_node.cmd('ndnsec key-gen -t r /muas/{} > /tmp/{}.key'.format(node.name, node.name))
-    
-    info('Installing keys on nodes\n')
-    # install keys on controller_node
-    for node in ndn.net.hosts:
-        controller_node.cmd('ndnsec cert-install -f /tmp/{}.key'.format(node.name))
-
-    info('Signing certificates on controller_node\n')
-    # sign certificates on controller_node using /muas
-    for node in ndn.net.hosts:
-        controller_node.cmd('ndnsec cert-gen -s /muas -i default /tmp/{}.key > /tmp/{}.cert'.format(node.name, node.name))
-        controller_node.cmd('ndnsec-export -P 123456 -o /tmp/{}.ndnkey -i /muas/{}'.format(node.name, node.name))
-
-    info('Installing keys and certificates on nodes\n')
-    for node in ndn.net.hosts:
-        # node.cmd('export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE:ndnsvs.svspubsub=TRACE:ndnsd.*=TRACE"')
-        node.cmd('export NDN_LOG="muas.main_gs=TRACE"')
-        
-        node.cmd('ndnsec import -P 123456 /tmp/muas.ndnkey')
-        node.cmd('ndnsec cert-install -f /tmp/muas.cert')
-
-        node.cmd('ndnsec import -P 123456 /tmp/aa.ndnkey')
-        node.cmd('ndnsec cert-install -f /tmp/aa.cert')
-        for node2 in ndn.net.hosts:
-            # node.cmd('ndnsec cert-install -f /tmp/{}.cert'.format(node2.name))
-            node.cmd('ndnsec import -P 123456 /tmp/{}.ndnkey'.format(node2.name))
-            node.cmd('ndnsec cert-install -f /tmp/{}.cert'.format(node2.name))
+        nfdc.setStrategy(node, "/muas", nfdc.STRATEGY_MULTICAST)
+        for peer in ndn.net.hosts:
+            for peer_interface, _ in peer.connectionsTo(node):
+                face = nfdc.createFace(node, peer_interface.IP())
+                nfdc.registerRoute(node, "/muas", face)
+        node.cmd("nlsrc advertise /muas/" + node.name)
+    for route in (("memphis", "csu", "ucla"), ("ucla", "csu", "memphis")):
+        destination = ndn.net[route[-1]].IP()
+        for source, next_hop in zip(route, route[1:]):
+            node = ndn.net[source]
+            interface, _ = ndn.net[next_hop].connectionsTo(node)[0]
+            node.cmd(f"ip route add {destination} via {interface.IP()}")
 
 
-def registerRouteToAllNeighbors(ndn, host, syncPrefix):
-    for node in ndn.net.hosts:
-        for neighbor in node.connectionsTo(host):
-            ip = node.IP(neighbor[0])
-            faceID = Nfdc.createFace(host, ip)
-            Nfdc.registerRoute(host, syncPrefix, faceID)
+def run(args, identity):
+    from minindn.apps.app_manager import AppManager
+    from minindn.apps.nfd import Nfd
+    from minindn.apps.nlsr import Nlsr
+    from minindn.helpers.nfdc import Nfdc
+    from minindn.minindn import Minindn
+    from minindn.util import MiniNDNCLI
 
-def configure_static_routes(ndn, hosts):
-    
-    # forward route: gs1 -> drone1 -> ... -> drone5
-    for i in range(len(hosts) - 1):
-        src = ndn.net[hosts[i]]
-        next_hop = ndn.net[hosts[i + 1]]
-
-
-        iface = next_hop.connectionsTo(src)[0][0]
-        next_hop_ip = iface.IP()
-
-        dst = ndn.net[hosts[-1]]
-        dst_ip = dst.IP()
-
-        src.cmd(f"ip route add {dst_ip} via {next_hop_ip}")
-        info(f"ip route add {dst_ip} via {next_hop_ip}")
-
-    # reverse route: drone5 -> ... -> drone1 -> gs1
-    for i in range(len(hosts) - 1, 0, -1):
-        src = ndn.net[hosts[i]]
-        next_hop = ndn.net[hosts[i - 1]]
-
-        iface = next_hop.connectionsTo(src)[0][0]
-        next_hop_ip = iface.IP()
-
-        dst = ndn.net[hosts[0]]
-        dst_ip = dst.IP()
-
-        src.cmd(f"ip route add {dst_ip} via {next_hop_ip}")
-        info(f"ip route add {dst_ip} via {next_hop_ip}")
-
-    info("Static IP routes configured.\n")
-
-if __name__ == '__main__':
-    setLogLevel('info')
-
-    Minindn.cleanUp()
     Minindn.verifyDependencies()
+    args.output_dir.mkdir(parents=True)
+    (args.output_dir / "inputs.json").write_text(json.dumps(identity, indent=2) + "\n")
+    with tempfile.TemporaryDirectory(prefix="ndnsf-syncps-", dir="/tmp") as work:
+        coordinator_home = Path(work) / "coordinator"
+        coordinator_home.mkdir(mode=0o700)
+        os.environ["HOME"] = str(coordinator_home)
+        for key in ("NDN_CLIENT_CONF", "NDN_CLIENT_PIB", "NDN_CLIENT_TPM",
+                    "NDN_CLIENT_TRANSPORT", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+            os.environ.pop(key, None)
+        original_argv = sys.argv
+        try:
+            sys.argv = [original_argv[0]]
+            ndn = Minindn(topoFile=str(args.topology), workDir=work)
+        finally:
+            sys.argv = original_argv
+        processes = []
+        received_counts = {}
+        try:
+            ndn.start()
+            AppManager(ndn, ndn.net.hosts, Nfd)
+            AppManager(ndn, ndn.net.hosts, Nlsr)
+            configure_routes(ndn, Nfdc)
+            for name in PEERS:
+                home = Path(ndn.net[name].params["params"]["homeDir"])
+                conf = home / ".ndn/client.conf"
+                transport = next(line.partition("=")[2].strip() for line in conf.read_text().splitlines()
+                                 if line.startswith("transport="))
+                env = {**os.environ, "HOME": str(home), "NDN_CLIENT_TRANSPORT": transport}
+                with (args.output_dir / (name + ".log")).open("wb") as log:
+                    processes.append(ndn.net[name].popen(
+                        [str(args.syncps), "/muas/" + name], cwd=home, env=env,
+                        stdout=log, stderr=subprocess.STDOUT))
+            if args.interactive:
+                MiniNDNCLI(ndn.net)
+            else:
+                deadline = time.monotonic() + args.seconds
+                while time.monotonic() < deadline:
+                    if any(process.poll() is not None for process in processes):
+                        raise RuntimeError("syncps exited early; inspect the peer logs")
+                    time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+            for name in PEERS:
+                other = next(peer for peer in PEERS if peer != name)
+                received = (args.output_dir / (name + ".log")).read_text(errors="replace")
+                received_counts[name] = len(re.findall(
+                    r"^\[recv .*\] /(?:8=)?muas/(?:8=)?" + other + r":",
+                    received, re.M))
+                if not received_counts[name]:
+                    raise RuntimeError(f"{name} did not receive a publication from {other}")
+        finally:
+            try:
+                for process in processes:
+                    if process.poll() is None:
+                        process.terminate()
+                for process in processes:
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+            finally:
+                ndn.stop()
+        return received_counts
 
-    ndn = Minindn(topoFile="./Topology/testbed(loss=0%).conf")
 
-    ndn.start()
-
-    info('Starting NFD on nodes\n')
-    nfds = AppManager(ndn, ndn.net.hosts, Nfd, logLevel='DEBUG')
-    
-    info('Starting NLSR on nodes\n')
-    nlsrs = AppManager(ndn, ndn.net.hosts, Nlsr)
-
-    generateAndSignCertificates(ndn)
-    
-    # nlsr
-    for node in ndn.net.hosts:
-        # node.cmd("nlsrc advertise /muas")
-        Nfdc.setStrategy(node, "/muas", Nfdc.STRATEGY_MULTICAST)
-        registerRouteToAllNeighbors(ndn, node, "/muas")
-        
-        node.cmd("nlsrc advertise /muas/{}".format(node.name))
-        # node.cmd('nfdc strategy set /muas/{} /localhost/nfd/strategy/multicast'.format(node.name))
-        # node.cmd('nfdc strategy set /muas/{}/provider /localhost/nfd/strategy/multicast'.format(node.name))
-        # node.cmd('nfdc strategy set /muas/{}/user /localhost/nfd/strategy/multicast'.format(node.name))
-        node.cmd('nfdc strategy set /muas/{}/NDNSF /localhost/nfd/strategy/multicast'.format(node.name))
-        node.cmd("nlsrc advertise /muas/NDNSD") # for ndnsd
-        node.cmd('nfdc strategy set /muas/NDNSD /localhost/nfd/strategy/multicast')
-        time.sleep(5)
-
-    configure_static_routes(ndn, ['memphis', 'csu', 'ucla'])
-
-    # sleep for 30 seconds to allow NLSR to propagate the prefixes
-    print("Waiting for NLSR to propagate prefixes...")
-    time.sleep(25)
-
-    # do some experiment here
-
-    ucla = ndn.net["ucla"]
-    pku = ndn.net["pku"]
-    csu = ndn.net["csu"]
-    caida = ndn.net["caida"]
-    arizona = ndn.net["arizona"]
-    uiuc = ndn.net["uiuc"]
-    wustl = ndn.net["wustl"]
-    umich = ndn.net["umich"]
-    neu = ndn.net["neu"]
-    memphis = ndn.net["memphis"]
-
-    memphis.cmd('xterm -T "memphis" -e "syncps /muas/memphis > /tmp/memphis.log 2>&1" &')
-
-    ucla.cmd('xterm -T "ucla" -e "syncps /muas/ucla > /tmp/ucla.log 2>&1" &')
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--syncps", type=Path, default=DEFAULT_BINARY)
+    parser.add_argument("--syncps-sha256", default=DEFAULT_BINARY_SHA256)
+    parser.add_argument("--topology", type=Path, default=DEFAULT_TOPOLOGY)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--seconds", type=float, default=35)
+    parser.add_argument("--interactive", action="store_true")
+    parser.add_argument("--preflight-only", action="store_true")
+    args = parser.parse_args()
+    args.syncps = args.syncps.resolve()
+    args.topology = args.topology.resolve()
+    try:
+        identity = input_identity(args.syncps, args.syncps_sha256, args.topology)
+        if args.preflight_only:
+            print(json.dumps(identity, sort_keys=True))
+            return 0
+        if os.geteuid() != 0 or args.output_dir is None or not (0 < args.seconds <= 3600):
+            parser.error("run requires root, --output-dir, and --seconds in (0, 3600]")
+        args.output_dir = args.output_dir.resolve()
+        print(json.dumps({"status": "PASS", "received": run(args, identity)}, sort_keys=True))
+        return 0
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"SYNCPS_EXPERIMENT_ERROR: {error}", file=sys.stderr)
+        return 2
 
 
-    # ndnsf-experiments /muas/drone1
-
-
-    # service-controller-example
-    # drone-example /muas/drone1
-    # gs-example /muas/gs1 100 100
-    
-
-
-
-    # run aa on gs1
-    # gs1.cmd('export NDN_LOG="*=TRACE"')
-    # gs1.cmd('export NDN_LOG="muas.main_gs=TRACE"')
-    # gs1.cmd('/home/tianxing/NDN/ndn-service-framework/build/examples/aa-example &')
-    
-    # for aa-example
-    # gs1.cmd('/home/tianxing/NDN/ndn-service-framework/build/examples/aa-example &')
-    # gs1.cmd('xterm -T "gs1" -e "/home/tianxing/NDN/ndn-service-framework/build/examples/aa-example" &') # for aa-example
-    # drone1.cmd('export NDN_LOG="muas.main_gs=TRACE"')
-
-    # time.sleep(3)
-
-    # drone1.cmd('xterm -T "drone1" &') # for drone-example
-    
-    # time.sleep(3)
-
-    # gs1.cmd('xterm -T "gs1" &') # for gs-example
-    
-    # /home/tianxing/NDN/ndn-service-framework/build/examples/aa-example
-    # /home/tianxing/NDN/ndn-service-framework/build/examples/gs-example 100 100
-    # /home/tianxing/NDN/ndn-service-framework/build/examples/drone-example
-    # export NDN_LOG="ndn_service_framework.*=TRACE:muas.*=TRACE:nacabe.*=TRACE"
-    
-    # nsc = getPopen(ndn.net["gs1"], "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/gs1 /muas/drone1 /FlightControl /ManualControl 1000 10", stdout=PIPE, stderr=PIPE)
-    # nsc.wait()
-    # printOutput(nsc.stdout.read())
-
-    # memphis xterm -T "memphis" &
-    # ucla xterm -T "ucla" &
-    # source /home/tianxing/NDN/ndn-service-framework/Experiments/pythonEnv/bin/activate
-    # python /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_server.py
-    # python /home/tianxing/NDN/ndn-service-framework/Experiments/gRPC/greeter_client.py
-    
-    # ucla xterm -T "ucla" -e "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/producer /muas/ucla /FlightControl /ManualControl" &
-    # memphis xterm -T "memphis" -e "/home/tianxing/NDN/ndn-service-framework/Experiments/NDN_NSC/consumer /muas/memphis /muas/ucla /FlightControl /ManualControl 100 1000" &
-
-    MiniNDNCLI(ndn.net)
-
-    ndn.stop()
+if __name__ == "__main__":
+    raise SystemExit(main())

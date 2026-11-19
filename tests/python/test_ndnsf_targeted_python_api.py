@@ -18,7 +18,7 @@ from ndnsf import ServiceUser
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _native_response(payload: bytes):
+def _native_response(payload: bytes, provider: str):
     return SimpleNamespace(
         status=True,
         payload=payload,
@@ -27,6 +27,7 @@ def _native_response(payload: bytes):
         data_name="",
         signer_certificate="",
         wire_digest="",
+        provider_identity=provider,
     )
 
 
@@ -44,7 +45,7 @@ class _FakeNativeUser:
         timeout_ms: int,
     ):
         self.sync_call = (provider, service, payload, timeout_ms)
-        return _native_response(b"targeted-ok")
+        return _native_response(b"targeted-ok", provider)
 
     def request_service_targeted_async(
         self,
@@ -98,6 +99,7 @@ class TargetedPythonApiTest(unittest.TestCase):
         )
         self.assertTrue(response.status)
         self.assertEqual(response.payload, b"targeted-ok")
+        self.assertEqual(response.provider_identity, "/repo/A")
         self.assertEqual(response.error, "")
 
     def test_async_targeted_forwards_callbacks_and_converts_response(self) -> None:
@@ -121,9 +123,10 @@ class TargetedPythonApiTest(unittest.TestCase):
         self.assertEqual(payload, b"RESERVE")
         self.assertEqual(timeout_ms, 1800)
 
-        on_response(_native_response(b"reserved"))
+        on_response(_native_response(b"reserved", provider))
         on_timeout("/request/7")
         self.assertEqual(responses[0].payload, b"reserved")
+        self.assertEqual(responses[0].provider_identity, "/repo/B")
         self.assertEqual(timeouts, ["/request/7"])
 
     @unittest.skipUnless(

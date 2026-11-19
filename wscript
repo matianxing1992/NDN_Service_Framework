@@ -1,7 +1,7 @@
 import shutil
 # -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
 
-from waflib import Context, Logs, Utils, TaskGen
+from waflib import Context, Logs, Options, Utils, TaskGen
 import hashlib
 import json
 import os
@@ -14,6 +14,13 @@ _DEPENDENCY_INVENTORY = runpy.run_path(os.path.join(
     os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else sys.path[0],
     'scripts', 'configure_dependencies.py'))
 
+
+# Host builds use the maintained `build/` and `build-ASAN-UBSAN/` trees only. Waf otherwise falls back to an
+# ad-hoc `_build/` whenever `--out` is omitted, which silently creates a third tree and a second full object
+# set on the same disk; default to `build/` here so an omitted `--out` cannot do that. An explicit `--out`
+# still wins, and the sanitizer tree is still selected by passing its own `--out`.
+if getattr(getattr(Options, 'options', None), 'out', '') == '':
+    Options.options.out = os.path.join(Context.top_dir or '.', 'build')
 
 VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
@@ -359,6 +366,8 @@ def options(opt):
                       help='Instrument the NDNSF-DI objects with address and undefined-behaviour '
                            'sanitizers. Diagnostic only: the library it produces is slower and '
                            'must not be installed as a release candidate.')
+    optgrp.add_option('--host-debug-info', choices=('line', 'full'), default='line',
+                      help='GCC debug information for the ordinary build/ tree')
     optgrp.add_option('--with-repo-python', action='store_true', default=False,
                       help='Build and install the Repo Python binding')
     optgrp.add_option('--install-experiment-fixtures', action='store_true', default=False,
@@ -380,7 +389,7 @@ def options(opt):
     optgrp.add_option('--onnx-prefix', default='/usr/local',
                       help='Installed ONNX 1.17 full-protobuf root (host default: /usr/local)')
     optgrp.add_option('--ort-probe-sdk-prefix', default='',
-                      help='Isolated SDK for spec220-ort-required-operators only; does not change applications')
+                      help='Isolated SDK for ort-required-operators only; does not change applications')
     optgrp.add_option('--allow-container-runtime-rpath', action='store_true',
                       default=False,
                       help='Allow $ORIGIN runtime RPATH for an explicit container SDK build')
@@ -997,6 +1006,9 @@ int main() {{ return requiredApi == nullptr; }}
 
 def build(bld):
     bld._ndnsf_default_scope = not bld.targets and bld.cmd in ('build', 'install')
+    if (bld.options.host_debug_info == 'line' and bld.bldnode.name == 'build' and
+            not bld.env.sanitize_di and bld.env.COMPILER_CXX == 'g++'):
+        bld.env.CXXFLAGS = ['-g1' if flag == '-g' else flag for flag in bld.env.CXXFLAGS]
     if not bld.env.NDNSF_COMPONENTS:
         bld.fatal('Reconfigure with --components before building or installing this source')
     # Diagnostic instrumentation is never a release artifact. Reject every
@@ -1261,6 +1273,9 @@ def build(bld):
         **package_install_paths)
 
     if 'di' in bld.env.NDNSF_COMPONENTS:
+        # Offline preparation is host tooling, not a second inference runtime.
+        # Preserve its resource layout under the selected prefix for use without
+        # the source checkout; declare these after all native target generators.
         asset_tools = [
             'Experiments/prepare-model-assets.py',
             'Experiments/prepare-native-deployment.py',
@@ -1275,17 +1290,21 @@ def build(bld):
             'Experiments/fixtures/native-deployment/two-provider.conf',
             'Experiments/recipes/qwen3-0.6b-int4.json',
             'Experiments/recipes/model-tools-py38.txt',
+            'Experiments/recipes/README.md',
             'Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-qwen-model.py',
             'tools/ndnsf-di/normalize_onnx_constants.py',
         ]
         for relative in asset_tools:
-            bld.install_as('${PREFIX}/share/ndnsf/' + relative, bld.srcnode.find_node(relative))
+            bld.install_as('${PREFIX}/share/ndnsf/' + relative,
+                           bld.srcnode.find_node(relative))
 
+        # Append new native tools after existing targets to preserve their object indices.
         bld.program(name='ndnsf-di-tokenize-input', target='ndnsf-di-tokenize-input',
                     source=['examples/di-tokenize-input.cpp'], includes=['.'],
                     use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
                         'BOOST NAC-ABE NDNSD OPENSSL DL',
-                    cxxflags=['-std=c++17'], rpath=[bld.env.LIBDIR], install_path='${BINDIR}')
+                    cxxflags=['-std=c++17'], rpath=[bld.env.LIBDIR],
+                    linkflags=['-Wl,-rpath,$ORIGIN/../lib'], install_path='${BINDIR}')
 
     if bld._ndnsf_default_scope:
         # Select installable products and metadata, retaining every test target

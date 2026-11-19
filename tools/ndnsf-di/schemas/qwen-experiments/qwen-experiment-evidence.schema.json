@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec109/qwen-experiment-evidence.schema.json",
+  "title": "Spec 109 Scaling Evidence Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "cellId", "sourceSnapshotDigest", "predecessorGateDigest", "deploymentProfileDigest", "candidateId", "model", "container", "slurm", "workload", "backend", "correctness", "metrics", "comparison", "terminal", "promotion", "authority", "checksums"],
+  "properties": {
+    "schemaVersion": {"const": "2.0"},
+    "runId": {"type": "string", "minLength": 1},
+    "cellId": {"type": "string", "minLength": 1},
+    "sourceSnapshotDigest": {"$ref": "#/$defs/digest"},
+    "predecessorGateDigest": {"$ref": "#/$defs/digest"},
+    "deploymentProfileDigest": {"$ref": "#/$defs/digest"},
+    "candidateId": {"type": "string", "minLength": 1},
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "revision", "tokenizerDigest", "licenseDigest", "dtype", "artifactSetDigest"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1}, "revision": {"type": "string", "minLength": 7},
+        "tokenizerDigest": {"$ref": "#/$defs/digest"}, "licenseDigest": {"$ref": "#/$defs/digest"},
+        "dtype": {"const": "float16"}, "artifactSetDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "container": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ociDigest", "sifSha256", "apptainerVersion"],
+      "properties": {"ociDigest": {"$ref": "#/$defs/digest"}, "sifSha256": {"$ref": "#/$defs/digest"}, "apptainerVersion": {"type": "string", "minLength": 1}}
+    },
+    "slurm": {
+      "type": "object", "additionalProperties": false,
+      "required": ["jobId", "account", "qos", "partition", "walltimeSeconds", "cpus", "memoryBytes", "requestedTres", "allocatedTres", "nodeList", "state", "exitCode"],
+      "properties": {
+        "jobId": {"type": "string", "minLength": 1}, "account": {"type": "string", "minLength": 1}, "qos": {"type": "string", "minLength": 1},
+        "partition": {"type": "string", "minLength": 1}, "walltimeSeconds": {"type": "integer", "minimum": 1}, "cpus": {"type": "integer", "minimum": 1},
+        "memoryBytes": {"type": "integer", "minimum": 1}, "requestedTres": {"type": "string", "minLength": 1}, "allocatedTres": {"type": "string", "minLength": 1},
+        "nodeList": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "state": {"type": "string", "minLength": 1}, "exitCode": {"type": "integer"}
+      }
+    },
+    "workload": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profileDigest", "arrivalMode", "targetRps", "maxInFlight", "requestTimeoutMs", "promptCount", "cacheState", "warmupRequests", "measurementSeconds"],
+      "properties": {
+        "profileDigest": {"$ref": "#/$defs/digest"}, "arrivalMode": {"enum": ["open-loop", "closed-loop"]}, "targetRps": {"type": "number", "exclusiveMinimum": 0},
+        "maxInFlight": {"type": "integer", "minimum": 1}, "requestTimeoutMs": {"type": "integer", "minimum": 1}, "promptCount": {"type": "integer", "minimum": 1},
+        "cacheState": {"enum": ["cold", "warm", "controlled-reset"]}, "warmupRequests": {"type": "integer", "minimum": 0}, "measurementSeconds": {"type": "integer", "enum": [0, 60]}
+      }
+    },
+    "backend": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requested", "fallbackAllowed", "fallbackUsed", "fullCuda", "profileDigest", "nodeAssignments", "gpuMappings"],
+      "properties": {
+        "requested": {"enum": ["cpu", "cuda"]}, "fallbackAllowed": {"type": "boolean"}, "fallbackUsed": {"type": "boolean"}, "fullCuda": {"type": "boolean"},
+        "profileDigest": {"$ref": "#/$defs/digest"},
+        "nodeAssignments": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["role", "nodeName", "provider", "modelNode"], "properties": {"role": {"type": "string", "minLength": 1}, "nodeName": {"type": "string", "minLength": 1}, "provider": {"enum": ["CUDAExecutionProvider", "CPUExecutionProvider", "other"]}, "modelNode": {"type": "boolean"}}}},
+        "gpuMappings": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["role", "uuid", "model", "containerDevice"], "properties": {"role": {"type": "string", "minLength": 1}, "uuid": {"type": "string", "minLength": 1}, "model": {"type": "string", "minLength": 1}, "containerDevice": {"type": "integer", "minimum": 0}}}}
+      },
+      "allOf": [
+        {"if": {"properties": {"fullCuda": {"const": true}}}, "then": {"properties": {"fallbackUsed": {"const": false}, "nodeAssignments": {"items": {"if": {"properties": {"modelNode": {"const": true}}}, "then": {"properties": {"provider": {"const": "CUDAExecutionProvider"}}}}}}}}
+      ]
+    },
+    "correctness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["promptSetDigest", "inputTokenIds", "outputTokenIds", "referenceOutputTokenIds", "exactMatch", "checkpoints"],
+      "properties": {
+        "promptSetDigest": {"$ref": "#/$defs/digest"},
+        "inputTokenIds": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+        "outputTokenIds": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+        "referenceOutputTokenIds": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+        "exactMatch": {"type": "boolean"},
+        "checkpoints": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["name", "kind", "rtol", "atol", "maxAbsError", "maxRelError", "pass"], "properties": {"name": {"type": "string", "minLength": 1}, "kind": {"enum": ["hidden-state", "kv-cache", "logits", "top1-margin"]}, "rtol": {"type": "number", "minimum": 0}, "atol": {"type": "number", "minimum": 0}, "maxAbsError": {"type": "number", "minimum": 0}, "maxRelError": {"type": "number", "minimum": 0}, "pass": {"type": "boolean"}}}}
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["completed", "failed", "ttftMs", "interTokenMs", "tokensPerSecond", "requestThroughput", "confidenceIntervals", "resources", "stages", "dependencies"],
+      "properties": {
+        "completed": {"type": "integer", "minimum": 0}, "failed": {"type": "integer", "minimum": 0},
+        "ttftMs": {"$ref": "#/$defs/distribution"}, "interTokenMs": {"$ref": "#/$defs/distribution"}, "tokensPerSecond": {"$ref": "#/$defs/distribution"}, "requestThroughput": {"$ref": "#/$defs/distribution"},
+        "confidenceIntervals": {"type": "object"}, "resources": {"type": "object"}, "stages": {"type": "array"}, "dependencies": {"type": "array"}
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "comparisonFingerprint", "matchedBaselineCellId", "matched"],
+      "properties": {"role": {"enum": ["correctness-oracle", "matched-staged-baseline", "candidate"]}, "comparisonFingerprint": {"$ref": "#/$defs/digest"}, "matchedBaselineCellId": {"type": ["string", "null"]}, "matched": {"type": "boolean"}}
+    },
+    "terminal": {"type": "object", "additionalProperties": false, "required": ["status", "reasonCode", "originalExitCode"], "properties": {"status": {"enum": ["PASS", "FAIL", "BLOCKED", "DEFERRED", "CANCELLED"]}, "reasonCode": {"type": "string"}, "originalExitCode": {"type": "integer"}}},
+    "promotion": {"type": "object", "additionalProperties": false, "required": ["durablePath", "complete", "manifestDigest"], "properties": {"durablePath": {"type": "string", "minLength": 1}, "complete": {"type": "boolean"}, "manifestDigest": {"$ref": "#/$defs/digest"}}},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["substrate", "oracle", "artifact", "stagedBaseline", "candidateCorrectness", "candidatePerformance", "physicalProduction", "physicalProductionOwner"],
+      "properties": {
+        "substrate": {"$ref": "#/$defs/status"}, "oracle": {"$ref": "#/$defs/status"}, "artifact": {"$ref": "#/$defs/status"}, "stagedBaseline": {"$ref": "#/$defs/status"},
+        "candidateCorrectness": {"$ref": "#/$defs/status"}, "candidatePerformance": {"$ref": "#/$defs/status"}, "physicalProduction": {"const": "DEFERRED"}, "physicalProductionOwner": {"const": "Spec 106"}
+      }
+    },
+    "checksums": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/digest"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"authority": {"properties": {"candidateCorrectness": {"const": "PASS"}}}}}, "then": {"properties": {"terminal": {"properties": {"status": {"const": "PASS"}}}, "correctness": {"properties": {"exactMatch": {"const": true}, "checkpoints": {"items": {"properties": {"pass": {"const": true}}}}}}, "backend": {"properties": {"fullCuda": {"const": true}, "fallbackUsed": {"const": false}}}, "promotion": {"properties": {"complete": {"const": true}}}}}},
+    {"if": {"properties": {"authority": {"properties": {"candidatePerformance": {"const": "PASS"}}}}}, "then": {"properties": {"terminal": {"properties": {"status": {"const": "PASS"}}}, "workload": {"properties": {"measurementSeconds": {"const": 60}}}, "comparison": {"properties": {"role": {"const": "candidate"}, "matched": {"const": true}, "matchedBaselineCellId": {"type": "string", "minLength": 1}}}, "authority": {"properties": {"candidateCorrectness": {"const": "PASS"}, "stagedBaseline": {"const": "PASS"}}}, "backend": {"properties": {"fullCuda": {"const": true}, "fallbackUsed": {"const": false}}}, "promotion": {"properties": {"complete": {"const": true}}}}}}
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"enum": ["PASS", "FAIL", "BLOCKED", "DEFERRED"]},
+    "distribution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["count", "mean", "p50", "p95", "p99"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0}, "mean": {"type": ["number", "null"]},
+        "p50": {"$ref": "#/$defs/percentile"}, "p95": {"$ref": "#/$defs/percentile"}, "p99": {"$ref": "#/$defs/percentile"}
+      },
+      "allOf": [
+        {"if": {"properties": {"count": {"maximum": 19}}}, "then": {"properties": {"p50": {"properties": {"status": {"const": "UNAVAILABLE_INSUFFICIENT_N"}, "value": {"type": "null"}}}}}},
+        {"if": {"properties": {"count": {"maximum": 99}}}, "then": {"properties": {"p95": {"properties": {"status": {"const": "UNAVAILABLE_INSUFFICIENT_N"}, "value": {"type": "null"}}}}}},
+        {"if": {"properties": {"count": {"maximum": 999}}}, "then": {"properties": {"p99": {"properties": {"status": {"const": "UNAVAILABLE_INSUFFICIENT_N"}, "value": {"type": "null"}}}}}}
+      ]
+    },
+    "percentile": {"type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": {"status": {"enum": ["AVAILABLE", "UNAVAILABLE_INSUFFICIENT_N"]}, "value": {"type": ["number", "null"]}}, "allOf": [{"if": {"properties": {"status": {"const": "AVAILABLE"}}}, "then": {"properties": {"value": {"type": "number"}}}}, {"if": {"properties": {"status": {"const": "UNAVAILABLE_INSUFFICIENT_N"}}}, "then": {"properties": {"value": {"type": "null"}}}}]}
+  }
+}

@@ -15,6 +15,7 @@ from typing import Any
 
 from ndnsf_distributed_inference.plan import ModelFamily, PlannerKind
 from ndnsf_distributed_inference.app_sdk.contracts import ArtifactReference as DIArtifactReference
+from ndnsf_distributed_inference.naming import canonical_name_uri, make_producer_data_prefix
 from ndnsf_distributed_inference.repo_artifact_resolver import binding_from_native_handle
 from ndnsf_distributed_inference.splitter import (
     SplitArtifact, SplitServiceSpec, SplitterOutput,
@@ -214,10 +215,12 @@ def build_llama_server_artifact_references(
             metadata={"runtimeBackend": "llama.cpp", "entrypoint": "llama-server"},
         )
     else:
+        logical_prefix = canonical_name_uri(make_producer_data_prefix(publisher_identity, "MODEL"))
+        logical_prefix += "/" + object_prefix.strip("/")
         model_entry = _publish_repo_artifact(
             repo,
             model_file,
-            logical_name=f"/{object_prefix.strip('/')}/model/{_sha256_file(model_file)}",
+            logical_name=f"{logical_prefix}/model/{_sha256_file(model_file)}",
             publisher_identity=publisher_identity,
             role=role,
             use="model",
@@ -234,7 +237,7 @@ def build_llama_server_artifact_references(
             repo,
             runtime_file,
             logical_name=(
-                f"/{object_prefix.strip('/')}/runtime/llama-server/"
+                f"{logical_prefix}/runtime/llama-server/"
                 f"{_sha256_file(runtime_file)}"
             ),
             publisher_identity=publisher_identity,
@@ -322,9 +325,10 @@ def _publish_repo_artifact(
         logical_name=logical_name,
         content_digest=payload_digest,
         size_bytes=path.stat().st_size,
-        root_manifest_name=logical_name + "/root",
+        root_manifest_name="",
+        format_version="raw-file-v1",
         publisher_identity=publisher_identity,
-        policy_epoch="/Policy/llama-server-qwen/v1",
+        policy_epoch="repo-policy-v1",
     )
     api = repo_client.artifact_api
     requirements = ArtifactCapabilityRequirements()
@@ -336,17 +340,18 @@ def _publish_repo_artifact(
             f"need {replication_factor}"
         )
     selected = SelectedRepoSet()
-    selected.targets = []
+    targets = []
     for candidate in candidates[:replication_factor]:
         target = SelectedRepoTarget()
         target.repo_node = candidate.repo_node
         target.provider_identity = candidate.provider_identity
         target.service_prefix = candidate.service_prefix
-        selected.targets.append(target)
-    selected.seed_repo_id = selected.targets[0].repo_node
+        targets.append(target)
+    selected.targets = targets
+    selected.seed_repo_id = targets[0].repo_node
     selected.consistency = RepoWriteConsistency.ALL
     result = repo_client.publish_file(path, reference, selected, timeout_ms=60000)
-    if not result.success or result.handle is None:
+    if result.handle is None or result.achieved_replicas != replication_factor:
         raise RuntimeError(f"native Repo publish failed for {logical_name}")
     uri = "urn:ndnsf:repo-artifact:" + hashlib.sha256(
         result.handle.to_json().encode("utf-8")).hexdigest()

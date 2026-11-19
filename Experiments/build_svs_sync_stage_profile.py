@@ -23,9 +23,9 @@ from typing import Any
 
 
 REPO = Path(__file__).resolve().parents[1]
-SVS_REPO = Path(os.environ.get("NDN_SVS_SOURCE_REPO", "/home/tianxing/NDN/ndn-svs"))
-BUILD_ROOT = REPO / "build/spec133"
 DRIVER = REPO / "Experiments/ndn-svs-pubsub-benchmark/svs-sync-stage-profile.cpp"
+FROZEN_PATCH = DRIVER.with_name("synchronous-stage-measurement.patch")
+FROZEN_PATCH_SHA256 = "a1a0526f31109669d0c341d26b44628b8f24eb6fb8cc2b3cd42510daa83eba72"
 
 BASE_COMMIT = "a9944019f76791773604999f00128057b9534ace"
 BASE_TREE = "945a321d473f44f29e8349a83ce60373f3e37420"
@@ -99,29 +99,29 @@ def git_status(cwd: Path) -> str:
     ).strip()
 
 
-def branch_exists(branch: str) -> bool:
+def branch_exists(branch: str, source: Path) -> bool:
     return (
         subprocess.run(
             ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-            cwd=SVS_REPO,
+            cwd=source,
         ).returncode
         == 0
     )
 
 
-def verify_base() -> None:
-    commit = git_value(SVS_REPO, f"{BASE_COMMIT}^{{commit}}")
-    tree = git_value(SVS_REPO, f"{BASE_COMMIT}^{{tree}}")
+def verify_base(source: Path) -> None:
+    commit = git_value(source, f"{BASE_COMMIT}^{{commit}}")
+    tree = git_value(source, f"{BASE_COMMIT}^{{tree}}")
     if commit != BASE_COMMIT:
         raise RuntimeError(f"base commit did not resolve exactly: {commit}")
     if tree != BASE_TREE:
         raise RuntimeError(f"base tree mismatch: expected {BASE_TREE}, got {tree}")
 
 
-def parse_worktrees() -> list[dict[str, str]]:
+def parse_worktrees(source: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     current: dict[str, str] = {}
-    for line in run(["git", "worktree", "list", "--porcelain"], cwd=SVS_REPO).splitlines():
+    for line in run(["git", "worktree", "list", "--porcelain"], cwd=source).splitlines():
         if not line:
             if current:
                 records.append(current)
@@ -134,10 +134,10 @@ def parse_worktrees() -> list[dict[str, str]]:
     return records
 
 
-def protected_snapshot(spec_root: Path) -> dict[str, dict[str, str]]:
+def protected_snapshot(spec_root: Path, source: Path) -> dict[str, dict[str, str]]:
     owned = (spec_root / "worktrees").resolve()
     snapshot: dict[str, dict[str, str]] = {}
-    for record in parse_worktrees():
+    for record in parse_worktrees(source):
         path = Path(record["worktree"]).resolve()
         if path == owned or owned in path.parents:
             continue
@@ -157,8 +157,9 @@ def protected_snapshot(spec_root: Path) -> dict[str, dict[str, str]]:
     return snapshot
 
 
-def verify_protected_snapshot(before: dict[str, dict[str, str]], spec_root: Path) -> None:
-    after = protected_snapshot(spec_root)
+def verify_protected_snapshot(before: dict[str, dict[str, str]], spec_root: Path,
+                              source: Path) -> None:
+    after = protected_snapshot(spec_root, source)
     if after != before:
         changed = sorted(set(before) | set(after))
         details = [path for path in changed if before.get(path) != after.get(path)]
@@ -184,15 +185,15 @@ def validate_boost_patch(worktree: Path) -> tuple[str, str, bytes]:
     return head, git_value(worktree, "HEAD^{tree}"), diff
 
 
-def ensure_clean_worktree(root: Path) -> tuple[Path, str, str, bytes]:
+def ensure_clean_worktree(root: Path, source: Path) -> tuple[Path, str, str, bytes]:
     worktree = root / "worktrees/clean-control"
     if not worktree.exists():
-        if branch_exists(CLEAN_BRANCH):
+        if branch_exists(CLEAN_BRANCH, source):
             raise RuntimeError(f"orphan temporary branch exists: {CLEAN_BRANCH}")
         worktree.parent.mkdir(parents=True, exist_ok=True)
         run(
             ["git", "worktree", "add", "-b", CLEAN_BRANCH, str(worktree), BASE_COMMIT],
-            cwd=SVS_REPO,
+            cwd=source,
             capture=False,
         )
         wscript = worktree / "wscript"
@@ -218,14 +219,14 @@ def ensure_clean_worktree(root: Path) -> tuple[Path, str, str, bytes]:
     return worktree, head, tree, diff
 
 
-def ensure_profile_worktree(root: Path, clean_head: str) -> Path:
+def ensure_profile_worktree(root: Path, clean_head: str, source: Path) -> Path:
     worktree = root / "worktrees/sync-stage-profile"
     if not worktree.exists():
-        if branch_exists(PROFILE_BRANCH):
+        if branch_exists(PROFILE_BRANCH, source):
             raise RuntimeError(f"orphan temporary branch exists: {PROFILE_BRANCH}")
         run(
             ["git", "worktree", "add", "-b", PROFILE_BRANCH, str(worktree), clean_head],
-            cwd=SVS_REPO,
+            cwd=source,
             capture=False,
         )
     if git_value(worktree, "HEAD") != clean_head:
@@ -334,21 +335,21 @@ def build_clean_library(worktree: Path, root: Path) -> dict[str, Any]:
     }
 
 
-def prepare(root: Path) -> Path:
+def prepare(root: Path, source: Path) -> Path:
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     foundation_path = root / "subject-foundation.json"
     if foundation_path.exists():
         raise RuntimeError(f"foundation already exists; refusing overwrite: {foundation_path}")
-    verify_base()
-    before = protected_snapshot(root)
-    clean_worktree, clean_head, clean_tree, boost_diff = ensure_clean_worktree(root)
+    verify_base(source)
+    before = protected_snapshot(root, source)
+    clean_worktree, clean_head, clean_tree, boost_diff = ensure_clean_worktree(root, source)
     source_audit = audit_no_internal_parallelism(clean_worktree)
     build = build_clean_library(clean_worktree, root)
     if git_status(clean_worktree):
         raise RuntimeError("clean-control worktree became dirty during build")
-    profile_worktree = ensure_profile_worktree(root, clean_head)
-    verify_protected_snapshot(before, root)
+    profile_worktree = ensure_profile_worktree(root, clean_head, source)
+    verify_protected_snapshot(before, root, source)
     patch_identity = canonical_patch_bytes()
     patch_path = root / "boost171-build.patch.identity"
     patch_path.write_bytes(patch_identity)
@@ -367,7 +368,7 @@ def prepare(root: Path) -> Path:
         "canonicalBoostPatchSha256": sha256_bytes(patch_identity),
         "canonicalBoostPatchPath": str(patch_path.resolve()),
         "boostGitDiffSha256": sha256_bytes(boost_diff),
-        "sourceRepository": str(SVS_REPO.resolve()),
+        "sourceRepository": str(source.resolve()),
         "protectedWorktrees": before,
         "sourceAudit": source_audit,
         "publishApi": "publish",
@@ -485,7 +486,8 @@ def finalize(
         raise RuntimeError(f"subject manifest already exists; refusing overwrite: {manifest_path}")
     if git_value(profile_worktree, "HEAD") != foundation["profileStartHead"]:
         raise RuntimeError("profiling worktree moved before freeze")
-    before = protected_snapshot(root)
+    source_repository = Path(foundation["sourceRepository"])
+    before = protected_snapshot(root, source_repository)
 
     # Stage only the reviewed allowlist, then save exactly the bytes committed.
     run(["git", "add", "--", *changed], cwd=profile_worktree)
@@ -557,7 +559,7 @@ def finalize(
         raise RuntimeError(f"frozen stage count mismatch: {stage_count}")
     if "publishAsync" in DRIVER.read_text(encoding="utf-8"):
         raise RuntimeError("shared driver reaches asynchronous publication")
-    verify_protected_snapshot(before, root)
+    verify_protected_snapshot(before, root, source_repository)
 
     manifest: dict[str, Any] = {
         **foundation,
@@ -623,7 +625,8 @@ def refreeze_io(root: Path) -> Path:
         raise RuntimeError("clean profiling worktree moved or became dirty")
     if git_value(profile_worktree, "HEAD") != source["profiledHead"] or git_status(profile_worktree):
         raise RuntimeError("profiled worktree moved or became dirty")
-    before = protected_snapshot(root)
+    source_repository = Path(source["sourceRepository"])
+    before = protected_snapshot(root, source_repository)
 
     binary_dir = root / "bin"
     binary_dir.mkdir(parents=True, exist_ok=True)
@@ -665,7 +668,7 @@ def refreeze_io(root: Path) -> Path:
                      "single-face-io-thread"):
         if required not in driver_text:
             raise RuntimeError(f"single-I/O driver contract missing: {required}")
-    verify_protected_snapshot(before, root)
+    verify_protected_snapshot(before, root, source_repository)
 
     manifest = {
         **source,
@@ -695,11 +698,26 @@ def refreeze_io(root: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("prepare", "finalize", "refreeze-io"))
-    parser.add_argument("--output", type=Path, default=BUILD_ROOT)
+    parser.add_argument("mode", choices=("rebuild-frozen", "prepare", "finalize", "refreeze-io"))
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--svs-source", type=Path)
     args = parser.parse_args(argv)
-    if args.mode == "prepare":
-        target = prepare(args.output)
+    if args.mode in ("prepare", "rebuild-frozen") and args.svs_source is None:
+        parser.error(f"{args.mode} requires --svs-source (a disposable NDN-SVS Git clone)")
+    if args.mode == "rebuild-frozen":
+        if sha256_file(FROZEN_PATCH) != FROZEN_PATCH_SHA256:
+            raise RuntimeError("frozen profiling patch changed")
+        foundation = load_foundation(prepare(args.output, args.svs_source.resolve()))
+        profile_worktree = Path(foundation["profileWorktree"])
+        run(["git", "apply", "--check", str(FROZEN_PATCH)], cwd=profile_worktree)
+        run(["git", "apply", str(FROZEN_PATCH)], cwd=profile_worktree)
+        target = finalize(args.output)
+        manifest = json.loads(target.read_text(encoding="utf-8"))
+        if manifest["profiledTree"] != "16202abb0790a49ab30827bdd672cddaf6481726":
+            raise RuntimeError("reconstructed profiling tree differs from the frozen Git tree")
+        target = refreeze_io(args.output)
+    elif args.mode == "prepare":
+        target = prepare(args.output, args.svs_source.resolve())
     elif args.mode == "finalize":
         target = finalize(args.output)
     else:

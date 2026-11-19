@@ -800,21 +800,20 @@ BOOST_AUTO_TEST_CASE(ExplicitDiscoveryPayloadPreservesSelectedOnlyPrivateInput)
   runRequestScopedResponseCase(false, false, false, 0, "task=survey;memory=128");
 }
 
-BOOST_AUTO_TEST_CASE(LegacyDiDiscoveryKeepsMetadataAndIsolatesOriginalInput)
+BOOST_AUTO_TEST_CASE(ExplicitApplicationDiscoveryKeepsMetadataAndIsolatesOriginalInput)
 {
-  // Expected bytes are fixture literals, independent of the production sanitizer.
   const std::string input =
     R"({"schema":"ndnsf-di-request-envelope-v2","input_payload_b64":"c2VjcmV0","task":"survey"})";
   const std::string discovery =
     R"({"schema":"ndnsf-di-request-envelope-v2","input_payload_b64":"","task":"survey"})";
-  runRequestScopedResponseCase(false, false, false, 0, discovery, input, false);
+  runRequestScopedResponseCase(false, false, false, 0, discovery, input);
 }
 
-BOOST_AUTO_TEST_CASE(ExplicitEmptyDiscoveryOverridesLegacyDiMetadata)
+BOOST_AUTO_TEST_CASE(ImplicitDiscoveryDoesNotInspectApplicationBytes)
 {
   const std::string input =
     R"({"schema":"ndnsf-di-request-envelope-v2","input_payload_b64":"c2VjcmV0","task":"survey"})";
-  runRequestScopedResponseCase(false, false, false, 0, "", input, true);
+  runRequestScopedResponseCase(false, false, false, 0, "", input, false);
 }
 
 BOOST_AUTO_TEST_CASE(DiscoveryPayloadPreparationIsOwnedBoundedAndLocal)
@@ -925,6 +924,9 @@ runCollaborationInputReceiptCase(bool structured)
       const std::string text = segmented ? std::string(8193, 'x') :
         R"({"schema":"ndnsf-di-request-envelope-v2","input_payload_b64":"c2VjcmV0","task":"survey"})";
       const ndn::Buffer input(text.begin(), text.end());
+      const std::string discovery = "task=survey";
+      const auto discoveryPayload = segmented ? std::optional<ndn::Buffer>() :
+        std::optional<ndn::Buffer>(ndn::Buffer(discovery.begin(), discovery.end()));
       std::vector<ServiceProvider::CollaborationPreparationFetchReceipt> receipts;
       environment.provider().addCollaborationHandler(service,
         [&] (ServiceProvider::CollaborationContext& context, const RequestMessage& request) {
@@ -968,7 +970,7 @@ runCollaborationInputReceiptCase(bool structured)
           completed = response.getStatus() && response.getPayload() == ndn::Buffer{0x6f, 0x6b};
         },
         [&] (const ndn::Name&) { timedOut = true; }, requestId, {}, capabilities,
-        std::nullopt, {}, {}, {}, {environment.provider().getName()}, inventory);
+        std::nullopt, {}, {}, {}, {environment.provider().getName()}, inventory, discoveryPayload);
       environment.pumpUntil([&] { return completed || timedOut; });
       BOOST_REQUIRE(committed);
       BOOST_REQUIRE(completed);
@@ -993,10 +995,10 @@ runCollaborationInputReceiptCase(bool structured)
       const auto measured = inventory->seal();
       BOOST_REQUIRE(measured.complete);
       const auto mode = segmented ? ControlByteKind::REQUEST_INPUT_EMPTY_DISCOVERY_MODE :
-                                    ControlByteKind::REQUEST_INPUT_SANITIZED_MODE;
+                                    ControlByteKind::REQUEST_INPUT_EXPLICIT_DISCOVERY_MODE;
       const auto& entry = measured.entries[static_cast<std::size_t>(mode)];
       BOOST_CHECK_EQUAL(entry.calls, 1U);
-      BOOST_CHECK_EQUAL(entry.bytes, segmented ? 0U : 8U);
+      BOOST_CHECK_EQUAL(entry.bytes, 0U);
       const auto& published = measured.entries[
         static_cast<std::size_t>(ControlByteKind::REQUEST_INPUT_PUBLISHED)];
       BOOST_CHECK_EQUAL(published.calls, 1U);
@@ -1321,6 +1323,11 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedMissingInputFailsBeforeExecution)
   BOOST_REQUIRE(!submit().empty());
   environment.markRequestPublished(scope);
   environment.pumpUntil([&] { return terminal; });
+  // A regular fixture batch pumps for about two seconds. The Provider owns
+  // up to three seconds of input acquisition within this five-second call.
+  if (!terminal) {
+    environment.pumpUntil([&] { return terminal; });
+  }
   BOOST_REQUIRE(terminal);
   BOOST_CHECK(!timedOut);
   BOOST_CHECK(!received.getStatus());

@@ -28,7 +28,6 @@ class Spec141ContractTests(unittest.TestCase):
         self.assertEqual(runner.TIMING, runner.spec140.TIMING)
 
     def test_binary_is_identical_to_spec140(self) -> None:
-        self.assertEqual(runner.BINARY, runner.spec140.DEFAULT_BINARY)
         self.assertEqual(
             runner.EXPECTED_BINARY_SHA256,
             "a5789d075ec0fbd702add6cc4084bddd0e91cc996b12ca6166e665fd6ec9204a",

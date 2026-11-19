@@ -23,10 +23,6 @@ sys.path.insert(0, str(EXAMPLES))
 from workload_common import TrafficUtilityReport, build_workload_manifest
 
 CELL_LAUNCHER = ROOT / "Experiments/NDNSF_LiveStream_Generality_Minindn.py"
-HISTORICAL_EVIDENCE = (
-    ROOT / "results/spec125-adaptive-sample-atomic-20260719-confirm06",
-    ROOT / "results/spec126-loss-reorder-20260720-confirmation07",
-)
 FROZEN_SOURCES = tuple(Path(value) for value in (
     "ndn-service-framework/Stream.hpp",
     "ndn-service-framework/Stream.cpp",
@@ -85,13 +81,19 @@ def digest_path(path: Path) -> str:
         return completed.stdout.split()[0]
 
 
-def hash_evidence(roots: Iterable[Path] = HISTORICAL_EVIDENCE) -> dict[str, str]:
+def hash_evidence(roots: Iterable[Path]) -> dict[str, str]:
     result = {}
+    names = set()
     for root in roots:
-        if not root.is_dir():
-            raise RuntimeError(f"missing historical evidence: {root}")
-        for path in sorted(value for value in root.rglob("*") if value.is_file()):
-            result[str(path.relative_to(ROOT))] = digest_path(path)
+        if root.name in names:
+            raise ValueError(f"duplicate historical evidence label: {root.name}")
+        names.add(root.name)
+        files = sorted(path for path in root.rglob("*") if path.is_file())
+        if not files:
+            raise ValueError(f"missing or empty historical evidence: {root}")
+        for path in files:
+            key = Path("results") / root.name / path.relative_to(root)
+            result[str(key)] = digest_path(path)
     return result
 
 
@@ -267,6 +269,8 @@ def aggregate(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--spec125-evidence", type=Path, required=True)
+    parser.add_argument("--spec126-evidence", type=Path, required=True)
     parser.add_argument("--duration-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -280,11 +284,14 @@ def main() -> int:
             validate_live_invoker()
         except PermissionError as error:
             raise SystemExit(str(error))
-    root.mkdir(parents=True)
+    historical = (args.spec125_evidence.resolve(), args.spec126_evidence.resolve())
+    if any(path == root or path in root.parents for path in historical):
+        parser.error("campaign output must be outside the frozen evidence directories")
     cells = frozen_cells()
     sources_before = hash_files(ROOT / value for value in FROZEN_SOURCES)
-    history_before = hash_evidence()
+    history_before = hash_evidence(historical)
     workloads = workload_hashes()
+    root.mkdir(parents=True)
     entries = []
     for cell in cells:
         output = root / cell["id"]
@@ -359,7 +366,7 @@ def main() -> int:
     finally:
         lock.unlink(missing_ok=True)
     sources_after, history_after = hash_files(
-        ROOT / value for value in FROZEN_SOURCES), hash_evidence()
+        ROOT / value for value in FROZEN_SOURCES), hash_evidence(historical)
     treatments = aggregate(runs)
     passed = len(runs) == 12 and sources_before == sources_after and \
         history_before == history_after and all(value["passed"] for value in treatments)

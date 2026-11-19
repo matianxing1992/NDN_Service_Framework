@@ -1123,7 +1123,7 @@ class PersonTrackingFaultTests(unittest.TestCase):
             self.assertNotIn(key, os.environ, "do not suppress dynamic diagnostics")
         root, config, profile, detector = self._network_fixture("F2-cache")
         installed_node = Path(shutil.which("UavTrackingNode")).resolve()
-        helper = installed_node.parent.parent / "libexec/ndnsf-tests/spec219-cached-signer-fixture"
+        helper = installed_node.parent.parent / "libexec/ndnsf-tests/cached-signer-fixture"
         self.assertTrue(helper.is_file())
         dependencies = subprocess.run(["readelf", "-d", str(helper)], capture_output=True,
                                       text=True, timeout=5, check=True).stdout

@@ -2,7 +2,7 @@
 """Run two candidate-bound Spec188 YOLO MiniNDN requests.
 
 This is orchestration only.  The maintained Spec187 runner owns MiniNDN/NFD,
-process barriers and input validation; the ``spec188-yolo-repeat`` executable
+process barriers and input validation; the ``yolo-repeat`` executable
 owns the native request/ACK/Selection/Provider/response assertions.  The
 wrapper changes only the run output and state roots between repetitions, so
 the model, profile, reference and selector identity stay fixed.
@@ -97,7 +97,7 @@ def _run_bounded(command: list[str], env: dict[str, str]) -> tuple[int | None, s
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selector", required=True,
-                        help="absolute executable path for spec188-yolo-repeat")
+                        help="absolute executable path for yolo-repeat")
     parser.add_argument("--repeat-root", required=True,
                         help="empty output parent under results/")
     args = parser.parse_args(argv)

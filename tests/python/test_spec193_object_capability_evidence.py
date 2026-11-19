@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-ORACLE = ROOT / "tests/minindn/spec193_packet_oracle.py"
+ORACLE = ROOT / "tests/minindn/packet_oracle.py"
 
 spec = importlib.util.spec_from_file_location("spec193_packet_oracle_under_test", ORACLE)
 oracle = importlib.util.module_from_spec(spec)

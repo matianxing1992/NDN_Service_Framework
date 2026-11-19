@@ -34,10 +34,10 @@
         "bin/DI_NativeArtifactAuthority",
         "bin/DI_NativeRequester",
         "bin/di-native-provider",
-        "bin/spec190-multiturn-oracle"
+        "bin/multiturn-oracle"
       ],
       "preflight": "ndnsf-di cluster check --config deployment.json",
-      "oracle": "spec190-multiturn-oracle --deployment-state state.json --require-multi-token --model-reference"
+      "oracle": "multiturn-oracle --deployment-state state.json --require-multi-token --model-reference"
     },
     {
       "id": "yolo-minindn",
@@ -80,7 +80,7 @@
         "repo"
       ],
       "inputRecipes": [
-        "tests/minindn/spec202_build_candidate.py",
+        "tests/minindn/build_candidate.py",
         "Experiments/Topology/AI_Lab.conf",
         "examples/python/NDNSF-DistributedRepo/generic_object_store/repo_policy.yaml"
       ],
@@ -103,11 +103,11 @@
       "installFiles": [
         "candidate/prefix/lib",
         "candidate/python",
-        "candidate/build/spec192-repo-client",
+        "candidate/build/repo-client",
         "candidate/spec202-source-build-receipt.json"
       ],
       "preflight": "--campaign-case CASE --build-receipt RECEIPT --output-dir NEW_RUN --preflight-only",
-      "oracle": "tests/minindn/spec193_packet_oracle.py and the campaign's native client receipt"
+      "oracle": "tests/minindn/packet_oracle.py and the campaign's native client receipt"
     },
     {
       "id": "wifi-reliability",

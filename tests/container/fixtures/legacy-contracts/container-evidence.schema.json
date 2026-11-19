@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec108/deployment-evidence.schema.json",
+  "title": "NDNSF-DI OCI Deployment Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "candidate",
+    "release",
+    "profileDigest",
+    "materialization",
+    "adapterEvidence",
+    "storage",
+    "network",
+    "backend",
+    "tests",
+    "authority",
+    "redaction",
+    "outcome",
+    "startedAt",
+    "finishedAt"
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^(sha256:)?[a-f0-9]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["PASS", "DEGRADED", "FAIL", "BLOCKED", "DEFERRED"] },
+    "gpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "model", "source"],
+      "properties": {
+        "uuid": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "physicalIndex": { "type": ["integer", "null"], "minimum": 0 },
+        "memoryMiB": { "type": ["integer", "null"], "minimum": 1 },
+        "driverVersion": { "type": ["string", "null"] },
+        "source": { "enum": ["host", "container"] }
+      }
+    }
+  },
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "runId": { "type": "string", "minLength": 1 },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateId", "sourceRevision"],
+      "properties": {
+        "candidateId": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 7 },
+        "spec107Evidence": { "type": ["string", "null"] }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["releaseId", "manifestDigest", "ociReference", "ociDigest"],
+      "properties": {
+        "releaseId": { "type": "string", "minLength": 1 },
+        "manifestDigest": { "$ref": "#/$defs/sha256" },
+        "ociReference": { "type": "string", "pattern": "@sha256:[a-f0-9]{64}$" },
+        "ociDigest": { "$ref": "#/$defs/sha256" },
+        "sbomDigest": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "provenanceDigest": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
+      }
+    },
+    "profileDigest": { "$ref": "#/$defs/sha256" },
+    "materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "type", "id", "runtimeVersion", "verified"],
+      "properties": {
+        "adapter": { "enum": ["docker-compose", "slurm-apptainer"] },
+        "type": { "enum": ["docker-image", "sif"] },
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "type": ["string", "null"] },
+        "runtimeVersion": { "type": "string", "minLength": 1 },
+        "loginRuntimeVersion": { "type": ["string", "null"] },
+        "verified": { "const": true }
+      }
+    },
+    "adapterEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "projectName", "services", "health", "routes"],
+          "properties": {
+            "kind": { "const": "docker-compose" },
+            "projectName": { "type": "string", "minLength": 1 },
+            "services": { "type": "array", "items": { "type": "object" } },
+            "health": { "$ref": "#/$defs/status" },
+            "routes": { "type": "array", "items": { "type": "object" } },
+            "rollbackReleaseId": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind", "jobId", "partition", "nodeList", "requestedTres",
+            "allocatedTres", "state", "exitCode", "evidenceCopy"
+          ],
+          "properties": {
+            "kind": { "const": "slurm-apptainer" },
+            "jobId": { "type": "string", "minLength": 1 },
+            "jobName": { "type": ["string", "null"] },
+            "account": { "type": ["string", "null"] },
+            "qos": { "type": ["string", "null"] },
+            "partition": { "type": "string", "minLength": 1 },
+            "nodeList": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "requestedTres": { "type": ["object", "string"] },
+            "allocatedTres": { "type": ["object", "string"] },
+            "slurmJobGpus": { "type": ["string", "null"] },
+            "cudaVisibleDevices": { "type": ["string", "null"] },
+            "state": { "type": "string", "minLength": 1 },
+            "exitCode": { "type": ["string", "null"] },
+            "elapsedSeconds": { "type": ["number", "null"], "minimum": 0 },
+            "apptainerVersionCompute": { "type": "string", "minLength": 1 },
+            "evidenceCopy": { "$ref": "#/$defs/status" }
+          }
+        }
+      ]
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectRoot", "scratchRoot", "evidenceRoot", "capacityChecks", "promotionManifestDigest"],
+      "properties": {
+        "accountRoot": { "type": ["string", "null"] },
+        "projectRoot": { "type": "string", "minLength": 1 },
+        "scratchRoot": { "type": "string", "minLength": 1 },
+        "evidenceRoot": { "type": "string", "minLength": 1 },
+        "capacityChecks": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+        "scratchWriteFsync": { "$ref": "#/$defs/status" },
+        "promotionManifestDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology", "nfdMode", "status"],
+      "properties": {
+        "topology": { "enum": ["single-node", "multi-host", "multi-node-allocation"] },
+        "nfdMode": { "enum": ["host-scoped", "job-scoped"] },
+        "status": { "$ref": "#/$defs/status" },
+        "routes": { "type": "array", "items": { "type": "object" } },
+        "probeEvidence": { "type": ["string", "null"] }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "observed", "allowCpuFallback", "fallbackOccurred", "status", "physicalGpus"],
+      "properties": {
+        "requested": { "enum": ["cpu", "cuda", "onnxruntime-cuda"] },
+        "observed": { "type": ["string", "null"] },
+        "allowCpuFallback": { "type": "boolean" },
+        "fallbackOccurred": { "type": "boolean" },
+        "status": { "enum": ["PASS", "DEGRADED", "FAIL"] },
+        "hostDriverVersion": { "type": ["string", "null"] },
+        "hostReportedCudaVersion": { "type": ["string", "null"] },
+        "runtimeCudaVersion": { "type": ["string", "null"] },
+        "onnxRuntimeVersion": { "type": ["string", "null"] },
+        "executionProvider": { "type": ["string", "null"] },
+        "containerVisibleDevices": { "type": ["string", "null"] },
+        "physicalGpus": { "type": "array", "items": { "$ref": "#/$defs/gpu" } }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "status": { "$ref": "#/$defs/status" },
+          "command": { "type": ["string", "null"] },
+          "artifactDigest": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] }
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["substrate", "candidate", "physicalProduction", "physicalProductionOwner"],
+      "properties": {
+        "substrate": { "$ref": "#/$defs/status" },
+        "candidate": { "$ref": "#/$defs/status" },
+        "physicalProduction": { "const": "DEFERRED" },
+        "physicalProductionOwner": { "const": "Spec 106" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "scanner", "findings"],
+      "properties": {
+        "status": { "enum": ["PASS", "FAIL"] },
+        "scanner": { "type": "string", "minLength": 1 },
+        "findings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "outcome": { "$ref": "#/$defs/status" },
+    "startedAt": { "$ref": "#/$defs/timestamp" },
+    "finishedAt": { "$ref": "#/$defs/timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "materialization": { "properties": { "adapter": { "const": "docker-compose" } } } } },
+      "then": {
+        "properties": {
+          "materialization": { "properties": { "type": { "const": "docker-image" }, "path": { "type": "null" } } },
+          "adapterEvidence": { "properties": { "kind": { "const": "docker-compose" } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "materialization": { "properties": { "adapter": { "const": "slurm-apptainer" } } } } },
+      "then": {
+        "properties": {
+          "materialization": {
+            "properties": {
+              "type": { "const": "sif" },
+              "id": { "$ref": "#/$defs/sha256" },
+              "path": { "type": "string", "minLength": 1 }
+            }
+          },
+          "adapterEvidence": { "properties": { "kind": { "const": "slurm-apptainer" } } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "backend": { "properties": { "fallbackOccurred": { "const": true } } } } },
+      "then": {
+        "properties": {
+          "backend": { "properties": { "status": { "const": "DEGRADED" } }, "required": ["status"] },
+          "outcome": { "not": { "const": "PASS" } }
+        }
+      }
+    }
+  ]
+}

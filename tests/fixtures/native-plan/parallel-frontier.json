@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "services": [{
+    "service": "/AI/YOLO/2x2Inference",
+    "model": "/Model/YOLO/v1",
+    "roles": ["/Backbone", "/Head/Shard/0", "/Head/Shard/1", "/Merge"],
+    "dependencies": [
+      {"producers": ["/Backbone"], "consumers": ["/Head/Shard/0", "/Head/Shard/1"],
+       "keyScope": "backbone-to-heads", "topicPrefix": "/activation",
+       "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+       "expectedSegments": 4, "expectedBytes": 24000, "required": true},
+      {"producers": ["/Head/Shard/0"], "consumers": ["/Merge"],
+       "keyScope": "head0-to-merge", "topicPrefix": "/activation",
+       "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+       "expectedSegments": 2, "expectedBytes": 9000, "required": true},
+      {"producers": ["/Head/Shard/1"], "consumers": ["/Merge"],
+       "keyScope": "head1-to-merge", "topicPrefix": "/activation",
+       "objectNameTemplate": "{producerProvider}/NDNSF/DI/ACTIVATION/{sessionId}/{keyScope}/{producerRole}/bundle/{sequence}",
+       "expectedSegments": 2, "expectedBytes": 9000, "required": true}
+    ]
+  }]
+}

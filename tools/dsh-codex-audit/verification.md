@@ -317,3 +317,46 @@ Own fixture Agent was released through its exact owned lifecycle callback while
 the original DSH agent remained running. Snapshot owners already removed their
 directories. Closeout removes the owned acceptance directory, pack cache and
 superseded local tarballs; durable reports, backup and final delivery remain.
+## Clean-directory delivery check — 2026-11-18
+
+Version `0.1.18` was tested from a copy containing only the Git-visible plugin
+files and its new lockfile, with an empty HOME and no inherited DSH, Codex or
+Node module paths. `npm ci --ignore-scripts` and `npm test` passed 79/79,
+including standalone CLI discovery. `npm pack --ignore-scripts` produced
+`dsh-codex-audit-0.1.18.tgz` (SHA-256
+`da5d9da2e2d42cf5931cd3f786b793162611f2aba0d06946fb987ccdcf5f5e6b`).
+Installed that tarball alone with `dsh plugin --profile web add` in a fresh DSH
+`0.2.2-rc.1` Web profile. An authenticated request to `codexAudit/view` on the
+loopback Host returned disabled settings and empty history for a new session.
+
+## 0.1.19 selectable audit reasoning effort (2026-11-18)
+
+The local Codex model catalog lists all four offered levels for
+`gpt-6.2-sol`. The session setting defaults to `xhigh` and preserves valid
+saved selections when the Host opens. Changing only the effort preserves the
+audit deadline and coverage period.
+
+Node 24 passed 81/81 tests, including the rendered selector, Host control,
+storage reopen, invalid selection, and the actual arguments received by a
+fixture Codex executable for each of the four choices. Nested Node stdout was
+empty under the default tool sandbox (`EPERM` in a direct spawn probe). The
+same suite passed on the host with fixture-only model execution.
+
+The exact tarball was installed and started in a clean DSH Web profile.
+Its authenticated RPC accepted the four choices, rejected `max`, and
+returned the previously selected `ultra` after a Host restart. No real
+Codex audit was started.
+
+SHA-256 `58cac33a12bba2b279f872930bd4667c7aadbd58589d102543b4365cb4d73efd`.
+All 13 installed files in the local Web profile matched the archive.
+The live service still had active DSH tasks at installation.
+This check made no Codex model request and did not use the personal profile.
+# Model and effort selection in 0.1.20 (2026-11-18)
+
+- Node 24 plugin suite passed 82 tests. An isolated DSH Web profile installed
+  the archive, switched models, applied the new model's compatible efforts,
+  rejected an invalid combination, and retained the choice after restart.
+  The runner's fixture verified Codex argument forwarding without a live audit.
+- The production Web profile contains the verified package. Its current
+  Host still serves the previous audit API and owns a running goal. Activation
+  waits for an idle window because the plugin manager reconciles the whole profile.

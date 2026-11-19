@@ -2670,6 +2670,11 @@ class ServiceUser:
         """Drain the native tracking job; returns the native cleanup state."""
         return self._native.stop_tracking(int(timeout_ms))
 
+    @property
+    def has_request_scoped_default(self) -> bool:
+        """Whether the Controller enables protected input by default."""
+        return bool(getattr(self._native, "has_request_scoped_default", False))
+
     @staticmethod
     def load_native_request_catalog(
         configuration_json: str,
@@ -3405,6 +3410,7 @@ class ServiceUser:
         on_stream_event: Optional[Callable[[bytes], None]] = None,
         on_stream_complete: Optional[Callable[[bytes], None]] = None,
         on_stream_error: Optional[Callable[[Mapping[str, Any]], None]] = None,
+        discovery_payload: Optional[bytes] = None,
     ) -> CollaborationInvocation:
         """Publish one generic Request and defer plan choice until ACK_CLOSED.
 
@@ -3412,6 +3418,8 @@ class ServiceUser:
         optimization. It may only report that the observed ACK candidates
         provide enough capability coverage; it cannot select providers or
         mutate the immutable ACK_CLOSED/commit_plan lifecycle.
+        For protected input, ``discovery_payload`` supplies the separate
+        bounded metadata visible to candidates before selection.
         """
 
         if str(mode).upper() != "DEFERRED":
@@ -3486,6 +3494,8 @@ class ServiceUser:
         if request_capabilities is not None:
             native_kwargs["request_capabilities"] = (
                 _native_request_capabilities(request_capabilities))
+        if discovery_payload is not None:
+            native_kwargs["discovery_payload"] = bytes(discovery_payload)
         if stream_dict is not None:
             native_kwargs.update({
                 "stream_options": stream_dict,
@@ -3497,6 +3507,10 @@ class ServiceUser:
             actual_request_id = self._native.begin_collaboration(
                 *native_args, **native_kwargs)
         except TypeError as exc:
+            if discovery_payload is not None:
+                raise RuntimeError(
+                    "native runtime does not support deferred collaboration "
+                    "discovery payloads") from exc
             if request_capabilities is not None:
                 raise RuntimeError(
                     "native runtime does not support deferred collaboration "

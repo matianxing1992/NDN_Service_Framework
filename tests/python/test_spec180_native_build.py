@@ -70,7 +70,7 @@ def test_runtime_probe_normalizes_uid_lookup_before_native_import(monkeypatch, c
 @pytest.fixture
 def local(tmp_path, monkeypatch):
     root = tmp_path / "checkout with spaces"
-    build_dir = root / "build-system-j2"
+    build_dir = root / "build"
     # This fixture models installed global roots without writing under /usr;
     # production defaults remain /usr and /usr/local.
     monkeypatch.setattr(
@@ -91,16 +91,16 @@ def local(tmp_path, monkeypatch):
     put(waf_dir / "waflib/__init__.py", b"# fixture Waf\n")
     put(waf_dir / "waflib/Scripting.py", b"# fixture build entry\n")
     for name in native.CONFIG_FILES:
-        put("build-system-j2/" + name)
+        put(build_dir / name)
     for name in ("ndn-service-framework/ServiceController.cpp",
                  "ndn-service-framework/ServiceController.hpp",
                  "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.cpp",
                  "pythonWrapper/src/ndnsf/_ndnsf.cpp",
                  "pythonWrapper/ndnsf/service.py"):
         put(name)
-    core = put("build-system-j2/" + native.LIBRARY + ".0.1.0", b"core-v1")
+    core = put(build_dir / (native.LIBRARY + ".0.1.0"), b"core-v1")
     (build_dir / native.LIBRARY).symlink_to(core.name)
-    put("build-system-j2/libndnsf-distributed-inference.so", b"di-v1")
+    put(build_dir / "libndnsf-distributed-inference.so", b"di-v1")
     global_dir = tmp_path / "global-lib"
     global_dir.mkdir()
     global_core = global_dir / (native.LIBRARY + ".0.1.0")
@@ -110,7 +110,7 @@ def local(tmp_path, monkeypatch):
     global_di.write_bytes((build_dir / "libndnsf-distributed-inference.so").read_bytes())
     monkeypatch.setattr(native, "GLOBAL_NATIVE_LIBRARY_DIR", global_dir)
     extension = put("pythonWrapper/ndnsf/_ndnsf.fixture.so", b"extension-v1")
-    provider = put("build-system-j2/examples/di-native-provider", b"provider-v1")
+    provider = put(build_dir / "examples/di-native-provider", b"provider-v1")
     provider.chmod(0o755)
     dependency = put("system/libdependency.so", b"dependency-v1")
     svs_source = tmp_path / "selected-svs"
@@ -133,7 +133,7 @@ def local(tmp_path, monkeypatch):
     for name in ("gcc", "g++", "ld"):
         put(toolchain_root / name, ("system tool " + name).encode())
     monkeypatch.setattr(native, "SETUP_TOOLCHAIN_ROOT", toolchain_root)
-    put("build-system-j2/c4che/_cache.py", (
+    put(build_dir / "c4che/_cache.py", (
         native.SVS_SOURCE_ENV + " = " + repr(str(svs_source)) + "\n" +
         native.SVS_BUILD_ENV + " = " + repr(str(svs_build)) + "\n" +
         "LIBPATH_NDN_CXX = " + repr([str(cxx_dir)]) + "\n" +
@@ -165,7 +165,7 @@ def local(tmp_path, monkeypatch):
 
     def fake_run(command, *, cwd, env, capture=False, timeout=None):
         calls.append({"command": command, "cwd": cwd, "env": dict(env)})
-        if command[0] == str(root / "waf"):
+        if command[0] == str(root / "scripts/build-safe.sh"):
             return None
         if "-print-prog-name=ld" in command:
             assert timeout == 10
@@ -210,8 +210,7 @@ def test_unified_build_targets_and_binding_cwd(local):
     data = build(local)
     waf, setup, probe, ldd = [c for c in local["calls"]
                             if "-print-prog-name=ld" not in c["command"]]
-    assert waf["command"] == [str(local["root"] / "waf"), "-o",
-                              str(local["build_dir"]), "build", "-j1",
+    assert waf["command"] == [str(local["root"] / "scripts/build-safe.sh"), "build", "-j1",
                               "--targets=" + native.TARGETS]
     assert setup["command"] == [local["python"], "setup.py", "build_ext", "--inplace", "--force"]
     assert setup["cwd"] == local["root"] / "pythonWrapper"
@@ -544,7 +543,7 @@ def test_cli_verify_detects_wrong_core_linkage(local, capsys, monkeypatch):
     local["state"]["framework"] = local["put"](
         "old-build/" + native.LIBRARY, b"old core")
     code = native.main(["verify", "--root", str(local["root"]),
-                        "--python", "python3"])
+                        "--build-dir", str(local["build_dir"]), "--python", "python3"])
     assert code == 1
     assert "WRONG_FRAMEWORK_LIBRARY" in capsys.readouterr().err
 
@@ -873,6 +872,9 @@ def test_setup_explicit_svs_pair_binds_headers_exact_library_and_runpath(local, 
 def test_setup_without_pair_preserves_pkg_config_and_ndnsf_library_dir(local, monkeypatch):
     monkeypatch.delenv(native.SVS_SOURCE_ENV, raising=False)
     monkeypatch.delenv(native.SVS_BUILD_ENV, raising=False)
+    metadata = Path("/usr/local/lib/pkgconfig/libndn-service-framework.pc")
+    is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda path: path != metadata and is_file(path))
     extension, calls = capture_setup(local, monkeypatch)
     assert extension.extra_objects == []
     assert "libndn-svs" in calls[0]
@@ -1031,7 +1033,7 @@ def test_waf_change_during_operation_preserves_previous_receipt(local, monkeypat
     original = native.run
     def change_waf(command, **kwargs):
         result = original(command, **kwargs)
-        if (during == "build" and command[0] == str(local["root"] / "waf")) or (
+        if (during == "build" and command[0] == str(local["root"] / "scripts/build-safe.sh")) or (
                 during == "verify" and "-c" in command):
             (local["waf_dir"] / "waflib/Scripting.py").write_text("# drift\n")
         return result

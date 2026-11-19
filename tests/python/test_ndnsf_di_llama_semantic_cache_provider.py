@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DIR = ROOT / "examples/python/NDNSF-DistributedInference/llama_server"
-sys.path.insert(0, str(ROOT / "pythonWrapper"))
+if os.environ.get("NDNSF_PREFER_INSTALLED_NATIVE") != "1":
+    sys.path.insert(0, str(ROOT / "pythonWrapper"))
 sys.path.insert(0, str(ROOT / "NDNSF-DistributedInference"))
 sys.path.insert(0, str(EXAMPLE_DIR))
 

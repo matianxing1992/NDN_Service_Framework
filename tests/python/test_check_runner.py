@@ -21,6 +21,33 @@ SPEC.loader.exec_module(checks)
 
 
 class ConfiguredRosterContractTest(unittest.TestCase):
+    def test_selected_model_requires_manifest_even_if_old_cache_directory_exists(self):
+        roster = {'profiles': {'model': {'targets': [{'assets': ['qwen']},
+                                                      {'assets': ['qwen']}]}},
+                  'assets': {'qwen': {'recipe': 'qwen3-0.6b-int4'}}}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {'NDNSF_DI_MODEL_CACHE': directory}, clear=True):
+            Path(directory, 'canonical-source.onnx').write_bytes(b'not a model')
+            missing = checks.check_assets(roster, ['model'], None)
+            self.assertEqual(len(missing), 1)
+            self.assertIn('SEALED manifest required', missing[0][1])
+
+    def test_manifest_argument_is_parsed_and_cannot_mean_search_its_parent(self):
+        asset = 'qwen3-0.6b-int4-frozen-export'
+        roster = {'profiles': {'model': {'targets': [{'assets': [asset]}]}},
+                  'assets': {asset: {'recipe': 'qwen3-0.6b-int4'}}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / asset).mkdir()
+            (root / asset / 'canonical-source.onnx').write_bytes(b'not a model')
+            manifest = root / 'asset-manifest.json'
+            manifest.write_text('{"state":"SEALED"}')
+            bindings = {}
+            missing = checks.check_assets(roster, ['model'], str(manifest), bindings)
+            self.assertEqual(len(missing), 1)
+            self.assertIn('RECIPE_MISMATCH', missing[0][1])
+            self.assertEqual(bindings, {})
+
     def test_case_discovery_cannot_open_user_identity_state(self):
         original = {'HOME': '/private/home', 'NDN_CLIENT_PIB': 'private-pib',
                     'NDN_CLIENT_TPM': 'private-tpm',
@@ -29,8 +56,11 @@ class ConfiguredRosterContractTest(unittest.TestCase):
         def discover(argv, **kwargs):
             env = kwargs['env']
             observed.append(env.copy())
+            self.assertEqual(Path(kwargs['cwd']).parent, Path(env['HOME']).parent)
             self.assertTrue(Path(env['HOME']).is_dir())
             self.assertTrue(Path(env['NDNSF_REQUEST_LARGE_DATA_DIR']).is_dir())
+            self.assertTrue(Path(env['TMPDIR']).is_dir())
+            self.assertEqual(Path(env['TMPDIR']).parent, Path(env['HOME']).parent)
             self.assertFalse(Path(env['HOME'], '.ndn').exists())
             self.assertNotIn('NDN_CLIENT_PIB', env)
             self.assertNotIn('NDN_CLIENT_TPM', env)
@@ -39,6 +69,7 @@ class ConfiguredRosterContractTest(unittest.TestCase):
         with patch.object(checks.subprocess, 'run', side_effect=discover):
             self.assertEqual(checks.enumerate_cases('/fixture', original)[1], ['Unit/Case'])
         self.assertFalse(Path(observed[0]['HOME']).exists())
+        self.assertFalse(Path(observed[0]['TMPDIR']).exists())
         self.assertEqual(original['HOME'], '/private/home')
 
     def test_identity_helper_belongs_to_the_selected_candidate(self):
@@ -214,10 +245,10 @@ class CheckRunner(unittest.TestCase):
             return Namespace(returncode=exit_code, stdout='Running 1 test case...' + message, stderr='')
         target = {'target': 'fixture', 'selector': {
             'include': include or ['*'], 'excludeSuites': ['Model']}}
-        def native(argv, environ, timeout):
+        def native(argv, environ, timeout, *, cwd=None):
             if observed is not None:
                 observed.append(dict(environ, homeExists=Path(environ['HOME']).is_dir(),
-                    spoolExists=Path(environ['NDNSF_REQUEST_LARGE_DATA_DIR']).is_dir()))
+                    spoolExists=Path(environ['NDNSF_REQUEST_LARGE_DATA_DIR']).is_dir(), cwd=cwd))
             return process(argv)
         with patch.object(checks.subprocess, 'run', side_effect=process), \
              patch.object(checks, 'native_process', side_effect=native):
@@ -236,6 +267,12 @@ class CheckRunner(unittest.TestCase):
         self.assertEqual(result['nativeExit'], 0)
         self.assertFalse(result['passed'])
         self.assertIn('NATIVE_NOT_RUN_MARKER', result['reportError'])
+
+    def test_boost_zero_assertion_warning_cannot_qualify_a_returned_case(self):
+        result = self.invoke(message='\nTest case Case did not check any assertions\n')
+        self.assertEqual(result['nativeExit'], 0)
+        self.assertFalse(result['passed'])
+        self.assertIn('NATIVE_ASSERTION_FREE_CASE', result['reportError'])
 
     def test_selectors_sharing_one_binary_preserve_both_logs(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -256,6 +293,8 @@ class CheckRunner(unittest.TestCase):
         self.assertTrue(self.invoke(environment=original, observed=observed)['passed'])
         self.assertTrue(observed[0]['homeExists'])
         self.assertTrue(observed[0]['spoolExists'])
+        self.assertEqual(Path(observed[0]['cwd']).parent, Path(observed[0]['HOME']).parent)
+        self.assertFalse(Path(observed[0]['cwd']).exists())
         self.assertNotIn('NDN_CLIENT_PIB', observed[0])
         self.assertNotIn('NDN_CLIENT_TPM', observed[0])
         self.assertNotIn('NDNSF_CONTROLLER_CERT_FILE', observed[0])

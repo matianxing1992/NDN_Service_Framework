@@ -743,9 +743,10 @@ ProviderRoleWorker::borrowAndSuspendOnEdge(WorkItem& item, const DependencyEdge&
                       std::to_string(m_nextDependencyWaitId.fetch_add(1));
   // Anchored at admission, not at the latest resume: a resumed unit that waited once must not
   // receive a fresh full timeout for the next step.
-  const auto deadline = (state->item.firstQueuedAt.has_value()
+  const auto deadline = state->item.role.executionDeadline.value_or(
+                       (state->item.firstQueuedAt.has_value()
                            ? *state->item.firstQueuedAt : state->item.queuedAt) +
-                        m_dependencyWaitTimeout;
+                        m_dependencyWaitTimeout);
   const auto submitted = m_dependencyWaitScheduler->submit(
     waitId,
     deadline,
@@ -850,7 +851,8 @@ ProviderRoleWorker::scheduleWhenInputsReady(WorkItem item,
   });
   const auto waitId = state->item.sessionId + "|" + state->item.role.role + "|" +
                       std::to_string(m_nextDependencyWaitId.fetch_add(1));
-  const auto deadline = std::chrono::steady_clock::now() + m_dependencyWaitTimeout;
+  const auto deadline = state->item.role.executionDeadline.value_or(
+    std::chrono::steady_clock::now() + m_dependencyWaitTimeout);
   const auto submitted = m_dependencyWaitScheduler->submit(
     waitId,
     deadline,

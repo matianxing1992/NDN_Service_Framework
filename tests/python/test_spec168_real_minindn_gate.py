@@ -8,6 +8,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -15,9 +16,10 @@ from ndnsf_distributed_inference.core.contracts import LifecycleEventV1
 
 
 REPO = Path(__file__).resolve().parents[2]
-JOBS = REPO / "specs/168-itiger-di-deployment-fidelity/jobs"
+SCRIPTS = REPO / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
+JOBS = REPO / "tests/fixtures/legacy-tiger-three-node"
 SPEC = importlib.util.spec_from_file_location(
-    "spec168_local_gate", JOBS / "spec168_local_gate.py")
+    "spec168_local_gate", SCRIPTS / "check-tiger-runtime-evidence.py")
 assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
@@ -28,7 +30,7 @@ runtime_evidence = importlib.util.module_from_spec(EVIDENCE_SPEC)
 EVIDENCE_SPEC.loader.exec_module(runtime_evidence)
 RETAINED_SPEC = importlib.util.spec_from_file_location(
     "spec168_retained_runtime_gate",
-    JOBS / "spec168_retained_runtime_gate.py")
+    SCRIPTS / "admit-retained-tiger-evidence.py")
 assert RETAINED_SPEC is not None and RETAINED_SPEC.loader is not None
 retained_gate = importlib.util.module_from_spec(RETAINED_SPEC)
 RETAINED_SPEC.loader.exec_module(retained_gate)
@@ -365,7 +367,7 @@ class Spec168RealMiniNdnGateTest(unittest.TestCase):
     def test_runner_retains_block_when_runtime_omits_evidence(self):
         output = self.output / "missing-evidence"
         result = subprocess.run([
-            "python3", str(JOBS / "spec168_local_gate.py"),
+            sys.executable, str(SCRIPTS / "check-tiger-runtime-evidence.py"),
             "--mode", "real-minindn", "--output-dir", str(output),
             "--hard-timeout-s", "5", "--", "/bin/true",
         ], cwd=REPO, text=True, stdout=subprocess.PIPE,
@@ -384,8 +386,8 @@ class Spec168RealMiniNdnGateTest(unittest.TestCase):
             checkpoint["commandDigest"], manifest["commandDigest"])
 
     def test_shell_launchers_have_no_settle_sleep_or_mock_path(self):
-        mini = (JOBS / "run-real-minindn-gate.sh").read_text()
-        exact = (JOBS / "run-exact-container-gate.sh").read_text()
+        mini = (JOBS / "run-real-minindn-gate.sh.txt").read_text()
+        exact = (JOBS / "run-exact-container-gate.sh.txt").read_text()
         experiment = (REPO / "Experiments/NDNSF_DI_LlmPipeline_Minindn.py").read_text()
         self.assertNotIn("sleep ", mini + exact)
         self.assertNotIn("mock", mini.lower() + exact.lower())
@@ -424,7 +426,7 @@ class Spec168RealMiniNdnGateTest(unittest.TestCase):
         )
 
         overlay_entrypoint = (
-            JOBS / "spec168-overlay-entrypoint.sh"
+            JOBS / "spec168-overlay-entrypoint.sh.txt"
         ).read_text()
         self.assertIn(
             "from py_repoclient import AdaptiveArtifactTransfer",
@@ -438,9 +440,12 @@ class Spec168RealMiniNdnGateTest(unittest.TestCase):
         ).read_text()
         self.assertRegex(
             experiment,
-            r'if args\.selection_dataflow_v2:\n'
-            r'(?:        #.*\n)+'
+            r'if \(args\.selection_dataflow_v2 or args\.selection_dataflow_v3\) and enabled:\n'
             r'        base_env\["NDNSF_SELECTION_TARGETED_PREFETCH"\] = "1"',
+        )
+        self.assertIn(
+            'selection_targeted_prefetch = apply_selection_targeted_prefetch_policy(',
+            experiment,
         )
         self.assertIn(
             'closure["NDNSF_SELECTION_TARGETED_PREFETCH"] = '

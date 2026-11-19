@@ -15,8 +15,11 @@ class ReleaseManifestTest(unittest.TestCase):
         self.assertEqual(value["releaseId"], "spec108-r1")
 
     def test_tag_only_and_mismatched_digest_are_rejected(self) -> None:
-        for name in ("release-tag-only.json", "release-mismatched-digest.json"):
-            with self.subTest(name=name), self.assertRaises(ReleaseError):
+        for name, failure in (
+            ("release-tag-only.json", r"RELEASE_INVALID:.*reference.*does not match"),
+            ("release-mismatched-digest.json", r"RELEASE_IMAGE_DIGEST_MISMATCH"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(ReleaseError, failure):
                 load_release_manifest(FIXTURES / "releases" / name)
 
 

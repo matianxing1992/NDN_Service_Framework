@@ -26,13 +26,14 @@ main(int argc, char** argv)
         requiredPath("--worker-script")) << std::endl;
       return 0;
     }
-    const auto appConfig = loadKeyValueConfig(getOption(argc, argv, "--app-config", ""));
+    const auto appConfigPath = getOption(argc, argv, "--app-config", "");
+    const auto appConfig = loadKeyValueConfig(appConfigPath);
     const std::string droneId = getConfigOption(argc, argv, appConfig, "--drone-id", "drone-id", "A");
     const bool available = getConfigBoolInvertedFlag(
       argc, argv, appConfig, "--unavailable", "available", true);
     const bool serveCertificates = getConfigBoolInvertedFlag(
       argc, argv, appConfig, "--no-serve-certificates", "serve-certificates", true);
-    const std::string videoPath = resolveVideoSource(argc, argv, appConfig);
+    const std::string videoPath = resolveVideoSource(argc, argv, appConfig, appConfigPath);
     const std::string flightControllerBackend =
       getConfigOption(argc, argv, appConfig, "--flight-controller-backend",
                       "flight-controller-backend", "mock");

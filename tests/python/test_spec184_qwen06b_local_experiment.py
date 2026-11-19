@@ -217,7 +217,7 @@ def test_example_profile_resolves_two_nodes_and_installed_native_boundary():
         ("authorityBinary", "DI_NativeArtifactAuthority"),
         ("requesterBinary", "DI_NativeRequester"),
         ("providerBinary", "di-native-provider"),
-        ("oracleBinary", "spec190-multiturn-oracle"),
+        ("oracleBinary", "multiturn-oracle"),
     ):
         assert profile[key] == "/usr/local/bin/" + binary
     assert profile["assemblyWorkerBinary"] == (

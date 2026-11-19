@@ -119,14 +119,14 @@ def build(bld):
                 rpath=[str(runtime / 'lib'), str(Path(bld.env.ONNX_PREFIX) / 'lib'),
                        str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-deployment-readiness-tests',
-                source=['../main.cpp', '../unit-tests/spec217-deployment-readiness.t.cpp'],
+                source=['../main.cpp', '../unit-tests/deployment-readiness.t.cpp'],
                 includes=[str(runtime / 'include'), source_root],
                 use='CORE BOOST_TEST OPENSSL',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
                 rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-credentials-consumer',
                 source=['installed-credentials-consumer.cpp',
-                        '../unit-tests/spec217-controller-certificate.t.cpp'],
+                        '../unit-tests/controller-certificate.t.cpp'],
                 includes=[str(runtime / 'include'), source_root],
                 use='CORE BOOST_TEST',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
@@ -151,7 +151,7 @@ def build(bld):
                 rpath=[str(runtime / 'lib'), str(bld.env.NAC_LIBDIR)], install_path=None)
     bld.program(target='installed-repo-catalog-consumer',
                 source=['installed-credentials-consumer.cpp',
-                        '../unit-tests/spec201-transparent-repo.t.cpp'],
+                        '../unit-tests/transparent-repo.t.cpp'],
                 includes=[str(runtime / 'include'), source_root + '/NDNSF-DistributedRepo/include',
                           source_root],
                 use='REPO NDNSF CORE BOOST_TEST OPENSSL SQLITE',
@@ -159,7 +159,7 @@ def build(bld):
                 rpath=[str(runtime / 'lib')], install_path=None)
     bld.program(target='installed-original-packet-consumer',
                 source=['installed-credentials-consumer.cpp',
-                        '../integration-tests/spec201-original-packet-publication.t.cpp'],
+                        '../integration-tests/original-packet-publication.t.cpp'],
                 includes=[str(runtime / 'include'), source_root],
                 use='REPO NDNSF CORE BOOST_TEST OPENSSL SQLITE',
                 cxxflags=['-std=c++17', '-O0', '-g0'],
@@ -192,8 +192,8 @@ def build(bld):
                 rpath=[str(runtime / 'lib')], install_path=None)
     bld.program(target='installed-identity-consumer',
                 source=['installed-identity-consumer.cpp',
-                        '../unit-tests/spec217-identity-check.t.cpp',
-                        '../unit-tests/spec217-deployment-readiness.t.cpp'],
+                        '../unit-tests/identity-check.t.cpp',
+                        '../unit-tests/deployment-readiness.t.cpp'],
                 includes=[str(runtime / 'include'), source_root],
                 use='CORE BOOST_TEST OPENSSL',
                 cxxflags=['-std=c++17', '-O0', '-g0'],

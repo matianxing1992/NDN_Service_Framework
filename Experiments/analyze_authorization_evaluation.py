@@ -18,7 +18,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = (
     ROOT
-    / "specs/172-data-centric-authorization-evaluation/contracts/authorization-cases.yaml"
+    / "Experiments/fixtures/authorization-evaluation/contracts/authorization-cases.yaml"
 )
 
 
@@ -37,7 +37,7 @@ def validate_manifest(input_dir: Path, root: Path = ROOT) -> list[str]:
         schema = json.loads(
             (
                 ROOT
-                / "specs/172-data-centric-authorization-evaluation/contracts/experiment-manifest.schema.json"
+                / "Experiments/fixtures/authorization-evaluation/contracts/experiment-manifest.schema.json"
             ).read_text(encoding="utf-8")
         )
         jsonschema.validate(manifest, schema)

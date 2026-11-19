@@ -16,11 +16,6 @@ except ImportError:
 
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_BINARY = (
-    REPO
-    / "build/spec140-svs-latency-distribution/svs-rsa-latency-distribution"
-)
-DEFAULT_LIBRARY_DIR = Path("/home/tianxing/NDN/ndn-svs/build")
 RESULT_ROOT = REPO / "results/spec140-svs-latency-distribution"
 MATRIX = (("face-inline-rsa", 400), ("worker-rsa", 400))
 TIMING = (10, 60, 10)
@@ -36,8 +31,8 @@ def is_within(path: Path, root: Path) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
-    parser.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--library-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 

@@ -1,0 +1,2076 @@
+diff --git a/ndn-svs/core.cpp b/ndn-svs/core.cpp
+index a22fa4d..8d2f8e8 100644
+--- a/ndn-svs/core.cpp
++++ b/ndn-svs/core.cpp
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "core.hpp"
++#include "profile.hpp"
+ #include "tlv.hpp"
+ 
+ #include <ndn-cxx/encoding/buffer-stream.hpp>
+@@ -23,6 +24,7 @@
+ #include <ndn-cxx/security/verification-helpers.hpp>
+ 
+ #include <chrono>
++#include <iterator>
+ 
+ #ifdef NDN_SVS_COMPRESSION
+ #include <boost/iostreams/copy.hpp>
+@@ -33,6 +35,30 @@
+ 
+ namespace ndn::svs {
+ 
++namespace {
++
++thread_local bool g_profileReceivePath = false;
++
++class ReceivePathScope
++{
++public:
++  ReceivePathScope()
++    : m_previous(g_profileReceivePath)
++  {
++    g_profileReceivePath = true;
++  }
++
++  ~ReceivePathScope()
++  {
++    g_profileReceivePath = m_previous;
++  }
++
++private:
++  bool m_previous;
++};
++
++} // namespace
++
+ SVSyncCore::SVSyncCore(ndn::Face& face,
+                        const Name& syncPrefix,
+                        const UpdateCallback& onUpdate,
+@@ -91,32 +117,100 @@ SVSyncCore::sendInitialInterest()
+ void
+ SVSyncCore::onSyncInterest(const Interest& interest)
+ {
++  auto& profiler = profile::Profiler::get();
++  const uint64_t traceId = profiler.nextTraceId();
++  profile::TraceScope traceScope(traceId);
++  const uint64_t receiveStartRawNs = profiler.nowRawNs();
++  auto finishReceive = [traceId, receiveStartRawNs](profile::Outcome outcome) {
++    const uint64_t endRawNs = profile::Profiler::get().nowRawNs();
++    profile::Profiler::get().recordInterval(
++      profile::StageId::SYNC_RECEIVE_TOTAL, traceId, receiveStartRawNs,
++      endRawNs >= receiveStartRawNs ? endRawNs - receiveStartRawNs : 0,
++      outcome, profile::CorrelationMode::Exact);
++  };
++
+   switch (m_securityOptions.interestSigner->signingInfo.getSignerType()) {
+-    case security::SigningInfo::SIGNER_TYPE_NULL:
++    case security::SigningInfo::SIGNER_TYPE_NULL: {
++      profile::Span verifySpan(profile::StageId::SYNC_INTEREST_VERIFY, traceId);
++      verifySpan.setOutcome(profile::Outcome::Skipped);
++      verifySpan.stop();
+       onSyncInterestValidated(interest);
++      finishReceive(profile::Outcome::Success);
+       return;
++    }
+ 
+-    case security::SigningInfo::SIGNER_TYPE_HMAC:
+-      if (security::verifySignature(interest,
+-                                    m_keyChainMem.getTpm(),
+-                                    m_securityOptions.interestSigner->signingInfo.getSignerName(),
+-                                    DigestAlgorithm::SHA256))
++    case security::SigningInfo::SIGNER_TYPE_HMAC: {
++      profile::Span verifySpan(profile::StageId::SYNC_INTEREST_VERIFY, traceId);
++      const bool valid = security::verifySignature(
++        interest, m_keyChainMem.getTpm(),
++        m_securityOptions.interestSigner->signingInfo.getSignerName(),
++        DigestAlgorithm::SHA256);
++      verifySpan.setOutcome(valid ? profile::Outcome::Success : profile::Outcome::Invalid);
++      verifySpan.stop();
++      if (valid) {
+         onSyncInterestValidated(interest);
++      }
++      finishReceive(valid ? profile::Outcome::Success : profile::Outcome::Invalid);
+       return;
++    }
+ 
+-    default:
+-      if (m_securityOptions.validator)
++    default: {
++      if (m_securityOptions.validator) {
++        const uint64_t verifyStartRawNs = profiler.nowRawNs();
+         m_securityOptions.validator->validate(
+-          interest, std::bind(&SVSyncCore::onSyncInterestValidated, this, _1), nullptr);
+-      else
++          interest,
++          [this, traceId, receiveStartRawNs, verifyStartRawNs](const Interest& validated) {
++            profile::TraceScope callbackTrace(traceId);
++            auto& callbackProfiler = profile::Profiler::get();
++            const uint64_t verifiedRawNs = callbackProfiler.nowRawNs();
++            callbackProfiler.recordInterval(
++              profile::StageId::SYNC_INTEREST_VERIFY, traceId, verifyStartRawNs,
++              verifiedRawNs >= verifyStartRawNs ? verifiedRawNs - verifyStartRawNs : 0,
++              profile::Outcome::Success, profile::CorrelationMode::Exact);
++            onSyncInterestValidated(validated);
++            const uint64_t endRawNs = callbackProfiler.nowRawNs();
++            callbackProfiler.recordInterval(
++              profile::StageId::SYNC_RECEIVE_TOTAL, traceId, receiveStartRawNs,
++              endRawNs >= receiveStartRawNs ? endRawNs - receiveStartRawNs : 0,
++              profile::Outcome::Success, profile::CorrelationMode::Exact);
++          },
++          [traceId, receiveStartRawNs, verifyStartRawNs](const Interest&,
++                                                         const ValidationError&) {
++            profile::TraceScope callbackTrace(traceId);
++            auto& callbackProfiler = profile::Profiler::get();
++            const uint64_t endRawNs = callbackProfiler.nowRawNs();
++            const uint64_t verifyDuration = endRawNs >= verifyStartRawNs
++                                              ? endRawNs - verifyStartRawNs : 0;
++            callbackProfiler.recordInterval(
++              profile::StageId::SYNC_INTEREST_VERIFY, traceId, verifyStartRawNs,
++              verifyDuration, profile::Outcome::Invalid, profile::CorrelationMode::Exact);
++            callbackProfiler.recordInterval(
++              profile::StageId::SYNC_RECEIVE_TOTAL, traceId, receiveStartRawNs,
++              endRawNs >= receiveStartRawNs ? endRawNs - receiveStartRawNs : 0,
++              profile::Outcome::Invalid, profile::CorrelationMode::Exact);
++          });
++      }
++      else {
++        profile::Span verifySpan(profile::StageId::SYNC_INTEREST_VERIFY, traceId);
++        verifySpan.setOutcome(profile::Outcome::Skipped);
++        verifySpan.stop();
+         onSyncInterestValidated(interest);
++        finishReceive(profile::Outcome::Success);
++      }
+       return;
++    }
+   }
+ }
+ 
+ void
+ SVSyncCore::onSyncInterestValidated(const Interest& interest)
+ {
++  auto& profiler = profile::Profiler::get();
++  uint64_t traceId = profiler.currentTraceId();
++  if (traceId == 0)
++    traceId = profiler.nextTraceId();
++  profile::TraceScope traceScope(traceId);
++  ReceivePathScope receivePathScope;
+   // Get incoming face (this is needed by NLSR)
+   uint64_t incomingFace = 0;
+   {
+@@ -127,13 +221,17 @@ SVSyncCore::onSyncInterestValidated(const Interest& interest)
+   }
+ 
+   // Check for invalid Interest
++  profile::Span paramsSpan(profile::StageId::SYNC_APP_PARAMS_PARSE, traceId);
+   if (!interest.hasApplicationParameters()) {
++    paramsSpan.setOutcome(profile::Outcome::Invalid);
+     return;
+   }
+ 
+   // Decode state parameters
+   ndn::Block params = interest.getApplicationParameters();
+   params.parse();
++  paramsSpan.setCounts(params.size(), 1);
++  paramsSpan.stop();
+ 
+ #ifdef NDN_SVS_COMPRESSION
+   // Decompress if necessary. The spec requires that if an LZMA block is
+@@ -162,9 +260,13 @@ SVSyncCore::onSyncInterestValidated(const Interest& interest)
+ 
+   // Get state vector
+   std::shared_ptr<VersionVector> vvOther;
++  profile::Span vvDecodeSpan(profile::StageId::SYNC_VV_DECODE, traceId);
+   try {
+     vvOther = std::make_shared<VersionVector>(params.get(tlv::StateVector));
++    vvDecodeSpan.setCounts(params.get(tlv::StateVector).size(), 1);
++    vvDecodeSpan.stop();
+   } catch (ndn::tlv::Error&) {
++    vvDecodeSpan.setOutcome(profile::Outcome::Invalid);
+     // TODO: log error
+     return;
+   }
+@@ -183,8 +285,11 @@ SVSyncCore::onSyncInterestValidated(const Interest& interest)
+ 
+   // Callback if missing data found
+   if (!result.missingInfo.empty()) {
++    profile::Span dispatchSpan(profile::StageId::SYNC_UPDATE_DISPATCH, traceId);
+     for (auto& e : result.missingInfo)
+       e.incomingFace = incomingFace;
++    dispatchSpan.setCounts(0, result.missingInfo.size());
++    dispatchSpan.stop();
+     m_onUpdate(result.missingInfo);
+   }
+ 
+@@ -195,16 +300,20 @@ SVSyncCore::onSyncInterestValidated(const Interest& interest)
+   // If incoming state identical/newer to local vector, reset timer
+   // If incoming state is older, send sync interest immediately
+   if (!result.myVectorNew) {
++    profile::Span decisionSpan(profile::StageId::SYNC_SUPPRESSION_DECISION, traceId);
++    decisionSpan.stop();
+     retxSyncInterest(false, 0);
+   } else {
+     enterSuppressionState(*vvOther);
+     // Check how much time is left on the timer,
+     // reset to ~m_intrReplyDist if more than that.
++    profile::Span decisionSpan(profile::StageId::SYNC_SUPPRESSION_DECISION, traceId);
+     int delay = m_intrReplyDist(m_rng);
+ 
+     // Curve the delay for better suppression in large groups
+     // TODO: efficient curve depends on number of active nodes
+     delay = suppressionCurve(m_maxSuppressionTime.count(), delay);
++    decisionSpan.stop();
+ 
+     if (getCurrentTime() + delay * 1000 < m_nextSyncInterest) {
+       retxSyncInterest(false, delay);
+@@ -229,12 +338,27 @@ SVSyncCore::retxSyncInterest(bool send, unsigned int delay)
+     delay = m_retxDist(m_rng);
+ 
+   {
+-    std::lock_guard<std::mutex> lock(m_schedulerMutex);
++    const uint64_t traceId = profile::Profiler::get().currentTraceId();
++    profile::Span lockSpan(g_profileReceivePath ? profile::StageId::SYNC_SCHEDULER_LOCK_WAIT
++                                               : profile::StageId::PUB_SCHEDULER_LOCK_WAIT,
++                           traceId);
++    std::unique_lock<std::mutex> lock(m_schedulerMutex, std::defer_lock);
++    lock.lock();
++    lockSpan.stop();
++    profile::Span timerSpan(profile::StageId::SYNC_TIMER_ARM_CANCEL, traceId);
+ 
+     // Store the scheduled time
+     m_nextSyncInterest = getCurrentTime() + 1000 * delay;
+-
+-    m_retxEvent = m_scheduler.schedule(time::milliseconds(delay), [this] { retxSyncInterest(true, 0); });
++    const uint64_t requestedRawNs = profile::Profiler::get().nowRawNs() +
++                                    static_cast<uint64_t>(delay) * 1000000ULL;
++    m_retxEvent = m_scheduler.schedule(time::milliseconds(delay), [this, traceId, requestedRawNs] {
++      profile::TraceScope callbackTrace(traceId);
++      const uint64_t actualRawNs = profile::Profiler::get().nowRawNs();
++      profile::Profiler::get().recordInterval(
++        profile::StageId::SYNC_TIMER_WAIT, traceId, requestedRawNs,
++        actualRawNs > requestedRawNs ? actualRawNs - requestedRawNs : 0);
++      retxSyncInterest(true, 0);
++    });
+   }
+ }
+ 
+@@ -244,10 +368,16 @@ SVSyncCore::sendSyncInterest()
+   if (!m_initialized)
+     return;
+ 
++  profile::TraceScope traceScope;
++  profile::Span totalSpan(profile::StageId::SYNC_PRODUCE_TOTAL, traceScope.id());
++
+   // Build app parameters
+   ndn::encoding::EncodingBuffer enc;
+   {
+-    std::lock_guard<std::mutex> lock(m_vvMutex);
++    profile::Span lockSpan(profile::StageId::SYNC_VV_ENCODE_LOCK_WAIT, traceScope.id());
++    std::unique_lock<std::mutex> lock(m_vvMutex, std::defer_lock);
++    lock.lock();
++    lockSpan.stop();
+     size_t length = 0;
+ 
+     // Add extra mapping blocks
+@@ -255,15 +385,24 @@ SVSyncCore::sendSyncInterest()
+       length += ndn::encoding::prependBlock(enc, m_getExtraBlock(m_vv));
+ 
+     // Add state vector
+-    length += ndn::encoding::prependBlock(enc, m_vv.encode());
++    {
++      profile::Span vvSpan(profile::StageId::SYNC_VV_ENCODE, traceScope.id());
++      auto vvBlock = m_vv.encode();
++      vvSpan.setCounts(vvBlock.size(), std::distance(m_vv.begin(), m_vv.end()));
++      length += ndn::encoding::prependBlock(enc, vvBlock);
++    }
+ 
+     // Add length and ApplicationParameters type
++    profile::Span paramsSpan(profile::StageId::SYNC_APP_PARAMS_ENCODE, traceScope.id());
+     enc.prependVarNumber(length);
+     enc.prependVarNumber(ndn::tlv::ApplicationParameters);
+   }
+ 
++  profile::Span paramsWireSpan(profile::StageId::SYNC_APP_PARAMS_ENCODE, traceScope.id());
+   ndn::Block wire = enc.block();
+   wire.encode();
++  paramsWireSpan.setCounts(wire.size(), 1);
++  paramsWireSpan.stop();
+ 
+ #ifdef NDN_SVS_COMPRESSION
+   boost::iostreams::filtering_istreambuf in;
+@@ -276,10 +415,14 @@ SVSyncCore::sendSyncInterest()
+ #endif
+ 
+   // Create Sync Interest
++  profile::Span interestBuildSpan(profile::StageId::SYNC_INTEREST_BUILD, traceScope.id());
+   Interest interest(Name(m_syncPrefix).appendVersion(2));
+   interest.setApplicationParameters(wire);
+   interest.setInterestLifetime(1_ms);
++  interestBuildSpan.setCounts(wire.size(), 1);
++  interestBuildSpan.stop();
+ 
++  profile::Span interestSignSpan(profile::StageId::SYNC_INTEREST_SIGN, traceScope.id());
+   switch (m_securityOptions.interestSigner->signingInfo.getSignerType()) {
+     case security::SigningInfo::SIGNER_TYPE_NULL:
+       break;
+@@ -292,14 +435,27 @@ SVSyncCore::sendSyncInterest()
+       m_securityOptions.interestSigner->sign(interest);
+       break;
+   }
++  interestSignSpan.stop();
+ 
++  profile::Span expressSpan(profile::StageId::SYNC_INTEREST_EXPRESS, traceScope.id());
+   m_face.expressInterest(interest, nullptr, nullptr, nullptr);
+ }
+ 
+ SVSyncCore::MergeResult
+ SVSyncCore::mergeStateVector(const VersionVector& vvOther)
+ {
+-  std::lock_guard<std::mutex> lock(m_vvMutex);
++  auto& profiler = profile::Profiler::get();
++  const uint64_t traceId = profiler.currentTraceId();
++  const uint64_t lockStartRawNs = profiler.nowRawNs();
++  std::unique_lock<std::mutex> lock(m_vvMutex, std::defer_lock);
++  lock.lock();
++  const uint64_t mergeStartRawNs = profiler.nowRawNs();
++  if (g_profileReceivePath) {
++    profiler.recordInterval(profile::StageId::SYNC_VV_MERGE_LOCK_WAIT, traceId,
++                            lockStartRawNs,
++                            mergeStartRawNs >= lockStartRawNs
++                              ? mergeStartRawNs - lockStartRawNs : 0);
++  }
+   SVSyncCore::MergeResult result;
+ 
+   // Check if other vector has newer state
+@@ -334,6 +490,11 @@ SVSyncCore::mergeStateVector(const VersionVector& vvOther)
+     }
+   }
+ 
++  if (g_profileReceivePath) {
++    const uint64_t endRawNs = profiler.nowRawNs();
++    profiler.recordInterval(profile::StageId::SYNC_VV_MERGE, traceId, mergeStartRawNs,
++                            endRawNs >= mergeStartRawNs ? endRawNs - mergeStartRawNs : 0);
++  }
+   return result;
+ }
+ 
+@@ -345,7 +506,12 @@ SVSyncCore::reset(bool isOnInterest)
+ SeqNo
+ SVSyncCore::getSeqNo(const NodeID& nid) const
+ {
+-  std::lock_guard<std::mutex> lock(m_vvMutex);
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span lockSpan(profile::StageId::PUB_VV_READ_LOCK_WAIT, traceId);
++  std::unique_lock<std::mutex> lock(m_vvMutex, std::defer_lock);
++  lock.lock();
++  lockSpan.stop();
++  profile::Span readSpan(profile::StageId::PUB_SEQ_READ, traceId);
+   NodeID t_nid = (nid == EMPTY_NODE_ID) ? m_id : nid;
+   return m_vv.get(t_nid);
+ }
+@@ -357,7 +523,12 @@ SVSyncCore::updateSeqNo(const SeqNo& seq, const NodeID& nid)
+ 
+   SeqNo prev;
+   {
+-    std::lock_guard<std::mutex> lock(m_vvMutex);
++    const uint64_t traceId = profile::Profiler::get().currentTraceId();
++    profile::Span lockSpan(profile::StageId::PUB_VV_UPDATE_LOCK_WAIT, traceId);
++    std::unique_lock<std::mutex> lock(m_vvMutex, std::defer_lock);
++    lock.lock();
++    lockSpan.stop();
++    profile::Span updateSpan(profile::StageId::PUB_LOCAL_STATE_UPDATE, traceId);
+     prev = m_vv.get(t_nid);
+     m_vv.set(t_nid, seq);
+   }
+@@ -388,12 +559,20 @@ SVSyncCore::getCurrentTime() const
+ bool
+ SVSyncCore::recordVector(const VersionVector& vvOther)
+ {
+-  std::lock_guard<std::mutex> lock(m_recordedVvMutex);
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span lockSpan(profile::StageId::SYNC_RECORDED_VV_LOCK_WAIT, traceId);
++  std::unique_lock<std::mutex> lock(m_recordedVvMutex, std::defer_lock);
++  lock.lock();
++  lockSpan.stop();
+ 
+   if (!m_recordedVv)
+     return false;
+ 
+-  std::lock_guard<std::mutex> lock1(m_vvMutex);
++  profile::Span vvLockSpan(profile::StageId::SYNC_RECORDED_VV_LOCK_WAIT, traceId);
++  std::unique_lock<std::mutex> lock1(m_vvMutex, std::defer_lock);
++  lock1.lock();
++  vvLockSpan.stop();
++  profile::Span decisionSpan(profile::StageId::SYNC_SUPPRESSION_DECISION, traceId);
+ 
+   for (const auto& entry : vvOther) {
+     NodeID nidOther = entry.first;
+@@ -411,7 +590,12 @@ SVSyncCore::recordVector(const VersionVector& vvOther)
+ void
+ SVSyncCore::enterSuppressionState(const VersionVector& vvOther)
+ {
+-  std::lock_guard<std::mutex> lock(m_recordedVvMutex);
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span lockSpan(profile::StageId::SYNC_RECORDED_VV_LOCK_WAIT, traceId);
++  std::unique_lock<std::mutex> lock(m_recordedVvMutex, std::defer_lock);
++  lock.lock();
++  lockSpan.stop();
++  profile::Span decisionSpan(profile::StageId::SYNC_SUPPRESSION_DECISION, traceId);
+ 
+   if (!m_recordedVv)
+     m_recordedVv = std::make_unique<VersionVector>(vvOther);
+diff --git a/ndn-svs/fetcher.cpp b/ndn-svs/fetcher.cpp
+index 59253b5..fc72a71 100644
+--- a/ndn-svs/fetcher.cpp
++++ b/ndn-svs/fetcher.cpp
+@@ -15,10 +15,49 @@
+  */
+ 
+ #include "fetcher.hpp"
++#include "profile.hpp"
+ #include "security-options.hpp"
+ 
+ namespace ndn::svs {
+ 
++namespace {
++
++bool
++isMappingInterest(const Interest& interest)
++{
++  return interest.getName().toUri().find("/MAPPING/") != std::string::npos;
++}
++
++profile::StageId
++queueStage(bool isMapping)
++{
++  return isMapping ? profile::StageId::MAP_FETCHER_QUEUE_WAIT
++                   : profile::StageId::PAYLOAD_FETCHER_QUEUE_WAIT;
++}
++
++profile::StageId
++expressStage(bool isMapping)
++{
++  return isMapping ? profile::StageId::MAP_INTEREST_EXPRESS
++                   : profile::StageId::PAYLOAD_INTEREST_EXPRESS;
++}
++
++profile::StageId
++networkStage(bool isMapping)
++{
++  return isMapping ? profile::StageId::MAP_NETWORK_WAIT
++                   : profile::StageId::PAYLOAD_NETWORK_WAIT;
++}
++
++profile::StageId
++validationStage(bool isMapping)
++{
++  return isMapping ? profile::StageId::MAP_DATA_VERIFY
++                   : profile::StageId::PAYLOAD_OUTER_VERIFY;
++}
++
++} // namespace
++
+ Fetcher::Fetcher(Face& face, const SecurityOptions& securityOptions)
+   : m_face(face)
+   , m_scheduler(face.getIoContext())
+@@ -35,6 +74,10 @@ Fetcher::expressInterest(const ndn::Interest& interest,
+                          const ndn::security::DataValidationFailureCallback& afterValidationFailed)
+ {
+   uint64_t id = ++m_interestIdCounter;
++  auto& profiler = profile::Profiler::get();
++  uint64_t traceId = profiler.currentTraceId();
++  if (traceId == 0)
++    traceId = profiler.nextTraceId();
+   m_interestQueue.push({
+     id,
+     interest,
+@@ -44,6 +87,10 @@ Fetcher::expressInterest(const ndn::Interest& interest,
+     nRetries,
+     m_securityOptions.nRetriesOnValidationFail,
+     afterValidationFailed,
++    traceId,
++    profiler.nowRawNs(),
++    std::make_shared<uint64_t>(0),
++    isMappingInterest(interest),
+   });
+   processQueue();
+ }
+@@ -53,6 +100,8 @@ Fetcher::expressInterest(const QueuedInterest& qi)
+ {
+   QueuedInterest qiNew(qi);
+   qiNew.id = ++m_interestIdCounter;
++  qiNew.profileEnqueueRawNs = profile::Profiler::get().nowRawNs();
++  qiNew.profileExpressRawNs = std::make_shared<uint64_t>(0);
+ 
+   Interest newNonceInterest(qiNew.interest);
+   newNonceInterest.refreshNonce();
+@@ -69,26 +118,63 @@ Fetcher::processQueue()
+     QueuedInterest i = m_interestQueue.front();
+     m_interestQueue.pop();
+ 
+-    m_pendingInterests[i.id] = m_face.expressInterest(i.interest,
+-                                                      std::bind(&Fetcher::onData, this, _1, _2, i),
+-                                                      std::bind(&Fetcher::onNack, this, _1, _2, i),
+-                                                      std::bind(&Fetcher::onTimeout, this, _1, i));
++    auto& profiler = profile::Profiler::get();
++    const uint64_t expressRawNs = profiler.nowRawNs();
++    profiler.recordInterval(queueStage(i.profileIsMapping), i.profileTraceId,
++                            i.profileEnqueueRawNs,
++                            expressRawNs >= i.profileEnqueueRawNs
++                              ? expressRawNs - i.profileEnqueueRawNs : 0,
++                            profile::Outcome::Success,
++                            profile::CorrelationMode::Exact);
++    profile::Span expressSpan(expressStage(i.profileIsMapping), i.profileTraceId);
++    auto pending = m_face.expressInterest(i.interest,
++                                          std::bind(&Fetcher::onData, this, _1, _2, i),
++                                          std::bind(&Fetcher::onNack, this, _1, _2, i),
++                                          std::bind(&Fetcher::onTimeout, this, _1, i));
++    expressSpan.stop();
++    *i.profileExpressRawNs = profiler.nowRawNs();
++    m_pendingInterests[i.id] = std::move(pending);
+   }
+ }
+ 
+ void
+ Fetcher::onData(const Interest& interest, const Data& data, const QueuedInterest& qi)
+ {
++  profile::TraceScope traceScope(qi.profileTraceId);
++  const uint64_t receiveRawNs = profile::Profiler::get().nowRawNs();
++  profile::Profiler::get().recordInterval(
++    networkStage(qi.profileIsMapping), qi.profileTraceId, *qi.profileExpressRawNs,
++    receiveRawNs >= *qi.profileExpressRawNs ? receiveRawNs - *qi.profileExpressRawNs : 0,
++    profile::Outcome::Success, profile::CorrelationMode::Exact);
+   m_pendingInterests.erase(qi.id);
+   processQueue();
+ 
+   if (m_securityOptions.validator == nullptr) {
+     // No validator provided
++    profile::Span skipped(validationStage(qi.profileIsMapping), qi.profileTraceId);
++    skipped.setOutcome(profile::Outcome::Skipped);
++    skipped.stop();
+     qi.afterSatisfied(interest, data);
+   } else {
+-    auto onDataValidated = [qi](const Data& data) { qi.afterSatisfied(qi.interest, data); };
++    const uint64_t validationStartRawNs = profile::Profiler::get().nowRawNs();
++    auto onDataValidated = [qi, validationStartRawNs](const Data& data) {
++      profile::TraceScope callbackTrace(qi.profileTraceId);
++      const uint64_t endRawNs = profile::Profiler::get().nowRawNs();
++      profile::Profiler::get().recordInterval(
++        validationStage(qi.profileIsMapping), qi.profileTraceId, validationStartRawNs,
++        endRawNs >= validationStartRawNs ? endRawNs - validationStartRawNs : 0,
++        profile::Outcome::Success, profile::CorrelationMode::Exact);
++      qi.afterSatisfied(qi.interest, data);
++    };
+ 
+-    auto onValidationFailed = [this, qi](const Data& data, const ValidationError& error) {
++    auto onValidationFailed = [this, qi, validationStartRawNs](const Data& data,
++                                                               const ValidationError& error) {
++      profile::TraceScope callbackTrace(qi.profileTraceId);
++      const uint64_t endRawNs = profile::Profiler::get().nowRawNs();
++      profile::Profiler::get().recordInterval(
++        validationStage(qi.profileIsMapping), qi.profileTraceId, validationStartRawNs,
++        endRawNs >= validationStartRawNs ? endRawNs - validationStartRawNs : 0,
++        profile::Outcome::Invalid, profile::CorrelationMode::Exact);
+       if (qi.nRetriesOnValidationFail > 0) {
+         this->m_scheduler.schedule(
+           ndn::time::milliseconds(this->m_securityOptions.millisBeforeRetryOnValidationFail), [this, qi] {
+@@ -111,6 +197,12 @@ Fetcher::onData(const Interest& interest, const Data& data, const QueuedInterest
+ void
+ Fetcher::onNack(const ndn::Interest& interest, const ndn::lp::Nack& nack, const QueuedInterest& qi)
+ {
++  profile::TraceScope traceScope(qi.profileTraceId);
++  const uint64_t receiveRawNs = profile::Profiler::get().nowRawNs();
++  profile::Profiler::get().recordInterval(
++    networkStage(qi.profileIsMapping), qi.profileTraceId, *qi.profileExpressRawNs,
++    receiveRawNs >= *qi.profileExpressRawNs ? receiveRawNs - *qi.profileExpressRawNs : 0,
++    profile::Outcome::Nack, profile::CorrelationMode::Exact);
+   m_pendingInterests.erase(qi.id);
+   processQueue();
+   qi.afterNacked(interest, nack);
+@@ -119,6 +211,12 @@ Fetcher::onNack(const ndn::Interest& interest, const ndn::lp::Nack& nack, const
+ void
+ Fetcher::onTimeout(const Interest& interest, const QueuedInterest& qi)
+ {
++  profile::TraceScope traceScope(qi.profileTraceId);
++  const uint64_t receiveRawNs = profile::Profiler::get().nowRawNs();
++  profile::Profiler::get().recordInterval(
++    networkStage(qi.profileIsMapping), qi.profileTraceId, *qi.profileExpressRawNs,
++    receiveRawNs >= *qi.profileExpressRawNs ? receiveRawNs - *qi.profileExpressRawNs : 0,
++    profile::Outcome::Timeout, profile::CorrelationMode::Exact);
+   m_pendingInterests.erase(qi.id);
+ 
+   if (qi.nRetries == 0) {
+diff --git a/ndn-svs/fetcher.hpp b/ndn-svs/fetcher.hpp
+index 5473fd4..9da5984 100644
+--- a/ndn-svs/fetcher.hpp
++++ b/ndn-svs/fetcher.hpp
+@@ -76,6 +76,10 @@ private:
+     int nRetries;
+     int nRetriesOnValidationFail;
+     ndn::security::DataValidationFailureCallback afterValidationFailed;
++    uint64_t profileTraceId;
++    uint64_t profileEnqueueRawNs;
++    std::shared_ptr<uint64_t> profileExpressRawNs;
++    bool profileIsMapping;
+   };
+ 
+   // Interests yet to be sent
+diff --git a/ndn-svs/mapping-provider.cpp b/ndn-svs/mapping-provider.cpp
+index 7d47150..9e7a0e2 100644
+--- a/ndn-svs/mapping-provider.cpp
++++ b/ndn-svs/mapping-provider.cpp
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "mapping-provider.hpp"
++#include "profile.hpp"
+ #include "tlv.hpp"
+ 
+ namespace ndn::svs {
+@@ -115,30 +116,50 @@ MappingProvider::getMapping(const NodeID& nodeId, const SeqNo& seqNo)
+ void
+ MappingProvider::onMappingQuery(const Interest& interest)
+ {
++  profile::TraceScope traceScope;
++  profile::Span parseSpan(profile::StageId::MAP_QUERY_PARSE, traceScope.id());
+   MissingDataInfo query = parseMappingQueryDataName(interest.getName());
++  parseSpan.stop();
+   MappingList queryResponse(query.nodeId);
+ 
++  profile::Span lookupSpan(profile::StageId::MAP_RANGE_LOOKUP, traceScope.id());
+   for (SeqNo i = query.low; i <= std::max(query.high, query.low); i++) {
+     try {
+       auto mapping = getMapping(query.nodeId, i);
+       queryResponse.pairs.emplace_back(i, mapping);
+     } catch (const std::exception&) {
++      lookupSpan.setOutcome(profile::Outcome::Miss);
+       // TODO: don't give up if not everything is found
+       // Instead return whatever we have and let the client request
+       // the remaining mappings again
+       return;
+     }
+   }
++  lookupSpan.setCounts(0, queryResponse.pairs.size());
++  lookupSpan.stop();
+ 
+   // Don't reply if we have nothing
+   if (queryResponse.pairs.empty())
+     return;
+ 
++  profile::Span encodeSpan(profile::StageId::MAP_LIST_ENCODE, traceScope.id());
++  Block encodedList = queryResponse.encode();
++  encodeSpan.setCounts(encodedList.size(), queryResponse.pairs.size());
++  encodeSpan.stop();
++  profile::Span buildSpan(profile::StageId::MAP_DATA_BUILD, traceScope.id());
+   Data data(interest.getName());
+-  data.setContent(queryResponse.encode());
++  data.setContent(encodedList);
+   data.setFreshnessPeriod(1_s);
+-  m_securityOptions.dataSigner->sign(data);
+-  m_face.put(data);
++  buildSpan.setCounts(encodedList.size(), queryResponse.pairs.size());
++  buildSpan.stop();
++  {
++    profile::Span signSpan(profile::StageId::MAP_DATA_SIGN, traceScope.id());
++    m_securityOptions.dataSigner->sign(data);
++  }
++  {
++    profile::Span putSpan(profile::StageId::MAP_DATA_FACE_PUT, traceScope.id());
++    m_face.put(data);
++  }
+ }
+ 
+ void
+@@ -156,17 +177,28 @@ MappingProvider::fetchNameMapping(const MissingDataInfo& info,
+                                   const TimeoutCallback& onTimeout,
+                                   int nRetries)
+ {
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span buildSpan(profile::StageId::MAP_INTEREST_BUILD, traceId);
+   Name queryName = getMappingQueryDataName(info);
+   Interest interest(queryName);
+   interest.setCanBePrefix(false);
+   interest.setMustBeFresh(false);
+   interest.setInterestLifetime(2_s);
++  buildSpan.stop();
+ 
+   auto onDataValidated = [this, onValidated, info](const Data& data) {
++    const uint64_t callbackTraceId = profile::Profiler::get().currentTraceId();
++    profile::Span extractSpan(profile::StageId::MAP_CONTENT_EXTRACT, callbackTraceId);
+     Block block = data.getContent().blockFromValue();
++    extractSpan.setCounts(block.size(), 1);
++    extractSpan.stop();
++    profile::Span decodeSpan(profile::StageId::MAP_LIST_DECODE, callbackTraceId);
+     MappingList list(block);
++    decodeSpan.setCounts(block.size(), list.pairs.size());
++    decodeSpan.stop();
+ 
+     // Add all mappings to self
++    profile::Span insertSpan(profile::StageId::MAP_REMOTE_STORE_INSERT, callbackTraceId);
+     for (const auto& [seq, mapping] : list.pairs) {
+       try {
+         getMapping(info.nodeId, seq);
+@@ -174,6 +206,8 @@ MappingProvider::fetchNameMapping(const MissingDataInfo& info,
+         insertMapping(info.nodeId, seq, mapping);
+       }
+     }
++    insertSpan.setCounts(0, list.pairs.size());
++    insertSpan.stop();
+ 
+     onValidated(list);
+   };
+diff --git a/ndn-svs/profile.cpp b/ndn-svs/profile.cpp
+new file mode 100644
+index 0000000..fa1372f
+--- /dev/null
++++ b/ndn-svs/profile.cpp
+@@ -0,0 +1,477 @@
++/* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
++#include "profile.hpp"
++
++#include <ndn-cxx/util/logger.hpp>
++
++#include <boost/log/core.hpp>
++
++#include <array>
++#include <atomic>
++#include <cerrno>
++#include <charconv>
++#include <climits>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <limits>
++#include <iostream>
++#include <mutex>
++#include <string>
++
++namespace ndn::svs::profile {
++
++NDN_LOG_INIT(ndn_svs.Profile);
++
++namespace {
++
++constexpr size_t STAGE_COUNT = static_cast<size_t>(StageId::COUNT);
++
++constexpr std::array<StageDefinition, STAGE_COUNT> STAGES = {{
++#define NDN_SVS_PROFILE_DEF(symbol, wire, kind, thread, parent) \
++  {StageId::symbol, wire, SpanKind::kind, ThreadRole::thread, parent},
++  NDN_SVS_PROFILE_STAGE_LIST(NDN_SVS_PROFILE_DEF)
++#undef NDN_SVS_PROFILE_DEF
++}};
++
++const char*
++toString(SpanKind kind) noexcept
++{
++  switch (kind) {
++    case SpanKind::LeafCpu: return "leaf-cpu";
++    case SpanKind::Aggregate: return "aggregate";
++    case SpanKind::LockWait: return "lock-wait";
++    case SpanKind::QueueWait: return "queue-wait";
++    case SpanKind::ExternalWait: return "external-wait";
++    case SpanKind::Milestone: return "milestone";
++  }
++  return "invalid";
++}
++
++const char*
++toString(ThreadRole role) noexcept
++{
++  switch (role) {
++    case ThreadRole::AppMain: return "app-main";
++    case ThreadRole::FaceIo: return "face-io";
++    case ThreadRole::Callback: return "callback";
++    case ThreadRole::External: return "external";
++    case ThreadRole::Mixed: return "mixed";
++  }
++  return "invalid";
++}
++
++const char*
++toString(CorrelationMode mode) noexcept
++{
++  switch (mode) {
++    case CorrelationMode::Exact: return "exact";
++    case CorrelationMode::Ambiguous: return "ambiguous";
++    case CorrelationMode::Censored: return "censored";
++  }
++  return "invalid";
++}
++
++const char*
++toString(Outcome outcome) noexcept
++{
++  switch (outcome) {
++    case Outcome::Success: return "success";
++    case Outcome::Miss: return "miss";
++    case Outcome::Invalid: return "invalid";
++    case Outcome::Nack: return "nack";
++    case Outcome::Timeout: return "timeout";
++    case Outcome::Exception: return "exception";
++    case Outcome::Skipped: return "skipped";
++  }
++  return "invalid";
++}
++
++bool
++parseEnabled(const char* value) noexcept
++{
++  if (value == nullptr)
++    return false;
++  return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
++         std::strcmp(value, "yes") == 0;
++}
++
++uint64_t
++parsePositive(const char* value, uint64_t fallback) noexcept
++{
++  if (value == nullptr || *value == '\0')
++    return fallback;
++  errno = 0;
++  char* end = nullptr;
++  const unsigned long long parsed = std::strtoull(value, &end, 10);
++  if (errno != 0 || end == value || *end != '\0' || parsed == 0)
++    return fallback;
++  return static_cast<uint64_t>(parsed);
++}
++
++std::string
++readIdentity(const char* variable, const char* fallback) noexcept
++{
++  try {
++    const char* value = std::getenv(variable);
++    std::string result = value != nullptr && *value != '\0' ? value : fallback;
++    for (char& ch : result) {
++      if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '=')
++        ch = '_';
++    }
++    return result;
++  }
++  catch (...) {
++    return fallback;
++  }
++}
++
++uint64_t
++fnv1a(std::string_view value) noexcept
++{
++  uint64_t hash = 1469598103934665603ULL;
++  for (unsigned char ch : value) {
++    hash ^= ch;
++    hash *= 1099511628211ULL;
++  }
++  return hash;
++}
++
++void
++updateMin(std::atomic<uint64_t>& target, uint64_t value) noexcept
++{
++  uint64_t current = target.load(std::memory_order_relaxed);
++  while (value < current &&
++         !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
++  }
++}
++
++void
++updateMax(std::atomic<uint64_t>& target, uint64_t value) noexcept
++{
++  uint64_t current = target.load(std::memory_order_relaxed);
++  while (value > current &&
++         !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
++  }
++}
++
++struct Aggregate
++{
++  std::atomic<uint64_t> calls{0};
++  std::atomic<uint64_t> successes{0};
++  std::atomic<uint64_t> failures{0};
++  std::atomic<uint64_t> sampledCalls{0};
++  std::atomic<uint64_t> droppedRecords{0};
++  std::atomic<uint64_t> totalDurationNs{0};
++  std::atomic<uint64_t> minDurationNs{std::numeric_limits<uint64_t>::max()};
++  std::atomic<uint64_t> maxDurationNs{0};
++  std::atomic<uint64_t> totalBytes{0};
++  std::atomic<uint64_t> totalItems{0};
++};
++
++} // namespace
++
++struct Profiler::Impl
++{
++  bool enabled = false;
++  uint64_t sampleModulus = 100;
++  std::string cell = "unset";
++  std::string peer = "unset";
++  std::array<Aggregate, STAGE_COUNT> aggregates;
++  std::atomic<uint64_t> traceCounter{0};
++  std::atomic<bool> flushed{false};
++};
++
++namespace {
++
++thread_local uint64_t g_currentTraceId = 0;
++
++std::string
++traceIdToString(uint64_t traceId)
++{
++  std::array<char, 32> buffer{};
++  const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), traceId);
++  if (result.ec != std::errc())
++    return "0";
++  return std::string(buffer.data(), result.ptr);
++}
++
++} // namespace
++
++const StageDefinition&
++getStageDefinition(StageId stage) noexcept
++{
++  const size_t index = static_cast<size_t>(stage);
++  return STAGES[index < STAGES.size() ? index : 0];
++}
++
++size_t
++getStageCount() noexcept
++{
++  return STAGES.size();
++}
++
++Profiler&
++Profiler::get() noexcept
++{
++  static Profiler* instance = new Profiler();
++  return *instance;
++}
++
++Profiler::Profiler() noexcept
++  : m_impl(new Impl())
++{
++  m_impl->enabled = parseEnabled(std::getenv("NDN_SVS_PROFILE_ENABLED"));
++  m_impl->sampleModulus = parsePositive(std::getenv("NDN_SVS_PROFILE_SAMPLE_MODULUS"), 100);
++  m_impl->cell = readIdentity("NDN_SVS_PROFILE_CELL_ID", "unset");
++  m_impl->peer = readIdentity("NDN_SVS_PROFILE_PEER_ID", "unset");
++  if (m_impl->enabled) {
++    try {
++      NDN_LOG_TRACE("schema=spec133-profile-lifecycle-v1 event=profile-start"
++                    << " cell=" << m_impl->cell
++                    << " peer=" << m_impl->peer
++                    << " sampleModulus=" << m_impl->sampleModulus
++                    << " clock=CLOCK_MONOTONIC_RAW");
++    }
++    catch (...) {
++    }
++    std::atexit([] { Profiler::get().flush(); });
++  }
++}
++
++bool
++Profiler::isEnabled() const noexcept
++{
++  return m_impl->enabled;
++}
++
++bool
++Profiler::shouldSample(std::string_view traceKey) const noexcept
++{
++  return m_impl->enabled && fnv1a(traceKey) % m_impl->sampleModulus == 0;
++}
++
++uint64_t
++Profiler::nextTraceId() noexcept
++{
++  if (!m_impl->enabled)
++    return 0;
++  return m_impl->traceCounter.fetch_add(1, std::memory_order_relaxed) + 1;
++}
++
++uint64_t
++Profiler::currentTraceId() const noexcept
++{
++  return g_currentTraceId;
++}
++
++uint64_t
++Profiler::nowRawNs() const noexcept
++{
++  timespec now{};
++  if (::clock_gettime(CLOCK_MONOTONIC_RAW, &now) != 0)
++    return 0;
++  return static_cast<uint64_t>(now.tv_sec) * 1000000000ULL +
++         static_cast<uint64_t>(now.tv_nsec);
++}
++
++void
++Profiler::record(StageId stage, std::string_view traceKey, uint64_t startRawNs,
++                 uint64_t durationNs, Outcome outcome, uint64_t bytes, uint64_t items,
++                 CorrelationMode correlationMode, bool sampled) noexcept
++{
++  if (!m_impl->enabled)
++    return;
++  const size_t index = static_cast<size_t>(stage);
++  if (index >= STAGES.size())
++    return;
++  Aggregate& aggregate = m_impl->aggregates[index];
++  aggregate.calls.fetch_add(1, std::memory_order_relaxed);
++  if (outcome == Outcome::Success)
++    aggregate.successes.fetch_add(1, std::memory_order_relaxed);
++  else if (outcome != Outcome::Skipped)
++    aggregate.failures.fetch_add(1, std::memory_order_relaxed);
++  aggregate.totalDurationNs.fetch_add(durationNs, std::memory_order_relaxed);
++  aggregate.totalBytes.fetch_add(bytes, std::memory_order_relaxed);
++  aggregate.totalItems.fetch_add(items, std::memory_order_relaxed);
++  updateMin(aggregate.minDurationNs, durationNs);
++  updateMax(aggregate.maxDurationNs, durationNs);
++  if (!sampled)
++    return;
++  aggregate.sampledCalls.fetch_add(1, std::memory_order_relaxed);
++  const StageDefinition& definition = STAGES[index];
++  try {
++    NDN_LOG_TRACE("schema=spec133-stage-span-v1 event=stage-span"
++                  << " cell=" << m_impl->cell
++                  << " peer=" << m_impl->peer
++                  << " stage=" << definition.id
++                  << " kind=" << toString(definition.kind)
++                  << " thread=" << toString(definition.thread)
++                  << " parent=" << (definition.parent[0] == '\0' ? "none" : definition.parent)
++                  << " trace=" << traceKey
++                  << " startRawNs=" << startRawNs
++                  << " durationNs=" << durationNs
++                  << " outcome=" << toString(outcome)
++                  << " bytes=" << bytes
++                  << " items=" << items
++                  << " correlationMode=" << toString(correlationMode)
++                  << " sampleModulus=" << m_impl->sampleModulus);
++  }
++  catch (...) {
++    aggregate.droppedRecords.fetch_add(1, std::memory_order_relaxed);
++  }
++}
++
++void
++Profiler::recordInterval(StageId stage, uint64_t traceId, uint64_t startRawNs,
++                         uint64_t durationNs, Outcome outcome,
++                         CorrelationMode correlationMode) noexcept
++{
++  if (!m_impl->enabled)
++    return;
++  try {
++    const std::string traceKey = traceIdToString(traceId);
++    record(stage, traceKey, startRawNs, durationNs, outcome, 0, 1,
++           correlationMode, shouldSample(traceKey));
++  }
++  catch (...) {
++  }
++}
++
++void
++Profiler::flush() noexcept
++{
++  if (!m_impl->enabled || m_impl->flushed.exchange(true, std::memory_order_relaxed))
++    return;
++  for (size_t index = 0; index < STAGES.size(); ++index) {
++    const StageDefinition& definition = STAGES[index];
++    Aggregate& aggregate = m_impl->aggregates[index];
++    const uint64_t calls = aggregate.calls.load(std::memory_order_relaxed);
++    const uint64_t minimum = calls == 0 ? 0 : aggregate.minDurationNs.load(std::memory_order_relaxed);
++    try {
++      NDN_LOG_TRACE("schema=spec133-stage-summary-v1 event=stage-summary"
++                    << " cell=" << m_impl->cell
++                    << " peer=" << m_impl->peer
++                    << " stage=" << definition.id
++                    << " kind=" << toString(definition.kind)
++                    << " thread=" << toString(definition.thread)
++                    << " calls=" << calls
++                    << " successes=" << aggregate.successes.load(std::memory_order_relaxed)
++                    << " failures=" << aggregate.failures.load(std::memory_order_relaxed)
++                    << " sampledCalls=" << aggregate.sampledCalls.load(std::memory_order_relaxed)
++                    << " droppedRecords=" << aggregate.droppedRecords.load(std::memory_order_relaxed)
++                    << " totalDurationNs=" << aggregate.totalDurationNs.load(std::memory_order_relaxed)
++                    << " minDurationNs=" << minimum
++                    << " maxDurationNs=" << aggregate.maxDurationNs.load(std::memory_order_relaxed)
++                    << " totalBytes=" << aggregate.totalBytes.load(std::memory_order_relaxed)
++                    << " totalItems=" << aggregate.totalItems.load(std::memory_order_relaxed)
++                    << " sampleModulus=" << m_impl->sampleModulus);
++    }
++    catch (...) {
++      aggregate.droppedRecords.fetch_add(1, std::memory_order_relaxed);
++    }
++  }
++  try {
++    NDN_LOG_TRACE("schema=spec133-profile-lifecycle-v1 event=profile-stop"
++                  << " cell=" << m_impl->cell
++                  << " peer=" << m_impl->peer
++                  << " sampleModulus=" << m_impl->sampleModulus);
++    boost::log::core::get()->flush();
++    std::clog.flush();
++  }
++  catch (...) {
++  }
++}
++
++TraceScope::TraceScope() noexcept
++  : TraceScope(Profiler::get().nextTraceId())
++{
++}
++
++TraceScope::TraceScope(uint64_t traceId) noexcept
++  : m_previous(g_currentTraceId)
++  , m_current(traceId)
++{
++  g_currentTraceId = traceId;
++}
++
++TraceScope::~TraceScope() noexcept
++{
++  g_currentTraceId = m_previous;
++}
++
++uint64_t
++TraceScope::id() const noexcept
++{
++  return m_current;
++}
++
++Span::Span(StageId stage, std::string_view traceKey,
++           CorrelationMode correlationMode) noexcept
++  : m_stage(stage)
++  , m_correlationMode(correlationMode)
++{
++  start(traceKey);
++}
++
++Span::Span(StageId stage, uint64_t traceId,
++           CorrelationMode correlationMode) noexcept
++  : m_stage(stage)
++  , m_correlationMode(correlationMode)
++{
++  try {
++    start(traceIdToString(traceId));
++  }
++  catch (...) {
++    m_enabled = false;
++  }
++}
++
++void
++Span::start(std::string_view traceKey) noexcept
++{
++  try {
++    Profiler& profiler = Profiler::get();
++    m_enabled = profiler.isEnabled();
++    if (!m_enabled)
++      return;
++    m_traceKey.assign(traceKey.data(), traceKey.size());
++    m_sampled = profiler.shouldSample(m_traceKey);
++    m_startRawNs = profiler.nowRawNs();
++  }
++  catch (...) {
++    m_enabled = false;
++  }
++}
++
++Span::~Span() noexcept
++{
++  stop();
++}
++
++void
++Span::setOutcome(Outcome outcome) noexcept
++{
++  m_outcome = outcome;
++}
++
++void
++Span::setCounts(uint64_t bytes, uint64_t items) noexcept
++{
++  m_bytes = bytes;
++  m_items = items;
++}
++
++void
++Span::stop() noexcept
++{
++  if (!m_enabled || m_stopped)
++    return;
++  m_stopped = true;
++  Profiler& profiler = Profiler::get();
++  const uint64_t endRawNs = profiler.nowRawNs();
++  const uint64_t durationNs = endRawNs >= m_startRawNs ? endRawNs - m_startRawNs : 0;
++  profiler.record(m_stage, m_traceKey, m_startRawNs, durationNs, m_outcome,
++                  m_bytes, m_items, m_correlationMode, m_sampled);
++}
++
++} // namespace ndn::svs::profile
+diff --git a/ndn-svs/profile.hpp b/ndn-svs/profile.hpp
+new file mode 100644
+index 0000000..467edde
+--- /dev/null
++++ b/ndn-svs/profile.hpp
+@@ -0,0 +1,251 @@
++/* -*- Mode: C++; c-file-style: "gnu"; indent-tabs-mode:nil -*- */
++#ifndef NDN_SVS_PROFILE_HPP
++#define NDN_SVS_PROFILE_HPP
++
++#include <cstddef>
++#include <cstdint>
++#include <string>
++#include <string_view>
++
++namespace ndn::svs::profile {
++
++enum class SpanKind : uint8_t {
++  LeafCpu,
++  Aggregate,
++  LockWait,
++  QueueWait,
++  ExternalWait,
++  Milestone,
++};
++
++enum class ThreadRole : uint8_t {
++  AppMain,
++  FaceIo,
++  Callback,
++  External,
++  Mixed,
++};
++
++enum class CorrelationMode : uint8_t {
++  Exact,
++  Ambiguous,
++  Censored,
++};
++
++enum class Outcome : uint8_t {
++  Success,
++  Miss,
++  Invalid,
++  Nack,
++  Timeout,
++  Exception,
++  Skipped,
++};
++
++#define NDN_SVS_PROFILE_STAGE_LIST(X)                                                        \
++  X(PUB_TOTAL, "PUB.TOTAL", Aggregate, AppMain, "")                                        \
++  X(PUB_VV_READ_LOCK_WAIT, "PUB.VV_READ_LOCK_WAIT", LockWait, AppMain, "PUB.TOTAL")        \
++  X(PUB_SEQ_READ, "PUB.SEQ_READ", LeafCpu, AppMain, "PUB.TOTAL")                           \
++  X(PUB_INNER_BUILD, "PUB.INNER_BUILD", LeafCpu, AppMain, "PUB.TOTAL")                     \
++  X(PUB_INNER_SIGN, "PUB.INNER_SIGN", LeafCpu, AppMain, "PUB.TOTAL")                       \
++  X(PUB_INNER_WIRE_ENCODE, "PUB.INNER_WIRE_ENCODE", LeafCpu, AppMain, "PUB.TOTAL")         \
++  X(PUB_EXTRA_DATA_LOCK_WAIT, "PUB.EXTRA_DATA_LOCK_WAIT", LockWait, AppMain, "PUB.TOTAL")  \
++  X(PUB_PIGGY_QUEUE_INSERT, "PUB.PIGGY_QUEUE_INSERT", LeafCpu, AppMain, "PUB.TOTAL")       \
++  X(PUB_OUTER_BUILD, "PUB.OUTER_BUILD", LeafCpu, AppMain, "PUB.TOTAL")                     \
++  X(PUB_OUTER_SIGN, "PUB.OUTER_SIGN", LeafCpu, AppMain, "PUB.TOTAL")                       \
++  X(PUB_OUTER_STORE_INSERT, "PUB.OUTER_STORE_INSERT", LeafCpu, AppMain, "PUB.TOTAL")       \
++  X(PUB_VV_UPDATE_LOCK_WAIT, "PUB.VV_UPDATE_LOCK_WAIT", LockWait, AppMain, "PUB.TOTAL")    \
++  X(PUB_LOCAL_STATE_UPDATE, "PUB.LOCAL_STATE_UPDATE", LeafCpu, AppMain, "PUB.TOTAL")       \
++  X(PUB_SCHEDULER_LOCK_WAIT, "PUB.SCHEDULER_LOCK_WAIT", LockWait, AppMain, "PUB.TOTAL")    \
++  X(PUB_OUTER_FACE_PUT, "PUB.OUTER_FACE_PUT", LeafCpu, AppMain, "PUB.TOTAL")               \
++  X(MAP_TIMESTAMP_BUILD, "MAP.TIMESTAMP_BUILD", LeafCpu, AppMain, "PUB.TOTAL")             \
++  X(MAP_NOTIFICATION_ENQUEUE, "MAP.NOTIFICATION_ENQUEUE", LeafCpu, AppMain, "PUB.TOTAL")   \
++  X(MAP_STORE_INSERT, "MAP.STORE_INSERT", LeafCpu, AppMain, "PUB.TOTAL")                   \
++  X(SYNC_TIMER_ARM_CANCEL, "SYNC.TIMER_ARM_CANCEL", LeafCpu, Mixed, "")                     \
++  X(SYNC_TIMER_WAIT, "SYNC.TIMER_WAIT", QueueWait, FaceIo, "")                             \
++  X(SYNC_PRODUCE_TOTAL, "SYNC.PRODUCE_TOTAL", Aggregate, FaceIo, "")                       \
++  X(SYNC_EXTRA_BLOCK_TOTAL, "SYNC.EXTRA_BLOCK_TOTAL", Aggregate, FaceIo, "SYNC.PRODUCE_TOTAL") \
++  X(SYNC_EXTRA_DATA_LOCK_WAIT, "SYNC.EXTRA_DATA_LOCK_WAIT", LockWait, FaceIo, "SYNC.EXTRA_BLOCK_TOTAL") \
++  X(SYNC_MAPPING_CANDIDATE_ENCODE, "SYNC.MAPPING_CANDIDATE_ENCODE", LeafCpu, FaceIo, "SYNC.EXTRA_BLOCK_TOTAL") \
++  X(SYNC_PIGGY_WIRE_SCAN, "SYNC.PIGGY_WIRE_SCAN", LeafCpu, FaceIo, "SYNC.EXTRA_BLOCK_TOTAL") \
++  X(SYNC_EXTRA_BLOCK_FINAL_ENCODE, "SYNC.EXTRA_BLOCK_FINAL_ENCODE", LeafCpu, FaceIo, "SYNC.EXTRA_BLOCK_TOTAL") \
++  X(SYNC_VV_ENCODE_LOCK_WAIT, "SYNC.VV_ENCODE_LOCK_WAIT", LockWait, FaceIo, "SYNC.PRODUCE_TOTAL") \
++  X(SYNC_VV_ENCODE, "SYNC.VV_ENCODE", LeafCpu, FaceIo, "SYNC.PRODUCE_TOTAL")                \
++  X(SYNC_APP_PARAMS_ENCODE, "SYNC.APP_PARAMS_ENCODE", LeafCpu, FaceIo, "SYNC.PRODUCE_TOTAL") \
++  X(SYNC_INTEREST_BUILD, "SYNC.INTEREST_BUILD", LeafCpu, FaceIo, "SYNC.PRODUCE_TOTAL")      \
++  X(SYNC_INTEREST_SIGN, "SYNC.INTEREST_SIGN", LeafCpu, FaceIo, "SYNC.PRODUCE_TOTAL")        \
++  X(SYNC_INTEREST_EXPRESS, "SYNC.INTEREST_EXPRESS", LeafCpu, FaceIo, "SYNC.PRODUCE_TOTAL")  \
++  X(SYNC_NETWORK_WAIT, "SYNC.NETWORK_WAIT", ExternalWait, External, "")                     \
++  X(SYNC_RECEIVE_TOTAL, "SYNC.RECEIVE_TOTAL", Aggregate, FaceIo, "")                       \
++  X(SYNC_INTEREST_VERIFY, "SYNC.INTEREST_VERIFY", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL")    \
++  X(SYNC_APP_PARAMS_PARSE, "SYNC.APP_PARAMS_PARSE", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL")  \
++  X(SYNC_VV_DECODE, "SYNC.VV_DECODE", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL")                \
++  X(SYNC_EXTRA_MAPPING_DECODE, "SYNC.EXTRA_MAPPING_DECODE", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL") \
++  X(SYNC_PIGGY_DATA_DECODE_CACHE, "SYNC.PIGGY_DATA_DECODE_CACHE", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL") \
++  X(SYNC_VV_MERGE_LOCK_WAIT, "SYNC.VV_MERGE_LOCK_WAIT", LockWait, FaceIo, "SYNC.RECEIVE_TOTAL") \
++  X(SYNC_VV_MERGE, "SYNC.VV_MERGE", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL")                  \
++  X(SYNC_UPDATE_DISPATCH, "SYNC.UPDATE_DISPATCH", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL")    \
++  X(SYNC_SUPPRESSION_DECISION, "SYNC.SUPPRESSION_DECISION", LeafCpu, FaceIo, "SYNC.RECEIVE_TOTAL") \
++  X(SYNC_RECORDED_VV_LOCK_WAIT, "SYNC.RECORDED_VV_LOCK_WAIT", LockWait, FaceIo, "SYNC.RECEIVE_TOTAL") \
++  X(SYNC_SCHEDULER_LOCK_WAIT, "SYNC.SCHEDULER_LOCK_WAIT", LockWait, FaceIo, "SYNC.RECEIVE_TOTAL") \
++  X(MAP_PROCESS_TOTAL, "MAP.PROCESS_TOTAL", Aggregate, FaceIo, "")                          \
++  X(MAP_LOCAL_LOOKUP, "MAP.LOCAL_LOOKUP", LeafCpu, FaceIo, "MAP.PROCESS_TOTAL")             \
++  X(MAP_FRESHNESS_CHECK, "MAP.FRESHNESS_CHECK", LeafCpu, FaceIo, "MAP.PROCESS_TOTAL")       \
++  X(MAP_SUBSCRIPTION_MATCH, "MAP.SUBSCRIPTION_MATCH", LeafCpu, FaceIo, "MAP.PROCESS_TOTAL") \
++  X(MAP_EXTRA_DATA_LOCK_WAIT, "MAP.EXTRA_DATA_LOCK_WAIT", LockWait, FaceIo, "MAP.PROCESS_TOTAL") \
++  X(MAP_PIGGY_CACHE_LOOKUP, "MAP.PIGGY_CACHE_LOOKUP", LeafCpu, FaceIo, "MAP.PROCESS_TOTAL") \
++  X(MAP_FETCH_QUEUE_INSERT, "MAP.FETCH_QUEUE_INSERT", LeafCpu, FaceIo, "MAP.PROCESS_TOTAL") \
++  X(MAP_PIGGY_CALLBACK, "MAP.PIGGY_CALLBACK", LeafCpu, Callback, "MAP.PROCESS_TOTAL")       \
++  X(MAP_INTEREST_BUILD, "MAP.INTEREST_BUILD", LeafCpu, FaceIo, "")                         \
++  X(MAP_FETCHER_QUEUE_WAIT, "MAP.FETCHER_QUEUE_WAIT", QueueWait, FaceIo, "")               \
++  X(MAP_INTEREST_EXPRESS, "MAP.INTEREST_EXPRESS", LeafCpu, FaceIo, "")                     \
++  X(MAP_NETWORK_WAIT, "MAP.NETWORK_WAIT", ExternalWait, External, "")                      \
++  X(MAP_QUERY_PARSE, "MAP.QUERY_PARSE", LeafCpu, FaceIo, "")                               \
++  X(MAP_RANGE_LOOKUP, "MAP.RANGE_LOOKUP", LeafCpu, FaceIo, "")                            \
++  X(MAP_LIST_ENCODE, "MAP.LIST_ENCODE", LeafCpu, FaceIo, "")                              \
++  X(MAP_DATA_BUILD, "MAP.DATA_BUILD", LeafCpu, FaceIo, "")                                \
++  X(MAP_DATA_SIGN, "MAP.DATA_SIGN", LeafCpu, FaceIo, "")                                  \
++  X(MAP_DATA_FACE_PUT, "MAP.DATA_FACE_PUT", LeafCpu, FaceIo, "")                          \
++  X(MAP_DATA_VERIFY, "MAP.DATA_VERIFY", LeafCpu, FaceIo, "")                              \
++  X(MAP_CONTENT_EXTRACT, "MAP.CONTENT_EXTRACT", LeafCpu, FaceIo, "")                      \
++  X(MAP_LIST_DECODE, "MAP.LIST_DECODE", LeafCpu, FaceIo, "")                              \
++  X(MAP_REMOTE_STORE_INSERT, "MAP.REMOTE_STORE_INSERT", LeafCpu, FaceIo, "")              \
++  X(PAYLOAD_INTEREST_BUILD, "PAYLOAD.INTEREST_BUILD", LeafCpu, FaceIo, "")                 \
++  X(PAYLOAD_FETCHER_QUEUE_WAIT, "PAYLOAD.FETCHER_QUEUE_WAIT", QueueWait, FaceIo, "")       \
++  X(PAYLOAD_INTEREST_EXPRESS, "PAYLOAD.INTEREST_EXPRESS", LeafCpu, FaceIo, "")             \
++  X(PAYLOAD_NETWORK_WAIT, "PAYLOAD.NETWORK_WAIT", ExternalWait, External, "")              \
++  X(PAYLOAD_PROVIDER_STORE_FIND, "PAYLOAD.PROVIDER_STORE_FIND", LeafCpu, FaceIo, "")        \
++  X(PAYLOAD_PROVIDER_FACE_PUT, "PAYLOAD.PROVIDER_FACE_PUT", LeafCpu, FaceIo, "")            \
++  X(PAYLOAD_OUTER_VERIFY, "PAYLOAD.OUTER_VERIFY", LeafCpu, FaceIo, "")                      \
++  X(PAYLOAD_OUTER_CACHE_INSERT, "PAYLOAD.OUTER_CACHE_INSERT", LeafCpu, FaceIo, "")          \
++  X(PAYLOAD_INNER_DECODE, "PAYLOAD.INNER_DECODE", LeafCpu, FaceIo, "")                     \
++  X(PAYLOAD_INNER_VERIFY, "PAYLOAD.INNER_VERIFY", LeafCpu, FaceIo, "")                     \
++  X(PAYLOAD_SUBSCRIPTION_CALLBACK, "PAYLOAD.SUBSCRIPTION_CALLBACK", LeafCpu, Callback, "")  \
++  X(APP_PAYLOAD_CHECK, "APP.PAYLOAD_CHECK", LeafCpu, Callback, "")                         \
++  X(APP_STATE_UPDATE, "APP.STATE_UPDATE", Milestone, Callback, "")                         \
++  X(APP_DELIVERY, "APP.DELIVERY", Milestone, Callback, "")
++
++enum class StageId : uint16_t {
++#define NDN_SVS_PROFILE_ENUM(symbol, wire, kind, thread, parent) symbol,
++  NDN_SVS_PROFILE_STAGE_LIST(NDN_SVS_PROFILE_ENUM)
++#undef NDN_SVS_PROFILE_ENUM
++  COUNT,
++};
++
++struct StageDefinition
++{
++  StageId stage;
++  const char* id;
++  SpanKind kind;
++  ThreadRole thread;
++  const char* parent;
++};
++
++const StageDefinition&
++getStageDefinition(StageId stage) noexcept;
++
++size_t
++getStageCount() noexcept;
++
++class Profiler
++{
++public:
++  static Profiler&
++  get() noexcept;
++
++  bool
++  isEnabled() const noexcept;
++
++  bool
++  shouldSample(std::string_view traceKey) const noexcept;
++
++  uint64_t
++  nextTraceId() noexcept;
++
++  uint64_t
++  currentTraceId() const noexcept;
++
++  uint64_t
++  nowRawNs() const noexcept;
++
++  void
++  record(StageId stage, std::string_view traceKey, uint64_t startRawNs,
++         uint64_t durationNs, Outcome outcome, uint64_t bytes, uint64_t items,
++         CorrelationMode correlationMode, bool sampled) noexcept;
++
++  void
++  recordInterval(StageId stage, uint64_t traceId, uint64_t startRawNs,
++                 uint64_t durationNs, Outcome outcome = Outcome::Success,
++                 CorrelationMode correlationMode = CorrelationMode::Exact) noexcept;
++
++  void
++  flush() noexcept;
++
++private:
++  Profiler() noexcept;
++  struct Impl;
++  Impl* m_impl;
++};
++
++class TraceScope
++{
++public:
++  TraceScope() noexcept;
++
++  explicit TraceScope(uint64_t traceId) noexcept;
++
++  ~TraceScope() noexcept;
++
++  TraceScope(const TraceScope&) = delete;
++  TraceScope& operator=(const TraceScope&) = delete;
++
++  uint64_t
++  id() const noexcept;
++
++private:
++  uint64_t m_previous = 0;
++  uint64_t m_current = 0;
++};
++
++class Span
++{
++public:
++  explicit Span(StageId stage, std::string_view traceKey,
++                CorrelationMode correlationMode = CorrelationMode::Exact) noexcept;
++
++  explicit Span(StageId stage, uint64_t traceId,
++                CorrelationMode correlationMode = CorrelationMode::Exact) noexcept;
++
++  ~Span() noexcept;
++
++  Span(const Span&) = delete;
++  Span& operator=(const Span&) = delete;
++
++  void
++  setOutcome(Outcome outcome) noexcept;
++
++  void
++  setCounts(uint64_t bytes, uint64_t items = 1) noexcept;
++
++  void
++  stop() noexcept;
++
++private:
++  void
++  start(std::string_view traceKey) noexcept;
++
++  StageId m_stage;
++  std::string m_traceKey;
++  CorrelationMode m_correlationMode;
++  Outcome m_outcome = Outcome::Success;
++  uint64_t m_startRawNs = 0;
++  uint64_t m_bytes = 0;
++  uint64_t m_items = 0;
++  bool m_enabled = false;
++  bool m_sampled = false;
++  bool m_stopped = false;
++};
++
++} // namespace ndn::svs::profile
++
++#endif // NDN_SVS_PROFILE_HPP
+diff --git a/ndn-svs/svspubsub.cpp b/ndn-svs/svspubsub.cpp
+index ca29d6b..e8c04f4 100644
+--- a/ndn-svs/svspubsub.cpp
++++ b/ndn-svs/svspubsub.cpp
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "svspubsub.hpp"
++#include "profile.hpp"
+ #include "tlv.hpp"
+ 
+ #include <ndn-cxx/util/segment-fetcher.hpp>
+@@ -61,6 +62,8 @@ SVSPubSub::publish(const Name& name,
+                    time::milliseconds freshnessPeriod,
+                    std::vector<Block> mappingBlocks)
+ {
++  profile::TraceScope traceScope;
++  profile::Span totalSpan(profile::StageId::PUB_TOTAL, traceScope.id());
+   // Segment the data if larger than MAX_DATA_SIZE
+   if (value.size() > MAX_DATA_SIZE) {
+     size_t nSegments = (value.size() / MAX_DATA_SIZE) + 1;
+@@ -70,6 +73,7 @@ SVSPubSub::publish(const Name& name,
+     SeqNo seqNo = m_svsync.getCore().getSeqNo(nid) + 1;
+ 
+     for (size_t i = 0; i < nSegments; i++) {
++      profile::Span buildSpan(profile::StageId::PUB_INNER_BUILD, traceScope.id());
+       // Create encapsulated segment
+       auto segmentName = Name(name).appendVersion(0).appendSegment(i);
+       auto segment = Data(segmentName);
+@@ -80,11 +84,19 @@ SVSPubSub::publish(const Name& name,
+       segment.setContent(ndn::make_span(segVal, segValSize));
+ 
+       segment.setFinalBlock(finalBlock);
+-      m_securityOptions.dataSigner->sign(segment);
++      buildSpan.setCounts(segValSize, 1);
++      buildSpan.stop();
++      {
++        profile::Span signSpan(profile::StageId::PUB_INNER_SIGN, traceScope.id());
++        m_securityOptions.dataSigner->sign(segment);
++      }
+ 
+       // Insert outer segment
++      profile::Span wireSpan(profile::StageId::PUB_INNER_WIRE_ENCODE, traceScope.id());
++      const auto segmentWire = segment.wireEncode();
++      wireSpan.setCounts(segmentWire.size(), 1);
+       m_svsync.insertDataSegment(
+-        segment.wireEncode(), freshnessPeriod, nid, seqNo, i, finalBlock, ndn::tlv::Data);
++        segmentWire, freshnessPeriod, nid, seqNo, i, finalBlock, ndn::tlv::Data);
+     }
+ 
+     // Insert mapping and manually update the sequence number
+@@ -92,14 +104,27 @@ SVSPubSub::publish(const Name& name,
+     m_svsync.getCore().updateSeqNo(seqNo, nid);
+     return seqNo;
+   } else {
++    profile::Span buildSpan(profile::StageId::PUB_INNER_BUILD, traceScope.id());
+     ndn::Data data(name);
+     data.setContent(value);
+     data.setFreshnessPeriod(freshnessPeriod);
+-    m_securityOptions.dataSigner->sign(data);
++    buildSpan.setCounts(value.size(), 1);
++    buildSpan.stop();
++    {
++      profile::Span signSpan(profile::StageId::PUB_INNER_SIGN, traceScope.id());
++      m_securityOptions.dataSigner->sign(data);
++    }
+     // If the data is within the configured limit, add it to the piggyback queue.
++    profile::Span wireSpan(profile::StageId::PUB_INNER_WIRE_ENCODE, traceScope.id());
+     const auto wireSize = data.wireEncode().size();
++    wireSpan.setCounts(wireSize, 1);
++    wireSpan.stop();
+     if (wireSize <= m_maxPiggyDataSize) {
+-      std::lock_guard<std::mutex> lock(m_extraDataMutex);
++      profile::Span lockSpan(profile::StageId::PUB_EXTRA_DATA_LOCK_WAIT, traceScope.id());
++      std::unique_lock<std::mutex> lock(m_extraDataMutex, std::defer_lock);
++      lock.lock();
++      lockSpan.stop();
++      profile::Span insertSpan(profile::StageId::PUB_PIGGY_QUEUE_INSERT, traceScope.id());
+       m_piggyDataQueue.push_back({data, 0});
+     }
+     else {
+@@ -132,7 +157,12 @@ SeqNo
+ SVSPubSub::publishPacket(const Data& data, const Name& nodePrefix, std::vector<Block> mappingBlocks)
+ {
+   NodeID nid = nodePrefix == EMPTY_NAME ? m_dataPrefix : nodePrefix;
+-  SeqNo seqNo = m_svsync.publishData(data.wireEncode(), data.getFreshnessPeriod(), nid, ndn::tlv::Data);
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span wireSpan(profile::StageId::PUB_INNER_WIRE_ENCODE, traceId);
++  const auto wire = data.wireEncode();
++  wireSpan.setCounts(wire.size(), 1);
++  wireSpan.stop();
++  SeqNo seqNo = m_svsync.publishData(wire, data.getFreshnessPeriod(), nid, ndn::tlv::Data);
+   insertMapping(nid, seqNo, data.getName(), mappingBlocks);
+   return seqNo;
+ }
+@@ -140,11 +170,13 @@ SVSPubSub::publishPacket(const Data& data, const Name& nodePrefix, std::vector<B
+ void
+ SVSPubSub::insertMapping(const NodeID& nid, SeqNo seqNo, const Name& name, std::vector<Block> additional)
+ {
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
+   // additional is a copy deliberately
+   // this way we can add well-known mappings to the list
+ 
+   // add timestamp block
+   if (m_opts.useTimestamp) {
++    profile::Span timestampSpan(profile::StageId::MAP_TIMESTAMP_BUILD, traceId);
+     unsigned long now = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+@@ -157,11 +189,13 @@ SVSPubSub::insertMapping(const NodeID& nid, SeqNo seqNo, const Name& name, std::
+ 
+   // notify subscribers in next sync interest
+   if (m_notificationMappingList.nodeId == EMPTY_NAME || m_notificationMappingList.nodeId == nid) {
++    profile::Span notificationSpan(profile::StageId::MAP_NOTIFICATION_ENQUEUE, traceId);
+     m_notificationMappingList.nodeId = nid;
+     m_notificationMappingList.pairs.push_back({ seqNo, entry });
+   }
+ 
+   // send mapping to provider
++  profile::Span storeSpan(profile::StageId::MAP_STORE_INSERT, traceId);
+   m_mappingProvider.insertMapping(nid, seqNo, entry);
+ }
+ 
+@@ -220,8 +254,11 @@ SVSPubSub::updateCallbackInternal(const std::vector<MissingDataInfo>& info)
+     for (const auto& sub : m_producerSubscriptions) {
+       if (sub.prefix.isPrefixOf(streamName)) {
+         // Add to fetching queue
+-        for (SeqNo i = stream.low; i <= stream.high; i++)
++        for (SeqNo i = stream.low; i <= stream.high; i++) {
++          profile::Span queueSpan(profile::StageId::MAP_FETCH_QUEUE_INSERT,
++                                  profile::Profiler::get().currentTraceId());
+           m_fetchMap[std::pair(stream.nodeId, i)].push_back(sub);
++        }
+ 
+         // Prefetch next available data
+         if (sub.prefetch)
+@@ -280,15 +317,33 @@ SVSPubSub::updateCallbackInternal(const std::vector<MissingDataInfo>& info)
+ bool
+ SVSPubSub::processMapping(const NodeID& nodeId, SeqNo seqNo)
+ {
++  auto& profiler = profile::Profiler::get();
++  uint64_t traceId = profiler.currentTraceId();
++  if (traceId == 0)
++    traceId = profiler.nextTraceId();
++  profile::TraceScope traceScope(traceId);
++  profile::Span totalSpan(profile::StageId::MAP_PROCESS_TOTAL, traceId);
+   const std::pair<Name, SeqNo> publication(nodeId, seqNo);
+   if (hasPiggyDeliveredPublication(publication)) {
++    totalSpan.setOutcome(profile::Outcome::Skipped);
+     return false;
+   }
+ 
+   // this will throw if mapping not found
+-  auto mapping = m_mappingProvider.getMapping(nodeId, seqNo);
++  auto mapping = [&] {
++    profile::Span lookupSpan(profile::StageId::MAP_LOCAL_LOOKUP, traceId);
++    try {
++      return m_mappingProvider.getMapping(nodeId, seqNo);
++    }
++    catch (...) {
++      lookupSpan.setOutcome(profile::Outcome::Miss);
++      totalSpan.setOutcome(profile::Outcome::Miss);
++      throw;
++    }
++  }();
+ 
+   // check if timestamp is too old
++  profile::Span freshnessSpan(profile::StageId::MAP_FRESHNESS_CHECK, traceId);
+   if (m_opts.maxPubAge > 0_ms) {
+     // look for the additional timestamp block
+     // if no timestamp block is present, we just skip this step
+@@ -303,19 +358,27 @@ SVSPubSub::processMapping(const NodeID& nodeId, SeqNo seqNo)
+       unsigned long pubTime = Name::Component(block).toNumber();
+       unsigned long maxAge = time::microseconds(m_opts.maxPubAge).count();
+ 
+-      if (now - pubTime > maxAge)
++      if (now - pubTime > maxAge) {
++        freshnessSpan.setOutcome(profile::Outcome::Skipped);
++        totalSpan.setOutcome(profile::Outcome::Skipped);
+         return false;
++      }
+     }
+   }
++  freshnessSpan.stop();
+ 
+   bool queued = false;
+   bool deliveredFromPiggy = false;
+   auto queueOrDeliver = [this, &queued, &deliveredFromPiggy, &mapping, &publication,
+-                         &nodeId, seqNo](const Subscription& sub) {
++                         &nodeId, seqNo, traceId](const Subscription& sub) {
+     if (sub.autofetch) {
+       std::optional<Data> packet;
+       {
+-        std::lock_guard<std::mutex> lock(m_extraDataMutex);
++        profile::Span lockSpan(profile::StageId::MAP_EXTRA_DATA_LOCK_WAIT, traceId);
++        std::unique_lock<std::mutex> lock(m_extraDataMutex, std::defer_lock);
++        lock.lock();
++        lockSpan.stop();
++        profile::Span cacheSpan(profile::StageId::MAP_PIGGY_CACHE_LOOKUP, traceId);
+         auto data = m_piggyDataCache.lower_bound(mapping.first);
+         auto exactData = m_piggyDataCache.find(mapping.first);
+         if (exactData != m_piggyDataCache.end()) {
+@@ -324,6 +387,7 @@ SVSPubSub::processMapping(const NodeID& nodeId, SeqNo seqNo)
+         else if (data != m_piggyDataCache.end() && mapping.first.isPrefixOf(data->first)) {
+           packet = data->second;
+         }
++        cacheSpan.setOutcome(packet ? profile::Outcome::Success : profile::Outcome::Miss);
+       }
+       if (packet) {
+         SubscriptionData subData = {
+@@ -333,10 +397,12 @@ SVSPubSub::processMapping(const NodeID& nodeId, SeqNo seqNo)
+           seqNo,
+           packet
+         };
++        profile::Span callbackSpan(profile::StageId::MAP_PIGGY_CALLBACK, traceId);
+         sub.callback(subData);
+         deliveredFromPiggy = true;
+       }
+       else {
++        profile::Span queueSpan(profile::StageId::MAP_FETCH_QUEUE_INSERT, traceId);
+         m_fetchMap[publication].push_back(sub);
+         queued = true;
+       }
+@@ -355,12 +421,18 @@ SVSPubSub::processMapping(const NodeID& nodeId, SeqNo seqNo)
+ 
+   // check if known mapping matches subscription
+   for (const auto& sub : m_prefixSubscriptions) {
+-    if (sub.prefix.isPrefixOf(mapping.first)) {
++    profile::Span matchSpan(profile::StageId::MAP_SUBSCRIPTION_MATCH, traceId);
++    const bool matches = sub.prefix.isPrefixOf(mapping.first);
++    matchSpan.stop();
++    if (matches) {
+       queueOrDeliver(sub);
+     }
+   }
+   for (const auto& sub : m_regexSubscriptions) {
+-    if (sub.regex->match(mapping.first)) {
++    profile::Span matchSpan(profile::StageId::MAP_SUBSCRIPTION_MATCH, traceId);
++    const bool matches = sub.regex->match(mapping.first);
++    matchSpan.stop();
++    if (matches) {
+       queueOrDeliver(sub);
+     }
+   }
+@@ -395,7 +467,12 @@ SVSPubSub::fetchAll()
+       const auto mapping = m_mappingProvider.getMapping(nodeId, seqNo);
+       std::optional<Data> packet;
+       {
+-        std::lock_guard<std::mutex> lock(m_extraDataMutex);
++        const uint64_t traceId = profile::Profiler::get().currentTraceId();
++        profile::Span lockSpan(profile::StageId::MAP_EXTRA_DATA_LOCK_WAIT, traceId);
++        std::unique_lock<std::mutex> lock(m_extraDataMutex, std::defer_lock);
++        lock.lock();
++        lockSpan.stop();
++        profile::Span cacheSpan(profile::StageId::MAP_PIGGY_CACHE_LOOKUP, traceId);
+         auto data = m_piggyDataCache.lower_bound(mapping.first);
+         auto exactData = m_piggyDataCache.find(mapping.first);
+         if (exactData != m_piggyDataCache.end()) {
+@@ -404,6 +481,7 @@ SVSPubSub::fetchAll()
+         else if (data != m_piggyDataCache.end() && mapping.first.isPrefixOf(data->first)) {
+           packet = data->second;
+         }
++        cacheSpan.setOutcome(packet ? profile::Outcome::Success : profile::Outcome::Miss);
+       }
+       if (packet) {
+         SubscriptionData subData = {
+@@ -414,6 +492,8 @@ SVSPubSub::fetchAll()
+           packet,
+         };
+         for (const auto& sub : m_fetchMap[key]) {
++          profile::Span callbackSpan(profile::StageId::MAP_PIGGY_CALLBACK,
++                                     profile::Profiler::get().currentTraceId());
+           sub.callback(subData);
+         }
+         rememberPiggyDeliveredPublication(key);
+@@ -432,8 +512,11 @@ SVSPubSub::fetchAll()
+ void
+ SVSPubSub::onSyncData(const Data& firstData, const std::pair<Name, SeqNo>& publication)
+ {
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span decodeSpan(profile::StageId::PAYLOAD_INNER_DECODE, traceId);
+   // Make sure the data is encapsulated
+   if (firstData.getContentType() != ndn::tlv::Data) {
++    decodeSpan.setOutcome(profile::Outcome::Invalid);
+     m_fetchingMap[publication] = false;
+     return;
+   }
+@@ -441,6 +524,8 @@ SVSPubSub::onSyncData(const Data& firstData, const std::pair<Name, SeqNo>& publi
+   // Unwrap
+   Data innerData(firstData.getContent().blockFromValue());
+   auto innerContent = innerData.getContent();
++  decodeSpan.setCounts(innerContent.value_size(), 1);
++  decodeSpan.stop();
+ 
+   // Return data to packet subscriptions
+   SubscriptionData subData = {
+@@ -448,13 +533,16 @@ SVSPubSub::onSyncData(const Data& firstData, const std::pair<Name, SeqNo>& publi
+   };
+ 
+   // Function to return data to subscriptions
+-  auto returnData = [this, firstData, subData, publication]() {
++  auto returnData = [this, firstData, subData, publication, traceId]() {
+     bool hasFinalBlock = subData.packet.value().getFinalBlock().has_value();
+     bool hasBlobSubcriptions = false;
+ 
+     for (const auto& sub : this->m_fetchMap[publication]) {
+-      if (sub.isPacketSubscription || !hasFinalBlock)
++      if (sub.isPacketSubscription || !hasFinalBlock) {
++        profile::Span callbackSpan(profile::StageId::PAYLOAD_SUBSCRIPTION_CALLBACK,
++                                   profile::Profiler::get().currentTraceId());
+         sub.callback(subData);
++      }
+ 
+       hasBlobSubcriptions |= !sub.isPacketSubscription;
+     }
+@@ -508,8 +596,11 @@ SVSPubSub::onSyncData(const Data& firstData, const std::pair<Name, SeqNo>& publi
+               };
+ 
+               for (const auto& sub : this->m_fetchMap[publication])
+-                if (!sub.isPacketSubscription)
++                if (!sub.isPacketSubscription) {
++                  profile::Span callbackSpan(profile::StageId::PAYLOAD_SUBSCRIPTION_CALLBACK,
++                                             profile::Profiler::get().currentTraceId());
+                   sub.callback(subData);
++                }
+ 
+               this->cleanUpFetch(publication);
+             };
+@@ -552,9 +643,28 @@ SVSPubSub::onSyncData(const Data& firstData, const std::pair<Name, SeqNo>& publi
+ 
+   // Validate encapsulated packet
+   if (m_securityOptions.encapsulatedDataValidator) {
++    const uint64_t validationStartRawNs = profile::Profiler::get().nowRawNs();
+     m_securityOptions.encapsulatedDataValidator->validate(
+-      innerData, [&](auto&&...) { returnData(); }, [](auto&&...) {});
++      innerData,
++      [&, traceId, validationStartRawNs](auto&&...) {
++        const uint64_t endRawNs = profile::Profiler::get().nowRawNs();
++        profile::Profiler::get().recordInterval(
++          profile::StageId::PAYLOAD_INNER_VERIFY, traceId, validationStartRawNs,
++          endRawNs >= validationStartRawNs ? endRawNs - validationStartRawNs : 0,
++          profile::Outcome::Success, profile::CorrelationMode::Exact);
++        returnData();
++      },
++      [traceId, validationStartRawNs](auto&&...) {
++        const uint64_t endRawNs = profile::Profiler::get().nowRawNs();
++        profile::Profiler::get().recordInterval(
++          profile::StageId::PAYLOAD_INNER_VERIFY, traceId, validationStartRawNs,
++          endRawNs >= validationStartRawNs ? endRawNs - validationStartRawNs : 0,
++          profile::Outcome::Invalid, profile::CorrelationMode::Exact);
++      });
+   } else {
++    profile::Span skipped(profile::StageId::PAYLOAD_INNER_VERIFY, traceId);
++    skipped.setOutcome(profile::Outcome::Skipped);
++    skipped.stop();
+     returnData();
+   }
+ }
+@@ -569,7 +679,12 @@ SVSPubSub::cleanUpFetch(const std::pair<Name, SeqNo>& publication)
+ bool
+ SVSPubSub::hasPiggyDeliveredPublication(const std::pair<Name, SeqNo>& publication)
+ {
+-  std::lock_guard<std::mutex> lock(m_extraDataMutex);
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span lockSpan(profile::StageId::MAP_EXTRA_DATA_LOCK_WAIT, traceId);
++  std::unique_lock<std::mutex> lock(m_extraDataMutex, std::defer_lock);
++  lock.lock();
++  lockSpan.stop();
++  profile::Span lookupSpan(profile::StageId::MAP_PIGGY_CACHE_LOOKUP, traceId);
+   return m_piggyDeliveredPublications.find(publication) != m_piggyDeliveredPublications.end();
+ }
+ 
+@@ -618,6 +733,8 @@ SVSPubSub::satisfyPendingFetchFromPiggyData(const Data& data)
+     };
+ 
+     for (const auto& sub : subscriptions) {
++      profile::Span callbackSpan(profile::StageId::PAYLOAD_SUBSCRIPTION_CALLBACK,
++                                 profile::Profiler::get().currentTraceId());
+       sub.callback(subData);
+     }
+     rememberPiggyDeliveredPublication(publication);
+@@ -633,7 +750,12 @@ SVSPubSub::satisfyPendingFetchFromPiggyData(const Data& data)
+ Block
+ SVSPubSub::onGetExtraData(const VersionVector&)
+ {
+-  std::lock_guard<std::mutex> lock(m_extraDataMutex);
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span totalSpan(profile::StageId::SYNC_EXTRA_BLOCK_TOTAL, traceId);
++  profile::Span lockSpan(profile::StageId::SYNC_EXTRA_DATA_LOCK_WAIT, traceId);
++  std::unique_lock<std::mutex> lock(m_extraDataMutex, std::defer_lock);
++  lock.lock();
++  lockSpan.stop();
+ 
+   MappingList includedMappings(m_notificationMappingList.nodeId);
+   size_t mappingCount = 0;
+@@ -642,7 +764,9 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+     for (const auto& entry : m_notificationMappingList.pairs) {
+       MappingList candidate = includedMappings;
+       candidate.pairs.push_back(entry);
++      profile::Span candidateSpan(profile::StageId::SYNC_MAPPING_CANDIDATE_ENCODE, traceId);
+       auto candidateBlock = candidate.encode();
++      candidateSpan.setCounts(candidateBlock.size(), 1);
+       if (candidateBlock.size() <= m_maxApplicationParametersSize) {
+         includedMappings = std::move(candidate);
+         ++mappingCount;
+@@ -650,14 +774,19 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+     }
+   }
+ 
++  profile::Span initialEncodeSpan(profile::StageId::SYNC_EXTRA_BLOCK_FINAL_ENCODE, traceId);
+   ndn::Block block = includedMappings.encode();
+   block.parse();
++  initialEncodeSpan.setCounts(block.size(), mappingCount);
++  initialEncodeSpan.stop();
+   size_t size = block.size();
+   size_t retainedCount = 0;
+   size_t expiredCount = 0;
+   std::deque<PiggyDataEntry> retained;
+   for (auto it = m_piggyDataQueue.rbegin(); it != m_piggyDataQueue.rend(); ++it) {
++    profile::Span piggySpan(profile::StageId::SYNC_PIGGY_WIRE_SCAN, traceId);
+     auto dataBlock = it->data.wireEncode();
++    piggySpan.setCounts(dataBlock.size(), 1);
+     if (size + dataBlock.size() > m_maxApplicationParametersSize) {
+       ++it->missed;
+       if (it->missed < 3) {
+@@ -676,6 +805,7 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+     size += dataBlock.size();
+     ++piggyCount;
+   }
++  profile::Span finalEncodeSpan(profile::StageId::SYNC_EXTRA_BLOCK_FINAL_ENCODE, traceId);
+   m_piggyDataQueue = std::move(retained);
+   block.encode();
+ 
+@@ -688,6 +818,7 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+                 << " piggyDataLimit=" << m_maxPiggyDataSize);
+ 
+   m_notificationMappingList = MappingList();
++  finalEncodeSpan.setCounts(block.size(), mappingCount + piggyCount);
+ 
+   return block;
+ }
+@@ -695,15 +826,18 @@ SVSPubSub::onGetExtraData(const VersionVector&)
+ void
+ SVSPubSub::onRecvExtraData(const Block& block, const VersionVector&)
+ {
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
+   std::vector<std::pair<NodeID, SeqNo>> receivedMappings;
+   try {
+     NDN_LOG_TRACE("event=piggyback_recv_block type=" << block.type()
+                   << " bytes=" << block.size());
++    profile::Span mappingSpan(profile::StageId::SYNC_EXTRA_MAPPING_DECODE, traceId);
+     MappingList list(block);
+     for (const auto& p : list.pairs) {
+       m_mappingProvider.insertMapping(list.nodeId, p.first, p.second);
+       receivedMappings.emplace_back(list.nodeId, p.first);
+     }
++    mappingSpan.setCounts(block.size(), list.pairs.size());
+     NDN_LOG_TRACE("event=piggyback_recv_mapping_list node=" << list.nodeId
+                   << " mappings=" << list.pairs.size());
+   } catch (const std::exception& e) {
+@@ -718,18 +852,24 @@ SVSPubSub::onRecvExtraData(const Block& block, const VersionVector&)
+       NDN_LOG_TRACE("event=piggyback_recv_child type=" << childBlock.type()
+                     << " bytes=" << childBlock.size());
+       if (childBlock.type() == ndn::svs::tlv::MappingData) {
++        profile::Span mappingSpan(profile::StageId::SYNC_EXTRA_MAPPING_DECODE, traceId);
+         MappingList childList(childBlock);
+         for (const auto& p : childList.pairs) {
+           m_mappingProvider.insertMapping(childList.nodeId, p.first, p.second);
+           receivedMappings.emplace_back(childList.nodeId, p.first);
+         }
++        mappingSpan.setCounts(childBlock.size(), childList.pairs.size());
+         mappingCount += childList.pairs.size();
+       }
+ 
+       if (childBlock.type() == ndn::tlv::Data) {
++        profile::Span dataDecodeSpan(profile::StageId::SYNC_PIGGY_DATA_DECODE_CACHE, traceId);
+         ndn::Data data(childBlock);
++        dataDecodeSpan.setCounts(childBlock.size(), 1);
++        dataDecodeSpan.stop();
+         satisfyPendingFetchFromPiggyData(data);
+         try {
++          profile::Span cacheSpan(profile::StageId::SYNC_PIGGY_DATA_DECODE_CACHE, traceId);
+           std::lock_guard<std::mutex> lock(m_extraDataMutex);
+           const auto dataName = data.getName();
+           if (m_piggyDataCache.find(dataName) == m_piggyDataCache.end()) {
+diff --git a/ndn-svs/svsync-base.cpp b/ndn-svs/svsync-base.cpp
+index 0f2f4b8..a9f1671 100644
+--- a/ndn-svs/svsync-base.cpp
++++ b/ndn-svs/svsync-base.cpp
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "svsync-base.hpp"
++#include "profile.hpp"
+ #include "store-memory.hpp"
+ 
+ #include <ndn-cxx/security/signing-helpers.hpp>
+@@ -62,20 +63,33 @@ SVSyncBase::publishData(const Block& content,
+                         const NodeID& id,
+                         uint32_t contentType)
+ {
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
+   NodeID pubId = id != EMPTY_NODE_ID ? id : m_id;
+   SeqNo newSeq = m_core.getSeqNo(pubId) + 1;
+ 
++  profile::Span buildSpan(profile::StageId::PUB_OUTER_BUILD, traceId);
+   Name dataName = getDataName(pubId, newSeq);
+   auto data = std::make_shared<Data>(dataName);
+   data->setContent(content);
+   data->setFreshnessPeriod(freshness);
+   data->setContentType(contentType);
+-
+-  m_securityOptions.dataSigner->sign(*data);
+-
+-  m_dataStore->insert(*data);
++  buildSpan.setCounts(content.size(), 1);
++  buildSpan.stop();
++
++  {
++    profile::Span signSpan(profile::StageId::PUB_OUTER_SIGN, traceId);
++    m_securityOptions.dataSigner->sign(*data);
++  }
++
++  {
++    profile::Span storeSpan(profile::StageId::PUB_OUTER_STORE_INSERT, traceId);
++    m_dataStore->insert(*data);
++  }
+   m_core.updateSeqNo(newSeq, pubId);
+-  m_face.put(*data);
++  {
++    profile::Span putSpan(profile::StageId::PUB_OUTER_FACE_PUT, traceId);
++    m_face.put(*data);
++  }
+ 
+   return newSeq;
+ }
+@@ -89,22 +103,38 @@ SVSyncBase::insertDataSegment(const Block& content,
+                               const Name::Component& finalBlock,
+                               uint32_t contentType)
+ {
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span buildSpan(profile::StageId::PUB_OUTER_BUILD, traceId);
+   Name dataName = getDataName(nid, seq).appendVersion(0).appendSegment(segNo);
+   auto data = std::make_shared<Data>(dataName);
+   data->setContent(content);
+   data->setFreshnessPeriod(freshness);
+   data->setContentType(contentType);
+   data->setFinalBlock(finalBlock);
+-  m_securityOptions.dataSigner->sign(*data);
+-  m_dataStore->insert(*data);
++  buildSpan.setCounts(content.size(), 1);
++  buildSpan.stop();
++  {
++    profile::Span signSpan(profile::StageId::PUB_OUTER_SIGN, traceId);
++    m_securityOptions.dataSigner->sign(*data);
++  }
++  {
++    profile::Span storeSpan(profile::StageId::PUB_OUTER_STORE_INSERT, traceId);
++    m_dataStore->insert(*data);
++  }
+ }
+ 
+ void
+ SVSyncBase::onDataInterest(const Interest& interest)
+ {
++  profile::TraceScope traceScope;
++  profile::Span findSpan(profile::StageId::PAYLOAD_PROVIDER_STORE_FIND, traceScope.id());
+   auto data = m_dataStore->find(interest);
+-  if (data != nullptr)
++  findSpan.setOutcome(data != nullptr ? profile::Outcome::Success : profile::Outcome::Miss);
++  findSpan.stop();
++  if (data != nullptr) {
++    profile::Span putSpan(profile::StageId::PAYLOAD_PROVIDER_FACE_PUT, traceScope.id());
+     m_face.put(*data);
++  }
+ }
+ 
+ void
+@@ -127,10 +157,17 @@ SVSyncBase::fetchData(const NodeID& nid,
+                       const TimeoutCallback& onTimeout,
+                       int nRetries)
+ {
++  auto& profiler = profile::Profiler::get();
++  uint64_t traceId = profiler.currentTraceId();
++  if (traceId == 0)
++    traceId = profiler.nextTraceId();
++  profile::TraceScope traceScope(traceId);
++  profile::Span buildSpan(profile::StageId::PAYLOAD_INTEREST_BUILD, traceId);
+   Name interestName = getDataName(nid, seqNo);
+   Interest interest(interestName);
+   interest.setCanBePrefix(true);
+   interest.setInterestLifetime(2_s);
++  buildSpan.stop();
+ 
+   m_fetcher.expressInterest(interest,
+                             std::bind(&SVSyncBase::onDataValidated, this, _2, onValidated),
+@@ -143,8 +180,15 @@ SVSyncBase::fetchData(const NodeID& nid,
+ void
+ SVSyncBase::onDataValidated(const Data& data, const DataValidatedCallback& dataCallback)
+ {
+-  if (shouldCache(data))
++  const uint64_t traceId = profile::Profiler::get().currentTraceId();
++  profile::Span cacheSpan(profile::StageId::PAYLOAD_OUTER_CACHE_INSERT, traceId);
++  if (shouldCache(data)) {
+     m_dataStore->insert(data);
++  }
++  else {
++    cacheSpan.setOutcome(profile::Outcome::Skipped);
++  }
++  cacheSpan.stop();
+ 
+   dataCallback(data);
+ }

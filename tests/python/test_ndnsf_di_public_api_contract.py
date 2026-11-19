@@ -18,10 +18,14 @@ MANIFEST = json.loads((
 class PublicApiContractTest(unittest.TestCase):
     def test_preferred_namespace_matches_allowlist_and_owner_manifest(self):
         from ndnsf_distributed_inference import api
+        from ndnsf import _ndnsf
 
         self.assertEqual(set(api.__all__), set(MANIFEST["apiExports"]))
         for name, module in MANIFEST["owners"].items():
             self.assertEqual(getattr(api, name).__module__, module)
+        self.assertIs(api.Runtime, _ndnsf.Runtime)
+        self.assertIs(api.PreparedModel, _ndnsf.PreparedModel)
+        self.assertIs(api.ProviderConfig, _ndnsf.NativeProviderConfig)
         self.assertNotIn("__getattr__", api.__dict__)
 
     def test_application_and_client_expose_model_first_and_explicit_preplanned(self):
@@ -65,7 +69,8 @@ class PublicApiContractTest(unittest.TestCase):
         suite = object()
         runtime = {
             "application": {"identity": "/app/creator"},
-            "controller": "/controller", "service": "/Inference/Generate"}
+            "controller": "/controller", "service": "/Inference/Generate",
+            "group": "/test/group"}
         with tempfile.TemporaryDirectory() as root, patch(
                 "ndnsf_distributed_inference.policy.load_config",
                 return_value=runtime), patch(
@@ -96,6 +101,7 @@ class PublicApiContractTest(unittest.TestCase):
         runtime = {
             "application": {"identity": "/app/creator"},
             "controller": "/controller", "service": "/Inference/Generate",
+            "group": "/test/group",
         }
         with tempfile.TemporaryDirectory() as root, patch(
                 "ndnsf_distributed_inference.policy.load_config",

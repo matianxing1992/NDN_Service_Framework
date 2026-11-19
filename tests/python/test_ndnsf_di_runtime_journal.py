@@ -69,7 +69,7 @@ class RuntimeJournalTest(unittest.TestCase):
             self.assertEqual(restarted.release_counters["PROVIDER_RESTART"], 1)
 
     def test_file_key_provider_requires_owner_only_external_file(self):
-        with tempfile.TemporaryDirectory(dir=Path.home()) as parent:
+        with tempfile.TemporaryDirectory() as parent:
             root = Path(parent)
             key_path = root / "owner-envelope.key"
             key_path.write_bytes(b"f" * 32)
@@ -83,6 +83,7 @@ class RuntimeJournalTest(unittest.TestCase):
                 root / "state",
                 "alice",
                 envelope_key_provider=provider,
+                test_only_allow_ephemeral_state_root=True,
             )
             journal.write_envelope(
                 "request", b"payload", expires_at_ms=10_000)
@@ -105,10 +106,10 @@ class RuntimeJournalTest(unittest.TestCase):
             journal = RuntimeJournal.for_test(root, "alice")
             self.assertFalse((journal.root / "request-envelope.key").exists())
 
-        with tempfile.TemporaryDirectory(dir=Path.home()) as root:
-            journal = RuntimeJournal(root, "alice")
+            journal_without_key = RuntimeJournal(
+                root, "alice-without-key", test_only_allow_ephemeral_state_root=True)
             with self.assertRaisesRegex(RuntimeJournalKeyError, "key provider"):
-                journal.write_envelope(
+                journal_without_key.write_envelope(
                     "request", b"payload", expires_at_ms=10_000)
 
     def test_wrong_and_rotated_owner_keys_fail_closed_or_reopen(self):

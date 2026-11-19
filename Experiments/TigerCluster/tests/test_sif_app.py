@@ -60,7 +60,7 @@ def _fixture(tmp_path):
         "bin/di-native-fault-provider": b"fault",
         "bin/App_ServiceController": b"controller",
         "bin/DI_NativeArtifactAuthority": b"authority",
-        "bin/spec187-yolo-minindn": b"selector",
+        "bin/yolo-minindn": b"selector",
         "python/ndnsf/__init__.py": b"",
         "python/ndnsf_distributed_inference/__init__.py": b"",
     }
@@ -110,7 +110,7 @@ def _fixture(tmp_path):
         "entrypoints": ["/opt/ndnsf-di/app/bin/" + name
                         for name in ("di-native-provider", "di-native-fault-provider",
                                      "App_ServiceController", "DI_NativeArtifactAuthority",
-                                     "spec187-yolo-minindn")],
+                                     "yolo-minindn")],
         "runtimeContract": {"cleanenv": True, "containall": True,
                              "appFallback": "forbidden", "modelMount": "/models:ro",
                              "artifactMount": "/artifacts:ro",

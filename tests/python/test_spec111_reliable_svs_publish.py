@@ -33,8 +33,8 @@ class ReliableSvsPublishContractTest(unittest.TestCase):
             self.assertRegex(
                 text,
                 r"if \(useAsyncSvsPublish\(\)\) \{\s*"
-                r"svs->publishAsync\(name, content\);\s*"
-                r"\}\s*else \{\s*svs->publish\(name, content\);",
+                r"return svs->publishAsync\(name, content\);\s*"
+                r"\}\s*return svs->publish\(name, content\);",
             )
 
 

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 PREPARER = ROOT / "tests/minindn/prepare_spec226_keychain.sh"
-TRUST_SCHEMA = ROOT / "tests/minindn/spec226-trust-schema.conf"
+TRUST_SCHEMA = ROOT / "tests/minindn/trust-schema.conf"
 Q1_RUNNER = ROOT / "tests/minindn/run_spec226_q1.py"
 ROOT_IDENTITY = "/example/uav"
 ACTOR_IDENTITIES = (

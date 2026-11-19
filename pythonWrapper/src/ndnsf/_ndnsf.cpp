@@ -4565,6 +4565,11 @@ public:
     return m_userIdentity.toUri(ndn::name::UriFormat::CANONICAL);
   }
 
+  bool hasRequestScopedDefault() const
+  {
+    return m_user && m_user->hasRequestScopedDefault();
+  }
+
   std::shared_ptr<ndnsf::di::NativeInferenceClient>
   nativeInferenceClient(std::shared_ptr<const ndnsf::di::NativeAdapterRegistry> adapters)
   {
@@ -5718,10 +5723,14 @@ public:
                      py::object streamOptionsObject = py::none(),
                      py::object onStreamEvent = py::none(),
                      py::object onStreamComplete = py::none(),
-                     py::object onStreamError = py::none())
+                     py::object onStreamError = py::none(),
+                     py::object discoveryPayloadObject = py::none())
   {
     start();
     auto payload = toBuffer(initialPayload);
+    std::optional<ndn::Buffer> discoveryPayload;
+    if (!discoveryPayloadObject.is_none())
+      discoveryPayload = toBuffer(discoveryPayloadObject.cast<py::bytes>());
     auto ackClosedCallback = keepPyFunction(std::move(onAckClosed));
     auto responseCallback = keepPyFunction(std::move(onResponse));
     auto timeoutCallback = keepPyFunction(std::move(onTimeout));
@@ -5811,12 +5820,13 @@ public:
        ackCoverageCallback = std::move(ackCoverageCallback),
        requestCapabilities,
        streamOptions,
+       discoveryPayload = std::move(discoveryPayload),
        streamEventCallback = std::move(streamEventCallback),
        streamCompleteCallback = std::move(streamCompleteCallback),
        streamErrorCallback = std::move(streamErrorCallback),
        actualRequestId, &mutex, &cv, &submitted, &submissionError]() mutable {
         try {
-          const auto requestId = m_user->BeginCollaboration(
+          const auto requestId = m_user->BeginCollaborationWithProviders(
             ndn::Name(serviceName),
             payload,
             ackTimeoutMs,
@@ -5920,7 +5930,7 @@ public:
               catch (const py::error_already_set& exception) {
                 PyErr_WriteUnraisable(exception.value().ptr());
               }
-            });
+            }, {}, nullptr, discoveryPayload);
           {
             std::lock_guard<std::mutex> lock(mutex);
             *actualRequestId = requestId.toUri();
@@ -9038,6 +9048,7 @@ PYBIND11_MODULE(_ndnsf, m)
 
   py::class_<NativeServiceUser, std::shared_ptr<NativeServiceUser>>(m, "NativeServiceUser")
     .def_property_readonly("requester_identity", &NativeServiceUser::requesterIdentity)
+    .def_property_readonly("has_request_scoped_default", &NativeServiceUser::hasRequestScopedDefault)
     .def(py::init<const std::string&,
                   const std::string&,
                   const std::string&,
@@ -9183,7 +9194,8 @@ PYBIND11_MODULE(_ndnsf, m)
          py::arg("stream_options") = py::none(),
          py::arg("on_stream_event") = py::none(),
          py::arg("on_stream_complete") = py::none(),
-         py::arg("on_stream_error") = py::none())
+         py::arg("on_stream_error") = py::none(),
+         py::arg("discovery_payload") = py::none())
     .def("commit_collaboration_plan",
          &NativeServiceUser::commitCollaborationPlan,
          py::arg("service"), py::arg("request_id"),

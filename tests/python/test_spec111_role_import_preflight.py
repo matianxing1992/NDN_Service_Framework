@@ -11,6 +11,17 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/spec111/run_non_regression_campaign.py"
+CANDIDATE = ROOT / "tests/fixtures/legacy-role-import-preflight/post-separation-candidate.json"
+
+
+def campaign_args(campaign_root: Path) -> list[str]:
+    recipe = campaign_root.parent / "baseline-recipe.txt"
+    recipe.write_text("Fixture for control-flow checks before readiness.\n", encoding="utf-8")
+    return [
+        str(SCRIPT), "--campaign-root", str(campaign_root),
+        "--baseline-root", str(campaign_root.parent / "baseline"),
+        "--candidate-report", str(CANDIDATE), "--baseline-recipe", str(recipe),
+    ]
 
 
 def load_campaign_module():
@@ -91,9 +102,7 @@ class RoleImportPreflightTest(unittest.TestCase):
                     module,
                     "run_role_import_preflight",
                     side_effect=RuntimeError("SPEC111_ROLE_IMPORT_BLOCKED")), \
-                    mock.patch.object(sys, "argv", [
-                        str(SCRIPT), "--campaign-root", str(campaign_root),
-                    ]):
+                    mock.patch.object(sys, "argv", campaign_args(campaign_root)):
                 with self.assertRaisesRegex(
                         RuntimeError, "SPEC111_ROLE_IMPORT_BLOCKED"):
                     module.main()
@@ -133,9 +142,7 @@ class RoleImportPreflightTest(unittest.TestCase):
                     mock.patch.object(
                         module, "run_runtime_readiness_preflight",
                         side_effect=RuntimeError("SPEC111_RUNTIME_READINESS_FAILED")), \
-                    mock.patch.object(sys, "argv", [
-                        str(SCRIPT), "--campaign-root", str(campaign_root),
-                    ]):
+                    mock.patch.object(sys, "argv", campaign_args(campaign_root)):
                 with self.assertRaisesRegex(
                         RuntimeError, "SPEC111_RUNTIME_READINESS_FAILED"):
                     module.main()

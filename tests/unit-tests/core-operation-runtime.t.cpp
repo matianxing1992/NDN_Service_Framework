@@ -56,7 +56,7 @@ struct ThrowingResult
   int value;
 };
 
-BOOST_AUTO_TEST_SUITE(Spec185CoreOperation)
+BOOST_AUTO_TEST_SUITE(DiCoreOperation)
 
 BOOST_AUTO_TEST_CASE(RuntimeQueuesWorkAndDrainsAfterTicketRelease)
 {

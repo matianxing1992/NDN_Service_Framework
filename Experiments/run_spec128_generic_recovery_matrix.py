@@ -22,9 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples/python/live_stream"
 sys.path.insert(0, str(EXAMPLES))
 from workload_common import TrafficUtilityReport, build_workload_manifest
+if __package__:
+    from .run_spec127_cross_application_matrix import hash_evidence
+else:
+    from run_spec127_cross_application_matrix import hash_evidence
 
 CELL_LAUNCHER = ROOT / "Experiments/NDNSF_LiveStream_Generality_Minindn.py"
-SPEC127_EVIDENCE = tuple(sorted((ROOT / "results").glob("spec127-*")))
 FROZEN_SOURCES = tuple(Path(value) for value in (
     "ndn-service-framework/Stream.hpp",
     "ndn-service-framework/Stream.cpp",
@@ -107,18 +110,6 @@ def hash_files(paths: Iterable[Path]) -> dict[str, str]:
         if not path.is_file():
             raise RuntimeError(f"missing frozen source: {path}")
         result[str(path.relative_to(ROOT))] = digest_path(path)
-    return result
-
-
-def hash_spec127_evidence() -> dict[str, str]:
-    if not SPEC127_EVIDENCE:
-        raise RuntimeError("missing immutable Spec 127 evidence")
-    result = {}
-    for evidence in SPEC127_EVIDENCE:
-        if not evidence.is_dir():
-            continue
-        for path in sorted(value for value in evidence.rglob("*") if value.is_file()):
-            result[str(path.relative_to(ROOT))] = digest_path(path)
     return result
 
 
@@ -337,6 +328,8 @@ def aggregate(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--spec127-evidence", type=Path, action="append",
+                        help="explicit prior campaign directory; repeat for multiple archives")
     parser.add_argument("--duration-seconds", type=int, default=60)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -345,6 +338,8 @@ def main() -> int:
     root = args.output_root.resolve()
     if "spec127" in root.name.lower():
         raise SystemExit("Spec 127 destinations are immutable")
+    if not args.spec127_evidence:
+        parser.error("--spec127-evidence is required")
     if root.exists():
         raise SystemExit(f"refusing existing Spec 128 output: {root}")
     if not args.dry_run:
@@ -354,11 +349,14 @@ def main() -> int:
             raise SystemExit(str(error))
         if shutil.disk_usage(ROOT).free < 8 * 1024 ** 3:
             raise SystemExit("less than 8 GiB free for frozen campaign")
+    historical = tuple(path.resolve() for path in args.spec127_evidence)
+    if any(path == root or path in root.parents for path in historical):
+        parser.error("campaign output must be outside the frozen evidence directories")
     cells = frozen_cells()
-    root.mkdir(parents=True)
     sources_before = hash_files(ROOT / value for value in FROZEN_SOURCES)
-    history_before = hash_spec127_evidence()
+    history_before = hash_evidence(historical)
     workloads = workload_hashes()
+    root.mkdir(parents=True)
     entries = []
     for cell in cells:
         output = root / cell["id"]
@@ -438,7 +436,7 @@ def main() -> int:
     finally:
         lock.unlink(missing_ok=True)
     sources_after = hash_files(ROOT / value for value in FROZEN_SOURCES)
-    history_after = hash_spec127_evidence()
+    history_after = hash_evidence(historical)
     treatments = aggregate(runs)
     passed = len(runs) == 16 and sources_before == sources_after and \
         history_before == history_after and all(value["passed"] for value in treatments)

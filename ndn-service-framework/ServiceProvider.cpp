@@ -13007,7 +13007,10 @@ namespace ndn_service_framework
         }
         for (const auto& item : prepared) {
             runWithLocalWorkObserver(workObserver, "core-tensor-ims-insert", [&] {
-                m_IMS.insert(*item.data, freshness);
+                // This bounded FIFO holds the Producer's immutable originals,
+                // not a downstream cache. Keep them servable while retained;
+                // their wire FreshnessPeriod does not expire work authority.
+                m_IMS.insert(*item.data);
             });
         }
         if (authorityLock.owns_lock()) authorityLock.unlock();
@@ -13082,7 +13085,8 @@ namespace ndn_service_framework
         if (authorityMutex) authorityLock = std::unique_lock<std::mutex>(*authorityMutex);
         if (m_fetchStopping->load() || (current && !current())) return false;
         for (const auto& packet : originals)
-            m_IMS.insert(*packet, packet->getFreshnessPeriod());
+            // Match first publication without changing any original wire byte.
+            m_IMS.insert(*packet);
         if (authorityLock.owns_lock()) authorityLock.unlock();
         for (const auto& packet : originals) satisfyPendingImsInterestsLocked(*packet);
         if (metrics) {

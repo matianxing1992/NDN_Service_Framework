@@ -3667,12 +3667,13 @@ oracle, candidate correctness/performance, overhead, scaling, or reproduction
 PASS. 72B additionally exceeds the 200 GB project allocation planning gate,
 and multi-node execution is deferred pending Spec 108 T134 network evidence.
 
-See `packaging/ndnsf-di-container/docs/itiger-qwen-models.md` for transfer,
-license, quota, and cleanup operations, and `itiger-qwen-evidence.md` for the
-standalone/artifact/staged-baseline/candidate authority boundary. Physical
-production remains owned by Spec 106.
+The preceding status is a historical scaling snapshot. Current transfer,
+quota, reuse and cleanup guidance is in the
+[Tiger runbook](../Experiments/TigerCluster/docs/portable-deployment.md);
+later qualified results and their limits are in the
+[evidence summary](../Experiments/TigerCluster/docs/lessons-and-evidence.md).
 
-The operations guide now also records the later Spec 160/161 lessons: use a
+The historical operations guide also recorded Spec 160/161 lessons: use a
 small memory-bounded Docker collaboration smoke before cluster work, validate
 one coherent SIF on a compute node, prove cross-node NFD before model preload,
 use allocation scratch for the temporary full-model peak, and run one

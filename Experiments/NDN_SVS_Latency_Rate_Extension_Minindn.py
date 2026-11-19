@@ -16,8 +16,6 @@ except ImportError:
 
 REPO = Path(__file__).resolve().parents[1]
 BASE = spec140.base
-BINARY = spec140.DEFAULT_BINARY
-LIBRARY_DIR = spec140.DEFAULT_LIBRARY_DIR
 RESULT_ROOT = REPO / "results/spec141-svs-latency-rate-extension"
 MATRIX = (
     ("face-inline-rsa", 600),
@@ -34,8 +32,8 @@ ACCEPTED_TERMINALS = {"COMPLETE", "LOAD_UNSUSTAINED"}
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, default=BINARY)
-    parser.add_argument("--library-dir", type=Path, default=LIBRARY_DIR)
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--library-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -74,9 +72,8 @@ def main() -> int:
             "binarySha256": BASE.sha256(binary),
             "library": str(library),
             "librarySha256": BASE.sha256(library),
-            "frozenConfigSource": str(
-                REPO / "specs/140-svs-latency-distribution-diagnostic"
-            ),
+            "frozenConfigSource": str(Path(spec140.__file__).resolve()),
+            "frozenConfigSha256": BASE.sha256(Path(spec140.__file__)),
             "matrix": [
                 {"ordinal": ordinal, "mode": mode, "ratePerPeer": rate}
                 for ordinal, (mode, rate) in enumerate(MATRIX, 1)

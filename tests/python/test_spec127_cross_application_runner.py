@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,10 +12,10 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 EXPERIMENTS = REPO / "Experiments"
+SPEC126_SOURCE_SNAPSHOT = os.environ.get("NDNSF_SPEC126_SOURCE_SNAPSHOT")
 sys.path.insert(0, str(EXPERIMENTS))
 
 from run_spec127_cross_application_matrix import (
-    ROOT,
     analyze_cell_summary,
     digest_path,
     frozen_cells,
@@ -28,6 +30,7 @@ class Spec127RunnerTest(unittest.TestCase):
             validate_live_invoker(1000)
         validate_live_invoker(0)
 
+    @unittest.skipUnless(SPEC126_SOURCE_SNAPSHOT, "archived Spec 126 source snapshot not selected")
     def test_accepted_core_and_binding_sources_match_spec126_confirmation(self):
         expected = {
             "ndn-service-framework/Stream.hpp":
@@ -39,7 +42,8 @@ class Spec127RunnerTest(unittest.TestCase):
             "pythonWrapper/ndnsf/streaming.py":
                 "9ad7a91aa86cd8b998d0a66d842a6d801ec305722f2888334c7594d6e04574a2",
         }
-        actual = {name: digest_path(ROOT / name) for name in expected}
+        root = Path(SPEC126_SOURCE_SNAPSHOT)
+        actual = {name: digest_path(root / name) for name in expected}
         self.assertEqual(actual, expected)
 
     def test_manifest_has_exactly_twelve_unique_one_shot_cells(self):
@@ -90,12 +94,19 @@ class Spec127RunnerTest(unittest.TestCase):
 
     def test_dry_run_freezes_commands_hashes_and_unique_outputs_without_launch(self):
         with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "campaign"
+            root = Path(directory)
+            output = root / "campaign"
+            baselines = []
+            for version in (125, 126):
+                baseline = root / f"synthetic-{version}"
+                baseline.mkdir()
+                (baseline / "marker.json").write_text(f"{{\"fixture\":{version}}}")
+                baselines += [f"--spec{version}-evidence", str(baseline)]
             completed = subprocess.run(
                 [sys.executable,
                  str(EXPERIMENTS / "run_spec127_cross_application_matrix.py"),
                  "--output-root", str(output), "--duration-seconds", "60",
-                 "--dry-run"], cwd=REPO, text=True, capture_output=True)
+                 "--dry-run", *baselines], cwd=root, text=True, capture_output=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads(
                 (output / "campaign-summary.json").read_text(encoding="utf-8"))
@@ -104,7 +115,13 @@ class Spec127RunnerTest(unittest.TestCase):
         self.assertEqual(summary["status"], "DRY_RUN")
         self.assertEqual(len(manifest), 12)
         self.assertEqual(len({entry["cell"]["outputPath"] for entry in manifest}), 12)
-        self.assertTrue(summary["sourceHashes"])
+        for source, digest in summary["sourceHashes"].items():
+            self.assertEqual(digest, hashlib.sha256((REPO / source).read_bytes()).hexdigest())
+        self.assertEqual(summary["historyHashes"], {
+            f"results/synthetic-{version}/marker.json":
+                hashlib.sha256(f"{{\"fixture\":{version}}}".encode()).hexdigest()
+            for version in (125, 126)
+        })
         self.assertEqual(set(summary["workloadHashes"]),
                          {"periodic-sensor", "variable-multisegment"})
 

@@ -33,7 +33,7 @@ struct PermissionFixture
   }
 };
 
-BOOST_AUTO_TEST_SUITE(Spec201ProducerSignerPolicy)
+BOOST_AUTO_TEST_SUITE(NamingProducerSignerPolicy)
 
 BOOST_FIXTURE_TEST_CASE(OwnerDelegateAndForeignSigner, PermissionFixture)
 {

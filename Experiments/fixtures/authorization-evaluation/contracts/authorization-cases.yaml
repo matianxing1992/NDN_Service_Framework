@@ -1,0 +1,100 @@
+version: 1
+cases:
+  - case_id: authorized_current_fresh
+    user_permission: present
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: fresh
+    provider_token: fresh
+    expected_gate: response_acceptance
+    expected_terminal: allow
+    expected_executions: 1
+
+  - case_id: user_permission_absent
+    user_permission: absent
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: fresh
+    provider_token: fresh
+    expected_gate: user_authorization
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: provider_permission_absent
+    user_permission: present
+    provider_permission: absent
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: fresh
+    provider_token: fresh
+    expected_gate: provider_authorization
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: stale_policy_epoch
+    user_permission: present
+    provider_permission: present
+    policy_epoch: stale
+    signer_name_relation: valid
+    user_token: fresh
+    provider_token: fresh
+    expected_gate: policy_epoch
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: signer_name_mismatch
+    user_permission: present
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: mismatch
+    user_token: fresh
+    provider_token: fresh
+    expected_gate: signature_trust
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: user_token_mismatch
+    user_permission: present
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: mismatch
+    provider_token: fresh
+    expected_gate: user_token
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: provider_token_mismatch
+    user_permission: present
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: fresh
+    provider_token: mismatch
+    expected_gate: provider_token
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: user_token_replay
+    user_permission: present
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: replay
+    provider_token: fresh
+    expected_gate: user_token_replay
+    expected_terminal: deny
+    expected_executions: 0
+
+  - case_id: provider_token_replay
+    user_permission: present
+    provider_permission: present
+    policy_epoch: current
+    signer_name_relation: valid
+    user_token: fresh
+    provider_token: replay
+    expected_gate: provider_token_replay
+    expected_terminal: deny
+    expected_executions: 0

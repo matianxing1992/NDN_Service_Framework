@@ -20,10 +20,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 REPO = Path(__file__).resolve().parents[1]
+PREFER_INSTALLED_NATIVE = os.environ.get("NDNSF_PREFER_INSTALLED_NATIVE") == "1"
 sys.path.insert(0, str(REPO / "NDNSF-DistributedInference"))
-sys.path.insert(0, str(REPO / "NDNSF-DistributedRepo" / "pythonWrapper"))
 sys.path.insert(0, str(REPO / "Experiments"))
-sys.path.insert(0, str(REPO / "pythonWrapper"))
+if not PREFER_INSTALLED_NATIVE:
+    sys.path.insert(0, str(REPO / "NDNSF-DistributedRepo" / "pythonWrapper"))
+    sys.path.insert(0, str(REPO / "pythonWrapper"))
 
 import NDNSF_NewAPI_Minindn_Perf as perf  # noqa: E402
 from ndnsf import (  # noqa: E402
@@ -798,7 +800,7 @@ def run_plan_tracer(policy_dir: Path,
         out_dir / f"{log_name}-policy-summary.json"
     )
     command = [
-        "python3", str(PLAN_TRACER),
+        sys.executable, str(PLAN_TRACER),
         "--out", str(policy_dir),
         "--summary-json", str(summary_path),
         "--runtime-candidate", runtime_candidate,
@@ -832,7 +834,7 @@ def run_llm_proportional_bundle(policy_dir: Path,
     logs_dir = logs_dir.resolve()
     summary_path = out_dir / "policy-summary.json"
     run_logged("generate-llm-proportional-bundle", [
-        "python3", str(LLM_BUNDLE_GENERATOR),
+        sys.executable, str(LLM_BUNDLE_GENERATOR),
         "--out", str(policy_dir),
         "--summary-json", str(summary_path),
         "--planner-mode", planner_mode,
@@ -853,7 +855,7 @@ def run_spec170_hybrid_bundle(policy_dir: Path,
                               role_execution_delay_ms: float = 0.0) -> dict[str, object]:
     summary_path = out_dir / "policy-summary.json"
     run_logged("generate-spec170-hybrid-bundle", [
-        "python3", str(HYBRID_BUNDLE_GENERATOR),
+        sys.executable, str(HYBRID_BUNDLE_GENERATOR),
         "--out", str(policy_dir.resolve()),
         "--profile", profile,
         "--role-execution-delay-ms", str(role_execution_delay_ms),
@@ -1133,7 +1135,8 @@ def controller_command(policy_dir: Path, assignment_rows: list[dict[str, str]]) 
         "serve_certificates=True"
         ").run()"
     )
-    return f"cd {perf.shell_quote(str(REPO))} && exec python3 -c {perf.shell_quote(code)}"
+    return (f"cd {perf.shell_quote(str(REPO))} && "
+            f"exec {perf.shell_quote(sys.executable)} -c {perf.shell_quote(code)}")
 
 
 def user_driver_command(policy_dir: Path,
@@ -1159,7 +1162,7 @@ def user_driver_command(policy_dir: Path,
     if assignment_csv is not None:
         assignment_csv = assignment_csv.resolve()
     args = [
-        "python3", str(USER_DRIVER),
+        sys.executable, str(USER_DRIVER),
         "--plan", str(policy_dir / "native-execution-plan.json"),
         "--service", SERVICE,
         "--group", GROUP,
@@ -2591,10 +2594,11 @@ def build_failure_breakdown(user_result: dict[str, object],
         item for item in requests
         if isinstance(item, dict) and item.get("status") != "executed"
     ]
-    timeout_count = sum(
+    failure_count = int(user_result.get("failureCount", len(failed_requests)) or 0)
+    timeout_count = min(failure_count, sum(
         1 for item in failed_requests
         if str(item.get("error", "")).startswith("timeout:")
-    )
+    ))
     user_recorded = negative_ack.get("userRecorded", {})
     provider_decisions = negative_ack.get("providerDecisions", {})
     payload_reasons = negative_ack.get("payloadReasons", {})
@@ -2605,9 +2609,9 @@ def build_failure_breakdown(user_result: dict[str, object],
     return {
         "requestCount": int(user_result.get("requestCount", len(requests)) or 0),
         "successCount": int(user_result.get("successCount", 0) or 0),
-        "failureCount": int(user_result.get("failureCount", len(failed_requests)) or 0),
+        "failureCount": failure_count,
         "timeoutCount": timeout_count,
-        "otherFailureCount": max(0, len(failed_requests) - timeout_count),
+        "otherFailureCount": max(0, failure_count - timeout_count),
         "negativeAckEventCount": negative_ack_count,
         "negativeAckReasons": user_recorded if isinstance(user_recorded, dict) else {},
         "providerNegativeAckReasons": (
@@ -3182,18 +3186,18 @@ def main() -> int:
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = ":".join([
+    source_paths = [
         str(REPO / "NDNSF-DistributedInference"),
-        str(REPO / "NDNSF-DistributedRepo" / "pythonWrapper"),
-        str(REPO / "pythonWrapper"),
         str(REPO / "Experiments"),
         str(REPO),
-        env.get("PYTHONPATH", ""),
-    ])
-    env["LD_LIBRARY_PATH"] = ":".join([
-        str(REPO / "build"),
-        env.get("LD_LIBRARY_PATH", ""),
-    ])
+    ]
+    if not PREFER_INSTALLED_NATIVE:
+        source_paths[:0] = [str(REPO / "NDNSF-DistributedRepo" / "pythonWrapper"),
+                            str(REPO / "pythonWrapper")]
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(
+            filter(None, (str(REPO / "build"), env.get("LD_LIBRARY_PATH"))))
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [*source_paths, env.get("PYTHONPATH")]))
+    env["PYTHONNOUSERSITE"] = "1"
     env["NDNSF_DI_DEPENDENCY_OBJECT_TRACE"] = "1"
 
     summary = build_base_summary(args, out_dir, policy_dir, logs_dir)

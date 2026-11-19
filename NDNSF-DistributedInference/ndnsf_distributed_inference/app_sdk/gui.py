@@ -1263,7 +1263,8 @@ class PolicyEditorTab(ttk.Frame):
     def __init__(self, parent, app: "DistributedInferenceGui"):
         super().__init__(parent)
         self.app = app
-        self.path_var = tk.StringVar(value=str(DEFAULT_POLICY))
+        default_policy = repo_root() / DEFAULT_POLICY
+        self.path_var = tk.StringVar(value=str(default_policy) if default_policy.is_file() else "")
         self._build()
 
     def _build(self) -> None:
@@ -1287,7 +1288,8 @@ class PolicyEditorTab(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=3)
         self.columnconfigure(2, weight=2)
-        self.open_policy()
+        if self.path_var.get():
+            self.open_policy()
 
     def set_policy_text(self, text: str) -> None:
         self.editor.set(text)
@@ -3365,8 +3367,10 @@ class DistributedInferenceGui(tk.Tk):
         self.geometry("1280x820")
         self.status = tk.StringVar(value="Ready")
         self.runtime_factory = factory
+        default_profile = (repo_root() /
+                           "examples/python/NDNSF-DistributedInference/gui_three_role_profile.json")
         self.profile_path_var = tk.StringVar(
-            value="examples/python/NDNSF-DistributedInference/gui_three_role_profile.json")
+            value=str(default_profile) if default_profile.is_file() else "")
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x")
         ttk.Label(toolbar, text="Profile").pack(side="left", padx=4)

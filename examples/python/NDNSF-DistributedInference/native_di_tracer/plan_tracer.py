@@ -405,7 +405,7 @@ def ensure_qwen_artifacts(config_path: Path) -> None:
            for path in required):
         return
     subprocess.run(
-        ["python3", str(GENERATE_QWEN_ARTIFACTS)],
+        [sys.executable, str(GENERATE_QWEN_ARTIFACTS)],
         cwd=str(ROOT),
         check=True,
     )

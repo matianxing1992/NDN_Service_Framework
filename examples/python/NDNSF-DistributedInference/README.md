@@ -361,7 +361,8 @@ already exist; DI cache entries are preparation files, not Repo receipts or
 replicas. Inter-stage activations use NDNSF's request data path and are not
 stored in Repo.
 
-`yolo_2x2/repo_client.py` is the direct native publish/fetch example. The
+`yolo_2x2/repo_client.py --model PATH` is the direct native publish/fetch example.
+Select the prepared YOLO weights explicitly. The
 `plan_example.py` script only inspects the DI policy and does not create Python
 Repo state or publish transient activations.
 

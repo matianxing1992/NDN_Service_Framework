@@ -555,15 +555,12 @@ def ops(tmp_path_factory):
     package.mkdir(exist_ok=True)
     shutil.copyfile(ROOT / "NDNSF-DistributedInference/ndnsf_di_launcher.py",
                     source / "ndnsf_di_launcher.py")
+    # find_packages traverses this build-time marker; the Ops wheel deliberately
+    # excludes it and must work as its own namespace portion after installation.
     shutil.copyfile(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/__init__.py",
                     package / "__init__.py")
     shutil.copytree(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/ops", package / "ops",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    shutil.copytree(ROOT / "NDNSF-DistributedInference/ndnsf_distributed_inference/compatibility",
-                    package / "compatibility", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    compat_profile = source / "packaging/python/compat"
-    shutil.copytree(ROOT / "NDNSF-DistributedInference/packaging/python/compat", compat_profile,
-                    ignore=shutil.ignore_patterns("build", "dist", "*.egg-info", "__pycache__"))
     helper = root / "source/packaging/ndnsf-di-container/lib/allocation_topology.py"
     helper.parent.mkdir(parents=True)
     shutil.copyfile(ROOT / "packaging/ndnsf-di-container/lib/allocation_topology.py", helper)
@@ -582,14 +579,16 @@ def ops(tmp_path_factory):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, target)
     wheels = root / "wheels"
-    subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", str(profiles), str(compat_profile),
+    built = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-index",
+                    "--no-build-isolation", str(profiles),
                     "-w", str(wheels)],
-                   check=True, capture_output=True, text=True, timeout=120)
-    assert len(list(wheels.glob("*.whl"))) == 2
+                   capture_output=True, text=True, timeout=120)
+    assert built.returncode == 0, built.stderr[-4000:]
+    assert len(list(wheels.glob("*.whl"))) == 1
     environment = root / 'environment'
     base_python = Path(sys._base_executable).resolve(strict=True)
     subprocess.run([str(base_python), '-I', '-m', 'venv', '--without-pip',
-                    '--system-site-packages', '--symlinks', str(environment)],
+                    '--symlinks', str(environment)],
                    check=True, capture_output=True, text=True, timeout=30)
     subprocess.run([str(environment / 'bin/python3'), '-I', '-c',
                     'import encodings,sys; assert sys.prefix == sys.argv[1]', str(environment)],
@@ -602,6 +601,9 @@ def ops(tmp_path_factory):
     # fixture environment; native DI/runtime packages are not copied.
     import ndn.encoding
     shutil.copytree(Path(ndn.encoding.__file__).parents[1], installed_root / 'ndn',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    import aenum
+    shutil.copytree(Path(aenum.__file__).parent, installed_root / 'aenum',
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     installed = installed_root / 'ndnsf_distributed_inference/ops'
     # A private package name isolates these configuration tests from any host
@@ -633,7 +635,7 @@ def test_ops_wheel_console_entry_runs_outside_source_checkout(ops, tmp_path):
     environment = tmp_path/'control'
     venv.EnvBuilder(with_pip=False, system_site_packages=True).create(environment)
     python = str(environment/'bin/python')
-    subprocess.run([python, '-m', 'pip', 'install', '--no-deps', '--force-reinstall',
+    subprocess.run([python, '-m', 'pip', 'install', '--no-deps', '--no-index', '--force-reinstall',
                     *map(str, wheels)], check=True, capture_output=True, text=True, timeout=60)
     unrelated = tmp_path/'unrelated'
     unrelated.mkdir()
@@ -641,6 +643,42 @@ def test_ops_wheel_console_entry_runs_outside_source_checkout(ops, tmp_path):
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert 'cluster' in result.stdout
+
+
+def test_ops_only_namespace_cannot_borrow_a_regular_parent_from_system_site(ops, tmp_path):
+    parser, _ = ops
+    installed = Path(parser.__file__)
+    source_environment = next(parent for parent in installed.parents
+                              if (parent / 'pyvenv.cfg').is_file())
+    wheel = next((source_environment.parent / 'wheels').glob('ndnsf_di_ops-*.whl'))
+    environment = tmp_path / 'ops-only'
+    venv.EnvBuilder(with_pip=False, system_site_packages=True).create(environment)
+    site = environment / 'lib' / ('python%d.%d' % sys.version_info[:2]) / 'site-packages'
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(site)
+    assert not (site / 'ndnsf_distributed_inference/__init__.py').exists()
+    foreign = tmp_path / 'foreign-system-site'
+    parent = foreign / 'ndnsf_distributed_inference'
+    parent.mkdir(parents=True)
+    (parent / '__init__.py').write_text('raise RuntimeError("FOREIGN_DI_OWNER_IMPORTED")\n')
+    code = '''
+import sys
+from pathlib import Path
+site, foreign = map(Path, sys.argv[1:])
+sys.path.append(str(foreign))
+import ndnsf_di_launcher as launcher
+assert Path(launcher.__file__).parent == site
+sys.argv = ['ndnsf-di', '--help']
+try:
+    launcher.main()
+except SystemExit as result:
+    assert result.code == 0
+import ndnsf_distributed_inference.ops as ops
+assert Path(ops.__file__).parent == site / 'ndnsf_distributed_inference/ops'
+'''
+    result = subprocess.run([str(environment / 'bin/python'), '-I', '-c', code,
+                             str(site), str(foreign)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
 
 
 def test_shipped_ops_console_entrypoint_resolves_in_isolated_install(ops, tmp_path):
@@ -1753,6 +1791,41 @@ def test_minindn_multihop_routes_use_first_hop_port_and_reuse_faces(ops, tmp_pat
     assert any(argv[3:5] == ['/provider/c/KEY', '261'] for argv in routes)
 
 
+@pytest.mark.parametrize('group_disappears', [True, False])
+def test_stop_owned_reaudits_transient_proc_gap_without_signalling_it(ops, monkeypatch, group_disappears):
+    module = importlib.import_module('_spec217_ops.processes')
+    proof = {'pid': 12345, 'state': 'S'}
+    clock = [0.0]
+    signals = []
+    scans = []
+    audit = module._group_members
+
+    def scan(_):
+        scans.append(None)
+        if len(scans) == 1:
+            return [proof]
+        return audit(proof)
+
+    def probe(pid, sig):
+        assert (pid, sig) == (proof['pid'], 0)
+        if group_disappears and len(scans) > 2:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(module, '_group_members', scan)
+    monkeypatch.setattr(module, 'owned_state', lambda _: 'RUNNING')
+    monkeypatch.setattr(module.Path, 'iterdir', lambda _: iter(()))
+    monkeypatch.setattr(module.os, 'waitpid', lambda *_: (0, 0))
+    monkeypatch.setattr(module.os, 'kill', lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(module.os, 'killpg', probe)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(module.time, 'sleep', lambda elapsed: clock.__setitem__(0, clock[0] + elapsed))
+    result = module.stop_owned(proof, term_seconds=0.1, kill_seconds=0.1)
+    assert signals == [(proof['pid'], signal.SIGTERM)]
+    assert len(scans) >= 3
+    assert not result['forced']
+    assert result['status'] == ('ZERO' if group_disappears else 'UNKNOWN')
+
+
 def test_closed_minindn_does_not_reaudit_a_reused_namespace_inode(ops, tmp_path):
     module = importlib.import_module('_spec217_ops.minindn')
     state = dict(boot_id='a' * 32, configuration_sha256='b' * 64)
@@ -2426,7 +2499,8 @@ def test_cluster_cancellation_after_intent_does_not_spawn_requester(ops, deploym
         assert not persisted['launches'][-1].get('proof')
 
 
-@pytest.mark.parametrize('observation', ('initial-empty', 'always-empty', 'cancel', 'early-exit'))
+@pytest.mark.parametrize('observation', ('initial-empty', 'always-empty', 'cancel', 'early-exit',
+                                       'early-exit-namespace'))
 def test_cluster_spawn_requires_complete_real_child_identity(
         ops, deployment, monkeypatch, observation):
     with management_operation(ops, deployment) as (cluster, _, root, state, _):
@@ -2439,7 +2513,7 @@ def test_cluster_spawn_requires_complete_real_child_identity(
         def start(*args, **kwargs):
             child = popen(*args, **kwargs)
             children.append(child)
-            if observation == 'early-exit':
+            if observation.startswith('early-exit'):
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     try:
@@ -2457,7 +2531,7 @@ def test_cluster_spawn_requires_complete_real_child_identity(
 
         def observe(pid):
             current = identity(pid)
-            if current and observation != 'early-exit' and (
+            if current and not observation.startswith('early-exit') and (
                     not observations or observation in ('always-empty', 'cancel')):
                 current = dict(current, bindings={key: '' for key in env
                     if key.startswith('NDNSF_DEPLOYMENT_')})
@@ -2474,9 +2548,18 @@ def test_cluster_spawn_requires_complete_real_child_identity(
         monkeypatch.setattr(cluster.subprocess, 'Popen', start)
         monkeypatch.setattr(cluster, 'process_identity', observe)
         monkeypatch.setattr(cluster, 'stop_owned', forbidden_signal)
-        code = 'pass' if observation == 'early-exit' else 'import time; time.sleep(60)'
+        code = 'raise SystemExit(7)' if observation.startswith('early-exit') else 'import time; time.sleep(60)'
         try:
-            if observation in ('always-empty', 'cancel'):
+            if observation == 'early-exit-namespace':
+                with pytest.raises(cluster.ClusterError, match='exited before network namespace admission: p2:7'):
+                    cluster._spawn(state, root, 'p2', 'provider',
+                                   [sys.executable, '-c', code], env, guard,
+                                   network_namespace=os.readlink('/proc/self/ns/net'))
+                row = state['launches'][-1]
+                assert cluster._valid_intent(row, state)
+                assert cluster.owned_state(row['proof']) == 'EXITED'
+                assert 'network_namespace' not in row
+            elif observation in ('always-empty', 'cancel'):
                 message = ('DEPLOYMENT_CANCELLED' if observation == 'cancel'
                            else 'cannot capture native process identity')
                 with pytest.raises(cluster.ClusterError, match=message):
@@ -4206,6 +4289,8 @@ if payload['facility']=='audit':
  value=dict(base,schema='ndnsf-di-host-node-audit-v1',node_id=node,
             host=socket.gethostname(),processes=[],errors=[],
             status='UNKNOWN' if mode=='audit-fail' else ('OBSERVED' if role else 'ZERO'))
+ if not role and mode!='missing-cs':
+  value['cs']=dict(capacity=0,nEntries=1 if mode=='nonzero-cs' else 0)
  if role:
   receipt=json.loads(Path(payload['native_receipt']).read_text())
   proof=dict(receipt['launches'][0]['proof'],nspid=[receipt['launches'][0]['proof']['pid']],
@@ -4323,7 +4408,8 @@ while True:
 
 @pytest.mark.parametrize('mode', ['complete', 'wrong-ready', 'service-fail', 'service-degraded',
                                  'requester-fail', 'audit-fail', 'timeout', 'signal', 'pre-entry-fail',
-                                 'ignore-cancel', 'pre-ready-cancel', 'negative-cache', 'shutdown-crash'])
+                                 'ignore-cancel', 'pre-ready-cancel', 'negative-cache', 'shutdown-crash',
+                                 'missing-cs', 'nonzero-cs'])
 def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         allocation_facility, monkeypatch, mode):
     config, module, args, scenario, events, children = allocation_facility
@@ -4336,7 +4422,10 @@ def test_allocation_owner_orders_real_steps_and_keeps_failure_boundaries(
         monkeypatch.setattr(module, '_ROLE_STOP_GRACE_SECONDS', 1.0)
     result = module.run_allocation(args, config)
     rows = [json.loads(line) for line in events.read_text().splitlines()]
-    if mode in ('complete', 'negative-cache'):
+    if mode in ('missing-cs', 'nonzero-cs'):
+        assert result['status'] == 'UNKNOWN' and result['execution'] == 'COMPLETE'
+        assert result['failure'].startswith('ALLOCATION_HOST_AUDIT_CS_NOT_ZERO:')
+    elif mode in ('complete', 'negative-cache'):
         assert result['status'] == 'STOPPED' and result['execution'] == 'COMPLETE'
         assert result['failure'] is None and result['oracle'] == 'NOT_RUN'
         launches = [row[1] for row in rows if row[0] == 'role']
@@ -4754,7 +4843,7 @@ def test_post_job_oracle_wrapper_uses_fixed_cpu_workload_and_exact_read_only_fil
                  *extra, environment=environment)
     assert result.returncode == 0, result.stderr
     item = json.loads(capture.read_text())
-    expected = [str(Path(config['release']['prefix']) / 'bin/spec190-multiturn-oracle'),
+    expected = [str(Path(config['release']['prefix']) / 'bin/multiturn-oracle'),
                 '--deployment-state', str(frozen.parent / 'allocation.json'), '--require-multi-token']
     if reference != 'quiet':
         expected.append('--model-reference')
@@ -5759,6 +5848,7 @@ def test_actual_wheel_namespace_cluster_check(ops, deployment):
     root, config = deployment
     path = write_config(root, config)
     installed = Path(cli.__file__).parents[2]
+    python = installed.parents[2] / 'bin/python3'
     code = """
 import importlib.abc
 from pathlib import Path
@@ -5779,7 +5869,7 @@ import ndnsf_distributed_inference.ops.cli as cli
 assert Path(sys.argv[1]) in Path(cli.__file__).resolve().parents
 raise SystemExit(cli.main(['cluster', 'check', '--config', sys.argv[2]]))
 """
-    result = subprocess.run([sys.executable, "-I", "-c", code, str(installed), str(path)],
+    result = subprocess.run([str(python), "-I", "-c", code, str(installed), str(path)],
                             cwd=root.parent, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["status"] == "CONFIGURATION_CHECKED"

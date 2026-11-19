@@ -38,6 +38,10 @@ class Spec112TargetedTimeoutTest(unittest.TestCase):
         self.assertTrue(hasattr(native.NativeServiceUser, "request_service_targeted_async"))
 
     def test_async_targeted_cli_requires_targeted_mode(self) -> None:
+        env = dict(os.environ)
+        if env.get("NDNSF_PREFER_INSTALLED_NATIVE") != "1":
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, (
+                str(REPO / "pythonWrapper"), env.get("PYTHONPATH"))))
         completed = subprocess.run(
             [
                 sys.executable,
@@ -47,7 +51,7 @@ class Spec112TargetedTimeoutTest(unittest.TestCase):
                 "--targeted-api", "async",
             ],
             cwd=str(REPO),
-            env={**os.environ, "PYTHONPATH": str(REPO / "pythonWrapper")},
+            env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

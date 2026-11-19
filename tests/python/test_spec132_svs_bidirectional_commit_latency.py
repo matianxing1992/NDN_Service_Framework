@@ -136,6 +136,14 @@ class Spec132ContractTests(unittest.TestCase):
                       "ratePpsPerPeer": 1, "aggregateTargetPps": 2,
                       "repetition": 1, "measureSeconds": 3, "drainSeconds": 2}
             result = analyzer.summarize_cell(cell, config)
+            b[0]["svsSeqNo"] = 300
+            (cell / "peer-b.jsonl").write_text("\n".join(map(json.dumps, b)) + "\n")
+            wrong_sequence = analyzer.summarize_cell(cell, config)["directions"]["peer-a-to-peer-b"]
+            self.assertEqual(wrong_sequence["invalid"], 1)
+            self.assertEqual(wrong_sequence["missing"], 2)
+            (cell / "peer-b.jsonl").unlink()
+            with self.assertRaisesRegex(ValueError, "missing event stream"):
+                analyzer.summarize_cell(cell, config)
         direction = result["directions"]["peer-a-to-peer-b"]
         self.assertEqual(direction["apiReturned"], 3)
         self.assertEqual(direction["delivered"], 2)

@@ -3,11 +3,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NATIVE_BUILD_DIR="$ROOT/build"
+BUILD_STORAGE="$ROOT/scripts/build-storage.py"
+PROMOTE_NATIVE_STAGE=0
 PYTHON_BIN="${PYTHON:-python3}"
 JOBS="${NDNSF_BUILD_JOBS:-6}"
 PERSON_RUNTIME=""
 WAF_CONFIGURE_ARGS=()
 QWEN_MININDN=0
+PREPARE_EXPERIMENT=""
+EXPERIMENT_ASSET_MANIFEST=""
+EXPERIMENT_WORK_ROOT=""
+EXPERIMENT_NAMESPACE=""
+EXPERIMENT_OFFLINE=0
 RUN_WAF_CONFIGURE=auto
 RUN_SYSTEM_INSTALL=1
 NATIVE_ONLY=0
@@ -127,6 +134,12 @@ Options:
   --with-minindn-deps      Install Mini-NDN experiment OS packages.
   --with-yolo-minindn      Install the pinned two-node Mini-NDN + YOLO CPU profile.
   --with-qwen-minindn      Check Qwen Mini-NDN prerequisites; do not download a model.
+  --prepare-experiment qwen06b-tp-cpu
+                          Prepare inputs using an already installed prefix; no build or actor launch.
+  --asset-manifest FILE   SEALED model manifest for --prepare-experiment.
+  --work-root DIR         New private deployment directory for --prepare-experiment.
+  --namespace NAME        New absolute NDN root for --prepare-experiment.
+  --offline               Require local inputs during explicit experiment preparation.
   --person-runtime PATH   Install only the locked CPython 3.10 person CPU environment.
                           NDNSF_PERSON_PYTHON selects the base interpreter (python3.10).
                           NDNSF_PERSON_WHEELS must contain the hash-verified Torchreid wheel.
@@ -143,6 +156,7 @@ Options:
   --no-system-install      Build without running ./waf install.
   --system-install         Run ./waf install (default).
   --native-only            Install native applications, SDK and tests; skip public Python wheels.
+  --promote-native-stage   Verify and install the prepared native stage for --prefix.
   --user                   Unsupported; system Python is required.
   --no-user                Use system Python (default).
   --no-editable            Install wheels, not source-tree links (default).
@@ -161,6 +175,12 @@ Notes:
     start it with nfd-start after installation.
   - --with-yolo-minindn installs Mini-NDN, python-ndn, CPU-only YOLO dependencies,
     and the hash-checked yolo26n.pt model; run ndnsf-yolo-minindn for inference.
+  - The optional Wi-Fi gRPC comparison uses tracked generated protocol modules.
+    From its selected Python 3.8 environment, install the lock with
+    python -m pip install -r Experiments/gRPC/requirements-py38.txt.
+  - Experiment preparation and required inputs are listed in Experiments/profiles/index.json.
+    The pinned NDN-SVS benchmarks use a disposable NDN-SVS clone and an explicit
+    subject build manifest. See Experiments/ndn-svs-pubsub-benchmark/README.md.
   - Supports Ubuntu 20.04/26.04 x86-64. Boost must be the matching system pair
     (1.71 on 20.04; 1.90 on 26.04). Missing SDKs and NFD use pinned inputs.
   - OpenABE is installed before NAC-ABE when needed. Waf/Python builds use the
@@ -236,6 +256,20 @@ while [[ $# -gt 0 ]]; do
       INSTALL_TEST_PACKAGES=1
       shift
       ;;
+    --prepare-experiment)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--prepare-experiment requires a profile' >&2; exit 2; }
+      PREPARE_EXPERIMENT="$2"; shift 2 ;;
+    --asset-manifest)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--asset-manifest requires a file' >&2; exit 2; }
+      EXPERIMENT_ASSET_MANIFEST="$2"; shift 2 ;;
+    --work-root)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--work-root requires a directory' >&2; exit 2; }
+      EXPERIMENT_WORK_ROOT="$2"; shift 2 ;;
+    --namespace)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo '--namespace requires a name' >&2; exit 2; }
+      EXPERIMENT_NAMESPACE="$2"; shift 2 ;;
+    --offline)
+      EXPERIMENT_OFFLINE=1; shift ;;
     --with-minindn-deps)
       INSTALL_MININDN_PACKAGES=1
       shift
@@ -268,9 +302,6 @@ while [[ $# -gt 0 ]]; do
       if [[ "$1" == "--with-tests" ]]; then
         INSTALL_TEST_PACKAGES=1
       fi
-      if [[ "$RUN_WAF_CONFIGURE" == "auto" ]]; then
-        RUN_WAF_CONFIGURE=1
-      fi
       shift
       ;;
     --no-system-install)
@@ -283,6 +314,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --native-only)
       NATIVE_ONLY=1
+      shift
+      ;;
+    --promote-native-stage)
+      PROMOTE_NATIVE_STAGE=1
       shift
       ;;
     --user)
@@ -330,6 +365,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Reject unsupported options before apt, dependency installation, or configure.
+if [[ -n "$PREPARE_EXPERIMENT" ]]; then
+  [[ "$PREPARE_EXPERIMENT" == qwen06b-tp-cpu && -n "$EXPERIMENT_ASSET_MANIFEST" &&
+     -n "$EXPERIMENT_WORK_ROOT" && -n "$EXPERIMENT_NAMESPACE" ]] || {
+    echo '--prepare-experiment qwen06b-tp-cpu requires --asset-manifest, --work-root and --namespace' >&2
+    exit 2
+  }
+  if (( CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES || UNINSTALL_STACK || SOURCE_MODE ||
+        QWEN_MININDN || INSTALL_YOLO_MININDN || FORCE_DEPENDENCIES || NATIVE_ONLY ||
+        ! RUN_SYSTEM_INSTALL )) || [[ -n "$PERSON_RUNTIME" ]] || ((${#WAF_CONFIGURE_ARGS[@]})); then
+    echo '--prepare-experiment is an installed-input preparation action; do not combine it with build/install profiles' >&2
+    exit 2
+  fi
+elif [[ -n "$EXPERIMENT_ASSET_MANIFEST$EXPERIMENT_WORK_ROOT$EXPERIMENT_NAMESPACE" ]] || (( EXPERIMENT_OFFLINE )); then
+  echo '--asset-manifest, --work-root, --namespace and --offline require --prepare-experiment' >&2
+  exit 2
+fi
 if (( NDNCXX_ONLY )); then
   if (( NO_DEPENDENCIES_REQUESTED )); then
     echo '--ndn-cxx-only cannot be combined with --no-dependencies' >&2
@@ -435,6 +486,9 @@ case ",$component_closure," in *,repo,*) NDNSF_INSTALL_REPO=1 ;; esac
 case ",$component_closure," in *,uav,*) NDNSF_INSTALL_UAV=1 ;; esac
 for component_arg in "${WAF_CONFIGURE_ARGS[@]}"; do
   case "$component_arg" in
+    --out|--out=*|-o|-o?*|--top|--top=*|--sanitize-di|--sanitize-di=*)
+      echo 'Native installation configures the ordinary checkout build/ tree' >&2
+      exit 2 ;;
     --components|--components=*) echo 'Use installer --components before --' >&2; exit 2 ;;
     --with-examples|--install-experiment-fixtures)
       [[ "$NATIVE_COMPONENT_PROFILE" == all ]] || {
@@ -484,6 +538,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -522,6 +577,14 @@ def is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
+def canonical_manifest_path(path: Path) -> Path:
+    if not path.is_absolute() or path.name in ("", ".", ".."):
+        raise ValueError(f"manifest file path must be absolute: {path}")
+    # Resolve parent aliases and RECORD's ../../../bin entries, retaining a
+    # final symlink as an owned link instead of replacing it with its target.
+    return path.parent.resolve(strict=False) / path.name
+
+
 def read_manifest(path: Path) -> dict[str, object]:
     if not path.exists():
         return {"schema": SCHEMA, "files": {}, "sources": [], "aptPackages": []}
@@ -531,6 +594,18 @@ def read_manifest(path: Path) -> dict[str, object]:
             not isinstance(data.get("aptPackages", []), list):
         raise ValueError(f"unsupported or corrupt install manifest: {path}")
     data.setdefault("aptPackages", [])
+    files = {}
+    for name, entry in data["files"].items():
+        canonical = str(canonical_manifest_path(Path(name)))
+        if canonical in files:
+            previous = files[canonical]
+            if ({key: value for key, value in previous.items() if key != "owners"} !=
+                    {key: value for key, value in entry.items() if key != "owners"}):
+                raise ValueError(f"conflicting manifest aliases: {canonical}")
+            previous["owners"] = sorted(set(previous.get("owners", [])) | set(entry.get("owners", [])))
+        else:
+            files[canonical] = dict(entry)
+    data["files"] = files
     return data
 
 
@@ -555,6 +630,23 @@ def backup_path(manifest: Path, target: Path) -> Path:
     return manifest.parent / f"{manifest.stem}.backups" / key
 
 
+def copy_install_entry(source: Path, target: Path, temporary: Path) -> None:
+    created = False
+    try:
+        if source.is_symlink():
+            os.symlink(os.readlink(source), temporary)
+            created = True
+        else:
+            with source.open("rb") as src, temporary.open("xb") as dst:
+                created = True
+                shutil.copyfileobj(src, dst)
+            shutil.copystat(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        if created:
+            temporary.unlink(missing_ok=True)
+
+
 def copy_backup(manifest: Path, target: Path) -> tuple[str | None, dict[str, object] | None]:
     before = file_state(target)
     if before is None:
@@ -567,7 +659,14 @@ def copy_backup(manifest: Path, target: Path) -> tuple[str | None, dict[str, obj
     elif before["kind"] == "symlink":
         os.symlink(str(before["target"]), backup)
     else:
-        shutil.copy2(target, backup, follow_symlinks=False)
+        pending = backup.with_suffix(".pending")
+        if pending.exists() or pending.is_symlink():
+            info = pending.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                    info.st_nlink != 1):
+                raise ValueError(f"unowned incomplete backup: {pending}")
+            pending.unlink()
+        copy_install_entry(target, backup, pending)
     return str(backup), before
 
 
@@ -617,13 +716,22 @@ def install_tree(args: argparse.Namespace) -> None:
         assert installed is not None
         key = str(target)
         old = entries.get(key)
-        if old is not None and current not in (old.get("installed"), old.get("backupState")):
-            raise ValueError(f"managed install target was modified; refusing overwrite: {target}")
+        if old is not None:
+            allowed = [old.get("installed"), old.get("backupState")]
+            if "pendingPrevious" in old:
+                allowed.append(old["pendingPrevious"])
+            if current not in allowed:
+                raise ValueError(f"managed install target was modified; refusing overwrite: {target}")
         backup = old.get("backup") if old is not None else None
         before = old.get("backupState") if old is not None else None
         owners = sorted(set((old or {}).get("owners", [])) | {args.component})
         entry = {"installed": installed, "backup": backup, "backupState": before,
                  "owners": owners}
+        nonce = (old or {}).get("pendingCopy", secrets.token_hex(16))
+        if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+            raise ValueError(f"invalid pending install copy identity: {target}")
+        entry["pendingPrevious"] = current
+        entry["pendingCopy"] = nonce
         plan.append((source, target, key, entry, old, current))
 
     for offset in range(0, len(plan), 64):
@@ -636,19 +744,19 @@ def install_tree(args: argparse.Namespace) -> None:
                 entry["backup"], entry["backupState"] = copy_backup(manifest_path, dst)
             data["files"][key] = entry
         write_manifest(manifest_path, data)
-        for src, dst, _, entry, _, _ in batch:
+        for src, dst, _, entry, old, current in batch:
+            temporary = dst.parent / f".ndnsf-install-{entry['pendingCopy']}"
+            if old is not None and "pendingCopy" in old:
+                temporary.unlink(missing_ok=True)
+            if file_state(dst) != current:
+                raise ValueError(f"install target changed during staging: {dst}")
             if file_state(dst) == entry["installed"]:
                 continue
-            temporary = dst.parent / f".{dst.name}.ndnsf-install-{os.getpid()}"
-            try:
-                if src.is_symlink():
-                    os.symlink(os.readlink(src), temporary)
-                else:
-                    shutil.copy2(src, temporary)
-                os.replace(temporary, dst)
-            finally:
-                if temporary.exists() or temporary.is_symlink():
-                    temporary.unlink()
+            copy_install_entry(src, dst, temporary)
+        for _, _, _, entry, _, _ in batch:
+            entry.pop("pendingCopy")
+            entry.pop("pendingPrevious")
+        write_manifest(manifest_path, data)
 
 
 def snapshot_python(args: argparse.Namespace) -> None:
@@ -661,7 +769,7 @@ def snapshot_python(args: argparse.Namespace) -> None:
         except importlib.metadata.PackageNotFoundError:
             continue
         for item in distribution.files or ():
-            target = Path(distribution.locate_file(item)).absolute()
+            target = canonical_manifest_path(Path(distribution.locate_file(item)).absolute())
             if not target.is_file() and not target.is_symlink():
                 continue
             key = str(target)
@@ -692,7 +800,7 @@ def record_python(args: argparse.Namespace) -> None:
         except importlib.metadata.PackageNotFoundError as error:
             raise ValueError(f"expected installed Python distribution is missing: {package}") from error
         for item in distribution.files or ():
-            target = Path(distribution.locate_file(item)).absolute()
+            target = canonical_manifest_path(Path(distribution.locate_file(item)).absolute())
             ensure_python_target(target)
             current = file_state(target)
             if current is None:
@@ -713,9 +821,14 @@ def record_python(args: argparse.Namespace) -> None:
 
 def ensure_python_target(target: Path) -> None:
     resolved = target.resolve(strict=False)
-    if not any(is_relative_to(resolved, root) for root in
-               (Path("/usr/local/lib"), Path("/usr/local/bin"))):
-        raise ValueError(f"Python package file is outside /usr/local/lib or /usr/local/bin: {target}")
+    roots = (Path("/usr/local/lib"), Path("/usr/local/bin"))
+    # An explicitly selected prefix may host its operator wheel in a standard
+    # isolated venv, so namespace packages cannot borrow stale global bindings.
+    runtime = os.environ.get("NDNSF_RUNTIME_PREFIX")
+    if runtime:
+        roots += (Path(runtime).resolve() / "libexec/ndnsf-python",)
+    if not any(is_relative_to(resolved, root) for root in roots):
+        raise ValueError(f"Python package file is outside selected installation roots: {target}")
 
 
 def add_source(args: argparse.Namespace) -> None:
@@ -914,7 +1027,7 @@ def verify_legacy_python(args: argparse.Namespace) -> None:
         elif wheel.parent != observed_wheel_stage:
             raise ValueError(f"legacy Python distributions came from multiple wheel stages: {package}")
         for item in distribution.files or ():
-            target = Path(distribution.locate_file(item)).absolute()
+            target = canonical_manifest_path(Path(distribution.locate_file(item)).absolute())
             ensure_python_target(target)
             if target.is_file() and item.hash is not None:
                 digest = hashlib.new(item.hash.mode)
@@ -1024,9 +1137,9 @@ manifest_tool() {
     shift
   fi
   if (( privileged )); then
-    consumer=(sudo_run env "NDNSF_RUNTIME_PREFIX=$RUNTIME_PREFIX" "$PYTHON_BIN" - "$@")
+    consumer=(sudo_run env "NDNSF_RUNTIME_PREFIX=$RUNTIME_PREFIX" "$PYTHON_BIN" -I - "$@")
   else
-    consumer=(env "NDNSF_RUNTIME_PREFIX=$RUNTIME_PREFIX" "$PYTHON_BIN" - "$@")
+    consumer=(env "NDNSF_RUNTIME_PREFIX=$RUNTIME_PREFIX" "$PYTHON_BIN" -I - "$@")
   fi
   manifest_source | "${consumer[@]}" || pipeline_status=("${PIPESTATUS[@]}")
   if ((${#pipeline_status[@]})); then
@@ -1044,6 +1157,37 @@ install_manifest_tree() {
     --component "$component"
 }
 
+lock_native_install() {
+  mkdir -p -- "$NATIVE_BUILD_DIR"
+  if [[ "$(readlink "/proc/$$/fd/7" 2>/dev/null || true)" != "$NATIVE_BUILD_DIR/.ndnsf-install.lock" ]]; then
+    exec 7>"$NATIVE_BUILD_DIR/.ndnsf-install.lock"
+  fi
+  flock -n 7 || { echo "Native install already active: $NATIVE_BUILD_DIR" >&2; exit 75; }
+}
+
+native_stage() {
+  "$PYTHON_BIN" "$BUILD_STORAGE" stage --build-dir "$NATIVE_BUILD_DIR" "$1"
+}
+
+promote_native_stage() {
+  local stage="$NATIVE_BUILD_DIR/install-stage"
+  "$PYTHON_BIN" "$BUILD_STORAGE" promotion-budget \
+    --build-dir "$NATIVE_BUILD_DIR" --prefix "$RUNTIME_PREFIX"
+  install_manifest_tree "$stage$RUNTIME_PREFIX" "$RUNTIME_PREFIX" ndnsf-native
+  if [[ "$RUNTIME_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]]; then
+    sudo_run /sbin/ldconfig
+  fi
+  "$PYTHON_BIN" "$BUILD_STORAGE" verify-install \
+    --build-dir "$NATIVE_BUILD_DIR" --prefix "$RUNTIME_PREFIX"
+}
+
+if (( PROMOTE_NATIVE_STAGE )); then
+  lock_native_install
+  promote_native_stage
+  native_stage retire
+  exit 0
+fi
+
 record_source_checkout() {
   local name="$1" url="$2" commit="$3" path="$4" base="$5" base_created="${6:-0}"
   local -a args=(--manifest "$INSTALL_MANIFEST" --path "$path" --base "$base"
@@ -1058,9 +1202,14 @@ uninstall_stack() {
     return 2
   fi
   if [[ -f "$INSTALL_MANIFEST" ]]; then
+    if [[ -d "$NATIVE_BUILD_DIR" ]]; then
+      lock_native_install
+    fi
     echo "==> Uninstalling the recorded NDNSF stack from $INSTALL_MANIFEST"
     manifest_tool --privileged uninstall --manifest "$INSTALL_MANIFEST"
-    sudo_run /sbin/ldconfig
+    if [[ "$RUNTIME_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]]; then
+      sudo_run /sbin/ldconfig
+    fi
     return
   fi
   if [[ -z "$LEGACY_BUILD_DIR" ]]; then
@@ -1233,15 +1382,37 @@ stage_python_wheel_sources() {
   PYTHON_WHEEL_INPUTS=("${staged_packages[@]}")
 }
 
+prepare_installer_pip() {
+  local stage="$1" help
+  local -a clean=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1)
+  pip_bootstrap_env=()
+  help="$("${clean[@]}" "$PYTHON_BIN" -m pip --isolated help install)"
+  if [[ "$help" == *--break-system-packages* ]]; then
+    return
+  fi
+  # Ubuntu 20.04's apt pip rejects newer wheel tags and lacks the install
+  # option used below. Keep the bootstrap private to this installer stage.
+  run_bounded "${clean[@]}" "$PYTHON_BIN" -m pip --isolated install \
+    --no-cache-dir --no-deps --target "$stage" 'pip==25.0.1'
+  pip_bootstrap_env=("PYTHONPATH=$stage")
+}
+
 pip_install() (
-  local wheel_dir
+  local wheel_dir package
+  local -a pip_bootstrap_env=()
   local -a python_distributions=(
     ndnsf py-repoclient ndnsf-distributed-inference ndnsf-di-core ndnsf-di-sdk
     ndnsf-di-planner ndnsf-di-app ndnsf-di-ops
   )
+  for package in "$@"; do
+    if [[ "$package" == "$ROOT/NDNSF-DistributedInference/packaging/python/adapters/onnx" ]]; then
+      python_distributions+=(ndnsf-di-adapter-onnx)
+    fi
+  done
   wheel_dir="$(mktemp -d -t ndnsf-wheels.XXXXXXXX)"
   trap 'rm -rf -- "$wheel_dir"' EXIT
   stage_python_wheel_sources "$wheel_dir/source-tree" "$@"
+  prepare_installer_pip "$wheel_dir/pip"
   # Compile bindings as the caller, then install wheels into system Python.
   run_bounded env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH \
@@ -1251,14 +1422,14 @@ pip_install() (
     NDNSF_RUNTIME_PREFIX="$RUNTIME_PREFIX" \
     NDNSF_NAC_ABE_PREFIX="$NAC_SDK_PREFIX" \
     NDNSF_GLOBAL_NATIVE_DIGESTS="$NDNSF_GLOBAL_NATIVE_DIGESTS" \
-    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 PYTHONNOUSERSITE=1 \
+    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 PYTHONNOUSERSITE=1 "${pip_bootstrap_env[@]}" \
     "$PYTHON_BIN" -m pip --isolated wheel --wheel-dir "$wheel_dir" \
     "${PYTHON_WHEEL_INPUTS[@]}"
   manifest_tool --privileged snapshot-python \
     --manifest "$INSTALL_MANIFEST" --python "$PYTHON_BIN" \
     --packages "${python_distributions[@]}"
   sudo_run env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 "${pip_bootstrap_env[@]}" \
     "$PYTHON_BIN" -m pip --isolated install --break-system-packages \
     --no-index --no-deps \
     --force-reinstall "$wheel_dir"/*.whl
@@ -1306,17 +1477,28 @@ native_runtime_rpath() {
 run_waf_clean() {
   refresh_global_pkg_config_path
   local -a waf_args=("$@")
+  local profile=stack-native-build
   # Only an explicitly requested private-SDK driver needs an ndn-cxx source pin.
   local ndncxx_source_tree="${NDNSF_NDN_CXX_SOURCE_TREE:-}"
   if [[ "${waf_args[0]:-}" == "configure" ]]; then
+    profile=stack-native-configure
     # Keep native outputs separate from the external SDK search roots.
     waf_args+=("--prefix=$RUNTIME_PREFIX" "--libdir=$RUNTIME_LIBRARY_DIR"
       "--components=$NATIVE_COMPONENT_PROFILE")
     [[ -z "$NAC_SDK_PREFIX" ]] || waf_args+=("--nac-abe-prefix=$NAC_SDK_PREFIX")
+    if [[ "$RUN_WAF_CONFIGURE" == auto ]] &&
+        "$PYTHON_BIN" "$BUILD_STORAGE" configured --build-dir "$NATIVE_BUILD_DIR" \
+          --cxx "${CXX:-}" -- "${waf_args[@]:1}" "--onnx-prefix=$GLOBAL_ONNX_PREFIX"; then
+      echo "==> Reusing configured Waf state in $NATIVE_BUILD_DIR"
+      return 0
+    fi
+  elif [[ "${waf_args[0]:-}" == "install" ]]; then
+    profile=stack-native-stage
   fi
   # The top-level configure/build sees only canonical global pkg-config roots;
   # this includes NDN-CXX's valid /usr/local/lib64 installation.
-  run_bounded env \
+  run_bounded "$PYTHON_BIN" "$BUILD_STORAGE" run --build-dir "$NATIVE_BUILD_DIR" \
+    --profile "$profile" --jobs "$JOBS" "${native_storage_prefix[@]}" -- env \
     -u PKG_CONFIG_LIBDIR \
     -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH \
@@ -1324,9 +1506,9 @@ run_waf_clean() {
     -u PKGCONFIG -u LD -u AR -u AS -u RANLIB -u NM -u STRIP \
     -u OBJCOPY -u OBJDUMP -u READELF \
     -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
-    PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
+    PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" WAFLOCK=.lock-waf_linux_build \
     PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
-    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
+    CC="${CC:-/usr/bin/gcc}" CXX="${CXX:-/usr/bin/g++}" LD=/usr/bin/ld \
     AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
     NM=/usr/bin/nm STRIP=/usr/bin/strip \
     NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
@@ -1397,7 +1579,11 @@ prepare_build_dir() {
   exec 8>"$BUILD_DIR/.ndnsf-stack-purpose.lock"
   flock -n 8 || { echo "SDK scratch is active: $BUILD_DIR" >&2; exit 75; }
   temp_dir="$(realpath -m -- "${NDNSF_TMPDIR:-$BUILD_DIR/tmp}")"
+  if [[ "$BUILD_DIR" == "$NATIVE_BUILD_DIR" && -z "${NDNSF_TMPDIR:-}" ]]; then
+    temp_dir="$NATIVE_BUILD_DIR/tmp"
+  fi
   case "$temp_dir" in
+    "$NATIVE_BUILD_DIR/tmp") ;;
     "$ROOT"|"$ROOT"/*)
       echo "Temporary files must stay outside the source checkout: $temp_dir" >&2
       exit 2
@@ -1423,6 +1609,10 @@ release_default_sdk_scratch() {
       esac
     done
     manifest_tool build-marker --build-dir "$BUILD_DIR" --root "$ROOT" --verify
+    if [[ -d "$BUILD_DIR/waf-dependencies" ]]; then
+      echo "==> Retaining incremental dependency objects in $BUILD_DIR/waf-dependencies"
+      return 0
+    fi
     rm -rf -- "$BUILD_DIR"
   fi
 }
@@ -2478,13 +2668,34 @@ OPENABE_BUILD
   rm -rf -- "$materialized_root" "$BUILD_DIR/install-staging/openabe"
 }
 
+build_and_stage_waf_dependency() {
+  local source="$1" output="$2" name="$3"
+  shift 3
+  local -a waf_command=("$@" WAFLOCK=.lock-waf_linux_build "$PYTHON_BIN" "$source/waf" "--out=$output"
+    --no-lock-in-run --no-lock-in-top)
+  local -a budget=("$PYTHON_BIN" "$BUILD_STORAGE" run --build-dir "$output"
+    --prefix "$GLOBAL_DEPENDENCY_PREFIX" --jobs "$JOBS" --profile "dependency-$name")
+  if ! "$PYTHON_BIN" "$BUILD_STORAGE" configured --build-dir "$output" \
+    --source-dir "$source" --cxx /usr/bin/g++-10 -- "--prefix=$GLOBAL_DEPENDENCY_PREFIX"; then
+    run_bounded "${budget[@]}" -- "${waf_command[@]}" configure "--prefix=$GLOBAL_DEPENDENCY_PREFIX"
+  fi
+  (cd "$output" && run_bounded "${budget[@]}" -- "${waf_command[@]}" build "-j$JOBS")
+  "${budget[@]}"
+  "$PYTHON_BIN" "$BUILD_STORAGE" stage --build-dir "$output" prepare
+  (cd "$output" && run_bounded "${budget[@]}" -- "${waf_command[@]}" install \
+    "--destdir=$output/install-stage" "-j$JOBS")
+  "$PYTHON_BIN" "$BUILD_STORAGE" promotion-budget --build-dir "$output" \
+    --prefix "$GLOBAL_DEPENDENCY_PREFIX"
+}
+
 build_waf_dependency() {
   local name="$1"
   local pkg="$2"
   local url="$3"
   local minimum="$4"
   local dir dependency_patch
-  local install_stage="$BUILD_DIR/install-staging/$name"
+  local build_out="$BUILD_DIR/waf-dependencies/$name"
+  local install_stage="$build_out/install-stage"
   local -a waf_env
 
   if [[ "$name" == NFD ]]; then
@@ -2505,7 +2716,8 @@ build_waf_dependency() {
   else
     dir="$(ensure_source_tree "$name" "$url" | tail -n 1)"
   fi
-  mkdir -p -- "$install_stage"
+  mkdir -p -- "$build_out"
+  "$PYTHON_BIN" "$BUILD_STORAGE" stage --build-dir "$build_out" retire
   echo "==> Building dependency $name"
   # Match Mini-NDN's per-project Waf lifecycle: finish one dependency before
   # moving on to the next, and report configure/build/install failures at the
@@ -2541,23 +2753,21 @@ build_waf_dependency() {
         exit 1
       fi
     fi
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf distclean
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf configure "--prefix=$GLOBAL_DEPENDENCY_PREFIX"
-    run_bounded "${waf_env[@]}" "$PYTHON_BIN" ./waf "-j$JOBS"
-    echo "==> Installing dependency $name"
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf install "--destdir=$install_stage"
+    build_and_stage_waf_dependency "$dir" "$build_out" "$name" "${waf_env[@]}"
   )
   if [[ "$name" == NFD && ! -e /usr/local/etc/ndn/nfd.conf && \
         -f "$install_stage/usr/local/etc/ndn/nfd.conf.sample" ]]; then
     cp -p -- "$install_stage/usr/local/etc/ndn/nfd.conf.sample" \
       "$install_stage/usr/local/etc/ndn/nfd.conf"
   fi
-  install_manifest_tree "$install_stage/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" "$name"
-  rm -rf -- "$install_stage"
+  install_manifest_tree "$install_stage$GLOBAL_DEPENDENCY_PREFIX" "$GLOBAL_DEPENDENCY_PREFIX" "$name"
   sudo_run ldconfig
   if [[ "$name" != NFD ]]; then
     record_source_receipt "$name"
   fi
+  "$PYTHON_BIN" "$BUILD_STORAGE" verify-install --build-dir "$build_out" \
+    --prefix "$GLOBAL_DEPENDENCY_PREFIX"
+  "$PYTHON_BIN" "$BUILD_STORAGE" stage --build-dir "$build_out" retire
 }
 
 preserve_existing_stage_targets() {
@@ -2595,9 +2805,10 @@ build_fixed_minindn_waf_dependency() {
   fi
 
   dir="$(ensure_fixed_source_tree "$name" "$url" "$commit" | tail -n 1)"
-  build_out="$(mktemp -d "$BUILD_DIR/minindn-build-${name}.XXXXXXXX")"
-  mkdir -p -- "$BUILD_DIR/install-staging"
-  stage_root="$(mktemp -d "$BUILD_DIR/install-staging/minindn-${name}.XXXXXXXX")"
+  build_out="$BUILD_DIR/waf-dependencies/$name"
+  stage_root="$build_out/install-stage"
+  mkdir -p -- "$build_out"
+  "$PYTHON_BIN" "$BUILD_STORAGE" stage --build-dir "$build_out" retire
   waf_env=(
     env -u PKG_CONFIG_LIBDIR -u CXXFLAGS -u CFLAGS -u CPPFLAGS -u LDFLAGS
     -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH -u C_INCLUDE_PATH
@@ -2610,13 +2821,7 @@ build_fixed_minindn_waf_dependency() {
   echo "==> Building pinned Mini-NDN prerequisite $name in $build_out"
   (
     cd "$dir"
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" distclean
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" configure \
-      "--prefix=$GLOBAL_DEPENDENCY_PREFIX"
-    run_bounded "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" "-j$JOBS"
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" install \
-      "--destdir=$stage_root"
-    run "${waf_env[@]}" "$PYTHON_BIN" ./waf --out="$build_out" distclean
+    build_and_stage_waf_dependency "$dir" "$build_out" "$name" "${waf_env[@]}"
   )
   preserve_existing_stage_targets "$stage_root/usr/local"
   install_manifest_tree "$stage_root/usr/local" "$GLOBAL_DEPENDENCY_PREFIX" \
@@ -2625,8 +2830,10 @@ build_fixed_minindn_waf_dependency() {
     echo "Pinned source tree is not clean after its out-of-tree build: $dir" >&2
     return 1
   fi
-  rm -rf -- "$build_out" "$stage_root"
   sudo_run ldconfig
+  "$PYTHON_BIN" "$BUILD_STORAGE" verify-install --build-dir "$build_out" \
+    --prefix "$GLOBAL_DEPENDENCY_PREFIX"
+  "$PYTHON_BIN" "$BUILD_STORAGE" stage --build-dir "$build_out" retire
 }
 
 build_fixed_minindn_infoedit() {
@@ -2734,6 +2941,7 @@ selected_python_ndn_version() {
 install_native_test_python_support() (
   (( NDNSF_INSTALL_DI )) || exit 0
   local enabled=0 test_option stage version test_stage_root
+  local -a pip_bootstrap_env=()
   for test_option in "${WAF_CONFIGURE_ARGS[@]}"; do
     [[ "$test_option" != --with-tests ]] || enabled=1
   done
@@ -2753,7 +2961,9 @@ install_native_test_python_support() (
   stage="$(mktemp -d "$test_stage_root/ndnsf-native-test-python.XXXXXXXX")"
   trap 'rm -rf -- "$stage"' EXIT
   mkdir -p -- "$stage/tmp" "$stage/tree/libexec/ndnsf-tests/python"
+  prepare_installer_pip "$stage/pip"
   run_bounded env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 TMPDIR="$stage/tmp" \
+    "${pip_bootstrap_env[@]}" \
     "$PYTHON_BIN" -m pip --isolated install --no-cache-dir --no-compile \
     --target "$stage/tree/libexec/ndnsf-tests/python" "python-ndn==$version"
   install_manifest_tree "$stage/tree" "$RUNTIME_PREFIX" ndnsf-test-python
@@ -2763,8 +2973,8 @@ install_yolo_minindn_profile() {
   local python_tag torch_version torchvision_version python_ndn_version onnxruntime_python_version
   local mini_prefix yolo_prefix
   local mini_source source_copy stage_root mini_site yolo_site mini_stage yolo_stage
-  local model_stage topology
-  local -a pip_env
+  local model_stage topology profile_stage yolo_examples
+  local -a pip_env pip_bootstrap_env=()
   python_ndn_version="$(selected_python_ndn_version)"
 
   case "$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" in
@@ -2810,7 +3020,8 @@ install_yolo_minindn_profile() {
   mini_stage="$stage_root/usr/local/${mini_site#/usr/local/}"
   yolo_stage="$stage_root/usr/local/${yolo_site#/usr/local/}"
   mkdir -p -- "$mini_stage" "$yolo_stage"
-  pip_env=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1)
+  prepare_installer_pip "$stage_root/pip"
+  pip_env=(env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "${pip_bootstrap_env[@]}")
 
   echo "==> Preparing the pinned Mini-NDN $MININDN_COMMIT Python package"
   git -C "$mini_source" archive --format=tar "$MININDN_COMMIT" |
@@ -2834,14 +3045,20 @@ install_yolo_minindn_profile() {
     "onnxruntime==$onnxruntime_python_version"
 
   model_stage="$stage_root/usr/local/share/ndnsf/models/yolo26n.pt"
-  mkdir -p -- "$(dirname -- "$model_stage")" \
-    "$stage_root/usr/local/share/ndnsf/yolo-minindn"
+  profile_stage="$stage_root/usr/local/share/ndnsf/yolo-minindn"
+  yolo_examples="$ROOT/examples/python/NDNSF-DistributedInference/yolo_split"
+  mkdir -p -- "$(dirname -- "$model_stage")" "$profile_stage/experiments" "$profile_stage/actors"
+  install -m 0644 "$ROOT/Experiments/NDNSF_DI_YoloSplit_Minindn.py" \
+    "$ROOT/Experiments/NDNSF_NewAPI_Minindn_Perf.py" "$profile_stage/experiments/"
+  install -m 0644 "$yolo_examples"/{controller,provider,split_model,user,yolo_split_lib}.py \
+    "$profile_stage/actors/"
   run curl --fail --location --retry 3 --output "$stage_root/yolo26n.pt.download" \
     "$YOLO_MODEL_URL"
   printf '%s  %s\n' "$YOLO_MODEL_SHA256" "$stage_root/yolo26n.pt.download" |
     sha256sum --check --status
   install -m 0644 "$stage_root/yolo26n.pt.download" "$model_stage"
-  printf '%s\n' "$ROOT" > "$stage_root/usr/local/share/ndnsf/yolo-minindn/source-root"
+  printf '%s\n' "$PYTHON_BIN" > "$profile_stage/python-executable"
+  printf '%s\n' "$RUNTIME_LIBRARY_DIR" > "$profile_stage/native-library-dir"
   printf '%s\n' "$mini_site" "$yolo_site" \
     > "$stage_root/usr/local/share/ndnsf/yolo-minindn/python-site-paths"
   printf '%s\n' "$YOLO_MODEL_SHA256" \
@@ -2858,25 +3075,36 @@ install_yolo_minindn_profile() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( EUID != 0 )); then
+if [[ ${1:-} == --help && $# -eq 1 ]]; then
+  echo 'Usage: ndnsf-yolo-minindn [--preflight-only]'
+  exit 0
+fi
+preflight_only=0
+if [[ ${1:-} == --preflight-only && $# -eq 1 ]]; then
+  preflight_only=1
+elif (($#)); then
+  echo 'Usage: ndnsf-yolo-minindn [--preflight-only]' >&2
+  exit 2
+fi
+if (( EUID != 0 && ! preflight_only )); then
   command -v sudo >/dev/null 2>&1 || { echo 'Mini-NDN needs root; sudo is unavailable' >&2; exit 1; }
   exec sudo -- "$0" "$@"
 fi
-if (($#)); then
-  echo 'Usage: ndnsf-yolo-minindn' >&2
-  exit 2
-fi
-
-state_dir=/usr/local/share/ndnsf/yolo-minindn
-model=/usr/local/share/ndnsf/models/yolo26n.pt
-[[ -r "$state_dir/source-root" && -r "$state_dir/python-site-paths" && -r "$state_dir/yolo26n.sha256" ]] || {
-  echo "Incomplete Mini-NDN/YOLO install state: $state_dir" >&2
-  exit 1
-}
-repo="${NDNSF_ROOT:-$(<"$state_dir/source-root")}"
-repo="$(realpath -e -- "$repo")"
-[[ -f "$repo/Experiments/NDNSF_DI_YoloSplit_Minindn.py" ]] || {
-  echo "YOLO Mini-NDN experiment not found under $repo; set NDNSF_ROOT" >&2
+prefix="$(dirname -- "$(dirname -- "$(realpath -e -- "$0")")")"
+state_dir="$prefix/share/ndnsf/yolo-minindn"
+model="$prefix/share/ndnsf/models/yolo26n.pt"
+for input in python-executable native-library-dir python-site-paths yolo26n.sha256 \
+  experiments/{NDNSF_DI_YoloSplit_Minindn,NDNSF_NewAPI_Minindn_Perf}.py \
+  actors/{controller,provider,split_model,user,yolo_split_lib}.py; do
+  [[ -f "$state_dir/$input" && -r "$state_dir/$input" ]] || {
+    echo "Missing Mini-NDN/YOLO input: $state_dir/$input" >&2
+    exit 1
+  }
+done
+python="$(<"$state_dir/python-executable")"
+native_lib="$(<"$state_dir/native-library-dir")"
+[[ -x "$python" && -r "$native_lib/libndnsf-distributed-inference.so" ]] || {
+  echo "Mini-NDN/YOLO runtime missing: $python or $native_lib/libndnsf-distributed-inference.so" >&2
   exit 1
 }
 [[ -f "$model" ]] || { echo "Cached YOLO model is missing: $model" >&2; exit 1; }
@@ -2890,19 +3118,63 @@ mapfile -t python_sites < "$state_dir/python-site-paths"
   exit 1
 }
 
-run_root="${NDNSF_YOLO_RUN_ROOT:-/var/tmp/ndnsf-yolo-minindn}"
-mkdir -p -- "$run_root"
-run_root="$(realpath -e -- "$run_root")"
-case "$run_root" in
-  "$repo"|"$repo"/*) echo "Run artifacts must be outside the checkout: $run_root" >&2; exit 2 ;;
+# Report which native binding and DI package the profile actually resolves, and their digests. The
+# preflight otherwise proves only that files exist and the model hashes, which is not enough to say what will
+# run: a stale binding or a source-tree copy resolves just as successfully.
+report_runtime_identity() {
+  local py="$1"
+  local native_dir="${!#}"
+  local sites=("${@:2:$#-2}")
+  local identity_status=0
+  PYTHONPATH="$(IFS=:; echo "${sites[*]}")" "$py" - <<'IDENTITY' || identity_status=$?
+import hashlib, importlib, pathlib, sys
+def digest(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+for module in ('ndnsf', 'ndnsf_distributed_inference'):
+    try:
+        loaded = importlib.import_module(module)
+    except Exception as exc:
+        print(f'YOLO_MININDN_PACKAGE {module} unavailable={type(exc).__name__}')
+        continue
+    where = pathlib.Path(loaded.__file__).resolve()
+    print(f'YOLO_MININDN_PACKAGE {module} path={where}')
+    binding = sorted(where.parent.glob('_ndnsf*.so'))
+    for item in binding:
+        print(f'YOLO_MININDN_BINDING {item} sha256={digest(item)}')
+IDENTITY
+  local library="$native_dir/libndnsf-distributed-inference.so"
+  if [[ -f "$library" ]]; then
+    printf 'YOLO_MININDN_NATIVE_LIBRARY %s sha256=%s\n' \
+      "$library" "$(sha256sum -- "$library" | cut -d' ' -f1)"
+  else
+    printf 'YOLO_MININDN_NATIVE_LIBRARY %s unavailable\n' "$library"
+    identity_status=1
+  fi
+  return "$identity_status"
+}
+
+if (( preflight_only )); then
+  # The report decides the preflight: an unresolvable binding, a package that is not importable, or a missing
+  # native library must fail here rather than be printed beside an OK line.
+  if ! report_runtime_identity "$python" "${python_sites[@]}" "$native_lib"; then
+    echo 'YOLO_MININDN_RUNTIME_IDENTITY_UNAVAILABLE' >&2
+    exit 1
+  fi
+  echo 'YOLO_MININDN_INSTALLED_INPUTS_OK'
+  exit 0
+fi
+
+run_root="$(realpath -e -- "${NDNSF_YOLO_RUN_ROOT:-${TMPDIR:-/tmp}}")"
+case "$(stat -f -c %T -- "$run_root")" in
+  tmpfs|ramfs) echo 'Mini-NDN/YOLO requires disk-backed run storage' >&2; exit 2 ;;
 esac
-run_dir="$(mktemp -d "$run_root/run.$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXX")"
+run_dir="$(mktemp -d "$run_root/ndnsf-yolo-run.XXXXXXXX")"
 model_cwd="$run_dir/model-cache"
 mkdir -p -- "$model_cwd" "$run_dir/tmp" "$run_dir/matplotlib" "$run_dir/torch"
 ln -s -- "$model" "$model_cwd/yolo26n.pt"
 
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-export NDNSF_ROOT="$repo"
+export NDNSF_YOLO_PROFILE_DIR="$state_dir" NDNSF_YOLO_NATIVE_LIB="$native_lib"
 export NDNSF_YOLO_MODEL="$model"
 export NDNSF_YOLO_RUN_DIR="$run_dir"
 export NDNSF_YOLO_MODEL_CWD="$model_cwd"
@@ -2912,37 +3184,36 @@ export PYTHONPATH="${python_sites[0]}:${python_sites[1]}"
 export PYTHONNOUSERSITE=1 PYTHONPYCACHEPREFIX="$run_dir/pycache"
 export TMPDIR="$run_dir/tmp" MPLCONFIGDIR="$run_dir/matplotlib"
 export TORCH_HOME="$run_dir/torch" YOLO_CONFIG_DIR="$run_dir/ultralytics-config"
-unset DISPLAY GST_PLUGIN_PATH
+unset DISPLAY GST_PLUGIN_PATH PYTHONHOME SUDO_USER LD_PRELOAD
+export LD_LIBRARY_PATH="$native_lib"
+cd -- "$run_dir"
 
 set -o pipefail
-/usr/bin/python3 - 2>&1 <<'PY' | tee "$run_dir/launcher.log"
+"$python" - 2>&1 <<'PY' | tee "$run_dir/launcher.log"
 import os
 from pathlib import Path
 import sys
 import subprocess
 
-repo = Path(os.environ['NDNSF_ROOT']).resolve()
+profile_dir = Path(os.environ['NDNSF_YOLO_PROFILE_DIR'])
 run_dir = Path(os.environ['NDNSF_YOLO_RUN_DIR']).resolve()
 model = Path(os.environ['NDNSF_YOLO_MODEL']).resolve()
 model_cwd = Path(os.environ['NDNSF_YOLO_MODEL_CWD']).resolve()
 mini_site = os.environ['NDNSF_MININDN_SITE']
 yolo_site = os.environ['NDNSF_YOLO_SITE']
-py_dir = repo / 'examples/python/NDNSF-DistributedInference/yolo_split'
+py_dir = profile_dir / 'actors'
 python_path = ':'.join((
     mini_site,
     yolo_site,
-    str(repo / 'NDNSF-DistributedInference'),
-    str(repo / 'pythonWrapper'),
     str(py_dir),
     '/usr/lib/python3/dist-packages',
 ))
 os.environ['PYTHONPATH'] = python_path
-sys.path.insert(0, str(repo / 'Experiments'))
+sys.path.insert(0, str(profile_dir / 'experiments'))
 
 import NDNSF_DI_YoloSplit_Minindn as experiment
 import minindn.minindn as minindn_impl
 
-experiment.REPO = repo
 two_node_topology = run_dir / 'minindn-two-node.conf'
 two_node_topology.write_text(
     '[nodes]\nucla:\nwustl:\n\n'
@@ -2952,6 +3223,7 @@ two_node_topology.write_text(
 experiment.TOPO = two_node_topology
 experiment.PY_DIR = py_dir
 experiment.OUT = run_dir / 'experiment'
+experiment.ARTIFACT_CACHE_ROOT = run_dir / 'artifacts'
 experiment.CONFIG = experiment.OUT / 'yolo_policy.yaml'
 experiment.GEN_POLICY = str(run_dir / 'generated-policy')
 
@@ -3000,6 +3272,13 @@ def generate_cached_policy():
 experiment.build_python_path = isolated_python_path
 experiment.python_cmd = isolated_python_cmd
 experiment.generate_auto_split_policy = generate_cached_policy
+
+app_env = experiment.perf.app_env
+def installed_app_env(*args):
+    environment = app_env(*args)
+    environment['LD_LIBRARY_PATH'] = os.environ['NDNSF_YOLO_NATIVE_LIB']
+    return environment
+experiment.perf.app_env = installed_app_env
 
 # The stock cleanUp calls host-level `nfd-stop` before `mn --clean`. The
 # experiment owns this topology; ndn.stop() tears down its exact network.
@@ -3439,7 +3718,7 @@ check_qwen_nfd_prerequisites() {
 check_qwen_installed_programs() {
   local program
   for program in bin/App_ServiceController bin/DI_NativeArtifactAuthority bin/DI_NativeRequester \
-      bin/di-native-provider libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker bin/spec190-multiturn-oracle; do
+      bin/di-native-provider libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker bin/multiturn-oracle; do
     [[ -f "$RUNTIME_PREFIX/$program" && -x "$RUNTIME_PREFIX/$program" ]] || {
       echo "Missing installed Qwen executable: $RUNTIME_PREFIX/$program" >&2
       return 1
@@ -3451,6 +3730,26 @@ check_qwen_installed_programs() {
 }
 
 cd "$ROOT"
+
+if [[ -n "$PREPARE_EXPERIMENT" ]]; then
+  prepare_command=("$PYTHON_BIN" -B "$RUNTIME_PREFIX/share/ndnsf/Experiments/prepare-native-deployment.py"
+    --profile "$PREPARE_EXPERIMENT" --prefix "$RUNTIME_PREFIX"
+    --asset-manifest "$EXPERIMENT_ASSET_MANIFEST" --work-root "$EXPERIMENT_WORK_ROOT"
+    --namespace "$EXPERIMENT_NAMESPACE")
+  (( ! EXPERIMENT_OFFLINE )) || prepare_command+=(--offline)
+  if (( PLAN_ONLY )); then
+    printf 'Installed experiment preparation (no writes): '
+    printf '%q ' "${prepare_command[@]}"
+    printf '\n'
+    exit 0
+  fi
+  [[ -f "${prepare_command[2]}" ]] || {
+    echo "Installed preparation tool missing: ${prepare_command[2]}" >&2
+    echo 'Install the DI native tools and ndnsf-di-ops owner CLI into the selected prefix first.' >&2
+    exit 2
+  }
+  exec "${prepare_command[@]}"
+fi
 
 if [[ -n "$PERSON_RUNTIME" ]]; then
   if (( UNINSTALL_STACK || CONFIGURE_ONLY || DEPS_ONLY || CHECK_DEPENDENCIES ||
@@ -3521,7 +3820,7 @@ if (( PLAN_ONLY )); then
     esac
   echo "  Python: $torch_plan; Ultralytics=$YOLO_ULTRALYTICS_VERSION."
     echo "  Model: yolo26n.pt SHA256=$YOLO_MODEL_SHA256."
-    echo '  Launcher: ndnsf-yolo-minindn; per-run outputs/logs go under /var/tmp/ndnsf-yolo-minindn.'
+    echo '  Launcher: ndnsf-yolo-minindn; run-specific outputs and logs go under disk-backed scratch.'
     echo '  Inference topology: exactly two Mini-NDN hosts; controller/user share ucla with stage 0, and stage 1 runs on wustl.'
   fi
   if (( QWEN_MININDN )); then
@@ -3546,6 +3845,7 @@ for pair in 'ndn-cxx:NDNCXX_REPO_URL' 'ndn-svs:NDNSVS_REPO_URL' 'NDNSD:NDNSD_REP
 done
 select_nac_sdk
 
+native_storage_prefix=()
 if (( CONFIGURE_ONLY )); then
   require_host_profile
   export PATH="$SYSTEM_PATH:/usr/local/bin:$PATH"
@@ -3556,6 +3856,7 @@ if (( CONFIGURE_ONLY )); then
   install_common_system_packages
   require_system_toolchain
   prepare_build_dir
+  lock_native_install
   run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
   release_default_sdk_scratch
   exit 0
@@ -3566,6 +3867,17 @@ echo "==> Python: $PYTHON_BIN"
 require_host_profile
 if (( QWEN_MININDN )); then
   check_qwen_minindn_prerequisites
+fi
+if (( ! DEPS_ONLY && ! NDNCXX_ONLY && ! CHECK_DEPENDENCIES )); then
+  if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
+    lock_native_install
+    native_stage retire
+    native_storage_prefix=(--prefix "$RUNTIME_PREFIX")
+  fi
+  native_early_tmp="${NDNSF_TMPDIR:-${BUILD_DIR:+$BUILD_DIR/tmp}}"
+  "$PYTHON_BIN" "$BUILD_STORAGE" run --build-dir "$NATIVE_BUILD_DIR" \
+    --temporary-dir "${native_early_tmp:-/tmp}" \
+    --profile stack-native-build --jobs "$JOBS" "${native_storage_prefix[@]}"
 fi
 if [[ "$CHECK_DEPENDENCIES" != "1" ]]; then
   install_common_system_packages
@@ -3580,6 +3892,10 @@ if [[ "$CHECK_DEPENDENCIES" == "1" ]]; then
 fi
 
 prepare_build_dir
+if (( ! DEPS_ONLY && ! NDNCXX_ONLY )); then
+  "$PYTHON_BIN" "$BUILD_STORAGE" run --build-dir "$NATIVE_BUILD_DIR" \
+    --profile stack-native-build --jobs "$JOBS" "${native_storage_prefix[@]}"
+fi
 if (( NDNCXX_ONLY )); then
   echo '==> Updating only the locked ndn-cxx dependency'
   require_global_boost
@@ -3635,54 +3951,20 @@ if (( DEPS_ONLY )); then
   exit 0
 fi
 
-if [[ "$RUN_WAF_CONFIGURE" == "auto" ]]; then
-  # Never infer that an existing cache is safe.  Reconfigure so Waf rechecks
-  # every package, compiler and linker path against the installed closure.
-  RUN_WAF_CONFIGURE=1
-fi
-
-if [[ "$RUN_WAF_CONFIGURE" == "0" ]]; then
-  echo "--no-configure is not allowed for the global-closure installer; rerun with configure enabled" >&2
-  exit 2
-fi
-
-if [[ "$RUN_WAF_CONFIGURE" == "1" ]]; then
-  echo "==> Configuring waf project"
-  run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
-else
-  echo "==> Skipping waf configure"
-fi
+echo "==> Checking Waf configuration"
+run_waf_clean configure "${WAF_CONFIGURE_ARGS[@]}"
 
 echo "==> Building C++ libraries and bundled subprojects"
 run_waf_clean -j"$JOBS"
 
 if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   echo "==> Installing C++ libraries and headers"
-  local_install_stage="$BUILD_DIR/install-staging/ndnsf$RUNTIME_PREFIX"
-  mkdir -p -- "$local_install_stage"
-  run_bounded env \
-    -u PKG_CONFIG_LIBDIR \
-    -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
-    -u LD_LIBRARY_PATH -u LIBRARY_PATH -u CPATH \
-    -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u LDSHARED -u WAFDIR \
-    -u PKGCONFIG -u LD -u AR -u AS -u RANLIB -u NM -u STRIP \
-    -u OBJCOPY -u OBJDUMP -u READELF \
-    -u BOOST_ROOT -u BOOST_INCLUDEDIR -u BOOST_LIBRARYDIR \
-    PATH="$SYSTEM_PATH" PKGCONFIG="$PKG_CONFIG_BIN" \
-    CC=/usr/bin/gcc-10 CXX=/usr/bin/g++-10 LD=/usr/bin/ld \
-    AR=/usr/bin/ar AS=/usr/bin/as RANLIB=/usr/bin/ranlib \
-    NM=/usr/bin/nm STRIP=/usr/bin/strip \
-    NDNSF_SKIP_DEV_PIP_INSTALL=1 \
-    PKG_CONFIG_PATH="$GLOBAL_PKG_CONFIG_PATH" \
-    NDNSF_LIBRARY_DIR="$RUNTIME_LIBRARY_DIR" \
-    NDNSF_RUNTIME_RPATH="$(native_runtime_rpath)" \
-    "$PYTHON_BIN" ./waf --out="$NATIVE_BUILD_DIR" --onnx-prefix="$GLOBAL_ONNX_PREFIX" \
-    install "--destdir=$BUILD_DIR/install-staging/ndnsf" -j"$JOBS"
-  install_manifest_tree "$local_install_stage" "$RUNTIME_PREFIX" ndnsf-native
-  rm -rf -- "$BUILD_DIR/install-staging/ndnsf"
-  if [[ "$RUNTIME_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]]; then
-    sudo_run /sbin/ldconfig
-  fi
+  "$PYTHON_BIN" "$BUILD_STORAGE" run --build-dir "$NATIVE_BUILD_DIR" \
+    --profile stack-native-stage --jobs "$JOBS" --prefix "$RUNTIME_PREFIX"
+  native_stage prepare
+  NDNSF_SKIP_DEV_PIP_INSTALL=1 run_waf_clean install \
+    "--destdir=$NATIVE_BUILD_DIR/install-stage" -j"$JOBS"
+  promote_native_stage
   selected_native_libraries=(libndn-service-framework.so)
   (( ! NDNSF_INSTALL_DI )) || selected_native_libraries+=(libndnsf-distributed-inference.so)
   (( ! NDNSF_INSTALL_REPO )) || selected_native_libraries+=(libndnsf-distributed-repo.a)
@@ -3697,7 +3979,8 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   if (( NDNSF_INSTALL_DI )); then
     native_runtime_targets+=("$RUNTIME_LIBRARY_DIR/libndnsf-distributed-inference.so")
     native_runtime_programs+=("$RUNTIME_PREFIX/bin/DI_NativeRequester" "$RUNTIME_PREFIX/bin/DI_NativeArtifactAuthority"
-      "$RUNTIME_PREFIX/bin/spec190-multiturn-oracle"
+      "$RUNTIME_PREFIX/bin/ndnsf-di-tokenize-input"
+      "$RUNTIME_PREFIX/bin/multiturn-oracle"
       "$RUNTIME_PREFIX/bin/di-native-provider"
       "$RUNTIME_PREFIX/libexec/ndnsf-di/ndnsf-di-device-query"
       "$RUNTIME_PREFIX/libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker")
@@ -3715,6 +3998,7 @@ if [[ "$RUN_SYSTEM_INSTALL" == "1" ]]; then
   # no NAC dependency. Any NAC they do load must still match the selected SDK.
   "$PYTHON_BIN" "$SOURCE_HELPER" check-runtime --lock "$LOCK_FILE" --name NAC-ABE \
     --prefix "$NAC_SDK_PREFIX" --runtime-object "${native_runtime_programs[@]}"
+  native_stage retire
 else
   echo "==> Skipping system C++ install"
   echo "==> Build-only mode stops before Python bindings because the global Core/DI install is required" >&2
@@ -3743,13 +4027,18 @@ export NDNSF_GLOBAL_NATIVE_DIGESTS
 unset NDNSF_RUNTIME_RPATH NDNSF_NDN_SVS_SOURCE_TREE NDNSF_NDN_SVS_BUILD_TREE
 # Resolve repository-owned packages together so pip cannot substitute an
 # index copy of ndnsf or of a split DI owner package.
+python_adapter_packages=()
+if (( INSTALL_YOLO_MININDN )); then
+  python_adapter_packages+=("$ROOT/NDNSF-DistributedInference/packaging/python/adapters/onnx")
+fi
 pip_install "$ROOT/pythonWrapper" "$ROOT/NDNSF-DistributedRepo/pythonWrapper" \
   "$ROOT/NDNSF-DistributedInference/packaging/python/core" \
   "$ROOT/NDNSF-DistributedInference/packaging/python/sdk" \
   "$ROOT/NDNSF-DistributedInference/packaging/python/planner" \
   "$ROOT/NDNSF-DistributedInference/packaging/python/app" \
   "$ROOT/NDNSF-DistributedInference/packaging/python/ops" \
-  "$ROOT/NDNSF-DistributedInference/packaging/python/compat"
+  "$ROOT/NDNSF-DistributedInference/packaging/python/compat" \
+  "${python_adapter_packages[@]}"
 
 echo "==> Running Python import smoke checks"
 run env -u PYTHONPATH -u PYTHONHOME PYTHONNOUSERSITE=1 "$PYTHON_BIN" -I - <<'PY'

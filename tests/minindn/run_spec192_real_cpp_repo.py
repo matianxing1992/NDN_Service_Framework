@@ -28,9 +28,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import spec193_preflight
 
 REPO = Path(__file__).resolve().parents[2]
-NO_PYTHON_PATH = REPO / "build/spec192-no-python-path"
-NO_PYTHON_CPP_BINARIES = {"spec192-repo-client", "DistributedRepoServer",
-                          "spec193-object-repo-server", "ndnsf-repo-import"}
+BUILD_DIR = REPO / "build"
+NO_PYTHON_PATH = BUILD_DIR / "spec192-no-python-path"
+CANDIDATE_RUNTIME = None
+NO_PYTHON_CPP_BINARIES = {"repo-client", "DistributedRepoServer",
+                          "object-repo-server", "ndnsf-repo-import"}
 sys.path.insert(0, str(REPO / "Experiments"))
 
 import NDNSF_DistributedRepo_Generic_Minindn as generic  # noqa: E402
@@ -215,7 +217,7 @@ def source_candidate() -> Tuple[str, List[str]]:
 
 def validate_di_publish_child_timeout() -> None:
     runner_source = Path(__file__).read_text(encoding="utf-8")
-    client_source = (REPO / "tests/standalone/spec192-repo-client.cpp").read_text(
+    client_source = (REPO / "tests/standalone/repo-client.cpp").read_text(
         encoding="utf-8")
     api_source = (REPO / "NDNSF-DistributedRepo/src/ArtifactRepositoryApi.cpp").read_text(
         encoding="utf-8")
@@ -230,7 +232,7 @@ def validate_di_publish_child_timeout() -> None:
     api_function = re.search(
         r'ArtifactPublishResult\s+ArtifactRepositoryApi::publishFile\s*\('
         r'\s*const std::string&\s+sourcePath,\s*'
-        r'const ArtifactReference&\s+reference,\s*'
+        r'const ArtifactReference&\s+\w+,\s*'
         r'const SelectedRepoSet&\s+selected,\s*int timeoutMs\s*\)\s*'
         r'\{(?P<body>.*?)\n\}',
         api_source, re.S)
@@ -708,6 +710,11 @@ def node_environment(host, repo_root: Path, *, no_python: bool = False) -> Dict[
                                                   env.get("PYTHONPATH", "")])),
         "PYTHONUNBUFFERED": "1",
     })
+    if CANDIDATE_RUNTIME is not None:
+        env.pop("LD_PRELOAD", None)
+        env.pop("PYTHONHOME", None)
+        env.update(CANDIDATE_RUNTIME)
+        env["PYTHONPATH"] += ":" + str(repo_root / "NDNSF-DistributedInference")
     return hide_python_path(env) if no_python else env
 
 
@@ -1166,7 +1173,7 @@ def start_di_provider(ndn, output: Path, processes: List[Dict[str, Any]],
     if certificate_name is None:
         raise RuntimeError("unknown Spec192 DI provider identity " + provider_identity)
     set_default_identity(ndn.net[APP_HOST], provider_identity, certificate_name)
-    peer = str(REPO / "tests/minindn/spec192_di_peer.py")
+    peer = str(REPO / "tests/minindn/di_peer.py")
     argv = [
         sys.executable, peer, "--mode", "provider",
         "--config", str(runtime_config),
@@ -1566,7 +1573,7 @@ def run_scenario(ndn, output: Path, processes: List[Dict[str, Any]],
                               "artifact_sha256": artifact_digest,
                               "authenticated_store_trace": archive_store_trace}
 
-    binding = str(REPO / "tests/minindn/spec192_binding_client.py")
+    binding = str(REPO / "tests/minindn/binding_client.py")
     python_args = [
         sys.executable, binding, "--mode", "fetch",
         "--group", GROUP, "--controller", CONTROLLER, "--user", CONSUMER,
@@ -1660,7 +1667,7 @@ def run_scenario(ndn, output: Path, processes: List[Dict[str, Any]],
         di_receipts[slot] = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     artifact_references = di_work / "artifact-references.json"
-    binding_script = str(REPO / "tests/minindn/spec192_di_peer.py")
+    binding_script = str(REPO / "tests/minindn/di_peer.py")
     child = run_child(
         ndn, output, processes, CONSUMER_HOST, "python-build-di-references",
         [sys.executable, binding_script, "--mode", "bindings",
@@ -2279,7 +2286,7 @@ def run_spec193_object_baseline(ndn, output: Path,
     if capability is None:
         raise RuntimeError("object client lacked authenticated no-receipt capability")
     # One record per provider ACK the requester admitted. The request and ACKs travel encrypted, so this
-    # evidence -- signer identity, trust decision and wire digest from the admitting process -- is the only
+    # evidence — signer identity, trust decision and wire digest from the admitting process — is the only
     # way to identify them.
     admitted_acks = []
     for line in child_log.splitlines():
@@ -6375,7 +6382,7 @@ def run_spec193_partial_consistency(ndn, output: Path,
              360)
     object_replacement = None
     if reject_target:
-        object_server = REPO / "build/spec193-object-repo-server"
+        object_server = BUILD_DIR / "object-repo-server"
         object_dir = Path(ndn.net[REPO_B_HOST].params["params"]["homeDir"]) / \
                      "spec193-a08-object-reject"
         shutil.rmtree(object_dir, ignore_errors=True)
@@ -7223,7 +7230,7 @@ def run_spec193_di_reuse(ndn, output: Path, processes: List[Dict[str, Any]],
             DI_PUBLISH_CHILD_TIMEOUT_S, require_no_python=True))
         ensure_two_repo_commits(receipt)
         expected[slot] = {"sha256": digest(source), "size": source.stat().st_size}
-    peer = str(REPO / "tests/minindn/spec192_di_peer.py")
+    peer = str(REPO / "tests/minindn/di_peer.py")
     references = work / "references.json"
     children.append(run_child(ndn, output, processes, CONSUMER_HOST, "spec193-p03-bindings",
         [sys.executable, peer, "--mode", "bindings", "--handle-dir", str(handles),
@@ -7355,7 +7362,7 @@ def run_spec193_legacy_import(ndn, output: Path, processes: List[Dict[str, Any]]
     if before["legacy.sqlite-wal"]["size"] == 0 or before["legacy.sqlite-shm"]["size"] == 0:
         raise RuntimeError("P05 frozen legacy bundle has no real WAL/SHM")
     import_id = "p05-" + output.name
-    importer = REPO / "build/NDNSF-DistributedRepo/ndnsf-repo-import"
+    importer = BUILD_DIR / "NDNSF-DistributedRepo/ndnsf-repo-import"
     argv = [str(importer), "--source-db", str(source_root / "legacy.sqlite"),
             "--source-payload-root", str(source_root), "--destination", str(destination), "--import-id", import_id,
             "--max-range-bytes", "256"]
@@ -7426,7 +7433,7 @@ def run_spec193_retired_python(ndn, output: Path, processes: List[Dict[str, Any]
     before = {item["repo_node"]: repo_database_state(item["repo_dir"]) for item in servers}
     events = repo_request_events(processes, set(before))
     child = run_child(ndn, output, processes, APP_HOST, "spec193-p06-retired-python",
-        [sys.executable, str(REPO / "tests/minindn/spec193_retired_python_peer.py"),
+        [sys.executable, str(REPO / "tests/minindn/retired_python_peer.py"),
          "--group", GROUP, "--controller", CONTROLLER, "--user", USER,
          "--trust-schema", str(trust_schema), "--service-prefix", SERVICE_PREFIX,
          "--source", str(source), "--forbidden-root", str(forbidden), "--report-out", str(report_path)],
@@ -7466,7 +7473,7 @@ def run_spec193_cross_language(ndn, output: Path, processes: List[Dict[str, Any]
     base = ["--group", GROUP, "--controller", CONTROLLER, "--trust-schema", str(trust_schema),
             "--service-prefix", SERVICE_PREFIX, "--repo-a", REPO_A_ID, "--provider-a", REPO_A_PROVIDER,
             "--repo-b", REPO_B_ID, "--provider-b", REPO_B_PROVIDER]
-    binding = str(REPO / "tests/minindn/spec192_binding_client.py")
+    binding = str(REPO / "tests/minindn/binding_client.py")
     children = []
     def state() -> dict:
         return {item["repo_node"]: repo_database_state(item["repo_dir"]) for item in servers}
@@ -7875,6 +7882,7 @@ def run_spec193_persistent_mode_boundary(ndn, output: Path,
 
 def main() -> int:
     global REPO_C_HOST, REPO_D_HOST, HOST_ROLES
+    global BUILD_DIR, NO_PYTHON_PATH, CANDIDATE_RUNTIME
     parser = argparse.ArgumentParser()
     parser.add_argument("--topology-file", type=Path,
                         default=REPO / "Experiments/Topology/AI_Lab.conf")
@@ -7892,6 +7900,8 @@ def main() -> int:
                                                    "A15", "A16", "A17", "A18",
                                                    "A19", "A20", "A21", "A22"))
     parser.add_argument("--candidate-lock", type=Path)
+    parser.add_argument("--build-receipt", type=Path,
+                        help="explicit candidate build receipt produced by spec202_build_candidate.py")
     parser.add_argument("--o17-failover", action="store_true")
     parser.add_argument("--o17-corrupt-location", action="store_true")
     parser.add_argument("--o17-drop-original-data", action="store_true")
@@ -7903,6 +7913,10 @@ def main() -> int:
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--preflight-acl-services", type=Path)
     args, minindn_args = parser.parse_known_args()
+    if args.campaign_case and not args.build_receipt:
+        parser.error("--campaign-case requires an explicit --build-receipt")
+    if args.preflight_only and not args.campaign_case:
+        parser.error("--preflight-only requires --campaign-case")
     if (args.o17_failover or args.o17_corrupt_location or
             args.o17_drop_original_data or args.o17_import_legacy or
             args.o17_cache_hit or args.o17_server_auth) and \
@@ -7921,13 +7935,11 @@ def main() -> int:
         if args.durable_repo_root is None:
             raise RuntimeError("persistence campaign requires --durable-repo-root")
         args.durable_repo_root = args.durable_repo_root.resolve()
-        evidence_root = (REPO / "specs/202-distributedrepo-convergence/evidence").resolve()
-        try:
-            relative_root = args.durable_repo_root.relative_to(evidence_root)
-        except ValueError as error:
-            raise RuntimeError("durable Repo root must be inside Spec202 evidence") from error
-        if len(relative_root.parts) < 2 or args.durable_repo_root == args.output_dir.resolve():
-            raise RuntimeError("durable Repo root must be a separate evidence cohort directory")
+        output_dir = args.output_dir.resolve()
+        if (args.durable_repo_root == output_dir or
+                output_dir in args.durable_repo_root.parents or
+                args.durable_repo_root in output_dir.parents):
+            raise RuntimeError("durable Repo root must be separate from the run output directory")
         if args.campaign_case in ("PERSIST_SEED", "PERSIST_ARTIFACT_SEED") and args.durable_repo_root.exists():
             raise RuntimeError("durable Repo seed root already exists")
         if args.campaign_case in ("PERSIST_READ", "PERSIST_ARTIFACT_READ"):
@@ -7939,13 +7951,13 @@ def main() -> int:
         REPO_C_HOST = "seattle"
         HOST_ROLES = dict(HOST_ROLES, seattle="repoC")
         if args.topology_file == REPO / "Experiments/Topology/AI_Lab.conf":
-            args.topology_file = REPO / "tests/minindn/spec193_six_host.conf"
+            args.topology_file = REPO / "tests/minindn/six_host.conf"
     if args.campaign_case == "A07":
         REPO_C_HOST = "seattle"
         REPO_D_HOST = "stanford"
         HOST_ROLES = dict(HOST_ROLES, seattle="repoC", stanford="repoD")
         if args.topology_file == REPO / "Experiments/Topology/AI_Lab.conf":
-            args.topology_file = REPO / "tests/minindn/spec193_seven_host.conf"
+            args.topology_file = REPO / "tests/minindn/seven_host.conf"
     if args.campaign_case == "A05" and shutil.which("tshark") is None:
         raise RuntimeError("Spec193 A05 requires tshark for signed NDN packet verification")
     validate_di_publish_child_timeout()
@@ -7994,6 +8006,7 @@ def main() -> int:
                 require_seven=args.campaign_case == "A07",
                 object_mode=args.campaign_case in ("OBJECT_BASELINE", "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE"),
                 lock_path=args.candidate_lock, acl_services=acl_services,
+                build_receipt=args.build_receipt.resolve() if args.build_receipt else None,
                 include_object_server=args.campaign_case == "A08_REJECT",
                 include_importer=args.campaign_case == "P05")
         except spec193_preflight.PreflightError as error:
@@ -8011,7 +8024,12 @@ def main() -> int:
     args.output_dir.mkdir(parents=True)
     if preflight is not None:
         write_json(args.output_dir / "preflight-candidate-lock.json", preflight)
-    (REPO / "build/spec192-no-python-path").mkdir(parents=True, exist_ok=True)
+    if preflight is not None:
+        receipt_path = args.build_receipt.resolve()
+        BUILD_DIR = receipt_path.parent / "build"
+        CANDIDATE_RUNTIME = spec193_preflight.candidate_runtime(receipt_path)
+        NO_PYTHON_PATH = args.output_dir / "no-python-path"
+    NO_PYTHON_PATH.mkdir(parents=True, exist_ok=True)
     processes: List[Dict[str, Any]] = []
     daemon_stops: List[Dict[str, Any]] = []
     captures: List[Dict[str, Any]] = []
@@ -8244,14 +8262,14 @@ def main() -> int:
                     metadata_denied_user=metadata_denied_user)
         trust_schema = args.output_dir / "generated-policy/trust-schema.conf"
         server_candidates = (
-            [REPO / "build/spec193-object-repo-server"]
+            [BUILD_DIR / "object-repo-server"]
             if args.campaign_case in ("OBJECT_BASELINE", "P05", "PERSIST_SEED", "PERSIST_READ", "L01", "L02", "L03_L04", "NW_OBJECT", "NW_MALFORMED", "NW_WRONG_SIGNER", "O01", "O02", "O03", "O04", "O05", "O06_O07", "O08", "O09", "O10", "O11", "O12", "O13", "O14", "O15", "O16", "O17_ROUTE") else
-            [REPO / "build/NDNSF-DistributedRepo/DistributedRepoServer",
-             REPO / "build/DistributedRepoServer"])
+            [BUILD_DIR / "NDNSF-DistributedRepo/DistributedRepoServer",
+             BUILD_DIR / "DistributedRepoServer"])
         repo_server = next((item for item in server_candidates if item.is_file()), None)
-        repo_client = REPO / "build/spec192-repo-client"
+        repo_client = BUILD_DIR / "repo-client"
         if repo_server is None or not repo_client.is_file():
-            raise RuntimeError("build the exact C++ Repo server and spec192-repo-client before MiniNDN")
+            raise RuntimeError("build the exact C++ Repo server and repo-client before MiniNDN")
         manifest["controller_target_certificate_imports"] = []
         for index, (identity, certificate_file) in enumerate(
                 sorted(identities["target_public_certificates"].items())):

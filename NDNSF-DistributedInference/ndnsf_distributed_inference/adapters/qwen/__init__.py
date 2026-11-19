@@ -1,73 +1,49 @@
-"""Qwen model-family adapters."""
+"""Qwen exports load on selection; offline codecs do not open runtime bindings."""
 
-from .placement import (
-    QWEN36_27B_LAYER_RANGES,
-    QWEN36_27B_DECODE_MODE,
-    QWEN36_27B_MODEL,
-    QWEN36_27B_MODALITY,
-    QWEN36_27B_MTP_ENABLED,
-    QWEN36_27B_PRECISION,
-    QWEN36_27B_REVISION,
-    QWEN36_27B_THINKING_MODE,
-    QWEN36_STAGE_ROLES,
-    QwenThreeStageSplitter,
-    build_qwen_three_stage_adapter,
-    build_qwen36_27b_three_stage_adapter,
-)
-from .parallel import seal_qwen_hybrid_plan
-from .tokenizer import StandaloneQwenTokenizer
-from .generation import (
-    GenerationContractError,
-    GenerationTokenEventV1,
-    OnePlanGenerationLoop,
-    StreamedGenerationResult,
-    activation_data_name,
-    token_feedback_data_name,
-    IncrementalDetokenizer,
-    SamplingConfig,
-    accepted_prefix_digest,
-    sample_token,
-)
-from .stateful_onnx import (
-    DecodeStateBundleV1,
-    DecodeStateContractError,
-    DecodeStateIdentityV1,
-    DecodeStateTransaction,
-    PersistentStatefulOnnxSession,
-    StatefulOnnxIOContractV1,
-    StateComponent,
-)
+from importlib import import_module
 
-__all__ = [
-    "QWEN36_27B_LAYER_RANGES",
-    "QWEN36_27B_DECODE_MODE",
-    "QWEN36_27B_MODEL",
-    "QWEN36_27B_MODALITY",
-    "QWEN36_27B_MTP_ENABLED",
-    "QWEN36_27B_PRECISION",
-    "QWEN36_27B_REVISION",
-    "QWEN36_27B_THINKING_MODE",
-    "QWEN36_STAGE_ROLES",
-    "QwenThreeStageSplitter",
-    "build_qwen_three_stage_adapter",
-    "build_qwen36_27b_three_stage_adapter",
-    "seal_qwen_hybrid_plan",
-    "StandaloneQwenTokenizer",
-    "GenerationContractError",
-    "GenerationTokenEventV1",
-    "OnePlanGenerationLoop",
-    "StreamedGenerationResult",
-    "activation_data_name",
-    "token_feedback_data_name",
-    "IncrementalDetokenizer",
-    "SamplingConfig",
-    "accepted_prefix_digest",
-    "sample_token",
-    "DecodeStateBundleV1",
-    "DecodeStateContractError",
-    "DecodeStateIdentityV1",
-    "DecodeStateTransaction",
-    "PersistentStatefulOnnxSession",
-    "StatefulOnnxIOContractV1",
-    "StateComponent",
-]
+_EXPORTS = {
+    'QWEN36_27B_LAYER_RANGES': '.placement',
+    'QWEN36_27B_DECODE_MODE': '.placement',
+    'QWEN36_27B_MODEL': '.placement',
+    'QWEN36_27B_MODALITY': '.placement',
+    'QWEN36_27B_MTP_ENABLED': '.placement',
+    'QWEN36_27B_PRECISION': '.placement',
+    'QWEN36_27B_REVISION': '.placement',
+    'QWEN36_27B_THINKING_MODE': '.placement',
+    'QWEN36_STAGE_ROLES': '.placement',
+    'QwenThreeStageSplitter': '.placement',
+    'build_qwen_three_stage_adapter': '.placement',
+    'build_qwen36_27b_three_stage_adapter': '.placement',
+    'seal_qwen_hybrid_plan': '.parallel',
+    'StandaloneQwenTokenizer': '.tokenizer',
+    'GenerationContractError': '.generation',
+    'GenerationTokenEventV1': '.generation',
+    'OnePlanGenerationLoop': '.generation',
+    'StreamedGenerationResult': '.generation',
+    'activation_data_name': '.generation',
+    'token_feedback_data_name': '.generation',
+    'IncrementalDetokenizer': '.generation',
+    'SamplingConfig': '.generation',
+    'accepted_prefix_digest': '.generation',
+    'sample_token': '.generation',
+    'DecodeStateBundleV1': '.stateful_onnx',
+    'DecodeStateContractError': '.stateful_onnx',
+    'DecodeStateIdentityV1': '.stateful_onnx',
+    'DecodeStateTransaction': '.stateful_onnx',
+    'PersistentStatefulOnnxSession': '.stateful_onnx',
+    'StatefulOnnxIOContractV1': '.stateful_onnx',
+    'StateComponent': '.stateful_onnx',
+}
+
+
+def __getattr__(name):
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_EXPORTS)

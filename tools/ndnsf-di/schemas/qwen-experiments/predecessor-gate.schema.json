@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ndnsf.example/spec109/predecessor-gate.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "requiredTaskIds", "entries", "gateDigest"],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "requiredTaskIds": {"const": ["107:T027", "107:T028", "107:T029", "107:T030", "107:T031", "107:T032", "107:T033", "107:T034", "107:T035", "107:T036", "107:T037", "107:T038", "108:T091", "108:T092", "108:T093", "108:T094", "108:T095", "108:T096", "108:T097", "108:T098", "108:T099", "108:T100", "108:T101", "108:T102"]},
+    "entries": {
+      "type": "object",
+      "required": ["107:T027", "107:T028", "107:T029", "107:T030", "107:T031", "107:T032", "107:T033", "107:T034", "107:T035", "107:T036", "107:T037", "107:T038", "108:T091", "108:T092", "108:T093", "108:T094", "108:T095", "108:T096", "108:T097", "108:T098", "108:T099", "108:T100", "108:T101", "108:T102"],
+      "additionalProperties": false,
+      "patternProperties": {"^(107:T0(27|2[89]|3[0-8])|108:T(09[1-9]|10[0-2]))$": {"$ref": "#/$defs/entry"}}
+    },
+    "gateDigest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requiredStatus", "observedStatus", "schemaVersion", "artifactPath", "artifactDigest", "identityDigest"],
+      "properties": {
+        "requiredStatus": {"const": "PASS"},
+        "observedStatus": {"const": "PASS"},
+        "schemaVersion": {"type": "string", "minLength": 1},
+        "artifactPath": {"type": "string", "minLength": 1},
+        "artifactDigest": {"$ref": "#/$defs/digest"},
+        "identityDigest": {"$ref": "#/$defs/digest"}
+      }
+    }
+  }
+}

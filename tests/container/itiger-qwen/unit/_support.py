@@ -9,7 +9,7 @@ import sys
 REPO = Path(__file__).resolve().parents[4]
 TOOLS = REPO / "tools" / "ndnsf-di"
 FIXTURES = REPO / "tests" / "container" / "itiger-qwen" / "fixtures"
-CONTRACTS = REPO / "specs" / "109-ndnsf-di-itiger-qwen-scaling" / "contracts"
+CONTRACTS = TOOLS / "schemas" / "qwen-experiments"
 D = "sha256:" + "a" * 64
 
 

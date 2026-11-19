@@ -248,6 +248,25 @@ def test_atomic_operation_record_is_private(tmp_path):
     assert not list(tmp_path.glob('*.tmp'))
 
 
+def test_finite_preparation_uses_explicit_cwd_and_retains_owned_output_stream(tmp_path):
+    directory = tmp_path / 'separate input root'
+    directory.mkdir()
+    (directory / 'input.txt').write_text('owned input')
+    cleanup = []
+    output = tmp_path / 'output.txt'
+    with output.open('w+b') as stream:
+        assert processes.run_finite_application(
+            'preparation', [sys.executable, '-c',
+                            'from pathlib import Path; print(Path("input.txt").read_text())'],
+            tmp_path / 'preparation.log', cleanup, seconds=5, stdout=stream,
+            cwd=str(directory)) == 0
+        assert not stream.closed
+        stream.seek(0)
+        assert stream.read() == b'owned input\n'
+    assert len(cleanup) == 1 and cleanup[0]['reaped'] and not cleanup[0]['forced']
+    assert cleanup[0]['error'] is None
+
+
 @pytest.mark.parametrize('exit_code,expected', [(7, 'APP_EXIT:finite:7'), (0, 'APP_CLEANUP:finite:')])
 def test_finite_first_failure_and_unknown_cleanup_are_retained(tmp_path, monkeypatch,
                                                                exit_code, expected):

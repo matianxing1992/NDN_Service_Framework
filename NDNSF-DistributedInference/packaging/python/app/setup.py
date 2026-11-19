@@ -10,7 +10,11 @@ setup(
     version="0.111.0",
     package_dir={"": "../../.."},
     packages=find_packages(
-        "../../..", include=["ndnsf_distributed_inference.app_sdk*"]
+        "../../..", include=[
+            "ndnsf_distributed_inference.app_sdk*",
+            "ndnsf_distributed_inference.api*",
+            "ndnsf_distributed_inference.security*",
+        ]
     ),
     py_modules=[
         "ndnsf_distributed_inference.artifact_deployment",
@@ -18,6 +22,7 @@ setup(
         "ndnsf_distributed_inference.deployment",
         "ndnsf_distributed_inference.policy",
         "ndnsf_distributed_inference.provider",
+        "ndnsf_distributed_inference.provider_api",
         "ndnsf_distributed_inference.repo_artifact_resolver",
         "ndnsf_distributed_inference.repo_reference",
         # NativeTracer's deployed Python user imports these modules directly.

@@ -1,0 +1,22 @@
+{
+  "schema": "spec120-trace-matrix-summary-v2",
+  "date": "2026-07-18",
+  "topology": "MiniNDN fresh identities, 0 percent loss",
+  "measured_window_seconds": 60,
+  "sample_denominator": 50,
+  "sample_rate": 0.02,
+  "metric": "group-correlated encoded-output-to-decoder-output",
+  "pairs": [
+    {"pair": 1, "off": "results/spec120-trace-correlated-v4-pair-01-off-candidate1-20260718", "on": "results/spec120-trace-correlated-v4-pair-01-on-candidate1-20260718", "decoded_frames_off": 116, "decoded_frames_on": 116, "metric_samples_off": 24, "metric_samples_on": 24, "sampled_cursors_on": 5, "p95_ms_off": 1044.0, "p95_ms_on": 1015.0, "p95_change_percent": -2.778, "cpu_seconds_off": 23.179, "cpu_seconds_on": 22.709, "cpu_change_percent": -2.028, "within_sc015": true},
+    {"pair": 2, "off": "results/spec120-trace-correlated-v4-pair-02-off-candidate1-20260718", "on": "results/spec120-trace-correlated-v4-pair-02-on-candidate1-20260718", "decoded_frames_off": 116, "decoded_frames_on": 116, "metric_samples_off": 24, "metric_samples_on": 24, "sampled_cursors_on": 6, "p95_ms_off": 1035.0, "p95_ms_on": 1006.0, "p95_change_percent": -2.802, "cpu_seconds_off": 23.426, "cpu_seconds_on": 23.425, "cpu_change_percent": -0.004, "within_sc015": true},
+    {"pair": 3, "off": "results/spec120-trace-correlated-v4-pair-03-off-candidate1-20260718", "on": "results/spec120-trace-correlated-v4-pair-03-on-candidate1-20260718", "decoded_frames_off": 116, "decoded_frames_on": 116, "metric_samples_off": 24, "metric_samples_on": 24, "sampled_cursors_on": 10, "p95_ms_off": 1025.0, "p95_ms_on": 1009.0, "p95_change_percent": -1.561, "cpu_seconds_off": 23.661, "cpu_seconds_on": 25.533, "cpu_change_percent": 7.912, "within_sc015": false},
+    {"pair": 4, "off": "results/spec120-trace-correlated-v4-pair-04-off-candidate1-20260718", "on": "results/spec120-trace-correlated-v4-pair-04-on-candidate1-20260718", "decoded_frames_off": 116, "decoded_frames_on": 116, "metric_samples_off": 24, "metric_samples_on": 24, "sampled_cursors_on": 7, "p95_ms_off": 1009.0, "p95_ms_on": 1025.0, "p95_change_percent": 1.586, "cpu_seconds_off": 23.874, "cpu_seconds_on": 23.876, "cpu_change_percent": 0.008, "within_sc015": true},
+    {"pair": 5, "off": "results/spec120-trace-correlated-v4-pair-05-off-candidate1-20260718", "on": "results/spec120-trace-correlated-v4-pair-05-on-candidate1-20260718", "decoded_frames_off": 116, "decoded_frames_on": 116, "metric_samples_off": 24, "metric_samples_on": 24, "sampled_cursors_on": 7, "p95_ms_off": 1018.0, "p95_ms_on": 1001.0, "p95_change_percent": -1.670, "cpu_seconds_off": 23.245, "cpu_seconds_on": 23.403, "cpu_change_percent": 0.680, "within_sc015": true}
+  ],
+  "sc015": {"p95_pairs_within_five_percent": "5/5", "cpu_pairs_within_five_percent": "4/5", "combined_pairs_within_five_percent": "4/5", "required_pairs": "at least 4/5", "passed": true},
+  "eligible_future_interest_hits": "25/25 in every run",
+  "interpretation": "SC-015 passes at 2 percent stable cursor sampling. Pair 3 CPU increased 7.912 percent and remains explicit negative variability; no optimization is claimed.",
+  "superseded_evidence": "The earlier 20 percent matrix passed CPU in 5/5 pairs but sparse uncorrelated p95 in only 3/5. The later 10, 5, and pre-correlation 2 percent candidates remain preserved as rejected measurement attempts.",
+  "dominant_same_clock_wait": "group-correlated encoded-output-to-decoder-output p95 is about 1.0 seconds; fine-grained traces commonly attribute 0.7 to 1.1 seconds to decrypted-to-reorder-ready",
+  "cross_clock_one_way": "unavailable without measured clock-offset uncertainty"
+}

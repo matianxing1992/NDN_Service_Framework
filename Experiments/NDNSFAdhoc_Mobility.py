@@ -4,6 +4,8 @@
 This example shows how to enable the adhoc mode
 Alternatively, you can use the MANET routing protocol of your choice
 """
+from pathlib import Path
+
 from mininet.log import setLogLevel, info
 from minindn.wifi.minindnwifi import MinindnAdhoc
 from minindn.util import MiniNDNWifiCLI
@@ -78,7 +80,9 @@ def generateAndSignCertificates(ndn: MinindnAdhoc):
 
 def topology():
     "Create a network."
-    ndnwifi = MinindnAdhoc(topoFile="./Topology/UAV_adhoc.conf",link=wmediumd, wmediumd_mode=interference)
+    topology_path = Path(__file__).resolve().parent / "Topology/UAV_adhoc.conf"
+    ndnwifi = MinindnAdhoc(topoFile=str(topology_path), link=wmediumd,
+                          wmediumd_mode=interference)
     ndnwifi.net.setPropagationModel(model="logDistance", exp=3)
 
     ndnwifi.start()

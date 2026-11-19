@@ -11,11 +11,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RepoRuntimeBoundaryTest(unittest.TestCase):
-    def test_repo_install_hook_targets_repo_binding(self) -> None:
+    def test_waf_installs_repo_native_binding_and_python_facade_together(self) -> None:
+        root_wscript = (ROOT / "wscript").read_text()
         wscript = (ROOT / "NDNSF-DistributedRepo/wscript").read_text()
-        self.assertIn("find_dir('NDNSF-DistributedRepo')", wscript)
-        self.assertIn("repo_root.find_dir('pythonWrapper')", wscript)
-        self.assertNotIn("bld.path.find_dir('pythonWrapper')", wscript)
+        self.assertIn("bld.recurse('NDNSF-DistributedRepo')", root_wscript)
+        self.assertIn("target='../spec201-repo-python/_py_repoclient'", wscript)
+        self.assertIn("install_path=python_site + '/py_repoclient'", wscript)
+        self.assertIn("bld.path.ant_glob('pythonWrapper/py_repoclient/*.py')", wscript)
 
     def test_standalone_cpp_network_server_owns_persistent_services(self) -> None:
         wscript = (ROOT / "NDNSF-DistributedRepo/wscript").read_text()

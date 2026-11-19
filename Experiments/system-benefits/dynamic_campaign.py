@@ -40,7 +40,7 @@ def candidate():
                              "analyze_credentials.py","summarize_dynamic.py","wscript")]
     sources.extend([HERE.parent/"targeted-invocation/common.hpp",HERE.parent/"targeted-invocation/run_minindn.py"])
     sources.extend([REPO/"examples/hello.policies",REPO/"examples/trust-schema.conf",
-                    REPO/"specs/205-compact-protected-requests/contracts.md"])
+                    HERE/"contracts.md"])
     binaries=[Path("/usr/local/bin/"+p) for p in ("ndnsf-dynamic-provider","ndnsf-dynamic-user",
                                                "ndnsf-dynamic-oracle","App_ServiceController")]
     paths=set(sources+binaries)

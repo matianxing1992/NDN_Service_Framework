@@ -63,7 +63,8 @@ def test_source_archive_excludes_host_binaries_and_build_output(tmp_path):
     assert "examples/python/NDNSF-DistributedInference/llm_pipeline/provider.py" in names
     for required in (
         "install_ndnsf_stack.sh", "scripts/configure_dependencies.py", "scripts/host_profile.py",
-        "scripts/build-safe.sh", "scripts/stack_sources.py", "packaging/host-dependencies.lock.json",
+        "scripts/build-safe.sh", "scripts/build-storage.py", "scripts/ndnsf-di-workspace.py",
+        "scripts/stack_sources.py", "packaging/host-dependencies.lock.json",
         "packaging/host-sdk-dependencies.lock.json", "patches/nac-abe/series.json",
         "packaging/ndnsf-di-container/lib/allocation_topology.py",
         "packaging/ndnsf-di-container/lib/adapters/slurm_apptainer.py",

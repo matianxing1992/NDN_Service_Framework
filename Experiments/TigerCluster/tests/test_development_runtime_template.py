@@ -329,7 +329,7 @@ def test_experiment_install_is_explicit_and_waf_owned():
     text = (ROOT / 'wscript').read_text()
     assert "'--install-experiment-fixtures', action='store_true', default=False" in text
     for path, target in [('examples/wscript', 'di-native-fault-provider'),
-                         ('tests/wscript', 'spec187-yolo-minindn')]:
+                         ('tests/wscript', 'yolo-minindn')]:
         tree = ast.parse((ROOT / path).read_text())
         call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call)
                     and any(kw.arg == 'name' and isinstance(kw.value, ast.Constant)

@@ -17,7 +17,6 @@ import base64
 import csv
 import json
 import os
-import pwd
 import re
 import shlex
 import statistics
@@ -32,23 +31,6 @@ from mininet.log import setLogLevel, info
 from mininet.topo import Topo
 
 
-def add_sudo_user_site_packages():
-    sudo_user = os.environ.get("SUDO_USER")
-    if not sudo_user:
-        return
-    try:
-        user_home = pwd.getpwnam(sudo_user).pw_dir
-    except KeyError:
-        return
-    user_site = os.path.join(
-        user_home, ".local", "lib",
-        "python{}.{}".format(sys.version_info.major, sys.version_info.minor),
-        "site-packages")
-    if os.path.isdir(user_site) and user_site not in sys.path:
-        sys.path.append(user_site)
-
-
-add_sudo_user_site_packages()
 from ndn.encoding import Name, parse_data
 
 try:
@@ -60,8 +42,11 @@ try:
     from minindn.helpers.nfdc import Nfdc
     from minindn.util import getPopen
 except ImportError as e:
-    print("MiniNDN is not installed or not importable: {}".format(e), file=sys.stderr)
-    sys.exit(2)
+    message = "MiniNDN is not installed or not importable: {}".format(e)
+    if __name__ == "__main__":
+        print(message, file=sys.stderr)
+        sys.exit(2)
+    raise ImportError(message) from e
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

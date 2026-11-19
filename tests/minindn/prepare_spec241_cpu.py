@@ -48,7 +48,7 @@ def configure_namespace(config, inputs, namespace):
         certificates[actor['identity']] = certificate
         environments[actor['identity']] = env
     for identity, env in environments.items():
-        subprocess.run(['/usr/local/bin/spec226-public-trust-installer',
+        subprocess.run(['/usr/local/bin/public-trust-installer',
                         str(Path(env['HOME']) / '.ndn'), 'tpm-file:',
                         *map(str, certificates.values())], env=env,
                        capture_output=True, check=True, timeout=10)

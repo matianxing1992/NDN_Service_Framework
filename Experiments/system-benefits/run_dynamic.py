@@ -276,7 +276,7 @@ def run(args, parser):
             if word.startswith("/") and Path(word).is_file():
                 manifest["libraries"][str(Path(word).resolve())] = digest(word)
     manifest["configuration"] = {p.name: digest(p) for p in [policy, trust]}
-    manifest["contract_sha256"] = digest(REPO / "specs/205-compact-protected-requests/contracts.md")
+    manifest["contract_sha256"] = digest(HERE / "contracts.md")
     manifest["inherited_environment"] = {k: v for k, v in os.environ.items() if k.startswith(("NDNSF_", "NDN_"))}
     children = []
     nfd_manager, controller, writer = None, None, None

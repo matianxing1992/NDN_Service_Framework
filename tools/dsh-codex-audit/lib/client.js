@@ -3,8 +3,8 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
   const h = React.createElement;
   const { createPortal } = require('react-dom');
   const { MarkdownText } = require('@deepseek-ai/dsh-client-ui-primitives');
-  const EFFORT_LABEL = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
-    xhigh: 'Extra high' };
+  const EFFORT_LABEL = { none: '无', minimal: '最低', low: '低', medium: '中等',
+    high: '高', xhigh: '极高（Extra high）', max: 'Max', ultra: 'Ultra' };
   const markdownLabels = { code: { copyLabel: '复制', copiedLabel: '已复制',
     toolbarLabels: { codeLabel: '代码', wrapLabel: '自动换行', unwrapLabel: '取消换行' } }, footnotes: '注释' };
   const css = `
@@ -19,7 +19,7 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
     .ca-card{border:1px solid var(--dsw-alias-border-l2,#373b46);background:var(--dsw-alias-bg-layer-1,#1d2028);border-radius:12px;padding:17px 18px;margin-bottom:16px}.ca-section-title{font-size:14px;font-weight:600;margin:0}
     .ca-panel button,.ca-panel select,.ca-panel input{font:inherit;color:inherit;box-sizing:border-box}.ca-btn,.ca-close{border:1px solid var(--dsw-alias-border-l2,#454a57);background:transparent;border-radius:8px;padding:7px 12px;cursor:pointer;transition:background .15s,border-color .15s}.ca-btn:hover,.ca-close:hover{background:var(--dsw-alias-interactive-bg-hover,#ffffff0b);border-color:#737b90}.ca-btn:disabled{opacity:.4;cursor:default}.ca-primary{background:#5868d9!important;border-color:#6c7be6!important;color:white!important}.ca-danger{color:#ed9b96!important}.ca-close{border:0;padding:3px 9px;font-size:22px;line-height:1.2}
     .ca-switch{display:flex;align-items:center;gap:8px;border:0;background:transparent;cursor:pointer;padding:4px 0}.ca-track{width:31px;height:18px;background:#565c6b;border-radius:12px;position:relative;transition:background .15s}.ca-track:after{content:'';position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:white;transition:transform .15s}.ca-track.on{background:#6172e4}.ca-track.on:after{transform:translateX(13px)}
-    .ca-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin:16px 0}.ca-field{display:flex;flex-direction:column;gap:7px}.ca-field label{font-size:11px;color:var(--dsw-alias-label-tertiary,#a3a9b7)}.ca-panel select,.ca-panel input{background:var(--dsw-alias-bg-base,#16181e);border:1px solid var(--dsw-alias-border-l2,#414754);border-radius:8px;padding:8px 10px;min-width:0}.ca-panel input{width:100%}.ca-next{font-size:14px;padding:7px 0;font-variant-numeric:tabular-nums}.ca-actions{border-top:1px solid var(--dsw-alias-border-l2,#373b46);padding-top:14px;margin-top:3px}
+    .ca-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) minmax(0,1.4fr);gap:16px;margin:16px 0}.ca-field{display:flex;flex-direction:column;gap:7px}.ca-field label{font-size:11px;color:var(--dsw-alias-label-tertiary,#a3a9b7)}.ca-panel select,.ca-panel input{background:var(--dsw-alias-bg-base,#16181e);border:1px solid var(--dsw-alias-border-l2,#414754);border-radius:8px;padding:8px 10px;min-width:0}.ca-panel input{width:100%}.ca-next{font-size:14px;padding:7px 0;font-variant-numeric:tabular-nums}.ca-actions{border-top:1px solid var(--dsw-alias-border-l2,#373b46);padding-top:14px;margin-top:3px}
     .ca-alert{border:1px solid #f0957c55;background:#f0957c0c;color:var(--dsw-alias-label-primary,#f5c7ba);padding:12px 14px;border-radius:10px;overflow-wrap:anywhere;white-space:pre-wrap;margin-bottom:15px}.ca-settings{margin-bottom:23px}.ca-settings>summary{cursor:pointer;color:var(--dsw-alias-label-tertiary,#a3a9b7);font-size:12px}.ca-settings[open]>summary{margin-bottom:12px}.ca-history-head{margin-bottom:12px}.ca-count{border-radius:6px;padding:1px 6px;background:var(--dsw-alias-bg-layer-1,#272b35);font-size:11px;color:var(--dsw-alias-label-tertiary,#a3a9b7)}
     .ca-record{border:1px solid var(--dsw-alias-border-l2,#373b46);border-radius:11px;margin:10px 0;overflow:hidden}.ca-record>summary{display:flex;align-items:center;gap:12px;list-style:none;cursor:pointer;padding:15px}.ca-record>summary::-webkit-details-marker{display:none}.ca-chevron{color:var(--dsw-alias-label-caption,#8d95a5);transition:transform .15s}.ca-record[open]>summary>.ca-chevron{transform:rotate(90deg)}.ca-record[open]>summary{background:var(--dsw-alias-bg-layer-1,#20242c);border-bottom:1px solid var(--dsw-alias-border-l2,#373b46)}.ca-record>p,.ca-record>details,.ca-record>button{margin:12px 16px}.ca-record>p{font-size:12px;overflow-wrap:anywhere;color:var(--dsw-alias-label-tertiary,#abb1bf)}.ca-record details>summary{cursor:pointer;padding:5px 0;font-size:12px;font-weight:550}.ca-badges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto}.ca-badge{font-size:10px;white-space:nowrap;border-radius:5px;padding:2px 6px;background:var(--dsw-alias-bg-layer-1,#282d38);color:var(--dsw-alias-label-tertiary,#afb6c6)}.ca-badge.good{color:#62bca3;background:#35a78615}.ca-badge.bad{color:#e18e87;background:#de756c13}.ca-badge.live{color:#92a3ff;background:#6479e51c}
     .ca-markdown{font-size:13px;line-height:1.8;padding:8px 0 12px;overflow-wrap:anywhere}.ca-markdown table{display:block;max-width:100%;overflow-x:auto}.ca-empty{text-align:center;border:1px dashed var(--dsw-alias-border-l2,#424754);border-radius:12px;padding:30px 18px;color:var(--dsw-alias-label-tertiary,#9da6b7)}.ca-footer{border-top:1px solid var(--dsw-alias-border-l2,#373b46);padding:10px 26px;font-size:10px;color:var(--dsw-alias-label-caption,#8f97a6);overflow-wrap:anywhere}
@@ -101,8 +101,8 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
       finally { setBusy(false); }
     };
     const settings = data?.settings;
-    const selectionLabel = value => value?.model
-      ? `${value.model} · ${EFFORT_LABEL[value.effort] ?? value.effort}` : '';
+    const models = data?.models ?? [];
+    const efforts = data?.efforts ?? [];
     const guard = data?.guard;
     const goalRef = guard?.goal ? { id: guard.goal.id, revision: guard.goal.revision } : null;
     const problem = error || (data?.error ?
@@ -208,18 +208,29 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
       h('div', { className: 'ca-body' },
       problem && h('div', { role: 'alert', className: 'ca-alert' }, problem),
       settings && h(React.Fragment, null, h('div', { className: 'ca-card' },
-        h('div', { className: 'ca-row ca-between' }, h('div', { className: 'ca-stack' },
+        h('div', { className: 'ca-row ca-between' },
           h('h3', { className: 'ca-section-title' }, '自动审计'),
-          // Rendered from the settings the host actually reports, not from a label kept in this
-          // file: the previous hard-coded caption said GPT-6.1-Sol while the host was selecting
-          // whatever `AUDIT_MODEL` named, so the panel could claim a model the audit was not using.
-          h('span', { className: 'ca-muted' }, selectionLabel(settings))),
           h('button', { type: 'button', className: 'ca-switch', role: 'switch',
             'aria-label': '自动审计开关', 'aria-checked': settings.enabled, disabled: busy,
             onClick: () => act('configure', { enabled: !settings.enabled }) },
             h('span', { className: 'ca-muted' }, settings.enabled ? '已开启' : '已暂停'),
             h('span', { className: `ca-track ${settings.enabled ? 'on' : ''}` }))),
-        h('div', { className: 'ca-grid' }, h('div', { className: 'ca-field' },
+        h('div', { className: 'ca-grid' },
+        h('div', { className: 'ca-field' },
+          h('label', { htmlFor: 'ca-model' }, '审计模型'),
+          h('select', { id: 'ca-model', value: settings.model, disabled: busy || !models.length,
+            onChange: event => act('configure', { model: event.target.value }) },
+          !models.some(model => model.id === settings.model) &&
+            h('option', { value: settings.model, disabled: true }, settings.model),
+          models.map(model => h('option', { key: model.id, value: model.id }, model.id)))),
+        h('div', { className: 'ca-field' },
+          h('label', { htmlFor: 'ca-effort' }, '思考强度'),
+          h('select', { id: 'ca-effort', value: settings.effort, disabled: busy || !efforts.length,
+            onChange: event => act('configure', { effort: event.target.value }) },
+          !efforts.includes(settings.effort) &&
+            h('option', { value: settings.effort, disabled: true }, EFFORT_LABEL[settings.effort] ?? settings.effort),
+          efforts.map(value => h('option', { key: value, value }, EFFORT_LABEL[value] ?? value)))),
+        h('div', { className: 'ca-field' },
         h('label', { htmlFor: 'ca-interval' }, '调用周期'), h('select', { id: 'ca-interval',
           value: settings.intervalHours, disabled: busy,
           onChange: event => act('configure', { intervalHours: Number(event.target.value) }) },

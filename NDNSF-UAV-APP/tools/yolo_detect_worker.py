@@ -59,16 +59,22 @@ def detect(model, image: Path, wanted: set[str], conf: float) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="yolo26n.pt")
+    parser.add_argument("--model", required=True)
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--classes", default="car,truck")
     args = parser.parse_args()
+
+    model_path = Path(args.model)
+    if not model_path.is_file():
+        print(encode_fields({"ready": "false", "error": f"model file not found: {model_path}"}),
+              flush=True)
+        return 2
 
     wanted = {item.strip().lower() for item in args.classes.split(",") if item.strip()}
     try:
         with contextlib.redirect_stdout(sys.stderr):
             from ultralytics import YOLO
-            model = YOLO(args.model)
+            model = YOLO(str(model_path.resolve()))
     except Exception as exc:  # pragma: no cover - depends on deployment
         print(encode_fields({"ready": "false", "error": f"ultralytics unavailable: {exc}"}), flush=True)
         return 3

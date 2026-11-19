@@ -89,7 +89,7 @@ PreparedModel 应持有上述材料引用，将不可变材料身份与可更新
 
 **S3：按依赖身份决定是否复用。** 仅 NDNSF 源码改变且依赖契约不变时复用 base；依赖集合、版本、编译选项、工具链或 ABI 改变时，先基于现有 base 补齐或重建受影响依赖，生成并验证新 base，旧版保留。增量对象缓存只有在 base、工具链、选项和依赖身份匹配时才可复用，否则重编受影响消费者。该方式避免反复构建稳定依赖，但最终 SIF 仍需重新封装和验证，不能保证每次仅花费源码编译时间。
 
-流程为：`验证/封存 base.sif → 容器内 Waf 构建与安装 NDNSF → 新 runtime.sif → 最终镜像依赖检查与规定测试`。复用 [TigerCluster 维护入口](../Experiments/TigerCluster/README.md)、[base 构建说明](../Experiments/TigerCluster/docs/base-sif-build.md)和 [SIF 构建流程](../Experiments/TigerCluster/docs/sif-build.md)，不新增平行脚本；当前统一使用 Apptainer 1.5.3。按既定分工由实验机执行镜像构建和集群实验。base 验证、NDNSF 构建、MiniNDN 与集群验收分别记录；本节规定交付方式，不代表全部脚本和已有镜像已完成相应验收。
+流程为：`验证/封存 base.sif → 容器内 Waf 构建与安装 NDNSF → 新 runtime.sif → 最终镜像依赖检查与规定测试`。复用 [TigerCluster 维护入口](../Experiments/TigerCluster/README.md) 和 [base/应用SIF构建流程](../Experiments/TigerCluster/docs/sif-build.md)，不新增平行脚本；当前统一使用 Apptainer 1.5.3。按既定分工由实验机执行镜像构建和集群实验。base 验证、NDNSF 构建、MiniNDN 与集群验收分别记录；本节规定交付方式，不代表全部脚本和已有镜像已完成相应验收。
 
 ## 变更如何遵守本文件
 

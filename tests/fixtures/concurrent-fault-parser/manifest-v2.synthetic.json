@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "spec130-confirmation-v2",
+  "synthetic": true,
+  "provenance": "Parser fixture only; not the original campaign manifest or measured evidence.",
+  "automaticRetry": false,
+  "rerunAllowed": false,
+  "expectedExpandedCellCount": 68,
+  "spec129Policy": "hash-only-never-invoke",
+  "statistics": {
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21
+    ],
+    "designs": [
+      "centralized",
+      "lease-only"
+    ],
+    "graph": "cycle",
+    "fault": "seeded-contention",
+    "failedTrialPolicy": "Keep failed trials; never rerun."
+  },
+  "cells": [
+    {
+      "cell": 1,
+      "id": "synthetic-pair-0-centralized",
+      "pair": "synthetic-0",
+      "graph": "disjoint",
+      "mode": "centralized",
+      "fault": "none",
+      "expectedAvailability": "available"
+    },
+    {
+      "cell": 2,
+      "id": "synthetic-pair-0-lease-only",
+      "pair": "synthetic-0",
+      "graph": "disjoint",
+      "mode": "lease-only",
+      "fault": "none",
+      "expectedAvailability": "available"
+    },
+    {
+      "cell": 3,
+      "id": "synthetic-pair-1-centralized",
+      "pair": "synthetic-1",
+      "graph": "identical",
+      "mode": "centralized",
+      "fault": "requester-after-reserve",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 4,
+      "id": "synthetic-pair-1-lease-only",
+      "pair": "synthetic-1",
+      "graph": "identical",
+      "mode": "lease-only",
+      "fault": "requester-after-reserve",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 5,
+      "id": "synthetic-pair-2-centralized",
+      "pair": "synthetic-2",
+      "graph": "nested",
+      "mode": "centralized",
+      "fault": "provider-after-decision",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 6,
+      "id": "synthetic-pair-2-lease-only",
+      "pair": "synthetic-2",
+      "graph": "nested",
+      "mode": "lease-only",
+      "fault": "provider-after-decision",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 7,
+      "id": "synthetic-pair-3-centralized",
+      "pair": "synthetic-3",
+      "graph": "partial",
+      "mode": "centralized",
+      "fault": "authority-before-grant",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 8,
+      "id": "synthetic-pair-3-lease-only",
+      "pair": "synthetic-3",
+      "graph": "partial",
+      "mode": "lease-only",
+      "fault": "authority-before-grant",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 9,
+      "id": "synthetic-pair-4-centralized",
+      "pair": "synthetic-4",
+      "graph": "cycle",
+      "mode": "centralized",
+      "fault": "asymmetric-partition",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 10,
+      "id": "synthetic-pair-4-lease-only",
+      "pair": "synthetic-4",
+      "graph": "cycle",
+      "mode": "lease-only",
+      "fault": "asymmetric-partition",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 11,
+      "id": "synthetic-pair-5-centralized",
+      "pair": "synthetic-5",
+      "graph": "identical",
+      "mode": "centralized",
+      "fault": "equal-expiry",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 12,
+      "id": "synthetic-pair-5-lease-only",
+      "pair": "synthetic-5",
+      "graph": "identical",
+      "mode": "lease-only",
+      "fault": "equal-expiry",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 13,
+      "id": "synthetic-pair-6-centralized",
+      "pair": "synthetic-6",
+      "graph": "nested",
+      "mode": "centralized",
+      "fault": "provider-restart",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 14,
+      "id": "synthetic-pair-6-lease-only",
+      "pair": "synthetic-6",
+      "graph": "nested",
+      "mode": "lease-only",
+      "fault": "provider-restart",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 15,
+      "id": "synthetic-pair-7-centralized",
+      "pair": "synthetic-7",
+      "graph": "partial",
+      "mode": "centralized",
+      "fault": "split-brain",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 16,
+      "id": "synthetic-pair-7-lease-only",
+      "pair": "synthetic-7",
+      "graph": "partial",
+      "mode": "lease-only",
+      "fault": "split-brain",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 17,
+      "id": "synthetic-pair-8-centralized",
+      "pair": "synthetic-8",
+      "graph": "cycle",
+      "mode": "centralized",
+      "fault": "capability-mismatch",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 18,
+      "id": "synthetic-pair-8-lease-only",
+      "pair": "synthetic-8",
+      "graph": "cycle",
+      "mode": "lease-only",
+      "fault": "capability-mismatch",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 19,
+      "id": "synthetic-pair-9-centralized",
+      "pair": "synthetic-9",
+      "graph": "disjoint",
+      "mode": "centralized",
+      "fault": "equal-expiry",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 20,
+      "id": "synthetic-pair-9-lease-only",
+      "pair": "synthetic-9",
+      "graph": "disjoint",
+      "mode": "lease-only",
+      "fault": "equal-expiry",
+      "expectedAvailability": "unavailable"
+    },
+    {
+      "cell": 21,
+      "id": "synthetic-pair-10-centralized",
+      "pair": "synthetic-10",
+      "graph": "partial",
+      "mode": "centralized",
+      "fault": "none",
+      "expectedAvailability": "available"
+    },
+    {
+      "cell": 22,
+      "id": "synthetic-pair-10-lease-only",
+      "pair": "synthetic-10",
+      "graph": "partial",
+      "mode": "lease-only",
+      "fault": "none",
+      "expectedAvailability": "available"
+    },
+    {
+      "cell": 23,
+      "id": "synthetic-pair-11-centralized",
+      "pair": "synthetic-11",
+      "graph": "cycle",
+      "mode": "centralized",
+      "fault": "none",
+      "expectedAvailability": "available"
+    },
+    {
+      "cell": 24,
+      "id": "synthetic-pair-11-lease-only",
+      "pair": "synthetic-11",
+      "graph": "cycle",
+      "mode": "lease-only",
+      "fault": "none",
+      "expectedAvailability": "available"
+    }
+  ]
+}

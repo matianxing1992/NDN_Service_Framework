@@ -4,7 +4,9 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 test('立即审计 opens a real prompt dialog, prefilled and clearable, and sends only that run', async () => {
-  const data = { settings: { enabled: true, intervalHours: 3, prompt: '默认提示词' },
+  const data = { settings: { enabled: true, intervalHours: 3, prompt: '默认提示词',
+    model: 'gpt-6.2-sol', effort: 'xhigh' }, efforts: ['medium', 'high', 'xhigh', 'ultra'],
+    models: [{ id: 'gpt-6.2-sol' }, { id: 'gpt-6.2-astra' }],
     records: [], total: 0, running: false, guard: null };
   let Panel, plugin;
   const states = [];
@@ -40,7 +42,16 @@ test('立即审计 opens a real prompt dialog, prefilled and clearable, and send
     register(options, component) { Panel = component; } },
     connection: { rpc: { async call() { return { ok: true, value: data }; } } }, sessions: {} });
 
-  const props = { sessionId: 's', rpc: async (method, request) => { calls.push({ method, request }); return data; } };
+  const props = { sessionId: 's', rpc: async (method, request) => {
+    calls.push({ method, request });
+    if (request.action === 'configure' && request.effort) data.settings.effort = request.effort;
+    if (request.model) {
+      data.settings.model = request.model;
+      data.settings.effort = 'high';
+      data.efforts = ['medium', 'high'];
+    }
+    return data;
+  } };
   const nodes = tree => !tree || typeof tree !== 'object' ? []
     : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...tree.children.flatMap(nodes)];
   const label = n => n.children.filter(c => typeof c === 'string').join('');
@@ -60,6 +71,17 @@ test('立即审计 opens a real prompt dialog, prefilled and clearable, and send
   assert.equal(Boolean(promptDialog(tree)), false, 'no prompt dialog before clicking');
 
   rerender = render;
+  const effort = nodes(tree).find(n => n.type === 'select' && n.props.id === 'ca-effort');
+  assert.equal(effort.props.value, 'xhigh');
+  assert.deepEqual(nodes(effort).filter(n => n.type === 'option').map(n => [n.props.value, label(n)]),
+    [['medium', '中等'], ['high', '高'], ['xhigh', '极高（Extra high）'], ['ultra', 'Ultra']]);
+  await effort.props.onChange({ target: { value: 'ultra' } });
+  assert.equal(nodes(tree).find(n => n.type === 'select' && n.props.id === 'ca-effort').props.value, 'ultra');
+  assert.equal(calls[0].request.effort, 'ultra');
+  nodes(tree).find(n => n.props?.id === 'ca-model').props.onChange({ target: { value: 'gpt-6.2-astra' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.find(call => call.request.model)?.request.model, 'gpt-6.2-astra');
+  assert.equal(nodes(tree).find(n => n.props?.id === 'ca-effort').props.value, 'high');
   const runButton = nodes(tree).find(n => n.type === 'button' && label(n) === '立即审计');
   runButton.props.onClick();
   const dialog = promptDialog(tree);
@@ -80,7 +102,7 @@ test('立即审计 opens a real prompt dialog, prefilled and clearable, and send
   area.props.onChange({ target: { value: '只看内存' } });
   const start = nodes(tree).find(n => n.type === 'button' && label(n) === '开始审计');
   start.props.onClick();
-  const sent = calls.filter(c => c.method === 'control').map(c => c.request);
+  const sent = calls.filter(c => c.method === 'control' && c.request.action === 'run').map(c => c.request);
   // Compared as JSON with sorted keys: the object is assembled from a spread, so key order is an
   // accident of construction and asserting it would be asserting nothing about behaviour.
   assert.equal(JSON.stringify(sent.map(entry => Object.fromEntries(

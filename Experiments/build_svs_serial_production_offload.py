@@ -23,10 +23,6 @@ from typing import Any, Iterable
 
 
 REPO = Path(__file__).resolve().parents[1]
-SVS_REPO = Path(
-    os.environ.get("NDN_SVS_SOURCE_REPO", "/home/tianxing/NDN/ndn-svs")
-).resolve()
-DEFAULT_OUTPUT = REPO / "build/spec137-four-core"
 BENCHMARK = (
     REPO
     / "Experiments/ndn-svs-pubsub-benchmark/svs-serial-production-offload.cpp"
@@ -127,11 +123,11 @@ def git_status(cwd: Path) -> str:
     ).rstrip("\n")
 
 
-def parse_worktrees() -> list[dict[str, str]]:
+def parse_worktrees(source: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
     current: dict[str, str] = {}
     for line in run(
-        ["git", "worktree", "list", "--porcelain"], cwd=SVS_REPO
+        ["git", "worktree", "list", "--porcelain"], cwd=source
     ).splitlines():
         if not line:
             if current:
@@ -145,10 +141,10 @@ def parse_worktrees() -> list[dict[str, str]]:
     return records
 
 
-def protected_snapshot(output: Path) -> dict[str, dict[str, str]]:
+def protected_snapshot(output: Path, source: Path) -> dict[str, dict[str, str]]:
     owned = output.resolve()
     snapshot: dict[str, dict[str, str]] = {}
-    for record in parse_worktrees():
+    for record in parse_worktrees(source):
         path = Path(record["worktree"]).resolve()
         if path == owned or owned in path.parents:
             continue
@@ -172,13 +168,15 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def protected_evidence_snapshot() -> dict[str, str]:
+def protected_evidence_snapshot(archive_root: Path | None) -> dict[str, str]:
+    if archive_root is None:
+        return {}
     return {
-        str(path.relative_to(REPO)): tree_digest(path)
+        str(path.relative_to(archive_root)): tree_digest(path)
         for path in (
-            REPO / "specs/133-svs-sync-stage-profiling",
-            REPO / "specs/135-svs-fetcher-window-validation",
-            REPO / "specs/136-svs-rsa-signing-offload",
+            archive_root / "specs/133-svs-sync-stage-profiling",
+            archive_root / "specs/135-svs-fetcher-window-validation",
+            archive_root / "specs/136-svs-rsa-signing-offload",
         )
     }
 
@@ -205,13 +203,13 @@ def boost_version(boost_root: Path) -> tuple[int, str, Path]:
     return int(number.group(1)), library.group(1), header
 
 
-def ensure_worktree(output: Path) -> Path:
+def ensure_worktree(output: Path, source: Path) -> Path:
     worktree = output / "worktrees/serial-production-offload"
     if not worktree.exists():
         worktree.parent.mkdir(parents=True, exist_ok=True)
         run(
             ["git", "worktree", "add", "--detach", str(worktree), BASE_COMMIT],
-            cwd=SVS_REPO,
+            cwd=source,
             capture=False,
         )
         wscript = worktree / "wscript"
@@ -299,7 +297,8 @@ def elf_build_id(binary: Path) -> str:
     return match.group(1) if match else "unavailable"
 
 
-def build_subject(base: str, boost_root: Path, output: Path) -> Path:
+def build_subject(base: str, boost_root: Path, output: Path, source: Path,
+                  archive_root: Path | None) -> Path:
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     manifest_path = output / "source-manifest.json"
@@ -307,9 +306,9 @@ def build_subject(base: str, boost_root: Path, output: Path) -> Path:
         raise RuntimeError(f"refusing to overwrite frozen manifest: {manifest_path}")
     if base != BASE_COMMIT:
         raise RuntimeError(f"base must be exactly {BASE_COMMIT}")
-    if git_value(SVS_REPO, f"{base}^{{commit}}") != BASE_COMMIT:
+    if git_value(source, f"{base}^{{commit}}") != BASE_COMMIT:
         raise RuntimeError("registered NDN-SVS commit cannot be resolved")
-    if git_value(SVS_REPO, f"{base}^{{tree}}") != BASE_TREE:
+    if git_value(source, f"{base}^{{tree}}") != BASE_TREE:
         raise RuntimeError("registered NDN-SVS tree changed")
     if not BENCHMARK.is_file() or not MEASUREMENT_PATCH.is_file():
         raise RuntimeError("Spec 137 benchmark or measurement patch is missing")
@@ -317,9 +316,9 @@ def build_subject(base: str, boost_root: Path, output: Path) -> Path:
     patch_bytes = MEASUREMENT_PATCH.read_bytes()
     validate_measurement_patch(patch_bytes.decode("utf-8"))
     boost_number, boost_library, boost_header = boost_version(boost_root.resolve())
-    before_worktrees = protected_snapshot(output)
-    before_evidence = protected_evidence_snapshot()
-    worktree = ensure_worktree(output)
+    before_worktrees = protected_snapshot(output, source)
+    before_evidence = protected_evidence_snapshot(archive_root)
+    worktree = ensure_worktree(output, source)
     patch_record = validate_worktree(worktree, patch_bytes)
 
     build_env = dict(os.environ)
@@ -427,9 +426,9 @@ def build_subject(base: str, boost_root: Path, output: Path) -> Path:
         "binary": linkage_record(binary, output, "binary"),
         "ndnSvs": linkage_record(library, output, "ndn-svs"),
     }
-    if protected_snapshot(output) != before_worktrees:
+    if protected_snapshot(output, source) != before_worktrees:
         raise RuntimeError("protected NDN-SVS worktree state changed during build")
-    if protected_evidence_snapshot() != before_evidence:
+    if protected_evidence_snapshot(archive_root) != before_evidence:
         raise RuntimeError("Spec 133/135/136 protected evidence changed during build")
 
     boost_identity = canonical_boost_patch_bytes()
@@ -443,7 +442,8 @@ def build_subject(base: str, boost_root: Path, output: Path) -> Path:
         "baseCommit": BASE_COMMIT,
         "baseTree": BASE_TREE,
         **patch_record,
-        "sourceRepository": str(SVS_REPO),
+        "sourceRepository": str(source),
+        "archiveRoot": str(archive_root) if archive_root is not None else None,
         "worktree": str(worktree.resolve()),
         "measurementPatch": str(MEASUREMENT_PATCH.resolve()),
         "measurementPatchSha256": sha256_file(MEASUREMENT_PATCH),
@@ -491,7 +491,7 @@ def build_subject(base: str, boost_root: Path, output: Path) -> Path:
     return manifest_path
 
 
-def load_subject(path: Path) -> dict[str, Any]:
+def load_subject(path: Path, *, archive_root: Path | None = None) -> dict[str, Any]:
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -536,9 +536,13 @@ def load_subject(path: Path) -> dict[str, Any]:
         verify_artifact(path.parent / name, expected, f"build log {name}")
     if record.get("boost", {}).get("versionNumber") != 107100:
         raise RuntimeError("subject is not bound to Boost 1.71")
-    if protected_evidence_snapshot() != record.get("protectedEvidence"):
+    if archive_root is None and record.get("archiveRoot"):
+        archive_root = Path(record["archiveRoot"])
+    if archive_root is None and record.get("protectedEvidence"):
+        raise RuntimeError("archived subject requires its explicit predecessor archive root")
+    if record.get("protectedEvidence") and protected_evidence_snapshot(archive_root) != record["protectedEvidence"]:
         raise RuntimeError("Spec 133/135/136 protected evidence changed after build")
-    if protected_snapshot(path.parent) != record.get("protectedWorktrees"):
+    if protected_snapshot(path.parent, Path(record["sourceRepository"])) != record.get("protectedWorktrees"):
         raise RuntimeError("protected NDN-SVS checkout/ref state changed after build")
     if Path(record["binary"]).stat().st_mode & 0o222:
         raise RuntimeError("frozen subject binary is writable")
@@ -549,13 +553,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     parser.add_argument("--boost-root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--svs-source", type=Path, required=True)
+    parser.add_argument("--archive-root", type=Path,
+                        help="optional read-only predecessor evidence to bind in the manifest")
+    parser.add_argument("--output", type=Path, required=True)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    path = build_subject(args.base, args.boost_root, args.output)
+    archive_root = args.archive_root.resolve(strict=True) if args.archive_root is not None else None
+    path = build_subject(args.base, args.boost_root, args.output,
+                         args.svs_source.resolve(strict=True), archive_root)
     print(path)
     return 0
 

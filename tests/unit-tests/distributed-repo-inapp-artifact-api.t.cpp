@@ -1,7 +1,7 @@
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/ArtifactRepositoryApi.hpp"
 #include "NDNSF-DistributedRepo/include/ndnsf-distributed-repo/FilesystemArtifactStore.hpp"
 #include "tests/boost-test.hpp"
-#include "tests/fixtures/spec202-syscall-fault.hpp"
+#include "tests/fixtures/syscall-fault.hpp"
 
 #include <sqlite3.h>
 

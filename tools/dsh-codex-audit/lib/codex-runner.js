@@ -1,12 +1,35 @@
 import { spawn } from 'node:child_process';
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, readdir, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, isAbsolute } from 'node:path';
-import { AuditError, AUDIT_MODEL, AUDIT_EFFORT } from './audit-manager.js';
+import { delimiter, join, isAbsolute } from 'node:path';
+import { AuditError, DEFAULT_MODELS } from './audit-manager.js';
 import { readCodexSelection } from './model-observation.js';
 
 const LIMIT = 8 * 1024 * 1024;
+const codexHome = () => process.env.CODEX_HOME || join(homedir(), '.codex');
+
+export async function readAuditModels(root = codexHome()) {
+  try {
+    const file = join(root, 'models_cache.json');
+    if ((await stat(file)).size > LIMIT) return DEFAULT_MODELS;
+    const { models } = JSON.parse(await readFile(file, 'utf8'));
+    if (!Array.isArray(models)) return DEFAULT_MODELS;
+    const options = new Map();
+    for (const model of models) {
+      if (model?.visibility !== 'list' || typeof model.slug !== 'string' ||
+          !/^[a-z0-9][a-z0-9._-]{0,99}$/i.test(model.slug)) continue;
+      const levels = Array.isArray(model.supported_reasoning_levels) ? model.supported_reasoning_levels : [];
+      const efforts = [...new Set(levels.map(level => level?.effort).filter(level =>
+        ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(level)))];
+      if (efforts.length) options.set(model.slug, { id: model.slug, efforts,
+        defaultEffort: efforts.includes(model.default_reasoning_level) ? model.default_reasoning_level : efforts[0] });
+    }
+    return options.size ? [...options.values()] : DEFAULT_MODELS;
+  } catch {
+    return DEFAULT_MODELS;
+  }
+}
 
 export function classifyFailure(message) {
   if (/insufficient_quota|billing|payment.required/i.test(message)) {
@@ -16,9 +39,9 @@ export function classifyFailure(message) {
   if (/401|403|unauthorized|forbidden|not logged in|authentication|invalid.*key/i.test(message)) {
     return new AuditError('CODEX_AUTH', 'Codex 认证失败。', '在 DSH Host 所在机器登录 Codex。');
   }
-  if (/model.*(not found|not supported|unavailable)|unsupported.*(model|reasoning|xhigh)|(?:reasoning|effort).*(unsupported|invalid|not supported)/i.test(message)) {
+  if (/model.*(not found|not supported|unavailable)|unsupported.*\b(model|reasoning|xhigh|ultra)\b|(?:reasoning|effort).*(unsupported|invalid|not supported)/i.test(message)) {
     return new AuditError('CODEX_MODEL', '指定模型或思考等级不可用。',
-      `检查 ${AUDIT_MODEL} / ${AUDIT_EFFORT} 的账户权限；插件不会降级。`);
+      '检查账户权限是否支持所选模型和思考强度。');
   }
   const transient = /429|rate.limit|timeout|timed out|503|502|connection|stream.*(disconnect|closed)/i.test(message);
   return new AuditError(transient ? 'CODEX_TRANSIENT' : 'CODEX_EXECUTION',
@@ -74,26 +97,41 @@ export function execute(binary, args, { cwd, input = '', signal, timeoutMs = 360
   });
 }
 
+async function isExecutable(file) {
+  try {
+    if (!(await stat(file)).isFile()) return false;
+    await access(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveCodex(configured) {
   if (configured) {
     if (!isAbsolute(configured)) throw new AuditError('CODEX_NOT_FOUND',
       'Codex 路径必须是绝对路径。', '配置 DSH Host 上的绝对可执行文件路径。');
-    try { await access(configured, constants.X_OK); return configured; }
-    catch { throw new AuditError('CODEX_NOT_FOUND', `Codex 无法执行：${configured}`,
-      '在 GUI 配置 DSH Host 上 Codex 可执行文件的绝对路径。'); }
+    if (await isExecutable(configured)) return configured;
+    throw new AuditError('CODEX_NOT_FOUND', `Codex 无法执行：${configured}`,
+      '在 GUI 配置 DSH Host 上 Codex 可执行文件的绝对路径。');
   }
-  const { readdir } = await import('node:fs/promises');
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!isAbsolute(dir)) continue;
+    const candidate = join(dir, process.platform === 'win32' ? 'codex.exe' : 'codex');
+    if (await isExecutable(candidate)) return candidate;
+  }
+  const platform = { linux: 'linux', darwin: 'macos' }[process.platform];
   for (const base of [join(homedir(), '.vscode/extensions'), join(homedir(), '.vscode-server/extensions')]) {
+    if (!platform) break;
     const entries = await readdir(base).catch(() => []);
     for (const name of entries.filter(name => name.startsWith('openai.chatgpt-')).sort().reverse()) {
-      const platform = process.platform === 'linux' ? 'linux' : 'macos';
       const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
       const candidate = join(base, name, 'bin', `${platform}-${arch}`, 'codex');
-      try { await access(candidate, constants.X_OK); return candidate; } catch { /* next */ }
+      if (await isExecutable(candidate)) return candidate;
     }
   }
-  throw new AuditError('CODEX_NOT_FOUND', 'DSH Host 上未找到 VSCode Codex 后端。',
-    '安装 Codex 扩展或在 GUI 设置可执行文件路径；远程窗口与本机可能不同。');
+  throw new AuditError('CODEX_NOT_FOUND', 'DSH Host 上未找到 Codex CLI。',
+    '将 Codex CLI 加入 DSH Host 的 PATH，或在 GUI 设置其绝对路径。');
 }
 
 export function parseResult(stdout) {
@@ -122,8 +160,8 @@ export async function runCodex({ record, settings, snapshot, signal, onAttempt =
   const binary = await resolveCodex(settings.codexPath);
   // The audit must not inherit MCP servers, hooks or writable tools. Authentication still
   // comes from CODEX_HOME. Custom provider routes require an explicitly isolated profile.
-  const config = await readFile(join(process.env.CODEX_HOME || join(homedir(), '.codex'),
-    'config.toml'), 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+  const config = await readFile(join(codexHome(), 'config.toml'), 'utf8')
+    .catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
   if (/^model_provider\s*=/m.test(config)) throw new AuditError('CUSTOM_PROVIDER_UNSUPPORTED',
     '检测到自定义 Codex provider；尚未验证隔离审计配置。',
     '保留现有配置，需要为该 provider 验证独立只读配置，不能静默切换账户路由。');

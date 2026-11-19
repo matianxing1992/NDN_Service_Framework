@@ -6,7 +6,7 @@ set -u
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="${NDNSF_BUILD_DIR:-${repo_root}/build}"
-seeder="${build_dir}/examples/spec240-seed-store"
+seeder="${build_dir}/examples/seed-store"
 server="${NDNSF_REPO_PACKET_SERVER:-/usr/local/bin/NDNSF_RepoPacketServer}"
 peek="${NDNSF_NDNPEEK:-/usr/local/bin/ndnpeek}"
 nfd_started="false"

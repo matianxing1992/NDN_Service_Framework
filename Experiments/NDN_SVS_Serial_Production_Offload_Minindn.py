@@ -26,7 +26,6 @@ import analyze_svs_serial_production_offload as analysis  # noqa: E402
 import build_svs_serial_production_offload as subject_builder  # noqa: E402
 
 
-DEFAULT_SUBJECT = REPO / "build/spec137-four-core/source-manifest.json"
 RATES = (60,)
 PEERS = ("peer-a", "peer-b")
 MODES = ("face-serial", "worker-serial")
@@ -1127,7 +1126,7 @@ def run_formal(campaign: Path) -> list[dict[str, Any]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--campaign", type=Path, required=True)
-    parser.add_argument("--subject-manifest", type=Path, default=DEFAULT_SUBJECT)
+    parser.add_argument("--subject-manifest", type=Path)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--preflight", action="store_true")
     actions.add_argument("--pilot", action="store_true")
@@ -1140,6 +1139,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     campaign = args.campaign.resolve()
     if args.preflight:
+        if args.subject_manifest is None:
+            parser.error("--preflight requires --subject-manifest")
         result = run_preflight(campaign, args.subject_manifest.resolve())
         print(json.dumps(result, sort_keys=True))
         return 0 if result["admitted"] else 1

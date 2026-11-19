@@ -7,4 +7,8 @@ version = "0.111.0"
 dependencies = ["ndnsf-di-core==0.111.0", "ndnsf-di-sdk==0.111.0", "ndnsf-di-planner==0.111.0", "cryptography>=2.8"]
 [tool.setuptools.packages.find]
 where = ["../../.."]
-include = ["ndnsf_distributed_inference.app_sdk*"]
+include = [
+  "ndnsf_distributed_inference.app_sdk*",
+  "ndnsf_distributed_inference.api*",
+  "ndnsf_distributed_inference.security*",
+]

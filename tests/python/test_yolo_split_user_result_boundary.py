@@ -24,6 +24,21 @@ CLIENT = ROOT / "examples/python/NDNSF-DistributedInference/yolo_split/user.py"
 EXPERIMENT = ROOT / "Experiments/NDNSF_DI_YoloSplit_Minindn.py"
 
 
+class LauncherIdentityReportTest(unittest.TestCase):
+    """The preflight reports what it resolved, not only that files exist."""
+
+    def test_preflight_reports_binding_and_package_identities(self) -> None:
+        source = (ROOT / "install_ndnsf_stack.sh").read_text(encoding="utf-8")
+        for marker in ("YOLO_MININDN_PACKAGE", "YOLO_MININDN_BINDING",
+                       "YOLO_MININDN_NATIVE_LIBRARY"):
+            self.assertIn(marker, source)
+        # The report must run on the preflight path, before the OK line.
+        preflight = source.index("if (( preflight_only )); then")
+        report = source.index('report_runtime_identity "$python"')
+        ok = source.index("YOLO_MININDN_INSTALLED_INPUTS_OK", preflight)
+        self.assertLess(report, ok)
+
+
 class ResultBoundaryTest(unittest.TestCase):
     def test_mismatched_shape_fails_before_any_difference(self) -> None:
         source = CLIENT.read_text(encoding="utf-8")

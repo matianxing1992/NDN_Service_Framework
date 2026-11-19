@@ -25,7 +25,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FEATURE = ROOT / "specs/172-data-centric-authorization-evaluation"
+FEATURE = ROOT / "Experiments/fixtures/authorization-evaluation"
 MARKER = re.compile(
     r"NDNSF_AUTH_CASE\s+case_id=(?P<case_id>\S+)\s+"
     r"terminal=(?P<terminal>allow|deny)\s+"
@@ -84,6 +84,12 @@ def utc_now() -> str:
 
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def subject_source_hashes(contract: dict, root: Path = ROOT) -> dict[str, str]:
+    """Capture this run's subject; historical baseline hashes are provenance."""
+    return {relative: sha256_file(root / relative)
+            for relative in contract["subject_source_paths"]}
 
 
 def parse_auth_markers(output: str) -> dict[str, dict[str, Any]]:
@@ -214,23 +220,13 @@ def validate_case_results(
 
 
 def resolve_unit_tests_binary(root: Path, explicit: Path | None = None) -> Path:
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(explicit)
     env_path = os.environ.get("NDNSF_UNIT_TESTS_BIN")
-    if env_path:
-        candidates.append(Path(env_path))
-    candidates.extend(
-        [
-            root / "build-new-svs-20260808/unit-tests",
-            root / "build/unit-tests",
-        ]
-    )
-    for candidate in candidates:
-        resolved = candidate if candidate.is_absolute() else root / candidate
-        if resolved.is_file():
-            return resolved.resolve()
-    raise FileNotFoundError("no NDNSF unit-tests binary found")
+    selected = explicit if explicit is not None else (
+        Path(env_path) if env_path else Path("build/unit-tests"))
+    candidate = selected if selected.is_absolute() else root / selected
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        raise FileNotFoundError(f"NDNSF unit-tests executable unavailable: {candidate}")
+    return candidate.resolve()
 
 
 def artifact_record(output_dir: Path, path: Path) -> dict[str, Any]:
@@ -241,13 +237,10 @@ def artifact_record(output_dir: Path, path: Path) -> dict[str, Any]:
     }
 
 
-def capture_ndn_svs_subject(output_dir: Path, build_dir: Path) -> dict[str, Any]:
+def capture_ndn_svs_subject(output_dir: Path, build_dir: Path,
+                            source_root: Path) -> dict[str, Any]:
     """Retain the exact dirty NDN-SVS source and runtime linkage under test."""
-    source_root = (ROOT.parent / "ndn-svs").resolve()
-    library = (
-        ROOT
-        / "build/deps/ndn-svs-experimental/lib/libndn-svs.so.0.1.0"
-    ).resolve()
+    source_root = source_root.resolve(strict=True)
 
     def git_text(*arguments: str) -> str:
         completed = subprocess.run(
@@ -259,39 +252,50 @@ def capture_ndn_svs_subject(output_dir: Path, build_dir: Path) -> dict[str, Any]
         )
         return completed.stdout.strip()
 
+    if Path(git_text("rev-parse", "--show-toplevel")).resolve() != source_root:
+        raise ValueError("--ndn-svs-source must name the SDK checkout root")
+    branch = git_text("branch", "--show-current")
+    head = git_text("rev-parse", "HEAD")
+    head_tree = git_text("rev-parse", "HEAD^{tree}")
     diff = subprocess.run(
         ["git", "diff", "--binary", "HEAD"],
         cwd=source_root,
         capture_output=True,
         check=True,
     ).stdout
+    linkage_env = os.environ.copy()
+    linkage_env.pop("LD_PRELOAD", None)
+    linkage_env["LD_LIBRARY_PATH"] = str(build_dir)
+    linkages = []
+    libraries = set()
+    for name in ("App_ServiceController", "App_Provider", "App_User"):
+        actor = build_dir / "examples" / name
+        linkage = subprocess.run(["ldd", str(actor)], capture_output=True,
+                                 text=True, check=True, env=linkage_env).stdout
+        if "=> not found" in linkage:
+            raise RuntimeError(f"Unresolved authorization actor linkage: {actor}")
+        matches = [line.partition(" => ")[2].rsplit(" (", 1)[0]
+                   for line in linkage.splitlines()
+                   if line.lstrip().startswith("libndn-svs.so") and " => " in line]
+        if len(matches) != 1:
+            raise RuntimeError(f"Expected exactly one NDN-SVS library in {actor}")
+        libraries.add(Path(matches[0]).resolve(strict=True))
+        linkages.append(f"{actor}\n{linkage}")
+    if len(libraries) != 1:
+        raise RuntimeError("Authorization actors resolve different NDN-SVS libraries")
+    library = libraries.pop()
+
+    output_dir.mkdir(parents=True, exist_ok=False)
     patch_path = output_dir / "ndn-svs-subject.patch"
     patch_path.write_bytes(diff)
-
-    linkage_env = os.environ.copy()
-    runtime_paths = [
-        str(build_dir),
-        str(ROOT / "build/deps/ndn-svs-experimental/lib"),
-        "/usr/lib/x86_64-linux-gnu",
-    ]
-    if linkage_env.get("LD_LIBRARY_PATH"):
-        runtime_paths.append(linkage_env["LD_LIBRARY_PATH"])
-    linkage_env["LD_LIBRARY_PATH"] = ":".join(runtime_paths)
-    linkage = subprocess.run(
-        ["ldd", str(build_dir / "unit-tests")],
-        capture_output=True,
-        text=True,
-        check=True,
-        env=linkage_env,
-    ).stdout
     linkage_path = output_dir / "runtime-linkage.txt"
-    linkage_path.write_text(linkage, encoding="utf-8")
+    linkage_path.write_text("\n".join(linkages), encoding="utf-8")
 
     return {
         "source_root": str(source_root),
-        "branch": git_text("branch", "--show-current"),
-        "head": git_text("rev-parse", "HEAD"),
-        "head_tree": git_text("rev-parse", "HEAD^{tree}"),
+        "branch": branch,
+        "head": head,
+        "head_tree": head_tree,
         "dirty": bool(diff),
         "patch_path": patch_path.name,
         "patch_sha256": sha256_file(patch_path),
@@ -299,7 +303,6 @@ def capture_ndn_svs_subject(output_dir: Path, build_dir: Path) -> dict[str, Any]
         "runtime_library_sha256": sha256_file(library),
         "runtime_linkage_path": linkage_path.name,
         "runtime_linkage_sha256": sha256_file(linkage_path),
-        "boost_version": "1.71.0",
     }
 
 
@@ -454,13 +457,8 @@ def _run_minindn_case(
         perf_args = _minindn_perf_args()
         perf.initialize_example_keychains(ndn, perf_args, case_dir)
         env = perf.app_env(case_dir, int(time.time()) + os.getpid(), perf_args)
-        runtime_paths = [
-            str(build_dir),
-            str(ROOT / "build/deps/ndn-svs-experimental/lib"),
-        ]
-        if os.environ.get("LD_LIBRARY_PATH"):
-            runtime_paths.append(os.environ["LD_LIBRARY_PATH"])
-        env["LD_LIBRARY_PATH"] = ":".join(runtime_paths)
+        env["LD_LIBRARY_PATH"] = str(build_dir)
+        env.pop("LD_PRELOAD", None)
         env["NDNSF_POLICY_EPOCH"] = str(policy_epoch)
         env["NDN_LOG"] = "ndn_service_framework.*=TRACE"
 
@@ -558,8 +556,7 @@ def run_minindn(args: argparse.Namespace) -> int:
     binary = resolve_unit_tests_binary(ROOT, args.unit_tests)
     build_dir = binary.parent
     output_dir = args.output.resolve()
-    output_dir.mkdir(parents=True, exist_ok=False)
-    ndn_svs_subject = capture_ndn_svs_subject(output_dir, build_dir)
+    ndn_svs_subject = capture_ndn_svs_subject(output_dir, build_dir, args.ndn_svs_source)
 
     if args.quick_smoke:
         _run_minindn_case(
@@ -642,10 +639,7 @@ user-policies
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
-    source_hashes = {
-        relative: sha256_file(ROOT / relative)
-        for relative in contract["baseline_source_hashes"]
-    }
+    source_hashes = subject_source_hashes(contract)
     artifacts = [
         artifact_record(output_dir, path)
         for path in sorted(output_dir.rglob("*"))
@@ -758,13 +752,8 @@ def run_correctness_smoke(args: argparse.Namespace) -> int:
         regression_log = output_dir / "security-regressions.log"
         regression_env = os.environ.copy()
         regression_env["NDNSF_BUILD_DIR"] = str(binary.parent)
-        runtime_paths = [
-            str(binary.parent),
-            str(ROOT / "build/deps/ndn-svs-experimental/lib"),
-        ]
-        if regression_env.get("LD_LIBRARY_PATH"):
-            runtime_paths.append(regression_env["LD_LIBRARY_PATH"])
-        regression_env["LD_LIBRARY_PATH"] = ":".join(runtime_paths)
+        regression_env["LD_LIBRARY_PATH"] = str(binary.parent)
+        regression_env.pop("LD_PRELOAD", None)
         try:
             completed = subprocess.run(
                 [str(ROOT / "examples/run_security_regressions.sh")],
@@ -847,10 +836,7 @@ def run_correctness_smoke(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
 
-    source_hashes = {
-        relative: sha256_file(ROOT / relative)
-        for relative in contract["baseline_source_hashes"]
-    }
+    source_hashes = subject_source_hashes(contract)
     artifacts = [
         artifact_record(output_dir, path)
         for path in sorted(output_dir.rglob("*"))
@@ -1008,10 +994,7 @@ def run_onboarding(args: argparse.Namespace) -> int:
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
-    source_hashes = {
-        relative: sha256_file(ROOT / relative)
-        for relative in contract["baseline_source_hashes"]
-    }
+    source_hashes = subject_source_hashes(contract)
     artifacts = [
         artifact_record(output_dir, path)
         for path in sorted(output_dir.rglob("*"))
@@ -1112,13 +1095,8 @@ def run_overhead(args: argparse.Namespace) -> int:
             env["NDNSF_SESSION_BASE"] = str(int(time.time()) + os.getpid() + repetition)
             env["NDNSF_TIMELINE_TRACE_SAMPLE_RATE"] = "1"
             env["NDN_LOG"] = "ndn_service_framework.*=TRACE"
-            runtime_paths = [
-                str(build_dir),
-                str(ROOT / "build/deps/ndn-svs-experimental/lib"),
-            ]
-            if env.get("LD_LIBRARY_PATH"):
-                runtime_paths.append(env["LD_LIBRARY_PATH"])
-            env["LD_LIBRARY_PATH"] = ":".join(runtime_paths)
+            env["LD_LIBRARY_PATH"] = str(build_dir)
+            env.pop("LD_PRELOAD", None)
 
             controller_log = repetition_dir / "controller.log"
             provider_log = repetition_dir / "provider.log"
@@ -1320,10 +1298,7 @@ def run_overhead(args: argparse.Namespace) -> int:
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    source_hashes = {
-        relative: sha256_file(ROOT / relative)
-        for relative in contract["baseline_source_hashes"]
-    }
+    source_hashes = subject_source_hashes(contract)
     artifacts = [
         artifact_record(output_dir, path)
         for path in sorted(output_dir.rglob("*"))
@@ -1382,6 +1357,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--unit-tests", type=Path)
+    parser.add_argument("--ndn-svs-source", type=Path,
+                        help="SDK checkout used to build the native actors (required in MiniNDN mode)")
     parser.add_argument(
         "--security-regressions",
         action="store_true",
@@ -1397,7 +1374,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=ROOT / "Experiments/Topology/AI_Lab.conf",
     )
     parser.add_argument("--quick-smoke", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.mode == "minindn" and args.ndn_svs_source is None:
+        parser.error("--mode minindn requires --ndn-svs-source")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

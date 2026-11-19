@@ -1,5 +1,7 @@
 #include <ndn-svs/svspubsub.hpp>
 
+#include <boost/asio/io_context.hpp>
+
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sched.h>
@@ -244,7 +246,7 @@ public:
     core.setSyncInterestBatching(false);
 #endif
 
-    m_pubsub->subscribe(Name("/spec132/publication"),
+    m_pubsub->subscribe(Name("/spec132/publication").append(m_options.remotePeerId),
                         [this](const auto& data) { onDelivery(data); });
   }
 
@@ -344,8 +346,9 @@ private:
   onUpdate(const std::vector<MissingDataInfo>& info)
   {
     const uint64_t timestamp = nowRaw();
+    const auto remotePrefix = Name(m_options.nodePrefix).getPrefix(-1).append(m_options.remotePeerId);
     for (const auto& item : info) {
-      if (item.nodeId.toUri().find(m_options.remotePeerId) == std::string::npos) {
+      if (item.nodeId != remotePrefix) {
         continue;
       }
       for (uint64_t seqNo = item.low; seqNo <= item.high; ++seqNo) {

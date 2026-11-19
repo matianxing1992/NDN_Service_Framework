@@ -88,7 +88,12 @@ def apply_component_scope(bld, roster):
             required = set(owners.values()) | {
                 COMPONENT_LIBRARIES[lib] for lib in libraries
                 if lib in COMPONENT_LIBRARIES}
-            if not canonical and not required <= components:
+            flags = generator.to_list(getattr(generator, 'linkflags', []))
+            sanitizer_only = (any(flag.startswith('-fsanitize=') and
+                                  {'address', 'undefined'}.intersection(flag[11:].split(','))
+                                  for flag in flags) and
+                              not bld.env.sanitize_di and bld.bldnode.name == 'build')
+            if sanitizer_only or (not canonical and not required <= components):
                 group.remove(generator)
                 bld.task_gen_cache_names.pop(generator.name, None)
                 continue

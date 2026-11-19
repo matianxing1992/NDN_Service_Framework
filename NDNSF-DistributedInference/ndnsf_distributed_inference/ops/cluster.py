@@ -399,7 +399,17 @@ def _spawn(state, root, actor_id, kind, argv, env, guard, *, launcher=None,
                     owned_state(proof) in ('RUNNING', 'EXITED')):
                 row['proof'] = proof
                 if network_namespace is not None:
-                    actual = os.readlink('/proc/' + str(child.pid) + '/ns/net')
+                    try:
+                        actual = os.readlink('/proc/' + str(child.pid) + '/ns/net')
+                    except FileNotFoundError:
+                        # A successfully exec'd child can exit before namespace
+                        # admission. Preserve its exit boundary and owned proof;
+                        # never invent a namespace for the already dead actor.
+                        status = child.poll()
+                        if status is not None:
+                            raise ClusterError('native process exited before network namespace admission: ' +
+                                               actor_id + ':' + str(status)) from None
+                        raise
                     if actual != network_namespace:
                         raise ClusterError('native process network namespace mismatch: ' + actor_id)
                     row['network_namespace'] = actual

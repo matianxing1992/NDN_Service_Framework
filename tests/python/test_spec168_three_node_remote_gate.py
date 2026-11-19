@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -14,12 +13,12 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-JOBS = ROOT / "specs/168-itiger-di-deployment-fidelity/jobs"
-ANALYZER = JOBS / "spec168-three-node-analyzer.py"
-CANARY_ANALYZER = JOBS / "spec168-control-plane-canary-analyzer.py"
-CANARY_PREPARE = JOBS / "spec168-prepare-single-campaign.py"
-PREPARE = (ROOT / "specs/162-itiger-qwen36-generation/jobs/"
-           "prepare-qwen36.py")
+JOBS = ROOT / "tests/fixtures/legacy-tiger-three-node"
+SCRIPTS = ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts"
+ANALYZER = SCRIPTS / "analyze-tiger-three-node.py"
+CANARY_ANALYZER = SCRIPTS / "analyze-tiger-control-plane-canary.py"
+CANARY_PREPARE = SCRIPTS / "prepare-tiger-single-campaign.py"
+PREPARE = SCRIPTS / "build-qwen-generation-policy.py"
 
 
 def load_module():
@@ -229,14 +228,13 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
                 remote.analyze(args)
 
     def test_launch_surface_uses_full_copy_up_overlay_and_no_fixed_settle(self):
-        rank = (JOBS / "spec168-three-node-rank-inner.sh").read_text()
-        outer_rank = (JOBS / "spec168-three-node-rank.sh").read_text()
-        sbatch = (JOBS / "gate-e-small-single.sbatch").read_text()
-        overlay = (JOBS / "spec168-overlay-entrypoint.sh").read_text()
-        gate_c = (JOBS / "gate-c-exact-sif-cuda.sbatch").read_text()
-        compat = (ROOT / "specs/162-itiger-qwen36-generation/jobs/"
-                  "generation-rank-inner.sh").read_text()
-        compat_child = (JOBS / "spec168-compat-child-abi-check.py").read_text()
+        rank = (JOBS / "spec168-three-node-rank-inner.sh.txt").read_text()
+        outer_rank = (JOBS / "spec168-three-node-rank.sh.txt").read_text()
+        sbatch = (JOBS / "gate-e-small-single.sbatch.txt").read_text()
+        overlay = (JOBS / "spec168-overlay-entrypoint.sh.txt").read_text()
+        gate_c = (JOBS / "gate-c-exact-sif-cuda.sbatch.txt").read_text()
+        compat = (JOBS / "generation-rank-inner.sh.txt").read_text()
+        compat_child = (JOBS / "spec168-compat-child-abi-check.py.txt").read_text()
         self.assertIn("/scratch/python-overlay", rank)
         self.assertIn(
             "exec bash /source/jobs/spec168-overlay-entrypoint.sh", rank)
@@ -333,7 +331,7 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
         self.assertIn("--expected-native-core-digest", sbatch)
         self.assertIn("--expected-native-extension-digest", sbatch)
 
-        native_builder = (JOBS / "build-native-closure.sh").read_text()
+        native_builder = (JOBS / "build-native-closure.sh.txt").read_text()
         self.assertIn('CFLAGS="-O1 -g0"', native_builder)
         self.assertIn('--out="$work_dir/core"', native_builder)
         self.assertIn('NDNSF_LIBRARY_DIR="$work_dir/core"', native_builder)
@@ -476,23 +474,23 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
             (fake_bin / "nvidia-smi").write_text(
                 "#!/bin/sh\nprintf 'gpu-test\\n'\n", encoding="utf-8"
             )
+            (fake_bin / "hostname").write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = -I ]; then printf '192.0.2.1\\n'; "
+                "else printf 'test-host\\n'; fi\n",
+                encoding="utf-8",
+            )
             (fake_bin / "apptainer").write_text(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$APPTAINER_ARGS_OUTPUT\"\n",
                 encoding="utf-8",
             )
-            for executable in (fake_bin / "nvidia-smi", fake_bin / "apptainer"):
+            for executable in (fake_bin / "nvidia-smi", fake_bin / "hostname",
+                               fake_bin / "apptainer"):
                 executable.chmod(0o755)
 
-            environment = dict(os.environ)
-            for name in (
-                "SPEC168_ARTIFACT_DIR",
-                "SPEC168_GENERATION_CAMPAIGN",
-                "SPEC168_MODEL_IDENTITY_DIGEST",
-                "SPEC168_WORKLOAD_DIGEST",
-            ):
-                environment.pop(name, None)
-            environment.update({
-                "PATH": str(fake_bin) + os.pathsep + environment["PATH"],
+            environment = {
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "USER": "ndnsf-test",
                 "APPTAINER_ARGS_OUTPUT": str(args_output),
                 "SLURM_PROCID": "0",
                 "SLURM_JOB_ID": "999",
@@ -507,9 +505,9 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
                 "SPEC168_REQUEST_TIMEOUT_MS": "60000",
                 "SPEC168_ACK_TIMEOUT_MS": "30000",
                 "SPEC168_SELECTION_OFFER_LEASE_MS": "120000",
-            })
+            }
             completed = subprocess.run(
-                ["bash", str(JOBS / "spec168-three-node-rank.sh")],
+                ["bash", str(JOBS / "spec168-three-node-rank.sh.txt")],
                 env=environment,
                 text=True,
                 capture_output=True,
@@ -525,8 +523,7 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
             self.assertNotIn("SPEC168_WORKLOAD_DIGEST", invocation)
 
     def test_three_node_launch_closes_cross_node_certificate_matrix_before_request(self):
-        compat = (ROOT / "specs/162-itiger-qwen36-generation/jobs/"
-                  "generation-rank-inner.sh").read_text()
+        compat = (JOBS / "generation-rank-inner.sh.txt").read_text()
         user = (ROOT / "examples/python/NDNSF-DistributedInference/"
                 "llm_pipeline/user.py").read_text()
 
@@ -547,10 +544,11 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
             ROOT / "ndn-service-framework/ServiceProvider.cpp"
         ).read_text(encoding="utf-8")
 
-        self.assertTrue(
-            "pendingCall.isCollaboration &&\n"
-            "            pendingCall.customSelectedAcks.size() > 1"
-            in user_source,
+        self.assertRegex(
+            user_source,
+            r"customSelectedAcks\.size\(\) > 1 &&\s*"
+            r"\(pendingCall\.isCollaboration \|\|\s*"
+            r"!pendingCall\.selectionAssignmentPayloads\.empty\(\)\)",
             "multi-provider collaboration must use provider projections",
         )
         self.assertTrue(
@@ -570,22 +568,17 @@ class Spec168ThreeNodeRemoteGateTest(unittest.TestCase):
             "collaboration prefetch must target the local provider projection",
         )
         self.assertIn(
-            "if (!providerProjected)", provider_source,
-            "generic providers must retain bounded compact multi-selection fallback",
-        )
-        self.assertIn(
             '"provider-projection"', provider_source,
-            "all providers must first prefetch the exact provider-bound decision",
+            "providers prefetch the exact provider-bound decision",
         )
-        self.assertIn(
+        self.assertNotIn(
             '"compact-fallback"', provider_source,
-            "generic multi-selection must remain source compatible",
+            "selection prefetch must follow the producer-owned naming contract",
         )
 
     def test_overlay_precedes_installed_package_and_rank_failure_aborts_waits(self):
-        outer = (JOBS / "spec168-three-node-rank.sh").read_text()
-        compat = (ROOT / "specs/162-itiger-qwen36-generation/jobs/"
-                  "generation-rank-inner.sh").read_text()
+        outer = (JOBS / "spec168-three-node-rank.sh.txt").read_text()
+        compat = (JOBS / "generation-rank-inner.sh.txt").read_text()
         self.assertIn(
             'export PYTHONPATH="/source/llm_pipeline:${PYTHONPATH:-/opt/ndnsf-app/python}"',
             compat,

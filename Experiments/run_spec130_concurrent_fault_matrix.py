@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Single-writer exact-once Spec 130 16-cell MiniNDN confirmation runner."""
+"""Legacy conflict-comparison analysis/runner; requires explicit historical inputs.
+
+The original v2 campaign manifest is not distributed. Parser fixtures are
+synthetic and cannot be used to execute or qualify a campaign.
+"""
 
 from __future__ import annotations
 
@@ -17,10 +21,7 @@ from typing import Any, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_SOURCE = ROOT / "specs/130-concurrent-fault-boundaries/experiment-manifest.json"
 LAUNCHER = ROOT / "Experiments/NDNSF_DI_ConcurrentFaultBoundaries_Minindn.py"
-SPEC129_SPEC = ROOT / "specs/129-selection-gated-deployment"
-SPEC129_RESULT = ROOT / "results/spec129-r1-20260721_183058"
 SPEC129_RUNNER_NAME = "run_spec129_selection_gated_deployment_matrix.py"
 FROZEN_SOURCES = tuple(ROOT / name for name in (
     "NDNSF-DistributedInference/ndnsf_distributed_inference/core/conflict_coordination.py",
@@ -28,7 +29,6 @@ FROZEN_SOURCES = tuple(ROOT / name for name in (
     "NDNSF-DistributedInference/ndnsf_distributed_inference/deployment.py",
     "Experiments/NDNSF_DI_ConcurrentFaultBoundaries_Minindn.py",
     "Experiments/run_spec130_concurrent_fault_matrix.py",
-    "specs/130-concurrent-fault-boundaries/experiment-manifest.json",
 ))
 
 METRIC_SCHEMA = (
@@ -51,12 +51,12 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_manifest(path: Path = MANIFEST_SOURCE) -> dict[str, Any]:
+def load_manifest(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def frozen_cells(manifest: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    source = manifest or load_manifest()
+def frozen_cells(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    source = manifest
     values = [dict(value) for value in source["cells"]]
     next_cell = len(values) + 1
     statistics = source["statistics"]
@@ -125,16 +125,16 @@ def hash_files(paths: Iterable[Path]) -> dict[str, str]:
     return values
 
 
-def hash_tree(path: Path) -> dict[str, str]:
+def hash_tree(path: Path, label: str) -> dict[str, str]:
     if not path.is_dir():
         raise RuntimeError(f"missing immutable tree: {path}")
-    return {str(item.relative_to(ROOT)): digest_path(item)
+    return {label + "/" + str(item.relative_to(path)): digest_path(item)
             for item in sorted(path.rglob("*")) if item.is_file()}
 
 
-def hash_spec129_evidence() -> dict[str, str]:
-    values = hash_tree(SPEC129_SPEC)
-    values.update(hash_tree(SPEC129_RESULT))
+def hash_spec129_evidence(spec_root: Path, result_root: Path) -> dict[str, str]:
+    values = hash_tree(spec_root, "prior-definition")
+    values.update(hash_tree(result_root, "prior-evidence"))
     return values
 
 
@@ -189,12 +189,13 @@ def build_identity() -> dict[str, Any]:
             "bindingSha256": digest_path(bindings[0])}
 
 
-def command_for(cell: dict[str, Any], output: Path,
+def command_for(cell: dict[str, Any], output: Path, manifest_path: Path,
                 manifest_digest: str) -> list[str]:
     return ["sudo", "-n", "-E", "timeout", "300s", sys.executable,
             str(LAUNCHER), "--scenario", cell["id"],
             "--graph", cell["graph"], "--mode", cell["mode"],
-            "--fault", cell["fault"], "--manifest-digest", manifest_digest,
+            "--fault", cell["fault"], "--experiment-manifest", str(manifest_path),
+            "--manifest-digest", manifest_digest,
             "--seed", str(int(cell.get("seed", 0))), "--output", str(output)]
 
 
@@ -204,8 +205,7 @@ def expected_availability(cell: dict[str, Any], manifest: dict[str, Any]) -> str
 
 
 def analyze_cell(cell: dict[str, Any], raw: dict[str, Any], return_code: int,
-                 manifest: dict[str, Any] | None = None) -> dict[str, Any]:
-    manifest = manifest or load_manifest()
+                 manifest: dict[str, Any], *, manifest_digest: str) -> dict[str, Any]:
     metrics = dict(raw.get("metrics") or {})
     missing = sorted(set(METRIC_SCHEMA) - set(metrics))
     mapping_count = int(metrics.get("mappingDataCount", 0))
@@ -218,7 +218,7 @@ def analyze_cell(cell: dict[str, Any], raw: dict[str, Any], return_code: int,
     checks.update({
         "launcherExitZero": return_code == 0,
         "scenarioMatches": raw.get("scenario") == cell["id"],
-        "manifestBound": raw.get("manifestDigest") == digest_path(MANIFEST_SOURCE),
+        "manifestBound": raw.get("manifestDigest") == manifest_digest,
         "metricSchemaComplete": not missing,
         "singleInvocation": int(raw.get("invocationCount", 0)) == 1,
         "zeroSafetyViolation": int(metrics.get("safetyViolationCount", -1)) == 0,
@@ -270,6 +270,12 @@ def write_analysis(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", type=Path, required=True,
+                        help="explicit original v2 campaign manifest; synthetic fixtures are rejected")
+    parser.add_argument("--prior-spec-root", type=Path, required=True,
+                        help="explicit frozen prior definition directory, hashed only")
+    parser.add_argument("--prior-evidence-root", type=Path, required=True,
+                        help="explicit frozen prior evidence directory, hashed only")
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--require-minindn", action="store_true")
@@ -279,10 +285,13 @@ def main() -> int:
         raise RuntimeError("frozen prior-Spec namespace cannot be a destination")
     if output.exists():
         raise RuntimeError("output reuse is forbidden for exact-once Spec 130 confirmation")
-    manifest_source = load_manifest(); validate_manifest(manifest_source)
-    manifest_digest = digest_path(MANIFEST_SOURCE)
+    manifest_path = args.manifest.resolve()
+    manifest_source = load_manifest(manifest_path); validate_manifest(manifest_source)
+    if manifest_source.get("synthetic"):
+        raise RuntimeError("SYNTHETIC_MANIFEST_NOT_EXECUTABLE")
+    manifest_digest = digest_path(manifest_path)
     source_hashes = hash_files(FROZEN_SOURCES)
-    spec129_before = hash_spec129_evidence()
+    spec129_before = hash_spec129_evidence(args.prior_spec_root, args.prior_evidence_root)
     identity = build_identity()
     output.mkdir(parents=True)
     lock_file = (output / ".campaign.lock").open("x+")
@@ -291,7 +300,7 @@ def main() -> int:
     for cell in frozen_cells(manifest_source):
         cell_output = output / f"cell-{cell['cell']:02d}-{cell['id']}"
         manifest.append({"cell": cell, "outputPath": str(cell_output),
-                         "command": command_for(cell, cell_output, manifest_digest),
+                         "command": command_for(cell, cell_output, manifest_path, manifest_digest),
                          "invocationCount": 0})
     (output / "campaign-manifest.json").write_text(
         json.dumps({"manifestDigest": manifest_digest, "entries": manifest},
@@ -330,8 +339,8 @@ def main() -> int:
         summary_path = cell_output / "cell-summary.json"
         raw = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
         rows.append(analyze_cell(entry["cell"], raw, completed.returncode,
-                                 manifest_source))
-    spec129_after = hash_spec129_evidence()
+                                 manifest_source, manifest_digest=manifest_digest))
+    spec129_after = hash_spec129_evidence(args.prior_spec_root, args.prior_evidence_root)
     unchanged = spec129_before == spec129_after
     write_csv(output / "campaign-runs.csv", rows)
     write_csv(output / "campaign-cells.csv", rows)

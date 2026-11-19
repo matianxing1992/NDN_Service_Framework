@@ -11,7 +11,7 @@
 ## 本项目依据
 
 源码文件和定位见 api/inventory.json、四模块 reference、api/contract-map.json 及 source-baseline.json。
-架构和运行边界使用 docs/architecture.md、docs/ndnsf-core-app-boundary.md、docs/NDNSF-DI-runtime-workflow.md 与 active Spec 的契约/证据。
+架构依据保留在 docs/architecture.md、docs/ndnsf-core-app-boundary.md 与 active Spec 的契约/证据；运行说明使用 [Tiger指南](../Experiments/TigerCluster/docs/portable-deployment.md) 和 [本地验证](../Experiments/guides/local-validation.md)。
 源码注释在 API 参考中保留原文作为接口作者说明；中文行为契约单独维护，不将注释自动升级为测试证明。
 ## R2 改进参考（2026-09-07 核对）
 

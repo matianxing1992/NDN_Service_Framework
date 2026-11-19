@@ -14,6 +14,8 @@
 #include <system_error>
 #include <unistd.h>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ndn_service_framework::test {
@@ -35,7 +37,8 @@ makeTestTrustDirectory()
 
 inline void
 writeTestTrustSchema(const std::filesystem::path& directory,
-                     const std::vector<ndn::security::Certificate>& anchors)
+                     const std::vector<ndn::security::Certificate>& anchors,
+                     std::string_view rules = {})
 {
   for (const auto& entry : std::filesystem::directory_iterator(directory)) {
     if (entry.path().filename().string().compare(0, 7, "anchor-") == 0) {
@@ -43,7 +46,8 @@ writeTestTrustSchema(const std::filesystem::path& directory,
     }
   }
   std::ofstream schema(directory / "trust.conf");
-  schema << R"SCHEMA(rule
+  if (rules.empty()) {
+    rules = R"SCHEMA(rule
 {
   id "isolated test certificates and data"
   for data
@@ -70,6 +74,8 @@ rule
   checker { type customized sig-type ecdsa-sha256 key-locator { type name regex ^<>*$ } }
 }
 )SCHEMA";
+  }
+  schema << rules << '\n';
   for (size_t index = 0; index < anchors.size(); ++index) {
     const auto fileName = "anchor-" + std::to_string(index) + ".cert";
     ndn::io::save(anchors[index], (directory / fileName).string());
@@ -98,11 +104,13 @@ public:
   {
   }
 
-  explicit IsolatedTestTrust(std::initializer_list<ndn::security::Certificate> anchors)
+  explicit IsolatedTestTrust(std::initializer_list<ndn::security::Certificate> anchors,
+                             std::string rules = {})
     : IsolatedTestTrust()
   {
+    m_rules = std::move(rules);
     m_anchors.assign(anchors);
-    trust_detail::writeTestTrustSchema(m_directory, m_anchors);
+    trust_detail::writeTestTrustSchema(m_directory, m_anchors, m_rules);
   }
 
   ~IsolatedTestTrust()
@@ -119,7 +127,7 @@ public:
     auto certificate = keyChain.createIdentity(identity, ndn::RsaKeyParams(2048))
                          .getDefaultKey().getDefaultCertificate();
     m_anchors.push_back(certificate);
-    trust_detail::writeTestTrustSchema(m_directory, m_anchors);
+    trust_detail::writeTestTrustSchema(m_directory, m_anchors, m_rules);
     return certificate;
   }
   std::string schemaPath() const { return (m_directory / "trust.conf").string(); }
@@ -127,6 +135,7 @@ public:
 private:
   std::filesystem::path m_directory;
   std::vector<ndn::security::Certificate> m_anchors;
+  std::string m_rules;
 };
 
 } // namespace ndn_service_framework::test

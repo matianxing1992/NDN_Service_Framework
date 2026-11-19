@@ -849,7 +849,7 @@ class MiniNdnCaseRuntime:
                     or not isinstance(selector_binding, Mapping)):
                 raise RunnerError("CASE_PROCESS_NATIVE_SELECTOR_INVALID")
             if sif_runtime_enabled():
-                if (str(selector) != "/opt/ndnsf-di/current/bin/spec187-yolo-minindn"
+                if (str(selector) != "/opt/ndnsf-di/current/bin/yolo-minindn"
                         or selector_binding.get("path") != str(selector)
                         or selector_binding.get("sealedSif") is not True
                         or not _DIGEST_RE.fullmatch(
@@ -1214,7 +1214,7 @@ class MiniNdnCaseRuntime:
                 # the native Provider and grant authority.  A host build
                 # path would disappear under --cleanenv/--containall.
                 selector_command_path = Path(
-                    "/opt/ndnsf-di/current/bin/spec187-yolo-minindn")
+                    "/opt/ndnsf-di/current/bin/yolo-minindn")
             else:
                 if (not selector.is_absolute() or selector.is_symlink()
                         or not selector.is_file() or not os.access(selector, os.X_OK)):
@@ -1773,7 +1773,7 @@ def _validate_native_selector(value: str) -> Path:
     if sif_runtime_enabled():
         if not value:
             raise RunnerError("SPEC187_NATIVE_SELECTOR_INVALID")
-        path = Path("/opt/ndnsf-di/current/bin/spec187-yolo-minindn")
+        path = Path("/opt/ndnsf-di/current/bin/yolo-minindn")
         # The outer runner is a host MiniNDN process.  The sealed path is
         # checked inside the candidate by _validate_sif_selector_runtime().
         return path
@@ -1795,7 +1795,7 @@ def _validate_sif_selector_runtime(binding: Mapping[str, Any]) -> None:
     if not _DIGEST_RE.fullmatch(expected):
         raise RunnerError("SPEC187_NATIVE_SELECTOR_DIGEST_INVALID")
     command = (sif_exec_prefix({}) + " sha256sum "
-               + shlex.quote("/opt/ndnsf-di/current/bin/spec187-yolo-minindn"))
+               + shlex.quote("/opt/ndnsf-di/current/bin/yolo-minindn"))
     try:
         result = subprocess.run(command, shell=True, check=False,
                                 capture_output=True, text=True, timeout=30)

@@ -1,4 +1,5 @@
 """Installer control-flow checks; never run apt, builds, or system installation."""
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -32,6 +33,52 @@ def shell(code, *args, env=None):
         )
 
 
+def test_yolo_launcher_preflights_its_prefix_outside_checkout(tmp_path):
+    prefix = tmp_path / "prefix"
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / "ndnsf-yolo-minindn"
+    launcher_body = DEFINITIONS.split("ndnsf-yolo-minindn\" <<'LAUNCHER'\n", 1)[1]
+    launcher.write_text(launcher_body.split("\nLAUNCHER\n", 1)[0] + "\n")
+    launcher.chmod(0o755)
+
+    state = prefix / "share/ndnsf/yolo-minindn"
+    experiments = state / "experiments"
+    experiments.mkdir(parents=True)
+    for name in ("NDNSF_DI_YoloSplit_Minindn.py", "NDNSF_NewAPI_Minindn_Perf.py"):
+        shutil.copyfile(ROOT / "Experiments" / name, experiments / name)
+    actors = state / "actors"
+    shutil.copytree(ROOT / "examples/python/NDNSF-DistributedInference/yolo_split", actors)
+    native_lib = prefix / "lib"
+    native_lib.mkdir()
+    (native_lib / "libndnsf-distributed-inference.so").touch()
+    (state / "native-library-dir").write_text(str(native_lib) + "\n")
+    (state / "python-executable").write_text(sys.executable + "\n")
+    sites = [prefix / name for name in ("mini-site", "yolo-site")]
+    for site in sites:
+        site.mkdir()
+    (state / "python-site-paths").write_text("".join(f"{site}\n" for site in sites))
+    model = state.parent / "models/yolo26n.pt"
+    model.parent.mkdir()
+    model.write_bytes(b"test model")
+    (state / "yolo26n.sha256").write_text(hashlib.sha256(model.read_bytes()).hexdigest() + "\n")
+    env = dict(os.environ, NDNSF_ROOT=str(tmp_path / "absent-checkout"), TMPDIR=str(tmp_path))
+    command = [str(launcher), "--preflight-only"]
+
+    preflight = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert preflight.returncode == 0, preflight.stderr
+    assert "YOLO_MININDN_INSTALLED_INPUTS_OK" in preflight.stdout
+    model.write_bytes(b"corrupted model")
+    corrupt = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert corrupt.returncode != 0
+    assert "failed SHA-256" in corrupt.stderr
+    (actors / "yolo_split_lib.py").unlink()
+    missing = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert missing.returncode != 0
+    assert "actors/yolo_split_lib.py" in missing.stderr
+    assert not list(tmp_path.glob("ndnsf-yolo-run.*"))
+
+
 @pytest.mark.parametrize("args, message", [
     (["--no-configure"], "--no-configure is not allowed"),
     (["--python"], "--python requires"),
@@ -39,12 +86,73 @@ def shell(code, *args, env=None):
     (["--jobs"], "--jobs requires"),
     (["--jobs", "0"], "host build"),
     (["--jobs", "2; touch /tmp/not-executed"], "host build"),
+    (["--", "--out=/tmp/other"], "ordinary checkout build/"),
+    (["--", "--sanitize-di"], "ordinary checkout build/"),
 ])
 def test_invalid_options_stop_before_installation(args, message):
     result = shell(SCRIPT.read_text(), '--plan', *args)
     assert result.returncode == 2
     assert message in result.stderr
     assert "NDNSF stack install root" not in result.stdout
+
+
+def test_prepare_experiment_delegates_only_to_selected_installed_tool(tmp_path):
+    import json
+    prefix = tmp_path / 'prefix'
+    helper = prefix / 'share/ndnsf/Experiments/prepare-native-deployment.py'
+    helper.parent.mkdir(parents=True)
+    helper.write_text('import json,sys; print(json.dumps(sys.argv[1:]))\n')
+    work = tmp_path / 'new private inputs'
+    manifest = tmp_path / 'asset-manifest.json'
+    result = shell(SCRIPT.read_text(), '--prepare-experiment', 'qwen06b-tp-cpu',
+                   '--prefix', str(prefix), '--asset-manifest', str(manifest),
+                   '--work-root', str(work), '--namespace', '/test/cpu', '--offline')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ['--profile', 'qwen06b-tp-cpu', '--prefix', str(prefix),
+        '--asset-manifest', str(manifest), '--work-root', str(work), '--namespace', '/test/cpu', '--offline']
+    assert not work.exists() and not manifest.exists()
+
+
+def test_manifest_python_console_paths_collapse_record_parents(tmp_path):
+    import json
+    source = SCRIPT.read_text().split("<<'NDNSF_INSTALL_MANIFEST_PY'\n", 1)[1].split('\nNDNSF_INSTALL_MANIFEST_PY', 1)[0]
+    namespace = {'__name__': 'installer_manifest_test'}
+    exec(compile(source, str(SCRIPT), 'exec'), namespace)
+    site = tmp_path / 'venv/lib/python3.8/site-packages'
+    site.mkdir(parents=True)
+    console = tmp_path / 'venv/bin/ndnsf-di'
+    alias = site / '../../../bin/ndnsf-di'
+    assert namespace['canonical_manifest_path'](alias) == console
+    state = {'installed': {'kind': 'file', 'sha256': 'a' * 64}, 'owners': ['python:ops']}
+    manifest = tmp_path / 'manifest.json'
+    manifest.write_text(json.dumps(dict(schema=1, sources=[], files={str(alias): state})))
+    assert namespace['read_manifest'](manifest)['files'] == {str(console): state}
+    conflicting = dict(state, installed={'kind': 'file', 'sha256': 'b' * 64})
+    manifest.write_text(json.dumps(dict(schema=1, sources=[], files={str(alias): state, str(console): conflicting})))
+    with pytest.raises(ValueError, match='conflicting manifest aliases'):
+        namespace['read_manifest'](manifest)
+
+
+def test_prepare_experiment_plan_does_not_need_or_create_an_installation(tmp_path):
+    prefix = tmp_path / 'uninstalled'
+    result = shell(SCRIPT.read_text(), '--plan', '--prepare-experiment', 'qwen06b-tp-cpu',
+        '--prefix', str(prefix), '--asset-manifest', str(tmp_path / 'assets.json'),
+        '--work-root', str(tmp_path / 'work'), '--namespace', '/test/cpu', '--offline')
+    assert result.returncode == 0, result.stderr
+    assert 'Installed experiment preparation (no writes)' in result.stdout
+    assert '--offline' in result.stdout and str(prefix) in result.stdout
+    assert not prefix.exists() and not (tmp_path / 'work').exists()
+
+
+@pytest.mark.parametrize('args', [
+    ['--prepare-experiment', 'qwen06b-tp-cpu'],
+    ['--asset-manifest', '/missing/assets.json'],
+    ['--offline'],
+])
+def test_incomplete_experiment_arguments_fail_before_installation(args):
+    result = shell(SCRIPT.read_text(), *args)
+    assert result.returncode == 2 and '--prepare-experiment' in result.stderr
+    assert 'NDNSF stack install root' not in result.stdout
 
 
 def test_jobs_environment_and_override():
@@ -664,7 +772,7 @@ def test_qwen_program_check_rejects_missing_binary(tmp_path):
 
 def test_qwen_program_check_does_not_claim_inference(tmp_path):
     for name in ("bin/App_ServiceController", "bin/DI_NativeArtifactAuthority", "bin/DI_NativeRequester",
-                 "bin/di-native-provider", "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker", "bin/spec190-multiturn-oracle"):
+                 "bin/di-native-provider", "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker", "bin/multiturn-oracle"):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("#!/bin/sh\nexit 0\n")
@@ -678,7 +786,7 @@ def test_qwen_program_check_rejects_executable_directory(tmp_path):
     names = (
         "bin/App_ServiceController", "bin/DI_NativeArtifactAuthority", "bin/DI_NativeRequester",
         "bin/di-native-provider", "libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker",
-        "bin/spec190-multiturn-oracle",
+        "bin/multiturn-oracle",
     )
     directory = tmp_path / names[0]
     directory.mkdir(parents=True)
@@ -736,19 +844,27 @@ def test_waf_dependency_patch_lifecycle_and_quoted_source_path(tmp_path, initial
                      '@@ -1 +1 @@\n-original\n+updated\n')
     waf = source / "waf"
     waf.write_text('import os, sys\nfrom pathlib import Path\n'
-                   'assert Path("value.txt").read_text() == "updated\\n"\n'
+                   'assert Path(__file__).with_name("value.txt").read_text() == "updated\\n"\n'
                    'print("FAKE_WAF:" + os.getcwd() + ":" + " ".join(sys.argv[1:]))\n'
-                   'if os.environ["NDNSF_TEST_FAIL_BUILD"] == "1" and sys.argv[1] == "-j2":\n'
-                   '    raise SystemExit(19)\n')
-    env = dict(os.environ, NDNSF_TEST_ROOT=str(project), NDNSF_TEST_BUILD=str(tmp_path / 'build'),
+                   'if "build" in sys.argv and os.environ["NDNSF_TEST_FAIL_BUILD"] == "1":\n'
+                   '    raise SystemExit(19)\n'
+                   'if "install" in sys.argv:\n'
+                   '    stage = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--destdir="))\n'
+                   '    target = Path(stage + os.environ["NDNSF_TEST_PREFIX"]) / "lib/test-file"\n'
+                   '    target.parent.mkdir(parents=True)\n'
+                   '    target.write_text("payload")\n')
+    prefix = tmp_path / 'prefix'
+    env = dict(os.environ, NDNSF_DISK_RESERVE_BYTES='0', NDNSF_TEST_PREFIX=str(prefix),
+               NDNSF_TEST_ROOT=str(project), NDNSF_TEST_BUILD=str(tmp_path / 'build'),
                NDNSF_TEST_SOURCE=str(source), NDNSF_TEST_FAIL_BUILD=str(int(fail_build)))
     result = shell(DEFINITIONS + '''
 ROOT="$NDNSF_TEST_ROOT"
 BUILD_DIR="$NDNSF_TEST_BUILD"
+GLOBAL_DEPENDENCY_PREFIX="$NDNSF_TEST_PREFIX"
 FORCE_DEPENDENCIES=1
 sudo_run() { :; }
 ensure_source_tree() { printf '%s\n' "$NDNSF_TEST_SOURCE"; }
-install_manifest_tree() { echo STAGED_INSTALL; }
+install_manifest_tree() { mkdir -p "$2"; cp -a "$1/." "$2"; echo STAGED_INSTALL; }
 record_source_receipt() { echo SOURCE_RECEIPT; }
 build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
 ''', "--deps-dir", str(source.parent), "--jobs", "2", env=env)
@@ -758,12 +874,17 @@ build_waf_dependency ndn-svs libndn-svs invalid-url 0.1
     if initial == 'incompatible':
         assert 'FAKE_WAF' not in result.stdout
         return
-    assert f"FAKE_WAF:{source}:configure --prefix=/usr/local" in result.stdout
-    assert f"FAKE_WAF:{source}:-j2" in result.stdout
+    output = tmp_path / 'build/waf-dependencies/ndn-svs'
+    assert f"configure --prefix={prefix}" in result.stdout
+    assert f"FAKE_WAF:{output}:" in result.stdout
+    assert f"--out={output}" in result.stdout
+    assert " build -j2" in result.stdout
+    assert "distclean" not in result.stdout
     assert ('STAGED_INSTALL' in result.stdout) == (not fail_build)
     assert ('SOURCE_RECEIPT' in result.stdout) == (not fail_build)
-    install_call = f"FAKE_WAF:{source}:install --destdir={tmp_path / 'build/install-staging/ndn-svs'}"
+    install_call = f"install --destdir={output / 'install-stage'}"
     assert (install_call in result.stdout) == (not fail_build)
+    assert not (output / 'install-stage').exists()
 
 
 def test_install_refreshes_loader_before_python_and_limits_jobs():
@@ -777,7 +898,11 @@ check_waf_inventory() { :; }
 require_global_external_closure() { :; }
 source_field() { printf '%s\n' 'https://example.invalid/test.git'; }
 require_global_file() { :; }
-run_waf_clean() { echo "WAF:$*"; }
+prepare_build_dir() { :; }
+lock_native_install() { :; }
+native_stage() { :; }
+install_manifest_tree() { :; }
+run_waf_clean() { echo "WAF:$*"; echo "NDNSF_SKIP_DEV_PIP_INSTALL=${NDNSF_SKIP_DEV_PIP_INSTALL:-0}"; }
 sudo_run() { echo "SUDO:$*"; }
 native_digest_receipt() { echo '{}'; }
 pip_install() { echo "PIP:$*"; }
@@ -787,7 +912,7 @@ run() { printf 'RUN:%s\\n' "$*"; }
     assert result.returncode == 0, result.stderr
     assert "WAF:-j2" in result.stdout
     install = next(shlex.split(line[4:]) for line in result.stdout.splitlines()
-                   if line.startswith('RUN:') and './waf' in line and ' install ' in line)
+                   if line.startswith('WAF:install '))
     assert '-j2' in install
     assert any(token.startswith('--destdir=') for token in install)
     assert "NDNSF_SKIP_DEV_PIP_INSTALL=1" in result.stdout
@@ -1085,15 +1210,18 @@ check_waf_inventory() { echo MISSING_GTK >&2; return 37; }
     assert 'UNEXPECTED' not in result.stdout
 
 
-def test_pip_builds_wheels_then_privileged_noneditable_install():
+@pytest.mark.parametrize("with_onnx_adapter", [False, True])
+def test_pip_builds_wheels_then_privileged_noneditable_install(with_onnx_adapter):
+    package = ('"$ROOT/NDNSF-DistributedInference/packaging/python/adapters/onnx"'
+               if with_onnx_adapter else '/example/package')
     result = shell(DEFINITIONS + '''
 NAC_SDK_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture
 NDNSF_GLOBAL_NATIVE_DIGESTS='{"fixture":"digest"}'
 stage_python_wheel_sources() { shift; PYTHON_WHEEL_INPUTS=("$@"); }
 run() { printf 'BUILD:%s\\n' "$*"; touch "$wheel_dir/test.whl"; }
 sudo_run() { printf 'INSTALL:%s\\n' "$*"; }
-pip_install /example/package
-''')
+manifest_tool() { printf 'MANIFEST:%s\n' "$*"; }
+pip_install ''' + package + '\n')
     assert result.returncode == 0, result.stderr
     assert '--isolated wheel --wheel-dir' in result.stdout
     assert 'NDNSF_NAC_ABE_PREFIX=/usr/local/ndnsf-sdk/nac-abe/fixture' in result.stdout
@@ -1105,12 +1233,18 @@ pip_install /example/package
     assert not {'--user', '--editable', '-e'} & set(install)
     assert any(token.endswith('/test.whl') for token in install)
     assert result.stdout.index('BUILD:') < result.stdout.index('INSTALL:')
+    manifests = [line for line in result.stdout.splitlines() if line.startswith('MANIFEST:')]
+    assert len(manifests) == 2
+    assert all(('ndnsf-di-adapter-onnx' in line.split()) == with_onnx_adapter for line in manifests)
 
 
 def test_pip_build_receives_native_identity_in_clean_child_environment(tmp_path):
     python = tmp_path / "wheel-builder"
     python.write_text('''#!/usr/bin/python3
 import os, pathlib, sys
+if sys.argv[-2:] == ['help', 'install']:
+    print('--break-system-packages')
+    sys.exit(0)
 assert os.environ['NDNSF_GLOBAL_NATIVE_DIGESTS'] == '{"fixture":"exact-native-identity"}'
 assert os.environ['NDNSF_RUNTIME_PREFIX'] == '/opt/ndnsf-fixture'
 assert os.environ['NDNSF_NAC_ABE_PREFIX'] == '/usr/local/ndnsf-sdk/nac-abe/fixture'
@@ -1134,6 +1268,27 @@ pip_install /example/package
     assert 'CLEAN_WHEEL_NATIVE_IDENTITY_OK' in result.stdout
 
 
+@pytest.mark.parametrize("modern", [False, True])
+def test_installer_scopes_old_pip_bootstrap_to_its_stage(tmp_path, modern):
+    python = tmp_path / "python"
+    pip_help = "--break-system-packages" if modern else "old pip help"
+    python.write_text("#!/bin/sh\nprintf '%s\\n' " + shlex.quote(pip_help) + "\n")
+    python.chmod(0o755)
+    stage = tmp_path / "private-pip"
+    result = shell(DEFINITIONS + "\nPYTHON_BIN=" + shlex.quote(str(python)) + "\n" + '''
+run() { printf 'BOOTSTRAP:%s\\n' "$*"; }
+prepare_installer_pip ''' + shlex.quote(str(stage)) + '''
+printf 'PIP_ENV:%s\\n' "${pip_bootstrap_env[*]}"
+''')
+    assert result.returncode == 0, result.stderr
+    if modern:
+        assert "BOOTSTRAP:" not in result.stdout
+        assert "PIP_ENV:\n" in result.stdout
+    else:
+        assert f"--target {stage} pip==25.0.1" in result.stdout
+        assert f"PIP_ENV:PYTHONPATH={stage}" in result.stdout
+
+
 def test_native_only_stops_before_public_python_wheels(tmp_path):
     source = SCRIPT.read_text()
     start = source.index('if (( NATIVE_ONLY )); then',
@@ -1150,11 +1305,12 @@ release_default_sdk_scratch() { echo NATIVE_SCRATCH_RELEASED; }
 
 
 def test_non_global_native_prefix_does_not_refresh_global_linker_cache(tmp_path):
-    source = SCRIPT.read_text()
-    start = source.index('  if [[ "$RUNTIME_PREFIX" == "$GLOBAL_DEPENDENCY_PREFIX" ]]; then',
-                         source.index('==> Installing C++ libraries and headers'))
-    end = source.index('\n  selected_native_libraries=', start)
-    code = DEFINITIONS + '\nsudo_run() { echo GLOBAL_LINKER_REFRESH; }\n' + source[start:end]
+    code = DEFINITIONS + '''
+PYTHON_BIN=/bin/true
+install_manifest_tree() { :; }
+sudo_run() { echo GLOBAL_LINKER_REFRESH; }
+promote_native_stage
+'''
     isolated = shell(code, '--prefix', str(tmp_path / 'candidate'))
     assert isolated.returncode == 0, isolated.stderr
     assert 'GLOBAL_LINKER_REFRESH' not in isolated.stdout

@@ -311,7 +311,7 @@ test('upgrade updates only the exact legacy default and never rewrites historica
   assert.equal(f.manager.state.records[0].prompt, LEGACY_PROMPT);
 });
 
-test('opening old settings pins future requests to the current model without rewriting history', async () => {
+test('opening old settings preserves the selected audit model without rewriting history', async () => {
   const oldSettings = { enabled: true, intervalHours: 3, nextDue: 7000,
     model: 'gpt-6.1-sol', effort: 'xhigh', prompt: 'custom instruction' };
   const historical = { id: 'old', status: 'completed',
@@ -320,17 +320,17 @@ test('opening old settings pins future requests to the current model without rew
     load: async () => ({ version: 1, sessions: { s: { ...oldSettings } },
       records: [{ ...historical }] }),
     run: async ({ settings }) => {
-      assert.equal(settings.model, AUDIT_MODEL);
+      assert.equal(settings.model, oldSettings.model);
       assert.equal(settings.effort, AUDIT_EFFORT);
       return { report: 'audit using new selection' };
     },
   });
-  const expected = { ...oldSettings, model: AUDIT_MODEL, effort: AUDIT_EFFORT };
+  const expected = oldSettings;
   assert.deepEqual(f.manager.publicSettings('s'), { ...expected, auditWindow: null });
   assert.deepEqual(f.durable().sessions.s, expected);
   const next = await f.manager.start('s');
   assert.equal(next.status, 'completed');
-  assert.equal(next.model, AUDIT_MODEL);
+  assert.equal(next.model, oldSettings.model);
   assert.equal(next.effort, AUDIT_EFFORT);
   assert.deepEqual(f.durable().records[0], historical);
 });
@@ -343,6 +343,19 @@ test('host close prevents a delayed activation from re-enabling its disposed man
   release({ basis: { capturedAt: 1, seq: 0 }, hashes: {} });
   await assert.rejects(pending, /disposed/);
   assert.equal(f.manager.settings('s').enabled, false);
+});
+
+test('reopening a session retains each supported effort and defaults missing or invalid values', async () => {
+  const efforts = ['medium', 'high', 'xhigh', 'ultra'];
+  const first = await fixture();
+  for (const effort of efforts) await first.manager.configure(effort, { effort });
+  const stored = first.durable();
+  stored.sessions.old = { effort: 'low' };
+  stored.sessions.missing = {};
+  const restarted = await fixture({ load: async () => stored });
+  for (const effort of efforts) assert.equal(restarted.manager.settings(effort).effort, effort);
+  assert.equal(restarted.manager.settings('old').effort, AUDIT_EFFORT);
+  assert.equal(restarted.manager.settings('missing').effort, AUDIT_EFFORT);
 });
 
 test('a per-run prompt applies to that audit only and is not persisted', async () => {

@@ -9,7 +9,7 @@ import types
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (
-    ROOT / "specs/175-ndnsf-di-streamed-invocation/jobs/"
+    ROOT / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
     "generate-qwen-onnx-reference.py"
 )
 WORKLOAD = ROOT / "packaging/ndnsf-di-container/jobs/spec175/workload.json"

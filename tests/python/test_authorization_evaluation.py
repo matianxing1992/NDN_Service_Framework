@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 
 import jsonschema
+import pytest
 import yaml
 
 from Experiments.analyze_authorization_evaluation import (
@@ -16,6 +17,7 @@ from Experiments.analyze_authorization_evaluation import (
     validate_manifest,
 )
 from Experiments.run_authorization_evaluation import (
+    capture_ndn_svs_subject,
     parse_auth_markers,
     parse_crypto_counter_marker,
     parse_publication_audit_markers,
@@ -23,11 +25,52 @@ from Experiments.run_authorization_evaluation import (
     parse_onboarding_marker,
     resolve_unit_tests_binary,
     validate_case_results,
+    subject_source_hashes,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FEATURE = ROOT / "specs/172-data-centric-authorization-evaluation"
+FEATURE = ROOT / "Experiments/fixtures/authorization-evaluation"
+
+
+def test_minindn_receipt_binds_actors_to_selected_svs_library(tmp_path, monkeypatch):
+    source = tmp_path / "sdk"
+    source.mkdir()
+    library = tmp_path / "libndn-svs.so.0.1.0"
+    library.write_bytes(b"selected SDK artifact")
+    other_library = tmp_path / "other" / library.name
+    other_library.parent.mkdir()
+    other_library.write_bytes(b"different SDK artifact")
+    build = tmp_path / "selected-build"
+    linked_actors = []
+    app_user_library = library
+
+    def run(argv, **kwargs):
+        if argv[0] == "ldd":
+            actor = Path(argv[1])
+            assert actor.parent == build / "examples"
+            assert kwargs["env"]["LD_LIBRARY_PATH"] == str(build)
+            selected = app_user_library if actor.name == "App_User" else library
+            linked_actors.append(actor.name)
+            return subprocess.CompletedProcess(argv, 0,
+                                               f"\t{library.name} => {selected} (0x0)\n")
+        assert argv[0] == "git" and kwargs["cwd"] == source
+        outputs = {"--show-toplevel": str(source), "--show-current": "main",
+                   "HEAD": "a" * 40, "HEAD^{tree}": "b" * 40}
+        stdout = b"source patch" if argv[1] == "diff" else outputs[argv[-1]] + "\n"
+        return subprocess.CompletedProcess(argv, 0, stdout)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    receipt = capture_ndn_svs_subject(tmp_path / "result", build, source)
+    assert linked_actors == ["App_ServiceController", "App_Provider", "App_User"]
+    assert receipt["runtime_library"] == str(library)
+    assert receipt["runtime_library_sha256"] == hashlib.sha256(library.read_bytes()).hexdigest()
+
+    app_user_library = other_library
+    rejected = tmp_path / "mixed"
+    with pytest.raises(RuntimeError, match="different NDN-SVS libraries"):
+        capture_ndn_svs_subject(rejected, build, source)
+    assert not rejected.exists()
 
 
 def test_auth_marker_parser_and_case_validation_are_fail_closed():
@@ -293,7 +336,27 @@ def test_publication_audit_marker_parser_retains_validated_packet_identity_field
 def test_active_unit_test_binary_resolution_prefers_explicit_path(tmp_path):
     explicit = tmp_path / "unit-tests"
     explicit.write_text("fixture", encoding="utf-8")
+    explicit.chmod(0o700)
     assert resolve_unit_tests_binary(ROOT, explicit) == explicit
+
+
+def test_missing_selected_binary_does_not_borrow_a_stale_build(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.delenv("NDNSF_UNIT_TESTS_BIN", raising=False)
+    stale = tmp_path / "build-new-svs-20260808/unit-tests"
+    stale.parent.mkdir()
+    stale.write_text("unrelated historical executable")
+    stale.chmod(0o700)
+    with pytest.raises(FileNotFoundError, match="build/unit-tests"):
+        resolve_unit_tests_binary(tmp_path)
+    current = tmp_path / "build/unit-tests"
+    current.parent.mkdir()
+    current.write_text("current executable")
+    current.chmod(0o700)
+    assert resolve_unit_tests_binary(tmp_path) == current
+    with pytest.raises(FileNotFoundError, match="missing-unit-tests"):
+        resolve_unit_tests_binary(tmp_path, Path("missing-unit-tests"))
 
 
 def _authorization_cases():
@@ -386,14 +449,24 @@ def test_registered_boost_test_selectors_are_executable():
         )
 
 
-def test_baseline_source_hash_inventory_matches_current_subject():
+def test_subject_inventory_is_portable_and_captures_current_source_bytes(tmp_path):
     contract = json.loads(
         (FEATURE / "contracts/runtime-gates.json").read_text(encoding="utf-8")
     )
 
-    for relative_path, expected in contract["baseline_source_hashes"].items():
-        observed = hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
-        assert observed == expected, f"baseline source drift: {relative_path}"
+    assert contract["subject_source_paths"]
+    for relative in contract["subject_source_paths"]:
+        assert not Path(relative).is_absolute()
+        assert not set(Path(relative).parts) & {"specs", "results", ".."}
+        assert (ROOT / relative).is_file(), relative
+    source = tmp_path / "subject.cpp"
+    source.write_bytes(b"candidate A")
+    selected = {"subject_source_paths": [source.name],
+                "historical_baseline_source_hashes": {source.name: "0" * 64}}
+    first = subject_source_hashes(selected, tmp_path)
+    assert first[source.name] == hashlib.sha256(b"candidate A").hexdigest()
+    source.write_bytes(b"candidate B")
+    assert subject_source_hashes(selected, tmp_path)[source.name] != first[source.name]
 
 
 def test_manifest_schema_accepts_a_minimal_terminal_run():

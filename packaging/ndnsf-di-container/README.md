@@ -142,10 +142,10 @@ that copy. There is no `ndnsf-di-deploy install` or Tiger-side materialization
 step in this route.
 
 For iTiger Qwen work, start with the
-[end-to-end operations runbook](docs/itiger-qwen-models.md), then apply the
-[evidence and acceptance rules](docs/itiger-qwen-evidence.md). The current
-runbook starts from the locally built SIF, then performs local closure checks,
-project-storage promotion, and bounded Slurm execution. Older Docker security
+[end-to-end operations runbook](../../Experiments/TigerCluster/docs/portable-deployment.md),
+[SIF guide](../../Experiments/TigerCluster/docs/sif-build.md) and
+[evidence scope](../../Experiments/TigerCluster/docs/lessons-and-evidence.md).
+These cover candidate reuse, native closure checks, persistent models and bounded Slurm execution. Older Docker security
 smokes and Tiger-side OCI materialization are explicitly historical diagnostics
 and are not interchangeable with the current SIF release.
 

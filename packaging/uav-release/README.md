@@ -58,9 +58,18 @@ The release wrappers can run the same preflight automatically when
 `NDNSF_UAV_PREFLIGHT=1` is set. Extra preflight-only arguments, such as
 `--expected-cert`, can be passed through `NDNSF_UAV_PREFLIGHT_ARGS`.
 
-Drone configs default to `video-source auto`: the drone selects the first local
-V4L2 capture device and falls back to `videos/drone.mp4` when no usable camera is
-present. Set `video-source /dev/videoX` or a file path to force a source.
+Drone configs default to `video-source auto`. The drone selects the first local
+V4L2 capture device and uses the packaged video configured in `video-fallback`
+when no usable camera is present. The fallback path is relative to the drone
+config file. Set `video-source /dev/videoX` or a file path to force a source.
+
+For ground-station object detection, prepare the pinned YOLO26n weights with
+`install_ndnsf_stack.sh --with-yolo-minindn` on the selected host. Point
+`ndnsf-uav-gs --yolo-model` at the resulting
+`<prefix>/share/ndnsf/models/yolo26n.pt` or place that file at
+`share/ndnsf/models/yolo26n.pt` under the release root. The package includes the
+detection scripts. Their host Python environment requires Ultralytics with a
+compatible CPU PyTorch installation.
 The default V4L2 capture format is adaptive:
 `camera-v4l2-input-format auto`, `camera-v4l2-input-size auto`, and
 `camera-v4l2-input-fps 0`. In this mode the drone queries the camera and chooses
@@ -179,8 +188,8 @@ export NDNSF_UAV_CONFIG_DIR=$PWD/config
 
 The wrappers pass `--runtime-config`, `--app-config`, and `--trust-schema`
 from `NDNSF_UAV_CONFIG_DIR` so they do not depend on the shell's current working
-directory. They also switch to the deployment root, so relative config values
-such as `videos/drone.mp4` resolve against the copied release directory.
+directory. They also switch to the deployment root for other relative runtime
+paths specified in the release configuration.
 
 To make a wrapper run preflight before starting the app:
 

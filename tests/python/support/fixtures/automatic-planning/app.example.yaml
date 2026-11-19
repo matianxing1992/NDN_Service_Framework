@@ -1,0 +1,32 @@
+# Operator-owned configuration. Secrets remain in the NDNSF keychain.
+schema: ndnsf-di-application/v2
+identity:
+  requester: /ndnsf/di/user
+  controller: /ndnsf/controller
+  trust_schema: config/ndnsf-di-trust.conf
+state:
+  root: state
+repository:
+  prefix: /ndnsf/di/models
+planning:
+  strategy:
+    name: pre-split-first
+    version: "2"
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  adapters:
+    allow:
+      - name: generic-onnx
+        digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+      - name: qwen-text-generation
+        digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+  default_adapter: generic-onnx
+  gpu_safety_margin: 0.15
+cache:
+  immutable_model_shards:
+    retain_verified: true
+    selected_and_inflight_evictable: false
+  derived_state:
+    default: destroy
+    exact_prefix_local_reuse: true
+    cross_tenant_reuse: false
+    migration: disabled

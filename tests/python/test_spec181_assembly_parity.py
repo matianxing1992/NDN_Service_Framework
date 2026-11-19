@@ -61,8 +61,8 @@ VECTORS_PREDATE_NATIVE_CONTRACT = True
 def test_native_production_entry_matches_fixed_vector_and_python(case, tmp_path):
     binary = os.environ.get("SPEC181_ASSEMBLY_PARITY_BINARY", "")
     assert binary and Path(binary).is_file(), "build and set SPEC181_ASSEMBLY_PARITY_BINARY; no mock fallback"
-    # The binary is a declared external native fixture: `./waf build --targets=spec181-assembly-parity`
-    # produces build/spec181-assembly-parity, and SPEC181_ASSEMBLY_PARITY_BINARY selects it.
+    # The binary is a declared external native fixture: `./waf build --targets=assembly-parity`
+    # produces build/assembly-parity, and SPEC181_ASSEMBLY_PARITY_BINARY selects it.
     request = tmp_path / "case.json"
     request.write_text(json.dumps(case))
     cache = tmp_path / "cache"

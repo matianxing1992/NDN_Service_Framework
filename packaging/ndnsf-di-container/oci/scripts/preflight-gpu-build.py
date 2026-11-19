@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -82,68 +83,42 @@ def require(condition: bool, code: str) -> None:
         raise PreflightError(code)
 
 
-def _call_block(text: str, start: int) -> str:
-    """Return one balanced ``bld.program(...)`` call.
-
-    Waf files contain nested calls (for example ``ant_glob``), so a regular
-    expression that stops at the first ``)`` is not a reliable target census.
-    This small scanner is deliberately conservative and understands Python
-    string literals and comments well enough for the checked-in wscript.
-    """
-    open_paren = text.find("(", start)
-    if open_paren < 0:
-        raise PreflightError("PREFLIGHT_WAF_PROGRAM_CALL_MALFORMED")
-    depth = 0
-    quote: str | None = None
-    escaped = False
-    comment = False
-    for index in range(open_paren, len(text)):
-        char = text[index]
-        if comment:
-            if char == "\n":
-                comment = False
-            continue
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = None
-            continue
-        if char == "#":
-            comment = True
-        elif char in "'\"":
-            quote = char
-        elif char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if depth == 0:
-                return text[start:index + 1]
-    raise PreflightError("PREFLIGHT_WAF_PROGRAM_CALL_UNBALANCED")
-
-
 def waf_program_census(workspace: Path) -> list[dict[str, object]]:
-    """Enumerate every bld.program target and its explicit use list."""
-    wscript_path = workspace / "examples/wscript"
-    require(wscript_path.is_file(), "PREFLIGHT_WAF_SCRIPT_MISSING")
-    text = wscript_path.read_text(encoding="utf-8")
-    census: list[dict[str, object]] = []
-    cursor = 0
-    marker = "bld.program"
-    while True:
-        start = text.find(marker, cursor)
-        if start < 0:
-            break
-        block = _call_block(text, start)
-        name_match = re.search(r"\bname\s*=\s*['\"]([^'\"]+)['\"]", block)
-        use_match = re.search(r"\buse\s*=\s*['\"]([^'\"]*)['\"]", block)
-        require(name_match is not None, "PREFLIGHT_WAF_TARGET_NAME_MISSING")
-        name = name_match.group(1)
-        use = sorted(set((use_match.group(1) if use_match else "").split()))
-        census.append({"name": name, "use": use})
-        cursor = start + len(block)
+    """Read literal registrations and the shared literal table of example targets."""
+    wscript = workspace / "examples/wscript"
+    require(wscript.is_file(), "PREFLIGHT_WAF_SCRIPT_MISSING")
+    try:
+        tree = ast.parse(wscript.read_text(encoding="utf-8"), filename=str(wscript))
+    except SyntaxError as error:
+        raise PreflightError("PREFLIGHT_WAF_SCRIPT_INVALID") from error
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    census = []
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "program" and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "bld"):
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        name = keywords.get("name")
+        use = keywords.get("use", ast.Constant(value=""))
+        require(isinstance(use, ast.Constant) and isinstance(use.value, str),
+                "PREFLIGHT_WAF_TARGET_USE_UNRESOLVED")
+        if isinstance(name, ast.Constant) and isinstance(name.value, str):
+            names = [name.value]
+        else:
+            loop = parents.get(parents.get(call))
+            require(isinstance(name, ast.Name) and isinstance(loop, ast.For)
+                    and isinstance(loop.target, ast.Tuple) and isinstance(loop.iter, ast.List),
+                    "PREFLIGHT_WAF_TARGET_NAME_MISSING")
+            columns = [item.id if isinstance(item, ast.Name) else None for item in loop.target.elts]
+            require(name.id in columns, "PREFLIGHT_WAF_TARGET_NAME_MISSING")
+            try:
+                names = [row[columns.index(name.id)] for row in ast.literal_eval(loop.iter)]
+            except (ValueError, TypeError, IndexError) as error:
+                raise PreflightError("PREFLIGHT_WAF_TARGET_TABLE_UNRESOLVED") from error
+            require(names and all(isinstance(item, str) for item in names),
+                    "PREFLIGHT_WAF_TARGET_TABLE_UNRESOLVED")
+        census.extend({"name": item, "use": sorted(set(use.value.split()))} for item in names)
     require(census, "PREFLIGHT_WAF_TARGET_CENSUS_EMPTY")
     return census
 

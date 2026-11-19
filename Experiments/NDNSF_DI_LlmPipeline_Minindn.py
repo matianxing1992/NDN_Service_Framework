@@ -994,20 +994,10 @@ def python_path_entries() -> list[str]:
     return deduped
 
 
-def local_python_subprocess_env() -> dict[str, str]:
-    """Keep repository-local Python wrappers visible to helper subprocesses.
-
-    The runner itself prepends the wrappers to ``sys.path``.  Helper scripts
-    (notably the Spec 162 policy/manifest builders) are separate Python
-    processes and therefore cannot inherit that in-process path mutation.
-    Passing the same closure explicitly makes the MiniNDN gate independent of
-    whether the host has ``py_repoclient`` installed globally.
-    """
-    return {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join(python_path_entries()),
-        "PYTHONNOUSERSITE": "1",
-    }
+def installed_helper_environment() -> dict[str, str]:
+    """Use the selected interpreter's installed wheel and native closure."""
+    return {key: value for key, value in os.environ.items()
+            if key not in {"PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH", "LD_PRELOAD"}}
 
 
 def sif_runtime_enabled() -> bool:
@@ -2554,13 +2544,13 @@ def prepare_selection_dataflow_v2(args) -> dict[str, object]:
         or USER_IDENTITY + "/NDNSF-DISTRIBUTED-REPO/OBJECT/QWEN"
     )
     subprocess.run([
-        sys.executable,
-        str(REPO / "specs/162-itiger-qwen36-generation/jobs/"
-            "build-automatic-planning-manifest.py"),
+        sys.executable, "-I",
+        str(REPO / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
+            "build-qwen-planning-manifest.py"),
         "--stage-manifest", str(stage_manifest),
         "--repository-prefix", repo_prefix,
         "--output", str(automatic),
-    ], cwd=str(REPO), env=local_python_subprocess_env(), check=True)
+    ], cwd=OUT, env=installed_helper_environment(), check=True)
     manifest = json.loads(automatic.read_text(encoding="utf-8"))
     if args.runtime == "qwen-transformers":
         backend = (
@@ -3390,16 +3380,16 @@ def main() -> int:
             and args.runtime != "tiny-onnx"):
         repo_policy = OUT / "llm_pipeline_policy.repo.yaml"
         subprocess.run([
-            sys.executable,
-            str(REPO / "specs/162-itiger-qwen36-generation/jobs/"
-                "build-generation-policy.py"),
+            sys.executable, "-I",
+            str(REPO / "Experiments/TigerCluster/adapters/slurm-apptainer/scripts/"
+                "build-qwen-generation-policy.py"),
             "--input", str(CONFIG),
             "--output", str(repo_policy),
             "--provenance", str(OUT / "policy-provenance.json"),
             "--user", USER_IDENTITY,
             "--provider-prefix", PROVIDER_PREFIX,
             "--repo-provider-prefix", REPO_PROVIDER_PREFIX,
-        ], cwd=str(REPO), env=local_python_subprocess_env(), check=True)
+        ], cwd=OUT, env=installed_helper_environment(), check=True)
         os.replace(repo_policy, CONFIG)
     if args.spec175_case:
         # Keep the signed controller capability map identical to the role map
