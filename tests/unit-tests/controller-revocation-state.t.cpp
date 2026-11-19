@@ -1309,6 +1309,73 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
 }
 
+BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
+{
+  // A request that names a different Controller must not be answered by this one, even when the
+  // signature is valid and the name was built for the Controller it names.
+  DefaultGenerationFiles files;
+  const auto requesterDir = files.root / "requester";
+  std::filesystem::create_directory(requesterDir);
+  ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
+                          "tpm-file:" + requesterDir.string(), false);
+  const ndn::Name identity("/user/history");
+  requester.createIdentity(identity);
+  const auto userCert = requester.getPib().getIdentity(identity).getDefaultKey()
+    .getDefaultCertificate();
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+  HistoricalKeyBroker::Material material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+
+  const auto signerLookup = [userCert] (const ndn::Name& name, ndn::security::Certificate& out) {
+    if (name != userCert.getName())
+      return false;
+    out = userCert;
+    return true;
+  };
+  const auto materialLookup = [&material] (uint64_t generation, uint64_t epoch,
+                                           HistoricalKeyBroker::Material& out) {
+    if (generation != 1002 || epoch != 3)
+      return false;
+    out = material;
+    return true;
+  };
+  const auto replySigner = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "attr-a";
+  request.recipientCertificate = userCert.getName();
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+  ndn::Interest interest;
+  signHistoricalKeyRequest(interest, request, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+
+  // Addressed to /controller/a, answered by /controller/a.
+  BOOST_CHECK(broker.answer(interest, ndn::Name("/controller/a"), 1'000'000));
+  // The same request presented to /controller/b must not be answered.
+  auto other = request;
+  other.controllerPrefix = ndn::Name("/controller/b");
+  ndn::Interest otherInterest;
+  signHistoricalKeyRequest(otherInterest, other, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+  BOOST_CHECK(!broker.answer(otherInterest, ndn::Name("/controller/a"), 1'000'000));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalKeyRecipientMustBeAnAbsoluteCertificateName)
 {
   HistoricalKeyRequest request;
