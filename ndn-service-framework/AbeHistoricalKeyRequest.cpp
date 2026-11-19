@@ -319,8 +319,12 @@ HistoricalKeyBroker::answerValidated(const ndn::Interest& interest,
     return std::nullopt;
   constexpr uint64_t MAX_SKEW_MS = 60000;
   constexpr uint64_t MAX_AGE_MS = 300000;
+  // A request that claims a very long validity would keep its digest in the replay set for that long,
+  // so the lifetime itself is bounded instead of trusted.
+  constexpr uint64_t MAX_TTL_MS = 600000;
   if (request.expiresAtMs <= nowMs || request.mintedAtMs > nowMs + MAX_SKEW_MS ||
-      request.mintedAtMs + MAX_AGE_MS < nowMs)
+      request.mintedAtMs + MAX_AGE_MS < nowMs ||
+      request.expiresAtMs - request.mintedAtMs > MAX_TTL_MS)
     return std::nullopt;
   // Mint only for the certificate the request named.
   if (signer.getName() != request.recipientCertificate)
@@ -378,8 +382,12 @@ HistoricalKeyBroker::answer(const ndn::Interest& interest, const ndn::Name& cont
 
   constexpr uint64_t MAX_SKEW_MS = 60000;
   constexpr uint64_t MAX_AGE_MS = 300000;
+  // A request that claims a very long validity would keep its digest in the replay set for that long,
+  // so the lifetime itself is bounded instead of trusted.
+  constexpr uint64_t MAX_TTL_MS = 600000;
   if (request.expiresAtMs <= nowMs || request.mintedAtMs > nowMs + MAX_SKEW_MS ||
-      request.mintedAtMs + MAX_AGE_MS < nowMs)
+      request.mintedAtMs + MAX_AGE_MS < nowMs ||
+      request.expiresAtMs - request.mintedAtMs > MAX_TTL_MS)
     return std::nullopt;
 
   ndn::security::Certificate signer;
