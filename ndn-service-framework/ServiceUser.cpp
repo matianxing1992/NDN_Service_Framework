@@ -10046,6 +10046,8 @@ namespace ndn_service_framework
             const auto status = m_revocationStates.find(serviceName.toUri());
             const auto prefix = m_controllerPrefix;
             if (status == m_revocationStates.end() && !prefix.empty()) {
+                NDN_LOG_INFO("NDNSF_CONTROLLER_STATUS_MISSING service=" << serviceName.toUri()
+                             << " action=request");
                 // Nothing to judge against yet: ask for this service's status so the next call - and
                 // the periodic revalidation armed by its arrival - can see a revocation.
                 m_scheduler.schedule(ndn::time::milliseconds(0),
