@@ -64,9 +64,13 @@ buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryE
   const auto stored = entry.publicParametersWireDigest;
   if (stored.size() != 71 || stored.compare(0, 7, "sha256:") != 0 || !isDigestHex(stored.substr(7)))
     return false;
-  const auto hex = stored.substr(7);
+  std::string hex = stored.substr(7);
+  std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char value) {
+    return static_cast<char>(std::tolower(value));
+  });
   // Bind what we publish to what we archived: a mismatch means the record is damaged, and a proof
-  // that does not match its own digest is worse than no proof.
+  // that does not match its own digest is worse than no proof.  The stored digest may be upper case,
+  // because it was produced by a different helper than the one used here.
   if (digestOf(entry.publicParameters) != hex)
     return false;
 

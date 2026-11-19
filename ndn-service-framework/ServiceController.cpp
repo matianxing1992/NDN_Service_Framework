@@ -691,6 +691,8 @@ ServiceController::registerArchivedPublicParameters()
   // retired key publishes a bound historical proof under a name of its own instead.
   const auto answers = collectHistoricalPublicParameterAnswers(archived, m_aaCert.getIdentity(),
                                                                sign);
+  NDN_LOG_INFO("Historical public parameters: archived=" << archived.size()
+               << " published=" << answers.size());
   for (const auto& answer : answers) {
     // A rotation after construction re-runs this; the same generation must not be registered twice.
     const auto name = answer->getName().toUri(ndn::name::UriFormat::CANONICAL);
