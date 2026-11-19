@@ -890,6 +890,9 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
       // authority, and it was never signed as a statement about this identity.
       const auto identityUri = identity.toUri(ndn::name::UriFormat::CANONICAL);
       const auto record = m_generationStore->loadGrant(identityUri, generation, epoch);
+      // WARN so the answer is visible in a deployment run that does not enable diagnostic logging.
+      NDN_LOG_WARN("NDNSF_GRANT_LOOKUP identity=" << identityUri << " generation=" << generation
+                   << " epoch=" << epoch << " found=" << (record ? 1 : 0));
       if (!record)
         return false;
       try {
@@ -902,7 +905,10 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
         const std::string grantContent(
           reinterpret_cast<const char*>(grantData.getContent().value()),
           grantData.getContent().value_size());
-        if (!historicalGrantRecordCoversPolicy(grantContent, policy))
+        const bool covers = historicalGrantRecordCoversPolicy(grantContent, policy);
+        NDN_LOG_WARN("NDNSF_GRANT_DECISION identity=" << identityUri << " policy=" << policy
+                     << " signature=1 covers=" << (covers ? 1 : 0));
+        if (!covers)
           return false;
       }
       catch (const std::exception&) {
