@@ -1309,6 +1309,34 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalKeyRecipientMustBeAnAbsoluteCertificateName)
+{
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "attr-a";
+  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+  const auto body = encodeHistoricalKeyRequest(request);
+
+  const auto replaceRecipient = [] (const std::string& source, const std::string& value) {
+    std::string text = source;
+    const auto marker = text.find("\nrecipient ");
+    const auto end = text.find('\n', marker + 1);
+    text.replace(marker + 1, end - marker - 1, "recipient " + value);
+    return text;
+  };
+  HistoricalKeyRequest parsed;
+  // A relative name, a name with a control character, and a name that would not round-trip.
+  BOOST_CHECK(!decodeHistoricalKeyRequest(replaceRecipient(body, "user/KEY/1"), parsed));
+  BOOST_CHECK(!decodeHistoricalKeyRequest(replaceRecipient(body, "/user/KEY/1\t"), parsed));
+  BOOST_CHECK(!decodeHistoricalKeyRequest(replaceRecipient(body, "/user/%"), parsed));
+  BOOST_CHECK(decodeHistoricalKeyRequest(body, parsed));
+  BOOST_CHECK(parsed == request);
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalKeyPolicyCannotSmuggleEnvelopeFields)
 {
   HistoricalKeyRequest request;

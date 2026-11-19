@@ -117,7 +117,16 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
         !parseU64(field(lines[6], "minted "), parsed.mintedAtMs) ||
         !parseU64(field(lines[7], "expires "), parsed.expiresAtMs))
       return false;
-    parsed.recipientCertificate = ndn::Name(field(lines[4], "recipient "));
+    const auto recipientText = field(lines[4], "recipient ");
+    // A certificate name is absolute and round-trips to the text it was written as; anything else
+    // would let the body and the name disagree about who is asking.
+    if (recipientText.empty() || recipientText.front() != '/' ||
+        std::any_of(recipientText.begin(), recipientText.end(),
+                    [] (unsigned char ch) { return ch < 0x20 || ch == 0x7f; }))
+      return false;
+    parsed.recipientCertificate = ndn::Name(recipientText);
+    if (parsed.recipientCertificate.toUri(ndn::name::UriFormat::CANONICAL) != recipientText)
+      return false;
     parsed.policy = field(lines[5], "policy ");
     if (parsed.controllerPrefix.empty() || parsed.generation == 0 ||
         parsed.recipientCertificate.empty() || !isSafePolicy(parsed.policy))
