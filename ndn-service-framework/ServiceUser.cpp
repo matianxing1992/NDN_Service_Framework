@@ -5814,6 +5814,9 @@ namespace ndn_service_framework
         for (const auto& record : records) {
             currentServices.insert(ndn::Name(record.serviceName).toUri(ndn::name::UriFormat::CANONICAL));
         }
+        NDN_LOG_WARN("NDNSF_USER_PERMISSIONS_INSTALLED services=" << currentServices.size()
+                     << " previous=" << previouslyKnownServices.size()
+                     << " epoch=" << response.getPolicyEpoch());
         // A service that disappeared from the record has had its authority withdrawn. Calls already in
         // flight for it are waiting for an answer that a Provider may never be allowed to give, so they are
         // failed here instead of being left to their deadline.
