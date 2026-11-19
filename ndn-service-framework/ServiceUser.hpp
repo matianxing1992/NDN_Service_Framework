@@ -2243,6 +2243,8 @@ namespace ndn_service_framework{
             uint64_t m_nextPolicyStatusFetchTicket = 0;
             std::map<std::string, ControllerVersion>
                 m_policyStatusRefreshScheduled;
+            /** Counts policy-status ticks so the permission refresh runs on a bounded fraction of them. */
+            uint64_t m_permissionRefreshTicks = 0;
             // A grant-only PermissionResponse can add a service while the
             // ABE generation remains unchanged. Defer one identity-scoped
             // DKEY replacement for the affected service until its signed

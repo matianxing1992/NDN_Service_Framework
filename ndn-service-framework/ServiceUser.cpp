@@ -6607,6 +6607,18 @@ namespace ndn_service_framework
                         }
                     }
                 }
+                // Permissions are installed once at bootstrap, so a Controller-side withdrawal never reaches a
+                // running User. The same periodic tick that refreshes the status also refreshes them, guarded so
+                // an in-flight fetch is never replaced.
+                if (!prefix.empty() && policyRevalidationPeriodMs() > 0 &&
+                    ++m_permissionRefreshTicks % 5 == 0) {
+                    NDN_LOG_INFO("NDNSF_PERMISSION_REVALIDATION role=user service="
+                                 << serviceName.toUri() << " tick=" << m_permissionRefreshTicks);
+                    // The previous handle may still be held for retries; dropping it cancels its pending
+                    // interest, so a new fetch never replaces one whose callbacks are still armed.
+                    m_permissionsFetch.reset();
+                    fetchPermissionsFromController(prefix);
+                }
                 if (shouldFetch && !prefix.empty()) {
                     NDN_LOG_INFO("NDNSF_POLICY_STATUS_REVALIDATION role=user"
                                  << " serviceName=" << serviceName.toUri()
