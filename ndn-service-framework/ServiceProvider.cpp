@@ -21594,6 +21594,10 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             }
             if (prefix.empty())
                 return;
+            // This deployment filters framework loggers (`NDN_LOG=*=NONE:…`), so the refresh reports on stdout
+            // where the runtime evidence is collected, otherwise its absence would be indistinguishable from
+            // it not running.
+            std::cout << "NDNSF_PROVIDER_PERMISSION_REVALIDATION periodMs=" << period << std::endl;
             NDN_LOG_INFO("NDNSF_PROVIDER_PERMISSION_REVALIDATION periodMs=" << period);
             fetchPermissionsFromController(prefix);
         });
