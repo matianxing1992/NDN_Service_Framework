@@ -1664,11 +1664,8 @@ NativePlannedRequest planNativeRequestImpl(
     }
     else {
       if (runtime.catalog) {
-        const bool sourceDefined = candidate.executionPlan.modelFamily == "qwen" ||
-                                   candidate.executionPlan.modelFamily == "llama";
-        *candidateCopy = runtime.catalog->bindStateContracts(model, candidate,
-          runtime.stateMapping, control,
-          sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
+        *candidateCopy = runtime.catalog->bindCatalogStateContracts(
+          model, candidate, runtime.stateMapping, control);
       }
       roles = preparation.prepareRoles(model, candidate, control);
     }

@@ -1894,6 +1894,11 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsPinnedSourceAndRejectsConfigurationDrift
   BOOST_REQUIRE(loaded.preparation);
   BOOST_REQUIRE(loaded.splitter);
   BOOST_CHECK(loaded.preparation->adapters()->frozen());
+  BOOST_CHECK_EQUAL(loaded.preparation->maxPayloadBytesFor(descriptor), 32U);
+  auto foreignDescriptor = descriptor;
+  foreignDescriptor.adapterVersion += "-unregistered";
+  BOOST_CHECK_THROW(loaded.preparation->maxPayloadBytesFor(foreignDescriptor),
+                    std::invalid_argument);
   const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1);
   BOOST_CHECK_EQUAL(candidates.front().canonicalJson(), oracle.at("candidate_json").get<std::string>());

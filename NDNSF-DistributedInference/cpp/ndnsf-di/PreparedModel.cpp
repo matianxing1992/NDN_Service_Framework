@@ -6,7 +6,6 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/Runtime.hpp"
-#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 
 #include <algorithm>
@@ -575,11 +574,8 @@ NativeApplicationInput PreparedModel::encodeInput(const Input& input) const
   case Input::Kind::Repository:
     try {
       const auto reference = nativeParseJson(input.m_reference.m_canonical);
-      const auto adapter = m_package->catalog.preparation->adapters()->find(
-        m_package->catalog.model.descriptor.adapterId);
-      const auto catalogAdapter = std::dynamic_pointer_cast<const NativeCatalogModelAdapter>(adapter);
-      if (catalogAdapter && reference.at("plaintextSize").get<std::uint64_t>() >
-          catalogAdapter->maxPayloadBytes())
+      if (reference.at("plaintextSize").get<std::uint64_t>() >
+          m_package->catalog.preparation->maxPayloadBytesFor(m_package->catalog.model.descriptor))
         throw DiError("INVALID_DATA_REFERENCE", "local", "input",
                       "repository plaintext size exceeds the verified adapter bound");
     }
@@ -651,16 +647,7 @@ NativeRequestOptions PreparedModel::projectOptions(const RequestOptions& options
   }
   if (native.outputMode != "FULL" && native.outputMode != "TOKEN_STREAMING")
     throw DiError("INVALID_ARGUMENT", "local", "request", "unsupported request output mode");
-  bool verifiedStreamingDefault = false;
-  try {
-    const auto registration = nativeParseJson(m_package->registration->configurationJson);
-    verifiedStreamingDefault = registration.at("request").value(
-      "generation_mode", std::string("TOKEN_DIAGNOSTIC")) == "TOKEN_STREAMING";
-  }
-  catch (const std::exception& error) {
-    throw DiError("INVALID_RUNTIME_CONFIGURATION", "local", "request",
-                  std::string("verified request contract is unavailable: ") + error.what());
-  }
+  const bool verifiedStreamingDefault = m_package->capabilities.streaming;
   if (options.stream) {
     if (!options.stream->enabled) {
       if (options.generation || native.outputMode == "TOKEN_STREAMING" || verifiedStreamingDefault)

@@ -35,7 +35,10 @@ class NativeCanonicalPreparationCatalog
 public:
   NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
     const NativeAssemblyControl& control);
+  NativeCanonicalPreparationCatalog(std::vector<NativeCanonicalCatalogEntry> entries,
+    const NativeAssemblyControl& control, NativeStateContractBinding stateBinding);
   std::shared_ptr<const NativeAdapterRegistry> adapters() const;
+  std::size_t maxPayloadBytesFor(const NativeModelDescriptor& model) const;
   /** Automatic contract for an automatic model, or null for other adapters. */
   std::shared_ptr<const AutomaticOnnxContract> automaticContractFor(
     const NativeModelDescriptor& model) const;
@@ -60,6 +63,9 @@ public:
     const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
     const NativeRequestControl& control,
     NativeStateContractBinding binding = NativeStateContractBinding::DECLARED) const;
+  NativeSplitCandidate bindCatalogStateContracts(const NativeInspectedModel& model,
+    const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
+    const NativeRequestControl& control) const;
   std::vector<NativeSelectionRoleV3> prepareRoles(const NativeInspectedModel& model,
     const NativeSplitCandidate& candidate, const NativeRequestControl& control) const;
   std::shared_ptr<NativeRequestPreparation> makePreparation(

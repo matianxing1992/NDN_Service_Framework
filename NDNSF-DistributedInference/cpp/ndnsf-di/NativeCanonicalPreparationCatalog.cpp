@@ -21,6 +21,8 @@ struct NativeCanonicalPreparationCatalog::State
     NativeCanonicalRolePreparer roles;
     NativeCanonicalPublicationOptions publication;
     std::shared_ptr<const AutomaticOnnxContract> automaticContract;
+    std::size_t maxPayloadBytes;
+    NativeStateContractBinding stateBinding;
   };
   mutable std::map<std::string, Record> records;
   std::shared_ptr<const NativeAdapterRegistry> adapters;
@@ -57,6 +59,14 @@ struct NativeCanonicalPreparationCatalog::State
 
 NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
   std::vector<NativeCanonicalCatalogEntry> entries, const NativeAssemblyControl& control)
+  : NativeCanonicalPreparationCatalog(std::move(entries), control,
+                                      NativeStateContractBinding::DECLARED)
+{
+}
+
+NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
+  std::vector<NativeCanonicalCatalogEntry> entries, const NativeAssemblyControl& control,
+  NativeStateContractBinding stateBinding)
 {
   if (entries.empty()) throw std::invalid_argument("native preparation catalog is empty");
   auto state = std::make_shared<State>();
@@ -177,7 +187,8 @@ NativeCanonicalPreparationCatalog::NativeCanonicalPreparationCatalog(
     immutableModel->validate();
     State::Record record{std::move(immutableModel),
       std::make_shared<const NativeCanonicalSource>(std::move(entry.source)),
-      std::move(roles), std::move(entry.publication), std::move(entry.automaticContract)};
+      std::move(roles), std::move(entry.publication), std::move(entry.automaticContract),
+      entry.maxPayloadBytes, stateBinding};
     if (!state->records.emplace(key, std::move(record)).second)
       throw std::invalid_argument("native preparation catalog repeats a model identity");
   }
@@ -278,6 +289,22 @@ NativeCanonicalPublicationOptions
 NativeCanonicalPreparationCatalog::publicationFor(const NativeModelDescriptor& model) const
 {
   return m_state->find(model).publication;
+}
+
+std::size_t
+NativeCanonicalPreparationCatalog::maxPayloadBytesFor(const NativeModelDescriptor& model) const
+{
+  return m_state->find(model).maxPayloadBytes;
+}
+
+NativeSplitCandidate
+NativeCanonicalPreparationCatalog::bindCatalogStateContracts(const NativeInspectedModel& model,
+  const NativeSplitCandidate& candidate, const NativeStateTensorMapping& mapping,
+  const NativeRequestControl& control) const
+{
+  control.requireActive();
+  const auto& record = m_state->find(model);
+  return record.roles.bindStateContracts(model, candidate, mapping, control, record.stateBinding);
 }
 
 NativeSourceRegionBoundary
