@@ -390,7 +390,7 @@
             "include": [
               "*"
             ],
-            "excludeSuites": ["Spec185Process"]
+            "excludeSuites": ["DiProcess"]
           }
         },
         {
@@ -423,7 +423,7 @@
         "target": "integration-tests",
         "requiresComponents": ["di"],
         "facilities": ["native-process-python", "ndn-tools", "process-isolation"],
-        "selector": {"include": ["Spec185Process/*"]}
+        "selector": {"include": ["DiProcess/*"]}
       }]
     },
     "gui": {

@@ -113,7 +113,10 @@ def verify_installed_files(prefix, roster, profiles):
     process_profile = any('native-process-python' in row.get('facilities', [])
                           for profile in profiles for row in roster['profiles'][profile]['targets'])
     if process_profile:
-        required.add(prefix / 'libexec/ndnsf-tests/di-prepared-request')
+        # The process cases drive these two installed sub-targets from the prefix, so the manifest must
+        # fail before startup when either is missing rather than when the case runs.
+        for sub_target in ('di-prepared-request', 'di-provider-assembly'):
+            required.add(prefix / 'libexec/ndnsf-tests' / sub_target)
         required.update(Path(name) for name in data['files'] if python_root in Path(name).parents)
         required.update(prefix / 'bin' / name for name in (
             'App_ServiceController', 'DI_NativeArtifactAuthority', 'DI_NativeRequester',
