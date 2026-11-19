@@ -233,7 +233,8 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
   }
   HistoricalPublicParameters proof;
   if (!parseHistoricalPublicParameters(std::string(proofWire->begin(), proofWire->end()), proof)) {
-    HISTORICAL_READ_DEBUG("historical read: proof did not parse\n");
+    HISTORICAL_READ_DEBUG("historical read: proof did not parse; first line: %.80s\n",
+                          std::string(proofWire->begin(), proofWire->end()).c_str());
     return std::nullopt;
   }
   if (proof.digest.substr(7) != std::get<2>(*found) || proof.originalName != std::get<3>(*found)) {

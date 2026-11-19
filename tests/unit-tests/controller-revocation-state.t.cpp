@@ -1509,6 +1509,40 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
   BOOST_CHECK(std::equal(read->begin(), read->end(), plaintext.begin()));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalProofRoundTripsThroughItsEnvelope)
+{
+  const std::string parameters("public-parameters-bytes-v1");
+  ControllerGenerationStore::AbeHistoryEntry entry;
+  entry.generationTimestamp = 1002;
+  entry.epoch = 3;
+  entry.publicParameters = parameters;
+  entry.publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
+  ndn::util::Sha256 hash;
+  hash << parameters;
+  auto digestHex = hash.toString();
+  std::transform(digestHex.begin(), digestHex.end(), digestHex.begin(), [] (unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  entry.publicParametersWireDigest = "sha256:" + digestHex;
+
+  ndn::Data proof;
+  BOOST_REQUIRE(buildHistoricalPublicParametersData(entry, ndn::Name("/controller/a"), {}, proof));
+  const std::string content(reinterpret_cast<const char*>(proof.getContent().value()),
+                            proof.getContent().value_size());
+  HistoricalPublicParameters parsed;
+  BOOST_REQUIRE(parseHistoricalPublicParameters(content, parsed));
+  BOOST_CHECK_EQUAL(parsed.publicParameters, parameters);
+  BOOST_CHECK_EQUAL(parsed.digest, entry.publicParametersWireDigest);
+  BOOST_CHECK_EQUAL(parsed.originalName, entry.publicParametersName);
+  BOOST_CHECK_EQUAL(parsed.length, parameters.size());
+
+  // A proof whose bytes were changed after the digest was computed must not parse.
+  auto tampered = content;
+  tampered.back() = static_cast<char>(tampered.back() + 1);
+  HistoricalPublicParameters ignored;
+  BOOST_CHECK(!parseHistoricalPublicParameters(tampered, ignored));
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalProofIndexListsWhatAColdReaderCannotGuess)
 {
   std::vector<ControllerGenerationStore::AbeHistoryEntry> entries(2);
