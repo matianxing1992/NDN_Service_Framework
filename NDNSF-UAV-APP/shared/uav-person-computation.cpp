@@ -128,6 +128,52 @@ readInventory(const json::JsonValue& value)
   return inventory;
 }
 
+
+void
+validateNativeInventory(const std::map<std::string, std::string>& native)
+{
+  if (native.empty() || native.size() > 256) {
+    throw std::invalid_argument("person native inventory count is invalid");
+  }
+  size_t executableCount = 0;
+  size_t inventoryBytes = 0;
+  for (const auto& [key, value] : native) {
+    if (key.size() > 4096 || !json::isValidUtf8(key) ||
+        std::any_of(key.begin(), key.end(), [] (unsigned char ch) { return ch < 0x20; })) {
+      throw std::invalid_argument("invalid person native artifact key");
+    }
+    size_t prefixSize = 0;
+    if (key.compare(0, 11, "executable:") == 0) {
+      prefixSize = 11;
+      ++executableCount;
+    }
+    else if (key.compare(0, 8, "library:") == 0) {
+      prefixSize = 8;
+    }
+    else {
+      throw std::invalid_argument("unknown person native artifact kind");
+    }
+    const auto pathText = key.substr(prefixSize);
+    const std::filesystem::path path(pathText);
+    if (!path.is_absolute() || path.filename().empty() ||
+        path.lexically_normal().generic_string() != pathText) {
+      throw std::invalid_argument("person native artifact path must be normalized and absolute");
+    }
+    requireDigest(value);
+    inventoryBytes += key.size() * 2 + value.size() + 6;
+    if (inventoryBytes > MAX_PERSON_COMPUTATION_BYTES) {
+      throw std::invalid_argument("person native inventory exceeds manifest bound");
+    }
+  }
+  if (executableCount != 1) {
+    throw std::invalid_argument("person native inventory requires exactly one executable");
+  }
+}
+
+constexpr std::array<std::string_view, 4> NATIVE_BACKEND_KEYS = {
+  "detector.onnx", "reid.onnx", "tracker.contract", "ort.runtime"
+};
+
 } // namespace
 
 UavPersonComputationManifest
@@ -168,17 +214,103 @@ makeUavPersonComputationManifest(const UavPersonTrackingProfile& profile,
 }
 
 UavPersonComputationManifest
+makeUavPersonNativeComputationManifest(const UavPersonTrackingProfile& profile,
+                                       const std::string& trackerContract,
+                                       const std::string& ortRuntime,
+                                       const std::map<std::string, std::string>& nativeInventory)
+{
+  const auto validatedProfile = parseUavPersonTrackingProfile(profile.canonicalJson);
+  if (validatedProfile.profileDigest != profile.profileDigest) {
+    throw std::invalid_argument("person profile bytes and digest disagree");
+  }
+  for (const auto* value : {&trackerContract, &ortRuntime}) {
+    if (value->empty() || value->size() > 128 ||
+        !std::all_of(value->begin(), value->end(), [] (unsigned char ch) {
+          return ch >= 0x20 && ch <= 0x7e;
+        })) {
+      throw std::invalid_argument("invalid native backend contract string");
+    }
+  }
+  validateNativeInventory(nativeInventory);
+  UavPersonComputationManifest result;
+  result.backendKind = "native-onnx";
+  result.trackerContract = trackerContract;
+  result.ortRuntime = ortRuntime;
+  result.profileDigest = validatedProfile.profileDigest;
+  result.backendInventory = {
+    {"detector.onnx", validatedProfile.detectorDigest},
+    {"reid.onnx", validatedProfile.reidDigest},
+    {"tracker.contract", digest(trackerContract)},
+    {"ort.runtime", digest(ortRuntime)},
+  };
+  result.nativeInventory = nativeInventory;
+  const auto backend = inventoryValue(result.backendInventory);
+  const auto native = inventoryValue(result.nativeInventory);
+  result.backendClosureDigest = digest(json::renderJson(backend));
+  result.nativeClosureDigest = digest(json::renderJson(native));
+  result.computationDigest = digest("uav-person-computation-v2\n" + result.profileDigest + "\n" +
+    result.backendClosureDigest + "\n" + result.nativeClosureDigest + "\n");
+  json::JsonValue root;
+  root.kind = Kind::Object;
+  root.object = {
+    {"schema", stringValue("uav-person-computation-manifest-v2")},
+    {"backendKind", stringValue(result.backendKind)},
+    {"profileDigest", stringValue(result.profileDigest)},
+    {"detectorDigest", stringValue(validatedProfile.detectorDigest)},
+    {"reidDigest", stringValue(validatedProfile.reidDigest)},
+    {"preprocessId", stringValue(validatedProfile.reidPreprocessId)},
+    {"trackerContract", stringValue(result.trackerContract)},
+    {"ortRuntime", stringValue(result.ortRuntime)},
+    {"backendInventory", backend}, {"nativeInventory", native},
+    {"backendClosureDigest", stringValue(result.backendClosureDigest)},
+    {"nativeClosureDigest", stringValue(result.nativeClosureDigest)},
+    {"computationDigest", stringValue(result.computationDigest)}
+  };
+  result.canonicalJson = json::renderJson(root);
+  if (result.canonicalJson.size() > MAX_PERSON_COMPUTATION_BYTES) {
+    throw std::invalid_argument("person computation manifest exceeds byte bound");
+  }
+  return result;
+}
+
+UavPersonComputationManifest
 parseUavPersonComputationManifest(const std::string& wire,
                                 const UavPersonTrackingProfile& profile)
 {
   const auto root = json::parseJson(wire, MAX_PERSON_COMPUTATION_BYTES);
   const auto& object = json::requireObject(root);
-  json::requireExactKeys(object, {"schema", "profileDigest", "backendInventory", "nativeInventory",
-    "backendClosureDigest", "nativeClosureDigest", "computationDigest"});
-  if (json::member(object, "schema", Kind::String).string !=
-      "uav-person-computation-manifest-v1") {
+  const auto schema = json::member(object, "schema", Kind::String).string;
+  if (schema == "uav-person-computation-manifest-v2") {
+    json::requireExactKeys(object, {"schema", "backendKind", "profileDigest", "detectorDigest",
+      "reidDigest", "preprocessId", "trackerContract", "ortRuntime", "backendInventory",
+      "nativeInventory", "backendClosureDigest", "nativeClosureDigest", "computationDigest"});
+    if (json::member(object, "backendKind", Kind::String).string != "native-onnx") {
+      throw std::invalid_argument("unsupported native person backend kind");
+    }
+    const auto result = makeUavPersonNativeComputationManifest(profile,
+      json::member(object, "trackerContract", Kind::String).string,
+      json::member(object, "ortRuntime", Kind::String).string,
+      readInventory(json::member(object, "nativeInventory", Kind::Object)));
+    if (json::member(object, "profileDigest", Kind::String).string != result.profileDigest ||
+        json::member(object, "detectorDigest", Kind::String).string != profile.detectorDigest ||
+        json::member(object, "reidDigest", Kind::String).string != profile.reidDigest ||
+        json::member(object, "preprocessId", Kind::String).string != profile.reidPreprocessId) {
+      throw std::invalid_argument("native person computation profile/model binding");
+    }
+    for (const auto key : {"profileDigest", "detectorDigest", "reidDigest",
+                           "backendClosureDigest", "nativeClosureDigest", "computationDigest"}) {
+      requireDigest(json::member(object, key, Kind::String).string);
+    }
+    if (json::renderJson(root) != result.canonicalJson) {
+      throw std::invalid_argument("native person computation manifest digest mismatch");
+    }
+    return result;
+  }
+  if (schema != "uav-person-computation-manifest-v1") {
     throw std::invalid_argument("unsupported person computation schema");
   }
+  json::requireExactKeys(object, {"schema", "profileDigest", "backendInventory", "nativeInventory",
+    "backendClosureDigest", "nativeClosureDigest", "computationDigest"});
   const auto result = makeUavPersonComputationManifest(profile,
     readInventory(json::member(object, "backendInventory", Kind::Object)),
     readInventory(json::member(object, "nativeInventory", Kind::Object)));

@@ -112,6 +112,9 @@ parseUavPersonTrackingProfile(const std::string& wire)
     throw std::invalid_argument("unsupported person ReID preprocessing");
   }
   UavPersonTrackingProfile result;
+  result.detectorPreprocessId = schema == "uav-person-tracking-profile-v2"
+    ? requireString(object, "detectorPreprocessId")
+    : "yolo-letterbox640-raw-box-v1";
   result.detectorDigest = requireDigest(object, "detectorDigest");
   result.reidDigest = requireDigest(object, "reidDigest");
   result.reidPreprocessId = reidPreprocessId;

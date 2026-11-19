@@ -22,6 +22,7 @@
 namespace ndnsf::di {
 
 struct NativeRequestControl;
+struct NativeSubgraphEntryContract;
 struct NativeSelectionProjectionV3;
 class AutomaticOnnxRequestBinding;
 
@@ -44,6 +45,10 @@ struct NativeModelRunnerSpec
   // Exact request-independent placement identity retained by cache owners.
   // It contains no path, grant, request id, plaintext, or model bytes.
   std::optional<NativeProviderResidencyIdentityV4> residencyIdentity;
+  // Verified single-CALL boundary of an ordinary whole-region artifact. Reconstructed by
+  // assembly/preparation; stripped from artifact-cache templates and rebound to each plan.
+  // Immutable values only, without a request or authorization owner.
+  std::shared_ptr<const NativeSubgraphEntryContract> entryContract;
 };
 
 /** Immutable binding shared by observations from the same request and role. */

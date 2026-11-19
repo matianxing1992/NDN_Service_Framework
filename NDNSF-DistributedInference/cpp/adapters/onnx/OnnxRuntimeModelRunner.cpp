@@ -711,7 +711,7 @@ private:
 };
 
 OnnxKvStateSample
-sampleKvState(const Ort::Value& value, const std::string& inputName)
+sampleKvState(const Ort::Value& value, const std::string& inputName, bool completeSmallState)
 {
   const auto info = value.GetTensorTypeAndShapeInfo();
   const auto count = info.GetElementCount();
@@ -740,7 +740,11 @@ sampleKvState(const Ort::Value& value, const std::string& inputName)
   const auto* source = static_cast<const std::uint8_t*>(value.GetTensorRawData());
   if (!source)
     throw std::runtime_error("missing qualification KV allocation");
-  const auto points = std::min<std::size_t>(16, count);
+  // The explicitly installed observer can verify complete small-fixture state. Larger
+  // production tensors keep the existing bounded scalar sample rather than copying KV.
+  constexpr std::size_t MAX_COMPLETE_KV_OBSERVATION_ELEMENTS = 4096;
+  const auto points = completeSmallState && count <= MAX_COMPLETE_KV_OBSERVATION_ELEMENTS
+    ? count : std::min<std::size_t>(16, count);
   for (std::size_t i = 0; i < points; ++i) {
     const auto index = points == 1 ? 0 :
       ((count - 1) / (points - 1)) * i + ((count - 1) % (points - 1)) * i / (points - 1);
@@ -990,23 +994,32 @@ tensorForInput(const TensorBundle& bundle,
                const std::string& inputName,
                const std::vector<int64_t>& fallbackShape)
 {
-  if (bundle.localTensors) {
-    // A local value is read through the same view entry as an encoded one, so a bundle that
-    // arrived by either route is handled identically here. ORT binds its own input buffer, so
-    // this is a copy of the values, not a re-encoding of a bundle: no framing, no decode.
-    for (const auto& view : decodeTensorBundleViews(bundle)) {
-      if (view.name != inputName) continue;
-      NamedTensor tensor;
-      tensor.name = view.name;
-      tensor.elementType = view.elementType;
-      tensor.shape = view.shape;
-      tensor.payload.assign(view.payload.begin(), view.payload.end());
-      return tensor;
+  const auto select = [&inputName] (auto& tensors) {
+    const auto find = [&tensors] (const std::string& name) {
+      return std::find_if(tensors.begin(), tensors.end(),
+        [&name] (const auto& tensor) { return tensor.name == name; });
+    };
+    auto selected = find(inputName);
+    if (selected == tensors.end()) selected = find("graph/" + inputName);
+    if (selected == tensors.end()) selected = find("graph" + inputName);
+    if (selected == tensors.end()) {
+      throw std::out_of_range("tensor bundle has no tensor: " + inputName);
     }
-    throw std::out_of_range("tensor bundle has no tensor: " + inputName);
+    return selected;
+  };
+  if (bundle.localTensors) {
+    const auto views = decodeTensorBundleViews(bundle);
+    const auto& view = *select(views);
+    NamedTensor tensor;
+    tensor.name = view.name;
+    tensor.elementType = view.elementType;
+    tensor.shape = view.shape;
+    tensor.payload.assign(view.payload.begin(), view.payload.end());
+    return tensor;
   }
   if (isEncodedTensorBundle(bundle.payload)) {
-    return takeOwnedInputTensor(decodeTensorBundle(bundle.payload), inputName);
+    auto tensors = decodeTensorBundle(bundle.payload);
+    return std::move(*select(tensors));
   }
   return makeFloat32Tensor(inputName, fallbackShape, bundle.payload);
 }
@@ -2444,7 +2457,15 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
     }
   }
   std::uint64_t borrowedOutputBytes = 0;
-  const bool observeState = m_impl->stateObserver && m_impl->stateObserver->wants(effectiveContext);
+  // A factory-level observer also sees stateless children; only an admitted stateful
+  // contract owns KV to observe. A stateful child that omits its state still fails below.
+  const bool observeState = m_impl->statefulIo && m_impl->stateObserver &&
+    m_impl->stateObserver->wants(effectiveContext);
+  const auto* completeObserver = observeState
+    ? dynamic_cast<const OnnxCompleteKvStateObserver*>(m_impl->stateObserver.get()) : nullptr;
+  const bool completeSmallState = completeObserver &&
+    completeObserver->wantsCompleteSmallState(effectiveContext);
+  auto* outputObserver = dynamic_cast<OnnxOutputTensorObserver*>(m_impl->stateObserver.get());
   std::vector<OnnxKvStateSample> stateSamples;
   for (std::size_t i = 0; i < outputs.size(); ++i) {
     auto& value = outputs[i];
@@ -2474,7 +2495,7 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
           throw std::runtime_error("qualification KV component bound exceeded");
         NativeWorkScope sampleWork(ctx.workStatistics, "onnx-kv-sample", NativeWorkKind::LOCAL);
         stateSamples.push_back(sampleKvState(relayoutState ? feedbackCandidate.at(successorInput) :
-                                              value, successorInput));
+                                              value, successorInput, completeSmallState));
       }
       if (relayoutState) {
         if (effectiveContext.streamingStateExecution) continue;
@@ -2520,6 +2541,9 @@ OnnxRuntimeModelRunner::runImpl(const RoleExecutionContext& ctx, InvocationKind 
       {"outputAlias." + outputNames[i], "output_alias." + outputNames[i]});
     if (tensor.name.empty()) {
       tensor.name = outputNames[i];
+    }
+    if (!stateOutput && outputObserver && outputObserver->wantsOutput(effectiveContext, tensor.name)) {
+      outputObserver->recordOutput(effectiveContext, sampleKvState(value, tensor.name, true));
     }
     tensor.elementType = elementType;
     tensor.shape = tensorInfo.GetShape();

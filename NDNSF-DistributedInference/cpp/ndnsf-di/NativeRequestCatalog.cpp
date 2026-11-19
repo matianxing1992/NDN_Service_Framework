@@ -8,6 +8,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/FixedAssignmentWork.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-state-role-mapping.hpp"
 
 #include <algorithm>
 #include <cfenv>
@@ -15,9 +16,21 @@
 #include <limits>
 #include <locale>
 #include <set>
+#include <string_view>
 
 namespace ndnsf::di {
 namespace {
+enum class CatalogRoute { QWEN, LLAMA, YOLO, AUTOMATIC };
+
+CatalogRoute
+parseCatalogRoute(std::string_view kind)
+{
+  if (kind == "QWEN") return CatalogRoute::QWEN;
+  if (kind == "LLAMA") return CatalogRoute::LLAMA;
+  if (kind == "YOLO") return CatalogRoute::YOLO;
+  if (kind == "AUTOMATIC") return CatalogRoute::AUTOMATIC;
+  throw std::invalid_argument("unsupported native request splitter");
+}
 
 std::map<std::string, NativeRoleResourceRequirement>
 resourceProfilesFromCatalog(const NativeJson& split, const std::vector<std::string>& roles,
@@ -67,6 +80,26 @@ resourceProfilesFromCatalog(const NativeJson& split, const std::vector<std::stri
 
 
 } // namespace
+
+NativeStateTensorMapping
+detail::remapNativeStateRoles(const NativeStateTensorMapping& source,
+                             const std::map<std::string, std::string>& sourceRoleByUnit)
+{
+  if (sourceRoleByUnit.empty())
+    throw std::invalid_argument("native state role expansion has no units");
+  NativeStateTensorMapping result;
+  for (const auto& [unit, sourceRole] : sourceRoleByUnit) {
+    const auto inputs = source.inputs.find(sourceRole);
+    const auto outputs = source.outputs.find(sourceRole);
+    if (unit.empty() || sourceRole.empty() || inputs == source.inputs.end() ||
+        outputs == source.outputs.end() ||
+        inputs->second.empty() != outputs->second.empty())
+      throw std::invalid_argument("native state role expansion omits a source state contract");
+    result.inputs.emplace(unit, inputs->second);
+    result.outputs.emplace(unit, outputs->second);
+  }
+  return result;
+}
 
 NativePreparedPlanningTemplate::NativePreparedPlanningTemplate(
   std::shared_ptr<const NativeInspectedModel> model,
@@ -298,8 +331,11 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   auto& model = entry.model;
   model.descriptor = NativeModelDescriptor::fromCanonicalJson(nativeCanonicalJson(root.at("model")));
   const auto& split = root.at("splitter");
-  const auto splitterKind = split.at("kind").get<std::string>();
-  const bool sourceDefined = splitterKind == "QWEN" || splitterKind == "LLAMA";
+  const auto route = parseCatalogRoute(split.at("kind").get<std::string>());
+  const bool sourceDefined = route == CatalogRoute::QWEN || route == CatalogRoute::LLAMA;
+  using RankArtifacts = std::map<std::string, std::vector<std::string>>;
+  const auto rankArtifacts = sourceDefined
+    ? split.value("rank_artifact_digests_by_role", RankArtifacts{}) : RankArtifacts{};
   const auto resourceProfiles = sourceDefined
     ? resourceProfilesFromCatalog(split, split.at("roles").get<std::vector<std::string>>(),
                                   model.descriptor.adapter.backends)
@@ -428,30 +464,26 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // preparation as an enumerated candidate. A projected candidate with empty prepared
   // roles would fail role binding later, which is why it is not pushed alone.
   std::optional<NativeSplitCandidate> projectedCandidate;
-  if (splitterKind == "QWEN" || splitterKind == "LLAMA") {
-    const auto modelFamily = splitterKind == "LLAMA" ? "llama" : "qwen";
+  std::map<std::string, std::string> sourceRoleByUnit;
+  std::shared_ptr<qwen::NativeQwenLayerSplit> transformerStrategy;
+  if (sourceDefined) {
+    const auto modelFamily = route == CatalogRoute::LLAMA ? "llama" : "qwen";
     // A sharded stage needs one artifact per rank. The catalog accepts the
     // per-rank map when present and leaves it empty otherwise, in which case the
     // splitter keeps the legacy single-artifact path for degree-one stages only.
-    std::map<std::string, std::vector<std::string>> rankArtifacts;
-    if (split.contains("rank_artifact_digests_by_role")) {
-      for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
-        rankArtifacts.emplace(item.key(),
-          item.value().get<std::vector<std::string>>());
-      }
-    }
-    auto strategy = std::make_shared<qwen::NativeQwenLayerSplit>(
+    transformerStrategy = std::make_shared<qwen::NativeQwenLayerSplit>(
       split.at("layer_ranges").get<std::vector<qwen::NativeQwenLayerSplit::LayerRange>>(),
       split.at("artifact_digests_by_role").get<std::map<std::string, std::string>>(),
       split.at("weight_bytes_by_role").get<std::map<std::string, std::uint64_t>>(),
       split.at("roles").get<std::vector<std::string>>(), split.at("tensor_degrees").get<std::vector<std::uint64_t>>(),
       split.value("input_ingress_role", std::string{}), split.value("result_egress_role", std::string{}),
-      modelFamily, std::move(rankArtifacts));
-    model.graph = strategy->inspectGraph(model.descriptor, model.descriptor.sourceRevision, entry.recipe.maxNodes);
-    result.cooperativeSplitter = strategy;
-    result.splitter = std::move(strategy);
+      modelFamily, rankArtifacts);
+    model.graph = transformerStrategy->inspectGraph(
+      model.descriptor, model.descriptor.sourceRevision, entry.recipe.maxNodes);
+    result.cooperativeSplitter = transformerStrategy;
+    result.splitter = transformerStrategy;
   }
-  else if (split.at("kind") == "YOLO") {
+  else if (route == CatalogRoute::YOLO) {
     if (referenceOnly)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
     model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
@@ -474,7 +506,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }
-  else if (splitterKind == "AUTOMATIC") {
+  else {
     if (referenceOnly || source.externalFileRanges.size() > 1)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_AUTOMATIC_SOURCE_UNSUPPORTED");
     const auto initializerFile = sourceConfig.value("initializer_file", std::string{});
@@ -512,7 +544,6 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }
-  else throw std::invalid_argument("unsupported native request splitter");
   result.stateMapping.inputs = root.value("state_inputs", NativeStateTensorMapping::Roles{});
   result.stateMapping.outputs = root.value("state_outputs", NativeStateTensorMapping::Roles{});
   result.model = model;
@@ -520,17 +551,17 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     // The automatic splitter's planning graph is the automatic inspection's
     // source graph. Reusing it keeps the role preparer's source/planning
     // identity check meaningful without an explicit ONNX node mapping.
-    if (splitterKind == "AUTOMATIC" && automaticModel)
+    if (route == CatalogRoute::AUTOMATIC && automaticModel)
       entry.sourceGraphInspection = automaticModel->inspection;
     else
       entry.sourceGraphInspection = inspectNativeOnnxSourceGraph(source, model.descriptor, control);
     // Only adapters with a reference-only restore contract publish this
     // metadata. Unsupported adapters remain on the source-backed path and
     // therefore cannot create a receipt that a later prepare cannot restore.
-    if (splitterKind == "QWEN" || splitterKind == "LLAMA")
+    if (sourceDefined)
       source.preparedMetadataJson = encodeNativePreparedOnnxMetadata(
         model, *entry.sourceGraphInspection, nullptr, control);
-    else if (splitterKind == "AUTOMATIC") {
+    else if (route == CatalogRoute::AUTOMATIC) {
       if (!automaticModel)
         throw std::logic_error("automatic source model was released before metadata");
       // The automatic inspection owns the source graph facts that back the
@@ -544,17 +575,52 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // The projected-plan branch runs after the source is moved into the catalog entry, so
   // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
   // the serialized graph, which only exists before the move.
-  const std::vector<std::uint8_t> planningGraphBytes = source.modelBytes;
+  const bool sourceBoundHybrid = route == CatalogRoute::QWEN &&
+    split.at("roles").size() > 1 &&
+    std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
+      [] (const auto& degree) { return degree.template get<std::uint64_t>() > 1; });
+  std::map<std::string, std::vector<std::uint64_t>> rankWeights;
+  if (const auto weights = split.find("tensor_rank_weights_by_role"); weights != split.end()) {
+    if (!sourceBoundHybrid || !weights->is_object() || weights->empty())
+      throw std::invalid_argument("tensor rank weights require a source-bound Qwen hybrid");
+    for (const auto& stage : weights->items()) {
+      if (!stage.value().is_array() || stage.value().empty())
+        throw std::invalid_argument("tensor rank weights require a nonempty array per stage");
+      auto& values = rankWeights[stage.key()];
+      for (const auto& weight : stage.value()) {
+        if (!weight.is_number_integer() || weight < 1 ||
+            weight > std::numeric_limits<std::int32_t>::max())
+          throw std::invalid_argument("tensor rank weights must be bounded positive integers");
+        values.push_back(weight.get<std::uint64_t>());
+      }
+    }
+  }
+  std::optional<qwen::QwenTpShape> hybridColdShape;
+  if (sourceBoundHybrid && !source.modelBytes.empty()) {
+    // Preserve full byte-based operator/quantization admission before releasing the bytes.
+    // Only the small geometry survives the move; port descriptions use inspected facts.
+    hybridColdShape = qwen::deriveQwenTpShape(source.modelBytes,
+      split.at("layer_ranges").back().at(1).get<std::uint64_t>());
+  }
+  // Hybrid cold/restore planning consumes the same inspected facts, without retaining
+  // another model-sized byte copy after the source moves into the preparation catalog.
+  const std::vector<std::uint8_t> planningGraphBytes =
+    sourceBoundHybrid ? std::vector<std::uint8_t>{} : source.modelBytes;
   // The same holds for the recorded graph facts: the sharded branch runs after the entry
   // has moved into the preparation catalog, so a reference-only restore could not reach
   // them there.
   const std::string planningGraphMetadata =
     entry.sourceGraphInspection ? entry.sourceGraphInspection->graphMetadataJson
                                 : std::string{};
+  const auto planningGraphInspection = sourceBoundHybrid
+    ? entry.sourceGraphInspection : std::optional<NativeOnnxGraphInspection>{};
   entry.source = std::move(source);
+  const auto assemblyByteLimit = entry.recipe.maxAssembledBytes;
   std::vector<NativeCanonicalCatalogEntry> entries;
   entries.push_back(std::move(entry));
-  result.preparation = std::make_shared<const NativeCanonicalPreparationCatalog>(std::move(entries), control);
+  result.preparation = std::make_shared<const NativeCanonicalPreparationCatalog>(
+    std::move(entries), control,
+    sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
 
   // Freeze the graph-dependent planning facts at prepare time.  The request
   // planner still rechecks the candidate/roles and performs all request-bound
@@ -571,24 +637,33 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // The stage list still describes the topology, but each stage's ranks are separate
   // units with their own plan, so the candidate is built from the projection instead of
   // from the splitter's per-stage enumeration.
-  if (sourceDefined && splitterKind == "QWEN" &&
+  if (route == CatalogRoute::QWEN &&
       std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
                   [] (const auto& degree) {
                     return degree.template get<std::uint64_t>() > 1;
                   })) {
-    // A sharded Qwen plan is one global tensor-parallel stage: every unit executes every
-    // layer with a different weight slice. The projection enforces that -- each unit must
-    // cover layers 0..N -- so a catalog that declares a sharded stage alongside a layer
-    // partition is a topology the projection cannot express, and it is refused here
-    // rather than silently projected into a shape the caller did not ask for.
+    // A single stage uses the existing tensor-parallel projection.
     const auto& degrees = split.at("tensor_degrees");
     const auto& layerRanges = split.at("layer_ranges");
     const auto& stageRoles = split.at("roles");
-    if (stageRoles.size() != 1 || layerRanges.size() != 1 || degrees.size() != 1) {
-      throw std::invalid_argument(
-        "sharded Qwen catalog must be a single global stage; layer-parallel and "
-        "tensor-parallel cannot be combined in one plan");
+    const bool hybridLayout =
+      stageRoles.size() > 1 || layerRanges.size() > 1 || degrees.size() > 1;
+    if (hybridLayout) {
+      const auto totalLayers = layerRanges.back().at(1).get<std::uint64_t>();
+      const auto hybridShape = hybridColdShape ? *hybridColdShape
+        : qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, totalLayers);
+      if (!planningGraphInspection)
+        throw std::invalid_argument("hybrid Qwen catalog requires inspected source port facts");
+      const qwen::QwenTpSourceRegionPort region = [&] (const auto& nodes, const auto& outputs) {
+        return result.preparation->sourceRegion(result.model, nodes, outputs, planningControl);
+      };
+      auto [candidate, unitStages] = transformerStrategy->lowerSourceHybrid(
+        result.model.descriptor, result.model.graph, hybridShape, resourceProfiles,
+        *planningGraphInspection, region, result.stateMapping, extensionControl, rankWeights);
+      projectedCandidate = std::move(candidate);
+      sourceRoleByUnit = std::move(unitStages);
     }
+    else {
     const auto layers = layerRanges.at(0).at(1).get<std::uint64_t>();
     const auto degree = degrees.at(0).get<std::uint64_t>();
     const auto stageRole = stageRoles.at(0).get<std::string>();
@@ -601,13 +676,6 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       ? qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, layers)
       : qwen::deriveQwenTpShape(planningGraphBytes, layers);
 
-    std::map<std::string, std::vector<std::string>> rankArtifacts;
-    if (split.contains("rank_artifact_digests_by_role")) {
-      for (const auto& item : split.at("rank_artifact_digests_by_role").items()) {
-        rankArtifacts.emplace(item.key(),
-          item.value().get<std::vector<std::string>>());
-      }
-    }
     const auto ranked = rankArtifacts.find(stageRole);
     if (ranked == rankArtifacts.end() || ranked->second.size() != degree) {
       throw std::invalid_argument(
@@ -634,6 +702,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       unit.layerEnd = layers;
       artifactByUnit[unit.roleId] = ranked->second.at(rank);
       requirementByUnit[unit.roleId] = profile->second;
+      sourceRoleByUnit.emplace(unit.roleId, stageRole);
       units.push_back(std::move(unit));
     }
     // The head lives on exactly one unit, and which one is configuration, not convention: the
@@ -678,12 +747,13 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     // request was refused at ACK_CLOSED as a foreign identity. Adopt the catalog's identity
     // here, where the candidate is produced under that strategy.
     projectedCandidate->splitter = result.cooperativeSplitter->identity();
+    }
   }
   const auto enumerated = projectedCandidate
     ? std::vector<NativeSplitCandidate>{}
     : result.cooperativeSplitter->enumerate(
         result.model.descriptor, result.model.graph, preparationBudget, extensionControl);
-  if (splitterKind == "AUTOMATIC" && !enumerated.empty() &&
+  if (route == CatalogRoute::AUTOMATIC && !enumerated.empty() &&
       result.stateMapping.inputs.empty()) {
     // The catalog did not declare a state map; derive it from the checked
     // automatic projection instead of inventing one.
@@ -704,21 +774,21 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // Preparation binds one state map, so it prepares the first (lowest-transfer)
   // candidate only instead of mixing maps across candidates.
   const std::vector<NativeSplitCandidate> selectedCandidates =
-    splitterKind == "AUTOMATIC" && enumerated.size() > 1 ?
+    route == CatalogRoute::AUTOMATIC && enumerated.size() > 1 ?
       std::vector<NativeSplitCandidate>{enumerated.front()} : enumerated;
   preparedCandidates.reserve(selectedCandidates.size());
   for (auto candidate : selectedCandidates) {
-    if (splitterKind == "AUTOMATIC") {
+    if (route == CatalogRoute::AUTOMATIC) {
       // The assembly budget is an explicit upper bound, not a measurement:
       // ORT workspace and activation peaks stay within it or preparation fails
       // at the actual stage owner. Transient memory is declared inapplicable
       // for this CPU profile instead of being treated as free.
       for (auto& [role, requirement] : candidate.requirementsByRole) {
         if (!requirement.workspaceBytes)
-          requirement.workspaceBytes = entry.recipe.maxAssembledBytes;
+          requirement.workspaceBytes = assemblyByteLimit;
         if (!requirement.transientBytes) requirement.transientBytes = std::uint64_t{0};
         if (!requirement.activationBytes)
-          requirement.activationBytes = entry.recipe.maxAssembledBytes;
+          requirement.activationBytes = assemblyByteLimit;
       }
       candidate.candidateDigest = candidate.computedDigest();
     }
@@ -726,45 +796,28 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
       candidate.requirementsByRole = resourceProfiles;
       candidate.candidateDigest = candidate.computedDigest();
     }
-    auto bound = result.preparation->bindStateContracts(
-      result.model, candidate, result.stateMapping, planningControl,
-      sourceDefined ? NativeStateContractBinding::SOURCE : NativeStateContractBinding::DECLARED);
+    auto bound = result.preparation->bindCatalogStateContracts(
+      result.model, candidate, result.stateMapping, planningControl);
     auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
     preparedCandidates.push_back({std::move(bound), std::move(roles)});
   }
   if (projectedCandidate) {
     auto candidate = std::move(*projectedCandidate);
-    // The state mapping is keyed by the catalog's stage roles, but this candidate's roles
-    // are unit names. Re-key it to the units, because the source-bound state binding
-    // requires a non-empty contract for every role the candidate declares. Each unit
-    // executes every layer, so each takes the full per-stage KV set.
-    {
-      const auto& stageRole = split.at("roles").at(0).get<std::string>();
-      // Read the roles from the candidate that now owns them. The optional was moved
-      // from a few lines above, so reading through it here would iterate an empty list
-      // and produce an empty cover -- which is exactly the failure this re-key exists to
-      // prevent.
-      const auto rekey = [&candidate, &stageRole] (
-                           const NativeStateTensorMapping::Roles& source) {
-        NativeStateTensorMapping::Roles keyed;
-        const auto found = source.find(stageRole);
-        if (found == source.end()) return keyed;
-        for (const auto& unit : candidate.executionPlan.roles)
-          keyed[unit] = found->second;
-        return keyed;
-      };
-      result.stateMapping.inputs = rekey(result.stateMapping.inputs);
-      result.stateMapping.outputs = rekey(result.stateMapping.outputs);
-    }
+    // Every unit inherits only its logical stage's source tensors. The role preparer
+    // still validates these names and their shapes against the actual source boundary.
+    if (sourceRoleByUnit.size() != candidate.executionPlan.roles.size() ||
+        std::any_of(candidate.executionPlan.roles.begin(), candidate.executionPlan.roles.end(),
+          [&] (const auto& unit) { return sourceRoleByUnit.count(unit) != 1; }))
+      throw std::invalid_argument("native state role expansion has an incomplete unit cover");
+    result.stateMapping = detail::remapNativeStateRoles(result.stateMapping, sourceRoleByUnit);
     // No resource override here. `resourceProfiles` is keyed by the catalog's stage
     // roles, while this candidate's roles are the expanded unit names, so assigning it
     // would replace a complete per-unit cover with a per-stage one and the candidate
     // would be refused for an incomplete role cover. The unit requirements were derived
     // from each stage's profile when the units were built.
     candidate.candidateDigest = candidate.computedDigest();
-    auto bound = result.preparation->bindStateContracts(
-      result.model, candidate, result.stateMapping, planningControl,
-      NativeStateContractBinding::SOURCE);
+    auto bound = result.preparation->bindCatalogStateContracts(
+      result.model, candidate, result.stateMapping, planningControl);
     auto roles = result.preparation->prepareRoles(result.model, bound, planningControl);
     preparedCandidates.push_back({std::move(bound), std::move(roles)});
   }

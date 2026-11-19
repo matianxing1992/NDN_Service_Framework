@@ -23,12 +23,55 @@ class NativeStaticProjectionLayout final
     std::vector<std::uint64_t>, std::vector<std::uint64_t>,
     std::string, std::string, std::string>;
   using DependencyGeometry = std::tuple<std::vector<std::string>, std::vector<std::string>,
-    std::vector<std::string>, std::string, std::string, std::vector<TransferGeometry>>;
+    std::vector<std::string>, std::string, std::string, std::vector<TransferGeometry>,
+    std::string, std::string, std::string, std::string>;
+  using SlotGeometry = std::tuple<std::string, std::string,
+    decltype(NativeStepSlotSpec{}.shape), std::string, std::string, std::string, std::string>;
+  using StepGeometry = std::tuple<std::string, std::string,
+    std::vector<SlotGeometry>, std::vector<SlotGeometry>>;
+  using StepGeometryKey = std::pair<std::string, std::vector<StepGeometry>>;
   using Identity = std::tuple<std::string, std::string, std::string,
     std::map<std::string, std::string>, std::map<std::string, RoleGeometry>,
-    std::vector<DependencyGeometry>, std::vector<std::string>, std::vector<std::string>>;
+    std::vector<DependencyGeometry>, std::vector<std::string>, std::vector<std::string>,
+    StepGeometryKey>;
+  static StepGeometryKey stepGeometry(const NativeExecutionPlan& plan)
+  {
+    StepGeometryKey result{plan.stepPlanVersion, {}};
+    const auto slots = [] (const auto& values) {
+      std::vector<SlotGeometry> geometry;
+      geometry.reserve(values.size());
+      for (const auto& value : values)
+        geometry.emplace_back(value.slotId, value.dtype, value.shape, value.layoutDigest,
+          value.source, value.producerStepId, value.producerSlotId);
+      return geometry;
+    };
+    for (const auto& step : plan.steps)
+      result.second.emplace_back(step.stepId, step.unitId,
+        slots(step.inputSlots), slots(step.outputSlots));
+    return result;
+  }
   bool matches(const NativePlacementPlanCore& core) const
   {
+    const auto& geometry = std::get<8>(identity);
+    if (geometry.first != core.executionPlan.stepPlanVersion ||
+        geometry.second.size() != core.executionPlan.steps.size()) return false;
+    const auto sameSlots = [] (const auto& cached, const auto& current) {
+      if (cached.size() != current.size()) return false;
+      for (std::size_t i = 0; i < current.size(); ++i) {
+        const auto& slot = current[i];
+        if (cached[i] != std::tie(slot.slotId, slot.dtype, slot.shape, slot.layoutDigest,
+                                  slot.source, slot.producerStepId, slot.producerSlotId))
+          return false;
+      }
+      return true;
+    };
+    for (std::size_t i = 0; i < core.executionPlan.steps.size(); ++i) {
+      const auto& cached = geometry.second[i];
+      const auto& current = core.executionPlan.steps[i];
+      if (std::get<0>(cached) != current.stepId || std::get<1>(cached) != current.unitId ||
+          !sameSlots(std::get<2>(cached), current.inputSlots) ||
+          !sameSlots(std::get<3>(cached), current.outputSlots)) return false;
+    }
     if (std::get<0>(identity) != core.candidateDigest || std::get<1>(identity) != core.modelDigest ||
         std::get<2>(identity) != core.graphDigest || std::get<3>(identity) != core.assignment.providerByRole ||
         std::get<6>(identity) != core.generationContract.stateInputNames ||
@@ -58,7 +101,11 @@ class NativeStaticProjectionLayout final
       if (std::get<4>(cached) != current.operationKind) return false;
       if (current.operationKind == "TOKEN_FEEDBACK") continue;
       if (std::get<0>(cached) != current.producers || std::get<1>(cached) != current.consumers ||
-          std::get<2>(cached) != current.tensors || std::get<3>(cached) != current.keyScope) return false;
+          std::get<2>(cached) != current.tensors || std::get<3>(cached) != current.keyScope ||
+          std::get<6>(cached) != current.producerStepId ||
+          std::get<7>(cached) != current.producerSlotId ||
+          std::get<8>(cached) != current.consumerStepId ||
+          std::get<9>(cached) != current.consumerSlotId) return false;
       const auto& transfers = std::get<5>(cached);
       if (transfers.size() != current.redistributions.size()) return false;
       for (std::size_t j = 0; j < transfers.size(); ++j) {
@@ -90,7 +137,8 @@ class NativeStaticProjectionLayout final
         // builder and is never a base readiness endpoint. Its scope is fresh
         // per request and cannot invalidate the reusable activation layout.
         dependencies.emplace_back(std::vector<std::string>{}, std::vector<std::string>{},
-          std::vector<std::string>{}, "", "TOKEN_FEEDBACK", std::vector<TransferGeometry>{});
+          std::vector<std::string>{}, "", "TOKEN_FEEDBACK", std::vector<TransferGeometry>{},
+          "", "", "", "");
         continue;
       }
       std::vector<TransferGeometry> transfers;
@@ -100,16 +148,54 @@ class NativeStaticProjectionLayout final
           transfer.targetLayoutDigest);
       // Request topic/name and size forecasts are refreshed outside geometry.
       dependencies.emplace_back(dependency.producers, dependency.consumers, dependency.tensors,
-        dependency.keyScope, dependency.operationKind, std::move(transfers));
+        dependency.keyScope, dependency.operationKind, std::move(transfers),
+        dependency.producerStepId, dependency.producerSlotId,
+        dependency.consumerStepId, dependency.consumerSlotId);
     }
     return {core.candidateDigest, core.modelDigest, core.graphDigest,
       core.assignment.providerByRole, std::move(roles), std::move(dependencies),
-      core.generationContract.stateInputNames, core.generationContract.stateOutputNames};
+      core.generationContract.stateInputNames, core.generationContract.stateOutputNames,
+      stepGeometry(core.executionPlan)};
   }
   Identity identity;
   std::map<std::size_t, std::vector<NativeTensorEndpointV3>> endpoints;
 };
 namespace {
+// Borrowed only while building this projection; the sealed plan owns both ports.
+std::pair<const NativeStepSlotSpec*, const NativeStepSlotSpec*>
+exactStepPorts(const NativeExecutionPlan& plan, const NativeDependencySpec& dependency)
+{
+  if (dependency.producers.size() != 1 || dependency.consumers.size() != 1 ||
+      dependency.tensors.size() != 1 || !dependency.redistributions.empty())
+    throw std::invalid_argument("v2 endpoint requires one replicated step tensor");
+  const auto step = [&] (const std::string& id, const std::string& unit)
+    -> const NativeExecutionStepSpec& {
+    const auto found = std::find_if(plan.steps.begin(), plan.steps.end(),
+      [&] (const auto& value) { return value.stepId == id && value.unitId == unit; });
+    if (found == plan.steps.end())
+      throw std::invalid_argument("v2 endpoint has no matching step owner");
+    return *found;
+  };
+  const auto slot = [] (const auto& values, const std::string& id)
+    -> const NativeStepSlotSpec& {
+    const auto found = std::find_if(values.begin(), values.end(),
+      [&] (const auto& value) { return value.slotId == id; });
+    if (found == values.end())
+      throw std::invalid_argument("v2 endpoint has no matching step port");
+    return *found;
+  };
+  const auto& output = slot(step(dependency.producerStepId, dependency.producers.front()).outputSlots,
+                            dependency.producerSlotId);
+  const auto& input = slot(step(dependency.consumerStepId, dependency.consumers.front()).inputSlots,
+                           dependency.consumerSlotId);
+  if (output.source != "LOCAL_STEP" || input.source != "REMOTE_STEP" ||
+      input.producerStepId != dependency.producerStepId ||
+      input.producerSlotId != dependency.producerSlotId || output.dtype != input.dtype ||
+      output.shape != input.shape || output.layoutDigest != input.layoutDigest)
+    throw std::invalid_argument("v2 endpoint step ports disagree");
+  return {&output, &input};
+}
+
 NativeTensorEndpointV3 staticEndpoint(const NativeTensorEndpointV3& source)
 {
   NativeTensorEndpointV3 e;
@@ -454,9 +540,10 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       }
     };
     if (feedback) {
-      if (!core.generationContract.enabled || !dependency.useNdnsfDataV1 ||
+      if (!core.generationContract.enabled || core.generationContract.tokenInputName.empty() ||
+          !dependency.useNdnsfDataV1 ||
           dependency.producers.size() != 1 || dependency.consumers.size() != 1 ||
-          dependency.tensors != std::vector<std::string>{"input_ids"} ||
+          dependency.tensors != std::vector<std::string>{core.generationContract.tokenInputName} ||
           dependency.collectiveOperationIndex >= core.generationContract.streamingOperationStride ||
           binding.operationIndex != dependency.collectiveOperationIndex ||
           !digest(dependency.collectiveTensorDigest) ||
@@ -576,15 +663,28 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
           if (sharedByEveryConsumer)
             e.bundleTensorNames.push_back(candidate.name);
         };
-        for (const auto& output : producerAssembly.expectedOutputs)
-          appendIfShared(output);
-        for (const auto& input : producerAssembly.expectedInputs)
-          appendIfShared(input);
+        if (core.executionPlan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+          const auto ports = exactStepPorts(core.executionPlan, dependency);
+          if (isGenerationState(transfer.tensor))
+            throw std::invalid_argument("v2 endpoint cannot expose private generation state");
+          // Source preparation certified this actual graph name for the exact step edge.
+          // Internal partials/controls need not be whole-role boundary outputs.
+          e.bundleTensorNames = {transfer.tensor};
+          e.layoutDigest = ports.first->layoutDigest;
+          e.targetLayoutDigest = ports.second->layoutDigest;
+        }
+        else {
+          for (const auto& output : producerAssembly.expectedOutputs)
+            appendIfShared(output);
+          for (const auto& input : producerAssembly.expectedInputs)
+            appendIfShared(input);
+          e.layoutDigest = transfer.sourceLayoutDigest;
+          e.targetLayoutDigest = transfer.targetLayoutDigest;
+        }
         std::sort(e.bundleTensorNames.begin(), e.bundleTensorNames.end());
         e.bundleTensorNames.erase(std::unique(e.bundleTensorNames.begin(),
                                               e.bundleTensorNames.end()),
                                   e.bundleTensorNames.end());
-        e.layoutDigest = transfer.sourceLayoutDigest; e.targetLayoutDigest = transfer.targetLayoutDigest;
         e.segmentCount = context.maxSegments;
         if (newLayout) newLayout->endpoints[index].push_back(staticEndpoint(e));
         appendEndpoint(std::move(e));

@@ -3,6 +3,7 @@
 
 #include "uav-tracking-config.hpp"
 #include "uav-tracking-presentation.hpp"
+#include "UavWindowBinding.hpp"
 
 #include <functional>
 #include <memory>
@@ -69,6 +70,8 @@ public:
   TrackingAdmission start(const TrackingJobDefinition& definition, std::string* reason = nullptr);
   TrackingCancelResult requestCancel(const std::string& jobId);
   TrackingSnapshot snapshot() const;
+  /** Copy only descriptors admitted by this job's protected SourceInfo bootstrap. */
+  std::vector<UavSourceDescriptor> sourceDescriptors() const;
   /** Local dependency drain; INCOMPLETE remote cleanup can still prohibit Start. */
   bool isDrained() const;
   void stop(std::function<void(const TrackingCleanupResult&)> onDrained);

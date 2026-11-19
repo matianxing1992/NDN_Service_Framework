@@ -23,6 +23,8 @@ def run_deployment(argv):
         parser.error('--debug only applies to run')
     if (args.verify and args.action != 'run') or (args.oracle and not args.verify):
         parser.error('--verify applies to run; --oracle requires --verify')
+    from ndnsf_di_launcher import _bind_package_root
+    _bind_package_root()
     from ndnsf_distributed_inference.ops.cli import main
     oracle = None
     if args.verify:

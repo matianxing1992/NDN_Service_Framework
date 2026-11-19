@@ -435,6 +435,53 @@ public:
     return StoredObject{parseManifestJson(manifestText), std::move(payload)};
   }
 
+  std::vector<uint8_t> getRange(const std::string& objectName,
+                                RepoByteRange range) const override
+  {
+    // Resolve the row and validate bounds without materializing the payload;
+    // incremental blob I/O reads only the requested bytes. The generic base
+    // implementation copies the whole object for every segment, which turns a
+    // 6144-byte packet read into a full-object copy.
+    sqlite3_stmt* stmt = nullptr;
+    prepare("SELECT rowid, payload_size FROM objects WHERE object_name=?", &stmt);
+    StatementGuard guard(stmt);
+    bindText(stmt, 1, objectName);
+    const int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_DONE) {
+      throw std::out_of_range("repo object not found: " + objectName);
+    }
+    if (rc != SQLITE_ROW) {
+      throwSqlite("failed to fetch repo object range");
+    }
+    const auto rowid = sqlite3_column_int64(stmt, 0);
+    const auto payloadSize = sqlite3_column_int64(stmt, 1);
+    if (payloadSize < 0 || range.offsetBytes > static_cast<std::uint64_t>(payloadSize) ||
+        range.lengthBytes > static_cast<std::uint64_t>(payloadSize) - range.offsetBytes) {
+      throw std::out_of_range("repo-range-read-out-of-bounds");
+    }
+    if (range.lengthBytes == 0) {
+      return {};
+    }
+    sqlite3_blob* blob = nullptr;
+    if (sqlite3_blob_open(m_db, "main", "objects", "payload", rowid, 0, &blob) != SQLITE_OK) {
+      throwSqlite("failed to open repo payload blob");
+    }
+    const std::unique_ptr<sqlite3_blob, decltype(&sqlite3_blob_close)>
+      payload(blob, sqlite3_blob_close);
+    const auto blobSize = static_cast<std::uint64_t>(sqlite3_blob_bytes(payload.get()));
+    if (range.offsetBytes > blobSize || range.lengthBytes > blobSize - range.offsetBytes) {
+      throw std::out_of_range("repo-range-read-out-of-bounds");
+    }
+    std::vector<uint8_t> bytes(static_cast<std::size_t>(range.lengthBytes));
+    const int read = sqlite3_blob_read(payload.get(), bytes.data(),
+                                       static_cast<int>(bytes.size()),
+                                       static_cast<int>(range.offsetBytes));
+    if (read != SQLITE_OK) {
+      throwSqlite("failed to read repo payload range");
+    }
+    return bytes;
+  }
+
   RepoObjectManifest getManifest(const std::string& objectName) const override
   {
     sqlite3_stmt* stmt = nullptr;

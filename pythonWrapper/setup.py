@@ -239,17 +239,7 @@ def validate_native_library_digests(dirs: list[str]) -> None:
             raise RuntimeError("NDNSF global library digest mismatch: " + name)
 
 
-def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
-    validate_pkg_config_environment()
-    try:
-        output = subprocess.check_output(
-            ["pkg-config", "--cflags", "--libs", *packages],
-            text=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise RuntimeError(
-            "pkg-config failed for " + ", ".join(packages)) from error
-
+def parse_pkg_config(output: str) -> tuple[list[str], list[str], list[str], list[str]]:
     include_dirs: list[str] = []
     library_dirs: list[str] = []
     libraries: list[str] = []
@@ -264,6 +254,33 @@ def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[st
         else:
             extra_link_args.append(token)
     return include_dirs, library_dirs, libraries, extra_link_args
+
+
+def pkg_config(*packages: str) -> tuple[list[str], list[str], list[str], list[str]]:
+    validate_pkg_config_environment()
+    try:
+        output = subprocess.check_output(
+            ["pkg-config", "--cflags", "--libs", *packages],
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "pkg-config failed for " + ", ".join(packages)) from error
+    return parse_pkg_config(output)
+
+
+def pkg_config_optional(*packages: str):
+    """Return pkg-config flags when installed, or None for a core-only host."""
+    validate_pkg_config_environment()
+    try:
+        output = subprocess.check_output(
+            ["pkg-config", "--cflags", "--libs", *packages],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return parse_pkg_config(output)
 
 
 def explicit_ndn_svs_pair():
@@ -313,6 +330,18 @@ def build_extension() -> Extension:
         "libnac-abe",
         "ndnsd",
     )
+    tracking = pkg_config_optional("ndnsf-uav-tracking")
+    tracking_includes: list[str] = []
+    tracking_library_dirs: list[str] = []
+    tracking_libraries: list[str] = []
+    tracking_link_args: list[str] = []
+    if tracking is not None:
+        tracking_includes, tracking_library_dirs, tracking_libraries, tracking_link_args = tracking
+        reject_historical_local_paths([*tracking_includes, *tracking_library_dirs],
+                                      "pkg-config ndnsf-uav-tracking")
+        reject_non_global_dependency_paths([*tracking_includes, *tracking_library_dirs],
+                                           "pkg-config ndnsf-uav-tracking")
+        reject_historical_local_link_flags(tracking_link_args, "pkg-config ndnsf-uav-tracking")
     reject_historical_local_paths([*include_dirs, *library_dirs], "pkg-config")
     reject_non_global_dependency_paths([*include_dirs, *library_dirs], "pkg-config")
     reject_historical_local_link_flags(extra_link_args, "pkg-config")
@@ -371,6 +400,12 @@ def build_extension() -> Extension:
         for header in sorted(header_root.glob(pattern))
     ]
 
+    tracking_api_headers = [
+        str(header)
+        for include_root in tracking_includes
+        for header in sorted(Path(include_root).glob("*.hpp"))
+    ]
+
     return Extension(
         "ndnsf._ndnsf",
         # All DI implementation symbols, including NativeGrantVerifier, come
@@ -380,7 +415,7 @@ def build_extension() -> Extension:
             "src/ndnsf/_ndnsf.cpp",
             "src/ndnsf/di_bindings.cpp",
         ],
-        depends=native_api_headers,
+        depends=[*native_api_headers, *tracking_api_headers],
         include_dirs=[
             *nac_includes,
             *svs_includes,
@@ -388,13 +423,21 @@ def build_extension() -> Extension:
             str(ROOT),
             str(ROOT / "ndn-service-framework"),
             str(ROOT / "NDNSF-DistributedInference/cpp/ndnsf-di"),
+            *tracking_includes,
             *include_dirs,
         ],
-        library_dirs=library_dirs,
-        libraries=["ndn-service-framework", "ndnsf-distributed-inference", *libraries],
+        library_dirs=list(dict.fromkeys([*tracking_library_dirs, *library_dirs])),
+        libraries=[
+            *(["ndnsf-uav-tracking"] if tracking is not None else []),
+            "ndn-service-framework",
+            "ndnsf-distributed-inference",
+            *tracking_libraries,
+            *libraries,
+        ],
+        define_macros=[("NDNSF_HAVE_UAV_TRACKING", "1")] if tracking is not None else [],
         extra_objects=[*svs_objects, *nac_objects],
         extra_compile_args=["-std=c++17"],
-        extra_link_args=extra_link_args,
+        extra_link_args=[*tracking_link_args, *extra_link_args],
         language="c++",
     )
 

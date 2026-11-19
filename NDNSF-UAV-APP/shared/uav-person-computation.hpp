@@ -13,6 +13,9 @@ namespace ndnsf::examples::uav {
 struct UavPersonComputationManifest
 {
   std::string canonicalJson;
+  std::string backendKind = "python-v1";
+  std::string trackerContract;
+  std::string ortRuntime;
   std::string profileDigest;
   std::map<std::string, std::string> backendInventory;
   std::map<std::string, std::string> nativeInventory;
@@ -28,6 +31,13 @@ UavPersonComputationManifest
 makeUavPersonComputationManifest(const UavPersonTrackingProfile& profile,
                                const std::map<std::string, std::string>& backendInventory,
                                const std::map<std::string, std::string>& nativeInventory);
+
+/** Native ONNX backend identity bound to the actual detector/ReID models. */
+UavPersonComputationManifest
+makeUavPersonNativeComputationManifest(const UavPersonTrackingProfile& profile,
+                                       const std::string& trackerContract,
+                                       const std::string& ortRuntime,
+                                       const std::map<std::string, std::string>& nativeInventory);
 
 /** Reject unknown fields and recompute every declared digest against the local profile. */
 UavPersonComputationManifest

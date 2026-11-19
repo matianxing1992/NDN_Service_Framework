@@ -44,6 +44,9 @@ struct NativeOfferBindingContext {
   // Local immutable factory owner used only to reuse canonical snapshot
   // subtrees. Actual snapshot fields are checked before using its bytes.
   std::shared_ptr<const NativePreparedPlanningTemplate> preparedPlanningTemplate;
+  // Candidate-derived execution constraints, not remote authorization or V4 telemetry.
+  // The sealer independently derives the same set from the final execution plan.
+  std::vector<std::string> requiredExecutionCapabilities;
 };
 /** Only the admission owner constructs verified observations; no lease authority. */
 class NativeAdmittedOfferV3 {

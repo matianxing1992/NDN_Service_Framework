@@ -17,6 +17,7 @@ struct UavPersonTrackingProfile
   std::string detectorDigest;
   std::string reidDigest;
   std::string reidPreprocessId;
+  std::string detectorPreprocessId;
   std::string requestedDevice;
   std::map<std::string, uint64_t> limits;
   std::map<std::pair<std::string, std::string>, bool> overlappingCameras;

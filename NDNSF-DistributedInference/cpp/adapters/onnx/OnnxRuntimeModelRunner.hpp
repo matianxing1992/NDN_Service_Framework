@@ -38,6 +38,27 @@ public:
                       std::vector<OnnxKvStateSample> samples) = 0;
 };
 
+/** Optional diagnostic capability; existing observers retain their 16-point contract.
+ * Complete observation is limited to tensors of at most 4096 elements. Consumers must
+ * check coverage when a larger tensor falls back to scalar samples. No observer is
+ * installed by default. A separate interface preserves the existing observer vtable.
+ */
+class OnnxCompleteKvStateObserver
+{
+public:
+  virtual ~OnnxCompleteKvStateObserver() = default;
+  virtual bool wantsCompleteSmallState(const RoleExecutionContext& context) const = 0;
+};
+
+/** Optional synchronous observer of one named ONNX output for qualification. */
+class OnnxOutputTensorObserver
+{
+public:
+  virtual ~OnnxOutputTensorObserver() = default;
+  virtual bool wantsOutput(const RoleExecutionContext& context, const std::string& name) const = 0;
+  virtual void recordOutput(const RoleExecutionContext& context, OnnxKvStateSample tensor) = 0;
+};
+
 struct OnnxRuntimeProviderSelection
 {
   std::string requestedProvider;

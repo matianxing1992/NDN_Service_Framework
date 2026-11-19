@@ -3134,6 +3134,9 @@ namespace ndn_service_framework{
             std::map<ndn::Name, std::string> m_selectedProviderTokenHashes;
             std::set<std::string> m_recentProviderRequestTokenHashes;
             std::set<std::string> m_consumedProviderTokenHashes;
+            // Only selections with multiple separately dispatched local roles need a count.
+            // The pending request owns it under m_pendingRequestMutex.
+            std::map<ndn::Name, std::size_t> m_collaborationLocalRolesRemaining;
             struct RequestScopedInvocationState
             {
                 RequestKeyBundle keys;
@@ -3141,7 +3144,6 @@ namespace ndn_service_framework{
                 std::uint64_t inputBytes = 0;
                 std::uint64_t inputPackets = 0;
                 std::uint64_t inputAttempt = 0;
-                std::size_t localRolesRemaining = 1;
                 bool inputObserved = false;
                 bool inputClaimed = false;
                 bool inputNestedInSelection = false;

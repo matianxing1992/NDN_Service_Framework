@@ -1,5 +1,7 @@
 #include "uav-person-published-frame.hpp"
 
+#include "uav-person-json.hpp"
+
 #include "UavDigest.hpp"
 #include "UavNames.hpp"
 #include "ndn-service-framework/strict-json.hpp"
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -80,9 +83,17 @@ UavPersonPublishedFrameStore::retainPublished(const UavPersonFrameReadBinding& b
   if (canonicalSha256Digest(hash.toString()) != binding.inputDigest) {
     throw std::invalid_argument("source publication bytes do not match its digest");
   }
-  auto candidate = std::make_unique<Publication>(Publication{fields, requesterIdentity, bytes});
   std::lock_guard<std::mutex> lock(m_mutex);
-  m_publication.swap(candidate);
+  const auto frameName = binding.frameName;
+  if (m_publications.find(frameName) == m_publications.end()) {
+    m_order.push_back(frameName);
+  }
+  m_publications[frameName] = Publication{fields, requesterIdentity, bytes};
+  constexpr size_t MAX_RETAINED_FRAMES = 8;
+  while (m_order.size() > MAX_RETAINED_FRAMES) {
+    m_publications.erase(m_order.front());
+    m_order.pop_front();
+  }
 }
 
 ndn::Buffer
@@ -90,11 +101,93 @@ UavPersonPublishedFrameStore::read(const std::map<std::string, std::string>& fie
                                   const ndn::Name& authenticatedRequester) const
 {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_publication || authenticatedRequester.empty() ||
-      authenticatedRequester != m_publication->requester || fields != m_publication->fields) {
+  const auto frameNameIt = fields.find("frame_name");
+  const auto publication = frameNameIt == fields.end()
+    ? m_publications.end() : m_publications.find(frameNameIt->second);
+  if (publication == m_publications.end() || authenticatedRequester.empty() ||
+      authenticatedRequester != publication->second.requester ||
+      fields != publication->second.fields) {
     throw std::invalid_argument("source frame publication is absent, evicted or context-mismatched");
   }
-  return m_publication->bytes;
+  return publication->second.bytes;
+}
+
+std::string
+renderUavPersonFrameContext(const UavPersonFrameReadBinding& binding)
+{
+  const uav::person_json::Json wire{
+    {"runId", binding.runId}, {"missionId", binding.missionId},
+    {"windowId", binding.windowId}, {"cameraId", binding.cameraId},
+    {"sourceId", binding.sourceId}, {"sourceEpoch", binding.sourceEpoch},
+    {"sequence", binding.sequence}, {"frameName", binding.frameName},
+    {"inputDigest", binding.inputDigest},
+    {"windowBindingName", binding.windowBindingName},
+    {"windowBindingDigest", binding.windowBindingDigest}};
+  return wire.dump();
+}
+
+UavPersonFrameReadBinding
+parseUavPersonFrameContext(const std::string& json, size_t maximumBytes)
+{
+  const auto wire = uav::person_json::parseBounded(json, maximumBytes);
+  uav::person_json::exactKeys(wire, {"runId", "missionId", "windowId", "cameraId",
+    "sourceId", "sourceEpoch", "sequence", "frameName", "inputDigest",
+    "windowBindingName", "windowBindingDigest"});
+  UavPersonFrameReadBinding binding;
+  binding.runId = uav::person_json::text(wire.at("runId"));
+  binding.missionId = uav::person_json::text(wire.at("missionId"));
+  binding.windowId = uav::person_json::text(wire.at("windowId"));
+  binding.cameraId = uav::person_json::text(wire.at("cameraId"));
+  binding.sourceId = uav::person_json::text(wire.at("sourceId"));
+  binding.sourceEpoch = uav::person_json::unsignedNumber(wire.at("sourceEpoch"));
+  binding.sequence = uav::person_json::unsignedNumber(wire.at("sequence"));
+  binding.frameName = uav::person_json::text(wire.at("frameName"));
+  binding.inputDigest = uav::person_json::text(wire.at("inputDigest"));
+  binding.windowBindingName = uav::person_json::text(wire.at("windowBindingName"));
+  binding.windowBindingDigest = uav::person_json::text(wire.at("windowBindingDigest"));
+  if (renderUavPersonFrameContext(binding) != json) {
+    throw std::invalid_argument("source frame context is not canonical");
+  }
+  return binding;
+}
+
+void
+UavPersonPublishedFrameStore::retainBindingRef(const std::string& name,
+                                               const std::string& digest)
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_order.empty()) throw std::invalid_argument("no publication for binding ref");
+  auto& publication = m_publications.at(m_order.back());
+  publication.bindingName = name;
+  publication.bindingDigest = digest;
+}
+
+std::string
+UavPersonPublishedFrameStore::readContext(const std::map<std::string, std::string>& fields,
+                                          const ndn::Name& authenticatedRequester) const
+{
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const auto frameNameIt = fields.find("frame_name");
+  const auto publication = frameNameIt == fields.end()
+    ? m_publications.end() : m_publications.find(frameNameIt->second);
+  if (publication == m_publications.end() || authenticatedRequester.empty() ||
+      authenticatedRequester != publication->second.requester ||
+      fields != publication->second.fields) {
+    throw std::invalid_argument("source frame publication is absent, evicted or context-mismatched");
+  }
+  UavPersonFrameReadBinding binding;
+  binding.runId = fields.at("run_id");
+  binding.missionId = fields.at("mission_id");
+  binding.windowId = fields.at("window_id");
+  binding.cameraId = fields.at("camera_id");
+  binding.sourceId = fields.at("source_id");
+  binding.sourceEpoch = std::stoull(fields.at("source_epoch"));
+  binding.sequence = std::stoull(fields.at("sequence"));
+  binding.frameName = fields.at("frame_name");
+  binding.inputDigest = fields.at("input_digest");
+  binding.windowBindingName = publication->second.bindingName;
+  binding.windowBindingDigest = publication->second.bindingDigest;
+  return renderUavPersonFrameContext(binding);
 }
 
 } // namespace ndnsf::examples::uav

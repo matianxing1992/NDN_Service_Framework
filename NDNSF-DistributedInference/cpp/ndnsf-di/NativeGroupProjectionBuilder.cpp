@@ -163,20 +163,22 @@ NativeGroupProjectionBuilder::buildFromValidatedSealed(
   }
   for (const auto& dependency : core.executionPlan.dependencies) {
     if (dependency.operationKind != "TOKEN_FEEDBACK") continue;
-    if (!core.generationContract.enabled || !dependency.useNdnsfDataV1 ||
+    if (!core.generationContract.enabled || core.generationContract.tokenInputName.empty() ||
+        !dependency.useNdnsfDataV1 ||
         dependency.producers.size() != 1 || dependency.consumers.size() != 1 ||
-        dependency.tensors != std::vector<std::string>{"input_ids"} ||
+        dependency.tensors != std::vector<std::string>{core.generationContract.tokenInputName} ||
         dependency.collectiveOperationIndex >= core.generationContract.streamingOperationStride)
       throw std::invalid_argument("group feedback execution contract is incomplete");
     const auto& producer = core.assignment.providerByRole.at(dependency.producers.front());
     const auto& consumer = core.assignment.providerByRole.at(dependency.consumers.front());
     auto& group = groups.at(groupByProvider.at(producer));
     const auto producerRank = std::to_string(group.rank.at(producer));
-    const auto feedbackLayout = hash(NativeJson{{"tensor", "input_ids"},
+    const auto feedbackLayout = hash(NativeJson{{"tensor", core.generationContract.tokenInputName},
       {"layout", "int64[1,1]"}, {"operation", "TOKEN_FEEDBACK"}});
     if (dependency.collectiveProducerRank != producerRank ||
         dependency.collectiveSourceLayoutDigest != feedbackLayout || dependency.collectiveTargetLayoutDigest != feedbackLayout ||
-        dependency.collectiveTensorDigest != hash(NativeJson::array({"input_ids"})))
+        dependency.collectiveTensorDigest !=
+          hash(NativeJson::array({core.generationContract.tokenInputName})))
       throw std::invalid_argument("group feedback rank or tensor identity mismatch");
     auto& operation = group.operations["feedback:" + dependency.keyScope];
     if (operation.sealedIndex) throw std::invalid_argument("group feedback operation repeats a scope");

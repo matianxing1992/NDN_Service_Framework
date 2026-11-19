@@ -85,8 +85,12 @@ projectTrackingPresentation(const TrackingPresentation& presentation,
                    result.at("missionId") == "tracking-" + definition.runId &&
                    result.at("windowId") == "window-" + std::to_string(presentation.windowIndex),
                  "display result execution mismatch");
-  requireDisplay(result.at("schema") == (definition.mode == TrackingMode::PERSON ?
-                   "uav-person-tracking-result-v1" : "spec210-tracking-result-v2") &&
+  const auto resultSchema = result.at("schema").get<std::string>();
+  const bool personV2 = definition.mode == TrackingMode::PERSON &&
+    resultSchema == "uav-person-tracking-result-v2";
+  requireDisplay((definition.mode == TrackingMode::PERSON ?
+                    (resultSchema == "uav-person-tracking-result-v1" || personV2) :
+                    resultSchema == "spec210-tracking-result-v2") &&
                    result.at("terminal") == true, "display result schema or terminal mismatch");
   const auto& frames = result.at("frames");
   requireDisplay(frames.is_array() && frames.size() == 3, "display requires three frames");
@@ -99,7 +103,8 @@ projectTrackingPresentation(const TrackingPresentation& presentation,
     requireDisplay(image.cameraId == source.cameraId && image.sourceId == source.sourceId &&
                      image.sourceEpoch == source.sourceEpoch &&
                      image.producerIdentity == source.producerIdentity &&
-                     image.sequence == presentation.windowIndex + 1 &&
+                     (personV2 ? number(frame.at("sequence")) == image.sequence
+                               : image.sequence == presentation.windowIndex + 1) &&
                      frame.at("cameraId") == image.cameraId &&
                      frame.at("sourceId") == image.sourceId &&
                      number(frame.at("sourceEpoch")) == image.sourceEpoch &&

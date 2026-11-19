@@ -217,6 +217,8 @@ struct Options
   std::string tokenizerJson;
   std::string statisticsFile;
   bool sampleKvStateValues = false;
+  bool captureCompleteKvState = false;
+  std::string captureLogitsOutput;
   std::string kvHandoffConfigPath;
   bool checkKvHandoffConfig = false;
   std::string repoServiceName = "/NDNSF/DistributedRepo";
@@ -849,6 +851,12 @@ parseArgs(int argc, char** argv)
     else if (arg == "--sample-kv-state-values") {
       options.sampleKvStateValues = true;
     }
+    else if (arg == "--capture-complete-kv-state") {
+      options.captureCompleteKvState = true;
+    }
+    else if (arg == "--capture-logits-output") {
+      options.captureLogitsOutput = readValue();
+    }
     else if (arg == "--repo-service") {
       options.repoServiceName = readValue();
     }
@@ -1231,7 +1239,8 @@ printUsage(const char* program)
     << "[--artifact-cache-max-mib <positive-MiB>] "
     << "[--cache-compatibility-source-dir <verified-cache-dir>] "
     << "[--tokenizer-json <path>] "
-    << "[--statistics-file <jsonl-path>] [--sample-kv-state-values] "
+    << "[--statistics-file <jsonl-path>] [--sample-kv-state-values | --capture-complete-kv-state] "
+    << "[--capture-logits-output <tensor-name>] "
     << "[--repo-fetch-timeout-ms <ms>] [--assembly-timeout-ms <ms>] "
     << "[--conversation-retention-ms <1..3600000>] "
     << "[--repo-ack-timeout-ms <ms>] "
@@ -1339,25 +1348,6 @@ main(int argc, char** argv)
     auto specs = withExecutionEvidenceContext(loadManifestSpecs(options), options,
                                               providerBootId, providerStartedAtMs);
     const auto allowedRoles = allowedRolesForOptions(plan, options);
-    if (options.serve) {
-      // A request-scoped serving manifest intentionally carries role names but
-      // no preassembled artifact paths. Keep one metadata-only runner slot per
-      // advertised role so ordered registration can complete; the authenticated
-      // Selection projection replaces each slot with its certified ONNX or
-      // native postprocess runner before execution.
-      for (const auto& role : allowedRoles) {
-        if (specs.find(role) != specs.end()) {
-          continue;
-        }
-        NativeModelRunnerSpec spec;
-        spec.role = role;
-        spec.kind = role == "Merge" ? "native-yolo-postprocess" : "onnx-model";
-        spec.backend = role == "Merge" ? "native-yolo-postprocess" : options.offerBackend;
-        specs.emplace(role, std::move(spec));
-      }
-      specs = withExecutionEvidenceContext(
-        std::move(specs), options, providerBootId, providerStartedAtMs);
-    }
     std::optional<NativeProviderOfferV3Config> nativeOfferConfig;
     if (!options.selectionOfferKeyFile.empty()) {
       auto signer = loadNativeOfferSigner(options.selectionOfferKeyFile);
@@ -1371,6 +1361,11 @@ main(int argc, char** argv)
       config.devices = options.offerDevices;
       config.canProvision = options.offerCanProvision;
       config.hasModel = options.offerHasModel;
+      // Declare what this binary actually runs. The worker implements the sealed step
+      // template and the local partial SUM, so a plan that needs them must be able to find
+      // a Provider that says so; an empty list refused every step plan at screening.
+      config.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_STEP_PLAN_CAPABILITY_V2,
+                             NATIVE_SUM_CAPABILITY_V1, NATIVE_TENSOR_SHARD_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {
@@ -1426,22 +1421,20 @@ main(int argc, char** argv)
       std::chrono::milliseconds(options.assemblyTimeoutMs);
     auto artifactCache = std::make_shared<ProviderArtifactCache>(artifactCacheConfig);
     std::shared_ptr<OnnxKvStateProbe> stateProbe;
-    if (options.sampleKvStateValues) {
+    if (options.sampleKvStateValues && options.captureCompleteKvState)
+      throw std::invalid_argument("choose one KV qualification mode");
+    if (!options.captureLogitsOutput.empty() && !options.captureCompleteKvState)
+      throw std::invalid_argument("logits qualification requires complete KV mode");
+    if (options.sampleKvStateValues || options.captureCompleteKvState) {
       if (options.statisticsFile.empty() || options.wiringCheckOnly ||
           options.tracerDeterministicRunner)
         throw std::invalid_argument("KV qualification requires statistics and real ONNX execution");
       stateProbe = std::make_shared<OnnxKvStateProbe>(
-        std::filesystem::absolute(options.statisticsFile + ".kv-samples.json"), options.providerName);
+        std::filesystem::absolute(options.statisticsFile +
+          (options.captureCompleteKvState ? ".kv-complete" : ".kv-samples.json")),
+        options.providerName, options.captureCompleteKvState, options.captureLogitsOutput);
     }
-    registerOnnxRuntimeBackend(*factory, sessionCache, std::move(stateProbe));
-    factory->registerBackend(
-      "native-yolo-postprocess",
-      [] (const NativeModelRunnerSpec& spec) {
-        return makeNativeYoloMergeRunner(spec);
-      });
-    // Same registration as the library factory: the tensor-parallel parent
-    // runner needs the ONNX backend above, and every other role is unaffected.
-    ndnsf::di::qwen::registerQwenTensorBackend(*factory);
+    registerMaintainedNativeProviderBackends(*factory, sessionCache, std::move(stateProbe));
     if (options.wiringCheckOnly || options.tracerDeterministicRunner) {
       factory->registerBackend(
         "onnxruntime",
@@ -2157,18 +2150,13 @@ main(int argc, char** argv)
               logRuntimeEvidence(record.str());
             }
 
-            // Formal serving never reads a ready-made role file at startup.
-            // The metadata-only specs are used only for the ordered role set;
-            // the exact model path is produced after Selection by the factory.
-            auto metadataSpecs = withExecutionEvidenceContext(
-              specs, options, providerBootId, providerStartedAtMs);
             // The post-Selection factory reconstructs a role spec from the
             // canonical assembly cache. Preserve the validated resident
             // opt-in across that reconstruction; otherwise the preparation
             // context adds a request profile and disables the ORT session
             // cache even though the service manifest requested residency.
             std::map<std::string, bool> residentSessionByRole;
-            for (const auto& item : metadataSpecs) {
+            for (const auto& item : specs) {
               const auto found = item.second.metadata.find("residentSession");
               const bool resident =
                 found != item.second.metadata.end() &&
@@ -2179,15 +2167,11 @@ main(int argc, char** argv)
                      << " manifestResident=" << (resident ? "true" : "false");
               logRuntimeEvidence(record.str());
             }
-            auto materializedSpecs = metadataSpecs;
-            auto runners = orderedSpecs(plan, materializedSpecs, allowedRoles);
             {
               std::ostringstream record;
               record << "NDNSF_DI_NATIVE_PROVIDER_PLAN_READY roles="
                        << plan.roles.size()
-                       << " artifacts=" << materializedSpecs.size()
-                       << " activeRoles=" << allowedRoles.size()
-                       << " runners=" << runners.size();
+                       << " activeRoles=" << allowedRoles.size();
               logRuntimeEvidence(record.str());
             }
 
@@ -2197,7 +2181,6 @@ main(int argc, char** argv)
             config.plan = plan;
             config.assignment = defaultAssignment(plan, options.providerName, allowedRoles);
             config.runnerFactory = factory;
-            config.runnerSpecs = std::move(runners);
             config.localProviderName = options.providerName;
             config.providerBootId = providerBootId;
             config.protectedResidentAuthority = protectedResidentAuthority;
@@ -2298,11 +2281,8 @@ main(int argc, char** argv)
                 ndn_service_framework::ServiceProvider::CollaborationContext& ctx,
                 const NativeSelectionProjectionV3& projection,
                 const std::shared_ptr<ProtectedRuntime>& protectedRuntime) {
-                NativeModelRunnerSpec spec;
-                if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS") {
-                  spec = nativeYoloMergeRunnerSpecFromProjection(projection);
-                }
-                else {
+                auto spec = prepareMaintainedNativeRole(projection, [&] {
+                  NativeModelRunnerSpec spec;
                   NativeCanonicalOnnxAssemblerOptions assemblyOptions;
                   assemblyOptions.cacheDir = assemblyCacheDir;
                   assemblyOptions.persistentRecipeResidencyIndex =
@@ -2448,7 +2428,7 @@ main(int argc, char** argv)
                         projection, "CACHE_TEMPLATE_REBIND", "current-grant-ciphertext");
                     }
                     else {
-                      artifactCache->invalidate(key);
+                      artifactCache->invalidate(key, projection);
                       throw std::runtime_error(
                         "DI_PROVIDER_ARTIFACT_TEMPLATE_REBIND_MISSING");
                     }
@@ -2477,7 +2457,8 @@ main(int argc, char** argv)
                     std::move(lease));
                   lifetime->plaintext = std::move(plaintextLease);
                   spec.lifetime = std::move(lifetime);
-                }
+                  return spec;
+                });
                 const auto resident = residentSessionByRole.find(spec.role);
                 const bool residentRequested =
                   resident != residentSessionByRole.end() && resident->second;

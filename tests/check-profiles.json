@@ -115,6 +115,7 @@
     "tests/unit-tests/dependency-recovery.t.cpp": "core",
     "tests/unit-tests/di-execution-lease-service.t.cpp": "di",
     "tests/unit-tests/di-extension-contract.t.cpp": "di",
+    "tests/unit-tests/di-hybrid-cut.t.cpp": "di",
     "tests/unit-tests/di-native-assembly.t.cpp": "di",
     "tests/unit-tests/di-native-authority.t.cpp": "di",
     "tests/unit-tests/di-native-canonical-json.t.cpp": "di",
@@ -206,6 +207,7 @@
     "tests/unit-tests/producer-signer-policy.t.cpp": "core",
     "tests/unit-tests/published-content-name.t.cpp": "core",
     "tests/unit-tests/repo-client-api.t.cpp": "repo",
+    "tests/unit-tests/repo-io-benchmark.t.cpp": "repo",
     "tests/unit-tests/repo-owner-delete-cli.t.cpp": "repo",
     "tests/unit-tests/repo-user-storage-journal.t.cpp": "repo",
     "tests/unit-tests/repo-user-storage-wire.t.cpp": "repo",
@@ -273,6 +275,7 @@
     "tests/unit-tests/uav-person-profile.t.cpp": "uav",
     "tests/unit-tests/uav-person-published-frame.t.cpp": "uav",
     "tests/unit-tests/uav-person-result.t.cpp": "uav",
+    "tests/unit-tests/uav-person-result-v2.t.cpp": "uav",
     "tests/unit-tests/uav-person-sequence.t.cpp": "uav",
     "tests/unit-tests/uav-person-tracking.t.cpp": "uav",
     "tests/unit-tests/uav-protocol-state.t.cpp": "uav",
@@ -287,7 +290,8 @@
     "tests/unit-tests/uav-tracking-worker-process.t.cpp": "uav",
     "tests/unit-tests/uav-tracking-worker-transaction.t.cpp": "uav",
     "tests/unit-tests/uav-two-lifecycle.t.cpp": "uav",
-    "tests/unit-tests/uav-vehicle-tracking-engine.t.cpp": "uav"
+    "tests/unit-tests/uav-vehicle-tracking-engine.t.cpp": "uav",
+    "tests/unit-tests/uav-window-binding.t.cpp": "uav"
   },
   "profiles": {
     "unit": {

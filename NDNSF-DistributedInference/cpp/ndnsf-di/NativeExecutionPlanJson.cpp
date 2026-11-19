@@ -10,6 +10,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-step-template-json.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-generation-feedback.hpp"
 #include <ndn-cxx/encoding/tlv.hpp>
 #include "ndn-service-framework/ProtectedBlobManifest.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
@@ -40,7 +42,6 @@ NativeRoleDataflowContractV3 bindFixedTemplateDataflow(
 std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
   const NativeJson& bindings, const NativeFixedExecutionTemplateV1& fixed);
 void requireOnlyBindingKeys(const NativeJson& value, std::initializer_list<const char*> keys);
-void bindFixedTemplateSteps(NativeExecutionPlan& plan, const NativeFixedExecutionTemplateV1& fixed);
 std::vector<NativeExecutionStepSpec> nativeStepsFromJson(const boost::property_tree::ptree& root);
 NativeJson nativeStepsJson(const std::vector<NativeExecutionStepSpec>& steps);
 
@@ -129,6 +130,8 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
     sink("tensor_parallel_degree", value.tensorParallelDegree);
     sink("tensor_parallel_rank", value.tensorParallelRank);
   }
+  if (!value.tensorShardV1.empty())
+    sink("tensor_shard_v1", value.tensorShardV1);
   sink("merge_kind", value.mergeKind);
   sink("postprocess_identity", value.postprocessIdentity);
   sink("postprocess_output_name", value.postprocessOutputName);
@@ -366,41 +369,6 @@ NativeJson jsonValue(const RedistributionSpec& value)
   result["axis"] = value.axis;
   result["temporaryMemoryBytes"] = value.temporaryMemoryBytes;
   result["completeOutput"] = value.completeOutput;
-  return result;
-}
-
-NativeJson jsonValue(const NativeStepSlotSpec& value)
-{
-  auto result = NativeJson::object();
-  result["slot_id"] = value.slotId;
-  result["dtype"] = value.dtype;
-  result["shape"] = NativeJson::array();
-  for (const auto& dimension : value.shape) {
-    std::visit([&result] (const auto& item) { result["shape"].push_back(item); }, dimension);
-  }
-  result["layout_digest"] = value.layoutDigest;
-  result["source"] = value.source;
-  // Only a step-fed slot carries a producer; the key is omitted rather than
-  // emitted empty so a legacy reader sees no new field at all.
-  if (!value.producerStepId.empty()) result["producer_step_id"] = value.producerStepId;
-  if (!value.producerSlotId.empty()) result["producer_slot_id"] = value.producerSlotId;
-  return result;
-}
-
-NativeJson jsonValue(const NativeExecutionStepSpec& value)
-{
-  auto result = NativeJson::object();
-  result["step_id"] = value.stepId;
-  result["unit_id"] = value.unitId;
-  result["operation"] = value.operation;
-  if (!value.artifactEntry.empty()) result["artifact_entry"] = value.artifactEntry;
-  result["input_slots"] = jsonArray(value.inputSlots);
-  result["output_slots"] = jsonArray(value.outputSlots);
-  // localStateSlots is already a string array; emit it through the same helper
-  // the rest of the schema uses.
-  auto states = NativeJson::array();
-  for (const auto& name : value.localStateSlots) states.push_back(name);
-  result["local_state_slots"] = std::move(states);
   return result;
 }
 
@@ -755,6 +723,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
     "protection_epoch", "plaintext-v1");
   role.tensorParallelDegree = node.get<std::uint64_t>("tensor_parallel_degree", 0);
   role.tensorParallelRank = node.get<std::uint64_t>("tensor_parallel_rank", 0);
+  role.tensorShardV1 = node.get<std::string>("tensor_shard_v1", "");
   role.mergeKind = node.get<std::string>("merge_kind", "");
   role.postprocessIdentity = node.get<std::string>(
     "postprocess_identity", "");
@@ -783,6 +752,9 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.protectionEpoch == right.protectionEpoch &&
          left.requiredDeviceMemoryMb == right.requiredDeviceMemoryMb &&
          left.artifactDigest == right.artifactDigest &&
+         left.tensorParallelDegree == right.tensorParallelDegree &&
+         left.tensorParallelRank == right.tensorParallelRank &&
+         left.tensorShardV1 == right.tensorShardV1 &&
          left.automaticContractDigest == right.automaticContractDigest &&
           (!compareRecipe || left.recipeDigest == right.recipeDigest) &&
          left.roleKind == right.roleKind && left.adapterId == right.adapterId &&
@@ -1452,6 +1424,15 @@ nativeExecutionPlansByServiceFromJson(std::istream& input)
       service.get<std::uint64_t>("tensor_degree", 1));
     if (const auto steps = service.get_child_optional("steps"))
       plan.steps = nativeStepsFromJson(*steps);
+    if (const auto stages = service.get_child_optional("stage_layout")) {
+      for (const auto& entry : *stages) {
+        NativeStageLayout stage;
+        stage.stageId = entry.second.get<std::string>("stage_id");
+        stage.sourceRegionDigest = entry.second.get<std::string>("source_region_digest", "");
+        stage.unitRoleIds = stringArrayFromJson(entry.second, "unit_role_ids");
+        plan.stageLayout.push_back(std::move(stage));
+      }
+    }
     const auto dependencies = service.get_child_optional("dependencies");
     if (dependencies) {
       for (const auto& depNode : dependencies.get()) {
@@ -1522,6 +1503,20 @@ nativeExecutionPlanForServiceFromJson(std::istream& input, const std::string& se
     throw std::out_of_range("native execution plan has no service: " + serviceName);
   }
   return found->second;
+}
+
+NativeJson
+nativeV2StepTemplateJson(const NativeExecutionPlan& plan)
+{
+  if (plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2)
+    throw std::invalid_argument("v2 step commitment requires a v2 plan");
+  plan.validateSteps();
+  auto stages = NativeJson::array();
+  for (const auto& stage : plan.stageLayout)
+    stages.push_back(nativeParseJson(stage.canonicalJson()));
+  return NativeJson{{"step_plan_version", plan.stepPlanVersion},
+    {"tensor_degree", plan.tensorDegree}, {"stage_layout", std::move(stages)},
+    {"steps", nativeStepsJson(plan.steps)}};
 }
 
 namespace {
@@ -1687,6 +1682,9 @@ NativeSelectionRoleV3 checkedGeneratedRole(const NativeSelectionRoleV3& source,
 
 void restoreSelectionRoleShapes(NativeSelectionRoleV3& role, const NativeJson& node)
 {
+    if (node.contains("tensor_shard_v1") &&
+        (!node.at("tensor_shard_v1").is_string() || role.tensorShardV1.empty()))
+      throw std::invalid_argument("missing or invalid typed tensor_shard_v1");
     const auto restore = [&node] (auto& contracts, const char* key) {
       if (contracts.empty()) return;
       if (!node.contains(key) || !node.at(key).is_array() ||
@@ -1753,6 +1751,22 @@ automaticInvocationEncoding(const NativeJson& value)
   return encoding;
 }
 
+std::vector<NativeStageLayout>
+nativeStageLayoutsFromJson(const NativeJson& rows)
+{
+  if (!rows.is_array()) throw std::invalid_argument("stage layout must be an array");
+  std::vector<NativeStageLayout> result;
+  for (const auto& row : rows) {
+    NativeStageLayout stage;
+    stage.stageId = row.at("stage_id").get<std::string>();
+    stage.sourceRegionDigest = row.at("source_region_digest").get<std::string>();
+    stage.unitRoleIds = row.at("unit_role_ids").get<std::vector<std::string>>();
+    stage.validate();
+    result.push_back(std::move(stage));
+  }
+  return result;
+}
+
 NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   const NativeJson& typedRoot, const boost::property_tree::ptree& root,
   const std::string& selectedRole,
@@ -1762,6 +1776,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   bool allowCompactProjection = false)
 {
   const auto schema = typedRoot.value("schema", std::string{});
+  const bool explicitShard = schema == NATIVE_TENSOR_SHARD_SELECTION_SCHEMA;
   const bool automatic = schema == "ndnsf-di-selection-v4" ||
     schema == "ndnsf-di-selection-invocation-v4";
   if (automatic && (!typedRoot.contains("schema_version") ||
@@ -1827,8 +1842,9 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
         (automatic ? (fixedAssignment ? "ndnsf-di-selection-invocation-v4" : "ndnsf-di-selection-v4") :
          fixedAssignment ? (rangeInvocation ? "ndnsf-di-selection-invocation-v3" :
                                              "ndnsf-di-selection-invocation-v1") :
-                           "ndnsf-di-selection-v3") ||
-      root.get<int>("schema_version", 0) != (automatic ? 4 : fixedAssignment ? invocationVersion : 3)) {
+         explicitShard ? NATIVE_TENSOR_SHARD_SELECTION_SCHEMA : "ndnsf-di-selection-v3") ||
+      root.get<int>("schema_version", 0) != (automatic ? 4 : fixedAssignment ? invocationVersion :
+        explicitShard ? NATIVE_TENSOR_SHARD_SELECTION_VERSION : 3)) {
     throw std::invalid_argument("V3 Selection projection schema mismatch");
   }
 
@@ -1868,6 +1884,18 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
 
   projection.plan.version = 3;
   projection.plan.executionPolicy = "DATA_DRIVEN_V2";
+  if (!fixedAssignment && typedRoot.contains("step_template_v2")) {
+    const auto& value = typedRoot.at("step_template_v2");
+    requireOnlyBindingKeys(value, {"step_plan_version", "tensor_degree", "stage_layout", "steps"});
+    if (value.at("step_plan_version") != NATIVE_STEP_PLAN_VERSION_V2 ||
+        !value.at("tensor_degree").is_number_integer() ||
+        value.at("tensor_degree") <= 0 || !value.at("steps").is_array())
+      throw std::invalid_argument("Selection v2 step template metadata is invalid");
+    projection.plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+    projection.plan.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
+    projection.plan.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
+    projection.plan.stageLayout = nativeStageLayoutsFromJson(value.at("stage_layout"));
+  }
   std::set<std::string> roleSet;
   const auto appendRole = [&] (const std::string& role) {
     if (!role.empty() && roleSet.insert(role).second) {
@@ -1879,6 +1907,7 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     projection.plan.dependencies = bindFixedTemplateDependencies(
       typedRoot.at("dependencies"), *fixedAssignment->executionTemplate());
     bindFixedTemplateSteps(projection.plan, *fixedAssignment->executionTemplate());
+    roleSet.insert(projection.plan.roles.begin(), projection.plan.roles.end());
     for (const auto& dependency : projection.plan.dependencies) {
       for (const auto& role : dependency.producers) appendRole(role);
       for (const auto& role : dependency.consumers) appendRole(role);
@@ -1902,6 +1931,8 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
   // role list -- every step then belongs to an "undeclared unit", which is exactly what
   // validateSteps reported for a degree-two plan.
   for (const auto& step : projection.plan.steps) appendRole(step.unitId);
+  if (projection.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
+    projection.plan.validateSteps();
 
   if (const auto generation = root.get_child_optional("generation_contract")) {
     auto& contract = projection.generationContract;
@@ -2047,14 +2078,10 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
               contract.eosTokenIds.begin(), contract.eosTokenIds.end(), value) !=
               contract.eosTokenIds.end();
           }) ||
-        // C6 requires one feedback edge per receiving unit, so a sharded plan has one
-        // per role. A pipeline plan keeps the single edge it always had. Any other
-        // count is still refused: two edges for three roles would leave a unit without
-        // its next-epoch input while the others ran.
-        // The expected count is the number of units this plan executes. A projection lists
-        // one role, but a sealed template names every unit in its steps, so the unit count
-        // comes from there when the plan is a template.
-        (feedbackCount != 1 &&
+        // Preserve legacy feedback counts. V2 checks exact token consumers after dataflow
+        // restoration, including the legitimate two-receiver/three-unit hybrid layout.
+        (projection.plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 &&
+         feedbackCount != 1 &&
          feedbackCount != (projection.plan.steps.empty()
            ? projection.plan.roles.size() : planUnitCount()))) {
       throw std::invalid_argument(
@@ -2173,11 +2200,40 @@ NativeSelectionProjectionV3 decodeSelectionProjectionV3(
     restoreSelectionRoleShapes(projection.selectedRole, typedRoot.at("roles").at(0));
     restoreSelectionRoleShapes(projection.assembly, typedRoot.at("assembly"));
   }
+  if (!fixedAssignment &&
+      (explicitShard != !projection.selectedRoleContract().tensorShardV1.empty() ||
+       explicitShard != !projection.assemblyContract().tensorShardV1.empty()))
+    throw std::invalid_argument("Selection tensor shard version mismatch");
+  if (!fixedAssignment)
+    validateNativeQwenTensorAssembly(projection.assemblyContract(), projection.plan.stageLayout);
   projection.dataflow = fixedAssignment
     ? bindFixedTemplateDataflow(typedDataflow, projection, *fixedAssignment->executionTemplate())
     : dataflowFromV3Json(*dataflow);
   validateTensorNamingStrideContract(projection.dataflow, projection.generationContract);
   projection.deviceBinding = deviceBindingFromV3Json(*deviceBinding);
+
+  if (projection.generationContract.enabled &&
+      projection.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2) {
+    std::set<std::string> producers;
+    std::set<std::string> consumers;
+    for (const auto& edge : projection.plan.dependencies) {
+      if (edge.operationKind != "TOKEN_FEEDBACK") continue;
+      if (edge.producers.size() != 1 || edge.consumers.size() != 1 ||
+          edge.tensors != std::vector<std::string>{projection.generationContract.tokenInputName} ||
+          !consumers.insert(edge.consumers.front()).second)
+        throw std::invalid_argument("V3 v2 feedback owner or consumer is ambiguous");
+      producers.insert(edge.producers.front());
+    }
+    if (producers.size() != 1)
+      throw std::invalid_argument("V3 v2 feedback requires one result owner");
+    const auto topology = nativeGenerationFeedbackTopology(projection.plan, *producers.begin(),
+      projection.generationContract.tokenInputName);
+    const std::set<std::string> expected(topology.consumerRoles.begin(), topology.consumerRoles.end());
+    if (consumers != expected ||
+        ((topology.producerRole == projection.executionRole.roleId) !=
+         projection.dataflow.terminalResponseOwner))
+      throw std::invalid_argument("V3 v2 feedback differs from token ports or result ownership");
+  }
 
   if (const auto stateReference =
         root.get_child_optional("conversation_state_reference")) {
@@ -2506,6 +2562,16 @@ NativeJson fixedTemplateJson(const NativeFixedExecutionTemplateV1& value)
     result["steps"] = nativeStepsJson(value.steps);
     result["step_plan_version"] = value.stepPlanVersion;
     result["tensor_degree"] = value.tensorDegree;
+    // Only a v2 template has stages, so v1 bytes stay identical.
+    if (!value.stageLayout.empty()) {
+      auto stages = NativeJson::array();
+      for (const auto& stage : value.stageLayout) {
+        stages.push_back(NativeJson{{"stage_id", stage.stageId},
+                                    {"source_region_digest", stage.sourceRegionDigest},
+                                    {"unit_role_ids", stage.unitRoleIds}});
+      }
+      result["stage_layout"] = std::move(stages);
+    }
   }
   return result;
 }
@@ -2747,7 +2813,11 @@ NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
 {
   NativeFixedExecutionTemplateV1 result;
   const bool withSteps = value.is_object() && value.contains("steps");
-  if (!value.is_object() || value.size() != (withSteps ? 8U : 5U) ||
+  const bool withLayout = value.is_object() && value.contains("stage_layout");
+  if (!value.is_object() ||
+      value.size() != (withSteps ? 8U : 5U) + (withLayout ? 1U : 0U) ||
+      (withLayout && !withSteps) ||
+      (withSteps && (!value.at("steps").is_array() || value.at("steps").empty())) ||
       !value.at("dependencies").is_array() ||
       !value.at("expand_role_epochs").is_boolean())
     throw std::invalid_argument("invalid fixed execution template fields");
@@ -2755,6 +2825,9 @@ NativeFixedExecutionTemplateV1 fixedTemplateFromJson(const NativeJson& value)
     result.steps = nativeStepsFromJson(legacyTreeFromValue(value.at("steps")));
     result.stepPlanVersion = value.at("step_plan_version").get<std::string>();
     result.tensorDegree = value.at("tensor_degree").get<std::uint64_t>();
+  }
+  if (withLayout) {
+    result.stageLayout = nativeStageLayoutsFromJson(value.at("stage_layout"));
   }
   result.providerByRole = value.at("provider_by_role").get<std::map<std::string, std::string>>();
   result.expandRoleEpochs = value.at("expand_role_epochs").get<bool>();
@@ -2858,38 +2931,6 @@ std::vector<NativeDependencySpec> bindFixedTemplateDependencies(
     }
   }
   return dependencies;
-}
-
-/** Carry the sealed step template into the invocation's execution plan. A
- * template without steps leaves the plan on its legacy whole-role path.
- */
-void bindFixedTemplateSteps(NativeExecutionPlan& plan,
-                            const NativeFixedExecutionTemplateV1& fixed)
-{
-  if (fixed.steps.empty()) {
-    if (!fixed.stepPlanVersion.empty() || fixed.tensorDegree != 1)
-      throw std::invalid_argument("fixed template has step metadata without steps");
-    return;
-  }
-  if (fixed.stepPlanVersion.empty() || fixed.tensorDegree < 2)
-    throw std::invalid_argument("fixed template step plan metadata is incomplete");
-  plan.steps = fixed.steps;
-  plan.stepPlanVersion = fixed.stepPlanVersion;
-  plan.tensorDegree = fixed.tensorDegree;
-  // The units named by a sealed template are the plan's roles, and the validation below
-  // checks every step against that list. A template whose edges are all self feedback lists
-  // no role through dependencies, so the roles must come from the steps before this check
-  // rather than after it.
-  for (const auto& step : plan.steps) {
-    if (std::find(plan.roles.begin(), plan.roles.end(), step.unitId) == plan.roles.end())
-      plan.roles.push_back(step.unitId);
-  }
-  // Validate the assembled plan, not just the template metadata. The template
-  // was normalized when it was sealed, but the invocation's plan binds it to a
-  // concrete role and dependency set, and that combination is what the Provider
-  // would execute. Without this check a malformed template that somehow reached
-  // the cache would be accepted as long as its metadata looked complete.
-  plan.validateSteps();
 }
 
 NativeJson endpointBindingsJson(const std::vector<NativeTensorEndpointV3>& endpoints)
@@ -3199,6 +3240,44 @@ rangeInvocationLogicalSize(const NativeJson& value)
 }
 } // namespace
 
+/** Carry the sealed step template into the invocation's execution plan. A
+ * template without steps leaves the plan on its legacy whole-role path.
+ */
+void bindFixedTemplateSteps(NativeExecutionPlan& plan,
+                            const NativeFixedExecutionTemplateV1& fixed)
+{
+  if (fixed.steps.empty()) {
+    if (!fixed.stepPlanVersion.empty() || fixed.tensorDegree != 1 || !fixed.stageLayout.empty())
+      throw std::invalid_argument("fixed template has step metadata without steps");
+    return;
+  }
+  const bool fixedV2 = fixed.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2;
+  if (fixed.stepPlanVersion.empty() || (!fixedV2 && fixed.tensorDegree < 2))
+    throw std::invalid_argument("fixed template step plan metadata is incomplete");
+  if (fixedV2 && fixed.stageLayout.empty())
+    throw std::invalid_argument("a v2 fixed template must carry its stage layout");
+  plan.steps = fixed.steps;
+  plan.stepPlanVersion = fixed.stepPlanVersion;
+  plan.tensorDegree = fixed.tensorDegree;
+  // Restore the stages with the steps: a Provider that read only the degree would give every
+  // unit the plan-wide geometry again.
+  plan.stageLayout = fixed.stageLayout;
+  // The units named by a sealed template are the plan's roles, and the validation below
+  // checks every step against that list. A template whose edges are all self feedback lists
+  // no role through dependencies, so the roles must come from the steps before this check
+  // rather than after it.
+  for (const auto& step : plan.steps) {
+    if (std::find(plan.roles.begin(), plan.roles.end(), step.unitId) == plan.roles.end())
+      plan.roles.push_back(step.unitId);
+  }
+  // Validate the assembled plan, not just the template metadata. The template
+  // was normalized when it was sealed, but the invocation's plan binds it to a
+  // concrete role and dependency set, and that combination is what the Provider
+  // would execute. Without this check a malformed template that somehow reached
+  // the cache would be accepted as long as its metadata looked complete.
+  plan.validateSteps();
+}
+
 void validateNativeSelectionInvocationBindingShapeV1(const NativeJson& value)
 {
   const auto automaticEncoding = automaticInvocationEncoding(value);
@@ -3290,6 +3369,12 @@ NativeJson
 selectionProjectionValue(const NativeSelectionProjectionV3& value)
 {
   auto root = selectionInvocationFields(value);
+  if (!value.assemblyContract().tensorShardV1.empty()) {
+    root["schema"] = NATIVE_TENSOR_SHARD_SELECTION_SCHEMA;
+    root["schema_version"] = NATIVE_TENSOR_SHARD_SELECTION_VERSION;
+  }
+  if (value.plan.stepPlanVersion == NATIVE_STEP_PLAN_VERSION_V2)
+    root["step_template_v2"] = nativeV2StepTemplateJson(value.plan);
   root["roles"] = NativeJson::array({jsonValue(value.selectedRoleContract())});
   root["assembly"] = jsonValue(value.assemblyContract());
   if (value.compactAssembly) {
@@ -3402,11 +3487,11 @@ nativeFixedRoleAssignmentV1FromProjection(NativeSelectionProjectionV3 projection
   auto role = std::make_shared<const NativeSelectionRoleV3>(projection.selectedRoleContract());
   auto providerByRole = projection.providerOwnership();
   if (providerByRole.empty()) providerByRole.emplace(role->selectedRole, projection.provider);
+  // The stages belong to the template for the same reason the steps do: a Provider that
+  // restored only steps and the plan-wide degree would give every unit the wrong geometry.
   NativeFixedExecutionTemplateV1 configuration{std::move(providerByRole), projection.plan.dependencies,
-    projection.dataflow, projection.generationContract};
-  configuration.steps = projection.plan.steps;
-  configuration.stepPlanVersion = projection.plan.stepPlanVersion;
-  configuration.tensorDegree = projection.plan.tensorDegree;
+    projection.dataflow, projection.generationContract, false, projection.plan.steps,
+    projection.plan.stepPlanVersion, projection.plan.tensorDegree, projection.plan.stageLayout};
   collapseFixedRoleEpochs(configuration);
   auto executionTemplate = std::make_shared<const NativeFixedExecutionTemplateV1>(
     normalizeExecutionTemplate(std::move(configuration)));
@@ -3462,6 +3547,7 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
     throw std::invalid_argument("fixed role source contains a noncanonical role contract");
   auto executionTemplate = std::make_shared<const NativeFixedExecutionTemplateV1>(
     fixedTemplateFromJson(root.at("execution_template")));
+  validateNativeQwenTensorAssembly(role, executionTemplate->stageLayout);
   validateFixedTemplateProviderCover(*executionTemplate, selected, provider);
   const auto digest = nativePlanningDigest(nativeCanonicalJson(NativeJson{
     {"schema", automatic ? "ndnsf-di-fixed-assignment-v2" : "ndnsf-di-fixed-assignment-v1"},
@@ -3473,6 +3559,19 @@ std::shared_ptr<const NativeFixedRoleAssignmentV1> nativeFixedRoleAssignmentV1Fr
   return std::make_shared<const NativeFixedRoleAssignmentV1>(
   NativeFixedRoleAssignmentV1(provider, digest, std::make_shared<const NativeSelectionRoleV3>(std::move(role)),
       std::move(executionTemplate)));
+}
+
+std::string
+detail::nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::string_view role)
+{
+  std::vector<NativeExecutionStepSpec> steps;
+  for (const auto& step : plan.steps)
+    if (step.unitId == role) steps.push_back(step);
+  if (steps.empty())
+    throw std::invalid_argument("selected role has no sealed execution steps");
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"version", plan.stepPlanVersion}, {"tensor_degree", plan.tensorDegree},
+    {"steps", nativeStepsJson(steps)}}));
 }
 
 bool nativeSelectionRoleContractsEqualV3(
@@ -3933,11 +4032,21 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
-  if (!role.automaticContractDigest.empty()) {
+  if (!role.tensorShardV1.empty()) {
+    if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
+        role.tensorParallelRank >= role.tensorParallelDegree ||
+        !role.automaticContractDigest.empty())
+      throw std::invalid_argument("tensor_shard_v1 requires a source-bound Qwen rank");
+    (void)parseNativeTensorShardV1(role.tensorShardV1);
+  }
+  // Authenticate the equal-Qwen case too. Otherwise removing both the shard
+  // field and its Selection version can retain an explicit recipe's cache key.
+  if (!role.automaticContractDigest.empty() ||
+      (role.adapterId == "qwen" && role.tensorParallelDegree >= 2)) {
     const auto canonical = canonicalNativeOnnxRecipeJson(role);
     const auto canonicalDigest = nativePlanningDigest(canonical);
     if (canonicalDigest != role.recipeDigest)
-      throw std::invalid_argument("automatic role recipe digest differs from its canonical contract: role=" +
+      throw std::invalid_argument("role recipe digest differs from its canonical contract: role=" +
         role.role + " recipe=" + role.recipeDigest + " canonical=" + canonicalDigest +
         " canonicalJson=" + canonical.substr(0, 512));
   }
@@ -3956,6 +4065,28 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
   const auto confidence = legacyTreeFromValue(NativeJson(role.postprocessConfidenceThreshold))
     .get_value<double>(0.0);
   validateSelectionRoleFields(role, confidence);
+}
+
+void
+validateNativeQwenTensorAssembly(const NativeSelectionRoleV3& role,
+                                 const std::vector<NativeStageLayout>& stages)
+{
+  if (role.adapterId != "qwen" && role.tensorShardV1.empty()) return;
+  bool found = false;
+  for (const auto& stage : stages) {
+    const auto member = std::find(stage.unitRoleIds.begin(), stage.unitRoleIds.end(),
+                                  role.selectedRole);
+    if (member == stage.unitRoleIds.end()) continue;
+    const auto degree = stage.degree() > 1 ? stage.degree() : 0;
+    const auto rank = static_cast<std::uint64_t>(std::distance(stage.unitRoleIds.begin(), member));
+    if (found || role.tensorParallelDegree != degree || role.tensorParallelRank != rank)
+      throw std::invalid_argument("Qwen tensor recipe disagrees with its stage member");
+    found = true;
+  }
+  if (!found && !role.tensorShardV1.empty())
+    throw std::invalid_argument("explicit Qwen tensor recipe has no bound stage");
+  if (role.tensorParallelDegree >= 2 || !role.tensorShardV1.empty())
+    validateNativeAssembly(role);
 }
 
 void

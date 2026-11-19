@@ -1,3 +1,4 @@
+import shutil
 # -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
 
 from waflib import Context, Logs, Utils, TaskGen
@@ -5,7 +6,14 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import subprocess
+import sys
+
+_DEPENDENCY_INVENTORY = runpy.run_path(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else sys.path[0],
+    'scripts', 'configure_dependencies.py'))
+
 
 VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
@@ -126,7 +134,7 @@ def _validate_boost_libraries(conf, library_dir, libraries):
                 f'{link_path} -> {resolved}')
         expected_soname = f'libboost_{library}.so.{HOST_BOOST_SONAME}'
         result = subprocess.run(
-            ['/usr/bin/readelf', '-d', resolved],
+            [shutil.which('readelf') or 'readelf', '-d', resolved],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0 or (
                 f'Library soname: [{expected_soname}]' not in result.stdout):
@@ -200,7 +208,7 @@ def _validate_global_dependency_identity(conf):
                 f'Global dependency digest changed for {name}: '
                 f'{actual_digest} != {expected_digest}; rerun the global installer')
         result = subprocess.run(
-            ['/usr/bin/readelf', '-d', actual_realpath],
+            [shutil.which('readelf') or 'readelf', '-d', actual_realpath],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         match = re.search(r'Library soname: \[([^]]+)\]', result.stdout)
         actual_soname = match.group(1) if match else ''
@@ -292,10 +300,17 @@ def _pin_compiler_toolchain(conf):
     if not cxx:
         conf.fatal('The C++ compiler was not configured')
 
+    compiler = cxx[0]
+    expected_root = conf.options.toolchain_root
+    if not os.path.isfile(compiler):
+        resolved = shutil.which(os.path.basename(compiler)) or shutil.which('g++')
+        if resolved:
+            compiler = resolved
+            expected_root = os.path.dirname(os.path.realpath(resolved))
     try:
         tools = _resolve_compiler_toolchain(
-            cxx[0], env=os.environ.copy(),
-            expected_root=conf.options.toolchain_root)
+            compiler, env=os.environ.copy(),
+            expected_root=expected_root)
     except (OSError, subprocess.SubprocessError, RuntimeError) as error:
         conf.fatal(f'Unable to establish a closed C++ toolchain: {error}')
 
@@ -372,6 +387,8 @@ def options(opt):
 
 
 def configure(conf):
+    global HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR
+    global HOST_BOOST_VERSION, HOST_BOOST_SONAME
     if os.environ.get('NDNSF_CONTAINER_BUILD') != '1':
         import runpy
         with open('/etc/os-release', encoding='utf-8') as release:
@@ -386,8 +403,6 @@ def configure(conf):
             selected = profile(version)
         except ValueError as error:
             conf.fatal(str(error))
-        global HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR
-        global HOST_BOOST_VERSION, HOST_BOOST_SONAME
         (HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR,
          HOST_BOOST_VERSION, HOST_BOOST_SONAME) = selected
     # Report missing SDKs together before receipt/ABI validation stops at the
@@ -780,16 +795,20 @@ void check(const ndn::InMemoryStorage& storage, const ndn::Name& name) {
 
     # T009 uses per-operation CK authorization. A version-0.1 pkg-config
     # match or a new header paired with an old library cannot supply it.
+    conf.env.INCLUDES_NDNSF_NAC = [os.path.join(nac_abe_prefix, 'include')]
+    conf.env.LIBPATH_NDNSF_NAC = [os.path.join(nac_abe_prefix, 'lib')]
+    conf.env.LIB_NDNSF_NAC = ['nac-abe']
+    nac_consumer_header = os.path.join(nac_abe_prefix, 'include', 'nac-abe', 'consumer.hpp')
     conf.check_cxx(
         msg='Checking installed NAC-ABE producer-bound CK API',
-        fragment='''
-#include <nac-abe/consumer.hpp>
+        fragment=f'''
+#include "{nac_consumer_header}"
 using Consumer = ndn::nacabe::Consumer;
 using RequiredApi = decltype(&Consumer::consumeWithCkAuthorization);
 RequiredApi volatile requiredApi = &Consumer::consumeWithCkAuthorization;
-int main() { return requiredApi == nullptr; }
+int main() {{ return requiredApi == nullptr; }}
 ''',
-        features='cxx cxxprogram', use='NAC-ABE NDN_CXX', mandatory=True)
+        features='cxx cxxprogram', use='NDNSF_NAC NDN_CXX', mandatory=True)
 
     # A layered application may link against staged builder inputs, but its
     # published ELF objects must resolve only through their APP-relative path
@@ -1225,6 +1244,14 @@ def build(bld):
             ONNXRUNTIME_LIBS=package_onnxruntime_libs,
             **package_install_paths)
 
+    if 'uav' in bld.env.NDNSF_COMPONENTS:
+        bld(features='subst',
+            source='ndnsf-uav-tracking.pc.in',
+            target='ndnsf-uav-tracking.pc',
+            install_path='${LIBDIR}/pkgconfig',
+            VERSION=VERSION,
+            **package_install_paths)
+
     bld(features='subst',
         source='libndn-service-framework.pc.in',
         target='libndn-service-framework.pc',
@@ -1232,6 +1259,33 @@ def build(bld):
         VERSION=VERSION, EXTRA_INCLUDES=package_extra_includes,
             ONNXRUNTIME_LIBS=package_onnxruntime_libs,
         **package_install_paths)
+
+    if 'di' in bld.env.NDNSF_COMPONENTS:
+        asset_tools = [
+            'Experiments/prepare-model-assets.py',
+            'Experiments/prepare-native-deployment.py',
+            'Experiments/model_assets.py',
+            'Experiments/native_probe_validation_links.py',
+            'Experiments/TigerCluster/runtime/processes.py',
+            'Experiments/profiles/qwen06b-tp-cpu.json',
+            'Experiments/profiles/requirements-cpu-ops-py38.txt',
+            'Experiments/fixtures/native-deployment/qwen06b-catalog.json',
+            'Experiments/fixtures/native-deployment/qwen06b-catalog.provenance.json',
+            'Experiments/fixtures/native-deployment/qwen06b-generation-options.json',
+            'Experiments/fixtures/native-deployment/two-provider.conf',
+            'Experiments/recipes/qwen3-0.6b-int4.json',
+            'Experiments/recipes/model-tools-py38.txt',
+            'Experiments/TigerCluster/adapters/slurm-apptainer/scripts/stage-qwen-model.py',
+            'tools/ndnsf-di/normalize_onnx_constants.py',
+        ]
+        for relative in asset_tools:
+            bld.install_as('${PREFIX}/share/ndnsf/' + relative, bld.srcnode.find_node(relative))
+
+        bld.program(name='ndnsf-di-tokenize-input', target='ndnsf-di-tokenize-input',
+                    source=['examples/di-tokenize-input.cpp'], includes=['.'],
+                    use='ndnsf-distributed-inference ndn-service-framework NDN_CXX NDN_SVS '
+                        'BOOST NAC-ABE NDNSD OPENSSL DL',
+                    cxxflags=['-std=c++17'], rpath=[bld.env.LIBDIR], install_path='${BINDIR}')
 
     if bld._ndnsf_default_scope:
         # Select installable products and metadata, retaining every test target

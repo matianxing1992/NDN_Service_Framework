@@ -1,5 +1,10 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRunnerPreparation.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloMergeRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -9,10 +14,28 @@
 #include <unistd.h>
 
 namespace ndnsf::di {
-namespace {
+
+void
+registerMaintainedNativeProviderBackends(RegistryNativeModelRunnerFactory& factory,
+  std::shared_ptr<OnnxRuntimeSessionCache> sessionCache,
+  std::shared_ptr<OnnxKvStateObserver> stateObserver)
+{
+  registerOnnxRuntimeBackend(factory, std::move(sessionCache), std::move(stateObserver));
+  factory.registerBackend("native-yolo-postprocess", makeNativeYoloMergeRunner);
+  qwen::registerQwenTensorBackend(factory);
+}
+
+NativeModelRunnerSpec
+prepareMaintainedNativeRole(const NativeSelectionProjectionV3& projection,
+  const std::function<NativeModelRunnerSpec()>& prepareOnnxRole)
+{
+  if (projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS")
+    return nativeYoloMergeRunnerSpecFromProjection(projection);
+  return prepareOnnxRole();
+}
 
 std::vector<std::pair<std::string, std::string>>
-parseSuccessorMap(const std::string& encoded)
+parseNativeStateSuccessorMap(const std::string& encoded)
 {
   std::vector<std::pair<std::string, std::string>> result;
   std::size_t start = 0;
@@ -37,6 +60,8 @@ parseSuccessorMap(const std::string& encoded)
   }
   return result;
 }
+
+namespace {
 
 bool containsName(const std::vector<std::string>& names, const std::string& value)
 {
@@ -66,6 +91,16 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
                                    const NativeSelectionProjectionV3& projection,
                                    const NativeRunnerPreparationContext& context)
 {
+  // Artifact templates may be reused by another admitted step plan. Rebind the immutable
+  // entry view to this invocation rather than retaining a cached entry ID or state map.
+  if (!projection.plan.steps.empty() && spec.backend != "native-qwen-tensor") {
+    spec.entryContract.reset();
+    if (!detail::bindNativeWholeRegionEntry(projection, spec))
+      throw std::invalid_argument("step runner has no supported current entry contract");
+  }
+  else if (spec.entryContract) {
+    throw std::invalid_argument("whole-region runner requires its current sealed step plan");
+  }
   spec.metadata["evidence.providerName"] = context.providerName;
   spec.metadata["evidence.providerBootId"] = context.providerBootId;
   spec.metadata["evidence.epoch"] = "1";
@@ -127,6 +162,13 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
     const auto stateOutputs = localNames(
       projection.generationContract.stateOutputNames,
       projection.assemblyContract().expectedOutputs);
+    if (stateInputs.empty() && stateOutputs.empty() && spec.entryContract &&
+        spec.entryContract->stateSuccessorByInputGraphName.empty()) {
+      spec.metadata.erase("statefulModel");
+      spec.metadata.erase("stateInputNames");
+      spec.metadata.erase("stateOutputNames");
+      return;
+    }
     if (stateInputs.empty() || stateInputs.size() != stateOutputs.size()) {
       throw std::invalid_argument(
         "generation state contract does not match prepared role boundary");
@@ -149,7 +191,7 @@ bindNativeRunnerPreparationContext(NativeModelRunnerSpec& spec,
 
     const auto& successorMap = projection.generationContract.stateSuccessorMap;
     if (!successorMap.empty()) {
-      const auto pairs = parseSuccessorMap(successorMap);
+      const auto pairs = parseNativeStateSuccessorMap(successorMap);
       std::vector<std::pair<std::string, std::string>> localPairs;
       for (const auto& item : pairs) {
         const bool localInput = containsName(stateInputs, item.first);

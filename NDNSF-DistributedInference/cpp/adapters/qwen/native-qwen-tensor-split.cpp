@@ -1,4 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxRecipeAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/onnx-tensor-type.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalRolePreparer.hpp"
 
 #include <onnx/onnx_pb.h>
 
@@ -7,6 +10,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
@@ -14,12 +18,42 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 
 namespace ndnsf::di::qwen {
 
 namespace {
+
+QwenTpShape
+deriveQwenTpRegionShape(const std::vector<std::uint8_t>& modelBytes,
+                        std::uint64_t layerBegin, std::uint64_t layerEnd);
+
+void
+retainQwenTpEgressHead(std::vector<QwenTpEntryContract>& table,
+                       const std::string& unitId, const std::string& egressRole);
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd);
+
+bool
+ownsStateInput(const QwenTpEntryContract& entry, const std::string& name);
+
+bool
+ownsRegionEntry(const QwenTpEntryNodes& entry, std::uint64_t layers,
+                std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (entry.kind == "ATTN" || entry.kind == "MLP")
+    return entry.layer >= layerBegin && entry.layer < layerEnd;
+  if (entry.kind == "HEAD") return layerEnd == layers;
+  return layerBegin == 0;
+}
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd);
 
 void
 requireRankAssemblyActive(const QwenTpAssemblyControl* control)
@@ -134,8 +168,8 @@ QwenTpShape::validate() const
   // residual width: the frozen export uses headDim 128 over a hidden width of
   // 1024, so the Q/O projections are twice as wide as the residual stream.
   // Only overflow is common to every accepted geometry.
-  if (queryHeads * headDim < queryHeads ||
-      kvHeads * headDim < kvHeads) {
+  if (queryHeads > std::numeric_limits<std::uint64_t>::max() / headDim ||
+      kvHeads > std::numeric_limits<std::uint64_t>::max() / headDim) {
     throw std::overflow_error("tensor-parallel head geometry exceeds uint64");
   }
   // The residual stream is the hidden width; every projection that produces a
@@ -164,7 +198,8 @@ QwenInitializerSlice::validate() const
 
 std::vector<QwenRankLayerSlices>
 planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
-                     std::uint64_t rank)
+                     std::uint64_t rank, std::uint64_t layerBegin,
+                     std::uint64_t layerEnd)
 {
   shape.validate();
   if (degree < 2) {
@@ -173,45 +208,122 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
   if (rank >= degree) {
     throw std::invalid_argument("tensor-parallel rank is outside its degree");
   }
-
-  // Whole heads split; a partial head is never acceptable.
-  const auto queryHeadsPerRank = checkedPart(shape.queryHeads, degree, "query heads");
   const auto kvHeadsPerRank = checkedPart(shape.kvHeads, degree, "kv heads");
   const auto ffnPerRank = checkedPart(shape.ffn, degree, "ffn width");
+  return planQwenTensorSlices(shape,
+    {rank * kvHeadsPerRank, (rank + 1) * kvHeadsPerRank,
+     rank * ffnPerRank, (rank + 1) * ffnPerRank}, layerBegin, layerEnd);
+}
 
-  const auto queryBegin = rank * queryHeadsPerRank * shape.headDim;
-  const auto queryEnd = queryBegin + queryHeadsPerRank * shape.headDim;
-  const auto kvBegin = rank * kvHeadsPerRank * shape.headDim;
-  const auto kvEnd = kvBegin + kvHeadsPerRank * shape.headDim;
-  const auto ffnBegin = rank * ffnPerRank;
-  const auto ffnEnd = ffnBegin + ffnPerRank;
+std::vector<QwenTpRankRange>
+resolveQwenTpRankRanges(const QwenTpShape& shape, const std::vector<std::uint64_t>& weights)
+{
+  shape.validate();
+  if (weights.size() < 2 || weights.size() > shape.kvHeads) {
+    throw std::invalid_argument("invalid tensor-parallel weight count");
+  }
+  std::uint64_t divisor = 0;
+  for (const auto weight : weights) {
+    if (weight == 0 || weight > std::numeric_limits<std::int32_t>::max())
+      throw std::invalid_argument("invalid tensor-parallel rank weight");
+    divisor = std::gcd(divisor, weight);
+  }
+  constexpr auto limit = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t sum = 0;
+  for (const auto weight : weights) {
+    if (weight / divisor > limit - sum)
+      throw std::overflow_error("tensor-parallel weight sum overflow");
+    sum += weight / divisor;
+  }
+  const auto allocate = [&](std::uint64_t extent, std::uint64_t quantum) {
+    const auto total = extent / quantum;
+    if (extent % quantum != 0 || total < weights.size())
+      throw std::invalid_argument("tensor-parallel axis cannot cover all ranks");
+    std::vector<std::uint64_t> counts(weights.size());
+    if (sum == weights.size()) {
+      std::fill(counts.begin(), counts.end(), checkedPart(total, sum, "aligned units") * quantum);
+      return counts;
+    }
+    std::vector<std::uint64_t> remainders(weights.size());
+    std::vector<std::size_t> order(weights.size());
+    std::iota(order.begin(), order.end(), 0);
+    auto remaining = total;
+    for (const auto rank : order) {
+      const auto weight = weights[rank] / divisor;
+      if (weight > limit / total)
+        throw std::overflow_error("tensor-parallel quota overflow");
+      const auto product = total * weight;
+      counts[rank] = product / sum;
+      remainders[rank] = product % sum;
+      remaining -= counts[rank];
+    }
+    std::stable_sort(order.begin(), order.end(), [&](auto lhs, auto rhs) {
+      return remainders[lhs] > remainders[rhs];
+    });
+    for (std::size_t index = 0; index < remaining; ++index)
+      ++counts[order[index]];
+    for (auto& count : counts) {
+      if (count == 0)
+        throw std::invalid_argument("tensor-parallel rank has an empty slice");
+      count *= quantum;
+    }
+    return counts;
+  };
+  const auto groupWidth = shape.queryWidth() / shape.kvHeads;
+  const auto groupQuantum = QWEN_INT4_BLOCK_SIZE / std::gcd(QWEN_INT4_BLOCK_SIZE, groupWidth);
+  const auto heads = allocate(shape.kvHeads, groupQuantum);
+  const auto channels = allocate(shape.ffn, QWEN_INT4_BLOCK_SIZE);
+  std::vector<QwenTpRankRange> result;
+  std::uint64_t kvBegin = 0;
+  std::uint64_t ffnBegin = 0;
+  for (std::size_t rank = 0; rank < weights.size(); ++rank) {
+    result.push_back({kvBegin, kvBegin + heads[rank], ffnBegin, ffnBegin + channels[rank]});
+    kvBegin += heads[rank];
+    ffnBegin += channels[rank];
+  }
+  return result;
+}
 
-  // The frozen export's K width must let the O projection be cut on blocks.
-  if (shape.queryWidth() % degree != 0 || (shape.queryWidth() / degree) % QWEN_INT4_BLOCK_SIZE != 0) {
-    throw std::invalid_argument("tensor-parallel O reduction width is not block aligned");
+std::vector<QwenRankLayerSlices>
+planQwenTensorSlices(const QwenTpShape& shape, const QwenTpRankRange& range,
+                     std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  shape.validate();
+  if (layerBegin >= layerEnd || layerEnd > shape.layers ||
+      range.kvBegin >= range.kvEnd || range.kvEnd > shape.kvHeads ||
+      range.ffnBegin >= range.ffnEnd || range.ffnEnd > shape.ffn) {
+    throw std::invalid_argument("tensor-parallel slice is outside the source");
   }
-  if ((shape.ffn / degree) % QWEN_INT4_BLOCK_SIZE != 0) {
-    throw std::invalid_argument("tensor-parallel down reduction width is not block aligned");
-  }
+  const auto groupWidth = shape.queryWidth() / shape.kvHeads;
+  const auto queryBegin = range.kvBegin * groupWidth;
+  const auto queryEnd = range.kvEnd * groupWidth;
+  const auto kvBegin = range.kvBegin * shape.headDim;
+  const auto kvEnd = range.kvEnd * shape.headDim;
+  const auto ffnBegin = range.ffnBegin;
+  const auto ffnEnd = range.ffnEnd;
+  const auto ffnPerRank = ffnEnd - ffnBegin;
+  if (queryBegin % QWEN_INT4_BLOCK_SIZE != 0 || queryEnd % QWEN_INT4_BLOCK_SIZE != 0 ||
+      ffnBegin % QWEN_INT4_BLOCK_SIZE != 0 || ffnEnd % QWEN_INT4_BLOCK_SIZE != 0)
+    throw std::invalid_argument("tensor-parallel range is not block aligned");
 
   std::vector<QwenRankLayerSlices> result;
-  result.reserve(shape.layers);
-  for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+  result.reserve(layerEnd - layerBegin);
+  for (std::uint64_t layer = layerBegin; layer < layerEnd; ++layer) {
     const auto prefix = "model.layers." + std::to_string(layer) + ".";
     QwenRankLayerSlices slices;
     slices.layer = layer;
 
     // Q/K/V: whole heads, output-channel slices.
     addSlice(slices, prefix + "attn.q_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
-             queryBegin, queryEnd, shape.hidden, queryHeadsPerRank * shape.headDim);
+             queryBegin, queryEnd, shape.hidden, queryEnd - queryBegin);
     addSlice(slices, prefix + "attn.k_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
-             kvBegin, kvEnd, shape.hidden, kvHeadsPerRank * shape.headDim);
+             kvBegin, kvEnd, shape.hidden, kvEnd - kvBegin);
     addSlice(slices, prefix + "attn.v_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
-             kvBegin, kvEnd, shape.hidden, kvHeadsPerRank * shape.headDim);
+             kvBegin, kvEnd, shape.hidden, kvEnd - kvBegin);
 
     // O: reduction over the same attention channels, producing a full-D partial.
     addSlice(slices, prefix + "attn.o_proj.MatMul.weight", QwenSliceAxis::InputChannels,
-             queryBegin, queryEnd, shape.queryWidth() / degree, shape.hidden);
+             queryBegin, queryEnd, queryEnd - queryBegin, shape.hidden);
 
     // gate/up share one FFN interval; down reduces over it.
     addSlice(slices, prefix + "mlp.gate_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
@@ -219,7 +331,7 @@ planQwenTensorSlices(const QwenTpShape& shape, std::uint64_t degree,
     addSlice(slices, prefix + "mlp.up_proj.MatMul.weight", QwenSliceAxis::OutputChannels,
              ffnBegin, ffnEnd, shape.hidden, ffnPerRank);
     addSlice(slices, prefix + "mlp.down_proj.MatMul.weight", QwenSliceAxis::InputChannels,
-             ffnBegin, ffnEnd, shape.ffn / degree, shape.hidden);
+             ffnBegin, ffnEnd, ffnPerRank, shape.hidden);
 
     // Norm weights stay replicated: splitting a normalization axis would add a
     // second cross-rank reduction, so each rank keeps the full vector.
@@ -611,8 +723,8 @@ validateTemplateInputs(const QwenTpShape& shape, std::uint64_t degree,
                        const std::string& entryPrefix)
 {
   shape.validate();
-  if (degree < 2) {
-    throw std::invalid_argument("tensor-parallel template requires degree >= 2");
+  if (degree < 1) {
+    throw std::invalid_argument("tensor-parallel template requires degree >= 1");
   }
   if (entryPrefix.empty()) {
     throw std::invalid_argument("tensor-parallel template requires an entry prefix");
@@ -624,8 +736,11 @@ validateTemplateInputs(const QwenTpShape& shape, std::uint64_t degree,
  */
 void
 validateUnits(const std::vector<QwenTpUnit>& units, std::uint64_t degree,
-              std::uint64_t layers)
+              std::uint64_t layers, std::uint64_t layerBegin, std::uint64_t layerEnd)
 {
+  if (layerEnd > layers || layerBegin >= layerEnd) {
+    throw std::invalid_argument("tensor-parallel unit range is empty or outside the model");
+  }
   if (units.size() != degree) {
     throw std::invalid_argument(
       "tensor-parallel units do not cover the declared degree");
@@ -641,9 +756,11 @@ validateUnits(const std::vector<QwenTpUnit>& units, std::uint64_t degree,
       throw std::invalid_argument(
         "tensor-parallel units have a duplicate or out-of-range rank");
     }
-    if (unit.layerBegin != 0 || unit.layerEnd != layers) {
+    // Every unit of one template owns the same window; a rank holds a shard of its
+    // stage's layers rather than of every layer in the model.
+    if (unit.layerBegin != layerBegin || unit.layerEnd != layerEnd) {
       throw std::invalid_argument(
-        "tensor-parallel unit does not cover every layer");
+        "tensor-parallel unit does not cover the template's layer range");
     }
   }
 }
@@ -667,16 +784,29 @@ buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
                     const std::string& entryPrefix,
                     const std::vector<QwenTpUnit>& units)
 {
+  return buildQwenTpTemplate(shape, degree, entryPrefix, units, 0, shape.layers);
+}
+
+QwenTpTemplate
+buildQwenTpTemplate(const QwenTpShape& shape, std::uint64_t degree,
+                    const std::string& entryPrefix,
+                    const std::vector<QwenTpUnit>& units,
+                    std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
   validateTemplateInputs(shape, degree, entryPrefix);
-  validateUnits(units, degree, shape.layers);
+  validateUnits(units, degree, shape.layers, layerBegin, layerEnd);
   QwenTpTemplate result;
   result.degree = degree;
   result.units = units;
   // Slices are indexed by rank, so the per-rank plans follow the unit ranks
   // rather than the list order.
   result.slicesByRank.resize(degree);
-  for (const auto& unit : units)
-    result.slicesByRank[unit.rank] = planQwenTensorSlices(shape, degree, unit.rank);
+  for (const auto& unit : units) {
+    // A single-rank stage owns whole tensors; there is no shard to plan.
+    if (degree > 1)
+      result.slicesByRank[unit.rank] =
+        planQwenTensorSlices(shape, degree, unit.rank, layerBegin, layerEnd);
+  }
   return result;
 }
 
@@ -694,6 +824,10 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
 
 namespace {
 
+NativeStepSlotSpec
+sourceStepSlot(const NativeJson& metadata, const std::string& name,
+               const std::string& slotId, const std::string& origin);
+
 /** Shared projection body.
  *
  * `verified` is null when the caller let the projection name its own entries,
@@ -705,7 +839,9 @@ void
 projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                 std::uint64_t degree, const std::string& entryPrefix,
                 const std::string& egressRole, const QwenTpTemplate& tp,
-                const std::vector<QwenTpEntryContract>* verified)
+                const std::vector<QwenTpEntryContract>* verified,
+                const QwenTpStageWindow* window = nullptr, bool sourceBindings = false,
+                const NativeJson* sourcePorts = nullptr)
 {
   // The egress unit owns the head, so it must be one of the declared units.
   if (std::none_of(tp.units.begin(), tp.units.end(),
@@ -713,11 +849,46 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     throw std::invalid_argument(
       "tensor-parallel egress role is not one of the declared units");
   }
+  // A stage owns a window of layers. The template's units all describe the same window,
+  // so the step and dependency loops below walk that window rather than the whole model;
+  // without this a windowed plan referenced ENTRIES for layers its template never sliced.
+  const std::uint64_t firstLayer =
+    window != nullptr ? window->layerBegin
+                      : (tp.units.empty() ? 0 : tp.units.front().layerBegin);
+  const std::uint64_t lastLayer =
+    window != nullptr ? window->layerEnd
+                      : (tp.units.empty() ? shape.layers : tp.units.front().layerEnd);
+  if (window != nullptr && firstLayer > 0 &&
+      (window->upstreamUnit.empty() || window->upstreamStepId.empty() ||
+       window->upstreamSlotId.empty() || window->upstreamMlpStepId.empty() ||
+       window->upstreamMlpSlotId.empty())) {
+    throw std::invalid_argument("a later stage needs both residual and MLP input producers");
+  }
+  if (window != nullptr && firstLayer > 0 &&
+      (window->upstreamStepId != mlpStep(window->upstreamUnit, firstLayer - 1) ||
+       window->upstreamSlotId != "post_residual" ||
+       window->upstreamMlpStepId != sumMlpStep(window->upstreamUnit, firstLayer - 1) ||
+       window->upstreamMlpSlotId != "merged")) {
+    throw std::invalid_argument("a Qwen stage boundary requires the complete previous layer");
+  }
   plan.roles.clear();
   plan.steps.clear();
   plan.dependencies.clear();
+  plan.stageLayout.clear();
   for (const auto& unit : tp.units) plan.roles.push_back(unit.roleId);
-  plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V1;
+  if (window != nullptr) {
+    // A stage window is what makes this a v2 plan: the units own part of the stack and
+    // the layout says which part, so a consumer never infers it from the roles.
+    plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+    ndnsf::di::NativeStageLayout layout;
+    layout.stageId = window->stageId;
+    layout.sourceRegionDigest = window->sourceRegionDigest;
+    for (const auto& unit : tp.units) layout.unitRoleIds.push_back(unit.roleId);
+    plan.stageLayout.push_back(std::move(layout));
+  }
+  else {
+    plan.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V1;
+  }
   plan.tensorDegree = degree;
   plan.modelFamily = "qwen";
   plan.plannerKind = "native-qwen-tensor";
@@ -742,9 +913,11 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                contract.layer == layer;
       });
     if (matched == verified->end()) {
+      if (sourceBindings && firstLayer > 0 && std::string(kind) == "INIT")
+        return std::string{};
       throw std::invalid_argument(
         "tensor-parallel step has no verified entry contract for its unit, "
-        "kind and layer");
+        "kind and layer: " + unit + "/" + kind + "/" + std::to_string(layer));
     }
     return matched->entryId;
   };
@@ -790,11 +963,17 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     totalLength.shape.clear();
     init.outputSlots = {makeIndexSlot("position_ids", "LOCAL_STEP", "int64"),
                         makeIndexSlot("attn_mask", "LOCAL_STEP", "int32"),
-                        std::move(totalLength),
-                        makeSlot("x0", "LOCAL_STEP", {}, shape.hidden)};
-    plan.steps.push_back(std::move(init));
+                        std::move(totalLength)};
+    // The embedding belongs to the stage that owns the model's first layer; a later stage
+    // starts from the activation its predecessor publishes. The metadata above is computed
+    // from the request, so every stage owns it locally rather than depending on a bundle
+    // tensor the request may not carry.
+    if (firstLayer == 0)
+      init.outputSlots.push_back(makeSlot("x0", "LOCAL_STEP", {}, shape.hidden));
+    if (!init.artifactEntry.empty())
+      plan.steps.push_back(std::move(init));
 
-    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+    for (std::uint64_t layer = firstLayer; layer < lastLayer; ++layer) {
       // Attention partial on this rank. Layer 0 reads the epoch input; later
       // layers read the MLP sum of the previous layer.
       ndnsf::di::NativeExecutionStepSpec attn;
@@ -815,11 +994,21 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       // -- the residual plus the attention projection, which the MLP entry already formed --
       // not the attention reduction alone. Feeding the reduction alone would drop the
       // residual stream from every layer after the first.
-      attn.inputSlots = {layer == 0
-        ? makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)
-        : makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
+      if (layer == 0) {
+        attn.inputSlots = {
+          makeFedSlot("x", "LOCAL_STEP", initStep(unit.roleId), "x0", shape.hidden)};
+      }
+      else if (layer == firstLayer) {
+        attn.inputSlots = {
+          makeFedSlot("post_attention", "REMOTE_STEP", window->upstreamStepId,
+                      window->upstreamSlotId, shape.hidden),
+          makeFedSlot("previous_mlp", "REMOTE_STEP", window->upstreamMlpStepId,
+                      window->upstreamMlpSlotId, shape.hidden)};
+      }
+      else {
+        attn.inputSlots = {
+          makeFedSlot("post_attention", "LOCAL_STEP", mlpStep(unit.roleId, layer - 1),
                       "post_residual", shape.hidden)};
-      if (layer > 0) {
         attn.inputSlots.push_back(
           makeFedSlot("previous_mlp", "LOCAL_STEP", sumMlpStep(unit.roleId, layer - 1),
                       "merged", shape.hidden));
@@ -917,7 +1106,7 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 
     // Only the egress unit owns the complete head; every rank still keeps its
     // own KV slices and receipts.
-    if (unit.roleId == egressRole) {
+    if (unit.roleId == egressRole && lastLayer == shape.layers) {
       ndnsf::di::NativeExecutionStepSpec head;
       head.stepId = unit.roleId + "/HEAD";
       head.unitId = unit.roleId;
@@ -937,10 +1126,84 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
     }
   }
 
+  if (sourceBindings) {
+    std::set<std::string> referenced;
+    for (auto& step : plan.steps) {
+      if (step.operation != "CALL_SUBGRAPH") continue;
+      const auto contract = std::find_if(verified->begin(), verified->end(),
+        [&] (const auto& item) { return item.entryId == step.artifactEntry; });
+      if (contract == verified->end() || contract->unitId != step.unitId)
+        throw std::invalid_argument("material step has no matching entry: " + step.stepId);
+      referenced.insert(contract->entryId);
+      if (!contract->synthesizedInputGraphNames.empty())
+        throw std::invalid_argument("material entry requires unbound synthesized inputs: " +
+                                    contract->entryId);
+      std::set<std::string> inputs;
+      std::set<std::string> outputs;
+      const auto collect = [&] (const auto& bindings, const auto& names, auto& slots) {
+        for (const auto& [name, slot] : bindings) {
+          if (std::find(names.begin(), names.end(), name) == names.end() || slot.empty())
+            throw std::invalid_argument("material port binding names no graph value: " + name);
+          slots.insert(slot);
+        }
+      };
+      collect(contract->inputSlotByGraphName, contract->inputNames, inputs);
+      collect(contract->outputSlotByGraphName, contract->outputNames, outputs);
+      collect(contract->passthroughSlotByInputGraphName, contract->inputNames, outputs);
+      if (sourcePorts != nullptr) {
+        // Actual source ports precede semantic narrowing. Their producer is resolved only
+        // after every region exists; no epoch input or synthesized value is invented here.
+        const auto complete = [&] (auto& slots, const auto& bindings) {
+          for (const auto& [name, id] : bindings) {
+            if (std::none_of(slots.begin(), slots.end(),
+                            [&] (const auto& slot) { return slot.slotId == id; }))
+              slots.push_back(sourceStepSlot(*sourcePorts, name, id, "LOCAL_STEP"));
+          }
+        };
+        complete(step.inputSlots, contract->inputSlotByGraphName);
+        complete(step.outputSlots, contract->outputSlotByGraphName);
+        complete(step.outputSlots, contract->passthroughSlotByInputGraphName);
+      }
+      std::set<std::string> producedSlots;
+      for (const auto& [name, slot] : contract->outputSlotByGraphName) {
+        if (!producedSlots.insert(slot).second)
+          throw std::invalid_argument("material outputs ambiguously share a slot: " + slot);
+      }
+      for (const auto& name : contract->inputNames) {
+        if (contract->inputSlotByGraphName.count(name) == 0 && !ownsStateInput(*contract, name))
+          throw std::invalid_argument("material graph input has no slot: " + name);
+      }
+      for (const auto& name : contract->outputNames) {
+        if (contract->outputSlotByGraphName.count(name) == 0 &&
+            std::find(contract->stateOutputGraphNames.begin(),
+                      contract->stateOutputGraphNames.end(), name) ==
+              contract->stateOutputGraphNames.end())
+          throw std::invalid_argument("material graph output has no slot or state binding: " + name);
+      }
+      const auto narrow = [&] (auto& slots, const auto& required) {
+        for (const auto& id : required) {
+          if (std::none_of(slots.begin(), slots.end(),
+                          [&] (const auto& slot) { return slot.slotId == id; }))
+            throw std::invalid_argument("material port has no planned slot: " + id);
+        }
+        slots.erase(std::remove_if(slots.begin(), slots.end(),
+          [&] (const auto& slot) { return required.count(slot.slotId) == 0; }), slots.end());
+      };
+      narrow(step.inputSlots, inputs);
+      narrow(step.outputSlots, outputs);
+      if (contract->stateOutputGraphNames.empty()) step.localStateSlots.clear();
+    }
+    for (const auto& contract : *verified) {
+      if (referenced.count(contract.entryId) == 0)
+        throw std::invalid_argument("material entry is not used by its region: " +
+                                    contract.entryId);
+    }
+  }
+
   // One dependency per remote contribution, bound to the exact producing and
   // consuming step/slot. The identity reuses keyScope and stays unique.
   for (const auto& unit : tp.units) {
-    for (std::uint64_t layer = 0; layer < shape.layers; ++layer) {
+    for (std::uint64_t layer = firstLayer; layer < lastLayer; ++layer) {
       for (const auto& peer : tp.units) {
         if (peer.rank == unit.rank) continue;
         for (const auto* kind : {"ATTN", "MLP"}) {
@@ -974,7 +1237,79 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
       }
     }
   }
-  plan.validateSteps();
+  // Preserve both source graph inputs across the stage boundary. Each edge carries one
+  // complete tensor, not an additive contribution or a partially reduced rank output.
+  if (window != nullptr && firstLayer > 0) {
+    for (const auto& unit : tp.units) {
+      for (const auto* slot : {"post_attention", "previous_mlp"}) {
+        const bool residual = std::string(slot) == "post_attention";
+        ndnsf::di::NativeDependencySpec dependency;
+        dependency.producers = {window->upstreamUnit};
+        dependency.consumers = {unit.roleId};
+        dependency.keyScope = "stage-input-" + window->stageId + "-" + unit.roleId + "-" + slot;
+        dependency.dependencyId = dependency.keyScope;
+        dependency.topicPrefix = "/NDNSF/DI/QWEN";
+        dependency.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+        dependency.tensors = {slot};
+        dependency.operationKind = "ACTIVATION";
+        dependency.useNdnsfDataV1 = true;
+        dependency.producerStepId = residual ? window->upstreamStepId : window->upstreamMlpStepId;
+        dependency.producerSlotId = residual ? window->upstreamSlotId : window->upstreamMlpSlotId;
+        dependency.consumerStepId = attnStep(unit.roleId, firstLayer);
+        dependency.consumerSlotId = slot;
+        plan.dependencies.push_back(std::move(dependency));
+      }
+    }
+  }
+  // A later stage's input producer lives in the previous stage's plan, so the stage alone
+  // cannot be validated - its remote slot would name a step this plan does not contain. The
+  // merged plan is validated instead, where every producer exists.
+  if (sourceBindings) {
+    std::map<std::pair<std::string, std::string>, std::vector<std::string>> producedNames;
+    for (const auto& step : plan.steps) {
+      if (step.operation == "SUM") {
+        const auto local = std::find_if(step.inputSlots.begin(), step.inputSlots.end(),
+          [] (const auto& slot) { return slot.source == "LOCAL_STEP"; });
+        if (local == step.inputSlots.end())
+          throw std::invalid_argument("material reduction has no local contribution");
+        producedNames[{step.stepId, "merged"}] =
+          producedNames.at({local->producerStepId, local->producerSlotId});
+        continue;
+      }
+      const auto contract = std::find_if(verified->begin(), verified->end(),
+        [&] (const auto& item) { return item.entryId == step.artifactEntry; });
+      for (const auto& [name, slot] : contract->outputSlotByGraphName)
+        producedNames[{step.stepId, slot}].push_back(name);
+      for (const auto& [name, slot] : contract->passthroughSlotByInputGraphName) {
+        const auto key = std::make_pair(step.stepId, slot);
+        if (producedNames.count(key) == 0) producedNames[key] = {name};
+      }
+    }
+    for (auto& dependency : plan.dependencies) {
+      dependency.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+      const auto source = producedNames.find(
+        {dependency.producerStepId, dependency.producerSlotId});
+      if (source != producedNames.end()) {
+        dependency.tensors = source->second;
+        continue;
+      }
+      // The upstream stage is not in this regional plan. Its original tensor name is also
+      // the source graph input declared by this consumer; never use a logical slot as a name.
+      const auto consumer = std::find_if(plan.steps.begin(), plan.steps.end(),
+        [&] (const auto& step) { return step.stepId == dependency.consumerStepId; });
+      const auto contract = std::find_if(verified->begin(), verified->end(),
+        [&] (const auto& item) { return item.entryId == consumer->artifactEntry; });
+      dependency.tensors.clear();
+      for (const auto& [name, slot] : contract->inputSlotByGraphName)
+        if (slot == dependency.consumerSlotId) dependency.tensors.push_back(name);
+      if (dependency.tensors.empty())
+        throw std::invalid_argument("material dependency has no bound graph tensor");
+    }
+  }
+  if (firstLayer == 0 && sourcePorts == nullptr)
+    plan.validateSteps();
 }
 
 } // namespace
@@ -982,11 +1317,20 @@ projectTemplate(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
 std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
 {
+  return classifyQwenRegionNodes(model, layers, 0, layers);
+}
+
+namespace {
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const onnx::ModelProto& model, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
   const auto& graph = model.graph();
   std::vector<std::string> names;
   names.reserve(graph.node_size());
   for (const auto& node : graph.node()) names.push_back(node.name());
-  auto entries = classifyQwenTpEntryNodes(names, layers);
+  auto entries = classifyQwenRegionNodes(names, layers, layerBegin, layerEnd);
 
   // A node with no layer and only initializer inputs is constant-derived. Naming
   // puts it in INIT, but its value is really a weight rearrangement that belongs
@@ -1049,6 +1393,13 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
     throw std::invalid_argument(
       "tensor-parallel entry relocation lost a graph node");
   }
+  // A later region may contain only a constant-derived preprocessing node. Once
+  // that node follows its consumer, there is no local INIT computation to emit.
+  if (layerBegin > 0) {
+    entries.erase(std::remove_if(entries.begin(), entries.end(), [] (const auto& entry) {
+      return entry.kind == "INIT" && entry.nodeIndices.empty();
+    }), entries.end());
+  }
   for (const auto& entry : entries) {
     if (entry.nodeIndices.empty()) {
       throw std::invalid_argument(
@@ -1057,6 +1408,8 @@ classifyQwenTpEntryNodes(const onnx::ModelProto& model, std::uint64_t layers)
   }
   return entries;
 }
+
+} // namespace
 
 std::pair<std::vector<onnx::ValueInfoProto>, std::vector<onnx::ValueInfoProto>>
 describeQwenTpEntryBoundary(const onnx::ModelProto& source, const QwenTpEntryNodes& entry)
@@ -1160,6 +1513,27 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
     for (const auto& output : node.output())
       if (!output.empty()) referenced.insert(output);
   }
+  // A shape or scalar supplied by a Constant node is part of the entry's own
+  // parameters, not an external boundary: without the producer the copied
+  // Reshape references a name no initializer or Constant provides. Only
+  // Constant nodes are absorbed; any other producer stays a boundary input.
+  // Absorbed parameter outputs are never exposed as boundary outputs: the
+  // sibling entries that share the operand carry their own copy, so publishing
+  // it would offer another entry's parameter as this entry's activation.
+  std::set<std::string> absorbedOutputs;
+  for (std::uint64_t index = 0; index < nodeCount; ++index) {
+    if (owned.count(index) != 0)
+      continue;
+    const auto& node = graph.node(static_cast<int>(index));
+    if (node.op_type() != "Constant")
+      continue;
+    for (const auto& output : node.output()) {
+      if (!output.empty() && referenced.count(output) != 0) {
+        owned.insert(index);
+        absorbedOutputs.insert(output);
+      }
+    }
+  }
   std::set<std::string> initializerNames;
   for (int i = 0; i < graph.initializer_size(); ++i)
     initializerNames.insert(graph.initializer(i).name());
@@ -1246,6 +1620,7 @@ extractQwenTpEntryModel(onnx::ModelProto& source, const QwenTpEntryNodes& entry,
       for (const auto& output : graph.node(static_cast<int>(index)).output())
         if (output == name) producedInside = true;
     if (!producedInside) continue;
+    if (absorbedOutputs.count(name) != 0) continue;
     // A tensor consumed outside this entry, or one the source declares as a
     // model output, must be exposed; anything else internal stays internal.
     const auto declaredOutput = std::any_of(graph.output().begin(), graph.output().end(),
@@ -1290,9 +1665,21 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          std::uint64_t layers, const QwenTpAssemblyShards& shards,
                          const QwenTpAssemblyControl* control)
 {
+  return assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control, 0, layers);
+}
+
+std::vector<QwenTpEntryContract>
+assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& unitId,
+                         const std::vector<std::uint8_t>& graphBytes,
+                         std::uint64_t layers, const QwenTpAssemblyShards& shards,
+                         const QwenTpAssemblyControl* control,
+                         std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
   if (root.empty() || unitId.empty() || graphBytes.empty() || layers == 0) {
     throw std::invalid_argument("tensor-parallel entry assembly needs a root, unit, graph and layers");
   }
+  if (layerEnd > layers || layerBegin >= layerEnd)
+    throw std::invalid_argument("tensor-parallel stage window is outside the model");
   // The source is parsed once per stack. Extraction consumes the model, and
   // re-parsing the frozen export for every entry would be ~59 full protobuf
   // builds of a 918 MB initializer set.
@@ -1302,7 +1689,13 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
   }
   // Graph-aware classification, so a constant-derived node follows its consumer
   // instead of being filed under INIT by name.
-  const auto classified = classifyQwenTpEntryNodes(probe, layers);
+  auto classified = classifyQwenRegionNodes(probe, layers, layerBegin, layerEnd);
+  // Select before writing or charging the budget. A complete source is accepted too,
+  // but a window never emits files or consumes another stage's assembly allowance.
+  classified.erase(std::remove_if(classified.begin(), classified.end(),
+    [&] (const auto& entry) {
+      return !ownsRegionEntry(entry, layers, layerBegin, layerEnd);
+    }), classified.end());
 
   std::error_code directoryError;
   std::filesystem::create_directories(root, directoryError);
@@ -1381,7 +1774,17 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
                          const std::string& egressRole)
 {
   auto table = assembleQwenTpEntryTable(root, unitId, graphBytes, layers, shards, control);
-  if (egressRole.empty()) return table;
+  retainQwenTpEgressHead(table, unitId, egressRole);
+  return table;
+}
+
+namespace {
+
+void
+retainQwenTpEgressHead(std::vector<QwenTpEntryContract>& table,
+                       const std::string& unitId, const std::string& egressRole)
+{
+  if (egressRole.empty()) return;
   if (unitId == egressRole) {
     // The egress unit must have the head; its absence means the caller and the taxonomy
     // disagree about this model rather than that the entry is optional.
@@ -1391,19 +1794,29 @@ assembleQwenTpEntryTable(const std::filesystem::path& root, const std::string& u
       throw std::invalid_argument(
         "tensor-parallel egress unit assembled no head entry");
     }
-    return table;
+    return;
   }
   // A non-egress unit runs no head step, so holding a head entry would make its table
   // disagree with its own steps.
   table.erase(std::remove_if(table.begin(), table.end(),
     [] (const auto& entry) { return entry.kind == "HEAD"; }), table.end());
-  return table;
 }
+
+} // namespace
 
 QwenTpShape
 deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t layers)
 {
-  if (modelBytes.empty() || layers == 0) {
+  return deriveQwenTpRegionShape(modelBytes, 0, layers);
+}
+
+namespace {
+
+QwenTpShape
+deriveQwenTpRegionShape(const std::vector<std::uint8_t>& modelBytes,
+                        std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (modelBytes.empty() || layerBegin >= layerEnd) {
     throw std::invalid_argument("tensor-parallel shape derivation needs a graph and layers");
   }
   onnx::ModelProto model;
@@ -1430,9 +1843,12 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
       throw std::invalid_argument(
         "tensor-parallel shape derivation found no head counts on the attention op");
     }
-    queryHeads = static_cast<std::uint64_t>(*heads);
-    kvHeads = static_cast<std::uint64_t>(*kv);
-    break;
+    const auto query = static_cast<std::uint64_t>(*heads);
+    const auto keyValue = static_cast<std::uint64_t>(*kv);
+    if (queryHeads != 0 && (queryHeads != query || kvHeads != keyValue))
+      throw std::invalid_argument("tensor-parallel region has inconsistent attention head counts");
+    queryHeads = query;
+    kvHeads = keyValue;
   }
   if (queryHeads == 0) {
     throw std::invalid_argument(
@@ -1444,7 +1860,8 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
   // come from the existing INT4 inspector rather than from reading node inputs
   // here: MatMulNBits takes its packed weight as the second input, and a second
   // copy of that schema knowledge is exactly how the earlier parser bug happened.
-  const auto nodes = inspectQwenNBitsGraph(modelBytes, layers);
+  const auto localLayers = layerEnd - layerBegin;
+  const auto nodes = inspectQwenNBitsGraph(modelBytes, localLayers);
   std::uint64_t queryWidth = 0;
   std::uint64_t outputWidth = 0;
   std::uint64_t gateWidth = 0;
@@ -1472,26 +1889,22 @@ deriveQwenTpShape(const std::vector<std::uint8_t>& modelBytes, std::uint64_t lay
     vocab = static_cast<std::uint64_t>(init.dims(0));
     break;
   }
-  if (vocab == 0) {
+  if (vocab == 0 && layerBegin == 0) {
     throw std::invalid_argument(
       "tensor-parallel shape derivation found no embedding table");
   }
 
-  QwenTpShape shape;
-  shape.hidden = outputWidth;
-  shape.layers = layers;
-  shape.queryHeads = queryHeads;
-  shape.kvHeads = kvHeads;
-  shape.headDim = headDim;
-  shape.ffn = gateWidth;
-  shape.vocab = vocab;
+  auto shape = qwenTpShapeFromNodes(nodes, outputWidth, localLayers, queryHeads,
+                                    kvHeads, headDim, gateWidth, vocab);
+  // Geometry is checked against the local projection count. Slicing still uses
+  // original global layer IDs, whose upper bound is the region end. A later
+  // region need not contain an embedding: its vocabulary is unused for slicing.
+  shape.layers = layerEnd;
   shape.validate();
-  // Cross-check the derived geometry against every sharded node, which is what
-  // refuses an export whose widths contradict the head counts.
-  (void)qwenTpShapeFromNodes(nodes, shape.hidden, shape.layers, shape.queryHeads,
-                             shape.kvHeads, shape.headDim, shape.ffn, shape.vocab);
   return shape;
 }
+
+} // namespace
 
 QwenTpShape
 deriveQwenTpShapeFromGraphMetadata(const std::string& graphMetadataJson,
@@ -1513,33 +1926,36 @@ deriveQwenTpShapeFromGraphMetadata(const std::string& graphMetadataJson,
     const auto& attributes = node.at("integerAttributes");
     const auto heads = attributes.find("num_heads");
     const auto kv = attributes.find("kv_num_heads");
-    if (heads == attributes.end() || kv == attributes.end()) continue;
+    if (heads == attributes.end() || kv == attributes.end())
+      throw std::invalid_argument("tensor-parallel metadata attention head counts are missing");
     const auto headsValue = heads->get<std::int64_t>();
     const auto kvValue = kv->get<std::int64_t>();
-    if (headsValue <= 0 || kvValue <= 0) continue;
+    if (headsValue <= 0 || kvValue <= 0)
+      throw std::invalid_argument("tensor-parallel metadata attention head counts are invalid");
+    if (queryHeads != 0 &&
+        (queryHeads != static_cast<std::uint64_t>(headsValue) ||
+         kvHeads != static_cast<std::uint64_t>(kvValue)))
+      throw std::invalid_argument("tensor-parallel metadata attention head counts disagree");
     queryHeads = static_cast<std::uint64_t>(headsValue);
     kvHeads = static_cast<std::uint64_t>(kvValue);
-    break;
   }
   if (queryHeads == 0)
     throw std::invalid_argument(
       "tensor-parallel metadata derivation found no attention head counts");
 
-  // The projection widths are the last axis of each projection's output tensor. The
-  // tensor table records them, and the names match the ones the byte path reads.
-  const auto widthOf = [&tensors] (const std::string& marker) -> std::uint64_t {
-    for (const auto& item : tensors.items()) {
-      const auto& value = item.value();
-      if (item.key().find(marker) == std::string::npos) continue;
-      const auto& shape = value.at("shape");
-      if (shape.empty()) continue;
-      const auto& last = shape.back();
-      if (!last.is_number_integer()) continue;
-      const auto width = last.get<std::int64_t>();
-      if (width <= 0) continue;
-      return static_cast<std::uint64_t>(width);
+  // N is the MatMulNBits output-channel count. Tensor inventories also contain packed
+  // weights/scales whose final dimensions are storage geometry, never output widths.
+  const auto widthOf = [&nodesJson] (const std::string& marker) -> std::uint64_t {
+    std::uint64_t result = 0;
+    for (const auto& node : nodesJson) {
+      if (node.value("opType", std::string{}) != "MatMulNBits" ||
+          node.at("name").get<std::string>().find(marker) == std::string::npos) continue;
+      const auto width = node.at("integerAttributes").at("N").get<std::int64_t>();
+      if (width <= 0 || (result != 0 && result != static_cast<std::uint64_t>(width)))
+        throw std::invalid_argument("tensor-parallel metadata projection widths disagree");
+      result = static_cast<std::uint64_t>(width);
     }
-    return 0;
+    return result;
   };
   const auto queryWidth = widthOf("q_proj");
   const auto outputWidth = widthOf("o_proj");
@@ -1710,6 +2126,576 @@ buildQwenTpCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
   return candidate;
 }
 
+namespace {
+
+bool
+role_ids_contain(const std::vector<QwenTpUnit>& units, const std::string& role)
+{
+  return std::any_of(units.begin(), units.end(),
+                     [&] (const auto& unit) { return unit.roleId == role; });
+}
+
+std::vector<std::vector<std::string>>
+stageSemanticNodes(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                   const std::vector<QwenTpStageWindow>& windows)
+{
+  if (graph.nodes.size() < 2 || shape.layers != graph.nodes.size() - 2)
+    throw std::invalid_argument("hybrid planning graph does not cover the model layers");
+  std::vector<std::vector<std::string>> result(windows.size());
+  for (std::size_t index = 0; index < graph.nodes.size(); ++index) {
+    const auto layer = index == 0 ? 0 : index - 1;
+    const auto expected = index == 0 ? std::string("embedding") :
+      index + 1 == graph.nodes.size() ? std::string("final-norm-head") :
+      std::string("layer-") + (layer < 10 ? "0" : "") + std::to_string(layer);
+    if (graph.nodes[index].id != expected)
+      throw std::invalid_argument("hybrid planning graph layer order is not canonical");
+    bool found = false;
+    for (std::size_t stage = 0; stage < windows.size(); ++stage) {
+      const auto& window = windows[stage];
+      if ((layer >= window.layerBegin && layer < window.layerEnd) ||
+          (layer == shape.layers && stage + 1 == windows.size())) {
+        result[stage].push_back(graph.nodes[index].id);
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      throw std::invalid_argument("hybrid candidate has a node outside every stage");
+  }
+  return result;
+}
+
+std::vector<std::string>
+physicalStateNames(const NativeStateTensorMapping::Roles& roles, const std::string& unit)
+{
+  const auto found = roles.find(unit);
+  if (found == roles.end())
+    throw std::invalid_argument("source hybrid state mapping omits a unit: " + unit);
+  std::vector<std::string> result;
+  for (const auto& family : found->second)
+    result.insert(result.end(), family.second.begin(), family.second.end());
+  return result;
+}
+
+NativeStepSlotSpec
+sourceStepSlot(const NativeJson& metadata, const std::string& name,
+               const std::string& slotId, const std::string& origin)
+{
+  const auto& facts = metadata.at("tensors").at(name);
+  NativeStepSlotSpec slot;
+  slot.slotId = slotId;
+  slot.dtype = facts.at("dtype").get<std::string>();
+  for (const auto& dimension : facts.at("shape")) {
+    if (dimension.is_string()) slot.shape.emplace_back(dimension.get<std::string>());
+    else slot.shape.emplace_back(dimension.get<std::int64_t>());
+  }
+  slot.layoutDigest = slot.dtype == "int64" || slot.dtype == "int32"
+    ? QWEN_TP_INDEX_LAYOUT_DIGEST : QWEN_TP_ACTIVATION_LAYOUT_DIGEST;
+  slot.source = origin;
+  return slot;
+}
+
+/** Close source graph values before the first merged-plan validation. */
+void
+bindHybridSourcePorts(std::vector<NativeExecutionPlan>& plans,
+                      const std::vector<std::vector<QwenTpUnit>>& units,
+                      const std::vector<std::vector<QwenTpEntryContract>>& tables,
+                      const std::vector<NativeSourceRegionBoundary>& boundaries,
+                      const NativeOnnxGraphInspection& source,
+                      const NativeStateTensorMapping& stateMapping)
+{
+  struct Producer
+  {
+    std::string step;
+    std::string slot;
+  };
+  std::map<std::string, std::map<std::string, Producer>> valuesByUnit;
+  std::map<std::string, NativeExecutionStepSpec*> steps;
+  std::map<std::pair<std::string, std::string>, std::string> outputNames;
+  std::map<std::string, std::map<std::string, std::string>> inputNames;
+  const auto metadata = nativeParseJson(source.graphMetadataJson);
+  const auto modelInputs = metadata.at("inputs").get<std::vector<std::string>>();
+  for (std::size_t stage = 0; stage < plans.size(); ++stage) {
+    for (auto& step : plans[stage].steps) {
+      if (!steps.emplace(step.stepId, &step).second)
+        throw std::invalid_argument("source hybrid repeats a step");
+      if (step.operation != "CALL_SUBGRAPH") continue;
+      auto& inputs = inputNames[step.stepId];
+      auto& values = valuesByUnit[step.unitId];
+      if (units[stage].size() == 1) {
+        for (const auto& slot : step.inputSlots) inputs.emplace(slot.slotId, slot.slotId);
+        for (const auto& slot : step.outputSlots) {
+          values.emplace(slot.slotId, Producer{step.stepId, slot.slotId});
+          outputNames.emplace(std::make_pair(step.stepId, slot.slotId), slot.slotId);
+        }
+        continue;
+      }
+      const auto contract = std::find_if(tables[stage].begin(), tables[stage].end(),
+        [&] (const auto& entry) { return entry.entryId == step.artifactEntry; });
+      if (contract == tables[stage].end())
+        throw std::invalid_argument("source hybrid CALL has no material contract");
+      for (const auto& binding : contract->inputSlotByGraphName)
+        if (!inputs.emplace(binding.second, binding.first).second)
+          throw std::invalid_argument("source hybrid input slot ambiguously binds graph values");
+      for (const auto& binding : contract->outputSlotByGraphName) {
+        const bool partial = binding.second == "partial" &&
+          (contract->kind == "ATTN" || contract->kind == "MLP");
+        const auto producer = partial
+          ? (contract->kind == "ATTN" ? sumAttnStep(step.unitId, contract->layer)
+                                      : sumMlpStep(step.unitId, contract->layer))
+          : step.stepId;
+        if (!values.emplace(binding.first,
+                             Producer{producer, partial ? "merged" : binding.second}).second)
+          throw std::invalid_argument("source hybrid graph value has multiple local producers");
+        outputNames.emplace(std::make_pair(step.stepId, binding.second), binding.first);
+      }
+      // A passthrough describes an alias, never a new source producer.
+      for (const auto& binding : contract->passthroughSlotByInputGraphName)
+        outputNames.emplace(std::make_pair(step.stepId, binding.second), binding.first);
+    }
+    for (const auto& step : plans[stage].steps) {
+      if (step.operation != "SUM") continue;
+      const auto local = std::find_if(step.inputSlots.begin(), step.inputSlots.end(),
+        [] (const auto& slot) { return slot.source == "LOCAL_STEP"; });
+      if (local == step.inputSlots.end())
+        throw std::invalid_argument("source hybrid reduction has no local contribution");
+      outputNames.emplace(std::make_pair(step.stepId, "merged"),
+        outputNames.at({local->producerStepId, local->producerSlotId}));
+    }
+  }
+  for (std::size_t stage = 0; stage < plans.size(); ++stage) {
+    auto& plan = plans[stage];
+    plan.dependencies.clear();
+    for (auto& step : plan.steps) {
+      for (auto& slot : step.outputSlots)
+        slot = sourceStepSlot(metadata, outputNames.at({step.stepId, slot.slotId}),
+                              slot.slotId, "LOCAL_STEP");
+      const auto state = physicalStateNames(stateMapping.inputs, step.unitId);
+      for (auto& slot : step.inputSlots) {
+        if (step.operation == "CALL_SUBGRAPH") {
+          const auto& name = inputNames.at(step.stepId).at(slot.slotId);
+          if (std::find(state.begin(), state.end(), name) != state.end())
+            throw std::invalid_argument("source hybrid exposes private state as an ordinary input");
+          const auto own = valuesByUnit.at(step.unitId).find(name);
+          Producer producer;
+          if (own != valuesByUnit.at(step.unitId).end() && own->second.step != step.stepId)
+            producer = own->second;
+          else if (std::find(modelInputs.begin(), modelInputs.end(), name) == modelInputs.end()) {
+            for (std::size_t previous = 0; previous < stage; ++previous) {
+              if (boundaries[previous].outputs.count(name) == 0) continue;
+              const auto& owner = valuesByUnit.at(units[previous].front().roleId);
+              const auto value = owner.find(name);
+              if (value == owner.end())
+                throw std::invalid_argument("source hybrid boundary value " + name +
+                  " has no complete producer on " + units[previous].front().roleId);
+              if (!producer.step.empty())
+                throw std::invalid_argument("source hybrid boundary value " + name +
+                  " has multiple complete producers");
+              producer = value->second;
+            }
+            if (producer.step.empty())
+              throw std::invalid_argument("source hybrid input has no producer: " + name);
+          }
+          slot = sourceStepSlot(metadata, name, slot.slotId,
+            producer.step.empty() ? "EPOCH_INPUT" :
+            steps.at(producer.step)->unitId == step.unitId ? "LOCAL_STEP" : "REMOTE_STEP");
+          slot.producerStepId = producer.step;
+          slot.producerSlotId = producer.slot;
+        }
+        else {
+          const auto name = outputNames.at({slot.producerStepId, slot.producerSlotId});
+          const auto old = slot;
+          slot = sourceStepSlot(metadata, name, old.slotId, old.source);
+          slot.producerStepId = old.producerStepId;
+          slot.producerSlotId = old.producerSlotId;
+        }
+        if (slot.source != "REMOTE_STEP") continue;
+        NativeDependencySpec dependency;
+        dependency.producers = {steps.at(slot.producerStepId)->unitId};
+        dependency.consumers = {step.unitId};
+        dependency.keyScope = "hybrid-" + std::to_string(stage) + "-" +
+          std::to_string(plan.dependencies.size());
+        dependency.dependencyId = dependency.keyScope;
+        dependency.topicPrefix = "/NDNSF/DI/QWEN";
+        dependency.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/QWEN/{sessionId}/{producerRole}/{keyScope}/{sequence}";
+        dependency.tensors = {outputNames.at({slot.producerStepId, slot.producerSlotId})};
+        dependency.operationKind = step.operation == "SUM" ? "TENSOR_PARTIAL" : "ACTIVATION";
+        dependency.useNdnsfDataV1 = true;
+        dependency.producerStepId = slot.producerStepId;
+        dependency.producerSlotId = slot.producerSlotId;
+        dependency.consumerStepId = step.stepId;
+        dependency.consumerSlotId = slot.slotId;
+        plan.dependencies.push_back(std::move(dependency));
+      }
+    }
+  }
+}
+
+void
+validateWeightedQwenRegion(const NativeOnnxGraphInspection& source, const NativeJson& metadata,
+                           const QwenTpShape& shape, const QwenTpStageWindow& window)
+{
+  const auto& nodes = metadata.at("nodes");
+  if (nodes.size() != source.graph.nodes.size())
+    throw std::invalid_argument("weighted Qwen source metadata has incomplete node coverage");
+  std::vector<std::string> nodeNames;
+  nodeNames.reserve(nodes.size());
+  for (const auto& node : nodes) {
+    // Prepared metadata restores semantic IDs separately from the original ONNX names.
+    if (node.at("index") != nodeNames.size())
+      throw std::invalid_argument("weighted Qwen source metadata is out of node order");
+    nodeNames.push_back(node.at("name").get<std::string>());
+  }
+  const auto entries = classifyQwenRegionNodes(nodeNames, shape.layers,
+                                               window.layerBegin, window.layerEnd);
+  const auto layers = planQwenTensorSlices(shape, {0, shape.kvHeads, 0, shape.ffn},
+                                           window.layerBegin, window.layerEnd);
+  const auto& tensors = metadata.at("tensors");
+  for (const auto& layer : layers) {
+    for (const auto* kind : {"ATTN", "MLP"}) {
+      const auto entry = std::find_if(entries.begin(), entries.end(), [&] (const auto& item) {
+        return item.layer == layer.layer && item.kind == kind;
+      });
+      if (entry == entries.end())
+        throw std::invalid_argument("weighted Qwen source has a missing decoder entry");
+      const bool attention = entry->kind == "ATTN";
+      std::set<std::uint64_t> projections;
+      std::size_t gqaCount = 0;
+      for (const auto index : entry->nodeIndices) {
+        const auto& node = nodes.at(index);
+        if (node.at("opType") == "MatMulNBits") projections.insert(index);
+        if (node.at("opType") == "GroupQueryAttention") {
+          ++gqaCount;
+          const auto& attrs = node.at("integerAttributes");
+          if (attrs.at("num_heads") != shape.queryHeads || attrs.at("kv_num_heads") != shape.kvHeads)
+            throw std::invalid_argument("weighted Qwen source has inconsistent per-layer heads");
+        }
+      }
+      if (gqaCount != (attention ? 1U : 0U) || projections.size() != (attention ? 4U : 3U))
+        throw std::invalid_argument("weighted Qwen source has incomplete per-layer projections");
+      for (const auto& slice : layer.initializers) {
+        if ((slice.name.find(".attn.") != std::string::npos) != attention) continue;
+        const auto weight = slice.name + "_Q4";
+        const auto scale = slice.name + "_scales";
+        const auto weightOwners = source.initializerConsumers.find(weight);
+        const auto scaleOwners = source.initializerConsumers.find(scale);
+        if (weightOwners == source.initializerConsumers.end() ||
+            scaleOwners == source.initializerConsumers.end() || weightOwners->second.size() != 1 ||
+            weightOwners->second != scaleOwners->second ||
+            projections.erase(weightOwners->second.front()) != 1)
+          throw std::invalid_argument("weighted Qwen source has a missing or mispaired projection: " +
+                                      slice.name);
+        const auto& attrs = nodes.at(weightOwners->second.front()).at("integerAttributes");
+        const auto blocks = slice.slicedK / QWEN_INT4_BLOCK_SIZE;
+        const auto scaleCount = packedInt4Bytes(slice.slicedN, slice.slicedK) / QWEN_INT4_BLOB_BYTES;
+        if (attrs.at("K") != slice.slicedK || attrs.at("N") != slice.slicedN ||
+            attrs.at("bits") != QWEN_INT4_BITS || attrs.at("block_size") != QWEN_INT4_BLOCK_SIZE ||
+            tensors.at(weight).at("dtype") != "uint8" || tensors.at(scale).at("dtype") != "float32" ||
+            tensors.at(weight).at("shape") != NativeJson::array({
+              slice.slicedN, blocks, QWEN_INT4_BLOB_BYTES}) ||
+            tensors.at(scale).at("shape") != NativeJson::array({scaleCount}))
+          throw std::invalid_argument("weighted Qwen source has inconsistent projection facts: " +
+                                      slice.name);
+      }
+    }
+  }
+}
+
+} // namespace
+
+static ndnsf::di::NativeSplitCandidate
+buildQwenHybridCandidateImpl(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection* source,
+                         const QwenTpSourceRegionPort* regionPort = nullptr,
+                         const NativeStateTensorMapping* stateMapping = nullptr)
+{
+  if (windows.empty() || windows.size() != stageUnits.size())
+    throw std::invalid_argument("hybrid candidate needs one window per stage");
+  if (regionPort != nullptr && (!*regionPort || source == nullptr || stateMapping == nullptr))
+    throw std::invalid_argument("source hybrid lowering requires its source and state owner");
+  const auto semanticNodes = stageSemanticNodes(graph, shape, windows);
+  NativeJson sourceMetadata;
+  std::vector<NativeSourceRegionBoundary> boundaries(windows.size());
+  std::vector<std::vector<QwenTpEntryContract>> tables(windows.size());
+  std::vector<ndnsf::di::NativeExecutionPlan> plans;
+  plans.reserve(windows.size());
+  std::vector<QwenTpUnit> units;
+  std::map<std::string, std::string> shardByUnit;
+  for (std::size_t index = 0; index < windows.size(); ++index) {
+    auto window = windows.at(index);
+    const auto& list = stageUnits.at(index);
+    if (list.empty())
+      throw std::invalid_argument("hybrid stage has no units: " + window.stageId);
+    if (regionPort != nullptr) {
+      validateUnits(list, list.size(), shape.layers, window.layerBegin, window.layerEnd);
+      for (std::size_t rank = 0; rank < list.size(); ++rank)
+        if (list[rank].rank != rank)
+          throw std::invalid_argument("source hybrid rank differs from its member order");
+    }
+    if (index == 0 && window.layerBegin != 0)
+      throw std::invalid_argument("the first hybrid stage must own layer zero");
+    if (index > 0) {
+      const auto& previous = windows.at(index - 1);
+      if (window.layerBegin != previous.layerEnd)
+        throw std::invalid_argument("hybrid stages must be contiguous");
+      if (window.upstreamStepId.empty())
+        throw std::invalid_argument("hybrid stage needs its upstream producer: " +
+                                    window.stageId);
+    }
+    ndnsf::di::NativeExecutionPlan plan;
+    plan.version = 3;
+    plan.modelName = model.modelName;
+    plan.modelFamily = "qwen";
+    plan.modelFormat = model.modelFormat;
+    plan.plannerKind = "native-qwen-hybrid";
+    plan.executionPolicy = "DATA_DRIVEN_V2";
+    const bool terminal = index + 1 == windows.size();
+    if (terminal && !role_ids_contain(list, egressRole))
+      throw std::invalid_argument("hybrid result owner must belong to the last stage");
+    const auto stageEgress = terminal ? egressRole : list.front().roleId;
+    if (regionPort != nullptr) {
+      const auto additional = physicalStateNames(stateMapping->outputs, list.front().roleId);
+      boundaries[index] = (*regionPort)(semanticNodes[index], additional);
+      if (boundaries[index].identityDigest.empty())
+        throw std::invalid_argument("source hybrid region is missing its checked identity");
+      window.sourceRegionDigest =
+        nativePlanningDigest("qwen-hybrid-source-v2|" + boundaries[index].identityDigest);
+    }
+    if (!window.rankRanges.empty()) {
+      if (regionPort == nullptr || list.size() < 2 || window.rankRanges.size() != list.size())
+        throw std::invalid_argument("explicit tensor ranges need a source-bound sharded stage");
+      if (sourceMetadata.is_null())
+        sourceMetadata = nativeParseJson(source->graphMetadataJson);
+      validateWeightedQwenRegion(*source, sourceMetadata, shape, window);
+      auto rankedAxes = NativeJson::array();
+      for (std::size_t rank = 0; rank < list.size(); ++rank) {
+        const auto& range = window.rankRanges[rank];
+        // Validate the physical geometry before sealing; derive entry slices at assembly.
+        QwenTpRankGeometry{list.size(), rank, shape.headDim, shape.queryWidth(),
+          shape.kvWidth(), shape.hidden, shape.ffn, range}.validate();
+        rankedAxes.push_back({{"role", list[rank].roleId}, {"axes", NativeJson::array({
+          {{"axis", "ffn-channel"}, {"begin", range.ffnBegin}, {"end", range.ffnEnd},
+           {"extent", shape.ffn}},
+          {{"axis", "kv-group"}, {"begin", range.kvBegin}, {"end", range.kvEnd},
+           {"extent", shape.kvHeads}}
+        })}});
+      }
+      const auto digest = nativeTensorStageLayoutDigest(model.adapter.descriptorDigest(),
+        graph.graphDigest, window.stageId, window.sourceRegionDigest, rankedAxes);
+      for (const auto& member : rankedAxes) {
+        shardByUnit.emplace(member.at("role").get<std::string>(), nativeCanonicalJson(NativeJson{
+          {"stage_layout_digest", digest}, {"axes", member.at("axes")}}));
+      }
+    }
+    if (regionPort != nullptr && list.size() == 1) {
+      const auto& unit = list.front();
+      const auto stateInputs = physicalStateNames(stateMapping->inputs, unit.roleId);
+      const auto stateOutputs = physicalStateNames(stateMapping->outputs, unit.roleId);
+      plan.roles = {unit.roleId};
+      plan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+      plan.tensorDegree = 1;
+      plan.stageLayout = {{window.stageId, window.sourceRegionDigest, {unit.roleId}}};
+      NativeExecutionStepSpec step;
+      step.stepId = step.artifactEntry = unit.roleId + "/REGION";
+      step.unitId = unit.roleId;
+      step.operation = "CALL_SUBGRAPH";
+      const auto slotFor = [] (const NativeAssemblyTensorContractV3& port) {
+        NativeStepSlotSpec slot;
+        slot.slotId = port.name;
+        slot.dtype = port.dtype;
+        slot.shape = port.shape;
+        slot.layoutDigest = port.dtype == "int64" || port.dtype == "int32"
+          ? QWEN_TP_INDEX_LAYOUT_DIGEST : QWEN_TP_ACTIVATION_LAYOUT_DIGEST;
+        slot.source = "LOCAL_STEP";
+        return slot;
+      };
+      for (const auto& port : boundaries[index].inputs)
+        if (std::find(stateInputs.begin(), stateInputs.end(), port.first) == stateInputs.end())
+          step.inputSlots.push_back(slotFor(port.second));
+      for (const auto& port : boundaries[index].outputs)
+        if (std::find(stateOutputs.begin(), stateOutputs.end(), port.first) == stateOutputs.end())
+          step.outputSlots.push_back(slotFor(port.second));
+      for (std::uint64_t layer = window.layerBegin; layer < window.layerEnd; ++layer) {
+        step.localStateSlots.push_back("kv." + std::to_string(layer) + ".key");
+        step.localStateSlots.push_back("kv." + std::to_string(layer) + ".value");
+      }
+      plan.steps.push_back(std::move(step));
+    }
+    else if (source != nullptr) {
+      tables[index] = describeQwenTpEntryContracts(*source, shape.layers, list,
+        window.layerBegin, window.layerEnd, stageEgress);
+      if (regionPort != nullptr) {
+        if (sourceMetadata.is_null())
+          sourceMetadata = nativeParseJson(source->graphMetadataJson);
+        QwenTpTemplate tp;
+        if (window.rankRanges.empty()) {
+          tp = buildQwenTpTemplate(shape, list.size(), "/verified", list,
+                                  window.layerBegin, window.layerEnd);
+        }
+        else {
+          validateTemplateInputs(shape, list.size(), "/verified");
+          tp.degree = list.size();
+          tp.units = list;
+        }
+        tp.entries = tables[index];
+        std::set<std::string> ids;
+        for (const auto& contract : tp.entries) {
+          contract.validate();
+          if (!ids.insert(contract.entryId).second)
+            throw std::invalid_argument("region entries must have unique identities");
+        }
+        projectTemplate(plan, shape, list.size(), "/verified", stageEgress, tp,
+                        &tp.entries, &window, true, &sourceMetadata);
+      }
+      else {
+        projectQwenTpPlan(plan, shape, list.size(), stageEgress, list, tables[index], window);
+      }
+    }
+    else {
+      projectQwenTpPlan(plan, shape, list.size(), entryPrefix, stageEgress, list, window);
+    }
+    plans.push_back(std::move(plan));
+    for (const auto& unit : list) units.push_back(unit);
+  }
+  if (!role_ids_contain(units, egressRole))
+    throw std::invalid_argument("hybrid candidate egress role is not one of its units: " +
+                                egressRole);
+  if (regionPort != nullptr)
+    bindHybridSourcePorts(plans, stageUnits, tables, boundaries, *source, *stateMapping);
+  auto merged = mergeQwenStagePlans(plans);
+
+  ndnsf::di::NativeSplitCandidate candidate;
+  candidate.source = "PRE_SPLIT";
+  candidate.splitter.name = "native-qwen-hybrid";
+  candidate.splitter.version = "1";
+  candidate.splitter.configurationDigest = nativePlanningDigest(
+    std::string("qwen-hybrid|1|") + std::to_string(windows.size()) + "|" + entryPrefix +
+    "|" + egressRole);
+  candidate.model = model;
+  candidate.graphDigest = graph.graphDigest;
+  candidate.executionPlan = std::move(merged);
+  candidate.inputIngressRole = units.front().roleId;
+  candidate.resultEgressRole = egressRole;
+
+  for (const auto& unit : units) {
+    if (artifactByUnit.count(unit.roleId) == 0 ||
+        requirementByUnit.count(unit.roleId) == 0)
+      throw std::invalid_argument("hybrid unit has no artifact or requirement: " + unit.roleId);
+    candidate.fragmentsByRole[unit.roleId] = nativePlanningDigest(
+      entryPrefix + "|" + unit.roleId + "|" + std::to_string(unit.rank));
+    candidate.tensorDegreesByRole[unit.roleId] = 1;
+    // The recipe needs the shard geometry of the unit's own stage, not of the widest one.
+    std::uint64_t stageDegree = 1;
+    for (const auto& list : stageUnits) {
+      if (std::any_of(list.begin(), list.end(),
+                      [&] (const auto& item) { return item.roleId == unit.roleId; })) {
+        stageDegree = list.size();
+        break;
+      }
+    }
+    // Singleton stages retain the ordinary, unsharded recipe identity. Their degree and
+    // membership remain sealed by stageLayout; only actual shards need a TP recipe binding.
+    if (stageDegree > 1)
+      candidate.tensorIdentityByRole[unit.roleId] = {
+        stageDegree, unit.rank, std::move(shardByUnit[unit.roleId])};
+    candidate.rankArtifactDigestsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
+    candidate.artifactsByRole[unit.roleId] = {artifactByUnit.at(unit.roleId)};
+    candidate.requirementsByRole[unit.roleId] = requirementByUnit.at(unit.roleId);
+  }
+
+  // Node ownership follows the stage windows: a node belongs to the stage whose layer range
+  // contains it, and every unit of that stage executes it. Handing the ingress unit every
+  // node - the tensor-parallel rule - would tell a Provider to assemble layers it never runs.
+  // The catalog supplies the semantic graph from NativeQwenLayerSplit::inspectGraph,
+  // not individual ONNX operators. Entry classification belongs to materialization.
+  for (std::size_t stage = 0; stage < semanticNodes.size(); ++stage) {
+    const auto& ownerUnits = stageUnits[stage];
+    for (const auto& id : semanticNodes[stage]) {
+      candidate.nodeRoles[id] = ownerUnits.front().roleId;
+      for (const auto& unit : ownerUnits) candidate.roleNodeIdsByRole[unit.roleId].push_back(id);
+    }
+  }
+  // Every role must appear in the execution relation, even when it owns no node of its own.
+  for (const auto& unit : units)
+    candidate.roleNodeIdsByRole[unit.roleId];
+
+  for (const auto& unit : units) {
+    std::vector<NativeTensorContract> stateInputs;
+    std::vector<NativeTensorContract> stateOutputs;
+    for (std::uint64_t layer = unit.layerBegin; layer < unit.layerEnd; ++layer) {
+      const auto suffix = std::to_string(layer);
+      for (const auto& kind : {"key", "value"}) {
+        stateInputs.push_back({"past_key_values." + suffix + "." + kind, "uint8",
+                               {"batch", "heads", "sequence", "head-dimension"},
+                               std::nullopt});
+        stateOutputs.push_back({"present." + suffix + "." + kind, "uint8",
+                                {"batch", "heads", "sequence", "head-dimension"},
+                                std::nullopt});
+      }
+    }
+    candidate.roleStateInputsByRole[unit.roleId] = std::move(stateInputs);
+    candidate.roleStateOutputsByRole[unit.roleId] = std::move(stateOutputs);
+  }
+
+  candidate.estimatedCosts = {
+    {"role_count", std::uint64_t(units.size())},
+    {"stage_count", std::uint64_t(windows.size())},
+    {"decoder_layers", std::uint64_t(shape.layers)},
+  };
+  candidate.candidateDigest = candidate.computedDigest();
+  return candidate;
+}
+
+NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit)
+{
+  return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
+    model, artifactByUnit, requirementByUnit, nullptr);
+}
+
+NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source)
+{
+  return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
+    model, artifactByUnit, requirementByUnit, &source);
+}
+
+NativeSplitCandidate
+buildQwenHybridCandidate(const NativeGraphSnapshot& graph, const QwenTpShape& shape,
+                         const std::vector<QwenTpStageWindow>& windows,
+                         const std::vector<std::vector<QwenTpUnit>>& stageUnits,
+                         const std::string& entryPrefix, const std::string& egressRole,
+                         const NativeModelDescriptor& model,
+                         const std::map<std::string, std::string>& artifactByUnit,
+                         const std::map<std::string, NativeRoleResourceRequirement>& requirementByUnit,
+                         const NativeOnnxGraphInspection& source,
+                         const QwenTpSourceRegionPort& regionPort,
+                         const NativeStateTensorMapping& stateMapping)
+{
+  return buildQwenHybridCandidateImpl(graph, shape, windows, stageUnits, entryPrefix, egressRole,
+    model, artifactByUnit, requirementByUnit, &source, &regionPort, &stateMapping);
+}
+
 void
 bindQwenTpGenerationState(const NativeExecutionPlan& plan,
                           NativeGenerationExecutionContractV1& contract)
@@ -1808,7 +2794,7 @@ buildQwenTpGenerationContract(const NativeExecutionPlan& plan, const QwenTpShape
                  contract.stateOutputNames[index];
   }
   contract.stateSuccessorMap = std::move(successor);
-  contract.positionInputPolicy = "position_ids";
+  contract.positionInputPolicy = "qwen-causal-position-v1";
   contract.attentionMaskInputName = "attention_mask";
   contract.positionIdsInputName = "position_ids";
   contract.eosTokenIds = sealed.eosTokenIds;
@@ -1850,7 +2836,21 @@ QwenTpRankGeometry::validate() const
   if (headDim == 0 || queryWidth == 0 || kvWidth == 0 || hidden == 0 || ffn == 0) {
     throw std::invalid_argument("tensor-parallel geometry is incomplete");
   }
-  if (queryWidth % degree != 0 || kvWidth % degree != 0 || ffn % degree != 0) {
+  if (range) {
+    if (kvWidth % headDim != 0 || queryWidth % kvWidth != 0 ||
+        range->kvBegin >= range->kvEnd || range->kvEnd > kvWidth / headDim ||
+        range->ffnBegin >= range->ffnEnd || range->ffnEnd > ffn) {
+      throw std::invalid_argument("invalid explicit tensor-parallel geometry");
+    }
+    const auto groupWidth = queryWidth / (kvWidth / headDim);
+    if ((range->kvBegin * groupWidth) % QWEN_INT4_BLOCK_SIZE != 0 ||
+        (range->kvEnd * groupWidth) % QWEN_INT4_BLOCK_SIZE != 0 ||
+        range->ffnBegin % QWEN_INT4_BLOCK_SIZE != 0 ||
+        range->ffnEnd % QWEN_INT4_BLOCK_SIZE != 0) {
+      throw std::invalid_argument("unaligned explicit tensor-parallel geometry");
+    }
+  }
+  else if (queryWidth % degree != 0 || kvWidth % degree != 0 || ffn % degree != 0) {
     throw std::invalid_argument(
       "tensor-parallel geometry does not divide evenly by its degree");
   }
@@ -1862,9 +2862,13 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   geometry.validate();
   auto* graph = entry.mutable_graph();
   const auto shard = [&] (std::uint64_t width) { return width / geometry.degree; };
-  const auto queryShard = shard(geometry.queryWidth);
-  const auto kvShard = shard(geometry.kvWidth);
-  const auto ffnShard = shard(geometry.ffn);
+  const auto& range = geometry.range;
+  const auto sourceHeads = geometry.kvWidth / geometry.headDim;
+  const auto kvShard = range ? (range->kvEnd - range->kvBegin) * geometry.headDim
+                             : shard(geometry.kvWidth);
+  const auto queryShard = range ? kvShard * (geometry.queryWidth / geometry.kvWidth)
+                                : shard(geometry.queryWidth);
+  const auto ffnShard = range ? range->ffnEnd - range->ffnBegin : shard(geometry.ffn);
 
   std::uint64_t changes = 0;
 
@@ -1879,15 +2883,42 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
         node->name().find("up_proj") != std::string::npos;
       const bool inputSharded = node->name().find("o_proj") != std::string::npos ||
         node->name().find("down_proj") != std::string::npos;
+      // A full-width bias cannot follow column slicing, and a row-partial bias would be
+      // added once per contributor by SUM. Ordinary, unsharded projections keep their bias.
+      if ((outputSharded || inputSharded) && node->input_size() > 5 &&
+          !node->input(5).empty())
+        throw std::invalid_argument("tensor-parallel projection has an unsupported bias: " +
+                                    node->name());
       for (int a = 0; a < node->attribute_size(); ++a) {
         auto* attr = node->mutable_attribute(a);
         if (!attr->has_i()) continue;
         if (attr->name() == "N" && outputSharded) {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range) {
+            const auto& name = node->name();
+            const bool query = name.find("q_proj") != std::string::npos;
+            const bool kv = name.find("k_proj") != std::string::npos ||
+                            name.find("v_proj") != std::string::npos;
+            const auto width = query ? geometry.queryWidth : kv ? geometry.kvWidth : geometry.ffn;
+            if (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) != width)
+              throw std::invalid_argument("unexpected source projection N");
+            attr->set_i(query ? queryShard : kv ? kvShard : ffnShard);
+          }
+          else {
+            attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          }
           ++changes;
         }
         else if (attr->name() == "K" && inputSharded) {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range) {
+            const bool attention = node->name().find("o_proj") != std::string::npos;
+            if (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) !=
+                (attention ? geometry.queryWidth : geometry.ffn))
+              throw std::invalid_argument("unexpected source projection K");
+            attr->set_i(attention ? queryShard : ffnShard);
+          }
+          else {
+            attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          }
           ++changes;
         }
       }
@@ -1897,13 +2928,64 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
         auto* attr = node->mutable_attribute(a);
         if (!attr->has_i()) continue;
         if (attr->name() == "num_heads") {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range && (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) !=
+                        geometry.queryWidth / geometry.headDim))
+            throw std::invalid_argument("unexpected source query heads");
+          attr->set_i(range ? queryShard / geometry.headDim :
+                      attr->i() / static_cast<std::int64_t>(geometry.degree));
           ++changes;
         }
         else if (attr->name() == "kv_num_heads") {
-          attr->set_i(attr->i() / static_cast<std::int64_t>(geometry.degree));
+          if (range && (attr->i() <= 0 || static_cast<std::uint64_t>(attr->i()) != sourceHeads))
+            throw std::invalid_argument("unexpected source KV heads");
+          attr->set_i(range ? kvShard / geometry.headDim :
+                      attr->i() / static_cast<std::int64_t>(geometry.degree));
           ++changes;
         }
+      }
+      // The head counts above are per rank now, so the KV state tensors must be narrowed to
+      // the same heads; otherwise the op declares one KV head while its buffers carry all of
+      // them, which ONNX Runtime rejects when the entry runs.
+      const auto narrowState = [&] (const std::string& name) {
+        for (int i = 0; i < graph->initializer_size(); ++i) {
+          auto* state = graph->mutable_initializer(i);
+          if (state->name() != name) continue;
+          if (range) {
+            if (state->dims_size() != 4 || state->dims(0) != 1 ||
+                state->dims(1) != static_cast<std::int64_t>(sourceHeads) ||
+                state->dims(2) != 0 ||
+                state->dims(3) != static_cast<std::int64_t>(geometry.headDim) ||
+                state->data_type() != onnx::TensorProto::FLOAT ||
+                state->data_location() != onnx::TensorProto::DEFAULT ||
+                !state->raw_data().empty() || state->float_data_size() != 0 ||
+                state->int32_data_size() != 0 || state->int64_data_size() != 0 ||
+                state->double_data_size() != 0 || state->uint64_data_size() != 0 ||
+                state->string_data_size() != 0 || state->external_data_size() != 0)
+              throw std::invalid_argument("unsupported explicit shard KV initializer");
+            state->set_dims(1, static_cast<std::int64_t>(kvShard / geometry.headDim));
+            ++changes;
+            return;
+          }
+          if (state->dims_size() != 4) continue;
+          const auto heads = static_cast<std::uint64_t>(state->dims(1));
+          if (geometry.degree == 0 || heads % geometry.degree != 0) return;
+          const auto perRank = heads / geometry.degree;
+          const auto sliceBytes = static_cast<std::size_t>(state->dims(2)) *
+            static_cast<std::size_t>(state->dims(3)) * sizeof(float);
+          const auto offset = static_cast<std::size_t>(geometry.rank * perRank) * sliceBytes;
+          const std::string raw = state->raw_data();
+          if (offset + perRank * sliceBytes > raw.size()) return;
+          std::vector<char> narrowed(raw.begin() + offset,
+                                     raw.begin() + offset + perRank * sliceBytes);
+          state->set_raw_data(narrowed.data(), narrowed.size());
+          state->set_dims(1, static_cast<std::int64_t>(perRank));
+          ++changes;
+          return;
+        }
+      };
+      if (node->input_size() > 4) {
+        narrowState(node->input(3));
+        narrowState(node->input(4));
       }
     }
   }
@@ -1916,14 +2998,29 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     const auto& node = graph->node(i);
     if (node.op_type() != "Reshape") continue;
     std::optional<std::int64_t> target;
+    std::uint64_t sourceWidth = 0;
     if (node.name().find("q_norm/Reshape_2") != std::string::npos) {
       target = static_cast<std::int64_t>(queryShard);
+      sourceWidth = geometry.queryWidth;
     }
     else if (node.name().find("k_norm/Reshape_2") != std::string::npos) {
       target = static_cast<std::int64_t>(kvShard);
+      sourceWidth = geometry.kvWidth;
     }
-    if (!target || node.input_size() < 2) continue;
+    if (!target) continue;
+    if (node.input_size() < 2) {
+      if (range) throw std::invalid_argument("tensor shard Reshape has no shape operand");
+      continue;
+    }
     const auto& targetName = node.input(1);
+    if (range) {
+      std::size_t users = 0;
+      for (const auto& consumer : graph->node())
+        users += std::count(consumer.input().begin(), consumer.input().end(), targetName);
+      if (users != 1)
+        throw std::invalid_argument("tensor shard Reshape shares its shape operand");
+    }
+    bool changed = false;
     for (int j = 0; j < graph->initializer_size(); ++j) {
       auto* init = graph->mutable_initializer(j);
       if (init->name() != targetName) continue;
@@ -1932,20 +3029,85 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
       if (init->raw_data().empty() || init->raw_data().size() % sizeof(std::int64_t) != 0)
         break;
       std::string bytes = init->raw_data();
-      bool changed = false;
       // The shape is [batch, sequence, width]; only the last entry is the sharded
       // one. Rewriting every slot would corrupt the batch and sequence markers.
-      const auto slots = bytes.size() / sizeof(std::int64_t);
-      if (slots >= 1) {
-        const auto offset = (slots - 1) * sizeof(std::int64_t);
-        std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
-        changed = true;
+      const auto offset = bytes.size() - sizeof(std::int64_t);
+      if (range) {
+        std::int64_t width = 0;
+        std::memcpy(&width, bytes.data() + offset, sizeof(width));
+        if (width <= 0 || static_cast<std::uint64_t>(width) != sourceWidth)
+          throw std::invalid_argument("tensor shard Reshape has an unexpected source width");
       }
-      if (changed) {
-        init->set_raw_data(bytes.data(), bytes.size());
-        ++changes;
-      }
+      std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
+      init->set_raw_data(bytes.data(), bytes.size());
+      ++changes;
+      changed = true;
       break;
+    }
+    // This export keeps the shape operands as Constant nodes instead of
+    // top-level initializers; rewrite the same trailing width slot there.
+    if (!changed) {
+      for (auto& constant : *graph->mutable_node()) {
+        if (constant.op_type() != "Constant" || constant.output_size() != 1 ||
+            constant.output(0) != targetName)
+          continue;
+        for (auto& attribute : *constant.mutable_attribute()) {
+          if (attribute.name() != "value" || !attribute.has_t())
+            continue;
+          auto* tensor = attribute.mutable_t();
+          if (tensor->data_type() != onnx::TensorProto::INT64 ||
+              tensor->data_location() != onnx::TensorProto::DEFAULT ||
+              tensor->raw_data().empty() ||
+              tensor->raw_data().size() % sizeof(std::int64_t) != 0)
+            break;
+          std::string bytes = tensor->raw_data();
+          const auto offset = bytes.size() - sizeof(std::int64_t);
+          if (range) {
+            std::int64_t width = 0;
+            std::memcpy(&width, bytes.data() + offset, sizeof(width));
+            if (width <= 0 || static_cast<std::uint64_t>(width) != sourceWidth)
+              throw std::invalid_argument("tensor shard Reshape has an unexpected source width");
+          }
+          std::memcpy(bytes.data() + offset, &*target, sizeof(std::int64_t));
+          tensor->set_raw_data(bytes.data(), bytes.size());
+          ++changes;
+          changed = true;
+          break;
+        }
+        if (changed)
+          break;
+      }
+    }
+    if (range && !changed) {
+      std::string detail = "no initializer or Constant names the shape operand";
+      detail += " operand=" + targetName + " reshape=" + node.name();
+      for (const auto& init : graph->initializer()) {
+        if (init.name() != targetName)
+          continue;
+        detail = "initializer dtype=" + std::to_string(init.data_type()) +
+                 " location=" + std::to_string(init.data_location()) +
+                 " raw=" + std::to_string(init.raw_data().size()) +
+                 " int64=" + std::to_string(init.int64_data_size());
+        break;
+      }
+      for (const auto& constant : graph->node()) {
+        if (constant.op_type() != "Constant" || constant.output_size() != 1 ||
+            constant.output(0) != targetName)
+          continue;
+        for (const auto& attribute : constant.attribute()) {
+          if (!attribute.has_t())
+            continue;
+          const auto& tensor = attribute.t();
+          detail = "constant attribute=" + attribute.name() +
+                   " dtype=" + std::to_string(tensor.data_type()) +
+                   " location=" + std::to_string(tensor.data_location()) +
+                   " raw=" + std::to_string(tensor.raw_data().size()) +
+                   " int64=" + std::to_string(tensor.int64_data_size());
+        }
+        break;
+      }
+      throw std::invalid_argument(
+        "tensor shard Reshape is missing its inline INT64 shape: " + detail);
     }
   }
 
@@ -1961,6 +3123,14 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
     if (!isState) return;
     auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
     // [batch, kvHeads, sequence, headDim]
+    if (range && (shape->dim_size() != 4 ||
+                  value->type().tensor_type().elem_type() != onnx::TensorProto::FLOAT ||
+                  !shape->dim(1).has_dim_value() ||
+                  shape->dim(1).dim_value() != static_cast<std::int64_t>(sourceHeads) ||
+                  !shape->dim(3).has_dim_value() ||
+                  shape->dim(3).dim_value() != static_cast<std::int64_t>(geometry.headDim))) {
+      throw std::invalid_argument("unexpected explicit shard KV port");
+    }
     if (shape->dim_size() < 4) return;
     auto* heads = shape->mutable_dim(1);
     if (!heads->has_dim_value()) return;
@@ -2014,7 +3184,7 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   };
   const auto rewriteProducerWidth = [&] (onnx::ValueInfoProto* value) {
     const auto width = widthOfProducer(value->name());
-    if (!width) return;
+    if (!width || (range && *width <= 0)) return;
     auto* shape = value->mutable_type()->mutable_tensor_type()->mutable_shape();
     if (shape->dim_size() == 0) return;
     auto* last = shape->mutable_dim(shape->dim_size() - 1);
@@ -2027,6 +3197,45 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
   for (int i = 0; i < graph->value_info_size(); ++i)
     rewriteProducerWidth(graph->mutable_value_info(i));
 
+  // SwiGLU's pointwise intermediates inherit their input width. Keep their
+  // declarations consistent with the narrowed projections rather than relying
+  // on ORT's lenient shape merge to discard stale full-FFN dimensions.
+  std::map<std::string, std::int64_t> widths;
+  const auto rememberWidth = [&] (const onnx::ValueInfoProto& value) {
+    const auto& shape = value.type().tensor_type().shape();
+    if (shape.dim_size() == 3 && shape.dim(2).has_dim_value() &&
+        shape.dim(2).dim_value() > 0)
+      widths[value.name()] = shape.dim(2).dim_value();
+  };
+  for (const auto& value : graph->input()) rememberWidth(value);
+  for (const auto& value : graph->value_info()) rememberWidth(value);
+  for (const auto& node : graph->node()) {
+    if ((!node.domain().empty() && node.domain() != "ai.onnx") || node.output_size() != 1)
+      continue;
+    std::optional<std::int64_t> width;
+    if (node.op_type() == "Sigmoid" && node.input_size() == 1) {
+      const auto input = widths.find(node.input(0));
+      if (input != widths.end()) width = input->second;
+    }
+    else if (node.op_type() == "Mul" && node.input_size() == 2) {
+      const auto left = widths.find(node.input(0));
+      const auto right = widths.find(node.input(1));
+      if (left != widths.end() && right != widths.end() && left->second == right->second)
+        width = left->second;
+    }
+    if (!width) continue;
+    widths[node.output(0)] = *width;
+    for (auto& value : *graph->mutable_value_info()) {
+      if (value.name() != node.output(0)) continue;
+      auto* shape = value.mutable_type()->mutable_tensor_type()->mutable_shape();
+      if (shape->dim_size() != 3 || !shape->dim(2).has_dim_value() ||
+          shape->dim(2).dim_value() == *width)
+        continue;
+      shape->mutable_dim(2)->set_dim_value(*width);
+      ++changes;
+    }
+  }
+
   for (int i = 0; i < graph->value_info_size(); ++i)
     shardKvState(graph->mutable_value_info(i));
   for (int i = 0; i < graph->input_size(); ++i)
@@ -2036,6 +3245,163 @@ adaptQwenTpEntryParameters(onnx::ModelProto& entry, const QwenTpRankGeometry& ge
 
   return changes;
 }
+
+namespace {
+
+void
+validateShardTensorStorage(const std::filesystem::path& root, const onnx::TensorProto& tensor,
+                           std::uint64_t bytes)
+{
+  if (tensor.data_location() == onnx::TensorProto::DEFAULT &&
+      tensor.external_data_size() == 0 && tensor.raw_data().size() == bytes)
+    return;
+  if (tensor.data_location() != onnx::TensorProto::EXTERNAL || !tensor.raw_data().empty())
+    throw std::invalid_argument("invalid packed tensor storage: " + tensor.name());
+  std::map<std::string, std::string> fields;
+  for (const auto& field : tensor.external_data()) {
+    if (!fields.emplace(field.key(), field.value()).second)
+      throw std::invalid_argument("duplicate sidecar metadata: " + tensor.name());
+  }
+  const auto decimal = [&] (const char* key) {
+    const auto& text = fields.at(key);
+    std::uint64_t value = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size())
+      throw std::invalid_argument("invalid sidecar interval: " + tensor.name());
+    return value;
+  };
+  const auto& location = fields.at("location");
+  const auto expectedLocation = std::filesystem::is_regular_file(root / "model.onnx.data")
+    ? "model.onnx.data" : "model.onnx_data";
+  if (location != expectedLocation)
+    throw std::invalid_argument("unexpected sidecar location: " + tensor.name());
+  const auto offset = decimal("offset");
+  const auto length = decimal("length");
+  const auto fileBytes = std::filesystem::file_size(root / location);
+  if (length != bytes || offset > fileBytes || length > fileBytes - offset ||
+      offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+      length > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
+      length > std::numeric_limits<std::size_t>::max() ||
+      length > std::numeric_limits<std::uint64_t>::max() - offset)
+    throw std::invalid_argument("packed tensor interval is outside its sidecar: " + tensor.name());
+}
+
+void
+requireShardOpAttribute(const onnx::NodeProto& node, const char* name, std::uint64_t expected)
+{
+  bool found = false;
+  for (const auto& attr : node.attribute()) {
+    if (attr.name() != name) continue;
+    if (found || !attr.has_i() || attr.i() <= 0 ||
+        static_cast<std::uint64_t>(attr.i()) != expected)
+      throw std::invalid_argument("invalid " + std::string(name) + " on " + node.name());
+    found = true;
+  }
+  if (!found) throw std::invalid_argument("missing " + std::string(name) + " on " + node.name());
+}
+
+void
+verifyExplicitShardEntry(const std::filesystem::path& root, const onnx::GraphProto& graph,
+                         const QwenRankLayerSlices& owned, const QwenTpRankGeometry& geometry,
+                         bool attention, bool narrowed)
+{
+  std::map<std::string, const onnx::TensorProto*> tensors;
+  for (const auto& tensor : graph.initializer()) {
+    if (!tensors.emplace(tensor.name(), &tensor).second)
+      throw std::invalid_argument("duplicate tensor shard initializer: " + tensor.name());
+  }
+  std::map<std::string, std::size_t> consumers;
+  std::map<std::string, const onnx::NodeProto*> projections;
+  std::size_t gqaCount = 0;
+  const auto sourceHeads = geometry.kvWidth / geometry.headDim;
+  const auto localHeads = geometry.range->kvEnd - geometry.range->kvBegin;
+  for (const auto& node : graph.node()) {
+    for (const auto& input : node.input()) ++consumers[input];
+    if (node.op_type() == "GroupQueryAttention") {
+      ++gqaCount;
+      if (node.domain() != "com.microsoft" || node.input_size() < 5 || node.output_size() != 3)
+        throw std::invalid_argument("unsupported tensor shard attention operator");
+      const auto heads = narrowed ? localHeads : sourceHeads;
+      requireShardOpAttribute(node, "kv_num_heads", heads);
+      requireShardOpAttribute(node, "num_heads", heads * (geometry.queryWidth / geometry.kvWidth));
+      const auto portIsValid = [&] (const auto& ports, const std::string& name) {
+        const auto port = std::find_if(ports.begin(), ports.end(),
+          [&] (const auto& info) { return info.name() == name; });
+        if (port == ports.end() || !port->type().has_tensor_type()) return false;
+        const auto& type = port->type().tensor_type();
+        const auto& shape = type.shape();
+        return type.elem_type() == onnx::TensorProto::FLOAT && shape.dim_size() == 4 &&
+          shape.dim(1).has_dim_value() && shape.dim(1).dim_value() == static_cast<std::int64_t>(heads) &&
+          shape.dim(3).has_dim_value() &&
+          shape.dim(3).dim_value() == static_cast<std::int64_t>(geometry.headDim);
+      };
+      const auto layer = std::to_string(owned.layer);
+      for (int i = 0; i < 2; ++i) {
+        const auto suffix = layer + (i == 0 ? ".key" : ".value");
+        const auto& past = node.input(3 + i);
+        const auto& present = node.output(1 + i);
+        const auto initial = tensors.find(past);
+        if (initial == tensors.end()) {
+          if (past != "past_key_values." + suffix || !portIsValid(graph.input(), past))
+            throw std::invalid_argument("tensor shard attention past port is not bound");
+        }
+        else {
+          const auto& tensor = *initial->second;
+          if (tensor.dims_size() != 4 || tensor.dims(0) != 1 || tensor.dims(2) != 0 ||
+              tensor.dims(1) != static_cast<std::int64_t>(heads) ||
+              tensor.dims(3) != static_cast<std::int64_t>(geometry.headDim) ||
+              tensor.data_type() != onnx::TensorProto::FLOAT)
+            throw std::invalid_argument("tensor shard attention initial state has invalid shape");
+        }
+        if (present != "present." + suffix || !portIsValid(graph.output(), present))
+          throw std::invalid_argument("tensor shard attention present port is not bound");
+      }
+    }
+    if (node.op_type() != "MatMulNBits") continue;
+    if (node.domain() != "com.microsoft" || node.input_size() < 3 ||
+        !projections.emplace(node.input(1), &node).second ||
+        std::any_of(node.input().begin() + 3, node.input().end(),
+                    [] (const std::string& input) { return !input.empty(); }))
+      throw std::invalid_argument("unsupported tensor shard projection: " + node.name());
+  }
+  if (gqaCount != (attention ? 1U : 0U) || projections.size() != (attention ? 4U : 3U))
+    throw std::invalid_argument("tensor shard entry has the wrong operators");
+  for (const auto& slice : owned.initializers) {
+    if ((slice.name.find(".attn.") != std::string::npos) != attention) continue;
+    const auto weightName = slice.name + "_Q4";
+    const auto scaleName = slice.name + "_scales";
+    if (!projections.count(weightName) || !tensors.count(weightName) || !tensors.count(scaleName) ||
+        consumers[weightName] != 1 || consumers[scaleName] != 1 ||
+        projections.at(weightName)->input(2) != scaleName)
+      throw std::invalid_argument("missing, shared or mispaired tensor shard: " + slice.name);
+    const auto k = narrowed ? slice.slicedK :
+      slice.axis == QwenSliceAxis::OutputChannels ? geometry.hidden :
+      attention ? geometry.queryWidth : geometry.ffn;
+    const auto n = narrowed ? slice.slicedN :
+      slice.axis == QwenSliceAxis::InputChannels ? geometry.hidden :
+      !attention ? geometry.ffn :
+      slice.name.find(".q_proj.") != std::string::npos ? geometry.queryWidth : geometry.kvWidth;
+    const auto bytes = packedInt4Bytes(n, k);
+    const auto scalesCount = bytes / QWEN_INT4_BLOB_BYTES;
+    const auto& node = *projections.at(weightName);
+    const auto& weight = *tensors.at(weightName);
+    const auto& scales = *tensors.at(scaleName);
+    requireShardOpAttribute(node, "K", k);
+    requireShardOpAttribute(node, "N", n);
+    requireShardOpAttribute(node, "bits", QWEN_INT4_BITS);
+    requireShardOpAttribute(node, "block_size", QWEN_INT4_BLOCK_SIZE);
+    if (weight.data_type() != onnx::TensorProto::UINT8 || weight.dims_size() != 3 ||
+        weight.dims(0) != static_cast<std::int64_t>(n) ||
+        weight.dims(1) != static_cast<std::int64_t>(k / QWEN_INT4_BLOCK_SIZE) ||
+        weight.dims(2) != QWEN_INT4_BLOB_BYTES || scales.data_type() != onnx::TensorProto::FLOAT ||
+        scales.dims_size() != 1 || scales.dims(0) != static_cast<std::int64_t>(scalesCount))
+      throw std::invalid_argument("invalid packed tensor shard shape: " + slice.name);
+    validateShardTensorStorage(root, weight, bytes);
+    validateShardTensorStorage(root, scales, scalesCount * sizeof(float));
+  }
+}
+
+} // namespace
 
 std::uint64_t
 applyQwenTpRankSlices(onnx::ModelProto& entry,
@@ -2319,8 +3685,39 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
                         const std::string& egressRole,
                         const QwenTpAssemblyControl* control)
 {
+  configureQwenTpRankSpec(spec, layers, steps, rankedByteBudget, tensorDegree,
+                          tensorRank, egressRole, control, 0);
+}
+
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget,
+                        std::uint64_t tensorDegree, std::uint64_t tensorRank,
+                        const std::string& egressRole,
+                        const QwenTpAssemblyControl* control, std::uint64_t layerBegin)
+{
+  configureQwenTpRankSpec(spec, layers, steps, rankedByteBudget, tensorDegree,
+                         tensorRank, egressRole, control, layerBegin, {});
+}
+
+void
+configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
+                        const std::vector<NativeExecutionStepSpec>& steps,
+                        std::uint64_t rankedByteBudget, std::uint64_t tensorDegree,
+                        std::uint64_t tensorRank, const std::string& egressRole,
+                        const QwenTpAssemblyControl* control, std::uint64_t layerBegin,
+                        const std::string& tensorShardV1)
+{
   requireRankAssemblyActive(control);
-  if (spec.path.empty() || layers == 0 || spec.role.empty()) {
+  const auto savedBackend = spec.metadata.find("tensorParallelChildBackend");
+  const auto childBackend = spec.backend == "native-qwen-tensor"
+    ? (savedBackend == spec.metadata.end() ? "onnxruntime" : savedBackend->second)
+    : (spec.backend.empty() ? "onnxruntime" : spec.backend);
+  if (childBackend != "onnxruntime" && childBackend != "onnxruntime-cpu" &&
+      childBackend != "onnxruntime-cuda")
+    throw std::invalid_argument("tensor-parallel child requires an ordinary ONNX backend");
+  if (spec.path.empty() || layerBegin >= layers || spec.role.empty()) {
     throw std::invalid_argument(
       "tensor-parallel rank spec needs an assembled path, a role and layers");
   }
@@ -2335,13 +3732,14 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   // from the graph rather than from a caller constant, so the slice cannot
   // disagree with the export it is cutting. A pipeline role keeps full width.
   QwenTpAssemblyShards shards;
+  if (!tensorShardV1.empty() && tensorDegree < 2)
+    throw std::invalid_argument("explicit tensor shard needs tensor degree >= 2");
   if (tensorDegree > 1) {
     if (tensorRank >= tensorDegree) {
       throw std::invalid_argument(
         "tensor-parallel rank is outside the sealed degree");
     }
-    const auto shape = deriveQwenTpShape(graphBytes, layers);
-    shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank);
+    const auto shape = deriveQwenTpRegionShape(graphBytes, layerBegin, layers);
     // The operators must describe the narrowed weights, or ORT rejects the entry
     // at load; the geometry is read from the same shape the slices came from.
     shards.geometry.degree = tensorDegree;
@@ -2351,6 +3749,22 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
     shards.geometry.kvWidth = shape.kvWidth();
     shards.geometry.hidden = shape.hidden;
     shards.geometry.ffn = shape.ffn;
+    if (!tensorShardV1.empty()) {
+      const auto shard = parseNativeTensorShardV1(tensorShardV1);
+      const auto& axes = shard.at("axes");
+      if (axes.size() != 2 || axes[0].at("axis") != "ffn-channel" ||
+          axes[0].at("extent") != shape.ffn || axes[1].at("axis") != "kv-group" ||
+          axes[1].at("extent") != shape.kvHeads)
+        throw std::invalid_argument("tensor shard axes disagree with the assembled Qwen region");
+      shards.geometry.range = QwenTpRankRange{
+        axes[1].at("begin").get<std::uint64_t>(), axes[1].at("end").get<std::uint64_t>(),
+        axes[0].at("begin").get<std::uint64_t>(), axes[0].at("end").get<std::uint64_t>()};
+      shards.geometry.validate();
+      shards.slicesByLayer = planQwenTensorSlices(shape, *shards.geometry.range, layerBegin, layers);
+    }
+    else {
+      shards.slicesByLayer = planQwenTensorSlices(shape, tensorDegree, tensorRank, layerBegin, layers);
+    }
     // The sidecar sits beside the rank file; only a non-contiguous slice needs it
     // in memory, and only for that entry's own weight.
     const auto sidecar = modelPath.parent_path() / "model.onnx.data";
@@ -2383,7 +3797,8 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   tableControl.maxAssembledBytes = rankedByteBudget;
   auto table = assembleQwenTpEntryTable(modelPath.parent_path(), spec.role,
                                         graphBytes, layers, shards,
-                                        &tableControl, egressRole);
+                                        &tableControl, layerBegin, layers);
+  retainQwenTpEgressHead(table, spec.role, egressRole);
   // A caller that declares fewer steps than the taxonomy produces is building a partial
   // template -- a test driving one block, or a plan that intentionally executes a slice.
   // The verifier's set-agreement rule exists to catch an artifact that disagrees with the
@@ -2435,6 +3850,7 @@ configureQwenTpRankSpec(NativeModelRunnerSpec& spec, std::uint64_t layers,
   spec.metadata["tensorParallelSteps"] = qwenTpStepDeclarationJson(steps);
   // The parent runner is selected by backend name, and the single-file rank model
   // is no longer what executes.
+  spec.metadata["tensorParallelChildBackend"] = childBackend;
   spec.backend = "native-qwen-tensor";
   requireRankAssemblyActive(&tableControl);
 }
@@ -2544,6 +3960,15 @@ isPastTensorName(const std::string& name)
   return name.rfind("past_key_values.", 0) == 0;
 }
 
+bool
+ownsStateInput(const QwenTpEntryContract& entry, const std::string& name)
+{
+  if (!isPastTensorName(name)) return false;
+  const auto successor = "present." + name.substr(std::string("past_key_values.").size());
+  return std::find(entry.stateOutputGraphNames.begin(), entry.stateOutputGraphNames.end(),
+                   successor) != entry.stateOutputGraphNames.end();
+}
+
 } // namespace
 
 /** Freeze the graph-to-slot binding for one assembled entry.
@@ -2560,8 +3985,8 @@ isPastTensorName(const std::string& name)
  *    post-MLP residual.
  *  - INIT returns the positions, the reformatted mask and the embedded X0.
  *
- * The mask scalars the export derives internally have no template slot; they are recorded
- * as synthesized rather than silently omitted.
+ * Ports outside this adapter's semantic aliases are completed by bindIdentitySlots;
+ * they retain their actual graph names and require explicit admitted values.
  */
 void
 bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contract)
@@ -2657,13 +4082,22 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
 
   if (contract.kind == "HEAD") {
     for (const auto& input : graph.input()) {
-      if (!hiddenInputs.empty() && input.name() == hiddenInputs.front()) continue;
+      if (std::find(hiddenInputs.begin(), hiddenInputs.end(), input.name()) != hiddenInputs.end())
+        continue;
       contract.synthesizedInputGraphNames.push_back(input.name());
     }
     // Two hidden inputs carry the merged attention value and the post-MLP residual.
     if (hiddenInputs.size() == 2) {
-      contract.inputSlotByGraphName[hiddenInputs[0]] = "merged";
-      contract.inputSlotByGraphName[hiddenInputs[1]] = "post_residual";
+      const bool firstMlp = hiddenInputs[0].find("down_proj") != std::string::npos;
+      const bool secondMlp = hiddenInputs[1].find("down_proj") != std::string::npos;
+      if (firstMlp != secondMlp) {
+        contract.inputSlotByGraphName[hiddenInputs[firstMlp ? 0 : 1]] = "merged";
+        contract.inputSlotByGraphName[hiddenInputs[firstMlp ? 1 : 0]] = "post_residual";
+      }
+      else {
+        contract.inputSlotByGraphName[hiddenInputs[0]] = "merged";
+        contract.inputSlotByGraphName[hiddenInputs[1]] = "post_residual";
+      }
     }
     // The head returns the vocabulary projection and, in the frozen export, the final
     // normalization's own output as well. Only the projection is a plan slot; binding both
@@ -2741,11 +4175,8 @@ bindQwenTpEntrySlots(const onnx::ModelProto& model, QwenTpEntryContract& contrac
     contract.inputSlotByGraphName[name] = fromAttention ? "merged" : "residual";
   }
 
-  // Two mask tensors reach attention: the reformatted mask the template carries as
-  // `attn_mask`, and the scalar the op reads as total_sequence_length. Only the first is a
-  // plan slot; the scalar is derived from the mask's own shape and has no slot, so it is
-  // synthesized. Mapping both to one slot would make the parent hand the same bundle to
-  // two inputs that expect different ranks.
+  // Mask and total length are distinct ports with distinct ranks. Unknown control inputs
+  // retain identity bindings below rather than borrowing either semantic slot.
   bool maskSlotTaken = false;
   bool lengthSlotTaken = false;
   for (const auto& input : graph.input()) {
@@ -2808,11 +4239,13 @@ void
 bindIdentitySlots(QwenTpEntryContract& contract)
 {
   for (const auto& name : contract.inputNames)
-    if (contract.inputSlotByGraphName.count(name) == 0 &&
-        std::find(contract.synthesizedInputGraphNames.begin(),
-                  contract.synthesizedInputGraphNames.end(), name) ==
-          contract.synthesizedInputGraphNames.end())
+    if (!ownsStateInput(contract, name) && contract.inputSlotByGraphName.count(name) == 0)
       contract.inputSlotByGraphName[name] = name;
+  // Unknown real graph inputs remain explicit dependencies, never implicit defaults.
+  contract.synthesizedInputGraphNames.erase(std::remove_if(
+    contract.synthesizedInputGraphNames.begin(), contract.synthesizedInputGraphNames.end(),
+    [&] (const auto& name) { return contract.inputSlotByGraphName.count(name) != 0; }),
+    contract.synthesizedInputGraphNames.end());
   for (const auto& name : contract.outputNames) {
     if (contract.outputSlotByGraphName.count(name) != 0) continue;
     if (std::find(contract.stateOutputGraphNames.begin(),
@@ -2821,6 +4254,112 @@ bindIdentitySlots(QwenTpEntryContract& contract)
       continue;
     contract.outputSlotByGraphName[name] = name;
   }
+}
+
+std::vector<QwenTpEntryContract>
+describeQwenTpEntryContracts(const NativeOnnxGraphInspection& source, std::uint64_t layers,
+                             const std::vector<QwenTpUnit>& units,
+                             std::uint64_t layerBegin, std::uint64_t layerEnd,
+                             const std::string& egressRole)
+{
+  if (units.empty() || layerBegin >= layerEnd || layerEnd > layers)
+    throw std::invalid_argument("source entry description needs units and a valid region");
+  const auto metadata = nativeParseJson(source.graphMetadataJson);
+  const auto& nodes = metadata.at("nodes");
+  if (nodes.size() != source.graph.nodes.size())
+    throw std::invalid_argument("source entry metadata node cover differs from inspection");
+
+  // A structural view only: no initializer payload, graph hash or executable file is made.
+  // Boundary discovery reads sets of input names, so restored initializer operands need
+  // ownership, not their original argument positions or weight bytes.
+  onnx::ModelProto structure;
+  auto& graph = *structure.mutable_graph();
+  for (const auto& node : nodes) {
+    if (node.at("index").get<std::uint64_t>() !=
+        static_cast<std::uint64_t>(graph.node_size()))
+      throw std::invalid_argument("source entry metadata is not in canonical node order");
+    auto* item = graph.add_node();
+    item->set_name(node.at("name").get<std::string>());
+    item->set_op_type(node.at("opType").get<std::string>());
+    for (const auto& name : node.at("inputs")) item->add_input(name.get<std::string>());
+    for (const auto& name : node.at("outputs")) item->add_output(name.get<std::string>());
+  }
+  std::set<std::string> initializers;
+  for (const auto& item : metadata.at("initializers")) {
+    const auto name = item.get<std::string>();
+    if (!initializers.insert(name).second)
+      throw std::invalid_argument("source entry metadata repeats an initializer");
+    graph.add_initializer()->set_name(name);
+    const auto owners = source.initializerConsumers.find(name);
+    if (owners == source.initializerConsumers.end())
+      throw std::invalid_argument("source entry metadata lacks initializer ownership");
+    for (const auto index : owners->second) {
+      if (index >= static_cast<std::uint64_t>(graph.node_size()))
+        throw std::invalid_argument("source entry initializer owner is outside the graph");
+      graph.mutable_node(static_cast<int>(index))->add_input(name);
+    }
+  }
+  if (initializers.size() != source.initializerConsumers.size())
+    throw std::invalid_argument("source entry initializer ownership has foreign keys");
+
+  const auto valueInfo = [&] (const std::string& name) {
+    const auto& facts = metadata.at("tensors").at(name);
+    onnx::ValueInfoProto value;
+    value.set_name(name);
+    auto* type = value.mutable_type()->mutable_tensor_type();
+    const auto dtype = facts.at("dtype").get<std::string>();
+    if (dtype.rfind("onnx_type_", 0) == 0) {
+      const auto label = dtype.substr(10);
+      std::size_t used = 0;
+      const auto scalar = std::stol(label, &used);
+      if (used != label.size() || scalar < 0 ||
+          scalar > std::numeric_limits<std::int32_t>::max())
+        throw std::invalid_argument("source entry has an invalid ONNX scalar type");
+      type->set_elem_type(static_cast<std::int32_t>(scalar));
+    }
+    else {
+      type->set_elem_type(onnxTensorScalarType(tensorElementTypeFromName(dtype)));
+    }
+    for (const auto& dimension : facts.at("shape")) {
+      auto* dim = type->mutable_shape()->add_dim();
+      if (dimension.is_string()) dim->set_dim_param(dimension.get<std::string>());
+      else dim->set_dim_value(dimension.get<std::int64_t>());
+    }
+    return value;
+  };
+  for (const auto& name : metadata.at("inputs"))
+    *graph.add_input() = valueInfo(name.get<std::string>());
+  for (const auto& name : metadata.at("outputs"))
+    *graph.add_output() = valueInfo(name.get<std::string>());
+  for (const auto& item : metadata.at("tensors").items())
+    if (initializers.count(item.key()) == 0) *graph.add_value_info() = valueInfo(item.key());
+
+  const auto entries = classifyQwenRegionNodes(structure, layers, layerBegin, layerEnd);
+  std::vector<QwenTpEntryContract> result;
+  for (const auto& unit : units) {
+    if (unit.layerBegin != layerBegin || unit.layerEnd != layerEnd)
+      throw std::invalid_argument("source entry unit differs from its region");
+    for (const auto& entry : entries) {
+      if (!ownsRegionEntry(entry, layers, layerBegin, layerEnd) ||
+          (entry.kind == "HEAD" && unit.roleId != egressRole)) continue;
+      const auto boundary = describeQwenTpEntryBoundary(structure, entry);
+      onnx::ModelProto ports;
+      for (const auto& input : boundary.first) *ports.mutable_graph()->add_input() = input;
+      for (const auto& output : boundary.second) *ports.mutable_graph()->add_output() = output;
+      QwenTpEntryContract contract;
+      contract.entryId = unit.roleId + "/" + entry.kind + "/" + std::to_string(entry.layer);
+      contract.unitId = unit.roleId;
+      contract.kind = entry.kind;
+      contract.layer = entry.layer;
+      for (const auto& input : boundary.first) contract.inputNames.push_back(input.name());
+      for (const auto& output : boundary.second) contract.outputNames.push_back(output.name());
+      bindQwenTpEntrySlots(ports, contract);
+      bindIdentitySlots(contract);
+      contract.validate();
+      result.push_back(std::move(contract));
+    }
+  }
+  return result;
 }
 
 /** Write an already-extracted entry: slice, declare, persist, digest.
@@ -2882,7 +4421,14 @@ finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId
         break;
       }
     }
-    if (owned != nullptr && (entry.kind == "ATTN" || entry.kind == "MLP")) {
+    const bool attention = entry.kind == "ATTN";
+    const bool tracedEntry = attention || entry.kind == "MLP";
+    const bool explicitShard = shards->geometry.range.has_value();
+    if (tracedEntry && explicitShard && owned == nullptr)
+      throw std::invalid_argument("tensor shard has no ranges for an owned entry");
+    if (owned != nullptr && tracedEntry) {
+      if (explicitShard)
+        verifyExplicitShardEntry(root, model.graph(), *owned, shards->geometry, attention, false);
       // Matching nothing is legal: an entry can hold only normalizations, and a
       // layer may have no sharded projection in a small fixture. The caller that
       // needs to know a real shard was narrowed asserts the resulting sizes, which
@@ -2896,6 +4442,8 @@ finalizeQwenTpEntry(const std::filesystem::path& root, const std::string& unitId
       if (shards->geometry.degree > 1) {
         (void)adaptQwenTpEntryParameters(model, shards->geometry);
       }
+      if (explicitShard)
+        verifyExplicitShardEntry(root, model.graph(), *owned, shards->geometry, attention, true);
     }
   }
 
@@ -2966,7 +4514,16 @@ std::vector<QwenTpEntryNodes>
 classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
                          std::uint64_t layers)
 {
-  if (nodeNames.empty() || layers == 0) {
+  return classifyQwenRegionNodes(nodeNames, layers, 0, layers);
+}
+
+namespace {
+
+std::vector<QwenTpEntryNodes>
+classifyQwenRegionNodes(const std::vector<std::string>& nodeNames, std::uint64_t layers,
+                       std::uint64_t layerBegin, std::uint64_t layerEnd)
+{
+  if (nodeNames.empty() || layers == 0 || layerBegin >= layerEnd || layerEnd > layers) {
     throw std::invalid_argument("tensor-parallel entry classification needs a graph");
   }
   // Layer indices run [0, layers); the export also carries a final
@@ -3045,20 +4602,21 @@ classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
     attention.nodeIndices.push_back(nodeIndex);
   }
 
-  if (init.nodeIndices.empty()) {
+  if (layerBegin == 0 && init.nodeIndices.empty()) {
     throw std::invalid_argument(
       "tensor-parallel entry classification found no INIT nodes");
   }
-  for (const auto& pair : perLayer) {
+  for (std::uint64_t layer = layerBegin; layer < layerEnd; ++layer) {
+    const auto& pair = perLayer[layer];
     if (pair.first.nodeIndices.empty() || pair.second.nodeIndices.empty()) {
       throw std::invalid_argument(
         "tensor-parallel entry classification left a layer without attention or MLP nodes");
     }
   }
-  entries.push_back(std::move(init));
+  if (!init.nodeIndices.empty()) entries.push_back(std::move(init));
   for (auto& pair : perLayer) {
-    entries.push_back(std::move(pair.first));
-    entries.push_back(std::move(pair.second));
+    if (!pair.first.nodeIndices.empty()) entries.push_back(std::move(pair.first));
+    if (!pair.second.nodeIndices.empty()) entries.push_back(std::move(pair.second));
   }
   if (!head.nodeIndices.empty()) entries.push_back(std::move(head));
   // The taxonomy must cover the graph exactly: a node in no entry would never be
@@ -3071,6 +4629,8 @@ classifyQwenTpEntryNodes(const std::vector<std::string>& nodeNames,
   }
   return entries;
 }
+
+} // namespace
 
 void
 QwenTpEntryContract::validate() const
@@ -3118,6 +4678,97 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
   projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr);
 }
 
+std::pair<std::uint64_t, std::uint64_t>
+stageLayerWindow(const ndnsf::di::NativeExecutionPlan& stage)
+{
+  bool seen = false;
+  std::uint64_t first = 0;
+  std::uint64_t last = 0;
+  for (const auto& step : stage.steps) {
+    if (step.operation != "CALL_SUBGRAPH") continue;
+    const auto slash = step.stepId.rfind('/');
+    if (slash == std::string::npos || slash + 1 >= step.stepId.size()) continue;
+    std::uint64_t layer = 0;
+    try {
+      layer = std::stoull(step.stepId.substr(slash + 1));
+    }
+    catch (const std::exception&) {
+      continue;
+    }
+    if (!seen) {
+      first = last = layer;
+      seen = true;
+    }
+    else {
+      first = std::min(first, layer);
+      last = std::max(last, layer);
+    }
+  }
+  if (!seen)
+    throw std::invalid_argument("stage plan has no layer-bearing step");
+  return {first, last};
+}
+
+std::string
+boundaryPublisher(const ndnsf::di::NativeExecutionPlan& stage)
+{
+  if (stage.stageLayout.size() != 1 || stage.stageLayout.front().unitRoleIds.empty())
+    throw std::invalid_argument("a hybrid stage needs one non-empty layout row");
+  return stage.stageLayout.front().unitRoleIds.front();
+}
+
+ndnsf::di::NativeExecutionPlan
+mergeQwenStagePlans(const std::vector<ndnsf::di::NativeExecutionPlan>& stages)
+{
+  if (stages.empty())
+    throw std::invalid_argument("a hybrid plan needs at least one stage");
+  ndnsf::di::NativeExecutionPlan merged;
+  std::set<std::string> stageIds;
+  std::set<std::string> unitIds;
+  for (const auto& stage : stages) {
+    if (stage.stepPlanVersion != ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2 ||
+        stage.stageLayout.size() != 1) {
+      throw std::invalid_argument(
+        "every hybrid stage must be a single-window version-two plan");
+    }
+    const auto& layout = stage.stageLayout.front();
+    if (!stageIds.insert(layout.stageId).second)
+      throw std::invalid_argument("hybrid stages share a stage id: " + layout.stageId);
+    for (const auto& unit : layout.unitRoleIds) {
+      if (!unitIds.insert(unit).second)
+        throw std::invalid_argument("hybrid stages share a unit: " + unit);
+    }
+    merged.roles.insert(merged.roles.end(), stage.roles.begin(), stage.roles.end());
+    merged.steps.insert(merged.steps.end(), stage.steps.begin(), stage.steps.end());
+    merged.dependencies.insert(merged.dependencies.end(), stage.dependencies.begin(),
+                               stage.dependencies.end());
+    merged.stageLayout.push_back(layout);
+    merged.tensorDegree = std::max(merged.tensorDegree, stage.tensorDegree);
+  }
+  merged.stepPlanVersion = ndnsf::di::NATIVE_STEP_PLAN_VERSION_V2;
+  merged.streamingOperationStride = merged.dependencies.size();
+  // The merged plan is the first object that contains every producer, so it is the first one
+  // that can be validated.
+  merged.validateSteps();
+  merged.modelFamily = stages.front().modelFamily;
+  merged.plannerKind = stages.front().plannerKind;
+  merged.serviceName = stages.front().serviceName;
+  merged.modelName = stages.front().modelName;
+  return merged;
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& entryPrefix,
+                  const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const QwenTpStageWindow& window)
+{
+  const auto tp = buildQwenTpTemplate(shape, degree, entryPrefix, units,
+                                      window.layerBegin, window.layerEnd);
+  projectTemplate(plan, shape, degree, entryPrefix, egressRole, tp, nullptr, &window);
+}
+
 void
 projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
                   std::uint64_t degree, const std::string& egressRole,
@@ -3134,6 +4785,25 @@ projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape
     if (!ids.insert(contract.entryId).second)
       throw std::invalid_argument("tensor-parallel entry ids are duplicated");
   projectTemplate(plan, shape, degree, "/verified", egressRole, tp, &tp.entries);
+}
+
+void
+projectQwenTpPlan(ndnsf::di::NativeExecutionPlan& plan, const QwenTpShape& shape,
+                  std::uint64_t degree, const std::string& egressRole,
+                  const std::vector<QwenTpUnit>& units,
+                  const std::vector<QwenTpEntryContract>& entries,
+                  const QwenTpStageWindow& window)
+{
+  auto tp = buildQwenTpTemplate(shape, degree, "/verified", units,
+                                window.layerBegin, window.layerEnd);
+  tp.entries = entries;
+  std::set<std::string> ids;
+  for (const auto& contract : tp.entries) {
+    contract.validate();
+    if (!ids.insert(contract.entryId).second)
+      throw std::invalid_argument("region entries must have unique identities");
+  }
+  projectTemplate(plan, shape, degree, "/verified", egressRole, tp, &tp.entries, &window, true);
 }
 
 } // namespace ndnsf::di::qwen

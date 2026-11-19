@@ -196,7 +196,9 @@ struct PersonFrameReadBatch
   std::array<uav::UavPersonFrameReadBinding, 3> bindings;
   std::array<ndn::Buffer, 3> images;
   std::array<std::pair<uint64_t, uint64_t>, 3> dimensions;
+  std::array<std::optional<uav::UavPersonFrameReadBinding>, 3> contexts;
   std::array<bool, 3> received{};
+  bool v2 = false;
   std::string resultJson;
   std::string resultDigest;
   std::string resultName;
@@ -220,6 +222,7 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
   std::string observationSchema{};
   std::string observationSourceEpoch{};
   std::string observationSourceUav1{};
+  std::string deliveryMode{};
   std::string observationSourceUav2{};
   std::string observationSourceUav3{};
   std::string sourceGenerationsPath{};
@@ -260,6 +263,7 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
   std::optional<ndn::Name> scopeRequestId;
   std::optional<ndn::Name> activeComputeProvider;
   size_t activeWindowIndex = 0;
+  std::array<uav::UavSourceDescriptor, 3> sourceDescriptors;
   bool cancellationInProgress = false;
   uint64_t resultDrainGeneration = 0;
   bool cancellationCompletionPending = false;
@@ -345,6 +349,90 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
       }
       if (!self->finished) self->pollAuthority();
     });
+  }
+
+
+  void
+  failBootstrap(const std::string& reason)
+  {
+    if (finished) return;
+    std::cerr << "SPEC226_SOURCE_INFO_FAILED reason=" << reason << std::endl;
+    publishPresentationFailure(0, reason);
+    view.reason = reason;
+    view.failureStage = "source-info";
+    exitCode = 1;
+    finish();
+  }
+
+  void
+  verifySourceInfos(size_t index)
+  {
+    if (finished || !checkLiveAuthority()) return;
+    if (index >= sourceProviders.size()) {
+      (*beginWindow)(0);
+      return;
+    }
+    uav::UavSourceInfoRequest request;
+    request.cameraId = "UAV" + std::to_string(index + 1);
+    if (sourceGenerations && !sourceGenerations->generations.empty()) {
+      const auto& generation = sourceGenerations->generations.front();
+      request.sourceEpoch = generation.sourceEpoch;
+      if (index < generation.sourceIds.size()) request.sourceId = generation.sourceIds[index];
+    }
+    else {
+      request.sourceId = definition.sources[index].sourceId;
+      request.sourceEpoch = definition.sources[index].sourceEpoch;
+    }
+    const auto text = uav::renderUavSourceInfoRequest(request);
+    ndn::Buffer payload(text.begin(), text.end());
+    nsf::RequestMessage message;
+    message.setPayload(payload, payload.size());
+    try {
+      (void)user.RequestServiceTargeted(
+        sourceProviders[index], uav::SERVICE_TRACKING_SOURCE, message, 5000,
+        [self = shared_from_this(), index] (const ndn::Name&) {
+          boost::asio::post(self->face.getIoContext(),
+            [self, index] { self->failBootstrap("source-info timeout for UAV" +
+                                                std::to_string(index + 1)); });
+        },
+        [self = shared_from_this(), index, request, expectedProvider = sourceProviders[index]]
+        (const nsf::ResponseMessage& response) {
+          const auto status = response.getStatus();
+          const auto bytes = response.getPayload();
+          boost::asio::post(self->face.getIoContext(),
+            [self, index, request, expectedProvider, status, bytes] {
+              if (self->finished) return;
+              if (!status) {
+                self->failBootstrap("source-info rejected for UAV" + std::to_string(index + 1));
+                return;
+              }
+              try {
+                const auto text = std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                const auto info = uav::parseUavSourceInfoResponse(text);
+                const auto& descriptor = info.descriptor;
+                if (descriptor.producerIdentity != expectedProvider ||
+                    descriptor.cameraId != request.cameraId ||
+                    descriptor.sourceId != request.sourceId ||
+                    descriptor.sourceEpoch != request.sourceEpoch ||
+                    info.digest != uav::uavSourceDescriptorDigest(descriptor) ||
+                    descriptor.acquisitionKind.empty() || descriptor.deliveryMode.empty()) {
+                  self->failBootstrap("source-info descriptor mismatch for UAV" +
+                                      std::to_string(index + 1));
+                  return;
+                }
+                self->sourceDescriptors[index] = descriptor;
+                self->verifySourceInfos(index + 1);
+              }
+              catch (const std::exception& error) {
+                self->failBootstrap("source-info parse failed for UAV" +
+                                    std::to_string(index + 1) + ": " + error.what());
+              }
+            });
+        });
+    }
+    catch (const std::exception& error) {
+      failBootstrap(std::string("source-info could not start: ") + error.what());
+    }
   }
 
   void
@@ -548,6 +636,7 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
     fault = option(argc, argv, "--fault", "none");
     motionDir = option(argc, argv, "--motion-dir");
     observationSchema = option(argc, argv, "--observation-schema");
+    deliveryMode = option(argc, argv, "--delivery-mode");
     observationSourceEpoch = option(argc, argv, "--source-epoch", "0");
     observationSourceUav1 = option(argc, argv, "--source-uav1-id");
     observationSourceUav2 = option(argc, argv, "--source-uav2-id");
@@ -591,7 +680,6 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
         (!personExpectation || personPresentationDir.empty())) {
       throw std::invalid_argument("committed window replay requires person presentation");
     }
-    requireOptionValue(argc, argv, "--calibration-provider");
     calibrationProviderText = option(argc, argv, "--calibration-provider");
     calibrationProvider = ndn::Name(calibrationProviderText);
     if (!calibrationProviderText.empty() &&
@@ -605,7 +693,7 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
     controllerReadyRetryMs = std::stoi(
       option(argc, argv, "--controller-ready-retry-ms", "250"));
     requestTimeoutMs = std::stoi(
-      option(argc, argv, "--request-timeout-ms", "60000"));
+      option(argc, argv, "--request-timeout-ms", "30000"));
     if (missionId.empty() || windowPrefix.empty() || windowCount == 0 || windowCount > 600 ||
         startDelayMs < 0 ||
         controllerReadyTimeoutMs <= 0 || controllerReadyRetryMs <= 0 ||
@@ -991,6 +1079,14 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
         {"window_id", windowId},
       };
       requestFields.insert(personRequestFields.begin(), personRequestFields.end());
+      if (!compatibility && personExpectation) {
+        for (size_t i = 0; i < sourceDescriptors.size(); ++i) {
+          const auto prefix = "source_uav" + std::to_string(i + 1);
+          requestFields.emplace(prefix + "_descriptor_digest",
+                                uav::uavSourceDescriptorDigest(sourceDescriptors[i]));
+          requestFields.emplace(prefix + "_epoch", std::to_string(sourceDescriptors[i].sourceEpoch));
+        }
+      }
       if (fault == "alter-committed-window" && alteredReplaySent) {
         requestFields.emplace("f4_altered_frame", "1");
       }
@@ -1084,10 +1180,24 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
                 expected.vehicleTracking = uav::UavVehicleTrackingResultExpectation{
                   !observationSchema.empty(), {}};
               }
-              uav::validateUavTrackingResultContext(
-                uav::fieldOr(fields, "result_name", ""),
-                uav::fieldOr(fields, "provider", ""), resultJson, expected);
-              resultContextVerified = true;
+              bool deferV2 = false;
+              if (personExpectation) {
+                const auto wire = uav::person_json::parseBounded(resultJson,
+                  personExpectation->profile.limits.at("maxResultBytes"));
+                deferV2 = uav::person_json::text(wire.at("schema")) ==
+                  "uav-person-tracking-result-v2" &&
+                  (!compatibility || !personPresentationDir.empty());
+              }
+              if (deferV2) {
+                // Frame contexts arrive from each Source with the JPEG reads.
+                resultContextVerified = true;
+              }
+              else {
+                uav::validateUavTrackingResultContext(
+                  uav::fieldOr(fields, "result_name", ""),
+                  uav::fieldOr(fields, "provider", ""), resultJson, expected);
+                resultContextVerified = true;
+              }
             }
             catch (const std::exception& error) {
               resultContextError = error.what();
@@ -1250,6 +1360,8 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
               const auto result = uav::person_json::parseBounded(
                 resultJson, personExpectation ? personExpectation->profile.limits.at("maxResultBytes")
                                               : 8 * 1024 * 1024);
+              batch->v2 = personExpectation &&
+                result.at("schema").get<std::string>() == "uav-person-tracking-result-v2";
               int64_t firstPts = std::numeric_limits<int64_t>::max();
               for (size_t i = 0; i < 3; ++i) {
                 const auto& frame = result.at("frames").at(i);
@@ -1281,7 +1393,9 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
               for (size_t i = 0; i < 3; ++i) {
                 if (!checkLiveAuthority()) return;
                 nsf::RequestMessage frameRequest;
-                auto payload = fieldsBuffer(uav::makeUavPersonFrameReadFields(batch->bindings[i]));
+                auto readFields = uav::makeUavPersonFrameReadFields(batch->bindings[i]);
+                if (batch->v2) readFields["include_context"] = "1";
+                auto payload = fieldsBuffer(readFields);
                 frameRequest.setPayload(payload, payload.size());
                 auto settled = std::make_shared<bool>(false);
                 ++pendingReads;
@@ -1311,13 +1425,45 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
                           const auto maxBytes = personExpectation
                             ? personExpectation->profile.limits.at("maxFrameBytes")
                             : MAX_PERSON_PUBLISHED_FRAME_BYTES;
-                          if (!status || bytes.empty() ||
-                              bytes.size() > maxBytes ||
-                              sha256Text(std::string_view(reinterpret_cast<const char*>(bytes.data()),
-                                                         bytes.size())) != batch->bindings[i].inputDigest) {
+                          auto frameBytes = bytes;
+                          if (batch->v2) {
+                            if (frameBytes.size() < 8 ||
+                                std::string_view(reinterpret_cast<const char*>(frameBytes.data()), 4) != "UCTX") {
+                              throw std::invalid_argument("source FRAME v2 response has no context");
+                            }
+                            const uint32_t contextLength =
+                              (static_cast<uint32_t>(frameBytes[4]) << 24) |
+                              (static_cast<uint32_t>(frameBytes[5]) << 16) |
+                              (static_cast<uint32_t>(frameBytes[6]) << 8) |
+                              static_cast<uint32_t>(frameBytes[7]);
+                            if (contextLength == 0 || frameBytes.size() < 8U + contextLength) {
+                              throw std::invalid_argument("source FRAME v2 context is truncated");
+                            }
+                            const std::string contextText(
+                              reinterpret_cast<const char*>(frameBytes.data()) + 8, contextLength);
+                            const auto context = uav::parseUavPersonFrameContext(contextText);
+                            const auto& expected = batch->bindings[i];
+                            if (context.runId != expected.runId ||
+                                context.missionId != expected.missionId ||
+                                context.windowId != expected.windowId ||
+                                context.cameraId != expected.cameraId ||
+                                context.sourceId != expected.sourceId ||
+                                context.sourceEpoch != expected.sourceEpoch ||
+                                context.sequence != expected.sequence ||
+                                context.frameName != expected.frameName ||
+                                context.inputDigest != expected.inputDigest) {
+                              throw std::invalid_argument("source FRAME v2 context mismatch");
+                            }
+                            batch->contexts[i] = context;
+                            frameBytes.erase(frameBytes.begin(), frameBytes.begin() + 8 + contextLength);
+                          }
+                          if (!status || frameBytes.empty() ||
+                              frameBytes.size() > maxBytes ||
+                              sha256Text(std::string_view(reinterpret_cast<const char*>(frameBytes.data()),
+                                                         frameBytes.size())) != batch->bindings[i].inputDigest) {
                             throw std::invalid_argument("source FRAME response status/size/digest mismatch");
                           }
-                          batch->images[i] = bytes;
+                          batch->images[i] = std::move(frameBytes);
                           batch->received[i] = true;
                           --batch->remaining;
                           std::cout << "SPEC219_SOURCE_FRAME_RECEIVED window=" << windowIndex
@@ -1327,6 +1473,51 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
                                     << " digest=" << batch->bindings[i].inputDigest
                                     << " bytes=" << bytes.size() << std::endl;
                           if (batch->remaining != 0) return;
+                          if (batch->v2) {
+                            const auto wire = uav::person_json::parseBounded(batch->resultJson,
+                              personExpectation->profile.limits.at("maxResultBytes"));
+                            uav::UavTrackingResultExpectation expected;
+                            expected.runId = runId;
+                            expected.missionId = missionId;
+                            expected.windowId = windowPrefix + "-" + std::to_string(windowIndex);
+                            expected.sequence = windowIndex + 1;
+                            expected.sourceEpoch = batch->contexts[0]->sourceEpoch;
+                            expected.computeProvider = *selectedComputeProvider;
+                            std::copy_n(sourceProviders.begin(), expected.sourceProviders.size(),
+                                        expected.sourceProviders.begin());
+                            expected.personTracking = personExpectation;
+                            for (size_t j = 0; j < 3; ++j) {
+                              const auto& context = *batch->contexts[j];
+                              const auto& resultFrame = wire.at("frames").at(j);
+                              uav::UavPersonFrameContext frame;
+                              frame.cameraId = context.cameraId;
+                              frame.sourceId = context.sourceId;
+                              frame.inputDigest = context.inputDigest;
+                              frame.sourceEpoch = context.sourceEpoch;
+                              frame.sequence = context.sequence;
+                              frame.trackerGeneration = uav::person_json::unsignedNumber(
+                                resultFrame.at("trackerGeneration"));
+                              frame.commonPtsUs = uav::person_json::unsignedNumber(
+                                resultFrame.at("commonPtsUs"),
+                                std::numeric_limits<int64_t>::max());
+                              frame.width = static_cast<int>(uav::person_json::unsignedNumber(
+                                resultFrame.at("width")));
+                              frame.height = static_cast<int>(uav::person_json::unsignedNumber(
+                                resultFrame.at("height")));
+                              frame.clockAvailable = uav::person_json::boolean(
+                                resultFrame.at("clockAvailable"));
+                              frame.clockUncertaintyUs = uav::person_json::unsignedNumber(
+                                resultFrame.at("clockUncertaintyUs"));
+                              expected.personFrames[j] = frame;
+                              expected.sourceIds[j] = context.sourceId;
+                              expected.inputDigests[j] = context.inputDigest;
+                              expected.windowBindings[j] = uav::UavBindingObjectRef{
+                                context.windowBindingName, context.windowBindingDigest,
+                                sourceProviders[j]};
+                            }
+                            uav::validateUavTrackingResultContext(batch->resultName,
+                              batch->responseProvider, batch->resultJson, expected);
+                          }
                           std::shared_ptr<TrackingPresentation> presentation;
                           if (!compatibility) {
                             presentation = std::make_shared<TrackingPresentation>();
@@ -1376,6 +1567,9 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
                             {"responseProvider", batch->responseProvider},
                             {"images", images}, {"gsElapsedUs", elapsedUs},
                             {"mediaOriginUs", *presentationMediaOriginUs},
+                            {"deliveryMode", deliveryMode.empty()
+                              ? (definition.sources[0].sourceManifest.path.empty()
+                                  ? "live-camera" : "video-replay") : deliveryMode},
                             {"timeBasis", "gs-bootstrap-elapsed-vs-first-common-media-pts"}};
                           if (personExpectation) {
                             projection["profileDigest"] = personExpectation->profile.profileDigest;
@@ -1537,7 +1731,8 @@ struct UavTrackingJob::Impl : std::enable_shared_from_this<UavTrackingJob::Impl>
         fail(reason);
       }
     };
-    scheduler.schedule(ndn::time::milliseconds(startDelayMs), [beginWindow = this->beginWindow] { (*beginWindow)(0); });
+    scheduler.schedule(ndn::time::milliseconds(startDelayMs),
+      [self = shared_from_this()] { self->verifySourceInfos(0); });
     pollAuthority();
   }
 };
@@ -1658,6 +1853,18 @@ TrackingSnapshot
 UavTrackingJob::snapshot() const
 {
   return m_impl ? m_impl->view : TrackingSnapshot{};
+}
+
+std::vector<UavSourceDescriptor>
+UavTrackingJob::sourceDescriptors() const
+{
+  std::vector<UavSourceDescriptor> result;
+  if (m_impl) {
+    for (const auto& descriptor : m_impl->sourceDescriptors) {
+      if (!descriptor.cameraId.empty()) result.push_back(descriptor);
+    }
+  }
+  return result;
 }
 
 bool

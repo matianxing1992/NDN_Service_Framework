@@ -196,7 +196,7 @@ validatePersonOrigin(const Json& track, const Json& frame, const Json& frames,
   const auto index = static_cast<size_t>(camera.back() - '1');
   const auto& source = frames.at(index);
   if (text(key.at("sourceId")) != expected.sourceIds[index] ||
-      unsignedNumber(key.at("sourceEpoch")) != expected.sourceEpoch ||
+      unsignedNumber(key.at("sourceEpoch")) != unsignedNumber(source.at("sourceEpoch")) ||
       unsignedNumber(key.at("trackerGeneration")) != unsignedNumber(source.at("trackerGeneration")) ||
       unsignedNumber(key.at("byteTrackId")) == 0 || key.dump() == personLocalKey(track).dump()) {
     reject("person result origin local/source binding");
@@ -255,7 +255,13 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
     "preprocessId", "requestedDevice", "actualDetectorDevice", "detectorModelDevice",
     "detectorInputDevice", "actualReidDevice", "reidModelDevice", "reidInputDevice",
     "reidInferenceBatches", "frames", "associationEvents", "limits", "counters", "timing"});
-  if (text(wire.at("schema")) != "uav-person-tracking-result-v1" ||
+  const auto resultSchema = text(wire.at("schema"));
+  const bool v2 = resultSchema == "uav-person-tracking-result-v2";
+  if ((!v2 && resultSchema != "uav-person-tracking-result-v1") ||
+      (v2 && std::any_of(expected.personFrames.begin(), expected.personFrames.end(),
+                          [] (const auto& frame) { return !frame; })) ||
+      (v2 && std::any_of(expected.windowBindings.begin(), expected.windowBindings.end(),
+                          [] (const auto& binding) { return !binding; })) ||
       !boolean(wire.at("terminal")) || text(wire.at("runId")) != expected.runId ||
       text(wire.at("missionId")) != expected.missionId ||
       text(wire.at("windowId")) != expected.windowId ||
@@ -296,16 +302,28 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
   uint64_t maximumPts = 0;
   for (size_t index = 0; index < 3; ++index) {
     const auto& frame = frames[index];
-    exactKeys(frame, {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration", "sequence",
-      "inputDigest", "commonPtsUs", "width", "height", "clockAvailable", "clockUncertaintyUs",
-      "geometryStatus", "observationName", "observationDigest", "observation", "tracks",
-      "lostByteTrackIds"});
+    if (v2) {
+      exactKeys(frame, {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration", "sequence",
+        "inputDigest", "commonPtsUs", "width", "height", "clockAvailable", "clockUncertaintyUs",
+        "geometryStatus", "observationName", "observationDigest", "observation", "tracks",
+        "lostByteTrackIds", "windowBinding"});
+    }
+    else {
+      exactKeys(frame, {"cameraId", "sourceId", "sourceEpoch", "trackerGeneration", "sequence",
+        "inputDigest", "commonPtsUs", "width", "height", "clockAvailable", "clockUncertaintyUs",
+        "geometryStatus", "observationName", "observationDigest", "observation", "tracks",
+        "lostByteTrackIds"});
+    }
     const auto camera = "UAV" + std::to_string(index + 1);
+    const uint64_t expectedEpoch = v2 ? expected.personFrames[index]->sourceEpoch
+                                     : expected.sourceEpoch;
+    const uint64_t expectedSequence = v2 ? expected.personFrames[index]->sequence
+                                        : expected.sequence;
     const auto generation = unsignedNumber(frame.at("trackerGeneration"));
     if (text(frame.at("cameraId")) != camera ||
         text(frame.at("sourceId")) != expected.sourceIds[index] ||
-        unsignedNumber(frame.at("sourceEpoch")) != expected.sourceEpoch || generation == 0 ||
-        unsignedNumber(frame.at("sequence")) != expected.sequence ||
+        unsignedNumber(frame.at("sourceEpoch")) != expectedEpoch || generation == 0 ||
+        unsignedNumber(frame.at("sequence")) != expectedSequence ||
         text(frame.at("inputDigest")) != expected.inputDigests[index] ||
         text(frame.at("geometryStatus")) != "UNKNOWN") reject("person result frame binding");
     const auto pts = unsignedNumber(frame.at("commonPtsUs"), std::numeric_limits<int64_t>::max());
@@ -317,9 +335,9 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
     unsignedNumber(frame.at("clockUncertaintyUs"));
     const auto producer = sourceProducer(expected, index);
     const auto observationName = makeUavObservationDataName(
-      producer, camera, expected.sourceEpoch, expected.sequence, "OBSERVATION", 1);
+      producer, camera, expectedEpoch, expectedSequence, "OBSERVATION", 1);
     const auto imageName = makeUavObservationDataName(
-      producer, camera, expected.sourceEpoch, expected.sequence, "FRAME", 1);
+      producer, camera, expectedEpoch, expectedSequence, "FRAME", 1);
     const auto observationDigest = text(frame.at("observationDigest"));
     if (text(frame.at("observationName")) != observationName.toUri() ||
         !isDigest(observationDigest)) reject("person result observation binding");
@@ -328,14 +346,25 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
                             "imageRef"});
     if (text(observation.at("schema")) != "uav-observation-v2" ||
         text(observation.at("sourceId")) != expected.sourceIds[index] ||
-        unsignedNumber(observation.at("sourceEpoch")) != expected.sourceEpoch ||
-        unsignedNumber(observation.at("sequence")) != expected.sequence) {
+        unsignedNumber(observation.at("sourceEpoch")) != expectedEpoch ||
+        unsignedNumber(observation.at("sequence")) != expectedSequence) {
       reject("person result observation source");
     }
     validatePersonReference(observation.at("observationRef"), observationName, observationDigest,
                              producer);
     validatePersonReference(observation.at("imageRef"), imageName, expected.inputDigests[index],
                              producer);
+    if (v2) {
+      const auto& binding = frame.at("windowBinding");
+      exactKeys(binding, {"name", "digest", "producerIdentity"});
+      const auto& wanted = *expected.windowBindings[index];
+      if (text(binding.at("name")) != wanted.name ||
+          text(binding.at("digest")) != wanted.digest ||
+          text(binding.at("producerIdentity")) != wanted.producerIdentity.toUri() ||
+          !isDigest(text(binding.at("digest")))) {
+        reject("person result window binding reference");
+      }
+    }
     const auto& tracks = frame.at("tracks");
     if (!tracks.is_array() || tracks.size() > profile.limits.at("maxPersonsPerFrame")) {
       reject("person result track count");
@@ -349,7 +378,7 @@ validatePersonResult(const std::string& resultJson, const UavTrackingResultExpec
         "appearanceDistance", "associationOrigin"});
       if (text(track.at("cameraId")) != camera ||
           text(track.at("sourceId")) != expected.sourceIds[index] ||
-          unsignedNumber(track.at("sourceEpoch")) != expected.sourceEpoch ||
+          unsignedNumber(track.at("sourceEpoch")) != expectedEpoch ||
           unsignedNumber(track.at("trackerGeneration")) != generation ||
           unsignedNumber(track.at("ptsUs"), std::numeric_limits<int64_t>::max()) != pts ||
           text(track.at("class")) != "person") reject("person result local/source binding");
@@ -495,6 +524,108 @@ makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
       {"tracks", std::move(tracks)}, {"lostByteTrackIds", backend.frames[index].lostByteTrackIds}});
   }
   Json wire = {{"schema", "uav-person-tracking-result-v1"}, {"terminal", true},
+    {"runId", context.runId}, {"missionId", context.missionId}, {"windowId", context.windowId},
+    {"sequence", context.sequence}, {"trackingMode", "indoor-person-reid"},
+    {"profileDigest", profile.profileDigest}, {"computationDigest", context.computationDigest},
+    {"detectorDigest", profile.detectorDigest}, {"reidDigest", profile.reidDigest},
+    {"preprocessId", profile.reidPreprocessId},
+    {"requestedDevice", backend.requestedDevice},
+    {"actualDetectorDevice", backend.actualDetectorDevice},
+    {"detectorModelDevice", backend.detectorModelDevice},
+    {"detectorInputDevice", backend.detectorInputDevice},
+    {"actualReidDevice", backend.actualReidDevice}, {"reidModelDevice", backend.reidModelDevice},
+    {"reidInputDevice", backend.reidInputDevice},
+    {"reidInferenceBatches", backend.reidInferenceBatches},
+    {"frames", std::move(frames)}, {"associationEvents", std::move(events)},
+    {"limits", Json::parse(profile.canonicalJson).at("limits")},
+    {"counters", {{"gallerySize", result.gallerySize}, {"localKeyCount", result.localKeyCount},
+                    {"watermarkUs", result.watermarkUs}}},
+    {"timing", {{"modelWindowNs", backend.modelWindowNs}}}};
+  auto encoded = wire.dump();
+  validatePersonResult(encoded, expected);
+  return encoded;
+}
+
+std::string
+makeUavPersonTrackingResultJsonV2(const UavPersonWindowResult& result,
+                                const UavPersonBackendWindow& backend,
+                                const UavPersonTrackingProfile& inputProfile,
+                                const std::array<std::string, 3>& observationNames,
+                                const std::array<std::string, 3>& observationDigests,
+                                const std::array<ndn::Name, 3>& sourceProducers,
+                                const std::array<UavBindingObjectRef, 3>& windowBindings)
+{
+  if (std::any_of(sourceProducers.begin(), sourceProducers.end(),
+                  [] (const ndn::Name& producer) { return producer.empty(); })) {
+    reject("person result builder requires explicit source Producers");
+  }
+  const auto profile = parseUavPersonTrackingProfile(inputProfile.canonicalJson);
+  if (!(result.context == backend.context) || backend.profileDigest != profile.profileDigest) {
+    reject("person result builder window/profile");
+  }
+  const auto& context = result.context;
+  Json frames = Json::array();
+  Json events = Json::array();
+  UavTrackingResultExpectation expected;
+  expected.runId = context.runId;
+  expected.missionId = context.missionId;
+  expected.windowId = context.windowId;
+  expected.sequence = context.sequence;
+  expected.sourceEpoch = context.frames[0].sourceEpoch;
+  expected.personTracking = UavPersonTrackingResultExpectation{profile, context.computationDigest};
+  expected.sourceProviders = sourceProducers;
+  for (size_t index = 0; index < 3; ++index) {
+    const auto& frame = context.frames[index];
+    expected.sourceIds[index] = frame.sourceId;
+    expected.inputDigests[index] = frame.inputDigest;
+    expected.personFrames[index] = frame;
+    expected.windowBindings[index] = windowBindings[index];
+    const auto producer = sourceProducer(expected, index);
+    const auto imageName = makeUavObservationDataName(producer, frame.cameraId, frame.sourceEpoch,
+      frame.sequence, "FRAME", 1);
+    Json observation = {{"schema", "uav-observation-v2"}, {"sourceId", frame.sourceId},
+      {"sourceEpoch", frame.sourceEpoch}, {"sequence", frame.sequence},
+      {"observationRef", {{"name", observationNames[index]}, {"digest", observationDigests[index]},
+                           {"producerIdentity", producer.toUri()}}},
+      {"imageRef", {{"name", imageName.toUri()}, {"digest", frame.inputDigest},
+                     {"producerIdentity", producer.toUri()}}}};
+    Json tracks = Json::array();
+    for (const auto& track : result.tracks[index]) {
+      if (track.distance && !std::isfinite(*track.distance)) reject("nonfinite native distance");
+      Json row = {{"cameraId", track.key.cameraId}, {"sourceId", track.key.sourceId},
+        {"sourceEpoch", track.key.sourceEpoch}, {"trackerGeneration", track.key.trackerGeneration},
+        {"localId", track.key.byteTrackId ? Json(track.key.byteTrackId) : Json(nullptr)},
+        {"byteTrackId", track.key.byteTrackId ? Json(track.key.byteTrackId) : Json(nullptr)},
+        {"globalId", track.globalId ? Json(*track.globalId) : Json(nullptr)}, {"class", "person"},
+        {"confidence", track.confidence}, {"box", track.box}, {"ptsUs", track.commonPtsUs},
+        {"associationStatus", track.associationStatus},
+        {"appearanceDistance", track.distance ? Json(*track.distance) : Json(nullptr)},
+        {"associationOrigin", nullptr}};
+      if (track.associationOrigin) {
+        const auto& origin = *track.associationOrigin;
+        const auto& key = origin.key;
+        row["associationOrigin"] = {
+          {"localKey", {{"cameraId", key.cameraId}, {"sourceId", key.sourceId},
+            {"sourceEpoch", key.sourceEpoch}, {"trackerGeneration", key.trackerGeneration},
+            {"byteTrackId", key.byteTrackId}}},
+          {"ptsUs", origin.ptsUs}, {"active", origin.active}};
+      }
+      events.push_back(personEvent(row));
+      tracks.push_back(std::move(row));
+    }
+    frames.push_back({{"cameraId", frame.cameraId}, {"sourceId", frame.sourceId},
+      {"sourceEpoch", frame.sourceEpoch}, {"trackerGeneration", frame.trackerGeneration},
+      {"sequence", frame.sequence}, {"inputDigest", frame.inputDigest},
+      {"commonPtsUs", frame.commonPtsUs}, {"width", frame.width}, {"height", frame.height},
+      {"clockAvailable", frame.clockAvailable}, {"clockUncertaintyUs", frame.clockUncertaintyUs},
+      {"geometryStatus", "UNKNOWN"}, {"observationName", observationNames[index]},
+      {"observationDigest", observationDigests[index]}, {"observation", std::move(observation)},
+      {"tracks", std::move(tracks)}, {"lostByteTrackIds", backend.frames[index].lostByteTrackIds},
+      {"windowBinding", {{"name", windowBindings[index].name},
+                          {"digest", windowBindings[index].digest},
+                          {"producerIdentity", windowBindings[index].producerIdentity.toUri()}}}});
+  }
+  Json wire = {{"schema", "uav-person-tracking-result-v2"}, {"terminal", true},
     {"runId", context.runId}, {"missionId", context.missionId}, {"windowId", context.windowId},
     {"sequence", context.sequence}, {"trackingMode", "indoor-person-reid"},
     {"profileDigest", profile.profileDigest}, {"computationDigest", context.computationDigest},

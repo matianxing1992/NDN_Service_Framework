@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeOfferAdmission.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-backend-variant.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
@@ -159,9 +160,7 @@ bool residencyMatchesCandidateV4(const NativeJson& row,
       }
     }
     const auto baseBackend = candidate.at("backend").get<std::string>();
-    if (sameArtifact && (observedBackend == baseBackend ||
-        observedBackend == baseBackend + "-cpu" ||
-        observedBackend == baseBackend + "-cuda"))
+    if (sameArtifact && matchesNativeBackendVariant(baseBackend, observedBackend))
       return true;
   }
   return false;

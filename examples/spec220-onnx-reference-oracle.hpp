@@ -3,17 +3,28 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
+#include <filesystem>
 #include <string>
+#include <vector>
 
 namespace spec220::oracle {
 
+struct CompleteKvCapture
+{
+  std::filesystem::path directory;
+  std::string provider;
+  std::string boot;
+  const std::vector<ndnsf::di::NativeJson>& requests;
+};
+
 /** Independently replay pinned greedy cold/warm inputs through the unsplit CPU model.
- * Authenticates checkpoints with the configured private journal keys, but does not
- * compare provider-resident state values. Deployment key-file paths must be absolute.
+ * Authenticates checkpoints and, when supplied, compares complete Provider KV evidence.
+ * Deployment key-file paths must be absolute.
  */
 ndnsf::di::NativeJson
 validateOnnxReference(const ndnsf::di::NativeJson& requester,
-                      const std::string& expectedRuntimeVersion);
+                      const std::string& expectedRuntimeVersion,
+                      const std::vector<CompleteKvCapture>& captures = {});
 
 } // namespace spec220::oracle
 

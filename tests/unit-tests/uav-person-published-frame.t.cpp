@@ -1,6 +1,7 @@
 #include "tests/boost-test.hpp"
 
 #include "NDNSF-UAV-APP/shared/uav-person-published-frame.hpp"
+#include "NDNSF-UAV-APP/shared/uav-person-json.hpp"
 
 #include <map>
 #include <stdexcept>
@@ -65,6 +66,36 @@ BOOST_AUTO_TEST_CASE(PublicationAndReadSnapshotsOwnTheirBytes)
   checkBytes(snapshot, frameBytes());
   snapshot[0] ^= 0xff;
   checkBytes(store.read(fields, REQUESTER), frameBytes());
+}
+
+BOOST_AUTO_TEST_CASE(ContextReadReturnsTheSameExactPublication)
+{
+  UavPersonPublishedFrameStore store(PRODUCER, "UAV1");
+  const auto binding = readBinding();
+  const auto fields = makeUavPersonFrameReadFields(binding);
+  store.retainPublished(binding, frameBytes(), REQUESTER);
+  const auto json = store.readContext(fields, REQUESTER);
+  const auto wire = person_json::parseBounded(json, 16384);
+  BOOST_CHECK_EQUAL(person_json::text(wire.at("runId")), "run");
+  BOOST_CHECK_EQUAL(person_json::text(wire.at("cameraId")), "UAV1");
+  BOOST_CHECK_EQUAL(person_json::text(wire.at("sourceId")), "source1");
+  BOOST_CHECK_EQUAL(person_json::unsignedNumber(wire.at("sourceEpoch")), 7);
+  BOOST_CHECK_EQUAL(person_json::unsignedNumber(wire.at("sequence")), 1);
+  BOOST_CHECK_EQUAL(person_json::text(wire.at("frameName")), binding.frameName);
+  BOOST_CHECK_EQUAL(person_json::text(wire.at("inputDigest")), binding.inputDigest);
+  BOOST_CHECK(person_json::text(wire.at("windowBindingName")).empty());
+  store.retainBindingRef("/example/uav/drone/UAV1/tracking/window-binding/run/mission/window-0/req",
+                         "sha256:" + std::string(64, 'e'));
+  const auto withBinding = person_json::parseBounded(store.readContext(fields, REQUESTER), 16384);
+  BOOST_CHECK_EQUAL(person_json::text(withBinding.at("windowBindingName")),
+    "/example/uav/drone/UAV1/tracking/window-binding/run/mission/window-0/req");
+  BOOST_CHECK_EQUAL(person_json::text(withBinding.at("windowBindingDigest")),
+    "sha256:" + std::string(64, 'e'));
+  auto wrong = fields;
+  wrong["sequence"] = "2";
+  BOOST_CHECK_THROW(store.readContext(wrong, REQUESTER), std::invalid_argument);
+  BOOST_CHECK_THROW(store.readContext(fields, ndn::Name("/example/uav/other")),
+                    std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_CASE(EveryRequestFieldAndAuthenticatedRequesterMustMatch)
@@ -138,7 +169,7 @@ BOOST_AUTO_TEST_CASE(RejectedRetentionCannotReplaceThePublishedSlot)
   BOOST_CHECK_THROW((UavPersonPublishedFrameStore(PRODUCER, "UAV4")), std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(OnlyTheLatestPublicationCanBeRead)
+BOOST_AUTO_TEST_CASE(EightExactPublicationsRemainReadableUntilOldestIsEvicted)
 {
   UavPersonPublishedFrameStore store(PRODUCER, "UAV1");
   const auto before = readBinding();
@@ -150,9 +181,33 @@ BOOST_AUTO_TEST_CASE(OnlyTheLatestPublicationCanBeRead)
                       .appendVersion(1).toUri();
   after.inputDigest = "sha256:69d56ad730f5f15e2ce80ddc856aeacf4258240842b413f32d378cb279bcd945";
   store.retainPublished(after, frameBytes("next-frame-bytes"), REQUESTER);
+  checkBytes(store.read(makeUavPersonFrameReadFields(before), REQUESTER), frameBytes());
+  for (uint64_t sequence = 3; sequence <= 8; ++sequence) {
+    auto next = after;
+    next.sequence = sequence;
+    next.windowId = "window-" + std::to_string(sequence - 1);
+    next.frameName = ndn::Name("/example/uav/drone/UAV1/UAV/OBS/UAV1/7/" +
+                              std::to_string(sequence) + "/FRAME").appendVersion(1).toUri();
+    store.retainPublished(next, frameBytes("next-frame-bytes"), REQUESTER);
+    checkBytes(store.read(makeUavPersonFrameReadFields(before), REQUESTER), frameBytes());
+  }
+  auto ninth = after;
+  ninth.sequence = 9;
+  ninth.windowId = "window-8";
+  ninth.frameName = ndn::Name("/example/uav/drone/UAV1/UAV/OBS/UAV1/7/9/FRAME")
+                     .appendVersion(1).toUri();
+  store.retainPublished(ninth, frameBytes("next-frame-bytes"), REQUESTER);
   BOOST_CHECK_THROW(store.read(makeUavPersonFrameReadFields(before), REQUESTER),
                     std::invalid_argument);
+  BOOST_CHECK_THROW(store.readContext(makeUavPersonFrameReadFields(before), REQUESTER),
+                    std::invalid_argument);
   checkBytes(store.read(makeUavPersonFrameReadFields(after), REQUESTER), frameBytes("next-frame-bytes"));
+  const auto context = parseUavPersonFrameContext(
+    store.readContext(makeUavPersonFrameReadFields(after), REQUESTER));
+  BOOST_CHECK_EQUAL(context.windowId, after.windowId);
+  BOOST_CHECK_EQUAL(context.sequence, after.sequence);
+  BOOST_CHECK_THROW(store.read(makeUavPersonFrameReadFields(after),
+                              ndn::Name("/example/uav/other-requester")), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

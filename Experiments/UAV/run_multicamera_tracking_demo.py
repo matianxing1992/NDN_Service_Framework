@@ -1312,7 +1312,7 @@ def _person_failure_display_presented(text: str, *, run_id: str, window_index: i
     return presented == {"UAV1", "UAV2", "UAV3"}
 
 
-def _provision_run_security(output: Path) -> dict[str, Any]:
+def _provision_run_security(output: Path, *, ndnsec: str | None = None) -> dict[str, Any]:
     """Use ndnsec to provision one fresh, run-owned RSA trust chain."""
     keychain = output / "private/keychain"
     if keychain.exists() and any(keychain.iterdir()):
@@ -1329,7 +1329,7 @@ def _provision_run_security(output: Path) -> dict[str, Any]:
         env.pop("LD_LIBRARY_PATH", None)
     else:
         env["LD_LIBRARY_PATH"] = override
-    ndnsec = shutil.which("ndnsec")
+    ndnsec = ndnsec or shutil.which("ndnsec")
     if ndnsec is None:
         raise RunnerError("installed ndnsec is required for UAV credentials")
     deadline = time.monotonic() + 120
@@ -2362,6 +2362,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
         shared_keychain = (output / "private" / "keychain").resolve()
         generation_state = (output / "private" / "controller" /
                             "controller-generation.state").resolve()
+        generation_state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         mpl_config = private / "mpl"
         yolo_config = private / "config" / "Ultralytics"
         for name in ("home", "config", "data", "cache", "pib", "tpm"):
@@ -2372,7 +2373,8 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             (shared_keychain / name).mkdir(parents=True, exist_ok=True)
         socket = nfd_sockets[node.name]
         child_ndn_log = os.environ.get("SPEC191_CHILD_NDN_LOG", "*=WARN").strip() or "*=WARN"
-        child_pythonpath = str(DEFAULT_TRACKING_LIBEXEC) if person_mode or main_mode else _child_pythonpath()
+        child_pythonpath = (str(DEFAULT_TRACKING_LIBEXEC) if person_mode or main_mode
+                            else _child_pythonpath())
         env = [
             f"export NDNSF_SPEC191_PRIVATE_DIR={shlex.quote(str(private))}",
             f"export HOME={shlex.quote(str(private / 'home'))}",
@@ -2573,10 +2575,18 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             transport = f"unix://{nfd_sockets[node.name]}"
             for peer_name in next_hops[node.name]:
                 peer_ip = face_target_ips[(node.name, peer_name)]
-                face_list = node.cmd(f"NDN_CLIENT_TRANSPORT={shlex.quote(transport)} nfdc face list")
-                match = re.search(
-                    rf"faceid=(\d+)\s+remote=(?:udp|udp4)://{re.escape(peer_ip)}:6363",
-                    face_list)
+                deadline = time.monotonic() + 10
+                match = None
+                face_list = ""
+                while time.monotonic() < deadline:
+                    face_list = node.cmd(
+                        f"NDN_CLIENT_TRANSPORT={shlex.quote(transport)} nfdc face list")
+                    match = re.search(
+                        rf"faceid=(\d+)\s+remote=(?:udp|udp4)://{re.escape(peer_ip)}:6363",
+                        face_list)
+                    if match is not None:
+                        break
+                    time.sleep(0.2)
                 if match is None:
                     raise RunnerError(
                         f"NFD face missing node={node.name} peer={peer_name}: {face_list!r}")
@@ -2932,6 +2942,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
     finally:
         cleanup_started_ns = time.monotonic_ns()
         cleanup_errors = []
+        forced_kills = []
         if resource_sampler is not None:
             resource_sampler.sample(force=True)
         for _name, process, _log in reversed(processes):
@@ -2950,6 +2961,7 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
             if process.poll() is None:
                 try:
                     process.kill()
+                    forced_kills.append(_name)
                 except ProcessLookupError:
                     pass
         reap_deadline = time.monotonic() + 2
@@ -2960,7 +2972,8 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                 pass
         for _name, _process, log in processes:
             log.close()
-        nfd_reap_deadline = cleanup_started_ns / 1_000_000_000 + (16 if main_mode else 9)
+        nfd_reap_deadline = (cleanup_started_ns / 1_000_000_000 +
+                             (16 if main_mode else 9))
         for nfd in reversed(nfd_apps):
             process = nfd.process
             if process is not None:
@@ -2981,16 +2994,18 @@ def _run_minindn(plan: dict[str, Any], output: Path, *, wall_timeout_seconds: fl
                 f"NFD socket directory cleanup: {type(error).__name__}: {error}"[:512])
         if person_mode or main_mode:
             resources = resource_sampler.finish()
-            _write_json(output / ("main-resources.json" if main_mode else "person-resources.json"), resources)
+            stem = "main" if main_mode else "person"
+            _write_json(output / (stem + "-resources.json"), resources)
             from person_run_receipt import audit_person_processes
             audit = audit_person_processes(output, resources["processes"])
             ended_ns = time.monotonic_ns()
-            _write_json(output / ("main-cleanup.json" if main_mode else "person-cleanup.json"), {
+            _write_json(output / (stem + "-cleanup.json"), {
                 "schema": "uav-person-cleanup-v1", "clockDomain": "CLOCK_MONOTONIC_NS",
                 "runStartedNs": started_ns, "cleanupStartedNs": cleanup_started_ns,
                 "cleanupEndedNs": ended_ns,
                 "cleanupSeconds": (ended_ns - cleanup_started_ns) / 1_000_000_000,
                 "cleanupErrors": cleanup_errors,
+                "forcedKills": forced_kills,
                 "applicationExitCodes": {name: process.poll() for name, process, _ in processes},
                 **audit})
 

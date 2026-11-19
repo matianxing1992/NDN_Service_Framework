@@ -1,6 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-io.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-admission.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-kv-restore-provider.hpp"
@@ -13,6 +14,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/collaboration-work-observer.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestPreparation.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
 
@@ -222,7 +225,9 @@ decodeNativeProviderAssignment(const ndn::Buffer& payload,
       (schema == "ndnsf-di-selection-invocation-v3" && schemaVersion == 3) ||
       (schema == "ndnsf-di-selection-invocation-v4" && schemaVersion == 4);
     if (!referenced && !((schema == "ndnsf-di-selection-v3" && schemaVersion == 3) ||
-                         (schema == "ndnsf-di-selection-v4" && schemaVersion == 4))) {
+                         (schema == "ndnsf-di-selection-v4" && schemaVersion == 4) ||
+                         (schema == NATIVE_TENSOR_SHARD_SELECTION_SCHEMA &&
+                          schemaVersion == NATIVE_TENSOR_SHARD_SELECTION_VERSION))) {
       throw std::invalid_argument(
         "V3 Selection projection schema mismatch: schema=" + schema +
         " schema_version=" + std::to_string(schemaVersion));
@@ -1677,12 +1682,17 @@ nativeProviderRoleAnswersRequester(const RoleSpec& roleSpec)
   return roleSpec.outputs.empty();
 }
 
-std::optional<std::vector<uint8_t>>
-nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
-                                   const ProviderRoleResult& result,
-                                   const std::string& finalResponseScope)
+static bool
+roleMayAnswerRequester(const RoleSpec& roleSpec, std::optional<bool> sealedTerminalOwner)
 {
-  if (!nativeProviderRoleAnswersRequester(roleSpec) || finalResponseScope.empty()) {
+  return sealedTerminalOwner ? *sealedTerminalOwner : nativeProviderRoleAnswersRequester(roleSpec);
+}
+
+static std::optional<std::vector<uint8_t>>
+finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& result,
+  const std::string& finalResponseScope, std::optional<bool> sealedTerminalOwner)
+{
+  if (!roleMayAnswerRequester(roleSpec, sealedTerminalOwner) || finalResponseScope.empty()) {
     return std::nullopt;
   }
 
@@ -1690,6 +1700,7 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
   if (found != result.outputsByScope.end()) {
     return found->second.payload;
   }
+  if (sealedTerminalOwner) return std::nullopt;
   // A step-carrying role has no final-response edge; its terminal value is keyed by
   // the slot the template declared (logits for a sharded head).
   if (roleSpec.steps != nullptr && !roleSpec.steps->empty()) {
@@ -1707,6 +1718,14 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
     }
   }
   return std::nullopt;
+}
+
+std::optional<std::vector<uint8_t>>
+nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
+                                   const ProviderRoleResult& result,
+                                   const std::string& finalResponseScope)
+{
+  return finalResponsePayloadForRole(roleSpec, result, finalResponseScope, std::nullopt);
 }
 
 bool
@@ -1879,6 +1898,16 @@ validateNativeProviderRuntimeReadiness(
   return std::nullopt;
 }
 
+static std::optional<std::string>
+validateExpectedRuntimeReadiness(const ExecutionEvidence& evidence, bool expectNativePostprocess,
+  const std::string& role, const std::string& backend, const std::string& device,
+  const std::string& artifactDigest)
+{
+  if (expectNativePostprocess != (evidence.runnerKind == RunnerKind::NativeYoloPostprocess))
+    return "DI_RUNTIME_RUNNER_KIND_MISMATCH";
+  return validateNativeProviderRuntimeReadiness(evidence, role, backend, device, artifactDigest);
+}
+
 std::optional<std::string>
 validateNativePreparedRunnerSpec(
   const NativeSelectionProjectionV3& projection,
@@ -1947,6 +1976,32 @@ validateNativePreparedRunnerSpec(
     spec.backend == "native-qwen-tensor" &&
     spec.metadata.count("tensorParallelEntries") != 0 &&
     spec.metadata.count("tensorParallelEntryRoot") != 0;
+  if (tensorParallelBackend) {
+    const auto childBackend = metadataValue(spec, {"tensorParallelChildBackend"});
+    if (assembly.adapterId != "qwen" || childBackend != assembly.backend ||
+        (childBackend != "onnxruntime" && childBackend != "onnxruntime-cpu" &&
+         childBackend != "onnxruntime-cuda"))
+      return "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH";
+    std::vector<NativeExecutionStepSpec> roleSteps;
+    for (const auto& step : projection.plan.steps)
+      if (step.unitId == assembly.selectedRole) roleSteps.push_back(step);
+    if (roleSteps.empty() || spec.entryContract ||
+        metadataValue(spec, {"tensorParallelSteps"}) != qwen::qwenTpStepDeclarationJson(roleSteps))
+      return "DI_PROVIDER_ASSEMBLY_STEP_CONTRACT_MISMATCH";
+  }
+  if (spec.entryContract || (!projection.plan.steps.empty() && !tensorParallelBackend)) {
+    try {
+      auto expected = spec;
+      expected.entryContract.reset();
+      const bool wholeRegion = detail::bindNativeWholeRegionEntry(projection, expected);
+      if (!wholeRegion || wholeRegion != static_cast<bool>(spec.entryContract) ||
+          (wholeRegion && !(*spec.entryContract == *expected.entryContract)))
+        return "DI_PROVIDER_WHOLE_REGION_ENTRY_MISMATCH";
+    }
+    catch (const std::exception&) {
+      return "DI_PROVIDER_WHOLE_REGION_ENTRY_MISMATCH";
+    }
+  }
   if (spec.role != assembly.selectedRole ||
       (spec.backend != assembly.backend && !tensorParallelBackend) ||
       spec.path.empty()) {
@@ -3291,10 +3346,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         publishConversationStateReady(ctx, *selectionProjection, *roleSpec.conversationStateBinding,
           config.conversationStateKeyScope, workStatistics, "state-hit");
       }
-      // DATA_DRIVEN_V2 serving deliberately keeps metadata-only runner slots
-      // until authenticated Selection.  Do not validate those empty slots as
-      // if they were the prepared ONNX runner; the preparation factory will
-      // return and validate the certified spec immediately before execution.
+      // Request-scoped serving prepares its runner after authenticated Selection.
       const auto* readinessRunnerSpec = config.runnerPreparationFactory
         ? nullptr : runnerSpecForRole(state->runnerSpecs, role);
       const auto deploymentRevision = nativeProviderFieldValue(
@@ -3454,8 +3506,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                 if (!evidence) {
                   throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
                 }
-                if (const auto error = validateNativeProviderRuntimeReadiness(
-                      *evidence, role, expectedBackend, expectedDevice,
+                if (const auto error = validateExpectedRuntimeReadiness(
+                      *evidence, projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS",
+                      role, expectedBackend, expectedDevice,
                       expectedArtifact)) {
                   throw std::runtime_error(*error);
                 }
@@ -3493,8 +3546,9 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             if (!evidence) {
               throw std::runtime_error("DI_RUNTIME_EVIDENCE_MISSING");
             }
-            if (const auto error = validateNativeProviderRuntimeReadiness(
-                  *evidence, role, expectedBackend, expectedDevice,
+            if (const auto error = validateExpectedRuntimeReadiness(
+                  *evidence, projection.assemblyContract().mergeKind == "NATIVE_POSTPROCESS",
+                  role, expectedBackend, expectedDevice,
                   expectedArtifact)) {
               throw std::runtime_error(*error);
             }
@@ -3522,8 +3576,20 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             failInvocation("DI_RUNTIME_EVIDENCE_MISSING");
             return;
           }
-          const auto readinessError = validateNativeProviderRuntimeReadiness(
-            *evidence, role, expectedBackend, expectedDevice, expectedArtifact);
+          if (readinessRunnerSpec == nullptr) {
+            completeExecutionLease();
+            failInvocation("DI_RUNTIME_ASSIGNMENT_INCOMPLETE");
+            return;
+          }
+          const bool nativePostprocess = readinessRunnerSpec->kind == "native-yolo-postprocess";
+          if (selectionProjection && nativePostprocess !=
+              (selectionProjection->assemblyContract().mergeKind == "NATIVE_POSTPROCESS")) {
+            completeExecutionLease();
+            failInvocation("DI_RUNTIME_RUNNER_KIND_MISMATCH");
+            return;
+          }
+          const auto readinessError = validateExpectedRuntimeReadiness(
+            *evidence, nativePostprocess, role, expectedBackend, expectedDevice, expectedArtifact);
           if (readinessError) {
             completeExecutionLease();
             failInvocation(*readinessError);
@@ -3942,10 +4008,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           requestStatistics->admittedArtifactDigest.clear();
         }
       }
-      const bool needsRoleScopedPreparation =
-        !authenticatedGeneration.enabled && selectionProjection && prepareRunner &&
-        executionPlan.roles.size() > 1;
-      const bool localFullPlan = !needsRoleScopedPreparation &&
+      std::optional<bool> sealedTerminalOwner;
+      if (selectionProjection) {
+        if (selectionProjection->executionRole.roleId != roleSpec.role ||
+            selectionProjection->dataflow.role != roleSpec.role)
+          throw std::invalid_argument("V3 Selection role differs from the admitted execution role");
+        sealedTerminalOwner = selectionProjection->dataflow.terminalResponseOwner;
+      }
+      const bool localFullPlan = (!sealedTerminalOwner || authenticatedGeneration.enabled) &&
         nativeProviderShouldExecuteLocalPlan(
           executionPlan,
           assignment,
@@ -4102,8 +4172,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       // published feedback internally while never installing a sink, so no token reached
       // the Requester. A projection carries the owner explicitly; the older inference stays
       // for a plan that has none.
-      const bool terminalRole = selectionProjection
-        ? selectionProjection->dataflow.terminalResponseOwner
+      const bool terminalRole = sealedTerminalOwner
+        ? roleMayAnswerRequester(roleSpec, sealedTerminalOwner)
         : roleSpec.outputs.empty() ||
           nativeRoleHasOnlyInternalFeedbackOutputs(roleSpec);
       if (ctx.isStreamed() && terminalRole) {
@@ -4201,8 +4271,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.role = role;
         coordinatorConfig.initialInputs = std::move(initialInputs);
         coordinatorConfig.prepareRunner = prepareRunner;
-        coordinatorConfig.terminalRole = selectionProjection
-          ? std::optional<bool>{selectionProjection->dataflow.terminalResponseOwner}
+        coordinatorConfig.terminalRole = sealedTerminalOwner
+          ? sealedTerminalOwner
           : std::optional<bool>{std::any_of(
               roleSpec.outputs.begin(), roleSpec.outputs.end(),
               [] (const auto& edge) {
@@ -4923,10 +4993,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             (*config.stageServiceTimeObserver)(elapsed);
           }
 
-          auto localFinalPayload = nativeProviderFinalResponsePayload(
+          auto localFinalPayload = finalResponsePayloadForRole(
             executedRoleSpec,
             result,
-            config.finalResponseScope);
+            config.finalResponseScope,
+            sealedTerminalOwner);
           if (localFinalPayload) {
             finalPayload = std::move(localFinalPayload);
           }
@@ -4983,7 +5054,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                << " planDigest=" << requestPlanDigest;
         logRuntimeEvidence(record.str());
       }
-      if (finalPayload) {
+      if (finalPayload && sealedTerminalOwner.value_or(true)) {
         // The conversation receipt is published before this point, so the
         // requester can authorize the promotion without seeing a terminal
         // response first.  Keep the terminal response behind the authenticated

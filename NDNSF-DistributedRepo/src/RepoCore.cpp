@@ -206,6 +206,64 @@ RepoCore::invalidatePacketBaseIndex() const
   m_packetBaseIndexBuilt = false;
 }
 
+std::optional<size_t>
+RepoCore::packetPositionIn(const RepoObjectManifest& manifest, const ndn::Name& name,
+                           const std::string& canonical, const std::string& alternate) const
+{
+  // Segment packets are resolved through the cached index proof (base -> segment
+  // positions) instead of a linear scan of every packet name: a large model set
+  // lists ~150K names, and the scan ran once per served segment.
+  if (!name.empty() && name[-1].isSegment()) {
+    try {
+      const auto proof = getPacketIndexProof(manifest);
+      if (proof) {
+        const auto found = proof->segments.find(packetBaseName(canonical));
+        if (found != proof->segments.end()) {
+          const auto segment = name[-1].toSegment();
+          const auto& positions = found->second;
+          auto position = std::lower_bound(positions.begin(), positions.end(), segment,
+            [](const auto& item, uint64_t wanted) { return item.segment < wanted; });
+          for (; position != positions.end() && position->segment == segment; ++position) {
+            const auto index = position->packetIndex;
+            if (index < manifest.packetNames.size() &&
+                (manifest.packetNames[index] == canonical || manifest.packetNames[index] == alternate))
+              return index;
+          }
+        }
+      }
+    }
+    catch (const std::exception&) {
+      // Fall back to the exact-name comparison below.
+    }
+  }
+  const auto findText = [&] (const std::string& text) -> std::optional<size_t> {
+    const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), text);
+    if (found == manifest.packetNames.end())
+      return std::nullopt;
+    return static_cast<size_t>(found - manifest.packetNames.begin());
+  };
+  if (const auto position = findText(alternate))
+    return position;
+  return findText(canonical);
+}
+
+void
+RepoCore::extendPacketBaseIndex(const RepoObjectManifest& manifest) const
+{
+  // A commit is far cheaper than invalidating the whole index: the next lookup
+  // would otherwise re-list and re-parse every stored manifest, including the
+  // large model packet sets.
+  if (manifest.objectType != "original-packet-set" || manifest.objectName.empty() ||
+      manifest.packetNames.empty() || manifest.objectName != manifest.packetNames.front())
+    return;
+  const auto canonical = ndn::Name(manifest.objectName).toUri(ndn::name::UriFormat::CANONICAL);
+  std::scoped_lock lock(m_packetBaseIndexMutex, m_packetIndexProofMutex);
+  if (!m_packetBaseIndexBuilt)
+    return;
+  addPacketBaseHint(m_packetBaseIndex, m_packetIndexProofBytes, MAX_PACKET_INDEX_BYTES,
+                    packetBaseName(canonical), manifest.objectName);
+}
+
 std::optional<std::pair<std::shared_ptr<const RepoObjectManifest>, size_t>>
 RepoCore::findIndexedOriginalPacket(const ndn::Name& name, const std::string& canonical,
   const std::string& alternate,
@@ -620,8 +678,15 @@ RepoCore::commitRangesLocked(const RepoObjectManifest& manifest)
       payloadAlreadyCommitted = m_store->hasCommittedPayload(commitManifest);
     }
     m_store->commitRanges(commitManifest);
-    if (commitManifest.objectType == "original-packet-set")
-      invalidatePacketBaseIndex();
+    if (commitManifest.objectType == "original-packet-set") {
+      try {
+        extendPacketBaseIndex(commitManifest);
+      }
+      catch (const std::exception& error) {
+        // A locator hint cannot turn a durable commit into a reported failure.
+        NDN_LOG_WARN("NDNSF_REPO_PACKET_INDEX_UPDATE_FAILED " << error.what());
+      }
+    }
     // A successful backend commit is the durable-manifest contract.  The
     // lookup normally confirms the exact stored value; if a transient read
     // fails, return the canonical identity used for the commit instead of
@@ -1486,12 +1551,9 @@ RepoCore::findPacketRecord(const ndn::Name& name,
     const auto manifest = m_store->getManifest(alternateKey);
     if (manifest.objectType == "original-packet-set" &&
         (acceptObject ? acceptObject(manifest) : manifest.objectName == alternateKey)) {
-      const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
-                                   alternateKey);
-      if (found != manifest.packetNames.end()) {
+      if (const auto position = packetPositionIn(manifest, name, key, alternateKey)) {
         validateReadPacketIndex(manifest);
-        return std::make_pair(manifest,
-          static_cast<size_t>(found - manifest.packetNames.begin()));
+        return std::make_pair(manifest, *position);
       }
     }
     else if (manifest.objectType == "ndn-data-wire") {
@@ -1544,13 +1606,10 @@ RepoCore::findPacketRecord(const ndn::Name& name,
     if (m_store->has(parentKey)) {
       const auto manifest = m_store->getManifest(parentKey);
       if (manifest.objectType == "original-packet-set" && manifest.objectName == parentKey) {
-        const auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
-                                     alternateKey);
-        if (found != manifest.packetNames.end()) {
+        if (const auto position = packetPositionIn(manifest, name, key, alternateKey)) {
           validateReadPacketIndex(manifest);
           if (!acceptObject || acceptObject(manifest)) {
-            return std::make_pair(manifest,
-              static_cast<size_t>(found - manifest.packetNames.begin()));
+            return std::make_pair(manifest, *position);
           }
         }
       }
@@ -1565,17 +1624,13 @@ RepoCore::findPacketRecord(const ndn::Name& name,
   }
   for (auto& manifest : detail::findPacketManifests(*m_store, key, alternateKey, false)) {
     if (manifest.objectType != "original-packet-set") continue;
-    auto found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(),
-                           alternateKey);
-    if (found == manifest.packetNames.end() && alternateKey != key)
-      found = std::find(manifest.packetNames.begin(), manifest.packetNames.end(), key);
-    if (found != manifest.packetNames.end()) {
+    const auto position = packetPositionIn(manifest, name, key, alternateKey);
+    if (position) {
       validateReadPacketIndex(manifest);
       if (acceptObject && !acceptObject(manifest)) {
         continue;
       }
-      const auto index = static_cast<size_t>(found - manifest.packetNames.begin());
-      return std::make_pair(std::move(manifest), index);
+      return std::make_pair(std::move(manifest), *position);
     }
   }
   return std::nullopt;

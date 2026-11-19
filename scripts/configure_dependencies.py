@@ -6,7 +6,6 @@ from pathlib import Path
 import shutil
 import subprocess
 
-
 def resolve_components(value='all'):
     """Return the supported native component closure in dependency order."""
     profiles = {

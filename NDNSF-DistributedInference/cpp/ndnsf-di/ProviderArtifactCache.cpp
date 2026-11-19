@@ -1,6 +1,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ProviderArtifactCache.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-backend-variant.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -16,6 +18,15 @@
 
 namespace ndnsf::di {
 namespace {
+std::string
+artifactTemplateKey(const ProviderArtifactKey& key, const NativeSelectionProjectionV3& projection)
+{
+  auto result = key.canonicalKey();
+  if (!projection.plan.steps.empty())
+    result += "|sealed-role-steps-v1|" +
+      detail::nativeRoleStepContractDigest(projection.plan, key.role);
+  return result;
+}
 
 using Clock = std::chrono::steady_clock;
 
@@ -87,9 +98,7 @@ bool candidateMatchesResidency(const NativeJson& candidate,
   }
   const auto requestedBackend = candidate.at("backend").get<std::string>();
   const auto residentBackend = residency.at("backend").get<std::string>();
-  return requestedBackend == residentBackend ||
-    residentBackend == requestedBackend + "-cpu" ||
-    residentBackend == requestedBackend + "-cuda";
+  return matchesNativeBackendVariant(requestedBackend, residentBackend);
 }
 
 } // namespace
@@ -404,6 +413,9 @@ void publish(const std::shared_ptr<ProviderArtifactCache::Shared>& shared,
   if (result.runnerSpec) {
     auto metadataOnly = std::make_shared<NativeModelRunnerSpec>(*result.runnerSpec);
     metadataOnly->path.clear();
+    // A whole-region entry is bound to the current sealed step/state contract, not to the
+    // reusable material identity. Preparation reconstructs it after every artifact lease.
+    metadataOnly->entryContract.reset();
     metadataOnly->lifetime.reset();
     metadataOnly->protectedResidentUse.reset();
     // A protected artifact is backed by the immutable ciphertext file written
@@ -512,7 +524,7 @@ ProviderArtifactLease ProviderArtifactCache::acquireWithRunner(
       throw cacheError("DI_PROVIDER_ARTIFACT_KEY_MISMATCH",
                        "cache identity is not bound to the authenticated grant");
   }
-  const auto cacheKey = key.canonicalKey();
+  const auto cacheKey = artifactTemplateKey(key, projection);
   if (cacheKey.empty())
     throw std::invalid_argument("provider artifact cache key is empty");
   requireControlActive(control);
@@ -842,16 +854,22 @@ ProviderArtifactCache::queryPlacementResidencyV4(
 
 void ProviderArtifactCache::invalidate(const ProviderArtifactKey& key) noexcept
 {
+  try { invalidateKey(key.canonicalKey()); }
+  catch (...) {}
+}
+
+void ProviderArtifactCache::invalidate(const ProviderArtifactKey& key,
+  const NativeSelectionProjectionV3& projection) noexcept
+{
+  try { invalidateKey(artifactTemplateKey(key, projection)); }
+  catch (...) {}
+}
+
+void ProviderArtifactCache::invalidateKey(const std::string& cacheKey) noexcept
+{
   const auto shared = m_shared;
   if (!shared)
     return;
-  std::string cacheKey;
-  try {
-    cacheKey = key.canonicalKey();
-  }
-  catch (...) {
-    return;
-  }
   if (cacheKey.empty())
     return;
   std::function<void()> cleanup;

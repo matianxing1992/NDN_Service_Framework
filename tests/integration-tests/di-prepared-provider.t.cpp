@@ -9,6 +9,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/RuntimeTestAccess.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/ExecutionEvidence.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeExecutionPlanJson.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-entry-runner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativePlanning.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeArtifactPolicyAuthority.hpp"
@@ -126,19 +127,24 @@ makeConfig(const std::string& providerName = "/spec185/provider",
   return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
 }
 
+enum class ProviderOracleMode { NORMAL, WRONG_READINESS_KIND, NONTERMINAL, WRONG_FINAL_SCOPE };
+
 std::shared_ptr<NativeModelRunnerFactory>
-makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
+makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs,
+                                ProviderOracleMode mode)
 {
   auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
   factory->registerBackend(
     "onnxruntime",
-    [runs] (const NativeModelRunnerSpec& spec) {
+    [runs, mode] (const NativeModelRunnerSpec& spec) {
+      const bool reportPostprocess = mode == ProviderOracleMode::WRONG_READINESS_KIND;
       ExecutionEvidence evidence;
       evidence.providerName = spec.metadata.at("provider");
       evidence.providerBootId = spec.metadata.at("boot");
       evidence.evidenceEpoch = 1;
-      evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
-      evidence.realCompute = true;
+      evidence.runnerKind = reportPostprocess ? RunnerKind::NativeYoloPostprocess :
+                                                RunnerKind::OnnxRuntimeCpu;
+      evidence.realCompute = !reportPostprocess;
       evidence.deviceKind = "cpu";
       evidence.deviceId = "0";
       evidence.deviceIds = {"0"};
@@ -147,17 +153,19 @@ makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs)
       evidence.planDigest = spec.metadata.at("plan");
       evidence.artifactDigests[spec.role] = spec.metadata.at("artifact");
       evidence.roles = {spec.role};
-      evidence.loadCompleted = true;
-      evidence.warmupCompleted = true;
+      evidence.loadCompleted = !reportPostprocess;
+      evidence.warmupCompleted = !reportPostprocess;
       evidence.createdAtMs = 1;
       evidence.validate();
       return makeNativeModelRunner(
-        [runs] (const RoleExecutionContext&) {
+        [runs, mode] (const RoleExecutionContext&) {
           runs->fetch_add(1, std::memory_order_relaxed);
           const std::string response = "di-provider-response";
+          const std::string scope = mode == ProviderOracleMode::WRONG_FINAL_SCOPE ?
+            "unrelated-leaf" : "final-response";
           return std::map<std::string, TensorBundle>{
-            {"final-response", TensorBundle{
-              "final-response",
+            {scope, TensorBundle{
+              scope,
               std::vector<std::uint8_t>(response.begin(), response.end()),
               1, response.size()}}};
         },
@@ -360,7 +368,8 @@ providerProjection(const ndn::Name& provider,
                    const std::string& artifactDigest,
                    const std::string& protectionEpoch = "plaintext-v1",
                    const std::string& grantName = {},
-                   const std::string& grantDigest = {})
+                   const std::string& grantDigest = {},
+                   bool terminalResponseOwner = true)
 {
   NativeSelectionProjectionV3 projection;
   projection.provider = provider.toUri();
@@ -428,7 +437,7 @@ providerProjection(const ndn::Name& provider,
   projection.dataflow.attempt = projection.attempt;
   projection.dataflow.planDigest = projection.planDigest;
   projection.dataflow.role = "/Backbone";
-  projection.dataflow.terminalResponseOwner = true;
+  projection.dataflow.terminalResponseOwner = terminalResponseOwner;
   projection.dataflow.dataflowDigest = planDigest;
   projection.deviceBinding.mode = "SINGLE_DEVICE";
   projection.deviceBinding.provider = projection.provider;
@@ -713,7 +722,8 @@ public:
 static std::weak_ptr<MessageValidator>
 runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                                                    bool restartHandler = false,
-                                                   bool includeStoredKeyTable = false)
+                                                   bool includeStoredKeyTable = false,
+                                                   ProviderOracleMode mode = ProviderOracleMode::NORMAL)
 {
   // This C++ ingress fixture uses the production Provider::serve path.  The
   // only test seam injects an already-bootstrapped Core owner and a
@@ -772,7 +782,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     grantRequest.sign(*requesterPrivate), nowMs, nowMs + 60'000);
   auto assignmentProjection = providerProjection(
     providerName, requestId, planDigest, artifactDigest, protectionEpoch,
-    issuedGrant.grantName, issuedGrant.grantDigest);
+    issuedGrant.grantName, issuedGrant.grantDigest, mode != ProviderOracleMode::NONTERMINAL);
 
   auto grantWires = std::make_shared<std::map<std::string, std::string>>();
   auto grantWiresMutex = std::make_shared<std::mutex>();
@@ -1136,7 +1146,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     environment.providerFace(), environment.provider(), environment.keyChain(),
     providerCertificate, providerCertificate,
       makeConfig(providerName.toUri(), serviceName.toUri()),
-    makeProviderOracleRunnerFactory(runs), preparationFactory,
+    makeProviderOracleRunnerFactory(runs, mode), preparationFactory,
     [grantWires, grantWiresMutex, verifiedRoleOwners, verifiedRoleOwnersMutex,
      authorityPublic = publicKeyBytes(authorityPrivate),
      recipientSeed = std::string(32, 'c'), protectionEpoch, bootId,
@@ -1420,6 +1430,20 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   BOOST_CHECK(probeRequestPublished(probe));
   BOOST_CHECK(probeSelectionSeen(probe));
   const auto positiveFailure = probeFailure(probe);
+  if (mode != ProviderOracleMode::NORMAL) {
+    const auto expectedFailure = mode == ProviderOracleMode::WRONG_READINESS_KIND ?
+      "DI_RUNTIME_RUNNER_KIND_MISMATCH" : mode == ProviderOracleMode::WRONG_FINAL_SCOPE ?
+      "DI_FINAL_RESPONSE_MISSING" : "request timed out";
+    BOOST_CHECK_MESSAGE(positiveFailure.find(expectedFailure) != std::string::npos,
+                        positiveFailure);
+    BOOST_CHECK(!probeResponseSeen(probe));
+    BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
+                      mode == ProviderOracleMode::WRONG_READINESS_KIND ? 0U : 1U);
+    registration.close();
+    facade.stop();
+    BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
+    return validatorLifetime;
+  }
   BOOST_CHECK_MESSAGE(positiveFailure.empty(), positiveFailure);
   BOOST_CHECK(probeResponseSeen(probe));
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
@@ -1809,6 +1833,23 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
   runAuthenticatedProviderAssignmentCase(false);
 }
 
+BOOST_AUTO_TEST_CASE(AuthenticatedModelSelectionRejectsPostprocessReadyEvidence)
+{
+  runAuthenticatedProviderAssignmentCase(
+    false, false, false, ProviderOracleMode::WRONG_READINESS_KIND);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedNonterminalRoleCannotAnswerWithItsLocalLeaf)
+{
+  runAuthenticatedProviderAssignmentCase(false, false, false, ProviderOracleMode::NONTERMINAL);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedTerminalRoleRequiresTheConfiguredResponseScope)
+{
+  runAuthenticatedProviderAssignmentCase(
+    false, false, false, ProviderOracleMode::WRONG_FINAL_SCOPE);
+}
+
 BOOST_AUTO_TEST_CASE(AuthenticatedSelectionAdmitsStoredModelKeysAndRejectsWrongCapsuleKey)
 {
   const auto validator = runAuthenticatedProviderAssignmentCase(false, false, true);
@@ -2008,6 +2049,62 @@ BOOST_AUTO_TEST_CASE(ProductionAssemblerFetchesCanonicalSourceAfterSelection)
   std::filesystem::remove_all(options.cacheDir, cleanupError);
 }
 
+BOOST_AUTO_TEST_CASE(EntryReadinessRequiresEveryChildOnTheSameBackendAndDevice)
+{
+  class ObservedChild final : public NativeModelRunner
+  {
+  public:
+    std::optional<ExecutionEvidence> observation;
+
+    std::optional<ExecutionEvidence> executionEvidenceSnapshot() const override
+    {
+      return observation;
+    }
+
+    std::map<std::string, TensorBundle> run(const RoleExecutionContext&) override
+    {
+      return {};
+    }
+  };
+  auto first = std::make_shared<ObservedChild>();
+  auto second = std::make_shared<ObservedChild>();
+  ExecutionEvidence evidence;
+  evidence.runnerKind = RunnerKind::OnnxRuntimeCpu;
+  evidence.deviceKind = "cpu";
+  evidence.deviceId = "0";
+  evidence.realCompute = true;
+  evidence.loadCompleted = true;
+  evidence.warmupCompleted = true;
+  const auto digest = "sha256:" + std::string(64, 'a');
+  first->observation = evidence;
+  first->observation->roles = {"first"};
+  first->observation->artifactDigests = {{"first", digest}};
+  NativeEntryRunner runner(
+    {{"first", "unit", {"input"}, {"output"}}, {"second", "unit", {"input"}, {"output"}}},
+    [&] (const NativeModelRunnerSpec& spec) { return spec.role == "first" ? first : second; },
+    [] (const NativeSubgraphEntryContract& entry) {
+      NativeModelRunnerSpec spec;
+      spec.role = entry.entryId;
+      return spec;
+    });
+  BOOST_CHECK(!runner.executionEvidenceSnapshot());
+  second->observation = evidence;
+  second->observation->roles = {"second"};
+  second->observation->artifactDigests = {{"second", digest}};
+  second->observation->deviceId = "1";
+  BOOST_CHECK(!runner.executionEvidenceSnapshot());
+  second->observation->deviceId = "0";
+  second->observation->warmupCompleted = false;
+  BOOST_CHECK(!runner.executionEvidenceSnapshot());
+  second->observation->warmupSkippedUnrankedInput = true;
+  const auto ready = runner.executionEvidenceSnapshot();
+  BOOST_REQUIRE(ready);
+  BOOST_CHECK_EQUAL(ready->artifactDigests.at("unit"), digest);
+  BOOST_CHECK(ready->warmupSkippedUnrankedInput);
+  second->observation->cpuFallbackUsed = true;
+  BOOST_CHECK(!runner.executionEvidenceSnapshot());
+}
+
 BOOST_AUTO_TEST_CASE(ProviderArtifactCachePinsEvictsAndSeparatesIdentity)
 {
   ProviderArtifactCache cache(ProviderArtifactCacheConfig{128 * 1024, 1,
@@ -2088,6 +2185,31 @@ BOOST_AUTO_TEST_CASE(ProviderArtifactCachePinsEvictsAndSeparatesIdentity)
   BOOST_CHECK(!replacement.cacheHit());
   BOOST_CHECK_EQUAL(builds.load(std::memory_order_relaxed), 2U);
   replacement = {};
+  auto stepped = projection;
+  NativeExecutionStepSpec step;
+  step.stepId = "only-step";
+  step.unitId = key.role;
+  step.operation = "CALL_SUBGRAPH";
+  step.artifactEntry = "first-entry";
+  stepped.plan.steps = {step};
+  auto firstStep = cache.acquireWithRunner(key, stepped, control, makeArtifact);
+  BOOST_REQUIRE(firstStep);
+  BOOST_CHECK(!firstStep.cacheHit());
+  firstStep = {};
+  auto sameStep = cache.acquireWithRunner(key, stepped, control, makeArtifact);
+  BOOST_REQUIRE(sameStep);
+  BOOST_CHECK(sameStep.cacheHit());
+  sameStep = {};
+  stepped.plan.steps.front().artifactEntry = "second-entry";
+  auto secondStep = cache.acquireWithRunner(key, stepped, control, makeArtifact);
+  BOOST_REQUIRE(secondStep);
+  BOOST_CHECK(!secondStep.cacheHit());
+  secondStep = {};
+  cache.invalidate(key, stepped);
+  auto invalidatedStep = cache.acquireWithRunner(key, stepped, control, makeArtifact);
+  BOOST_REQUIRE(invalidatedStep);
+  BOOST_CHECK(!invalidatedStep.cacheHit());
+  invalidatedStep = {};
   cache.stop();
   BOOST_CHECK_EQUAL(cache.counters().activeLeases, 0U);
   BOOST_CHECK_EXCEPTION(cache.acquireWithRunner(key, projection, control, makeArtifact),

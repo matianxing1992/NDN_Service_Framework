@@ -1,6 +1,7 @@
 #ifndef NDNSF_EXAMPLES_UAV_TRACKING_RESULT_VERIFIER_HPP
 #define NDNSF_EXAMPLES_UAV_TRACKING_RESULT_VERIFIER_HPP
 
+#include "UavWindowBinding.hpp"
 #include "uav-person-tracking.hpp"
 
 #include <ndn-cxx/name.hpp>
@@ -39,6 +40,9 @@ struct UavTrackingResultExpectation
   std::optional<UavPersonTrackingResultExpectation> personTracking;
   /** Explicit, complete source Producer mapping for every result mode. */
   std::array<ndn::Name, 3> sourceProviders;
+  /** Result v2 per-camera contexts and exact binding references, when present. */
+  std::array<std::optional<UavPersonFrameContext>, 3> personFrames;
+  std::array<std::optional<UavBindingObjectRef>, 3> windowBindings;
   std::optional<UavVehicleTrackingResultExpectation> vehicleTracking;
 };
 
@@ -50,6 +54,16 @@ makeUavPersonTrackingResultJson(const UavPersonWindowResult& result,
                                 const std::array<std::string, 3>& observationNames,
                                 const std::array<std::string, 3>& observationDigests,
                                 const std::array<ndn::Name, 3>& sourceProducers);
+
+/** Result v2: per-frame capture contexts and exact window-binding references. */
+std::string
+makeUavPersonTrackingResultJsonV2(const UavPersonWindowResult& result,
+                                  const UavPersonBackendWindow& backend,
+                                  const UavPersonTrackingProfile& profile,
+                                  const std::array<std::string, 3>& observationNames,
+                                  const std::array<std::string, 3>& observationDigests,
+                                  const std::array<ndn::Name, 3>& sourceProducers,
+                                  const std::array<UavBindingObjectRef, 3>& windowBindings);
 
 /** Bind a Spec210 terminal result and its three frames to the request context. */
 void

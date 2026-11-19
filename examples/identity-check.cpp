@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -36,10 +37,12 @@ main(int argc, char** argv)
       std::cout.write(output.data(), static_cast<std::streamsize>(output.size()));
       return std::cout ? 0 : 1;
     }
-    if (argc != 2 && argc != 3)
+    const bool metadata = argc > 1 && std::string(argv[1]) == "--credential-metadata";
+    if ((metadata && argc != 4) || (!metadata && argc != 2 && argc != 3))
       throw std::invalid_argument(
-        "usage: ndnsf-identity-check HOME [IDENTITY] | --trust-resources SCHEMA");
-    const std::filesystem::path home(argv[1]);
+        "usage: ndnsf-identity-check HOME [IDENTITY] | --trust-resources SCHEMA | "
+        "--credential-metadata HOME IDENTITY");
+    const std::filesystem::path home(argv[metadata ? 2 : 1]);
     if (!home.is_absolute() || std::filesystem::canonical(home) != home)
       throw std::invalid_argument("credential HOME must be an absolute canonical directory");
     const auto pib = home / ".ndn";
@@ -60,7 +63,7 @@ main(int argc, char** argv)
       throw std::runtime_error("cannot isolate KeyChain defaults");
     ndn::security::KeyChain keyChain("pib-sqlite3:" + pib.string(),
                                     tpmLocator, false);
-    const auto identity = argc == 3 ? ndn::Name(argv[2]) :
+    const auto identity = metadata || argc == 3 ? ndn::Name(argv[metadata ? 3 : 2]) :
       keyChain.getPib().getDefaultIdentity().getName();
     const auto certificate = keyChain.getPib().getIdentity(identity)
                                .getDefaultKey().getDefaultCertificate();
@@ -71,7 +74,17 @@ main(int argc, char** argv)
     keyChain.sign(proof, ndn::security::signingByCertificate(certificate.getName()));
     if (!ndn::security::verifySignature(proof, std::optional<ndn::security::Certificate>(certificate)))
       throw std::runtime_error("credential private key does not match certificate");
-    std::cout << "NDNSF_IDENTITY_CHECKED identity=" << identity << std::endl;
+    if (metadata) {
+      // URI rendering escapes component bytes, so std::quoted supplies the
+      // remaining JSON string escaping without another serialization owner.
+      std::cout << "{\"schema\":\"ndnsf-credential-metadata-v1\",\"identity\":"
+                << std::quoted(identity.toUri()) << ",\"certificateName\":"
+                << std::quoted(certificate.getName().toUri()) << ",\"keyName\":"
+                << std::quoted(certificate.getKeyName().toUri()) << "}\n";
+    }
+    else {
+      std::cout << "NDNSF_IDENTITY_CHECKED identity=" << identity << std::endl;
+    }
     return 0;
   }
   catch (const std::exception& error) {

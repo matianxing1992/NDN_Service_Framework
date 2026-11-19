@@ -2,6 +2,7 @@
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -102,6 +103,10 @@ runnerReuseKey(const NativeSelectionProjectionV3& projection,
   frameStrings(role.deviceSet);
   frame(role.artifactDigest);
   frame(role.recipeDigest);
+  if (!projection.plan.steps.empty()) {
+    frame("sealed-role-steps-v1");
+    frame(detail::nativeRoleStepContractDigest(projection.plan, role.selectedRole));
+  }
   frame(role.roleKind);
   frame(role.adapterId);
   frame(role.adapterVersion);

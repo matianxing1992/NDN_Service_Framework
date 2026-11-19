@@ -3170,6 +3170,28 @@ NativeProviderRuntime::executeRoleAsyncImpl(
      {"attemptEpoch", std::to_string(role.attemptEpoch)}});
   try {
     completion->use = std::move(conversationUse);
+    if (stateful) {
+      const auto attemptEpoch = role.candidateDecodeStateIdentity
+        ? role.candidateDecodeStateIdentity->attemptEpoch : role.attemptEpoch;
+      const auto retainRunner = [this, key = sessionRunnerKey(sessionId, role.role, attemptEpoch)]
+        (const std::shared_ptr<NativeModelRunner>& prepared) {
+          if (!prepared) return;
+          std::lock_guard<std::mutex> lock(m_mutex);
+          m_sessionRunners[key] = prepared;
+        };
+      // A worker can leave adapter state before failing to return a result. Retain its owner
+      // before execution so terminal release also finds lazily prepared runners on failure.
+      if (prepareRunner) {
+        prepareRunner = [prepare = std::move(prepareRunner), retainRunner] () mutable {
+          auto prepared = prepare();
+          retainRunner(prepared.runner);
+          return prepared;
+        };
+      }
+      else {
+        retainRunner(runner);
+      }
+    }
     // WorkItem retains this owner until inference and output publication settle.
     // The guard must never access use: only the completion releases that lease.
     const auto workerGuard = [completion, executionGuard] {
@@ -3218,15 +3240,6 @@ NativeProviderRuntime::executeRoleAsyncImpl(
         auto result = completion->future.get();
         workerWait.finish();
         if (executionGuard) executionGuard();
-        if (result.runner) {
-          std::lock_guard<std::mutex> lock(m_mutex);
-          const auto attemptEpoch = role.candidateDecodeStateIdentity
-            ? role.candidateDecodeStateIdentity->attemptEpoch
-            : role.attemptEpoch;
-          m_sessionRunners[sessionRunnerKey(
-            stateSessionId, role.role, attemptEpoch)] =
-            result.runner;
-        }
         TensorBundle state;
         if (role.streamingStateExecution &&
             result.runnerSupportsOpaqueStateHandles) {

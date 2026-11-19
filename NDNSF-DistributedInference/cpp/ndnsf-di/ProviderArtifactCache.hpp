@@ -196,11 +196,14 @@ public:
   // Mark an immutable entry unusable after a failed path/digest/authentication
   // check.  Active leases defer removal until their final release.
   void invalidate(const ProviderArtifactKey& key) noexcept;
+  void invalidate(const ProviderArtifactKey& key,
+                  const NativeSelectionProjectionV3& projection) noexcept;
 
   void stop() noexcept;
   ProviderArtifactCacheCounters counters() const noexcept;
 
 private:
+  void invalidateKey(const std::string& cacheKey) noexcept;
   static ProviderArtifactLease makeLease(const std::shared_ptr<Shared>& shared,
                                          const std::string& key,
                                          bool cacheHit);

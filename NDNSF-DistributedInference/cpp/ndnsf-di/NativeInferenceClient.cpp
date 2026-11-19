@@ -3097,9 +3097,8 @@ dispatchOperation(const std::shared_ptr<NativeInferenceHandle::Operation>& opera
         operation->model, options.taskName.empty() ? input.taskName : options.taskName,
         input.inputSchemaDigest, input.optionsSchemaDigest, input.payload,
         input.repositoryReference, operation->deadline);
-      if (operation->model.adapterId == "automatic-onnx") {
-        if (!operation->runtime || !operation->runtime->automaticShapeSeedFactory ||
-            !prepared.repositoryReference.empty())
+      if (operation->runtime && operation->runtime->automaticShapeSeedFactory) {
+        if (!prepared.repositoryReference.empty())
           throw std::invalid_argument("automatic request has no shape binder or inline input");
         const auto cancelled = operation->cancelled;
         NativeRequestControl control{operation->coreRequestId, operation->attempt,

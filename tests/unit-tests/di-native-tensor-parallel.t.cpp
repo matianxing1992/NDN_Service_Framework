@@ -39,6 +39,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
+#include "tests/fixtures/native-dependency-bus.hpp"
 
 #include <onnx/onnx_pb.h>
 #include <google/protobuf/text_format.h>
@@ -317,8 +318,10 @@ BOOST_AUTO_TEST_CASE(StepsWithoutVersionOrWithDegreeOneAreRejected)
   degreeOne.tensorDegree = 1;
   BOOST_CHECK_THROW(degreeOne.validateSteps(), std::invalid_argument);
 
+  // Step-plan v2 is a real version now (Spec 242 T001 admits per-stage degrees and
+  // degree-one stages), so the unknown-version case uses a name no reader defines.
   auto unknownVersion = twoRankPlan();
-  unknownVersion.stepPlanVersion = "step-plan-v2";
+  unknownVersion.stepPlanVersion = "step-plan-v3";
   BOOST_CHECK_THROW(unknownVersion.validateSteps(), std::invalid_argument);
 
   auto degreeWithoutSteps = twoRankPlan();
@@ -5026,6 +5029,94 @@ BOOST_AUTO_TEST_CASE(UnitEntryTableAssemblesFromOneRankArtifact)
 }
 
 
+BOOST_AUTO_TEST_CASE(QwenEntryBindsCausalInputsFromAdmittedLineage)
+{
+  qwen::QwenTpEntryContract entry;
+  entry.entryId = "entry/init";
+  entry.unitId = "S0R0";
+  entry.kind = "INIT";
+  entry.inputNames = {"input_ids", "attention_mask", "position_ids"};
+  entry.outputNames = {"out"};
+  entry.relativeGraphPath = "init.onnx";
+  entry.graphDigest = nativePlanningDigest("init-fixture");
+  entry.inputSlotByGraphName = {{"input_ids", "tokens"}, {"attention_mask", "mask-slot"},
+                               {"position_ids", "position-slot"}};
+  entry.outputSlotByGraphName = {{"out", "result"}};
+
+  const auto tensor = [] (const std::string& name, const std::vector<std::int64_t>& values) {
+    NamedTensor input{name, TensorElementType::Int64,
+                      {1, static_cast<std::int64_t>(values.size())}, {}};
+    input.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(input.payload.data(), values.data(), input.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(input)});
+  };
+  const auto values = [] (const TensorBundle& bundle) {
+    const auto decoded = decodeTensorBundleViews(bundle);
+    BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+    BOOST_REQUIRE(decoded.front().elementType == TensorElementType::Int64);
+    std::vector<std::int64_t> result(decoded.front().payload.size() / sizeof(std::int64_t));
+    std::memcpy(result.data(), decoded.front().payload.data(), decoded.front().payload.size());
+    return result;
+  };
+  std::vector<std::int64_t> mask, positions;
+  const auto child = makeNativeModelRunner([&] (const RoleExecutionContext& context) {
+    mask = values(context.inputsByScope.at("attention_mask"));
+    positions = values(context.inputsByScope.at("position_ids"));
+    return std::map<std::string, TensorBundle>{{"out", tensor("out", {7})}};
+  });
+  qwen::NativeQwenTensorRunner runner({entry},
+    [&] (const NativeModelRunnerSpec&) { return child; },
+    [] (const qwen::QwenTpEntryContract&) { return NativeModelRunnerSpec{}; });
+  auto step = std::make_shared<NativeExecutionStepSpec>();
+  step->stepId = "init";
+  step->unitId = entry.unitId;
+  step->operation = "CALL_SUBGRAPH";
+  step->artifactEntry = entry.entryId;
+  step->inputSlots = {slot("tokens", "EPOCH_INPUT"), slot("mask-slot", "EPOCH_INPUT"),
+                      slot("position-slot", "EPOCH_INPUT")};
+  step->outputSlots = {slot("result", "LOCAL_STEP")};
+  RoleExecutionContext context;
+  context.role = entry.unitId;
+  context.sessionId = "/spec251/causal";
+  context.activeStep = step;
+  context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{*step});
+  context.stepInputsBySlot.emplace("tokens", tensor("input_ids", {7, 9}));
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = context.sessionId;
+  lineage.attemptEpoch = 1;
+  lineage.planDigest = nativePlanningDigest("spec251-plan");
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+  lineage.logicalPrefixDigest = nativePlanningDigest("spec251-prefix");
+  lineage.logicalPrefixTokenCount = 2;
+  lineage.positionDigest = nativePlanningDigest("spec251-position");
+  context.generationLineage = lineage;
+  context.generationInputTokenCount = 2;
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  BOOST_CHECK(mask == (std::vector<std::int64_t>{1, 1}));
+  BOOST_CHECK(positions == (std::vector<std::int64_t>{0, 1}));
+
+  context.generationLineage->inferenceEpoch = 1;
+  context.generationLineage->transitionKind = GenerationEpochLineageV1::DECODE;
+  context.generationLineage->logicalPrefixTokenCount = 3;
+  context.generationInputTokenCount = 1;
+  context.stepInputsBySlot["tokens"] = tensor("input_ids", {11});
+  context.stepInputsBySlot["mask-slot"] = tensor("attention_mask", {0, 1, 1});
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  BOOST_CHECK(mask == (std::vector<std::int64_t>{0, 1, 1}));
+  BOOST_CHECK(positions == (std::vector<std::int64_t>{2}));
+  step->inputSlots.back().source = "REMOTE_STEP";
+  BOOST_CHECK_THROW(runner.run(context), std::out_of_range);
+  step->inputSlots.back().source = "EPOCH_INPUT";
+  context.generationLineage.reset();
+  BOOST_CHECK_THROW(runner.run(context), std::out_of_range);
+  context.stepInputsBySlot["position-slot"] = tensor("position_ids", {4});
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  BOOST_CHECK(positions == (std::vector<std::int64_t>{4}));
+}
+
 BOOST_AUTO_TEST_CASE(RunnerRefusesATableThatDoesNotMatchItsTemplate)
 {
   // The runner and the template come from two places: the table from assembly,
@@ -6369,6 +6460,51 @@ private:
 
 } // namespace
 
+BOOST_AUTO_TEST_CASE(GenericStateBindingsDoNotRequireAttentionNames)
+{
+  NativeSubgraphEntryContract recurrent;
+  recurrent.entryId = "recurrent-cell";
+  recurrent.unitId = "arbitrary-unit";
+  recurrent.inputNames = {"input", "carry"};
+  recurrent.outputNames = {"result", "next-carry"};
+  recurrent.stateSuccessorByInputGraphName = {{"carry", "next-carry"}};
+  auto stateless = recurrent;
+  stateless.entryId = "stateless-cell";
+  stateless.stateSuccessorByInputGraphName.clear();
+  std::map<std::string, std::shared_ptr<FakeStatefulRunner>> children;
+  NativeEntryRunner runner({stateless, recurrent},
+    [&children] (const NativeModelRunnerSpec& spec) {
+      auto child = std::make_shared<FakeStatefulRunner>(true);
+      children.emplace(spec.role, child);
+      return child;
+    },
+    [] (const NativeSubgraphEntryContract& entry) {
+      NativeModelRunnerSpec spec;
+      spec.role = entry.entryId;
+      return spec;
+    });
+  BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  BOOST_CHECK(runner.supportsConversationStateTransfer());
+  const auto state = runner.promoteSessionStateToConversation("session", "conversation");
+  BOOST_REQUIRE(state.has_value());
+  BOOST_CHECK_EQUAL(state->logicalBytes, 4096u);
+  BOOST_CHECK_EQUAL(state->opaque.role, "arbitrary-unit");
+  BOOST_CHECK_EQUAL(children.at("stateless-cell")->promoteCalls, 0u);
+  BOOST_CHECK_EQUAL(children.at("recurrent-cell")->promoteCalls, 1u);
+  BOOST_CHECK(runner.restoreConversationState(*state, "restored"));
+  BOOST_CHECK(runner.releaseConversationState(*state));
+  runner.releaseSessionState("restored");
+  BOOST_CHECK_EQUAL(children.at("stateless-cell")->releaseCalls, 1u);
+  BOOST_CHECK_EQUAL(children.at("recurrent-cell")->releaseCalls, 1u);
+
+  auto invalid = recurrent;
+  invalid.stateSuccessorByInputGraphName["carry"] = "missing";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+  invalid = recurrent;
+  invalid.stateSuccessorByInputGraphName["input"] = "next-carry";
+  BOOST_CHECK_THROW(invalid.validate(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
 {
   // C6: INIT/MLP/HEAD cannot answer a state question, and a unit that reported "no
@@ -6386,6 +6522,11 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
     entry.kind = spec.second;
     entry.inputNames = {"in"};
     entry.outputNames = {"out"};
+    if (entry.kind == "ATTN") {
+      const auto layer = entry.entryId.substr(entry.entryId.rfind('/') + 1);
+      entry.inputNames.push_back("past_key_values." + layer + ".key");
+      entry.stateOutputGraphNames.push_back("present." + layer + ".key");
+    }
     entry.relativeGraphPath = "entry.onnx";
     entry.graphDigest = "sha256:" + std::string(64, 'a');
     entry.validate();
@@ -6429,6 +6570,15 @@ BOOST_AUTO_TEST_CASE(UnitStateAnswerAggregatesOnlyItsKvHoldingChildren)
     // Release reaches every child, including the ones without state.
     runner.releaseSessionState("state-session");
     BOOST_CHECK(runner.supportsOpaqueStateHandles());
+  }
+
+  // A diagnostic kind alone does not establish state ownership.
+  {
+    auto entry = table.front();
+    entry.kind = "ATTN";
+    const auto runner = makeRunner({entry}, true);
+    BOOST_CHECK(!runner.supportsOpaqueStateHandles());
+    BOOST_CHECK(!runner.supportsConversationStateTransfer());
   }
 
   // A non-stateful attention child makes the whole unit non-stateful: a partial
@@ -7492,6 +7642,24 @@ BOOST_AUTO_TEST_CASE(ShardedGenerationContractSatisfiesTheSealerRequirements)
   sealed.tokenizerDigest = "sha256:" + std::string(64, 'b');
   sealed.eosTokenIds = {2};
   const auto contract = qwen::buildQwenTpGenerationContract(plan, shape, sealed);
+
+  // Exercise the actual ordinary-runner consumer, not just the generation wire schema.
+  // A tensor name is not a policy identifier, even when both contracts serialize it.
+  StatefulOnnxIoContractV1 positionIo;
+  positionIo.inputNames = {contract.tokenInputName, contract.attentionMaskInputName,
+                           contract.positionIdsInputName};
+  CausalPositionInputContractV1 position;
+  position.policy = contract.positionInputPolicy;
+  position.attentionMaskInputName = contract.attentionMaskInputName;
+  position.positionIdsInputName = contract.positionIdsInputName;
+  position.cachePositionInputName = contract.cachePositionInputName;
+  BOOST_CHECK_NO_THROW(position.validate(positionIo));
+  auto unknownPolicy = position;
+  unknownPolicy.policy = "position_ids";
+  BOOST_CHECK_THROW(unknownPolicy.validate(positionIo), std::invalid_argument);
+  auto missingPosition = positionIo;
+  missingPosition.inputNames.pop_back();
+  BOOST_CHECK_THROW(position.validate(missingPosition), std::invalid_argument);
 
   BOOST_CHECK(contract.enabled);
   BOOST_CHECK_EQUAL(contract.mode, std::string("TOKEN_STREAMING"));
@@ -9995,108 +10163,8 @@ namespace {
  * at the step that needs it, which is the exchange the coordinator is supposed to enable.
  * A promise per waiter means a late publisher still satisfies an early waiter.
  */
-class PartialBus
-{
-public:
-  std::future<TensorBundle>
-  subscribe(std::string scope)
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    const auto published = m_published.find(scope);
-    std::promise<TensorBundle> promise;
-    auto future = promise.get_future();
-    if (published != m_published.end()) {
-      promise.set_value(published->second);
-    }
-    else {
-      m_waiters[std::move(scope)].push_back(std::move(promise));
-    }
-    return future;
-  }
-
-  void
-  publish(const std::string& scope, const TensorBundle& bundle)
-  {
-    std::vector<std::promise<TensorBundle>> waiters;
-    {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      m_published[scope] = bundle;
-      const auto found = m_waiters.find(scope);
-      if (found != m_waiters.end()) {
-        waiters = std::move(found->second);
-        m_waiters.erase(found);
-      }
-    }
-    for (auto& waiter : waiters) waiter.set_value(bundle);
-  }
-
-  std::size_t publishedCount() const
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_published.size();
-  }
-
-  /** A copy of what was published under one scope.
-   *
-   * The bus already keeps the latest bundle per scope for late subscribers; returning a copy lets a
-   * test compare an intermediate a step published against the unsplit export's same intermediate,
-   * which is the only way to locate where a chain of steps first diverges from the reference.
-   */
-  std::optional<TensorBundle>
-  published(const std::string& scope) const
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    const auto found = m_published.find(scope);
-    if (found == m_published.end()) return std::nullopt;
-    return found->second;
-  }
-
-  std::vector<std::string>
-  publishedScopes() const
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::vector<std::string> scopes;
-    scopes.reserve(m_published.size());
-    for (const auto& item : m_published) scopes.push_back(item.first);
-    return scopes;
-  }
-
-private:
-  mutable std::mutex m_mutex;
-  std::map<std::string, TensorBundle> m_published;
-  std::map<std::string, std::vector<std::promise<TensorBundle>>> m_waiters;
-};
-
-/** DependencyIo that moves contributions over a shared bus instead of a network. */
-class BusDependencyIo final : public DependencyIo
-{
-public:
-  explicit BusDependencyIo(std::shared_ptr<PartialBus> bus)
-    : m_bus(std::move(bus))
-  {
-  }
-
-  std::future<TensorBundle>
-  prefetchInput(const std::string&, const DependencyEdge& edge) override
-  {
-    ++prefetchCalls;
-    return m_bus->subscribe(edge.scope);
-  }
-
-  void
-  publishOutput(const std::string&, const DependencyEdge& edge,
-                const TensorBundle& bundle) override
-  {
-    ++publishCalls;
-    m_bus->publish(edge.scope, bundle);
-  }
-
-  std::atomic<std::size_t> prefetchCalls{0};
-  std::atomic<std::size_t> publishCalls{0};
-
-private:
-  std::shared_ptr<PartialBus> m_bus;
-};
+using tests::PartialBus;
+using tests::BusDependencyIo;
 
 } // namespace
 
@@ -15851,9 +15919,14 @@ BOOST_AUTO_TEST_CASE(ProviderAcceptsATensorParallelPreparedSpec)
   BOOST_REQUIRE(withoutTable.has_value());
   BOOST_CHECK_EQUAL(*withoutTable, std::string("DI_PROVIDER_ASSEMBLY_RUNNER_MISMATCH"));
 
-  // With a table and its root the same spec is accepted, which is the sharded case.
+  // A production wrapper also binds the admitted child backend and owning adapter.
   retargeted.metadata["tensorParallelEntries"] = R"([{"entryId":"S0R0/ATTN/0"}])";
   retargeted.metadata["tensorParallelEntryRoot"] = "/var/tmp/spec224-publish/S0R0";
+  const auto withoutChild = validateNativePreparedRunnerSpec(projection, retargeted);
+  BOOST_REQUIRE(withoutChild);
+  BOOST_CHECK_EQUAL(*withoutChild, "DI_PROVIDER_ASSEMBLY_CHILD_BACKEND_MISMATCH");
+  assembly.adapterId = "qwen";
+  retargeted.metadata["tensorParallelChildBackend"] = assembly.backend;
   BOOST_CHECK_MESSAGE(!validateNativePreparedRunnerSpec(projection, retargeted).has_value(),
     "a sharded spec with an entry table was still refused");
 }
@@ -18922,6 +18995,11 @@ BOOST_AUTO_TEST_CASE(UnitPromotionCommitsOnlyWhenEveryChildSucceeds)
     entry.kind = spec.second;
     entry.inputNames = {"in"};
     entry.outputNames = {"out"};
+    if (entry.kind == "ATTN") {
+      const auto layer = entry.entryId.substr(entry.entryId.rfind('/') + 1);
+      entry.inputNames.push_back("past_key_values." + layer + ".key");
+      entry.stateOutputGraphNames.push_back("present." + layer + ".key");
+    }
     entry.relativeGraphPath = "entry.onnx";
     entry.graphDigest = "sha256:" + std::string(64, 'a');
     entry.validate();
@@ -20090,6 +20168,64 @@ findSlice(const qwen::QwenRankLayerSlices& layer, const std::string& suffix)
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(ShardMath)
+
+BOOST_AUTO_TEST_CASE(WeightedShardsKeepWholeGroupsAndAlignedColumns)
+{
+  const auto shape = frozenShape();
+  const auto ranges = qwen::resolveQwenTpRankRanges(shape, {6, 2});
+  BOOST_REQUIRE_EQUAL(ranges.size(), 2U);
+  BOOST_CHECK_EQUAL(ranges[0].kvEnd, 6U);
+  BOOST_CHECK_EQUAL(ranges[0].ffnEnd, 2304U);
+  BOOST_CHECK_EQUAL(ranges[1].kvBegin, 6U);
+  const auto slices = qwen::planQwenTensorSlices(shape, ranges[1], 3, 4);
+  BOOST_REQUIRE_EQUAL(slices.size(), 1U);
+  BOOST_CHECK_EQUAL(slices.front().layer, 3U);
+  const auto* out = findSlice(slices.front(), "attn.o_proj.MatMul.weight");
+  const auto* down = findSlice(slices.front(), "mlp.down_proj.MatMul.weight");
+  BOOST_REQUIRE(out != nullptr);
+  BOOST_REQUIRE(down != nullptr);
+  BOOST_CHECK_EQUAL(out->begin, 1536U);
+  BOOST_CHECK_EQUAL(out->slicedK, 512U);
+  BOOST_CHECK_EQUAL(down->begin, 2304U);
+  BOOST_CHECK_EQUAL(down->slicedK, 768U);
+  BOOST_CHECK_EQUAL(down->slicedN, 1024U);
+  const auto triple = qwen::resolveQwenTpRankRanges(shape, {2, 1, 1});
+  BOOST_REQUIRE_EQUAL(triple.size(), 3U);
+  BOOST_CHECK_EQUAL(triple[1].kvBegin, 4U);
+  BOOST_CHECK_EQUAL(triple[2].kvBegin, 6U);
+  const auto mixed = qwen::resolveQwenTpRankRanges(shape, {3, 1, 2});
+  BOOST_REQUIRE_EQUAL(mixed.size(), 3U);
+  BOOST_CHECK_EQUAL(mixed[0].kvEnd, 4U);
+  BOOST_CHECK_EQUAL(mixed[1].kvEnd, 5U);
+  BOOST_CHECK_EQUAL(mixed[2].kvEnd, 8U);
+  BOOST_CHECK_EQUAL(mixed[0].ffnEnd, 1536U);
+  BOOST_CHECK_EQUAL(mixed[1].ffnEnd, 2048U);
+  BOOST_CHECK_EQUAL(mixed[2].ffnEnd, 3072U);
+  BOOST_CHECK_THROW(qwen::resolveQwenTpRankRanges(shape, {1, 1, 1}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(WeightedShardsRespectGroupedBlockGranularity)
+{
+  auto shape = frozenShape();
+  shape.headDim = 104;
+  const auto even = qwen::resolveQwenTpRankRanges(shape, {1, 1, 1, 1});
+  BOOST_REQUIRE_EQUAL(even.size(), 4U);
+  BOOST_CHECK_EQUAL(even[1].kvBegin, 2U);
+  BOOST_CHECK_EQUAL(even[1].ffnBegin, 768U);
+  shape.queryHeads = 12;
+  shape.kvHeads = 6;
+  shape.headDim = 24;
+  const auto ranges = qwen::resolveQwenTpRankRanges(shape, {2, 1});
+  BOOST_REQUIRE_EQUAL(ranges.size(), 2U);
+  BOOST_CHECK_EQUAL(ranges[1].kvBegin, 4U);
+  const auto slices = qwen::planQwenTensorSlices(shape, ranges[1], 0, 1);
+  const auto* out = findSlice(slices.at(0), "attn.o_proj.MatMul.weight");
+  BOOST_REQUIRE(out != nullptr);
+  BOOST_CHECK_EQUAL(out->begin, 192U);
+  BOOST_CHECK_EQUAL(out->slicedK, 96U);
+  BOOST_CHECK_THROW(qwen::resolveQwenTpRankRanges(shape, {100, 1}), std::invalid_argument);
+  BOOST_CHECK_THROW(qwen::resolveQwenTpRankRanges(shape, {0, 1}), std::invalid_argument);
+}
 
 BOOST_AUTO_TEST_CASE(PlanSplitsFrozenShapeByWholeHeads)
 {

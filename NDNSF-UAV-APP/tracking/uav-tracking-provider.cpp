@@ -13,8 +13,11 @@
 #include "../shared/UavSourceGeneration.hpp"
 #include "../shared/UavTrackingEvidenceStore.hpp"
 #include "../shared/UavTrackingResultVerifier.hpp"
+#include "../shared/UavWindowBinding.hpp"
 #include "../shared/UavTrackingWorkerTransaction.hpp"
+#include "../shared/uav-person-backend.hpp"
 #include "../shared/uav-person-computation.hpp"
+#include "../shared/uav-person-onnx.hpp"
 #include "../shared/uav-person-published-frame.hpp"
 #include "../shared/uav-person-trace.hpp"
 #include "../shared/uav-person-window-admission.hpp"
@@ -161,12 +164,17 @@ struct Options
   std::string camera;
   std::string droneId;
   std::string videoSource;
+  uint64_t mediaStartUs = 0;
+  uint64_t captureEpoch = 0;
+  bool compatibility = true;
   std::string frameFile;
   std::string frameDir;
   std::string model;
   std::string trackingProfile;
   std::string reidModel;
   std::string describePersonComputation;
+  std::string describeNativePersonComputation;
+  std::string computationManifest;
   std::string workerPython = "python3";
   std::string workerScript = "NDNSF-UAV-APP/tracking/tracking_worker.py";
   std::string display = "headless";
@@ -193,7 +201,9 @@ struct Options
 Options
 parseOptions(int argc, char** argv)
 {
-  for (const auto name : {"--tracking-profile", "--reid-model", "--describe-person-computation"}) {
+  for (const auto name : {"--tracking-profile", "--reid-model", "--describe-person-computation",
+                          "--describe-native-person-computation",
+                          "--person-computation-manifest"}) {
     for (int i = 1; i < argc; ++i) {
       if (argv[i] == std::string_view(name) &&
           (i + 1 >= argc || argv[i + 1][0] == '\0' ||
@@ -206,12 +216,19 @@ parseOptions(int argc, char** argv)
   result.role = option(argc, argv, "--role");
   result.camera = option(argc, argv, "--camera");
   result.videoSource = option(argc, argv, "--video-source");
+  result.mediaStartUs = std::stoull(option(argc, argv, "--media-start-us", "0"));
+  result.captureEpoch = std::stoull(option(argc, argv, "--capture-epoch",
+    option(argc, argv, "--source-epoch", "1")));
+  result.compatibility = option(argc, argv, "--compatibility", "true") != "false";
   result.frameFile = option(argc, argv, "--frame-file");
   result.frameDir = option(argc, argv, "--frame-dir");
   result.model = option(argc, argv, "--model");
   result.trackingProfile = option(argc, argv, "--tracking-profile");
   result.reidModel = option(argc, argv, "--reid-model");
   result.describePersonComputation = option(argc, argv, "--describe-person-computation");
+  result.describeNativePersonComputation = option(argc, argv,
+    "--describe-native-person-computation");
+  result.computationManifest = option(argc, argv, "--person-computation-manifest");
   result.workerPython = option(argc, argv, "--worker-python", result.workerPython);
   result.workerScript = option(argc, argv, "--worker-script", result.workerScript);
   result.display = option(argc, argv, "--display", result.display);
@@ -231,21 +248,26 @@ parseOptions(int argc, char** argv)
   result.fault = option(argc, argv, "--fault", "none");
   result.requestTimeoutMs = uav::readUavTrackingRequestTimeout(
     {{"tracking_request_timeout_ms", option(argc, argv, "--request-timeout-ms", "30000")}}, true);
-  if (result.describePersonComputation.empty() &&
+  if (result.describePersonComputation.empty() && result.describeNativePersonComputation.empty() &&
       result.requestTimeoutMs > trackingHostRequestBudget()) {
     throw std::invalid_argument("tracking request budget exceeds host fence policy");
   }
-  if ((!result.trackingProfile.empty() || !result.reidModel.empty() ||
-       !result.describePersonComputation.empty()) &&
-      (result.role != "compute" || result.trackingProfile.empty() || result.reidModel.empty() ||
-       (!result.describePersonComputation.empty() && result.describePersonComputation != "stdout"))) {
-    throw std::invalid_argument("person mode requires compute role, profile and ReID model; "
-                                "--describe-person-computation accepts stdout only");
+  if (result.role == "compute" && (result.trackingProfile.empty() || result.reidModel.empty())) {
+    if (!result.describePersonComputation.empty() || !result.trackingProfile.empty() ||
+        !result.reidModel.empty()) {
+      throw std::invalid_argument("person compute requires profile and ReID model");
+    }
+  }
+  if (!result.describePersonComputation.empty() &&
+      (result.role != "compute" || result.describePersonComputation != "stdout")) {
+    throw std::invalid_argument("--describe-person-computation accepts compute/stdout only");
   }
   if ((result.role != "source" && result.role != "compute") ||
       (result.role == "source" && (result.camera.empty() ||
-                                    (result.videoSource.empty() && result.observationStreamDir.empty()) ||
-                                    (result.frameFile.empty() && result.frameDir.empty() &&
+                                    (result.videoSource.empty() &&
+                                     result.observationStreamDir.empty()) ||
+                                    (result.videoSource.empty() && result.frameFile.empty() &&
+                                     result.frameDir.empty() &&
                                      result.observationStreamDir.empty()))) ||
       (result.role == "compute" && result.model.empty())) {
     throw std::invalid_argument(
@@ -259,7 +281,8 @@ parseOptions(int argc, char** argv)
   if (result.windowCount == 0 || result.windowCount > 600) {
     throw std::invalid_argument("window-count must be in the range 1..600");
   }
-  if (result.role == "source" && !result.observationStreamDir.empty()) {
+  if (result.role == "source" &&
+      (!result.observationStreamDir.empty() || !result.videoSource.empty())) {
     if (result.observationSourceId.empty() || result.worldFrameId.empty() ||
         result.sourceEpoch == 0 ||
         (result.acquisitionKind != "simulated" && result.acquisitionKind != "measured") ||
@@ -608,6 +631,21 @@ collectLoadedNativePath(dl_phdr_info* info, size_t, void* context) noexcept
   }
 }
 
+std::string
+readBoundedPersonFile(const std::filesystem::path& path, uint64_t limit)
+{
+  if (!std::filesystem::is_regular_file(path)) {
+    throw std::invalid_argument("person manifest is not a regular file: " + path.string());
+  }
+  const auto size = std::filesystem::file_size(path);
+  if (size > limit) throw std::invalid_argument("person manifest exceeds its byte bound");
+  std::ifstream input(path, std::ios::binary);
+  std::string bytes(static_cast<size_t>(size), '\0');
+  input.read(bytes.data(), static_cast<std::streamsize>(size));
+  if (!input) throw std::runtime_error("person manifest read failed");
+  return bytes;
+}
+
 LoadedPersonComputation
 loadPersonComputation(const Options& options,
                       const std::function<bool()>& stillAuthorized)
@@ -638,6 +676,34 @@ loadPersonComputation(const Options& options,
   if (hashArtifact(options.model) != result.profile.detectorDigest ||
       hashArtifact(options.reidModel) != result.profile.reidDigest) {
     throw std::invalid_argument("person model files do not match the tracking profile");
+  }
+  const auto manifestWire = readBoundedPersonFile(options.computationManifest,
+                                                  uav::MAX_PERSON_COMPUTATION_BYTES);
+  const auto manifestRoot = uav::person_json::parseBounded(manifestWire,
+    uav::MAX_PERSON_COMPUTATION_BYTES);
+  if (manifestRoot.at("schema") == "uav-person-computation-manifest-v2") {
+    result.manifest = uav::parseUavPersonComputationManifest(manifestWire, result.profile);
+    if (result.manifest.backendKind != "native-onnx" ||
+        result.manifest.trackerContract.empty() || result.manifest.ortRuntime.empty()) {
+      throw std::invalid_argument("unsupported native person computation manifest");
+    }
+    LoadedNativePaths paths;
+    if (dl_iterate_phdr(collectLoadedNativePath, &paths) != 0) {
+      if (paths.error) std::rethrow_exception(paths.error);
+      throw std::runtime_error("cannot enumerate person native artifacts");
+    }
+    const auto executable = std::filesystem::canonical("/proc/self/exe");
+    std::map<std::string, std::string> native;
+    native.emplace("executable:" + executable.generic_string(), hashArtifact(executable));
+    for (const auto& path : paths.libraries) {
+      native.emplace("library:" + path, hashArtifact(path));
+    }
+    const auto expected = uav::makeUavPersonNativeComputationManifest(result.profile,
+      result.manifest.trackerContract, uav::personOnnxRuntimeId(), native);
+    if (expected.canonicalJson != result.manifest.canonicalJson) {
+      throw std::invalid_argument("native person computation runtime or inventory changed");
+    }
+    return result;
   }
   const auto workerDir = std::filesystem::path(options.workerScript).parent_path();
   std::map<std::string, std::string> backend;
@@ -1445,10 +1511,96 @@ struct TerminalIntent
   std::string error;
 };
 
+class InjectedSourceSink final : public ndnsf::examples::uav::IObservationSink
+{
+public:
+  InjectedSourceSink(ndnsf::examples::uav::SourceIdentity identity,
+                     ndnsf::examples::uav::ObservationPolicy policy)
+    : m_ingress(std::move(identity), std::move(policy), [] {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
+      })
+  {
+  }
+
+  ndnsf::examples::uav::Admission
+  submitCalibration(ndnsf::examples::uav::CalibrationRecord record) override
+  {
+    return m_ingress.submitCalibration(std::move(record));
+  }
+
+  ndnsf::examples::uav::Admission
+  submitGround(ndnsf::examples::uav::GroundRecord record) override
+  {
+    return m_ingress.submitGround(std::move(record));
+  }
+
+  ndnsf::examples::uav::Admission
+  submitPose(ndnsf::examples::uav::PoseSample sample) override
+  {
+    return m_ingress.submitPose(std::move(sample));
+  }
+
+  ndnsf::examples::uav::Admission
+  submitFrame(ndnsf::examples::uav::CapturedFrame frame) override
+  {
+    const auto key = frame.key;
+    auto admission = m_ingress.submitFrame(std::move(frame));
+    if (admission.accepted()) {
+      {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_keys.push_back(key);
+      }
+      m_ready.notify_one();
+    }
+    return admission;
+  }
+
+  ndnsf::examples::uav::Admission
+  submitGap(ndnsf::examples::uav::FrameGap gap) override
+  {
+    return m_ingress.submitGap(std::move(gap));
+  }
+
+  std::optional<ndnsf::examples::uav::FrameKey>
+  takeNextKey(std::chrono::milliseconds timeout)
+  {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (!m_ready.wait_for(lock, timeout, [this] { return !m_keys.empty(); })) {
+      return std::nullopt;
+    }
+    auto key = m_keys.front();
+    m_keys.pop_front();
+    return key;
+  }
+
+  ndnsf::examples::uav::AlignedObservation
+  takeAligned(const ndnsf::examples::uav::FrameKey& key)
+  {
+    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+    return m_ingress.take(key, now);
+  }
+
+  void
+  close() noexcept
+  {
+    m_ingress.close();
+    m_ready.notify_all();
+  }
+
+private:
+  ndnsf::examples::uav::ObservationIngress m_ingress;
+  std::mutex m_mutex;
+  std::condition_variable m_ready;
+  std::deque<ndnsf::examples::uav::FrameKey> m_keys;
+};
+
 struct ProviderRuntime
 {
   Options options;
   ndn::Name identity;
+  std::shared_ptr<InjectedSourceSink> injectedSink;
   bool compatibility = false;
   bool ready = false;
   std::string error;
@@ -1460,6 +1612,7 @@ struct ProviderRuntime
   std::shared_ptr<std::mutex> transactionMutex = std::make_shared<std::mutex>();
   std::shared_ptr<uav::UavPersonPublishedFrameStore> frames;
   std::shared_ptr<uav::UavTrackingWorkerSession> session;
+  std::shared_ptr<uav::UavPersonModelBackend> personBackend;
   nsf::ServiceProvider::RequestHandler requestHandler;
   std::function<void(nsf::ServiceProvider::CollaborationContext&, const nsf::RequestMessage&,
                      TerminalIntent&, const std::shared_ptr<std::atomic<bool>>&, std::mutex&)> roleHandler;
@@ -1469,7 +1622,10 @@ void
 installRuntimeHandlers(ProviderRuntime& runtime,
                        const std::function<bool()>& stillAuthorized = {})
 {
-  const auto& options = runtime.options;
+  auto options = runtime.options;
+  if (runtime.definition && !runtime.definition->computationManifest.path.empty()) {
+    options.computationManifest = runtime.definition->computationManifest.path.string();
+  }
   const auto identity = runtime.identity;
   const auto sourceGenerations = runtime.sourceGenerations;
   const auto shutdown = runtime.shutdown;
@@ -1489,7 +1645,8 @@ installRuntimeHandlers(ProviderRuntime& runtime,
     ? sha256(bufferFrom(hashWorkerAsset(options.workerScript) + hashWorkerAsset(
         std::filesystem::path(options.workerScript).parent_path() / "motion_estimator.py")))
     : std::string();
-  const auto personComputation = options.trackingProfile.empty()
+  const auto personComputation = options.trackingProfile.empty() ||
+      options.role == "source"
     ? std::optional<LoadedPersonComputation>()
     : std::optional<LoadedPersonComputation>(loadPersonComputation(options, authorized));
   if (personComputation && runtime.compatibility) {
@@ -1507,24 +1664,35 @@ installRuntimeHandlers(ProviderRuntime& runtime,
       runtime.expectedComputation->canonicalJson != personComputation->manifest.canonicalJson)) {
     throw std::invalid_argument("actual computation differs from the prepared provider catalog");
   }
-  const auto personWorkerSession = personComputation && options.role == "compute"
+  const bool nativePersonComputation = personComputation &&
+    personComputation->manifest.backendKind == "native-onnx";
+  const auto personBackend = nativePersonComputation && options.role == "compute"
+    ? std::make_shared<uav::UavPersonModelBackend>(personComputation->profile,
+        options.model, options.reidModel,
+        static_cast<size_t>(personComputation->profile.limits.at("reidBatchSize")))
+    : nullptr;
+  runtime.personBackend = personBackend;
+  const auto personWorkerSession = personComputation && !nativePersonComputation &&
+    options.role == "compute"
     ? std::make_shared<uav::UavTrackingWorkerSession>(personSessionArguments(options),
         personComputation->profile.limits.at("maxChildLogBytes")) : nullptr;
   runtime.session = personWorkerSession;
   const auto personWindowAdmission = std::make_shared<uav::UavPersonWindowAdmission>();
-  runtime.requestHandler = [options, identity, publishedFrameStore]
+  runtime.requestHandler = [options, identity, publishedFrameStore, personBackend]
       (const ndn::Name& requesterIdentity, const ndn::Name&, const ndn::Name&,
                            const ndn::Name&, const nsf::RequestMessage& request) {
         const auto input = payloadText(request);
         if (input.empty()) return makeError("empty Spec191 request payload");
         if (options.role == "source") {
           const auto fields = requestFields(request);
-          if (uav::fieldOr(fields, "schema", "") == "uav-person-source-frame-read-v1") {
+          if (uav::fieldOr(fields, "schema", "") ==
+              "uav-person-source-frame-context-v1") {
             try {
               if (!publishedFrameStore) {
-                throw std::invalid_argument("source frame reads require observation-stream mode");
+                throw std::invalid_argument("source context reads require observation-stream mode");
               }
-              auto bytes = publishedFrameStore->read(fields, requesterIdentity);
+              auto text = publishedFrameStore->readContext(fields, requesterIdentity);
+              auto bytes = bufferFrom(text);
               nsf::ResponseMessage response;
               response.setStatus(true);
               response.setErrorInfo("No error");
@@ -1532,6 +1700,43 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               return response;
             }
             catch (const std::exception& error) {
+              return makeError(error.what());
+            }
+          }
+          if (uav::fieldOr(fields, "schema", "") == "uav-person-source-frame-read-v1") {
+            try {
+              if (!publishedFrameStore) {
+                throw std::invalid_argument("source frame reads require observation-stream mode");
+              }
+              auto readFields = fields;
+              const bool includeContext = uav::fieldOr(readFields, "include_context", "") == "1";
+              readFields.erase("include_context");
+              auto bytes = publishedFrameStore->read(readFields, requesterIdentity);
+              std::cerr << "SPEC226_SOURCE_READ include=" << (includeContext ? "true" : "false")
+                        << " frame=" << uav::fieldOr(readFields, "frame_name", "")
+                        << " bytes=" << bytes.size() << std::endl;
+              if (includeContext) {
+                const auto context = publishedFrameStore->readContext(readFields, requesterIdentity);
+                const uint32_t length = static_cast<uint32_t>(context.size());
+                ndn::Buffer framed;
+                framed.reserve(8 + context.size() + bytes.size());
+                framed.insert(framed.end(), {'U', 'C', 'T', 'X'});
+                framed.push_back(static_cast<uint8_t>(length >> 24));
+                framed.push_back(static_cast<uint8_t>(length >> 16));
+                framed.push_back(static_cast<uint8_t>(length >> 8));
+                framed.push_back(static_cast<uint8_t>(length));
+                framed.insert(framed.end(), context.begin(), context.end());
+                framed.insert(framed.end(), bytes.begin(), bytes.end());
+                bytes = std::move(framed);
+              }
+              nsf::ResponseMessage response;
+              response.setStatus(true);
+              response.setErrorInfo("No error");
+              response.setPayload(bytes, bytes.size());
+              return response;
+            }
+            catch (const std::exception& error) {
+              std::cerr << "SPEC226_SOURCE_READ_FAILED reason=" << error.what() << std::endl;
               return makeError(error.what());
             }
           }
@@ -1549,9 +1754,11 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         }
         return makeResponse(output.str());
   };
+  const auto injectedSink = runtime.injectedSink;
   runtime.roleHandler = [options, identity, sourceGenerations, modelDigest, workerImplementationDigest,
-       personComputation, vehicleComputation, personWindowAdmission, publishedFrameStore, personWorkerSession,
-       shutdown, transactionMutex, compatibility]
+       personComputation, vehicleComputation, nativePersonComputation, personBackend,
+       personWindowAdmission, publishedFrameStore, personWorkerSession, authorized,
+       shutdown, transactionMutex, compatibility, injectedSink]
       (nsf::ServiceProvider::CollaborationContext& context,
                          const nsf::RequestMessage& request, TerminalIntent& terminal,
        const std::shared_ptr<std::atomic<bool>>& userCancellationReceived,
@@ -1813,8 +2020,74 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           personContext.computationDigest = personComputation->manifest.computationDigest;
         }
         std::cout << "SPEC191_TRACKING_COMPUTE_WINDOW_START window=" << window << std::endl;
+        std::array<uav::UavBindingObjectRef, 3> windowBindingRefs{};
+        std::array<uint64_t, 3> admittedCaptureSequences{};
+        const bool useWindowBindings = useObservations && !compatibility && personComputation;
+        std::array<uav::UavWindowBinding, 3> admittedBindings{};
+        std::array<std::optional<uav::UavWindowFailure>, 3> sourceFailures{};
+        if (useWindowBindings) {
+          // Admit every terminal Source outcome before fetching any frame or invoking a backend.
+          for (size_t cameraIndex = 0; cameraIndex < 3; ++cameraIndex) {
+            const auto camera = "UAV" + std::to_string(cameraIndex + 1);
+            const auto& producer = options.sourceProducers.at(cameraIndex);
+            const auto producerRole = selectedRoleFor(producer);
+            if (producerRole != "Camera-" + camera) {
+              throw std::invalid_argument("window outcome producer is not selected for its camera");
+            }
+            const auto bindingRequestId = sha256(bufferFrom(context.sessionId())).substr(7);
+            const auto bindingName = uav::makeUavWindowBindingName(producer,
+              options.runId, mission, window, bindingRequestId);
+            std::optional<ndn::Buffer> payload;
+            for (int attempt = 0; attempt < 20 && !payload; ++attempt) {
+              payload = fetchAdmittedInput(bindingName, producer, producerRole,
+                "uav-tracking-observation", nsf::InputObjectEncoding::ReusableCollaborationObject,
+                uav::MAX_WINDOW_BINDING_BYTES, 1);
+              if (!payload) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (!payload) {
+              failRole("tracking compute could not fetch window binding " + bindingName.toUri());
+              return;
+            }
+            auto outcome = uav::parseUavWindowOutcome(bufferText(*payload));
+            if (auto* failure = std::get_if<uav::UavWindowFailure>(&outcome)) {
+              const auto prefix = "source_uav" + std::to_string(cameraIndex + 1);
+              const auto sourceId = uav::fieldOr(fields, prefix + "_id", "");
+              if (failure->producerIdentity != producer || failure->runId != options.runId ||
+                  failure->wireMissionId != mission || failure->windowId != window ||
+                  failure->windowSequence != index + 1 || failure->requestId != bindingRequestId ||
+                  failure->cameraId != camera || failure->sourceId != sourceId ||
+                  std::to_string(failure->sourceEpoch) !=
+                    uav::fieldOr(fields, prefix + "_epoch", "") ||
+                  failure->descriptorDigest !=
+                    uav::fieldOr(fields, prefix + "_descriptor_digest", "")) {
+                failRole("window failure context mismatch for " + camera);
+                return;
+              }
+              sourceFailures[cameraIndex] = std::move(*failure);
+            }
+            else {
+              auto binding = std::get<uav::UavWindowBinding>(std::move(outcome));
+              if (binding.runId != options.runId || binding.wireMissionId != mission ||
+                  binding.windowId != window || binding.requestId != bindingRequestId ||
+                  binding.cameraId != camera || binding.frameRef.producerIdentity != producer ||
+                  binding.observationRef.producerIdentity != producer) {
+                failRole("window binding context mismatch for " + camera);
+                return;
+              }
+              admittedBindings[cameraIndex] = std::move(binding);
+              windowBindingRefs[cameraIndex] = {bindingName.toUri(), sha256(*payload), producer};
+            }
+          }
+          for (const auto& failure : sourceFailures) {
+            if (failure) {
+              failRole("source " + failure->cameraId + ": " + failure->reason);
+              return;
+            }
+          }
+        }
         for (const auto& camera : {std::string("UAV1"), std::string("UAV2"),
                                    std::string("UAV3")}) {
+          const size_t cameraIndex = static_cast<size_t>(camera.back() - '1');
           if (personComputation) {
             auto trace = personTraceScope;
             trace["cameraId"] = camera;
@@ -1826,11 +2099,28 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           if (producerRole != "Camera-" + camera) {
             throw std::invalid_argument("tracking frame producer is not selected for its camera role");
           }
-          const auto dataName = useObservations
-            ? uav::makeUavObservationDataName(
-                producer, camera, observationEpoch, index + 1, "FRAME", 1)
-            : uav::makeUavEvidenceName(
-                producer, mission, window, camera + "-" + std::to_string(index + 1), 1);
+          uav::UavWindowBinding windowBinding;
+          ndn::Name dataName;
+          ndn::Name observationName;
+          std::string expectedFrameDigest;
+          std::string expectedObservationDigest;
+          if (useWindowBindings) {
+            windowBinding = std::move(admittedBindings[cameraIndex]);
+            dataName = ndn::Name(windowBinding.frameRef.name);
+            observationName = ndn::Name(windowBinding.observationRef.name);
+            expectedFrameDigest = windowBinding.frameRef.digest;
+            expectedObservationDigest = windowBinding.observationRef.digest;
+          }
+          else if (useObservations) {
+            dataName = uav::makeUavObservationDataName(
+              producer, camera, observationEpoch, index + 1, "FRAME", 1);
+            observationName = uav::makeUavObservationDataName(
+              producer, camera, observationEpoch, index + 1, "OBSERVATION", 1);
+          }
+          else {
+            dataName = uav::makeUavEvidenceName(
+              producer, mission, window, camera + "-" + std::to_string(index + 1), 1);
+          }
           if (options.fault == "unauthorized-frame-cache" && personComputation &&
               camera == "UAV3" && index == 1) {
             cacheProbeReleased.store(false);
@@ -1863,11 +2153,15 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           const auto maxFrameBytes = personComputation
             ? personComputation->profile.limits.at("maxFrameBytes")
             : 8U * 1024U * 1024U;
-          const auto payload = fetchAdmittedInput(
-            dataName, producer, producerRole, uav::TRACKING_INPUT_KEY_SCOPE,
-            personComputation ? nsf::InputObjectEncoding::ReusableCollaborationObject
-                              : nsf::InputObjectEncoding::CollaborationLarge,
-            maxFrameBytes, 4096);
+          std::optional<ndn::Buffer> payload;
+          for (int attempt = 0; attempt < 100 && !payload; ++attempt) {
+            payload = fetchAdmittedInput(
+              dataName, producer, producerRole, uav::TRACKING_INPUT_KEY_SCOPE,
+              personComputation ? nsf::InputObjectEncoding::ReusableCollaborationObject
+                                : nsf::InputObjectEncoding::CollaborationLarge,
+              maxFrameBytes, 4096);
+            if (!payload) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
           if (cancelTriggerThread.joinable()) cancelTriggerThread.join();
           if (!payload) {
             if (options.fault == "cancel-during-active-fetch" && camera == "UAV3") {
@@ -1885,7 +2179,12 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               payload->size() > personComputation->profile.limits.at("maxFrameBytes")) {
             throw std::invalid_argument("person frame exceeds its profile byte bound");
           }
-          digests.push_back(sha256(*payload));
+          const auto payloadDigest = sha256(*payload);
+          if (!expectedFrameDigest.empty() && payloadDigest != expectedFrameDigest) {
+            failRole("tracking frame digest disagrees with its window binding");
+            return;
+          }
+          digests.push_back(payloadDigest);
           inputs.push_back(std::move(*payload));
           imageNames.push_back(dataName.toUri());
           if (useObservations) {
@@ -1895,8 +2194,6 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               failRole("observation request omitted source identity for " + camera);
               return;
             }
-            const auto observationName = uav::makeUavObservationDataName(
-              producer, camera, observationEpoch, index + 1, "OBSERVATION", 1);
             const auto observationPayload = fetchAdmittedInput(
               observationName, producer, "Camera-" + camera,
               "uav-tracking-observation",
@@ -1909,6 +2206,11 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             }
             if (observationPayload->empty() || observationPayload->size() > 64U * 1024U) {
               failRole("tracking observation sidecar exceeds 64 KiB");
+              return;
+            }
+            if (!expectedObservationDigest.empty() &&
+                sha256(*observationPayload) != expectedObservationDigest) {
+              failRole("tracking observation digest disagrees with its window binding");
               return;
             }
             const auto observationTree = parseJson(bufferText(*observationPayload),
@@ -1933,10 +2235,12 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             const auto observationDroneId = jsonString(identityTree, "droneId");
             const auto observationWorldFrameId = jsonString(identityTree, "worldFrameId");
             const auto observationAcquisitionKind = jsonString(identityTree, "acquisitionKind");
+            const uint64_t admittedEpoch = useWindowBindings
+              ? windowBinding.sourceEpoch : observationEpoch;
             const auto observationDeliveryMode = jsonString(identityTree, "deliveryMode");
             if (jsonString(identityTree, "cameraId") != camera ||
                 jsonString(identityTree, "sourceId") != sourceId ||
-                jsonPositiveInteger(identityTree, "epoch") != observationEpoch ||
+                jsonPositiveInteger(identityTree, "epoch") != admittedEpoch ||
                 sourceId.size() > 128 || observationDroneId.empty() ||
                 observationDroneId.size() > 128 || observationWorldFrameId.empty() ||
                 observationWorldFrameId.size() > 128 ||
@@ -1950,11 +2254,37 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                 observationDeliveryMode != options.deliveryMode ||
                 jsonString(keyTree, "cameraId") != camera ||
                 jsonString(keyTree, "sourceId") != sourceId ||
-                jsonPositiveInteger(keyTree, "epoch") != observationEpoch ||
-                jsonPositiveInteger(keyTree, "sequence") != index + 1) {
+                jsonPositiveInteger(keyTree, "epoch") != admittedEpoch ||
+                jsonPositiveInteger(keyTree, "sequence") !=
+                  (useWindowBindings ? windowBinding.captureSequence : index + 1)) {
+              std::cerr << "SPEC226_OBS_MISMATCH camera=" << camera
+                        << " side_camera=" << jsonString(identityTree, "cameraId")
+                        << " side_source=" << jsonString(identityTree, "sourceId")
+                        << " side_epoch=" << jsonPositiveInteger(identityTree, "epoch")
+                        << " side_key_seq=" << jsonPositiveInteger(keyTree, "sequence")
+                        << " want_source=" << sourceId
+                        << " want_epoch=" << observationEpoch
+                        << " want_seq=" << (useWindowBindings ? windowBinding.captureSequence : index + 1)
+                        << " world=" << observationWorldFrameId
+                        << " want_world=" << options.worldFrameId
+                        << " acq=" << observationAcquisitionKind
+                        << " want_acq=" << options.acquisitionKind
+                        << " del=" << observationDeliveryMode
+                        << " want_del=" << options.deliveryMode << std::endl;
               failRole("fetched observation sidecar identity does not match the requested frame");
               return;
             }
+            if (useWindowBindings) {
+              const auto descriptorDigest = uav::makeUavSourceDescriptorDigest(producer,
+                camera, sourceId, admittedEpoch, observationAcquisitionKind,
+                observationDeliveryMode);
+              if (windowBinding.descriptorDigest != descriptorDigest) {
+                failRole("window binding descriptor disagrees with the admitted observation");
+                return;
+              }
+            }
+            admittedCaptureSequences[cameraIndex] = static_cast<uint64_t>(
+              jsonPositiveInteger(keyTree, "sequence"));
             const auto geometryValidity = jsonString(observationTree, "geometryValidity");
             if (geometryValidity != "illustrative" && geometryValidity != "calibrated-plane" &&
                 geometryValidity != "analytic-fixture") {
@@ -1968,7 +2298,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               failRole("fetched observation sidecar has invalid pose status or reason");
               return;
             }
-            const auto actualImageDigest = sha256(*payload);
+            const auto actualImageDigest = digests[cameraIndex];
             const auto& imageRef = observationTree.get_child("imageRef");
             validateDataRef(imageRef, dataName, producer, actualImageDigest, "FRAME");
 
@@ -2027,14 +2357,16 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               }
               std::optional<ndn::Buffer> objectPayload;
               try {
-                const auto encoding = category != "POSE"
+                const auto encoding = (category != "POSE" && category != "FRAME")
                   ? nsf::InputObjectEncoding::ImmutableProtected
                   : personComputation
                     ? nsf::InputObjectEncoding::ReusableCollaborationObject
                     : nsf::InputObjectEncoding::CollaborationLarge;
+                const auto keyScope = category == "FRAME"
+                  ? uav::TRACKING_INPUT_KEY_SCOPE : "uav-tracking-observation";
                 objectPayload = fetchAdmittedInput(
                   dataRef.exactName, dataRef.producerIdentity, producerRole,
-                  "uav-tracking-observation", encoding, 64U * 1024U, 64);
+                  keyScope, encoding, 64U * 1024U, 64);
               }
               catch (...) {
                 if (cancelReferenceTriggerThread.joinable()) {
@@ -2115,7 +2447,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                    "deliveryMode"}, {}, "POSE identity");
                 if (jsonString(poseIdentity, "cameraId") != camera ||
                     jsonString(poseIdentity, "sourceId") != sourceId ||
-                    jsonPositiveInteger(poseIdentity, "epoch") != observationEpoch ||
+                    jsonPositiveInteger(poseIdentity, "epoch") != admittedEpoch ||
                     jsonString(poseIdentity, "droneId") != observationDroneId ||
                     jsonString(poseIdentity, "worldFrameId") != observationWorldFrameId ||
                     jsonString(poseIdentity, "acquisitionKind") != observationAcquisitionKind ||
@@ -2177,9 +2509,10 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               frame.cameraId = camera;
               frame.sourceId = sourceId;
               frame.inputDigest = actualImageDigest;
-              frame.sourceEpoch = observationEpoch;
+              frame.sourceEpoch = admittedEpoch;
               frame.trackerGeneration = 1;
-              frame.sequence = index + 1;
+              frame.sequence = useWindowBindings
+                ? admittedCaptureSequences[cameraIndex] : index + 1;
               frame.commonPtsUs = static_cast<int64_t>(personUnsignedField(
                 observationTree, "captureTimeUs", std::numeric_limits<int64_t>::max()));
               frame.clockUncertaintyUs = personUnsignedField(
@@ -2289,6 +2622,10 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         std::map<std::string, std::string> expectedInputDigests;
         for (size_t cameraIndex = 0; cameraIndex < imageNames.size(); ++cameraIndex) {
           expectedInputDigests.emplace(imageNames[cameraIndex], digests[cameraIndex]);
+          if (useWindowBindings) {
+            expectedInputDigests.emplace(windowBindingRefs[cameraIndex].name,
+                                         windowBindingRefs[cameraIndex].digest);
+          }
           if (useObservations) {
             expectedInputDigests.emplace(observationNames[cameraIndex],
                                          observationDigests[cameraIndex]);
@@ -2299,6 +2636,15 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         }
         if (inputSpecifications.size() != admittedInputs.size() ||
             inputSpecifications.size() != expectedInputDigests.size()) {
+          std::cerr << "SPEC226_INPUT_SET specs=" << inputSpecifications.size()
+                    << " admitted=" << admittedInputs.size()
+                    << " expected=" << expectedInputDigests.size() << std::endl;
+          for (const auto& spec : inputSpecifications) {
+            std::cerr << "SPEC226_INPUT_SPEC name=" << spec.object.name.toUri() << std::endl;
+          }
+          for (const auto& [name, digest] : expectedInputDigests) {
+            std::cerr << "SPEC226_INPUT_EXPECT name=" << name << " digest=" << digest << std::endl;
+          }
           failRole("tracking window input set is incomplete or contains duplicate names");
           return;
         }
@@ -2504,6 +2850,12 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             if (personComputation) {
               expected.personTracking = uav::UavPersonTrackingResultExpectation{
                 personComputation->profile, personComputation->manifest.computationDigest};
+              if (useWindowBindings) {
+                for (size_t cameraIndex = 0; cameraIndex < 3; ++cameraIndex) {
+                  expected.personFrames[cameraIndex] = personContext.frames[cameraIndex];
+                  expected.windowBindings[cameraIndex] = windowBindingRefs[cameraIndex];
+                }
+              }
             }
             else {
               expected.vehicleTracking = uav::UavVehicleTrackingResultExpectation{
@@ -2565,11 +2917,27 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             }
             const auto workerArguments = personComputation
               ? std::vector<std::string>() : makeWorkerArguments();
-            // Record the actual dispatch boundary in every mode so source
-            // failures can be distinguished from worker execution failures.
-            std::cout << "SPEC210_TRACKING_WORKER_INVOKED window="
-                      << window << std::endl;
-            const auto workerStatus = runWorker(workerArguments, inputDigest);
+            uav::UavTrackingWorkerProcessResult workerStatus;
+            if (nativePersonComputation) {
+              if (!personBackend || !personEngine) {
+                failRole("native person backend is unavailable");
+                return;
+              }
+              std::cout << "SPEC226_NATIVE_BACKEND_INVOKED window="
+                        << window << std::endl;
+              const std::array<ndn::Buffer, 3> jpegs{inputs[0], inputs[1], inputs[2]};
+              const auto wire = personBackend->processWindow(personContext, jpegs,
+                personEngine->backendStateJson(), authorized);
+              writeBytes(workerOutput, bufferFrom(wire));
+              workerStatus.outcome = uav::UavTrackingWorkerOutcome::SUCCESS;
+            }
+            else {
+              // Record the actual dispatch boundary in every mode so source
+              // failures can be distinguished from worker execution failures.
+              std::cout << "SPEC210_TRACKING_WORKER_INVOKED window="
+                        << window << std::endl;
+              workerStatus = runWorker(workerArguments, inputDigest);
+            }
             if (personComputation &&
                 workerStatus.outcome == uav::UavTrackingWorkerOutcome::SUCCESS &&
                 std::filesystem::is_regular_file(workerOutput)) {
@@ -2578,11 +2946,17 @@ installRuntimeHandlers(ProviderRuntime& runtime,
               uav::emitUavPersonTrace(personTraceScope, "association-start");
               const auto decision = personEngine->processWindow(personContext, backend);
               uav::emitUavPersonTrace(personTraceScope, "association-end");
-              result = bufferFrom(uav::makeUavPersonTrackingResultJson(
-                decision, backend, personComputation->profile,
-                {observationNames[0], observationNames[1], observationNames[2]},
-                {observationDigests[0], observationDigests[1], observationDigests[2]},
-                options.sourceProducers));
+              result = bufferFrom(useWindowBindings
+                ? uav::makeUavPersonTrackingResultJsonV2(
+                    decision, backend, personComputation->profile,
+                    {observationNames[0], observationNames[1], observationNames[2]},
+                    {observationDigests[0], observationDigests[1], observationDigests[2]},
+                    options.sourceProducers, windowBindingRefs)
+                : uav::makeUavPersonTrackingResultJson(
+                    decision, backend, personComputation->profile,
+                    {observationNames[0], observationNames[1], observationNames[2]},
+                    {observationDigests[0], observationDigests[1], observationDigests[2]},
+                    options.sourceProducers));
               validateResult(result);
               std::filesystem::create_directories(candidateState.parent_path());
               writeBytes(candidateState, bufferFrom(decision.candidateStateJson));
@@ -2837,7 +3211,8 @@ installRuntimeHandlers(ProviderRuntime& runtime,
       }
       if (context.role().rfind("Camera-", 0) != 0 ||
           (options.frameFile.empty() && options.frameDir.empty() &&
-           options.observationStreamDir.empty())) {
+           options.observationStreamDir.empty() && options.videoSource.empty() &&
+           !injectedSink)) {
         failRole("source frame input is not configured");
         return;
       }
@@ -2867,7 +3242,89 @@ installRuntimeHandlers(ProviderRuntime& runtime,
         if (options.fault == "stale-epoch") frame.sourceEpoch = 0;
         frame.sequence = index + 1;
         frame.encoding = "image/jpeg";
-        if (!options.observationStreamDir.empty()) {
+        const bool personSource = !options.trackingProfile.empty() ||
+          uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid";
+        const auto failSourceWindow = [&] (const std::string& reason) {
+          if (compatibility || !personSource || !useObservations) {
+            failRole(reason);
+            return;
+          }
+          if (!context.hasCurrentWorkAuthority() || shutdown->load() ||
+              userCancellationReceived->load(std::memory_order_acquire)) {
+            failRole("source authority revoked before failure publication");
+            return;
+          }
+          uav::UavWindowFailure failure;
+          failure.producerIdentity = identity;
+          failure.runId = options.runId;
+          failure.wireMissionId = mission;
+          failure.windowId = window;
+          failure.windowSequence = index + 1;
+          failure.requestId = sha256(bufferFrom(context.sessionId())).substr(7);
+          failure.cameraId = options.camera;
+          failure.sourceId = sourceId;
+          failure.sourceEpoch = sourceEpoch;
+          failure.descriptorDigest = uav::makeUavSourceDescriptorDigest(identity,
+            options.camera, sourceId, failure.sourceEpoch,
+            options.acquisitionKind, options.deliveryMode);
+          failure.reason = reason;
+          const auto name = uav::makeUavWindowBindingName(identity, options.runId,
+            mission, window, failure.requestId);
+          const auto bytes = bufferFrom(uav::renderUavWindowFailure(failure));
+          if (context.publishReusableLargeNamed("uav-tracking-observation", name,
+                                                bytes, 1400, 60000) != name) {
+            throw std::runtime_error("source failure publication name changed");
+          }
+          std::cerr << ("SPEC226_WINDOW_FAILURE_PUBLISHED camera=" + options.camera +
+            " window=" + window + " name=" + name.toUri() + " reason=" + reason) << std::endl;
+          completeRole();
+        };
+        if (injectedSink) {
+          std::cerr << "SPEC226_SOURCE_INJECTED_BEGIN identity=" << identity.toUri()
+                    << " window=" << window << std::endl;
+          const auto key = injectedSink->takeNextKey(std::chrono::milliseconds(5000));
+          if (!key) {
+            failSourceWindow("injected source produced no frame for the window");
+            return;
+          }
+          uav::AlignedObservation observation;
+          for (int attempt = 0; attempt < 50; ++attempt) {
+            observation = injectedSink->takeAligned(*key);
+            if (observation.status != uav::AlignedObservationStatus::Pending) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            if (!context.hasCurrentWorkAuthority() || shutdown->load()) break;
+          }
+          if (observation.status != uav::AlignedObservationStatus::Ready ||
+              !observation.aligned) {
+            failSourceWindow("injected source observation was not admitted: " + observation.reason);
+            return;
+          }
+          std::cerr << "SPEC226_SOURCE_INJECTED_ALIGNED bytes="
+                    << observation.aligned->frame.imageBytes.size() << std::endl;
+          auto& aligned = *observation.aligned;
+          if (uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid") {
+            auto trace = personTraceScope;
+            trace["cameraId"] = options.camera;
+            trace["sourceId"] = sourceId;
+            trace["sourceEpoch"] = aligned.frame.key.epoch;
+            trace["commonPtsUs"] = aligned.captureTimeUs;
+            uav::emitUavPersonTrace(std::move(trace), "capture");
+          }
+          frame.sequence = aligned.frame.key.sequence;
+          frame.sourceEpoch = aligned.frame.key.epoch;
+          frame.ptsUs = aligned.captureTimeUs;
+          frame.width = aligned.frame.width;
+          frame.height = aligned.frame.height;
+          frame.encoding = aligned.frame.encoding;
+          frame.timeUncertaintyUs = aligned.timeUncertaintyUs;
+          frame.observationMetadata = observationSnapshotJson(
+            aligned, identity, frame.observationObjects, context,
+            options.camera == "UAV3" && index == 1 ? options.fault : "");
+          frame.bytes = std::move(aligned.frame.imageBytes);
+          std::cerr << "SPEC226_SOURCE_FRAME_READY seq=" << frame.sequence
+                    << " bytes=" << frame.bytes.size() << std::endl;
+        }
+        else if (!options.observationStreamDir.empty()) {
           auto aligned = readObservationStream(options, framePath, window,
             expectedSourceIdentity, [&] {
               return !shutdown->load() && context.hasCurrentWorkAuthority();
@@ -3043,8 +3500,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           }
           frame.observationMetadata.replace(valueStart, valueEnd - valueStart, replacement);
         }
-        const bool reusablePersonObjects =
-          uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid";
+        const bool reusablePersonObjects = personSource;
         // Vehicle frames use the existing large-segment path to bound packet overhead.
         uav::UavTrackingEvidenceStore store(reusablePersonObjects ? 1400 : 7000);
         std::string reason;
@@ -3055,7 +3511,10 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           std::cerr << "SPEC191_TRACKING_BAD_IDENTITY_INJECTED camera="
                     << options.camera << " window=" << window << std::endl;
         }
+        std::cerr << "SPEC226_SOURCE_STAGE_BEGIN identity=" << publishedIdentity.toUri() << std::endl;
         auto staged = store.stage(publishedIdentity, mission, window, frame, &reason);
+        std::cerr << "SPEC226_SOURCE_STAGE_RESULT ok=" << (staged ? "true" : "false")
+                  << " reason=" << reason << std::endl;
         if (!staged) {
           failContext(reason.empty() ? "source frame staging failed" : reason);
           return;
@@ -3078,7 +3537,7 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                     << " category=" << referenceFaultCategory << std::endl;
         }
         ndn::Name published;
-        if (uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid") {
+        if (personSource) {
           auto trace = personTraceScope;
           trace["cameraId"] = options.camera;
           trace["sourceId"] = sourceId;
@@ -3151,15 +3610,20 @@ installRuntimeHandlers(ProviderRuntime& runtime,
                       << window << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(5));
           }
+          std::cerr << "SPEC226_SOURCE_PUBLISH_BEGIN identity=" << identity.toUri() << std::endl;
           published = store.publish(context, uav::TRACKING_INPUT_KEY_SCOPE,
                                     *staged, 60000, reusablePersonObjects);
+          std::cerr << "SPEC226_SOURCE_PUBLISH_RESULT name=" << published.toUri()
+                    << " personSource=" << (personSource ? "true" : "false")
+                    << " compat=" << (compatibility ? "true" : "false")
+                    << " store=" << (publishedFrameStore ? "true" : "false") << std::endl;
         }
         if (published != staged->reference.exactDataName) {
           failContext("source publication name changed");
           return;
         }
-        if (publishedFrameStore && (!compatibility ||
-            uav::fieldOr(fields, "tracking_mode", "") == "indoor-person-reid")) {
+        if (!compatibility || personSource) {
+          if (publishedFrameStore) {
           uav::UavPersonFrameReadBinding binding;
           binding.runId = options.runId;
           binding.missionId = mission;
@@ -3171,6 +3635,56 @@ installRuntimeHandlers(ProviderRuntime& runtime,
           binding.frameName = published.toUri();
           binding.inputDigest = sha256(staged->payload);
           publishedFrameStore->retainPublished(binding, staged->payload, context.requesterName());
+          }
+          if (personSource) {
+            try {
+              uav::UavWindowBinding windowBinding;
+              windowBinding.runId = options.runId;
+              windowBinding.wireMissionId = mission;
+              windowBinding.windowId = window;
+              windowBinding.windowSequence = index + 1;
+              windowBinding.requestId =
+                sha256(bufferFrom(context.sessionId())).substr(7);
+              windowBinding.cameraId = options.camera;
+              windowBinding.sourceId = sourceId;
+              windowBinding.sourceEpoch = frame.sourceEpoch;
+              windowBinding.captureSequence = frame.sequence;
+              windowBinding.trackerGeneration = 1;
+              windowBinding.descriptorDigest = uav::makeUavSourceDescriptorDigest(
+                publishedIdentity, options.camera, sourceId, frame.sourceEpoch,
+                options.acquisitionKind, options.deliveryMode);
+              windowBinding.commonPtsUs = static_cast<int64_t>(frame.ptsUs);
+              windowBinding.clockUncertaintyUs = frame.timeUncertaintyUs;
+              windowBinding.frameRef.name = published.toUri();
+              windowBinding.frameRef.digest = sha256(staged->payload);
+              windowBinding.frameRef.producerIdentity = publishedIdentity;
+              windowBinding.observationRef.name = staged->observationName.toUri();
+              windowBinding.observationRef.digest = staged->observationDigest;
+              windowBinding.observationRef.producerIdentity = publishedIdentity;
+              const auto bindingName = uav::makeUavWindowBindingName(publishedIdentity,
+                options.runId, mission, window, windowBinding.requestId);
+              const auto bytes = bufferFrom(uav::renderUavWindowBinding(windowBinding));
+              const auto publishedBinding = context.publishReusableLargeNamed(
+                "uav-tracking-observation", bindingName, bytes, 1400, 60000);
+              if (publishedBinding != bindingName) {
+                std::cerr << "SPEC226_BINDING_NAME expected=" << bindingName.toUri()
+                          << " actual=" << publishedBinding.toUri() << std::endl;
+                throw std::runtime_error("window binding publication name changed");
+              }
+              if (publishedFrameStore) {
+                publishedFrameStore->retainBindingRef(bindingName.toUri(),
+                                                      sha256(bytes));
+              }
+              std::cout << ("SPEC226_WINDOW_BINDING_PUBLISHED camera=" + options.camera +
+                " window=" + window + " name=" + bindingName.toUri()) << std::endl;
+            }
+            catch (const std::exception& error) {
+              std::cerr << "SPEC226_BINDING_FAILED camera=" << options.camera
+                        << " reason=" << error.what() << std::endl;
+              failContext(std::string("window binding publication failed: ") + error.what());
+              return;
+            }
+          }
           auto trace = personTraceScope;
           trace["cameraId"] = options.camera;
           trace["sourceId"] = sourceId;
@@ -3197,6 +3711,59 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
   explicit Impl(ndn::Name producer)
     : identity(std::move(producer))
   {
+  }
+
+  void
+  attachInjectedSource(std::shared_ptr<ndnsf::examples::uav::IObservationSource> source)
+  {
+    if (!source) throw std::invalid_argument("injected observation source is null");
+    if (injectedSource) throw std::logic_error("observation source is already attached");
+    ProviderRuntime* selected = nullptr;
+    for (const auto& [id, runtime] : runs) {
+      if (runtime->options.role != "source") continue;
+      if (selected) throw std::invalid_argument("injected source requires exactly one source run");
+      selected = runtime.get();
+    }
+    if (!selected) throw std::invalid_argument("injected source has no source run");
+    const auto& options = selected->options;
+    auto sourceId = options.observationSourceId;
+    auto sourceEpoch = options.sourceEpoch;
+    if (selected->sourceGenerations &&
+        !selected->sourceGenerations->generations.empty()) {
+      const auto& generation = selected->sourceGenerations->generations.front();
+      const auto cameraIndex = static_cast<size_t>(options.camera.back() - '1');
+      if (cameraIndex < generation.sourceIds.size()) {
+        sourceId = generation.sourceIds[cameraIndex];
+        sourceEpoch = generation.sourceEpoch;
+      }
+    }
+    if (sourceId.empty() || sourceEpoch == 0) {
+      throw std::invalid_argument("injected source identity is not configured");
+    }
+    auto identity = observationIdentity(options, sourceId,
+      options.captureEpoch != 0 ? options.captureEpoch : sourceEpoch);
+    uav::ObservationPolicy policy;
+    policy.maxAlignWaitMs = 1;  // no pose stream; one bounded retry
+    policy.maxClockUncertaintyUs = 100000;  // one 25 Hz frame period
+    policy.maxSourceAgeMs = 3600ULL * 1000ULL;  // file replay has no wall-clock age
+    policy.maxQueuedFrames = 16;
+    policy.maxQueuedBytes = 64U * 1024U * 1024U;
+    injectedSink = std::make_shared<InjectedSourceSink>(std::move(identity), policy);
+    injectedSource = std::move(source);
+    selected->injectedSink = injectedSink;
+    if (selected->roleHandler) {
+      installRuntimeHandlers(*selected);
+    }
+    injectedSource->start(*injectedSink);
+  }
+
+  void
+  stopInjectedSource() noexcept
+  {
+    if (injectedSource) injectedSource->stop();
+    if (injectedSink) injectedSink->close();
+    injectedSource.reset();
+    injectedSink.reset();
   }
 
   struct CallbackLease
@@ -3442,6 +4009,8 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
     catch (const std::exception& error) {
       decision.status = false;
       decision.message = std::string(error.what()).substr(0, 512);
+      std::cerr << "SPEC226_ACK_REJECTED identity=" << identity.toUri()
+                << " reason=" << decision.message << std::endl;
     }
     return decision;
   }
@@ -3552,6 +4121,9 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
       if (runtime->options.role == "source") services.insert(SERVICE_TRACKING_SOURCE);
       else if (compatibility) services.insert(SERVICE_TRACKING_COMPUTE);
     }
+    std::cerr << "SPEC226_SERVICE_REGISTER identity=" << identity.toUri()
+              << " compatibility=" << (compatibility ? "true" : "false")
+              << " roles=" << roles.size() << " services=" << services.size() << std::endl;
     for (const auto& service : services) {
       registrations.push_back(provider.addScopedService(service,
         [weak] (const nsf::RequestMessage&) {
@@ -3571,6 +4143,57 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
           CallbackLease lease(self);
           if (!lease.admitted) return makeError("tracking capability stopping");
           try {
+            if (service == SERVICE_TRACKING_SOURCE) {
+              const auto payload = payloadText(request);
+              if (!payload.empty() && payload.front() == '{') {
+                const auto info = uav::parseUavSourceInfoRequest(payload);
+                bool cameraConfigured = false;
+                bool sourceConfigured = false;
+                for (const auto& [runId, runtime] : self->runs) {
+                  if (runtime->options.role != "source") continue;
+                  if (info.cameraId != runtime->options.camera) continue;
+                  cameraConfigured = true;
+                  auto configuredSourceId = runtime->options.observationSourceId;
+                  auto configuredEpoch = runtime->options.sourceEpoch;
+                  if (runtime->sourceGenerations &&
+                      !runtime->sourceGenerations->generations.empty()) {
+                    const auto cameraIndex = static_cast<size_t>(
+                      runtime->options.camera.back() - '1');
+                    const auto& generation = runtime->sourceGenerations->generations.front();
+                    if (cameraIndex < generation.sourceIds.size()) {
+                      configuredSourceId = generation.sourceIds[cameraIndex];
+                      configuredEpoch = generation.sourceEpoch;
+                    }
+                  }
+                  if (configuredSourceId.empty() || configuredEpoch == 0) {
+                    return makeError("source-info identity is not configured");
+                  }
+                  if (!info.sourceId.empty() && info.sourceId != configuredSourceId) {
+                    continue;
+                  }
+                  sourceConfigured = true;
+                  if (info.sourceEpoch != 0 && info.sourceEpoch != configuredEpoch) {
+                    continue;
+                  }
+                  const uav::UavSourceDescriptor descriptor{
+                    self->identity, runtime->options.camera, configuredSourceId,
+                    configuredEpoch, runtime->options.acquisitionKind,
+                    runtime->options.deliveryMode};
+                  const auto digest = uav::uavSourceDescriptorDigest(descriptor);
+                  const uav::UavSourceInfoResponse response{descriptor, digest};
+                  auto bytes = bufferFrom(uav::renderUavSourceInfoResponse(response));
+                  nsf::ResponseMessage message;
+                  message.setStatus(true);
+                  message.setErrorInfo("No error");
+                  message.setPayload(bytes, bytes.size());
+                  return message;
+                }
+                return makeError(!cameraConfigured ? "source-info camera is not configured" :
+                  !sourceConfigured ? "source-info source filter mismatch" :
+                                      "source-info epoch filter mismatch");
+              }
+            }
+            const auto fields = requestFields(request);
             const auto runtime = self->findRun(request, !self->compatibility);
             const bool source = runtime->options.role == "source";
             if (service != (source ? SERVICE_TRACKING_SOURCE : SERVICE_TRACKING_COMPUTE)) {
@@ -3600,11 +4223,24 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
       },
       [weak] (nsf::ServiceProvider::CollaborationContext& context, const nsf::RequestMessage& request) {
         const auto self = weak.lock();
-        if (!self) { context.fail("tracking capability unavailable"); return; }
+        if (!self) {
+          std::cerr << "SPEC226_ROLE_REJECTED reason=capability-unavailable" << std::endl;
+          context.fail("tracking capability unavailable");
+          return;
+        }
         CallbackLease lease(self);
-        if (!lease.admitted) { context.fail("tracking capability stopping"); return; }
+        if (!lease.admitted) {
+          std::cerr << "SPEC226_ROLE_REJECTED identity=" << self->identity.toUri()
+                    << " role=" << context.role() << " reason=stopping" << std::endl;
+          context.fail("tracking capability stopping");
+          return;
+        }
+        std::cerr << "SPEC226_ROLE_START identity=" << self->identity.toUri()
+                  << " role=" << context.role() << std::endl;
         try { self->execute(context, request); }
         catch (const std::exception& error) {
+          std::cerr << "SPEC226_EXECUTE_FAILED identity=" << self->identity.toUri()
+                    << " role=" << context.role() << " reason=" << error.what() << std::endl;
           context.fail(error.what());
           if (context.role() == "Tracking-Compute") {
             try {
@@ -3619,6 +4255,8 @@ struct UavTrackingProvider::Impl : std::enable_shared_from_this<UavTrackingProvi
 
   ndn::Name identity;
   std::string droneId;
+  std::shared_ptr<ndnsf::examples::uav::IObservationSource> injectedSource;
+  std::shared_ptr<InjectedSourceSink> injectedSink;
   bool compatibility = false;
   std::shared_ptr<std::atomic<bool>> shutdown = std::make_shared<std::atomic<bool>>(false);
   std::map<std::string, std::shared_ptr<ProviderRuntime>> runs;
@@ -3651,6 +4289,13 @@ UavTrackingProvider::UavTrackingProvider(const UavTrackingProviderConfig& config
   }
 }
 
+UavTrackingProvider::UavTrackingProvider(const UavTrackingProviderConfig& config,
+                                           std::shared_ptr<IObservationSource> source)
+  : UavTrackingProvider(config)
+{
+  m_impl->attachInjectedSource(std::move(source));
+}
+
 UavTrackingProvider::~UavTrackingProvider()
 {
   if (!m_impl) return;
@@ -3668,6 +4313,7 @@ UavTrackingProvider::registerServices(nsf::ServiceProvider& provider)
 void
 UavTrackingProvider::stopAdmission()
 {
+  m_impl->stopInjectedSource();
   {
     std::lock_guard<std::mutex> lock(m_impl->gateMutex);
     m_impl->closed = true;
@@ -3754,6 +4400,36 @@ UavTrackingProviderTestAccess::adoptIdleSession(
 #endif
 
 std::string
+describeUavPersonNativeComputation(const std::filesystem::path& model,
+                                   const std::filesystem::path& profile,
+                                   const std::filesystem::path& reidModel)
+{
+  const auto parsedProfile = uav::parseUavPersonTrackingProfile(
+    readBoundedPersonFile(profile, uav::MAX_PERSON_PROFILE_BYTES));
+  if (sha256File(model, 1024ULL * 1024 * 1024, [] { return true; }) !=
+        parsedProfile.detectorDigest ||
+      sha256File(reidModel, 1024ULL * 1024 * 1024, [] { return true; }) !=
+        parsedProfile.reidDigest) {
+    throw std::invalid_argument("native person models do not match the tracking profile");
+  }
+  LoadedNativePaths paths;
+  if (dl_iterate_phdr(collectLoadedNativePath, &paths) != 0) {
+    if (paths.error) std::rethrow_exception(paths.error);
+    throw std::runtime_error("cannot enumerate person native artifacts");
+  }
+  const auto executable = std::filesystem::canonical("/proc/self/exe");
+  std::map<std::string, std::string> native;
+  native.emplace("executable:" + executable.generic_string(),
+                 sha256File(executable, 1024ULL * 1024 * 1024, [] { return true; }));
+  for (const auto& path : paths.libraries) {
+    native.emplace("library:" + path,
+                   sha256File(path, 1024ULL * 1024 * 1024, [] { return true; }));
+  }
+  return uav::makeUavPersonNativeComputationManifest(parsedProfile,
+    "bytetrack-ultralytics-v1", uav::personOnnxRuntimeId(), native).canonicalJson;
+}
+
+std::string
 describeUavPersonComputation(const std::filesystem::path& model,
                              const std::filesystem::path& profile,
                              const std::filesystem::path& reidModel,
@@ -3773,12 +4449,17 @@ describeUavPersonComputation(const std::filesystem::path& model,
 }
 
 int
-runTrackingNodeCli(int argc, char** argv)
+runTrackingNodeCliImpl(int argc, char** argv, const UavTrackingSourceFactory* sourceFactory)
 {
   std::signal(SIGINT, onSignal);
   std::signal(SIGTERM, onSignal);
   auto options = parseOptions(argc, argv);
   if (options.fault == "unauthorized-frame-cache") std::signal(SIGUSR2, onCacheProbeSignal);
+  if (!options.describeNativePersonComputation.empty()) {
+    std::cout << describeUavPersonNativeComputation(options.model, options.trackingProfile,
+                                                   options.reidModel) << std::endl;
+    return 0;
+  }
   if (!options.describePersonComputation.empty()) {
     std::cout << loadPersonComputation(options, [] { return !g_stop.load(); }).manifest.canonicalJson
               << std::endl;
@@ -3817,12 +4498,44 @@ runTrackingNodeCli(int argc, char** argv)
   config.droneId = options.role == "source" ? options.camera : "compute";
   config.ownedWorkspace = std::filesystem::temp_directory_path() / ("ndnsf-spec191-" + options.runId);
   UavTrackingProvider capability(config);
-  capability.m_impl->compatibility = true;
+  const bool compatibility = options.compatibility;
+  capability.m_impl->compatibility = compatibility;
   auto runtime = std::make_shared<ProviderRuntime>();
   runtime->options = options;
   runtime->identity = identity;
-  runtime->compatibility = true;
+  runtime->compatibility = compatibility;
   runtime->shutdown = capability.m_impl->shutdown;
+  {
+    uav::TrackingProviderRunDefinition definition;
+    definition.runId = options.runId;
+    definition.mode = options.trackingProfile.empty()
+      ? uav::TrackingMode::VEHICLE : uav::TrackingMode::PERSON;
+    definition.role = options.role == "source"
+      ? uav::TrackingProviderRole::SOURCE : uav::TrackingProviderRole::COMPUTE;
+    definition.cameraId = options.camera;
+    for (size_t i = 0; i < 3; ++i) {
+      definition.sourceProducers[i] = droneIdentity(names, "UAV" + std::to_string(i + 1));
+    }
+    definition.computeProducer = droneIdentity(names, "compute");
+    definition.windowCount = options.windowCount;
+    definition.observationStreamDirectory = options.observationStreamDir;
+    definition.worldFrameId = options.worldFrameId;
+    definition.acquisitionKind = options.acquisitionKind;
+    definition.deliveryMode = options.deliveryMode;
+    const auto ref = [] (const std::string& path) {
+      if (path.empty()) return uav::TrackingAssetReference{};
+      return uav::TrackingAssetReference{path,
+        sha256File(path, 1024ULL * 1024 * 1024, [] { return true; })};
+    };
+    definition.model = ref(options.model);
+    definition.profile = ref(options.trackingProfile);
+    definition.reidModel = ref(options.reidModel);
+    definition.computationManifest = ref(options.computationManifest);
+    if (!options.sourceGenerations.empty()) {
+      definition.sourceGenerations = ref(options.sourceGenerations);
+    }
+    runtime->definition = std::move(definition);
+  }
   if (!options.sourceGenerations.empty()) {
     runtime->sourceGenerations = loadUavSourceGenerationSchedule(
       options.sourceGenerations, options.windowCount);
@@ -3833,12 +4546,31 @@ runTrackingNodeCli(int argc, char** argv)
       throw std::invalid_argument("source generation manifest does not match the process");
     }
   }
-  if (options.role == "source" && !options.observationStreamDir.empty()) {
+  if (options.role == "source" &&
+      (!options.observationStreamDir.empty() || !options.trackingProfile.empty() ||
+       !options.videoSource.empty())) {
     runtime->frames = std::make_shared<UavPersonPublishedFrameStore>(identity, options.camera);
+  }
+  if (options.role == "compute" && !options.trackingProfile.empty() &&
+      !options.computationManifest.empty()) {
+    runtime->expectedProfile = uav::parseUavPersonTrackingProfile(
+      readPersonProfile(options.trackingProfile));
+    runtime->expectedComputation = uav::parseUavPersonComputationManifest(
+      bufferText(readBytes(options.computationManifest)), *runtime->expectedProfile);
+  }
+  capability.m_impl->runs.emplace(options.runId, runtime);
+  if (sourceFactory && options.role == "source") {
+    if (options.videoSource.empty()) {
+      throw std::invalid_argument("source factory requires --video-source");
+    }
+    auto injected = (*sourceFactory)(UavTrackingSourceRequest{
+      options.camera, options.observationSourceId, options.sourceEpoch,
+      options.windowCount, options.mediaStartUs, options.captureEpoch,
+      options.videoSource});
+    capability.m_impl->attachInjectedSource(std::move(injected));
   }
   installRuntimeHandlers(*runtime);
   runtime->ready = true;
-  capability.m_impl->runs.emplace(options.runId, runtime);
   const auto providerCertificate = getOrCreateIdentity(keyChain, identity);
   const auto controllerCertificate = getOrCreateIdentity(keyChain, ndn::Name(options.controller));
   nsf::CertificatePublisher certificatePublisher(face, keyChain, providerCertificate.getName());
@@ -3846,8 +4578,8 @@ runTrackingNodeCli(int argc, char** argv)
                                 controllerCertificate, options.trustSchema);
   provider.setPerformanceMode(true);
   provider.setUseTokens(true);
-  capability.registerServices(provider);
   provider.init();
+  capability.registerServices(provider);
   provider.fetchPermissionsFromController(ndn::Name(options.controller));
   std::cout << "SPEC191_TRACKING_NODE_READY role=" << options.role
             << " identity=" << identity.toUri()
@@ -3871,6 +4603,19 @@ runTrackingNodeCli(int argc, char** argv)
   }
   std::cout << "SPEC191_TRACKING_NODE_EXIT identity=" << identity.toUri() << std::endl;
   return 0;
+}
+
+int
+runTrackingNodeCli(int argc, char** argv)
+{
+  return runTrackingNodeCliImpl(argc, argv, nullptr);
+}
+
+int
+runTrackingNodeCliWithSource(int argc, char** argv,
+                             const UavTrackingSourceFactory& sourceFactory)
+{
+  return runTrackingNodeCliImpl(argc, argv, &sourceFactory);
 }
 
 } // namespace ndnsf::examples::uav

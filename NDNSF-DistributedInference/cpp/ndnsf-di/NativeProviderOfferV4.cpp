@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderOfferV4.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-backend-variant.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestEnvelope.hpp"
 #include "ndn-service-framework/NetworkProbeRate.hpp"
 
@@ -361,9 +362,7 @@ residencyMatchesCandidate(const NativeJson& rowIdentity,
       }
     }
     const auto baseBackend = candidate.at("backend").get<std::string>();
-    if (sameArtifact && (concreteBackend == baseBackend ||
-        concreteBackend == baseBackend + "-cpu" ||
-        concreteBackend == baseBackend + "-cuda"))
+    if (sameArtifact && matchesNativeBackendVariant(baseBackend, concreteBackend))
       return true;
   }
   return false;
