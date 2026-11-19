@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <ndn-cxx/data.hpp>
@@ -45,6 +46,25 @@ buildHistoricalPublicParametersData(const ControllerGenerationStore::AbeHistoryE
                                     const ndn::Name& identity,
                                     const std::function<void(ndn::Data&)>& sign,
                                     ndn::Data& result);
+
+/** Build the signed index a cold reader uses to find the proofs.
+ *
+ * The proof names carry the digest of the original content, which a reader cannot guess. This index
+ * lists what exists, and is the only place a reader learns the digest to ask under:
+ *
+ *   NDNSF-HIST-PUBPARAMS-INDEX-v1
+ *   <generation> <epoch> <sha256-hex> <original-name-uri>
+ */
+bool
+buildHistoricalPublicParametersIndex(
+  const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
+  const ndn::Name& identity, const std::function<void(ndn::Data&)>& sign, ndn::Data& result);
+
+/** Parse the index; returns one record per line and fails on any malformed line. */
+bool
+parseHistoricalPublicParametersIndex(const std::string& content,
+                                     std::vector<std::tuple<uint64_t, uint64_t, std::string,
+                                                            std::string>>& records);
 
 /** Build the proofs a Controller can serve, skipping entries it cannot bind. */
 std::vector<std::shared_ptr<ndn::Data>>

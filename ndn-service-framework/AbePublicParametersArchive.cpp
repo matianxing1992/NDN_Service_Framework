@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <cstdlib>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -115,6 +117,86 @@ collectHistoricalPublicParameterAnswers(
     }
   }
   return answers;
+}
+
+} // namespace ndn_service_framework
+
+namespace ndn_service_framework {
+
+namespace {
+constexpr char INDEX_SCHEMA[] = "NDNSF-HIST-PUBPARAMS-INDEX-v1";
+}
+
+bool
+buildHistoricalPublicParametersIndex(
+  const std::vector<ControllerGenerationStore::AbeHistoryEntry>& entries,
+  const ndn::Name& identity, const std::function<void(ndn::Data&)>& sign, ndn::Data& result)
+{
+  if (identity.empty())
+    return false;
+  std::string content(INDEX_SCHEMA);
+  content += "\n";
+  std::size_t listed = 0;
+  for (const auto& entry : entries) {
+    if (entry.generationTimestamp == 0 || entry.publicParameters.empty())
+      continue;
+    if (entry.publicParametersWireDigest.rfind("sha256:", 0) != 0 ||
+        entry.publicParametersWireDigest.size() != 71)
+      continue;
+    content += std::to_string(entry.generationTimestamp) + " " + std::to_string(entry.epoch) + " " +
+               entry.publicParametersWireDigest.substr(7) + " " + entry.publicParametersName + "\n";
+    ++listed;
+  }
+  if (listed == 0)
+    return false;
+  ndn::Name name(identity);
+  name.append("NDNSF").append("HISTORY").append("PUBPARAMS");
+  ndn::Data data(name);
+  data.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(content.data()), content.size()));
+  data.setFreshnessPeriod(ndn::time::milliseconds(0));
+  if (sign)
+    sign(data);
+  result = std::move(data);
+  return true;
+}
+
+bool
+parseHistoricalPublicParametersIndex(const std::string& content,
+                                     std::vector<std::tuple<uint64_t, uint64_t, std::string,
+                                                            std::string>>& records)
+{
+  records.clear();
+  std::size_t begin = 0;
+  bool first = true;
+  while (begin <= content.size()) {
+    const auto end = content.find('\n', begin);
+    const std::string line = content.substr(begin, end == std::string::npos ? std::string::npos
+                                                                           : end - begin);
+    begin = end == std::string::npos ? content.size() + 1 : end + 1;
+    if (line.empty())
+      continue;
+    if (first) {
+      if (line != INDEX_SCHEMA)
+        return false;
+      first = false;
+      continue;
+    }
+    std::istringstream fields(line);
+    std::string generation, epoch, digest, original;
+    if (!(fields >> generation >> epoch >> digest >> original))
+      return false;
+    if (digest.size() != 64 || original.empty() || original.front() != '/')
+      return false;
+    char* stop = nullptr;
+    const auto gen = std::strtoull(generation.c_str(), &stop, 10);
+    if (stop == generation.c_str() || *stop != '\0')
+      return false;
+    const auto ep = std::strtoull(epoch.c_str(), &stop, 10);
+    if (stop == epoch.c_str() || *stop != '\0')
+      return false;
+    records.emplace_back(gen, ep, digest, original);
+  }
+  return !records.empty();
 }
 
 } // namespace ndn_service_framework

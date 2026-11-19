@@ -1457,6 +1457,49 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
   BOOST_CHECK(std::equal(read->begin(), read->end(), plaintext.begin()));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalProofIndexListsWhatAColdReaderCannotGuess)
+{
+  std::vector<ControllerGenerationStore::AbeHistoryEntry> entries(2);
+  entries[0].generationTimestamp = 1002;
+  entries[0].epoch = 3;
+  entries[0].publicParameters = std::string("params", 6);
+  entries[0].publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1002003";
+  entries[0].publicParametersWireDigest = "sha256:" + std::string(64, 'a');
+  entries[1].generationTimestamp = 1003;
+  entries[1].epoch = 1;
+  entries[1].publicParameters = std::string("params2", 7);
+  entries[1].publicParametersName = "/controller/a/PUBPARAMS/KP-ABE/v=1003001";
+  entries[1].publicParametersWireDigest = "sha256:" + std::string(64, 'b');
+
+  ndn::Data listing;
+  BOOST_REQUIRE(buildHistoricalPublicParametersIndex(entries, ndn::Name("/controller/a"), {}, listing));
+  BOOST_CHECK_EQUAL(listing.getName().toUri(),
+                    std::string("/controller/a/NDNSF/HISTORY/PUBPARAMS"));
+
+  const std::string content(reinterpret_cast<const char*>(listing.getContent().value()),
+                            listing.getContent().value_size());
+  std::vector<std::tuple<uint64_t, uint64_t, std::string, std::string>> records;
+  BOOST_REQUIRE(parseHistoricalPublicParametersIndex(content, records));
+  BOOST_REQUIRE_EQUAL(records.size(), 2u);
+  BOOST_CHECK_EQUAL(std::get<0>(records[0]), 1002u);
+  BOOST_CHECK_EQUAL(std::get<1>(records[0]), 3u);
+  BOOST_CHECK_EQUAL(std::get<2>(records[0]), std::string(64, 'a'));
+  BOOST_CHECK_EQUAL(std::get<3>(records[0]),
+                    std::string("/controller/a/PUBPARAMS/KP-ABE/v=1002003"));
+
+  // A malformed line fails the whole index rather than silently dropping a generation.
+  auto broken = content;
+  broken.replace(broken.find("1003 1 "), 7, "1003 x ");
+  std::vector<std::tuple<uint64_t, uint64_t, std::string, std::string>> ignored;
+  BOOST_CHECK(!parseHistoricalPublicParametersIndex(broken, ignored));
+  // An entry without a bound digest is not listed.
+  entries[0].publicParametersWireDigest.clear();
+  ndn::Data one;
+  BOOST_CHECK(buildHistoricalPublicParametersIndex(entries, ndn::Name("/controller/a"), {}, one));
+  BOOST_CHECK(std::string(reinterpret_cast<const char*>(one.getContent().value()),
+                          one.getContent().value_size()).find("1002 3") == std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding)
 {
   const std::set<std::string> then = {"/PERMISSION/A", "/PERMISSION/B"};

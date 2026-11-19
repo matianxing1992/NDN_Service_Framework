@@ -728,6 +728,31 @@ ServiceController::registerArchivedPublicParameters()
                                                                sign);
   NDN_LOG_INFO("Historical public parameters: archived=" << archived.size()
                << " published=" << answers.size());
+  // A cold reader cannot guess the digest that the proof name carries, so the Controller also serves
+  // one signed index under the parent prefix. It is rebuilt from the archive on every request.
+  {
+    ndn::Name indexName(m_aaCert.getIdentity());
+    indexName.append("NDNSF").append("HISTORY").append("PUBPARAMS");
+    if (m_archivedParameterNames.insert(indexName.toUri(ndn::name::UriFormat::CANONICAL)).second) {
+      m_archivedParameterFilters.push_back(m_face.setInterestFilter(indexName,
+        [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+          std::vector<ControllerGenerationStore::AbeHistoryEntry> current;
+          try {
+            current = m_generationStore->loadAbeHistory();
+          }
+          catch (const std::exception&) {
+            return;
+          }
+          ndn::Data listing;
+          if (!buildHistoricalPublicParametersIndex(current, m_aaCert.getIdentity(),
+                                                    std::function<void(ndn::Data&)>(), listing))
+            return;
+          listing.setName(interest.getName());
+          m_keyChain.sign(listing, ndn::security::signingByCertificate(m_aaCert));
+          m_face.put(listing);
+        }));
+    }
+  }
   for (const auto& answer : answers) {
     // A rotation after construction re-runs this; the same generation must not be registered twice.
     const auto name = answer->getName().toUri(ndn::name::UriFormat::CANONICAL);
