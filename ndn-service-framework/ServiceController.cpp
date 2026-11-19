@@ -727,6 +727,7 @@ ServiceController::advanceAuthorizationEpoch(bool requireAbeRotationOnRestart)
 void
 ServiceController::registerArchivedPublicParameters()
 {
+  NDN_LOG_WARN("NDNSF_HISTORICAL_REGISTER entered=1 store=" << (m_generationStore ? 1 : 0));
   if (!m_generationStore)
     return;
   std::vector<ControllerGenerationStore::AbeHistoryEntry> archived;
@@ -739,6 +740,7 @@ ServiceController::registerArchivedPublicParameters()
     NDN_LOG_ERROR("Controller archived public parameters unavailable: " << error.what());
     return;
   }
+  NDN_LOG_WARN("NDNSF_HISTORICAL_REGISTER archived=" << archived.size());
   const auto sign = [this] (ndn::Data& data) {
     m_keyChain.sign(data, ndn::security::signingByCertificate(m_aaCert));
   };
