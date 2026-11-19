@@ -9949,6 +9949,9 @@ namespace ndn_service_framework
         std::function<void(const StreamedInvocationError&)> onError,
         size_t strategy)
     {
+        NDN_LOG_INFO("NDNSF_STREAM_ENTRY service=" << serviceName.toUri()
+                     << " target=" << targetProvider.toUri()
+                     << " mode=" << (options.mode == InvocationMode::Normal ? "normal" : "targeted"));
         if (serviceName.empty() ||
             (options.mode == InvocationMode::Normal && !targetProvider.empty()) ||
             (options.mode == InvocationMode::Targeted && targetProvider.empty())) {
@@ -10876,6 +10879,8 @@ namespace ndn_service_framework
                                       ResponseHandler onResponseHandler,
                                       std::shared_ptr<ControlByteStatistics> controlStatistics)
     {
+        NDN_LOG_INFO("NDNSF_TARGETED_ENTRY service=" << serviceName.toUri()
+                     << " provider=" << provider.toUri());
         if (provider.empty()) {
             return ndn::Name();
         }
