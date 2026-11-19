@@ -21582,6 +21582,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     void ServiceProvider::scheduleProviderPermissionRefresh()
     {
         const auto period = policyRevalidationPeriodMs();
+        // Printed before any early return, so "the refresh never ran" can be told apart from "the period is
+        // zero" without another build.
+        std::cout << "NDNSF_PROVIDER_PERMISSION_BOOTSTRAP periodMs=" << period << std::endl;
         if (period == 0 || m_providerPermissionRefreshScheduled)
             return;
         m_providerPermissionRefreshScheduled = true;
