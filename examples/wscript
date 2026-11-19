@@ -428,6 +428,17 @@ def build(bld):
                     install_path='${BINDIR}')
 
         # Native qualification is part of the installed DI closure.
+        # Native acceptance probe for reading an object whose generation the Controller retired.
+        if 'di' in bld.env.NDNSF_COMPONENTS:
+            bld.program(name='ndnsf-historical-read-probe',
+                        target='ndnsf-historical-read-probe',
+                        source=['HistoricalReadProbe.cpp'],
+                        rpath=[runtime_libdir],
+                        includes=['..', '../NDNSF-DistributedRepo/include'],
+                        use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE OPENSSL',
+                        linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                        install_path='${BINDIR}')
+
         bld.program(name='multiturn-oracle',
                     target='multiturn-oracle',
                     source=['Spec189TwoProviderOracle.cpp', 'spec220-onnx-reference-oracle.cpp'],
