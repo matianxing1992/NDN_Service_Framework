@@ -6228,6 +6228,33 @@ namespace ndn_service_framework
         if (serviceName.empty() || !version.isValid()) {
             return;
         }
+        // An invocation stream that is already running waits for a terminal event.  If the authority
+        // that admitted it just changed, no such event is coming, so fail it here instead of letting the
+        // caller sit until its deadline.
+        {
+            std::vector<std::shared_ptr<StreamedInvocationSharedState>> affected;
+            for (auto it = m_streamStates.begin(); it != m_streamStates.end();) {
+                if (it->second->serviceName != serviceName) {
+                    ++it;
+                    continue;
+                }
+                affected.push_back(it->second);
+                it = m_streamStates.erase(it);
+            }
+            for (auto& state : affected) {
+                std::function<void(const StreamedInvocationError&)> onError;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    state->status = StreamedInvocationStatus::Failed;
+                    onError = state->onError;
+                }
+                if (onError) {
+                    onError({StreamedInvocationErrorCode::Unauthorized,
+                             "stream failed because the Controller authority advanced for " +
+                               serviceName.toUri()});
+                }
+            }
+        }
 
         if (m_securityProfiles) m_securityProfiles->invalidate();
         m_profileReaderObservations.clear();
@@ -10106,6 +10133,7 @@ namespace ndn_service_framework
                 cancelStreamRequest(requestId);
             });
         };
+        state->serviceName = serviceName;
         m_streamStates[requestId] = state;
 
         TimeoutHandler timeout = [state](const ndn::Name&) {
