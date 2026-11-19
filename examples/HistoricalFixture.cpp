@@ -113,8 +113,15 @@ main(int argc, char** argv)
 
     const auto ckName = ndn_service_framework::makeHybridMessageKeyDataName(service, identity,
                                                                             attribute, "fixture-1");
-    ndn::Name payloadName = ndn_service_framework::makeProducerDataPrefix(identity, "OBJECT");
-    payloadName.append("fixture-1");
+    const ndn::Name payloadRoot = [&identity] {
+      ndn::Name root = ndn_service_framework::makeProducerDataPrefix(identity, "OBJECT");
+      root.append("fixture-1");
+      return root;
+    }();
+    // The object is one packet under segment zero, while the reader is told the object's root: it appends
+    // the segment component itself.
+    ndn::Name payloadName(payloadRoot);
+    payloadName.appendSegment(0);
 
     // The envelopes the reader parses: CK as outer 0x15 with 0x0259, payload with 0x025A/0x025B.
     ndn::Data ck(ckName);
@@ -142,15 +149,21 @@ main(int argc, char** argv)
     }
 
     // Only the two exact names are served: the fixture is a producer for one object, not a namespace.
+    // A failed registration must be visible, or the fixture looks alive while serving nothing.
+    const auto onFailure = [] (const ndn::Name& name, const std::string& reason) {
+      std::cout << "FIXTURE_REGISTER_FAILED name=" << name.toUri() << " reason=" << reason
+                << std::endl << std::flush;
+    };
     face.setInterestFilter(ck.getName(),
-      [&face, ck] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(ck); });
+      [&face, ck] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(ck); }, onFailure);
     face.setInterestFilter(payloadName,
-      [&face, object] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(object); });
+      [&face, object] (const ndn::InterestFilter&, const ndn::Interest&) { face.put(object); },
+      onFailure);
 
     ndn::util::Sha256 hash;
     hash << payload;
     std::cout << "FIXTURE_READY ck=" << ck.getName().toUri()
-              << " payload=" << payloadName.toUri()
+              << " payload=" << payloadRoot.toUri()
               << " service=" << service.toUri()
               << " attribute=" << attribute
               << " producer=" << identity.toUri()
