@@ -422,9 +422,15 @@ HistoricalKeyBroker::finish(const HistoricalKeyRequest& request, uint64_t nowMs,
     return std::nullopt;
   // Without a decision the broker must not mint: a Controller that cannot check the object's
   // authorization has no basis for handing out a key to a retired generation.
+  // The certificate that signed the request, not the one the body claims, is what the decision covers.
+  ndn::util::Sha256 signerDigest;
+  const auto& recipientWire = recipient.wireEncode();
+  signerDigest << std::string(reinterpret_cast<const char*>(recipientWire.data()),
+                              recipientWire.size());
   if (!m_authorizationCheck ||
       !m_authorizationCheck(ndn::security::extractIdentityFromCertName(request.recipientCertificate),
-                            request.generation, request.epoch, request.policy))
+                            request.generation, request.epoch, request.policy,
+                            "sha256:" + signerDigest.toString()))
     return std::nullopt;
   // The key may only be one that belongs to the object's own scope, so a requester cannot borrow a key
   // minted for a different service, producer or attribute and point it at something else.

@@ -864,7 +864,12 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
     // The decision is the intersection of what the identity held when the generation was published
     // and what it holds now. Without a recorded snapshot the answer is no.
     const auto authorization = [this] (const ndn::Name& identity, uint64_t generation,
-                                       uint64_t epoch, const std::string& policy) mutable {
+                                       uint64_t epoch, const std::string& policy,
+                                       const std::string& signerCertificateDigest) mutable {
+      // A revoked identity or certificate must not receive a retired generation's key, whatever the
+      // archived attribute snapshot says it once held.
+      if (isIdentityOrCertificateRevoked(identity, signerCertificateDigest))
+        return false;
       std::optional<std::map<std::string, std::set<std::string>>> snapshot;
       try {
         snapshot = m_generationStore->loadAttributeSnapshot(generation, epoch);

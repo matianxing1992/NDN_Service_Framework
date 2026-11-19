@@ -1114,7 +1114,8 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersOnceForTheNamedCertificateAndTheKeyWorks)
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
   // These cases are about delivery and binding, so the permission decision is granted here; the
   // decision itself has its own cases.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy,
+                                     const std::string&) {
     return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
   });
 
@@ -1385,7 +1386,7 @@ BOOST_AUTO_TEST_CASE(HistoricalReadRefusesAKeyReplyNotSignedByTheController)
     [&other] (ndn::Data& data) {
       other.keyChain.sign(data, ndn::security::signingByCertificate(other.certificate));
     });
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&, const std::string&) {
     return true;
   });
   ndn::Name dkeyPrefix("/controller/a/NDNSF/HISTORY/DKEY");
@@ -1536,7 +1537,7 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
     [&keys] (ndn::Data& data) {
       keys.keyChain.sign(data, ndn::security::signingByCertificate(keys.certificate));
     });
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&, const std::string&) {
     return true;
   });
   ndn::Name dkeyPrefix("/controller/a/NDNSF/HISTORY/DKEY");
@@ -1725,7 +1726,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesAKeyForAnotherScope)
     data.setSignatureValue(ndn::Buffer{1});
   };
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&, const std::string&) {
     return true;   // permission alone would allow it; the scope check must still refuse
   });
 
@@ -1806,7 +1807,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesWhenThePermissionDecisionSaysNo)
   // No decision supplied at all: nothing is minted.
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
   // A decision that refuses: still nothing.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string&, const std::string&) {
     return false;
   });
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
@@ -1815,7 +1816,7 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesWhenThePermissionDecisionSaysNo)
   uint64_t seenGeneration = 0;
   std::string seenPolicy;
   broker.setAuthorizationCheck([&] (const ndn::Name& identity, uint64_t generation, uint64_t,
-                                    const std::string& policy) {
+                                    const std::string& policy, const std::string&) {
     seenIdentity = identity;
     seenGeneration = generation;
     seenPolicy = policy;
@@ -2130,7 +2131,8 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
   // These cases are about delivery and binding, so the permission decision is granted here; the
   // decision itself has its own cases.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy,
+                                     const std::string&) {
     return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
   });
 
@@ -2203,7 +2205,8 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestThatClaimsTooLongAValidity)
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
   // These cases are about delivery and binding, so the permission decision is granted here; the
   // decision itself has its own cases.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy,
+                                     const std::string&) {
     return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
   });
 
@@ -2274,7 +2277,8 @@ BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
   // These cases are about delivery and binding, so the permission decision is granted here; the
   // decision itself has its own cases.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy,
+                                     const std::string&) {
     return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
   });
 
@@ -2468,7 +2472,8 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
   // These cases are about delivery and binding, so the permission decision is granted here; the
   // decision itself has its own cases.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy,
+                                     const std::string&) {
     return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
   });
 
@@ -2583,7 +2588,8 @@ BOOST_AUTO_TEST_CASE(ForwarderDeliversNoKeyToAStrangerOrAnExpiredRequest)
   HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
   // These cases are about delivery and binding, so the permission decision is granted here; the
   // decision itself has its own cases.
-  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy) {
+  broker.setAuthorizationCheck([] (const ndn::Name&, uint64_t, uint64_t, const std::string& policy,
+                                     const std::string&) {
     return policy == "attr-a" || policy == "/SERVICE/ObjectDetection";
   });
 

@@ -145,13 +145,14 @@ unsealHistoricalKeyReply(const HistoricalKeyReply& reply, const ndn::security::T
 
 /** Decides whether a requester may still read one object of a retired generation.
  *
- * It receives the verified signer identity, the generation the object was published under, and the
- * attribute the requester asked for. Returning false makes the broker answer nothing, so a Controller
- * that cannot decide fails closed by leaving the hook unset.
+ * It receives the verified signer identity, the generation the object was published under, the attribute
+ * the requester asked for, and the digest of the certificate that actually signed the request, so a
+ * Controller can refuse a revoked certificate rather than only a revoked identity. Returning false makes
+ * the broker answer nothing, so a Controller that cannot decide fails closed by leaving the hook unset.
  */
 using HistoricalKeyAuthorizationCheck =
   std::function<bool(const ndn::Name& identity, uint64_t generation, uint64_t epoch,
-                     const std::string& policy)>;
+                     const std::string& policy, const std::string& signerCertificateDigest)>;
 
 /** The decision part of a historical key responder, with no face of its own.
  *
