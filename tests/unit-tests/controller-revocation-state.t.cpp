@@ -7,6 +7,7 @@
 #include "ndn-service-framework/AbeHistoricalKey.hpp"
 #include "ndn-service-framework/AbePublicParametersArchive.hpp"
 #include "ndn-service-framework/FileKeyRing.hpp"
+#include "ndn-service-framework/SealedField.hpp"
 #include "ndn-service-framework/PolicyRefreshCoordinator.hpp"
 #include "ndn-service-framework/RevocationState.hpp"
 #include "ndn-service-framework/utils.hpp"
@@ -1265,6 +1266,35 @@ BOOST_AUTO_TEST_CASE(HistoricalCkNameMustBindTheAskedAttribute)
   BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name("/producer/p1/KEY/other"), producer, service,
                                           attribute));
   BOOST_CHECK(!historicalCkBindsAttribute(ndn::Name(), producer, service, attribute));
+}
+
+BOOST_AUTO_TEST_CASE(SealedFieldsRoundTripAndRefuseTampering)
+{
+  const std::vector<uint8_t> key(32, 0x5a);
+  const std::string plain("master-secret-bytes");
+  const std::string aad("ndnsf/controller/abe-material");
+
+  const auto sealed = sealField(key, plain, aad);
+  BOOST_CHECK(isSealedField(sealed));
+  BOOST_CHECK(sealed.find(plain) == std::string::npos);
+
+  std::string opened;
+  BOOST_REQUIRE(openField(key, sealed, aad, opened));
+  BOOST_CHECK_EQUAL(opened, plain);
+
+  // A different purpose does not open it.
+  BOOST_CHECK(!openField(key, sealed, "ndnsf/controller/abe-history", opened));
+  // A different key does not open it.
+  std::vector<uint8_t> otherKey(32, 0x5b);
+  BOOST_CHECK(!openField(otherKey, sealed, aad, opened));
+  // Flipping one ciphertext character fails authentication rather than returning wrong bytes.
+  auto tampered = sealed;
+  const auto position = tampered.size() - 8;
+  tampered[position] = tampered[position] == 'A' ? 'B' : 'A';
+  BOOST_CHECK(!openField(key, tampered, aad, opened));
+  // An unmarked field is not silently accepted as sealed.
+  BOOST_CHECK(!openField(key, plain, aad, opened));
+  BOOST_CHECK(!isSealedField(plain));
 }
 
 BOOST_AUTO_TEST_CASE(HistoricalAttributeRequiresBothPublicationAndCurrentHolding)
