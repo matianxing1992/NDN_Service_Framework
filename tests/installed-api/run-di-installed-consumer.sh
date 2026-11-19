@@ -18,7 +18,7 @@ else
   output_dir=${5:-"${TMPDIR:-/tmp}/di-installed-api"}
 fi
 source_file=$(cd "$(dirname "$0")" && pwd)/di-installed-consumer.cpp
-repo_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel 2>/dev/null || true)
+source_root=$(cd "$(dirname "$0")/../.." && pwd)
 
 # The header roster comes from the install prefix's own manifest, not from an ignored Spec file and
 # not from a fixed count. The previous form read an api-exposure.json that is Git-ignored, so this
@@ -77,7 +77,7 @@ run_one() {
   read -r -a cflags <<< "$(pkg-config --cflags ndnsf-distributed-inference)"
   read -r -a libs <<< "$(pkg-config --libs ndnsf-distributed-inference)"
   for flag in "${cflags[@]}"; do
-    if [[ -n "$repo_root" && "$flag" == *"$repo_root"* ]]; then
+    if [[ -n "$source_root" && "$flag" == *"$source_root"* ]]; then
       echo "SOURCE_TREE_INCLUDE_LEAK:$flag" >&2
       exit 4
     fi

@@ -4,7 +4,7 @@ set -euo pipefail
 prefix=${1:?usage: $0 <installed-prefix> [output-dir]}
 output_dir=${2:-"${TMPDIR:-/tmp}/di-caller-consumer"}
 prefix=$(cd "$prefix" && pwd)
-repo_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
+source_root=$(cd "$(dirname "$0")/../.." && pwd)
 source_file=$(cd "$(dirname "$0")" && pwd)/di-caller-consumer.cpp
 pkg_root="$output_dir/installed"
 mkdir -p "$pkg_root"
@@ -20,7 +20,7 @@ read -r -a cflags <<< "$(pkg-config --cflags ndnsf-distributed-inference)"
 read -r -a libs <<< "$(pkg-config --libs ndnsf-distributed-inference)"
 for flag in "${cflags[@]}"; do
   case "$flag" in
-    *"$repo_root"*) echo "SOURCE_TREE_INCLUDE_LEAK:$flag" >&2; exit 4 ;;
+    *"$source_root"*) echo "SOURCE_TREE_INCLUDE_LEAK:$flag" >&2; exit 4 ;;
   esac
 done
 test -f "$prefix/include/ndnsf-di/api.hpp"
