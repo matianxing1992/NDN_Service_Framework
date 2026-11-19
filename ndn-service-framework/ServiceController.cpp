@@ -3,6 +3,7 @@
 #include "AbeHistoricalKeyRequest.hpp"
 #include "AbePublicParametersArchive.hpp"
 #include "ServiceController.hpp"
+#include "FileKeyRing.hpp"
 #include "HybridMessageCrypto.hpp"
 #include "ProducerDataNaming.hpp"
 #include "ProducerSignerPolicy.hpp"
@@ -386,6 +387,26 @@ ServiceController::initializeControllerGeneration()
       NDN_LOG_ERROR("Controller generation writer unavailable identity="
                     << identity.toUri(ndn::name::UriFormat::CANONICAL) << " state=" << statePath);
       return false;
+    }
+    // Seal the ABE master secrets with the deployment's file key ring. Without a ring the restore
+    // material stays readable, which is reported once rather than silently assumed to be sealed.
+    if (const auto ring = fileKeyRingPath(); ring) {
+      std::vector<FileKeyRingEntry> entries;
+      try {
+        entries = loadFileKeyRingEntries();
+      }
+      catch (const std::exception& error) {
+        NDN_LOG_ERROR("Controller file key ring is unusable: " << error.what());
+        return false;
+      }
+      const auto chosen = std::find_if(entries.begin(), entries.end(),
+        [] (const FileKeyRingEntry& entry) { return entry.keyId == "controller-abe"; });
+      const auto& entry = chosen != entries.end() ? *chosen : entries.front();
+      m_generationStore->setSecretSeal(entry.key, entry.keyId);
+      NDN_LOG_INFO("Controller ABE secrets: sealed with file key id=" << entry.keyId);
+    }
+    else {
+      NDN_LOG_WARN("Controller ABE secrets: no NDNSF_FILE_KEYRING, restore material stays readable");
     }
     statePath = m_generationStore->statePath();
     const auto now = nowMilliseconds();
