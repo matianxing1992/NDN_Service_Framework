@@ -1214,6 +1214,35 @@ BOOST_AUTO_TEST_CASE(HistoricalProofAcceptsAnUpperCaseRecordedDigest)
   BOOST_CHECK_EQUAL(collectHistoricalPublicParameterAnswers({entry}, identity, sign).size(), 1u);
 }
 
+BOOST_AUTO_TEST_CASE(ContentKeyPairingSurvivesAFieldByFieldRebuild)
+{
+  // `kpContentKeyGen` generates the symmetric key and ABE-wraps it; `encrypt` uses that same key.
+  // Pairing a hand-made ContentKey with `kpEncrypt`'s wrapped key does not work, because `kpEncrypt`
+  // wraps a random key of its own - the earlier reconstruction attempt made exactly that mistake.
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+
+  auto contentKey = abe.kpContentKeyGen(params, {"attr-a"});
+  BOOST_REQUIRE(contentKey);
+  const auto ct = abe.encrypt(contentKey, ndn::Buffer{1, 2, 3});
+  const auto dkey = abe.kpPrvKeyGen(params, master, "attr-a");
+  BOOST_CHECK(abe.kpDecrypt(params, dkey, ct) == ndn::Buffer({1, 2, 3}));
+
+  // Now rebuild only what a receiver can see: the wrapped key and the encrypted content.
+  ndn::nacabe::algo::CipherText rebuilt;
+  rebuilt.m_contentKey = std::make_shared<ndn::nacabe::algo::ContentKey>(
+    std::string(), contentKey->m_encAesKey);
+  rebuilt.m_content = ct.m_content;
+  rebuilt.m_plainTextSize = ct.m_plainTextSize;
+  BOOST_CHECK(abe.kpDecrypt(params, dkey, rebuilt) == ndn::Buffer({1, 2, 3}));
+
+  // A private key for another policy must not open it.
+  const auto wrong = abe.kpPrvKeyGen(params, master, "attr-b");
+  BOOST_CHECK_THROW(abe.kpDecrypt(params, wrong, rebuilt), std::exception);
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalDecryptionKeyIsMintedInTheLibraryFormat)
 {
   // A superseded generation must still be able to issue a key for a policy it authorized.
@@ -1389,6 +1418,70 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   BOOST_REQUIRE(verifyHistoricalKeyReply(*reply, request, 1'000'000, accepted));
   // Now it is answered, so a replay must not mint again.
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
+}
+
+BOOST_AUTO_TEST_CASE(BrokerRefusesARequestThatClaimsTooLongAValidity)
+{
+  // A long-lived request would pin its digest in the replay set for that long, so the lifetime is
+  // bounded rather than trusted.
+  DefaultGenerationFiles files;
+  const auto requesterDir = files.root / "requester";
+  std::filesystem::create_directory(requesterDir);
+  ndn::KeyChain requester("pib-sqlite3:" + requesterDir.string(),
+                          "tpm-file:" + requesterDir.string(), false);
+  const ndn::Name identity("/user/history");
+  requester.createIdentity(identity);
+  const auto userCert = requester.getPib().getIdentity(identity).getDefaultKey()
+    .getDefaultCertificate();
+
+  auto& abe = ndn::nacabe::algo::ABESupport::getInstance();
+  ndn::nacabe::algo::PublicParams params;
+  ndn::nacabe::algo::MasterKey master;
+  abe.kpInit(params, master);
+  const auto wire = params.toBuffer();
+  HistoricalKeyBroker::Material material;
+  material.publicParameters.assign(wire.begin(), wire.end());
+  material.masterSecret = master.m_msk;
+
+  const auto signerLookup = [userCert] (const ndn::Name& name, ndn::security::Certificate& out) {
+    if (name != userCert.getName())
+      return false;
+    out = userCert;
+    return true;
+  };
+  const auto materialLookup = [&material] (uint64_t generation, uint64_t epoch,
+                                           HistoricalKeyBroker::Material& out) {
+    if (generation != 1002 || epoch != 3)
+      return false;
+    out = material;
+    return true;
+  };
+  const auto replySigner = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  HistoricalKeyBroker broker(signerLookup, materialLookup, replySigner);
+
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "attr-a";
+  request.recipientCertificate = userCert.getName();
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'000'000 + 3'600'000;   // an hour
+  ndn::Interest interest;
+  signHistoricalKeyRequest(interest, request, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+  BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
+  // The same request with a sane lifetime is answered.
+  request.expiresAtMs = 1'000'000 + 60'000;
+  ndn::Interest sane;
+  signHistoricalKeyRequest(sane, request, requester,
+                           ndn::security::SigningInfo(ndn::security::SigningInfo::SIGNER_TYPE_CERT,
+                                                      userCert.getName()));
+  BOOST_CHECK(broker.answer(sane, request.controllerPrefix, 1'000'000));
 }
 
 BOOST_AUTO_TEST_CASE(BrokerRefusesARequestAddressedToAnotherController)
