@@ -9847,6 +9847,16 @@ namespace ndn_service_framework
         // The base RequestMessage overload enters here directly, while the
         // typed/Targeted wrappers also prepare before reaching this boundary.
         // Keep every publication path behind the same readiness/status gate.
+        // Every publication path passes here, so this is the one place that must refuse a caller whose
+        // authority for the service is gone. Without it a revoked User reached this function, published a
+        // Request and waited for a terminal event that no Provider would produce.
+        if (const auto status = m_revocationStates.find(serviceName.toUri());
+            status != m_revocationStates.end() && status->second.hasCurrentStatus() &&
+            !authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY)) {
+            NDN_LOG_ERROR("Reject request under revoked Controller status service="
+                          << serviceName.toUri() << " requestId=" << requestId.toUri());
+            return ndn::Name();
+        }
         if (!prepareRequestControllerVersion(requestMessage, serviceName, requestId)) {
             return ndn::Name();
         }
