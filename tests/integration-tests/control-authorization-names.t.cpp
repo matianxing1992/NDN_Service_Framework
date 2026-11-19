@@ -14,6 +14,7 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/security/validator-null.hpp>
+#include "ndn-service-framework/AbeHistoricalKey.hpp"
 #include <nac-abe/algo/abe-support.hpp>
 #include <nac-abe/attribute-authority.hpp>
 #include <ndn-cxx/util/io.hpp>
@@ -1214,6 +1215,20 @@ BOOST_AUTO_TEST_CASE(StrictCkConsumerValidatesCertificateChainBeforeProducerAuth
     const auto corePlaintext = ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(
       authority.m_pubParams, dkey, rebuilt);
     BOOST_CHECK(corePlaintext == expected);
+
+    // And through the historical issuance path: material captured as an archive, a key minted from it,
+    // and the same rebuilt object decrypted with that key.
+    ndn_service_framework::HistoricalAbeMaterial archived;
+    const auto wire = authority.getPublicParametersWire();
+    archived.publicParameters.assign(wire.begin(), wire.end());
+    archived.masterSecret = authority.m_masterKey.m_msk;
+    const auto historicalWire =
+      ndn_service_framework::issueHistoricalDecryptionKey(archived, "attr1 AND attr2");
+    ndn::nacabe::algo::PrivateKey historicalKey;
+    historicalKey.fromBuffer(ndn::Buffer(historicalWire.data(), historicalWire.size()));
+    const auto historicalPlaintext = ndn::nacabe::algo::ABESupport::getInstance().kpDecrypt(
+      authority.m_pubParams, historicalKey, rebuilt);
+    BOOST_CHECK(historicalPlaintext == expected);
   }
   const auto authorizedBefore = authorizations;
   const auto requestedBefore = ckRequests;
