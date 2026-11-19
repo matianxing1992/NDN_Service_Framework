@@ -166,6 +166,12 @@ private:
   std::shared_ptr<const NativeSealedPlan> m_value;
 };
 
+/** Check fresh, admitted Provider offers actually selected for this proposal. */
+bool
+selectedProvidersSupportCapability(const NativeRolePlacementProposalV3& proposal,
+                                   const std::vector<NativeAdmittedOfferV3>& offers,
+                                   std::string_view capability);
+
 /** Stateless canonical plan constructor used between placement and Core. */
 class NativePlanSealer final
 {

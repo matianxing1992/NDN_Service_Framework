@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import re
+import runpy
 import sys
 from pathlib import Path
 
@@ -21,23 +22,26 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def prepare(output, requester, protection_epoch):
+def prepare(output, requester, protection_epoch, scenario="hybrid"):
     repo = Path(__file__).resolve().parents[3]
     # Use the maintained host-side encoder and semantic graph identity.
     sys.path.insert(0, str(repo / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import qwen_graph_digest, tensor_bundle
 
-    source = Path(__file__).with_name("four-layer-conversation.onnx").resolve()
+    output.mkdir(mode=0o700)
+    if scenario == "tp3":
+        source = output / "one-layer-tp3.onnx"
+        generate = runpy.run_path(str(Path(__file__).with_name("make-four-layer-qwen.py")))["build"]
+        generate(str(source), layers=1, q_heads=6, kv_heads=3, ffn=192, decode=True)
+        partition, stages, degrees = [[0, 1]], ["/Stage/First"], [3]
+    else:
+        source = Path(__file__).with_name("four-layer-conversation.onnx").resolve()
+        partition, stages, degrees = [[0, 1], [1, 4]], ["/Stage/First", "/Stage/Last"], [2, 1]
     model_bytes = source.read_bytes()
     source_digest = digest(model_bytes)
-    if source_digest != "sha256:52fc9b4abbc04ef28c9ca80c9e2dd40e31573998220a325acf281e1a87860fbd":
+    if scenario == "hybrid" and source_digest != "sha256:52fc9b4abbc04ef28c9ca80c9e2dd40e31573998220a325acf281e1a87860fbd":
         raise ValueError("Spec 242 ONNX fixture identity changed")
     graph_digest = canonical_onnx_identity(source).graph_digest
-    partition = [[0, 1], [1, 4]]
-    # The Controller represents each absolute role as an NDN hierarchy.
-    # Relative ranks with embedded slashes would become one escaped component.
-    stages = ["/Stage/First", "/Stage/Last"]
-    degrees = [2, 1]
     schema_digest = digest(b"spec242-planning-graph")
     manifest_digest = digest(b"spec242-four-layer-conversation:" + model_bytes)
     adapter = dict(name="qwen", version="1", abi="onnxruntime", model_formats=["onnx"],
@@ -59,8 +63,8 @@ def prepare(output, requester, protection_epoch):
                             safety_margin=1.0) for stage in stages}
     splitter = dict(kind="QWEN", roles=stages, layer_ranges=partition, tensor_degrees=degrees,
                     artifact_digests_by_role={stage: digest(stage.encode()) for stage in stages},
-                    rank_artifact_digests_by_role={stages[0]: [digest(b"first-r0"),
-                                                               digest(b"first-r1")]},
+                    rank_artifact_digests_by_role={
+                        stages[0]: [digest(f"first-r{rank}".encode()) for rank in range(degrees[0])]},
                     weight_bytes_by_role={stage: bound for stage in stages},
                     resources_by_role=profiles, input_ingress_role=stages[0],
                     result_egress_role=stages[-1])
@@ -112,7 +116,6 @@ def prepare(output, requester, protection_epoch):
     if validated.canonical_source_digest != source_digest:
         raise ValueError("native catalog returned a different source identity")
 
-    output.mkdir(mode=0o700)
     write_json(output / "catalog.json", catalog)
     tokenizer_path = output / "tokenizer.json"
     write_json(tokenizer_path, dict(
@@ -124,7 +127,7 @@ def prepare(output, requester, protection_epoch):
     (output / "delta.bin").write_bytes(tensor_bundle([4]))
     write_json(output / "generation.json", dict(
         sampling=dict(mode="Greedy", repetitionPenalty=1.0),
-        maxNewTokens=32, outputMode="TOKEN_STREAMING", useCache=True,
+        maxNewTokens=2 if scenario == "tp3" else 32, outputMode="TOKEN_STREAMING", useCache=True,
         tokenizerDigest=digest(tokenizer_path.read_bytes()),
         tokenInputName="input_ids", logitsOutputName="logits",
         eosTokenIds=[63], stopStrings=[], attentionMaskInputName="attention_mask",
@@ -139,7 +142,8 @@ if __name__ == "__main__":
                         help="Absent directory under a target-machine workspace")
     parser.add_argument("--requester", required=True, help="Complete Requester NDN identity")
     parser.add_argument("--protection-epoch", required=True)
+    parser.add_argument("--scenario", choices=("hybrid", "tp3"), default="hybrid")
     args = parser.parse_args()
     if not args.requester.startswith("/") or args.requester.endswith("/"):
         parser.error("--requester must be an absolute non-root NDN name")
-    prepare(args.output.resolve(), args.requester, args.protection_epoch)
+    prepare(args.output.resolve(), args.requester, args.protection_epoch, args.scenario)

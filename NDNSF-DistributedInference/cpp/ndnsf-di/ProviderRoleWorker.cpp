@@ -23,6 +23,16 @@ namespace ndnsf::di {
 
 namespace {
 
+std::string_view
+partialLineageConsumer(const DependencyEdge& edge)
+{
+  if (edge.declaredByV3 && edge.useNdnsfDataV1 && edge.operationKind == "TENSOR_PARTIAL" &&
+      edge.consumerRoles.size() > 1) {
+    return edge.consumerRoles.front();
+  }
+  return edge.consumerRole;
+}
+
 /** Admit one peer contribution on a generation-bound unit.
  *
  * Every route that delivers a peer contribution uses this: the awaited fetch, a resumed
@@ -41,7 +51,14 @@ admitPeerContribution(const RoleSpec& role, const DependencyEdge& edge, TensorBu
   }
   auto expected = *role.generationLineage;
   expected.producerRole = edge.producerRole;
-  expected.consumerRole = edge.consumerRole;
+  if (edge.declaredByV3 && edge.useNdnsfDataV1 && edge.operationKind == "TENSOR_PARTIAL" &&
+      edge.consumerRoles.size() > 1 &&
+      (edge.consumerRole != role.role ||
+       std::find(edge.consumerRoles.begin(), edge.consumerRoles.end(), role.role) ==
+         edge.consumerRoles.end())) {
+    throw std::runtime_error("GENERATION_EPOCH_LINEAGE_MISMATCH");
+  }
+  expected.consumerRole = partialLineageConsumer(edge);
   expected.operationIndex = edge.collectiveOperationIndex;
   if (!lineage->sameGenerationState(expected) ||
       lineage->producerRole != expected.producerRole ||
@@ -1406,6 +1423,25 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
     // its own slots are present, which is what lets the peer produce later
     // partials. Awaiting the whole role's inputs first is the deadlock this path
     // exists to remove.
+    const auto startDeferred = [&](const auto& edge) {
+      if (item.deferredInputsByScope.erase(edge.scope) == 0) return;
+      auto started = item.io->prefetchInput(item.sessionId, edge);
+      const auto inserted = item.pendingInputsByScope.emplace(
+        edge.scope, std::shared_future<TensorBundle>(std::move(started)));
+      if (!inserted.second)
+        throw std::runtime_error("sealed step remote input started twice: " + edge.scope);
+    };
+    if (step.operation == "SUM") {
+      // Start this step's reads together before waiting for any result.
+      // The fetch owner still bounds concurrency and validates each slot.
+      for (const auto& edge : item.role.inputs) {
+        if (edge.consumerStepId == step.stepId &&
+            ctx.inputsByScope.count(edge.scope) == 0 &&
+            item.stepRemoteInputs.count(edge.scope) == 0) {
+          startDeferred(edge);
+        }
+      }
+    }
     for (const auto& edge : item.role.inputs) {
       if (edge.consumerStepId != step.stepId) continue;
       auto admitted = ctx.inputsByScope.find(edge.scope);
@@ -1431,15 +1467,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
         // A deferred edge is started here, on the step that needs it. This is the only
         // place the Interest is signed for a peer partial, so the producing rank has
         // already had its chance to run the step that publishes it.
-        if (item.deferredInputsByScope.erase(edge.scope) != 0) {
-          auto started = item.io->prefetchInput(item.sessionId, edge);
-          const auto inserted = item.pendingInputsByScope.emplace(
-            edge.scope, std::shared_future<TensorBundle>(std::move(started)));
-          if (!inserted.second) {
-            throw std::runtime_error(
-              "sealed step remote input started twice: " + edge.scope);
-          }
-        }
+        startDeferred(edge);
         const auto pending = item.pendingInputsByScope.find(edge.scope);
         if (pending == item.pendingInputsByScope.end()) {
           // A contribution collected by an earlier turn is already in `inputs`; anything else
@@ -1687,7 +1715,7 @@ ProviderRoleWorker::runSealedSteps(const RoleExecutionContext& ctx, WorkItem& it
       if (item.role.generationLineage) {
         auto lineage = *item.role.generationLineage;
         lineage.producerRole = edge.producerRole;
-        lineage.consumerRole = edge.consumerRole;
+        lineage.consumerRole = partialLineageConsumer(edge);
         lineage.operationIndex = edge.collectiveOperationIndex;
         stripped = attachGenerationEpochLineage(stripped, lineage);
       }
@@ -2143,7 +2171,7 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
           " consumer=" + edge.consumerRole);
       }
       lineage.producerRole = edge.producerRole;
-      lineage.consumerRole = edge.consumerRole;
+      lineage.consumerRole = partialLineageConsumer(edge);
       lineage.operationIndex = edge.collectiveOperationIndex;
       bundle = attachGenerationEpochLineage(bundle, lineage);
     }

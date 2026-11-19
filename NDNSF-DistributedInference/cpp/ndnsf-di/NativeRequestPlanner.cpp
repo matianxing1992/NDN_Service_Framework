@@ -125,6 +125,78 @@ bindNativeGenerationFeedback(NativeExecutionPlan& plan,
   }
   plan.streamingOperationStride = transferCount;
 }
+namespace detail {
+
+void
+coalesceSharedTensorPartials(NativeExecutionPlan& plan)
+{
+  if (plan.steps.empty() || plan.tensorDegree < 3 || plan.stageLayout.size() > 1) return;
+  plan.validateSteps();
+  using Output = std::pair<std::string, std::string>;
+  std::map<Output, std::vector<std::size_t>> groups;
+  for (std::size_t index = 0; index < plan.dependencies.size(); ++index) {
+    const auto& dependency = plan.dependencies[index];
+    if (dependency.operationKind == "TENSOR_PARTIAL") {
+      groups[{dependency.producerStepId, dependency.producerSlotId}].push_back(index);
+    }
+  }
+  const auto sameContract = [] (const auto& left, const auto& right) {
+    auto normalized = right;
+    normalized.keyScope = left.keyScope;
+    normalized.dependencyId = left.dependencyId;
+    normalized.consumers = left.consumers;
+    normalized.consumerStepId = left.consumerStepId;
+    normalized.consumerSlotId = left.consumerSlotId;
+    return left.expectedSegments == right.expectedSegments &&
+      left.expectedBytes == right.expectedBytes &&
+      nativeFixedDependencyContractsEqualV1(left, normalized);
+  };
+  std::vector<bool> redundant(plan.dependencies.size());
+  for (const auto& [output, indexes] : groups) {
+    if (indexes.size() < 2) continue;
+    const auto& first = plan.dependencies[indexes.front()];
+    if (first.producers.size() != 1 || !first.useNdnsfDataV1 ||
+        !first.redistributions.empty() || output.first.empty() || output.second != "partial" ||
+        first.tensors.size() != 1 || first.tensors.front().empty()) continue;
+    auto shared = first;
+    shared.consumers.clear();
+    const auto canShare = std::all_of(indexes.begin(), indexes.end(), [&](auto index) {
+      const auto& edge = plan.dependencies[index];
+      if (edge.consumers.size() != 1 || edge.consumers.front() == first.producers.front() ||
+          edge.consumerStepId.empty() || edge.consumerSlotId.empty() ||
+          !sameContract(first, edge)) return false;
+      shared.consumers.push_back(edge.consumers.front());
+      return true;
+    });
+    if (!canShare) continue;
+    std::sort(shared.consumers.begin(), shared.consumers.end());
+    if (std::adjacent_find(shared.consumers.begin(), shared.consumers.end()) !=
+        shared.consumers.end()) continue;
+    for (const auto index : indexes) {
+      const auto& original = plan.dependencies[index];
+      const auto slot = findSharedPartialInput(plan, shared, original.consumers.front());
+      if (slot.first != original.consumerStepId || slot.second != original.consumerSlotId) {
+        throw std::invalid_argument("shared TP partial changed the declared SUM binding");
+      }
+    }
+    shared.consumerStepId.clear();
+    shared.consumerSlotId.clear();
+    shared.keyScope = "tp-shared-" + nativePlanningDigest(nativeCanonicalJson(
+      NativeJson::array({shared.producers.front(), output.first, output.second,
+                         shared.tensors.front()}))).substr(7);
+    shared.dependencyId = shared.keyScope;
+    plan.dependencies[indexes.front()] = std::move(shared);
+    for (auto index = std::next(indexes.begin()); index != indexes.end(); ++index)
+      redundant[*index] = true;
+  }
+  std::size_t index = 0;
+  plan.dependencies.erase(std::remove_if(plan.dependencies.begin(), plan.dependencies.end(),
+    [&] (const auto&) { return redundant[index++]; }), plan.dependencies.end());
+  plan.validateSteps();
+}
+
+} // namespace detail
+
 // Only this translation unit can construct the process-local scope snapshot.
 // The public lease remains a value, so also compare it with the original scope.
 class NativeGrantLeaseFixedContext final
@@ -1781,6 +1853,17 @@ NativePlannedRequest planNativeRequestImpl(
       if (!options.stream || !options.generation->enabled ||
           options.generation->mode != "TOKEN_STREAMING")
         throw std::invalid_argument("generation requires the authenticated streaming request path");
+      if (runtime.fixedRoleSourcePublisher && runtime.fixedRoleAssignments) {
+        if (selectedProvidersSupportCapability(proposal, offers,
+                                                NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1)) {
+          if (selectedProvidersSupportCapability(proposal, offers,
+                                                NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1)) {
+            if (auto receivingSum = makeReceivingStageReduction(execution, candidate.resultEgressRole))
+              execution = std::move(*receivingSum);
+          }
+          detail::coalesceSharedTensorPartials(execution);
+        }
+      }
       std::set<std::string> sources(execution.roles.begin(), execution.roles.end());
       std::set<std::string> terminals = sources;
       for (const auto& edge : execution.dependencies) {

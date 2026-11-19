@@ -12,6 +12,8 @@ class KeyChain;
 namespace ndnsf::di {
 struct NativeProviderHandlerConfig;
 struct NativeProtectedGrantConfig;
+class ProtectedRuntime;
+class ProviderGroupCoordinator;
 // Resolve the operator registry and the selected Provider's recipient key.
 NativeProtectedGrantConfig loadNativeProtectedGrantConfig(
   const std::string& provider, const std::string& modelFamily,
@@ -38,5 +40,20 @@ void installNativeProtectedGrantFactory(NativeProviderHandlerConfig& config);
 void installNativeProviderGroupCoordinatorFactory(
   NativeProviderHandlerConfig& config, const std::string& localProvider,
   const std::string& providerCertificateName, ndn::security::KeyChain* keyChain);
+
+namespace detail {
+
+/** Bind and verify a Selection against the locally resolved authority and recipient. */
+std::shared_ptr<ProtectedRuntime>
+verifySelectedProviderGrant(const NativeSelectionProjectionV3& projection,
+                            const std::shared_ptr<ProviderGroupCoordinator>& group,
+                            const std::map<std::string, std::string>& assignmentFields,
+                            const std::string& providerBoot,
+                            NativeProtectedGrantConfig keys,
+                            const std::function<std::string(
+                              const std::string&, int, const std::function<bool()>&)>& fetchGrant,
+                            const std::shared_ptr<NativeWorkStatistics>& statistics = {});
+
+} // namespace detail
 }
 #endif

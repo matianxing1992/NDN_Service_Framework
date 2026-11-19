@@ -52,6 +52,13 @@ struct NetworkTelemetryStoreTestAccess
 /** Test-only private access; no independent protocol or lifecycle implementation. */
 struct ServiceProviderTestAccess
 {
+  static void recordSelectionReceived(ServiceProvider& provider, const std::string& digest,
+                                      const ndn::Name& service, const ndn::Name& request)
+  {
+    provider.updateSelectionExecutionStatus(digest, SelectionExecutionState::Received,
+      provider.getName(), service, request);
+  }
+
   static void useSigningKeyChainForPeerProbe(ServiceProvider& provider,
                                              ndn::KeyChain& keyChain)
   {

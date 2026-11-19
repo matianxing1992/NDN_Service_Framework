@@ -2370,6 +2370,7 @@ enum class CoordinatorFault
   MISSING,
   WRONG_PRODUCER,
   PUBLICATION_FAILURE,
+  MISSING_CONTRIBUTION,
 };
 
 auto
@@ -2538,8 +2539,12 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
       auto bus = std::make_shared<tests::PartialBus>();
       tests::CancellableBusDependencyIo::PublicationMutation mutation;
       if (fault != CoordinatorFault::NONE) {
-        mutation = [fault] (const DependencyEdge& edge, TensorBundle& value) {
-          if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") return;
+        mutation = [&, fault] (const DependencyEdge& edge, TensorBundle& value) {
+          if (fault == CoordinatorFault::MISSING_CONTRIBUTION) {
+            return edge.operationKind != "TENSOR_PARTIAL" || edge.consumerRole != egress ||
+                   edge.producerRole != basePlan.stageLayout.front().unitRoleIds.front();
+          }
+          if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") return true;
           auto lineage = extractGenerationEpochLineage(value);
           if (!lineage)
             throw std::runtime_error("fixture could not find the Producer's original lineage");
@@ -2550,6 +2555,7 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
             lineage->producerRole = "foreign/Tensor/Rank/0";
             value = attachGenerationEpochLineage(value, *lineage);
           }
+          return true;
         };
       }
       auto io = std::make_shared<tests::CancellableBusDependencyIo>(bus, std::move(mutation));
@@ -2683,8 +2689,8 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
         BOOST_REQUIRE_MESSAGE(!failures.str().empty(), "corrupt lineage was accepted");
         const auto expected = fault == CoordinatorFault::PUBLICATION_FAILURE
           ? "injected activation publication failure" : "GENERATION_EPOCH_LINEAGE_MISMATCH";
-        BOOST_CHECK_MESSAGE(failures.str().find(expected) !=
-                              std::string::npos, failures.str());
+        if (fault != CoordinatorFault::MISSING_CONTRIBUTION)
+          BOOST_CHECK_MESSAGE(failures.str().find(expected) != std::string::npos, failures.str());
         BOOST_CHECK(sampledTokens.empty());
         for (const auto& epoch : coordinatedResults) {
           BOOST_CHECK_EQUAL(epoch.first, 0u);
@@ -3511,6 +3517,70 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
   BOOST_REQUIRE_EQUAL(stages.size(), 2u);
   BOOST_CHECK_EQUAL(stages.front().stageId, "first");
   BOOST_CHECK_EQUAL(stages.back().stageId, "last");
+  {
+    auto baseline = prepared.candidate.executionPlan;
+    const auto& receiver = stages.back().unitRoleIds.front();
+    const auto findStep = [&](const auto& id) {
+      return std::find_if(baseline.steps.begin(), baseline.steps.end(),
+        [&](const auto& step) { return step.stepId == id; });
+    };
+    const auto edge = std::find_if(baseline.dependencies.begin(), baseline.dependencies.end(),
+      [&](const auto& dep) {
+        if (dep.consumers != std::vector<std::string>{receiver}) return false;
+        const auto step = findStep(dep.producerStepId);
+        return step != baseline.steps.end() && step->operation == "SUM";
+      });
+    BOOST_REQUIRE(edge != baseline.dependencies.end());
+    const auto cut = *edge;
+    const auto oldSum = *findStep(cut.producerStepId);
+
+    // Each side that needs the complete value performs its own SUM.
+    auto upstreamRead = oldSum;
+    upstreamRead.stepId += "/retained";
+    upstreamRead.operation = "CALL_SUBGRAPH";
+    upstreamRead.artifactEntry = "fixture-retained-sum";
+    upstreamRead.inputSlots = oldSum.outputSlots;
+    upstreamRead.inputSlots.front().slotId = "retained-sum";
+    upstreamRead.inputSlots.front().producerStepId = oldSum.stepId;
+    upstreamRead.inputSlots.front().producerSlotId = oldSum.outputSlots.front().slotId;
+    baseline.steps.push_back(upstreamRead);
+    const auto both = makeReceivingStageReduction(baseline, receiver);
+    BOOST_REQUIRE(both.has_value());
+    BOOST_CHECK(std::any_of(both->steps.begin(), both->steps.end(), [&](const auto& step) {
+      return step.stepId == oldSum.stepId;
+    }));
+    BOOST_CHECK_EQUAL(std::count_if(both->steps.begin(), both->steps.end(), [&](const auto& step) {
+      return step.unitId == receiver && step.operation == "SUM";
+    }), 1U);
+    BOOST_CHECK_EQUAL(std::count_if(both->dependencies.begin(), both->dependencies.end(),
+      isSharedTensorPartial), 1U);
+    baseline.steps.pop_back();
+
+    auto moved = makeReceivingStageReduction(baseline, receiver);
+    BOOST_REQUIRE(moved.has_value());
+
+    // The previous planner may have omitted the unused mirror SUM already.
+    const auto peer = std::find_if(baseline.steps.begin(), baseline.steps.end(),
+      [&](const auto& step) {
+        if (step.operation != "SUM" || step.unitId == oldSum.unitId ||
+            step.inputSlots.size() != oldSum.inputSlots.size()) return false;
+        return std::equal(step.inputSlots.begin(), step.inputSlots.end(),
+          oldSum.inputSlots.begin(), [](const auto& left, const auto& right) {
+            return left.producerStepId == right.producerStepId &&
+                   left.producerSlotId == right.producerSlotId;
+          });
+      });
+    BOOST_REQUIRE(peer != baseline.steps.end());
+    const auto peerId = peer->stepId;
+    baseline.steps.erase(peer);
+    baseline.dependencies.erase(std::remove_if(baseline.dependencies.begin(),
+      baseline.dependencies.end(), [&](const auto& dep) { return dep.consumerStepId == peerId; }),
+      baseline.dependencies.end());
+    auto single = makeReceivingStageReduction(baseline, receiver);
+    BOOST_REQUIRE(single.has_value());
+    BOOST_CHECK_EQUAL(single->steps.size(), moved->steps.size());
+    BOOST_CHECK_EQUAL(single->dependencies.size(), moved->dependencies.size());
+  }
   std::set<std::string> sourceIdentities;
   for (const auto& stage : stages) {
     BOOST_REQUIRE(!stage.unitRoleIds.empty());
@@ -3856,7 +3926,8 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
                       const std::vector<std::uint64_t>& degrees = {},
                       bool finalizeCheckpoint = false,
                       const std::vector<std::uint64_t>& firstRankWeights = {},
-                      const std::vector<std::uint64_t>& expectedKvEnds = {})
+                      const std::vector<std::uint64_t>& expectedKvEnds = {},
+                      bool receivingStageReduction = false)
 {
   // These projections exercise post-admission assembly, not Selection or transport security.
   if (const auto* childPath = std::getenv("NDNSF_SPEC242_CACHE_REOPEN")) {
@@ -4058,9 +4129,27 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     BOOST_CHECK_EQUAL(shape.headDim, 32u);
     BOOST_CHECK_EQUAL(shape.ffn, 384u);
   }
+  auto executionPlan = prepared.candidate.executionPlan;
+  if (receivingStageReduction) {
+    const auto& egress = prepared.candidate.resultEgressRole;
+    auto candidate = makeReceivingStageReduction(executionPlan, egress);
+    BOOST_REQUIRE(candidate.has_value());
+    const auto sum = std::find_if(candidate->steps.begin(), candidate->steps.end(),
+      [&](const auto& step) { return step.unitId == egress && step.operation == "SUM"; });
+    BOOST_REQUIRE(sum != candidate->steps.end());
+    BOOST_REQUIRE_EQUAL(sum->inputSlots.size(), 2U);
+    BOOST_CHECK_EQUAL(std::count_if(candidate->dependencies.begin(), candidate->dependencies.end(),
+      [&](const auto& edge) {
+        return edge.operationKind == "TENSOR_PARTIAL" && edge.consumerStepId == sum->stepId &&
+               edge.consumers == std::vector<std::string>{egress};
+      }), 2U);
+    BOOST_CHECK_EQUAL(candidate->dependencies.size() + 1, executionPlan.dependencies.size());
+    BOOST_CHECK_EQUAL(candidate->steps.size() + 1, executionPlan.steps.size());
+    executionPlan = std::move(*candidate);
+  }
   for (const auto& role : prepared.roles) {
     BOOST_CHECK_EQUAL(!role.tensorShardV1.empty(), expectedKvRanges.count(role.role) != 0);
-    auto projection = stageWindowProjection(prepared.candidate.executionPlan);
+    auto projection = stageWindowProjection(executionPlan);
     projection.provider = options.providerIdentity;
     projection.fixedProviderByRole.clear();
     for (const auto& unit : prepared.candidate.executionPlan.roles)
@@ -4073,7 +4162,7 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     projection.deadlineMs = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count()) + 120000;
-    projection.plan = prepared.candidate.executionPlan;
+    projection.plan = executionPlan;
     projection.plan.serviceName = "/fixture/service";
     projection.canonicalArtifactName = "/fixture/root";
     projection.selectedRole = projection.assembly = role;
@@ -4268,7 +4357,6 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     units.push_back(std::move(members));
     ++stageIndex;
   }
-  auto executionPlan = prepared.candidate.executionPlan;
   for (const auto& item : std::vector<std::pair<std::string,
          const std::map<std::string, NativeModelRunnerSpec>*>>{
            {"cold-material", &coldSpecs}, {"cached-material", &cachedSpecs}}) {
@@ -4277,7 +4365,8 @@ verifyHybridMaterials(bool mirrored, bool externalControls = false, bool coordin
     verifyHybridExecution(sourcePath.string(),
       executionPlan, shape, units, prepared.candidate.resultEgressRole,
       *item.second, true, item.first + "-" + layoutLabel +
-        (externalControls ? "-controls" : "") + (coordinator ? "-coordinator" : ""),
+        (externalControls ? "-controls" : "") + (coordinator ? "-coordinator" : "") +
+        (receivingStageReduction ? "-receiving-sum" : ""),
       externalControls, coordinator, fault, finalizeCheckpoint, expectedKvRanges);
   }
   if (coordinator) return;
@@ -4359,6 +4448,17 @@ BOOST_AUTO_TEST_CASE(HybridCoordinatorsGenerateFromActualFeedback)
 {
   verifyHybridMaterials(false, false, true);
   verifyHybridMaterials(true, false, true);
+}
+
+BOOST_AUTO_TEST_CASE(HybridReceiverReducesTheTwoRawStageContributions)
+{
+  verifyHybridMaterials(false, false, true, CoordinatorFault::NONE, {}, false, {}, {}, true);
+}
+
+BOOST_AUTO_TEST_CASE(HybridReceiverCannotFinishWithOneRawContributionMissing)
+{
+  verifyHybridMaterials(false, false, true, CoordinatorFault::MISSING_CONTRIBUTION,
+                        {}, false, {}, {}, true);
 }
 
 BOOST_AUTO_TEST_CASE(HybridCoordinatorsFinalizeTheThirtySecondToken)

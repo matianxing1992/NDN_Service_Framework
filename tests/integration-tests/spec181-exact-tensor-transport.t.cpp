@@ -297,6 +297,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
             std::size_t repeatedFetches = 0, std::size_t prefetchWorkerCount = 0,
             bool checkpointFinalize = false)
 {
+  const bool sharedCancellation = mode == "shared-tp-cancel";
+  const bool sharedFanout = mode == "shared-tp-partial" || sharedCancellation;
   const bool manifestLate = mode == "manifest-late";
   const bool manifestTimeout = mode == "manifest-timeout";
   const bool segmentTimeout = mode == "segment-timeout";
@@ -312,7 +314,7 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   const bool boundedWindow = mode == "inline-window" || windowCancellation || windowRefill ||
     adaptiveWindow || mode == "prefetch" || mode == "inline-prefetch";
   ndn_service_framework::test::BootstrapProfile profile;
-  profile.providerCount = 2;
+  profile.providerCount = sharedFanout ? 3 : 2;
   ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
   environment.bootstrap();
   BOOST_REQUIRE(environment.status() ==
@@ -519,8 +521,9 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
 
   ProviderGroupCoordinatorOptions options;
   options.wrapEpochKey = [&] (const std::string& provider, const ProviderGroupBytes& key) {
-    const auto keyName = provider == producer.getName().toUri()
-      ? producer.getSigningKeyName() : consumer.getSigningKeyName();
+    const auto keyName = provider == producer.getName().toUri() ? producer.getSigningKeyName() :
+      sharedFanout && provider == environment.provider(2).getName().toUri()
+        ? environment.provider(2).getSigningKeyName() : consumer.getSigningKeyName();
     const auto publicKey = environment.keyChain().getPib()
       .getIdentity(keyName.getPrefix(-2)).getKey(keyName).getPublicKey();
     const auto wrapped = wrapSelectionGatedInputKey(
@@ -562,9 +565,11 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   const bool feedback = mode == "feedback" || mode == "feedback-next";
   operation.operationIndex = feedback ? (mode == "feedback-next" ? 5 : 2) : 7;
   if (observedSizing && mode != "inline-observed-prefill") operation.operationIndex = 15;
-  operation.kind = feedback ? "TOKEN_FEEDBACK" : "PIPELINE_TRANSFER";
+  operation.kind = feedback ? "TOKEN_FEEDBACK" :
+    sharedFanout ? "TENSOR_PARTIAL" : "PIPELINE_TRANSFER";
   operation.producerRanks = {"0"};
   operation.consumerRanks = {"1"};
+  if (sharedFanout) operation.consumerRanks.push_back("2");
   operation.tensorLayoutDigest = sourceLayout;
   operation.maxBytes = 2U << 20;
   operation.maxSegments = 300;
@@ -588,12 +593,15 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
         return left.operationIndex < right.operationIndex;
       });
   }
+  std::vector<GroupMemberV1> members{
+    {producer.getName().toUri(), 0, "offer-producer", producer.getName().toUri()},
+    {consumer.getName().toUri(), 1, "offer-consumer", consumer.getName().toUri()}};
+  if (sharedFanout) {
+    const auto name = environment.provider(2).getName().toUri();
+    members.push_back({name, 2, "offer-second-consumer", name});
+  }
   const auto capability = producerCoordinator->createCapability(
-      requestId.toUri(), "attempt-1", planDigest, groupId, 3,
-      {{producer.getName().toUri(), 0, "offer-producer",
-        producer.getName().toUri()},
-       {consumer.getName().toUri(), 1, "offer-consumer",
-        consumer.getName().toUri()}},
+      requestId.toUri(), "attempt-1", planDigest, groupId, 3, std::move(members),
       permittedOperations, inflightBudget,
       shortDeadline ? 700 : 5000, shortDeadline ? 1800 : 30000);
   auto consumerCoordinator =
@@ -619,9 +627,10 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
   endpoint.producerRole = feedback ? "S1R0" : "S0R0";
   endpoint.producerRank = 0;
   endpoint.consumerRole = feedback ? "S0R0" : "S1R0";
-  endpoint.consumerRoles = mode == "reuse" ?
+  endpoint.consumerRoles = (mode == "reuse" || sharedFanout) ?
     std::vector<std::string>{"S1R0", "S1R1"} : std::vector<std::string>{endpoint.consumerRole};
-  endpoint.tensorId = feedback ? "input_ids" : std::string(160, 't');
+  endpoint.tensorId = feedback ? "input_ids" :
+    sharedFanout ? "partial" : std::string(160, 't');
   endpoint.tensorDigest = tensorDigest;
   endpoint.layoutDigest = sourceLayout;
   endpoint.targetLayoutDigest = targetLayout;
@@ -738,7 +747,8 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     original.payload = {'N', 'D', 'I', 'T', 'B', 'Z', '0', '1',
                         1, 0, 0, 4, 0, 0, 0, 0, 0x78};
   }
-  const auto producerWork = mode == "prefetch" ? makeNativeWorkStatistics() : nullptr;
+  const auto producerWork = (mode == "prefetch" || sharedFanout)
+    ? makeNativeWorkStatistics() : nullptr;
   const auto consumerWork = (mode == "prefetch" || mode == "prefetch-renewals" || adaptiveWindow)
     ? makeNativeWorkStatistics() : nullptr;
   NdnsfCollaborationDependencyIo producerIo(
@@ -1236,6 +1246,70 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
     return;
   }
 
+  if (sharedFanout) {
+    auto& other = environment.provider(2);
+    auto& otherFace = environment.providerFace(2);
+    const auto otherProvider = other.getName().toUri();
+    auto otherCoordinator = std::make_shared<ProviderGroupCoordinator>(options);
+    otherCoordinator->installCapability(capability,
+      producerCoordinator->epochKeyForProvider(otherProvider), true);
+    auto otherEdge = edge;
+    otherEdge.consumerRole = "S1R1";
+    auto otherAssignment = consumerAssignment;
+    otherAssignment.role = otherEdge.consumerRole;
+    ServiceProvider::CollaborationContext otherContext(
+      other, profile.userIdentity, requestId, RequestMessage(), otherAssignment);
+    NdnsfCollaborationDependencyIo otherIo(
+      otherContext, 5000, chunkSize, 60000, otherCoordinator);
+    std::set<ndn::Name> otherNames;
+    std::map<ndn::Name, ndn::Buffer> otherWires;
+    ndn::signal::ScopedConnection otherInterests = otherFace.onSendInterest.connect(
+      [&] (const ndn::Interest& interest) {
+        otherNames.insert(interest.getName());
+        producerFace.receive(interest);
+      });
+    ndn::signal::ScopedConnection otherData = producerFace.onSendData.connect(
+      [&] (const ndn::Data& data) {
+        if (otherNames.count(data.getName()) == 0) return;
+        const auto& wire = data.wireEncode();
+        otherWires.emplace(data.getName(), ndn::Buffer(wire.begin(), wire.end()));
+        otherFace.receive(data);
+      });
+    holdManifestInterests = sharedCancellation;
+    auto first = consumerIo.prefetchInput("session-v3", edge);
+    if (sharedCancellation) {
+      environment.pumpUntil([&] { return !heldManifestInterests.empty(); });
+      BOOST_REQUIRE(!heldManifestInterests.empty());
+      BOOST_CHECK(first.wait_for(0ms) != std::future_status::ready);
+      consumerIo.cancelPendingPrefetches();
+      environment.pumpUntil([&] { return first.wait_for(0ms) == std::future_status::ready; });
+      BOOST_REQUIRE(first.wait_for(0ms) == std::future_status::ready);
+      BOOST_CHECK_THROW(first.get(), std::runtime_error);
+      consumerIo.drainPendingPrefetches();
+    }
+    auto second = otherIo.prefetchInput("session-v3", otherEdge);
+    environment.pumpUntil([&] {
+      return (sharedCancellation || first.wait_for(0ms) == std::future_status::ready) &&
+             second.wait_for(0ms) == std::future_status::ready;
+    });
+    if (!sharedCancellation) {
+      BOOST_REQUIRE(first.wait_for(0ms) == std::future_status::ready);
+      BOOST_CHECK(first.get().payload == original.payload);
+    }
+    BOOST_REQUIRE(second.wait_for(0ms) == std::future_status::ready);
+    BOOST_CHECK(second.get().payload == original.payload);
+    BOOST_CHECK(otherWires == uniquePackets);
+    BOOST_CHECK_EQUAL(otherWires.size(), expectedSegments + 1);
+    BOOST_CHECK_EQUAL(producerWork->snapshot().counts.at("tensor.objectManifestCalls"), 1U);
+    auto foreign = otherEdge;
+    foreign.consumerRole = edge.consumerRole;
+    BOOST_CHECK_THROW(otherIo.prefetchInput("session-v3", foreign).get(), std::invalid_argument);
+    foreign.consumerRole = "foreign";
+    BOOST_CHECK_THROW(otherIo.prefetchInput("session-v3", foreign).get(), std::invalid_argument);
+    BOOST_CHECK_THROW(producerIo.prefetchInput("session-v3", otherEdge).get(), std::invalid_argument);
+    return;
+  }
+
   const auto fetchStarted = std::chrono::steady_clock::now();
   auto fetched = consumerIo.prefetchInput("session-v3", edge);
   if (manifestLate) {
@@ -1703,6 +1777,14 @@ BOOST_AUTO_TEST_CASE(PooledFinalizePrefetchAbandonmentCancelsAndDrains)
   runTransfer("cancel", true, 0, 1, true);
 }
 BOOST_AUTO_TEST_CASE(ExactTensorRetryReusesOriginalSignedPacketsAndRejectsConflicts) { runTransfer("reuse"); }
+BOOST_AUTO_TEST_CASE(SharedTpPartialReachesTwoProvidersAsOneOriginal)
+{
+  runTransfer("shared-tp-partial", false);
+}
+BOOST_AUTO_TEST_CASE(CancellingOneSharedTpPartialReaderKeepsTheOriginalAvailable)
+{
+  runTransfer("shared-tp-cancel", false);
+}
 BOOST_AUTO_TEST_CASE(TensorOriginalQuotaRejectsBeforePacketsAndLeavesEndpointReusable) { runTransfer("quota"); }
 BOOST_AUTO_TEST_CASE(InlineManifestDeliversSingleSegmentWithoutSegmentInterest) { runTransfer("inline-single"); }
 BOOST_AUTO_TEST_CASE(CompressibleTensorUsesRawSegmentsAndPreservesOriginalSignedPackets)

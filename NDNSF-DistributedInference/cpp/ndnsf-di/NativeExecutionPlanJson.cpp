@@ -1323,7 +1323,8 @@ dependencyFromV3Json(const boost::property_tree::ptree& dep)
         "V3 redistribution does not bind the dependency rank/layout contract");
     }
   }
-  const bool degreeChanges = spec.producers.size() != spec.consumers.size();
+  const bool degreeChanges = spec.producers.size() != spec.consumers.size() &&
+                             !isSharedTensorPartial(spec);
   const bool layoutChanges =
     !spec.collectiveSourceLayoutDigest.empty() &&
     !spec.collectiveTargetLayoutDigest.empty() &&
@@ -3424,6 +3425,9 @@ bool NativeFixedRoleAssignmentV1::matchesExecutionTemplate(const NativeSelection
       !sameAssembly(projection.selectedRoleContract(), *m_role) ||
       !sameAssembly(projection.assemblyContract(), *m_role) ||
       !sameFixedGeneration(projection.generationContract, fixed.generation) ||
+      !nativeStepContractsEqualV1(projection.plan, fixed.stepPlanVersion,
+                                  fixed.tensorDegree, fixed.steps) ||
+      projection.plan.stageLayout.size() != fixed.stageLayout.size() ||
       projection.plan.dependencies.size() != fixed.dependencies.size() ||
       current.role != fixed.dataflow.role || current.terminalResponseOwner != fixed.dataflow.terminalResponseOwner ||
       current.waitFor.size() != fixed.dataflow.waitFor.size()) return false;
@@ -3432,6 +3436,9 @@ bool NativeFixedRoleAssignmentV1::matchesExecutionTemplate(const NativeSelection
         fixed.providerByRole.begin()->second != m_provider) return false;
   }
   else if (projection.providerOwnership() != fixed.providerByRole) return false;
+  for (std::size_t index = 0; index < fixed.stageLayout.size(); ++index)
+    if (projection.plan.stageLayout[index].canonicalJson() !=
+        fixed.stageLayout[index].canonicalJson()) return false;
   for (std::size_t index = 0; index < fixed.dependencies.size(); ++index)
     if (!sameFixedDependency(projection.plan.dependencies[index], fixed.dependencies[index])) return false;
   const auto generationEpochs = fixed.expandRoleEpochs ?
@@ -3578,6 +3585,15 @@ bool nativeSelectionRoleContractsEqualV3(
   const NativeSelectionRoleV3& left, const NativeSelectionRoleV3& right)
 {
   return sameAssembly(left, right);
+}
+
+bool
+nativeStepContractsEqualV1(const NativeExecutionPlan& plan, std::string_view version,
+                           std::uint64_t degree,
+                           const std::vector<NativeExecutionStepSpec>& steps)
+{
+  return plan.stepPlanVersion == version && plan.tensorDegree == degree &&
+    ((plan.steps.empty() && steps.empty()) || nativeStepsJson(plan.steps) == nativeStepsJson(steps));
 }
 
 bool nativeFixedDependencyContractsEqualV1(const NativeDependencySpec& left,
@@ -4126,6 +4142,7 @@ validateNativeSelectionProjectionSetV3(
     const NativeGenerationEndpointRangeV1* range;
   };
   std::map<std::string, std::vector<Publisher>> publishers;
+  std::map<std::string, std::set<std::string>> sharedPartialReaders;
   std::map<std::string, std::set<std::string>> edges;
   std::map<std::string, std::size_t> incoming;
   std::size_t terminalOwners = 0;
@@ -4180,6 +4197,15 @@ validateNativeSelectionProjectionSetV3(
           "V3 mustFetch has no exact single mayPublish owner");
       }
       const auto& publisher = found->second.front();
+      if (endpoint.operation == "TENSOR_PARTIAL" && endpoint.consumerRoles.size() > 1) {
+        if (endpoint.consumerRole != consumer || endpoint.dependencyId.empty() ||
+            endpoint.dependencyId != publisher.endpoint->dependencyId ||
+            std::find(endpoint.consumerRoles.begin(), endpoint.consumerRoles.end(), consumer) ==
+              endpoint.consumerRoles.end() ||
+            !sharedPartialReaders[endpoint.endpointDigest].insert(consumer).second) {
+          throw std::invalid_argument("V3 shared TP partial has an invalid reader projection");
+        }
+      }
       if (projection.dataflow.endpointRange) {
         const auto& range = *projection.dataflow.endpointRange;
         if (!publisher.range || range.epochCount != publisher.range->epochCount ||
@@ -4203,6 +4229,17 @@ validateNativeSelectionProjectionSetV3(
       }
       if (edges[endpoint.producerRole].insert(consumer).second) {
         ++incoming[consumer];
+      }
+    }
+  }
+
+  for (const auto& item : publishers) {
+    for (const auto& owner : item.second) {
+      const auto& endpoint = *owner.endpoint;
+      if (endpoint.operation != "TENSOR_PARTIAL" || endpoint.consumerRoles.size() <= 1) continue;
+      const std::set<std::string> audience(endpoint.consumerRoles.begin(), endpoint.consumerRoles.end());
+      if (item.second.size() != 1 || sharedPartialReaders[item.first] != audience) {
+        throw std::invalid_argument("V3 shared TP partial audience lacks exact reader cover");
       }
     }
   }
@@ -4473,6 +4510,9 @@ roleSpecFromSelectionProjectionV3Impl(
       // historical keyScope match so that topology is unchanged.
       return dependency.keyScope == endpoint.groupId;
     };
+    const bool sharedEndpoint = endpoint.operation == "TENSOR_PARTIAL" &&
+      endpoint.consumerRoles.size() > 1;
+    bool sharedBinding = false;
     for (const auto& dependency : dependencies) {
       if (!matchesEndpoint(dependency)) {
         continue;
@@ -4486,6 +4526,20 @@ roleSpecFromSelectionProjectionV3Impl(
       edge.producerSlotId = dependency.producerSlotId;
       edge.consumerStepId = dependency.consumerStepId;
       edge.consumerSlotId = dependency.consumerSlotId;
+      if (isSharedTensorPartial(dependency)) {
+        if (!sharedEndpoint || endpoint.dependencyId.empty() ||
+            endpoint.dependencyId != dependency.dependencyId ||
+            endpoint.consumerRoles != dependency.consumers ||
+            projection.providerOwnership().empty()) {
+          throw std::invalid_argument("V3 shared TP partial does not match sealed authority");
+        }
+        sharedBinding = true;
+        if (!output) {
+          const auto [step, slot] = findSharedPartialInput(projection.plan, dependency, dataflow.role);
+          edge.consumerStepId = step;
+          edge.consumerSlotId = slot;
+        }
+      }
       edge.redistributions = dependency.redistributions;
       if (!edge.redistributions.empty()) {
         const auto& redistribution = edge.redistributions.front();
@@ -4510,6 +4564,9 @@ roleSpecFromSelectionProjectionV3Impl(
       }
       break;
     }
+    if (sharedEndpoint && !sharedBinding) {
+      throw std::invalid_argument("V3 shared TP partial lacks a sealed dependency");
+    }
     return edge;
   };
 
@@ -4524,6 +4581,23 @@ roleSpecFromSelectionProjectionV3Impl(
   spec.inputs.reserve(dataflow.mustFetch.size());
   for (const auto& endpoint : dataflow.mustFetch) {
     if (atSequence(endpoint)) spec.inputs.push_back(makeEdge(endpoint, false));
+  }
+  for (const auto& dependency : projection.plan.dependencies) {
+    if (!isSharedTensorPartial(dependency)) continue;
+    const auto checkBinding = [&] (const auto& edges, const auto& roles) {
+      if (std::find(roles.begin(), roles.end(), spec.role) == roles.end()) return;
+      const auto matches = std::count_if(edges.begin(), edges.end(), [&](const auto& edge) {
+        return edge.operationKind == "TENSOR_PARTIAL" &&
+               edge.producerStepId == dependency.producerStepId &&
+               edge.producerSlotId == dependency.producerSlotId &&
+               edge.consumerRoles == dependency.consumers;
+      });
+      if (matches != 1) {
+        throw std::invalid_argument("V3 shared TP partial has no exact local binding");
+      }
+    };
+    checkBinding(spec.outputs, dependency.producers);
+    checkBinding(spec.inputs, dependency.consumers);
   }
   // The sealed template has to travel with the role. Without it the Provider receives the
   // dependency edges but not the step DAG those edges bind to, so a tensor-parallel role

@@ -16,6 +16,14 @@ struct NativeKvOwnerKeyOperations;
 class NativeConversationCoordinator;
 struct NativeRecipientKeyMaterialV1;
 
+namespace detail {
+
+/** Merge compatible partial edges after the Planner has admitted all participating offers. */
+void
+coalesceSharedTensorPartials(NativeExecutionPlan& plan);
+
+} // namespace detail
+
 /** Type-erased cooperative ports captured by one request operation. */
 struct NativeStrategyPorts
 {

@@ -402,6 +402,9 @@ private:
 std::map<std::string, NativeExecutionPlan>
 nativeExecutionPlansByServiceFromJson(std::istream& input);
 
+bool nativeStepContractsEqualV1(const NativeExecutionPlan& plan, std::string_view version,
+                                std::uint64_t degree,
+                                const std::vector<NativeExecutionStepSpec>& steps);
 bool nativeFixedDependencyContractsEqualV1(const NativeDependencySpec& left,
                                          const NativeDependencySpec& right);
 bool nativeFixedGenerationInterfacesEqualV1(const NativeGenerationExecutionContractV1& left,

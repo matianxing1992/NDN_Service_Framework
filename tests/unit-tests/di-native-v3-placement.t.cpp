@@ -37,6 +37,12 @@
 #include "tests/unit-tests/generic-dynamic-api-fixture.hpp"
 #include "tests/integration-tests/isolated-test-trust.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCatalogModelAdapter.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-split.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProtectedProvider.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderHandler.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NdnsfCollaborationDependencyIo.hpp"
+#include "tests/integration-tests/ndnsf-integration-fixture.hpp"
+#include "tests/fixtures/service-provider-test-access.hpp"
 #include <thread>
 #include <atomic>
 #include <future>
@@ -45,6 +51,7 @@
 #include <limits>
 #include <locale>
 #include <cfenv>
+#include <cstring>
 
 namespace {
 using namespace ndnsf::di;
@@ -2505,6 +2512,523 @@ BOOST_AUTO_TEST_CASE(RequestPlannerComposesAuthenticatedGrantsAndCoreAssignments
   BOOST_CHECK_EQUAL(grantPublications, successfulGrantPublications);
 }
 
+BOOST_AUTO_TEST_CASE(SharedTpPlanningUsesSignedAckAndReopensFixedSelections)
+{
+  auto f = oracle();
+  auto sample = f.at("seal_cases").front();
+  const std::vector<std::string> rankRoles{"/spec252/rank/0", "/spec252/rank/1", "/spec252/rank/2"};
+  ndn_service_framework::test::BootstrapProfile profile;
+  profile.providerCount = rankRoles.size();
+  profile.serviceName = ndn::Name("/service");
+  profile.userIdentity = ndn::Name("/requester");
+  ndn_service_framework::test::NdnsfIntegrationEnvironment environment(profile);
+  environment.bootstrap();
+  environment.enableProductionIngressForTest();
+  environment.disconnectProviderPeerTransportForTest();
+
+  const auto policyTemplate = f.at("policy").at("entries").at(1);
+  f["policy"]["entries"] = NativeJson::array();
+  const auto offerTemplate = sample.at("offers").front().get<std::string>();
+  sample["offers"] = NativeJson::array();
+  for (std::size_t index = 0; index < rankRoles.size(); ++index) {
+    const auto provider = environment.provider(index).getName().toUri();
+    auto policy = policyTemplate;
+    policy["provider"] = provider;
+    policy["keyLocatorPrefix"] = provider + "/KEY/fixture";
+    policy["certificateName"] = provider + "/KEY/fixture/issuer/v=1";
+    f["policy"]["entries"].push_back(std::move(policy));
+    auto offer = nativeParseJson(offerTemplate);
+    offer["provider"] = offer["topology"]["provider"] = provider;
+    offer["accepted_roles"] = {rankRoles[index]};
+    offer["capabilities"] = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_SUM_CAPABILITY_V1,
+                             NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1};
+    sample["offers"].push_back(resignOfferAcceptingRole(nativeCanonicalJson(offer), rankRoles[index]));
+  }
+  Input input(f, sample, true);
+  ndn::security::KeyChain keychain("pib-memory:spec252-acks", "tpm-memory:spec252-acks");
+  const auto certificates = groupCertificates(input, keychain);
+  NativeOfferAdmission admission(uriProfileFixturePolicy(f),
+    {{f.at("key_id"), f.at("public_pem")}}, f.at("candidate"));
+
+  auto role = input.roles.front();
+  input.roles.clear();
+  std::vector<qwen::QwenTpUnit> units;
+  std::map<std::string, NativeRoleResourceRequirement> requirements;
+  NativeArtifactBinding artifacts;
+  artifacts.manifestDigest = input.inspected.modelManifestDigest;
+  artifacts.recipeDigest = role.recipeDigest;
+  qwen::QwenTpShape shape;
+  shape.hidden = 2048; shape.layers = 1; shape.queryHeads = 48;
+  shape.kvHeads = 12; shape.headDim = 128; shape.ffn = 3072; shape.vocab = 151936;
+  for (std::size_t rank = 0; rank < rankRoles.size(); ++rank) {
+    const auto& name = rankRoles[rank];
+    auto& unit = units.emplace_back();
+    unit.roleId = name;
+    unit.rank = rank;
+    unit.layerEnd = 1;
+    role.role = role.selectedRole = name;
+    role.artifactDigest = nativePlanningDigest(name);
+    role.expectedInputs = {{"input_ids", "int64", {1, 1}}, {"state", "float32", {1}}};
+    role.expectedOutputs = {{"logits", "float32", {1, 1, static_cast<std::int64_t>(shape.vocab)}},
+                            {"next_state", "float32", {1}}};
+    input.roles.push_back(role);
+    artifacts.sourceByRole[name] = "/catalog/root";
+    artifacts.artifactNameByRole[name] = "/catalog/artifact";
+    artifacts.artifactDigestByRole[name] = role.artifactDigest;
+    requirements[name] = {{"onnxruntime"}, 1, 0, 0, 0, 0, 1.0};
+  }
+  input.split = qwen::buildQwenTpCandidate(input.inspected.graph, shape, units, "entry",
+    rankRoles.front(), input.inspected.descriptor, artifacts.artifactDigestByRole, requirements);
+
+  class Splitter final : public NativeModelSplitStrategy
+  {
+  public:
+    explicit Splitter(const NativeSplitCandidate& value) : m_value(value) {}
+    NativeStrategyIdentity identity() const override { return m_value.splitter; }
+    std::vector<NativeSplitCandidate>
+    enumerate(const NativeModelDescriptor&, const NativeGraphSnapshot&,
+              const NativeCandidateBudget&) const override { return {m_value}; }
+  private:
+    const NativeSplitCandidate& m_value;
+  } splitter(input.split);
+  auto registry = std::make_shared<NativeAdapterRegistry>();
+  registry->freeze();
+  NativeRequestPreparation preparation(registry, {},
+    [&](const auto&, const auto&, const auto&, const auto&) { return artifacts; },
+    [&](const auto&, const auto&, const auto&) { return input.roles; });
+  const auto key = [] (unsigned char seed) {
+    std::array<unsigned char, 32> bytes;
+    bytes.fill(seed);
+    return std::shared_ptr<EVP_PKEY>(EVP_PKEY_new_raw_private_key(
+      EVP_PKEY_ED25519, nullptr, bytes.data(), bytes.size()), EVP_PKEY_free);
+  };
+  NativeGrantIssuerConfig issuer;
+  issuer.authorityIdentity = "/authority";
+  issuer.requesterIdentity = "/requester";
+  issuer.protectionEpoch = role.protectionEpoch;
+  issuer.keyId = "spec252";
+  issuer.authorityPrivateKey = key('a');
+  issuer.requesterPublicKey = key('b');
+  issuer.allowedModelManifests = {artifacts.manifestDigest};
+  issuer.contentKey = [] (const auto&, const auto&) { return std::vector<std::uint8_t>(32, 42); };
+  for (const auto& offer : input.offers)
+    issuer.recipientPublicKeys[offer.observation().provider] = key('c');
+  std::string publicKey(32, '\0');
+  std::size_t publicSize = publicKey.size();
+  BOOST_REQUIRE_EQUAL(EVP_PKEY_get_raw_public_key(issuer.authorityPrivateKey.get(),
+    reinterpret_cast<unsigned char*>(publicKey.data()), &publicSize), 1);
+
+  NativeRequestRuntime runtime;
+  const auto& adapter = input.inspected.descriptor.adapter;
+  runtime.contract = {input.context.serviceName, "task", input.inspected.descriptor.adapterId,
+    adapter.descriptorDigest(), nativePlanningDigest("spec252-contract"), nativePlanningDigest("task")};
+  runtime.contract.generationMode = "TOKEN_STREAMING";
+  runtime.contract.tokenizerDigest = nativePlanningDigest("tokenizer");
+  runtime.requesterIdentity = issuer.requesterIdentity;
+  runtime.protectionEpoch = issuer.protectionEpoch;
+  runtime.inputLayoutDigest = nativePlanningDigest("spec252-input-layout");
+  runtime.security = {nativePlanningDigest("spec252-policy"), true};
+  runtime.budget.maxPolicyMs = 1000;
+  std::map<std::string, std::string> publishedGrants;
+  std::mutex publishedGrantsMutex;
+  runtime.grants = std::make_shared<NativeAuthenticatedGrantClient>(
+    issuer.requesterIdentity, key('b'), issuer.authorityIdentity, publicKey,
+    std::make_shared<NativeArtifactGrantIssuer>(issuer),
+    [&] (const auto& name, const auto& bytes, const auto&) {
+      std::lock_guard<std::mutex> lock(publishedGrantsMutex);
+      publishedGrants[name] = bytes;
+      return name;
+    });
+  runtime.fixedRoleSourcePublisher = [&](const auto& projection, const auto& fixed,
+                                         const NativeRequestControl& control) {
+    control.requireActive();
+    const auto wire = nativeFixedRoleAssignmentV1ToJson(fixed);
+    ndn_service_framework::PreparedServiceRequest publicationContext;
+    publicationContext.serviceName = profile.serviceName;
+    publicationContext.requestId = ndn::Name(projection.requestId);
+    ndn_service_framework::LargeDataPublishOptions publicationOptions;
+    publicationOptions.contentName = nativeFixedRoleSourceContentName(projection, fixed);
+    const auto key = environment.user().prepareHybridSendKeyForTest(profile.serviceName,
+                                                                    "REQUEST-LARGE");
+    for (std::size_t rank = 0; rank < rankRoles.size(); ++rank) {
+      environment.provider(rank).cacheHybridReceiveKeyForTest(key.keyId, key.epochId, key.key);
+    }
+    auto publication = environment.user().publishEncryptedLargeData(publicationContext,
+      std::vector<std::uint8_t>(wire.begin(), wire.end()), "spec252-fixed-" + fixed.digest().substr(7),
+      ndn::DEFAULT_FRESHNESS_PERIOD, true, publicationOptions);
+    if (!publication.success || !publication.servingLease)
+      throw std::runtime_error("Spec252 could not publish the encrypted fixed role");
+    return NativeFixedRoleSourceV1{publication.encryptedDataName.toUri(
+      ndn::name::UriFormat::CANONICAL), nativePlanningDigest(wire), wire.size(),
+      publication.servingLease};
+  };
+  NativeApplicationInput application;
+  application.taskName = "task";
+  application.payload = {1};
+  application.inputSchemaDigest = adapter.inputSchemaDigest;
+  application.optionsSchemaDigest = adapter.optionsSchemaDigest;
+  const auto options = nativeCanonicalJson(NativeJson{{"useCache", true},
+    {"outputMode", "TOKEN_STREAMING"}, {"maxNewTokens", 2}, {"eosTokenIds", {2}},
+    {"tokenizerDigest", runtime.contract.tokenizerDigest}, {"tokenInputName", "input_ids"},
+    {"stateInputNames", {"state"}}, {"stateOutputNames", {"next_state"}}});
+  application.options.assign(options.begin(), options.end());
+  NativeRequestOptions requestOptions;
+  requestOptions.stream = ndn_service_framework::StreamRequestOptions{};
+  requestOptions.stream->generationId.fill(0x11);
+  requestOptions.stream->deadlineEpochMs = input.context.deadlineMs;
+  requestOptions.stream->streamEpoch = 1;
+  requestOptions.stream->eventKeyCommitment.fill(0x12);
+  requestOptions.generation = nativeGenerationFromOptions(application.options, std::string(32, '1'));
+
+  ndn_service_framework::CollaborationAckClosure closure;
+  closure.requestId = ndn::Name(input.context.requestId);
+  closure.candidates = input.acks;
+  closure.digest = input.ackDigest;
+  const auto encoded = encodeNativeRequestEnvelope(input.inspected.descriptor, application,
+    runtime.contract, input.context.requestId, 1, input.context.deadlineMs);
+  NativeRequestControl control{input.context.requestId, 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(30), {}};
+  const auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  const auto plan = [&] {
+    return planNativeRequest(runtime, requestOptions, input.inspected, encoded, splitter,
+      NativePreSplitFirstPlacement(), preparation, admission, closure, control,
+      input.context.deadlineMs, cancelled);
+  };
+  const auto shared = plan();
+  const auto sharedCount = [] (const auto& planned) {
+    const auto& dependencies = planned.sealed.core.executionPlan.dependencies;
+    return std::count_if(dependencies.begin(), dependencies.end(), isSharedTensorPartial);
+  };
+  BOOST_REQUIRE_EQUAL(sharedCount(shared), 6U);
+  const auto selection = shared.corePlan.participantSelector->select(closure.candidates,
+    shared.corePlan.roles);
+  BOOST_REQUIRE_EQUAL(selection.size(), 3U);
+  BOOST_REQUIRE_EQUAL(shared.fixedAssignments.size(), selection.size());
+
+  std::vector<ndn::signal::ScopedConnection> bridges;
+  for (std::size_t rank = 0; rank < rankRoles.size(); ++rank) {
+    auto& source = environment.providerFace(rank);
+    for (std::size_t peer = 0; peer < rankRoles.size(); ++peer) {
+      if (rank == peer) continue;
+      auto& destination = environment.providerFace(peer);
+      const auto prefix = environment.provider(peer).getName();
+      bridges.emplace_back(source.onSendInterest.connect(
+        [&destination, prefix] (const ndn::Interest& interest) {
+          if (prefix.isPrefixOf(interest.getName())) destination.receive(interest);
+        }));
+      bridges.emplace_back(source.onSendData.connect(
+        [&destination] (const ndn::Data& data) { destination.receive(data); }));
+    }
+  }
+  using Context = ndn_service_framework::ServiceProvider::CollaborationContext;
+  std::vector<std::unique_ptr<Context>> contexts;
+  std::vector<std::shared_ptr<NdnsfCollaborationDependencyIo>> transports;
+  std::vector<std::shared_ptr<ProtectedRuntime>> protectedRuntimes;
+  std::vector<std::shared_ptr<NativeWorkStatistics>> statistics;
+  std::vector<std::future<ProviderRoleResult>> results;
+  std::vector<std::function<std::future<ProviderRoleResult>()>> pending;
+  std::atomic<unsigned> sums{0};
+  unsigned handlerAdmissions = 0;
+  ProviderRoleWorker worker(1, 3, 16, std::chrono::seconds(5));
+  std::map<std::string, NativeRoleProjectionInputs> expandedInputs;
+  std::map<std::string, NativeSelectionProjectionV3> compactByRole;
+  std::map<std::string, std::shared_ptr<const NativeFixedRoleAssignmentV1>> fixedByRole;
+  const auto valueForSlot = [] (const NativeStepSlotSpec& slot, float value) {
+    NamedTensor tensor;
+    tensor.name = slot.slotId;
+    tensor.elementType = tensorElementTypeFromName(slot.dtype);
+    for (const auto& extent : slot.shape) {
+      const auto* fixed = std::get_if<std::int64_t>(&extent);
+      tensor.shape.push_back(fixed ? *fixed : 1);
+    }
+    tensor.payload.resize(tensorStorageByteSize(tensor.elementType, tensor.shape));
+    if (tensor.elementType == TensorElementType::Float32) {
+      const auto scalar = float32Payload({value});
+      for (std::size_t offset = 0; offset < tensor.payload.size(); offset += scalar.size())
+        std::memcpy(tensor.payload.data() + offset, scalar.data(), scalar.size());
+    }
+    return makeEncodedTensorBundle(slot.slotId, {std::move(tensor)});
+  };
+  for (const auto& selected : selection) {
+    const auto fixed = std::find_if(shared.fixedAssignments.begin(), shared.fixedAssignments.end(),
+      [&](const auto& value) { return ndn::Name(value->provider()) == selected.provider; });
+    BOOST_REQUIRE(fixed != shared.fixedAssignments.end());
+    std::istringstream fixedWire(nativeFixedRoleAssignmentV1ToJson(**fixed));
+    const auto reopened = nativeFixedRoleAssignmentV1FromJson(fixedWire);
+    const auto& roleId = reopened->roleOwner()->selectedRole;
+    std::istringstream invocation(std::string(selected.assignmentPayload.begin(),
+      selected.assignmentPayload.end()));
+    const auto compact = nativeSelectionInvocationV1FromJson(invocation, roleId, *reopened);
+    BOOST_REQUIRE(compact.dataflow.endpointRange.has_value());
+    const auto range = *compact.dataflow.endpointRange;
+    const auto expand = [&] (const auto& base) {
+      std::vector<NativeTensorEndpointV3> endpoints;
+      for (const auto& endpoint : base) {
+        if (endpoint.sourceKind != "ROLE") {
+          endpoints.push_back(endpoint);
+          continue;
+        }
+        for (std::uint64_t epoch = 0; epoch < range.epochCount; ++epoch) {
+          endpoints.push_back(NativePlanProjectionBuilder::deriveGenerationEndpoint(
+            endpoint, range, epoch));
+        }
+      }
+      return endpoints;
+    };
+    auto& expanded = expandedInputs[roleId];
+    expanded.executionRole = compact.executionRole;
+    expanded.dataflow = compact.dataflow;
+    expanded.dataflow.endpointRange.reset();
+    expanded.dataflow.mayPublish = expand(compact.dataflow.mayPublish);
+    expanded.dataflow.mustFetch = expand(compact.dataflow.mustFetch);
+    compactByRole.emplace(roleId, compact);
+    fixedByRole.emplace(roleId, reopened);
+    auto roleSpec = roleSpecFromSelectionProjectionV3(compact, compact.provider, 0);
+    BOOST_CHECK_EQUAL(std::count_if(roleSpec.outputs.begin(), roleSpec.outputs.end(),
+      [](const auto& edge) { return edge.operationKind == "TENSOR_PARTIAL"; }), 2U);
+    BOOST_CHECK_EQUAL(std::count_if(roleSpec.inputs.begin(), roleSpec.inputs.end(),
+      [](const auto& edge) { return edge.operationKind == "TENSOR_PARTIAL"; }), 4U);
+    const auto rank = std::find(rankRoles.begin(), rankRoles.end(), roleId) - rankRoles.begin();
+    BOOST_REQUIRE_LT(static_cast<std::size_t>(rank), rankRoles.size());
+    auto& provider = environment.provider(rank);
+    BOOST_REQUIRE_EQUAL(provider.getName(), selected.provider);
+    ndn_service_framework::ServiceProvider::CollaborationAssignment assignment;
+    assignment.service = profile.serviceName;
+    assignment.role = roleId;
+    assignment.assignmentPayload = selected.assignmentPayload;
+    assignment.assignedArtifact = selected.artifactDataName;
+    assignment.workDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    assignment.workCurrent = [] { return true; };
+    contexts.push_back(std::make_unique<Context>(provider, profile.userIdentity,
+      closure.requestId, ndn_service_framework::RequestMessage(), assignment));
+    statistics.push_back(makeNativeWorkStatistics());
+    roleSpec.workStatistics = statistics.back();
+    NativeProviderHandlerConfig config;
+    config.plan = compact.plan;
+    config.planDigest = compact.planDigest;
+    installNativeProviderGroupCoordinatorFactory(config, compact.provider,
+      certificates.at(compact.provider).getName().toUri(), &keychain);
+    auto group = config.groupCoordinatorFactory(*contexts.back(),
+      {{"groupCapabilityV1", compact.groupCapabilityV1},
+       {"executionPlanDigest", compact.planDigest}}, statistics.back());
+    const auto fields = parseNativeProviderAssignmentFields(selected.assignmentPayload, roleId,
+                                                            &compact);
+    NativeProtectedGrantConfig grant;
+    grant.authorityIdentity = issuer.authorityIdentity;
+    grant.authorityPublicKeyRaw = publicKey;
+    grant.publicationIdentity = issuer.requesterIdentity;
+    grant.recipientKey.material = std::string(32, 'c');
+    const auto fetchGrant = [&](const auto& name, int timeout, const auto&) {
+      BOOST_REQUIRE_GT(timeout, 0);
+      return publishedGrants.at(name);
+    };
+    const auto offer = std::find_if(input.offers.begin(), input.offers.end(),
+      [&](const auto& value) { return value.observation().provider == compact.provider; });
+    BOOST_REQUIRE(offer != input.offers.end());
+    const auto& boot = offer->observation().bootEpoch;
+    auto authorized = ndnsf::di::detail::verifySelectedProviderGrant(
+      compact, group, fields, boot, grant, fetchGrant, statistics.back());
+    BOOST_REQUIRE(authorized->state() == ProtectedRuntimeState::GrantVerified);
+    if (rank == 1) {
+      config.localProviderName = compact.provider;
+      config.providerBootId = boot;
+      config.runnerFactory = std::make_shared<RegistryNativeModelRunnerFactory>();
+      config.protectedRuntimeFactory = [grant, fetchGrant, boot] (
+          Context& context, const NativeSelectionProjectionV3& projection,
+          const std::shared_ptr<ProviderGroupCoordinator>& coordinator,
+          const std::shared_ptr<NativeWorkStatistics>& work) {
+        const auto localFields = parseNativeProviderAssignmentFields(
+          context.assignment().assignmentPayload, context.role(), &projection);
+        return ndnsf::di::detail::verifySelectedProviderGrant(
+          projection, coordinator, localFields, boot, grant, fetchGrant, work);
+      };
+      config.runnerPreparationFactory = [&handlerAdmissions] (
+          Context&, const NativeSelectionProjectionV3&,
+          const std::shared_ptr<ProtectedRuntime>& checked) -> NativeModelRunnerSpec {
+        if (!checked || checked->state() != ProtectedRuntimeState::GrantVerified)
+          throw std::runtime_error("Spec252 handler authorization missing at preparation");
+        ++handlerAdmissions;
+        throw std::runtime_error("Spec252 admission observation complete");
+      };
+      std::string handlerFailure;
+      config.requestStatisticsObserver =
+        std::make_shared<std::function<void(const NativeRequestStatistics&)>>(
+          [&handlerFailure] (const NativeRequestStatistics& result) {
+            handlerFailure = result.failureReason;
+          });
+      auto handler = makeNativeProviderCollaborationHandler(config);
+      ndn_service_framework::RequestMessage request;
+      ndn::Buffer requestWire(encoded.wire.begin(), encoded.wire.end());
+      request.setPayload(requestWire, requestWire.size());
+      request.setStreamRequestOptions(*requestOptions.stream);
+      assignment.selectionDigest = nativePlanningDigest(selected.assignmentPayload.data(),
+                                                        selected.assignmentPayload.size());
+      ndn_service_framework::ServiceProviderTestAccess::recordSelectionReceived(
+        provider, assignment.selectionDigest, profile.serviceName, closure.requestId);
+      Context ingress(provider, profile.userIdentity, closure.requestId, request, assignment);
+      auto done = std::async(std::launch::async, [&] { handler(ingress, request); });
+      const auto finished = [&] {
+        return done.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+      };
+      environment.pumpUntil(finished);
+      if (!finished()) {
+        ingress.revokeCurrentWorkAuthority();
+        environment.pumpUntil(finished);
+      }
+      BOOST_REQUIRE(finished());
+      done.get();
+      BOOST_REQUIRE_MESSAGE(handlerAdmissions == 1,
+                            "TP3 Handler stopped before preparation: " + handlerFailure);
+    }
+    protectedRuntimes.push_back(authorized);
+    transports.push_back(std::make_shared<NdnsfCollaborationDependencyIo>(
+      *contexts.back(), 5000, 4096, 60000, group, authorized, 0, statistics.back()));
+    std::map<std::string, TensorBundle> initial;
+    for (const auto& step : *roleSpec.steps)
+      for (const auto& slot : step.inputSlots)
+        if (slot.source == "EPOCH_INPUT")
+          initial.try_emplace(slot.slotId, valueForSlot(slot, 0));
+
+    GenerationEpochLineageV1 lineage;
+    lineage.requestId = compact.requestId;
+    lineage.attemptEpoch = compact.attempt;
+    lineage.planDigest = compact.planDigest;
+    lineage.generationId = compact.generationContract.generationId;
+    lineage.streamEpoch = 1;
+    lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+    lineage.logicalPrefixDigest = nativePlanningDigest("spec252-prefill-prefix");
+    lineage.logicalPrefixTokenCount = 1;
+    lineage.positionDigest = nativePlanningDigest("spec252-prefill-position");
+    roleSpec.generationLineage = std::move(lineage);
+
+    // The fixture supplies sealed prefill inputs in-process. The count oracle
+    // concerns the rank DAG and excludes next-epoch feedback.
+    const auto feedback = [](const auto& edge) { return edge.operationKind == "TOKEN_FEEDBACK"; };
+    roleSpec.inputs.erase(std::remove_if(roleSpec.inputs.begin(), roleSpec.inputs.end(),
+      [&](const auto& edge) { return feedback(edge) || edge.operationKind == "APPLICATION_INPUT"; }),
+                          roleSpec.inputs.end());
+    roleSpec.outputs.erase(std::remove_if(roleSpec.outputs.begin(), roleSpec.outputs.end(), feedback),
+                           roleSpec.outputs.end());
+    const auto run = [&, rank, valueForSlot] (const RoleExecutionContext& context) {
+      const auto& step = *context.activeStep;
+      if (step.stepId.find("/MLP/") != std::string::npos ||
+          step.stepId.find("/HEAD") != std::string::npos) {
+        const auto tensors = decodeTensorBundleViews(context.stepInputsBySlot.at("merged"));
+        if (tensors.size() != 1 || tensors.front().elementType != TensorElementType::Float32 ||
+            tensors.front().payload.size() != shape.hidden * sizeof(float)) {
+          throw std::runtime_error("TP3 SUM output violates the sealed type or width");
+        }
+        for (std::size_t offset = 0; offset < tensors.front().payload.size(); offset += sizeof(float)) {
+          float actual;
+          std::memcpy(&actual, tensors.front().payload.data() + offset, sizeof(actual));
+          if (actual != 1.0f) throw std::runtime_error("TP3 SUM differs from the rank-order oracle");
+        }
+        ++sums;
+      }
+      constexpr std::array<float, 3> partial{16777216.0f, -16777216.0f, 1.0f};
+      std::map<std::string, TensorBundle> outputs;
+      for (const auto& slot : step.outputSlots)
+        outputs.emplace(slot.slotId, valueForSlot(slot, partial[rank]));
+      return outputs;
+    };
+    pending.emplace_back([&, session = closure.requestId.toUri() + "/" + roleId,
+      roleSpec = std::move(roleSpec), io = transports.back(),
+      run, initial = std::move(initial)] () mutable {
+      return worker.executeAsync(std::move(session), std::move(roleSpec),
+                                 std::move(io), run, std::move(initial));
+    });
+  }
+  for (auto& start : pending) results.push_back(start());
+  const auto ready = [&] {
+    return std::all_of(results.begin(), results.end(), [](const auto& result) {
+      return result.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+    });
+  };
+  environment.pumpUntil(ready);
+  if (!ready()) {
+    for (const auto& transport : transports) transport->cancelPendingPrefetches();
+    environment.pumpUntil(ready);
+  }
+  BOOST_REQUIRE(ready());
+  std::set<std::string> published;
+  std::map<std::string, unsigned> fetched;
+  for (auto& result : results) {
+    const auto execution = result.get();
+    BOOST_REQUIRE_EQUAL(execution.inputTimings.size(), 4U);
+    for (const auto& input : execution.inputTimings) {
+      BOOST_CHECK(!input.preSatisfied);
+      BOOST_CHECK_GT(input.bytes, 0U);
+      ++fetched[input.plannedDataName];
+    }
+    BOOST_REQUIRE_EQUAL(execution.outputTimings.size(), 2U);
+    for (const auto& output : execution.outputTimings) {
+      BOOST_CHECK_GT(output.bytes, 0U);
+      BOOST_CHECK(published.insert(output.plannedDataName).second);
+    }
+  }
+  BOOST_REQUIRE_EQUAL(published.size(), 6U);
+  BOOST_REQUIRE_EQUAL(fetched.size(), published.size());
+  for (const auto& name : published) BOOST_CHECK_EQUAL(fetched.at(name), 2U);
+  BOOST_CHECK_EQUAL(sums.load(), 4U);
+  for (const auto& work : statistics) {
+    BOOST_CHECK_EQUAL(work->snapshot().counts.at("tensor.objectManifestCalls"), 2U);
+    BOOST_CHECK_EQUAL(work->snapshot().counts.at("sum.accumulators"), 2U);
+  }
+  auto cancelledRuntime = protectedRuntimes.front();
+  bool zeroized = false;
+  cancelledRuntime->registerHostPlaintextLease("fixture-cancel", [&] { zeroized = true; });
+  cancelledRuntime->cancel("fixture cancellation");
+  BOOST_CHECK(zeroized);
+  BOOST_CHECK(cancelledRuntime->state() == ProtectedRuntimeState::Zeroized);
+  for (std::size_t i = 1; i < protectedRuntimes.size(); ++i)
+    protectedRuntimes[i]->complete();
+
+  NativePlanProjectionBuilder::certify(expandedInputs, shared.sealed);
+  for (const auto& [roleId, expanded] : expandedInputs) {
+    const auto& compact = compactByRole.at(roleId);
+    auto full = compact;
+    full.dataflow = expanded.dataflow;
+    const auto& fixed = *fixedByRole.at(roleId);
+    std::istringstream fullWire(nativeSelectionInvocationV2ToJson(full, fixed));
+    const auto decoded = nativeSelectionInvocationV1FromJson(fullWire, roleId, fixed);
+    BOOST_CHECK(!decoded.dataflow.endpointRange.has_value());
+    const auto binding = [] (const auto& edges) {
+      std::set<std::tuple<std::string, std::string, std::string, std::string>> result;
+      for (const auto& edge : edges)
+        result.emplace(edge.manifestDataName, edge.endpointDigest,
+                       edge.consumerStepId, edge.consumerSlotId);
+      return result;
+    };
+    for (std::uint64_t epoch = 0; epoch < compact.dataflow.endpointRange->epochCount; ++epoch) {
+      const auto a = roleSpecFromSelectionProjectionV3(compact, compact.provider, epoch);
+      const auto b = roleSpecFromSelectionProjectionV3(decoded, decoded.provider, epoch);
+      BOOST_CHECK(binding(a.inputs) == binding(b.inputs));
+      BOOST_CHECK(binding(a.outputs) == binding(b.outputs));
+    }
+  }
+
+  const auto warm = plan();
+  BOOST_CHECK_EQUAL(sharedCount(warm), 6U);
+  BOOST_REQUIRE_EQUAL(warm.fixedRoleSources.size(), shared.fixedRoleSources.size());
+  for (std::size_t i = 0; i < warm.fixedRoleSources.size(); ++i)
+    BOOST_CHECK_EQUAL(warm.fixedRoleSources[i].get(), shared.fixedRoleSources[i].get());
+
+  auto& oldAck = closure.candidates.back();
+  const auto oldPayload = oldAck.ack.getPayload();
+  auto oldOffer = nativeParseJson(std::string(oldPayload.begin(), oldPayload.end()));
+  oldOffer["capabilities"] = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_SUM_CAPABILITY_V1};
+  const auto oldWire = resignOfferAcceptingRole(nativeCanonicalJson(oldOffer), rankRoles.back());
+  ndn::Buffer oldBytes(oldWire.begin(), oldWire.end());
+  oldAck.ack.setPayload(oldBytes, oldBytes.size());
+  oldAck.authenticationEvidence.wireDigest = nativePlanningDigest(oldWire);
+  runtime.fixedRoleAssignments = std::make_shared<NativeFixedRoleAssignmentCache>();
+  const auto baseline = plan();
+  BOOST_CHECK_EQUAL(sharedCount(baseline), 0U);
+  const auto& baselineDeps = baseline.sealed.core.executionPlan.dependencies;
+  BOOST_CHECK_EQUAL(std::count_if(baselineDeps.begin(), baselineDeps.end(),
+    [](const auto& edge) { return edge.operationKind == "TENSOR_PARTIAL"; }), 12U);
+}
+
 BOOST_AUTO_TEST_CASE(RequestPlannerAcquiresIndependentRoleGrantsConcurrently)
 {
   const auto f = oracle();
@@ -4484,6 +5008,34 @@ BOOST_AUTO_TEST_CASE(ConversationAffinityPrecedesCostButNotFeasibility)
   input.roles.front().backend = "unsupported";
   BOOST_CHECK_THROW(strategy.proposeRoles(input.context, input.ackDigest,
     input.roles, input.offers, 200), NativeNoFeasiblePlacement);
+}
+
+BOOST_AUTO_TEST_CASE(SharedPartialNegotiationRequiresSelectedSignedOffers)
+{
+  const auto f = oracle();
+  auto sample = f.at("cases")[0];
+  Input legacy(f, sample);
+  const NativePreSplitFirstPlacement placement;
+  const auto proposal = placement.proposeRoles(legacy.context, legacy.ackDigest,
+    legacy.roles, legacy.offers, 200);
+  BOOST_CHECK(!selectedProvidersSupportCapability(proposal, legacy.offers, NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1));
+
+  for (auto& wire : sample.at("offers")) {
+    auto offer = nativeParseJson(wire.get<std::string>());
+    if (offer.at("provider") != "/provider/b") continue;
+    offer["capabilities"] = {NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1};
+    wire = resignOfferAcceptingRole(nativeCanonicalJson(offer), legacy.roles.front().role);
+  }
+  Input mixed(f, sample);
+  auto first = placement.proposeRoles(mixed.context, mixed.ackDigest, mixed.roles, mixed.offers, 200);
+  BOOST_CHECK(!selectedProvidersSupportCapability(first, mixed.offers, NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1));
+  mixed.context.preferredProvidersByRole[mixed.roles.front().role] = "/provider/b";
+  auto capable = placement.proposeRoles(mixed.context, mixed.ackDigest, mixed.roles, mixed.offers, 200);
+  BOOST_CHECK(selectedProvidersSupportCapability(capable, mixed.offers, NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1));
+  BOOST_CHECK(!selectedProvidersSupportCapability(capable, mixed.offers,
+    NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1));
+  capable.offerDigestByProvider.at("/provider/b") = nativePlanningDigest("wrong-ack");
+  BOOST_CHECK(!selectedProvidersSupportCapability(capable, mixed.offers, NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1));
 }
 
 BOOST_AUTO_TEST_CASE(ExplicitShardPlacementRequiresAnAdmittedCapability)
