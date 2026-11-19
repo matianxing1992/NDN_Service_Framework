@@ -428,6 +428,17 @@ def build(bld):
                     install_path='${BINDIR}')
 
         # Native qualification is part of the installed DI closure.
+        # Native fixture that publishes one ABE-protected object for the historical-read acceptance.
+        if 'di' in bld.env.NDNSF_COMPONENTS:
+            bld.program(name='ndnsf-historical-fixture',
+                        target='ndnsf-historical-fixture',
+                        source=['HistoricalFixture.cpp'],
+                        rpath=[runtime_libdir],
+                        includes=['..', '../NDNSF-DistributedRepo/include'],
+                        use='ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE OPENSSL',
+                        linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                        install_path='${BINDIR}')
+
         # Native acceptance probe for reading an object whose generation the Controller retired.
         if 'di' in bld.env.NDNSF_COMPONENTS:
             bld.program(name='ndnsf-historical-read-probe',
