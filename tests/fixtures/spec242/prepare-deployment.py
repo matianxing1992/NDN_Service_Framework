@@ -56,7 +56,7 @@ def prepare_identities(root, prefix, namespace, group, actors):
         certificates[actor_id] = str(certificate)
     for actor in actors:
         home = Path(actor["credential_home"])
-        capture([str(prefix / "bin/spec226-public-trust-installer"), str(home / ".ndn"),
+        capture([str(prefix / "bin/public-trust-installer"), str(home / ".ndn"),
                  "tpm-file:", *certificates.values()], environments[actor["id"]])
         capture([str(prefix / "bin/ndnsf-identity-check"), str(home), actor["identity"]],
                 environments[actor["id"]])

@@ -468,7 +468,8 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
   const std::optional<NativePlacementProbeAllowlistV4>& probeAllowlist,
   std::string requesterIdentity, bool selectionGenerationOptions,
   const std::shared_ptr<NativeWorkStatistics>& statistics = {},
-  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed = std::nullopt)
+  const std::optional<NativeAutomaticShapeSeed>& automaticShapeSeed = std::nullopt,
+  bool prepareLegacyDiscovery = false)
 {
   NativeWorkScope encodingWork(statistics, "request-envelope-encode", NativeWorkKind::LOCAL);
   if (selectionGenerationOptions && contract.generationMode != "TOKEN_STREAMING")
@@ -714,10 +715,20 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
       {"committed_prefix_digest", nativePlanningDigest(prefix)}};
     result.recovery = value;
   }
+  const auto encodeDiscovery = [&](const std::string& wire) {
+    if (automaticShapeSeed)
+      return nativeCanonicalJson(automaticDiscoverySummary(envelope, nativePlanningDigest(wire)));
+    auto& inputValue = envelope.at("input_payload_b64");
+    auto payload = std::move(inputValue);
+    inputValue = "";
+    auto discovery = nativeCanonicalJson(envelope);
+    inputValue = std::move(payload);
+    return discovery;
+  };
   auto wire = nativeCanonicalJson(envelope);
-  if (automaticShapeSeed) {
+  if (automaticShapeSeed || prepareLegacyDiscovery) {
     using ndn_service_framework::RequestMessage;
-    auto discovery = nativeCanonicalJson(automaticDiscoverySummary(envelope, nativePlanningDigest(wire)));
+    auto discovery = encodeDiscovery(wire);
     if (discovery.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE &&
         envelope.at("task").at("placement_profile") == "DI_PLACEMENT_V4") {
       // Keep the optional V4 scope whole or use the existing V3 profile.
@@ -731,11 +742,14 @@ NativeEncodedRequest encodeNativeRequestEnvelopeImpl(
       result.allowedRttPairs.clear(); result.allowedGoodputEdges.clear();
       result.probeScopeDigest.clear(); result.requesterIdentity.clear();
       wire = nativeCanonicalJson(envelope);
-      discovery = nativeCanonicalJson(automaticDiscoverySummary(envelope, nativePlanningDigest(wire)));
-      if (statistics) statistics->addCount("request.automaticDiscoveryV4BudgetFallbacks", 1);
+      discovery = encodeDiscovery(wire);
+      if (statistics) {
+        statistics->addCount(automaticShapeSeed ? "request.automaticDiscoveryV4BudgetFallbacks" :
+                                                  "request.legacyDiscoveryV4BudgetFallbacks", 1);
+      }
     }
     if (discovery.size() > RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE)
-      throw std::invalid_argument("automatic discovery exceeds the Core metadata limit");
+      throw std::invalid_argument("DI discovery exceeds the Core metadata limit");
     result.discoveryPayload.emplace(discovery.begin(), discovery.end());
   }
   if (wire.size() > MAX_WIRE) throw std::invalid_argument("DI request envelope exceeds limit");
@@ -791,7 +805,7 @@ NativeEncodedRequest encodeNativeRequestEnvelopeForRuntime(
   return encodeNativeRequestEnvelopeImpl(model, input, contract, requestId, attempt,
     deadlineMs, recovery, candidateProviders, candidateArtifactInventory,
     probeAllowlist, std::move(requesterIdentity), optionsTransport != "INLINE", statistics,
-    automaticShapeSeed);
+    automaticShapeSeed, true);
 }
 
 bool requiresSelectionGenerationOptions(const std::string& requestWire,

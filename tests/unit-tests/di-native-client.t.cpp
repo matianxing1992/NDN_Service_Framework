@@ -12,6 +12,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeRequestOptionsTransport.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/request-work-statistics.hpp"
+#include "ndn-service-framework/NDNSFMessages.hpp"
 #include "tests/fixtures/spec182/native-model-fixture.hpp"
 #include "tests/integration-tests/isolated-test-trust.hpp"
 
@@ -290,6 +291,46 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeMatchesSdkIdentityAndNativeProviderInput)
   BOOST_CHECK_EQUAL(v4Wire.at("probe_scope_digest").get<std::string>(),
                     v4Encoded.probeScopeDigest);
   BOOST_CHECK_EQUAL(v4Wire.at("requester_identity").get<std::string>(), "/requester/1");
+  const auto encodeForRuntime = [&](const auto& candidateInventory) {
+    return detail::encodeNativeRequestEnvelopeForRuntime(model, input, contract, "/request/v4",
+      1, 10000, std::nullopt, {"/provider/1"}, candidateInventory, probeAllowlist,
+      "/requester/1", "INLINE", {});
+  };
+  const auto withinBudget = encodeForRuntime(inventory);
+  BOOST_CHECK(withinBudget.wire == v4Encoded.wire);
+  BOOST_REQUIRE(withinBudget.discoveryPayload);
+  auto largeInventory = inventory;
+  for (unsigned rank = 1; rank <= 12; ++rank) {
+    auto identity = inventory.identities.front();
+    identity["rank"] = rank;
+    largeInventory.identities.push_back(std::move(identity));
+  }
+  std::sort(largeInventory.identities.begin(), largeInventory.identities.end(),
+    [](const auto& a, const auto& b) { return nativeCanonicalJson(a) < nativeCanonicalJson(b); });
+  largeInventory.digest = nativePlanningDigest(nativeCanonicalJson(largeInventory.identities));
+  const auto largeV4 = encodeNativeRequestEnvelope(model, input, contract,
+    "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, largeInventory,
+    probeAllowlist, "/requester/1");
+  auto overBudget = NativeJson::parse(largeV4.wire);
+  overBudget["input_payload_b64"] = "";
+  BOOST_REQUIRE_GT(nativeCanonicalJson(overBudget).size(),
+                   ndn_service_framework::RequestMessage::MAX_DISCOVERY_PAYLOAD_SIZE);
+  const auto bounded = encodeForRuntime(largeInventory);
+  const auto boundedWire = NativeJson::parse(bounded.wire);
+  BOOST_CHECK_EQUAL(boundedWire.at("task").at("placement_profile").get<std::string>(),
+                    "DI_PLACEMENT_V3");
+  BOOST_CHECK_EQUAL(boundedWire.at("input_payload_b64").get<std::string>(), "AAH/");
+  BOOST_CHECK_EQUAL(boundedWire.at("options_payload_b64").get<std::string>(), "e30=");
+  BOOST_CHECK(bounded.candidateArtifacts.empty());
+  BOOST_CHECK(bounded.probeScopeDigest.empty());
+  BOOST_REQUIRE(bounded.discoveryPayload);
+  const auto& metadata = *bounded.discoveryPayload;
+  ndn_service_framework::RequestMessage request;
+  BOOST_CHECK_NO_THROW(request.setDiscoveryPayload(ndn::Buffer(metadata.begin(), metadata.end())));
+  auto expectedDiscovery = boundedWire;
+  expectedDiscovery["input_payload_b64"] = "";
+  BOOST_CHECK_EQUAL(std::string(metadata.begin(), metadata.end()),
+                    nativeCanonicalJson(expectedDiscovery));
   const auto otherRequester = encodeNativeRequestEnvelope(model, input, contract,
     "/request/v4", 1, 10000, std::nullopt, {"/provider/1"}, inventory,
     probeAllowlist, "/requester/2");
@@ -411,6 +452,12 @@ BOOST_AUTO_TEST_CASE(RequestEnvelopeWorkObservationsPreserveWireAndCountRepresen
                         referenced ? "" : "AAH/AgM=");
       BOOST_CHECK_EQUAL(json.at("options_payload_b64").get<std::string>(),
                         mode == "INLINE" ? "e30=" : "");
+      BOOST_REQUIRE(encoded.discoveryPayload);
+      auto expectedDiscovery = json;
+      expectedDiscovery["input_payload_b64"] = "";
+      const auto& discovery = *encoded.discoveryPayload;
+      BOOST_CHECK_EQUAL(std::string(discovery.begin(), discovery.end()),
+                        nativeCanonicalJson(expectedDiscovery));
       const auto work = statistics->snapshot();
       BOOST_CHECK(work.complete);
       BOOST_CHECK_EQUAL(work.activeSpans, 0U);

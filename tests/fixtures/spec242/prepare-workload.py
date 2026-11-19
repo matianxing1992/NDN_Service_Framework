@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import onnx
-from ndnsf import _ndnsf
 from ndnsf_distributed_inference.adapters.onnx.graph import canonical_onnx_identity
 
 
@@ -68,6 +67,8 @@ def prepare(output, requester, protection_epoch, scenario="hybrid"):
                     weight_bytes_by_role={stage: bound for stage in stages},
                     resources_by_role=profiles, input_ingress_role=stages[0],
                     result_egress_role=stages[-1])
+    if scenario == "tp3":
+        splitter["tensor_rank_weights_by_role"] = {stages[0]: [1, 1, 1]}
     node_mapping = {}
     for index, node in enumerate(onnx.load_model_from_string(model_bytes).graph.node):
         match = re.search(r"layers\.(\d+)(?:/|$)", node.name)
@@ -110,11 +111,14 @@ def prepare(output, requester, protection_epoch, scenario="hybrid"):
                    node_mapping=node_mapping, state_inputs=state_inputs, state_outputs=state_outputs,
                    conversation_input=dict(kind="TENSOR_BUNDLE_TOKEN_IDS", tensor_name="input_ids"),
                    input_format="OPAQUE", max_payload_bytes=1024 * 1024)
-    validated = _ndnsf.NativeRequestCatalog.load(json.dumps(catalog), model_bytes,
-                                                  max_source_bytes=bound,
-                                                  max_assembled_bytes=bound)
-    if validated.canonical_source_digest != source_digest:
-        raise ValueError("native catalog returned a different source identity")
+    if scenario == "hybrid":
+        from ndnsf import _ndnsf
+
+        validated = _ndnsf.NativeRequestCatalog.load(json.dumps(catalog), model_bytes,
+                                                      max_source_bytes=bound,
+                                                      max_assembled_bytes=bound)
+        if validated.canonical_source_digest != source_digest:
+            raise ValueError("native catalog returned a different source identity")
 
     write_json(output / "catalog.json", catalog)
     tokenizer_path = output / "tokenizer.json"

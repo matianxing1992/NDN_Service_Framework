@@ -575,14 +575,15 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // The projected-plan branch runs after the source is moved into the catalog entry, so
   // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
   // the serialized graph, which only exists before the move.
-  const bool sourceBoundHybrid = route == CatalogRoute::QWEN &&
-    split.at("roles").size() > 1 &&
+  const auto weights = split.find("tensor_rank_weights_by_role");
+  const bool sourceBoundTensorPlan = route == CatalogRoute::QWEN &&
+    (split.at("roles").size() > 1 || weights != split.end()) &&
     std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
       [] (const auto& degree) { return degree.template get<std::uint64_t>() > 1; });
   std::map<std::string, std::vector<std::uint64_t>> rankWeights;
-  if (const auto weights = split.find("tensor_rank_weights_by_role"); weights != split.end()) {
-    if (!sourceBoundHybrid || !weights->is_object() || weights->empty())
-      throw std::invalid_argument("tensor rank weights require a source-bound Qwen hybrid");
+  if (weights != split.end()) {
+    if (!sourceBoundTensorPlan || !weights->is_object() || weights->empty())
+      throw std::invalid_argument("tensor rank weights require a source-bound sharded Qwen plan");
     for (const auto& stage : weights->items()) {
       if (!stage.value().is_array() || stage.value().empty())
         throw std::invalid_argument("tensor rank weights require a nonempty array per stage");
@@ -596,7 +597,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     }
   }
   std::optional<qwen::QwenTpShape> hybridColdShape;
-  if (sourceBoundHybrid && !source.modelBytes.empty()) {
+  if (sourceBoundTensorPlan && !source.modelBytes.empty()) {
     // Preserve full byte-based operator/quantization admission before releasing the bytes.
     // Only the small geometry survives the move; port descriptions use inspected facts.
     hybridColdShape = qwen::deriveQwenTpShape(source.modelBytes,
@@ -605,14 +606,14 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // Hybrid cold/restore planning consumes the same inspected facts, without retaining
   // another model-sized byte copy after the source moves into the preparation catalog.
   const std::vector<std::uint8_t> planningGraphBytes =
-    sourceBoundHybrid ? std::vector<std::uint8_t>{} : source.modelBytes;
+    sourceBoundTensorPlan ? std::vector<std::uint8_t>{} : source.modelBytes;
   // The same holds for the recorded graph facts: the sharded branch runs after the entry
   // has moved into the preparation catalog, so a reference-only restore could not reach
   // them there.
   const std::string planningGraphMetadata =
     entry.sourceGraphInspection ? entry.sourceGraphInspection->graphMetadataJson
                                 : std::string{};
-  const auto planningGraphInspection = sourceBoundHybrid
+  const auto planningGraphInspection = sourceBoundTensorPlan
     ? entry.sourceGraphInspection : std::optional<NativeOnnxGraphInspection>{};
   entry.source = std::move(source);
   const auto assemblyByteLimit = entry.recipe.maxAssembledBytes;
@@ -642,13 +643,12 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
                   [] (const auto& degree) {
                     return degree.template get<std::uint64_t>() > 1;
                   })) {
-    // A single stage uses the existing tensor-parallel projection.
+    // Existing single-stage catalogs retain the V1 projection. Explicit rank weights
+    // use the source-bound V2 plan, even when the catalog declares one stage.
     const auto& degrees = split.at("tensor_degrees");
     const auto& layerRanges = split.at("layer_ranges");
     const auto& stageRoles = split.at("roles");
-    const bool hybridLayout =
-      stageRoles.size() > 1 || layerRanges.size() > 1 || degrees.size() > 1;
-    if (hybridLayout) {
+    if (sourceBoundTensorPlan) {
       const auto totalLayers = layerRanges.back().at(1).get<std::uint64_t>();
       const auto hybridShape = hybridColdShape ? *hybridColdShape
         : qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, totalLayers);
