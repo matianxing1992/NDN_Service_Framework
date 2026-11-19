@@ -5835,6 +5835,11 @@ namespace ndn_service_framework
           }
           return result;
         };
+        for (std::size_t i = 0; i < records.size() && i < 3; ++i) {
+          NDN_LOG_WARN("NDNSF_USER_PERMISSION_RECORD index=" << i
+                       << " permissionFullName=" << records[i].providerServiceName
+                       << " serviceName=" << records[i].serviceName);
+        }
         const bool carriesInference = std::any_of(
           currentServices.begin(), currentServices.end(), [&plainService] (const std::string& service) {
             return plainService(service).find("DI/Infer") != std::string::npos;
