@@ -821,6 +821,8 @@ ServiceController::registerArchivedPublicParameters()
   // recipient can open. A signed Data proves origin and integrity, not confidentiality, so
   // answering an unsealed key would publish it to anyone who can reach the prefix. With the
   // filter unregistered such requests time out, which is the safe direction.
+  NDN_LOG_WARN("NDNSF_HISTORICAL_ISSUANCE enabled=" << (kHistoricalKeyIssuanceEnabled ? 1 : 0)
+               << " controllerPrefix=" << m_controllerPrefix);
   if (kHistoricalKeyIssuanceEnabled) {
     ndn::Name dkeyPrefix(m_controllerPrefix);
     dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
