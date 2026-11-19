@@ -1309,6 +1309,41 @@ BOOST_AUTO_TEST_CASE(BrokerRetriesAfterAFailedMintInsteadOfBurningTheRequest)
   BOOST_CHECK(!broker.answer(interest, request.controllerPrefix, 1'000'000));
 }
 
+BOOST_AUTO_TEST_CASE(HistoricalKeyReplyRefusesAnOversizedKey)
+{
+  // The length field is attacker-controlled; a consumer must not allocate or accept whatever it says.
+  HistoricalKeyRequest request;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.generation = 1002;
+  request.epoch = 3;
+  request.policy = "attr-a";
+  request.recipientCertificate = ndn::Name("/user/KEY/1/self/v=1");
+  request.mintedAtMs = 1'000'000;
+  request.expiresAtMs = 1'060'000;
+
+  const auto sign = [] (ndn::Data& data) {
+    data.setSignatureInfo(ndn::SignatureInfo());
+    data.setSignatureValue(ndn::Buffer{1});
+  };
+  ndn::Data reply;
+  BOOST_REQUIRE(buildHistoricalKeyReply(request, std::string(10, 'k'), 1'030'000, sign, reply));
+
+  // Rewrite the length field to a large value without touching name or binding fields.
+  std::string content(reinterpret_cast<const char*>(reply.getContent().value()),
+                      reply.getContent().value_size());
+  const auto marker = content.find("\nlength ");
+  BOOST_REQUIRE(marker != std::string::npos);
+  const auto end = content.find('\n', marker + 1);
+  const auto declared = content.substr(marker + 1, end - marker - 1);
+  BOOST_REQUIRE_EQUAL(declared, std::string("length 10"));
+  content.replace(marker + 1, end - marker - 1, "length 9000");
+  ndn::Data forged(reply);
+  forged.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(content.data()), content.size()));
+
+  HistoricalKeyReply accepted;
+  BOOST_CHECK(!verifyHistoricalKeyReply(forged, request, 1'000'000, accepted));
+}
+
 BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
 {
   std::unique_ptr<ndn::Face> face;

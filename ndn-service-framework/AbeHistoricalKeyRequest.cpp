@@ -246,7 +246,9 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
       return false;
     if (expires <= nowMs || expires > request.expiresAtMs)
       return false;
-    if (length == 0 || length != lines[8].size())
+    // Bound what a consumer will accept: a key is small, and a claimed length is attacker-controlled.
+    constexpr uint64_t MAX_KEY_BYTES = 8192;
+    if (length == 0 || length > MAX_KEY_BYTES || length != lines[8].size())
       return false;
     accepted.requestName = reply.getName();
     accepted.keyBytes = lines[8];
