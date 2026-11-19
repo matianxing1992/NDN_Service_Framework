@@ -111,15 +111,7 @@ def prepare(output, requester, protection_epoch, scenario="hybrid"):
                    node_mapping=node_mapping, state_inputs=state_inputs, state_outputs=state_outputs,
                    conversation_input=dict(kind="TENSOR_BUNDLE_TOKEN_IDS", tensor_name="input_ids"),
                    input_format="OPAQUE", max_payload_bytes=1024 * 1024)
-    if scenario == "hybrid":
-        from ndnsf import _ndnsf
-
-        validated = _ndnsf.NativeRequestCatalog.load(json.dumps(catalog), model_bytes,
-                                                      max_source_bytes=bound,
-                                                      max_assembled_bytes=bound)
-        if validated.canonical_source_digest != source_digest:
-            raise ValueError("native catalog returned a different source identity")
-
+    # Catalog admission belongs to the installed Requester selected by the deployment.
     write_json(output / "catalog.json", catalog)
     tokenizer_path = output / "tokenizer.json"
     write_json(tokenizer_path, dict(

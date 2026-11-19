@@ -2371,6 +2371,8 @@ enum class CoordinatorFault
   WRONG_PRODUCER,
   PUBLICATION_FAILURE,
   MISSING_CONTRIBUTION,
+  WRONG_CONTRIBUTION_EPOCH,
+  WRONG_CONTRIBUTION_PRODUCER,
 };
 
 auto
@@ -2533,6 +2535,9 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
     std::vector<std::int64_t> sampledTokens;
     if (coordinator) {
       BOOST_REQUIRE(dynamic && !externalControls);
+      const bool partialFault = fault == CoordinatorFault::MISSING_CONTRIBUTION ||
+        fault == CoordinatorFault::WRONG_CONTRIBUTION_EPOCH ||
+        fault == CoordinatorFault::WRONG_CONTRIBUTION_PRODUCER;
       const auto topology = nativeGenerationFeedbackTopology(plan, egress, "input_ids");
       bindNativeGenerationFeedback(plan, topology, "input_ids", requestId, 1,
                                    assignment.providerByRole);
@@ -2540,9 +2545,25 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
       tests::CancellableBusDependencyIo::PublicationMutation mutation;
       if (fault != CoordinatorFault::NONE) {
         mutation = [&, fault] (const DependencyEdge& edge, TensorBundle& value) {
-          if (fault == CoordinatorFault::MISSING_CONTRIBUTION) {
-            return edge.operationKind != "TENSOR_PARTIAL" || edge.consumerRole != egress ||
-                   edge.producerRole != basePlan.stageLayout.front().unitRoleIds.front();
+          if (partialFault) {
+            const bool target = edge.operationKind == "TENSOR_PARTIAL" &&
+              edge.consumerRole == egress &&
+              edge.producerRole == basePlan.stageLayout.front().unitRoleIds.front();
+            if (!target) return true;
+            if (fault == CoordinatorFault::MISSING_CONTRIBUTION) return false;
+            auto lineage = extractGenerationEpochLineage(value);
+            if (!lineage)
+              throw std::runtime_error("fixture could not find the partial's original lineage");
+            if (fault == CoordinatorFault::WRONG_CONTRIBUTION_EPOCH) {
+              ++lineage->inferenceEpoch;
+              if (lineage->transitionKind == GenerationEpochLineageV1::PREFILL)
+                lineage->transitionKind = GenerationEpochLineageV1::DECODE;
+            }
+            else {
+              lineage->producerRole = "foreign/Tensor/Rank/0";
+            }
+            value = attachGenerationEpochLineage(stripGenerationEpochLineage(value), *lineage);
+            return true;
           }
           if (edge.operationKind != "ACTIVATION" && edge.operationKind != "PIPELINE") return true;
           auto lineage = extractGenerationEpochLineage(value);
@@ -2691,6 +2712,14 @@ verifyHybridExecution(const std::string& source, const NativeExecutionPlan& base
           ? "injected activation publication failure" : "GENERATION_EPOCH_LINEAGE_MISMATCH";
         if (fault != CoordinatorFault::MISSING_CONTRIBUTION)
           BOOST_CHECK_MESSAGE(failures.str().find(expected) != std::string::npos, failures.str());
+        if (partialFault) {
+          const auto metrics = runners.at(egress)->runtimeMetricsSnapshot();
+          if (metrics && metrics->lastBackendExecution) {
+            const auto& execution = *metrics->lastBackendExecution;
+            BOOST_REQUIRE(execution.identity);
+            BOOST_CHECK_NE(execution.identity->requestId, requestId);
+          }
+        }
         BOOST_CHECK(sampledTokens.empty());
         for (const auto& epoch : coordinatedResults) {
           BOOST_CHECK_EQUAL(epoch.first, 0u);
@@ -3558,6 +3587,15 @@ BOOST_AUTO_TEST_CASE(HybridCatalogBindsRealSourceStateBeforePreparingRoles)
 
     auto moved = makeReceivingStageReduction(baseline, receiver);
     BOOST_REQUIRE(moved.has_value());
+    auto wrongSlot = *moved;
+    const auto partial = std::find_if(wrongSlot.dependencies.begin(), wrongSlot.dependencies.end(),
+      [&](const auto& dep) {
+        return dep.operationKind == "TENSOR_PARTIAL" &&
+               dep.consumers == std::vector<std::string>{receiver};
+      });
+    BOOST_REQUIRE(partial != wrongSlot.dependencies.end());
+    partial->consumerSlotId = cut.consumerSlotId;
+    BOOST_CHECK_THROW(wrongSlot.validateSteps(), std::invalid_argument);
 
     // The previous planner may have omitted the unused mirror SUM already.
     const auto peer = std::find_if(baseline.steps.begin(), baseline.steps.end(),
@@ -4458,6 +4496,14 @@ BOOST_AUTO_TEST_CASE(HybridReceiverReducesTheTwoRawStageContributions)
 BOOST_AUTO_TEST_CASE(HybridReceiverCannotFinishWithOneRawContributionMissing)
 {
   verifyHybridMaterials(false, false, true, CoordinatorFault::MISSING_CONTRIBUTION,
+                        {}, false, {}, {}, true);
+}
+
+BOOST_AUTO_TEST_CASE(HybridReceiverDoesNotRunRegionWithForeignPartialLineage)
+{
+  verifyHybridMaterials(false, false, true, CoordinatorFault::WRONG_CONTRIBUTION_EPOCH,
+                        {}, false, {}, {}, true);
+  verifyHybridMaterials(false, false, true, CoordinatorFault::WRONG_CONTRIBUTION_PRODUCER,
                         {}, false, {}, {}, true);
 }
 
