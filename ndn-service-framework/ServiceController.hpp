@@ -273,6 +273,8 @@ private:
   std::unique_ptr<ControllerGenerationStore> m_generationStore;
   /** Responders for superseded generations' public parameters, kept alive with the Controller. */
   std::vector<ndn::ScopedInterestFilterHandle> m_archivedParameterFilters;
+  /** Historical proof names already registered, so a later rotation does not register them twice. */
+  std::set<std::string> m_archivedParameterNames;
   /** One entry per historical key request seen, kept until the request would expire.
    *
    * A Signed Interest that is replayed must not mint a second key, so the digest that names the

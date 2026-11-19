@@ -692,6 +692,10 @@ ServiceController::registerArchivedPublicParameters()
   const auto answers = collectHistoricalPublicParameterAnswers(archived, m_aaCert.getIdentity(),
                                                                sign);
   for (const auto& answer : answers) {
+    // A rotation after construction re-runs this; the same generation must not be registered twice.
+    const auto name = answer->getName().toUri(ndn::name::UriFormat::CANONICAL);
+    if (!m_archivedParameterNames.insert(name).second)
+      continue;
     m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
       [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {
         m_face.put(*answer);
@@ -814,6 +818,8 @@ ServiceController::revoke(const RevocationTarget& target)
     m_abeRotationPending = true;
     return false;
   }
+  // The generation that was just retired becomes readable through its bound historical proof.
+  registerArchivedPublicParameters();
   NDN_LOG_WARN("NDNSF_CONTROLLER_REVOKED kind="
                << static_cast<int>(target.kind)
                << " identity=" << target.targetIdentity
