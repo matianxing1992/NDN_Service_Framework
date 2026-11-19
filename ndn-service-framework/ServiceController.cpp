@@ -301,8 +301,10 @@ ServiceController::ServiceController(ndn::Face& face,
   , m_keyChain()
   , m_aa(m_aaCert, m_face, m_validator, m_keyChain)
 {
+  NDN_LOG_WARN("NDNSF_CONTROLLER_CTOR entered=1");
   // Load provider/user policies from config
   loadConfigFiles();
+  NDN_LOG_WARN("NDNSF_CONTROLLER_CTOR policies-loaded=1");
   m_policyValidFromMs = 0;
   m_policyEpoch = computePolicyEpoch(m_configFilePath);
   m_requiredKeyEpoch = m_policyEpoch;
@@ -311,6 +313,7 @@ ServiceController::ServiceController(ndn::Face& face,
   // can be issued.  A failed lease or corrupt state leaves the Controller
   // unable to publish permission/status Data rather than reusing a version.
   m_generationReady = initializeControllerGeneration();
+  NDN_LOG_WARN("NDNSF_CONTROLLER_CTOR generationReady=" << (m_generationReady ? 1 : 0));
 
   if (m_generationReady) {
     try {
@@ -323,9 +326,12 @@ ServiceController::ServiceController(ndn::Face& face,
     }
   }
 
+  NDN_LOG_WARN("NDNSF_CONTROLLER_CTOR abeInit-done=1");
   // Convert policies into ABE attribute policies and register them in AA
   addAttributesForUsersAccordingToServicePolicy();
+  NDN_LOG_WARN("NDNSF_CONTROLLER_CTOR attributes-done=1");
   registerArchivedPublicParameters();
+  NDN_LOG_WARN("NDNSF_CONTROLLER_CTOR registration-returned=1");
 
   // Build fast lookup tables for Interest answering
   buildLookupTables();

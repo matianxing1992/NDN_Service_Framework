@@ -35,8 +35,29 @@ historicalGrantRecordCoversPolicy(const std::string& recordContent, const std::s
   constexpr std::string_view PERMISSION("/PERMISSION/");
   if (policy.size() <= PERMISSION.size() || policy.compare(0, PERMISSION.size(), PERMISSION) != 0)
     return false;
-  const std::string service = policy.substr(PERMISSION.size());
-  if (service.empty())
+  // Records may carry canonical URIs whose components keep their type prefix (`8=HELLO`), while a policy
+  // writes the plain form. Compare the two after removing type prefixes from both sides.
+  const auto plain = [] (const std::string& uri) {
+    std::string result;
+    std::size_t begin = 0;
+    while (begin < uri.size()) {
+      const auto end = uri.find('/', begin + 1);
+      std::string component = uri.substr(begin + 1, end == std::string::npos
+                                                  ? std::string::npos : end - begin - 1);
+      const auto equals = component.find('=');
+      if (equals != std::string::npos && equals > 0 &&
+          std::all_of(component.begin(), component.begin() + equals,
+                      [] (unsigned char ch) { return std::isdigit(ch) != 0; }))
+        component = component.substr(equals + 1);
+      result += "/" + component;
+      if (end == std::string::npos)
+        break;
+      begin = end;
+    }
+    return result;
+  };
+  const std::string service = plain(policy.substr(PERMISSION.size() - 1));
+  if (service.size() <= 1)
     return false;
   bool schemaSeen = false;
   std::size_t begin = 0;
@@ -51,8 +72,8 @@ historicalGrantRecordCoversPolicy(const std::string& recordContent, const std::s
     }
     constexpr std::string_view GRANTED("granted ");
     if (line.compare(0, GRANTED.size(), GRANTED) == 0) {
-      const auto granted = line.substr(GRANTED.size());
-      if (granted == service || granted == "/" + service)
+      const auto granted = plain(line.substr(GRANTED.size()));
+      if (granted == service)
         return schemaSeen;
     }
   }
