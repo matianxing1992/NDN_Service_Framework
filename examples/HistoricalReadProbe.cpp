@@ -59,14 +59,16 @@ loadCertificate(const std::string& pib, const std::string& identity)
 int
 main(int argc, char** argv)
 {
-  if (argc != 2) {
-    std::cerr << "usage: ndnsf-historical-read-probe <config.json>\n"
+  if (argc < 2) {
+    std::cerr << "usage: ndnsf-historical-read-probe <config.json> [more.json ...]\n"
                  "  keys: pib, controller_pib, producer_pib, controller, generation, epoch, object,"
                  " producer, service, ck, payload, policy, identity\n";
     return 2;
   }
+  int failures = 0;
+  for (int index = 1; index < argc; ++index) {
   try {
-    const std::string text = readFile(argv[1]);
+    const std::string text = readFile(argv[index]);
     const std::string pib = field(text, "pib");
     ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:", false);
     ndn::Face face;
@@ -90,25 +92,28 @@ main(int argc, char** argv)
     const auto parameters = ndn_service_framework::fetchHistoricalPublicParameters(
       face, request.controllerPrefix, request.generation, request.epoch, controllerCertificate, 5000);
     if (!parameters) {
-      std::cout << "HISTORICAL_READ_FAILED stage=parameters" << std::endl;
-      return 1;
+      std::cout << "HISTORICAL_READ_FAILED stage=parameters config=" << argv[index] << std::endl;
+      ++failures;
+      continue;
     }
     request.publicParameters = *parameters;
 
     const auto plaintext = ndn_service_framework::readHistoricalObject(face, keyChain, request);
     if (!plaintext) {
-      std::cout << "HISTORICAL_READ_FAILED stage=object" << std::endl;
-      return 1;
+      std::cout << "HISTORICAL_READ_FAILED stage=object config=" << argv[index] << std::endl;
+      ++failures;
+      continue;
     }
     ndn::util::Sha256 hash;
     hash << *plaintext;
     std::cout << "HISTORICAL_READ_OK generation=" << request.generation << " epoch=" << request.epoch
               << " bytes=" << plaintext->size() << " plaintextDigest=sha256:" << hash.toString()
-              << std::endl;
-    return 0;
+              << " attribute=" << request.policy << " config=" << argv[index] << std::endl;
   }
   catch (const std::exception& error) {
     std::cout << "HISTORICAL_READ_FAILED stage=config error=" << error.what() << std::endl;
-    return 1;
+    ++failures;
   }
+  }
+  return failures == 0 ? 0 : 1;
 }

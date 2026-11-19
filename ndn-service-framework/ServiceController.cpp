@@ -855,7 +855,7 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
     // The decision is the intersection of what the identity held when the generation was published
     // and what it holds now. Without a recorded snapshot the answer is no.
     const auto authorization = [this] (const ndn::Name& identity, uint64_t generation,
-                                       uint64_t epoch, const std::string& policy) {
+                                       uint64_t epoch, const std::string& policy) mutable {
       std::optional<std::map<std::string, std::set<std::string>>> snapshot;
       try {
         snapshot = m_generationStore->loadAttributeSnapshot(generation, epoch);
@@ -868,9 +868,17 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
       const auto held = snapshot->find(identity.toUri(ndn::name::UriFormat::CANONICAL));
       if (held == snapshot->end())
         return false;
-      const auto current = m_attributesMap.find(identity.toUri(ndn::name::UriFormat::CANONICAL));
-      const std::set<std::string> now = current == m_attributesMap.end()
-        ? std::set<std::string>{} : current->second;
+      const auto identityUri = identity.toUri(ndn::name::UriFormat::CANONICAL);
+      const auto current = m_attributesMap.find(identityUri);
+      // What it holds now means what the Controller would still grant: a configured attribute that has since
+      // been revoked is not held, and issuing a retired generation's key for it would undo the revocation.
+      std::set<std::string> now;
+      if (current != m_attributesMap.end()) {
+        for (const auto& attribute : current->second) {
+          if (!isAbeAttributeRevoked(identityUri, attribute))
+            now.insert(attribute);
+        }
+      }
       return historicalAttributeIsAuthorized(policy, held->second, now);
     };
     m_historicalKeyBroker->setAuthorizationCheck(authorization);
