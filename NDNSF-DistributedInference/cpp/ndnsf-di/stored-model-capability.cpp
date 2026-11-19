@@ -29,6 +29,7 @@
 #include <ndn-cxx/util/random.hpp>
 
 #include "ndn-service-framework/FileKeyRing.hpp"
+#include "ndn-service-framework/SealedField.hpp"
 
 #include "detail/native-symmetric-crypto.hpp"
 
@@ -682,14 +683,19 @@ public:
       auto bytes = readPrivateFile(path, MAX_JOURNAL_BYTES, m_io.requireCurrent);
       Cleanse guard{bytes};
       try {
-        const std::string magic = MAGIC;
+        const std::string magic(MAGIC);
+        const std::string sealedMagic(SEALED_MAGIC);
+        const bool sealed = bytes.size() > sealedMagic.size() + 103 &&
+          std::equal(sealedMagic.begin(), sealedMagic.end(), bytes.begin());
         require(bytes.size() > magic.size() + 103 &&
-          std::equal(magic.begin(), magic.end(), bytes.begin()));
-        const auto bodySize = bytes.size() - 71;
+          (sealed || std::equal(magic.begin(), magic.end(), bytes.begin())));
+        const auto magicSize = sealed ? sealedMagic.size() : magic.size();
+        const auto keyBytes = sealed ? SEALED_FIELD_BYTES : std::size_t{32};
+        const auto bodySize = bytes.size() - 32;
         require(digest(bytes.data(), bodySize) ==
                 std::string(bytes.begin() + bodySize, bytes.end()));
-        const auto metadataEnd = bodySize - 32;
-        const auto text = std::string(bytes.begin() + magic.size(), bytes.begin() + metadataEnd);
+        const auto metadataEnd = bodySize - keyBytes;
+        const auto text = std::string(bytes.begin() + magicSize, bytes.begin() + metadataEnd);
         m_metadata = nativeParseJson(text);
         if (resolvePrefix)
           bindPrefix(m_metadata.at("context").at("publicationPrefix").get<std::string>());
@@ -717,7 +723,20 @@ public:
         require(nativeCanonicalJson(m_metadata) == text && m_metadata.is_object() &&
           m_metadata.size() == 7 && m_metadata.at("schema") == "ndnsf-di-model-preparation-v1" &&
           savedContext == context);
-        m_handle.masterKey.assign(bytes.begin() + metadataEnd, bytes.begin() + bodySize);
+        if (sealed) {
+          const auto& protection = journalProtectionKey();
+          require(!protection.empty() &&
+            ndn_service_framework::openField(
+              protection,
+              std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
+              "ndnsf-di/model-preparation-journal", m_sealedKey));
+          require(m_sealedKey.size() == 32);
+          m_handle.masterKey.assign(m_sealedKey.begin(), m_sealedKey.end());
+          OPENSSL_cleanse(m_sealedKey.data(), m_sealedKey.size());
+        }
+        else {
+          m_handle.masterKey.assign(bytes.begin() + metadataEnd, bytes.begin() + bodySize);
+        }
         validate();
       }
       catch (...) {
@@ -949,12 +968,27 @@ private:
   save()
   {
     m_io.requireCurrent();
-    const auto prefix = std::string(MAGIC) + nativeCanonicalJson(m_metadata);
-    require(prefix.size() + 103 <= MAX_JOURNAL_BYTES);
+    const auto& protection = journalProtectionKey();
+    // A journal written with a key is sealed with it; without a key the older layout stands, which the
+    // reader still accepts. The magic names which layout this file uses.
+    std::string keyField;
+    if (!protection.empty()) {
+      keyField = ndn_service_framework::sealField(
+        protection, std::string(m_handle.masterKey.begin(), m_handle.masterKey.end()),
+        "ndnsf-di/model-preparation-journal");
+      require(keyField.size() == SEALED_FIELD_BYTES);
+    }
+    const auto prefix = std::string(protection.empty() ? MAGIC : SEALED_MAGIC) +
+      nativeCanonicalJson(m_metadata);
+    require(prefix.size() + (protection.empty() ? 103 : 103 - 32 + SEALED_FIELD_BYTES) <=
+            MAX_JOURNAL_BYTES);
     Bytes bytes(prefix.begin(), prefix.end());
     bytes.reserve(prefix.size() + 103);
     Cleanse guard{bytes};
-    bytes.insert(bytes.end(), m_handle.masterKey.begin(), m_handle.masterKey.end());
+    if (protection.empty())
+      bytes.insert(bytes.end(), m_handle.masterKey.begin(), m_handle.masterKey.end());
+    else
+      bytes.insert(bytes.end(), keyField.begin(), keyField.end());
     const auto checksum = digest(bytes.data(), bytes.size());
     bytes.insert(bytes.end(), checksum.begin(), checksum.end());
     detail::writePrivateCheckpointFile(m_path, {}, [&](int fd) {
@@ -979,10 +1013,31 @@ private:
     require(::unlink(m_stage.c_str()) == 0 && ::fsync(m_parent.value) == 0);
   }
 
+  /** The key that seals the journal, from the deployment ring; empty when there is none. */
+  static const std::vector<std::uint8_t>&
+  journalProtectionKey()
+  {
+    static const std::vector<std::uint8_t> key = [] {
+      try {
+        const auto entries = ndn_service_framework::loadFileKeyRingEntries();
+        if (!entries.empty())
+          return entries.front().key;
+      }
+      catch (const std::exception&) {
+      }
+      return std::vector<std::uint8_t>{};
+    }();
+    return key;
+  }
+
   static constexpr char MAGIC[] = "NDNSF-DI-MODEL-PREPARATION-v1\n";
+  static constexpr char SEALED_MAGIC[] = "NDNSF-DI-MODEL-PREPARATION-v2\n";
+  // base64 of a 32-byte secret sealed with AES-256-GCM: 12-byte nonce, 32-byte ciphertext, 16-byte tag.
+  static constexpr std::size_t SEALED_FIELD_BYTES = 95;
   static constexpr std::uint64_t MAX_JOURNAL_BYTES = 64U << 20;
   std::filesystem::path m_path, m_stage;
   NativeStoredModelPacketIo m_io;
+  std::string m_sealedKey;
   FileDescriptor m_parent{-1}, m_lock{-1};
   NativeStoredModelHandle m_handle;
   ndn::Name m_prefix;
