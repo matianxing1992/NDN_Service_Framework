@@ -6540,6 +6540,9 @@ namespace ndn_service_framework
                              result.outcome ==
                                  PolicyRefreshCoordinator::Outcome::FETCH_COALESCED);
                     }
+                    NDN_LOG_INFO("NDNSF_STATUS_REFRESH_FIRE service=" << serviceName.toUri()
+                                 << " shouldFetch=" << shouldFetch
+                                 << " rearm=" << rearmForPeriodicRefresh);
                     if (rearmForPeriodicRefresh) {
                         const auto current = m_policyStatusRefreshScheduled.find(serviceKey);
                         if (current != m_policyStatusRefreshScheduled.end() &&
