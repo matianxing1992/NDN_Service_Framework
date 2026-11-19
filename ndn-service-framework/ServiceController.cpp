@@ -35,6 +35,14 @@
 
 namespace ndn_service_framework {
 
+/** Whether the Controller answers historical decryption-key requests.
+ *
+ * Closed by default: the reply must carry a key sealed to the recipient's verified public key before
+ * signing, because a signature proves who produced a packet, not who may read it. Reopen only together
+ * with that sealing.
+ */
+constexpr bool kHistoricalKeyIssuanceEnabled = false;
+
 NDN_LOG_INIT(ndn_service_framework.ServiceController);
 
 namespace {
@@ -703,13 +711,21 @@ ServiceController::registerArchivedPublicParameters()
         m_face.put(*answer);
       }));
   }
-  // Historical key requests arrive under one prefix and are checked per request.
-  ndn::Name dkeyPrefix(m_controllerPrefix);
-  dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
-  m_historicalKeyFilters.push_back(m_face.setInterestFilter(dkeyPrefix,
-    [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
-      serveHistoricalKeyRequest(interest);
-    }));
+  // Historical key issuance is closed until the reply can carry a key that only the verified
+  // recipient can open. A signed Data proves origin and integrity, not confidentiality, so
+  // answering an unsealed key would publish it to anyone who can reach the prefix. With the
+  // filter unregistered such requests time out, which is the safe direction.
+  if (kHistoricalKeyIssuanceEnabled) {
+    ndn::Name dkeyPrefix(m_controllerPrefix);
+    dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
+    m_historicalKeyFilters.push_back(m_face.setInterestFilter(dkeyPrefix,
+      [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
+        serveHistoricalKeyRequest(interest);
+      }));
+  }
+  else {
+    NDN_LOG_INFO("Historical key issuance: disabled (reply must be sealed to the recipient)");
+  }
 }
 
 void
