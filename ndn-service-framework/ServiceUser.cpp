@@ -10036,6 +10036,32 @@ namespace ndn_service_framework
         }
         options.validate();
 
+        // A caller whose authority is gone must learn here, not at its deadline. The targeted path
+        // already gates on the Controller status before spending credentials; the normal path did not,
+        // so a revoked User kept waiting for a terminal event that no Provider would produce. When no
+        // status for this service has been installed yet there is nothing to judge against, so one is
+        // requested instead of refusing a first call that the Controller would allow.
+        {
+            std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
+            const auto status = m_revocationStates.find(serviceName.toUri());
+            const auto prefix = m_controllerPrefix;
+            if (status == m_revocationStates.end() && !prefix.empty()) {
+                // Nothing to judge against yet: ask for this service's status so the next call - and
+                // the periodic revalidation armed by its arrival - can see a revocation.
+                m_scheduler.schedule(ndn::time::milliseconds(0),
+                    [this, prefix, serviceName] {
+                        fetchPolicyStatusFromController(prefix, serviceName, 1, std::nullopt);
+                    });
+            }
+            if (status != m_revocationStates.end() && status->second.hasCurrentStatus() &&
+                !authorizeControllerTransition(serviceName, ProtectedTransition::DISCOVERY)) {
+                if (onError) onError({StreamedInvocationErrorCode::Unauthorized,
+                                      "request rejected by Controller status for " +
+                                        serviceName.toUri()});
+                return nullptr;
+            }
+        }
+
         RequestMessage requestMessage;
         requestMessage.setPayload(requestPayload, requestPayload.size());
         requestMessage.setStrategy(strategy);
