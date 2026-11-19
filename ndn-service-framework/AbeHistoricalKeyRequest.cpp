@@ -260,6 +260,18 @@ verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& req
   }
 }
 
+bool
+verifyHistoricalKeyReplySignature(const ndn::Data& reply,
+                                  const ndn::security::Certificate& controllerCertificate)
+{
+  try {
+    return ndn::security::verifySignature(reply, controllerCertificate.getPublicKey());
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 std::optional<ndn::Data>
 HistoricalKeyBroker::answerValidated(const ndn::Interest& interest,
                                      const ndn::Name& controllerPrefix, uint64_t nowMs,

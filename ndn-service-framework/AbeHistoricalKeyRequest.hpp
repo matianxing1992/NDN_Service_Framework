@@ -107,6 +107,15 @@ bool
 verifyHistoricalKeyReply(const ndn::Data& reply, const HistoricalKeyRequest& request,
                          uint64_t nowMs, HistoricalKeyReply& accepted);
 
+/** Verify that the reply was signed by the Controller's key.
+ *
+ * The binding checks above say what the reply claims; this says who signed it. A consumer needs both
+ * before it uses a key, because a binding it can read is not a binding the Controller vouched for.
+ */
+bool
+verifyHistoricalKeyReplySignature(const ndn::Data& reply,
+                                  const ndn::security::Certificate& controllerCertificate);
+
 /** The decision part of a historical key responder, with no face of its own.
  *
  * Everything that can be wrong about a request is decided here - name binding, freshness, replay,

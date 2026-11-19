@@ -1343,6 +1343,8 @@ BOOST_AUTO_TEST_CASE(BrokerAnswersARealSignedInterestOnce)
     face->processEvents(ndn::time::milliseconds(100));
 
   BOOST_REQUIRE(arrived);
+  // The consumer needs the binding and a signature by the Controller's own key.
+  BOOST_CHECK(verifyHistoricalKeyReplySignature(received, controllerCert));
   HistoricalKeyReply accepted;
   BOOST_REQUIRE(verifyHistoricalKeyReply(received, request, now, accepted));
 }
