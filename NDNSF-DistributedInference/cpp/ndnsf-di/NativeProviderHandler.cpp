@@ -1682,12 +1682,17 @@ nativeProviderRoleAnswersRequester(const RoleSpec& roleSpec)
   return roleSpec.outputs.empty();
 }
 
-std::optional<std::vector<uint8_t>>
-nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
-                                   const ProviderRoleResult& result,
-                                   const std::string& finalResponseScope)
+static bool
+roleMayAnswerRequester(const RoleSpec& roleSpec, std::optional<bool> sealedTerminalOwner)
 {
-  if (!nativeProviderRoleAnswersRequester(roleSpec) || finalResponseScope.empty()) {
+  return sealedTerminalOwner ? *sealedTerminalOwner : nativeProviderRoleAnswersRequester(roleSpec);
+}
+
+static std::optional<std::vector<uint8_t>>
+finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& result,
+  const std::string& finalResponseScope, std::optional<bool> sealedTerminalOwner)
+{
+  if (!roleMayAnswerRequester(roleSpec, sealedTerminalOwner) || finalResponseScope.empty()) {
     return std::nullopt;
   }
 
@@ -1695,6 +1700,7 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
   if (found != result.outputsByScope.end()) {
     return found->second.payload;
   }
+  if (sealedTerminalOwner) return std::nullopt;
   // A step-carrying role has no final-response edge; its terminal value is keyed by
   // the slot the template declared (logits for a sharded head).
   if (roleSpec.steps != nullptr && !roleSpec.steps->empty()) {
@@ -1712,6 +1718,14 @@ nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
     }
   }
   return std::nullopt;
+}
+
+std::optional<std::vector<uint8_t>>
+nativeProviderFinalResponsePayload(const RoleSpec& roleSpec,
+                                   const ProviderRoleResult& result,
+                                   const std::string& finalResponseScope)
+{
+  return finalResponsePayloadForRole(roleSpec, result, finalResponseScope, std::nullopt);
 }
 
 bool
@@ -3994,10 +4008,14 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
           requestStatistics->admittedArtifactDigest.clear();
         }
       }
-      const bool needsRoleScopedPreparation =
-        !authenticatedGeneration.enabled && selectionProjection && prepareRunner &&
-        executionPlan.roles.size() > 1;
-      const bool localFullPlan = !needsRoleScopedPreparation &&
+      std::optional<bool> sealedTerminalOwner;
+      if (selectionProjection) {
+        if (selectionProjection->executionRole.roleId != roleSpec.role ||
+            selectionProjection->dataflow.role != roleSpec.role)
+          throw std::invalid_argument("V3 Selection role differs from the admitted execution role");
+        sealedTerminalOwner = selectionProjection->dataflow.terminalResponseOwner;
+      }
+      const bool localFullPlan = (!sealedTerminalOwner || authenticatedGeneration.enabled) &&
         nativeProviderShouldExecuteLocalPlan(
           executionPlan,
           assignment,
@@ -4154,8 +4172,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
       // published feedback internally while never installing a sink, so no token reached
       // the Requester. A projection carries the owner explicitly; the older inference stays
       // for a plan that has none.
-      const bool terminalRole = selectionProjection
-        ? selectionProjection->dataflow.terminalResponseOwner
+      const bool terminalRole = sealedTerminalOwner
+        ? roleMayAnswerRequester(roleSpec, sealedTerminalOwner)
         : roleSpec.outputs.empty() ||
           nativeRoleHasOnlyInternalFeedbackOutputs(roleSpec);
       if (ctx.isStreamed() && terminalRole) {
@@ -4253,8 +4271,8 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
         coordinatorConfig.role = role;
         coordinatorConfig.initialInputs = std::move(initialInputs);
         coordinatorConfig.prepareRunner = prepareRunner;
-        coordinatorConfig.terminalRole = selectionProjection
-          ? std::optional<bool>{selectionProjection->dataflow.terminalResponseOwner}
+        coordinatorConfig.terminalRole = sealedTerminalOwner
+          ? sealedTerminalOwner
           : std::optional<bool>{std::any_of(
               roleSpec.outputs.begin(), roleSpec.outputs.end(),
               [] (const auto& edge) {
@@ -4975,10 +4993,11 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
             (*config.stageServiceTimeObserver)(elapsed);
           }
 
-          auto localFinalPayload = nativeProviderFinalResponsePayload(
+          auto localFinalPayload = finalResponsePayloadForRole(
             executedRoleSpec,
             result,
-            config.finalResponseScope);
+            config.finalResponseScope,
+            sealedTerminalOwner);
           if (localFinalPayload) {
             finalPayload = std::move(localFinalPayload);
           }
@@ -5035,7 +5054,7 @@ makeNativeProviderCollaborationRuntime(NativeProviderHandlerConfig config)
                << " planDigest=" << requestPlanDigest;
         logRuntimeEvidence(record.str());
       }
-      if (finalPayload) {
+      if (finalPayload && sealedTerminalOwner.value_or(true)) {
         // The conversation receipt is published before this point, so the
         // requester can authorize the promotion without seeing a terminal
         // response first.  Keep the terminal response behind the authenticated

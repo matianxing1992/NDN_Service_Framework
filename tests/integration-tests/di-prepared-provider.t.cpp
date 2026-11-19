@@ -127,14 +127,17 @@ makeConfig(const std::string& providerName = "/spec185/provider",
   return ProviderConfig::fromCommandLine(static_cast<int>(argv.size()), argv.data());
 }
 
+enum class ProviderOracleMode { NORMAL, WRONG_READINESS_KIND, NONTERMINAL, WRONG_FINAL_SCOPE };
+
 std::shared_ptr<NativeModelRunnerFactory>
 makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs,
-                                bool reportPostprocess = false)
+                                ProviderOracleMode mode)
 {
   auto factory = std::make_shared<RegistryNativeModelRunnerFactory>();
   factory->registerBackend(
     "onnxruntime",
-    [runs, reportPostprocess] (const NativeModelRunnerSpec& spec) {
+    [runs, mode] (const NativeModelRunnerSpec& spec) {
+      const bool reportPostprocess = mode == ProviderOracleMode::WRONG_READINESS_KIND;
       ExecutionEvidence evidence;
       evidence.providerName = spec.metadata.at("provider");
       evidence.providerBootId = spec.metadata.at("boot");
@@ -155,12 +158,14 @@ makeProviderOracleRunnerFactory(std::shared_ptr<std::atomic<unsigned>> runs,
       evidence.createdAtMs = 1;
       evidence.validate();
       return makeNativeModelRunner(
-        [runs] (const RoleExecutionContext&) {
+        [runs, mode] (const RoleExecutionContext&) {
           runs->fetch_add(1, std::memory_order_relaxed);
           const std::string response = "spec185-provider-response";
+          const std::string scope = mode == ProviderOracleMode::WRONG_FINAL_SCOPE ?
+            "unrelated-leaf" : "final-response";
           return std::map<std::string, TensorBundle>{
-            {"final-response", TensorBundle{
-              "final-response",
+            {scope, TensorBundle{
+              scope,
               std::vector<std::uint8_t>(response.begin(), response.end()),
               1, response.size()}}};
         },
@@ -363,7 +368,8 @@ providerProjection(const ndn::Name& provider,
                    const std::string& artifactDigest,
                    const std::string& protectionEpoch = "plaintext-v1",
                    const std::string& grantName = {},
-                   const std::string& grantDigest = {})
+                   const std::string& grantDigest = {},
+                   bool terminalResponseOwner = true)
 {
   NativeSelectionProjectionV3 projection;
   projection.provider = provider.toUri();
@@ -431,7 +437,7 @@ providerProjection(const ndn::Name& provider,
   projection.dataflow.attempt = projection.attempt;
   projection.dataflow.planDigest = projection.planDigest;
   projection.dataflow.role = "/Backbone";
-  projection.dataflow.terminalResponseOwner = true;
+  projection.dataflow.terminalResponseOwner = terminalResponseOwner;
   projection.dataflow.dataflowDigest = planDigest;
   projection.deviceBinding.mode = "SINGLE_DEVICE";
   projection.deviceBinding.provider = projection.provider;
@@ -717,7 +723,7 @@ static std::weak_ptr<MessageValidator>
 runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                                                    bool restartHandler = false,
                                                    bool includeStoredKeyTable = false,
-                                                   bool reportPostprocess = false)
+                                                   ProviderOracleMode mode = ProviderOracleMode::NORMAL)
 {
   // This C++ ingress fixture uses the production Provider::serve path.  The
   // only test seam injects an already-bootstrapped Core owner and a
@@ -776,7 +782,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     grantRequest.sign(*requesterPrivate), nowMs, nowMs + 60'000);
   auto assignmentProjection = providerProjection(
     providerName, requestId, planDigest, artifactDigest, protectionEpoch,
-    issuedGrant.grantName, issuedGrant.grantDigest);
+    issuedGrant.grantName, issuedGrant.grantDigest, mode != ProviderOracleMode::NONTERMINAL);
 
   auto grantWires = std::make_shared<std::map<std::string, std::string>>();
   auto grantWiresMutex = std::make_shared<std::mutex>();
@@ -1140,7 +1146,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     environment.providerFace(), environment.provider(), environment.keyChain(),
     providerCertificate, providerCertificate,
       makeConfig(providerName.toUri(), serviceName.toUri()),
-    makeProviderOracleRunnerFactory(runs, reportPostprocess), preparationFactory,
+    makeProviderOracleRunnerFactory(runs, mode), preparationFactory,
     [grantWires, grantWiresMutex, verifiedRoleOwners, verifiedRoleOwnersMutex,
      authorityPublic = publicKeyBytes(authorityPrivate),
      recipientSeed = std::string(32, 'c'), protectionEpoch, bootId,
@@ -1424,11 +1430,15 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   BOOST_CHECK(probeRequestPublished(probe));
   BOOST_CHECK(probeSelectionSeen(probe));
   const auto positiveFailure = probeFailure(probe);
-  if (reportPostprocess) {
-    BOOST_CHECK_MESSAGE(positiveFailure.find("DI_RUNTIME_RUNNER_KIND_MISMATCH") != std::string::npos,
+  if (mode != ProviderOracleMode::NORMAL) {
+    const auto expectedFailure = mode == ProviderOracleMode::WRONG_READINESS_KIND ?
+      "DI_RUNTIME_RUNNER_KIND_MISMATCH" : mode == ProviderOracleMode::WRONG_FINAL_SCOPE ?
+      "DI_FINAL_RESPONSE_MISSING" : "request timed out";
+    BOOST_CHECK_MESSAGE(positiveFailure.find(expectedFailure) != std::string::npos,
                         positiveFailure);
     BOOST_CHECK(!probeResponseSeen(probe));
-    BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 0U);
+    BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
+                      mode == ProviderOracleMode::WRONG_READINESS_KIND ? 0U : 1U);
     registration.close();
     facade.stop();
     BOOST_REQUIRE(facade.drain(std::chrono::milliseconds(2000)));
@@ -1825,7 +1835,19 @@ BOOST_AUTO_TEST_CASE(AuthenticatedSelectionRunsProviderAssemblyRunnerAndResponse
 
 BOOST_AUTO_TEST_CASE(AuthenticatedModelSelectionRejectsPostprocessReadyEvidence)
 {
-  runAuthenticatedProviderAssignmentCase(false, false, false, true);
+  runAuthenticatedProviderAssignmentCase(
+    false, false, false, ProviderOracleMode::WRONG_READINESS_KIND);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedNonterminalRoleCannotAnswerWithItsLocalLeaf)
+{
+  runAuthenticatedProviderAssignmentCase(false, false, false, ProviderOracleMode::NONTERMINAL);
+}
+
+BOOST_AUTO_TEST_CASE(AuthenticatedTerminalRoleRequiresTheConfiguredResponseScope)
+{
+  runAuthenticatedProviderAssignmentCase(
+    false, false, false, ProviderOracleMode::WRONG_FINAL_SCOPE);
 }
 
 BOOST_AUTO_TEST_CASE(AuthenticatedSelectionAdmitsStoredModelKeysAndRejectsWrongCapsuleKey)

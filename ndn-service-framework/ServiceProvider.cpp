@@ -11068,11 +11068,10 @@ namespace ndn_service_framework
                                             isStructuredCollaborationPayload(assignmentPayloadCopy);
                                         const auto rolePayloads = collaborationRolePayloads(
                                             assignmentPayloadCopy, structured);
-                                        {
+                                        if (rolePayloads.size() > 1) {
                                             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
-                                            const auto input = m_requestScopedInvocations.find(inputKey);
-                                            if (input != m_requestScopedInvocations.end())
-                                                input->second.localRolesRemaining = rolePayloads.size();
+                                            m_collaborationLocalRolesRemaining.emplace(
+                                                inputKey, rolePayloads.size());
                                         }
                                         bool dispatched = false;
                                         for (const auto& rolePayload : rolePayloads) {
@@ -11493,10 +11492,9 @@ namespace ndn_service_framework
             .append(serviceName).append(requestId);
         {
             std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
-            const auto input = m_requestScopedInvocations.find(pendingKey);
-            if (input != m_requestScopedInvocations.end() &&
-                input->second.localRolesRemaining > 1) {
-                --input->second.localRolesRemaining;
+            const auto roles = m_collaborationLocalRolesRemaining.find(pendingKey);
+            if (roles != m_collaborationLocalRolesRemaining.end() && roles->second > 1) {
+                --roles->second;
                 return;
             }
         }
@@ -16331,12 +16329,8 @@ namespace ndn_service_framework
                                                ProtectedTransition::PROVIDER_EXECUTION)) {
                 return false;
             }
-            // completeCollaborationRoleOnEventLoop clears pending ACK/token
-            // bookkeeping after one role finishes, while sibling roles may
-            // still be queued. That table is not collaboration lifetime
-            // authority. Keep its captured deadline cap above immutable;
-            // revocation and shutdown remain fenced by version, authorization,
-            // the stop token, and the request's collaboration binding below.
+            // The captured deadline stays fixed even if ACK/token bookkeeping
+            // changes. Revocation and shutdown also fence the collaboration.
             std::lock_guard<std::mutex> lock(m_collaborationMutex);
             const auto found = m_collaborationServiceNamesByRequest.find(requestId);
             return found != m_collaborationServiceNamesByRequest.end() &&
@@ -17519,6 +17513,7 @@ namespace ndn_service_framework
         // spec182: the registration-generation binding shares the pending
         // request's lifetime exactly; release it together.
         m_pendingRegistrationStates.erase(pendingKey);
+        m_collaborationLocalRolesRemaining.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
         auto streamIt = m_streamLifecycles.find(pendingKey);
         if (streamIt != m_streamLifecycles.end()) {
@@ -17601,6 +17596,7 @@ namespace ndn_service_framework
         // spec182: expire the registration-generation binding with the
         // pending request it mirrors.
         m_pendingRegistrationStates.erase(pendingKey);
+        m_collaborationLocalRolesRemaining.erase(pendingKey);
         pendingProviderTokens.erase(pendingKey);
         auto requestScopedIt = m_requestScopedInvocations.find(pendingKey);
         if (requestScopedIt != m_requestScopedInvocations.end()) {
@@ -23772,6 +23768,12 @@ opaque_selection_committed:
                 // execution context and must retain their existing behavior.
                 const auto rolePayloads = collaborationRolePayloads(
                     effectiveAssignmentPayload, structuredAssignmentPayload);
+                if (rolePayloads.size() > 1) {
+                    const auto pendingKey = ndn::Name(requesterName).append(serviceName)
+                        .append(requestId);
+                    std::lock_guard<std::mutex> lock(m_pendingRequestMutex);
+                    m_collaborationLocalRolesRemaining.emplace(pendingKey, rolePayloads.size());
+                }
                 bool dispatchedAny = false;
                 for (const auto& rolePayload : rolePayloads) {
                     auto assignment =

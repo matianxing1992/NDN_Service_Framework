@@ -1207,10 +1207,12 @@ public:
   ResidentServedProviderRunner(
     OnnxRuntimeSessionCache::Lease lease,
     ExecutionEvidence evidence,
-    std::shared_ptr<std::atomic<unsigned>> runs)
+    std::shared_ptr<std::atomic<unsigned>> runs,
+    std::vector<std::string> publishedTensorNames)
     : m_lease(std::move(lease))
     , m_evidence(std::move(evidence))
     , m_runs(std::move(runs))
+    , m_publishedTensorNames(std::move(publishedTensorNames))
   {
     if (!m_lease)
       throw std::invalid_argument("resident served-provider test lease is empty");
@@ -1220,6 +1222,13 @@ public:
   run(const RoleExecutionContext&) final
   {
     m_runs->fetch_add(1, std::memory_order_relaxed);
+    if (!m_publishedTensorNames.empty()) {
+      std::vector<NamedTensor> tensors;
+      for (const auto& name : m_publishedTensorNames)
+        tensors.push_back({name, TensorElementType::UInt8, {1}, {1}});
+      return {{"fixture-activations",
+               makeEncodedTensorBundle("fixture-activations", std::move(tensors))}};
+    }
     const std::string response = "spec185-provider-response";
     const std::vector<std::uint8_t> responseBytes(response.begin(), response.end());
     return {{"final-response", TensorBundle{
@@ -1243,6 +1252,7 @@ private:
   OnnxRuntimeSessionCache::Lease m_lease;
   std::optional<ExecutionEvidence> m_evidence;
   std::shared_ptr<std::atomic<unsigned>> m_runs;
+  std::vector<std::string> m_publishedTensorNames;
 };
 #endif
 
@@ -1357,7 +1367,9 @@ makeResidentServedProviderRunnerFactory(
         return std::make_shared<std::uint8_t>(0);
       });
       return std::make_shared<ResidentServedProviderRunner>(
-        std::move(lease), makeResidentServedProviderEvidence(servedSpec), m_runs);
+        std::move(lease), makeResidentServedProviderEvidence(servedSpec), m_runs,
+        nativeParseJson(servedSpec.metadata.at("fixture.publishedTensors"))
+          .get<std::vector<std::string>>());
 #endif
     }
 
@@ -1387,6 +1399,14 @@ makePreparedServedProviderPreparation()
     spec.metadata["artifact"] = assembly.artifactDigest;
     spec.metadata["fragmentDigest"] = assembly.artifactDigest;
     spec.metadata["recipeDigest"] = assembly.recipeDigest;
+    std::set<std::string> published;
+    for (const auto& endpoint : projection.dataflow.mayPublish) {
+      if (endpoint.bundleTensorNames.empty())
+        published.insert(endpoint.tensorId);
+      else
+        published.insert(endpoint.bundleTensorNames.begin(), endpoint.bundleTensorNames.end());
+    }
+    spec.metadata["fixture.publishedTensors"] = nativeCanonicalJson(published);
     if (assembly.mergeKind == "NATIVE_POSTPROCESS") {
       spec.kind = "native-yolo-postprocess";
       spec.backend = "native-yolo-postprocess";
@@ -2604,10 +2624,10 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/served-provider/sync");
-  profile.userNode = ndn::Name("/ndnsf/spec185/served-provider/user");
-  profile.providerNode = ndn::Name("/ndnsf/spec185/served-provider/provider");
   profile.userIdentity = ndn::Name("/user");
   profile.providerIdentity = ndn::Name("/provider");
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
   profile.providerRoles = {"/Front", "/Branch", "/Merge"};
@@ -2763,7 +2783,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     return std::vector<std::uint8_t>(32, 0x77);
   };
   auto grantIssuer = std::make_shared<NativeArtifactGrantIssuer>(std::move(issuerConfig));
-  auto publishedGrantWires = std::make_shared<std::map<std::string, std::string>>();
+  auto publishedGrantWires = std::make_shared<std::map<ndn::Name, std::string>>();
   auto publishedGrantWiresMutex = std::make_shared<std::mutex>();
   auto grantPublications = std::make_shared<std::atomic<unsigned>>(0);
   NativeAuthenticatedGrantClient::Issue issue = [grantIssuer] (
@@ -2782,7 +2802,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
     control.check();
     {
       std::lock_guard<std::mutex> lock(*publishedGrantWiresMutex);
-      (*publishedGrantWires)[name] = wire;
+      (*publishedGrantWires)[ndn::Name(name)] = wire;
     }
     grantPublications->fetch_add(1, std::memory_order_relaxed);
     return name;
@@ -2806,7 +2826,9 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   const auto providerConfig = preparedProviderConfig(serviceName, providerRoleNames);
 #endif
   auto runs = std::make_shared<std::atomic<unsigned>>(0);
-  auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>();
+  OnnxRuntimeSessionCache::Config sessionConfig;
+  sessionConfig.maxEntries = providerRoleWorkerCount;
+  auto sessionCache = std::make_shared<OnnxRuntimeSessionCache>(sessionConfig);
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   NativeProviderHandlerConfig::RunnerPreparationFactory preparation;
 #else
@@ -2870,7 +2892,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
       std::string wire;
       {
         std::lock_guard<std::mutex> lock(*publishedGrantWiresMutex);
-        const auto found = publishedGrantWires->find(interest.getName().toUri());
+        const auto found = publishedGrantWires->find(interest.getName());
         if (found == publishedGrantWires->end())
           return;
         wire = found->second;
@@ -2912,7 +2934,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
       state->pending = face->expressInterest(interest,
         [state, name] (const ndn::Interest&, const ndn::Data& data) {
           std::lock_guard<std::mutex> lock(state->mutex);
-          if (data.getName().toUri() == name && data.getContent().value_size() <= 65536) {
+          if (data.getName() == ndn::Name(name) && data.getContent().value_size() <= 65536) {
             state->payload.assign(reinterpret_cast<const char*>(data.getContent().value()),
                                   data.getContent().value_size());
             state->received = true;
@@ -3107,11 +3129,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
 #endif
   BOOST_CHECK_EQUAL(result.modelDigest, model.intentDigest());
   BOOST_CHECK(!result.planDigest.empty());
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), roles.size());
-#else
-  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 1U);
-#endif
   BOOST_CHECK(exactGrantFetches->load(std::memory_order_relaxed) > 0U);
   BOOST_CHECK(grantDataFetches->load(std::memory_order_relaxed) > 0U);
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
@@ -3147,19 +3165,17 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
 #endif
   BOOST_CHECK_EQUAL(secondResult.modelDigest, model.intentDigest());
   BOOST_CHECK(!secondResult.planDigest.empty());
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
                     firstRequestRunnerCalls + roles.size());
-#else
-  BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed), 2U);
-#endif
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   // T011 covers Provider's live-runner cache. The independent ONNX session
   // cache may be ineligible for this protected or profiled runner spec.
 #else
   const auto residentCounters = sessionCache->counters();
-  BOOST_CHECK_EQUAL(residentCounters.loads, 1U);
-  BOOST_CHECK_EQUAL(residentCounters.hits, 1U);
+  const auto warmRunnersCreated = facade.counters().runnersCreated;
+  BOOST_CHECK_EQUAL(residentCounters.loads, roles.size());
+  BOOST_CHECK_EQUAL(residentCounters.residentEntries, roles.size());
+  BOOST_CHECK_EQUAL(warmRunnersCreated, residentCounters.loads + residentCounters.hits);
 #endif
   const auto dataFetchesBeforeMissing = grantDataFetches->load(std::memory_order_relaxed);
   const auto exactFetchesBeforeMissing = exactGrantFetches->load(std::memory_order_relaxed);
@@ -3215,14 +3231,13 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK(revokedFailed);
   BOOST_CHECK(revokedHandle.status() == RequestStatus::Failed ||
               revokedHandle.status() == RequestStatus::Cancelled);
-#if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   BOOST_CHECK_EQUAL(runs->load(std::memory_order_relaxed),
                     firstRequestRunnerCalls + roles.size());
-#endif
 #if !defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   const auto afterRevokeCounters = sessionCache->counters();
-  BOOST_CHECK_EQUAL(afterRevokeCounters.loads, 1U);
-  BOOST_CHECK_EQUAL(afterRevokeCounters.hits, 1U);
+  BOOST_CHECK_EQUAL(afterRevokeCounters.loads, residentCounters.loads);
+  BOOST_CHECK_EQUAL(afterRevokeCounters.hits, residentCounters.hits);
+  BOOST_CHECK_EQUAL(facade.counters().runnersCreated, warmRunnersCreated);
 #endif
 
   bool userReadyAfterRevocation = false;
@@ -3236,14 +3251,12 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughServedProvider)
   BOOST_CHECK_GT(counters.assemblies, 0U);
   BOOST_CHECK_GT(counters.sourceFetches, 0U);
 #else
-  BOOST_CHECK_GE(counters.assemblies, 2U);
+  BOOST_CHECK_GE(counters.assemblies, roles.size());
 #endif
 #if defined(SPEC194_PLACEMENT_COMPOSITION_SELECTOR)
   // The two intermediate output groups are request-scoped and must rebuild;
   // the terminal runner's fixed final-response binding remains reusable.
   BOOST_CHECK_EQUAL(counters.runnersCreated, 2U * roles.size() - 1U);
-#else
-  BOOST_CHECK_EQUAL(counters.runnersCreated, 2U);
 #endif
 
   runtime->close();

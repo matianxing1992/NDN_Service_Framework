@@ -1,5 +1,6 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/native-qwen-tensor-runner.hpp"
 
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/OnnxRuntimeModelRunner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 
 #include <algorithm>
@@ -74,7 +75,42 @@ NativeQwenTensorRunner::NativeQwenTensorRunner(
 std::map<std::string, TensorBundle>
 NativeQwenTensorRunner::run(const RoleExecutionContext& ctx)
 {
-  return NativeEntryRunner::run(ctx);
+  if (!ctx.activeStep || !ctx.generationLineage || ctx.generationInputTokenCount == 0)
+    return NativeEntryRunner::run(ctx);
+  const auto& entries = entryContracts();
+  const auto entry = std::find_if(entries.begin(), entries.end(), [&] (const auto& item) {
+    return item.entryId == ctx.activeStep->artifactEntry;
+  });
+  if (entry == entries.end() || entry->unitId != ctx.role)
+    return NativeEntryRunner::run(ctx);
+  const auto epochSlot = [&] (const std::string& graphName) -> const std::string* {
+    const auto binding = entry->inputSlotByGraphName.find(graphName);
+    if (binding == entry->inputSlotByGraphName.end())
+      return nullptr;
+    const auto& slots = ctx.activeStep->inputSlots;
+    const auto found = std::find_if(slots.begin(), slots.end(), [&] (const auto& slot) {
+      return slot.slotId == binding->second && slot.source == "EPOCH_INPUT";
+    });
+    return found == slots.end() ? nullptr : &found->slotId;
+  };
+  const auto* mask = epochSlot("attention_mask");
+  const auto* positions = epochSlot("position_ids");
+  if (mask == nullptr || positions == nullptr ||
+      (ctx.stepInputsBySlot.count(*mask) != 0 && ctx.stepInputsBySlot.count(*positions) != 0))
+    return NativeEntryRunner::run(ctx);
+
+  CausalPositionInputContractV1 contract;
+  contract.policy = "qwen-causal-position-v1";
+  contract.attentionMaskInputName = "attention_mask";
+  contract.positionIdsInputName = "position_ids";
+  StatefulOnnxIoContractV1 io;
+  io.inputNames = entry->inputNames;
+  auto generated = materializeCausalPositionInputsV1(
+    contract, io, *ctx.generationLineage, ctx.generationInputTokenCount);
+  auto bound = ctx;
+  bound.stepInputsBySlot.try_emplace(*mask, std::move(generated.at("attention_mask")));
+  bound.stepInputsBySlot.try_emplace(*positions, std::move(generated.at("position_ids")));
+  return NativeEntryRunner::run(bound);
 }
 
 std::string

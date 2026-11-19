@@ -5029,6 +5029,94 @@ BOOST_AUTO_TEST_CASE(UnitEntryTableAssemblesFromOneRankArtifact)
 }
 
 
+BOOST_AUTO_TEST_CASE(QwenEntryBindsCausalInputsFromAdmittedLineage)
+{
+  qwen::QwenTpEntryContract entry;
+  entry.entryId = "entry/init";
+  entry.unitId = "S0R0";
+  entry.kind = "INIT";
+  entry.inputNames = {"input_ids", "attention_mask", "position_ids"};
+  entry.outputNames = {"out"};
+  entry.relativeGraphPath = "init.onnx";
+  entry.graphDigest = nativePlanningDigest("init-fixture");
+  entry.inputSlotByGraphName = {{"input_ids", "tokens"}, {"attention_mask", "mask-slot"},
+                               {"position_ids", "position-slot"}};
+  entry.outputSlotByGraphName = {{"out", "result"}};
+
+  const auto tensor = [] (const std::string& name, const std::vector<std::int64_t>& values) {
+    NamedTensor input{name, TensorElementType::Int64,
+                      {1, static_cast<std::int64_t>(values.size())}, {}};
+    input.payload.resize(values.size() * sizeof(std::int64_t));
+    std::memcpy(input.payload.data(), values.data(), input.payload.size());
+    return makeEncodedTensorBundle(name, {std::move(input)});
+  };
+  const auto values = [] (const TensorBundle& bundle) {
+    const auto decoded = decodeTensorBundleViews(bundle);
+    BOOST_REQUIRE_EQUAL(decoded.size(), 1U);
+    BOOST_REQUIRE(decoded.front().elementType == TensorElementType::Int64);
+    std::vector<std::int64_t> result(decoded.front().payload.size() / sizeof(std::int64_t));
+    std::memcpy(result.data(), decoded.front().payload.data(), decoded.front().payload.size());
+    return result;
+  };
+  std::vector<std::int64_t> mask, positions;
+  const auto child = makeNativeModelRunner([&] (const RoleExecutionContext& context) {
+    mask = values(context.inputsByScope.at("attention_mask"));
+    positions = values(context.inputsByScope.at("position_ids"));
+    return std::map<std::string, TensorBundle>{{"out", tensor("out", {7})}};
+  });
+  qwen::NativeQwenTensorRunner runner({entry},
+    [&] (const NativeModelRunnerSpec&) { return child; },
+    [] (const qwen::QwenTpEntryContract&) { return NativeModelRunnerSpec{}; });
+  auto step = std::make_shared<NativeExecutionStepSpec>();
+  step->stepId = "init";
+  step->unitId = entry.unitId;
+  step->operation = "CALL_SUBGRAPH";
+  step->artifactEntry = entry.entryId;
+  step->inputSlots = {slot("tokens", "EPOCH_INPUT"), slot("mask-slot", "EPOCH_INPUT"),
+                      slot("position-slot", "EPOCH_INPUT")};
+  step->outputSlots = {slot("result", "LOCAL_STEP")};
+  RoleExecutionContext context;
+  context.role = entry.unitId;
+  context.sessionId = "/spec251/causal";
+  context.activeStep = step;
+  context.roleSteps = std::make_shared<const std::vector<NativeExecutionStepSpec>>(
+    std::vector<NativeExecutionStepSpec>{*step});
+  context.stepInputsBySlot.emplace("tokens", tensor("input_ids", {7, 9}));
+  GenerationEpochLineageV1 lineage;
+  lineage.requestId = context.sessionId;
+  lineage.attemptEpoch = 1;
+  lineage.planDigest = nativePlanningDigest("spec251-plan");
+  lineage.generationId = "0123456789abcdef0123456789abcdef";
+  lineage.streamEpoch = 1;
+  lineage.transitionKind = GenerationEpochLineageV1::PREFILL;
+  lineage.logicalPrefixDigest = nativePlanningDigest("spec251-prefix");
+  lineage.logicalPrefixTokenCount = 2;
+  lineage.positionDigest = nativePlanningDigest("spec251-position");
+  context.generationLineage = lineage;
+  context.generationInputTokenCount = 2;
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  BOOST_CHECK(mask == (std::vector<std::int64_t>{1, 1}));
+  BOOST_CHECK(positions == (std::vector<std::int64_t>{0, 1}));
+
+  context.generationLineage->inferenceEpoch = 1;
+  context.generationLineage->transitionKind = GenerationEpochLineageV1::DECODE;
+  context.generationLineage->logicalPrefixTokenCount = 3;
+  context.generationInputTokenCount = 1;
+  context.stepInputsBySlot["tokens"] = tensor("input_ids", {11});
+  context.stepInputsBySlot["mask-slot"] = tensor("attention_mask", {0, 1, 1});
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  BOOST_CHECK(mask == (std::vector<std::int64_t>{0, 1, 1}));
+  BOOST_CHECK(positions == (std::vector<std::int64_t>{2}));
+  step->inputSlots.back().source = "REMOTE_STEP";
+  BOOST_CHECK_THROW(runner.run(context), std::out_of_range);
+  step->inputSlots.back().source = "EPOCH_INPUT";
+  context.generationLineage.reset();
+  BOOST_CHECK_THROW(runner.run(context), std::out_of_range);
+  context.stepInputsBySlot["position-slot"] = tensor("position_ids", {4});
+  BOOST_REQUIRE_NO_THROW(runner.run(context));
+  BOOST_CHECK(positions == (std::vector<std::int64_t>{4}));
+}
+
 BOOST_AUTO_TEST_CASE(RunnerRefusesATableThatDoesNotMatchItsTemplate)
 {
   // The runner and the template come from two places: the table from assembly,
