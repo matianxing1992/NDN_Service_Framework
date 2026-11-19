@@ -1897,11 +1897,6 @@ def build(bld):
                                   'unit-tests/model-repository-no-repo.t.cpp'] +
                                  (uav_unit_excludes
                                   if 'uav' not in bld.env.NDNSF_COMPONENTS else [])) +
-                        # Four unit cases drive the shared integration fixture, which owns the
-                        # in-memory Controller/Provider/NFD setup they need. Without it the target
-                        # links every one of their symbols and then fails on the fixture's, which is
-                        # a missing source rather than a missing dependency.
-                        [bld.path.find_node('integration-tests/ndnsf-integration-fixture.cpp')] +
                         framework_sources +
                         # The UAV sources are compiled only when the configured component set
                         # contains `uav`. The umbrella globs every unit case, and 23 of them are UAV

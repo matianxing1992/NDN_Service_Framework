@@ -1,12 +1,7 @@
 """Isolated configure inventory tests: no apt, network, or native build."""
 import importlib.util
-import copy
-import json
-import os
 from pathlib import Path
-import shutil
 import subprocess
-import tempfile
 import unittest
 from unittest.mock import patch, Mock
 
@@ -16,126 +11,6 @@ spec = importlib.util.spec_from_file_location(
 inventory = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inventory)
 
-
-class NixIdentityTest(unittest.TestCase):
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        store = Path(self.directory.name) / 'store'
-        store.mkdir()
-        self.addCleanup(inventory.load_nix_build_identity.cache_clear)
-        patched = patch.object(inventory, 'NIX_STORE', store)
-        patched.start()
-        self.addCleanup(patched.stop)
-        tools = store / ('a' * 32 + '-tools')
-        deps = store / ('b' * 32 + '-deps')
-        (tools / 'bin').mkdir(parents=True)
-        (deps / 'lib').mkdir(parents=True)
-        (deps / 'include/boost').mkdir(parents=True)
-        (deps / 'include/boost/version.hpp').write_text('#define BOOST_VERSION 107100\n')
-        for name in ('ld', 'ar', 'ranlib', 'nm', 'cc1plus'):
-            shutil.copy2('/bin/true', tools / 'bin' / name)
-        shutil.copy2(shutil.which('readelf'), tools / 'bin/readelf')
-        compiler = tools / 'bin/g++'
-        compiler.write_text('#!/bin/sh\n'
-                            'if [ "$1" = "-dumpmachine" ]; then echo x86_64-test-linux; exit; fi\n'
-                            'for arg do case "$arg" in -print-prog-name=*) '
-                            f'printf "%s/%s\\n" "{tools}/bin" "${{arg#*=}}"; exit;; esac; done\n')
-        compiler.chmod(0o755)
-        self.library = deps / 'lib/libfixture.so'
-        subprocess.run(['/usr/bin/cc', '-shared', '-fPIC', '-Wl,-soname,libfixture.so',
-                        '-x', 'c', '-', '-o', str(self.library)],
-                       input='int fixture(void) { return 1; }\n', text=True, check=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.identity = inventory.make_nix_build_identity({
-            'roots': [str(tools), str(deps)], 'compiler': str(compiler),
-            'binutilsPrefix': str(tools / 'bin'), 'readelf': str(tools / 'bin/readelf'),
-            'libraries': {'libfixture.so': str(self.library)},
-            'boost': {'includes': str(deps / 'include'), 'libraries': str(deps / 'lib'),
-                      'version': 107100, 'soname': '1.71.0'}})
-        self.receipt = store / ('c' * 32 + '-identity.json')
-        self.receipt.write_text(json.dumps(self.identity))
-
-    def test_exact_identity_and_declared_compiler_are_accepted(self):
-        self.assertEqual(inventory.load_nix_build_identity(str(self.receipt)), self.identity)
-        inventory.validate_nix_compiler(self.identity, self.identity['tools']['cxx']['path'])
-
-    def test_bare_store_and_host_paths_are_not_dependency_roots(self):
-        changed = copy.deepcopy(self.identity)
-        changed['roots'] = [str(inventory.NIX_STORE)]
-        with self.assertRaisesRegex(ValueError, 'exact immutable store'):
-            inventory.validate_nix_build_identity(changed)
-        with self.assertRaisesRegex(ValueError, 'undeclared Nix dependency'):
-            inventory.require_nix_path(self.identity, '/usr/include')
-
-    def test_changed_library_digest_or_abi_is_rejected(self):
-        for key, value, reason in [('sha256', '0' * 64, 'digest/path'),
-                                   ('soname', 'wrong.so', 'ABI/SONAME'),
-                                   ('elfClass', 'ELF32', 'ABI/SONAME')]:
-            with self.subTest(key=key):
-                changed = copy.deepcopy(self.identity)
-                changed['libraries']['libfixture.so'][key] = value
-                with self.assertRaisesRegex(ValueError, reason):
-                    inventory.validate_nix_build_identity(changed)
-
-    def test_symlink_escape_and_foreign_compiler_are_rejected(self):
-        self.library.unlink()
-        self.library.symlink_to('/bin/true')
-        with self.assertRaisesRegex(ValueError, 'undeclared Nix dependency'):
-            inventory.validate_nix_build_identity(self.identity)
-        with self.assertRaisesRegex(ValueError, 'differs from the declared toolchain'):
-            inventory.validate_nix_compiler(self.identity, '/bin/true')
-
-    def test_other_declared_output_cannot_replace_the_selected_library(self):
-        other = Path(self.identity['roots'][0]) / 'lib'
-        other.mkdir()
-        shutil.copy2(self.library, other / 'libfixture.so')
-        with self.assertRaisesRegex(ValueError, 'Selected library differs'):
-            inventory.validate_nix_library_selection(
-                self.identity, [str(other), str(self.library.parent)], ['fixture'])
-
-    def test_declared_tool_bytes_do_not_authorize_a_different_linker_selection(self):
-        changed = copy.deepcopy(self.identity)
-        changed['tools']['ld'] = copy.deepcopy(changed['tools']['ar'])
-        with self.assertRaisesRegex(ValueError, 'resolved a different tool: ld'):
-            inventory.validate_nix_compiler(changed, changed['tools']['cxx']['path'])
-
-    def test_compiler_and_global_flags_cannot_override_the_declared_tools(self):
-        for flag in ('-B/other/bin/', '-specs=other.specs', '-fuse-ld=lld'):
-            with self.subTest(flag=flag):
-                with self.assertRaisesRegex(ValueError, 'undeclared arguments'):
-                    inventory.validate_nix_compiler(
-                        self.identity, [self.identity['tools']['cxx']['path'], flag])
-                with self.assertRaisesRegex(ValueError, 'toolchain override'):
-                    inventory.reject_nix_tool_overrides([flag])
-
-    def test_an_executable_cannot_masquerade_as_a_digest_matched_library(self):
-        executable = self.library.with_name('libopenabe.so')
-        shutil.copyfile('/bin/true', executable)
-        self.identity['libraries'] = {'libopenabe.so': {
-            **inventory._file_identity(executable),
-            **inventory._elf_identity(self.identity['tools']['readelf']['path'], executable)}}
-        with self.assertRaisesRegex(ValueError, 'ABI/SONAME'):
-            inventory.validate_nix_build_identity(self.identity)
-
-    def test_environment_roots_must_equal_the_immutable_receipt(self):
-        with patch.dict(os.environ, {'NDNSF_NIX_BUILD_IDENTITY': str(self.receipt),
-                                     'NDNSF_NIX_DEPENDENCY_ROOTS': '',
-                                     'NDNSF_CONTAINER_BUILD': '0'}):
-            self.assertEqual(inventory.nix_build_identity(), self.identity)
-            os.environ['NDNSF_NIX_DEPENDENCY_ROOTS'] = str(inventory.NIX_STORE)
-            with self.assertRaisesRegex(ValueError, 'differ from the identity receipt'):
-                inventory.nix_build_identity()
-
-    def test_container_marker_or_unreceipted_roots_cannot_select_nix(self):
-        with patch.dict(os.environ, {'NDNSF_NIX_BUILD_IDENTITY': '',
-                                     'NDNSF_NIX_DEPENDENCY_ROOTS': str(inventory.NIX_STORE)}):
-            with self.assertRaisesRegex(ValueError, 'validated Nix build identity'):
-                inventory.nix_build_identity()
-        with patch.dict(os.environ, {'NDNSF_NIX_BUILD_IDENTITY': str(self.receipt),
-                                     'NDNSF_CONTAINER_BUILD': '1'}):
-            with self.assertRaisesRegex(ValueError, 'cannot use the container marker'):
-                inventory.nix_build_identity()
 
 class ConfigureDependenciesTest(unittest.TestCase):
     def test_core_and_repo_inventory_do_not_require_model_or_gui_sdks(self):

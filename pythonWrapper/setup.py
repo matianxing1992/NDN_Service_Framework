@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from functools import lru_cache
 import os
 import hashlib
 import json
-import runpy
 import shlex
 import subprocess
 from pathlib import Path
@@ -45,37 +43,7 @@ def runtime_prefix() -> Path:
     return prefix
 
 
-@lru_cache(maxsize=1)
-def _nix_build_helpers():
-    return runpy.run_path(str(ROOT / "scripts/configure_dependencies.py"))
-
-
-def nix_dependency_roots() -> tuple[Path, ...]:
-    """Explicit dependency roots from a controlled Nix build only."""
-    if not (os.environ.get("NDNSF_NIX_BUILD_IDENTITY") or
-            os.environ.get("NDNSF_NIX_DEPENDENCY_ROOTS")):
-        return ()
-    try:
-        helper = _nix_build_helpers()
-        identity = helper["nix_build_identity"]()
-        required = ("libndn-service-framework.so", "libndnsf-distributed-inference.so")
-        if not all(name in identity["libraries"] for name in required):
-            raise ValueError("binding Nix identity is missing installed native libraries")
-        compiler = shlex.split(os.environ.get("CXX", "c++"))
-        helper["validate_nix_compiler"](identity, compiler)
-        flag = "-B" + identity["binutilsPrefix"] + "/"
-        os.environ["CXX"] = shlex.join(
-            [identity["tools"]["cxx"]["realpath"]] + compiler[1:] +
-            ([flag] if flag not in compiler else []))
-        return tuple(Path(root) for root in identity["roots"])
-    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError("invalid Nix binding identity: " + str(error)) from error
-
-
 def dependency_roots() -> tuple[Path, ...]:
-    nix_roots = nix_dependency_roots()
-    if nix_roots:
-        return nix_roots
     roots = list(HOST_GLOBAL_DEPENDENCY_ROOTS)
     if os.environ.get("NDNSF_CONTAINER_BUILD") == "1":
         roots.extend(CONTAINER_GLOBAL_DEPENDENCY_ROOTS)
@@ -437,23 +405,6 @@ def build_extension() -> Extension:
         for include_root in tracking_includes
         for header in sorted(Path(include_root).glob("*.hpp"))
     ]
-
-    if nix_dependency_roots():
-        helper = _nix_build_helpers()
-        identity = helper["nix_build_identity"]()
-        helper["reject_nix_tool_overrides"](
-            [*extra_link_args, *tracking_link_args,
-                       *shlex.split(os.environ.get("CXXFLAGS", "")),
-                       *shlex.split(os.environ.get("LDFLAGS", ""))])
-        helper["validate_nix_library_selection"](
-            identity, [*tracking_library_dirs, *library_dirs],
-            ["ndn-service-framework", "ndnsf-distributed-inference",
-             *tracking_libraries, *libraries])
-        for path in [*svs_objects, *nac_objects]:
-            key = Path(path).name
-            if (key not in identity["libraries"] or
-                    str(Path(path).resolve()) != identity["libraries"][key]["realpath"]):
-                raise RuntimeError("explicit SDK object differs from the Nix identity: " + path)
 
     return Extension(
         "ndnsf._ndnsf",

@@ -172,6 +172,7 @@ def build(bld):
                     use='uav-main-common ndnsf-uav-tracking ndnsf-distributed-repo '
                         'ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL gtkmm sqlite3 GSTREAMER',
                     cxxflags=uav_cxxflags,
+                    rpath=[bld.env.LIBDIR],
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 
@@ -254,6 +255,7 @@ def build(bld):
                     source=['../NDNSF-UAV-APP/tracking/UavTrackingNode.cpp'],
                     includes=['..', '../NDNSF-UAV-APP/shared', '../NDNSF-UAV-APP/tracking'],
                     use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD DL',
+                    rpath=[bld.env.LIBDIR],
                     linkflags=['-Wl,-rpath,$ORIGIN/..'], install_path='${BINDIR}')
 
         # Spec191's Python worker and display runner are installed beside the
@@ -298,6 +300,7 @@ def build(bld):
                     includes=['..', '../NDNSF-UAV-APP/shared',
                               '../NDNSF-UAV-APP/tracking'],
                     use='ndnsf-uav-tracking ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD',
+                    rpath=[bld.env.LIBDIR],
                     linkflags=['-Wl,-rpath,$ORIGIN/..'],
                     install_path='${BINDIR}')
 

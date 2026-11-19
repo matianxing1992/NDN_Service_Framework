@@ -23,7 +23,7 @@ def test_dependency_helper_loads_through_actual_waf_from_another_directory(tmp_p
     module = Context.load_module(str(ROOT / "wscript"))
     assert "__file__" not in vars(module)
     assert Path(module._DEPENDENCY_INVENTORY["__file__"]) == ROOT / "scripts/configure_dependencies.py"
-    assert callable(module._DEPENDENCY_INVENTORY["validate_nix_build_identity"])
+    assert callable(module._DEPENDENCY_INVENTORY["check_dependencies"])
 
 
 @pytest.mark.parametrize("components,missing", [(["core"], False), (["core", "repo"], False),

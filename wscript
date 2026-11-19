@@ -15,12 +15,6 @@ _DEPENDENCY_INVENTORY = runpy.run_path(os.path.join(
     'scripts', 'configure_dependencies.py'))
 
 
-def _nix_build_identity():
-    try:
-        return _DEPENDENCY_INVENTORY['nix_build_identity']()
-    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError('Invalid Nix build identity: ' + str(error)) from error
-
 VERSION = '0.1.0'
 APPNAME = 'ndn-service-framework'
 GIT_TAG_PREFIX = 'ndn-service-framework-'
@@ -42,7 +36,7 @@ CONTAINER_GLOBAL_DEPENDENCY_PREFIXES = (
 HOST_BOOST_INCLUDE_DIR = '/usr/include'
 HOST_BOOST_LIBRARY_DIR = '/usr/lib/x86_64-linux-gnu'
 HOST_BOOST_VERSION = 107100
-HOST_BOOST_SONAME = os.environ.get('NDNSF_NIX_BOOST_SONAME', '1.71.0')
+HOST_BOOST_SONAME = '1.71.0'
 HOST_DEPENDENCY_IDENTITY_FILE = (
     '/usr/local/share/ndnsf/global-dependency-identity.json')
 HOST_DEPENDENCY_LIBRARIES = (
@@ -51,9 +45,6 @@ HOST_DEPENDENCY_LIBRARIES = (
 
 
 def _global_dependency_prefixes():
-    identity = _nix_build_identity()
-    if identity:
-        return tuple(identity['roots'])
     roots = list(HOST_GLOBAL_DEPENDENCY_PREFIXES)
     if os.environ.get('NDNSF_CONTAINER_BUILD') == '1':
         roots.extend(CONTAINER_GLOBAL_DEPENDENCY_PREFIXES)
@@ -76,14 +67,6 @@ def _require_global_dependency_prefix(path, owner):
 
 def _validate_boost_selection(conf):
     """Pin Boost headers and libraries to the host's installed system pair."""
-    identity = _nix_build_identity()
-    if identity:
-        boost = identity['boost']
-        for option, key in (('boost_includes', 'includes'), ('boost_libs', 'libraries')):
-            value = str(getattr(conf.options, option, '') or '')
-            if value and os.path.realpath(value) != boost[key]:
-                conf.fatal('Boost selection differs from the Nix identity: ' + value)
-        return boost['includes'], boost['libraries']
     configured_include = str(getattr(conf.options, 'boost_includes', '') or '').strip()
     configured_lib = str(getattr(conf.options, 'boost_libs', '') or '').strip()
     environment_values = {
@@ -162,13 +145,6 @@ def _validate_boost_libraries(conf, library_dir, libraries):
 
 def _validate_global_dependency_identity(conf):
     """Match installed dependency DSOs to the installer-issued identity receipt."""
-    identity = _nix_build_identity()
-    if identity:
-        required = [name for name in HOST_DEPENDENCY_LIBRARIES
-                    if name != 'libonnxruntime.so' or 'di' in conf.env.NDNSF_COMPONENTS]
-        if not all(name in identity['libraries'] for name in required):
-            conf.fatal('Nix build identity is missing a required dependency library')
-        return
     if os.environ.get('NDNSF_CONTAINER_BUILD') == '1':
         return
     receipt_path = HOST_DEPENDENCY_IDENTITY_FILE
@@ -324,32 +300,13 @@ def _pin_compiler_toolchain(conf):
     if not cxx:
         conf.fatal('The C++ compiler was not configured')
 
-    identity = _nix_build_identity()
-    if identity:
-        try:
-            _DEPENDENCY_INVENTORY['validate_nix_compiler'](identity, cxx)
-        except (ValueError, OSError, subprocess.SubprocessError) as error:
-            conf.fatal(str(error))
-        prefix = identity['binutilsPrefix']
-        flag = '-B' + prefix + '/'
-        driver = identity['tools']['cxx']['realpath']
-        conf.env.CXX = [driver] + cxx[1:] + ([flag] if flag not in cxx else [])
-        conf.env.LINK_CXX = list(conf.env.CXX)
-        for name in ('ar', 'ranlib', 'nm', 'ld'):
-            conf.env[name.upper()] = [identity['tools'][name]['realpath']]
-        conf.env.NDNSF_LINKER = identity['tools']['ld']['realpath']
-        conf.env.NDNSF_TOOLCHAIN_ROOT = prefix
-        conf.env.NDNSF_NIX_BUILD_IDENTITY = os.environ['NDNSF_NIX_BUILD_IDENTITY']
-        conf.msg('Validated Nix C++ toolchain', driver)
-        return
-
     compiler = cxx[0]
     expected_root = conf.options.toolchain_root
     if not os.path.isfile(compiler):
         resolved = shutil.which(os.path.basename(compiler)) or shutil.which('g++')
         if resolved:
             compiler = resolved
-            expected_root = '/nix/store' if resolved.startswith('/nix/store/') else os.path.dirname(os.path.realpath(resolved))
+            expected_root = os.path.dirname(os.path.realpath(resolved))
     try:
         tools = _resolve_compiler_toolchain(
             compiler, env=os.environ.copy(),
@@ -432,16 +389,7 @@ def options(opt):
 def configure(conf):
     global HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR
     global HOST_BOOST_VERSION, HOST_BOOST_SONAME
-    try:
-        nix_identity = _nix_build_identity()
-    except RuntimeError as error:
-        conf.fatal(str(error))
-    if nix_identity:
-        boost = nix_identity['boost']
-        (HOST_BOOST_INCLUDE_DIR, HOST_BOOST_LIBRARY_DIR,
-         HOST_BOOST_VERSION, HOST_BOOST_SONAME) = (
-            boost['includes'], boost['libraries'], boost['version'], boost['soname'])
-    elif os.environ.get('NDNSF_CONTAINER_BUILD') != '1':
+    if os.environ.get('NDNSF_CONTAINER_BUILD') != '1':
         import runpy
         with open('/etc/os-release', encoding='utf-8') as release:
             values = dict(line.rstrip().split('=', 1) for line in release
@@ -467,13 +415,6 @@ def configure(conf):
     except ValueError as error:
         conf.fatal(str(error))
     conf.env.NDNSF_COMPONENTS = list(selected_components)
-    if nix_identity:
-        sdks = [('nac-abe', conf.options.nac_abe_prefix)]
-        if 'di' in selected_components:
-            sdks.append(('onnx', conf.options.onnx_prefix))
-        for name, prefix in sdks:
-            if os.path.realpath(prefix) != nix_identity['sdks'].get(name):
-                conf.fatal('SDK selection differs from the Nix identity: ' + name)
     if conf.options.components != 'all' and (conf.options.with_examples or
             conf.options.install_experiment_fixtures):
         conf.fatal('Historical examples/experiment fixtures require --components=all')
@@ -967,36 +908,14 @@ int main() {{ return requiredApi == nullptr; }}
     # closure.  Checking only the three primary NDNSF libraries is insufficient:
     # OpenSSL, NDNSD, protobuf, ONNX Runtime, GTK and GStreamer .pc files can
     # inject their own include, library or RPATH flags.
-    if nix_identity:
-        try:
-            _DEPENDENCY_INVENTORY['reject_nix_tool_overrides'](
-                list(conf.env.LINKFLAGS or []) + list(conf.env.CXXFLAGS or []))
-        except ValueError as error:
-            conf.fatal(str(error))
     for uselib in ('NDN_CXX', 'NDN_SVS', 'NAC-ABE', 'NAC_ABE', 'OPENSSL',
                    'NDNSD', 'PROTOBUF', 'ONNXRUNTIME', 'GTKMM', 'GSTREAMER'):
-        if nix_identity:
-            try:
-                _DEPENDENCY_INVENTORY['validate_nix_library_selection'](
-                    nix_identity,
-                    Utils.to_list(conf.env.LIBPATH) +
-                    Utils.to_list(getattr(conf.env, 'LIBPATH_' + uselib, [])) +
-                    Utils.to_list(conf.env.LIBPATH_NDN_CXX),
-                    Utils.to_list(getattr(conf.env, 'LIB_' + uselib, [])))
-            except ValueError as error:
-                conf.fatal(uselib + ': ' + str(error))
         for key_prefix in ('INCLUDES_', 'LIBPATH_', 'STLIBPATH_',
                            'CXXFLAGS_', 'CFLAGS_', 'LINKFLAGS_'):
             key = key_prefix + uselib
             if key_prefix in ('INCLUDES_', 'LIBPATH_', 'STLIBPATH_'):
                 check_dependency_paths(key, key)
             else:
-                if nix_identity:
-                    try:
-                        _DEPENDENCY_INVENTORY['reject_nix_tool_overrides'](
-                            getattr(conf.env, key, []) or [])
-                    except ValueError as error:
-                        conf.fatal(str(error))
                 reject_non_global_link_flags(
                     getattr(conf.env, key, []) or [], key)
 
