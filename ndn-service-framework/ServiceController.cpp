@@ -1621,6 +1621,9 @@ bool ServiceController::serveOriginalControlReply(const ndn::Interest& interest)
 {
   const auto found = m_originalControlReplies.find(interest.getName());
   if (found == m_originalControlReplies.end()) return false;
+  if (m_prefixUserPermissions.isPrefixOf(interest.getName())) {
+    NDN_LOG_WARN("NDNSF_ORIGINAL_REPLY_HIT name=" << interest.getName());
+  }
   try { m_face.put(*found->second.packet); }
   catch (const std::exception& e) { NDN_LOG_WARN("Original control reply delivery failed: " << e.what()); }
   return true;
