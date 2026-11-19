@@ -5814,6 +5814,47 @@ namespace ndn_service_framework
         for (const auto& record : records) {
             currentServices.insert(ndn::Name(record.serviceName).toUri(ndn::name::UriFormat::CANONICAL));
         }
+        // A service that disappeared from the record has had its authority withdrawn. Calls already in
+        // flight for it are waiting for an answer that a Provider may never be allowed to give, so they are
+        // failed here instead of being left to their deadline.
+        {
+            std::set<std::string> withdrawn;
+            for (const auto& existing : previouslyKnownServices) {
+                if (!currentServices.count(existing))
+                    withdrawn.insert(existing);
+            }
+            if (!withdrawn.empty()) {
+                std::vector<std::shared_ptr<StreamedInvocationSharedState>> affected;
+                for (auto it = m_streamStates.begin(); it != m_streamStates.end();) {
+                    if (!withdrawn.count(it->second->serviceName.toUri(ndn::name::UriFormat::CANONICAL))) {
+                        ++it;
+                        continue;
+                    }
+                    affected.push_back(it->second);
+                    it = m_streamStates.erase(it);
+                }
+                for (auto& state : affected) {
+                    std::function<void(const StreamedInvocationError&)> onError;
+                    {
+                        std::lock_guard<std::mutex> lock(state->mutex);
+                        state->status = StreamedInvocationStatus::Failed;
+                        onError = state->onError;
+                    }
+                    if (onError) {
+                        onError({StreamedInvocationErrorCode::Unauthorized,
+                                 "service authority was withdrawn while the call was in flight"});
+                    }
+                }
+                std::string listed;
+                for (const auto& service : withdrawn) {
+                    if (!listed.empty())
+                        listed += ",";
+                    listed += service;
+                }
+                NDN_LOG_WARN("NDNSF_SERVICE_AUTHORITY_WITHDRAWN services=" << listed
+                             << " failed_streams=" << affected.size());
+            }
+        }
         if (previouslyKnownServices != currentServices) {
             std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
             for (const auto& record : records)
