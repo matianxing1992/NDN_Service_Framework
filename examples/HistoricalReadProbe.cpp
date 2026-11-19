@@ -49,7 +49,7 @@ field(const std::string& text, const std::string& key)
 ndn::security::Certificate
 loadCertificate(const std::string& pib, const std::string& identity)
 {
-  ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:" + pib, false);
+  ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:", false);
   return keyChain.getPib().getIdentity(ndn::Name(identity)).getDefaultKey()
     .getDefaultCertificate();
 }
@@ -68,7 +68,7 @@ main(int argc, char** argv)
   try {
     const std::string text = readFile(argv[1]);
     const std::string pib = field(text, "pib");
-    ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:" + pib, false);
+    ndn::KeyChain keyChain("pib-sqlite3:" + pib, "tpm-file:", false);
     ndn::Face face;
 
     ndn_service_framework::HistoricalReadRequest request;

@@ -143,8 +143,14 @@ buildHistoricalPublicParametersIndex(
     if (entry.publicParametersWireDigest.rfind("sha256:", 0) != 0 ||
         entry.publicParametersWireDigest.size() != 71)
       continue;
+    // Publish the digest exactly as a proof name carries it: the proof lower-cases the stored value, so
+    // an index written with the stored case sends readers to a name nothing answers.
+    auto digestHex = entry.publicParametersWireDigest.substr(7);
+    std::transform(digestHex.begin(), digestHex.end(), digestHex.begin(), [] (unsigned char value) {
+      return static_cast<char>(std::tolower(value));
+    });
     content += std::to_string(entry.generationTimestamp) + " " + std::to_string(entry.epoch) + " " +
-               entry.publicParametersWireDigest.substr(7) + " " + entry.publicParametersName + "\n";
+               digestHex + " " + entry.publicParametersName + "\n";
     ++listed;
   }
   if (listed == 0)
@@ -241,7 +247,12 @@ parseHistoricalPublicParameters(const std::string& content, HistoricalPublicPara
     std::transform(hex.begin(), hex.end(), hex.begin(), [] (unsigned char value) {
       return static_cast<char>(std::tolower(value));
     });
-    if (parsed.digest.substr(7) != hex)
+    // The envelope carries whatever case the store used; compare canonically.
+    auto declared = parsed.digest.substr(7);
+    std::transform(declared.begin(), declared.end(), declared.begin(), [] (unsigned char value) {
+      return static_cast<char>(std::tolower(value));
+    });
+    if (declared != hex)
       return false;
     proof = std::move(parsed);
     return true;

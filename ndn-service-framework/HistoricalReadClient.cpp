@@ -4,6 +4,7 @@
 #include "AbeHistoricalKeyRequest.hpp"
 #include "AbePublicParametersArchive.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -53,8 +54,13 @@ fetchVerified(ndn::Face& face, const ndn::Name& name, const ndn::security::Certi
       try {
         if (ndn::security::verifySignature(data, signer.getPublicKey()))
           state->data = data;
+        else
+          HISTORICAL_READ_DEBUG("historical read: %s signature did not verify against %s\n",
+                                data.getName().toUri().c_str(), signer.getName().toUri().c_str());
       }
-      catch (const std::exception&) {
+      catch (const std::exception& error) {
+        HISTORICAL_READ_DEBUG("historical read: %s verification error: %s\n",
+                              data.getName().toUri().c_str(), error.what());
       }
       state->done = true;
     },
@@ -237,7 +243,13 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
                           std::string(proofWire->begin(), proofWire->end()).c_str());
     return std::nullopt;
   }
-  if (proof.digest.substr(7) != std::get<2>(*found) || proof.originalName != std::get<3>(*found)) {
+  auto proofDigest = proof.digest.substr(7);
+  std::transform(proofDigest.begin(), proofDigest.end(), proofDigest.begin(),
+                 [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  auto indexDigest = std::get<2>(*found);
+  std::transform(indexDigest.begin(), indexDigest.end(), indexDigest.begin(),
+                 [] (unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  if (proofDigest != indexDigest || proof.originalName != std::get<3>(*found)) {
     HISTORICAL_READ_DEBUG("historical read: proof does not match the index entry\n");
     return std::nullopt;
   }
@@ -253,21 +265,38 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
   // The content key is one packet under its exact name; only the payload is segmented.
   const auto ckWire = fetchSingleData(face, request.ckName, request.producerCertificate,
                                       request.fetchTimeoutMs);
-  if (!ckWire)
+  if (!ckWire) {
+    HISTORICAL_READ_DEBUG("historical read: content key fetch failed for %s\n",
+                          request.ckName.toUri().c_str());
     return std::nullopt;
+  }
   const auto payloadWire = fetchSegmentedData(face, request.payloadName, request.producerCertificate,
                                               request.maxSegments, request.fetchTimeoutMs);
-  if (!payloadWire)
+  if (!payloadWire) {
+    HISTORICAL_READ_DEBUG("historical read: payload fetch failed for %s\n",
+                          request.payloadName.toUri().c_str());
     return std::nullopt;
+  }
   HistoricalCkContent ck;
   HistoricalPayloadContent payload;
   if (!parseHistoricalCkContent(std::string(ckWire->begin(), ckWire->end()), ck) ||
-      !parseHistoricalPayloadContent(std::string(payloadWire->begin(), payloadWire->end()), payload))
+      !parseHistoricalPayloadContent(std::string(payloadWire->begin(), payloadWire->end()), payload)) {
+    HISTORICAL_READ_DEBUG("historical read: envelope parse failed\n");
     return std::nullopt;
+  }
   const auto key = fetchHistoricalKey(face, keyChain, request, request.fetchTimeoutMs * 4);
-  if (!key || request.publicParameters.empty())
+  if (!key) {
+    HISTORICAL_READ_DEBUG("historical read: historical key request failed\n");
     return std::nullopt;
-  return decryptHistoricalPayload(request.publicParameters, ck, payload, *key);
+  }
+  if (request.publicParameters.empty()) {
+    HISTORICAL_READ_DEBUG("historical read: no public parameters to decrypt with\n");
+    return std::nullopt;
+  }
+  auto plaintext = decryptHistoricalPayload(request.publicParameters, ck, payload, *key);
+  if (!plaintext)
+    HISTORICAL_READ_DEBUG("historical read: decryption failed\n");
+  return plaintext;
 }
 
 } // namespace ndn_service_framework
