@@ -882,7 +882,29 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
       const auto held = snapshot->find(identity.toUri(ndn::name::UriFormat::CANONICAL));
       if (held == snapshot->end())
         return false;
+      // What it held when the object was published comes from the Controller's own signed grant record for
+      // that version, not from a retirement-time snapshot: the snapshot cannot prove publication-time
+      // authority, and it was never signed as a statement about this identity.
       const auto identityUri = identity.toUri(ndn::name::UriFormat::CANONICAL);
+      const auto record = m_generationStore->loadGrant(identityUri, generation, epoch);
+      if (!record)
+        return false;
+      try {
+        ndn::Data grantData;
+        grantData.wireDecode(ndn::Block(
+          ndn::span<const uint8_t>(reinterpret_cast<const uint8_t*>(record->data()),
+                                   record->size())));
+        if (!ndn::security::verifySignature(grantData, m_aaCert.getPublicKey()))
+          return false;
+        const std::string grantContent(
+          reinterpret_cast<const char*>(grantData.getContent().value()),
+          grantData.getContent().value_size());
+        if (!historicalGrantRecordCoversPolicy(grantContent, policy))
+          return false;
+      }
+      catch (const std::exception&) {
+        return false;
+      }
       const auto current = m_attributesMap.find(identityUri);
       // What it holds now means what the Controller would still grant: a configured attribute that has since
       // been revoked is not held, and issuing a retired generation's key for it would undo the revocation.

@@ -34,6 +34,22 @@ historicalAttributeIsAuthorized(const std::string& policy,
  * Controller tells "a key for the object I want" from "a key for something else" without trusting either
  * the requester's claim or the CK's bytes.
  */
+/** Check that a signed grant record covers the service a policy attribute names.
+ *
+ * The record is the Controller's own statement of what it granted, at the version the object was published
+ * under. Its content is line oriented:
+ *
+ *   NDNSF-GRANT-v1
+ *   identity /name
+ *   generation <n>
+ *   epoch <n>
+ *   granted <service>
+ *
+ * The policy must be `/PERMISSION/<service>`, and the record must list that same service.
+ */
+bool
+historicalGrantRecordCoversPolicy(const std::string& recordContent, const std::string& policy);
+
 bool
 historicalCkBindsAttribute(const ndn::Name& ckName, const ndn::Name& producer,
                            const ndn::Name& service, const std::string& attribute);

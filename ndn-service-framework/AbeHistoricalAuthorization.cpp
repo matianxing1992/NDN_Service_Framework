@@ -30,6 +30,36 @@ historicalAttributeIsAuthorized(const std::string& policy,
 }
 
 bool
+historicalGrantRecordCoversPolicy(const std::string& recordContent, const std::string& policy)
+{
+  constexpr std::string_view PERMISSION("/PERMISSION/");
+  if (policy.size() <= PERMISSION.size() || policy.compare(0, PERMISSION.size(), PERMISSION) != 0)
+    return false;
+  const std::string service = policy.substr(PERMISSION.size());
+  if (service.empty())
+    return false;
+  bool schemaSeen = false;
+  std::size_t begin = 0;
+  while (begin < recordContent.size()) {
+    const auto end = recordContent.find('\n', begin);
+    const std::string line = recordContent.substr(
+      begin, end == std::string::npos ? std::string::npos : end - begin);
+    begin = end == std::string::npos ? recordContent.size() : end + 1;
+    if (line == "NDNSF-GRANT-v1") {
+      schemaSeen = true;
+      continue;
+    }
+    constexpr std::string_view GRANTED("granted ");
+    if (line.compare(0, GRANTED.size(), GRANTED) == 0) {
+      const auto granted = line.substr(GRANTED.size());
+      if (granted == service || granted == "/" + service)
+        return schemaSeen;
+    }
+  }
+  return false;
+}
+
+bool
 historicalCkBindsAttribute(const ndn::Name& ckName, const ndn::Name& producer,
                            const ndn::Name& service, const std::string& attribute)
 {

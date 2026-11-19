@@ -1574,6 +1574,29 @@ BOOST_AUTO_TEST_CASE(HistoricalReadClientFetchesVerifiesUnsealsAndDecrypts)
   BOOST_CHECK(std::equal(read->begin(), read->end(), plaintext.begin()));
 }
 
+BOOST_AUTO_TEST_CASE(GrantRecordCoversOnlyTheServiceItLists)
+{
+  const std::string record =
+    "NDNSF-GRANT-v1\n"
+    "identity /user/reader\n"
+    "generation 1000\n"
+    "epoch 1\n"
+    "granted /Spec225/DI/Infer\n"
+    "granted /HELLO\n";
+  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, "/PERMISSION/Spec225/DI/Infer"));
+  BOOST_CHECK(historicalGrantRecordCoversPolicy(record, "/PERMISSION/HELLO"));
+  // A service the record does not list is not granted, whatever else it contains.
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "/PERMISSION/Other"));
+  // A record without its schema line proves nothing.
+  const std::string noSchema =
+    "identity /user/reader\ngeneration 1000\nepoch 1\ngranted /HELLO\n";
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(noSchema, "/PERMISSION/HELLO"));
+  // Only a plain permission attribute names a service.
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "/SERVICE/HELLO"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "/PERMISSION/"));
+  BOOST_CHECK(!historicalGrantRecordCoversPolicy(record, "HELLO"));
+}
+
 BOOST_AUTO_TEST_CASE(GrantRecordsRoundTripPerIdentityAndVersion)
 {
   DefaultGenerationFiles files;
