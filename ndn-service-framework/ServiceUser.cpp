@@ -6015,6 +6015,9 @@ namespace ndn_service_framework
                     // a stopped I/O context must not roll it back.
                 }
             }
+            NDN_LOG_INFO("NDNSF_STATUS_INSTALL service=" << serviceKey
+                         << " versionChanged=" << versionChanged
+                         << " streams=" << m_streamStates.size());
             if (versionChanged) {
                 invalidateControllerScopedCaches(status.getServiceName(),
                                                   status.getControllerVersion(),
@@ -6812,6 +6815,9 @@ namespace ndn_service_framework
         }
         const auto decision = it->second.authorize(subject, transition,
                                                    nowMilliseconds());
+        NDN_LOG_INFO("NDNSF_CONTROLLER_GATE_DECISION service=" << serviceName.toUri()
+                     << " allowed=" << decision.allowed
+                     << " reason=" << decision.reason);
         if (!decision.allowed) {
             NDN_LOG_WARN("NDNSF_USER_REVOCATION_REJECT service="
                          << serviceName << " transition="
