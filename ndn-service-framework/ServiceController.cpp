@@ -39,12 +39,20 @@ namespace ndn_service_framework {
 
 /** Whether the Controller answers historical decryption-key requests.
  *
- * Open again now that the reply is sealed to the certificate the signed request named, the permission
- * decision is the intersection of publication-time and current authority, and the key must belong to the
- * scope the object was published under. Each of those is required before a reply is built, so a request
- * that fails any of them gets nothing.
+ * Closed pending the audit's two P0 findings against issuance:
+ *
+ *   1. the reader checks only the reply's envelope fields and then hands the sealed key to its TPM, so a
+ *      forged envelope naming the right generation would be unsealed without ever verifying the
+ *      Controller's signature over the exact request and authorization version;
+ *   2. the issuer decides historical permission from the retirement-time attribute snapshot, which cannot
+ *      on its own prove what the identity held when the object was published, and it does not check the
+ *      revocation state of the certificate the request actually presents.
+ *
+ * Reopen only when the reply is verified end to end by the reader and the decision is derived from the
+ * signed original publication record. Until then the filter stays unregistered and a request times out,
+ * which is the safe direction.
  */
-constexpr bool kHistoricalKeyIssuanceEnabled = true;
+constexpr bool kHistoricalKeyIssuanceEnabled = false;
 
 NDN_LOG_INIT(ndn_service_framework.ServiceController);
 
