@@ -38,11 +38,12 @@ namespace ndn_service_framework {
 
 /** Whether the Controller answers historical decryption-key requests.
  *
- * Closed by default: the reply must carry a key sealed to the recipient's verified public key before
- * signing, because a signature proves who produced a packet, not who may read it. Reopen only together
- * with that sealing.
+ * Open again now that the reply is sealed to the certificate the signed request named, the permission
+ * decision is the intersection of publication-time and current authority, and the key must belong to the
+ * scope the object was published under. Each of those is required before a reply is built, so a request
+ * that fails any of them gets nothing.
  */
-constexpr bool kHistoricalKeyIssuanceEnabled = false;
+constexpr bool kHistoricalKeyIssuanceEnabled = true;
 
 NDN_LOG_INIT(ndn_service_framework.ServiceController);
 
@@ -729,7 +730,7 @@ ServiceController::registerArchivedPublicParameters()
       }));
   }
   else {
-    NDN_LOG_INFO("Historical key issuance: disabled (reply must be sealed to the recipient)");
+    NDN_LOG_INFO("Historical key issuance: disabled");
   }
 }
 
