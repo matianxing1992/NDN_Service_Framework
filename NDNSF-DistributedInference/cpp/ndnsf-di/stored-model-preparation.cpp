@@ -307,8 +307,24 @@ nativePublishStoredPreparedModel(ndn::KeyChain& keyChain, const ndn::Name& produ
     if (nextMetadata == metadata.size()) return std::nullopt;
     return std::move(metadata[nextMetadata++]);
   };
+  // N4 package facts. The splitter kind is the verified adapter family; precision and revision come from the
+  // descriptor. A size is only taken from a label the family prefixes, never guessed.
+  NativeStoredModelSemanticContext semantic;
+  try {
+    const auto family = config.at("splitter").at("kind").get<std::string>() == "LLAMA" ? "llama" : "qwen";
+    const auto facts = nativeModelPathFacts(model.modelName, model.sourceRevision, family,
+                                            model.precision);
+    semantic.modelFamily = facts.family;
+    semantic.modelSize = facts.size;
+    semantic.quantization = facts.quantization;
+    semantic.sourceRevisionLabel = facts.revisionLabel;
+  }
+  catch (const std::exception&) {
+    // A configuration without the declared splitter keeps the explicit `unspecified` words.
+  }
   return nativePublishStoredModel(keyChain, producer, repository, publicationPrefix,
-    model.modelDigest(), catalogId, "business-root", next, io, preparationState, bindPrefix);
+    model.modelDigest(), catalogId, "business-root", next, io, preparationState, bindPrefix,
+    semantic);
 }
 
 NativeStoredPreparedModel

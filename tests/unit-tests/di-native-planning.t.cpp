@@ -486,6 +486,31 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
   const auto stored = nativePublishStoredPreparedModel(storedKeys, ndn::Name("/model-preparer"),
     ndn::Name("/repo"), ndn::Name("/model-preparer/models").appendVersion(1), loaded,
     nativeCanonicalJson(storedConfiguration), storedIo);
+  // An omitted prefix lets the journal allocate the N4 package root from the verified facts.
+  const auto semanticRoot = std::filesystem::temp_directory_path() /
+    ("ndnsf-semantic-root-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(semanticRoot);
+  std::filesystem::create_directories(semanticRoot);
+  std::filesystem::permissions(semanticRoot, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  const auto semanticState = semanticRoot / "package.state";
+  struct SemanticStateCleanup {
+    std::filesystem::path path;
+    ~SemanticStateCleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+  } semanticCleanup{semanticRoot};
+  const auto semanticStored = nativePublishStoredPreparedModel(storedKeys, ndn::Name("/model-preparer"),
+    ndn::Name("/repo"), ndn::Name{}, loaded, nativeCanonicalJson(storedConfiguration), storedIo,
+    semanticState);
+  const auto packagePrefix = semanticStored.handle.rootName.getPrefix(-1);
+  BOOST_REQUIRE_GE(packagePrefix.size(), 3U);
+  BOOST_CHECK(packagePrefix[-3] == ndn::name::Component("stored"));
+  BOOST_CHECK(packagePrefix[-2] == ndn::name::Component("rep"));
+  BOOST_CHECK_EQUAL(packagePrefix[-1].value_size(), 32U);
+  const auto semanticResumed = nativePublishStoredPreparedModel(storedKeys, ndn::Name("/model-preparer"),
+    ndn::Name("/repo"), ndn::Name{}, loaded, nativeCanonicalJson(storedConfiguration), storedIo,
+    semanticState);
+  BOOST_CHECK(semanticResumed.handle.rootName.getPrefix(-1) == packagePrefix);
+
   const auto writerIo = storedIo;
   const auto packetsBeforeBadMapping = originalPackets.size();
   auto badMapping = storedConfiguration;
