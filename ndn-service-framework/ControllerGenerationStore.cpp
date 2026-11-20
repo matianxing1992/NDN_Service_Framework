@@ -1034,4 +1034,24 @@ ControllerGenerationStore::advanceEpoch(
   return version;
 }
 
-} // namespace ndn_service_framework
+ControllerVersion
+ControllerGenerationStore::recordRevocations(
+    const std::vector<RevocationTarget>& revocations, bool requireAbeRotationOnRestart)
+{
+  requireWriter();
+  auto state = loadState();
+  if (state.abeMaterial && state.abeMaterial->owner != m_owner)
+    throw std::runtime_error("Controller ABE state identity mismatch");
+  if (!state.version.isValid())
+    throw std::runtime_error("Controller generation has not started");
+  // The version is left alone on purpose: it names key material, and the rotation that would give the next version
+  // its material has not run yet. The withdrawal is durable here, and the flag tells a later start (or this process)
+  // to finish the rotation before answering with anything the old material cannot back.
+  if (state.abeMaterial)
+    state.abeMaterial->rotationRequired = requireAbeRotationOnRestart ||
+      !sameRevocations(state.revocations, revocations);
+  persist(state.version, revocations, state.abeMaterial, state.abeHistory);
+  return state.version;
+}
+
+} // namespace ndn_service_framework} // namespace ndn_service_framework

@@ -152,6 +152,16 @@ public:
       const std::vector<RevocationTarget>& revocations = {},
       bool requireAbeRotationOnRestart = false);
 
+  /** Record a withdrawal **without** claiming a new version.
+   *
+   * The version names key material, so it may only advance once that material exists. A revocation that still needs
+   * its rotation is therefore persisted against the current version with the rotation-required flag, and `advanceEpoch`
+   * publishes the new version afterwards. Returns the version that is still being served.
+   */
+  ControllerVersion recordRevocations(
+      const std::vector<RevocationTarget>& revocations,
+      bool requireAbeRotationOnRestart = true);
+
 private:
   struct PersistedState
   {
