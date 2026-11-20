@@ -471,6 +471,13 @@ public:
         if (resolvePrefix)
           bindPrefix(m_metadata.at("context").at("publicationPrefix").get<std::string>());
         auto savedContext = m_metadata.at("context");
+        if (!savedContext.contains("semanticPublication") &&
+            context.contains("semanticPublication")) {
+          // A package prepared before the semantic row has no coordinates on record. Its prefix is already
+          // allocated and its objects are named by the legacy contract, so the requested facts cannot change it;
+          // the stored record is reused as it stands instead of failing the resume.
+          context.erase("semanticPublication");
+        }
         if (savedContext.contains("semanticPublication") &&
             context.contains("semanticPublication")) {
           // Resume: the facts must be the same package; the id stored with it is the one to reuse.

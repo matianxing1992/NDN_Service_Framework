@@ -236,6 +236,55 @@ struct PacketRepository
 
 BOOST_AUTO_TEST_SUITE(StoredModelCapability)
 
+BOOST_AUTO_TEST_CASE(LegacyJournalResumesWhenCoordinatesAreSupplied)
+{
+  PacketRepository repository;
+  const auto root = std::filesystem::temp_directory_path() /
+    ("ndnsf-stored-legacy-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  std::filesystem::permissions(root, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  const auto state = root / "model.preparation";
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+  } cleanup{root};
+
+  NativeStoredModelSemanticContext semantic;
+  semantic.modelFamily = "qwen3";
+  semantic.modelSize = "0.6b";
+  semantic.quantization = "int4";
+  semantic.sourceRevisionLabel = "r3";
+
+  const auto publish = [&](NativeStoredModelSemanticContext facts) {
+    ndn::KeyChain keys{"pib-memory:", "tpm-memory:"};
+    auto port = repository.io();
+    std::size_t next = 0;
+    return nativePublishStoredModel(keys, ndn::Name("/preparer"), ndn::Name("/repo"),
+      ndn::Name{}, "sha256:" + std::string(64, 'd'), "catalog", "manifest",
+      [&] () -> std::optional<NativeStoredModelInput> {
+        if (next == repository.source.size())
+          return std::nullopt;
+        return repository.source[next++];
+      }, port, state, {}, facts);
+  };
+
+  // First run carries no coordinates, so the journal records the legacy prefix and names.
+  const auto legacy = publish(NativeStoredModelSemanticContext{});
+  const auto legacyPrefix = legacy.handle.rootName.getPrefix(-1);
+  BOOST_CHECK(!nativeStoredModelSemanticPrefix(legacyPrefix));
+
+  // A later run supplies the verified facts; the recorded package cannot be renamed, so the resume reuses it.
+  const auto resumed = publish(semantic);
+  BOOST_CHECK(resumed.handle.rootName.getPrefix(-1) == legacyPrefix);
+  const auto catalog = nativeLoadStoredModelCatalog(resumed.handle, repository.io(false));
+  for (const auto& item : catalog.objects()) {
+    BOOST_CHECK(item.second.object.name ==
+                ndn::Name(legacyPrefix).append("objects").append(item.first).appendVersion(0));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
 {
   constexpr auto capacity = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;
