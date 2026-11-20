@@ -174,6 +174,10 @@ struct RuntimeTaskHold
     : state(std::move(state)) {}
   ~RuntimeTaskHold();
   std::shared_ptr<RuntimeState> state;
+  /** Set when this hold keeps one entry of `queued` until the task starts. */
+  bool countedQueued = false;
+  /** Set by the wrapper before it runs the task; an unstarted task still owns `queued`. */
+  bool started = false;
 };
 
 } // namespace detail

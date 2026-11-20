@@ -183,6 +183,10 @@ detail::RuntimeTaskHold::~RuntimeTaskHold()
     std::lock_guard<std::mutex> lock(state->mutex);
     if (state->tickets > 0)
       --state->tickets;
+    // A task handed to a submit hook may never be invoked; its queued entry must still be rolled back,
+    // otherwise the worker's exit condition (closed && tickets == 0 && queued == 0) can never hold.
+    if (countedQueued && !started && state->queued > 0)
+      --state->queued;
   }
   // A task/timer hold is the final accounting edge for queued work.  Wake
   // both local drain waiters and any enclosing owner that registered a
@@ -300,9 +304,11 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
   if (!ticket.valid() || ticket.m_state != state)
     throw OperationError(OperationErrorCode::Closed, "operation ticket is invalid");
 
-  auto wrapped = [state, task = std::move(task)]() mutable {
+  std::shared_ptr<detail::RuntimeTaskHold> hold;
+  auto wrapped = [state, task = std::move(task), hold = hold]() mutable {
     {
       std::lock_guard<std::mutex> lock(state->mutex);
+      hold->started = true;
       if (state->queued > 0)
         --state->queued;
       ++state->active;
@@ -325,12 +331,12 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
   };
 
   bool useHook = false;
-  std::shared_ptr<detail::RuntimeTaskHold> hold;
   {
     std::lock_guard<std::mutex> lock(state->mutex);
     if (state->closed)
       throw OperationError(OperationErrorCode::Closed, "operation runtime is closed");
     hold = std::make_shared<detail::RuntimeTaskHold>(state);
+    hold->countedQueued = true;
     ++state->tickets;
     ++state->queued;
     useHook = static_cast<bool>(state->submitHook);
