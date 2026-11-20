@@ -313,15 +313,15 @@ NativeSourcePartitionStrategy::enumerateImpl(
                                   m_profile.roles[1] + "/RUN", partial));
     sum.inputSlots.push_back(slot("rank1", m_profile.partialShape, "REMOTE_STEP",
                                   m_profile.roles[2] + "/RUN", partial));
-    sum.outputSlots.push_back(slot("sum", m_profile.partialShape, "LOCAL_STEP", "", ""));
+    sum.outputSlots.push_back(slot(partial, m_profile.partialShape, "LOCAL_STEP", "", ""));
     candidate.executionPlan.steps.push_back(std::move(sum));
     NativeExecutionStepSpec suffix;
     suffix.stepId = m_profile.roles[3] + "/RUN";
     suffix.unitId = m_profile.roles[3];
     suffix.operation = "CALL_SUBGRAPH";
     suffix.artifactEntry = m_profile.roles[3] + "/artifact";
-    suffix.inputSlots.push_back(slot("sum", m_profile.partialShape, "REMOTE_STEP",
-                                     sumStep, "sum"));
+    suffix.inputSlots.push_back(slot(partial, m_profile.partialShape, "REMOTE_STEP",
+                                     sumStep, partial));
     suffix.outputSlots.push_back(graph.modelOutputs.empty()
       ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
       : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP"));
@@ -498,7 +498,8 @@ NativeSourcePartitionStrategy::enumerateImpl(
       m_profile.roles[1] + "/SUM", "rank1"));
     candidate.executionPlan.dependencies.push_back(dependency(
       "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
-      m_profile.roles[1] + "/SUM", "sum", m_profile.roles[3] + "/RUN", "sum"));
+      m_profile.roles[1] + "/SUM", m_profile.convOutputTensor,
+      m_profile.roles[3] + "/RUN", m_profile.convOutputTensor));
   }
 
   const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / m_profile.roles.size());

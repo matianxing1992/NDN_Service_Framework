@@ -2346,6 +2346,17 @@ def build(bld):
     # travel with the binary and the runner resolves them from its own prefix.
     # `share` is spelled out because this tree does not define a DATADIR variable, and inventing
     # one here would disagree with the installer's own manifest, which records absolute paths.
+    # Fixture preparation helper: print the canonical identity a planner will
+    # compute for one ONNX file, so a tracked driver never re-implements it.
+    bld.program(target='../native-source-inspect', name='native-source-inspect',
+                source=[bld.path.find_node('standalone/native-source-inspect.cpp')] +
+                       di_integration_sources,
+                includes=framework_includes,
+                use='ndnsf-distributed-inference ' + di_integration_use + ' ONNXRUNTIME',
+                defines=['HAVE_TESTS'], cxxflags=['-fPIC', '-O0', '-g0'],
+                linkflags=['-Wl,--no-relax'], rpath=[bld.bldnode.abspath()],
+                install_path=None)
+
     tests_share = '${PREFIX}/share/ndnsf/tests'
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
     driver_names = (['run-spec182-native-grant-process.py',
