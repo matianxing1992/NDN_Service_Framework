@@ -761,6 +761,25 @@ ServiceController::advanceAuthorizationEpoch(bool requireAbeRotationOnRestart)
 }
 
 void
+ServiceController::registerServedPrefix(const ndn::Name& prefix,
+                                        const std::function<void(const ndn::InterestFilter&,
+                                                                 const ndn::Interest&)>& onInterest)
+{
+  if (!m_registeredServedPrefixes.insert(prefix.toUri(ndn::name::UriFormat::CANONICAL)).second)
+    return;
+  // The history prefixes are served Data, so they need the same forwarder registration the RPC prefixes get:
+  // the two-argument overload only dispatches inside this process, and a MiniNDN actor route for another node
+  // does not cover this one.
+  auto holder = std::make_shared<ndn::ScopedRegisteredPrefixHandle>();
+  m_registrationHandles.push_back(holder);
+  *holder = m_face.setInterestFilter(prefix, onInterest,
+    [] (const ndn::Name&) {},
+    [prefix] (const ndn::Name&, const std::string& reason) {
+      NDN_LOG_ERROR("NDNSF_HISTORY_REGISTER_FAILED prefix=" << prefix << " reason=" << reason);
+    });
+}
+
+void
 ServiceController::registerArchivedPublicParameters()
 {
   NDN_LOG_WARN("NDNSF_HISTORICAL_REGISTER entered=1 store=" << (m_generationStore ? 1 : 0));
@@ -792,7 +811,7 @@ ServiceController::registerArchivedPublicParameters()
     ndn::Name indexName(m_aaCert.getIdentity());
     indexName.append("NDNSF").append("HISTORY").append("PUBPARAMS");
     if (m_archivedParameterNames.insert(indexName.toUri(ndn::name::UriFormat::CANONICAL)).second) {
-      m_archivedParameterFilters.push_back(m_face.setInterestFilter(indexName,
+      registerServedPrefix(indexName,
         [this, indexName] (const ndn::InterestFilter&, const ndn::Interest& interest) {
           std::vector<ControllerGenerationStore::AbeHistoryEntry> current;
           try {
@@ -842,7 +861,7 @@ ServiceController::registerArchivedPublicParameters()
           listing.setName(interest.getName());
           sign(listing);
           m_face.put(listing);
-        }));
+        });
     }
   }
   for (const auto& answer : answers) {
@@ -850,10 +869,10 @@ ServiceController::registerArchivedPublicParameters()
     const auto name = answer->getName().toUri(ndn::name::UriFormat::CANONICAL);
     if (!m_archivedParameterNames.insert(name).second)
       continue;
-    m_archivedParameterFilters.push_back(m_face.setInterestFilter(answer->getName(),
+    registerServedPrefix(answer->getName(),
       [this, answer] (const ndn::InterestFilter&, const ndn::Interest&) {
         m_face.put(*answer);
-      }));
+      });
   }
   // Historical key issuance is closed until the reply can carry a key that only the verified
   // recipient can open. A signed Data proves origin and integrity, not confidentiality, so
@@ -868,10 +887,10 @@ ServiceController::registerArchivedPublicParameters()
     const ndn::Name base = m_controllerPrefix.empty() ? m_aaCert.getIdentity() : m_controllerPrefix;
     ndn::Name dkeyPrefix(base);
     dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
-    m_historicalKeyFilters.push_back(m_face.setInterestFilter(dkeyPrefix,
+    registerServedPrefix(dkeyPrefix,
       [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
         serveHistoricalKeyRequest(interest);
-      }));
+      });
   }
   else {
     NDN_LOG_INFO("Historical key issuance: disabled");

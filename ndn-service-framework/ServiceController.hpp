@@ -272,7 +272,13 @@ private:
   ControllerVersion m_abeMaterialVersion;
   std::unique_ptr<ControllerGenerationStore> m_generationStore;
   /** Responders for superseded generations' public parameters, kept alive with the Controller. */
+  /** Register a prefix for this Controller's served data with a forwarder registration, so it is reachable from
+   *  other nodes and not only through this process's own dispatcher. */
+  void registerServedPrefix(const ndn::Name& prefix,
+                            const std::function<void(const ndn::InterestFilter&,
+                                                     const ndn::Interest&)>& onInterest);
   std::vector<ndn::ScopedInterestFilterHandle> m_archivedParameterFilters;
+  std::set<std::string> m_registeredServedPrefixes;
   /** Historical proof names already registered, so a later rotation does not register them twice. */
   std::set<std::string> m_archivedParameterNames;
   /** One entry per historical key request seen, kept until the request would expire.
