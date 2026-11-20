@@ -163,8 +163,29 @@ def gpu_query_files(prefix, build_root):
         'libcudart.so.12', 'libcuda.so.1', 'libnvidia-ml.so.1')] + [query]
 
 
-def target_environment(target, environ, prefix, build_root):
+ROUTINE_PROFILES = frozenset({'unit', 'integration'})
+
+# Inputs the T001 audit proved can change a routine case's data, helper or assertions. A routine profile
+# must not inherit them from the developer shell: each one switches a default case onto host data, and the
+# explicit `qualification`/`model` profiles are where they may be supplied.
+QUALIFICATION_ONLY_INPUTS = frozenset({
+    'NDNSF_DI_TEST_ONNX_MODEL',              # D2b real-model branch
+    'NDNSF_DI_NATIVE_PLAN_JSON',             # async runtime plan override
+    'NDNSF_DI_NATIVE_PLAN_SERVICE',
+    'NDNSF_SPEC190_RUN_INT8',                # direct INT8 gate
+    'NDNSF_SPEC190_INT8_ONNX',
+    'SPEC190_NATIVE_REQUESTER_BINARY',       # real CLI live turns
+    'SPEC190_NATIVE_TURNS_CONFIG',
+    'NDNSF_TEST_PORTABLE_ONNX_GRAPH',        # frozen CUDA replay
+    'NDNSF_TEST_PORTABLE_CUDA_PROFILE',
+})
+
+
+def target_environment(target, environ, prefix, build_root, routine=False):
     result = environ.copy()
+    if routine:
+        for name in QUALIFICATION_ONLY_INPUTS:
+            result.pop(name, None)
     if 'repo-owner-delete' in target.get('facilities', []):
         binary = (prefix / 'bin/ndnsf-repo-owner-delete' if prefix is not None else
                   build_root / 'NDNSF-DistributedRepo/ndnsf-repo-owner-delete')
@@ -763,7 +784,8 @@ def main(argv=None):
                 failed = True
                 continue
             try:
-                target_env = target_environment(target, environ, prefix, build_root)
+                target_env = target_environment(target, environ, prefix, build_root,
+                                                 routine=name in ROUTINE_PROFILES)
                 for asset_name in target.get('assets', []):
                     target_env.update(asset_bindings[asset_name])
                 listing = enumerate_cases(binary, target_env)

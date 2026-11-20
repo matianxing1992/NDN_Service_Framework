@@ -321,6 +321,21 @@ class CheckRunner(unittest.TestCase):
         self.assertIn('--run_test=!Model', seen[-1])
         return result
 
+    def test_routine_profile_does_not_inherit_qualification_inputs(self):
+        # A developer shell that exported the real-model switch must not change what a routine profile
+        # exercises; the explicit qualification profile is where the input belongs.
+        environment = {'NDNSF_DI_TEST_ONNX_MODEL': '/host/model.onnx',
+                       'SPEC190_NATIVE_TURNS_CONFIG': '/host/turns.json',
+                       'KEPT': 'yes'}
+        target = {'target': 'fixture', 'selector': {'include': ['*']}}
+        routine = checks.target_environment(target, environment, None, Path('/tmp'), routine=True)
+        explicit = checks.target_environment(target, environment, None, Path('/tmp'), routine=False)
+        self.assertNotIn('NDNSF_DI_TEST_ONNX_MODEL', routine)
+        self.assertNotIn('SPEC190_NATIVE_TURNS_CONFIG', routine)
+        self.assertEqual(routine['KEPT'], 'yes')
+        self.assertEqual(explicit['NDNSF_DI_TEST_ONNX_MODEL'], '/host/model.onnx')
+        self.assertEqual(explicit['SPEC190_NATIVE_TURNS_CONFIG'], '/host/turns.json')
+
     def test_passed_case_with_no_assertions_is_not_a_pass(self):
         result = self.invoke(assertions_passed=0)
         self.assertFalse(result['passed'])
