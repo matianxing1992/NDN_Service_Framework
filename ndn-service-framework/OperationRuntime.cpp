@@ -305,10 +305,9 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
     throw OperationError(OperationErrorCode::Closed, "operation ticket is invalid");
 
   std::shared_ptr<detail::RuntimeTaskHold> hold;
-  auto wrapped = [state, task = std::move(task), hold = hold]() mutable {
+  auto wrapped = [state, task = std::move(task)]() mutable {
     {
       std::lock_guard<std::mutex> lock(state->mutex);
-      hold->started = true;
       if (state->queued > 0)
         --state->queued;
       ++state->active;
@@ -671,6 +670,9 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
           auto queuedTask = std::move(state->queue.front());
           state->queue.pop_front();
           taskTicket = std::move(queuedTask.ticket);
+          // The task is about to run, so its hold must no longer roll back the queued entry it owns.
+          if (taskTicket)
+            taskTicket->started = true;
           task = std::move(queuedTask.function);
           break;
         }
