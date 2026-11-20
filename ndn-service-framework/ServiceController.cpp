@@ -1040,13 +1040,46 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
         deny(validated, "requester-certificate");
         return;
       }
-      auto reply = m_historicalKeyBroker->answerValidated(validated, m_controllerPrefix,
-                                                          nowMilliseconds(), signer);
-      if (!reply) {
-        deny(validated, "not-authorised");
+      const auto answer = [this, validated, deny, signer] {
+        auto reply = m_historicalKeyBroker->answerValidated(validated, m_controllerPrefix,
+                                                            nowMilliseconds(), signer);
+        if (!reply) {
+          deny(validated, "not-authorised");
+          return;
+        }
+        m_face.put(*reply);
+      };
+      // The requester may offer the producer-signed CK packet as publication evidence. It is only evidence if this
+      // Controller verifies it: the name must be the one being asked for, and the signature must chain to the
+      // deployment's trust - otherwise the decision would still rest on something the requester wrote.
+      HistoricalKeyRequest claimed;
+      const auto parameters = validated.getApplicationParameters();
+      const std::string body(reinterpret_cast<const char*>(parameters.value()),
+                             parameters.value_size());
+      if (!decodeHistoricalKeyRequest(body, claimed) || claimed.ckEvidence.empty()) {
+        answer();
         return;
       }
-      m_face.put(*reply);
+      ndn::Data evidence;
+      try {
+        evidence.wireDecode(ndn::Block(ndn::span<const uint8_t>(claimed.ckEvidence.data(),
+                                                                 claimed.ckEvidence.size())));
+      }
+      catch (const std::exception&) {
+        deny(validated, "ck-evidence-malformed");
+        return;
+      }
+      if (!evidence.getName().equals(claimed.ckName)) {
+        deny(validated, "ck-evidence-name");
+        return;
+      }
+      m_validator.validate(evidence,
+        [answer] (const ndn::Data&) { answer(); },
+        [deny, validated] (const ndn::Data&, const ndn::security::ValidationError&) {
+          NDN_LOG_WARN("NDNSF_HISTORICAL_EVIDENCE_REJECTED reason=signature name="
+                       << validated.getName());
+          deny(validated, "ck-evidence-signature");
+        });
     },
     [deny] (const ndn::Interest& invalid, const ndn::security::ValidationError& error) {
       NDN_LOG_WARN("Historical key request rejected: " << error.getInfo());
