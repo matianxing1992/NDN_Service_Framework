@@ -134,6 +134,16 @@ struct Result
   bool matchesFloat32Tensor(const std::string& tensorName,
                             const std::vector<float>& expected,
                             double tolerance) const;
+
+  /** Compare fixed-width rows as an unordered detection set.
+   *
+   * NMS emits near-tied detections whose row order may differ between two
+   * otherwise identical runs. Each expected row must match one unused actual
+   * row within tolerance; row order itself is not part of the contract.
+   */
+  bool matchesFloat32TensorRows(const std::string& tensorName,
+                                const std::vector<float>& expected,
+                                double tolerance, std::size_t rowWidth) const;
 };
 
 enum class RequestStatus { Pending, Succeeded, Failed, Cancelled };

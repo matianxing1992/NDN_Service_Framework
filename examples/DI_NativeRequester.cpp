@@ -1453,8 +1453,12 @@ run(int argc, char** argv)
       const auto tensor = oracle->get<std::string>("tensor", {});
       const auto expected = floatArray(*oracle, "float32");
       const auto tolerance = oracle->get<double>("tolerance", 1e-5);
+      const auto rowWidth = oracle->get<std::uint64_t>("row_width", 0);
+      const bool matched = rowWidth == 0
+        ? result.matchesFloat32Tensor(tensor, expected, tolerance)
+        : result.matchesFloat32TensorRows(tensor, expected, tolerance, rowWidth);
       if (tensor.empty() || expected.empty() || !std::isfinite(tolerance) || tolerance < 0.0 ||
-          !result.matchesFloat32Tensor(tensor, expected, tolerance))
+          !matched)
         throw std::runtime_error("NATIVE_NUMERICAL_ORACLE_FAILED: tensor value mismatch");
       if (diagnosticOutputEnabled())
         std::cout << "NATIVE_NUMERICAL_ORACLE_PASS tensor=" << tensor

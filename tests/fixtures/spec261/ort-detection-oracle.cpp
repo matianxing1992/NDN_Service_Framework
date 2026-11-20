@@ -89,7 +89,7 @@ readNpy(const std::string& path)
 int
 main(int argc, char** argv)
 {
-  std::string graph, input, predictions, inputName;
+  std::string graph, input, predictions, inputName, writePredictions;
   std::vector<std::string> outputNames;
   for (int i = 1; i < argc; ++i) {
     const std::string flag = argv[i];
@@ -98,12 +98,15 @@ main(int argc, char** argv)
     if (flag == "--graph") graph = value;
     else if (flag == "--input") input = value;
     else if (flag == "--predictions") predictions = value;
+    else if (flag == "--write-predictions") writePredictions = value;
     else if (flag == "--input-name") inputName = value;
     else if (flag == "--output-name") outputNames.push_back(value);
     else throw std::runtime_error("unknown flag " + flag);
   }
-  if (graph.empty() || input.empty() || predictions.empty())
-    throw std::runtime_error("oracle requires --graph, --input and --predictions");
+  if (graph.empty() || input.empty() ||
+      (predictions.empty() && writePredictions.empty()))
+    throw std::runtime_error(
+      "oracle requires --graph, --input and --predictions or --write-predictions");
   // The frozen graph declares its own terminal output name; a profile whose
   // export names it differently must not force the caller to remember it. Use
   // exactly one output and bind it by the graph's actual name unless asked.
@@ -147,9 +150,41 @@ main(int argc, char** argv)
                              inputs.size(), outputNameValues.data(), outputNameValues.size());
   if (outputs.size() != 1) throw std::runtime_error("oracle expects one output tensor");
   const auto info = outputs.front().GetTensorTypeAndShapeInfo();
+  if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT)
+    throw std::runtime_error("oracle output is not float32");
   const auto shapeValue = info.GetShape();
   const auto values = outputs.front().GetTensorData<float>();
   const auto size = info.GetElementCount();
+
+  if (!writePredictions.empty()) {
+    std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (";
+    for (std::size_t i = 0; i < shapeValue.size(); ++i) {
+      if (i != 0) header += ", ";
+      header += std::to_string(shapeValue[i]);
+    }
+    if (shapeValue.size() == 1) header += ",";
+    header += "), }";
+    const std::size_t preamble = 10;
+    const auto padded = ((preamble + header.size() + 1 + 63) / 64) * 64;
+    header.append(padded - preamble - header.size() - 1, ' ');
+    header.push_back('\n');
+    std::ofstream out(writePredictions, std::ios::binary);
+    out.write("\x93NUMPY", 6);
+    const unsigned char version[2] = {1, 0};
+    out.write(reinterpret_cast<const char*>(version), 2);
+    const std::uint16_t length = static_cast<std::uint16_t>(header.size());
+    out.write(reinterpret_cast<const char*>(&length), 2);
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    out.write(reinterpret_cast<const char*>(values),
+              static_cast<std::streamsize>(size * sizeof(float)));
+    out.close();
+    if (!out) throw std::runtime_error("cannot write predictions");
+  }
+  if (predictions.empty()) {
+    std::cout << "SPEC261_CPP_ORT_ORACLE_WROTE " << writePredictions
+              << " elements=" << size << std::endl;
+    return 0;
+  }
 
   const auto expected = readNpy(predictions);
   // Shape equality is part of the ABI: two tensors with the same element count

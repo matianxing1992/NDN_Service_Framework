@@ -47,6 +47,53 @@ bool Result::matchesFloat32Tensor(const std::string& tensorName,
   }
 }
 
+bool Result::matchesFloat32TensorRows(const std::string& tensorName,
+                                      const std::vector<float>& expected,
+                                      double tolerance, std::size_t rowWidth) const
+{
+  if (tensorName.empty() || expected.empty() || !std::isfinite(tolerance) ||
+      tolerance < 0.0 || rowWidth == 0 || expected.size() % rowWidth != 0)
+    return false;
+  try {
+    const auto tensors = decodeTensorBundle(payload);
+    const auto& tensor = findTensor(tensors, tensorName);
+    if (tensor.elementType != TensorElementType::Float32 ||
+        tensor.payload.size() != expected.size() * sizeof(float))
+      return false;
+    std::vector<float> actual(expected.size());
+    std::memcpy(actual.data(), tensor.payload.data(), tensor.payload.size());
+    for (const auto value : actual)
+      if (!std::isfinite(value)) return false;
+    for (const auto value : expected)
+      if (!std::isfinite(value)) return false;
+    const auto rows = expected.size() / rowWidth;
+    std::vector<bool> used(rows, false);
+    for (std::size_t row = 0; row < rows; ++row) {
+      bool matched = false;
+      for (std::size_t candidate = 0; candidate < rows && !matched; ++candidate) {
+        if (used[candidate]) continue;
+        bool equal = true;
+        for (std::size_t column = 0; column < rowWidth; ++column) {
+          const auto index = row * rowWidth + column;
+          const auto other = candidate * rowWidth + column;
+          const double reference = static_cast<double>(expected[index]);
+          if (std::fabs(static_cast<double>(actual[other]) - reference) >
+              tolerance + tolerance * std::fabs(reference)) {
+            equal = false;
+            break;
+          }
+        }
+        if (equal) { used[candidate] = true; matched = true; }
+      }
+      if (!matched) return false;
+    }
+    return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 namespace {
 
 bool isDigest(const std::string& value)
