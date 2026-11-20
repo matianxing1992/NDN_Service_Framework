@@ -1043,6 +1043,13 @@ private:
   {
     m_io.requireCurrent();
     const auto protection = journalWriteKey();
+    // A ring that is configured but cannot be read is not the same as no ring: falling back to the plain layout here
+    // would write the master secret in clear exactly when the protection is supposed to be in force.
+    if (!protection) {
+      const char* ring = ::getenv("NDNSF_FILE_KEYRING");
+      if (ring != nullptr && *ring != '\0')
+        throw std::runtime_error("DI_STORED_MODEL_REJECTED: the configured file key ring could not be read");
+    }
     // A journal written with a key is sealed with the newest ring entry and records that entry's id, so a later
     // rotation still opens it. Without a ring the older plain layout stands, which the reader still accepts.
     std::string keyField;
