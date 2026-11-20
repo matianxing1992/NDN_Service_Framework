@@ -184,6 +184,25 @@ NativeSourcePartitionStrategy::enumerateImpl(
       2, 1, nativeCanonicalJson(shard1)};
     candidate.executionPlan.tensorDegree = 2;
     candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+    const auto rankTransform = [&] (std::uint64_t begin, std::uint64_t end) {
+      return nativeCanonicalJson(NativeJson{
+        {"schema", "source_transform_v1"},
+        {"kind", "conv-input-channel-partial"},
+        {"node", m_profile.boundaryNode},
+        {"axis", m_profile.convInputAxis},
+        {"begin", begin}, {"end", end}, {"extent", m_profile.inputChannels}});
+    };
+    candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0, half);
+    candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(half, m_profile.inputChannels);
+    if (boundaryIndex + 1 < graph.topologicalOrder.size()) {
+      const auto& nextId = graph.topologicalOrder[boundaryIndex + 1];
+      const auto next = std::find_if(graph.nodes.begin(), graph.nodes.end(),
+        [&] (const auto& node) { return node.id == nextId; });
+      if (next != graph.nodes.end() && next->opType == "Add")
+        candidate.sourceTransformByRole[m_profile.roles[3]] = nativeCanonicalJson(NativeJson{
+          {"schema", "source_transform_v1"}, {"kind", "add-conv-bias"},
+          {"node", nextId}, {"sourceConv", m_profile.boundaryNode}});
+    }
     candidate.executionPlan.stageLayout = {
       {m_profile.roles[0] + "/stage", nativePlanningDigest("source-prefix|" + graph.graphDigest),
        {m_profile.roles[0]}},

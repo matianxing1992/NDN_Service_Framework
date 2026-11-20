@@ -324,6 +324,8 @@ struct NativeSplitCandidate
     std::string tensorShardV1;
   };
   std::map<std::string, RoleTensorIdentity> tensorIdentityByRole;
+  /** Optional per-role source transform identity (source_transform_v1). */
+  std::map<std::string, std::string> sourceTransformByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateInputsByRole;
   std::map<std::string, std::vector<NativeTensorContract>> roleStateOutputsByRole;
 

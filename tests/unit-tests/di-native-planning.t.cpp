@@ -2229,6 +2229,7 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   const auto graphDigest = digest("generic-source-hybrid");
   auto sourceGraph = graph(graphDigest, {"input", "pre", "conv", "post", "head"});
   sourceGraph.nodes[2].opType = "Conv";
+  sourceGraph.nodes[3].opType = "Add";
   auto sourceModel = model("onnx", "GenericHybrid", graphDigest);
   NativeSourcePartitionStrategy hybrid({NativeSourcePartitionMode::HYBRID, "conv",
     {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel", {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""});
@@ -2244,6 +2245,14 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   BOOST_CHECK(std::any_of(candidate.executionPlan.steps.begin(), candidate.executionPlan.steps.end(),
     [] (const auto& step) { return step.operation == "SUM"; }));
   BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
+  BOOST_REQUIRE_EQUAL(candidate.sourceTransformByRole.size(), 3U);
+  for (const auto& role : {"Rank0", "Rank1"}) {
+    const auto transform = nativeParseJson(candidate.sourceTransformByRole.at(role));
+    BOOST_CHECK_EQUAL(transform.at("kind").get<std::string>(), "conv-input-channel-partial");
+    BOOST_CHECK_EQUAL(transform.at("extent").get<std::uint64_t>(), 16U);
+  }
+  BOOST_CHECK_EQUAL(nativeParseJson(candidate.sourceTransformByRole.at("Suffix"))
+    .at("kind").get<std::string>(), "add-conv-bias");
 
   // The two rank shards must describe contiguous, disjoint halves of the
   // admitted Conv input-channel axis; a gap, overlap or wrong extent would

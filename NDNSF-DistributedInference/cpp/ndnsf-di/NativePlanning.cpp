@@ -537,6 +537,12 @@ std::string NativeSplitCandidate::canonicalJson() const
     }
     executionPlanJson["tensor_identity"] = identities;
   }
+  if (!sourceTransformByRole.empty()) {
+    auto transforms = NativeJson::object();
+    for (const auto& item : sourceTransformByRole)
+      transforms[item.first] = nativeParseJson(item.second);
+    executionPlanJson["source_transform_by_role"] = transforms;
+  }
   if (!executionPlan.steps.empty()) {
     auto steps = NativeJson::array();
     for (const auto& step : executionPlan.steps) {
