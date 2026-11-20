@@ -21725,25 +21725,21 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             return;
         }
         if (!previouslyServed.empty()) {
-          // Losing every service this Provider serves is a stop condition: continuing to serve with
-          // withdrawn authority is exactly what a revocation is meant to end.
-          bool stillGranted = false;
-          for (const auto& record : records) {
-            if (stillGranted)
-              break;
-            const std::string name = record.serviceName;
-            for (const auto& served : previouslyServed) {
-              if (name == served) {
-                stillGranted = true;
-                break;
-              }
-            }
+          // Report the services this refresh took away. A Provider that keeps some of them is not withdrawn as a
+          // whole; the host decides which of the lost services it can no longer serve.
+          std::vector<std::string> lost;
+          for (const auto& served : previouslyServed) {
+            const bool granted = std::any_of(records.begin(), records.end(),
+              [&served] (const auto& record) { return record.serviceName == served; });
+            if (!granted)
+              lost.push_back(served);
           }
-          if (!stillGranted) {
-            NDN_LOG_WARN("NDNSF_PROVIDER_AUTHORITY_WITHDRAWN services=" << previouslyServed.size()
+          if (!lost.empty()) {
+            NDN_LOG_WARN("NDNSF_PROVIDER_AUTHORITY_WITHDRAWN lost=" << lost.size()
+                         << " of=" << previouslyServed.size()
                          << " epoch=" << response.getPolicyEpoch());
             if (m_authorityWithdrawnHook)
-              m_authorityWithdrawnHook();
+              m_authorityWithdrawnHook(lost);
           }
         }
         // Permission responses are scoped to this identity, but their
