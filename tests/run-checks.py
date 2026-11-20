@@ -570,6 +570,9 @@ def check_assets(roster, selected, manifest_path, bindings=None):
                     'NDNSF_TEST_CANONICAL_MODEL_DIR': str(files['canonicalGraph'].parent),
                     'NDNSF_SPEC233_REAL_MODEL': str(files['sourceModel']),
                     'NDNSF_SPEC233_REAL_GENERATION_ROW': 'Q06-I4',
+                    # The manifest is the authority once it is admitted: a legacy path that survives in the
+                    # caller's shell would otherwise make the consumer reject the verified asset.
+                    'NDNSF_SPEC224_FROZEN_MODEL': None,
                 }
         except (OSError, ValueError, KeyError, TypeError, ImportError) as error:
             missing.append((asset_name, str(error)))
@@ -836,7 +839,11 @@ def main(argv=None):
                 target_env = target_environment(target, environ, prefix, build_root,
                                                  routine=name in ROUTINE_PROFILES)
                 for asset_name in target.get('assets', []):
-                    target_env.update(asset_bindings[asset_name])
+                    for key, value in asset_bindings[asset_name].items():
+                        if value is None:
+                            target_env.pop(key, None)
+                        else:
+                            target_env[key] = value
                 listing = enumerate_cases(binary, target_env)
                 suites, cases, disabled = listing
                 if not cases:

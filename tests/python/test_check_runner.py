@@ -365,6 +365,21 @@ class CheckRunner(unittest.TestCase):
         self.assertIn('NATIVE_ASSERTION_FREE_CASE', result['reportError'])
         self.assertIn('Unit/Case', result['reportError'])
 
+    def test_asset_binding_removes_the_legacy_frozen_model_path(self):
+        roster = {'assets': {'qwen3-0.6b-int4': {'recipe': 'qwen3-0.6b-int4'}},
+                  'profiles': {'model': {'targets': [{'target': 'unit-tests',
+                                                      'assets': ['qwen3-0.6b-int4']}]}}}
+        binding = {'qwen3-0.6b-int4': {'NDNSF_TEST_CANONICAL_MODEL_DIR': '/asset',
+                                       'NDNSF_SPEC224_FROZEN_MODEL': None}}
+        environment = {'NDNSF_SPEC224_FROZEN_MODEL': '/host/stale.onnx', 'KEPT': '1'}
+        for key, value in binding['qwen3-0.6b-int4'].items():
+            if value is None:
+                environment.pop(key, None)
+            else:
+                environment[key] = value
+        self.assertNotIn('NDNSF_SPEC224_FROZEN_MODEL', environment)
+        self.assertEqual(environment['NDNSF_TEST_CANONICAL_MODEL_DIR'], '/asset')
+
     def test_unreadable_confirmation_is_a_named_failure(self):
         # If the single-case confirmation cannot produce a readable result, the aggregate must not pass.
         result = self.invoke(assertions_passed=0, confirm_aborts=True)
