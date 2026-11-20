@@ -417,8 +417,12 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
   const auto applyNamingCoordinates = [&](NativeTensorEndpointV3& endpoint,
                                           const NativeDependencySpec& dependency) {
     const bool generation = core.generationContract.enabled;
-    endpoint.namingPhase = !generation ? "execute"
-      : (endpoint.round == 0 ? "prefill" : "continuation");
+    // `round` is the packed operation index; the epoch that produces this object is `round / stride`. Every
+    // output of the first epoch is prefill and later epochs are continuation. Settling it here — where the
+    // endpoint is built and before it is sealed — keeps a cached or rebound projection identical to a fresh one.
+    const auto stride = endpoint.namingOperationStride;
+    const auto epoch = stride == 0 ? 0 : endpoint.round / stride;
+    endpoint.namingPhase = !generation ? "execute" : (epoch == 0 ? "prefill" : "continuation");
     endpoint.namingStepId = dependency.producerStepId.empty() ? "role-execution"
       : dependency.producerStepId;
     endpoint.namingPortId = dependency.producerSlotId.empty() ? "role-execution"
