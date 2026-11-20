@@ -1,5 +1,7 @@
 #include "tests/unit-tests/native-protected-kv-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeConversationWire.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeProviderRuntime.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <ndn-cxx/security/verification-helpers.hpp>
@@ -52,6 +54,72 @@ struct PacketFixture : protectedKv::Fixture
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec221ProtectedKvPackets)
+
+BOOST_AUTO_TEST_CASE(SavedRoleCodecAcceptsTheN5Root)
+{
+  PacketFixture fixture;
+  ProviderConversationStateReceiptV1 receipt;
+  receipt.conversationId = "conv-1";
+  receipt.parentContextEpoch = 1;
+  receipt.successorContextEpoch = 2;
+  receipt.originRequestId = "/requester/request/1";
+  receipt.originGenerationId = "generation-1";
+  receipt.serviceName = "/svc";
+  receipt.requesterIdentity = fixture.certificate.getIdentity().toUri();
+  receipt.providerIdentity = fixture.certificate.getIdentity().toUri();
+  receipt.providerBootId = "boot-1";
+  receipt.roleName = "S0R0";
+  receipt.layoutDigest = "sha256:" + std::string(64, 'a');
+  receipt.securityDomainDigest = "sha256:" + std::string(64, 'd');
+  receipt.modelDigest = "sha256:" + std::string(64, 'e');
+  receipt.graphSemanticDigest = "sha256:" + std::string(64, 'f');
+  receipt.adapterDigest = "sha256:" + std::string(64, '1');
+  receipt.roleSplitDigest = "sha256:" + std::string(64, '3');
+  receipt.planRoleMapDigest = "sha256:" + std::string(64, '4');
+  receipt.prefixDigest = "sha256:" + std::string(64, '5');
+  receipt.positionDigest = "sha256:" + std::string(64, '6');
+  receipt.stateSchemaDigest = "sha256:" + std::string(64, '7');
+  receipt.expiresAtMs = 4102444800000ULL;
+  receipt.stateComponentDigests = {"sha256:" + std::string(64, '2')};
+  const auto checkpointIdentity = receipt.computedDigest();
+
+  NativeSavedKvRoleV1 saved;
+  saved.receipt = receipt;
+  saved.protection = nativeProtectPortableKvCheckpoint(fixture.plain, fixture.cipher,
+    fixture.certificate, fixture.certificate.getIdentity(), checkpointIdentity,
+    fixture.limits, {});
+  NativeKvPacketNamingContext context;
+  context.conversationId = receipt.conversationId;
+  context.epoch = receipt.successorContextEpoch;
+  context.roleId = receipt.roleName;
+  context.stateLayoutLabel = receipt.layoutDigest.substr(7);
+  saved.rootName = nativeProtectedKvPacketRootName(saved.protection, fixture.certificate, context);
+  saved.repoNode = "/repo/node";
+  saved.repoProvider = "/repo/provider";
+  saved.repoServicePrefix = "/repo/service";
+  saved.originalWireSha256 = std::string(64, 'b');
+  saved.originalWireBytes = saved.protection.wireBytes + 8;
+  saved.ownerEpoch = 1;
+
+  // The N5 root survives the Saved record codec, which is what a Provider writes after Repo commit.
+  const auto restored = nativeReadSavedKvRole(nativeSavedKvRoleToJson(saved));
+  BOOST_CHECK(restored.rootName == saved.rootName);
+  BOOST_CHECK(restored.receipt.computedDigest() == checkpointIdentity);
+
+  // A root that is not under the Producer is refused.
+  auto foreign = saved;
+  foreign.rootName = ndn::Name("/elsewhere/NDNSF-DI/checkpoint/conversation/conv-1/epoch/2")
+    .append("role").append("S0R0").append("state").append(std::string(64, 'a'))
+    .append("rep").append(ndn_service_framework::makeNamingDigestComponent(std::string(64, 'c')))
+    .append("MANIFEST");
+  BOOST_CHECK_THROW(nativeReadSavedKvRole(nativeSavedKvRoleToJson(foreign)), std::exception);
+
+  // A receipt that does not describe this checkpoint is refused.
+  auto mismatched = saved;
+  mismatched.receipt.successorContextEpoch = 9;
+  mismatched.receipt.parentContextEpoch = 8;
+  BOOST_CHECK_THROW(nativeReadSavedKvRole(nativeSavedKvRoleToJson(mismatched)), std::exception);
+}
 
 BOOST_AUTO_TEST_CASE(N5CheckpointCoordinatesComeFromTheReceipt)
 {
