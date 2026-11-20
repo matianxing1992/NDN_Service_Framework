@@ -18,6 +18,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include <onnx/shape_inference/implementation.h>
@@ -2282,6 +2283,11 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   BOOST_CHECK_EQUAL(candidates.front().executionPlan.roles.size(), 1U);
   BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
+  NativeRequestControl requestControl{"/fixture/request", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+  const auto roles = loaded.preparation->prepareRoles(loaded.model,
+                                                       candidates.front(), requestControl);
+  BOOST_CHECK_EQUAL(roles.size(), 1U);
 
   for (const auto& mutation : std::vector<std::pair<std::string, NativeJson>>{
          {"mode", NativeJson("foreign")},
