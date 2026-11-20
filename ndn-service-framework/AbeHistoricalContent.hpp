@@ -22,6 +22,9 @@ struct HistoricalPayloadContent
 {
   std::string encryptedContent;
   uint32_t plainTextSize = 0;
+  /** The CK name the producer wrote into the payload (TLV 0x0249), when it carries one. This is what binds a payload
+   *  to the key that protects it: without it a reader can only trust that some CK decrypted it. */
+  std::string ckName;
 };
 
 /** Read the wrapped key out of a CK packet's content. */

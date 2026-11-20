@@ -75,6 +75,10 @@ parseHistoricalPayloadContent(const std::string& content, HistoricalPayloadConte
     return false;
   parsed.encryptedContent = std::move(encrypted);
   parsed.plainTextSize = static_cast<uint8_t>(size[0]);
+  // Optional on the fixture's hand-built envelopes, present on real Producer output.
+  std::string ckName;
+  if (findField(content, 0x0249, ckName) && !ckName.empty())
+    parsed.ckName = std::move(ckName);
   return true;
 }
 

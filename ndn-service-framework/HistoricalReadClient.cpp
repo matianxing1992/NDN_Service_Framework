@@ -344,6 +344,17 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
     HISTORICAL_READ_DEBUG("historical read: envelope parse failed\n");
     return std::nullopt;
   }
+  // When the producer wrote the CK name into the payload, it must be the CK this request verified: otherwise the
+  // object is protected by some other key and the refusal must happen before anything is unsealed.
+  if (!payload.ckName.empty()) {
+    const auto expected = request.ckName.wireEncode();
+    if (payload.ckName.size() != expected.size() ||
+        !std::equal(expected.begin(), expected.end(),
+                    reinterpret_cast<const uint8_t*>(payload.ckName.data()))) {
+      HISTORICAL_READ_DEBUG("historical read: payload names a different CK\n");
+      return std::nullopt;
+    }
+  }
   const auto key = fetchHistoricalKey(face, keyChain, request, request.fetchTimeoutMs * 4);
   if (!key) {
     HISTORICAL_READ_DEBUG("historical read: historical key request failed\n");
