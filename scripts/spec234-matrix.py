@@ -31,7 +31,7 @@ MANIFEST = Path('/usr/local/share/ndnsf/stack-install-manifest.json')
 # The prepared workload freezes each layout's geometry (stages, cuts, degrees and
 # rank weights); these labels only name the cell family in the results file.
 LAYOUTS = {name: {} for name in ('L1', 'L2', 'L3', 'L4a', 'L4b', 'L5', 'L6', 'L7a', 'L7b',
-                                'PP11', 'PP31', 'PP13', 'PP12', 'TP11', 'TP31', 'TP13', 'TP12')}
+                                'PP11', 'PP31', 'PP13', 'PP12', 'TP11', 'TP31', 'TP13', 'TP12', 'OP')}
 NETWORKS = {
     'N0': dict(bw=100, delay=2, loss=None),
     'N1': dict(bw=10, delay=2, loss=None),
@@ -78,11 +78,16 @@ def verified_mesh_cell(root, deployment, network):
     topology = Path(platform['topology']).read_bytes()
     digest = 'sha256:' + hashlib.sha256(topology).hexdigest()
     kind = cell.get('topology_kind')
-    expected = 6 if kind == 'k8' else (1 if network == 'N8' else 2)
-    if (cell.get('cell') != network or kind not in ('k8', 'star') or
+    shaped = len(cell.get('shaped_links', []))
+    if kind == 'k8':
+        valid = shaped == 6
+    elif kind == 'star':
+        valid = (shaped == 1) if network == 'N8' else (1 <= shaped <= 2)
+    else:
+        valid = False
+    if (cell.get('cell') != network or not valid or
             cell.get('topology_sha256') != digest or platform['topology_sha256'] != digest or
-            not cell.get('base_topology_sha256') or
-            len(cell.get('shaped_links', [])) != expected):
+            not cell.get('base_topology_sha256')):
         raise ValueError('derive the requested network cell before starting the matrix boot')
     return cell
 

@@ -142,8 +142,8 @@ def derive(root, network, base_topology=None, provider_nodes=(), shaped_provider
             raise ValueError('star base topology must be separate from the generated cell topology')
         providers = {actor['node'] for actor in deployment['actors']
                      if actor['kind'] == 'provider'}
-        if len(providers) != 2:
-            raise ValueError('seven-node star needs exactly two Provider actors')
+        if len(providers) not in (1, 2):
+            raise ValueError('seven-node star needs one or two Provider actors')
         if network == 'N8':
             if shaped_provider not in providers:
                 raise ValueError('N8 needs --shape-provider naming one Provider node')
