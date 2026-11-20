@@ -170,51 +170,6 @@ def remap_yolo_semantic_partition(
     return result
 
 
-def native_yolo_splitter(manifest: dict[str, Any],
-                         role_map: dict[str, str]) -> dict[str, Any]:
-    catalogue = manifest.get("catalogue")
-    candidates = catalogue.get("candidates") if isinstance(catalogue, dict) else None
-    if not isinstance(candidates, list):
-        raise RuntimeError("SPEC196_YOLO_SIGNED_CATALOGUE_MISSING")
-    shared = next((item for item in candidates
-                   if item.get("candidateId") == "shared-backbone-two-shard-v1"), None)
-    atomic = next((item for item in candidates
-                   if item.get("candidateId") == "atomic-v1"), None)
-    if shared is None or atomic is None:
-        raise RuntimeError("SPEC196_YOLO_REQUIRED_CANDIDATE_MISSING")
-    components = [{
-        "candidate_id": str(atomic["candidateId"]),
-        "priority": int(atomic["selectionPriority"]),
-        "roles": [str(item["role"]) for item in atomic["roles"]],
-        "node_names_by_role": {},
-        "input_ingress_role": str(atomic["inputIngressRole"]),
-        "result_egress_role": str(atomic["resultEgressRole"]),
-        "merge_kind": str(atomic["mergeKind"]),
-        "candidate_digest": str(atomic["candidateDigest"]),
-        "semantic_partition": {},
-    }]
-    components[0]["input_ingress_role"] = "FullModel"
-    components[0]["result_egress_role"] = "FullModel"
-    mapped_roles = [role_map[str(item["role"])] for item in shared["roles"]]
-    partition = remap_yolo_semantic_partition(
-        shared["semanticPartition"], role_map)
-    if set(partition["roleNodeSets"]) != set(mapped_roles):
-        raise RuntimeError("SPEC196_YOLO_ROLE_REMAP_INCOMPLETE")
-    components.append({
-        "candidate_id": str(shared["candidateId"]),
-        "priority": int(shared["selectionPriority"]),
-        "roles": mapped_roles,
-        "node_names_by_role": {},
-        "input_ingress_role": role_map[str(shared["inputIngressRole"])],
-        "result_egress_role": role_map[str(shared["resultEgressRole"])],
-        "merge_kind": str(shared["mergeKind"]),
-        "candidate_digest": str(shared["candidateDigest"]),
-        "semantic_partition": partition,
-    })
-    return {"kind": "YOLO", "components": components,
-            "postprocessing": manifest.get("postprocessing", {})}
-
-
 def native_program(repo: Path, name: str) -> Path:
     """Resolve one native executable from the installed prefix or the build tree."""
     prefix = os.environ.get("NDNSF_TEST_RUNTIME_PREFIX", "")
@@ -579,8 +534,8 @@ def prepare_native_yolo_assets(
         encoding="utf-8"), encoding="utf-8")
     # The ONNX_SOURCE splitter is generated from the inspected Conv facts so the
     # catalog cannot restate operand names, geometry or channel counts that the
-    # model does not have. `native_yolo_splitter` stays available for the
-    # migration comparison only.
+    # model does not have. A historical comparison run may still set
+    # `legacy_yolo_retired: false` on a hand-built kind=YOLO catalog.
     conv_index = int(os.environ.get("SPEC261_CONV_INDEX", "3"))
     conv_facts = _inspect_source_conv(
         graph_path, weights_path, conv_index, repo, native_program)
