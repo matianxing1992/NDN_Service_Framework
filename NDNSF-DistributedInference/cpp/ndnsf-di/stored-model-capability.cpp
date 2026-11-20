@@ -471,6 +471,17 @@ public:
         if (resolvePrefix)
           bindPrefix(m_metadata.at("context").at("publicationPrefix").get<std::string>());
         auto savedContext = m_metadata.at("context");
+        if (savedContext.contains("semanticPublication") &&
+            context.contains("semanticPublication")) {
+          // Resume: the facts must be the same package; the id stored with it is the one to reuse.
+          auto savedFacts = savedContext.at("semanticPublication");
+          const auto packageId = savedFacts.contains("packagePublicationId")
+            ? savedFacts.at("packagePublicationId").get<std::string>() : std::string{};
+          savedFacts.erase("packagePublicationId");
+          require(savedFacts == context.at("semanticPublication"));
+          if (!packageId.empty())
+            context["semanticPublication"]["packagePublicationId"] = packageId;
+        }
         (void)uploadGroupingVersion(savedContext, "tailUploadGroupingVersion");
         savedContext.erase("tailUploadGroupingVersion");
         require(nativeCanonicalJson(m_metadata) == text && m_metadata.is_object() &&
@@ -487,11 +498,48 @@ public:
     else {
       require(errno == ENOENT && ::lstat(m_stage.c_str(), &status) != 0 && errno == ENOENT);
       if (resolvePrefix) {
-        std::uint64_t version = 0;
-        require(RAND_bytes(reinterpret_cast<unsigned char*>(&version), sizeof(version)) == 1);
-        const auto prefix = ndn::Name(m_handle.producer).append("NDNSF").append("DI")
-          .append("STORED-MODEL").appendVersion(version);
-        bindPrefix(prefix.toUri(ndn::name::UriFormat::CANONICAL));
+        if (context.contains("semanticPublication")) {
+          // N4 package root: the package id is a publication commitment over the verified facts, the content
+          // identity and a fresh seed, so one seed and one prefix are allocated together and persisted below.
+          const auto& facts = context.at("semanticPublication");
+          std::vector<std::uint8_t> seed(32);
+          require(RAND_bytes(seed.data(), static_cast<int>(seed.size())) == 1);
+          const auto hex = [](const std::vector<std::uint8_t>& bytes) {
+            static constexpr char digits[] = "0123456789abcdef";
+            std::string text;
+            for (const auto byte : bytes) {
+              text += digits[byte >> 4];
+              text += digits[byte & 15];
+            }
+            return text;
+          };
+          const auto seedHex = hex(seed);
+          const auto commitment = nativeCanonicalJson(NativeJson{
+            {"schema", "ndnsf-di-stored-model-package-v1"},
+            {"modelFamily", facts.at("modelFamily").get<std::string>()},
+            {"modelSize", facts.at("modelSize").get<std::string>()},
+            {"quantization", facts.at("quantization").get<std::string>()},
+            {"revisionLabel", facts.at("revisionLabel").get<std::string>()},
+            {"modelDigest", context.at("modelDigest").get<std::string>()},
+            {"catalogId", context.at("catalogId").get<std::string>()},
+            {"manifestId", context.at("manifestId").get<std::string>()},
+            {"seed", seedHex}});
+          const auto packageId = digest(
+            reinterpret_cast<const std::uint8_t*>(commitment.data()), commitment.size()).substr(7);
+          const auto prefix = nativeStoredModelPackagePrefix(m_handle.producer,
+            {facts.at("modelFamily").get<std::string>(), facts.at("modelSize").get<std::string>(),
+             facts.at("quantization").get<std::string>(), "revision",
+             facts.at("revisionLabel").get<std::string>()}, packageId);
+          context["semanticPublication"]["packagePublicationId"] = packageId;
+          bindPrefix(prefix.toUri(ndn::name::UriFormat::CANONICAL));
+        }
+        else {
+          std::uint64_t version = 0;
+          require(RAND_bytes(reinterpret_cast<unsigned char*>(&version), sizeof(version)) == 1);
+          const auto prefix = ndn::Name(m_handle.producer).append("NDNSF").append("DI")
+            .append("STORED-MODEL").appendVersion(version);
+          bindPrefix(prefix.toUri(ndn::name::UriFormat::CANONICAL));
+        }
       }
       m_handle.masterKey.resize(32);
       require(RAND_bytes(m_handle.masterKey.data(), m_handle.masterKey.size()) == 1);
@@ -1049,6 +1097,20 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   const std::function<void(const ndn::Name&)>& bindPrefix)
 {
+  return nativePublishStoredModel(keyChain, producer, repository, publicationPrefix, modelDigest,
+    catalogId, manifestId, nextObject, io, preparationState, bindPrefix,
+    NativeStoredModelSemanticContext{});
+}
+
+NativeStoredModelPublication
+nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
+  const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  const std::function<void(const ndn::Name&)>& bindPrefix,
+  const NativeStoredModelSemanticContext& semantic)
+{
   require(io.commit && io.requireCurrent && nextObject && !repository.empty() &&
           repository.wireEncode().size() <= 4096 &&
           isDigest(modelDigest) && validObjectId(catalogId) && validObjectId(manifestId) &&
@@ -1064,12 +1126,24 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   if (!prefix.empty()) handle.rootName = ndn::Name(prefix).append("root");
   std::unique_ptr<PreparationJournal> journal;
   if (!preparationState.empty()) {
-    journal = std::make_unique<PreparationJournal>(preparationState, NativeJson{
+    NativeJson context{
       {"producer", producer.toUri(ndn::name::UriFormat::CANONICAL)},
       {"repository", repository.toUri(ndn::name::UriFormat::CANONICAL)},
       {"publicationPrefix", prefix.empty() ? std::string{} :
         prefix.toUri(ndn::name::UriFormat::CANONICAL)},
-      {"modelDigest", modelDigest}, {"catalogId", catalogId}, {"manifestId", manifestId}}, io);
+      {"modelDigest", modelDigest}, {"catalogId", catalogId}, {"manifestId", manifestId}};
+    if (!semantic.empty() && prefix.empty()) {
+      // The package rows need the verified facts before the journal allocates its prefix; the prefix itself is
+      // allocated inside the journal and persisted with the seed.
+      context["semanticPublication"] = NativeJson{
+        {"schema", "ndnsf-di-stored-model-semantic-v1"},
+        {"modelFamily", semantic.modelFamily.empty() ? "unspecified" : semantic.modelFamily},
+        {"modelSize", semantic.modelSize.empty() ? "unspecified" : semantic.modelSize},
+        {"quantization", semantic.quantization.empty() ? "unspecified" : semantic.quantization},
+        {"revisionLabel", semantic.sourceRevisionLabel.empty() ? "unspecified" :
+          semantic.sourceRevisionLabel}};
+    }
+    journal = std::make_unique<PreparationJournal>(preparationState, context, io);
     handle = journal->handle();
     prefix = journal->prefix();
     if (journal->ready()) {

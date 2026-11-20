@@ -93,6 +93,22 @@ struct NativeStoredModelInput
 struct NativeStoredModelPublication;
 
 /** Factory-owned root-authenticated index; callers cannot modify its admitted object mapping. */
+/** Verified `<ModelPath>` facts for one stored-model package. Empty facts mean the preparation established
+ * nothing and are rendered as `unspecified`; an all-empty context keeps the legacy package prefix. */
+struct NativeStoredModelSemanticContext
+{
+  std::string modelFamily;
+  std::string modelSize;
+  std::string quantization;
+  std::string sourceRevisionLabel;
+
+  bool empty() const
+  {
+    return modelFamily.empty() && modelSize.empty() && quantization.empty() &&
+      sourceRevisionLabel.empty();
+  }
+};
+
 class NativeStoredModelCatalog
 {
 public:
@@ -121,6 +137,12 @@ private:
     const std::string&, const std::string&,
     const std::function<std::optional<NativeStoredModelInput>()>&, const NativeStoredModelPacketIo&,
     const std::filesystem::path&, const std::function<void(const ndn::Name&)>&);
+  friend NativeStoredModelPublication nativePublishStoredModel(ndn::KeyChain&,
+    const ndn::Name&, const ndn::Name&, const ndn::Name&, const std::string&,
+    const std::string&, const std::string&,
+    const std::function<std::optional<NativeStoredModelInput>()>&, const NativeStoredModelPacketIo&,
+    const std::filesystem::path&, const std::function<void(const ndn::Name&)>&,
+    const NativeStoredModelSemanticContext&);
   friend std::uint64_t nativePreflightStoredModelPublication(ndn::KeyChain&,
     const ndn::Name&, const ndn::Name&, const std::string&, const std::string&,
     const std::string&, const std::vector<std::pair<std::string, std::uint64_t>>&);
@@ -196,6 +218,17 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
   const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
   const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
   const std::function<void(const ndn::Name&)>& bindPrefix);
+
+/** Same journal-aware entry with the verified semantic facts. The journal allocates and persists the package
+ * prefix and its `<PackagePublicationId>` together with the seed, and reuses them on resume. */
+NativeStoredModelPublication
+nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
+  const ndn::Name& repository, const ndn::Name& publicationPrefix,
+  const std::string& modelDigest, const std::string& catalogId, const std::string& manifestId,
+  const std::function<std::optional<NativeStoredModelInput>()>& nextObject,
+  const NativeStoredModelPacketIo& io, const std::filesystem::path& preparationState,
+  const std::function<void(const ndn::Name&)>& bindPrefix,
+  const NativeStoredModelSemanticContext& semantic);
 
 /** Read-only admission; no source loader or commit callback is invoked. */
 NativeStoredModelCatalog
