@@ -214,6 +214,46 @@ def native_yolo_splitter(manifest: dict[str, Any],
             "postprocessing": manifest.get("postprocessing", {})}
 
 
+def native_onnx_source_splitter(*, boundary_node: str, roles: list[str],
+                               conv: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the ``ONNX_SOURCE`` hybrid splitter from inspected source facts.
+
+    ``conv`` is the JSON emitted by ``native-source-inspect --conv`` for the cut
+    node, so operand names, geometry and channel counts are read from the model
+    rather than restated here. A caller that supplies its own numbers can drift
+    from the graph; this generator cannot.
+    """
+    attributes = {item["name"]: item for item in conv.get("attributes", [])
+                  if isinstance(item, dict)}
+    weight_dims = list(conv.get("weight_dims") or [])
+    if conv.get("op") != "Conv" or len(conv.get("inputs", [])) < 2 or len(weight_dims) != 4:
+        raise RuntimeError("SPEC261_ONNX_SOURCE_CONV_FACTS_INVALID")
+    inputs = list(conv["inputs"])
+    pads = list(attributes.get("pads", {}).get("ints", [0, 0, 0, 0]))
+    strides = list(attributes.get("strides", {}).get("ints", [1, 1]))
+    dilations = list(attributes.get("dilations", {}).get("ints", [1, 1]))
+    channels = int(weight_dims[1])
+    return {
+        "kind": "ONNX_SOURCE",
+        "selection_mode": "hybrid",
+        "roles": roles,
+        "boundary_node": boundary_node,
+        "input_ingress_role": roles[0],
+        "result_egress_role": roles[-1],
+        "postprocessing": {},
+        "input_channels": channels,
+        "conv_input_axis": "input-channel",
+        "activation_dtype": "float32",
+        "conv_input_tensor": inputs[0],
+        "conv_weight_initializer": inputs[1],
+        "conv_bias_initializer": inputs[2] if len(inputs) > 2 else "",
+        "conv_output_tensor": list(conv["outputs"])[0],
+        "conv_pads": pads,
+        "conv_strides": strides,
+        "conv_dilations": dilations,
+    }
+
+
 def add_native_grant_service(policy_path: Path, *, requester: str,
                              authority: str) -> None:
     """Grant the run-scoped native artifact authority its protected service."""
