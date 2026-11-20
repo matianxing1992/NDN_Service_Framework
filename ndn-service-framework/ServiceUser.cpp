@@ -8102,9 +8102,10 @@ namespace ndn_service_framework
                         throw std::runtime_error("DURABLE_LOOKUP_METADATA_MISMATCH");
                     }
                     if (durableHit->packetStorageFormat != "original-packet-set" ||
-                        durableHit->dataPrefix.empty() || durableHit->manifestName.empty() ||
-                        ndn::Name(durableHit->dataPrefix) != encryptedDataName)
+                        durableHit->dataPrefix.empty() || durableHit->manifestName.empty())
                         throw std::runtime_error("DURABLE_ORIGINAL_PACKET_METADATA_REQUIRED");
+                    // A record published under an older name shape keeps its own prefix and manifest; the restored
+                    // manifest, which is decoded below, is what proves it is the same object.
                     const ndn::Name manifestName(durableHit->manifestName);
                     if (durableReference->packetStorageFormat == "original-packet-set" &&
                         ndn::Name(durableReference->manifestName) != manifestName)
@@ -8124,11 +8125,15 @@ namespace ndn_service_framework
                         std::vector<std::uint8_t>(rootContent.value(), rootContent.value() + rootContent.value_size()),
                         identity, manifestName);
                     if (!restoredManifest.contentName ||
-                        restoredManifest.contentName->encode() != contentName.encode() ||
-                        restoredManifest.manifestSuffix != options.manifestSuffix ||
+                        !restoredManifest.contentName->sameSemanticFacts(contentName) ||
+                        // An adapter alias belongs to the record that produced it; across shapes one side has none.
+                        (restoredManifest.manifestSuffix != options.manifestSuffix &&
+                         !(restoredManifest.manifestSuffix.empty() || options.manifestSuffix.empty())) ||
                         ndn::Name(restoredManifest.authorizationScope) !=
                             ndn::Name("/SERVICE").append(ctx.serviceName) ||
-                        restoredManifest.dataPrefix != encryptedDataName ||
+                        (restoredManifest.dataPrefix != encryptedDataName &&
+                         !(durableHit->packetStorageFormat == "original-packet-set" &&
+                           restoredManifest.dataPrefix == ndn::Name(durableHit->dataPrefix))) ||
                         restoredManifest.envelopeBytes != durableHit->source->size() ||
                         restoredManifest.plaintextBytes != result.plaintextSize ||
                         restoredManifest.keyReferenceId != durableHit->keyReferenceId ||

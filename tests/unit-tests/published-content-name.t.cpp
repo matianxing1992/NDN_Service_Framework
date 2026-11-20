@@ -391,6 +391,37 @@ BOOST_AUTO_TEST_CASE(SemanticMetadataGoldenWireVectors)
                       modelWire.begin(), modelWire.begin() + 40)), std::exception);
 }
 
+BOOST_AUTO_TEST_CASE(SemanticFactsDecideReuseAcrossNameShapes)
+{
+  PublishedContentName legacy;
+  legacy.kind = ContentDataKind::ModelFile;
+  legacy.label = "canonical-source";
+  legacy.modelName = "qwen3";
+  legacy.modelIdentity = std::string(64, 'a');
+
+  // The same object prepared after the coordinate row: the shared facts agree, so a recorded legacy name can be
+  // reused instead of publishing a second copy under the new shape.
+  auto semantic = legacy;
+  semantic.semanticRole = ContentSemanticRole::SourceGraph;
+  semantic.modelFamily = "qwen3";
+  semantic.modelSize = "0.6b";
+  semantic.quantization = "int4";
+  semantic.sourceRevisionLabel = "r3";
+  BOOST_CHECK(legacy.sameSemanticFacts(semantic));
+  BOOST_CHECK(semantic.sameSemanticFacts(legacy));
+
+  // A different object is refused, whether the difference is in the shared facts or in the coordinates.
+  auto otherModel = legacy;
+  otherModel.modelIdentity = std::string(64, 'b');
+  BOOST_CHECK(!semantic.sameSemanticFacts(otherModel));
+  auto otherQuantization = semantic;
+  otherQuantization.quantization = "int8";
+  BOOST_CHECK(!semantic.sameSemanticFacts(otherQuantization));
+  auto otherRole = semantic;
+  otherRole.semanticRole = ContentSemanticRole::ModelManifest;
+  BOOST_CHECK(!semantic.sameSemanticFacts(otherRole));
+}
+
 BOOST_AUTO_TEST_CASE(SemanticManifestUsesTheStemWithoutAPayloadHash)
 {
   const ndn::Name producer("/lab/preparer");

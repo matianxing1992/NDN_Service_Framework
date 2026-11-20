@@ -97,6 +97,13 @@ struct PublishedContentName {
   /** N4 `<ObjectPrefix>` including the representation tail. */
   ndn::Name representationPrefix(const ndn::Name& producer,
                                  const std::string& representationId) const;
+  /** Whether two records describe the same semantic object.
+   *
+   * Compares the business facts a publication owns. Coordinates are compared when both records carry them; a
+   * record that predates the coordinate row has none, and its shared facts decide. Used to reuse an existing
+   * durable record across name shapes instead of comparing name bytes.
+   */
+  bool sameSemanticFacts(const PublishedContentName& other) const;
   /** N2 `<ModelPath>` components: family, size, quantization, "revision", label. */
   std::vector<std::string> modelPathComponents() const;
   /** True when any N4 coordinate field is set, i.e. the extended wire layout applies. */

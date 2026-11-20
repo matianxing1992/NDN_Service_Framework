@@ -560,6 +560,33 @@ PublishedContentName::modelPathComponents() const
 }
 
 bool
+PublishedContentName::sameSemanticFacts(const PublishedContentName& other) const
+{
+  if (kind != other.kind || label != other.label || modelName != other.modelName ||
+      modelIdentity != other.modelIdentity || artifactKind != other.artifactKind ||
+      coordinate != other.coordinate || profileIdentity != other.profileIdentity ||
+      inputKind != other.inputKind)
+    return false;
+  if (!hasSemanticCoordinates() || !other.hasSemanticCoordinates())
+    return true;
+  if (semanticRole != other.semanticRole || modelFamily != other.modelFamily ||
+      modelSize != other.modelSize || quantization != other.quantization ||
+      sourceRevisionLabel != other.sourceRevisionLabel || bundleIndex != other.bundleIndex ||
+      profileLabel != other.profileLabel || useId != other.useId ||
+      artifactEntry != other.artifactEntry || pageNumber != other.pageNumber)
+    return false;
+  return partition.kind == other.partition.kind &&
+    partition.stageIndex == other.partition.stageIndex &&
+    partition.layerBegin == other.partition.layerBegin &&
+    partition.layerEnd == other.partition.layerEnd &&
+    partition.tensorDegree == other.partition.tensorDegree &&
+    partition.rank == other.partition.rank &&
+    partition.cutPrefixNodes == other.partition.cutPrefixNodes &&
+    partition.graphSide == other.partition.graphSide &&
+    partition.componentId == other.partition.componentId;
+}
+
+bool
 PublishedContentName::hasSemanticCoordinates() const
 {
   return semanticRole != ContentSemanticRole::None || !modelFamily.empty() || !modelSize.empty() ||
