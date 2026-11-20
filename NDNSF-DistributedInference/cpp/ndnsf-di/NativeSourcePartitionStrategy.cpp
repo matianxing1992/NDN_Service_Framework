@@ -161,6 +161,25 @@ NativeSourcePartitionStrategy::enumerateImpl(
       if (i < boundaryIndex) candidate.roleNodeIdsByRole[m_profile.roles[0]].push_back(node);
       else if (i > boundaryIndex) candidate.roleNodeIdsByRole[m_profile.roles[3]].push_back(node);
     }
+    struct CrossingEdge
+    {
+      const NativeGraphEdge* edge = nullptr;
+      std::string producerRole;
+      std::string consumerRole;
+    };
+    // Every tensor that leaves one role region and enters another. V2 binds each
+    // one explicitly; a bypass must not be silently dropped just because the
+    // planner models the Conv output as a SUM.
+    std::vector<CrossingEdge> crossings;
+    for (const auto& edge : graph.edges) {
+      const auto producer = ownerByNode.find(edge.producer);
+      if (producer == ownerByNode.end()) continue;
+      for (const auto& consumerNode : edge.consumers) {
+        const auto consumer = ownerByNode.find(consumerNode);
+        if (consumer == ownerByNode.end() || consumer->second == producer->second) continue;
+        crossings.push_back({&edge, producer->second, consumer->second});
+      }
+    }
     const auto half = m_profile.inputChannels / 2;
     hybridStageDigest = nativePlanningDigest("source-hybrid|" + graph.graphDigest + "|" +
                                              m_profile.boundaryNode + "|" +
@@ -292,6 +311,17 @@ NativeSourcePartitionStrategy::enumerateImpl(
       : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT"));
     prefix.outputSlots.push_back(slot(activation, m_profile.activationShape,
                                       "LOCAL_STEP", "", ""));
+    for (const auto& crossing : crossings) {
+      if (crossing.producerRole != m_profile.roles[0] ||
+          crossing.consumerRole != m_profile.roles[3] ||
+          crossing.edge->id == partial || crossing.edge->id == activation ||
+          crossing.edge->producer == m_profile.boundaryNode)
+        continue;
+      if (!std::any_of(prefix.outputSlots.begin(), prefix.outputSlots.end(),
+            [&] (const auto& value) { return value.slotId == crossing.edge->id; }))
+        prefix.outputSlots.push_back(contractSlot(crossing.edge->id, crossing.edge->tensor,
+                                                  "LOCAL_STEP", "", ""));
+    }
     candidate.executionPlan.steps.push_back(std::move(prefix));
     for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]}) {
       NativeExecutionStepSpec step;
@@ -322,6 +352,21 @@ NativeSourcePartitionStrategy::enumerateImpl(
     suffix.artifactEntry = m_profile.roles[3] + "/artifact";
     suffix.inputSlots.push_back(slot(partial, m_profile.partialShape, "REMOTE_STEP",
                                      sumStep, partial));
+    for (const auto& crossing : crossings) {
+      if (crossing.consumerRole != m_profile.roles[3] || crossing.edge->id == partial ||
+          crossing.edge->producer == m_profile.boundaryNode)
+        continue;
+      if (crossing.producerRole != m_profile.roles[0] &&
+          crossing.producerRole != m_profile.roles[1] &&
+          crossing.producerRole != m_profile.roles[2])
+        continue;
+      if (!std::any_of(suffix.inputSlots.begin(), suffix.inputSlots.end(),
+            [&] (const auto& value) { return value.slotId == crossing.edge->id; }))
+        suffix.inputSlots.push_back(contractSlot(crossing.edge->id, crossing.edge->tensor,
+                                                 "REMOTE_STEP",
+                                                 crossing.producerRole + "/RUN",
+                                                 crossing.edge->id));
+    }
     suffix.outputSlots.push_back(graph.modelOutputs.empty()
       ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
       : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP"));
@@ -374,15 +419,25 @@ NativeSourcePartitionStrategy::enumerateImpl(
          nativePlanningDigest("source-full|" + graph.graphDigest), {m_profile.roles.front()}});
     }
     else {
-      const std::string activation = m_profile.convInputTensor.empty()
-        ? (graph.edges.empty() ? "activation" : graph.edges.front().id)
-        : m_profile.convInputTensor;
-      // The cut tensor's real contract is the authority for the handoff port;
-      // an empty shape would make the entry binder reject the source boundary.
-      NativeTensorContract activationContract{"", m_profile.activationDtype, {}, {}};
-      for (const auto& edge : graph.edges)
-        if (edge.id == activation) { activationContract = edge.tensor; break; }
+      // Every tensor crossing the component cut becomes an explicit V2 port and
+      // dependency, not just the first one: a region that keeps a residual path
+      // otherwise loses that edge and the entry binder rejects the boundary.
+      std::vector<const NativeGraphEdge*> cut;
+      std::set<std::string> selectedCuts;
+      for (const auto& edge : graph.edges) {
+        const auto producer = ownerByNode.find(edge.producer);
+        if (producer == ownerByNode.end() || producer->second != m_profile.roles[0]) continue;
+        const bool crossesToSuffix = std::any_of(edge.consumers.begin(), edge.consumers.end(),
+          [&] (const auto& consumerNode) {
+            const auto consumer = ownerByNode.find(consumerNode);
+            return consumer != ownerByNode.end() && consumer->second == m_profile.roles[1];
+          });
+        if (crossesToSuffix && selectedCuts.insert(edge.id).second) cut.push_back(&edge);
+      }
+      if (cut.empty())
+        throw std::invalid_argument("component cut has no crossing tensor");
       const std::string prefixStep = m_profile.roles[0] + "/RUN";
+      const std::string suffixStep = m_profile.roles[1] + "/RUN";
       NativeExecutionStepSpec prefix;
       prefix.stepId = prefixStep;
       prefix.unitId = m_profile.roles[0];
@@ -391,15 +446,17 @@ NativeSourcePartitionStrategy::enumerateImpl(
       prefix.inputSlots.push_back(graph.modelInputs.empty()
         ? contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}}, "EPOCH_INPUT", "", "")
         : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT", "", ""));
-      prefix.outputSlots.push_back(contractSlot(activation, activationContract,
-        "LOCAL_STEP", "", ""));
       NativeExecutionStepSpec suffix;
-      suffix.stepId = m_profile.roles[1] + "/RUN";
+      suffix.stepId = suffixStep;
       suffix.unitId = m_profile.roles[1];
       suffix.operation = "CALL_SUBGRAPH";
       suffix.artifactEntry = m_profile.roles[1] + "/artifact";
-      suffix.inputSlots.push_back(contractSlot(activation, activationContract,
-        "REMOTE_STEP", prefixStep, activation));
+      for (const auto* edge : cut) {
+        prefix.outputSlots.push_back(contractSlot(edge->id, edge->tensor,
+                                                  "LOCAL_STEP", "", ""));
+        suffix.inputSlots.push_back(contractSlot(edge->id, edge->tensor,
+                                                 "REMOTE_STEP", prefixStep, edge->id));
+      }
       suffix.outputSlots.push_back(graph.modelOutputs.empty()
         ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
         : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP", "", ""));
@@ -411,21 +468,23 @@ NativeSourcePartitionStrategy::enumerateImpl(
         {m_profile.roles[1] + "/stage",
          nativePlanningDigest("source-suffix|" + graph.graphDigest), {m_profile.roles[1]}},
       };
-      NativeDependencySpec dependency;
-      dependency.dependencyId = "component-activation";
-      dependency.producers = {m_profile.roles[0]};
-      dependency.consumers = {m_profile.roles[1]};
-      dependency.keyScope = "native-source-activation";
-      dependency.topicPrefix = "/NDNSF/DI/ONNX_SOURCE";
-      dependency.objectNameTemplate =
-        "{producerProvider}/NDNSF/DI/ONNX_SOURCE/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
-      dependency.tensors = {activation};
-      dependency.operationKind = "ACTIVATION";
-      dependency.producerStepId = prefixStep;
-      dependency.producerSlotId = activation;
-      dependency.consumerStepId = m_profile.roles[1] + "/RUN";
-      dependency.consumerSlotId = activation;
-      candidate.executionPlan.dependencies.push_back(std::move(dependency));
+      for (const auto* edge : cut) {
+        NativeDependencySpec dependency;
+        dependency.dependencyId = "component-" + edge->id;
+        dependency.producers = {m_profile.roles[0]};
+        dependency.consumers = {m_profile.roles[1]};
+        dependency.keyScope = "native-source-activation";
+        dependency.topicPrefix = "/NDNSF/DI/ONNX_SOURCE";
+        dependency.objectNameTemplate =
+          "{producerProvider}/NDNSF/DI/ONNX_SOURCE/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
+        dependency.tensors = {edge->id};
+        dependency.operationKind = "ACTIVATION";
+        dependency.producerStepId = prefixStep;
+        dependency.producerSlotId = edge->id;
+        dependency.consumerStepId = suffixStep;
+        dependency.consumerSlotId = edge->id;
+        candidate.executionPlan.dependencies.push_back(std::move(dependency));
+      }
     }
   }
 
@@ -500,6 +559,33 @@ NativeSourcePartitionStrategy::enumerateImpl(
       "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
       m_profile.roles[1] + "/SUM", m_profile.convOutputTensor,
       m_profile.roles[3] + "/RUN", m_profile.convOutputTensor));
+    // Direct bypass dependencies carry every non-SUM crossing into the suffix.
+    for (const auto& edge : graph.edges) {
+      const auto producer = ownerByNode.find(edge.producer);
+      if (producer == ownerByNode.end()) continue;
+      const bool fromRank = producer->second == m_profile.roles[1] ||
+                            producer->second == m_profile.roles[2];
+      if (producer->second != m_profile.roles[0] && !fromRank) continue;
+      if (edge.id == m_profile.convOutputTensor || edge.id == m_profile.convInputTensor ||
+          edge.producer == m_profile.boundaryNode)
+        continue;
+      const bool toSuffix = std::any_of(edge.consumers.begin(), edge.consumers.end(),
+        [&] (const auto& node) {
+          const auto consumer = ownerByNode.find(node);
+          return consumer != ownerByNode.end() &&
+                 consumer->second == m_profile.roles[3];
+        });
+      if (!toSuffix) continue;
+      const auto dependencyId = std::string("bypass-") + edge.id;
+      if (std::any_of(candidate.executionPlan.dependencies.begin(),
+                      candidate.executionPlan.dependencies.end(),
+                      [&] (const auto& value) { return value.dependencyId == dependencyId; }))
+        continue;
+      candidate.executionPlan.dependencies.push_back(dependency(
+        dependencyId, producer->second, m_profile.roles[3],
+        producer->second + "/RUN", edge.id,
+        m_profile.roles[3] + "/RUN", edge.id));
+    }
   }
 
   const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / m_profile.roles.size());
