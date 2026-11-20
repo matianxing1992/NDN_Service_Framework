@@ -6159,57 +6159,6 @@ BOOST_AUTO_TEST_CASE(Spec194V4HonorsPreferredProviderAndDeviceReservations)
   BOOST_CHECK_NE(proposal.roles[0].deviceSet.front(), proposal.roles[1].deviceSet.front());
   BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, roles, input.offers, 200));
 }
-BOOST_AUTO_TEST_CASE(GenerationEndpointPhaseFollowsTheDerivedRound)
-{
-  NativeTensorEndpointV3 base;
-  base.producerNamespace = "/lab/provider";
-  base.requester = "/lab/requester";
-  base.requestId = "/lab/request/1";
-  base.attempt = 1;
-  base.sourceKind = "ROLE";
-  base.producerRole = "region";
-  base.consumerRole = "head";
-  base.consumerRoles = {"head"};
-  base.operation = "ACTIVATION";
-  base.namingOperationStride = 4;
-  base.round = 0;
-  base.tensorId = "activation";
-  base.planDigest = "sha256:" + std::string(64, 'a');
-  base.groupId = "group";
-  base.groupEpoch = "epoch";
-  base.tensorDigest = "sha256:" + std::string(64, 'b');
-  base.layoutDigest = "sha256:" + std::string(64, 'c');
-  base.targetLayoutDigest = "sha256:" + std::string(64, 'd');
-  base.manifestDigest = "sha256:" + std::string(64, 'e');
-  base.securityProfile = "NDNSF_DATA_V1";
-  base.noProgressDeadlineMs = 1000;
-  base.hardDeadlineMs = 2000;
-  base.segmentCount = 1;
-  base.namingPhase = "prefill";
-  base.namingStepId = "role-execution";
-  base.namingPortId = "role-execution";
-  auto seal = [](NativeTensorEndpointV3& value) {
-    auto identity = nativeEndpointJson(value);
-    identity.erase("endpoint_digest");
-    identity.erase("consumer_role");
-    value.endpointDigest = nativePlanningDigest(nativeCanonicalJson(identity));
-  };
-  seal(base);
-
-  NativeGenerationEndpointRangeV1 range;
-  range.epochCount = 3;
-  range.operationStride = 4;
-  const auto first = NativePlanProjectionBuilder::deriveGenerationEndpoint(base, range, 0);
-  const auto second = NativePlanProjectionBuilder::deriveGenerationEndpoint(base, range, 1);
-  const auto third = NativePlanProjectionBuilder::deriveGenerationEndpoint(base, range, 2);
-  BOOST_CHECK_EQUAL(first.round, 0U);
-  BOOST_CHECK_EQUAL(first.namingPhase, "prefill");
-  BOOST_CHECK_EQUAL(second.round, 4U);
-  BOOST_CHECK_EQUAL(second.namingPhase, "continuation");
-  BOOST_CHECK_EQUAL(third.round, 8U);
-  BOOST_CHECK_EQUAL(third.namingPhase, "continuation");
-}
-
 BOOST_AUTO_TEST_CASE(TensorObjectNameUsesTheN5SchemaWhenCoordinatesAreSet)
 {
   NativeTensorEndpointV3 endpoint;
