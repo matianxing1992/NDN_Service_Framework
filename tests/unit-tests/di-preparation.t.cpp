@@ -1201,4 +1201,45 @@ BOOST_AUTO_TEST_CASE(DispatchQueueThenThrowStillDeliversExactlyOnce)
 
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_CASE(StoredModelPackageNamesFollowTheRoleRows)
+{
+  const ndn::Name producer("/lab/preparer");
+  const std::string packageId(64, 'c');
+  const std::vector<std::string> modelPath{"qwen3", "0.6b", "int4", "revision", "r3"};
+  const auto prefix = nativeStoredModelPackagePrefix(producer, modelPath, packageId);
+  BOOST_CHECK(nativeStoredModelSemanticPrefix(prefix));
+  BOOST_CHECK(prefix[-9] == ndn::name::Component("model"));
+  BOOST_CHECK(prefix[-3] == ndn::name::Component("stored"));
+  BOOST_CHECK(prefix[-2] == ndn::name::Component("rep"));
+  BOOST_CHECK_EQUAL(prefix[-1].value_size(), 32U);
+
+  const auto tailOf = [&](const std::string& id, std::size_t count) {
+    const auto name = nativeStoredModelObjectName(prefix, id);
+    BOOST_REQUIRE(name.size() > count);
+    return name.getSubName(name.size() - count);
+  };
+  BOOST_CHECK(tailOf("material-bundle-12", 5) ==
+              ndn::Name("/object/material/bundle/12/DATA"));
+  BOOST_CHECK(tailOf("material-manifest", 4) == ndn::Name("/object/material/manifest/DATA"));
+  BOOST_CHECK(tailOf("material-receipt", 4) == ndn::Name("/object/receipt/assembly/DATA"));
+  BOOST_CHECK(tailOf("prepared-metadata", 3) == ndn::Name("/object/metadata/DATA"));
+  BOOST_CHECK(tailOf("business-root", 3) == ndn::Name("/object/business-manifest/DATA"));
+  BOOST_CHECK(tailOf("catalog-" + std::string(72, 'd'), 4) ==
+              ndn::Name("/object/catalog/source-free/DATA"));
+  // An unknown id is refused instead of being expanded into a path.
+  BOOST_CHECK_THROW(nativeStoredModelObjectName(prefix, "part-0"), std::invalid_argument);
+
+  // A package published before this row keeps its recorded name.
+  const auto legacyPrefix = ndn::Name("/source-publisher/models/test");
+  BOOST_CHECK(!nativeStoredModelSemanticPrefix(legacyPrefix));
+  BOOST_CHECK(nativeStoredModelObjectName(legacyPrefix, "part-0") ==
+              ndn::Name(legacyPrefix).append("objects").append("part-0").appendVersion(0));
+
+  // The package id is exactly one 32-byte lowercase hex value.
+  BOOST_CHECK_THROW(nativeStoredModelPackagePrefix(producer, modelPath, std::string(63, 'c')),
+                    std::exception);
+  BOOST_CHECK_THROW(nativeStoredModelPackagePrefix(producer, modelPath, std::string(64, 'C')),
+                    std::exception);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

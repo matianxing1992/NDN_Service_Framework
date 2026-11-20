@@ -145,6 +145,14 @@ struct NativeStoredModelPublication
 ndn::Name
 nativeStoredModelObjectName(const ndn::Name& publicationPrefix, const std::string& id);
 
+/** N4 `<StoredModelPrefix>`: one package publication for a prepared model. */
+ndn::Name nativeStoredModelPackagePrefix(const ndn::Name& producer,
+                                         const std::vector<std::string>& modelPath,
+                                         const std::string& packagePublicationId);
+
+/** True when the prefix is the N4 package prefix and therefore uses the role object names. */
+bool nativeStoredModelSemanticPrefix(const ndn::Name& publicationPrefix);
+
 /** Validate the actual object/index/root geometry before publication and return a conservative
  * original-wire byte bound. Uses fixed-width digest placeholders, never reads model payloads.
  */

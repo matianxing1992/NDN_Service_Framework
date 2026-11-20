@@ -893,12 +893,84 @@ commitPackets(const std::vector<std::shared_ptr<ndn::Data>>& packets,
 
 } // namespace
 
+bool
+nativeStoredModelSemanticPrefix(const ndn::Name& publicationPrefix)
+{
+  // <Producer>/NDNSF-DI/model/<ModelPath>/stored/rep/<PackagePublicationId>
+  if (publicationPrefix.size() < 2)
+    return false;
+  if (publicationPrefix[-2] != ndn::name::Component("rep"))
+    return false;
+  const auto& id = publicationPrefix[-1];
+  if (id.type() != ndn::tlv::GenericNameComponent || id.value_size() != 32)
+    return false;
+  return publicationPrefix[-3] == ndn::name::Component("stored");
+}
+
+ndn::Name
+nativeStoredModelPackagePrefix(const ndn::Name& producer,
+                               const std::vector<std::string>& modelPath,
+                               const std::string& packagePublicationId)
+{
+  // The package id is one 32-byte representation component, given as a bare lowercase sha256 hex.
+  require(!producer.empty() && modelPath.size() == 5 && packagePublicationId.size() == 64 &&
+          std::all_of(packagePublicationId.begin(), packagePublicationId.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+          }));
+  const auto& id = packagePublicationId;
+  ndn::Name name(producer);
+  name.append("NDNSF-DI").append("model");
+  for (const auto& component : modelPath) {
+    require(!component.empty());
+    name.append(component);
+  }
+  // The id is bare lowercase hex; the component is the 32 bytes it spells.
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(32);
+  for (std::size_t index = 0; index < id.size(); index += 2) {
+    const auto nibble = [](const char c) -> std::uint8_t {
+      return c <= '9' ? static_cast<std::uint8_t>(c - '0') : static_cast<std::uint8_t>(c - 'a' + 10);
+    };
+    bytes.push_back(static_cast<std::uint8_t>((nibble(id[index]) << 4) | nibble(id[index + 1])));
+  }
+  name.append("stored").append("rep").append(ndn::name::Component(
+    ndn::span<const std::uint8_t>(bytes.data(), bytes.size())));
+  return name;
+}
+
 ndn::Name
 nativeStoredModelObjectName(const ndn::Name& publicationPrefix, const std::string& id)
 {
   require(!publicationPrefix.empty() && validObjectId(id));
+  if (!nativeStoredModelSemanticPrefix(publicationPrefix)) {
+    // A package published before the semantic row keeps its exact recorded name.
+    auto name = publicationPrefix;
+    name.append("objects").append(id).appendVersion(0);
+    return name;
+  }
   auto name = publicationPrefix;
-  name.append("objects").append(id).appendVersion(0);
+  const auto appendPath = [&name](const std::string& path) {
+    std::size_t begin = 0;
+    for (;;) {
+      const auto slash = path.find('/', begin);
+      name.append(path.substr(begin, slash == std::string::npos ? std::string::npos : slash - begin));
+      if (slash == std::string::npos)
+        break;
+      begin = slash + 1;
+    }
+  };
+  const auto role = [&id]() -> std::string {
+    if (id == "material-manifest") return "object/material/manifest";
+    if (id == "material-receipt") return "object/receipt/assembly";
+    if (id == "prepared-metadata") return "object/metadata";
+    if (id == "business-root") return "object/business-manifest";
+    if (id.rfind("material-bundle-", 0) == 0) return "object/material/bundle/" +
+      id.substr(std::string("material-bundle-").size());
+    if (id.rfind("catalog-", 0) == 0) return "object/catalog/source-free";
+    throw std::invalid_argument("unknown stored model object role: " + id);
+  }();
+  appendPath(role);
+  name.append("DATA");
   return name;
 }
 
