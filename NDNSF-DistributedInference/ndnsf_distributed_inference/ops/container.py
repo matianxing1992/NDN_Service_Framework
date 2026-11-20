@@ -475,6 +475,10 @@ def role_mounts(config, source, actor=None, *, node=None, management=None,
         add(source.parent / 'nodes' / node['id'] / 'gpu-allocation.json')
     for key in ('trust_schema', 'controller_certificate'):
         add(config['security'][key])
+    # A model preparation needs its file-protection key inside the container as well: without the ring the runtime
+    # refuses to publish, and with an unreadable one it must not fall back to a plain handle.
+    if config['security'].get('file_keyring'):
+        add(config['security']['file_keyring'])
     for path in trust_resources:
         add(path)
     if kind == 'controller':
@@ -794,6 +798,7 @@ def execute(args):
     _prepare_repository_locks(repository_locks)
     env = cluster._environment(home, node['nfd']['socket'], role_id,
                               {'boot_id': args.boot_id, 'configuration_sha256': args.configuration_sha256,
+                               'file_keyring': config['security'].get('file_keyring'),
                                'release_sha256': args.release_sha256,
                                 'diagnostic_logging': args.debug,
                                 'runtime_timing': getattr(args, 'timing', False)})
