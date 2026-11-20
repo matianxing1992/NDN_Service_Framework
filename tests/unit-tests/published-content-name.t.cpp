@@ -403,6 +403,27 @@ BOOST_AUTO_TEST_CASE(SemanticMetadataGoldenWireVectors)
                       modelWire.begin(), modelWire.begin() + 40)), std::exception);
 }
 
+BOOST_AUTO_TEST_CASE(ALongLabelStaysWithinTheParserBound)
+{
+  // `name=` + a 64-byte UTF-8 prefix + `~` + a 16-hex commitment is the longest encoding the legacy packet parsers
+  // accept, and they re-derive the value, so an over-long or forged component is still refused.
+  const std::string label = std::string(64, 'a') + "-long";
+  const auto component = ndn_service_framework::makeNamingLabelComponent(label);
+  // 5 bytes of `name=` + 64 of prefix + `~` + 16 hex.
+  BOOST_CHECK_EQUAL(component.value_size(), 86U);
+  const std::string text(reinterpret_cast<const char*>(component.value()), component.value_size());
+  BOOST_CHECK(text.rfind("name=" + std::string(64, 'a'), 0) == 0);
+  BOOST_CHECK(ndn_service_framework::matchesNamingLabelComponent(component, label));
+  BOOST_CHECK(!ndn_service_framework::matchesNamingLabelComponent(component, label + "-other"));
+  BOOST_CHECK(!ndn_service_framework::matchesNamingLabelComponent(component, label.substr(0, 64)));
+
+  // A label that fits the public bound is encoded exactly with no commitment suffix.
+  const auto shortLabel = ndn_service_framework::makeNamingLabelComponent("spec231-assignment");
+  BOOST_CHECK_EQUAL(shortLabel.value_size(), 5U + std::string("spec231-assignment").size());
+  BOOST_CHECK(std::string(reinterpret_cast<const char*>(shortLabel.value()), shortLabel.value_size())
+    .find('~') == std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(SemanticFactsDecideReuseAcrossNameShapes)
 {
   PublishedContentName legacy;

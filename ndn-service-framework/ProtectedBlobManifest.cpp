@@ -37,7 +37,9 @@ bool digestComponent(const ndn::name::Component& value)
 
 bool readableComponent(const ndn::name::Component& value)
 {
-  if (value.type() != 8 || value.value_size() < 6 || value.value_size() > 69) return false;
+  // `name=` plus a label of at most 64 bytes, or that prefix plus `~` and a 16-hex commitment when the label is
+  // longer than the public bound. The exact value is still re-derived below, so the bound only admits the shapes.
+  if (value.type() != 8 || value.value_size() < 6 || value.value_size() > 87) return false;
   const std::string label(reinterpret_cast<const char*>(value.value()), value.value_size());
   return label.compare(0, 5, "name=") == 0 && matchesNamingLabelComponent(value, label.substr(5));
 }
@@ -275,7 +277,7 @@ bool supportedManifestSuffix(const ndn::Name& suffix, DataNameReadMode mode)
 {
   if (suffix.empty()) return true;
   const auto named = [](const ndn::name::Component& c) {
-    if (c.type() != 8 || c.value_size() < 6 || c.value_size() > 69) return false;
+    if (c.type() != 8 || c.value_size() < 6 || c.value_size() > 87) return false;
     const std::string value(reinterpret_cast<const char*>(c.value()), c.value_size());
     return value.compare(0, 5, "name=") == 0 && matchesNamingLabelComponent(c, value.substr(5));
   };
