@@ -127,7 +127,8 @@ def build(bld):
                 source=['apps/LegacyRepoImport.cpp'],
                 includes=['include', '..'],
                 use='ndnsf-distributed-repo ndn-service-framework NDN_CXX NDN_SVS BOOST NAC-ABE NDNSD OPENSSL sqlite3 DL',
-                install_path=None)
+                rpath=[r'$ORIGIN/../../lib'],
+                install_path='${LIBEXECDIR}/ndnsf-tests' if bld.env.WITH_TESTS else None)
     bld.program(name='DistributedRepoSmoke',
                 target='DistributedRepoSmoke',
                 source=['examples/DistributedRepoSmoke.cpp'],

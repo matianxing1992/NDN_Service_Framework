@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -385,8 +386,12 @@ verifyRepoObject(const fs::path& root, const std::string& importId,
 int
 runImporterChild(const fs::path& log, std::vector<std::string> arguments)
 {
-  const auto binary = fs::read_symlink("/proc/self/exe").parent_path() /
-    "NDNSF-DistributedRepo/ndnsf-repo-import";
+  const auto executableRoot = fs::read_symlink("/proc/self/exe").parent_path();
+  const auto* configured = std::getenv("NDNSF_REPO_IMPORT_BIN");
+  const auto binary = configured ? fs::path(configured) :
+    executableRoot / "NDNSF-DistributedRepo/ndnsf-repo-import";
+  if (::access(binary.c_str(), X_OK) != 0)
+    throw std::runtime_error("REPO_LEGACY_IMPORT_TEST_INPUT_MISSING: " + binary.string());
   arguments.insert(arguments.begin(), binary.string());
   std::vector<char*> argv;
   for (auto& value : arguments) argv.push_back(value.data());

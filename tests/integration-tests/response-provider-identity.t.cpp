@@ -4,6 +4,9 @@
 #include "ndn-service-framework/PolicyStatus.hpp"
 #include "ndn-service-framework/utils.hpp"
 
+#include <ndn-cxx/security/verification-helpers.hpp>
+#include <ndn-cxx/util/scope.hpp>
+
 #include <chrono>
 #include <cstdlib>
 #include <optional>
@@ -125,9 +128,8 @@ BOOST_AUTO_TEST_CASE(ProductionOnResponseRejectsValidDataSignedByWrongProvider)
   BOOST_REQUIRE_EQUAL(environment.user().getPendingCallCount(), 1U);
   environment.markRequestPublished(scope);
 
-  // The fixture uses an accept-all SVS validator. Publish a syntactically
-  // valid Response name for Provider 0 using Provider 1's real KeyChainSigner;
-  // this reaches the production OnResponse identity check after validation.
+  // Observe the signed publication on the User's SVS subscription before
+  // checking whether Core admitted it for the named Provider.
   const auto mismatchedResponseName = makeResponseNameV2(
       providers[0], requesterName, serviceName, requestId);
   ResponseMessage response;
@@ -139,16 +141,23 @@ BOOST_AUTO_TEST_CASE(ProductionOnResponseRejectsValidDataSignedByWrongProvider)
   const auto responseWire = response.WireEncode();
   const ndn::Buffer responseContent(
       responseWire.data(), responseWire.data() + responseWire.size());
-  publish(environment.providerPubSub(1), mismatchedResponseName, responseContent);
-
-  uint64_t rejectedIdentityCount = 0;
-  environment.pumpUntil([&] {
-    rejectedIdentityCount += environment.user().consumeRuntimeDiagnostics()
-                                 .responseRejectedProviderIdentity;
-    return rejectedIdentityCount > 0;
+  const auto signerCertificate = environment.keyChain().getPib().getIdentity(providers[1])
+    .getDefaultKey().getDefaultCertificate();
+  std::size_t mismatchedDeliveries = 0;
+  const auto subscription = environment.userPubSub().subscribeToProducer(
+      ndn::Name(providers[1]).append("provider"),
+      [&](const ndn::svs::SVSPubSub::SubscriptionData& publication) {
+        if (publication.name != mismatchedResponseName) return;
+        BOOST_REQUIRE(publication.packet);
+        BOOST_CHECK(ndn::security::verifySignature(*publication.packet, signerCertificate));
+        ++mismatchedDeliveries;
+      }, true);
+  const auto unsubscribe = ndn::make_scope_exit([&] {
+    environment.userPubSub().unsubscribe(subscription);
   });
-
-  BOOST_CHECK_EQUAL(rejectedIdentityCount, 1U);
+  publish(environment.providerPubSub(1), mismatchedResponseName, responseContent);
+  environment.pumpUntil([&] { return mismatchedDeliveries > 0; });
+  BOOST_REQUIRE_EQUAL(mismatchedDeliveries, 1U);
   BOOST_CHECK(!responseCallbackInvoked);
   BOOST_CHECK(!timeoutCallbackInvoked);
   BOOST_CHECK_EQUAL(environment.user().getPendingCallCount(), 1U);

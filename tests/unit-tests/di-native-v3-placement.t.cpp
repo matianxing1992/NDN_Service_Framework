@@ -1120,7 +1120,7 @@ BOOST_AUTO_TEST_CASE(ProjectionBuilderDerivesApplicationInputAndDependencyReadin
         stepOffers.push_back(stepAdmission.verify(ack, input.context, now));
       }
       auto stepProposal = proposal;
-      stepProposal.context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(stepExecution);
+      stepProposal.context.requiredExecutionCapabilities = nativePlanRequiredCapabilities(input.split);
       stepProposal.offerDigestByProvider.clear();
       for (const auto& assignment : stepProposal.providerByRole) {
         const auto offer = std::find_if(stepOffers.begin(), stepOffers.end(), [&assignment] (const auto& item) {

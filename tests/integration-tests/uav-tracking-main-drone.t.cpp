@@ -1,6 +1,7 @@
 #include "NDNSF-UAV-APP/drone/drone-service-container.hpp"
 #include "NDNSF-UAV-APP/shared/UavObservationRefVerifier.hpp"
 #include "NDNSF-UAV-APP/shared/UavTrackingEvidenceStore.hpp"
+#include "NDNSF-UAV-APP/shared/UavWindowBinding.hpp"
 #include "NDNSF-UAV-APP/tracking/UavTrackingCoordinator.hpp"
 #include "tests/fixtures/uav-tracking-core-flow.hpp"
 #include "tests/fixtures/uav-tracking-provider-access.hpp"
@@ -503,6 +504,7 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
       }
       interestObservation.disconnect();
       // All fixture captures remain alive until every production worker joins.
+      sourceRegistrations.clear();
       environment.reset();
       runtime.reset();
     }
@@ -562,7 +564,38 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
         }
       });
     for (size_t i = 0; i < 3; ++i) {
-      environment->provider(i).addCollaborationHandler(SERVICE_TRACKING_WINDOW,
+      if (useNativeJob) {
+        const auto& source = definition.sources[i];
+        const ndnsf::examples::uav::UavSourceDescriptor descriptor{
+          source.producerIdentity, source.cameraId,
+          source.sourceId, source.sourceEpoch, "simulated", "replay"};
+        sourceRegistrations.push_back(environment->provider(i).addScopedService(
+          SERVICE_TRACKING_SOURCE,
+          [](const nsf::RequestMessage&) {
+            nsf::ServiceProvider::AckDecision ack;
+            ack.status = true;
+            return ack;
+          },
+          [descriptor](const ndn::Name&, const ndn::Name&, const ndn::Name&, const ndn::Name&,
+                       const nsf::RequestMessage& request) {
+            const auto payload = request.getPayload();
+            const auto query = ndnsf::examples::uav::parseUavSourceInfoRequest(
+              std::string(payload.begin(), payload.end()));
+            nsf::ResponseMessage response;
+            const bool matches = query.cameraId == descriptor.cameraId &&
+              query.sourceId == descriptor.sourceId && query.sourceEpoch == descriptor.sourceEpoch;
+            response.setStatus(matches);
+            if (matches) {
+              const auto wire = ndnsf::examples::uav::renderUavSourceInfoResponse(
+                {descriptor, ndnsf::examples::uav::uavSourceDescriptorDigest(descriptor)});
+              auto bytes = asBuffer(wire);
+              response.setPayload(bytes, bytes.size());
+            }
+            return response;
+          }, nsf::ServiceProvider::ServiceInvocationMode::TargetedOnly));
+      }
+      sourceRegistrations.push_back(environment->provider(i).addScopedCollaborationHandler(
+        SERVICE_TRACKING_WINDOW, {"Camera-" + definition.sources[i].cameraId},
         [this, i](const nsf::RequestMessage&) {
           nsf::ServiceProvider::AckDecision ack;
           ack.status = true;
@@ -620,7 +653,7 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
           publishSource(context, fields, i);
           publishDrained(context, fields);
           context.completeRole();
-        });
+        }, nsf::CollaborationAdmissionLimits{}));
     }
     // Production init subscribes the handlers already registered on each actor.
     environment->enableProductionIngressForTest();
@@ -796,6 +829,7 @@ pathlib.Path(a.output_json).write_text(json.dumps(y))
   std::array<ndn::Name, 3> clocks;
   std::array<std::atomic<bool>, 3> clockPrepared{};
   std::array<std::atomic<size_t>, 3> clockFetches{};
+  std::vector<nsf::ServiceProvider::ServiceRegistration> sourceRegistrations;
   ndn::signal::ScopedConnection interestObservation;
 };
 

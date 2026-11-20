@@ -109,8 +109,13 @@ def test_verified_entry_runs_outside_checkout_before_stage_retires(tmp_path):
     deposited = build / "install-stage" / prefix.relative_to("/")
     staged = deposited / "bin" / "DI_NativeRequester"
     staged.parent.mkdir(parents=True)
-    staged.write_text('#!/bin/sh\n[ "$1" = --help ] && [ "$PWD" = "$HOME" ]\n')
+    staged.write_text('#!/bin/sh\n[ "$1" = --help ] && [ "$PWD" = "$HOME" ] && '
+                      '[ "$LD_LIBRARY_PATH" = "${0%/bin/*}/lib" ]\n')
     staged.chmod(0o755)
+    identity = staged.with_name("ndnsf-identity-check")
+    identity.write_text('#!/bin/sh\n[ -d "$1" ] && [ "$1" != "$HOME" ] || exit 2\n'
+                        'echo "existing credential PIB and TPM" >&2\nexit 1\n')
+    identity.chmod(0o755)
     shutil.copytree(deposited, prefix)
     assert call("promotion-budget", "--build-dir", build, "--prefix", prefix,
                 "--reserve", 0).returncode == 0

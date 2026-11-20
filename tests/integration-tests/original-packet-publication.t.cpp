@@ -1413,9 +1413,9 @@ void runOriginalSignedPacketExecRestart(bool legacyV2, bool wrongManifest = fals
         ::setenv("NDNSF_SPEC201_EXEC_ROOT", root.c_str(), 1) != 0 ||
         ::setenv("NDN_NAME_ALT_URI", childUri, 1) != 0) ::_exit(126);
     ::execl("/proc/self/exe", "spec201-original-packet-publication",
-      wrongManifest ? "--run_test=Spec201OriginalPacketPublication/WrongManifestReferenceFailsBeforeServing" :
-      legacyV2 ? "--run_test=Spec201OriginalPacketPublication/LegacyV2ReferenceUpgradesAfterExec" :
-        "--run_test=Spec201OriginalPacketPublication/OriginalSignedPacketsSurviveRealExecRestart",
+      wrongManifest ? "--run_test=NamingOriginalPacketPublication/WrongManifestReferenceFailsBeforeServing" :
+      legacyV2 ? "--run_test=NamingOriginalPacketPublication/LegacyV2ReferenceUpgradesAfterExec" :
+        "--run_test=NamingOriginalPacketPublication/OriginalSignedPacketsSurviveRealExecRestart",
       "--log_level=test_suite", static_cast<char*>(nullptr));
     ::_exit(127);
   }

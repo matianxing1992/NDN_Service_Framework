@@ -4871,8 +4871,7 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   });
   BOOST_CHECK_THROW(nullFactory.create(cold), std::logic_error);
 
-  // Real in-memory template hits must rebind plan-owned entry values without rebuilding
-  // the artifact or retaining the previous invocation's entry ID/state map.
+  // Reuse requires the same sealed step contract, even when the artifact key matches.
   ProviderArtifactCache artifactCache;
   const auto key = nativeProviderArtifactKey(projection, projection.provider,
     inspected.canonicalSourceName, inspected.canonicalSourceDigest);
@@ -4899,7 +4898,6 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   reboundProjection.dataflow.requestId = reboundProjection.requestId;
   reboundProjection.planDigest = nativePlanningDigest("rebound-entry-plan");
   reboundProjection.dataflow.planDigest = reboundProjection.planDigest;
-  reboundProjection.plan.steps.front().artifactEntry = "rebound-arithmetic";
   const auto reboundKey = nativeProviderArtifactKey(reboundProjection, projection.provider,
     inspected.canonicalSourceName, inspected.canonicalSourceDigest);
   BOOST_CHECK_EQUAL(key.canonicalKey(), reboundKey.canonicalKey());
@@ -4908,7 +4906,12 @@ BOOST_AUTO_TEST_CASE(GenericEntryRunsAStatelessMultiportGraphThroughTheWorker)
   auto hit = artifactCache.acquireWithRunner(reboundKey, reboundProjection, reboundControl, build);
   BOOST_REQUIRE(hit.cacheHit());
   BOOST_CHECK_EQUAL(builds, 1u);
-  auto reboundSpec = *hit.runnerSpec();
+  reboundProjection.plan.steps.front().artifactEntry = "rebound-arithmetic";
+  auto changedEntry = artifactCache.acquireWithRunner(
+    reboundKey, reboundProjection, reboundControl, build);
+  BOOST_CHECK(!changedEntry.cacheHit());
+  BOOST_CHECK_EQUAL(builds, 2u);
+  auto reboundSpec = *changedEntry.runnerSpec();
   reboundSpec.path = reboundSpec.metadata.at("assembledCachePath");
   bindNativeRunnerPreparationContext(reboundSpec, reboundProjection,
     {projection.provider, "fixture-boot", 1234, workspace.root.string()});

@@ -23,6 +23,7 @@
 #include <future>
 #include "ndnsf-integration-fixture.hpp"
 #include "ndn-service-framework/PolicyStatus.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/security/pib/pib.hpp>
@@ -79,12 +80,23 @@ expectProviderConsumable(const ndn::Data& data, const std::string& publicationId
                          const ndn::Name& expectedSignerCert,
                          const std::string& expectedWire)
 {
-  const auto uri = data.getName().toUri();
-  BOOST_CHECK_EQUAL(uri.substr(0, publicationIdentity.size()),
-                    publicationIdentity);
-  BOOST_CHECK(uri.find("/NDNSF-DI/KEY-GRANT/v1/PROVIDER/") != std::string::npos);
-  BOOST_CHECK(uri.find("/REQ/") != std::string::npos);
-  BOOST_CHECK(uri.find("/GRANT/" + digest("grant").substr(7)) != std::string::npos);
+  const auto parsed = ndn_service_framework::parseProducerDataName(
+    data.getName(), ndn::Name(publicationIdentity));
+  BOOST_REQUIRE(parsed);
+  BOOST_CHECK_EQUAL(parsed->category, "GRANT");
+  BOOST_REQUIRE_EQUAL(parsed->suffix.size(), 10U);
+  BOOST_CHECK(parsed->suffix[0] == ndn::name::Component("kind=KEY-GRANT"));
+  BOOST_CHECK(parsed->suffix[1] == ndn::name::Component("RECIPIENT"));
+  BOOST_CHECK(parsed->suffix[3] == ndn::name::Component("SCOPE"));
+  BOOST_CHECK(parsed->suffix[4] == ndn::name::Component("MODEL"));
+  BOOST_CHECK(parsed->suffix[6] == ndn::name::Component("EPOCH"));
+  BOOST_CHECK(parsed->suffix[8] == ndn::name::Component("OBJECT"));
+  for (const auto index : {2, 5, 7}) {
+    BOOST_CHECK_EQUAL(parsed->suffix[index].type(), 8);
+    BOOST_CHECK_EQUAL(parsed->suffix[index].value_size(), 32);
+  }
+  BOOST_CHECK(parsed->suffix[9] == ndn_service_framework::makeNamingDigestComponent(
+    digest("grant").substr(7)));
   BOOST_CHECK_EQUAL(data.getSignatureInfo().getKeyLocator().getName(),
                     expectedSignerCert);
   const auto& content = data.getContent();
@@ -263,7 +275,7 @@ BOOST_AUTO_TEST_CASE(RequesterAcquirePublishesSignedExactNameDataConsumedByProvi
   // DummyClientFace emits the put only while its event loop runs.
   environment.pumpUntil([&] { return publishedData.has_value(); });
   BOOST_REQUIRE(publishedData.has_value());
-  BOOST_CHECK_EQUAL(publishedData->getName().toUri(), binding.grantName);
+  BOOST_CHECK(publishedData->getName() == ndn::Name(binding.grantName));
 
   // Provider-side exact-name fetch.  DummyClientFace does not retain
   // unsolicited Data, so replay the captured packet when the fetch Interest
@@ -286,7 +298,7 @@ BOOST_AUTO_TEST_CASE(RequesterAcquirePublishesSignedExactNameDataConsumedByProvi
 
   BOOST_REQUIRE_MESSAGE(fetchedData.has_value(), "exact-name grant fetch failed");
   BOOST_CHECK(!fetchTimedOut);
-  BOOST_CHECK_EQUAL(fetchedData->getName().toUri(), binding.grantName);
+  BOOST_CHECK(fetchedData->getName() == ndn::Name(binding.grantName));
   expectProviderConsumable(*fetchedData, requesterUri, requesterCertName,
                            binding.wireJson);
   BOOST_CHECK_EQUAL(binding.provider, view.provider);

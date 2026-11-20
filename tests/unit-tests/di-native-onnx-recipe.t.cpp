@@ -1823,37 +1823,27 @@ BOOST_AUTO_TEST_CASE(SubprocessCancelDuringBlockingWorkerEscalatesKill)
 {
   const std::string tool =
     requireWorkerBinary("worker-tool-block");
+  WorkerDiscoveryFixture workspace;
+  const auto probeDirectory = workspace.root / "worker-home-probe";
+  std::filesystem::create_directory(probeDirectory);
+  std::filesystem::current_path(workspace.root);
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
   const auto started = std::chrono::steady_clock::now();
   const auto homesBefore = privateWorkerHomes();
-  bool sawPrivateHome = false;
-  bool sawChildEnvironment = false;
+  std::set<std::filesystem::path> observedPrivateHomes;
   auto control = workerControlFor(std::chrono::milliseconds(250));
   control.requireActive = [&] {
     for (const auto& home : privateWorkerHomes()) {
       if (homesBefore.count(home) != 0) continue;
-      sawPrivateHome = true;
+      observedPrivateHomes.insert(home);
       struct stat status{};
       BOOST_REQUIRE_EQUAL(::stat(home.c_str(), &status), 0);
       BOOST_CHECK_EQUAL(status.st_mode & 0777, 0700);
       BOOST_CHECK_EQUAL(status.st_uid, ::geteuid());
       if (const auto callerHome = std::getenv("HOME")) {
         BOOST_CHECK(home != std::filesystem::path(callerHome));
-      }
-      std::ifstream children("/proc/self/task/" + std::to_string(::getpid()) +
-                             "/children");
-      pid_t childPid = -1;
-      while (children >> childPid) {
-        std::ifstream input("/proc/" + std::to_string(childPid) + "/environ");
-        const std::string environment((std::istreambuf_iterator<char>(input)),
-                                      std::istreambuf_iterator<char>{});
-        std::istringstream entries(environment);
-        std::string entry;
-        while (std::getline(entries, entry, '\0')) {
-          if (entry == "HOME=" + home.string()) sawChildEnvironment = true;
-        }
       }
     }
   };
@@ -1869,8 +1859,11 @@ BOOST_AUTO_TEST_CASE(SubprocessCancelDuringBlockingWorkerEscalatesKill)
   BOOST_CHECK_EQUAL(code, "DI_NATIVE_ONNX_ASSEMBLY_TIMEOUT");
   BOOST_CHECK(elapsedMs >= 1000);
   BOOST_CHECK(elapsedMs < 5000);
-  BOOST_CHECK(sawPrivateHome);
-  BOOST_CHECK(sawChildEnvironment);
+  BOOST_CHECK(!observedPrivateHomes.empty());
+  std::ifstream evidence(probeDirectory / "observed");
+  std::string childHome;
+  BOOST_REQUIRE(std::getline(evidence, childHome));
+  BOOST_CHECK_EQUAL(observedPrivateHomes.count(childHome), 1U);
   BOOST_CHECK(privateWorkerHomes() == homesBefore);
 }
 

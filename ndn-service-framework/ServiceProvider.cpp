@@ -13378,7 +13378,7 @@ namespace ndn_service_framework
             bool recoveryQueued = false;
             std::atomic<std::size_t> sentInterests{0};
             bool retryQueued = false;
-            std::size_t lastRetryEnqueuedAttempt = 0;
+            std::size_t lastClaimedRetryAttempt = 0;
             ndn::ScopedPendingInterestHandle pendingInterest;
             bool inFlight = false;
             ExactClock::time_point sentAt, retryAt;
@@ -14385,21 +14385,20 @@ namespace ndn_service_framework
                             // replace its pending Interest on the Face owner thread.
                             if (!state->completed.load() && !slot->completed.load() &&
                                 slot->attempts.load(std::memory_order_relaxed) == expectedAttempt) {
-                                if (refresh) {
-                                    (*next)();
-                                    return;
-                                }
                                 {
                                     std::lock_guard<std::mutex> lock(state->mutex);
-                                    if (slot->lastRetryEnqueuedAttempt == expectedAttempt ||
+                                    if (slot->lastClaimedRetryAttempt == expectedAttempt ||
                                         slot->retryQueued || slot->networkCompleted.load()) return;
-                                    slot->lastRetryEnqueuedAttempt = expectedAttempt;
-                                    if (slot->creditHeld) --state->activeSlots;
-                                    slot->creditHeld = false;
-                                    slot->retryQueued = true;
-                                    state->retryQueue.push_back(index);
+                                    slot->lastClaimedRetryAttempt = expectedAttempt;
+                                    if (!refresh) {
+                                        if (slot->creditHeld) --state->activeSlots;
+                                        slot->creditHeld = false;
+                                        slot->retryQueued = true;
+                                        state->retryQueue.push_back(index);
+                                    }
                                 }
-                                (*refill)();
+                                if (refresh) (*next)();
+                                else (*refill)();
                             }
                         });
                 }

@@ -1058,8 +1058,7 @@ BOOST_AUTO_TEST_CASE(ProductionIngressRejectsMalformedNativeRepositoryEnvelope)
   BOOST_CHECK(result.handlerEntered);
   BOOST_CHECK(!result.providerInputMatches);
   BOOST_CHECK(result.statusFailed);
-  BOOST_CHECK(result.statusMessage.find(
-    "malformed native DI request envelope") != std::string::npos);
+  BOOST_CHECK_EQUAL(result.statusMessage, "malformed native request JSON");
   BOOST_CHECK(!result.responseReceived);
   BOOST_CHECK(!result.timedOut);
 }
@@ -7364,7 +7363,12 @@ runSpec175NativeTinyMultiProviderCase(std::size_t providerCount,
     streamOptions.interestLifetimeMs = 1000;
   }
   if (conversationRequest) {
-    if (caseOptions.conversationFault ==
+    if (caseOptions.conversationFault == Spec190NativeConversationFault::LostFinalize) {
+      // Keep one exact retry available after the Provider's 2 s control wait.
+      // The collaboration deadline and the fault injection stay unchanged.
+      streamOptions.maxEventRetries = 4;
+    }
+    else if (caseOptions.conversationFault ==
         Spec190NativeConversationFault::CommitAckLoss) {
       // The requester waits up to 5 s for the complete COMMIT ACK set before
       // publishing compensating ROLLBACK controls.  Keep event recovery open
@@ -9555,11 +9559,6 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
           {"schema", "NDNSF-DI-FINAL-V1"}, {"tokenIds", deltaTokens},
           {"text", text}, {"finishHint", "EOS"}, {"finishReason", "eos"},
           {"generationId", projection.generationContract.generationId}});
-        if (!ctx.finishStream(ndn::Buffer(final.begin(), final.end()),
-                              StreamFinishReason::ApplicationComplete)) {
-          throw std::runtime_error("R4-B6 stream final publication failed");
-        }
-
         ProviderConversationStateReceiptV1 receipt;
         receipt.conversationId = binding.conversationId;
         receipt.parentContextEpoch = binding.parentContextEpoch;
@@ -9588,17 +9587,19 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
         receipt.validate();
         const auto receiptJson = receipt.toJson();
         ctx.publish("ndnsf-di-conversation-state-v1",
-                    ndn::Name("/ndnsf-di/conversation/receipt").append(role),
+                    ndn::Name("/ndnsf-di/conversation/receipt").append(ndn::Name(role)),
                     ndn::Buffer(receiptJson.begin(), receiptJson.end()));
 
         const auto controlTopic = ndn::Name("/ndnsf-di/conversation/control");
         const auto commitTopic = ndn::Name("/ndnsf-di/conversation/commit");
         // A failed test must not leave the collaboration worker waiting
         // forever for a control message after the requester has aborted.
+        std::size_t controlsRead = 0;
         for (int rounds = 0; rounds < 30; ++rounds) {
           const auto controls = ctx.waitFor("ndnsf-di-conversation-state-v1",
-                                             controlTopic, 1, 1000);
-          for (const auto& controlData : controls) {
+                                             controlTopic, controlsRead + 1, 1000);
+          for (; controlsRead < controls.size(); ++controlsRead) {
+            const auto& controlData = controls[controlsRead];
             if (controlData.producer != ctx.requesterName() ||
                 controlData.producerRole != "user-control-v1") {
               continue;
@@ -9611,7 +9612,16 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
               continue;
             }
             const auto action = control.value("action", std::string{});
-            if (action == "FINALIZE" || action == "ROLLBACK") return;
+            if (action == "ROLLBACK") return;
+            if (action == "FINALIZE") {
+              // Core retires the role's collaboration input when End is sent.
+              // Keep that input live through the authenticated commit exchange.
+              if (!ctx.finishStream(ndn::Buffer(final.begin(), final.end()),
+                                    StreamFinishReason::ApplicationComplete)) {
+                throw std::runtime_error("R4-B6 stream final publication failed");
+              }
+              return;
+            }
             if (action != "COMMIT") continue;
             const auto ack = nativeCanonicalJson(NativeJson{
               {"schema", "ndnsf-di-provider-conversation-commit-ack-v1"},
@@ -9628,10 +9638,6 @@ runR4B6RealProviderConversationCase(bool exerciseReplacement = false,
               {"committed", !failConversationCommit}});
             ctx.publish("ndnsf-di-conversation-state-v1", commitTopic,
                         ndn::Buffer(ack.begin(), ack.end()));
-            // A COMMIT control is terminal for this role.  Returning here
-            // prevents the retained control record from being processed in a
-            // tight loop while the acknowledgement is handed to the Face.
-            return;
           }
         }
         throw std::runtime_error("R4-B6 conversation control timeout");

@@ -305,9 +305,10 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
     throw OperationError(OperationErrorCode::Closed, "operation ticket is invalid");
 
   std::shared_ptr<detail::RuntimeTaskHold> hold;
-  auto wrapped = [state, task = std::move(task)]() mutable {
+  auto wrapped = [state, task = std::move(task)](detail::RuntimeTaskHold& taskHold) mutable {
     {
       std::lock_guard<std::mutex> lock(state->mutex);
+      taskHold.started = true;
       if (state->queued > 0)
         --state->queued;
       ++state->active;
@@ -340,14 +341,9 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
     ++state->queued;
     useHook = static_cast<bool>(state->submitHook);
     if (!useHook) {
-      try {
-        state->queue.push_back({hold, std::move(wrapped)});
-      }
-      catch (...) {
-        // The hold owns both the ticket and the queued entry; destroying it after this lock is gone rolls
-        // both back, so rolling `queued` back here would decrement it twice.
-        throw;
-      }
+      state->queue.push_back({hold, [hold, wrapped = std::move(wrapped)]() mutable {
+        wrapped(*hold);
+      }});
     }
   }
   if (useHook) {
@@ -365,7 +361,7 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
       auto once = std::make_shared<std::atomic<bool>>(false);
       guarded = [once, holdBox, wrapped]() mutable {
         if (!once->exchange(true)) {
-          wrapped();
+          wrapped(**holdBox);
           // A retained hook callback must not retain a completed task's
           // accounting ticket after its first dispatch.
           holdBox->reset();
@@ -665,9 +661,6 @@ OperationRuntime::runWorker(const std::shared_ptr<detail::RuntimeState>& state) 
           auto queuedTask = std::move(state->queue.front());
           state->queue.pop_front();
           taskTicket = std::move(queuedTask.ticket);
-          // The task is about to run, so its hold must no longer roll back the queued entry it owns.
-          if (taskTicket)
-            taskTicket->started = true;
           task = std::move(queuedTask.function);
           break;
         }

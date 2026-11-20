@@ -11,6 +11,10 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
 namespace {
 
 // dup2 keeps the parent's nonblocking pipe ends on 0/1/2; clear the flag so
@@ -41,6 +45,11 @@ main()
 {
   makeStdioBlocking();
   signal(SIGTERM, SIG_IGN);
+  if (const char* home = std::getenv("HOME")) {
+    const std::filesystem::path probeDirectory("worker-home-probe");
+    if (std::filesystem::is_directory(probeDirectory))
+      std::ofstream(probeDirectory / "observed") << home << '\n';
+  }
   drainStdin();
   for (;;) {
     pause();

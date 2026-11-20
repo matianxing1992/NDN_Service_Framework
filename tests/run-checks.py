@@ -80,6 +80,9 @@ def verify_installed_files(prefix, roster, profiles):
     if any('repo-owner-delete' in row.get('facilities', [])
            for profile in profiles for row in roster['profiles'][profile]['targets']):
         required.add(prefix / 'bin/ndnsf-repo-owner-delete')
+    if any('repo-legacy-import' in row.get('facilities', [])
+           for profile in profiles for row in roster['profiles'][profile]['targets']):
+        required.add(prefix / 'libexec/ndnsf-tests/ndnsf-repo-import')
     if any('gpu-query-fixtures' in row.get('facilities', [])
            for profile in profiles for row in roster['profiles'][profile]['targets']):
         vendor_root, files = gpu_query_files(prefix, None)
@@ -184,17 +187,28 @@ QUALIFICATION_ONLY_INPUTS = frozenset({
 })
 
 
-def target_environment(target, environ, prefix, build_root, routine=False):
+def target_environment(target, environ, prefix, build_root, routine=False, components=()):
     result = environ.copy()
     if routine:
         for name in QUALIFICATION_ONLY_INPUTS:
             result.pop(name, None)
+        result['NDNSF_SPEC182_BIN_DIR'] = str(
+            prefix / 'libexec/ndnsf-tests' if prefix is not None else build_root)
+        if 'di' in components:
+            worker_root = prefix / 'libexec/ndnsf-di' if prefix is not None else build_root
+            result['NDNSF_DI_WORKER_BINARY'] = str(worker_root / 'DI_NativeOnnxAssemblyWorker')
     if 'repo-owner-delete' in target.get('facilities', []):
         binary = (prefix / 'bin/ndnsf-repo-owner-delete' if prefix is not None else
                   build_root / 'NDNSF-DistributedRepo/ndnsf-repo-owner-delete')
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise ValueError('REPO_OWNER_DELETE_TEST_INPUT_MISSING: ' + str(binary))
         result['NDNSF_REPO_OWNER_DELETE_BIN'] = str(binary)
+    if 'repo-legacy-import' in target.get('facilities', []):
+        binary = (prefix / 'libexec/ndnsf-tests/ndnsf-repo-import' if prefix is not None else
+                  build_root / 'NDNSF-DistributedRepo/ndnsf-repo-import')
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise ValueError('REPO_LEGACY_IMPORT_TEST_INPUT_MISSING: ' + str(binary))
+        result['NDNSF_REPO_IMPORT_BIN'] = str(binary)
     if 'identity-check' in target.get('facilities', []):
         binary = (prefix / 'bin/ndnsf-identity-check' if prefix is not None else
                   build_root / 'examples/ndnsf-identity-check')
@@ -219,7 +233,8 @@ def check_facilities(roster, profiles, environ, prefix=None, build_root=None):
     for profile in profiles:
         for target in roster['profiles'][profile]['targets']:
             for facility in target.get('facilities', []):
-                if facility in ('gpu-query-fixtures', 'identity-check', 'repo-owner-delete'):
+                if facility in ('gpu-query-fixtures', 'identity-check', 'repo-owner-delete',
+                                'repo-legacy-import'):
                     try:
                         target_environment(target, environ, prefix, build_root)
                     except (OSError, ValueError) as error:
@@ -837,7 +852,8 @@ def main(argv=None):
                 continue
             try:
                 target_env = target_environment(target, environ, prefix, build_root,
-                                                 routine=name in ROUTINE_PROFILES)
+                                                 routine=name in ROUTINE_PROFILES,
+                                                 components=roster['configuredComponents'])
                 for asset_name in target.get('assets', []):
                     for key, value in asset_bindings[asset_name].items():
                         if value is None:

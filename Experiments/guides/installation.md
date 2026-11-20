@@ -80,6 +80,10 @@ python3 tests/run-checks.py --profile model \
 只跑默认检查时用 `--profile unit` 或 `--profile integration`。清单无效或缺失按前置失败处理，
 不计为通过；准备回执只证明文件与结构契约，不代表原生执行或数值资格。
 
+使用 `--with-tests` 安装且启用了 Repo 时，可以运行
+`<prefix>/bin/ndnsf-checks --profile migration`，验证离线迁移 CLI 的重放、结果一致性与源数据不变。
+默认 `integration` 档继续运行原生迁移 API 用例。
+
 普通安装只安装软件，不隐式下载模型。先按[固定模型配方](../recipes/README.md)
 显式准备SEALED资产；随后在已经安装并具有完整receipt的prefix上单独运行：
 

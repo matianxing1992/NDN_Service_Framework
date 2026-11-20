@@ -971,7 +971,8 @@ RuntimeConfig runtimeConfig(const RuntimeFixture& fixture)
 
 PreparedModel prepareWithInProcessPump(
   const std::shared_ptr<Runtime>& runtime,
-  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment)
+  ndn_service_framework::test::NdnsfIntegrationEnvironment& environment,
+  const std::string& modelKey = "default")
 {
   if (!runtime)
     throw std::invalid_argument("Di prepared model requires Runtime");
@@ -982,7 +983,7 @@ PreparedModel prepareWithInProcessPump(
     }
   });
   try {
-    auto prepared = runtime->user().prepare();
+    auto prepared = runtime->user().prepare(modelKey);
     pumping.store(false, std::memory_order_release);
     pump.join();
     return prepared;
@@ -1019,10 +1020,10 @@ makeInProcessRuntimeEnvironment()
   ndn_service_framework::test::BootstrapProfile profile;
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/t013/sync");
-  profile.userNode = ndn::Name("/ndnsf/spec185/t013/user");
-  profile.providerNode = ndn::Name("/ndnsf/spec185/t013/provider");
   profile.userIdentity = ndn::Name("/user");
   profile.providerIdentity = ndn::Name("/provider");
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
   profile.providerRoles = {"/Backbone"};
@@ -1467,6 +1468,15 @@ struct DiPreparedModelTestAccess
   {
     return model.m_package->catalog.preparation->sourceLifetimeForTest(
       model.m_package->catalog.model.descriptor);
+  }
+
+  static PreparedModel
+  requestBoundary(std::function<std::shared_ptr<NativeInferenceClient>(
+                    const std::shared_ptr<const PreparedModelPackage>&)> factory)
+  {
+    auto package = std::make_shared<PreparedModelPackage>();
+    package->capabilities.inputKinds = {"INLINE_BYTES"};
+    return PreparedModel(std::move(package), {}, {}, std::move(factory));
   }
 
   static PreparedModel
@@ -1919,7 +1929,7 @@ BOOST_AUTO_TEST_CASE(PreparedRequestsSharePackageButAllocateIndependentIds)
   auto runtime = Runtime::open(runtimeConfig(fixture));
   binding = bindInProcessRuntime(fixture, runtime);
   auto user = runtime->user();
-  auto prepared = user.prepare();
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
   // This request goes through Runtime::prepare's production client factory;
   // the immediate cancellation keeps this identity probe independent of a
   // Provider response while still using the fixture-owned real Face.
@@ -2063,10 +2073,10 @@ BOOST_AUTO_TEST_CASE(PreparedRequestCompletesThroughCoreCollaborationFixture)
   // same principal after the internal transport override.
   profile.groupPrefix = ndn::Name("/group");
   profile.syncPrefix = ndn::Name("/ndnsf/spec185/t005/sync");
-  profile.userNode = ndn::Name("/ndnsf/spec185/t005/user");
-  profile.providerNode = ndn::Name("/ndnsf/spec185/t005/provider");
   profile.userIdentity = ndn::Name("/user");
   profile.providerIdentity = ndn::Name("/provider");
+  profile.userNode = ndn::Name(profile.userIdentity).append("user");
+  profile.providerNode = ndn::Name(profile.providerIdentity).append("provider");
   profile.attributeAuthority = ndn::Name("/aa");
   profile.serviceName = ndn::Name("/Inference");
   auto environment = std::make_shared<
@@ -3446,12 +3456,16 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
         std::istringstream input(assignmentText);
         const auto projection = [&] {
           const auto header = nativeParseJson(assignmentText);
-          if (header.value("schema", std::string{}) != "ndnsf-di-selection-invocation-v1")
+          const auto schema = header.value("schema", std::string{});
+          const auto version = schema == "ndnsf-di-selection-invocation-v1" ? 1 :
+            schema == "ndnsf-di-selection-invocation-v2" ? 2 :
+            schema == "ndnsf-di-selection-invocation-v3" ? 3 : 0;
+          if (version == 0)
             return nativeSelectionProjectionV3FromJson(input, context.role());
           validateNativeSelectionInvocationBindingShapeV1(header);
           const auto reference = header.at("fixed_role_ref").get<std::string>();
           if (!header.at("schema_version").is_number_integer() ||
-              header.at("schema_version") != NativeJson(1) ||
+              header.at("schema_version") != NativeJson(version) ||
               header.at("provider") != context.localProvider().toUri() ||
               header.at("request_id") != context.sessionId() ||
               header.at("execution_role") != NativeJson{{"role_id", context.role()}} ||
@@ -3574,14 +3588,17 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
         receipt.validate();
         const auto receiptJson = receipt.toJson();
         context.publish("ndnsf-di-conversation-state-v1",
-                        ndn::Name("/ndnsf-di/conversation/receipt").append(context.role()),
+                        ndn::Name("/ndnsf-di/conversation/receipt").append(ndn::Name(context.role())),
                         ndn::Buffer(receiptJson.begin(), receiptJson.end()));
         const auto controlTopic = ndn::Name("/ndnsf-di/conversation/control");
         const auto commitTopic = ndn::Name("/ndnsf-di/conversation/commit");
+        std::size_t controlsRead = 0;
+        bool committed = false;
         for (int rounds = 0; rounds < 30; ++rounds) {
           const auto controls = context.waitFor("ndnsf-di-conversation-state-v1",
-                                                controlTopic, 1, 1000);
-          for (const auto& controlData : controls) {
+                                                controlTopic, controlsRead + 1, 1000);
+          for (; controlsRead < controls.size(); ++controlsRead) {
+            const auto& controlData = controls[controlsRead];
             if (controlData.producer != context.requesterName() ||
                 controlData.producerRole != "user-control-v1") continue;
             const auto control = nativeParseJson(std::string(
@@ -3590,7 +3607,19 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
                 control.value("successorContextEpoch", std::uint64_t{0}) != binding.successorContextEpoch ||
                 control.value("roleName", std::string{}) != context.role()) continue;
             const auto action = control.value("action", std::string{});
-            if (action == "FINALIZE" || action == "ROLLBACK") return;
+            if (action == "ROLLBACK") return;
+            if (action == "FINALIZE" && committed) {
+              if (terminal) {
+                if (!context.finishStream(ndn::Buffer(finalPayload.begin(), finalPayload.end()),
+                    ndn_service_framework::StreamFinishReason::ApplicationComplete))
+                  throw std::runtime_error("Di T007 final publication failed");
+                completedTurns->fetch_add(1, std::memory_order_relaxed);
+              }
+              else if (!context.completeRole()) {
+                throw std::runtime_error("Di T007 non-terminal role completion failed");
+              }
+              return;
+            }
             if (action != "COMMIT") continue;
             const auto ack = nativeCanonicalJson(NativeJson{
               {"schema", "ndnsf-di-provider-conversation-commit-ack-v1"},
@@ -3607,16 +3636,7 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
               {"committed", true}});
             context.publish("ndnsf-di-conversation-state-v1", commitTopic,
                             ndn::Buffer(ack.begin(), ack.end()));
-            if (terminal) {
-              if (!context.finishStream(
-                    ndn::Buffer(finalPayload.begin(), finalPayload.end()),
-                    ndn_service_framework::StreamFinishReason::ApplicationComplete))
-                throw std::runtime_error("Di T007 final publication failed");
-              completedTurns->fetch_add(1, std::memory_order_relaxed);
-            }
-            else if (!context.completeRole())
-              throw std::runtime_error("Di T007 non-terminal role completion failed");
-            return;
+            committed = true;
           }
         }
         throw std::runtime_error("Di T007 conversation control timeout");
@@ -3806,8 +3826,13 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
   BOOST_CHECK(!thirdObservation->get().payload.empty());
   BOOST_CHECK_EQUAL(completedTurns->load(std::memory_order_relaxed), 3U);
   const auto thirdCheckpointBytes = restored.checkpoint().bytes();
-  BOOST_CHECK_EQUAL(nativeParseJson(std::string(thirdCheckpointBytes.begin(), thirdCheckpointBytes.end()))
-                      .at("expiresAtMs").get<std::uint64_t>(), firstExpiry);
+  const auto thirdCheckpoint = nativeParseJson(
+    std::string(thirdCheckpointBytes.begin(), thirdCheckpointBytes.end()));
+  BOOST_CHECK_EQUAL(thirdCheckpoint.at("expiresAtMs").get<std::uint64_t>(), firstExpiry);
+  BOOST_CHECK_EQUAL(thirdCheckpoint.at("parentContextEpoch").get<std::uint64_t>(), 2U);
+  BOOST_CHECK_EQUAL(thirdCheckpoint.at("contextEpoch").get<std::uint64_t>(), 3U);
+  BOOST_CHECK_EQUAL(thirdCheckpoint.at("logicalPrefixDigest").get<std::string>(),
+    nativeConversationPrefixDigest({1, 2, 3, 1, 2, 4, 5, 6, 3, 7, 8, 9, 4}));
   restored.close();
   conversation.close();
   runtime->close();
@@ -3821,9 +3846,11 @@ BOOST_AUTO_TEST_CASE(PreparedConversationCommitsTwoNativeTurns)
 BOOST_AUTO_TEST_CASE(PlacementHandlesAreRuntimeBound)
 {
   RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
   auto firstRuntime = Runtime::open(runtimeConfig(fixture));
   auto secondRuntime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = firstRuntime->user().prepare();
+  binding = bindInProcessRuntime(fixture, firstRuntime);
+  auto prepared = prepareWithInProcessPump(firstRuntime, *binding.environment);
   auto placement = secondRuntime->placementStrategy("native-pre-split-first");
   auto materializations = std::make_shared<std::atomic<unsigned>>(0);
   auto instrumented = ndnsf::di::DiPreparedModelTestAccess::bind(
@@ -3856,11 +3883,8 @@ BOOST_AUTO_TEST_CASE(PlacementHandlesAreRuntimeBound)
 
 BOOST_AUTO_TEST_CASE(PreparedRequestFactoryErrorsMapAtPublicBoundary)
 {
-  RuntimeFixture fixture;
-  auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
-  auto throwing = ndnsf::di::DiPreparedModelTestAccess::bind(
-    prepared, [] (const std::shared_ptr<const PreparedModelPackage>&) ->
+  auto throwing = ndnsf::di::DiPreparedModelTestAccess::requestBoundary(
+    [] (const std::shared_ptr<const PreparedModelPackage>&) ->
       std::shared_ptr<NativeInferenceClient> {
       throw std::runtime_error("injected client factory failure");
     });
@@ -3873,8 +3897,6 @@ BOOST_AUTO_TEST_CASE(PreparedRequestFactoryErrorsMapAtPublicBoundary)
                                  error.domain() == "runtime" &&
                                  error.boundary() == "request";
                         });
-  runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncIncludesNativeClientWork)
@@ -3903,7 +3925,7 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncIncludesNativeClientWork)
   BOOST_CHECK(drainWithInProcessPump(binding, runtime, drainTimeout));
 }
 
-BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedSourceAlive)
+BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedPackageAlive)
 {
   RuntimeFixture fixture;
   // Change only the frozen request budget so the second registration has a
@@ -3925,9 +3947,10 @@ BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedSourceAlive)
   binding = bindInProcessRuntime(fixture, runtime);
 
   std::optional<PreparedModel> first;
-  first.emplace(runtime->user().prepare("default"));
-  auto source = ndnsf::di::DiPreparedModelTestAccess::source(*first);
-  BOOST_REQUIRE(!source.expired());
+  first.emplace(prepareWithInProcessPump(runtime, *binding.environment));
+  BOOST_CHECK(ndnsf::di::DiPreparedModelTestAccess::source(*first).expired());
+  std::weak_ptr<const PreparedModelPackage> firstPackage =
+    ndnsf::di::DiPreparedModelTestAccess::package(*first);
   {
     RequestOptions options;
     options.timeout = std::chrono::milliseconds(500);
@@ -3936,13 +3959,11 @@ BOOST_AUTO_TEST_CASE(RuntimeClientDoesNotKeepEvictedSourceAlive)
     handle.cancel();
     binding.environment->pumpUntil([] { return false; });
   }
-  // The application still owns the prepared view, so the source remains live
-  // even if the Runtime cache later has to retire this package.
-  BOOST_REQUIRE(!source.expired());
+  BOOST_REQUIRE(!firstPackage.expired());
   first.reset(); // release the view and its lazily cached client
 
-  auto second = runtime->user().prepare("secondary");
-  BOOST_CHECK(source.expired());
+  auto second = prepareWithInProcessPump(runtime, *binding.environment, "secondary");
+  BOOST_CHECK(firstPackage.expired());
   runtime->close();
   BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
@@ -4029,23 +4050,25 @@ BOOST_AUTO_TEST_CASE(RuntimeDrainAsyncWakesAfterLastClientTimerRetires)
 
 BOOST_AUTO_TEST_CASE(PreparedRequestRejectsUnsupportedTextBeforeNativeSubmission)
 {
-  RuntimeFixture fixture;
-  auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
+  auto prepared = ndnsf::di::DiPreparedModelTestAccess::requestBoundary(
+    [] (const std::shared_ptr<const PreparedModelPackage>&) ->
+      std::shared_ptr<NativeInferenceClient> {
+      throw std::logic_error("unsupported text reached the native factory");
+    });
   BOOST_CHECK_EXCEPTION(prepared.request(Input::text("hello")), DiError,
                         [] (const DiError& error) {
                           return error.code() == "UNSUPPORTED_CAPABILITY" &&
                                  error.boundary() == "input";
                         });
-  runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(PreparedRequestRejectsUnsupportedGenerationContract)
 {
-  RuntimeFixture fixture;
-  auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
+  auto prepared = ndnsf::di::DiPreparedModelTestAccess::requestBoundary(
+    [] (const std::shared_ptr<const PreparedModelPackage>&) ->
+      std::shared_ptr<NativeInferenceClient> {
+      throw std::logic_error("unsupported generation reached the native factory");
+    });
   RequestOptions options;
   options.stream = StreamOptions{};
   options.generation = GenerationOptions{4};
@@ -4054,8 +4077,6 @@ BOOST_AUTO_TEST_CASE(PreparedRequestRejectsUnsupportedGenerationContract)
                           return error.code() == "UNSUPPORTED_CAPABILITY" &&
                                  error.boundary() == "request";
                         });
-  runtime->close();
-  BOOST_CHECK(runtime->drain(std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_CASE(PreparedRequestValidatesProtectedReferenceMetadata)
@@ -4076,8 +4097,10 @@ BOOST_AUTO_TEST_CASE(PreparedRequestValidatesProtectedReferenceMetadata)
                         });
 
   RuntimeFixture fixture;
+  InProcessRuntimeBinding binding;
   auto runtime = Runtime::open(runtimeConfig(fixture));
-  auto prepared = runtime->user().prepare();
+  binding = bindInProcessRuntime(fixture, runtime);
+  auto prepared = prepareWithInProcessPump(runtime, *binding.environment);
   auto oversized = reference;
   oversized["plaintextSize"] = 33; // fixture adapter max_payload_bytes is 32
   const auto oversizedRef = DataRef::fromPublishedMetadata(nativeCanonicalJson(oversized));

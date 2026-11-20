@@ -381,6 +381,15 @@
           }
         },
         {
+          "target": "di-prepared-request",
+          "requiresComponents": ["di"],
+          "selector": {
+            "include": ["DiPreparedRequest/PreparedRequestFactoryErrorsMapAtPublicBoundary",
+                        "DiPreparedRequest/PreparedRequestRejectsUnsupportedTextBeforeNativeSubmission",
+                        "DiPreparedRequest/PreparedRequestRejectsUnsupportedGenerationContract"]
+          }
+        },
+        {
           "target": "model-repository-no-repo",
           "requiresComponents": ["di"],
           "selector": {"include": ["ModelRepositoryWithoutRepo/*"]}
@@ -397,6 +406,7 @@
               "*"
             ],
             "excludeSuites": ["DiProcess",
+                              "Spec192LegacyRepoImportIntegration/productionCliMatchesNativeImportAndReplayWithoutSourceMutation",
                               "Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation",
                               "Spec181ExactTensorTransport/RepeatedExactPrefetchThreadAndCpuProbe",
                               "Spec181ExactTensorTransport/RepeatedPooledExactPrefetchThreadAndCpuProbe"]
@@ -412,7 +422,12 @@
         {
           "target": "di-prepared-request",
           "requiresComponents": ["di"],
-          "selector": {"include": ["*"]}
+          "selector": {
+            "include": ["*"],
+            "excludeSuites": ["DiPreparedRequest/PreparedRequestFactoryErrorsMapAtPublicBoundary",
+                              "DiPreparedRequest/PreparedRequestRejectsUnsupportedTextBeforeNativeSubmission",
+                              "DiPreparedRequest/PreparedRequestRejectsUnsupportedGenerationContract"]
+          }
         },
         {
           "target": "uav-tracking-main-drone-tests",
@@ -425,6 +440,17 @@
           "selector": {"include": ["*"]}
         }
       ]
+    },
+    "migration": {
+      "description": "Offline Repo migration CLI, replay, native parity and source immutability.",
+      "targets": [{
+        "target": "integration-tests",
+        "requiresComponents": ["repo"],
+        "facilities": ["repo-legacy-import"],
+        "selector": {
+          "include": ["Spec192LegacyRepoImportIntegration/productionCliMatchesNativeImportAndReplayWithoutSourceMutation"]
+        }
+      }]
     },
     "process": {
       "description": "Native cross-process oracles with owned NFD/PIB/TPM and host-only Python orchestration.",

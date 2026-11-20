@@ -44,7 +44,7 @@ checkReceiptLifecycle(const std::string& path, bool sqlite)
   const auto original = dataWire(name, 0x41);
   const auto replacement = dataWire(name, 0x42);
   const auto digest = sha256Hex(original);
-  const std::string legacyName = "/producer/legacy";
+  const auto legacyName = ndn::Name("/producer/legacy").toUri(ndn::name::UriFormat::CANONICAL);
   const auto legacyWire = dataWire(legacyName, 0x43);
   const auto legacyDigest = sha256Hex(legacyWire);
   std::string receiptId;

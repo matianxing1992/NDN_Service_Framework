@@ -288,7 +288,7 @@ public:
       }
       const auto found = available.find(itemKey);
       if (found != available.end()) {
-        promise->set_value(found->second);
+        promise->set_value(copyForReceive(found->second));
         return future;
       }
       waiters[itemKey].push_back(std::move(promise));
@@ -346,7 +346,7 @@ public:
         publishObserver(edge.plannedDataName);
       }
       const auto itemKey = key(sessionId, edge);
-      available[itemKey] = value;
+      available[itemKey] = copyForReceive(value);
       const auto found = waiters.find(itemKey);
       if (found != waiters.end()) {
         ready = std::move(found->second);
@@ -354,11 +354,22 @@ public:
       }
     }
     for (auto& promise : ready) {
-      promise->set_value(value);
+      promise->set_value(copyForReceive(value));
     }
   }
 
 private:
+  static TensorBundle
+  copyForReceive(TensorBundle bundle)
+  {
+    // The in-memory transport must mirror the wire's separate send and receive records.
+    if (bundle.transferObservation) {
+      bundle.transferObservation =
+        std::make_shared<StageTransferObservation>(*bundle.transferObservation);
+    }
+    return bundle;
+  }
+
   static std::string
   key(const std::string& sessionId, const DependencyEdge& edge)
   {
@@ -1210,6 +1221,19 @@ BOOST_AUTO_TEST_CASE(ProviderRoleWorkerStagesAllOutputsBeforePublishingAny)
       };
     });
   BOOST_CHECK_THROW(future.get(), std::logic_error);
+  role.outputs.back().plannedDataName = role.outputs.front().plannedDataName;
+  auto conflicting = worker.executeAsync(
+    "conflicting-output-stage", role, io,
+    [] (const RoleExecutionContext&) {
+      return std::map<std::string, TensorBundle>{
+        {"first", bundle("first", "first-payload")},
+        {"second", bundle("second", "second-payload")},
+      };
+    });
+  BOOST_CHECK_EXCEPTION(conflicting.get(), std::invalid_argument,
+    [] (const std::invalid_argument& error) {
+      return std::string_view(error.what()) == "conflicting legacy publication for one Data name";
+    });
   std::lock_guard<std::mutex> lock(io->mutex);
   BOOST_CHECK(io->publishedByScope.empty());
 }
@@ -6812,7 +6836,14 @@ BOOST_AUTO_TEST_CASE(NativeExecutionPlanGeneratedJsonDrivesProviderRoleWorkers)
 
   BOOST_REQUIRE(resultsByRole.count("/Merge") == 1);
   if (resultsByRole.count("/Backbone") == 1) {
-    BOOST_CHECK(resultsByRole.at("/Backbone").inputTimings.empty());
+    const auto& backbone = resultsByRole.at("/Backbone");
+    BOOST_CHECK(backbone.inputTimings.empty());
+    BOOST_REQUIRE_EQUAL(backbone.outputTimings.size(), 1U);
+    const auto& sharedName = backbone.outputTimings.front().plannedDataName;
+    BOOST_CHECK_EQUAL(std::count(io->publishedNames.begin(), io->publishedNames.end(),
+                                sharedName), 1);
+    BOOST_CHECK_EQUAL(std::count(io->prefetchedNames.begin(), io->prefetchedNames.end(),
+                                sharedName), 2);
   }
   BOOST_REQUIRE_GE(std::count_if(
                      resultsByRole.begin(),

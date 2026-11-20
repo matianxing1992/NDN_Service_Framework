@@ -345,14 +345,17 @@ def verify_install(args):
                if name not in ("LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONPATH", "PYTHONHOME",
                                "NDN_CLIENT_PIB", "NDN_CLIENT_TPM")}
         env.update(HOME=workspace, TMPDIR=workspace, PYTHONNOUSERSITE="1",
-                   PATH=f"{prefix}/bin:/usr/bin:/bin")
+                   PATH=f"{prefix}/bin:/usr/bin:/bin",
+                   LD_LIBRARY_PATH=str(prefix / "lib"))
         for program in programs:
             if program.name in ("DI_NativeRequester", "DI_NativeArtifactAuthority",
                                 "multiturn-oracle", "ndnsf-di", "ndnsf-checks"):
                 subprocess.run([str(program), "--help"], check=True, cwd=workspace,
                                env=env, timeout=30, stdout=subprocess.DEVNULL)
             elif program.name == "ndnsf-identity-check":
-                probe = subprocess.run([str(program), workspace], cwd=workspace, env=env,
+                identity_home = Path(workspace) / "empty-credentials"
+                identity_home.mkdir()
+                probe = subprocess.run([str(program), str(identity_home)], cwd=workspace, env=env,
                                        timeout=30, text=True, capture_output=True)
                 if probe.returncode != 1 or "existing credential PIB and TPM" not in probe.stderr:
                     raise ValueError(f"unexpected installed identity-check result: {probe.stderr}")

@@ -108,14 +108,17 @@ BOOST_AUTO_TEST_CASE(FileBackedSegmentsAreExactAndWindowed)
       const auto parsed = ndn_service_framework::parseProducerDataName(
         published.encryptedDataName, producer);
       BOOST_REQUIRE(parsed);
-      BOOST_CHECK_EQUAL(parsed->category, "BLOB");
-      BOOST_REQUIRE_EQUAL(parsed->suffix.size(), 4);
-      BOOST_CHECK(parsed->suffix[0] == ndn_service_framework::makeNamingDigestComponent(
+      BOOST_CHECK_EQUAL(parsed->category, "blob");
+      BOOST_REQUIRE_EQUAL(parsed->suffix.size(), 6);
+      BOOST_CHECK(parsed->suffix[0] == ndn::name::Component("name=bounded-file-object"));
+      BOOST_CHECK_EQUAL(parsed->suffix[1].type(), 8);
+      BOOST_CHECK_EQUAL(parsed->suffix[1].value_size(), 32);
+      BOOST_CHECK(parsed->suffix[2] == ndn_service_framework::makeNamingDigestComponent(
         published.contentDigest.substr(7)));
-      BOOST_CHECK(parsed->suffix[1] == ndn::name::Component("PROTECTED"));
-      BOOST_CHECK_EQUAL(parsed->suffix[2].type(), 8);
-      BOOST_CHECK_EQUAL(parsed->suffix[2].value_size(), 32);
-      BOOST_CHECK(parsed->suffix[3] == ndn::name::Component("DATA"));
+      BOOST_CHECK(parsed->suffix[3] == ndn::name::Component("PROTECTED"));
+      BOOST_CHECK_EQUAL(parsed->suffix[4].type(), 8);
+      BOOST_CHECK_EQUAL(parsed->suffix[4].value_size(), 32);
+      BOOST_CHECK(parsed->suffix[5] == ndn::name::Component("DATA"));
     }
 
     BOOST_REQUIRE_MESSAGE(published.success,

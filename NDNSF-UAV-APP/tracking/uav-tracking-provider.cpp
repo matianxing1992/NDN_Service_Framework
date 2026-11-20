@@ -2155,12 +2155,14 @@ installRuntimeHandlers(ProviderRuntime& runtime,
             : 8U * 1024U * 1024U;
           std::optional<ndn::Buffer> payload;
           for (int attempt = 0; attempt < 100 && !payload; ++attempt) {
+            if (shutdown->load() || !context.hasCurrentWorkAuthority()) break;
             payload = fetchAdmittedInput(
               dataName, producer, producerRole, uav::TRACKING_INPUT_KEY_SCOPE,
               personComputation ? nsf::InputObjectEncoding::ReusableCollaborationObject
                                 : nsf::InputObjectEncoding::CollaborationLarge,
               maxFrameBytes, 4096);
-            if (!payload) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (payload || shutdown->load() || !context.hasCurrentWorkAuthority()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
           }
           if (cancelTriggerThread.joinable()) cancelTriggerThread.join();
           if (!payload) {

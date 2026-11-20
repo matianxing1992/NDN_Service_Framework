@@ -68,6 +68,7 @@ class BuildComponentContractTest(unittest.TestCase):
                          ['unit-tests'])
         self.assertEqual([row['target'] for row in selected['profiles']['integration']['targets']],
                          ['integration-tests'])
+        self.assertEqual(selected['profiles']['migration']['targets'], [])
         self.assertEqual(selected['profiles']['model']['targets'], [])
         self.assertNotIn('configuredComponents', roster)
 
@@ -76,6 +77,10 @@ class BuildComponentContractTest(unittest.TestCase):
         selected = components.configured_roster(roster, ['core', 'repo', 'di'])
         self.assertIn('di-provider-assembly',
                       [row['target'] for row in selected['profiles']['integration']['targets']])
+        migration = selected['profiles']['migration']['targets'][0]
+        self.assertIn('repo-legacy-import', migration['facilities'])
+        self.assertIn(migration['selector']['include'][0],
+                      selected['profiles']['integration']['targets'][0]['selector']['excludeSuites'])
         self.assertEqual(len(selected['profiles']['model']['targets']), 1)
 
 

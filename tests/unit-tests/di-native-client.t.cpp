@@ -832,7 +832,7 @@ BOOST_AUTO_TEST_CASE(CancellationDuringAdapterEncodingDiscardsLatePreparation)
   adapter->onEncode = {};
 }
 
-BOOST_AUTO_TEST_CASE(SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientClose)
+BOOST_AUTO_TEST_CASE(SlowObserverDoesNotBlockCancelAndCloseRejectsLateRegistration)
 {
   auto client = NativeClientTestAccess::create(port(), user, adapters);
   auto handle = request(*client);
@@ -840,20 +840,33 @@ BOOST_AUTO_TEST_CASE(SlowObserverDoesNotBlockCancelAndLateReplaySurvivesClientCl
   auto enteredFuture = entered.get_future();
   auto gate = release.get_future().share();
   handle.observe([&](const NativeInferenceEvent&) { entered.set_value(); gate.wait(); });
-  auto cancelling = std::async(std::launch::async, [&] { handle.cancel(); });
-  auto enteredState = enteredFuture.wait_for(std::chrono::seconds(2));
-  auto cancelState = cancelling.wait_for(std::chrono::milliseconds(200));
-  release.set_value();
-  cancelling.get();
-  BOOST_CHECK(enteredState == std::future_status::ready);
-  BOOST_CHECK(cancelState == std::future_status::ready);
+  handle.cancel();
+  // The fixture queues observer delivery through the same submission hook as
+  // request dispatch. Keep dispatch parked while delivering the cancelled event.
+  BOOST_REQUIRE_GE(work.size(), 2U);
+  auto delivery = std::move(work[1]);
+  work.erase(work.begin() + 1);
+  auto observing = std::async(std::launch::async, std::move(delivery));
+  const auto enteredState = enteredFuture.wait_for(std::chrono::seconds(2));
   BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
-  client.reset();
+  release.set_value();
+  observing.get();
+  BOOST_CHECK(enteredState == std::future_status::ready);
   auto replay = std::make_shared<std::promise<std::string>>();
   auto replayed = replay->get_future();
   handle.observe([replay](const NativeInferenceEvent& e) { replay->set_value(e.requestId); });
+  while (work.size() > 1) {
+    auto callback = std::move(work[1]);
+    work.erase(work.begin() + 1);
+    callback();
+  }
   BOOST_REQUIRE(replayed.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
   BOOST_CHECK_EQUAL(replayed.get(), handle.requestId());
+  client.reset();
+  BOOST_CHECK_EXCEPTION(handle.observe([] (const NativeInferenceEvent&) {}),
+                        NativeDiError, [] (const NativeDiError& error) {
+                          return error.code() == "RUNTIME_CLOSED";
+                        });
   while (!work.empty()) { auto f = std::move(work.front()); work.pop_front(); f(); }
   BOOST_CHECK(handle.status() == NativeRequestStatus::Cancelled);
   BOOST_CHECK(!handle.conversationCheckpoint().has_value());
@@ -874,14 +887,30 @@ BOOST_AUTO_TEST_CASE(LocalWaitDoesNotTerminateRequestAndExpiredDispatchFails)
   BOOST_CHECK(handle.status() == NativeRequestStatus::Failed);
 }
 
-BOOST_AUTO_TEST_CASE(SubmissionFailureReturnsFailedHandle)
+BOOST_AUTO_TEST_CASE(SubmitHookFailureRecoversInlineAndPreservesPreparationFailure)
 {
+  now = std::chrono::steady_clock::now();
   auto throwingPort = port();
   throwingPort.submitHook = [](std::function<void()>) { throw std::runtime_error("queue unavailable"); };
-  auto client = NativeClientTestAccess::create(throwingPort, user, adapters);
-  auto handle = request(*client);
+  std::size_t encodeCalls = 0;
+  clientAdapter->onEncode = [&] (const auto&) {
+    ++encodeCalls;
+    throw std::runtime_error("invalid fixture encoding");
+  };
+  auto client = NativeClientTestAccess::create(
+    throwingPort, user, adapters, std::make_shared<NativeRequestPreparation>(adapters));
+  NativeApplicationInput input;
+  input.taskName = "inference";
+  input.inputSchemaDigest = nativePlanningDigest("input-schema");
+  input.optionsSchemaDigest = nativePlanningDigest("options-schema");
+  input.payload = {1};
+  auto handle = client->request(model, input, std::make_shared<ClientTestSplit>(),
+    std::make_shared<NativePreSplitFirstPlacement>(), {});
   BOOST_CHECK_EXCEPTION(handle.result(std::chrono::milliseconds(0)), NativeDiError,
-                        [](const NativeDiError& e) { return e.code() == "NATIVE_REQUEST_DISPATCH_FAILED"; });
+                        [] (const NativeDiError& e) {
+                          return e.code() == "NATIVE_INPUT_PREPARATION_FAILED";
+                        });
+  BOOST_CHECK_EQUAL(encodeCalls, 1U);
   BOOST_REQUIRE_EQUAL(timers.size(), 1U);
   BOOST_CHECK(timers.front()->cancelled);
 }
@@ -932,13 +961,28 @@ BOOST_AUTO_TEST_CASE(RealDeadlineDoesNotWaitForWorkOrSlowObserver)
   auto realPort = port();
   realPort.now = {};
   realPort.scheduleHook = {};
+  const auto testThread = std::this_thread::get_id();
+  bool parkTestThreadPosts = true;
+  realPort.submitHook = [&, testThread] (std::function<void()> task) {
+    if (std::this_thread::get_id() == testThread && parkTestThreadPosts)
+      work.push_back(std::move(task));
+    else
+      task();
+  };
   auto client = NativeClientTestAccess::create(realPort, user, adapters);
   auto first = request(*client);
+  BOOST_REQUIRE_EQUAL(work.size(), 1U);
+  auto firstDispatch = std::move(work.front());
+  work.pop_front();
   std::promise<void> entered, release;
   auto enteredFuture = entered.get_future();
   auto gate = release.get_future().share();
   first.observe([&](const NativeInferenceEvent&) { entered.set_value(); gate.wait(); });
   first.cancel();
+  BOOST_REQUIRE(!work.empty());
+  auto observerDelivery = std::move(work.front());
+  work.clear();
+  auto observing = std::async(std::launch::async, std::move(observerDelivery));
   const auto enteredState = enteredFuture.wait_for(std::chrono::seconds(2));
   NativeRequestOptions options;
   options.timeoutMs = 50;
@@ -949,10 +993,13 @@ BOOST_AUTO_TEST_CASE(RealDeadlineDoesNotWaitForWorkOrSlowObserver)
   catch (const NativeDiError& error) { errorCode = error.code(); }
   // Always release the worker before any fatal test assertion/unwinding.
   release.set_value();
+  observing.get();
   BOOST_CHECK(enteredState == std::future_status::ready);
   BOOST_CHECK_EQUAL(errorCode, "NATIVE_REQUEST_TIMEOUT");
   BOOST_CHECK(pending.status() == NativeRequestStatus::Failed);
-  BOOST_CHECK_EQUAL(work.size(), 2U); // No DI work was pumped to cause expiry.
+  BOOST_CHECK_EQUAL(work.size(), 1U); // Both DI dispatches stayed parked.
+  firstDispatch = {};
+  parkTestThreadPosts = false;
   // Queue a barrier to ensure the callback's referenced promises are no
   // longer used when the test returns.
   auto barrier = std::make_shared<std::promise<void>>();

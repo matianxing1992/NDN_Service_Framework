@@ -8,6 +8,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeFaultInjection.hpp"
 #endif
 
+#include <ndn-cxx/name.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -2133,11 +2135,37 @@ ProviderRoleWorker::runReadyRole(WorkItem& item)
   NativeWorkScope outputWork(item.role.workStatistics, "role-output-pack", NativeWorkKind::LOCAL);
   std::vector<std::pair<DependencyEdge, TensorBundle>> stagedOutputs;
   stagedOutputs.reserve(item.role.outputs.size());
+  std::map<ndn::Name, const DependencyEdge*> legacyPublications;
   for (const auto& edge : item.role.outputs) {
     // Already sent by the step that produced it. Skipping here is what keeps the
     // transport from receiving the same object twice, and it is also why the final
     // pass must not re-validate an edge whose bundle was already accepted.
     if (item.publishedScopes.count(edge.scope) != 0) continue;
+    // The unsealed plan expands one dependency into one edge per consumer.
+    // A legacy named publication under one collaboration scope is shared by
+    // those consumers. Sealed and generation-bound edges have their own
+    // recipient and lineage contracts.
+    if (!sealedTemplate && !item.role.streamingStateExecution &&
+        !item.role.generationLineage && !edge.declaredByV3 && !edge.useNdnsfDataV1 &&
+        edge.endpointDigest.empty() && edge.redistributions.empty() &&
+        !edge.plannedDataName.empty()) {
+      auto [entry, first] = legacyPublications.emplace(ndn::Name(edge.plannedDataName), &edge);
+      if (!first) {
+        const auto& previous = *entry->second;
+        if (edge.scope != previous.scope || edge.transportScope != previous.transportScope ||
+            edge.producerRole != previous.producerRole ||
+            edge.producerProvider != previous.producerProvider ||
+            edge.topicPrefix != previous.topicPrefix || edge.tensors != previous.tensors ||
+            edge.bundleTensorNames != previous.bundleTensorNames ||
+            edge.expectedSegments != previous.expectedSegments ||
+            edge.expectedBytes != previous.expectedBytes ||
+            edge.operationKind != previous.operationKind ||
+            edge.round != previous.round || edge.microbatch != previous.microbatch) {
+          throw std::invalid_argument("conflicting legacy publication for one Data name");
+        }
+        continue;
+      }
+    }
     for (const auto& tensor : edge.tensors) {
       if (std::find(item.role.stateOutputNames.begin(),
                     item.role.stateOutputNames.end(), tensor) !=

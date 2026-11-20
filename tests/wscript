@@ -259,6 +259,7 @@ def build(bld):
                 cxxflags=['-std=c++17', '-O0', '-g0'], install_path=None)
     if 'uav' in bld.env.NDNSF_COMPONENTS:
         tracking_rpath = [bld.bldnode.make_node('examples').abspath(), bld.bldnode.abspath()]
+        tracking_portable_rpath = ['$ORIGIN/examples', '$ORIGIN', '$ORIGIN/../../lib']
         bld.program(target='../uav-tracking-main-app-tests',
                     name='uav-tracking-main-app-tests',
                     lib=['pangoft2-1.0', 'fontconfig'],
@@ -272,7 +273,7 @@ def build(bld):
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
-                    rpath=tracking_rpath,
+                    rpath=tracking_portable_rpath,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../uav-tracking-main-drone-tests',
                     name='uav-tracking-main-drone-tests',
@@ -288,7 +289,7 @@ def build(bld):
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS', 'NDNSF_UAV_MAIN_APP_TEST_SEAM',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
-                    rpath=tracking_rpath,
+                    rpath=tracking_portable_rpath,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../uav-tracking-provider-tests',
                     name='uav-tracking-provider-tests',
@@ -314,7 +315,7 @@ def build(bld):
                     cxxflags=['-std=c++17', '-O0', '-g0'],
                     defines=['HAVE_TESTS',
                              'NDNSF_TEST_SOURCE_DIR="%s"' % bld.srcnode.abspath()],
-                    rpath=tracking_rpath,
+                    rpath=tracking_portable_rpath,
                     install_path='${PREFIX}/libexec/ndnsf-tests')
         bld.program(target='../uav-tracking-job-tests', name='uav-tracking-job-tests',
                     source=[bld.path.find_node('main.cpp'),

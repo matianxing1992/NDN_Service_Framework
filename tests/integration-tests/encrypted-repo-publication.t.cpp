@@ -74,9 +74,16 @@ struct SlowStore final : EncryptedLargeDataRangeStore
 {
   std::shared_ptr<RepoEncryptedLargeDataStore> delegate;
   std::atomic<bool> entered{false}, release{false};
-  explicit SlowStore(std::shared_ptr<RepoCore> repo)
-    : delegate(std::make_shared<RepoEncryptedLargeDataStore>(std::move(repo))) {}
+  explicit SlowStore(std::shared_ptr<RepoCore> repo, bool blockBeforeCommit = false)
+    : delegate(std::make_shared<RepoEncryptedLargeDataStore>(std::move(repo)))
+    , m_blockBeforeCommit(blockBeforeCommit)
+  {
+  }
   bool supportsDurableRetention() const noexcept override
+  {
+    return true;
+  }
+  bool supportsOriginalDataPackets() const noexcept override
   {
     return true;
   }
@@ -90,11 +97,7 @@ struct SlowStore final : EncryptedLargeDataRangeStore
     const std::string& name, const std::filesystem::path& path, std::uint64_t size,
     const std::function<void()>& active) override
   {
-    entered = true;
-    while (!release.load()) {
-      if (active) active();
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    waitForRelease(active);
     return delegate->commitFile(name, path, size, active);
   }
 
@@ -104,12 +107,33 @@ struct SlowStore final : EncryptedLargeDataRangeStore
     const std::function<void()>& active) override
   {
     auto source = delegate->commitFile(name, path, size, options, active);
+    waitForRelease(active);
+    return source;
+  }
+
+  std::shared_ptr<const EncryptedLargeDataRangeSource> commitOriginalDataPackets(
+    const ndn::Name& manifest, const EncryptedLargeDataCommitOptions& options,
+    const std::function<std::optional<std::pair<ndn::Name, std::vector<std::uint8_t>>>()>& next,
+    const std::function<void()>& active) override
+  {
+    if (m_blockBeforeCommit)
+      waitForRelease(active);
+    auto source = delegate->commitOriginalDataPackets(manifest, options, next, active);
+    if (!m_blockBeforeCommit)
+      waitForRelease(active);
+    return source;
+  }
+
+private:
+  bool m_blockBeforeCommit;
+
+  void waitForRelease(const std::function<void()>& active)
+  {
     entered = true;
     while (!release.load()) {
       if (active) active();
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return source;
   }
 };
 
@@ -223,9 +247,11 @@ BOOST_AUTO_TEST_CASE(ApprovedWorkHorizonIsIndependentOfSingleFetchBudget)
 BOOST_AUTO_TEST_CASE(WorkerCommitKeepsIoResponsiveAndCancellationDrains)
 {
   RepoFixture fixture;
-  auto store = std::make_shared<SlowStore>(fixture.repo);
+  auto store = std::make_shared<SlowStore>(fixture.repo, true);
   const auto spool = (fixture.root / "spool").string();
   ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  const auto keyReferences = (fixture.root / "key-references").string();
+  ScopedEnvironmentValue keyDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", keyReferences.c_str());
   ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
   ndn::DummyClientFace face(keys);
   const auto certificate = makeRsaIdentity(keys, ndn::Name("/spec189/worker-user"));
@@ -238,10 +264,13 @@ BOOST_AUTO_TEST_CASE(WorkerCommitKeepsIoResponsiveAndCancellationDrains)
   const auto key = user.prepareHybridSendKeyForTest(ndn::Name("/spec189/model"), "REQUEST-LARGE");
   const auto request = user.prepareServiceRequest("/spec189/model");
   const std::vector<std::uint8_t> bytes(40000, 9);
+  LargeDataPublishOptions options;
+  options.retention = EncryptedLargeDataRetention::Durable;
+  options.publicationIdentity = "sha256:" + std::string(64, 'f');
   std::atomic<bool> cancelled{false};
   auto result = std::async(std::launch::async, [&] {
     return user.publishEncryptedLargeDataFromWorker(request, bytes, "slow-store",
-      ndn::time::milliseconds(1), [&] {
+      ndn::time::milliseconds(1), options, [&] {
         if (cancelled.load()) throw std::runtime_error("fixture-cancelled");
       });
   });
@@ -295,15 +324,13 @@ BOOST_AUTO_TEST_CASE(ProtectedSegmentsSurviveTtlAndReleaseWithLease)
   BOOST_REQUIRE(publication.servingLease);
   user.releaseSeed(service, key.keyId);
   BOOST_REQUIRE(user.hasWrapped(key.keyId));
-  BOOST_REQUIRE(fixture.repo->has(publication.encryptedDataName.toUri()));
+  BOOST_CHECK(fixture.repo->list().empty());
   face.processEvents(ndn::time::milliseconds(30));
   BOOST_REQUIRE_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 1U);
   BOOST_CHECK_THROW(user.setEncryptedLargeDataRangeStore({}), std::logic_error);
 
   // Fetch every segment through the production Interest callback after TTL.
-  ndn::Interest discovery(publication.encryptedDataName);
-  discovery.setCanBePrefix(true);
-  face.receive(discovery);
+  face.receive(ndn::Interest(ndn::Name(publication.encryptedDataName).appendSegment(0)));
   face.processEvents(ndn::time::milliseconds(1));
   std::map<std::uint64_t, ndn::Buffer> segments;
   std::uint64_t last = 0;
@@ -338,11 +365,10 @@ BOOST_AUTO_TEST_CASE(ProtectedSegmentsSurviveTtlAndReleaseWithLease)
   BOOST_REQUIRE(hybridAesGcmDecrypt(key.key, envelope,
     ndn::Buffer(reinterpret_cast<const std::uint8_t*>(associated.data()), associated.size()), decoded));
   BOOST_CHECK_EQUAL_COLLECTIONS(decoded.begin(), decoded.end(), plaintext.begin(), plaintext.end());
-  const auto name = publication.encryptedDataName.toUri();
   publication.servingLease.reset();
   face.processEvents(ndn::time::milliseconds(1100));
   BOOST_CHECK_EQUAL(user.getLargeDataServingMetricsForTest().publicationCount, 0U);
-  BOOST_CHECK(!fixture.repo->has(name));
+  BOOST_CHECK(std::filesystem::is_empty(spool));
   BOOST_CHECK(!user.hasWrapped(key.keyId));
 }
 
@@ -623,9 +649,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
     // Exercise the production Core Interest callback after a real exec.  The
     // returned bytes must be the original immutable envelope, not a fresh
     // publication or a request-scoped copy.
-    ndn::Interest discovery(recovered.encryptedDataName);
-    discovery.setCanBePrefix(true);
-    face.receive(discovery);
+    face.receive(ndn::Interest(ndn::Name(recovered.encryptedDataName).appendSegment(0)));
     face.processEvents(ndn::time::milliseconds(1));
     std::uint64_t lastSegment = 0;
     for (const auto& data : face.sentData) {
@@ -699,7 +723,7 @@ BOOST_AUTO_TEST_CASE(DurablePublicationServesAfterExecRestart)
     BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
     BOOST_REQUIRE(first.fileBacked);
     BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
-    committedName = first.encryptedDataName.toUri();
+    committedName = first.manifestName.toUri(ndn::name::UriFormat::CANONICAL);
     committedManifest = fixture.repo->getManifest(committedName);
   }
   // The child must acquire the backend's authoritative owner after the
@@ -749,6 +773,7 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
                                       keyReferenceDir.c_str());
   ndn::security::KeyChain keys("pib-memory:", "tpm-memory:");
   ndn::DummyClientFace face(keys);
+  ndn::DummyClientFace providerFace(keys);
   const auto userCertificate = makeRsaIdentity(
     keys, ndn::Name("/spec189/provider-fetch-user"));
   const auto providerCertificate = makeRsaIdentity(
@@ -776,8 +801,13 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   BOOST_REQUIRE(publication.fileBacked);
   BOOST_REQUIRE_EQUAL(fixture.repo->list().size(), 1U);
 
-  LocalServiceProvider provider(face, ndn::Name("/spec189/provider-fetch"),
-                                providerCertificate, authority);
+  IsolatedTestTrust trust{userCertificate, providerCertificate, authority};
+  LocalServiceProvider provider(providerFace, ndn::Name("/spec189/provider-fetch"),
+                                providerCertificate, authority, trust.schemaPath());
+  ndn::signal::ScopedConnection toProducer = providerFace.onSendInterest.connect(
+    [&](const ndn::Interest& interest) { face.receive(interest); });
+  ndn::signal::ScopedConnection toProvider = face.onSendData.connect(
+    [&](const ndn::Data& data) { providerFace.receive(data); });
   provider.useSigningKeyChainForTest(keys);
   // This fixture intentionally supplies the current key because it does not
   // model Controller/AA DKEY bootstrap; the production fetch/decrypt path is
@@ -786,13 +816,15 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   BOOST_REQUIRE(!publication.manifestName.empty());
   face.receive(ndn::Interest(publication.manifestName));
   face.processEvents(ndn::time::milliseconds(1));
+  BOOST_REQUIRE(!face.sentData.empty());
   const auto rootPacket = face.sentData.back();
+  BOOST_REQUIRE(rootPacket.getName() == publication.manifestName);
   const auto& rootBytes = rootPacket.getContent();
   const auto rootDescriptor = ProtectedBlobManifest::decode(
     std::vector<std::uint8_t>(rootBytes.value(), rootBytes.value() + rootBytes.value_size()),
     userCertificate.getIdentity(), publication.manifestName);
   const auto referenceText = sendKey.keyId + "|" + sendKey.epochId + "|" +
-    service.toUri() + "|" + rootDescriptor.authorizationScope;
+    service.toUri(ndn::name::UriFormat::CANONICAL) + "|" + rootDescriptor.authorizationScope;
   ndn::util::Sha256 referenceHash;
   referenceHash.update(ndn::span<const std::uint8_t>(
     reinterpret_cast<const std::uint8_t*>(referenceText.data()), referenceText.size()));
@@ -800,14 +832,12 @@ BOOST_AUTO_TEST_CASE(ProviderDecryptsDurableEnvelopeThroughProductionFetch)
   std::transform(referenceHex.begin(), referenceHex.end(), referenceHex.begin(),
     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   BOOST_CHECK_EQUAL(rootDescriptor.keyReferenceId, "sha256:" + referenceHex);
-  BOOST_TEST_MESSAGE("ROOT_KEYREF_SCOPE " + rootDescriptor.authorizationScope +
-    " service=" + service.toUri() + " claimed=" + rootDescriptor.keyReferenceId +
-    " computed=sha256:" + referenceHex);
   auto pending = std::async(std::launch::async, [&] {
     return provider.fetchAndDecryptLargeData(publication.manifestName,
                                              service.toUri());
   });
   while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+    providerFace.processEvents(ndn::time::milliseconds(1));
     face.processEvents(ndn::time::milliseconds(1));
   }
   const auto fetched = pending.get();
@@ -851,15 +881,18 @@ BOOST_AUTO_TEST_CASE(ProviderRejectsAuthenticatedBlobWithFalsePlaintextIdentity)
   const auto producer = makeRsaIdentity(keys, ndn::Name("/spec201/NDNSF/BLOB/producer"));
   const auto receiver = makeRsaIdentity(keys, ndn::Name("/spec201/digest-receiver"));
   const auto authority = makeRsaIdentity(keys, ndn::Name("/spec201/digest-authority"));
-  LocalServiceProvider provider(face, ndn::Name("/spec201"), receiver, authority);
+  IsolatedTestTrust trust{producer, receiver, authority};
+  LocalServiceProvider provider(face, ndn::Name("/spec201"), receiver, authority,
+                                trust.schemaPath());
   provider.useSigningKeyChainForTest(keys);
   const ndn::Buffer key(32, 0x11);
   provider.cacheHybridReceiveKeyForTest("spec201-key", "1", key);
   const ndn::Name service("/spec201/digest-service");
-  const ndn::Buffer wrongDigest(32, 0);
-  const auto component = ndn::name::Component(ndn::span<const std::uint8_t>(wrongDigest.data(), wrongDigest.size()));
-  const auto prefix = ndn::Name(producer.getIdentity()).append("NDNSF").append("BLOB")
-    .append(component).append("PROTECTED").append(component).append("DATA");
+  const ndn::Buffer representationDigest(32, 0x42);
+  PublishedContentName content;
+  content.label = "digest-test";
+  auto prefix = content.contentPrefix(producer.getIdentity(), std::string(64, '0'));
+  prefix.append("PROTECTED").append(ndn::name::Component(representationDigest)).append("DATA");
   const auto aadText = prefix.toUri(ndn::name::UriFormat::CANONICAL) +
     "|REQUEST-LARGE|" + service.toUri(ndn::name::UriFormat::CANONICAL);
   const ndn::Buffer input{1, 2, 3};

@@ -92,17 +92,30 @@ class ConfiguredRosterContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory) / 'build'
             prefix = Path(directory) / 'installed'
-            binary = build / 'NDNSF-DistributedRepo/ndnsf-repo-owner-delete'
-            binary.parent.mkdir(parents=True)
-            binary.write_text('#!/bin/sh\nexit 0\n')
-            binary.chmod(0o755)
-            target = {'facilities': ['repo-owner-delete']}
-            original = {'NDNSF_REPO_OWNER_DELETE_BIN': '/unrelated/helper'}
-            selected = checks.target_environment(target, original, None, build)
-            self.assertEqual(selected['NDNSF_REPO_OWNER_DELETE_BIN'], str(binary))
-            self.assertEqual(original['NDNSF_REPO_OWNER_DELETE_BIN'], '/unrelated/helper')
-            with self.assertRaisesRegex(ValueError, 'REPO_OWNER_DELETE_TEST_INPUT_MISSING'):
-                checks.target_environment(target, original, prefix, build)
+            for facility, name, destination, variable, missing in (
+                ('repo-owner-delete', 'ndnsf-repo-owner-delete', 'bin',
+                 'NDNSF_REPO_OWNER_DELETE_BIN', 'REPO_OWNER_DELETE_TEST_INPUT_MISSING'),
+                ('repo-legacy-import', 'ndnsf-repo-import', 'libexec/ndnsf-tests',
+                 'NDNSF_REPO_IMPORT_BIN', 'REPO_LEGACY_IMPORT_TEST_INPUT_MISSING'),
+            ):
+                with self.subTest(facility=facility):
+                    binary = build / 'NDNSF-DistributedRepo' / name
+                    binary.parent.mkdir(parents=True, exist_ok=True)
+                    binary.write_text('#!/bin/sh\nexit 0\n')
+                    binary.chmod(0o755)
+                    target = {'facilities': [facility]}
+                    original = {variable: '/unrelated/helper'}
+                    selected = checks.target_environment(target, original, None, build)
+                    self.assertEqual(selected[variable], str(binary))
+                    self.assertEqual(original[variable], '/unrelated/helper')
+                    with self.assertRaisesRegex(ValueError, missing):
+                        checks.target_environment(target, original, prefix, build)
+                    installed = prefix / destination / name
+                    installed.parent.mkdir(parents=True)
+                    installed.write_bytes(binary.read_bytes())
+                    installed.chmod(0o755)
+                    selected = checks.target_environment(target, original, prefix, build)
+                    self.assertEqual(selected[variable], str(installed))
 
     def test_vendor_test_libraries_are_scoped_and_never_fall_back_to_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -357,6 +370,20 @@ class CheckRunner(unittest.TestCase):
         self.assertEqual(routine['KEPT'], 'yes')
         self.assertEqual(explicit['NDNSF_DI_TEST_ONNX_MODEL'], '/host/model.onnx')
         self.assertEqual(explicit['SPEC190_NATIVE_TURNS_CONFIG'], '/host/turns.json')
+
+    def test_routine_profile_uses_declared_worker_paths(self):
+        poisoned = {'NDNSF_DI_WORKER_BINARY': '/host/worker',
+                    'NDNSF_SPEC182_BIN_DIR': '/host/helpers'}
+        for prefix, workers, helpers in (
+                (None, '/test/build', '/test/build'),
+                (Path('/test/prefix'), '/test/prefix/libexec/ndnsf-di',
+                 '/test/prefix/libexec/ndnsf-tests')):
+            selected = checks.target_environment(
+                {'target': 'fixture'}, poisoned, prefix, Path('/test/build'),
+                routine=True, components=['core', 'di'])
+            self.assertEqual(selected['NDNSF_DI_WORKER_BINARY'],
+                             workers + '/DI_NativeOnnxAssemblyWorker')
+            self.assertEqual(selected['NDNSF_SPEC182_BIN_DIR'], helpers)
 
     def test_passed_case_with_no_assertions_is_not_a_pass(self):
         # Both the combined run and the single-case confirmation report zero assertions.

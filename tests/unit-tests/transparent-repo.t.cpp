@@ -1938,7 +1938,7 @@ BOOST_AUTO_TEST_CASE(AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart)
   if (child == 0) {
     ::setenv("NDNSF_SPEC201_PACKET_SET_REOPEN", (fixture.root / "set").c_str(), 1);
     ::execl("/proc/self/exe", "spec201-transparent-repo",
-      "--run_test=Spec201TransparentRepo/AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart",
+      "--run_test=NamingTransparentRepo/AtomicPacketSetBackendPreservesWireAcrossReuseAndRestart",
       static_cast<char*>(nullptr));
     ::_exit(127);
   }
