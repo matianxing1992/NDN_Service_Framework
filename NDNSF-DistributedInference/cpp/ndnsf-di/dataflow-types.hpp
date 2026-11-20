@@ -140,8 +140,8 @@ struct DependencyEdge
   std::string consumerStepId;
   std::string consumerSlotId;
   // N5 naming coordinates copied from the sealed endpoint. Empty means the endpoint was produced before the row
-  // existed and the edge keeps the legacy name schema.
-  std::string namingPhase;
+  // existed and the edge keeps the legacy name schema. The phase is not stored: it is derivable from the round and
+  // the operation stride, and deriving it keeps a cached projection identical to a fresh one.
   std::string namingStepId;
   std::uint64_t namingLayerBegin = 0;
   std::uint64_t namingLayerEnd = 0;

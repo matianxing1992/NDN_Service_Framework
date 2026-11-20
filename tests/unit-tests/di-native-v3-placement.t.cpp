@@ -3020,6 +3020,21 @@ BOOST_AUTO_TEST_CASE(SharedTpPlanningUsesSignedAckAndReopensFixedSelections)
       const auto b = roleSpecFromSelectionProjectionV3(decoded, decoded.provider, epoch);
       BOOST_CHECK(binding(a.inputs) == binding(b.inputs));
       BOOST_CHECK(binding(a.outputs) == binding(b.outputs));
+      // The phase follows the epoch that produced the object, and it is derived from the round and the stride so
+      // the fresh and the reopened projection agree.
+      const std::string expectedPhase = epoch == 0 ? "prefill" : "continuation";
+      std::size_t named = 0;
+      for (const auto& edge : a.outputs) {
+        if (edge.plannedDataName.empty()) continue;
+        const ndn::Name name(edge.plannedDataName);
+        for (std::size_t index = 0; index + 1 < name.size(); ++index) {
+          if (name[index] != ndn::name::Component("phase")) continue;
+          ++named;
+          BOOST_CHECK_EQUAL(name[index + 1].toUri(), expectedPhase);
+          break;
+        }
+      }
+      BOOST_CHECK_GT(named, 0U);
     }
   }
 
@@ -6199,7 +6214,6 @@ BOOST_AUTO_TEST_CASE(TensorObjectNameUsesTheN5SchemaWhenCoordinatesAreSet)
   const auto legacy = ndn::Name(tensorObjectNamePrefix(endpoint));
   BOOST_CHECK(legacy[-18] == ndn::name::Component("REQUEST"));
 
-  endpoint.namingPhase = "continuation";
   endpoint.namingStepId = "mlp-13";
   endpoint.namingLayerBegin = 14;
   endpoint.namingLayerEnd = 28;
@@ -6239,10 +6253,12 @@ BOOST_AUTO_TEST_CASE(TensorObjectNameUsesTheN5SchemaWhenCoordinatesAreSet)
   BOOST_REQUIRE_LT(layersAt + 2, noneName.size());
   BOOST_CHECK(noneName[layersAt + 1] == ndn::name::Component("none"));
   BOOST_CHECK(noneName[layersAt + 2] == ndn::name::Component("none"));
-  auto badPhase = endpoint;
-  badPhase.namingPhase = "decode";
-  sealEndpoint(badPhase);
-  BOOST_CHECK_THROW(tensorObjectNamePrefix(badPhase), std::invalid_argument);
+  // The phase is derived from the round and the stride, not stored: a later epoch names continuation.
+  auto laterEpoch = endpoint;
+  laterEpoch.round = 3 + endpoint.namingOperationStride * 2;
+  sealEndpoint(laterEpoch);
+  const auto laterName = tensorObjectNamePrefix(laterEpoch);
+  BOOST_CHECK(laterName.find("/8=phase/8=continuation/") != std::string::npos);
   auto badPort = endpoint;
   badPort.namingPortId = std::string("partial\x01");
   sealEndpoint(badPort);

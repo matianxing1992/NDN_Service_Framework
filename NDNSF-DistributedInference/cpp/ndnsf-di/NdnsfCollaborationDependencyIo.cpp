@@ -300,7 +300,8 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
     if (suffix.get(1) != ndn::name::Component(edge.requestId) ||
         suffix.get(3) != makeNamingDecimalComponent(edge.attemptEpoch) ||
         suffix.get(5) != makeNamingDecimalComponent(round) ||
-        suffix.get(7) != ndn::name::Component(edge.namingPhase) ||
+        suffix.get(7) != ndn::name::Component(edge.namingOperationStride == 0 ? "execute" :
+          (round == 0 ? "prefill" : "continuation")) ||
         suffix.get(9) != ndn::name::Component(edge.producerRole) ||
         suffix.get(11) != ndn::name::Component(edge.namingStepId) ||
         suffix.get(12) != ndn::name::Component("layers"))

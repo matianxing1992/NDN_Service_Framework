@@ -50,10 +50,10 @@ computeTensorExecutionObjectDigest(const NativeTensorEndpointV3& endpoint)
     stringField(3, 2, endpoint.targetLayoutDigest), stringField(4, 2, endpoint.manifestDigest),
     stringField(5, 2, endpoint.securityProfile),
     stringField(6, 5, nativeCanonicalJson(NativeJson(endpoint.bundleTensorNames)))};
-  if (!endpoint.namingPhase.empty()) {
-    // The N5 coordinates are source-side execution facts, so they belong to the object commitment.
-    fields.push_back(stringField(7, 2, endpoint.namingPhase));
-    fields.push_back(stringField(8, 2, endpoint.namingStepId));
+  if (!endpoint.namingStepId.empty()) {
+    // The N5 coordinates are source-side execution facts, so they belong to the object commitment. The phase is not
+    // among them: it is derived from the round and the stride when the name is built.
+    fields.push_back(stringField(7, 2, endpoint.namingStepId));
     fields.push_back(uint64Field(9, endpoint.namingLayerBegin));
     fields.push_back(uint64Field(10, endpoint.namingLayerEnd));
     fields.push_back(stringField(11, 2, endpoint.namingPortId));
@@ -73,16 +73,20 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
   const auto index = input ? 0 : stride == 0 ? endpoint.round : endpoint.round % stride;
   auto name = ndn_service_framework::makeProducerDataPrefix(
     ndn::Name(endpoint.producerNamespace), "NDNSF-DI", "tensor");
-  if (!endpoint.namingPhase.empty()) {
+  if (!endpoint.namingStepId.empty()) {
     // N5 fixed schema. The packed operation index remains bound in the step/metadata and in the object
-    // commitment above; it is not a separate name component.
+    // commitment above; it is not a separate name component. The phase names the epoch that produced the object:
+    // a generation plan's first epoch is prefill and every later one is continuation, a non-generation plan is
+    // execute. Deriving it here means no cached or rebound projection can disagree about it.
+    const auto phase = stride == 0 ? std::string("execute")
+      : (round == 0 ? std::string("prefill") : std::string("continuation"));
     const auto label = [](const std::string& value) {
       return ndn::name::Component(value);
     };
     name.append("request").append(label(endpoint.requestId));
     name.append("attempt").append(ndn_service_framework::makeNamingDecimalComponent(endpoint.attempt));
     name.append("round").append(ndn_service_framework::makeNamingDecimalComponent(round));
-    name.append("phase").append(endpoint.namingPhase);
+    name.append("phase").append(phase);
     name.append("role").append(label(endpoint.producerRole));
     name.append("step").append(label(endpoint.namingStepId));
     name.append("layers");

@@ -247,7 +247,6 @@ struct NativeTensorEndpointV3
   std::uint64_t namingOperationStride = 0;
   // N5 naming coordinates. Empty means the endpoint was produced before this row existed and keeps the legacy
   // name schema; a set phase requires the rest to be consistent and selects the fixed N5 schema.
-  std::string namingPhase;       // prefill | continuation | execute
   std::string namingStepId;      // verified step id, or role-execution for a non-step PP
   std::uint64_t namingLayerBegin = 0;
   std::uint64_t namingLayerEnd = 0;  // zero means the coordinates declare no layer interval

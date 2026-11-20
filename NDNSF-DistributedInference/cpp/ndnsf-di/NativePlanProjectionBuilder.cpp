@@ -211,7 +211,7 @@ NativeTensorEndpointV3 staticEndpoint(const NativeTensorEndpointV3& source)
   e.layoutDigest = source.layoutDigest; e.targetLayoutDigest = source.targetLayoutDigest;
   e.microbatch = source.microbatch;
   // The naming coordinates are part of the endpoint identity, so a cached layout must keep them.
-  e.namingPhase = source.namingPhase; e.namingStepId = source.namingStepId;
+  e.namingStepId = source.namingStepId;
   e.namingLayerBegin = source.namingLayerBegin; e.namingLayerEnd = source.namingLayerEnd;
   e.namingPortId = source.namingPortId;
   return e;
@@ -416,13 +416,6 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
   // degree. The phase is the object's production class, decided before any output exists.
   const auto applyNamingCoordinates = [&](NativeTensorEndpointV3& endpoint,
                                           const NativeDependencySpec& dependency) {
-    const bool generation = core.generationContract.enabled;
-    // `round` is the packed operation index; the epoch that produces this object is `round / stride`. Every
-    // output of the first epoch is prefill and later epochs are continuation. Settling it here — where the
-    // endpoint is built and before it is sealed — keeps a cached or rebound projection identical to a fresh one.
-    const auto stride = endpoint.namingOperationStride;
-    const auto epoch = stride == 0 ? 0 : endpoint.round / stride;
-    endpoint.namingPhase = !generation ? "execute" : (epoch == 0 ? "prefill" : "continuation");
     endpoint.namingStepId = dependency.producerStepId.empty() ? "role-execution"
       : dependency.producerStepId;
     endpoint.namingPortId = dependency.producerSlotId.empty() ? "role-execution"

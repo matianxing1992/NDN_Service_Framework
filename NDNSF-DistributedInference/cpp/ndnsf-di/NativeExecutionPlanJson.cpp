@@ -275,8 +275,7 @@ NativeJson jsonValue(const NativeTensorEndpointV3& value)
   result["hard_deadline_ms"] = value.hardDeadlineMs;
   // The N5 coordinates are appended only when set, so an endpoint produced before this row keeps the same
   // canonical JSON and therefore the same endpoint digest.
-  if (!value.namingPhase.empty()) {
-    result["naming_phase"] = value.namingPhase;
+  if (!value.namingStepId.empty()) {
     result["naming_step_id"] = value.namingStepId;
     result["naming_layer_begin"] = value.namingLayerBegin;
     result["naming_layer_end"] = value.namingLayerEnd;
@@ -889,7 +888,6 @@ tensorEndpointFromV3Json(const boost::property_tree::ptree& node)
   endpoint.round = node.get<std::uint64_t>("round", 0);
   endpoint.dependencyId = node.get<std::string>("dependency_id", "");
   endpoint.namingOperationStride = node.get<std::uint64_t>("naming_operation_stride");
-  endpoint.namingPhase = node.get<std::string>("naming_phase", "");
   endpoint.namingStepId = node.get<std::string>("naming_step_id", "");
   endpoint.namingLayerBegin = node.get<std::uint64_t>("naming_layer_begin", 0);
   endpoint.namingLayerEnd = node.get<std::uint64_t>("naming_layer_end", 0);
@@ -1379,12 +1377,10 @@ segmentNamingFromJson(const boost::property_tree::ptree& dependency,
 void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpoint)
 {
   validateNativeTensorEndpointV3(endpoint);
-  if (!endpoint.namingPhase.empty()) {
-    // N5 coordinates: a phase is one of the three pre-decidable values, a declared layer interval must be
-    // non-empty and half-open, and the step and port identifiers must be single bounded atoms.
-    if (endpoint.namingPhase != "prefill" && endpoint.namingPhase != "continuation" &&
-        endpoint.namingPhase != "execute")
-      throw std::invalid_argument("tensor naming phase is not one of the declared values");
+  if (!endpoint.namingStepId.empty()) {
+    // N5 coordinates: a declared layer interval must be non-empty and half-open, and the step and port
+    // identifiers must be single bounded atoms. The phase is derived from the round and stride, so it is not
+    // validated here.
     // A step or port identifier is one bounded public component. It is appended as a component, so a separator
     // inside it never expands the name; only control characters are refused.
     const auto atom = [](const std::string& value) {
@@ -4596,7 +4592,6 @@ roleSpecFromSelectionProjectionV3Impl(
     edge.operationKind = endpoint.operation;
     edge.round = endpoint.round;
     edge.namingOperationStride = endpoint.namingOperationStride;
-    edge.namingPhase = endpoint.namingPhase;
     edge.namingStepId = endpoint.namingStepId;
     edge.namingLayerBegin = endpoint.namingLayerBegin;
     edge.namingLayerEnd = endpoint.namingLayerEnd;
