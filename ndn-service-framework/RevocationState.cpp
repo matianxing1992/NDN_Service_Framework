@@ -48,6 +48,42 @@ hasCanonicalServiceAttribute(const ndn::Name& serviceName,
   return attribute == permission || attribute == service;
 }
 
+bool
+sameVersionGuards(const PolicyStatusData& candidate, const PolicyStatusData& current)
+{
+  return candidate.getServiceName() == current.getServiceName() &&
+         candidate.getControllerVersion() == current.getControllerVersion() &&
+         candidate.getAbePublicParametersName() == current.getAbePublicParametersName() &&
+         candidate.getAbePublicParametersDigest() == current.getAbePublicParametersDigest();
+}
+
+/** True when `current`'s revocations are all present in `candidate`, i.e. the candidate only adds withdrawals. */
+bool
+revocationsSuperset(const PolicyStatusData& candidate, const PolicyStatusData& current)
+{
+  std::set<std::string> have;
+  for (const auto& target : candidate.getRevocations()) {
+    try {
+      const auto wire = target.wireEncode();
+      have.insert(std::string(wire.begin(), wire.end()));
+    }
+    catch (const std::exception&) {
+      return false;
+    }
+  }
+  for (const auto& target : current.getRevocations()) {
+    try {
+      const auto wire = target.wireEncode();
+      if (have.count(std::string(wire.begin(), wire.end())) == 0)
+        return false;
+    }
+    catch (const std::exception&) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 RevocationState::RevocationState(ndn::Name serviceName)
