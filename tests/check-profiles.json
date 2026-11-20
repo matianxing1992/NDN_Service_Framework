@@ -459,7 +459,11 @@
           "target": "integration-tests",
           "requiresComponents": ["di"],
           "selector": {
-            "include": ["Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation"]
+            "include": ["Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation",
+                        "Spec170NdnsfDiCoreFlow/ProductionIngressRunsD2bSelectionIntoExactC04Data",
+                        "Spec170NdnsfDiCoreFlow/ProductionIngressRejectsTamperedD2bExactC04Data",
+                        "Spec170NdnsfDiCoreFlow/ProductionIngressBoundsDroppedD2bExactC04Data",
+                        "Spec170NdnsfDiCoreFlow/ProductionIngressDeduplicatesD2bExactC04Data"]
           }
         }
       ]

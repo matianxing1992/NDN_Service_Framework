@@ -1301,9 +1301,10 @@ BOOST_AUTO_TEST_CASE(PortableGraphProfileMatchesFrozenCudaRun)
 {
   const auto* modelPath = std::getenv("NDNSF_TEST_PORTABLE_ONNX_GRAPH");
   const auto* profilePath = std::getenv("NDNSF_TEST_PORTABLE_CUDA_PROFILE");
+  // Selected only by the explicit qualification profile: a missing graph/profile pair is a named failure.
   if (!modelPath || !profilePath) {
-    BOOST_TEST_MESSAGE("Frozen portable graph/profile check not requested");
-    return;
+    BOOST_FAIL("PORTABLE_GRAPH_INPUT_MISSING: set NDNSF_TEST_PORTABLE_ONNX_GRAPH and "
+               "NDNSF_TEST_PORTABLE_CUDA_PROFILE");
   }
   const auto inventory = detail::inspectOnnxRuntimeGraphMetadata(modelPath);
   BOOST_REQUIRE(!inventory.hostMetadataNodes.empty());

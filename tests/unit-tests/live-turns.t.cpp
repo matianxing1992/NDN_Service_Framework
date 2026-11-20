@@ -170,11 +170,11 @@ BOOST_AUTO_TEST_CASE(ParentPipeReadsLiveEventsBeforeTerminal)
 {
   const char* binary = std::getenv("SPEC190_NATIVE_REQUESTER_BINARY");
   const char* config = std::getenv("SPEC190_NATIVE_TURNS_CONFIG");
+  // Selected only by the explicit qualification profile: missing inputs are a named failure, not a silent
+  // "passed" case with no assertions.
   if (!binary || !config || *binary == '\0' || *config == '\0') {
-    BOOST_TEST_MESSAGE(
-      "SPEC190_NATIVE_REQUESTER_BINARY/SPEC190_NATIVE_TURNS_CONFIG absent; "
-      "real CLI live-turn qualification is unobserved");
-    return;
+    BOOST_FAIL("LIVE_TURN_INPUT_MISSING: set SPEC190_NATIVE_REQUESTER_BINARY and "
+               "SPEC190_NATIVE_TURNS_CONFIG");
   }
 
   struct Cleanup {

@@ -1721,9 +1721,10 @@ BOOST_AUTO_TEST_CASE(DirectInt8CandidateAssemblyRunsOrtAndContinuation)
 #else
   const char* runGate = std::getenv("NDNSF_SPEC190_RUN_INT8");
   const char* modelPath = std::getenv("NDNSF_SPEC190_INT8_ONNX");
+  // This case is only selected by the explicit qualification profile, so running it without its inputs is a
+  // configuration error and must fail by name instead of returning a "passed" case that asserted nothing.
   if (runGate == nullptr || std::string(runGate) != "1") {
-    BOOST_TEST_MESSAGE("Spec190 direct INT8 C++ gate skipped: set NDNSF_SPEC190_RUN_INT8=1");
-    return;
+    BOOST_FAIL("DIRECT_INT8_INPUT_MISSING: set NDNSF_SPEC190_RUN_INT8=1 and NDNSF_SPEC190_INT8_ONNX");
   }
   BOOST_REQUIRE(modelPath != nullptr && *modelPath != '\0');
   const auto candidate = std::filesystem::path(modelPath);
