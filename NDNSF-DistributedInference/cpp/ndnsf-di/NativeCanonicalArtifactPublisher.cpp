@@ -187,12 +187,31 @@ ndn_service_framework::PublishedContentName publicationContentName(
     value.quantization = facts.quantization;
     value.sourceRevisionLabel = facts.revisionLabel;
   };
+  // Every row below now carries N4 coordinates, so the model facts that bind the object identity are always set.
+  value.modelName = model.descriptor.modelName;
+  value.modelIdentity = model.descriptor.modelDigest().substr(7);
   if (label == "di-material-manifest" || label == "di-material-receipt" ||
       label.compare(0, 19, "di-material-bundle-") == 0) {
-    value.kind = ContentDataKind::Material;
-    const auto role = label == "di-material-manifest" ? "material-manifest-" :
-      label == "di-material-receipt" ? "assembly-receipt-" : "material-bundle-";
-    value.label = std::string(role) + model.descriptor.modelName;
+    // N4 material rows: the bundle number is the actual pack index this publication produced.
+    setFacts();
+    value.label = label;
+    if (label == "di-material-manifest") {
+      value.kind = ContentDataKind::Material;
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::MaterialManifest;
+    }
+    else if (label == "di-material-receipt") {
+      value.kind = ContentDataKind::ModelFile;
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::AssemblyReceipt;
+    }
+    else {
+      value.kind = ContentDataKind::Material;
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::MaterialBundle;
+      const auto suffix = label.substr(std::string("di-material-bundle-").size());
+      if (suffix.empty() || !std::all_of(suffix.begin(), suffix.end(),
+                                         [](char c) { return c >= '0' && c <= '9'; }))
+        throw std::invalid_argument("material bundle label lacks a pack number");
+      value.bundleIndex = std::strtoull(suffix.c_str(), nullptr, 10);
+    }
   }
   else {
     value.modelName = model.descriptor.modelName;

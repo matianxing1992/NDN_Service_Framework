@@ -210,6 +210,12 @@ IdentityParts parts(const PublishedContentName& value)
     if ((!coordinates && (!value.modelName.empty() || !value.modelIdentity.empty())) ||
         !value.artifactKind.empty() || !value.coordinate.empty() || !value.profileIdentity.empty())
       throw std::invalid_argument("unexpected model identity");
+    if (coordinates && !value.modelIdentity.empty()) {
+      // The model facts still bind the object identity even when the row name carries only coordinates.
+      makeNamingDigestComponent(value.modelIdentity);
+      result.parent = "{\"modelIdentity\":\"" + value.modelIdentity +
+        "\",\"modelName\":" + quotedLabel(value.modelName) + "}";
+    }
     if (value.kind == ContentDataKind::Input) {
       if (!atom(value.inputKind)) throw std::invalid_argument("invalid input kind");
       result.parent = "{\"kind\":\"" + value.inputKind + "\"}";

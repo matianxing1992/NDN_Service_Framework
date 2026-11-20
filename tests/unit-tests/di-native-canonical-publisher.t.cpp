@@ -3366,11 +3366,17 @@ BOOST_AUTO_TEST_CASE(UsesRealCoreIoAndEncryptedPublicationWithLocalMockKey)
   const auto materialReceipt = materialPending.get();
   BOOST_REQUIRE(!materialReceipt.materialReceiptDataName.empty());
   const ndn::Name receiptName(materialReceipt.materialReceiptDataName);
+  // N4 receipt row: <Producer>/NDNSF-DI/receipt/<ModelPath>/assembly/rep/<RepresentationId>/...
+  const auto fact = [](const std::string& value) { return value.empty() ? std::string("unspecified") : value; };
+  const auto& descriptor = materialInput.model.descriptor;
   const auto expectedReceipt = ndn::Name("/publisher-test/user").append("NDNSF-DI")
-    .append("receipt").append("assembly")
-    .append(ndn::name::Component("name=assembly-receipt-" + materialInput.model.descriptor.modelName));
-  BOOST_CHECK(receiptName.getPrefix(-1) == expectedReceipt);
-  BOOST_CHECK_EQUAL(receiptName.get(-1).type(), 8U);
-  BOOST_CHECK_EQUAL(receiptName.get(-1).value_size(), 32U);
+    .append("receipt").append("unspecified").append("unspecified")
+    .append(fact(descriptor.precision)).append("revision").append(fact(descriptor.sourceRevision))
+    .append("assembly");
+  BOOST_REQUIRE(expectedReceipt.isPrefixOf(receiptName));
+  BOOST_CHECK_EQUAL(receiptName.size(), expectedReceipt.size() + 3);
+  BOOST_CHECK(receiptName[expectedReceipt.size()] == ndn::name::Component("rep"));
+  BOOST_CHECK_EQUAL(receiptName[expectedReceipt.size() + 1].type(), 8U);
+  BOOST_CHECK_EQUAL(receiptName[expectedReceipt.size() + 1].value_size(), 32U);
 }
 BOOST_AUTO_TEST_SUITE_END()
