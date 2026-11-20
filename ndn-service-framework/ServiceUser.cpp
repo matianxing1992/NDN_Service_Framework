@@ -10240,6 +10240,7 @@ namespace ndn_service_framework
         m_streamEventKeysPending.emplace(requestId, eventKey);
         auto state = std::make_shared<StreamedInvocationSharedState>();
         state->requestId = requestId;
+        state->serviceName = serviceName;
         state->status = StreamedInvocationStatus::Requesting;
         state->onEvent = std::move(onEvent);
         state->onComplete = std::move(onComplete);
@@ -11925,6 +11926,9 @@ namespace ndn_service_framework
             (void) lifecycle;
             auto state = std::make_shared<StreamedInvocationSharedState>();
             state->requestId = requestId;
+            // The service name is what a Controller-change callback filters on; a stream created without it is
+            // skipped by that filter and never receives its terminal notification.
+            state->serviceName = service;
             state->status = StreamedInvocationStatus::Requesting;
             state->onEvent = std::move(onStreamEvent);
             state->onComplete = std::move(onStreamComplete);
