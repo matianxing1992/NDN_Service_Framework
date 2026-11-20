@@ -362,7 +362,11 @@
               "Spec217ProviderOfferGpu/OwnedCudaQueryReadsFreshValuesAndDrainsItsSession",
               "Spec217DeviceQuery",
               "Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal",
-              "DiOnnxRuntimeGpuEvidence/PortableGraphProfileMatchesFrozenCudaRun"
+              "DiOnnxRuntimeGpuEvidence/PortableGraphProfileMatchesFrozenCudaRun",
+              "Spec216WarmEvidence/LargeInventoryCopyProbe",
+              "Spec216WarmEvidence/MultiRoleAtomicInventoryCopyProbe",
+              "Spec216WarmEvidence/RunnerEvidenceSnapshotCopyProbe",
+              "Spec216WarmEvidence/SingleRoleAtomicInventoryCopyProbe"
             ],
             "note": "External-input TP cases belong to model. Fake-vendor query cases use a separate invocation with private test DSOs. All other synthetic tensor-parallel and provider-offer cases remain in this invocation."
           }
@@ -451,7 +455,11 @@
           "selector": {
             "include": [
               "Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal",
-              "DiOnnxRuntimeGpuEvidence/PortableGraphProfileMatchesFrozenCudaRun"
+              "DiOnnxRuntimeGpuEvidence/PortableGraphProfileMatchesFrozenCudaRun",
+              "Spec216WarmEvidence/LargeInventoryCopyProbe",
+              "Spec216WarmEvidence/MultiRoleAtomicInventoryCopyProbe",
+              "Spec216WarmEvidence/RunnerEvidenceSnapshotCopyProbe",
+              "Spec216WarmEvidence/SingleRoleAtomicInventoryCopyProbe"
             ]
           }
         },

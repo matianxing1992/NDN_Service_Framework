@@ -845,9 +845,10 @@ BOOST_AUTO_TEST_CASE(RepeatedObservationReconcilesIndependentLegacySetters)
 
 BOOST_AUTO_TEST_CASE(RunnerEvidenceSnapshotCopyProbe)
 {
+  // Selected only by the explicit qualification profile: a missing opt-in is a named failure, not a case
+  // that reports "passed" without checking anything.
   if (std::getenv("NDNSF_DI_EVIDENCE_COPY_PROBE") == nullptr) {
-    BOOST_TEST_MESSAGE("Opt-in runner evidence snapshot probe not requested");
-    return;
+    BOOST_FAIL("EVIDENCE_COPY_PROBE_INPUT_MISSING: set NDNSF_DI_EVIDENCE_COPY_PROBE");
   }
   constexpr std::size_t CYCLES = 129;
   const std::string requestId = "/request/snapshot-probe";
@@ -901,9 +902,9 @@ BOOST_AUTO_TEST_CASE(RunnerEvidenceSnapshotCopyProbe)
 
 BOOST_AUTO_TEST_CASE(SingleRoleAtomicInventoryCopyProbe)
 {
+  // Selected only by the explicit qualification profile: a missing opt-in is a named failure.
   if (std::getenv("NDNSF_DI_EVIDENCE_COPY_PROBE") == nullptr) {
-    BOOST_TEST_MESSAGE("Opt-in atomic inventory copy probe not requested");
-    return;
+    BOOST_FAIL("EVIDENCE_COPY_PROBE_INPUT_MISSING: set NDNSF_DI_EVIDENCE_COPY_PROBE");
   }
   for (const auto nodes : {5568, 5432}) {
     auto value = makeEvidence("/Stage/0", nodes);
@@ -937,9 +938,9 @@ BOOST_AUTO_TEST_CASE(SingleRoleAtomicInventoryCopyProbe)
 
 BOOST_AUTO_TEST_CASE(MultiRoleAtomicInventoryCopyProbe)
 {
+  // Selected only by the explicit qualification profile: a missing opt-in is a named failure.
   if (std::getenv("NDNSF_DI_EVIDENCE_COPY_PROBE") == nullptr) {
-    BOOST_TEST_MESSAGE("Opt-in multi-role inventory probe not requested");
-    return;
+    BOOST_FAIL("EVIDENCE_COPY_PROBE_INPUT_MISSING: set NDNSF_DI_EVIDENCE_COPY_PROBE");
   }
   constexpr std::size_t CYCLES = 129;
   EvidenceByRole items{{"/Stage/0", makeEvidence("/Stage/0", 5568)},
@@ -984,9 +985,9 @@ BOOST_AUTO_TEST_CASE(MultiRoleAtomicInventoryCopyProbe)
 
 BOOST_AUTO_TEST_CASE(LargeInventoryCopyProbe)
 {
+  // Selected only by the explicit qualification profile: a missing opt-in is a named failure.
   if (std::getenv("NDNSF_DI_EVIDENCE_COPY_PROBE") == nullptr) {
-    BOOST_TEST_MESSAGE("Opt-in copy-cost probe not requested");
-    return;
+    BOOST_FAIL("EVIDENCE_COPY_PROBE_INPUT_MISSING: set NDNSF_DI_EVIDENCE_COPY_PROBE");
   }
   for (const auto nodes : {5568, 5432}) {
     const EvidenceByRole items{{"/Stage/0", makeEvidence("/Stage/0", nodes)}};
