@@ -17,6 +17,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeAuthenticatedGrantClient.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 
 #include <boost/test/unit_test.hpp>
 #include <onnx/shape_inference/implementation.h>
@@ -2190,6 +2191,54 @@ BOOST_AUTO_TEST_CASE(AutomaticSeedSealsEveryRoleAndChangesOnlyCurrentCoreIdentit
     if (failure == 3) changed.automaticShapeSeed->maxNewTokens = 1;
     BOOST_CHECK_THROW(NativePlanSealer::sealCore(fixture.snapshot, proposal, changed), std::exception);
   }
+}
+
+BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsFullAndComponentPlans)
+{
+  const auto graphDigest = digest("generic-source-partition");
+  auto sourceGraph = graph(graphDigest, {"input", "layer-00", "layer-01", "head"});
+  auto sourceModel = model("onnx", "GenericSource", graphDigest);
+
+  NativeSourcePartitionStrategy full({NativeSourcePartitionMode::FULL, {}, {"FullModel"},
+                                      "FullModel", "FullModel", "{}"});
+  auto fullCandidates = full.enumerate(sourceModel, sourceGraph, {});
+  BOOST_REQUIRE_EQUAL(fullCandidates.size(), 1U);
+  BOOST_CHECK(fullCandidates.front().nodeRoles.size() == sourceGraph.nodes.size());
+  BOOST_CHECK_NO_THROW(fullCandidates.front().validate(sourceGraph));
+
+  NativeSourcePartitionStrategy component({NativeSourcePartitionMode::COMPONENT, "layer-01",
+                                           {"Prefix", "Suffix"}, "Prefix", "Suffix", "{}"});
+  auto componentCandidates = component.enumerate(sourceModel, sourceGraph, {});
+  BOOST_REQUIRE_EQUAL(componentCandidates.size(), 1U);
+  const auto& candidate = componentCandidates.front();
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("input"), "Prefix");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("layer-00"), "Prefix");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("layer-01"), "Suffix");
+  BOOST_CHECK_EQUAL(candidate.nodeRoles.at("head"), "Suffix");
+  BOOST_CHECK_EQUAL(candidate.crossPartitionTensors.size(), 1U);
+  BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
+
+  NativeSourcePartitionStrategy bad({NativeSourcePartitionMode::COMPONENT, "missing",
+                                     {"Prefix", "Suffix"}, "Prefix", "Suffix", "{}"});
+  BOOST_CHECK_THROW(bad.enumerate(sourceModel, sourceGraph, {}), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
+{
+  const auto graphDigest = digest("generic-source-hybrid");
+  auto sourceGraph = graph(graphDigest, {"input", "pre", "conv", "post", "head"});
+  auto sourceModel = model("onnx", "GenericHybrid", graphDigest);
+  NativeSourcePartitionStrategy hybrid({NativeSourcePartitionMode::HYBRID, "conv",
+    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel"});
+  auto candidates = hybrid.enumerate(sourceModel, sourceGraph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  const auto& candidate = candidates.front();
+  BOOST_REQUIRE_EQUAL(candidate.executionPlan.stageLayout.size(), 3U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.stageLayout[1].degree(), 2U);
+  BOOST_REQUIRE_EQUAL(candidate.tensorIdentityByRole.size(), 2U);
+  BOOST_CHECK_EQUAL(candidate.tensorIdentityByRole.at("Rank0").rank, 0U);
+  BOOST_CHECK_EQUAL(candidate.tensorIdentityByRole.at("Rank1").rank, 1U);
+  BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

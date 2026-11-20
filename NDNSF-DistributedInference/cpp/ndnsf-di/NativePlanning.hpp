@@ -495,6 +495,10 @@ private:
   bool m_frozen = false;
 };
 
+/** Compose ordered single-window stage plans into one verified V2 plan. */
+NativeExecutionPlan
+composeNativeStagePlans(const std::vector<NativeExecutionPlan>& stages);
+
 /** Capabilities a sealed plan requires from every unit that executes it.
  * A plan without steps requires none, so legacy pipeline Providers stay
  * admissible; a plan with steps requires the step-plan capability and, when it
