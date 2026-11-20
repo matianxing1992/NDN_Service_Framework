@@ -18,18 +18,46 @@ main(int argc, char** argv)
 {
   const bool catalogMode = argc == 4 && std::string(argv[1]) == "--catalog";
   const bool initializerMode = argc == 4 && std::string(argv[1]) == "--initializer";
-  if (argc != 2 && !catalogMode && !initializerMode) {
+  const bool planningMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--planning";
+  if (argc != 2 && !catalogMode && !initializerMode && !planningMode) {
     std::cerr << "usage: native-source-inspect model.onnx | "
                  "--catalog catalog.json model.onnx" << std::endl;
     return 2;
   }
   try {
-    const char* modelPath = (catalogMode || initializerMode) ? argv[3] : argv[1];
+    const char* modelPath = (catalogMode || initializerMode || planningMode) ? argv[3] : argv[1];
     std::ifstream input(modelPath, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open the model file");
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input), {}};
     ndnsf::di::NativeCanonicalSource source;
     source.modelBytes = bytes;
+    if (planningMode) {
+      if (argc == 5) {
+        std::ifstream weights(argv[4], std::ios::binary);
+        if (!weights) throw std::runtime_error("cannot open the initializer file");
+        source.initializerBytes = ndnsf::di::NativeCanonicalByteBuffer{
+          std::vector<std::uint8_t>{std::istreambuf_iterator<char>(weights), {}}};
+      }
+      std::ifstream descriptorStream(argv[2]);
+      if (!descriptorStream) throw std::runtime_error("cannot open the descriptor");
+      const auto descriptorJson = ndnsf::di::nativeParseJson(
+        std::string{std::istreambuf_iterator<char>(descriptorStream), {}});
+      const auto declared = ndnsf::di::NativeModelDescriptor::fromCanonicalJson(
+        ndnsf::di::nativeCanonicalJson(descriptorJson.at("model")));
+      const auto control = ndnsf::di::NativeAssemblyControl{
+        std::chrono::steady_clock::now() + std::chrono::seconds(60), [] {}, 1 << 28, 1 << 28};
+      const auto graph = ndnsf::di::inspectNativeOnnxSourceGraph(source, declared, control);
+      const auto identity = ndnsf::di::canonicalOnnxSourceIdentity(source, control);
+      std::cout << ndnsf::di::nativeCanonicalJson(ndnsf::di::NativeJson{
+        {"declared_graph_digest", declared.graphDigest},
+        {"planning_graph_digest", graph.graph.graphDigest},
+        {"canonical_graph_digest", identity.graphDigest},
+        {"initializer_digest", identity.initializerDigest},
+        {"initializer_object_digest",
+          source.initializerBytes ? ndnsf::di::nativeCanonicalInitializerDigest(source, control)
+                                  : std::string{}}}) << std::endl;
+      return 0;
+    }
     if (initializerMode) {
       std::ifstream weights(argv[2], std::ios::binary);
       if (!weights) throw std::runtime_error("cannot open the initializer file");
