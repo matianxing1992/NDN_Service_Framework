@@ -702,12 +702,25 @@ public:
       try {
         const std::string magic(MAGIC);
         const std::string sealedMagic(SEALED_MAGIC);
-        const bool sealed = bytes.size() > sealedMagic.size() + 103 &&
+        const std::string keyedMagic(SEALED_MAGIC_V3);
+        const bool keyed = bytes.size() > keyedMagic.size() + 103 &&
+          std::equal(keyedMagic.begin(), keyedMagic.end(), bytes.begin());
+        const bool sealed = !keyed && bytes.size() > sealedMagic.size() + 103 &&
           std::equal(sealedMagic.begin(), sealedMagic.end(), bytes.begin());
         require(bytes.size() > magic.size() + 103 &&
-          (sealed || std::equal(magic.begin(), magic.end(), bytes.begin())));
-        const auto magicSize = sealed ? sealedMagic.size() : magic.size();
-        const auto keyBytes = sealed ? SEALED_FIELD_BYTES : std::size_t{32};
+          (keyed || sealed || std::equal(magic.begin(), magic.end(), bytes.begin())));
+        std::size_t magicSize = keyed ? keyedMagic.size() : (sealed ? sealedMagic.size() : magic.size());
+        std::optional<JournalKey> storedKey;
+        if (keyed) {
+          const auto newline = std::find(bytes.begin() + static_cast<std::ptrdiff_t>(magicSize),
+                                         bytes.begin() + 256, '\n');
+          require(newline != bytes.begin() + 256);
+          storedKey = journalKeyById(std::string(bytes.begin() + static_cast<std::ptrdiff_t>(magicSize),
+                                                 newline));
+          require(storedKey.has_value());
+          magicSize = static_cast<std::size_t>(newline - bytes.begin()) + 1;
+        }
+        const auto keyBytes = (keyed || sealed) ? SEALED_FIELD_BYTES : std::size_t{32};
         // The trailing checksum is a `sha256:` digest, 71 characters, not the raw 32 bytes.
         const auto bodySize = bytes.size() - 71;
         require(digest(bytes.data(), bodySize) ==
@@ -741,11 +754,12 @@ public:
         require(nativeCanonicalJson(m_metadata) == text && m_metadata.is_object() &&
           m_metadata.size() == 7 && m_metadata.at("schema") == "ndnsf-di-model-preparation-v1" &&
           savedContext == context);
-        if (sealed) {
-          const auto& protection = journalProtectionKey();
-          require(!protection.empty() &&
+        if (keyed || sealed) {
+          const auto fallback = sealed ? journalWriteKey() : std::nullopt;
+          const auto protection = keyed ? storedKey : fallback;
+          require(protection.has_value() &&
             ndn_service_framework::openField(
-              protection,
+              protection->key,
               std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
               "ndnsf-di/model-preparation-journal", m_sealedKey));
           require(m_sealedKey.size() == 32);
@@ -986,25 +1000,25 @@ private:
   save()
   {
     m_io.requireCurrent();
-    const auto& protection = journalProtectionKey();
-    // A journal written with a key is sealed with it; without a key the older layout stands, which the
-    // reader still accepts. The magic names which layout this file uses.
+    const auto protection = journalWriteKey();
+    // A journal written with a key is sealed with the newest ring entry and records that entry's id, so a later
+    // rotation still opens it. Without a ring the older plain layout stands, which the reader still accepts.
     std::string keyField;
-    if (!protection.empty()) {
+    if (protection) {
       keyField = ndn_service_framework::sealField(
-        protection, std::string(m_handle.masterKey.begin(), m_handle.masterKey.end()),
+        protection->key, std::string(m_handle.masterKey.begin(), m_handle.masterKey.end()),
         "ndnsf-di/model-preparation-journal");
       require(keyField.size() == SEALED_FIELD_BYTES);
     }
-    const auto prefix = std::string(protection.empty() ? MAGIC : SEALED_MAGIC) +
+    const auto prefix = (protection ? std::string(SEALED_MAGIC_V3) + protection->id + "\n" : std::string(MAGIC)) +
       nativeCanonicalJson(m_metadata);
-    require(prefix.size() + (protection.empty() ? 103 : 103 - 32 + SEALED_FIELD_BYTES) <=
+    require(prefix.size() + (protection ? (103 - 32 + SEALED_FIELD_BYTES) : 103) <=
             MAX_JOURNAL_BYTES);
     // 103 = 32-byte secret + 71-character digest; the sealed layout replaces 32 with its field length.
     Bytes bytes(prefix.begin(), prefix.end());
     bytes.reserve(prefix.size() + 103);
     Cleanse guard{bytes};
-    if (protection.empty())
+    if (!protection)
       bytes.insert(bytes.end(), m_handle.masterKey.begin(), m_handle.masterKey.end());
     else
       bytes.insert(bytes.end(), keyField.begin(), keyField.end());
@@ -1032,25 +1046,46 @@ private:
     require(::unlink(m_stage.c_str()) == 0 && ::fsync(m_parent.value) == 0);
   }
 
-  /** The key that seals the journal, from the deployment ring; empty when there is none. */
-  static const std::vector<std::uint8_t>&
-  journalProtectionKey()
+  struct JournalKey
   {
-    static const std::vector<std::uint8_t> key = [] {
-      try {
-        const auto entries = ndn_service_framework::loadFileKeyRingEntries();
-        if (!entries.empty())
-          return entries.front().key;
-      }
-      catch (const std::exception&) {
-      }
-      return std::vector<std::uint8_t>{};
-    }();
-    return key;
+    std::string id;
+    std::vector<std::uint8_t> key;
+  };
+
+  /** The write key for new journal material: the newest ring entry. Re-read every call so a rotated ring is
+   *  picked up without restarting the process. */
+  static std::optional<JournalKey>
+  journalWriteKey()
+  {
+    try {
+      const auto entries = ndn_service_framework::loadFileKeyRingEntries();
+      if (!entries.empty())
+        return JournalKey{entries.front().keyId, entries.front().key};
+    }
+    catch (const std::exception&) {
+    }
+    return std::nullopt;
+  }
+
+  /** The key a journal was sealed with, resolved by the id stored beside it. */
+  static std::optional<JournalKey>
+  journalKeyById(const std::string& id)
+  {
+    try {
+      for (const auto& entry : ndn_service_framework::loadFileKeyRingEntries())
+        if (entry.keyId == id)
+          return JournalKey{entry.keyId, entry.key};
+    }
+    catch (const std::exception&) {
+    }
+    return std::nullopt;
   }
 
   static constexpr char MAGIC[] = "NDNSF-DI-MODEL-PREPARATION-v1\n";
   static constexpr char SEALED_MAGIC[] = "NDNSF-DI-MODEL-PREPARATION-v2\n";
+  // v3 carries the id of the ring entry that sealed it, so a rotated ring stays readable: a journal sealed with
+  // an older entry is opened with that entry, not with whichever key happens to be first today.
+  static constexpr char SEALED_MAGIC_V3[] = "NDNSF-DI-MODEL-PREPARATION-v3\n";
   // base64 of a 32-byte secret sealed with AES-256-GCM: 12-byte nonce, 32-byte ciphertext, 16-byte tag.
   static constexpr std::size_t SEALED_FIELD_BYTES = 95;
   static constexpr std::uint64_t MAX_JOURNAL_BYTES = 64U << 20;
