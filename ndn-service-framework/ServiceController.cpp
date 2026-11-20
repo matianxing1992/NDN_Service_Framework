@@ -2485,6 +2485,12 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
                                           record.size()));
       m_keyChain.sign(signedRecord, ndn::security::signingByCertificate(m_aaCert));
       const auto recordWire = signedRecord.wireEncode();
+      // The version the record is written under, next to the version the answer named: a reader that is told one
+      // version and finds a record under another cannot decide anything, and only these two numbers say why.
+      NDN_LOG_WARN("NDNSF_GRANT_RECORD identity="
+                   << targetIdentity.toUri(ndn::name::UriFormat::CANONICAL)
+                   << " generation=" << response.getControllerVersion().controllerGenerationTimestamp
+                   << " epoch=" << response.getControllerVersion().controllerEpoch);
       m_generationStore->recordGrant(
         targetIdentity.toUri(ndn::name::UriFormat::CANONICAL),
         response.getControllerVersion().controllerGenerationTimestamp,
