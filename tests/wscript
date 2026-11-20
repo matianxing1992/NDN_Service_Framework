@@ -2366,7 +2366,9 @@ def build(bld):
                      'run-spec261-source-component-process.py',
                      'run-spec261-source-hybrid-process.py',
                      'run-spec261-source-bypass-process.py',
-                     'run-spec261-yolo-full-process.py', 'di_native_fixture.py']
+                     'run-spec261-yolo-full-process.py',
+                     'run-spec261-yolo-component-process.py',
+                     'run-spec261-yolo-hybrid-process.py', 'di_native_fixture.py']
                     if 'di' in bld.env.NDNSF_COMPONENTS else [])
     bld.env.NDNSF_TEST_DRIVER_FILES = driver_names
     if driver_names:

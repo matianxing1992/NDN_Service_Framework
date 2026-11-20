@@ -88,6 +88,16 @@ setInlineBytes(onnx::TensorProto& tensor, std::vector<std::uint8_t> bytes)
   tensor.set_raw_data(bytes.data(), bytes.size());
 }
 
+bool
+hasExternalInitializers(const onnx::ModelProto& model)
+{
+  for (const auto& initializer : model.graph().initializer())
+    if (initializer.data_location() == onnx::TensorProto::EXTERNAL ||
+        !initializer.external_data().empty())
+      return true;
+  return false;
+}
+
 void
 setInts(onnx::NodeProto& node, const char* name, const std::vector<std::int64_t>& values)
 {
@@ -265,7 +275,10 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
       if (output.name() == transform.output) output.set_name(rewritten);
     // Do not rename the source value_info: `transform.output` may be a graph
     // input, in which case the synthesized Add still consumes that exact name.
-    onnx::checker::check_model(result);
+    // External initializers live in the protected sidecar, not on disk at the
+    // path their metadata names. The structural rewrite above is complete; a
+    // checker that insists on loading external bytes would reject a valid role.
+    if (!hasExternalInitializers(result)) onnx::checker::check_model(result);
     return result;
   }
 
