@@ -19,6 +19,11 @@
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
+#include <onnxruntime_cxx_api.h>
+#include <onnx/checker.h>
+#include <array>
+#include <map>
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <boost/test/unit_test.hpp>
@@ -2424,6 +2429,188 @@ BOOST_AUTO_TEST_CASE(NativeConvInputChannelRangesAreContiguous)
   BOOST_CHECK_THROW(nativeConvInputChannelRanges(1, 2), std::invalid_argument);
   BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 0), std::invalid_argument);
   BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 5), std::invalid_argument);
+}
+
+namespace {
+
+std::vector<float>
+readNpyFloats(const std::filesystem::path& path, std::vector<std::int64_t>* shape = nullptr)
+{
+  std::ifstream input(path, std::ios::binary);
+  if (!input) throw std::runtime_error("npy missing");
+  std::string raw((std::istreambuf_iterator<char>(input)), {});
+  if (raw.size() < 128 || raw.compare(0, 6, "\x93NUMPY") != 0)
+    throw std::runtime_error("npy signature");
+  const auto major = static_cast<unsigned char>(raw[6]);
+  std::size_t offset = 0, length = 0;
+  if (major == 1) {
+    std::uint16_t value = 0; std::memcpy(&value, raw.data() + 8, 2);
+    offset = 10; length = value;
+  } else {
+    std::uint32_t value = 0; std::memcpy(&value, raw.data() + 8, 4);
+    offset = 12; length = value;
+  }
+  const auto header = raw.substr(offset, length);
+  if (header.find("'<f4'") == std::string::npos) throw std::runtime_error("npy dtype");
+  std::vector<std::int64_t> dims;
+  const auto open = header.find('(');
+  const auto close = header.find(')', open);
+  std::size_t index = open + 1;
+  while (index < close) {
+    while (index < close && (header[index] == ' ' || header[index] == ',')) ++index;
+    std::size_t end = index;
+    while (end < close && header[end] >= '0' && header[end] <= '9') ++end;
+    if (end == index) break;
+    dims.push_back(std::stoll(header.substr(index, end - index)));
+    index = end;
+  }
+  std::size_t count = 1;
+  for (const auto dim : dims) count *= static_cast<std::size_t>(dim);
+  if (raw.size() != offset + length + count * 4) throw std::runtime_error("npy size");
+  std::vector<float> result(count);
+  std::memcpy(result.data(), raw.data() + offset + length, count * 4);
+  if (shape) *shape = dims;
+  return result;
+}
+
+onnx::ModelProto
+subgraph(const onnx::ModelProto& source, const std::vector<std::string>& nodeNames,
+         const std::vector<std::string>& inputs, const std::vector<std::string>& outputs,
+         const std::vector<std::string>& initializers)
+{
+  onnx::ModelProto result;
+  result.set_ir_version(source.ir_version());
+  for (const auto& opset : source.opset_import()) *result.add_opset_import() = opset;
+  result.mutable_graph()->set_name("spec261-transform");
+  for (const auto& node : source.graph().node())
+    if (std::find(nodeNames.begin(), nodeNames.end(), node.name()) != nodeNames.end())
+      *result.mutable_graph()->add_node() = node;
+  for (const auto& initializer : source.graph().initializer())
+    if (std::find(initializers.begin(), initializers.end(), initializer.name()) != initializers.end())
+      *result.mutable_graph()->add_initializer() = initializer;
+  // The reference graph declares only full-model I/O, so an internal handoff
+  // (for example the prefix output) has no ValueInfo in the source bytes. Give
+  // the role boundary the exact typed contract the caller provides.
+  const auto shapeOf = [&] (const std::string& name) -> std::optional<std::vector<std::int64_t>> {
+    if (name == "scaled") return std::vector<std::int64_t>{1, 16, 8, 8};
+    if (name == "conv_out") return std::vector<std::int64_t>{1, 32, 8, 8};
+    return std::nullopt;
+  };
+  const auto addValue = [&] (const std::string& name, bool input) {
+    const auto& values = input ? source.graph().input() : source.graph().output();
+    for (const auto& value : values)
+      if (value.name() == name) {
+        if (input) *result.mutable_graph()->add_input() = value;
+        else *result.mutable_graph()->add_output() = value;
+        return;
+      }
+    const auto shape = shapeOf(name);
+    if (!shape) throw std::runtime_error("subgraph value missing: " + name);
+    auto* value = input ? result.mutable_graph()->add_input()
+                         : result.mutable_graph()->add_output();
+    value->set_name(name);
+    auto* tensor = value->mutable_type()->mutable_tensor_type();
+    tensor->set_elem_type(onnx::TensorProto::FLOAT);
+    for (const auto dim : *shape) tensor->mutable_shape()->add_dim()->set_dim_value(dim);
+  };
+  for (const auto& name : inputs) addValue(name, true);
+  for (const auto& name : outputs) addValue(name, false);
+  onnx::checker::check_model(result);
+  return result;
+}
+
+std::vector<float>
+runOrt(const onnx::ModelProto& model, const std::map<std::string, std::vector<float>>& inputs,
+       const std::map<std::string, std::vector<std::int64_t>>& shapes,
+       const std::string& output)
+{
+  std::string bytes;
+  model.SerializeToString(&bytes);
+  Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "spec261-transform");
+  Ort::SessionOptions options;
+  options.SetIntraOpNumThreads(1);
+  Ort::Session session(env, bytes.data(), bytes.size(), options);
+  Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  std::vector<Ort::Value> values;
+  std::vector<const char*> names;
+  for (const auto& item : inputs) {
+    const auto shape = shapes.at(item.first);
+    if (shape.size() != 4) throw std::runtime_error("unexpected rank");
+    const std::array<std::int64_t, 4> fixed{shape[0], shape[1], shape[2], shape[3]};
+    values.push_back(Ort::Value::CreateTensor<float>(memory,
+      const_cast<float*>(item.second.data()), item.second.size(), fixed.data(), 4));
+    names.push_back(item.first.c_str());
+  }
+  const char* outputName = output.c_str();
+  auto result = session.Run(Ort::RunOptions{nullptr}, names.data(), values.data(), values.size(),
+                            &outputName, 1);
+  const auto count = result.front().GetTensorTypeAndShapeInfo().GetElementCount();
+  const auto* data = result.front().GetTensorData<float>();
+  return {data, data + count};
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-bypass.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  std::string modelBytes((std::istreambuf_iterator<char>(file)), {});
+  onnx::ModelProto source;
+  BOOST_REQUIRE(source.ParseFromArray(modelBytes.data(), static_cast<int>(modelBytes.size())));
+  std::vector<std::int64_t> inputShape;
+  const auto frozen = readNpyFloats(
+    ndnsf::test::testFixturePath("spec261/conv-input.npy"), &inputShape);
+  BOOST_REQUIRE_EQUAL(frozen.size(), 3072U);
+  std::vector<float> images(frozen.begin(), frozen.begin() + 1024);
+  std::vector<float> residual(frozen.begin() + 1024, frozen.end());
+  const auto expected = readNpyFloats(ndnsf::test::testFixturePath("spec261/conv-oracle.npy"));
+  BOOST_REQUIRE_EQUAL(expected.size(), 2048U);
+
+  // Independent full-graph reference through ONNX Runtime.
+  const auto full = runOrt(source, {{"images", images}, {"residual", residual}},
+    {{"images", {1, 16, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
+  double fullError = 0.0;
+  for (std::size_t i = 0; i < expected.size(); ++i)
+    fullError = std::max(fullError, std::abs(double(full[i]) - double(expected[i])));
+  BOOST_CHECK_SMALL(fullError, 1e-5);
+
+  // prefix: pre0
+  const auto prefix = subgraph(source, {"pre0"}, {"images"}, {"scaled"}, {"scale"});
+  const auto scaled = runOrt(prefix, {{"images", images}}, {{"images", {1, 16, 8, 8}}}, "scaled");
+  BOOST_REQUIRE_EQUAL(scaled.size(), 1024U);
+
+  const auto rankModel = subgraph(source, {"conv0"}, {"scaled"}, {"conv_out"}, {"w_conv"});
+  NativeOnnxSourceTransformV1 rank0;
+  rank0.kind = "conv-input-channel-partial";
+  rank0.node = "conv0"; rank0.axis = "input-channel";
+  rank0.input = "scaled"; rank0.weight = "w_conv"; rank0.output = "conv_out";
+  rank0.begin = 0; rank0.end = 8; rank0.extent = 16;
+  rank0.pads = {1, 1, 1, 1}; rank0.strides = {1, 1}; rank0.dilations = {1, 1};
+  NativeOnnxSourceTransformV1 rank1 = rank0;
+  rank1.begin = 8; rank1.end = 16;
+  const auto rank0Model = applyNativeOnnxSourceTransform(rankModel, rank0);
+  const auto rank1Model = applyNativeOnnxSourceTransform(rankModel, rank1);
+  const auto partial0 = runOrt(rank0Model, {{"scaled", scaled}},
+    {{"scaled", {1, 16, 8, 8}}}, "conv_out");
+  const auto partial1 = runOrt(rank1Model, {{"scaled", scaled}},
+    {{"scaled", {1, 16, 8, 8}}}, "conv_out");
+  std::vector<float> partial(partial0.size());
+  for (std::size_t i = 0; i < partial.size(); ++i) partial[i] = partial0[i] + partial1[i];
+
+  const auto suffixModel = subgraph(source, {"bias0", "relu0", "add0", "relu1", "head0"},
+    {"conv_out", "residual"}, {"predictions"}, {"b_conv"});
+  NativeOnnxSourceTransformV1 bias;
+  bias.kind = "add-conv-bias"; bias.node = "bias0";
+  bias.bias = "b_conv"; bias.output = "conv_out";
+  const auto derived = applyNativeOnnxSourceTransform(suffixModel, bias);
+  const auto hybrid = runOrt(derived, {{"conv_out", partial}, {"residual", residual}},
+    {{"conv_out", {1, 32, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
+  double hybridError = 0.0;
+  for (std::size_t i = 0; i < expected.size(); ++i)
+    hybridError = std::max(hybridError, std::abs(double(hybrid[i]) - double(expected[i])));
+  BOOST_CHECK_SMALL(hybridError, 1e-5);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
