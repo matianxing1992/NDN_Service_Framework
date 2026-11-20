@@ -2378,6 +2378,9 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
   BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank0").weightBytes, 9216U);
   BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank1").weightBytes, 9216U);
   BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Suffix").weightBytes, 128U);
+  const auto capabilities = nativePlanRequiredCapabilities(candidates.front());
+  BOOST_CHECK(std::find(capabilities.begin(), capabilities.end(),
+    NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1) != capabilities.end());
   BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
   NativeRequestControl requestControl{"/fixture/conv/request", 1,
     std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};

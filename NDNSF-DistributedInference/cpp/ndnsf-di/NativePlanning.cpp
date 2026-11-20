@@ -927,6 +927,8 @@ nativePlanRequiredCapabilities(const NativeSplitCandidate& candidate)
                   [] (const auto& item) { return !item.second.tensorShardV1.empty(); })) {
     required.emplace_back(NATIVE_TENSOR_SHARD_CAPABILITY_V1);
   }
+  if (!candidate.sourceTransformByRole.empty())
+    required.emplace_back(NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1);
   return required;
 }
 

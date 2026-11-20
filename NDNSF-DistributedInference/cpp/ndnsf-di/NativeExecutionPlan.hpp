@@ -132,6 +132,8 @@ inline constexpr const char* NATIVE_STEP_PLAN_CAPABILITY_V2 = "step-plan-v2";
 /** Capability value a Provider must advertise to perform a local SUM. */
 inline constexpr const char* NATIVE_SUM_CAPABILITY_V1 = "sum-v1";
 inline constexpr const char* NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1 = "tp-shared-partial-v1";
+/** Provider can materialize an ONNX Conv input-channel partial and suffix bias. */
+inline constexpr const char* NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1 = "onnx-source-transform-v1";
 inline constexpr const char* NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1 = "tp-receiving-stage-sum-v1";
 
 struct NativeDependencySpec
