@@ -2012,6 +2012,16 @@ def build(bld):
                 # build tree. No build-tree RPATH: the runner binds the prefix's library directory.
                 install_path='${PREFIX}/libexec/ndnsf-tests')
 
+    # Spec 261 independent detection oracle: a plain ONNX Runtime process that
+    # must reproduce the frozen prediction fixture without the DI split path.
+    bld.program(name='spec261-ort-detection-oracle',
+                target='spec261-ort-detection-oracle',
+                source=[bld.path.parent.find_node('tests/fixtures/spec261/ort-detection-oracle.cpp')],
+                includes=['..'],
+                use='ONNXRUNTIME BOOST',
+                linkflags=['-Wl,-rpath,$ORIGIN/..'],
+                install_path=None)
+
     # Keep the packet-level DummyClientFace/SVSPubSub flow runnable as a
     # separate integration target.  It intentionally reuses the existing
     # production-backed smoke fixture, but does not pull in the full unit-test
