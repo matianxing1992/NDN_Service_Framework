@@ -396,7 +396,14 @@ NativeProviderRunnerReuseCache::lookup(
     return std::make_shared<LeasedRunner>(std::move(runner), std::move(lease),
                                           projection.planDigest, modelDigest);
   }
-  return runner;
+  // Without a protected resident lease the cached runner is still a live
+  // object prepared for an earlier request, so it needs the same evidence
+  // rebinding before it can answer this one.
+  const auto& contract = projection.assemblyContract();
+  const auto modelDigest = contract.modelManifestDigest.empty()
+    ? projection.planDigest : contract.modelManifestDigest;
+  return std::make_shared<LeasedRunner>(std::move(runner), nullptr,
+                                        projection.planDigest, modelDigest);
 }
 
 void
