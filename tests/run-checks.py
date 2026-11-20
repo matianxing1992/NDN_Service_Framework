@@ -94,7 +94,7 @@ def verify_installed_files(prefix, roster, profiles):
                     if component in roster['configuredComponents'])
     if 'di' in roster['configuredComponents']:
         required.add(prefix / 'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker')
-        required.update(prefix / 'libexec/ndnsf-tests' / ('spec182-worker-tool-' + role)
+        required.update(prefix / 'libexec/ndnsf-tests' / ('worker-tool-' + role)
                         for role in ('block', 'sigkill', 'silent0', 'silent7', 'garbage'))
     if not roster.get('fixtureFiles'):
         raise ValueError('CONFIGURED_TEST_FIXTURES_MISSING')

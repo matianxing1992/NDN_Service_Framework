@@ -520,7 +520,7 @@ workerAcceptRow()
 // NDNSF_SPEC182_BIN_DIR override.  Returns "" when the binary is absent so
 // pure cases stay runnable without a build tree; subprocess cases fail loudly.
 std::string
-spec182BinaryPath(const std::string& basename)
+workerBinaryPath(const std::string& basename)
 {
   if (basename == "DI_NativeOnnxAssemblyWorker") {
     return ndnsf::test::testNativeWorkerLocation().path;
@@ -529,13 +529,13 @@ spec182BinaryPath(const std::string& basename)
 }
 
 std::string
-spec182RequireBinary(const std::string& basename)
+requireWorkerBinary(const std::string& basename)
 {
-  const std::string path = spec182BinaryPath(basename);
+  const std::string path = workerBinaryPath(basename);
   BOOST_REQUIRE_MESSAGE(!path.empty(),
-                        "spec182 worker binary not found: run the full waf "
+                        "worker binary not found: run the full waf "
                         "build (--targets=unit-tests,di-native-assembly-worker,"
-                        "spec182-worker-tool-*) first (" << basename << ")");
+                        "worker-tool-*) first (" << basename << ")");
   return path;
 }
 
@@ -693,7 +693,7 @@ activationOptions(const std::string& cacheDir,
 NativeOnnxWorkerLocation
 activationRealWorkerLocation()
 {
-  return {spec182RequireBinary("DI_NativeOnnxAssemblyWorker"), ""};
+  return {requireWorkerBinary("DI_NativeOnnxAssemblyWorker"), ""};
 }
 
 std::string
@@ -1402,7 +1402,7 @@ BOOST_AUTO_TEST_CASE(AutomaticRecipeMatchesIndependentGoldenAndRejectsDowngrade)
 
 BOOST_AUTO_TEST_CASE(AutomaticRecipeInstalledChildRetainsLegacyModelBytes)
 {
-  const auto worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const auto worker = requireWorkerBinary("DI_NativeOnnxAssemblyWorker");
   const auto row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   auto recipe = recipeFromVector(row);
@@ -1631,7 +1631,7 @@ openDescriptorCount()
 
 BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
 {
-  const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const std::string worker = requireWorkerBinary("DI_NativeOnnxAssemblyWorker");
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
@@ -1678,7 +1678,7 @@ BOOST_AUTO_TEST_CASE(SubprocessUnregisteredThenRegisteredMatchesInProcess)
 
 BOOST_AUTO_TEST_CASE(SubprocessFileBackedMaterializedRoleMatchesInProcess)
 {
-  const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const std::string worker = requireWorkerBinary("DI_NativeOnnxAssemblyWorker");
   const auto row = workerAcceptRow();
   const auto sourceBytes = fromHex(row.get<std::string>("modelHex"));
   const auto source = sourceFromRow(row);
@@ -1721,7 +1721,7 @@ BOOST_AUTO_TEST_CASE(SubprocessChainRejectionPropagatesItsOwnCode)
   // chain rejection (S1-S7 fail() sites) was mislabeled
   // DI_NATIVE_ONNX_WORKER_INTERNAL and the parent propagated the wrong
   // family.
-  const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const std::string worker = requireWorkerBinary("DI_NativeOnnxAssemblyWorker");
   registerNativeOnnxWorkerLocation({worker, ""});
   const auto root = loadExtractionVectors();
   const auto& row = caseRow(root.get_child("cases"), "pythonError",
@@ -1737,7 +1737,7 @@ BOOST_AUTO_TEST_CASE(SubprocessChainRejectionPropagatesItsOwnCode)
 BOOST_AUTO_TEST_CASE(SubprocessCrashBySignalReported)
 {
   const std::string tool =
-    spec182RequireBinary("spec182-worker-tool-sigkill");
+    requireWorkerBinary("worker-tool-sigkill");
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
@@ -1822,7 +1822,7 @@ BOOST_AUTO_TEST_CASE(SubprocessCancelBeforeStartAndActiveGate)
 BOOST_AUTO_TEST_CASE(SubprocessCancelDuringBlockingWorkerEscalatesKill)
 {
   const std::string tool =
-    spec182RequireBinary("spec182-worker-tool-block");
+    requireWorkerBinary("worker-tool-block");
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
@@ -1881,7 +1881,7 @@ BOOST_AUTO_TEST_CASE(SubprocessSilentExitsReported)
   const auto recipe = recipeFromVector(row);
   const auto homesBefore = privateWorkerHomes();
   const std::string silent0 =
-    spec182RequireBinary("spec182-worker-tool-silent0");
+    requireWorkerBinary("worker-tool-silent0");
   // Exit zero but no response frame: the stream ended before any result.
   BOOST_CHECK_EQUAL(
     expectWorkerThrow([&] {
@@ -1891,7 +1891,7 @@ BOOST_AUTO_TEST_CASE(SubprocessSilentExitsReported)
     "DI_NATIVE_ONNX_WORKER_INCOMPLETE");
 
   const std::string silent7 =
-    spec182RequireBinary("spec182-worker-tool-silent7");
+    requireWorkerBinary("worker-tool-silent7");
   // Nonzero exit without a frame and without a signal.
   BOOST_CHECK_EQUAL(
     expectWorkerThrow([&] {
@@ -1905,7 +1905,7 @@ BOOST_AUTO_TEST_CASE(SubprocessSilentExitsReported)
 BOOST_AUTO_TEST_CASE(SubprocessGarbageStdoutRejected)
 {
   const std::string tool =
-    spec182RequireBinary("spec182-worker-tool-garbage");
+    requireWorkerBinary("worker-tool-garbage");
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
@@ -1921,7 +1921,7 @@ BOOST_AUTO_TEST_CASE(SubprocessGarbageStdoutRejected)
 
 BOOST_AUTO_TEST_CASE(PreflightRejectsMissingAndRehashedLocations)
 {
-  const std::string worker = spec182RequireBinary("DI_NativeOnnxAssemblyWorker");
+  const std::string worker = requireWorkerBinary("DI_NativeOnnxAssemblyWorker");
   const auto& row = workerAcceptRow();
   const auto source = sourceFromRow(row);
   const auto recipe = recipeFromVector(row);
@@ -2262,7 +2262,7 @@ BOOST_AUTO_TEST_CASE(ActivationTimesOutBlockingWorkerAndNeverSigns)
   const auto source = sourceFromRow(row);
   const auto rootPayload = activationRootPayload(row, source.modelBytes);
   const auto projection = activationProjection(row, rootPayload);
-  const auto tool = spec182RequireBinary("spec182-worker-tool-block");
+  const auto tool = requireWorkerBinary("worker-tool-block");
   const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
                                            kActivationSourceName,
                                            source.modelBytes);
@@ -2316,7 +2316,7 @@ BOOST_AUTO_TEST_CASE(ActivationRejectsCrashBySignalBeforeAnySign)
   const auto source = sourceFromRow(row);
   const auto rootPayload = activationRootPayload(row, source.modelBytes);
   const auto projection = activationProjection(row, rootPayload);
-  const auto tool = spec182RequireBinary("spec182-worker-tool-sigkill");
+  const auto tool = requireWorkerBinary("worker-tool-sigkill");
   const auto fetchers = activationFetchers(kActivationRootName, rootPayload,
                                            kActivationSourceName,
                                            source.modelBytes);
