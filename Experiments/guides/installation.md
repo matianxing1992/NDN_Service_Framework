@@ -36,6 +36,50 @@ SIF与宿主是两套ABI边界：见[SIF构建](../TigerCluster/docs/sif-build.m
 
 ## 模型与新部署输入
 
+### 最小模型、准备命令与两种调用
+
+默认 `unit` 与 `integration` 档只读受版本控制的 fixture，不读外部模型。需要真实模型时，用仓库内
+唯一登记的配方 `Experiments/recipes/qwen3-0.6b-int4.json`（0.6B INT4，CPU 可跑）；更大的模型走
+既有显式部署/实验入口，不在本机准备。
+
+准备（两种来源，任选其一；`--asset-root` 的父目录须已存在）：
+
+~~~bash
+python3 -m venv /path/to/model-tools
+/path/to/model-tools/bin/python -m pip install --only-binary=:all: \
+  -r Experiments/recipes/model-tools-py38.txt
+
+# 显式下载（经授权）
+/path/to/model-tools/bin/python Experiments/prepare-model-assets.py \
+  --recipe qwen3-0.6b-int4 --asset-root /persistent/models/qwen3-0.6b-int4-v1 --allow-download
+
+# 本地源镜像（离线）
+/path/to/model-tools/bin/python Experiments/prepare-model-assets.py \
+  --recipe qwen3-0.6b-int4 --asset-root /persistent/models/qwen3-0.6b-int4-v1 \
+  --source-dir /persistent/models/qwen3-0.6b-int4-source --offline
+~~~
+
+依赖：Python 3.8 工具环境、配方锁定的上游 revision、至少 4 GiB 空闲；准备过程保留约 1.8 GiB
+不可变输入输出。`--offline --allow-download` 会被拒绝；缺文件、LFS 指针、错误 revision、
+权重变化、空间不足或转换失败都不会产出可准入的 SEALED 清单。
+
+准备成功后，清单路径是 `<asset-root>/asset-manifest.json`。两种调用都只把该清单交给 runner，
+由它按配方与逐文件承诺校验，再把精确的角色路径传给原生用例：
+
+~~~bash
+# 源码树
+python3 tests/run-checks.py --profile model \
+  --asset-manifest /persistent/models/qwen3-0.6b-int4-v1/asset-manifest.json
+
+# 已安装前缀（从源码树外）
+<prefix>/bin/ndnsf-checks --profile model \
+  --asset-manifest /persistent/models/qwen3-0.6b-int4-v1/asset-manifest.json
+~~~
+
+`--profile all` 会**主动包含** `model` 与 `qualification` 档，因此它要求这些档的输入都已准备；
+只跑默认检查时用 `--profile unit` 或 `--profile integration`。清单无效或缺失按前置失败处理，
+不计为通过；准备回执只证明文件与结构契约，不代表原生执行或数值资格。
+
 普通安装只安装软件，不隐式下载模型。先按[固定模型配方](../recipes/README.md)
 显式准备SEALED资产；随后在已经安装并具有完整receipt的prefix上单独运行：
 

@@ -137,6 +137,16 @@ Options:
   --prepare-experiment qwen06b-tp-cpu
                           Prepare inputs using an already installed prefix; no build or actor launch.
   --asset-manifest FILE   SEALED model manifest for --prepare-experiment.
+                          Prepare it first with Experiments/prepare-model-assets.py:
+                            --recipe qwen3-0.6b-int4 --asset-root DIR
+                            (--source-dir DIR --offline | --allow-download)
+                          Needs Python 3.8 model tools (Experiments/recipes/model-tools-py38.txt),
+                          the pinned upstream revision and >=4 GiB free. The receipt binds every
+                          file and the structural model contract; it is not inference evidence.
+                          Source-tree run:  python3 tests/run-checks.py --profile model \
+                                              --asset-manifest DIR/asset-manifest.json
+                          Installed run:    <prefix>/bin/ndnsf-checks --profile model \
+                                              --asset-manifest DIR/asset-manifest.json
   --work-root DIR         New private deployment directory for --prepare-experiment.
   --namespace NAME        New absolute NDN root for --prepare-experiment.
   --offline               Require local inputs during explicit experiment preparation.
