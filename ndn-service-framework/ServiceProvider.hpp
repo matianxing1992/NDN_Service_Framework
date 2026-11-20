@@ -1380,6 +1380,13 @@ namespace ndn_service_framework{
              * still performs its own permission check.
             */
             bool hasProviderPermissionForService(const ndn::Name& serviceName) const;
+
+            /** Invoked when a refreshed permission record no longer grants any service this Provider serves.
+             *  The host application decides what stopping means for it; the Provider only reports the fact. */
+            void setAuthorityWithdrawnHook(std::function<void()> hook)
+            {
+                m_authorityWithdrawnHook = std::move(hook);
+            }
             /** Return whether NAC-ABE public parameters and the Provider DKEY
              * are installed so protected incoming requests can be decrypted. */
             bool isRequestDecryptionReady();
@@ -3052,6 +3059,8 @@ namespace ndn_service_framework{
             ndn::Name m_controllerPrefix;
             std::map<std::string, std::shared_ptr<detail::PolicyStatusFetch>>
                 m_policyStatusFetchInFlight;
+            /** Reports that this Provider's authority was withdrawn; empty when the host ignores it. */
+            std::function<void()> m_authorityWithdrawnHook;
             uint64_t m_nextPolicyStatusFetchTicket = 0;
             std::map<std::string, ControllerVersion>
                 m_policyStatusRefreshScheduled;

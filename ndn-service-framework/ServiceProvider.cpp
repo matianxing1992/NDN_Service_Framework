@@ -21713,12 +21713,35 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 providerServiceName.toUri(), entry.getServiceName(),
                 tlv::ProviderPermission, response.getPolicyEpoch()});
         }
+        const auto previouslyServed = previouslyKnownServices;
         if (!m_authorizations.replacePermissions(tlv::ProviderPermission,
                                                  response.getPolicyEpoch(),
                                                  records)) {
             NDN_LOG_ERROR("Rejected invalid or stale provider PermissionResponse epoch="
                           << response.getPolicyEpoch());
             return;
+        }
+        if (!previouslyServed.empty()) {
+          // Losing every service this Provider serves is a stop condition: continuing to serve with
+          // withdrawn authority is exactly what a revocation is meant to end.
+          bool stillGranted = false;
+          for (const auto& record : records) {
+            if (stillGranted)
+              break;
+            const std::string name = record.serviceName;
+            for (const auto& served : previouslyServed) {
+              if (name == served) {
+                stillGranted = true;
+                break;
+              }
+            }
+          }
+          if (!stillGranted) {
+            NDN_LOG_WARN("NDNSF_PROVIDER_AUTHORITY_WITHDRAWN services=" << previouslyServed.size()
+                         << " epoch=" << response.getPolicyEpoch());
+            if (m_authorityWithdrawnHook)
+              m_authorityWithdrawnHook();
+          }
         }
         // Permission responses are scoped to this identity, but their
         // records are service-level.  Detect an actual table change before

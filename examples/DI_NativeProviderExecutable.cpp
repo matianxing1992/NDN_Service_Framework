@@ -2751,6 +2751,14 @@ main(int argc, char** argv)
         return hostDrained && sessionsDrained && residentsDrained;
       };
 
+      provider->setAuthorityWithdrawnHook([&] {
+        // Losing the service is fatal for this Provider: continuing would be serving with withdrawn authority.
+        std::ostringstream record;
+        record << "NDNSF_DI_NATIVE_PROVIDER_AUTHORITY_WITHDRAWN provider=" << options.providerName
+               << " service=" << options.serviceName;
+        logRuntimeEvidence(record.str());
+        provisionFailed->store(true, std::memory_order_release);
+      });
       provider->fetchPermissionsFromController(controllerIdentity);
       if (handoffWriter) {
         handoffWriter->fetchPermissionsFromController(controllerIdentity);
