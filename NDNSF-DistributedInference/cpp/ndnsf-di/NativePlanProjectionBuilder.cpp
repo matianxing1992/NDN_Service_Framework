@@ -307,6 +307,10 @@ NativePlanProjectionBuilder::deriveGenerationEndpoint(
   auto endpoint = base;
   if (endpoint.sourceKind == "ROLE") {
     endpoint.round += sequence * range.operationStride;
+    // The naming phase classifies this produced object, so it must follow the derived round: the first epoch of a
+    // generation is prefill and every later one is continuation.
+    if (!endpoint.namingPhase.empty())
+      endpoint.namingPhase = endpoint.round == 0 ? "prefill" : "continuation";
     if (sequence != 0) {
       endpoint.prefetchBundleBytes = 0;
       endpoint.prefetchSegmentBytes = 0;
