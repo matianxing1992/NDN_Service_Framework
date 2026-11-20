@@ -200,13 +200,19 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
       [current] { current(); return false; }};
     packetLimits.maxPackets = limits.maxPacketCount;
     packetLimits.maxPacketWireBytes = limits.maxPacketWireBytes;
+    // An N5 packet set has its prefix recomputed here from the recorded root, the signing certificate carried in
+    // the set and the authenticated receipt coordinates, so a renamed or substituted root cannot be restored.
+    const auto naming = nativeKvPacketNamingContext(restore.saved.receipt);
+    const bool semanticPackets = nativeKvPacketNamingContextComplete(naming) &&
+      ndn::Name(restore.saved.rootName).size() >= 2 &&
+      ndn::Name(restore.saved.rootName)[-2] == ndn::name::Component("rep");
     nativeMaterializeProtectedKvPackets(wires, restore.saved.protection, restore.saved.rootName,
       files.cipher, packetLimits,
       [writer = policy.storageWriter, current, deadline](const ndn::Buffer& wire,
                                                       const ndn::Name& producer) {
         current();
         return writer->validateProducerPacketWireUntil(wire, producer, deadline);
-      }, current);
+      }, current, {}, semanticPackets ? naming : NativeKvPacketNamingContext{});
     const NativeProtectedKvRecipientConsumerV1 consumer = [&context, deadline](const auto& capsule,
       const auto& certificate, const auto& keyDigest, const auto& aad, const auto& consume) {
       return context.consumeRecipientAssignmentCurrent(capsule, certificate, keyDigest, aad,
