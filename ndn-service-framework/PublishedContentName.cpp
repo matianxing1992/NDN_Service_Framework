@@ -51,11 +51,13 @@ bool roleAllowed(ContentDataKind kind, ContentSemanticRole role)
   switch (role) {
     case ContentSemanticRole::None: return true;
     case ContentSemanticRole::SourceGraph:
-    case ContentSemanticRole::Initializers:
     case ContentSemanticRole::PreparedMetadata:
     case ContentSemanticRole::ModelManifest:
     case ContentSemanticRole::AssemblyReceipt:
       return kind == ContentDataKind::ModelFile;
+    case ContentSemanticRole::Initializers:
+      // The initializer aggregate has its own wire family and also appears as a model file row.
+      return kind == ContentDataKind::ModelFile || kind == ContentDataKind::Initializer;
     case ContentSemanticRole::WeightsObject: return kind == ContentDataKind::Weights;
     case ContentSemanticRole::TokenizerObject: return kind == ContentDataKind::Tokenizer;
     case ContentSemanticRole::MaterialBundle:
