@@ -53,10 +53,10 @@ class ConfiguredRosterContractTest(unittest.TestCase):
                     'NDN_CLIENT_TPM': 'private-tpm',
                     'NDNSF_CONTROLLER_CERT_FILE': '/private/controller.cert'}
         observed = []
-        def discover(argv, **kwargs):
-            env = kwargs['env']
+        def discover(argv, environ, timeout=None, *, cwd=None):
+            env = environ
             observed.append(env.copy())
-            self.assertEqual(Path(kwargs['cwd']).parent, Path(env['HOME']).parent)
+            self.assertEqual(Path(cwd).parent, Path(env['HOME']).parent)
             self.assertTrue(Path(env['HOME']).is_dir())
             self.assertTrue(Path(env['NDNSF_REQUEST_LARGE_DATA_DIR']).is_dir())
             self.assertTrue(Path(env['TMPDIR']).is_dir())
@@ -65,8 +65,8 @@ class ConfiguredRosterContractTest(unittest.TestCase):
             self.assertNotIn('NDN_CLIENT_PIB', env)
             self.assertNotIn('NDN_CLIENT_TPM', env)
             self.assertNotIn('NDNSF_CONTROLLER_CERT_FILE', env)
-            return Namespace(returncode=0, stdout='', stderr='Unit*\n    Case*\n')
-        with patch.object(checks.subprocess, 'run', side_effect=discover):
+            return Namespace(returncode=0, stdout='', stderr='Unit*\n    Case*\n', boundary=None)
+        with patch.object(checks, 'native_process', side_effect=discover):
             self.assertEqual(checks.enumerate_cases('/fixture', original)[1], ['Unit/Case'])
         self.assertFalse(Path(observed[0]['HOME']).exists())
         self.assertFalse(Path(observed[0]['TMPDIR']).exists())
@@ -130,7 +130,8 @@ class ConfiguredRosterContractTest(unittest.TestCase):
     def test_installed_receipt_rejects_missing_and_changed_delivery_inputs(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)
-            roster = {'configuredComponents': ['core'], 'fixtureFiles': ['sample.txt'],
+            roster = {'schema': 'ndnsf-check-profiles-v1',
+                      'configuredComponents': ['core'], 'fixtureFiles': ['sample.txt'],
                       'profiles': {'unit': {'targets': [{'target': 'unit-tests'}]}}}
             names = ['bin/ndnsf-checks', 'share/ndnsf/tests/run-checks.py',
                      'share/ndnsf/tests/check-profiles.json', 'libexec/ndnsf-tests/unit-tests',
@@ -159,6 +160,68 @@ class ConfiguredRosterContractTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 checks.verify_installed_files(prefix, roster, ['unit'])
 
+    def test_installed_mode_refuses_fixture_root_outside_the_verified_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            roster = {'schema': 'ndnsf-check-profiles-v1',
+                      'configuredComponents': ['core'], 'fixtureFiles': ['sample.txt'],
+                      'profiles': {'unit': {'targets': [{'target': 'unit-tests'}]}}}
+            names = ['bin/ndnsf-checks', 'share/ndnsf/tests/run-checks.py',
+                     'share/ndnsf/tests/check-profiles.json', 'libexec/ndnsf-tests/unit-tests',
+                     'share/ndnsf/tests/fixtures/sample.txt', 'lib/libndn-service-framework.so']
+            records = {}
+            for name in names:
+                path = prefix / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'original fixture bytes')
+                path.chmod(0o644)
+                records[str(path)] = {'owners': ['ndnsf-native'], 'installed': {
+                    'kind': 'file', 'mode': 0o644,
+                    'sha256': hashlib.sha256(b'original fixture bytes').hexdigest()}}
+            (prefix / 'share/ndnsf/stack-install-manifest.json').write_text(
+                json.dumps({'schema': 1, 'files': records}))
+            roster_path = prefix / 'share/ndnsf/tests/check-profiles.json'
+            roster_path.write_text(json.dumps(roster))
+            output = io.StringIO()
+            outside = Path(directory).parent / 'outside-fixtures'
+            with patch.object(checks, 'installed_prefix', return_value=prefix), \
+                    contextlib.redirect_stderr(output):
+                result = checks.main(['--profile', 'unit', '--fixture-root', str(outside)])
+            # The receipt verifies the prefix's own root, so a different one is refused before any
+            # binary is enumerated or started.
+            self.assertEqual(result, checks.EXIT_ROSTER)
+            self.assertIn('FIXTURE_ROOT_OUTSIDE_VERIFIED_PREFIX', output.getvalue())
+
+    def test_stale_worker_tool_alias_does_not_satisfy_the_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            roster = {'schema': 'ndnsf-check-profiles-v1',
+                      'configuredComponents': ['di'], 'fixtureFiles': ['sample.txt'],
+                      'driverFiles': ['run-driver.py'],
+                      'profiles': {'unit': {'targets': [{'target': 'unit-tests'}]}}}
+            names = ['bin/ndnsf-checks', 'share/ndnsf/tests/run-checks.py',
+                     'share/ndnsf/tests/check-profiles.json', 'libexec/ndnsf-tests/unit-tests',
+                     'share/ndnsf/tests/fixtures/sample.txt',
+                     'lib/libndn-service-framework.so', 'lib/libndnsf-distributed-inference.so',
+                     'libexec/ndnsf-di/DI_NativeOnnxAssemblyWorker',
+                     'share/ndnsf/tests/standalone/run-driver.py']
+            # Only the retired alias is present: the manifest must still reject the prefix.
+            names += ['libexec/ndnsf-tests/spec182-worker-tool-' + role
+                      for role in ('block', 'sigkill', 'silent0', 'silent7', 'garbage')]
+            records = {}
+            for name in names:
+                path = prefix / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'worker')
+                path.chmod(0o755)
+                records[str(path)] = {'owners': ['ndnsf-native'], 'installed': {
+                    'kind': 'file', 'mode': 0o755,
+                    'sha256': hashlib.sha256(b'worker').hexdigest()}}
+            (prefix / 'share/ndnsf/stack-install-manifest.json').write_text(
+                json.dumps({'schema': 1, 'files': records}))
+            with self.assertRaisesRegex(ValueError, 'INSTALL_MANIFEST_ENTRY_MISSING|worker-tool-'):
+                checks.verify_installed_files(prefix, roster, ['unit'])
+
     def test_missing_build_roster_never_falls_back_to_checkout_binary(self):
         with tempfile.TemporaryDirectory() as directory:
             output = io.StringIO()
@@ -185,8 +248,8 @@ class ConfiguredRosterContractTest(unittest.TestCase):
 class CheckRunner(unittest.TestCase):
     def test_listing_keeps_nested_identity_and_disabled_cases(self):
         listing = 'A*\n    Nested*\n        Same*\nB*\n    Same*\n    Optional \n'
-        with patch.object(checks.subprocess, 'run', return_value=Namespace(
-                returncode=0, stdout='', stderr=listing)):
+        with patch.object(checks, 'native_process', return_value=Namespace(
+                returncode=0, stdout='', stderr=listing, boundary=None)):
             suites, cases, disabled = checks.enumerate_cases('/fixture', {})
         self.assertEqual(suites, ['A', 'A/Nested', 'B'])
         self.assertEqual(cases, ['A/Nested/Same', 'B/Same', 'B/Optional'])

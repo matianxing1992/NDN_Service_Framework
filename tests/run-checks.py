@@ -366,11 +366,14 @@ def enumerate_cases(binary, environ):
     reports a binary with thousands of cases as having none.
     """
     with isolated_native_environment(environ) as (result_root, native_env):
-        completed = subprocess.run([str(binary), '--list_content'], capture_output=True, text=True,
-                                   env=native_env, cwd=result_root / 'scratch', timeout=300)
+        # Enumeration runs through the same bounded session as execution: a listing that times out or
+        # leaves descendants behind must fail the run here, because a partial listing would start the
+        # selected cases on incomplete knowledge of what the binary contains.
+        completed = native_process([str(binary), '--list_content'], native_env, 300,
+                                   cwd=result_root / 'scratch')
     if completed.returncode != 0:
-        raise ValueError('CASE_ENUMERATION_FAILED: %s\n%s'
-                         % (binary, completed.stderr[-2000:]))
+        boundary = getattr(completed, 'boundary', None) or 'CASE_ENUMERATION_FAILED'
+        raise ValueError('%s: %s\n%s' % (boundary, binary, completed.stderr[-2000:]))
     nodes = []
     for line in (completed.stdout + completed.stderr).splitlines():
         stripped = line.strip()
@@ -620,8 +623,18 @@ def main(argv=None):
             sys.stderr.write('BUILD_ROOT_REFUSED_IN_INSTALLED_MODE: %s\n' % arguments.build_root)
             return EXIT_ROSTER
         search = [str(prefix / 'libexec' / 'ndnsf-tests'), str(prefix / 'bin')]
+        # The receipt verifies the prefix's own fixture root, so an explicit root may only name that same
+        # directory. Accepting another one would check the receipt against one tree and then read test data
+        # from another, which is how a same-named host fixture changes the verdict.
+        verified_fixture_root = (prefix / 'share' / 'ndnsf' / 'tests' / 'fixtures').resolve()
         if arguments.fixture_root is None:
-            arguments.fixture_root = str(prefix / 'share' / 'ndnsf' / 'tests' / 'fixtures')
+            arguments.fixture_root = str(verified_fixture_root)
+        else:
+            requested_root = Path(arguments.fixture_root).resolve()
+            if requested_root != verified_fixture_root:
+                sys.stderr.write('FIXTURE_ROOT_OUTSIDE_VERIFIED_PREFIX: %s (verified: %s)\n'
+                                 % (requested_root, verified_fixture_root))
+                return EXIT_ROSTER
         try:
             verified_files = verify_installed_files(prefix, roster, selected)
         except (OSError, ValueError, KeyError) as error:
