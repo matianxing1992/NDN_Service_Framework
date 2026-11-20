@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalOnnxAssembler.hpp"
+#include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-whole-region-entry.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
@@ -3484,6 +3485,40 @@ prepareNativeCanonicalOnnxRole(
           writeMaterial(initializerFd, bytes.data(), bytes.size());
         });
       canonicalSource.modelBytes = std::move(materializedFiles.modelBytes);
+      // A transformed role executes a derived graph, not the plain selected
+      // region. Apply its admitted transform before the derived identity and
+      // the role file are finalized; the original selection stays the
+      // authenticated provenance.
+      if (!projection.assemblyContract().sourceTransformV1.empty()) {
+        const auto transform = NativeOnnxSourceTransformV1::parse(
+          projection.assemblyContract().sourceTransformV1);
+        onnx::ModelProto sourceModel;
+        if (!sourceModel.ParseFromArray(canonicalSource.modelBytes.data(),
+                                        static_cast<int>(canonicalSource.modelBytes.size())))
+          throw std::runtime_error("DI_CANONICAL_SOURCE_PARSE_FAILED");
+        onnx::ModelProto derived;
+        std::map<std::string, std::vector<std::uint8_t>> externalCache;
+        derived = applyNativeOnnxSourceTransform(sourceModel, transform,
+          [&] (const std::string& location, std::uint64_t offset, std::uint64_t length) {
+            const auto found = externalCache.find(location);
+            if (found != externalCache.end()) {
+              if (offset + length > found->second.size())
+                throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_RANGE");
+              return std::vector<std::uint8_t>(found->second.begin() + offset,
+                                               found->second.begin() + offset + length);
+            }
+            if (!canonicalSource.initializerRangeSource)
+              throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_MISSING");
+            const auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
+            return bytes;
+          });
+        std::string derivedBytes;
+        if (!derived.SerializeToString(&derivedBytes) ||
+            derivedBytes.size() > assemblyControl.maxAssembledBytes)
+          throw std::runtime_error("DI_CANONICAL_TRANSFORM_OUTPUT_INVALID");
+        canonicalSource.modelBytes.assign(derivedBytes.begin(), derivedBytes.end());
+        reportProgress("MODEL_TRANSFORMED", 0.8);
+      }
       if (initializerFd >= 0) {
         const auto closeStatus = ::close(initializerFd);
         initializerFd = -1;
