@@ -14279,6 +14279,46 @@ namespace ndn_service_framework
             return false;
         }
 
+        // ACK-loss recovery: a single lost Request/ACK must not drop a fixed
+        // Provider from the round. While the invocation deadline is open,
+        // re-publish the same Request and reopen the ACK window for the
+        // Providers that have not replied, then evaluate again.
+        if (!pendingCall->second.ackWindowExpired &&
+            !pendingCall->second.providers.empty() &&
+            pendingCall->second.requestDeadlineUs != 0 &&
+            nowUs < pendingCall->second.requestDeadlineUs &&
+            pendingCall->second.ackCollectionRetries < 8) {
+            std::set<ndn::Name> admitted;
+            if (const auto ackIt = m_AckInfoMap.find(requestId);
+                ackIt != m_AckInfoMap.end()) {
+                for (const auto& ack : ackIt->second) admitted.insert(ack.providerName);
+            }
+            bool missing = false;
+            for (const auto& provider : pendingCall->second.providers) {
+                if (!admitted.count(provider)) { missing = true; break; }
+            }
+            if (missing) {
+                ++pendingCall->second.ackCollectionRetries;
+                const auto delayMs = std::min<std::uint64_t>(
+                    2000, std::uint64_t{250} << std::min<unsigned>(
+                        3, pendingCall->second.ackCollectionRetries - 1));
+                pendingCall->second.ackWindowDeadlineUs = nowUs + delayMs * 1000;
+                NDN_LOG_WARN("[NDNSF_TRACE] role=user event=ACK_COLLECTION_RETRY"
+                             << " requestId=" << requestId.toUri()
+                             << " attempt=" << pendingCall->second.ackCollectionRetries
+                             << " expected=" << pendingCall->second.providers.size()
+                             << " admitted=" << admitted.size());
+                PublishRequestV2(pendingCall->second.providers,
+                                 pendingCall->second.serviceName,
+                                 requestId,
+                                 pendingCall->second.requestMessage.getPayload(),
+                                 pendingCall->second.strategy);
+                m_scheduler.schedule(ndn::time::milliseconds(delayMs), [this, requestId] {
+                    handleAckCollectionTimeout(requestId);
+                });
+                return false;
+            }
+        }
         pendingCall->second.ackWindowExpired = true;
         if (shouldTrackAckDecrypt(pendingCall->second) &&
             !usesR1ReservationSelection(pendingCall->second) &&

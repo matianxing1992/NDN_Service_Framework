@@ -22,7 +22,8 @@ def write_json(path, value):
 
 def prepare(output, requester, protection_epoch, source=None, source_sha256=None,
             tokenizer=None, layer_cut=None, rank_weights=None, max_new_tokens=None,
-            layer_cuts=None, tensor_degrees=None, weighted_stage=0, transcript=None):
+            layer_cuts=None, tensor_degrees=None, weighted_stage=0, transcript=None,
+            material_bound=None):
     repo = Path(__file__).resolve().parents[3]
     # Use the maintained host-side encoder and semantic graph identity.
     sys.path.insert(0, str(repo / "Experiments"))
@@ -97,6 +98,12 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
                  model_format="onnx", precision="int4", quantization_subtype="weight_only_int4",
                  adapter=adapter)
     bound = source_bytes + (128 << 20) if real_model else 8 << 20
+    if material_bound is not None:
+        # A single-stage TP rank materializes the whole-model graph; the
+        # maintained bound must cover its inline material, not only the source.
+        if material_bound < source_bytes:
+            raise ValueError("material bound cannot be smaller than the source")
+        bound = material_bound
     # The frozen four-round load grows the logical prefix to 256 tokens and then
     # generates 32 more; the whole-model KV at that length is about 132 MB, so a
     # conservative per-stage budget keeps the reference replay and the runtime
@@ -107,8 +114,7 @@ def prepare(output, requester, protection_epoch, source=None, source_sha256=None
                             safety_margin=1.0) for stage in stages}
     splitter = dict(kind="QWEN", roles=stages, layer_ranges=partition, tensor_degrees=degrees,
                     artifact_digests_by_role={stage: digest(stage.encode()) for stage in stages},
-                    rank_artifact_digests_by_role={stages[0]: [
-                        digest(f"first-r{rank}".encode()) for rank in range(degrees[0])]},
+                    rank_artifact_digests_by_role={},
                     weight_bytes_by_role={stage: bound for stage in stages},
                     resources_by_role=profiles, input_ingress_role=stages[0],
                     result_egress_role=stages[-1])
@@ -264,6 +270,8 @@ if __name__ == "__main__":
                         help="Tensor-parallel degree per stage")
     parser.add_argument("--weighted-stage", type=int, default=0,
                         help="Zero-based stage index that receives --rank-weights")
+    parser.add_argument("--material-bound", type=int,
+                        help="Assembled-material byte bound override (default: source + 128 MiB)")
     parser.add_argument("--transcript", type=Path,
                         help="Frozen four-round transcript JSON (32 new tokens per round)")
     args = parser.parse_args()
@@ -280,4 +288,5 @@ if __name__ == "__main__":
     prepare(args.output.resolve(), args.requester, args.protection_epoch,
             args.source.resolve(strict=True) if args.source else None, args.source_sha256,
             args.tokenizer, args.layer_cut, args.rank_weights, args.max_new_tokens,
-            args.layer_cuts, args.tensor_degrees, args.weighted_stage, args.transcript)
+            args.layer_cuts, args.tensor_degrees, args.weighted_stage, args.transcript,
+            args.material_bound)

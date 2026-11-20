@@ -1742,6 +1742,7 @@ namespace ndn_service_framework{
                 bool admissionPublished = false;
                 bool admissionReleased = false;
                 bool ackTimeoutScheduled = false;
+                uint32_t ackCollectionRetries = 0;
                 bool requestTimeoutScheduled = false;
                 bool scheduleAckTimeoutAfterPublish = false;
                 bool scheduleImmediateAckTimeoutAfterPublish = false;

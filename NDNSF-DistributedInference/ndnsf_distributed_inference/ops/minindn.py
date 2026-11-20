@@ -5,6 +5,7 @@ Imports are lazy so host and Slurm installations do not require MiniNDN.
 """
 from __future__ import annotations
 
+import configparser
 import contextlib
 from functools import partial
 import hashlib
@@ -22,6 +23,37 @@ import time
 
 from . import cluster
 from .processes import owned_state, process_identity, stop_owned, write_json
+
+
+def _topology_bytes(platform):
+    data = Path(platform['topology']).read_bytes()
+    if 'sha256:' + hashlib.sha256(data).hexdigest() != platform['topology_sha256']:
+        raise cluster.ClusterError('MININDN_TOPOLOGY_CHANGED')
+    return data
+
+
+def _fixed_face_costs(platform):
+    """Read one explicit positive route cost per undirected topology link."""
+    parser = configparser.ConfigParser(delimiters=(' ',), allow_no_value=True)
+    try:
+        parser.read_string(_topology_bytes(platform).decode('utf-8'))
+        costs = {}
+        for key, value in parser.items('faces'):
+            # Some Python versions retain the space-delimited value in the option
+            # when allow_no_value is enabled for the topology's [nodes] section.
+            fields = (key + ' ' + (value or '')).split()
+            if len(fields) != 2:
+                raise ValueError(key)
+            link, option = fields
+            endpoints = tuple(sorted(link.split(':')))
+            cost = re.fullmatch(r'cost=([1-9][0-9]{0,19})', option)
+            if (len(endpoints) != 2 or endpoints[0] == endpoints[1] or
+                    endpoints in costs or not cost or int(cost[1]) >= 1 << 64):
+                raise ValueError(link)
+            costs[endpoints] = int(cost[1])
+    except (configparser.Error, OSError, ValueError) as error:
+        raise cluster.ClusterError('MININDN_ROUTE_COST_INVALID:' + str(error)) from error
+    return costs
 
 
 @contextlib.contextmanager
@@ -88,10 +120,9 @@ class MiniNdnFacility:
             from minindn.minindn import Minindn
         except ImportError as error:
             raise cluster.ClusterError('MININDN_FACILITY_UNAVAILABLE:' + str(error)) from error
-        topology = Path(self.config['platform']['topology'])
-        if 'sha256:' + hashlib.sha256(topology.read_bytes()).hexdigest() != self.config[
-                'platform']['topology_sha256']:
-            raise cluster.ClusterError('MININDN_TOPOLOGY_CHANGED')
+        platform = self.config['platform']
+        topology = Path(platform['topology'])
+        _topology_bytes(platform)
         names = {node['host'] for node in self.config['nodes']}
         # MiniNDN link creation may replace an identically named interface.
         # Reject an existing topology before creating any local facility.
@@ -215,16 +246,32 @@ class MiniNdnFacility:
         nodes = {node['id']: node for node in self.config['nodes']}
         graph = {node_id: {} for node_id in nodes}
         ids = {node['host']: node['id'] for node in nodes.values()}
+        platform = self.config.get('platform', {})
+        metric = platform.get('route_metric', 'delay')
+        fixed_costs = _fixed_face_costs(platform) if metric == 'face-cost' else None
+        physical_edges = set()
         for node_id, node in nodes.items():
             for interface in self.hosts[node['host']].intfList():
                 if not interface.link:
                     continue
                 link = interface.link
                 other = link.intf2 if link.intf1 is interface else link.intf1
-                # Link delay is the same weight used by MiniNDN's maintained
-                # link-state helper. All commands use the destination's link IP.
-                delay = float(str(interface.params.get('delay', '1ms')).replace('ms', ''))
-                graph[node_id][ids[other.node.name]] = (delay, other.IP())
+                peer = ids[other.node.name]
+                if fixed_costs is None:
+                    weight = float(str(interface.params.get('delay', '1ms')).replace('ms', ''))
+                else:
+                    edge = tuple(sorted((node['host'], other.node.name)))
+                    if edge not in fixed_costs:
+                        raise cluster.ClusterError('MININDN_ROUTE_COST_MISSING:' + ':'.join(edge))
+                    if peer in graph[node_id]:
+                        raise cluster.ClusterError('MININDN_ROUTE_COST_PARALLEL_LINK:' + ':'.join(edge))
+                    physical_edges.add(edge)
+                    weight = fixed_costs[edge]
+                # Use the adjacent node's address on this link, even on a multihop route.
+                graph[node_id][peer] = (weight, other.IP())
+        if fixed_costs is not None and fixed_costs.keys() != physical_edges:
+            extras = ','.join(':'.join(edge) for edge in sorted(fixed_costs.keys() - physical_edges))
+            raise cluster.ClusterError('MININDN_ROUTE_COST_UNKNOWN_LINK:' + extras)
         origins = []
         for actor in self.config['actors']:
             if not actor['external']:
@@ -249,7 +296,7 @@ class MiniNdnFacility:
                 child.wait()
             text = output.decode('utf-8', errors='replace')
             commands.append(dict(source=source, arguments=argv, exit_code=child.returncode, output=text))
-            write_json(directory / 'routes.json', {'commands': commands})
+            write_json(directory / 'routes.json', {'metric': metric, 'commands': commands})
             if child.returncode:
                 raise cluster.ClusterError('MININDN_ROUTE_FAILED:' + source)
             return text

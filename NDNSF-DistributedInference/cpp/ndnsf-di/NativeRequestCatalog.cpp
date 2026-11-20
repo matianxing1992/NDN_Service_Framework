@@ -568,8 +568,9 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
   // The projected-plan branch runs after the source is moved into the catalog entry, so
   // the bytes the shape derivation needs are captured here. `deriveQwenTpShape` parses
   // the serialized graph, which only exists before the move.
+  // A sharded Qwen plan needs its source geometry whether it has one stage
+  // (pure TP) or several (hybrid); the role count alone does not decide it.
   const bool sourceBoundHybrid = sourceDefined && splitterKind == "QWEN" &&
-    split.at("roles").size() > 1 &&
     std::any_of(split.at("tensor_degrees").begin(), split.at("tensor_degrees").end(),
       [] (const auto& degree) { return degree.template get<std::uint64_t>() > 1; });
   std::map<std::string, std::vector<std::uint64_t>> rankWeights;

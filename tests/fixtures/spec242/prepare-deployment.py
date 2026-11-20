@@ -105,8 +105,15 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
                        tokenizer=None, layer_cut=None, rank_weights=None,
                        prepared_workload=None, link_bw=None, link_delay=None, probe=True,
                        link_loss=None, max_new_tokens=None, kv_capture=True,
-                       storage_budget=None, provider_cpus=None, dynamic_shaping=False):
+                       storage_budget=None, provider_cpus=None, dynamic_shaping=False,
+                       topology=None, route_metric=None):
     checkout = Path(__file__).resolve().parents[3]
+    explicit_topology = topology is not None
+    if route_metric is not None and not explicit_topology:
+        raise ValueError("an explicit topology is required for a route metric")
+    if explicit_topology and (dynamic_shaping or
+                              any(value is not None for value in (link_bw, link_delay, link_loss))):
+        raise ValueError("derive network cells separately when using an explicit topology")
     sys.path.insert(0, str(checkout / "Experiments"))
     from NDNSF_DI_Qwen06B_Native_Minindn import (
         digest_bytes as digest, make_external_key, preparation_cache_budget,
@@ -173,14 +180,24 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
     catalog = json.loads((bundle / "catalog.json").read_bytes())
     options = json.loads((bundle / "generation.json").read_bytes())
     split = catalog["splitter"]
-    roles = [stage + "/Tensor/Rank/" + str(rank)
-             for stage, degree in zip(split["roles"], split["tensor_degrees"])
-             for rank in range(degree)]
+    # Pure layer-split plans (every stage degree one) register the stage
+    # identities directly; mixed plans keep the per-rank role names for their
+    # sharded stages and the Tensor/Rank/0 convention for the unsharded ones.
+    pure_pp = all(degree == 1 for degree in split["tensor_degrees"])
+    roles = (list(split["roles"]) if pure_pp else
+             [stage + "/Tensor/Rank/" + str(rank)
+              for stage, degree in zip(split["roles"], split["tensor_degrees"])
+              for rank in range(degree)])
     actor_nodes = [("controller", "controller", "h242ctl"),
                    ("authority", "artifact-authority", "h242auth"),
                    ("repo", "repo", "h242repo"),
                    ("requester", "requester", "h242user")]
     actor_nodes += [(f"provider-{rank}", "provider", f"h242p{rank}") for rank in range(len(roles))]
+    if explicit_topology:
+        declared = set(topology_hosts(topology))
+        missing = {node for _, _, node in actor_nodes} - declared
+        if missing:
+            raise ValueError("explicit topology is missing actor hosts: " + ", ".join(sorted(missing)))
     if provider_cpus is not None and len(provider_cpus) != len(actor_nodes) - 4:
         raise ValueError("provider CPU quotas must match the provider count")
     actors = []
@@ -325,8 +342,9 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
     else:
         turn_options["conversation_id"] = conversation_id
     placement = {role: actor["identity"] for role, actor in zip(roles, providers)}
-    topology = checkout / "tests/fixtures/spec242/minindn-topology.conf"
-    if len(providers) == 4:
+    if not explicit_topology:
+        topology = checkout / "tests/fixtures/spec242/minindn-topology.conf"
+    if not explicit_topology and len(providers) == 4:
         # The three-rank TP stage and singleton PP stage need four distinct hosts.
         topology_text = topology.read_text()
         topology = root / "minindn-topology.conf"
@@ -377,7 +395,8 @@ def prepare_deployment(root, prefix, ledger, journal_root, source=None, source_s
         "deployment_id": "spec234-qwen-int4" if real_model else "spec242-hybrid",
         "release": {"prefix": str(prefix), "manifest": str(ledger)},
         "platform": {"kind": "minindn", "topology": str(topology),
-                     "topology_sha256": digest(topology.read_bytes())},
+                     "topology_sha256": digest(topology.read_bytes()),
+                     **({"route_metric": route_metric} if route_metric is not None else {})},
         # Every host the topology declares must be present, including a
         # forwarding-only host that no actor uses (for example the third rank
         # host in a two-provider layout).
@@ -465,6 +484,10 @@ if __name__ == "__main__":
                         help="Deployment storage budget in bytes (default 8 GiB real model)")
     parser.add_argument("--provider-cpus", nargs="+", type=int,
                         help="Per-provider CPU quota for placement-interaction cells")
+    parser.add_argument("--topology", type=Path,
+                        help="Explicit MiniNDN topology; derive network treatments separately")
+    parser.add_argument("--route-metric", choices=("face-cost",),
+                        help="Route on fixed [faces] costs in the explicit topology")
     parser.add_argument("--dynamic-shaping", action="store_true",
                         help="Shape the Provider data links after material assembly instead of at topology creation")
     args = parser.parse_args()
@@ -475,10 +498,17 @@ if __name__ == "__main__":
         parser.error("model source options require --source")
     if args.rank_weights is not None and len(args.rank_weights) not in (2, 3):
         parser.error("the MiniNDN qualification layout requires two or three rank weights")
+    if args.route_metric is not None and args.topology is None:
+        parser.error("--route-metric requires --topology")
+    if args.topology is not None and (args.dynamic_shaping or
+                                      any(value is not None for value in (
+                                          args.link_bw, args.link_delay, args.link_loss))):
+        parser.error("derive network cells separately when using --topology")
     prepare_deployment(args.output.resolve(), args.prefix.resolve(strict=True),
                        args.release_manifest.resolve(strict=True), args.journal_root.resolve(),
                        args.source, args.source_sha256, args.tokenizer, args.layer_cut,
                        args.rank_weights, args.prepared_workload,
                        args.link_bw, args.link_delay, args.probe,
                        args.link_loss, args.max_new_tokens, args.kv_capture,
-                       args.storage_budget, args.provider_cpus, args.dynamic_shaping)
+                       args.storage_budget, args.provider_cpus, args.dynamic_shaping,
+                       args.topology.resolve(strict=True) if args.topology else None, args.route_metric)

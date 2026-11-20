@@ -1577,7 +1577,10 @@ def test_native_qualification_barriers_reject_unsafe_inputs(ops, minindn_deploym
         parser.load_deployment(write_config(root, config))
 
 
-@pytest.mark.parametrize('change', ['none', 'digest', 'missing-node', 'same-socket', 'same-home', 'external-nfd'])
+@pytest.mark.parametrize('change', [
+    'none', 'face-cost', 'invalid-metric', 'digest', 'missing-node', 'same-socket',
+    'same-home', 'external-nfd',
+])
 def test_minindn_configuration_is_local_and_topology_bound(ops, minindn_deployment, change):
     parser, _ = ops
     base, config = minindn_deployment
@@ -1591,15 +1594,45 @@ def test_minindn_configuration_is_local_and_topology_bound(ops, minindn_deployme
         config['actors'][-1]['credential_home'] = config['actors'][0]['credential_home']
     elif change == 'external-nfd':
         config['nodes'][1]['nfd']['mode'] = 'external'
+    elif change in ('face-cost', 'invalid-metric'):
+        config['platform']['route_metric'] = change
     source = write_config(base, config)
-    if change == 'none':
+    if change in ('none', 'face-cost'):
         result = parser.load_deployment(source)
         assert result['platform']['kind'] == 'minindn'
+        assert result['platform'].get('route_metric') == config['platform'].get('route_metric')
         assert len(result['nodes']) == 2
         assert Path(result['release']['prefix']).is_absolute()
     else:
         with pytest.raises(ValueError):
             parser.load_deployment(source)
+
+
+def test_minindn_probes_use_each_nodes_nfd_socket(ops, minindn_deployment, monkeypatch):
+    parser, _ = ops
+    cluster = importlib.import_module('_spec217_ops.cluster')
+    root, config = minindn_deployment
+    config['probes'] = {'enabled': True, 'ping_count': 1}
+    config = parser.load_deployment(write_config(root, config))
+    facility = SimpleNamespace(launcher=lambda node: node, hosts={
+        node['host']: SimpleNamespace(intfList=lambda: []) for node in config['nodes']
+    })
+    calls = []
+
+    def capture(argv, launcher=None, timeout=5, env=None):
+        calls.append((argv, launcher, env))
+        return {'exit_code': 0}
+
+    monkeypatch.setattr(cluster, '_probe_capture', capture)
+    cluster._probe_environment(config, root, {}, facility, [], lambda: None, time.monotonic() + 5)
+    for node in config['nodes']:
+        node_calls = [(argv[1:], env) for argv, host, env in calls
+                      if host == node['id'] and env is not None]
+        assert [argv for argv, _ in node_calls] == [
+            ['route', 'list'], ['fib', 'list'], ['face', 'list'],
+        ]
+        assert all(env['NDN_CLIENT_TRANSPORT'] == 'unix://' + node['nfd']['socket']
+                   for _, env in node_calls)
 
 
 def test_minindn_uses_shared_native_translation(ops, minindn_deployment):
@@ -1707,50 +1740,103 @@ def test_minindn_repeated_cleanup_does_not_stop_closed_network(ops, tmp_path):
         assert not state['facility']['cleanup'][0].get('forced')
 
 
-def test_minindn_multihop_routes_use_first_hop_port_and_reuse_faces(ops, tmp_path, monkeypatch):
+@pytest.mark.parametrize(('triangle', 'metric', 'faces', 'hop', 'cost', 'error'), [
+    pytest.param(False, 'delay', '', '10.0.0.2:6364', '10', None, id='multihop'),
+    pytest.param(True, 'delay', 'a:b cost=9\nb:c cost=9\na:c cost=2\n',
+                 '10.0.0.2:6364', '10', None, id='legacy-delay'),
+    pytest.param(True, 'face-cost', 'a:b cost=9\nb:c cost=9\nc:a cost=2\n',
+                 '10.0.0.10:6365', '2', None, id='explicit-face-cost'),
+    pytest.param(True, 'face-cost', 'a:b cost=9\nb:c cost=9\n',
+                 None, None, 'MININDN_ROUTE_COST_MISSING:a:c', id='missing-edge'),
+    pytest.param(True, 'face-cost', 'a:b cost=9\nb:c cost=9\na:c cost=2\nc:a cost=2\n',
+                 None, None, 'MININDN_ROUTE_COST_INVALID:c:a', id='duplicate-edge'),
+    pytest.param(True, 'face-cost', 'a:b cost=9\nb:c cost=9\na:c cost=2\na:d cost=2\n',
+                 None, None, 'MININDN_ROUTE_COST_UNKNOWN_LINK:a:d', id='unknown-edge'),
+    pytest.param(True, 'face-cost', 'a:b cost=9\nb:c cost=9\na:c cost=0\n',
+                 None, None, 'MININDN_ROUTE_COST_INVALID:a:c', id='nonpositive-cost'),
+])
+def test_minindn_multihop_routes_use_first_hop_port_and_reuse_faces(
+        ops, tmp_path, monkeypatch, triangle, metric, faces, hop, cost, error):
     from types import SimpleNamespace
     module = importlib.import_module('_spec217_ops.minindn')
     nodes = [dict(id=name, host=name, nfd=dict(socket='/unused-' + name, port=port))
              for name, port in [('a', 6363), ('b', 6364), ('c', 6365)]]
+    topology = tmp_path / 'topology.conf'
+    topology.write_text('[faces]\n' + faces)
     config = dict(nodes=nodes, actors=[dict(node='c', identity='/provider/c', external=False)],
-                  network=dict(group='/group', routes=[]))
+                  network=dict(group='/group', routes=[]),
+                  platform=dict(topology=str(topology),
+                                topology_sha256='sha256:' + hashlib.sha256(topology.read_bytes()).hexdigest()))
+    if metric == 'face-cost':
+        config['platform']['route_metric'] = metric
     root = tmp_path / 'routes'
     module.cluster._private_directory(root)
     facility = module.MiniNdnFacility(config, root,
         dict(boot_id='a' * 32, configuration_sha256='b' * 64), time.monotonic() + 20)
     interfaces = {name: [] for name in ['a', 'b', 'c']}
-    for left, right, address_left, address_right in [
-            ('a', 'b', '10.0.0.1', '10.0.0.2'), ('b', 'c', '10.0.0.5', '10.0.0.6')]:
+    links = [('a', 'b', '10.0.0.1', '10.0.0.2', '5ms'),
+             ('b', 'c', '10.0.0.5', '10.0.0.6', '5ms')]
+    if triangle:
+        links.append(('a', 'c', '10.0.0.9', '10.0.0.10', '30ms'))
+    for left, right, address_left, address_right, delay in links:
         first = SimpleNamespace(node=SimpleNamespace(name=left), IP=lambda ip=address_left: ip,
-                                params=dict(delay='5ms'))
+                                params=dict(delay=delay))
         second = SimpleNamespace(node=SimpleNamespace(name=right), IP=lambda ip=address_right: ip,
-                                 params=dict(delay='5ms'))
+                                 params=dict(delay=delay))
         first.link = second.link = SimpleNamespace(intf1=first, intf2=second)
         interfaces[left].append(first)
         interfaces[right].append(second)
     facility.hosts = {name: SimpleNamespace(intfList=lambda name=name: interfaces[name])
                       for name in interfaces}
     calls = []
+    created = {}
+
     class Child:
         returncode = 0
+        def __init__(self, output):
+            self.output = output
         def communicate(self, **kwargs):
-            return b'face-created id=261\n', None
+            return self.output, None
         def poll(self):
             return 0
         def wait(self):
             return 0
+
     def launch(source):
         def run(argv, **kwargs):
             calls.append((source, argv))
-            return Child()
+            if argv[1:3] == ['face', 'create']:
+                key = (source, argv[3])
+                assert key not in created
+                face = str(261 + len(created))
+                created[key] = face
+                return Child(('face-created id=' + face + '\n').encode())
+            return Child(b'')
         return run
+
     monkeypatch.setattr(facility, 'launcher', launch)
+    if error:
+        with pytest.raises(module.cluster.ClusterError, match=error):
+            facility.routes(root, lambda: None)
+        assert not calls
+        return
+
     facility.routes(root, lambda: None)
-    faces = [argv for source, argv in calls if source == 'a' and argv[1:3] == ['face', 'create']]
-    assert faces == [['nfdc', 'face', 'create', 'udp://10.0.0.2:6364', 'persistency', 'permanent']]
+    a_faces = [argv for source, argv in calls if source == 'a' and argv[1:3] == ['face', 'create']]
+    uri = 'udp://' + hop
+    assert ['nfdc', 'face', 'create', uri, 'persistency', 'permanent'] in a_faces
+    assert len(a_faces) == (2 if metric == 'face-cost' else 1)
+    face = created['a', uri]
     routes = [argv for source, argv in calls if source == 'a' and argv[1:3] == ['route', 'add']]
-    assert any(argv[3:5] == ['/provider/c', '261'] for argv in routes)
-    assert any(argv[3:5] == ['/provider/c/KEY', '261'] for argv in routes)
+    assert any(argv[3:] == ['/provider/c', face, 'cost', cost] for argv in routes)
+    assert any(argv[3:] == ['/provider/c/KEY', face, 'cost', cost] for argv in routes)
+    assert json.loads((root / 'routes.json').read_text())['metric'] == metric
+    if metric == 'face-cost':
+        topology.write_text('[faces]\n' + faces + '\n')
+        commands_before_mismatch = len(calls)
+        with pytest.raises(module.cluster.ClusterError, match='MININDN_TOPOLOGY_CHANGED'):
+            facility.routes(root, lambda: None)
+        assert len(calls) == commands_before_mismatch
 
 
 def test_closed_minindn_does_not_reaudit_a_reused_namespace_inode(ops, tmp_path):

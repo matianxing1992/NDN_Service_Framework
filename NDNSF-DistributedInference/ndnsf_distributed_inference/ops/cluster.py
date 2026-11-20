@@ -388,12 +388,12 @@ def _native_launch(config, actor, directory, state, *, visible_devices=None, rep
     return argv, env
 
 
-def _probe_capture(argv, launcher=None, timeout=5.0):
+def _probe_capture(argv, launcher=None, timeout=5.0, env=None):
     """Run one bounded probe command and keep a bounded text result."""
     try:
         child = (launcher or subprocess.Popen)(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, start_new_session=True)
+            stderr=subprocess.STDOUT, start_new_session=True, env=env)
         output, _ = child.communicate(timeout=timeout)
         return {'argv': argv, 'exit_code': child.returncode,
                 'output': output.decode('utf-8', 'replace')[-8192:]}
@@ -487,15 +487,23 @@ def _probe_environment(config, directory, state, facility, children, guard, dead
     record = {'schema': 'ndnsf-di-minindn-probes-v1',
               'startedUnixSeconds': time.time(), 'nodes': {}, 'processes': {},
               'ping': []}
+    nfdc = shutil.which('nfdc') or 'nfdc'
     for node in config['nodes']:
         guard()
         launcher = facility.launcher(node['id']) if facility is not None else None
         entry = {}
         for name, argv in (('links', ['ip', '-s', 'link']),
                            ('qdisc', ['tc', '-s', 'qdisc']),
-                           ('routes', ['nfdc', 'route', 'list']),
-                           ('faces', ['nfdc', 'face', 'list'])):
+                           ('classes', ['tc', '-s', 'class', 'show'])):
             entry[name] = _probe_capture(argv, launcher)
+        # UNIX sockets share the filesystem across namespaces. A namespace
+        # alone does not select the NFD owned by that node.
+        nfd_env = {'PATH': os.defpath,
+                   'NDN_CLIENT_TRANSPORT': 'unix://' + node['nfd']['socket']}
+        for name, argv in (('routes', [nfdc, 'route', 'list']),
+                           ('fib', [nfdc, 'fib', 'list']),
+                           ('faces', [nfdc, 'face', 'list'])):
+            entry[name] = _probe_capture(argv, launcher, env=nfd_env)
         record['nodes'][node['id']] = entry
     for actor, child, row in children:
         guard()

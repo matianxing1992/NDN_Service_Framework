@@ -251,7 +251,7 @@ def load_deployment(path, *, prepare_only=False):
     publish_only = config.get('operation') == 'prepare' and model_input.get('mode') == 'publish-stored'
     platform = _object(config["platform"], "platform", {
         "kind", "sif", "sif_sha256", "build_record", "apptainer", "slurm",
-        "topology", "topology_sha256"}, {"kind"})
+        "topology", "topology_sha256", "route_metric"}, {"kind"})
     if not isinstance(platform["kind"], str) or platform["kind"] not in (
             "host", "minindn", "slurm-apptainer"):
         _fail("platform.kind", "unsupported platform")
@@ -259,9 +259,12 @@ def load_deployment(path, *, prepare_only=False):
     local = platform["kind"] != "slurm-apptainer"
     if platform["kind"] == "host" and platform.keys() != {"kind"}:
         _fail("platform", "host cannot declare container/scheduler inputs")
-    if namespaced and platform.keys() != {"kind", "topology", "topology_sha256"}:
-        _fail("platform", "minindn requires only kind, topology and topology_sha256")
-    if not local and platform.keys() & {"topology", "topology_sha256"}:
+    minindn_required = {"kind", "topology", "topology_sha256"}
+    if namespaced and not minindn_required <= platform.keys() <= minindn_required | {"route_metric"}:
+        _fail("platform", "minindn requires topology and topology_sha256; route_metric is optional")
+    if namespaced and "route_metric" in platform and platform["route_metric"] != "face-cost":
+        _fail("platform.route_metric", "expected face-cost")
+    if not local and platform.keys() & {"topology", "topology_sha256", "route_metric"}:
         _fail("platform", "Slurm cannot declare MiniNDN inputs")
     read_paths = {source}
 

@@ -9,6 +9,7 @@ probe summary and failure boundary.
 """
 
 import argparse
+import hashlib
 import json
 import shutil
 import signal
@@ -29,7 +30,8 @@ MANIFEST = Path('/usr/local/share/ndnsf/stack-install-manifest.json')
 
 # The prepared workload freezes each layout's geometry (stages, cuts, degrees and
 # rank weights); these labels only name the cell family in the results file.
-LAYOUTS = {name: {} for name in ('L1', 'L2', 'L3', 'L4a', 'L4b', 'L5', 'L6', 'L7a', 'L7b')}
+LAYOUTS = {name: {} for name in ('L1', 'L2', 'L3', 'L4a', 'L4b', 'L5', 'L6', 'L7a', 'L7b',
+                                'PP11', 'PP31', 'PP13', 'PP12', 'TP11', 'TP31', 'TP13', 'TP12')}
 NETWORKS = {
     'N0': dict(bw=100, delay=2, loss=None),
     'N1': dict(bw=10, delay=2, loss=None),
@@ -39,6 +41,7 @@ NETWORKS = {
     'N5': dict(bw=100, delay=2, loss=0.1),
     'N6': dict(bw=100, delay=2, loss=1),
     'N7': dict(bw=10, delay=10, loss=0.1),
+    'N8': dict(bw=10, delay=30, loss=1),
 }
 
 
@@ -67,6 +70,23 @@ def generate(root, workload, layout, network, journal, storage_budget,
     run(argv)
 
 
+def verified_mesh_cell(root, deployment, network):
+    """Bind a cached boot to the network cell derived immediately before it."""
+    platform = deployment['platform']
+    with (root / 'cells.jsonl').open() as history:
+        cell = json.loads(list(history)[-1])
+    topology = Path(platform['topology']).read_bytes()
+    digest = 'sha256:' + hashlib.sha256(topology).hexdigest()
+    kind = cell.get('topology_kind')
+    expected = 6 if kind == 'k8' else (1 if network == 'N8' else 2)
+    if (cell.get('cell') != network or kind not in ('k8', 'star') or
+            cell.get('topology_sha256') != digest or platform['topology_sha256'] != digest or
+            not cell.get('base_topology_sha256') or
+            len(cell.get('shaped_links', [])) != expected):
+        raise ValueError('derive the requested network cell before starting the matrix boot')
+    return cell
+
+
 def _prune_boot_dirs(root, archive_dir=None):
     """Archive the small receipt files, then drop the boot's disposable dirs.
 
@@ -91,13 +111,17 @@ def _prune_boot_dirs(root, archive_dir=None):
             target = archive_dir / boot
             target.mkdir(parents=True, exist_ok=True)
             for name in ('requester-statistics.jsonl', 'probes.json',
-                         'probes-after.json', 'cells.jsonl'):
+                         'probes-after.json', 'routes.json'):
                 path = evidence / name
                 if path.is_file():
                     shutil.copy2(path, target / name)
             for path in evidence.glob('shaping-*.json'):
                 if path.is_file():
                     shutil.copy2(path, target / path.name)
+            if deployment['platform'].get('route_metric') == 'face-cost':
+                shutil.copy2(root / 'cells.jsonl', target / 'cells.jsonl')
+                shutil.copy2(deployment['platform']['topology'], target / 'minindn-topology.conf')
+                shutil.copy2(state_file, target / 'state.json')
         shutil.rmtree(evidence, ignore_errors=True)
         shutil.rmtree(Path(storage['state_root']) / deployment['deployment_id'],
                         ignore_errors=True)
@@ -165,16 +189,17 @@ def _archive_outputs(root, outputs_dir, block):
         shutil.copy2(path, directory / path.name)
 
 
-def boot(root, timeout):
+def boot(root, timeout, debug=True):
     log = root / 'boot.log'
     env = dict(os.environ, PYTHONPATH=str(REPO / 'NDNSF-DistributedInference'),
                NDNSF_DI_DIAGNOSTIC_LOG_FILTER='ndn.*=NONE:ndn_service_framework.*=WARN:ndnsf.*=DEBUG')
     started = time.monotonic()
+    argv = [sys.executable, *OPTS.split(), 'cluster', 'up', '--config',
+            str(root / 'deployment.json'), '--timing', '--timeout', str(timeout)]
+    if debug:
+        argv.append('--debug')
     with open(log, 'wb') as output:
-        result = subprocess.run(
-            [sys.executable, *OPTS.split(), 'cluster', 'up', '--config',
-             str(root / 'deployment.json'), '--timing', '--debug', '--timeout', str(timeout)],
-            env=env, stdout=output, stderr=subprocess.STDOUT)
+        result = subprocess.run(argv, env=env, stdout=output, stderr=subprocess.STDOUT)
     return result.returncode, time.monotonic() - started, log
 
 
@@ -187,7 +212,7 @@ def close(root, timeout=120):
 
 def summarize(root, code, wall, layout, network, block, result_path,
               cell=None, provider_cpus=None, reference=None, outputs_dir=None,
-              attempt=None):
+              attempt=None, network_cell=None):
     row = dict(layout=layout, network=network, block=block, exit_code=code,
                wall_seconds=round(wall, 2))
     if cell is not None:
@@ -196,6 +221,8 @@ def summarize(root, code, wall, layout, network, block, result_path,
         row['attempt'] = attempt
     if provider_cpus:
         row['provider_cpus'] = list(provider_cpus)
+    if network_cell is not None:
+        row['network_cell'] = network_cell
     try:
         deployment = json.loads((root / 'deployment.json').read_text())
         state = json.loads((Path(deployment['storage']['state_root']) /
@@ -259,6 +286,8 @@ def main():
                         help='Per-provider CPU quota (placement-interaction cells)')
     parser.add_argument('--dynamic-shaping', action='store_true',
                         help='Shape Provider data links after material assembly')
+    parser.add_argument('--require-mesh', action='store_true',
+                        help='Require an explicitly prepared and derived K8 cell')
     parser.add_argument('--reference', type=Path,
                         help='Frozen reference token vectors (JSON) for per-round comparison')
     parser.add_argument('--outputs-dir', type=Path,
@@ -273,14 +302,33 @@ def main():
                         help='Row cell label (defaults to the root name)')
     parser.add_argument('--timeout', type=int, default=2400)
     args = parser.parse_args()
+    deployment_path = args.root / 'deployment.json'
+    if args.require_mesh and not deployment_path.is_file():
+        parser.error('prepare the mesh layout deployment before running any mesh cell')
     args.root.parent.mkdir(parents=True, exist_ok=True)
     args.journal.mkdir(parents=True, exist_ok=True)
-    if not (args.root / 'deployment.json').exists():
+    if not deployment_path.exists():
         generate(args.root, args.workload, args.layout, args.network, args.journal,
                  args.storage_budget, args.provider_cpus, args.dynamic_shaping)
+    deployment = json.loads(deployment_path.read_text())
+    mesh = deployment['platform'].get('route_metric') == 'face-cost'
+    if args.require_mesh and not mesh:
+        parser.error('expected a mesh deployment with platform.route_metric=face-cost')
+    mesh_cell = None
+    if mesh:
+        if args.dynamic_shaping or deployment.get('shaping') or args.retry_failures:
+            parser.error('K8 cells use static shaping and owned cleanup')
+        if not args.keep_root or args.reference is None:
+            parser.error('K8 requires --keep-root and the frozen --reference')
+        if args.prune_boot_dirs and not args.archive_dir:
+            parser.error('K8 boot receipts must be archived before pruning')
+        try:
+            mesh_cell = verified_mesh_cell(args.root, deployment, args.network)
+        except (OSError, ValueError, IndexError) as error:
+            parser.error(str(error))
     for block in range(args.blocks):
         close(args.root)
-        code, wall, log = boot(args.root, args.timeout)
+        code, wall, log = boot(args.root, args.timeout, debug=not mesh)
         attempt = 0
         while (code != 0 and attempt < args.retry_failures and _start_hang(args.root)):
             attempt += 1
@@ -295,7 +343,8 @@ def main():
             reference = json.loads(args.reference.read_text())
         row = summarize(args.root, code, wall, args.layout, args.network, block, args.results,
                         cell=args.cell_label or args.root.name, provider_cpus=args.provider_cpus,
-                        reference=reference, outputs_dir=args.outputs_dir, attempt=attempt)
+                        reference=reference, outputs_dir=args.outputs_dir, attempt=attempt,
+                        network_cell=mesh_cell)
         print(json.dumps(row, sort_keys=True))
         if code == 0 and args.prune_boot_dirs:
             _prune_boot_dirs(args.root, args.archive_dir)
