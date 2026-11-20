@@ -2350,7 +2350,8 @@ def build(bld):
     bld.install_files(tests_share, 'run-checks.py', chmod=0o755)
     driver_names = (['run-spec182-native-grant-process.py',
                      'run-spec182-native-unary-process.py',
-                     'run-spec182-native-stream-process.py', 'di_native_fixture.py']
+                     'run-spec182-native-stream-process.py',
+                     'run-spec261-source-full-process.py', 'di_native_fixture.py']
                     if 'di' in bld.env.NDNSF_COMPONENTS else [])
     bld.env.NDNSF_TEST_DRIVER_FILES = driver_names
     if driver_names:

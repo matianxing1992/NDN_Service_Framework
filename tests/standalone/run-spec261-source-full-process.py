@@ -109,7 +109,10 @@ def launch(cmd,env,name):
 children=[]
 try:
  nfd=launch(['/usr/local/bin/nfd','--config',str(nfdconf)],base,'nfd');children.append(nfd)
- while not nfd_socket.exists(): time.sleep(.05)
+ nfd_deadline=time.monotonic()+30
+ while not nfd_socket.exists():
+  if time.monotonic()>nfd_deadline: raise RuntimeError('NFD socket did not appear within 30s')
+  time.sleep(.05)
  subprocess.run(['/usr/local/bin/nfdc','strategy','set','/example/hello/group','/localhost/nfd/strategy/multicast'],env=base,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  def penv(store):
   return b.actor_environment(base,store)
@@ -152,8 +155,16 @@ try:
   revoke_wait_seconds=max(30, int(revoke_after_ms / 1000) + 30)
   b.wait_marker(c,run_root/'controller.log','NDNSF_REVOCATION_APPLIED success=1',revoke_wait_seconds)
  # requester direct first
- rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq); rq.wait();print('requester rc',rq.returncode)
+ rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq)
+ try:
+  rq.wait(timeout=120)
+ except subprocess.TimeoutExpired:
+  b.stop(rq)
+  raise RuntimeError('requester did not finish within 120s')
+ print('requester rc',rq.returncode)
  print('ROOT',run_root)
+ if rq.returncode != 0:
+  raise SystemExit(rq.returncode)
  # This script owns process startup, scheduled revocation and cleanup only.
  # Business success/failure, grant identity and Provider execution are
  # asserted by the C++ parent selector from these retained logs.  Keeping the
