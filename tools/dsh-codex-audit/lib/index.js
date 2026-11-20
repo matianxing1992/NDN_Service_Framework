@@ -2,8 +2,10 @@ import { TypertRemoteService, Remote } from '@deepseek-ai/dsh-typert-protocol';
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain';
 import { z } from 'zod';
 import { AuditManager, AuditError } from './audit-manager.js';
-import { runCodex, resolveCodex, readAuditModels } from './codex-runner.js';
-import { createSnapshot, checkSnapshotCurrent, describeBasis } from './snapshot.js';
+import { rm } from 'node:fs/promises';
+import { runCodex, checkCodex, readAuditModels } from './codex-runner.js';
+import { createSnapshot, checkSnapshotCurrent, describeBasis, resolveAuditWorkspace,
+  createAuditScratch } from './snapshot.js';
 import { reviewDocumentChanges, applyDocumentChange } from './document-changes.js';
 import { serializeConversation } from './conversation.js';
 import { readCodexSelection } from './model-observation.js';
@@ -350,6 +352,18 @@ export default class CodexAudit extends TypertRemoteService {
     if (this.bootError) return { error: this.bootError };
     const sessionId = request.sessionId;
     if (typeof sessionId !== 'string' || !sessionId) throw new Error('sessionId required');
+    if (request.conversationCard === true) {
+      await this.manager.writes;
+      const record = this.manager.state.records.findLast(r => r.sessionId === sessionId &&
+        r.status === 'completed' && (!request.auditId || r.id === request.auditId));
+      if (!record || (!request.auditId &&
+          this.manager.settings(sessionId).dismissedAuditId === record.id)) return { card: null, dismissible: true };
+      const { id, finishedAt, delivery, admittedSeq, replies, error, report } = record;
+      return { dismissible: true, card: { id, finishedAt, delivery, admitted: Number.isSafeInteger(admittedSeq),
+        replied: replies.length > 0, issue: error?.message,
+        messageId: record.messageId ?? `codex-audit-${id}`,
+        ...(request.auditId ? { report } : {}) } };
+    }
     const all = this.manager.state.records.filter(r => r.sessionId === sessionId).slice().reverse();
     const offset = request.offset ?? 0;
     if (!Number.isInteger(offset) || offset < 0 || offset > 200) throw new Error('Invalid history offset');
@@ -383,6 +397,16 @@ export default class CodexAudit extends TypertRemoteService {
     if (this.bootError) throw new Error(this.bootError.message);
     const { sessionId, action } = request;
     if (typeof sessionId !== 'string' || !this.ctx.agents.get(sessionId)) throw new Error('原 DSH 会话未加载。');
+    if (action === 'dismiss-card') {
+      const latest = this.manager.state.records.findLast(r => r.sessionId === sessionId &&
+        r.status === 'completed');
+      if (latest && latest.id === request.auditId) {
+        const settings = this.manager.settings(sessionId);
+        this.manager.state.sessions[sessionId] = { ...settings, dismissedAuditId: latest.id };
+        await this.manager.persist();
+      }
+      return { dismissed: true };
+    }
     if (action === 'configure-guard') {
       await this.guard.configure(sessionId, request.enabled, request.goalRef);
       await this.requestBlockedReview();
@@ -406,14 +430,27 @@ export default class CodexAudit extends TypertRemoteService {
         if (Object.hasOwn(request, key)) patch[key] = request[key];
       }
       if (patch.codexPath !== undefined && typeof patch.codexPath !== 'string') throw new Error('Invalid Codex path');
-      if (patch.enabled) await resolveCodex(patch.codexPath ?? this.manager.settings(sessionId).codexPath);
+      if (patch.enabled) await checkCodex(patch.codexPath ?? this.manager.settings(sessionId).codexPath);
       await this.manager.configure(sessionId, patch);
       this.lastError = null;
     } else if (action === 'check') {
-      try { return { codexPath: await resolveCodex(this.manager.settings(sessionId).codexPath) }; }
+      try {
+        const cut = await this.ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'none' });
+        let cwd;
+        try { ({ cwd } = await resolveAuditWorkspace(cut.header?.cwd)); }
+        finally { cut[Symbol.dispose](); }
+        const scratch = await createAuditScratch(cwd);
+        await rm(scratch, { recursive: true, force: true });
+        const { binary, provider } = await checkCodex(this.manager.settings(sessionId).codexPath, { cwd });
+        return { cwd, codexPath: binary, provider: provider.id };
+      }
       catch (error) { return { error: { code: error.code, message: error.message, remedy: error.remedy } }; }
     } else if (action === 'skip-next') {
       await this.manager.skipNext(sessionId);
+    } else if (action === 'reserve-next') {
+      await this.manager.reserveNext(sessionId);
+    } else if (action === 'cancel-reservation') {
+      await this.manager.cancelReservation(sessionId);
     } else if (action === 'apply-document') {
       const record = this.manager.state.records.find(r => r.id === request.auditId && r.sessionId === sessionId);
       const change = record?.documentChanges?.[request.index];

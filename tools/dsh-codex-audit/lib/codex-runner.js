@@ -4,12 +4,11 @@ import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join, isAbsolute } from 'node:path';
 import { AuditError, DEFAULT_MODELS } from './audit-manager.js';
-import { readCodexSelection } from './model-observation.js';
+import { codexHomePath, readCodexSelection } from './model-observation.js';
+import { readProviderConfig } from './provider-config.js';
 
 const LIMIT = 8 * 1024 * 1024;
-const codexHome = () => process.env.CODEX_HOME || join(homedir(), '.codex');
-
-export async function readAuditModels(root = codexHome()) {
+export async function readAuditModels(root = codexHomePath()) {
   try {
     const file = join(root, 'models_cache.json');
     if ((await stat(file)).size > LIMIT) return DEFAULT_MODELS;
@@ -49,7 +48,8 @@ export function classifyFailure(message) {
 }
 
 // No shell interpolation; the child owns its process group, deadline and output bounds.
-export function execute(binary, args, { cwd, input = '', signal, timeoutMs = 3600000 } = {}) {
+export function execute(binary, args, { cwd, input = '', signal, timeoutMs = 3600000,
+  processName = 'Codex', env } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     let stdout = '';
@@ -69,28 +69,33 @@ export function execute(binary, args, { cwd, input = '', signal, timeoutMs = 360
     const abort = () => stop(signal.reason ?? new Error('Audit cancelled'));
     if (signal?.aborted) return reject(signal.reason);
     try {
-      child = spawn(binary, args, { cwd, detached: process.platform !== 'win32',
+      child = spawn(binary, args, { cwd, env, detached: process.platform !== 'win32',
         stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     } catch (error) { reject(error); return; }
     signal?.addEventListener('abort', abort, { once: true });
-    const deadline = setTimeout(() => stop(new AuditError('CODEX_TIMEOUT',
-      'Codex 审计超过时限。', '检查运行记录后重试。', true)), timeoutMs);
+    const deadline = setTimeout(() => stop(new AuditError(
+      processName === 'Git' ? 'GIT_TIMEOUT' : 'CODEX_TIMEOUT',
+      `${processName} 操作超过时限。`, '检查运行记录后重试。', true)), timeoutMs);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', value => {
       stdout += value;
-      if (Buffer.byteLength(stdout) > LIMIT) stop(new Error('Codex output exceeds 8 MiB'));
+      if (Buffer.byteLength(stdout) > LIMIT) stop(new Error(`${processName} output exceeds 8 MiB`));
       if (stdout.length > LIMIT) stdout = stdout.slice(0, LIMIT);
     });
     child.stderr.on('data', value => { stderr = (stderr + value).slice(-65536); });
     child.stdin.on('error', error => { if (error.code !== 'EPIPE') stop(error); });
     child.on('error', error => { failure ??= error; });
-    child.on('close', code => {
+    child.on('close', (code, killedBy) => {
       clearTimeout(deadline);
       clearTimeout(killTimer);
       signal?.removeEventListener('abort', abort);
       if (failure) reject(failure);
-      else if (code !== 0) reject(classifyFailure(stderr || stdout || `Codex exit ${code}`));
+      else if (code !== 0) {
+        const message = (stderr || stdout || `${processName} exit ${code ?? killedBy}`).trim();
+        reject(processName === 'Git' ? new AuditError('GIT_EXECUTION', message.slice(0, 2000),
+          '检查 DSH Host 上 Git 工作区的可读性和配置。') : classifyFailure(message));
+      }
       else resolve({ stdout, stderr });
     });
     child.stdin.end(input);
@@ -120,18 +125,43 @@ export async function resolveCodex(configured) {
     const candidate = join(dir, process.platform === 'win32' ? 'codex.exe' : 'codex');
     if (await isExecutable(candidate)) return candidate;
   }
-  const platform = { linux: 'linux', darwin: 'macos' }[process.platform];
-  for (const base of [join(homedir(), '.vscode/extensions'), join(homedir(), '.vscode-server/extensions')]) {
-    if (!platform) break;
+  const platform = { linux: 'linux', darwin: 'macos', win32: 'win32' }[process.platform];
+  const arch = { arm64: 'aarch64', x64: 'x86_64' }[process.arch];
+  for (const extensions of ['.vscode', '.vscode-server']) {
+    if (!platform || !arch) break;
+    const base = join(homedir(), extensions, 'extensions');
     const entries = await readdir(base).catch(() => []);
     for (const name of entries.filter(name => name.startsWith('openai.chatgpt-')).sort().reverse()) {
-      const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-      const candidate = join(base, name, 'bin', `${platform}-${arch}`, 'codex');
+      const candidate = join(base, name, 'bin', `${platform}-${arch}`,
+        process.platform === 'win32' ? 'codex.exe' : 'codex');
       if (await isExecutable(candidate)) return candidate;
     }
   }
   throw new AuditError('CODEX_NOT_FOUND', 'DSH Host 上未找到 Codex CLI。',
     '将 Codex CLI 加入 DSH Host 的 PATH，或在 GUI 设置其绝对路径。');
+}
+
+export async function checkCodex(configured, { signal, cwd } = {}) {
+  const binary = await resolveCodex(configured);
+  const codexHome = codexHomePath();
+  const provider = await readProviderConfig(codexHome);
+  let help;
+  try {
+    const result = await execute(binary, ['exec', '--help'], { signal, cwd, timeoutMs: 10000,
+      env: { ...process.env, CODEX_HOME: codexHome } });
+    help = result.stdout;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new AuditError('CODEX_CLI_UNSUPPORTED',
+      `DSH Host 无法运行 Codex CLI 帮助（${error.code ?? error.message}）：${binary}`,
+      '确认宿主操作系统和架构匹配，并配置支持 exec 的 Codex 可执行文件。Windows 上使用 codex.exe。');
+  }
+  const missing = ['--ignore-user-config', '--ignore-rules', '--json', '--sandbox',
+    '--skip-git-repo-check', '--output-schema'].filter(flag => !help.includes(flag));
+  if (missing.length) throw new AuditError('CODEX_CLI_UNSUPPORTED',
+    `Codex CLI 缺少审计所需选项：${missing.join('、')}`,
+    '升级 DSH Host 上的 Codex CLI，或在面板指定支持这些选项的可执行文件。');
+  return { binary, codexHome, provider };
 }
 
 export function parseResult(stdout) {
@@ -157,28 +187,23 @@ export function parseResult(stdout) {
 }
 
 export async function runCodex({ record, settings, snapshot, signal, onAttempt = async () => {} }) {
-  const binary = await resolveCodex(settings.codexPath);
-  // The audit must not inherit MCP servers, hooks or writable tools. Authentication still
-  // comes from CODEX_HOME. Custom provider routes require an explicitly isolated profile.
-  const config = await readFile(join(codexHome(), 'config.toml'), 'utf8')
-    .catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
-  if (/^model_provider\s*=/m.test(config)) throw new AuditError('CUSTOM_PROVIDER_UNSUPPORTED',
-    '检测到自定义 Codex provider；尚未验证隔离审计配置。',
-    '保留现有配置，需要为该 provider 验证独立只读配置，不能静默切换账户路由。');
+  const { binary, codexHome, provider } = await checkCodex(settings.codexPath,
+    { signal, cwd: snapshot.path });
   const args = ['exec', '--ignore-user-config', '--ignore-rules', '--json',
     '--skip-git-repo-check', '--sandbox', 'read-only', '-c', 'approval_policy="never"',
     '-m', settings.model, '-c', `model_reasoning_effort="${settings.effort}"`,
-    '--output-schema', snapshot.schemaPath, '-C', snapshot.path, '-'];
+    ...provider.args, '--output-schema', snapshot.schemaPath, '-C', snapshot.path, '-'];
   for (let attempt = 1; attempt <= 3; attempt++) {
     signal.throwIfAborted();
     record.attempts = attempt;
     await onAttempt();
     try {
       const output = await execute(binary, args, { cwd: snapshot.path, signal,
+        env: { ...process.env, CODEX_HOME: codexHome },
         input: snapshot.prompt, timeoutMs: settings.timeoutMs ?? 3600000 });
       const result = parseResult(output.stdout);
       result.modelObservation = await readCodexSelection({ threadId: result.threadId,
-        startedAt: record.startedAt });
+        startedAt: record.startedAt, codexHome });
       record.modelObservation = result.modelObservation;
       record.codexThreadId = result.threadId;
       const observed = result.modelObservation;

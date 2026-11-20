@@ -22,6 +22,12 @@ The default interval is three
 hours, adjustable to integer values from one to five hours. Scheduling runs in
 the DSH Host, including while the panel is closed. A stopped Host cannot run audits.
 Sessions start disabled so installing the plugin does not unexpectedly spend quota.
+With automatic audits paused, **预约下次审计** saves a single run due one
+configured interval from the click. The displayed time stays fixed if you run
+an immediate audit or change the interval. **取消预约** removes the pending run.
+At maturity the Host runs it when the single audit slot is available, even if
+the session is idle or the panel is closed. An overdue reservation survives a
+Host restart; a started reservation is recorded once and clears its timer.
 Each off-to-on transition captures a new session cursor and workspace file-hash
 baseline. First periodic review covers work since that activation; subsequent
 successful full reviews advance coverage to their **snapshot cursor**, not their
@@ -127,9 +133,12 @@ untracked source), the ignored active Spec selected by `.specify/feature.json`,
 and an exact DSH conversation cutoff through `sessionQuery`. Complete settled
 messages and tool calls are retained in ordered, hashed chunks; duplicate stream
 frames are excluded. A source manifest and conversation index locate the inputs.
-Bounded scratch
-snapshots live in owned directories on disk-backed `/tmp` and are removed after
-the attempt. Credentials, model-sized assets, build outputs and symlinks are
+Bounded scratch snapshots use the DSH host's OS temporary directory (`TMPDIR`
+on Linux/macOS, `TEMP` or `TMP` on Windows) and are removed after the attempt.
+Set the temporary directory outside the audited worktree in the environment
+that starts DSH. The snapshot starts at the session's Git worktree root,
+including when the session opens a subdirectory. Credentials, model-sized
+assets, build outputs and symlinks are
 excluded. A changing source fails snapshot admission rather than silently mixing
 versions. This is a source snapshot, not a release or runtime qualification.
 HEAD is only the baseline: audit instructions, history and delivered messages
@@ -144,8 +153,9 @@ exclusions above still apply.
 Codex uses an independent process, JSONL completion events, a structured response,
 read-only shell sandbox and no approvals. User configuration is excluded to avoid
 inheriting writable MCP tools and hooks; authentication still uses `CODEX_HOME`.
-Custom provider routes currently produce an explicit unsupported-configuration
-error instead of silently using another route. Model and effort are confirmed
+The plugin parses the host's TOML and reads the selected provider, including a
+provider selected by the default profile. For a custom provider it passes only
+supported connection fields to the isolated invocation. Model and effort are confirmed
 from the exact Codex thread's `turn_context` runtime records, bounded by this
 audit's completion time. Existing history is backfilled on plugin initialization.
 The UI identifies this evidence as Codex runtime confirmation; it does not claim
@@ -156,7 +166,14 @@ the VSCode sidebar or promise its audit thread appears there.
 
 Completed reports are saved before delivery to the original DSH session via
 `steer()`. This does not cancel the current model request or tool. DSH reads the
-report at its next model step. Stable message identities deduplicate inbox and
+report at its next model step. The conversation shows the latest completed audit
+in its input area, even while the agent is busy. The card refreshes about every
+two seconds in a visible tab and loads the report body when expanded. Its receipt
+states distinguish a saved report, admission to DSH history, and an explicit
+DSH acknowledgement. Closing the card persists its audit ID for that session.
+The next completed audit can appear, and older reports remain in audit history.
+Native audit input rows stay hidden even when the card is closed. Stable message
+identities deduplicate inbox and
 durable-history delivery. Inbox acceptance is displayed separately from confirmed
 log admission. A dropped pre-step input returns to pending delivery; automatic
 delivery has at most five attempts before explicit retry is needed. A Session
@@ -183,6 +200,53 @@ bounded to 1 MiB. History retains up to 200 records while preserving pending del
 audits are marked on restart. Auth/model/executable configuration failures pause
 automatic audit requests. Transient Codex failures have at most three attempts.
 
+## Install on another machine
+
+On the machine running the DSH Web host, check `dsh --version` before installing.
+This package declares DSH `0.2.2-rc.1` with its Cordis `4.1.0` runtime contracts.
+That DSH release requires Node.js 24.9 or newer. Install the tarball from an
+absolute path on that machine:
+
+```sh
+dsh plugin --profile web add "/absolute/path/to/dsh-codex-audit-0.1.25.tgz"
+```
+
+Use the profile that actually serves your Web UI if it has another name.
+The package manager needs access to the declared npm dependencies or a
+prepopulated cache. Verify `dsh-codex-audit` occurs once in the active profile's
+`package.json` under `dsh.profile.bundles`. A copied profile patch that adds the
+same `codex-audit` entry a second time can interfere with startup and reload.
+Restart the service through its existing owner after installation.
+
+Open a DSH session in a Git worktree with a commit. In the audit panel, open
+**连接与运行环境** and click **检查本机条件**. This checks the session's Git
+worktree, scratch-directory creation, provider configuration and required CLI flags without making
+a model request. Codex runs on the DSH host. If the service has a different PATH
+from your terminal, set the absolute path to Codex in the panel. On Windows
+prefer the native `codex.exe` over a package-manager `.cmd` shim. A browser or
+VS Code client on another machine cannot supply the host's executable, local
+workspace path or authentication. When migrating settings, clear or update any
+saved Codex path from the previous host.
+
+Authenticate Codex as the account that runs DSH and run one manual audit to
+verify the selected model and reasoning effort. Codex reads its own auth state,
+with optional `CODEX_HOME` in the DSH process environment. A relative
+`CODEX_HOME` resolves from the host's working directory before Codex starts
+in the snapshot. The model selector
+uses that account's available local catalog when present. Without a usable
+catalog the plugin only lists its configured default, whose availability must
+still be verified on that account. DSH's own model/provider credentials are not
+used by Codex. Copying NDNSF, TPS Window, another host's profile state, or Codex
+credentials from another machine is unnecessary.
+
+For a custom gateway, configure `model_provider` and the matching
+`[model_providers.<id>]` table in the host's Codex config. Supply its Responses
+API `base_url` and use `env_key` for an API key. Set the named variable in the
+environment that launches the DSH service. Environment-backed headers are also
+supported. Static tokens and headers, command-backed credentials and custom
+gateways that reuse the built-in OpenAI login are rejected with a configuration
+error. Choose a provider you authorize to receive the workspace audit inputs.
+
 ## Development verification
 
 This directory can be copied or cloned on its own. Use Node 22 or newer, npm
@@ -191,22 +255,12 @@ This directory can be copied or cloned on its own. Use Node 22 or newer, npm
 ```sh
 npm ci --ignore-scripts
 npm test
-npm pack --ignore-scripts
+npm pack --ignore-scripts --pack-destination /path/to/artifacts
 ```
 
-Install the resulting tarball with `dsh plugin --profile web add /absolute/path/to/the.tgz`.
-Verify that `dsh-codex-audit` occurs once in the Web profile's `dsh.profile.bundles`
-and restart the service through its existing owner. The supported host is DSH
-`0.2.2-rc.1` with Cordis `4.1.0`. The host supplies Agent, query, storage and
-gateway services. Its Web loader supplies React, React DOM and the DSH Markdown
-renderer. The plugin does not need the rest of the NDNSF checkout or TPS Window.
-
-Actual audits require Git, a Git workspace with a commit, and an authenticated
-Codex CLI that supports the requested model and effort. Set the CLI's absolute
-path in the panel or put its executable on the DSH host's `PATH`. Linux and
-macOS also support discovery through a local VS Code installation. Codex reads
-its own authentication state, with optional `CODEX_HOME` for an explicit profile.
-The bundled tests use isolated fixtures and make no model requests.
+The host supplies Agent, query, storage and gateway services. Its Web loader
+supplies React, React DOM and the DSH Markdown renderer. The tests use
+isolated fixtures and make no model requests.
 
 Reply collection materializes each session observation once and indexes report
 admissions before scanning assistant messages. It must not search the complete

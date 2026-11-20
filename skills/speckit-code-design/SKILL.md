@@ -91,6 +91,9 @@ FR/SC 或任务中已经写入某项工作，并不自动证明它必要。审�
    明确真实入口、可观察结果、独立判据和必要负例，不以测试数量代替行为。
    将手推断点归入已有行为owner；检查每项验收所需能力在该任务或其前置内产生，
    局部检查与后续端到端资格分开，不让前置任务依赖尚未实现的后续闭环。
+   对重构和相关测试、实验修正，按 [Batch Allocation Decision](references/batch-quality-gates.md#batch-allocation-decision)
+   在 plan 写清逻辑批次与共同验收出口，在 tasks 把必须共同落地的改动写成一个任务的有序步骤。
+   有独立验收的既有任务可复用同批构建，分别保留 ID、判据与结果。
 6. 用 [review-gate.md](references/review-gate.md) 检查设计是否可实施。
    未知项只阻塞受影响范围，不能以文档结构检查 PASS 宣称整个设计就绪。
 
@@ -121,7 +124,11 @@ tasks.md 顶部必须用逐执行单元的 `Execution Progress` 表完整登记�
 唯一执行规则见 [pre-test-static-review.md](references/pre-test-static-review.md)；真实运行、
 MiniNDN、模型和资格实验的反复重试还必须遵循
 [experiment-static-review-loop.md](references/experiment-static-review-loop.md)。
-每个小任务编码后应用只读 review-agent profile 静态门。按该参考的 Dependency-Scoped Dispatch：依赖该任务的工作等待通过；无依赖、文件边界清晰且自身前置已满足的任务可在异步审查期间继续。单主会话使用编码主代理和只读审查子代理，审查固定快照；整批成员静态通过及组合审查通过后统一构建和相关测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用最终验证阶段。
+每个可独立审阅的批次成员完成后应用只读 review-agent profile 静态门。同一任务内必须共同
+落地的改动按内部顺序完成后审阅。按该参考的 Dependency-Scoped Dispatch：依赖该成员的
+工作等待静态确认；无依赖、文件边界清晰且自身前置已满足的任务可在异步审查期间继续。
+单主会话使用编码主代理和只读审查子代理，审查固定快照。整批成员静态通过并完成组合审查后，
+按所需构建配置集中构建与测试。批次测试未完成保持 PARTIAL；集成与真实实验沿用既定验证阶段。
 Static review PASS != Behavior PASS。
 
 批次覆盖、稳定出口、漏检分类和构建测量统一遵循
@@ -154,8 +161,9 @@ Static review PASS != Behavior PASS。
 
 这四步是批次门，不是新增的任务层级。若某个 batch 没有稳定出口或没有可执行的 C++
 selector，停止动态运行并记录 `gap`/`NOT_RUN`，先修复接线或拆分批次。
-编码前必须记录每批的分配依据（共同入口/调用方、契约、oracle/selector、source
-closure、验收出口）；任一项不一致就拆成新的批次，不以少一次构建为合批理由。
+编码前必须记录每批的分配依据（入口/调用方、共同契约、oracle/selector、source
+closure、验收出口）。同一改动波及多个目标或选择器时列出受影响闭包；独立成果或
+需要提前通过不同硬验收的工作另分批次。
 每个静态门和批末门还必须留下五 lane Coverage matrix；没有实际文件/符号和查询
 命令的覆盖声称不能产生 `STATIC_PASS`。
 矩阵格式统一采用 [review-agent.md](references/review-agent.md) 的 **Minimum Review Record**；

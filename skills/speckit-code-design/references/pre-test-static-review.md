@@ -58,8 +58,10 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 测试文件的 clean review 必须记为 coverage gap。
 
 无已知控制性缺陷且验证命令、独立判据和必要负例明确，记录 `READY_FOR_BATCH_TESTS`，并填写
-批末 `Review trace` 与 `Closure decision: CLOSED_FOR_VALIDATION`，再统一执行必要构建、相关
-单测及登记的动态 profile。共享构建和重叠选择器合并执行，结果逐项映射成员；不按任务数重复命令。
+批末 `Review trace` 与 `Closure decision: CLOSED_FOR_VALIDATION`，再执行批次初验。对同一候选，
+按必需的构建配置合并受影响目标，使用现有增量产物完成一次批次构建；合并重叠选择器，
+执行相关单测、集成检查或实验中本批应做的部分及登记的动态 profile。把结果逐项映射到
+成员及验收。普通与插桩配置、兼容性基线与新候选、以及需要独立观测的实验运行各留证据。
 动态 profile 使用独立 sanitizer build/output；`asan-ubsan`、`tsan` 和 `parser-fuzz` 不混用
 同一编译产物。动态结果为 `NOT_RUN`、`DYNAMIC_PASS` 或 `DYNAMIC_FAIL`，不能单独提升行为或
 资格状态。
@@ -76,7 +78,7 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 若尚未达到稳定出口，必须记录 `OPEN_FOR_NEXT_BATCH` 及触发条件，不得以 READY 或共享构建掩盖缺口。
 不得把后续批次全部写完才测试当前已闭合批次。
 
-全部实现、调用方迁移和测试/harness 编写完成后，补审最终跨批接线，再执行约定的 final unit regression → integration → system/MiniNDN → feature acceptance。跨组件/跨进程用例随实现编写，默认留最终阶段运行；不能重命名为 unit/smoke 提前执行或由静态扫描替代。
+全部实现、调用方迁移和测试/harness 编写完成后，补审最终跨批接线，再执行约定的 final unit regression → integration → system/MiniNDN → feature acceptance。跨批集成和整体验收留最终阶段。批次本身的硬验收需要安装入口、跨进程或最小实验时，在批末完成该检查并记录它证明的范围。
 
 ## Exceptions And Retry
 
@@ -84,7 +86,10 @@ closure 后，官方 review-agent 的 `No findings` 才能成为静态门结果�
 
 明确要求的 TDD RED / counterfactual 保留：先审查检测路径及预期失败，运行具名受控缺陷用例，再修复、重审；RED 不算验收。不因风格或无证据猜测反复重构。
 
-失败时保留原始结果并识别首个失败边界，重读相关源码，修复后重审和重跑受影响范围。启动失败与协议结果分开。源码、配置、依赖变化只使受影响证据失效；既有有效 PASS 可复用。后续测试层级无新变化时无需重复全量审查。
+失败时保留原始结果并识别首个失败边界。修复后重审受影响调用链，增量重建相关目标，
+复测失败用例与共享变更所影响的其余用例。启动失败与协议结果分开。复用已有 PASS 前核对
+相关源码、配置、fixture、依赖及产物身份；影响整个批次或正式验收候选时，重新执行对应的
+整批检查。后续测试层级无新变化时无需重复全量审查。
 
 若失败属于编译/链接或运行/测试漏检，重试前必须在同一结果记录中链接首个失败证据，
 并写明新增或改变的静态检查及其覆盖 lane；重复同类漏检时先更新共享 skill、模板或

@@ -84,6 +84,10 @@ test('the runner passes each chosen effort to the Codex executable', async () =>
     const binary = join(root, 'codex-fixture.cjs');
     await writeFile(binary, `#!${process.execPath}
 const args = process.argv.slice(2);
+if (args.includes('--help')) {
+  console.log('--ignore-user-config --ignore-rules --json --sandbox --skip-git-repo-check --output-schema');
+  process.exit(0);
+}
 const report = JSON.stringify(args);
 console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message',
   text: JSON.stringify({ report, documentChanges: [] }) } }));

@@ -38,7 +38,9 @@ test('立即审计 opens a real prompt dialog, prefilled and clearable, and send
     window: { __ModuleLoader__: { load: m => { plugin = m.factory(require); } } },
     document: { body: {} }, Date, Set, Map, Object, Number, String, Math,
   });
-  plugin.apply({ slots: { inject(name, factory) { [...factory()]; },
+  plugin.apply({ slots: { inject(name, factory) {
+    if (name === 'conversation.composer.dock') [...factory()];
+  },
     register(options, component) { Panel = component; } },
     connection: { rpc: { async call() { return { ok: true, value: data }; } } }, sessions: {} });
 

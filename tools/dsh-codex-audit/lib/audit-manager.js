@@ -92,7 +92,7 @@ export class AuditManager {
   settings(sessionId) {
     const model = this.models.find(option => option.id === AUDIT_MODEL) ?? this.models[0];
     return this.state.sessions[sessionId] ?? { enabled: false, intervalHours: 3,
-      nextDue: null, model: model.id,
+      nextDue: null, reservationAt: null, model: model.id,
       effort: model.efforts.includes(AUDIT_EFFORT) ? AUDIT_EFFORT : model.defaultEffort, prompt: DEFAULT_PROMPT };
   }
 
@@ -123,6 +123,8 @@ export class AuditManager {
     if (this.configurationRequests.get(sessionId) !== token) throw new AuditError(
       'CONFIGURATION_SUPERSEDED', '设置已被后续操作替代。', '以面板当前显示的设置为准。');
     if (!selectionOnly) value.nextDue = value.enabled ? this.now() + value.intervalHours * HOUR : null;
+    value.reservationAt = this.settings(sessionId).reservationAt ?? null;
+    value.dismissedAuditId = this.settings(sessionId).dismissedAuditId ?? null;
     this.state.sessions[sessionId] = value;
     await this.persist();
     return structuredClone(this.publicSettings(sessionId));
@@ -137,6 +139,15 @@ export class AuditManager {
 
   async tick() {
     if (this.disposed) return;
+    if (!this.running.size) {
+      const due = Object.entries(this.state.sessions)
+        .filter(([, settings]) => Number.isFinite(settings.reservationAt) && settings.reservationAt <= this.now())
+        .sort(([, a], [, b]) => a.reservationAt - b.reservationAt)[0];
+      if (due) {
+        this.start(due[0], 'reservation').catch(error => this.safeNotify(error));
+        return;
+      }
+    }
     for (const [sessionId, settings] of Object.entries(this.state.sessions)) {
       if (!settings.enabled || settings.nextDue > this.now() || !this.active(sessionId)) continue;
       // Advance the deadline once: missed intervals never become a backlog.
@@ -144,6 +155,24 @@ export class AuditManager {
       await this.persist();
       this.start(sessionId, 'scheduled').catch(error => this.safeNotify(error));
     }
+  }
+
+  async reserveNext(sessionId) {
+    if (this.disposed) throw new Error('Audit manager disposed');
+    const settings = this.settings(sessionId);
+    if (settings.enabled) throw new AuditError('SCHEDULE_ENABLED',
+      '自动审计已开启。', '暂停自动审计后可预约一次审计。');
+    this.state.sessions[sessionId] = { ...settings,
+      reservationAt: settings.reservationAt ?? this.now() + settings.intervalHours * HOUR };
+    await this.persist();
+  }
+
+  async cancelReservation(sessionId) {
+    if (this.disposed) throw new Error('Audit manager disposed');
+    const settings = this.state.sessions[sessionId];
+    if (settings?.reservationAt == null) return;
+    settings.reservationAt = null;
+    await this.persist();
   }
 
   async skipNext(sessionId) {
@@ -187,7 +216,10 @@ export class AuditManager {
     const current = this.state.sessions[sessionId];
     if (current?.enabled && !current.auditPeriod) current.auditPeriod = await this.newPeriod(sessionId);
     const settings = structuredClone(this.settings(sessionId));
+    const reservationAt = trigger === 'reservation' ? settings.reservationAt : null;
+    if (trigger === 'reservation' && !Number.isFinite(reservationAt)) return;
     const record = { id: `AUD-${randomUUID()}`, sessionId, trigger,
+      ...(reservationAt === null ? {} : { reservationAt }),
       blockedGoal: blockedGoal ? structuredClone(blockedGoal) : null,
       model: settings.model, effort: settings.effort, effectiveModel: null,
       effectiveEffort: null,
@@ -207,6 +239,9 @@ export class AuditManager {
       if (index < 0) throw new Error('Audit history capacity reached');
       this.state.records.splice(index, 1);
     }
+    // Clear the deadline in the same save that creates the running record.
+    // After a restart the recorded attempt is interrupted, not launched again.
+    if (reservationAt !== null) this.state.sessions[sessionId].reservationAt = null;
     this.state.records.push(record);
     let snapshot;
     try {
@@ -262,7 +297,9 @@ export class AuditManager {
       }
       record.error = { code: error.code ?? 'AUDIT_FAILED', message: error.message,
         remedy: error.remedy ?? '检查执行记录后重试。' };
-      if (['CODEX_AUTH', 'CODEX_QUOTA', 'CODEX_MODEL', 'CODEX_SELECTION_MISMATCH', 'CODEX_NOT_FOUND', 'CUSTOM_PROVIDER_UNSUPPORTED'].includes(error.code)) {
+      if (['CODEX_AUTH', 'CODEX_QUOTA', 'CODEX_MODEL', 'CODEX_SELECTION_MISMATCH',
+        'CODEX_NOT_FOUND', 'CODEX_CLI_UNSUPPORTED', 'CODEX_PROVIDER_CONFIG',
+        'CODEX_PROVIDER_ENV_MISSING'].includes(error.code)) {
         const current = this.state.sessions[sessionId];
         if (current) { current.enabled = false; current.nextDue = null; }
       }

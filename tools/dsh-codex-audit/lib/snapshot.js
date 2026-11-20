@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile, rm, lstat, realpath, statfs } from 'node:fs/promises';
-import { join, dirname, relative, isAbsolute, extname } from 'node:path';
+import { mkdtemp, mkdir, readFile, writeFile, rm, lstat, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname, relative, isAbsolute, extname, sep } from 'node:path';
 import { execute } from './codex-runner.js';
 import { AuditError } from './audit-manager.js';
 import { conversationParts } from './conversation.js';
@@ -12,6 +13,65 @@ const SOURCE_EXTENSIONS = new Set(['.cpp', '.hpp', '.h', '.c', '.cc', '.cxx', '.
   '.ts', '.tsx', '.jsx', '.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.sh', '.cmake']);
 const EXCLUDED = /(^|\/)(\.git|\.codex|\.aws|node_modules|\.venv|build[^/]*|credentials?|secrets?)(\/|$)|(^|\/)(\.env[^/]*|auth\.json|[^/]*\.(pem|key|p12|pfx))$/i;
 export const digest = value => createHash('sha256').update(value).digest('hex');
+
+function runGit(cwd, args, signal) {
+  return execute('git', ['-C', cwd, ...args], { signal, timeoutMs: 15000,
+    processName: 'Git', env: { ...process.env, LC_ALL: 'C' } });
+}
+
+export async function resolveAuditWorkspace(cwd, signal) {
+  if (typeof cwd !== 'string' || !isAbsolute(cwd)) throw new AuditError('WORKSPACE_NOT_FOUND',
+    'DSH 会话未提供有效的本机工作目录。', '在 DSH Host 上打开项目的本机 Git 工作区。');
+  cwd = await realpath(cwd).catch(() => { throw new AuditError('WORKSPACE_NOT_FOUND',
+    `DSH Host 无法访问工作目录：${cwd}`, '检查会话路径是否在 DSH Host 上可读。'); });
+  const git = async (...args) => {
+    try {
+      return (await runGit(cwd, args, signal)).stdout.replace(/\r?\n$/, '');
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM') {
+        throw new AuditError('GIT_UNAVAILABLE', 'DSH Host 无法启动 Git。',
+          '安装 Git 并将其加入启动 DSH Host 的 PATH。');
+      }
+      throw error;
+    }
+  };
+  let root;
+  try { root = await git('rev-parse', '--show-toplevel'); }
+  catch (error) {
+    if (error.code !== 'GIT_EXECUTION' || !/not a git repository|must be run in a work tree/i.test(error.message)) {
+      throw error;
+    }
+    throw new AuditError('WORKSPACE_NOT_GIT', `DSH 会话目录不属于 Git 工作树：${cwd}`,
+      '在 DSH 中打开待审计的 Git checkout。');
+  }
+  cwd = await realpath(root);
+  let head;
+  try { head = await git('rev-parse', '--verify', 'HEAD'); }
+  catch (error) {
+    if (error.code !== 'GIT_EXECUTION' || !/needed a single revision/i.test(error.message)) throw error;
+    throw new AuditError('WORKSPACE_NO_COMMIT', 'Git 工作区没有可解析的 HEAD。',
+      '检出或创建第一个提交后再审计。');
+  }
+  return { cwd, head };
+}
+
+export async function createAuditScratch(workspace) {
+  const directory = tmpdir();
+  try {
+    if (!isAbsolute(directory)) throw new Error('临时目录须为绝对路径');
+    const target = await realpath(directory);
+    const fromWorkspace = relative(workspace, target);
+    if (!fromWorkspace || !isAbsolute(fromWorkspace) &&
+        fromWorkspace !== '..' && !fromWorkspace.startsWith(`..${sep}`)) {
+      throw new Error('临时目录须位于当前 Git 工作树之外');
+    }
+    return await mkdtemp(join(target, 'dsh-codex-audit-'));
+  } catch (error) {
+    throw new AuditError('SCRATCH_UNAVAILABLE', `DSH 无法在临时目录 ${directory} 创建审计快照（${error.code ?? error.message}）。`,
+      '为 DSH Host 设置存在、可写且有足够空间的临时目录，再重启该服务。');
+  }
+}
 
 export function describeBasis(basis) {
   if (basis.sourceMode !== 'working-tree') {
@@ -34,8 +94,7 @@ export async function checkSnapshotCurrent(snapshot) {
       if (changedFiles.length < 100) changedFiles.push(name);
     }
   }
-  const list = async args => (await execute('git', ['-C', snapshot.originalCwd, ...args],
-    { timeoutMs: 15000 })).stdout.split('\0').filter(Boolean);
+  const list = async args => (await runGit(snapshot.originalCwd, args)).stdout.split('\0').filter(Boolean);
   const names = await list(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
   if (snapshot.basis.feature) names.push(...await list(['ls-files', '-z', '--others',
     '--ignored', '--exclude-standard', '--', snapshot.basis.feature]));
@@ -50,8 +109,7 @@ export async function checkSnapshotCurrent(snapshot) {
     changedCount++;
     if (changedFiles.length < 100) changedFiles.push(name);
   }
-  const currentHead = (await execute('git', ['-C', snapshot.originalCwd, 'rev-parse', 'HEAD'],
-    { timeoutMs: 15000 })).stdout.trim();
+  const currentHead = (await runGit(snapshot.originalCwd, ['rev-parse', 'HEAD'])).stdout.trim();
   return { checkedAt: Date.now(), currentHead, changedCount, changedFiles,
     stale: changedCount > 0 || currentHead !== snapshot.basis.head };
 }
@@ -85,16 +143,10 @@ export async function createSnapshot({ cwd, conversation = '', seq, prompt, sign
     throw new AuditError('CONVERSATION_CAPACITY', '完整消息记录超过 64 MiB 审计输入上限。',
       '请为该超大会话提供明确的审计范围；插件没有静默截断对话。');
   }
-  cwd = await realpath(cwd).catch(() => { throw new AuditError('WORKSPACE_NOT_FOUND',
-    `DSH Host 无法访问工作目录：${cwd}`, '检查 DSH 与 VSCode 是否在同一主机及工作目录。'); });
-  const fs = baselineOnly ? null : await statfs('/tmp');
-  if (fs && (Number(fs.type) === 0x01021994 || Number(fs.bavail) * Number(fs.bsize) < MAX_BYTES * 2)) {
-    throw new AuditError('SCRATCH_UNAVAILABLE', '/tmp 为内存盘或可用空间不足。',
-      '为审计提供至少 512 MiB 可用的磁盘 /tmp。');
-  }
-  const git = async args => (await execute('git', ['-C', cwd, ...args],
-    { signal, timeoutMs: 15000 })).stdout;
-  const head = (await git(['rev-parse', 'HEAD'])).trim();
+  const workspace = await resolveAuditWorkspace(cwd, signal);
+  cwd = workspace.cwd;
+  const git = async args => (await runGit(cwd, args, signal)).stdout;
+  const head = workspace.head;
   const names = (await git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']))
     .split('\0').filter(Boolean);
   let feature = null;
@@ -115,7 +167,7 @@ export async function createSnapshot({ cwd, conversation = '', seq, prompt, sign
     .filter(row => selectedNames.has(row.path));
   const workingTreeChanges = await workingTreeStatus();
   if (selected.length > MAX_FILES) throw new Error('Snapshot exceeds 15000 source files');
-  const path = baselineOnly ? null : await mkdtemp('/tmp/dsh-codex-audit-');
+  const path = baselineOnly ? null : await createAuditScratch(cwd);
   const hashes = {};
   let bytes = 0;
   try {
@@ -215,6 +267,9 @@ export async function createSnapshot({ cwd, conversation = '', seq, prompt, sign
     };
   } catch (error) {
     if (path) await rm(path, { recursive: true, force: true });
+    if (error.code === 'ENOSPC' || error.code === 'EDQUOT') throw new AuditError('SCRATCH_UNAVAILABLE',
+      `审计快照的临时目录空间或配额不足：${tmpdir()}`,
+      '释放该目录的空间，或为 DSH Host 设置另一个可写的临时目录。');
     throw error;
   }
 }

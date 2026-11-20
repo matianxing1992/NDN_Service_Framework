@@ -50,6 +50,11 @@
 - Preserve unrelated worktree and index changes. Stage explicit authorized paths;
   never use `git add -A` or destructive resets. Commit when requested or required
   by the per-task completion rule below. Push only when explicitly requested.
+- Keep `tools/dsh-codex-audit/`, `tools/dsh-tps-window/` and the repository's
+  `skills/` in Git. Commit changes to plugin source, package manifests, lockfiles,
+  tests and repository skill definitions and references with their corresponding
+  work. Keep installed copies, `node_modules`, generated package archives and
+  machine-specific configuration outside Git.
 - For Spec-based work, `.specify/feature.json`, when present, selects the active
   feature. Read that feature's plan and tasks; follow specification -> plan ->
   tasks -> implementation -> verification.
@@ -331,6 +336,25 @@ approval again or hide an exception in a special-case branch.
   or accumulate unrelated changes merely to save a build. Implementation tasks
   should change product code or verify C++ behavior; update affected documentation
   in the same task when an interface, behavior or security contract changes.
+- Plan refactors and related test or experiment repairs as logical batches. Group
+  the callers, implementations, registrations, fixtures, launchers and affected
+  entry points needed to complete a shared behavior, migration or test harness
+  contract. Prefer one task with ordered internal steps for changes that must
+  land together. In the existing plan and tasks, identify each batch's owner,
+  dependency order, affected build targets and test selectors, and observable
+  acceptance criteria. Different selectors or targets may belong to one batch
+  when they exercise the same change on the same candidate. Split independent
+  outcomes and changes with hard acceptance dependencies that require an
+  earlier result. An explicit `STRICT_SERIAL` plan retains its order and exits.
+- Finish the related edits and review their combined call path before the batch
+  build. Reuse the configured build and run the deduplicated affected targets
+  and checks on the same candidate, once per required build profile in the
+  initial validation. Run focused diagnostics earlier only when they resolve a
+  concrete blocker or fulfill an explicit required gate. Keep each task's
+  acceptance and required experiment evidence visible. After a failure,
+  preserve the first failing boundary and rerun the affected closure after
+  repair, retaining earlier results only where their inputs and prerequisites
+  still apply.
 - Scope each Spec to one concrete outcome; first check whether qualified evidence
   and maintained code already suffice. For every task, name the remaining gap
   and the smallest change or check that closes it; remove speculative variants
@@ -522,13 +546,16 @@ approval again or hide an exception in a special-case branch.
   what changed, actual verification performed and material remaining limits.
   Do not claim build, runtime, experiment or publication readiness from static
   inspection alone.
-- For work tracked in `tasks.md`, finish verification, mark each task complete,
-  and immediately create a separate commit for that task before starting the
-  next task. This is standing authorization to commit without asking again;
-  do not accumulate several completed tasks into one commit. Include only that
-  task's changes and any tracked status/evidence updates, respecting local-only
-  exclusions. Stage specific hunks when files contain unrelated pending work;
-  preserve that work and the index. Failed or partial tasks are not complete.
+- For work tracked in `tasks.md`, finish the defined acceptance and commit the
+  verified task before starting the next task. For a declared logical batch,
+  this rule applies at the batch boundary. Complete its internal steps in
+  dependency order, run their shared validation, map evidence to each task's
+  exit, and commit the verified batch together before starting the next batch.
+  `STRICT_SERIAL` batches that require shared verification belong inside one
+  top-level task. Keep failed or untested acceptance open. This is standing
+  authorization to commit only the verified unit's changes and tracked
+  status/evidence updates, respecting local-only exclusions. Stage explicit
+  paths or specific hunks when files contain unrelated pending work.
   For other work, commit only when requested. Push still requires an explicit
   user instruction.
 - Keep an active goal running while builds or jobs run, resources are queued,
@@ -537,6 +564,23 @@ approval again or hide an exception in a special-case branch.
   with no meaningful next action; report the concrete condition. If the host
   goal state cannot be resumed through available tools, explain that limitation
   without claiming it was restored, and continue authorized work in the turn.
+- Before reporting a DSH context shortage, verify the latest usage and effective
+  context limit for the active agent's session and model. Check whether the
+  displayed percentage means used or remaining, and account for the next step's
+  input, any required output reserve and expected tool results. A generic warning
+  or an unverified estimate alone cannot justify a blocked goal. If the reading
+  shows more than half remains and there is no confirmed request-size error,
+  continue with a bounded step. If the reading is unavailable, stale or conflicts
+  with a warning, try a small useful step and check its actual outcome. A
+  successful request confirms that step can continue. Recover missing task facts
+  from source, the task record or the last verified checkpoint.
+  If the host explicitly reports a context limit or verified usage shows the
+  next bounded step cannot fit, narrow inputs and tool output and initiate
+  supported compaction as needed. Preserve the goal, user constraints, last
+  verified checkpoint and next action, then resume with the goal active. Mark
+  the goal blocked only when bounded recovery attempts leave no meaningful next
+  action. Report the specific step, the observed limit or exact host error, and
+  the recovery attempted.
 - **Decide rather than stall on a design fork.** When a choice changes already
   written code, state the options with their concrete cost and ask once, in the
   same turn, with a recommendation. If no answer arrives within ten minutes,

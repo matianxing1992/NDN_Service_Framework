@@ -2,15 +2,16 @@ import { createReadStream } from 'node:fs';
 import { readdir, lstat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const MAX_LOG_BYTES = 32 * 1024 * 1024;
 const unavailable = reason => ({ status: 'unavailable', source: 'codex-turn-context', reason });
+export const codexHomePath = () => resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
 
 // Read only metadata from the exact engine thread. Never infer actual selection
 // from requested settings or return conversation/credential content to the UI.
 export async function readCodexSelection({ threadId, startedAt, finishedAt = Date.now(),
-  codexHome = process.env.CODEX_HOME || join(homedir(), '.codex') }) {
+  codexHome = codexHomePath() }) {
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(threadId ?? '') ||
       !Number.isFinite(startedAt)) return unavailable('缺少有效的 Codex 会话标识或审计时间。');
   const directories = new Set();

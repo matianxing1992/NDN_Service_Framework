@@ -37,6 +37,97 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
     interrupted: '审计中断', cancelled: '已取消', pending: '待投递',
     delivered: '已投递', held: '报告已保留', 'not-ready': '未就绪' };
 
+  function ConversationCard({ sessionId, rpc }) {
+    const [latest, setLatest] = React.useState(null);
+    const [expanded, setExpanded] = React.useState(null);
+    const [body, setBody] = React.useState(null);
+    const [dismissed, setDismissed] = React.useState(null);
+    const [dismissError, setDismissError] = React.useState(null);
+    const candidate = latest?.sessionId === sessionId ? latest.card : null;
+    const card = dismissed?.sessionId === sessionId && dismissed.id === candidate?.id ? null : candidate;
+    const id = card?.id;
+    const isOpen = expanded?.sessionId === sessionId && expanded.id === id;
+
+    React.useEffect(() => {
+      const controller = new AbortController();
+      let timer;
+      const poll = async () => {
+        if (controller.signal.aborted) return;
+        if (!document.hidden) {
+          try {
+            const result = await rpc('view', { sessionId, conversationCard: true }, controller.signal);
+            if (!controller.signal.aborted && !result.error) setLatest({ sessionId,
+              card: result.card, dismissible: result.dismissible === true });
+          } catch { /* Preserve the last receipt across a disconnected poll. */ }
+        }
+        if (!controller.signal.aborted) timer = setTimeout(poll, 2000);
+      };
+      poll();
+      return () => { controller.abort(); clearTimeout(timer); };
+    }, [sessionId, rpc]);
+
+    React.useEffect(() => {
+      if (!isOpen || !id || (body?.sessionId === sessionId && body.id === id && !body.error)) return;
+      const controller = new AbortController();
+      rpc('view', { sessionId, conversationCard: true, auditId: id }, controller.signal).then(result => {
+        if (!controller.signal.aborted) setBody({ sessionId, id, report: result.card?.report,
+          error: result.card ? null : '报告已不在审计历史中。' });
+      }).catch(() => {
+        if (!controller.signal.aborted) setBody({ sessionId, id, error: '暂时无法读取报告，请收起后重试。' });
+      });
+      return () => controller.abort();
+    }, [isOpen, id, sessionId, rpc]);
+
+    // Hide the plugin's native input rows even when there is no visible card.
+    // They retain their original message IDs and remain in the model transcript.
+    const nativeRows = /^[\w-]+$/.test(sessionId) ? h('style', null,
+      `[data-conversation-session="${sessionId}"] [data-chat-node-key^="13:input-messagecodex-audit-AUD-"]{display:none}`) : null;
+    if (!card) return nativeRows;
+    const current = body?.sessionId === sessionId && body.id === id ? body : null;
+    const wait = card.admitted || card.replied ? null : card.delivery === 'delivered' ?
+      '已入队，等待 DSH 进入下一步' : card.delivery === 'held' ? '报告已保留' : '待投递';
+    const close = async () => {
+      try {
+        await rpc('control', { sessionId, action: 'dismiss-card', auditId: id });
+        setDismissed({ sessionId, id });
+      } catch {
+        setDismissError({ id, text: '关闭失败，请重试。' });
+      }
+    };
+    return h('div', { className: 'ca-chat-card-wrap', 'data-codex-audit-id': id },
+    nativeRows,
+    latest.dismissible && h('button', { type: 'button', className: 'ca-chat-close', 'aria-label': '关闭审计报告',
+      title: '关闭审计报告', onClick: close }, '×'),
+    h('details', { className: 'ca-chat-card', open: isOpen,
+      onToggle: event => {
+        if (event.currentTarget.open !== isOpen) {
+          setExpanded(event.currentTarget.open ? { sessionId, id } : null);
+        }
+      } },
+    h('summary', null, h('strong', null, 'Codex 审计完成'), h('time', null, date(card.finishedAt)),
+      h('span', { className: 'ca-chat-progress', 'aria-live': 'polite' },
+        h('span', { 'data-reached': true }, '报告已完成'),
+        h('span', { 'data-reached': card.admitted || card.replied }, 'DSH 已接收'),
+        h('span', { 'data-reached': card.replied }, 'DSH 已回应'))),
+    h('style', null, `
+      .ca-chat-card-wrap{position:relative;width:100%}
+      .ca-chat-close{position:absolute;inset-inline-end:8px;top:6px;z-index:1;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;cursor:pointer;padding:1px 7px}
+      .ca-chat-close:hover{background:var(--dsw-alias-interactive-bg-hover,#78818f20)}
+      .ca-chat-card{box-sizing:border-box;width:100%;margin:0 0 8px;padding:9px 14px;border:1px solid var(--dsw-alias-border-l2,#59616d);border-radius:12px;background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText)}
+      .ca-chat-card>summary{cursor:pointer;line-height:1.7;padding-inline-end:24px}
+      .ca-chat-card time,.ca-chat-progress{margin-inline-start:10px;font-size:.82em}
+      .ca-chat-progress{display:inline-flex;gap:6px;flex-wrap:wrap}
+      .ca-chat-progress span{padding:0 6px;border-radius:5px;background:var(--dsw-alias-bg-layer-2,#78818f20);opacity:.6}
+      .ca-chat-progress [data-reached="true"]{opacity:1;background:#32a78024}
+      .ca-chat-report{max-height:min(42vh,420px);overflow:auto;overflow-wrap:anywhere;padding:4px 0}
+      .ca-chat-wait{margin:3px 0 0;font-size:.83em}
+    `),
+    dismissError?.id === id && h('p', { role: 'alert' }, dismissError.text),
+    wait && h('p', { className: 'ca-chat-wait' }, wait, card.issue ? ` · ${card.issue}` : ''),
+    isOpen && h('div', { className: 'ca-chat-report' },
+      current?.report === undefined ? (current?.error ?? '正在读取报告…') : markdown(current.report))));
+  }
+
   function Panel({ sessionId, rpc, revealReply }) {
     const [openSession, setOpenSession] = React.useState(null);
     const open = openSession === sessionId;
@@ -95,12 +186,14 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
         const value = await rpc('control', { sessionId, action, ...values });
         if (action === 'check') setCheck(value.error ?
           `${value.error.code}: ${value.error.message} ${value.error.remedy}` :
-          `可执行文件：${value.codexPath}（认证和模型调用尚未验证）`);
+          `Git 工作区：${value.cwd}\n临时目录可写 · Codex CLI 参数兼容：${value.codexPath}\n` +
+          `Provider 配置通过：${value.provider}\n认证及模型调用待实跑确认。`);
         await refresh();
       } catch (error) { setError(error.message); }
       finally { setBusy(false); }
     };
     const settings = data?.settings;
+    const reserved = Number.isFinite(settings?.reservationAt);
     const models = data?.models ?? [];
     const efforts = data?.efforts ?? [];
     const guard = data?.guard;
@@ -132,7 +225,8 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
     h('summary', null, h('span', { className: 'ca-chevron', 'aria-hidden': true }, '›'),
       h('span', { className: 'ca-stack' }, h('strong', null, date(record.startedAt)),
         h('span', { className: 'ca-muted' },
-          `${({ manual: '手动审计', scheduled: '定时审计', 'goal-blocked': '阻塞审计' })[record.trigger] ?? '其他触发'} · ${record.model} · ${record.effort}`)),
+          `${({ manual: '手动审计', scheduled: '定时审计', reservation: '预约审计',
+            'goal-blocked': '阻塞审计' })[record.trigger] ?? '其他触发'} · ${record.model} · ${record.effort}`)),
       h('span', { className: 'ca-badges' },
         badge(label[record.status] ?? record.status, record.status === 'completed' ? 'good' : record.status === 'running' ? 'live' : 'bad'),
         badge(record.replies.length ? 'DSH 已回应' : record.delivery === 'delivered' &&
@@ -236,13 +330,20 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
           onChange: event => act('configure', { intervalHours: Number(event.target.value) }) },
         [1, 2, 3, 4, 5].map(value => h('option', { key: value, value }, `每 ${value} 小时`)))),
         h('div', { className: 'ca-field' }, h('label', null, '下次审计'),
-          h('div', { className: 'ca-next' }, settings.enabled ? date(settings.nextDue) : '暂停中'))),
+          h('div', { className: 'ca-next' }, settings.enabled ? date(settings.nextDue) :
+            reserved ? date(settings.reservationAt) : '未安排'))),
         h('div', { className: 'ca-row ca-actions' },
           button('立即审计', () => { setRunPrompt(settings.prompt ?? ''); setPromptOpen(true); },
             data.running, 'ca-primary'),
           button('跳过下一次', () => act('skip-next'), !settings.enabled),
+          reserved ? button('取消预约', () => act('cancel-reservation')) :
+            button('预约下次审计', () => act('reserve-next'), settings.enabled),
           data.running && button('取消当前审计', () => act('cancel'), false, 'ca-danger')),
-        h('p', { className: 'ca-muted' }, '立即审计会从本次开始时间重新计算周期，不会再按旧时间重复审计。'),
+        reserved ? h('p', { className: 'ca-muted' },
+          `已预约一次 · ${date(settings.reservationAt)}${Date.now() >= settings.reservationAt ?
+            '（已到期，等待执行）' : ''}`) : !settings.enabled &&
+          h('p', { className: 'ca-muted' }, `预约将在 ${settings.intervalHours} 小时后执行一次。`),
+        settings.enabled && h('p', { className: 'ca-muted' }, '立即审计会从本次开始时间重新计算自动审计周期。'),
         settings.enabled && settings.auditWindow && h('p', { className: 'ca-muted' },
           `本次开启：${date(settings.auditWindow.enabledAt)}；` +
           `下次重点从${settings.auditWindow.lastCoveredAt ? '上次成功快照 ' + date(settings.auditWindow.lastCoveredAt) : '本次开启'}开始。关闭期间不自动补审。`),
@@ -303,7 +404,7 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
                 `${entry.error ? ` · ${entry.error}` : ''}`)))),
         h('details', { className: 'ca-settings' }, h('summary', null, '连接与运行环境'),
         h('div', { className: 'ca-stack' }, h('label', { className: 'ca-muted' }, 'Codex 可执行文件路径'),
-        h('input', { value: path, placeholder: settings.codexPath || '自动发现 VSCode Codex 后端',
+        h('input', { value: path, placeholder: settings.codexPath || '自动查找 Codex CLI',
           'aria-label': 'Codex 可执行文件路径',
           onChange: event => setPath(event.target.value) }),
         h('div', { className: 'ca-row' }, button('保存路径', () => act('configure', { codexPath: path })),
@@ -319,7 +420,7 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
       // panel after the guard card and the connection details, so clicking 立即审计 appeared to do
       // nothing until the operator scrolled down. Rendered here as a fixed, centred layer instead.
       ...(records.length ? records : [h('div', { className: 'ca-empty', key: 'empty' },
-        h('strong', null, '还没有审计记录'), h('div', null, '开启自动审计，或点击“立即审计”开始。'))])),
+        h('strong', null, '还没有审计记录'), h('div', null, '可立即审计、预约一次或开启自动审计。'))])),
       h('footer', { className: 'ca-footer' }, `当前会话 · ${sessionId}`))), document.body),
       promptOpen && createPortal(h('div', { className: 'ca-modal', role: 'presentation',
         onClick: event => { if (event.target === event.currentTarget) setPromptOpen(false); } },
@@ -352,6 +453,10 @@ window.__ModuleLoader__.load({ id: 'dsh-codex-audit', factory: require => {
       if (!result.ok) throw new Error(result.error?.message ?? '审计 RPC 调用失败');
       return result.value;
     };
+    ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+      name: 'conversation.input.dock', id: 'codex-audit-report', order: 15,
+      inject: sessionId => ({ sessionId, rpc }),
+    }, ConversationCard));
     ctx.slots.inject('conversation.composer.dock', function* () {
       yield ctx.slots.register({ name: 'conversation.composer.dock', id: 'codex-audit', order: 2,
         inject: sessionId => ({ sessionId, rpc, revealReply: async reply => {

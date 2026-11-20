@@ -33,7 +33,9 @@ test('guard panel stays collapsed by default and exposes blocked progress and ex
     window: { __ModuleLoader__: { load: module => { plugin = module.factory(require); } } },
     document: { body: {} }, Date, Set, Map, Object, Number, String, Math,
   });
-  plugin.apply({ slots: { inject(name, factory) { [...factory()]; },
+  plugin.apply({ slots: { inject(name, factory) {
+    if (name === 'conversation.composer.dock') [...factory()];
+  },
     register(options, component) { Panel = component; } },
     connection: { rpc: { async call(channel, method, payload) {
       calls.push({ method, request: payload.args.request }); return { ok: true, value: data };
@@ -53,7 +55,7 @@ test('guard panel stays collapsed by default and exposes blocked progress and ex
   assert.ok(rendered.some(n => n.children.includes('阻塞审计与续跑守护')));
   assert.ok(rendered.some(n => n.children.includes('手动审计 · gpt-6.2-sol · xhigh')));
   assert.ok(rendered.some(n => n.children.some(child => typeof child === 'string' &&
-    child.includes('立即审计会从本次开始时间重新计算周期'))));
+    child.includes('立即审计会从本次开始时间重新计算自动审计周期'))));
   const retry = rendered.find(n => n.type === 'button' && n.children.includes('重新审计阻塞'));
   assert.ok(rendered.some(n => n.children.some(child => typeof child === 'string' &&
     child.includes('重点范围：本次开启后'))));
@@ -95,7 +97,9 @@ test('a manual audit prompts for this run only, and clearing it is not an empty 
     window: { __ModuleLoader__: { load: module => { plugin = module.factory(require); } } },
     document: { body: {} }, Date, Set, Map, Object, Number, String, Math,
   });
-  plugin.apply({ slots: { inject(name, factory) { [...factory()]; },
+  plugin.apply({ slots: { inject(name, factory) {
+    if (name === 'conversation.composer.dock') [...factory()];
+  },
     register(options, component) { Panel = component; } },
     connection: { rpc: { async call() { return { ok: true, value: data }; } } }, sessions: {} });
   const nodes = tree => {
