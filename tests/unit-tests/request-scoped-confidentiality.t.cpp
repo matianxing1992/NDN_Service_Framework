@@ -487,6 +487,45 @@ BOOST_AUTO_TEST_CASE(RequestCryptoFailureNamesAreStable)
                    "nonce_reuse");
 }
 
+BOOST_AUTO_TEST_CASE(InputNameCarriesTheRequestIdAsOneComponent)
+{
+  RequestSecurityBinding binding;
+  binding.serviceName = ndn::Name("/LLM/Test");
+  // A Core request name has several components and an attempt-2 recovery suffix; neither may expand the name.
+  binding.requestId = ndn::Name("/user/NDNSF-DI/request/9/recovery/1");
+  binding.attempt = 2;
+  binding.controllerVersion.controllerGenerationTimestamp = 1;
+  binding.controllerVersion.controllerEpoch = 2;
+  binding.userEncryptionCertName = ndn::Name("/user/KEY/k1");
+  binding.userEncryptionCertDigest = "sha256:" + std::string(64, 'b');
+  binding.providerEncryptionCertName = ndn::Name("/provider/KEY/k2");
+  binding.providerEncryptionCertDigest = "sha256:" + std::string(64, 'c');
+  binding.selectionDigest = "sha256:" + std::string(64, 'd');
+  const RequestInputOwner owner{ndn::Name("/user"), ndn::Name("/provider")};
+  const auto name = makeRequestScopedInputName(owner, binding);
+  const auto uri = name.toUri(ndn::name::UriFormat::CANONICAL);
+  BOOST_TEST_MESSAGE("input name " << uri);
+
+  // The row is fixed and the request id occupies exactly one component.
+  std::size_t requestAt = name.size();
+  for (std::size_t index = 0; index + 1 < name.size(); ++index) {
+    if (name[index] == ndn::name::Component("request")) { requestAt = index; break; }
+  }
+  BOOST_REQUIRE_LT(requestAt + 1, name.size());
+  BOOST_CHECK(name[requestAt + 1] != ndn::name::Component("user"));
+  BOOST_CHECK(name[requestAt + 2] == ndn::name::Component("attempt"));
+  BOOST_CHECK(uri.find("/8=request/8=user/") == std::string::npos);
+  BOOST_CHECK_EQUAL(name[-1].toVersion(), 0U);
+  BOOST_CHECK(name[-3] == ndn::name::Component("rep"));
+  BOOST_CHECK_EQUAL(name[-2].value_size(), 32U);
+
+  // The same binding and owner produce the same name, and the identity changes with the content of the binding.
+  BOOST_CHECK(makeRequestScopedInputName(owner, binding) == name);
+  auto otherAttempt = binding;
+  otherAttempt.attempt = 1;
+  BOOST_CHECK(makeRequestScopedInputName(owner, otherAttempt) != name);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 } // namespace ndn_service_framework::test

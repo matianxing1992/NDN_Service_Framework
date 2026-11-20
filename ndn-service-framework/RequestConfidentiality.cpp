@@ -280,8 +280,10 @@ makeRequestScopedInputName(const RequestInputOwner& owner,
     throw std::invalid_argument("request-scoped input name facts are incomplete");
   const auto representation = computeRequestInputRepresentationId(binding, owner);
   ndn::Name name(owner.user);
+  // `<RequestId>` is one public component: a multi-component Core request name is carried inside a single label
+  // rather than expanded into the name, which N2 forbids.
   name.append("NDNSF-DI").append("input").append("request")
-    .append(binding.requestId)
+    .append(makeNamingLabelComponent(binding.requestId.toUri(ndn::name::UriFormat::CANONICAL)))
     .append("attempt").append(makeNamingDecimalComponent(binding.attempt))
     .append("recipient").append(makeReversibleNameComponent(owner.provider))
     .append("rep").append(makeNamingDigestComponent(representation))
