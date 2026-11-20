@@ -854,7 +854,11 @@ ServiceController::registerArchivedPublicParameters()
   NDN_LOG_WARN("NDNSF_HISTORICAL_ISSUANCE enabled=" << (kHistoricalKeyIssuanceEnabled ? 1 : 0)
                << " controllerPrefix=" << m_controllerPrefix);
   if (kHistoricalKeyIssuanceEnabled) {
-    ndn::Name dkeyPrefix(m_controllerPrefix);
+    // The deployment may not set an explicit prefix; the certificate identity is the prefix every other
+    // Controller name uses (the history index is built from it), so fall back to it rather than registering a
+    // filter under a bare `/NDNSF/HISTORY/DKEY` that no client asks for.
+    const ndn::Name base = m_controllerPrefix.empty() ? m_aaCert.getIdentity() : m_controllerPrefix;
+    ndn::Name dkeyPrefix(base);
     dkeyPrefix.append("NDNSF").append("HISTORY").append("DKEY");
     m_historicalKeyFilters.push_back(m_face.setInterestFilter(dkeyPrefix,
       [this] (const ndn::InterestFilter&, const ndn::Interest& interest) {
