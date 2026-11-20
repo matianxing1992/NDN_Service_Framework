@@ -210,6 +210,10 @@ NativeTensorEndpointV3 staticEndpoint(const NativeTensorEndpointV3& source)
   e.tensorDigest = source.tensorDigest; e.bundleTensorNames = source.bundleTensorNames;
   e.layoutDigest = source.layoutDigest; e.targetLayoutDigest = source.targetLayoutDigest;
   e.microbatch = source.microbatch;
+  // The naming coordinates are part of the endpoint identity, so a cached layout must keep them.
+  e.namingPhase = source.namingPhase; e.namingStepId = source.namingStepId;
+  e.namingLayerBegin = source.namingLayerBegin; e.namingLayerEnd = source.namingLayerEnd;
+  e.namingPortId = source.namingPortId;
   return e;
 }
 std::uint64_t fixedBundleBytes(const NativeSelectionRoleV3& producer,
@@ -408,6 +412,24 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
     e.hardDeadlineMs = core.expiresAtMs - context.nowMs;
     return e;
   };
+  // N5 naming coordinates: every fact below is read from the verified plan, never from a label or a per-unit
+  // degree. The phase is the object's production class, decided before any output exists.
+  const auto applyNamingCoordinates = [&](NativeTensorEndpointV3& endpoint,
+                                          const NativeDependencySpec& dependency) {
+    const bool generation = core.generationContract.enabled;
+    endpoint.namingPhase = !generation ? "execute"
+      : (endpoint.round == 0 ? "prefill" : "continuation");
+    endpoint.namingStepId = dependency.producerStepId.empty() ? "role-execution"
+      : dependency.producerStepId;
+    endpoint.namingPortId = dependency.producerSlotId.empty() ? "role-execution"
+      : dependency.producerSlotId;
+    const auto role = core.roleContracts().find(dependency.producers.empty()
+      ? std::string{} : dependency.producers.front());
+    if (role != core.roleContracts().end() && role->second.layerEnd != 0) {
+      endpoint.namingLayerBegin = role->second.layerBegin;
+      endpoint.namingLayerEnd = role->second.layerEnd;
+    }
+  };
   if (!candidate.inputIngressRole.empty()) {
     if (!digest(context.logicalInputDigest) || !digest(context.inputLayoutDigest))
       throw std::invalid_argument("projection application input identity is missing");
@@ -568,6 +590,7 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
       e.tensorDigest = dependency.collectiveTensorDigest;
       e.layoutDigest = dependency.collectiveSourceLayoutDigest;
       e.targetLayoutDigest = dependency.collectiveTargetLayoutDigest;
+      applyNamingCoordinates(e, dependency);
       appendEndpoint(std::move(e));
       continue;
     }
@@ -691,6 +714,7 @@ NativePlanProjectionBuilder::buildFromValidatedSealed(
                                               e.bundleTensorNames.end()),
                                   e.bundleTensorNames.end());
         e.segmentCount = context.maxSegments;
+        applyNamingCoordinates(e, dependency);
         if (newLayout) newLayout->endpoints[index].push_back(staticEndpoint(e));
         appendEndpoint(std::move(e));
       }

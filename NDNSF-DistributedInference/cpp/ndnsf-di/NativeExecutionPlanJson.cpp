@@ -1385,11 +1385,12 @@ void detail::validateTensorEndpointForNaming(const NativeTensorEndpointV3& endpo
     if (endpoint.namingPhase != "prefill" && endpoint.namingPhase != "continuation" &&
         endpoint.namingPhase != "execute")
       throw std::invalid_argument("tensor naming phase is not one of the declared values");
+    // A step or port identifier is one bounded public component. It is appended as a component, so a separator
+    // inside it never expands the name; only control characters are refused.
     const auto atom = [](const std::string& value) {
       return !value.empty() && value.size() <= 64 &&
         std::all_of(value.begin(), value.end(), [](unsigned char c) {
-          return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                 (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_';
+          return c > 0x20 && c < 0x7f;
         });
     };
     if (!atom(endpoint.namingStepId) || !atom(endpoint.namingPortId))

@@ -6228,7 +6228,7 @@ BOOST_AUTO_TEST_CASE(TensorObjectNameUsesTheN5SchemaWhenCoordinatesAreSet)
   sealEndpoint(badPhase);
   BOOST_CHECK_THROW(tensorObjectNamePrefix(badPhase), std::invalid_argument);
   auto badPort = endpoint;
-  badPort.namingPortId = "partial/x";
+  badPort.namingPortId = std::string("partial\x01");
   sealEndpoint(badPort);
   BOOST_CHECK_THROW(tensorObjectNamePrefix(badPort), std::invalid_argument);
 }
