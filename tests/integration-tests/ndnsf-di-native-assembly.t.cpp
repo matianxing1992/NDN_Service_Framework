@@ -1726,9 +1726,14 @@ BOOST_AUTO_TEST_CASE(DirectInt8CandidateAssemblyRunsOrtAndContinuation)
   if (runGate == nullptr || std::string(runGate) != "1") {
     BOOST_FAIL("DIRECT_INT8_INPUT_MISSING: set NDNSF_SPEC190_RUN_INT8=1 and NDNSF_SPEC190_INT8_ONNX");
   }
-  BOOST_REQUIRE(modelPath != nullptr && *modelPath != '\0');
+  // Gate open but file missing is the other half of the same contract: name it, do not abort anonymously.
+  if (modelPath == nullptr || *modelPath == '\0') {
+    BOOST_FAIL("DIRECT_INT8_MODEL_MISSING: NDNSF_SPEC190_RUN_INT8=1 requires NDNSF_SPEC190_INT8_ONNX");
+  }
   const auto candidate = std::filesystem::path(modelPath);
-  BOOST_REQUIRE(std::filesystem::is_regular_file(candidate));
+  if (!std::filesystem::is_regular_file(candidate)) {
+    BOOST_FAIL("DIRECT_INT8_MODEL_MISSING: not a regular file: " + candidate.string());
+  }
   const auto source = readBytes(candidate);
   BOOST_REQUIRE(!source.empty());
   onnx::ModelProto model;
