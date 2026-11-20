@@ -1740,12 +1740,18 @@ runTransfer(const std::string& mode, bool enableSpeculation = true,
 BOOST_AUTO_TEST_CASE(LargeTensorUsesBoundedSignedPackets) { runTransfer(""); }
 BOOST_AUTO_TEST_CASE(RepeatedExactPrefetchThreadAndCpuProbe)
 {
-  if (std::getenv("NDNSF_DI_PREFETCH_REUSE_PROBE") == nullptr) return;
+  // Selected only by the explicit qualification profile: a missing opt-in is a named failure.
+  if (std::getenv("NDNSF_DI_PREFETCH_REUSE_PROBE") == nullptr) {
+    BOOST_FAIL("PREFETCH_REUSE_PROBE_INPUT_MISSING: set NDNSF_DI_PREFETCH_REUSE_PROBE");
+  }
   runTransfer("inline-single", true, 129);
 }
 BOOST_AUTO_TEST_CASE(RepeatedPooledExactPrefetchThreadAndCpuProbe)
 {
-  if (std::getenv("NDNSF_DI_PREFETCH_REUSE_PROBE") == nullptr) return;
+  // Selected only by the explicit qualification profile: a missing opt-in is a named failure.
+  if (std::getenv("NDNSF_DI_PREFETCH_REUSE_PROBE") == nullptr) {
+    BOOST_FAIL("PREFETCH_REUSE_PROBE_INPUT_MISSING: set NDNSF_DI_PREFETCH_REUSE_PROBE");
+  }
   runTransfer("inline-single", true, 129, 1);
 }
 BOOST_AUTO_TEST_CASE(PooledInputsRegisterBothReadsBeforeProducerReply)

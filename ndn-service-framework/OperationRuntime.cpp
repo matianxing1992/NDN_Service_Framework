@@ -344,9 +344,8 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
         state->queue.push_back({hold, std::move(wrapped)});
       }
       catch (...) {
-        // RuntimeTaskHold releases tickets after this lock is gone; queued
-        // must be rolled back here because it is not part of that token.
-        --state->queued;
+        // The hold owns both the ticket and the queued entry; destroying it after this lock is gone rolls
+        // both back, so rolling `queued` back here would decrement it twice.
         throw;
       }
     }
@@ -355,12 +354,8 @@ OperationRuntime::post(WorkTicket& ticket, std::function<void()> task)
     std::shared_ptr<std::shared_ptr<detail::RuntimeTaskHold>> holdBox;
     std::function<void()> guarded;
     const auto rollbackQueued = [&] {
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (state->queued > 0)
-          --state->queued;
-      }
-      // RuntimeTaskHold must never be destroyed while state->mutex is held.
+      // Resetting the boxes destroys the hold outside state->mutex; that owner releases the ticket and the
+      // queued entry, so no manual decrement happens here.
       holdBox.reset();
       hold.reset();
       state->condition.notify_all();

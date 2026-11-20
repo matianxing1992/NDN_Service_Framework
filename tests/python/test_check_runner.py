@@ -293,13 +293,15 @@ class CheckRunner(unittest.TestCase):
 
     def invoke(self, outcome='passed', exit_code=0, timeout=False, omit=False, message='',
                report=None, include=None, environment=None, observed=None, assertions_passed=7,
-               confirm_assertions=None):
+               confirm_assertions=None, confirm_aborts=False):
         seen = []
         def process(argv, **kwargs):
             seen.append(argv)
             if '--list_content' in argv:
                 return Namespace(returncode=0, stdout='', stderr='Unit*\n    Case*\nModel*\n    Case*\n')
             if any(a.startswith('--run_test=Unit/Case') for a in argv):
+                if confirm_aborts:
+                    return Namespace(returncode=201, stdout='', stderr='', boundary=None)
                 output = Path(next(x.split('=', 1)[1] for x in argv if x.startswith('--report_sink=')))
                 output.write_text('<TestResult><TestSuite name="module"><TestSuite name="Unit">'
                                   '<TestCase name="Case" result="passed" assertions_passed="%d"/>'
@@ -350,6 +352,13 @@ class CheckRunner(unittest.TestCase):
         result = self.invoke(assertions_passed=0)
         self.assertFalse(result['passed'])
         self.assertIn('NATIVE_ASSERTION_FREE_CASE', result['reportError'])
+        self.assertIn('Unit/Case', result['reportError'])
+
+    def test_unreadable_confirmation_is_a_named_failure(self):
+        # If the single-case confirmation cannot produce a readable result, the aggregate must not pass.
+        result = self.invoke(assertions_passed=0, confirm_aborts=True)
+        self.assertFalse(result['passed'])
+        self.assertIn('NATIVE_ASSERTION_CHECK_UNAVAILABLE', result['reportError'])
         self.assertIn('Unit/Case', result['reportError'])
 
     def test_combined_report_zero_assertions_is_confirmed_before_failing(self):

@@ -512,6 +512,7 @@ def confirm_assertion_free(binary, candidates, environ):
     is therefore confirmed only if a single-case invocation also reports no assertion.
     """
     confirmed = []
+    unavailable = []
     for case in candidates:
         with isolated_native_environment(environ) as (result_root, native_env):
             xml_path = Path(result_root) / 'confirm.xml'
@@ -521,15 +522,20 @@ def confirm_assertion_free(binary, candidates, environ):
                  '--run_test=' + case], native_env, 900, cwd=result_root / 'scratch')
             # Read inside the context: the isolated root, and its XML, are removed when it exits.
             if completed.returncode != 0:
-                # A case that fails on its own is already reported through the run's own results.
+                # The case aborted on its own. That is not a confirmation of anything, so it must surface as a
+                # named result rather than being skipped into a passing aggregate.
+                unavailable.append('%s (exit %s%s)' % (case, completed.returncode,
+                                                        ', ' + completed.boundary
+                                                        if getattr(completed, 'boundary', None) else ''))
                 continue
             try:
                 counts = read_case_assertions(xml_path)
-            except (OSError, ET.ParseError, ValueError, KeyError):
+            except (OSError, ET.ParseError, ValueError, KeyError) as error:
+                unavailable.append('%s (unreadable result: %s)' % (case, error))
                 continue
             if counts.get(case, 0) < 1:
                 confirmed.append(case)
-    return confirmed
+    return confirmed, unavailable
 
 
 def check_assets(roster, selected, manifest_path, bindings=None):
@@ -632,10 +638,13 @@ def run_target(binary, target, environ, timeout, arguments, listing=None):
             assertion_counts = {}
         candidates = sorted(case for case in expected
                             if actual.get(case) == 'passed' and assertion_counts.get(case, 0) < 1)
-        empty = confirm_assertion_free(binary, candidates, environ) if candidates else []
+        empty, unconfirmed = confirm_assertion_free(binary, candidates, environ) if candidates else ([], [])
         if empty:
             report_error = ((report_error + '; ') if report_error else '') + \
                 'NATIVE_ASSERTION_FREE_CASE: ' + ', '.join(empty[:5])
+        if unconfirmed:
+            report_error = ((report_error + '; ') if report_error else '') + \
+                'NATIVE_ASSERTION_CHECK_UNAVAILABLE: ' + ', '.join(unconfirmed[:5])
         if arguments.report and xml_path.exists():
             xml_copy = str(Path(arguments.report).with_suffix('')) + '.' + run_name + '.xml'
             shutil.copyfile(xml_path, xml_copy)
