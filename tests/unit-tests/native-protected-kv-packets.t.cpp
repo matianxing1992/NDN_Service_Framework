@@ -53,6 +53,34 @@ struct PacketFixture : protectedKv::Fixture
 
 BOOST_AUTO_TEST_SUITE(Spec221ProtectedKvPackets)
 
+BOOST_AUTO_TEST_CASE(N5CheckpointCoordinatesComeFromTheReceipt)
+{
+  ProviderConversationStateReceiptV1 receipt;
+  receipt.conversationId = "conv-9";
+  receipt.parentContextEpoch = 2;
+  receipt.successorContextEpoch = 3;
+  receipt.roleName = "S0R0";
+  receipt.layoutDigest = std::string(64, 'a');
+  const auto context = nativeKvPacketNamingContext(receipt);
+  BOOST_CHECK(nativeKvPacketNamingContextComplete(context));
+  BOOST_CHECK_EQUAL(context.conversationId, "conv-9");
+  BOOST_CHECK_EQUAL(context.epoch, 3U);   // the produced state's epoch, not the parent's
+  BOOST_CHECK_EQUAL(context.roleId, "S0R0");
+  BOOST_CHECK_EQUAL(context.stateLayoutLabel, std::string(64, 'a'));
+
+  // Every coordinate is required: a receipt that does not authenticate one of them yields an incomplete context.
+  for (const auto clear : {0, 1, 2, 3}) {
+    auto partial = receipt;
+    switch (clear) {
+      case 0: partial.conversationId.clear(); break;
+      case 1: partial.successorContextEpoch = 0; break;
+      case 2: partial.roleName.clear(); break;
+      default: partial.layoutDigest.clear(); break;
+    }
+    BOOST_CHECK(!nativeKvPacketNamingContextComplete(nativeKvPacketNamingContext(partial)));
+  }
+}
+
 BOOST_AUTO_TEST_CASE(N5CheckpointPrefixNamesTheManifestAndSegments)
 {
   PacketFixture fixture;

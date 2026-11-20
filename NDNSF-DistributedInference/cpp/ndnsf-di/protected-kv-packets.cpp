@@ -143,6 +143,24 @@ checkSigningCertificate(const ndn::Data& data, const ndn::security::Certificate&
 
 } // namespace
 
+NativeKvPacketNamingContext
+nativeKvPacketNamingContext(const ProviderConversationStateReceiptV1& receipt)
+{
+  NativeKvPacketNamingContext context;
+  context.conversationId = receipt.conversationId;
+  context.epoch = receipt.successorContextEpoch;
+  context.roleId = receipt.roleName;
+  context.stateLayoutLabel = receipt.layoutDigest;
+  return context;
+}
+
+bool
+nativeKvPacketNamingContextComplete(const NativeKvPacketNamingContext& context)
+{
+  return !context.conversationId.empty() && context.epoch > 0 && !context.roleId.empty() &&
+    !context.stateLayoutLabel.empty();
+}
+
 ndn::Name
 nativeProtectedKvPacketRootName(const NativeProtectedKvCheckpointReferenceV1& reference,
                                const ndn::security::Certificate& certificate)

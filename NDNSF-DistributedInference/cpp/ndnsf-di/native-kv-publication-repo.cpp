@@ -83,13 +83,9 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   packetLimits.maxPackets = owner.policy.maxPacketCountPerRole;
   packetLimits.maxPacketWireBytes = owner.policy.maxPacketSetWireBytesPerRole;
   // N5 coordinates come from the authenticated export receipt, never from a caller-chosen name.
-  NativeKvPacketNamingContext naming;
-  naming.conversationId = owner.receipt.conversationId;
-  naming.epoch = owner.receipt.successorContextEpoch;
-  naming.roleId = owner.receipt.roleName;
-  naming.stateLayoutLabel = owner.receipt.layoutDigest;
-  require(!naming.conversationId.empty() && naming.epoch > 0 && !naming.roleId.empty() &&
-          !naming.stateLayoutLabel.empty(), "HANDOFF_CHECKPOINT_COORDINATES_INCOMPLETE");
+  const auto naming = nativeKvPacketNamingContext(owner.receipt);
+  require(nativeKvPacketNamingContextComplete(naming),
+          "HANDOFF_CHECKPOINT_COORDINATES_INCOMPLETE");
   const auto packets = nativePrepareProtectedKvPackets(protectedPath, reference,
     owner.publication.signingCertificate, packetLimits, [&](ndn::Data& packet) {
       require(producer->signProducerDataUntil(packet, owner.deadline, current),

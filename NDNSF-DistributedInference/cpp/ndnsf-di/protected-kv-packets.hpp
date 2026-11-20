@@ -2,6 +2,7 @@
 #define NDNSF_DI_PROTECTED_KV_PACKETS_HPP
 
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-checkpoint.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/ConversationStateBinding.hpp"
 
 #include <ndn-cxx/data.hpp>
 
@@ -47,6 +48,14 @@ using NativeKvPacketSigner = std::function<void(ndn::Data&)>;
 // Configured trust/namespace validation; certificates validate their exact subject
 // and issuer, and subsequent application packets validate their Producer.
 using NativeKvObjectVerifier = std::function<bool(const ndn::Buffer&, const ndn::Name&)>;
+
+/** Project the N5 coordinates from the authenticated export receipt; a receipt without them yields an
+ * incomplete context, which the publication owner must refuse rather than guess. */
+NativeKvPacketNamingContext nativeKvPacketNamingContext(
+  const ProviderConversationStateReceiptV1& receipt);
+
+/** True when every coordinate the N5 prefix needs is present. */
+bool nativeKvPacketNamingContextComplete(const NativeKvPacketNamingContext& context);
 
 ndn::Name
 nativeProtectedKvPacketRootName(const NativeProtectedKvCheckpointReferenceV1& reference,
