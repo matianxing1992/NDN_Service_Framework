@@ -1082,4 +1082,44 @@ NativeAdapterRegistry::find(const std::string& adapterId) const
   return it == m_adapters.end() ? nullptr : it->second;
 }
 
+namespace {
+
+/** A coordinate is an atom or the explicit word for a fact the preparation did not establish. */
+std::string
+modelPathFact(const std::string& value)
+{
+  if (value.empty())
+    return "unspecified";
+  for (const char c : value) {
+    const auto byte = static_cast<unsigned char>(c);
+    const bool atom = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+      (byte >= '0' && byte <= '9') || c == '-' || c == '.' || c == '=';
+    if (!atom)
+      throw std::invalid_argument("model path fact is not an atom: " + value);
+  }
+  return value;
+}
+
+} // namespace
+
+NativeModelPathFacts
+nativeModelPathFacts(const NativeModelDescriptor& descriptor, const std::string& family,
+                     const std::string& quantization)
+{
+  NativeModelPathFacts facts;
+  facts.family = modelPathFact(family);
+  // The model label carries the size for a prepared Qwen/Llama export ("qwen2.5-0.5b", "qwen3-0.6b"), but a
+  // label is not validation. Only the adapter-declared family together with a label that starts with it is
+  // accepted; otherwise the size stays unspecified.
+  const auto& name = descriptor.modelName;
+  const auto dash = name.find('-');
+  if (facts.family != "unspecified" && dash != std::string::npos && name.compare(0, facts.family.size(), facts.family) == 0)
+    facts.size = modelPathFact(name.substr(dash + 1));
+  else
+    facts.size = "unspecified";
+  facts.quantization = modelPathFact(quantization);
+  facts.revisionLabel = modelPathFact(descriptor.sourceRevision);
+  return facts;
+}
+
 } // namespace ndnsf::di

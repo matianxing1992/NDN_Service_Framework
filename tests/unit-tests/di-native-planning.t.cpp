@@ -2192,4 +2192,34 @@ BOOST_AUTO_TEST_CASE(AutomaticSeedSealsEveryRoleAndChangesOnlyCurrentCoreIdentit
   }
 }
 
+BOOST_AUTO_TEST_CASE(ModelPathFactsComeFromVerifiedFactsOnly)
+{
+  NativeModelDescriptor descriptor;
+  descriptor.modelName = "qwen3-0.6b";
+  descriptor.sourceRevision = "r3";
+  auto facts = nativeModelPathFacts(descriptor, "qwen3", "int4");
+  BOOST_CHECK_EQUAL(facts.family, "qwen3");
+  BOOST_CHECK_EQUAL(facts.size, "0.6b");
+  BOOST_CHECK_EQUAL(facts.quantization, "int4");
+  BOOST_CHECK_EQUAL(facts.revisionLabel, "r3");
+
+  // A family that does not prefix the label cannot supply a size: it stays explicit instead of being guessed.
+  auto unknownFamily = nativeModelPathFacts(descriptor, "llama", "");
+  BOOST_CHECK_EQUAL(unknownFamily.size, "unspecified");
+  BOOST_CHECK_EQUAL(unknownFamily.quantization, "unspecified");
+
+  // No family, no revision and no quantization remain explicit words.
+  NativeModelDescriptor bare;
+  bare.modelName = "some-model";
+  const auto bareFacts = nativeModelPathFacts(bare, "", "");
+  BOOST_CHECK_EQUAL(bareFacts.family, "unspecified");
+  BOOST_CHECK_EQUAL(bareFacts.size, "unspecified");
+  BOOST_CHECK_EQUAL(bareFacts.revisionLabel, "unspecified");
+
+  // A fact that is not an atom is refused rather than escaped.
+  NativeModelDescriptor hostile;
+  hostile.modelName = "qwen3-0.6b";
+  BOOST_CHECK_THROW(nativeModelPathFacts(hostile, "qwen3", "int4/e4m3"), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

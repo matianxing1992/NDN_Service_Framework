@@ -164,6 +164,23 @@ struct NativeModelDescriptor
   static NativeModelDescriptor fromCanonicalJson(const std::string& json);
 };
 
+/** N2 `<ModelPath>` facts for a published model object.
+ *
+ * A fact is only filled from verified preparation output; anything the preparation did not establish stays the
+ * explicit word `unspecified` instead of being parsed out of a model label. */
+struct NativeModelPathFacts
+{
+  std::string family;
+  std::string size;
+  std::string quantization;
+  std::string revisionLabel;
+};
+
+/** Project the facts a descriptor and the selected plan establish; absent facts remain `unspecified`. */
+NativeModelPathFacts nativeModelPathFacts(const NativeModelDescriptor& descriptor,
+                                          const std::string& family,
+                                          const std::string& quantization);
+
 struct NativeGraphNode
 {
   std::string id;
