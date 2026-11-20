@@ -2037,6 +2037,9 @@ def build(bld):
                            'integration-tests/di-prepared-request.t.cpp',
                            # This .t.cpp is a standalone argv-driven helper with its own main.
                            'integration-tests/ndnsf-di-protected-grant.t.cpp',
+                           # Dedicated naming target; it needs NDN_SVS_HAVE_TESTS and must not
+                           # silently compile here without that define.
+                           'integration-tests/invocation-names.t.cpp',
                            'integration-tests/uav-static-metadata.t.cpp',
                            'integration-tests/uav-vehicle-packet-capacity.t.cpp',
                            'integration-tests/uav-tracking-main-app.t.cpp',
