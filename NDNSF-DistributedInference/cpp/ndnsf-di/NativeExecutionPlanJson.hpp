@@ -219,6 +219,11 @@ struct NativeFixedRoleSourceV1
 };
 
 /** Admit the original assignment DATA prefix before fetch or cache mutation. */
+/** Admit a model object-key capsule table: the canonical or stored capsule row of N4, or the legacy
+ * assignment shape a previously published table still carries. */
+void nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
+  const std::string& requester, bool stored, const std::string& role);
+
 void nativeValidateFixedRoleSourceProducer(const NativeFixedRoleSourceV1& source,
   const std::string& requester, const std::string& role);
 

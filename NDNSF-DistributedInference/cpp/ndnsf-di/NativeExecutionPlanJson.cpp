@@ -3642,6 +3642,43 @@ void nativeValidateFixedRoleSourceProducer(const NativeFixedRoleSourceV1& source
     throw std::invalid_argument("fixed source Producer, role or plaintext name commitment mismatch");
 }
 
+void
+nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
+                                      const std::string& requester, const bool stored,
+                                      const std::string& role)
+{
+  validateFixedRoleSource(source);
+  const ndn::Name producer(requester);
+  const ndn::Name name(source.dataName);
+  const auto inferred = ndn_service_framework::ProtectedBlobManifest::inferDataProducer(name);
+  if (producer.empty() || !inferred || *inferred != producer)
+    throw std::invalid_argument("capsule table Producer mismatch");
+  const auto offset = producer.size();
+  // <User>/NDNSF-DI/key-capsule/<family>/<size>/<quant>/revision/<label>/source/<canonical|stored>/use/<UseId>
+  //   /rep/<RepresentationId>/DATA
+  const std::size_t capsuleTail = 14;
+  if (name.size() == offset + capsuleTail &&
+      name[offset] == ndn::name::Component("NDNSF-DI") &&
+      name[offset + 1] == ndn::name::Component("key-capsule") &&
+      name[offset + 7] == ndn::name::Component("source") &&
+      name[offset + 8] == ndn::name::Component(stored ? "stored" : "canonical") &&
+      name[offset + 9] == ndn::name::Component("use") &&
+      name[offset + 11] == ndn::name::Component("rep") &&
+      name[offset + 12].type() == ndn::tlv::GenericNameComponent &&
+      name[offset + 12].value_size() == 32 &&
+      name[offset + 13] == ndn::name::Component("DATA")) {
+    for (std::size_t index : {2, 3, 4, 6, 10}) {
+      if (name[offset + index].empty())
+        throw std::invalid_argument("capsule table name has an empty coordinate");
+    }
+    if (name[offset + 5] != ndn::name::Component("revision"))
+      throw std::invalid_argument("capsule table name is missing the revision marker");
+    return;
+  }
+  // A capsule published before this shape keeps its assignment name and stays readable.
+  nativeValidateFixedRoleSourceProducer(source, requester, role);
+}
+
 ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
   const NativeSelectionProjectionV3& projection, const NativeFixedRoleAssignmentV1& fixed)
 {
