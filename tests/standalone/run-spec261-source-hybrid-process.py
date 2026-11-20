@@ -40,37 +40,6 @@ model=model_descriptor('ConvSingle',dg('conv-single-content'),dg('conv-single-se
 adapter_digest=digest(ad)
 package=dg('yolo-package-manifest'); profile=dg('yolo-artifact-profile'); asm=dg('yolo-assembler'); offer_policy=dg('yolo-offer-policy')
 catalog={"schema":"ndnsf-di-native-request-catalog-v1","model":json.loads(canonical_bytes(model).decode()),"source":{"data_name":"/catalog/source","digest":src_digest,"model_manifest_digest":package,"canonical_graph_digest":CANONICAL_DIGEST},"recipe":{"artifact_profile_digest":profile,"assembler_descriptor_digest":asm,"backend_abi":"onnxruntime-cpu-v1","precision":"float32","quantization":"none","layout":"native","padding":"none","protection_epoch":"epoch-1","max_source_bytes":1000000,"max_assembled_bytes":1000000,"max_nodes":64},"publication":{"artifact_root":"/Model/YOLOFixture/artifacts","package_manifest_digest":package},"input_format":"OPAQUE","max_payload_bytes":16384,"splitter":{"kind":"ONNX_SOURCE","selection_mode":"hybrid","roles":["Prefix","Rank0","Rank1","Suffix"],"boundary_node":"onnx-node-1","input_ingress_role":"Prefix","result_egress_role":"Suffix","postprocessing":{},"input_channels":16,"conv_input_axis":"input-channel","activation_shape":[1,16,8,8],"partial_shape":[1,4,8,8],"activation_dtype":"float32","conv_input_tensor":"scaled","conv_weight_initializer":"w_conv","conv_bias_initializer":"b_conv","conv_output_tensor":"conv_out","conv_weight_bytes":2304,"conv_bias_bytes":16,"conv_pads":[1,1,1,1],"conv_strides":[1,1],"conv_dilations":[1,1]},"node_mapping":{},"state_inputs":{},"state_outputs":{}}
-def slot(sid,dtype,shape,source,pstep="",pslot=""):
- d={"slot_id":sid,"dtype":dtype,"shape":shape,"layout_digest":dg('activation-layout'),"source":source}
- if pstep: d["producer_step_id"]=pstep
- if pslot: d["producer_slot_id"]=pslot
- return d
-steps=[
- {"step_id":"Prefix/RUN","unit_id":"Prefix","operation":"CALL_SUBGRAPH","artifact_entry":"Prefix/artifact",
-  "input_slots":[slot("images","float32",[1,16,8,8],"EPOCH_INPUT")],
-  "output_slots":[slot("scaled","float32",[1,16,8,8],"LOCAL_STEP")],"local_state_slots":[]},
- {"step_id":"Rank0/RUN","unit_id":"Rank0","operation":"CALL_SUBGRAPH","artifact_entry":"Rank0/artifact",
-  "input_slots":[slot("scaled","float32",[1,16,8,8],"REMOTE_STEP","Prefix/RUN","scaled")],
-  "output_slots":[slot("conv_out","float32",[1,4,8,8],"LOCAL_STEP")],"local_state_slots":[]},
- {"step_id":"Rank1/RUN","unit_id":"Rank1","operation":"CALL_SUBGRAPH","artifact_entry":"Rank1/artifact",
-  "input_slots":[slot("scaled","float32",[1,16,8,8],"REMOTE_STEP","Prefix/RUN","scaled")],
-  "output_slots":[slot("conv_out","float32",[1,4,8,8],"LOCAL_STEP")],"local_state_slots":[]},
- {"step_id":"Rank0/SUM","unit_id":"Rank0","operation":"SUM","artifact_entry":"",
-  "input_slots":[slot("rank0","float32",[1,4,8,8],"LOCAL_STEP","Rank0/RUN","conv_out"),
-                 slot("rank1","float32",[1,4,8,8],"REMOTE_STEP","Rank1/RUN","conv_out")],
-  "output_slots":[slot("conv_out","float32",[1,4,8,8],"LOCAL_STEP")],"local_state_slots":[]},
- {"step_id":"Suffix/RUN","unit_id":"Suffix","operation":"CALL_SUBGRAPH","artifact_entry":"Suffix/artifact",
-  "input_slots":[slot("conv_out","float32",[1,4,8,8],"REMOTE_STEP","Rank0/SUM","conv_out")],
-  "output_slots":[slot("predictions","float32",[1,4,8,8],"LOCAL_STEP")],"local_state_slots":[]},
-]
-def dep(did,producer,consumer,ps,pss,cs,css):
- return {"dependencyId":did,"producers":[producer],"consumers":[consumer],"keyScope":"native-source-activation",
-  "topicPrefix":"/NDNSF/DI/ONNX_SOURCE","objectNameTemplate":"{producerProvider}/NDNSF/DI/ONNX_SOURCE/{sessionId}/{producerRole}/{consumerRole}/{sequence}",
-  "tensors":[pss],"operationKind":"ACTIVATION","producerStepId":ps,"producerSlotId":pss,"consumerStepId":cs,"consumerSlotId":css}
-step_plan_version='step-plan-v2'
-stage_layout=[{"stage_id":"Prefix/stage","source_region_digest":dg('source-prefix'),"unit_role_ids":["Prefix"]},
-              {"stage_id":"Rank0/conv","source_region_digest":dg('source-hybrid'),"unit_role_ids":["Rank0","Rank1"]},
-              {"stage_id":"Suffix/stage","source_region_digest":dg('source-suffix'),"unit_role_ids":["Suffix"]}]
 plan={"version":2,"services":[{"service":"/Inference/NativeUnary","schemaVersion":2,"model":"/Model/ConvSingle","modelFamily":"spec261","modelFormat":"onnx","plannerKind":"native-source-hybrid","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2","roles":["Prefix","Rank0","Rank1","Suffix"],"dependencies":[],"planner":{"schemaVersion":2,"modelFamily":"spec261","modelFormat":"onnx","plannerKind":"native-source-hybrid","runtimeBackend":"onnxruntime","executionPolicy":"DATA_DRIVEN_V2"}}]}
 manifest={"services":[{"name":"/Inference/NativeUnary","model":"/Model/ConvSingle","roles":["Prefix","Rank0","Rank1","Suffix"],"artifacts":[{"artifact":"/Artifact/Source/Prefix","backend":"onnxruntime-cpu","kind":"model","role":"Prefix"},{"artifact":"/Artifact/Source/Rank0","backend":"onnxruntime-cpu","kind":"model","role":"Rank0"},{"artifact":"/Artifact/Source/Rank1","backend":"onnxruntime-cpu","kind":"model","role":"Rank1"},{"artifact":"/Artifact/Source/Suffix","backend":"onnxruntime-cpu","kind":"model","role":"Suffix"}],"inputs":{"Prefix":{"codec":"tensor-bundle","fields":{"images":{"dtype":"float32","shape":[1,16,8,8]}}},"Rank0":{"codec":"tensor-bundle","fields":{"scaled":{"dtype":"float32","shape":[1,16,8,8]}}},"Rank1":{"codec":"tensor-bundle","fields":{"scaled":{"dtype":"float32","shape":[1,16,8,8]}}},"Suffix":{"codec":"tensor-bundle","fields":{"conv_out":{"dtype":"float32","shape":[1,4,8,8]}}}},"outputs":{"Prefix":{"codec":"tensor-bundle","fields":{"scaled":{"dtype":"float32","shape":[1,16,8,8]}}},"Rank0":{"codec":"tensor-bundle","fields":{"conv_out":{"dtype":"float32","shape":[1,4,8,8]}}},"Rank1":{"codec":"tensor-bundle","fields":{"conv_out":{"dtype":"float32","shape":[1,4,8,8]}}},"Suffix":{"codec":"tensor-bundle","fields":{"predictions":{"dtype":"float32","shape":[1,4,8,8]}}}}}]}
 # provider plan and manifest files generated later
