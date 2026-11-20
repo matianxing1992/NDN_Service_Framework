@@ -2245,4 +2245,43 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
 }
 
+BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
+  BOOST_REQUIRE(file.good());
+  const auto oracle = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = oracle.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("fixture-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("fixture-profile")},
+      {"assembler_descriptor_digest", digest("fixture-assembler-v1")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1048576},
+      {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/artifacts"}}},
+    {"input_format", "JSON"}, {"max_payload_bytes", 32},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "full"}, {"roles", {"FullModel"}},
+      {"input_ingress_role", "FullModel"}, {"result_egress_role", "FullModel"},
+      {"postprocessing", NativeJson::object()}}}
+  };
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.splitter);
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  BOOST_CHECK_EQUAL(candidates.front().executionPlan.roles.size(), 1U);
+  BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
