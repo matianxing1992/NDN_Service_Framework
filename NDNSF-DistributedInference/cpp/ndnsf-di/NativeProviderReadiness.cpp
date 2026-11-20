@@ -764,6 +764,19 @@ NativeProviderReadinessState::updateExecutionEvidence(const ExecutionEvidence& o
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     nextByRole = m_executionEvidenceByRole;
+    // Execution evidence describes one request's plan. A Provider that stays up
+    // across requests must not aggregate the new request's roles together with
+    // the previous request's snapshots; their plan identities legitimately
+    // differ and the readiness aggregate is per-request.
+    if (!observed.planDigest.empty()) {
+      for (auto entry = nextByRole.begin(); entry != nextByRole.end();) {
+        if (entry->second && !entry->second->planDigest.empty() &&
+            entry->second->planDigest != observed.planDigest)
+          entry = nextByRole.erase(entry);
+        else
+          ++entry;
+      }
+    }
     for (const auto& role : observed.roles) {
       nextByRole[role] = observation;
     }
