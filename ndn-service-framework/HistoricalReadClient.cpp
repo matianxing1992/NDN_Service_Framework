@@ -13,6 +13,8 @@
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 namespace ndn_service_framework {
 namespace {
@@ -227,8 +229,21 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
     const auto marker = value.find("unix://");
     if (marker != std::string::npos) {
       const auto path = value.substr(marker + 7);
-      HISTORICAL_READ_DEBUG("historical read: transport %s present=%d\n", path.c_str(),
-                            ::access(path.c_str(), F_OK) == 0 ? 1 : 0);
+      // A file is not a listener: a socket left by an earlier phase satisfies access() while nothing accepts on
+      // it, and the Face then sends into nothing. A real connect tells the two apart.
+      int probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
+      int connected = -1;
+      int failure = 0;
+      if (probe >= 0) {
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        ::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
+        connected = ::connect(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+        failure = errno;
+        ::close(probe);
+      }
+      HISTORICAL_READ_DEBUG("historical read: transport %s present=%d connect=%d errno=%d\n", path.c_str(),
+                            ::access(path.c_str(), F_OK) == 0 ? 1 : 0, connected, failure);
     }
   }
   HISTORICAL_READ_DEBUG("historical read: expressing %s\n", indexName.toUri().c_str());
