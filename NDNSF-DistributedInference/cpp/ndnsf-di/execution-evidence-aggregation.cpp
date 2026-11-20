@@ -67,8 +67,21 @@ aggregateEvidence(const EvidenceReferences& items)
       if (item.runtimeVersion != aggregate.runtimeVersion) note("runtimeVersion");
       if (item.deviceKind != aggregate.deviceKind) note("deviceKind");
       if (item.cpuFallbackUsed != aggregate.cpuFallbackUsed) note("cpuFallbackUsed");
+      std::string detail;
+      for (const auto& source : items) {
+        const auto& value = source.get();
+        std::string roles;
+        for (const auto& role : value.roles) {
+          if (!roles.empty()) roles += "|";
+          roles += role;
+        }
+        if (!detail.empty()) detail += "; ";
+        detail += "roles=" + roles + " model=" + value.modelDigest +
+                  " plan=" + value.planDigest;
+      }
       throw std::runtime_error(
-        "provider runner execution evidence is internally inconsistent: " + fields);
+        "provider runner execution evidence is internally inconsistent: " + fields +
+        " [" + detail + "]");
     }
     seedDeviceIds(item);
     seedGpuUuids(item);
