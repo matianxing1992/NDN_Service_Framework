@@ -847,6 +847,7 @@ ServiceController::registerArchivedPublicParameters()
 void
 ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
 {
+  NDN_LOG_WARN("NDNSF_HISTORICAL_KEY_REQUEST name=" << interest.getName().toUri());
   if (!m_generationStore)
     return;
   if (!m_historicalKeyBroker) {
