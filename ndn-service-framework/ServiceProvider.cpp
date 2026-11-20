@@ -19365,6 +19365,11 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
     {
       std::lock_guard<std::mutex> lock(m_controllerVersionMutex);
       auto found = m_policyStatusFetchInFlight.find(key);
+      if (found != m_policyStatusFetchInFlight.end() && !found->second) {
+        // An entry without a fetch cannot be in flight; drop it rather than dereferencing it below.
+        m_policyStatusFetchInFlight.erase(found);
+        found = m_policyStatusFetchInFlight.end();
+      }
       if (found != m_policyStatusFetchInFlight.end()) {
         if (attempt == 1 && !replace) return;
         owner = found->second;
