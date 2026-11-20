@@ -30,6 +30,8 @@ struct NativeSourcePartitionProfile
   std::vector<std::int64_t> partialShape;
   std::string activationDtype = "float32";
   std::string activationLayoutDigest;
+  std::uint64_t convWeightBytes = 0;
+  std::uint64_t convBiasBytes = 0;
 };
 
 /**

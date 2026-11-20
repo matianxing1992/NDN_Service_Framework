@@ -2366,13 +2366,18 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
       {"result_egress_role", "Suffix"}, {"postprocessing", NativeJson::object()},
       {"input_channels", 16}, {"conv_input_axis", "input-channel"},
       {"activation_shape", {1, 16, 8, 8}}, {"partial_shape", {1, 32, 8, 8}},
-      {"activation_dtype", "float32"}}}
+      {"activation_dtype", "float32"},
+      {"conv_weight_bytes", 18432}, {"conv_bias_bytes", 128}}}
   };
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
   BOOST_REQUIRE(loaded.splitter);
   const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   BOOST_REQUIRE_EQUAL(candidates.front().sourceTransformByRole.size(), 3U);
+  BOOST_REQUIRE(candidates.front().requirementsByRole.at("Rank0").weightBytes);
+  BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank0").weightBytes, 9216U);
+  BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank1").weightBytes, 9216U);
+  BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Suffix").weightBytes, 128U);
   BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
   NativeRequestControl requestControl{"/fixture/conv/request", 1,
     std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};

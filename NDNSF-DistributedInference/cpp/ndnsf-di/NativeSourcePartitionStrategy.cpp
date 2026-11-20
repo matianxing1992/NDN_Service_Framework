@@ -338,6 +338,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
   }
 
   const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / m_profile.roles.size());
+  const auto transformedRoles = !candidate.sourceTransformByRole.empty();
   for (const auto& role : m_profile.roles) {
     if (control) control->requireActive();
     std::vector<std::string> roleNodes;
@@ -347,9 +348,18 @@ NativeSourcePartitionStrategy::enumerateImpl(
       {"candidate", candidate.splitter.name}, {"graph", graph.graphDigest},
       {"role", role}, {"nodes", roleNodes}}));
     candidate.artifactsByRole[role] = {candidate.fragmentsByRole[role]};
+    std::uint64_t residentBytes = roleBytes;
+    if (transformedRoles && m_profile.convWeightBytes != 0) {
+      if (role == m_profile.roles[1])
+        residentBytes = (m_profile.convWeightBytes + 1) / 2;
+      else if (role == m_profile.roles[2])
+        residentBytes = m_profile.convWeightBytes - m_profile.convWeightBytes / 2;
+      else if (role == m_profile.roles[3])
+        residentBytes = std::max<std::uint64_t>(1, m_profile.convBiasBytes);
+    }
     candidate.requirementsByRole[role] = {
       {"onnxruntime-cpu", "onnxruntime-cuda"},
-      roleBytes, 256ULL * 1024ULL * 1024ULL, 0,
+      residentBytes, 256ULL * 1024ULL * 1024ULL, 0,
       256ULL * 1024ULL * 1024ULL, 64ULL * 1024ULL * 1024ULL, 1.1};
   }
   std::uint64_t dependencyIndex = 0;

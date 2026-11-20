@@ -532,6 +532,8 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     profile.partialShape = split.value("partial_shape", std::vector<std::int64_t>{});
     profile.activationDtype = split.value("activation_dtype", std::string("float32"));
     profile.activationLayoutDigest = split.value("activation_layout_digest", std::string{});
+    profile.convWeightBytes = split.value("conv_weight_bytes", std::uint64_t{0});
+    profile.convBiasBytes = split.value("conv_bias_bytes", std::uint64_t{0});
     auto strategy = std::make_shared<NativeSourcePartitionStrategy>(std::move(profile));
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
