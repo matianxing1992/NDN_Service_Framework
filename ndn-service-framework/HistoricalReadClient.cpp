@@ -195,6 +195,25 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
   if (!verifyHistoricalKeyReply(*state->reply, keyRequest, nowMs(), accepted)) {
     // Both sides, so the mismatch is a fact rather than a guess: which of the bound fields differs decides whether
     // the request or the Controller's answer is wrong.
+    // The reply's own claims, read for the log only - the verifier refuses them, this only says why.
+    {
+      const std::string content(reinterpret_cast<const char*>(state->reply->getContent().value()),
+                                state->reply->getContent().value_size());
+      std::vector<std::string> lines;
+      std::size_t begin = 0;
+      while (lines.size() < 9) {
+        const auto end = content.find('\n', begin);
+        if (end == std::string::npos)
+          break;
+        lines.emplace_back(content.substr(begin, end - begin));
+        begin = end + 1;
+      }
+      HISTORICAL_READ_DEBUG("historical read: reply lines=%zu object=%s generation=%s epoch=%s policy=%s\n",
+                            lines.size(), lines.size() > 2 ? lines[2].c_str() : "-",
+                            lines.size() > 4 ? lines[4].c_str() : "-",
+                            lines.size() > 5 ? lines[5].c_str() : "-",
+                            lines.size() > 6 ? lines[6].c_str() : "-");
+    }
     HISTORICAL_READ_DEBUG("historical read: key reply mismatch request{generation=%llu epoch=%llu policy=%s "
                           "ck=%s object=%s} reply=%s\n",
                           static_cast<unsigned long long>(keyRequest.generation),
