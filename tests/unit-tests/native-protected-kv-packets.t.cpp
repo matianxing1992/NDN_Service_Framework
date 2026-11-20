@@ -67,6 +67,12 @@ BOOST_AUTO_TEST_CASE(N5CheckpointCoordinatesComeFromTheReceipt)
   BOOST_CHECK_EQUAL(context.epoch, 3U);   // the produced state's epoch, not the parent's
   BOOST_CHECK_EQUAL(context.roleId, "S0R0");
   BOOST_CHECK_EQUAL(context.stateLayoutLabel, std::string(64, 'a'));
+  // The receipt records a prefixed digest; the label is its bare hex, which fits the 64-byte bound.
+  auto prefixed = receipt;
+  prefixed.layoutDigest = "sha256:" + std::string(64, 'b');
+  const auto prefixedContext = nativeKvPacketNamingContext(prefixed);
+  BOOST_CHECK_EQUAL(prefixedContext.stateLayoutLabel, std::string(64, 'b'));
+  BOOST_CHECK_LE(prefixedContext.stateLayoutLabel.size(), 64U);
 
   // Every coordinate is required: a receipt that does not authenticate one of them yields an incomplete context.
   for (const auto clear : {0, 1, 2, 3}) {

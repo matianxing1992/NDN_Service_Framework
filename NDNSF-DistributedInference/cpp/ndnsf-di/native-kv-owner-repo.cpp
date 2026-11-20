@@ -231,11 +231,19 @@ NativeKvHandoffOwner::verifyAndPromote(std::shared_ptr<User> user,
     packets.maxPackets = limits.maxPacketCount;
     packets.maxPacketWireBytes = limits.maxPacketWireBytes;
     packets.checkpoint = {256ULL * 1024 * 1024, 256ULL * 1024 * 1024, {}};
+    // The same rule the target uses: a set that carries the N5 root is verified against the receipt coordinates,
+    // a set published before the row keeps its recorded name.
+    const auto naming = nativeKvPacketNamingContext(role.receipt);
+    const auto rootName = ndn::Name(role.rootName);
+    const bool semanticPackets = nativeKvPacketNamingContextComplete(naming) &&
+      rootName.size() >= 4 && rootName[-1] == ndn::name::Component("MANIFEST") &&
+      rootName[-3] == ndn::name::Component("rep");
     nativeMaterializeProtectedKvPackets(wires, role.protection, role.rootName, file.file, packets,
       [context](const ndn::Buffer& wire, const ndn::Name& producer) {
         context->current();
         return context->user->validateProducerPacketWireUntil(wire, producer, context->deadline);
-      }, [context] { context->current(); });
+      }, [context] { context->current(); }, {},
+      semanticPackets ? naming : NativeKvPacketNamingContext{});
     const auto current = [context] { context->current(); };
     const auto protectionLimits = NativeProtectedKvCheckpointLimitsV1{
       256ULL * 1024 * 1024, 256ULL * 1024 * 1024,

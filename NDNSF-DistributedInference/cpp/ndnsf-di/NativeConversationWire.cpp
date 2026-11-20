@@ -593,8 +593,18 @@ nativeReadSavedKvRole(const NativeJson& value)
     role.originalWireBytes <= 1000000000ULL && role.ownerEpoch > 0 &&
     !ndn::Name(role.repoProvider).empty() && !ndn::Name(role.repoServicePrefix).empty() &&
     ndn::Name(role.repoProvider) != role.protection.producerPrefix &&
-    role.protection.objectName().isPrefixOf(role.rootName) &&
-    role.rootName.size() == role.protection.objectName().size() + 3 &&
+    // Two closed shapes are admissible. A packet set published before the N5 row is named
+    // `<objectName>/packets/<digest>/manifest`, so the byte reference is its ancestor and the root adds exactly
+    // three components. An N5 set is `<CheckpointPrefix>/MANIFEST`, whose prefix is derived from the Producer and
+    // the authenticated receipt coordinates instead of from the byte reference; its cryptographic binding is
+    // checked when the packets are materialized, with the signing certificate the set carries.
+    ((role.protection.objectName().isPrefixOf(role.rootName) &&
+      role.rootName.size() == role.protection.objectName().size() + 3) ||
+     (role.rootName[-1] == ndn::name::Component("MANIFEST") && role.rootName.size() >= 4 &&
+      role.rootName[-3] == ndn::name::Component("rep") &&
+      role.rootName[-2].type() == ndn::tlv::GenericNameComponent &&
+      role.rootName[-2].value_size() == 32 &&
+      role.protection.producerPrefix.isPrefixOf(role.rootName))) &&
     role.protection.checkpointIdentityDigest == role.receipt.computedDigest() &&
     role.protection.ownerIdentity == ndn::Name(role.receipt.requesterIdentity) &&
     role.protection.producerPrefix == ndn::Name(role.receipt.providerIdentity),

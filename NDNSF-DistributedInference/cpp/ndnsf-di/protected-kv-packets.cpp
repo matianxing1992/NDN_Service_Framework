@@ -6,6 +6,7 @@
 #include <ndn-cxx/util/sha256.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <cerrno>
 #include <cctype>
 #include <unistd.h>
@@ -101,7 +102,12 @@ rootName(const NativeProtectedKvCheckpointReferenceV1& reference, const std::str
     .append("role").append(context.roleId)
     .append("state").append(context.stateLayoutLabel)
     .append("rep").append(ndn_service_framework::makeNamingDigestComponent(representation));
-  return ndn::Name(prefix).append("MANIFEST");
+  const auto root = ndn::Name(prefix).append("MANIFEST");
+  // The whole name, and the bound with a segment suffix, must stay inside the project's 1024-byte wire limit.
+  ndn_service_framework::checkNamingNameSize(root);
+  ndn_service_framework::checkNamingNameSize(ndn::Name(prefix).append("DATA").appendSegment(
+    std::numeric_limits<std::uint64_t>::max()));
+  return root;
 }
 
 ndn::Name
@@ -150,7 +156,10 @@ nativeKvPacketNamingContext(const ProviderConversationStateReceiptV1& receipt)
   context.conversationId = receipt.conversationId;
   context.epoch = receipt.successorContextEpoch;
   context.roleId = receipt.roleName;
-  context.stateLayoutLabel = receipt.layoutDigest;
+  // `<StateLayoutLabel>` is a public label bounded to 64 bytes; the receipt records the layout as a digest with
+  // the `sha256:` prefix, whose bare lowercase hex is exactly that bound.
+  const auto& layout = receipt.layoutDigest;
+  context.stateLayoutLabel = layout.rfind("sha256:", 0) == 0 ? layout.substr(7) : layout;
   return context;
 }
 

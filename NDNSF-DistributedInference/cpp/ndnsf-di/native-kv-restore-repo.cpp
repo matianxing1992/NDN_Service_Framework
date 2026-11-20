@@ -143,15 +143,10 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
       "KV restore Repo manifest differs from Owner commitment");
     repo::RepoDataReference reference;
     reference.objectName = root;
-    // A packet set published under N5 carries `<CheckpointPrefix>/MANIFEST`, so the grant's data prefix is that
-    // prefix. A set published before the row recorded the Producer prefix instead and keeps it.
-    const auto savedRoot = ndn::Name(restore.saved.rootName);
-    const bool n5Packets = savedRoot.size() >= 3 &&
-      savedRoot[-2] == ndn::name::Component("rep") &&
-      savedRoot[-1] == ndn::name::Component("MANIFEST");
-    reference.dataPrefix = n5Packets
-      ? savedRoot.getPrefix(-1).toUri()
-      : restore.saved.protection.producerPrefix.toUri();
+    // The Repo's exact packet-set check requires every packet, including the accompanying `/KEY` certificate Data,
+    // to fall under this prefix, so it stays the complete Producer prefix for both shapes; the checkpoint
+    // sub-prefix is carried by the object name and by the naming context, not by this field.
+    reference.dataPrefix = restore.saved.protection.producerPrefix.toUri();
     reference.expectedSize = restore.saved.originalWireBytes;
     reference.expectedSha256 = restore.saved.originalWireSha256;
     reference.forwardingHint = ndn::Name(policy.repoProvider).toUri();
@@ -203,9 +198,12 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
     // An N5 packet set has its prefix recomputed here from the recorded root, the signing certificate carried in
     // the set and the authenticated receipt coordinates, so a renamed or substituted root cannot be restored.
     const auto naming = nativeKvPacketNamingContext(restore.saved.receipt);
+    // `<CheckpointPrefix>/MANIFEST` puts `rep` at -3 and the identity at -2.
+    const auto savedRootName = ndn::Name(restore.saved.rootName);
     const bool semanticPackets = nativeKvPacketNamingContextComplete(naming) &&
-      ndn::Name(restore.saved.rootName).size() >= 2 &&
-      ndn::Name(restore.saved.rootName)[-2] == ndn::name::Component("rep");
+      savedRootName.size() >= 4 &&
+      savedRootName[-1] == ndn::name::Component("MANIFEST") &&
+      savedRootName[-3] == ndn::name::Component("rep");
     nativeMaterializeProtectedKvPackets(wires, restore.saved.protection, restore.saved.rootName,
       files.cipher, packetLimits,
       [writer = policy.storageWriter, current, deadline](const ndn::Buffer& wire,
