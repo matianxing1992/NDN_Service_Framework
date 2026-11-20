@@ -511,6 +511,34 @@ BOOST_AUTO_TEST_CASE(SmolLm2LlamaCatalogRoutesToNativePlanner)
     semanticState);
   BOOST_CHECK(semanticResumed.handle.rootName.getPrefix(-1) == packagePrefix);
 
+  // Persistence: a fresh read-only catalogue load from the same stored packets must recover the package by its
+  // recorded root and index names.
+  auto readOnly = storedIo;
+  readOnly.commit = {};
+  const auto reloaded = nativeLoadStoredModelCatalog(semanticResumed.handle, readOnly);
+  BOOST_CHECK_EQUAL(reloaded.catalogId(), "catalog-" + nativePlanningDigest(
+    nativeStoredModelConfigurationIdentity(nativeCanonicalJson(storedConfiguration))).substr(7));
+  BOOST_CHECK(reloaded.manifestId() == "business-root");
+  BOOST_REQUIRE(!reloaded.objects().empty());
+  for (const auto& item : reloaded.objects()) {
+    const auto expected = nativeStoredModelObjectName(packagePrefix, item.first);
+    BOOST_CHECK(item.second.object.name == expected);
+    BOOST_CHECK(expected.getPrefix(packagePrefix.size()) == packagePrefix);
+  }
+
+  // A package published under an explicit prefix keeps the legacy object names, and still reloads by them.
+  {
+    auto legacyRead = storedIo;
+    legacyRead.commit = {};
+    const auto legacyCatalog = nativeLoadStoredModelCatalog(stored.handle, legacyRead);
+    const auto legacyPrefix = stored.handle.rootName.getPrefix(-1);
+    BOOST_CHECK(!nativeStoredModelSemanticPrefix(legacyPrefix));
+    for (const auto& item : legacyCatalog.objects()) {
+      BOOST_CHECK(item.second.object.name ==
+                  ndn::Name(legacyPrefix).append("objects").append(item.first).appendVersion(0));
+    }
+  }
+
   const auto writerIo = storedIo;
   const auto packetsBeforeBadMapping = originalPackets.size();
   auto badMapping = storedConfiguration;
