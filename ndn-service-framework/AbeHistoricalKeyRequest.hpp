@@ -39,6 +39,7 @@ struct HistoricalKeyRequest
   /** The content key the object's payload names, which is what the Controller checks the scope against. */
   ndn::Name ckName;
   std::string policy;
+  std::vector<uint8_t> ckEvidence;
   ndn::Name recipientCertificate;
   uint64_t mintedAtMs = 0;
   uint64_t expiresAtMs = 0;

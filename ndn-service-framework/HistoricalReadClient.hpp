@@ -34,6 +34,7 @@ struct HistoricalReadRequest
   ndn::Name ckName;
   ndn::Name payloadName;
   std::string policy;
+  std::vector<uint8_t> ckEvidence;
   ndn::security::Certificate recipientCertificate;
   /** The Controller whose signature the key reply must carry. Verification is not optional: an envelope
    *  that names the right generation proves nothing about who wrote it. */

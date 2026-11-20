@@ -159,6 +159,7 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
   keyRequest.serviceName = request.serviceName;
   keyRequest.ckName = request.ckName;
   keyRequest.policy = request.policy;
+  keyRequest.ckEvidence = request.ckEvidence;
   keyRequest.recipientCertificate = request.recipientCertificate.getName();
   const auto now = nowMs();
   keyRequest.mintedAtMs = now;
@@ -404,7 +405,9 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
       return std::nullopt;
     }
   }
-  const auto key = fetchHistoricalKey(face, keyChain, request, request.fetchTimeoutMs * 4);
+  auto evidenced = request;
+  evidenced.ckEvidence.assign(ckWire->begin(), ckWire->end());
+  const auto key = fetchHistoricalKey(face, keyChain, evidenced, request.fetchTimeoutMs * 4);
   if (!key) {
     HISTORICAL_READ_DEBUG("historical read: historical key request failed\n");
     return std::nullopt;

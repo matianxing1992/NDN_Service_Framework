@@ -19,7 +19,8 @@
 namespace ndn_service_framework {
 namespace {
 
-constexpr char BODY_SCHEMA[] = "ndnsf-abe-history-dkey-request-v3";
+constexpr char BODY_SCHEMA[] = "ndnsf-abe-history-dkey-request-v4";
+constexpr char BODY_SCHEMA_V3[] = "ndnsf-abe-history-dkey-request-v3";
 constexpr char REPLY_SCHEMA[] = "ndnsf-abe-history-dkey-reply-v2";
 
 std::string
@@ -80,7 +81,7 @@ encodeHistoricalKeyRequest(const HistoricalKeyRequest& request)
 {
   if (!isSafePolicy(request.policy))
     throw std::invalid_argument("historical key request policy is not a plain attribute expression");
-  std::string body(BODY_SCHEMA);
+  std::string body(request.ckEvidence.empty() ? BODY_SCHEMA_V3 : BODY_SCHEMA);
   body += "\ncontroller " + request.controllerPrefix.toUri(ndn::name::UriFormat::CANONICAL);
   body += "\ngeneration " + std::to_string(request.generation);
   body += "\nepoch " + std::to_string(request.epoch);
@@ -92,6 +93,14 @@ encodeHistoricalKeyRequest(const HistoricalKeyRequest& request)
   body += "\npolicy " + request.policy;
   body += "\nminted " + std::to_string(request.mintedAtMs);
   body += "\nexpires " + std::to_string(request.expiresAtMs);
+  // The evidence is the last line: the earlier fields keep their positions, so a v3 body and a v4 body differ only by a
+  // trailing line and every existing index in the decoder stays valid.
+  if (!request.ckEvidence.empty()) {
+    static constexpr char HEX[] = "0123456789abcdef";
+    std::string hex;
+    for (const auto byte : request.ckEvidence) { hex.push_back(HEX[byte >> 4]); hex.push_back(HEX[byte & 0x0F]); }
+    body += "\nck-evidence " + hex;
+  }
   return body;
 }
 
@@ -108,7 +117,10 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
         break;
       begin = end + 1;
     }
-    if (lines.size() != 12 || lines[0] != BODY_SCHEMA)
+    while (!lines.empty() && lines.back().empty())
+      lines.pop_back();
+    const bool v4 = lines.size() == 13 && lines[0] == BODY_SCHEMA;
+    if ((!v4 && (lines.size() != 12 || lines[0] != BODY_SCHEMA_V3)) || lines.size() < 12)
       return false;
     const auto field = [] (const std::string& line, const char* prefix) -> std::string {
       const std::string head(prefix);
@@ -117,6 +129,24 @@ decodeHistoricalKeyRequest(const std::string& body, HistoricalKeyRequest& reques
       return line.substr(head.size());
     };
     HistoricalKeyRequest parsed;
+    if (v4) {
+      const auto hex = field(lines[12], "ck-evidence ");
+      if (hex.size() % 2 != 0)
+        return false;
+      const auto digit = [] (char value) -> int {
+        if (value >= '0' && value <= '9') return value - '0';
+        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+        if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+        return -1;
+      };
+      for (std::size_t i = 0; i < hex.size(); i += 2) {
+        const auto high = digit(hex[i]);
+        const auto low = digit(hex[i + 1]);
+        if (high < 0 || low < 0)
+          return false;
+        parsed.ckEvidence.push_back(static_cast<uint8_t>((high << 4) | low));
+      }
+    }
     parsed.controllerPrefix = ndn::Name(field(lines[1], "controller "));
     if (!parseU64(field(lines[2], "generation "), parsed.generation) ||
         !parseU64(field(lines[3], "epoch "), parsed.epoch) ||
@@ -473,8 +503,8 @@ HistoricalKeyBroker::answer(const ndn::Interest& interest, const ndn::Name& cont
 
   constexpr uint64_t MAX_SKEW_MS = 60000;
   constexpr uint64_t MAX_AGE_MS = 300000;
-  // A request that claims a very long validity would keep its digest in the replay set for that long,
-  // so the lifetime itself is bounded instead of trusted.
+  // A request that claims a very long validity would keep its digest in the replay set for that
+  // long, so the lifetime itself is bounded instead of trusted.
   constexpr uint64_t MAX_TTL_MS = 600000;
   if (request.expiresAtMs <= nowMs || request.mintedAtMs > nowMs + MAX_SKEW_MS ||
       request.mintedAtMs + MAX_AGE_MS < nowMs ||
