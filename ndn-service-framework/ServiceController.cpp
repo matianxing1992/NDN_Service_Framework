@@ -1084,20 +1084,27 @@ ServiceController::revoke(const RevocationTarget& target)
   }
 
   m_revocations.push_back(target);
+  // Record the withdrawal against the version that is still being served. The version names key material, and the
+  // material for the next one does not exist until the rotation below has run; committing the epoch first is what
+  // produced a served version with no keys behind it.
   try {
-    advanceAuthorizationEpoch();
+    m_generationStore->recordRevocations(m_revocations, true);
   }
   catch (const std::exception& error) {
-    // Before rename, retain the prior authoritative state. If the commit
-    // outcome is uncertain, advanceAuthorizationEpoch has stopped serving.
     m_revocations.pop_back();
     NDN_LOG_ERROR("NDNSF_CONTROLLER_REVOKE_FAILED error=" << error.what());
     return false;
   }
+  // The rotation generates the material for the next version; that version is advertised only after the material
+  // exists, which is what `advanceEpoch` below checks.
+  const auto previousVersion = m_controllerVersion;
+  m_controllerVersion = ControllerVersion{previousVersion.controllerGenerationTimestamp,
+                                          previousVersion.controllerEpoch + 1};
   try {
     rotateAbeGenerationAndReissuePolicies();
   }
   catch (const std::exception& error) {
+    m_controllerVersion = previousVersion;
     NDN_LOG_ERROR("NDNSF_CONTROLLER_ABE_REKEY_FAILED error=" << error.what());
     // The generation store is monotonic; do not pretend an already-persisted
     // ControllerVersion can be rolled back.  Keep the revocation in memory so
@@ -1106,6 +1113,19 @@ ServiceController::revoke(const RevocationTarget& target)
     // next revoke entry retries it (reconcilePendingAbeRotation) instead of
     // serving the mixed state indefinitely.
     m_abeRotationPending = true;
+    return false;
+  }
+  try {
+    m_controllerVersion = m_generationStore->advanceEpoch(m_revocations, false);
+    m_policyEpoch = static_cast<size_t>(m_controllerVersion.controllerEpoch);
+    m_requiredKeyEpoch = m_policyEpoch;
+    m_policyValidFromMs = nowMilliseconds();
+    m_policyValidUntilMs = m_policyValidFromMs + 24ULL * 60ULL * 60ULL * 1000ULL;
+  }
+  catch (const std::exception& error) {
+    // The material exists but the version could not be published; refuse to serve a half-committed rotation.
+    m_abeRotationPending = true;
+    NDN_LOG_ERROR("NDNSF_CONTROLLER_EPOCH_COMMIT_FAILED error=" << error.what());
     return false;
   }
   // The generation that was just retired becomes readable through its bound historical proof.
