@@ -160,6 +160,17 @@ class ConfiguredRosterContractTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 checks.verify_installed_files(prefix, roster, ['unit'])
 
+    def test_inherited_fixture_root_cannot_block_an_installed_run(self):
+        # A stale NDNSF_TEST_FIXTURE_ROOT in the shell is not a request: installed mode keeps the verified root.
+        self.assertEqual(checks.target_environment({'target': 'x'}, {'KEPT': '1'}, None,
+                                                   Path('/tmp'))['KEPT'], '1')
+        with patch.object(checks.os, 'environ', {'NDNSF_TEST_FIXTURE_ROOT': '/host/stale-fixtures'}):
+            with patch.object(checks, 'installed_prefix', return_value=Path('/prefix')), \
+                    patch.object(checks, 'load_roster', side_effect=SystemExit('stop')), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    checks.main(['--profile', 'unit'])
+
     def test_installed_mode_refuses_fixture_root_outside_the_verified_prefix(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix = Path(directory)

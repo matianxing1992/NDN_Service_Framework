@@ -178,6 +178,9 @@ QUALIFICATION_ONLY_INPUTS = frozenset({
     'SPEC190_NATIVE_TURNS_CONFIG',
     'NDNSF_TEST_PORTABLE_ONNX_GRAPH',        # frozen CUDA replay
     'NDNSF_TEST_PORTABLE_CUDA_PROFILE',
+    'NDNSF_DI_WORKER_BINARY',                # C++ assembly worker override
+    'NDNSF_SPEC182_BIN_DIR',                 # helper binary directory override
+    'SPEC201_PUBLICATION_BINDING_ORACLE',    # publication oracle dump path
 })
 
 
@@ -670,8 +673,10 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--profile', required=True,
                         help='profile name, or "all" for every declared profile')
-    parser.add_argument('--fixture-root', default=os.environ.get('NDNSF_TEST_FIXTURE_ROOT'),
-                        help='declared fixture root; passed through to every check')
+    parser.add_argument('--fixture-root', default=None,
+                        help='declared fixture root; passed through to every check. Source mode falls back to '
+                             'NDNSF_TEST_FIXTURE_ROOT when the option is absent; installed mode ignores the '
+                             'inherited value and only accepts the verified prefix root.')
     parser.add_argument('--asset-manifest', default=None,
                         help='SEALED asset-manifest.json from the pinned model preparation recipe')
     parser.add_argument('--build-root', default=None,
@@ -679,6 +684,11 @@ def main(argv=None):
     parser.add_argument('--report', default=None, help='write the JSON report here')
     parser.add_argument('--timeout', type=float, default=3600.0, help='per-selector timeout')
     arguments = parser.parse_args(argv)
+    # Keep the provenance of the root: a CLI value is a request, an inherited value is a shell accident that
+    # must not be able to masquerade as one (installed mode treats the two differently).
+    fixture_root_from_cli = arguments.fixture_root is not None
+    if not fixture_root_from_cli:
+        arguments.fixture_root = os.environ.get('NDNSF_TEST_FIXTURE_ROOT')
 
     prefix = installed_prefix()
     checkout = Path(__file__).resolve().parent.parent
@@ -719,7 +729,8 @@ def main(argv=None):
         # directory. Accepting another one would check the receipt against one tree and then read test data
         # from another, which is how a same-named host fixture changes the verdict.
         verified_fixture_root = (prefix / 'share' / 'ndnsf' / 'tests' / 'fixtures').resolve()
-        if arguments.fixture_root is None:
+        if not fixture_root_from_cli:
+            # An inherited value must not block, and must not override, the verified prefix root.
             arguments.fixture_root = str(verified_fixture_root)
         else:
             requested_root = Path(arguments.fixture_root).resolve()
