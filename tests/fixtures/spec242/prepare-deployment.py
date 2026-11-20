@@ -193,6 +193,10 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
     repo_identity = by_id["repo"]["identity"]
     requester = by_id["requester"]["identity"]
     security_digest = digest(policy.read_bytes())
+    keyring = root / "file-keyring"
+    keyring.parent.mkdir(parents=True, exist_ok=True)
+    keyring.write_text("spec242-protection " + os.urandom(32).hex() + "\n")
+    keyring.chmod(0o600)
     options_file = str(bundle / "generation.json")
     turns = [dict(input_file=str(bundle / input_name), options_file=options_file,
                   output_file=str(root / f"output-{i}.json"),
@@ -212,7 +216,10 @@ def prepare_deployment(root, prefix, ledger, journal_root, scenario="hybrid"):
         "network": dict(group=group, service=service, artifact_service=grant_service,
                         repo_service=repo_service, routes=[]),
         "security": dict(controller_certificate=certificates["controller"],
-                         controller_policy=str(policy), trust_schema=str(trust)),
+                         controller_policy=str(policy), trust_schema=str(trust),
+                         # A model preparation refuses to publish without a file-protection key, so the fixture has to
+                         # provide one: the runtime will not write an unsealed handle or a plain master secret.
+                         file_keyring=str(keyring)),
         "storage": {**{key + "_root": str(root / key) for key in
                        ("cache", "repo", "scratch", "state", "evidence")}, "max_bytes": 128 << 20},
         "model": dict(manifest=str(manifest), plan=str(plan), tokenizer=str(bundle / "tokenizer.json")),
