@@ -3,6 +3,7 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -257,7 +258,9 @@ NativeSourcePartitionStrategy::enumerateImpl(
     // contracts, not from the Conv activation shapes: the entry binder compares
     // name, dtype and shape exactly against the real source ports.
     const auto contractSlot = [&] (const std::string& id, const NativeTensorContract& contract,
-                                   const std::string& source) {
+                                   const std::string& source,
+                                   const std::string& producerStep = {},
+                                   const std::string& producerSlot = {}) {
       NativeStepSlotSpec result;
       result.slotId = id;
       result.dtype = contract.dtype.empty() ? m_profile.activationDtype : contract.dtype;
@@ -266,6 +269,8 @@ NativeSourcePartitionStrategy::enumerateImpl(
       }
       result.layoutDigest = layout;
       result.source = source;
+      result.producerStepId = producerStep;
+      result.producerSlotId = producerSlot;
       return result;
     };
     const std::string activation = m_profile.convInputTensor;
@@ -283,7 +288,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
     // The ingress reads the request's own named tensor; internal handoffs keep
     // the actual ONNX tensor names so a runner port binding is never a guess.
     prefix.inputSlots.push_back(graph.modelInputs.empty()
-      ? slot(sourceInput, m_profile.activationShape, "EPOCH_INPUT", "", "")
+      ? contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}}, "EPOCH_INPUT", "", "")
       : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT"));
     prefix.outputSlots.push_back(slot(activation, m_profile.activationShape,
                                       "LOCAL_STEP", "", ""));
@@ -318,9 +323,105 @@ NativeSourcePartitionStrategy::enumerateImpl(
     suffix.inputSlots.push_back(slot("sum", m_profile.partialShape, "REMOTE_STEP",
                                      sumStep, "sum"));
     suffix.outputSlots.push_back(graph.modelOutputs.empty()
-      ? slot(sourceOutput, m_profile.partialShape, "LOCAL_STEP", "", "")
+      ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
       : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP"));
     candidate.executionPlan.steps.push_back(std::move(suffix));
+  }
+
+  // Ordinary source roles execute through the same V2 step template as the
+  // hybrid split: one CALL_SUBGRAPH for a full role, two stages for a component
+  // cut. A step-produced terminal value is materialized to wire bytes at the
+  // response boundary by the Provider.
+  if (m_profile.mode == NativeSourcePartitionMode::FULL ||
+      m_profile.mode == NativeSourcePartitionMode::COMPONENT) {
+    const std::string sourceInput = graph.modelInputs.empty() ? "input"
+      : graph.modelInputs.front().name;
+    const std::string sourceOutput = graph.modelOutputs.empty() ? "output"
+      : graph.modelOutputs.front().name;
+    const auto layout = m_profile.activationLayoutDigest.empty()
+      ? nativePlanningDigest("source-activation-layout-v1")
+      : m_profile.activationLayoutDigest;
+    const auto contractSlot = [&] (const std::string& id, const NativeTensorContract& contract,
+                                   const std::string& source, const std::string& producerStep,
+                                   const std::string& producerSlot) {
+      NativeStepSlotSpec result;
+      result.slotId = id;
+      result.dtype = contract.dtype.empty() ? m_profile.activationDtype : contract.dtype;
+      for (const auto& dim : contract.shape)
+        if (const auto* value = std::get_if<std::int64_t>(&dim)) result.shape.push_back(*value);
+      result.layoutDigest = layout;
+      result.source = source;
+      result.producerStepId = producerStep;
+      result.producerSlotId = producerSlot;
+      return result;
+    };
+    candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
+    if (m_profile.mode == NativeSourcePartitionMode::FULL) {
+      NativeExecutionStepSpec step;
+      step.stepId = m_profile.roles.front() + "/RUN";
+      step.unitId = m_profile.roles.front();
+      step.operation = "CALL_SUBGRAPH";
+      step.artifactEntry = m_profile.roles.front() + "/artifact";
+      step.inputSlots.push_back(graph.modelInputs.empty()
+        ? contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}}, "EPOCH_INPUT", "", "")
+        : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT", "", ""));
+      step.outputSlots.push_back(graph.modelOutputs.empty()
+        ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
+        : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP", "", ""));
+      candidate.executionPlan.steps.push_back(std::move(step));
+      candidate.executionPlan.stageLayout.push_back(
+        {m_profile.roles.front() + "/stage",
+         nativePlanningDigest("source-full|" + graph.graphDigest), {m_profile.roles.front()}});
+    }
+    else {
+      const std::string activation = m_profile.convInputTensor.empty()
+        ? (graph.edges.empty() ? "activation" : graph.edges.front().id)
+        : m_profile.convInputTensor;
+      const std::string prefixStep = m_profile.roles[0] + "/RUN";
+      NativeExecutionStepSpec prefix;
+      prefix.stepId = prefixStep;
+      prefix.unitId = m_profile.roles[0];
+      prefix.operation = "CALL_SUBGRAPH";
+      prefix.artifactEntry = m_profile.roles[0] + "/artifact";
+      prefix.inputSlots.push_back(graph.modelInputs.empty()
+        ? contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}}, "EPOCH_INPUT", "", "")
+        : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT", "", ""));
+      prefix.outputSlots.push_back(contractSlot(activation,
+        {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", ""));
+      NativeExecutionStepSpec suffix;
+      suffix.stepId = m_profile.roles[1] + "/RUN";
+      suffix.unitId = m_profile.roles[1];
+      suffix.operation = "CALL_SUBGRAPH";
+      suffix.artifactEntry = m_profile.roles[1] + "/artifact";
+      suffix.inputSlots.push_back(contractSlot(activation,
+        {"", m_profile.activationDtype, {}, {}}, "REMOTE_STEP", prefixStep, activation));
+      suffix.outputSlots.push_back(graph.modelOutputs.empty()
+        ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
+        : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP", "", ""));
+      candidate.executionPlan.steps.push_back(std::move(prefix));
+      candidate.executionPlan.steps.push_back(std::move(suffix));
+      candidate.executionPlan.stageLayout = {
+        {m_profile.roles[0] + "/stage",
+         nativePlanningDigest("source-prefix|" + graph.graphDigest), {m_profile.roles[0]}},
+        {m_profile.roles[1] + "/stage",
+         nativePlanningDigest("source-suffix|" + graph.graphDigest), {m_profile.roles[1]}},
+      };
+      NativeDependencySpec dependency;
+      dependency.dependencyId = "component-activation";
+      dependency.producers = {m_profile.roles[0]};
+      dependency.consumers = {m_profile.roles[1]};
+      dependency.keyScope = "native-source-activation";
+      dependency.topicPrefix = "/NDNSF/DI/ONNX_SOURCE";
+      dependency.objectNameTemplate =
+        "{producerProvider}/NDNSF/DI/ONNX_SOURCE/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
+      dependency.tensors = {activation};
+      dependency.operationKind = "ACTIVATION";
+      dependency.producerStepId = prefixStep;
+      dependency.producerSlotId = activation;
+      dependency.consumerStepId = m_profile.roles[1] + "/RUN";
+      dependency.consumerSlotId = activation;
+      candidate.executionPlan.dependencies.push_back(std::move(dependency));
+    }
   }
 
   std::uint64_t knownBytes = 0;

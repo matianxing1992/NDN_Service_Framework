@@ -1688,6 +1688,19 @@ roleMayAnswerRequester(const RoleSpec& roleSpec, std::optional<bool> sealedTermi
   return sealedTerminalOwner ? *sealedTerminalOwner : nativeProviderRoleAnswersRequester(roleSpec);
 }
 
+/** Return the transport bytes for a terminal value.
+ *
+ * A step-produced value is a local tensor view with no wire payload; forwarding
+ * it unchanged would send an empty response while claiming success. Materialize
+ * it once at the network boundary, exactly as an output edge already does.
+ */
+static std::vector<uint8_t>
+terminalBundlePayload(const TensorBundle& bundle)
+{
+  if (!bundle.localTensors) return bundle.payload;
+  return materializeTensorBundleWire(bundle).payload;
+}
+
 static std::optional<std::vector<uint8_t>>
 finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& result,
   const std::string& finalResponseScope, std::optional<bool> sealedTerminalOwner)
@@ -1698,7 +1711,7 @@ finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& 
 
   const auto found = result.outputsByScope.find(finalResponseScope);
   if (found != result.outputsByScope.end()) {
-    return found->second.payload;
+    return terminalBundlePayload(found->second);
   }
   // A sealed terminal owner that carries a step template binds its result to
   // the unconsumed output slot the template declared. Only a step-less sealed
@@ -1719,7 +1732,8 @@ finalResponsePayloadForRole(const RoleSpec& roleSpec, const ProviderRoleResult& 
       for (const auto& slot : step.outputSlots) {
         if (consumed.count(step.stepId + "\n" + slot.slotId) != 0) continue;
         const auto terminal = result.outputsByScope.find(slot.slotId);
-        if (terminal != result.outputsByScope.end()) return terminal->second.payload;
+        if (terminal != result.outputsByScope.end())
+          return terminalBundlePayload(terminal->second);
       }
     }
   }
