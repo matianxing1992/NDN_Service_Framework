@@ -692,6 +692,12 @@ ServiceController::isRevoked(const ndn::Name& identity,
         return true;
       break;
     case RevocationKind::SERVICE_AUTHORIZATION:
+      NDN_LOG_WARN("NDNSF_SERVICE_REVOCATION_COMPARE targetIdentity=" << target.targetIdentity.toUri()
+                   << " identity=" << identity.toUri()
+                   << " targetService=" << target.serviceName.toUri()
+                   << " service=" << serviceName.toUri()
+                   << " targetAttribute=" << target.authorizationAttribute.toUri()
+                   << " attribute=" << authorizationAttribute.toUri());
       if (target.targetIdentity == identity && target.serviceName == serviceName &&
           (authorizationAttribute.empty() ||
            target.authorizationAttribute == authorizationAttribute))
@@ -1906,9 +1912,14 @@ ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdenti
     allowedServices = it->second;
   }
 
+  NDN_LOG_WARN("NDNSF_PROVIDER_RECORD_ALLOWED identity=" << targetIdentity.toUri()
+               << " services=" << allowedServices.size() << " revocations=" << m_revocations.size());
   for (const auto& service : allowedServices) {
-    if (isRevoked(targetIdentity, ndn::Name(service), {},
-                  makeAuthorizationAttribute("/SERVICE", service)))
+    const auto attribute = makeAuthorizationAttribute("/SERVICE", service);
+    const bool revoked = isRevoked(targetIdentity, ndn::Name(service), {}, attribute);
+    NDN_LOG_WARN("NDNSF_PROVIDER_RECORD_SERVICE name=" << service
+                 << " attribute=" << attribute.toUri() << " revoked=" << (revoked ? 1 : 0));
+    if (revoked)
       continue;
     PermissionEntry entry;
     entry.setProviderName(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
