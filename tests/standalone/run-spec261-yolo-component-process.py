@@ -37,12 +37,12 @@ sys.path.insert(0, str(ROOT/'tests/standalone'))
 from di_native_fixture import adapter_descriptor, canonical_bytes, digest, model_descriptor, fixture_path
 def dg(x): return 'sha256:'+hashlib.sha256(x.encode()).hexdigest()
 YOLO = {
- '26n': {'dir': Path('/tmp/spec261-yolo26n/canonical'), 'name': 'YOLO26n',
+ '26n': {'dir': Path(os.environ.get('SPEC261_ASSET_ROOT','/usr/local/lib/ndnsf/spec261/models'))/'yolo26n', 'name': 'YOLO26n',
    'planning': 'sha256:0dda659f16ce8efa7f81e95a7e6a3df1753550a9281e8618e39103464b969302',
    'canonical': 'sha256:55c7615315259bcdcfa1e7d4a11a899eec24656358302b5595e29057305d6a55',
    'initializer': 'sha256:f0820471225a9492718ae3cf637f34304e14734567d6ec698c6854642c0ed09b',
    'output': 'predictions', 'max_nodes': 1024},
- '11n': {'dir': Path('/tmp/spec261-yolo11n-nms/canonical'), 'name': 'YOLO11n',
+ '11n': {'dir': Path(os.environ.get('SPEC261_ASSET_ROOT','/usr/local/lib/ndnsf/spec261/models'))/'yolo11n', 'name': 'YOLO11n',
    'planning': 'sha256:78ceb0afd63a3a4270ce5bcb9556425d358b48c977a10a54c1f029926c5782fb',
    'canonical': 'sha256:e8a26e0045c331dc0a58602dda602c66fc5c5877c973bfaf73ff7738c0d147f3',
    'initializer': 'sha256:7655f01d6f5f721c7b2b418570833cd8e0e81a0e2065b477474c5e108079190e',

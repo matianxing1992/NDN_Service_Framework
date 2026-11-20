@@ -10,6 +10,7 @@ hand-off crosses real links instead of one host's Unix socket.
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 import json
 import os
@@ -82,6 +83,19 @@ def main() -> int:
 
     persist()
 
+    # Mini-NDN installs its Python package outside the default site-packages on
+    # this host (a versioned prefix). Resolve it explicitly before importing.
+    candidates = [os.environ.get("NDNSF_MININDN_PYTHONPATH", "")]
+    for pattern in ("/usr/local/lib/ndnsf/mini-ndn/*/python*/site-packages",
+                    "/home/*/NDN/mini-ndn"):
+        candidates.extend(str(Path(item).parent if Path(item).name == "minindn"
+                               else item)
+                          for item in glob.glob(pattern))
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "minindn" / "__init__.py").is_file():
+            sys.path.insert(0, candidate)
+            result["minindnPath"] = candidate
+            break
     try:
         from minindn.minindn import Minindn
         from minindn.apps.app_manager import AppManager
