@@ -26,6 +26,10 @@ struct NativeSourcePartitionProfile
   std::string postprocessingJson = "{}";
   std::uint64_t inputChannels = 0;
   std::string convInputAxis = "input-channel";
+  std::vector<std::int64_t> activationShape;
+  std::vector<std::int64_t> partialShape;
+  std::string activationDtype = "float32";
+  std::string activationLayoutDigest;
 };
 
 /**

@@ -36,8 +36,9 @@ NativeSourcePartitionStrategy::NativeSourcePartitionStrategy(
     throw std::invalid_argument("component source partition requires two roles and a boundary");
   if (m_profile.mode == NativeSourcePartitionMode::HYBRID &&
       (m_profile.roles.size() != 4 || m_profile.boundaryNode.empty() ||
-       m_profile.inputChannels < 2 || m_profile.convInputAxis.empty()))
-    throw std::invalid_argument("hybrid source partition requires four roles, boundary and channels");
+       m_profile.inputChannels < 2 || m_profile.convInputAxis.empty() ||
+       m_profile.activationShape.empty() || m_profile.partialShape.empty()))
+    throw std::invalid_argument("hybrid source partition requires four roles, boundary, channels and shapes");
 }
 
 NativeStrategyIdentity
@@ -187,17 +188,63 @@ NativeSourcePartitionStrategy::enumerateImpl(
       {m_profile.roles[3] + "/stage", nativePlanningDigest("source-suffix|" + graph.graphDigest),
        {m_profile.roles[3]}},
     };
-    // Structural step entries. T002 replaces these with the source-bound
-    // CALL_SUBGRAPH/SUM recipes; they exist here so rank units can share the
-    // boundary node without claiming a private graph node.
-    for (const auto& role : m_profile.roles) {
+    const auto layout = [&] {
+      if (!m_profile.activationLayoutDigest.empty()) return m_profile.activationLayoutDigest;
+      return nativePlanningDigest("source-activation-layout-v1");
+    }();
+    const auto slot = [&] (const std::string& id, const std::vector<std::int64_t>& shape,
+                           const std::string& source, const std::string& producerStep,
+                           const std::string& producerSlot) {
+      NativeStepSlotSpec result;
+      result.slotId = id;
+      result.dtype = m_profile.activationDtype;
+      for (const auto value : shape) result.shape.push_back(value);
+      result.layoutDigest = layout;
+      result.source = source;
+      result.producerStepId = producerStep;
+      result.producerSlotId = producerSlot;
+      return result;
+    };
+    NativeExecutionStepSpec prefix;
+    prefix.stepId = m_profile.roles[0] + "/RUN";
+    prefix.unitId = m_profile.roles[0];
+    prefix.operation = "CALL_SUBGRAPH";
+    prefix.artifactEntry = m_profile.roles[0] + "/artifact";
+    prefix.outputSlots.push_back(slot("prefix-out", m_profile.activationShape,
+                                      "LOCAL_STEP", "", ""));
+    candidate.executionPlan.steps.push_back(std::move(prefix));
+    for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]}) {
       NativeExecutionStepSpec step;
-      step.stepId = role + "/RUN";
-      step.unitId = role;
+      step.stepId = rank + "/RUN";
+      step.unitId = rank;
       step.operation = "CALL_SUBGRAPH";
-      step.artifactEntry = role + "/artifact";
+      step.artifactEntry = rank + "/artifact";
+      step.inputSlots.push_back(slot("activation", m_profile.activationShape, "REMOTE_STEP",
+                                     m_profile.roles[0] + "/RUN", "prefix-out"));
+      step.outputSlots.push_back(slot("partial", m_profile.partialShape,
+                                      "LOCAL_STEP", "", ""));
       candidate.executionPlan.steps.push_back(std::move(step));
     }
+    NativeExecutionStepSpec sum;
+    sum.stepId = m_profile.roles[1] + "/SUM";
+    sum.unitId = m_profile.roles[1];
+    sum.operation = "SUM";
+    sum.inputSlots.push_back(slot("rank0", m_profile.partialShape, "LOCAL_STEP",
+                                  m_profile.roles[1] + "/RUN", "partial"));
+    sum.inputSlots.push_back(slot("rank1", m_profile.partialShape, "REMOTE_STEP",
+                                  m_profile.roles[2] + "/RUN", "partial"));
+    sum.outputSlots.push_back(slot("sum", m_profile.partialShape, "LOCAL_STEP", "", ""));
+    candidate.executionPlan.steps.push_back(std::move(sum));
+    NativeExecutionStepSpec suffix;
+    suffix.stepId = m_profile.roles[3] + "/RUN";
+    suffix.unitId = m_profile.roles[3];
+    suffix.operation = "CALL_SUBGRAPH";
+    suffix.artifactEntry = m_profile.roles[3] + "/artifact";
+    suffix.inputSlots.push_back(slot("sum", m_profile.partialShape, "REMOTE_STEP",
+                                     m_profile.roles[1] + "/SUM", "sum"));
+    suffix.outputSlots.push_back(slot("result", m_profile.partialShape,
+                                      "LOCAL_STEP", "", ""));
+    candidate.executionPlan.steps.push_back(std::move(suffix));
   }
 
   std::uint64_t knownBytes = 0;
@@ -234,28 +281,37 @@ NativeSourcePartitionStrategy::enumerateImpl(
   }
 
   if (m_profile.mode == NativeSourcePartitionMode::HYBRID) {
-    NativeDependencySpec first;
-    first.producers = {m_profile.roles[0]};
-    first.consumers = {m_profile.roles[1], m_profile.roles[2]};
-    first.keyScope = "native-source-activation";
-    first.topicPrefix = "/NDNSF/DI/ONNX_SOURCE";
-    first.objectNameTemplate =
-      "{producerProvider}/NDNSF/DI/ONNX_SOURCE/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
-    first.tensors = {m_profile.boundaryNode + "-input"};
-    first.operationKind = "ACTIVATION";
-    candidate.executionPlan.dependencies.push_back(std::move(first));
-    for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]}) {
-      NativeDependencySpec partial;
-      partial.producers = {rank};
-      partial.consumers = {m_profile.roles[3]};
-      partial.keyScope = "native-source-activation";
-      partial.topicPrefix = "/NDNSF/DI/ONNX_SOURCE";
-      partial.objectNameTemplate =
+    const auto dependency = [&] (const std::string& id, const std::string& producer,
+                                 const std::string& consumer, const std::string& producerStep,
+                                 const std::string& producerSlot,
+                                 const std::string& consumerStep,
+                                 const std::string& consumerSlot) {
+      NativeDependencySpec result;
+      result.dependencyId = id;
+      result.producers = {producer};
+      result.consumers = {consumer};
+      result.keyScope = id;
+      result.topicPrefix = "/NDNSF/DI/ONNX_SOURCE";
+      result.objectNameTemplate =
         "{producerProvider}/NDNSF/DI/ONNX_SOURCE/{sessionId}/{producerRole}/{consumerRole}/{sequence}";
-      partial.tensors = {rank + "-partial"};
-      partial.operationKind = "ACTIVATION";
-      candidate.executionPlan.dependencies.push_back(std::move(partial));
-    }
+      result.tensors = {producerSlot};
+      result.operationKind = "ACTIVATION";
+      result.producerStepId = producerStep;
+      result.producerSlotId = producerSlot;
+      result.consumerStepId = consumerStep;
+      result.consumerSlotId = consumerSlot;
+      return result;
+    };
+    for (const auto& rank : {m_profile.roles[1], m_profile.roles[2]})
+      candidate.executionPlan.dependencies.push_back(dependency(
+        "prefix-to-" + rank, m_profile.roles[0], rank,
+        m_profile.roles[0] + "/RUN", "prefix-out", rank + "/RUN", "activation"));
+    candidate.executionPlan.dependencies.push_back(dependency(
+      "rank1-to-sum", m_profile.roles[2], m_profile.roles[1],
+      m_profile.roles[2] + "/RUN", "partial", m_profile.roles[1] + "/SUM", "rank1"));
+    candidate.executionPlan.dependencies.push_back(dependency(
+      "sum-to-suffix", m_profile.roles[1], m_profile.roles[3],
+      m_profile.roles[1] + "/SUM", "sum", m_profile.roles[3] + "/RUN", "sum"));
   }
 
   const auto roleBytes = std::max<std::uint64_t>(1, knownBytes / m_profile.roles.size());

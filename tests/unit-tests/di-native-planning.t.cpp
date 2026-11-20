@@ -2229,7 +2229,7 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   auto sourceGraph = graph(graphDigest, {"input", "pre", "conv", "post", "head"});
   auto sourceModel = model("onnx", "GenericHybrid", graphDigest);
   NativeSourcePartitionStrategy hybrid({NativeSourcePartitionMode::HYBRID, "conv",
-    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel"});
+    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel", {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""});
   auto candidates = hybrid.enumerate(sourceModel, sourceGraph, {});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   const auto& candidate = candidates.front();
@@ -2238,6 +2238,9 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   BOOST_REQUIRE_EQUAL(candidate.tensorIdentityByRole.size(), 2U);
   BOOST_CHECK_EQUAL(candidate.tensorIdentityByRole.at("Rank0").rank, 0U);
   BOOST_CHECK_EQUAL(candidate.tensorIdentityByRole.at("Rank1").rank, 1U);
+  BOOST_CHECK_EQUAL(candidate.executionPlan.steps.size(), 5U);
+  BOOST_CHECK(std::any_of(candidate.executionPlan.steps.begin(), candidate.executionPlan.steps.end(),
+    [] (const auto& step) { return step.operation == "SUM"; }));
   BOOST_CHECK_NO_THROW(candidate.validate(sourceGraph));
 }
 
