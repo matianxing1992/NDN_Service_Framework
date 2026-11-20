@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeRequestCatalog.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/prepared-onnx-metadata.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/automatic-onnx-split.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
@@ -20,7 +21,7 @@
 
 namespace ndnsf::di {
 namespace {
-enum class CatalogRoute { QWEN, LLAMA, YOLO, AUTOMATIC };
+enum class CatalogRoute { QWEN, LLAMA, YOLO, ONNX_SOURCE, AUTOMATIC };
 
 CatalogRoute
 parseCatalogRoute(std::string_view kind)
@@ -28,6 +29,7 @@ parseCatalogRoute(std::string_view kind)
   if (kind == "QWEN") return CatalogRoute::QWEN;
   if (kind == "LLAMA") return CatalogRoute::LLAMA;
   if (kind == "YOLO") return CatalogRoute::YOLO;
+  if (kind == "ONNX_SOURCE") return CatalogRoute::ONNX_SOURCE;
   if (kind == "AUTOMATIC") return CatalogRoute::AUTOMATIC;
   throw std::invalid_argument("unsupported native request splitter");
 }
@@ -503,6 +505,34 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     auto strategy = std::make_shared<yolo::NativeYoloComponentSplit>(
       yolo::NativeYoloComponentSplit::fromOnnxCatalog(model.descriptor, source, control,
         std::move(components), nativeCanonicalJson(split.value("postprocessing", NativeJson::object()))));
+    result.cooperativeSplitter = strategy;
+    result.splitter = std::move(strategy);
+  }
+  else if (route == CatalogRoute::ONNX_SOURCE) {
+    if (referenceOnly)
+      throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
+    model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
+    const auto modeText = split.at("mode").get<std::string>();
+    NativeSourcePartitionMode mode;
+    if (modeText == "full") mode = NativeSourcePartitionMode::FULL;
+    else if (modeText == "component") mode = NativeSourcePartitionMode::COMPONENT;
+    else if (modeText == "hybrid") mode = NativeSourcePartitionMode::HYBRID;
+    else throw std::invalid_argument("unsupported ONNX_SOURCE mode");
+    NativeSourcePartitionProfile profile;
+    profile.mode = mode;
+    profile.roles = split.at("roles").get<std::vector<std::string>>();
+    profile.boundaryNode = split.value("boundary_node", std::string{});
+    profile.inputIngressRole = split.at("input_ingress_role").get<std::string>();
+    profile.resultEgressRole = split.at("result_egress_role").get<std::string>();
+    profile.postprocessingJson = nativeCanonicalJson(
+      split.value("postprocessing", NativeJson::object()));
+    profile.inputChannels = split.value("input_channels", std::uint64_t{0});
+    profile.convInputAxis = split.value("conv_input_axis", std::string("input-channel"));
+    profile.activationShape = split.value("activation_shape", std::vector<std::int64_t>{});
+    profile.partialShape = split.value("partial_shape", std::vector<std::int64_t>{});
+    profile.activationDtype = split.value("activation_dtype", std::string("float32"));
+    profile.activationLayoutDigest = split.value("activation_layout_digest", std::string{});
+    auto strategy = std::make_shared<NativeSourcePartitionStrategy>(std::move(profile));
     result.cooperativeSplitter = strategy;
     result.splitter = std::move(strategy);
   }
