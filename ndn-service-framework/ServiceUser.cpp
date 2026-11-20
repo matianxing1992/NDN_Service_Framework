@@ -6334,6 +6334,12 @@ namespace ndn_service_framework
                 std::function<void(const StreamedInvocationError&)> onError;
                 {
                     std::lock_guard<std::mutex> lock(state->mutex);
+                    // A stream that already reported its outcome is terminal: ending it again would deliver a second
+                    // terminal event, and the caller has no way to tell which one is real.
+                    if (state->status == StreamedInvocationStatus::Completed ||
+                        state->status == StreamedInvocationStatus::Failed ||
+                        state->status == StreamedInvocationStatus::Cancelled)
+                        continue;
                     state->status = StreamedInvocationStatus::Failed;
                     onError = state->onError;
                 }
@@ -10261,7 +10267,10 @@ namespace ndn_service_framework
             std::function<void(const StreamedInvocationError&)> onError;
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
+                // Failed is terminal too: a stream that already reported its failure must not report a second one
+                // when its deadline elapses, or a caller sees two terminal events for one invocation.
                 if (state->status == StreamedInvocationStatus::Completed ||
+                    state->status == StreamedInvocationStatus::Failed ||
                     state->status == StreamedInvocationStatus::Cancelled) return;
                 state->status = StreamedInvocationStatus::Failed;
                 onError = state->onError;
