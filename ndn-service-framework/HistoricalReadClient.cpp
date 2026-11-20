@@ -222,6 +222,15 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
     std::optional<ndn::Data> index;
   };
   auto state = std::make_shared<State>();
+  if (const char* transport = std::getenv("NDN_CLIENT_TRANSPORT")) {
+    const std::string value(transport);
+    const auto marker = value.find("unix://");
+    if (marker != std::string::npos) {
+      const auto path = value.substr(marker + 7);
+      HISTORICAL_READ_DEBUG("historical read: transport %s present=%d\n", path.c_str(),
+                            ::access(path.c_str(), F_OK) == 0 ? 1 : 0);
+    }
+  }
   HISTORICAL_READ_DEBUG("historical read: expressing %s\n", indexName.toUri().c_str());
   face.expressInterest(indexInterest,
     [state] (const ndn::Interest&, const ndn::Data& data) { state->index = data; },
