@@ -225,6 +225,11 @@ struct NativeTensorSemanticFacts
   std::string layoutDigest;
   std::string targetLayoutDigest;
   std::string securityProfile;
+  // Framing facts: they decide how the object is split and bundled into original packets, so a different framing is
+  // a different representation even when the execution coordinates are identical.
+  std::uint64_t segmentCount = 0;
+  std::string bundleTensorNamesDigest;
+  std::uint64_t inlineFirstSegment = 0;
 };
 
 std::string computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts);

@@ -87,7 +87,10 @@ computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts)
     text(16, facts.tensorDigest),
     text(17, facts.layoutDigest),
     text(18, facts.targetLayoutDigest),
-    text(19, facts.securityProfile)});
+    text(19, facts.securityProfile),
+    uint64Field(20, facts.segmentCount),
+    text(21, facts.bundleTensorNamesDigest),
+    uint64Field(22, facts.inlineFirstSegment)});
 }
 
 std::string
@@ -119,6 +122,12 @@ tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
   facts.layoutDigest = endpoint.layoutDigest;
   facts.targetLayoutDigest = endpoint.targetLayoutDigest;
   facts.securityProfile = endpoint.securityProfile;
+  facts.segmentCount = endpoint.segmentCount;
+  const auto bundle = nativeCanonicalJson(NativeJson(endpoint.bundleTensorNames));
+  facts.bundleTensorNamesDigest = ndn_service_framework::computeNamingDigest(
+    "ndnsf-naming/tensor-bundle",
+    {{1, 5, std::vector<std::uint8_t>(bundle.begin(), bundle.end())}});
+  facts.inlineFirstSegment = endpoint.inlineFirstSegment ? 1 : 0;
   const auto key = computeTensorRepresentationCommitment(facts);
   auto name = ndn_service_framework::makeProducerDataPrefix(
     ndn::Name(endpoint.producerNamespace), "NDNSF-DI", "tensor");

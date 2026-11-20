@@ -6214,7 +6214,11 @@ BOOST_AUTO_TEST_CASE(TensorRepresentationCommitsToSemanticsNotTransport)
     {"tensor digest", [](auto& f) { f.tensorDigest = "sha256:" + std::string(64, 'd'); }},
     {"layout", [](auto& f) { f.layoutDigest = "sha256:" + std::string(64, 'e'); }},
     {"target layout", [](auto& f) { f.targetLayoutDigest = "sha256:" + std::string(64, 'f'); }},
-    {"profile", [](auto& f) { f.securityProfile = "OTHER"; }}};
+    {"profile", [](auto& f) { f.securityProfile = "OTHER"; }},
+    // Framing facts change how the object becomes original packets, so they are part of the representation.
+    {"segments", [](auto& f) { f.segmentCount = 9; }},
+    {"bundle", [](auto& f) { f.bundleTensorNamesDigest = std::string(64, '9'); }},
+    {"inline", [](auto& f) { f.inlineFirstSegment = 1; }}};
   for (const auto& mutation : mutations) {
     auto changed = facts;
     mutation.second(changed);

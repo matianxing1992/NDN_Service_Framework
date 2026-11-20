@@ -303,6 +303,13 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
   facts.layoutDigest = edge.layoutDigest;
   facts.targetLayoutDigest = edge.collectiveTargetLayoutDigest;
   facts.securityProfile = edge.securityProfile;
+  // Framing facts come from the sealed edge: the plan-time segment bound, the selected bundle and the inline rule.
+  facts.segmentCount = edge.maxSegments;
+  const auto bundle = ndnsf::di::nativeCanonicalJson(ndnsf::di::NativeJson(edge.bundleTensorNames));
+  facts.bundleTensorNamesDigest = ndn_service_framework::computeNamingDigest(
+    "ndnsf-naming/tensor-bundle",
+    {{1, 5, std::vector<std::uint8_t>(bundle.begin(), bundle.end())}});
+  facts.inlineFirstSegment = edge.inlineFirstSegment ? 1 : 0;
   const auto key = computeTensorRepresentationCommitment(facts);
   const auto& suffix = parsed->suffix;
   if (n5) {
