@@ -185,12 +185,19 @@ NativeSourcePartitionStrategy::enumerateImpl(
     candidate.executionPlan.tensorDegree = 2;
     candidate.executionPlan.stepPlanVersion = NATIVE_STEP_PLAN_VERSION_V2;
     const auto rankTransform = [&] (std::uint64_t begin, std::uint64_t end) {
-      return nativeCanonicalJson(NativeJson{
+      auto value = NativeJson{
         {"schema", "source_transform_v1"},
         {"kind", "conv-input-channel-partial"},
         {"node", m_profile.boundaryNode},
         {"axis", m_profile.convInputAxis},
-        {"begin", begin}, {"end", end}, {"extent", m_profile.inputChannels}});
+        {"begin", begin}, {"end", end}, {"extent", m_profile.inputChannels},
+        {"input", m_profile.convInputTensor},
+        {"weight", m_profile.convWeightInitializer},
+        {"output", m_profile.convOutputTensor}};
+      if (!m_profile.convPads.empty()) value["pads"] = m_profile.convPads;
+      if (!m_profile.convStrides.empty()) value["strides"] = m_profile.convStrides;
+      if (!m_profile.convDilations.empty()) value["dilations"] = m_profile.convDilations;
+      return nativeCanonicalJson(value);
     };
     candidate.sourceTransformByRole[m_profile.roles[1]] = rankTransform(0, half);
     candidate.sourceTransformByRole[m_profile.roles[2]] = rankTransform(half, m_profile.inputChannels);
@@ -201,7 +208,9 @@ NativeSourcePartitionStrategy::enumerateImpl(
       if (next != graph.nodes.end() && next->opType == "Add")
         candidate.sourceTransformByRole[m_profile.roles[3]] = nativeCanonicalJson(NativeJson{
           {"schema", "source_transform_v1"}, {"kind", "add-conv-bias"},
-          {"node", nextId}, {"sourceConv", m_profile.boundaryNode}});
+          {"node", nextId}, {"sourceConv", m_profile.boundaryNode},
+          {"bias", m_profile.convBiasInitializer},
+          {"partial", m_profile.convOutputTensor}});
     }
     candidate.executionPlan.stageLayout = {
       {m_profile.roles[0] + "/stage", nativePlanningDigest("source-prefix|" + graph.graphDigest),

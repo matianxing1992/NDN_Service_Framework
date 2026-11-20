@@ -649,7 +649,10 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
     if (kind == "conv-input-channel-partial") {
       if (!transform.contains("begin") || !transform.contains("end") ||
           !transform.contains("extent") || !transform.contains("node") ||
-          transform.at("node").get<std::string>().empty())
+          transform.at("node").get<std::string>().empty() ||
+          transform.value("input", std::string{}).empty() ||
+          transform.value("weight", std::string{}).empty() ||
+          transform.value("output", std::string{}).empty())
         throw std::invalid_argument("channel-partial transform is incomplete");
       const auto begin = transform.at("begin").get<std::uint64_t>();
       const auto end = transform.at("end").get<std::uint64_t>();

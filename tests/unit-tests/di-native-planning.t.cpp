@@ -2231,8 +2231,14 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
   sourceGraph.nodes[2].opType = "Conv";
   sourceGraph.nodes[3].opType = "Add";
   auto sourceModel = model("onnx", "GenericHybrid", graphDigest);
-  NativeSourcePartitionStrategy hybrid({NativeSourcePartitionMode::HYBRID, "conv",
-    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel", {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""});
+  NativeSourcePartitionProfile hybridProfile{NativeSourcePartitionMode::HYBRID, "conv",
+    {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel",
+    {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""};
+  hybridProfile.convInputTensor = "input";
+  hybridProfile.convWeightInitializer = "w";
+  hybridProfile.convOutputTensor = "conv-out";
+  hybridProfile.convBiasInitializer = "b_conv";
+  NativeSourcePartitionStrategy hybrid(std::move(hybridProfile));
   auto candidates = hybrid.enumerate(sourceModel, sourceGraph, {});
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   const auto& candidate = candidates.front();
@@ -2251,8 +2257,9 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
     BOOST_CHECK_EQUAL(transform.at("kind").get<std::string>(), "conv-input-channel-partial");
     BOOST_CHECK_EQUAL(transform.at("extent").get<std::uint64_t>(), 16U);
   }
-  BOOST_CHECK_EQUAL(nativeParseJson(candidate.sourceTransformByRole.at("Suffix"))
-    .at("kind").get<std::string>(), "add-conv-bias");
+  const auto suffixTransform = nativeParseJson(candidate.sourceTransformByRole.at("Suffix"));
+  BOOST_CHECK_EQUAL(suffixTransform.at("kind").get<std::string>(), "add-conv-bias");
+  BOOST_CHECK_EQUAL(suffixTransform.at("bias").get<std::string>(), "b_conv");
 
   // The two rank shards must describe contiguous, disjoint halves of the
   // admitted Conv input-channel axis; a gap, overlap or wrong extent would
@@ -2367,7 +2374,11 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
       {"input_channels", 16}, {"conv_input_axis", "input-channel"},
       {"activation_shape", {1, 16, 8, 8}}, {"partial_shape", {1, 32, 8, 8}},
       {"activation_dtype", "float32"},
-      {"conv_weight_bytes", 18432}, {"conv_bias_bytes", 128}}}
+      {"conv_weight_bytes", 18432}, {"conv_bias_bytes", 128},
+      {"conv_input_tensor", "scaled"}, {"conv_weight_initializer", "w_conv"},
+      {"conv_bias_initializer", "b_conv"}, {"conv_output_tensor", "conv_out"},
+      {"conv_pads", {1, 1, 1, 1}}, {"conv_strides", {1, 1}},
+      {"conv_dilations", {1, 1}}}}
   };
   const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
   BOOST_REQUIRE(loaded.splitter);
@@ -2378,6 +2389,12 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
   BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank0").weightBytes, 9216U);
   BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Rank1").weightBytes, 9216U);
   BOOST_CHECK_EQUAL(*candidates.front().requirementsByRole.at("Suffix").weightBytes, 128U);
+  const auto rank0Transform = nativeParseJson(
+    candidates.front().sourceTransformByRole.at("Rank0"));
+  BOOST_CHECK_EQUAL(rank0Transform.at("input").get<std::string>(), "scaled");
+  BOOST_CHECK_EQUAL(rank0Transform.at("weight").get<std::string>(), "w_conv");
+  BOOST_CHECK_EQUAL(rank0Transform.at("output").get<std::string>(), "conv_out");
+  BOOST_CHECK_EQUAL(rank0Transform.at("pads").at(0).get<std::int64_t>(), 1);
   const auto capabilities = nativePlanRequiredCapabilities(candidates.front());
   BOOST_CHECK(std::find(capabilities.begin(), capabilities.end(),
     NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1) != capabilities.end());

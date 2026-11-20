@@ -32,6 +32,13 @@ struct NativeSourcePartitionProfile
   std::string activationLayoutDigest;
   std::uint64_t convWeightBytes = 0;
   std::uint64_t convBiasBytes = 0;
+  std::string convInputTensor;
+  std::string convWeightInitializer;
+  std::string convBiasInitializer;
+  std::string convOutputTensor;
+  std::vector<std::int64_t> convPads;
+  std::vector<std::int64_t> convStrides;
+  std::vector<std::int64_t> convDilations;
 };
 
 /**
