@@ -45,6 +45,9 @@ constexpr char ABE_STATE_MAGIC[] = "NDNSFCS3";
 // that archive is non-empty, so a store with no history keeps the older magic and an
 // older binary can still read it.
 constexpr char ABE_HISTORY_MAGIC[] = "NDNSFCS6";
+// CS8 is CS6 plus the version the material was generated for, which the digest covers. A store whose material has no
+// version keeps writing CS6, so an older binary still reads it and a newer one reads both.
+constexpr char ABE_HISTORY_VERSIONED_MAGIC[] = "NDNSFCS8";
 // CS5 = CS4 without a live generation: the archive outlives the current material, so a
 // failed rotation that left no material must not silently drop it.
 // CS7 keeps the same entry layout as CS6 but carries no live material, so the two writers stay
@@ -201,7 +204,10 @@ std::string
 abeMaterialDigest(const ControllerGenerationStore::AbeMaterial& material)
 {
   ndn::util::Sha256 hash;
-  hash << std::string("NDNSF-CONTROLLER-ABE-STATE-V1");
+  // A versioned material is digested under its own prefix, so the older layout keeps validating for states written
+  // before the version existed.
+  hash << (material.version.isValid() ? std::string("NDNSF-CONTROLLER-ABE-STATE-V2")
+                                      : std::string("NDNSF-CONTROLLER-ABE-STATE-V1"));
   for (const auto* field : {&material.owner, &material.signingKeyDigest,
                             &material.policyDigest, &material.publicParameters,
                             &material.masterSecret}) {
@@ -209,6 +215,10 @@ abeMaterialDigest(const ControllerGenerationStore::AbeMaterial& material)
     hash << *field;
   }
   hash << std::string(material.rotationRequired ? "1" : "0");
+  if (material.version.isValid()) {
+    hash << std::to_string(material.version.controllerGenerationTimestamp);
+    hash << std::to_string(material.version.controllerEpoch);
+  }
   return "sha256:" + hash.toString();
 }
 
@@ -268,6 +278,9 @@ ControllerGenerationStore::AbeMaterial::operator=(const AbeMaterial& other)
     policyDigest = other.policyDigest;
     publicParameters = other.publicParameters;
     masterSecret = other.masterSecret;
+    // The version is part of the material's identity: without it a reloaded state cannot tell which version the keys
+    // were generated for, and the publication check that depends on it is skipped.
+    version = other.version;
     rotationRequired = other.rotationRequired;
   }
   return *this;
@@ -493,7 +506,10 @@ ControllerGenerationStore::loadState() const
     throw std::runtime_error("truncated Controller generation state");
 
   PersistedState result;
-  const bool hasHistory = std::equal(std::begin(magic), std::end(magic), ABE_HISTORY_MAGIC);
+  const bool hasMaterialVersion = std::equal(std::begin(magic), std::end(magic),
+                                             ABE_HISTORY_VERSIONED_MAGIC);
+  const bool hasHistory = hasMaterialVersion ||
+    std::equal(std::begin(magic), std::end(magic), ABE_HISTORY_MAGIC);
   const bool hasLegacyHistory = std::equal(std::begin(magic), std::end(magic),
                                            LEGACY_HISTORY_MAGIC) ||
     std::equal(std::begin(magic), std::end(magic), LEGACY_HISTORY_ONLY_MAGIC);
@@ -546,6 +562,12 @@ ControllerGenerationStore::loadState() const
                                               materialSealContext(), opened))
           throw std::runtime_error("Controller ABE state is sealed and cannot be opened");
         material.masterSecret = std::move(opened);
+      }
+      if (hasMaterialVersion) {
+        material.version.controllerGenerationTimestamp = readU64(state);
+        material.version.controllerEpoch = readU64(state);
+        if (!material.version.isValid())
+          throw std::runtime_error("invalid Controller ABE material version");
       }
       std::string checksum;
       readStringInto(state, checksum, 71);
@@ -922,7 +944,8 @@ ControllerGenerationStore::persist(
     const char* magic = abeMaterial
       ? (abeHistory.empty() ? ABE_STATE_MAGIC : ABE_HISTORY_MAGIC)
       : (abeHistory.empty() ? STATE_MAGIC : HISTORY_ONLY_MAGIC);
-    writeAll(fd, magic, STATE_MAGIC_SIZE);
+    const bool versionedMaterial = abeMaterial.has_value() && abeMaterial->version.isValid();
+    writeAll(fd, versionedMaterial ? ABE_HISTORY_VERSIONED_MAGIC : magic, STATE_MAGIC_SIZE);
     writeU64(fd, version.controllerGenerationTimestamp);
     writeU64(fd, version.controllerEpoch);
     writeU64(fd, revocations.size());
@@ -942,9 +965,15 @@ ControllerGenerationStore::persist(
       writeString(fd, m_secretKey.empty()
         ? abeMaterial->masterSecret
         : sealField(m_secretKey, abeMaterial->masterSecret, materialSealContext()));
+      if (versionedMaterial) {
+        writeU64(fd, abeMaterial->version.controllerGenerationTimestamp);
+        writeU64(fd, abeMaterial->version.controllerEpoch);
+      }
       writeString(fd, abeMaterialDigest(*abeMaterial));
     }
-    if (!abeHistory.empty()) {
+    // A CS8 record always carries the history block, so the reader has one layout to follow: the versioned material
+    // and the (possibly empty) archive are read together.
+    if (!abeHistory.empty() || versionedMaterial) {
       writeU64(fd, abeHistory.size());
       for (const auto& entry : abeHistory) {
         if (entry.generationTimestamp == 0 || entry.digest != abeHistoryDigest(entry))
@@ -1028,9 +1057,11 @@ ControllerGenerationStore::advanceEpoch(
   const ControllerVersion version{previous.version.controllerGenerationTimestamp,
                                   previous.version.controllerEpoch + 1};
   // The version names the material that backs it: refuse to publish a version whose material does not carry it.
+  // Material may be older than the version being published - a grant moves the policy, not the keys - but it may never
+  // be newer, because that would name a version whose material does not exist yet.
   if (previous.abeMaterial && previous.abeMaterial->version.isValid() &&
-      !(previous.abeMaterial->version == version))
-    throw std::runtime_error("Controller ABE material is not for the version being published");
+      previous.abeMaterial->version.compare(version) > 0)
+    throw std::runtime_error("Controller ABE material is newer than the version being published");
   if (previous.abeMaterial &&
       (requireAbeRotationOnRestart || !sameRevocations(previous.revocations, revocations)))
     previous.abeMaterial->rotationRequired = true;
