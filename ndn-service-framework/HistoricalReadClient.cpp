@@ -3,6 +3,7 @@
 #include "AbeHistoricalContent.hpp"
 #include "AbeHistoricalKeyRequest.hpp"
 #include "AbePublicParametersArchive.hpp"
+#include "utils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <memory>
 
+#include <ndn-cxx/security/interest-signer.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <ndn-cxx/security/verification-helpers.hpp>
 #include <ndn-cxx/util/segment-fetcher.hpp>
@@ -417,4 +419,41 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
   return plaintext;
 }
 
-} // namespace ndn_service_framework
+bool
+primePermissions(ndn::Face& face, ndn::KeyChain& keyChain, const ndn::Name& controllerPrefix,
+                 const ndn::Name& identity, const ndn::security::Certificate& requesterCertificate,
+                 uint32_t timeoutMs)
+{
+  const auto parameters = encodeControlQueryParameters(
+    ControlQueryParameters{identity, ndn::Name(), 0, 0});
+  ndn::Interest interest(makeControlRpcName(controllerPrefix, "USER-PERMISSIONS", parameters,
+                                            makeControlQueryNonce()));
+  try {
+    interest.setInterestLifetime(ndn::time::milliseconds(timeoutMs));
+    ndn::security::InterestSigner signer(keyChain);
+    signer.makeSignedInterest(interest, ndn::security::signingByCertificate(requesterCertificate));
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+
+  struct State
+  {
+    bool answered = false;
+    bool done = false;
+  };
+  auto state = std::make_shared<State>();
+  face.expressInterest(interest,
+    [state] (const ndn::Interest&, const ndn::Data&) {
+      state->answered = true;
+      state->done = true;
+    },
+    [state] (const ndn::Interest&, const ndn::lp::Nack&) { state->done = true; },
+    [state] (const ndn::Interest&) { state->done = true; });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (!state->done && std::chrono::steady_clock::now() < deadline)
+    face.processEvents(ndn::time::milliseconds(10));
+  return state->answered;
+}
+
+} // namespace ndn_service_framework} // namespace ndn_service_framework

@@ -72,6 +72,19 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
                                 uint64_t epoch, const ndn::security::Certificate& controllerCertificate,
                                 uint32_t timeoutMs);
 
+/** Ask the Controller for this identity's permissions, so the grant record a later historical read depends on exists.
+ *
+ * The Controller writes that record when it answers this query, and it is written under the version it advertises at
+ * that moment. A reader that only reads cannot obtain it at all: the record is a side effect of the permission
+ * exchange, so a read whose grant was never recorded is refused no matter how correct the rest of the flow is.
+ *
+ * Returns true when the Controller answered; the answer's content is not needed here, only its side effect.
+ */
+bool
+primePermissions(ndn::Face& face, ndn::KeyChain& keyChain, const ndn::Name& controllerPrefix,
+                 const ndn::Name& identity, const ndn::security::Certificate& requesterCertificate,
+                 uint32_t timeoutMs);
+
 /** The whole read: fetch, verify, request the key, unseal, reassemble and decrypt. */
 std::optional<std::string>
 readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalReadRequest& request);
