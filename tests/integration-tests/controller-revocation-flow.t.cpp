@@ -259,6 +259,12 @@ struct ServiceControllerTestAccess
     return controller.m_abePublicParametersName;
   }
 
+  static ControllerVersion
+  abeMaterialVersion(const ServiceController& controller)
+  {
+    return controller.m_abeMaterialVersion;
+  }
+
   static bool reconcilePendingAbeRotation(ServiceController& controller)
   {
     return controller.reconcilePendingAbeRotation();
@@ -4268,6 +4274,17 @@ BOOST_AUTO_TEST_CASE(PersistedRotationFailureRecoversInANewController)
     const std::string bytes{std::istreambuf_iterator<char>(state),
                             std::istreambuf_iterator<char>()};
     BOOST_CHECK(bytes.find("revocation-rotation") != std::string::npos);
+    // The material's version survives the restart. Without it a reloaded Controller cannot tell which version its keys
+    // were generated for, and the check that refuses a version without material is skipped exactly when it matters.
+    BOOST_CHECK(bytes.find("NDNSFCS8") != std::string::npos);
+    const auto materialVersion = ServiceControllerTestAccess::abeMaterialVersion(recovered);
+    BOOST_REQUIRE(materialVersion.isValid());
+    BOOST_CHECK_EQUAL(materialVersion.controllerGenerationTimestamp,
+                      recovered.getPolicyStatus(ndn::Name(SERVICE))
+                        .getControllerVersion().controllerGenerationTimestamp);
+    // Material may lag the served version (a grant moves the policy, not the keys) but never lead it.
+    BOOST_CHECK(materialVersion.compare(
+      recovered.getPolicyStatus(ndn::Name(SERVICE)).getControllerVersion()) <= 0);
 
     // The same revocation is now a duplicate and must stay a no-op: recovery already finished the work.
     BOOST_CHECK(!recovered.revoke(makeServiceRevocation("/spec179/rotate-fail/user")));
