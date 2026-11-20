@@ -20,6 +20,8 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/PreparedModel.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/TensorBundleCodec.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include <onnxruntime_cxx_api.h>
 #include <onnx/checker.h>
@@ -2733,6 +2735,51 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformRejectsAnUnboundConv)
   auto wrongStride = rank; wrongStride.strides = {2, 2};
   BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongStride),
                     std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(DetectionOracleRejectsChangedClassesAndPadding)
+{
+  const std::vector<float> expected{
+    1.0F, 2.0F, 3.0F, 4.0F, 0.90F, 5.0F,
+    10.0F, 20.0F, 30.0F, 40.0F, 0.50F, 7.0F,
+    0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+  auto payloadOf = [] (const std::vector<float>& values,
+                       const std::vector<std::int64_t>& shape) {
+    ndnsf::di::NamedTensor tensor;
+    tensor.name = "det";
+    tensor.elementType = ndnsf::di::TensorElementType::Float32;
+    tensor.shape = shape;
+    tensor.payload.resize(values.size() * sizeof(float));
+    std::memcpy(tensor.payload.data(), values.data(), tensor.payload.size());
+    return ndnsf::di::encodeTensorBundle({tensor});
+  };
+  ndnsf::di::Result result;
+  // Rows are permuted, and the effective values differ only by noise inside the
+  // coordinate/score tolerances.
+  const std::vector<float> permuted{
+    10.0001F, 20.0001F, 30.0001F, 40.0001F, 0.50001F, 7.0F,
+    1.0001F, 2.0001F, 3.0001F, 4.0001F, 0.90001F, 5.0F,
+    0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+  result.payload = payloadOf(permuted, {1, 3, 6});
+  BOOST_CHECK(result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto classChanged = permuted;
+  classChanged[5] = 9.0F;
+  result.payload = payloadOf(classChanged, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto paddingLost = permuted;
+  paddingLost[12] = 1.0F;
+  result.payload = payloadOf(paddingLost, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  auto shifted = permuted;
+  shifted[0] += 0.5F;
+  result.payload = payloadOf(shifted, {1, 3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
+
+  result.payload = payloadOf(permuted, {3, 6});
+  BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

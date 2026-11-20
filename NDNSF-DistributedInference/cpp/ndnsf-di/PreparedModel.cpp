@@ -47,6 +47,88 @@ bool Result::matchesFloat32Tensor(const std::string& tensorName,
   }
 }
 
+bool Result::matchesFloat32Detections(const std::string& tensorName,
+                                            const std::vector<float>& expected,
+                                            std::size_t rowWidth,
+                                            double coordinateTolerance,
+                                            double scoreTolerance,
+                                            double iouFloor) const
+{
+  if (tensorName.empty() || rowWidth != 6 || expected.empty() ||
+      expected.size() % rowWidth != 0 || !std::isfinite(coordinateTolerance) ||
+      coordinateTolerance < 0.0 || !std::isfinite(scoreTolerance) ||
+      scoreTolerance < 0.0 || !std::isfinite(iouFloor) || iouFloor < 0.0 ||
+      iouFloor > 1.0)
+    return false;
+  try {
+    const auto tensors = decodeTensorBundle(payload);
+    const auto& tensor = findTensor(tensors, tensorName);
+    const auto rows = expected.size() / rowWidth;
+    if (tensor.elementType != TensorElementType::Float32 ||
+        tensor.payload.size() != expected.size() * sizeof(float))
+      return false;
+    const auto& shape = tensor.shape;
+    if (shape.size() != 3 || shape[0] != 1 ||
+        shape[1] != static_cast<std::int64_t>(rows) ||
+        shape[2] != static_cast<std::int64_t>(rowWidth))
+      return false;
+    std::vector<float> actual(expected.size());
+    std::memcpy(actual.data(), tensor.payload.data(), tensor.payload.size());
+    const auto isPadding = [] (const float* row, std::size_t width) {
+      for (std::size_t i = 0; i < width; ++i)
+        if (row[i] != 0.0F) return false;
+      return true;
+    };
+    const auto boxIou = [] (const float* a, const float* b) {
+      const double ax1 = a[0], ay1 = a[1], ax2 = a[2], ay2 = a[3];
+      const double bx1 = b[0], by1 = b[1], bx2 = b[2], by2 = b[3];
+      const double ix = std::max(0.0, std::min(ax2, bx2) - std::max(ax1, bx1));
+      const double iy = std::max(0.0, std::min(ay2, by2) - std::max(ay1, by1));
+      const double intersection = ix * iy;
+      const double areaA = std::max(0.0, ax2 - ax1) * std::max(0.0, ay2 - ay1);
+      const double areaB = std::max(0.0, bx2 - bx1) * std::max(0.0, by2 - by1);
+      const double uni = areaA + areaB - intersection;
+      return uni <= 0.0 ? (intersection <= 0.0 ? 1.0 : 0.0) : intersection / uni;
+    };
+    std::vector<bool> used(rows, false);
+    std::size_t expectedPadding = 0;
+    std::size_t actualPadding = 0;
+    std::vector<std::size_t> effective;
+    for (std::size_t row = 0; row < rows; ++row) {
+      if (isPadding(expected.data() + row * rowWidth, rowWidth)) ++expectedPadding;
+      else effective.push_back(row);
+      if (isPadding(actual.data() + row * rowWidth, rowWidth)) ++actualPadding;
+    }
+    if (expectedPadding != actualPadding) return false;
+    for (const auto row : effective) {
+      bool matched = false;
+      const auto* want = expected.data() + row * rowWidth;
+      for (std::size_t candidate = 0; candidate < rows && !matched; ++candidate) {
+        if (used[candidate]) continue;
+        const auto* got = actual.data() + candidate * rowWidth;
+        if (isPadding(got, rowWidth)) continue;
+        if (want[5] != got[5]) continue;
+        if (std::fabs(static_cast<double>(want[4]) -
+                      static_cast<double>(got[4])) > scoreTolerance) continue;
+        bool coordsMatch = true;
+        for (std::size_t column = 0; column < 4; ++column)
+          if (std::fabs(static_cast<double>(want[column]) -
+                        static_cast<double>(got[column])) > coordinateTolerance)
+            coordsMatch = false;
+        if (!coordsMatch) continue;
+        if (boxIou(want, got) + 1e-12 < iouFloor) continue;
+        used[candidate] = true;
+        matched = true;
+      }
+      if (!matched) return false;
+    }
+    return true;
+  }
+  catch (const std::exception&) {
+    return false;
+  }
+}
+
 bool Result::matchesFloat32TensorRows(const std::string& tensorName,
                                       const std::vector<float>& expected,
                                       double tolerance, std::size_t rowWidth) const

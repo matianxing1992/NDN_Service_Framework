@@ -144,6 +144,20 @@ struct Result
   bool matchesFloat32TensorRows(const std::string& tensorName,
                                 const std::vector<float>& expected,
                                 double tolerance, std::size_t rowWidth) const;
+
+  /** Compare detection rows by their semantics rather than their order.
+   *
+   * Rows are `[x1,y1,x2,y2,score,class]` (coordinate/score columns fixed by
+   * `rowWidth`). The tensor must present the exact `[1,rows,rowWidth]` shape.
+   * All-zero rows are NMS padding and must match in count; effective rows match
+   * by exact class, a score tolerance, a coordinate tolerance and an IoU floor.
+   */
+  bool matchesFloat32Detections(const std::string& tensorName,
+                                const std::vector<float>& expected,
+                                std::size_t rowWidth,
+                                double coordinateTolerance,
+                                double scoreTolerance,
+                                double iouFloor) const;
 };
 
 enum class RequestStatus { Pending, Succeeded, Failed, Cancelled };
