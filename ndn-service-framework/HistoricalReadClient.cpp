@@ -49,6 +49,9 @@ fetchVerified(ndn::Face& face, const ndn::Name& name, const ndn::security::Certi
   ndn::Interest interest(name);
   interest.setInterestLifetime(ndn::time::milliseconds(timeoutMs));
   interest.setMustBeFresh(false);
+  // Whether the Interest is ever expressed is a fact only this side can report: with the send path unreached the
+  // forwarder sees management commands and nothing else.
+  HISTORICAL_READ_DEBUG("historical read: expressing %s\n", name.toUri().c_str());
   face.expressInterest(interest,
     [state, signer] (const ndn::Interest&, const ndn::Data& data) {
       try {
@@ -203,8 +206,10 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
                                 uint64_t epoch, const ndn::security::Certificate& controllerCertificate,
                                 uint32_t timeoutMs)
 {
-  if (controllerPrefix.empty() || controllerCertificate.getName().empty())
+  if (controllerPrefix.empty() || controllerCertificate.getName().empty()) {
+    HISTORICAL_READ_DEBUG("historical read: parameters stage has no controller prefix or certificate\n");
     return std::nullopt;
+  }
   ndn::Name indexName(controllerPrefix);
   indexName.append("NDNSF").append("HISTORY").append("PUBPARAMS");
   ndn::Interest indexInterest(indexName);
@@ -217,6 +222,7 @@ fetchHistoricalPublicParameters(ndn::Face& face, const ndn::Name& controllerPref
     std::optional<ndn::Data> index;
   };
   auto state = std::make_shared<State>();
+  HISTORICAL_READ_DEBUG("historical read: expressing %s\n", indexName.toUri().c_str());
   face.expressInterest(indexInterest,
     [state] (const ndn::Interest&, const ndn::Data& data) { state->index = data; },
     [] (const ndn::Interest&, const ndn::lp::Nack&) {},
