@@ -2227,6 +2227,7 @@ BOOST_AUTO_TEST_CASE(SourcePartitionStrategyBuildsHybridGeometry)
 {
   const auto graphDigest = digest("generic-source-hybrid");
   auto sourceGraph = graph(graphDigest, {"input", "pre", "conv", "post", "head"});
+  sourceGraph.nodes[2].opType = "Conv";
   auto sourceModel = model("onnx", "GenericHybrid", graphDigest);
   NativeSourcePartitionStrategy hybrid({NativeSourcePartitionMode::HYBRID, "conv",
     {"Prefix", "Rank0", "Rank1", "Suffix"}, "Prefix", "Suffix", "{}", 16, "input-channel", {1, 16, 4, 4}, {1, 32, 4, 4}, "float32", ""});

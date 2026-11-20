@@ -89,6 +89,10 @@ NativeSourcePartitionStrategy::enumerateImpl(
                                     m_profile.boundaryNode);
     if (boundary == graph.topologicalOrder.end())
       throw std::invalid_argument("source partition boundary is not in the graph");
+    const auto boundaryNode = std::find_if(graph.nodes.begin(), graph.nodes.end(),
+      [&] (const auto& node) { return node.id == m_profile.boundaryNode; });
+    if (boundaryNode == graph.nodes.end() || boundaryNode->opType != "Conv")
+      throw std::invalid_argument("source hybrid boundary is not a Conv");
     const auto boundaryIndex = static_cast<std::size_t>(
       std::distance(graph.topologicalOrder.begin(), boundary));
     if (boundaryIndex == 0 || boundaryIndex + 1 >= graph.topologicalOrder.size())
