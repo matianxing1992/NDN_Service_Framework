@@ -143,7 +143,15 @@ nativeRestoreKvForInvocation(NativeProviderRuntime& runtime,
       "KV restore Repo manifest differs from Owner commitment");
     repo::RepoDataReference reference;
     reference.objectName = root;
-    reference.dataPrefix = restore.saved.protection.producerPrefix.toUri();
+    // A packet set published under N5 carries `<CheckpointPrefix>/MANIFEST`, so the grant's data prefix is that
+    // prefix. A set published before the row recorded the Producer prefix instead and keeps it.
+    const auto savedRoot = ndn::Name(restore.saved.rootName);
+    const bool n5Packets = savedRoot.size() >= 3 &&
+      savedRoot[-2] == ndn::name::Component("rep") &&
+      savedRoot[-1] == ndn::name::Component("MANIFEST");
+    reference.dataPrefix = n5Packets
+      ? savedRoot.getPrefix(-1).toUri()
+      : restore.saved.protection.producerPrefix.toUri();
     reference.expectedSize = restore.saved.originalWireBytes;
     reference.expectedSha256 = restore.saved.originalWireSha256;
     reference.forwardingHint = ndn::Name(policy.repoProvider).toUri();

@@ -82,11 +82,19 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   packetLimits.checkpoint = limits;
   packetLimits.maxPackets = owner.policy.maxPacketCountPerRole;
   packetLimits.maxPacketWireBytes = owner.policy.maxPacketSetWireBytesPerRole;
+  // N5 coordinates come from the authenticated export receipt, never from a caller-chosen name.
+  NativeKvPacketNamingContext naming;
+  naming.conversationId = owner.receipt.conversationId;
+  naming.epoch = owner.receipt.successorContextEpoch;
+  naming.roleId = owner.receipt.roleName;
+  naming.stateLayoutLabel = owner.receipt.layoutDigest;
+  require(!naming.conversationId.empty() && naming.epoch > 0 && !naming.roleId.empty() &&
+          !naming.stateLayoutLabel.empty(), "HANDOFF_CHECKPOINT_COORDINATES_INCOMPLETE");
   const auto packets = nativePrepareProtectedKvPackets(protectedPath, reference,
     owner.publication.signingCertificate, packetLimits, [&](ndn::Data& packet) {
       require(producer->signProducerDataUntil(packet, owner.deadline, current),
         "HANDOFF_PRODUCER_SIGNING_FAILED");
-    }, current);
+    }, current, naming);
 
   NativeDurableStorageGrantRoleChallengeV1 challenge;
   challenge.roleName = owner.receipt.roleName;
@@ -97,7 +105,8 @@ publish(const std::shared_ptr<ndn_service_framework::ServiceProvider>& producer,
   challenge.publicationIdentity = packets.wireDigest;
   // The immutable encrypted-file digest identifies this protection instance.
   challenge.protectionEpoch = reference.wireDigest.substr(7);
-  challenge.dataPrefix = reference.objectName().toUri(ndn::name::UriFormat::ALTERNATE);
+  // The grant's data prefix is the N5 `<CheckpointPrefix>`, not the underlying byte reference.
+  challenge.dataPrefix = packets.rootName.getPrefix(-1).toUri(ndn::name::UriFormat::ALTERNATE);
   challenge.packetWireBytes = packets.wireBytes;
   challenge.auxiliaryPacketNames = {
     owner.publication.signingCertificate.getName().toUri(ndn::name::UriFormat::ALTERNATE)};
