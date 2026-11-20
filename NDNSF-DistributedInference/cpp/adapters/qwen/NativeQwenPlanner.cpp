@@ -118,8 +118,8 @@ NativeQwenLayerSplit::lowerSourceHybrid(const NativeModelDescriptor& model,
   const NativeStateTensorMapping& stateMapping, const ExtensionControl& control,
   const std::map<std::string, std::vector<std::uint64_t>>& rankWeights) const
 {
-  if (m_modelFamily != "qwen" || m_roles.size() < 2 || !region)
-    throw std::invalid_argument("Qwen SOURCE hybrid requires multiple stages and a source region");
+  if (m_modelFamily != "qwen" || m_roles.empty() || !region)
+    throw std::invalid_argument("Qwen SOURCE shape requires at least one stage and a source region");
   std::vector<QwenTpStageWindow> windows;
   std::vector<std::vector<QwenTpUnit>> stageUnits;
   std::map<std::string, std::string> artifacts;
