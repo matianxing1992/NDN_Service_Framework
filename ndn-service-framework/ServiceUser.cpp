@@ -5871,6 +5871,12 @@ namespace ndn_service_framework
                     std::function<void(const StreamedInvocationError&)> onError;
                     {
                         std::lock_guard<std::mutex> lock(state->mutex);
+                        // Same rule as the Controller-change path: a stream that already reported its outcome is
+                        // terminal, and a second terminal event would make the caller's outcome ambiguous.
+                        if (state->status == StreamedInvocationStatus::Completed ||
+                            state->status == StreamedInvocationStatus::Failed ||
+                            state->status == StreamedInvocationStatus::Cancelled)
+                            continue;
                         state->status = StreamedInvocationStatus::Failed;
                         onError = state->onError;
                     }
@@ -6308,6 +6314,17 @@ namespace ndn_service_framework
     }
 
     namespace {
+      /** True when this status withdraws the identity itself, which ends every stream it was admitted for. */
+      bool controllerChangeRevokesIdentity(const PolicyStatusData& status, const ndn::Name& identity)
+      {
+        for (const auto& revocation : status.getRevocations()) {
+          if (revocation.targetIdentity.size() > 0 && revocation.targetIdentity == identity &&
+              revocation.kind != RevocationKind::SERVICE_AUTHORIZATION)
+            return true;
+        }
+        return false;
+      }
+
       /** True when this status withdraws the given provider, either directly or by withdrawing the whole service. */
       bool controllerChangeAffectsProvider(const PolicyStatusData& status,
                                            const ndn::Name& provider, const ndn::Name& service)
@@ -6350,6 +6367,7 @@ namespace ndn_service_framework
                 // failure for an execution that was never withdrawn. An unscoped stream has no provider to compare
                 // and stays conservative.
                 if (!it->second->providerName.empty() && status != nullptr &&
+                    !controllerChangeRevokesIdentity(*status, identity) &&
                     !controllerChangeAffectsProvider(*status, it->second->providerName, serviceName)) {
                     ++it;
                     continue;
