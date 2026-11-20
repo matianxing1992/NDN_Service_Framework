@@ -1027,6 +1027,10 @@ ControllerGenerationStore::advanceEpoch(
     throw std::overflow_error("Controller epoch overflow");
   const ControllerVersion version{previous.version.controllerGenerationTimestamp,
                                   previous.version.controllerEpoch + 1};
+  // The version names the material that backs it: refuse to publish a version whose material does not carry it.
+  if (previous.abeMaterial && previous.abeMaterial->version.isValid() &&
+      !(previous.abeMaterial->version == version))
+    throw std::runtime_error("Controller ABE material is not for the version being published");
   if (previous.abeMaterial &&
       (requireAbeRotationOnRestart || !sameRevocations(previous.revocations, revocations)))
     previous.abeMaterial->rotationRequired = true;

@@ -31,6 +31,9 @@ public:
     std::string policyDigest;
     std::string publicParameters;
     std::string masterSecret;
+    /** The version this material was generated for. A version may only be published once material carrying it
+     *  exists, so the two can never drift apart. */
+    ControllerVersion version;
     bool rotationRequired = false;
 
     AbeMaterial() = default;

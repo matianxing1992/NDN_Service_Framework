@@ -351,6 +351,9 @@ ServiceController::persistAbeMaterial()
   material.publicParameters.assign(reinterpret_cast<const char*>(publicParams.data()),
                                    publicParams.size());
   material.masterSecret = m_aa.getMasterSecret();
+  // The material names the version it was generated for, so a version can never be published without material
+  // behind it and material can never be served under a version it was not made for.
+  material.version = m_controllerVersion;
   m_generationStore->storeAbeMaterial(material);
   m_abeMaterialVersion = m_controllerVersion;
 }
