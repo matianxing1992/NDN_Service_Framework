@@ -564,6 +564,10 @@ ndn::Name PublishedContentName::contentPrefix(const ndn::Name& producer,
                                              const std::string& plaintextDigest) const
 {
   const auto identity = parts(*this);
+  if (hasSemanticCoordinates()) {
+    // C1: the semantic stem ends before `/rep/<RepresentationId>`; the publisher adds the tail once.
+    return semanticStem(producer);
+  }
   if (kind == ContentDataKind::Assignment) {
     auto name = makeProducerDataPrefix(producer, "NDNSF-DI", "assignment");
     name.append("model").append(makeNamingLabelComponent(modelName))

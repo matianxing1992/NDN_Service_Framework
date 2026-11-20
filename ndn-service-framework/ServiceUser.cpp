@@ -2681,7 +2681,29 @@ namespace ndn_service_framework
                 {{1, 5, std::vector<std::uint8_t>(representation.begin(), representation.end())},
                  {2, 5, std::vector<std::uint8_t>(protection.begin(), protection.end())}});
             auto name = contentName.contentPrefix(producer, contentDigest.substr(7));
-            name.append("PROTECTED").append(makeNamingDigestComponent(protectionDigest)).append("DATA");
+            if (contentName.hasSemanticCoordinates()) {
+                // N3: one representation identity replaces the chained PROTECTED digest. Tags follow C2:
+                // producer, category/role, semantic identity, reservation seed, representation, protection,
+                // signer context.
+                const auto role = std::to_string(static_cast<std::uint8_t>(contentName.semanticRole));
+                auto semantic = std::string("{\"contentDigest\":") + quoteNamingJson(contentDigest) +
+                    ",\"modelIdentity\":\"" + contentName.modelIdentity +
+                    "\",\"role\":\"" + role + "\"}";
+                const auto representationId = computeNamingDigest("ndnsf-naming/representation", {
+                    {1, 1, std::vector<std::uint8_t>(producer.wireEncode().begin(), producer.wireEncode().end())},
+                    {2, 2, std::vector<std::uint8_t>(role.begin(), role.end())},
+                    {3, 5, std::vector<std::uint8_t>(semantic.begin(), semantic.end())},
+                    {4, 4, instance},
+                    {5, 5, std::vector<std::uint8_t>(representation.begin(), representation.end())},
+                    {6, 5, std::vector<std::uint8_t>(protection.begin(), protection.end())},
+                    {7, 5, std::vector<std::uint8_t>(contentName.objectIdentity().begin(),
+                                                     contentName.objectIdentity().end())}});
+                name = contentName.representationPrefix(producer, representationId);
+                name.append("DATA");
+            }
+            else {
+                name.append("PROTECTED").append(makeNamingDigestComponent(protectionDigest)).append("DATA");
+            }
             checkNamingNameSize(ndn::Name(name).appendSegment(
                 std::numeric_limits<std::uint64_t>::max()));
             return {std::move(name), std::move(instance), representation, protection};
@@ -2695,6 +2717,14 @@ namespace ndn_service_framework
             if (contentDigest.size() != 71 || contentDigest.compare(0, 7, "sha256:") != 0)
                 return false;
             const auto prefix = contentName.contentPrefix(producer, contentDigest.substr(7));
+            if (contentName.hasSemanticCoordinates()) {
+                // <stem>/rep/<RepresentationId>/DATA
+                return prefix.isPrefixOf(name) && name.size() == prefix.size() + 3 &&
+                    name[-3] == ndn::name::Component("rep") &&
+                    name[-2].type() == ndn::tlv::GenericNameComponent &&
+                    name[-2].value_size() == 32 &&
+                    name[-1] == ndn::name::Component("DATA");
+            }
             return prefix.isPrefixOf(name) && name.size() == prefix.size() + 3 &&
                 name[-3] == ndn::name::Component("PROTECTED") &&
                 name[-2].type() == 8 && name[-2].value_size() == 32 &&

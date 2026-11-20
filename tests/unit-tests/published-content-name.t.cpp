@@ -306,6 +306,55 @@ BOOST_AUTO_TEST_CASE(ArtifactStemNamesTheActualPartition)
   BOOST_CHECK(cutStem[-7] == ndn::name::Component("suffix"));
 }
 
+BOOST_AUTO_TEST_CASE(SemanticManifestUsesTheStemWithoutAPayloadHash)
+{
+  const ndn::Name producer("/lab/preparer");
+  PublishedContentName content;
+  content.kind = ContentDataKind::Material;
+  content.semanticRole = ContentSemanticRole::MaterialBundle;
+  content.label = "bundle-12";
+  content.modelName = "qwen3";
+  content.modelIdentity = std::string(64, 'a');
+  content.modelFamily = "qwen3";
+  content.modelSize = "0.6b";
+  content.quantization = "int4";
+  content.sourceRevisionLabel = "r3";
+  content.bundleIndex = 12;
+
+  ProtectedBlobManifest manifest;
+  manifest.producer = producer;
+  manifest.contentName = content;
+  manifest.plaintextDigest.assign(32, 0x7f);
+  manifest.plaintextBytes = 4096;
+  manifest.envelopeBytes = 4200;
+  manifest.segmentBytes = 4000;
+  manifest.segmentCount = 2;
+  manifest.representationSpec = "{\"encoding\":\"ndnsf-hybrid-envelope\",\"schema\":1}";
+  manifest.protectionSpec = "{\"cipher\":\"AES-256-GCM\",\"scope\":\"request/1\"}";
+  manifest.authorizationScope = "request/1";
+  manifest.protectionEpoch = "epoch-3";
+  manifest.keyReferenceId = std::string(64, 'b');
+  manifest.keyIdentifier = std::string(64, 'c');
+  const auto representation = std::string(64, 'd');
+  manifest.dataPrefix = content.representationPrefix(producer, representation);
+  manifest.dataPrefix.append("DATA");
+
+  const auto manifestName = manifest.getName();
+  const auto expected = content.representationPrefix(producer, representation).append("MANIFEST");
+  BOOST_CHECK(manifestName == expected);
+  BOOST_CHECK_EQUAL(manifestName.size(), expected.size());
+
+  const auto payload = manifest.encode();
+  const auto decoded = ProtectedBlobManifest::decode(payload, producer, manifestName);
+  BOOST_CHECK(decoded.getName() == manifestName);
+
+  // A prefix that does not carry the representation tail is refused for a semantic object.
+  auto wrong = manifest;
+  wrong.dataPrefix = content.semanticStem(producer).append("PROTECTED")
+    .append(makeNamingDigestComponent(std::string(64, 'e'))).append("DATA");
+  BOOST_CHECK_THROW(wrong.encode(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(SemanticStemFollowsTheN4Rows)
 {
   const ndn::Name producer("/lab/preparer");

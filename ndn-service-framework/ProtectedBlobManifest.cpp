@@ -135,6 +135,20 @@ void ProtectedBlobManifest::validate(DataNameReadMode mode) const
   for (const auto byte : plaintextDigest) { plaintextHex += Hex[byte >> 4]; plaintextHex += Hex[byte & 15]; }
   auto expected = contentName ? contentName->contentPrefix(producer, plaintextHex) :
     makeProducerDataPrefix(producer, "BLOB").append(ndn::name::Component(bytes(plaintextDigest)));
+  if (contentName && contentName->hasSemanticCoordinates()) {
+    // The representation identity is validated where it was admitted; this check binds the recorded
+    // dataPrefix to the same semantic stem and tail shape.
+    const auto stem = contentName->semanticStem(producer);
+    if (!stem.isPrefixOf(dataPrefix) || dataPrefix.size() != stem.size() + 3 ||
+        dataPrefix[-3] != ndn::name::Component("rep") ||
+        dataPrefix[-2].type() != ndn::tlv::GenericNameComponent ||
+        dataPrefix[-2].value_size() != 32 ||
+        dataPrefix[-1] != ndn::name::Component("DATA"))
+      throw std::invalid_argument("BLOB_MANIFEST_BINDING_MISMATCH");
+    checkNamingNameSize(ndn::Name(dataPrefix).appendSegment(
+      std::numeric_limits<std::uint64_t>::max()));
+    return;
+  }
   expected.append("PROTECTED")
     .append(makeNamingDigestComponent(digest)).append("DATA");
   if (dataPrefix != expected)
@@ -180,7 +194,10 @@ ndn::Name ProtectedBlobManifest::getName(DataNameReadMode mode) const
   auto name = manifestSuffix.empty() ? ndn::Name(dataPrefix.getPrefix(-1)).append("MANIFEST") :
     (contentName ? ndn::Name(producer).append(manifestSuffix) :
                    ndn::Name(producer).append("NDNSF").append(manifestSuffix));
-  name.append(ndn::name::Component(bytes(*hash)));
+  // C2: a semantical object's manifest is `<ObjectPrefix>/MANIFEST`; the payload digest is bound inside the
+  // manifest, not appended to its name. Legacy records keep the trailing payload hash.
+  if (!(contentName && contentName->hasSemanticCoordinates() && manifestSuffix.empty()))
+    name.append(ndn::name::Component(bytes(*hash)));
   checkNamingNameSize(name);
   return name;
 }
