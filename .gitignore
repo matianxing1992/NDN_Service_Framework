@@ -124,3 +124,6 @@ tests/container/**/actual/
 # Spec 242: the four-layer fixture is generated deterministically by
 # tests/fixtures/spec242/make-four-layer-qwen.py and is a test input, not build output.
 !tests/fixtures/spec242/*.onnx
+
+# Spec 261 keeps its small Conv cut fixture under version control.
+!tests/fixtures/spec261/conv-bypass.onnx
