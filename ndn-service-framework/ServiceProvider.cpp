@@ -21714,6 +21714,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 tlv::ProviderPermission, response.getPolicyEpoch()});
         }
         const auto previouslyServed = previouslyKnownServices;
+        NDN_LOG_WARN("NDNSF_PROVIDER_PERMISSION_APPLY records=" << records.size()
+                     << " previouslyServed=" << previouslyServed.size()
+                     << " epoch=" << response.getPolicyEpoch());
         if (!m_authorizations.replacePermissions(tlv::ProviderPermission,
                                                  response.getPolicyEpoch(),
                                                  records)) {
