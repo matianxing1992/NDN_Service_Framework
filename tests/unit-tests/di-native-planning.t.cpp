@@ -2782,4 +2782,45 @@ BOOST_AUTO_TEST_CASE(DetectionOracleRejectsChangedClassesAndPadding)
   BOOST_CHECK(!result.matchesFloat32Detections("det", expected, 6, 0.01, 1e-4, 0.999));
 }
 
+BOOST_AUTO_TEST_CASE(RequestCatalogRejectsRetiredLegacyYolo)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec182/yolo-semantic-oracle.json").string());
+  BOOST_REQUIRE(file.good());
+  const auto oracle = NativeJson::parse(file);
+  NativeCanonicalSource source;
+  const auto hex = oracle.at("model_hex").get<std::string>();
+  for (std::size_t i = 0; i < hex.size(); i += 2)
+    source.modelBytes.push_back(std::stoul(hex.substr(i, 2), nullptr, 16));
+  const auto descriptor = model("yolo26n", "YOLOFixture", oracle.at("graph_digest").get<std::string>());
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 1024 * 1024, 1024 * 1024};
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/source"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("fixture-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("fixture-profile")},
+      {"assembler_descriptor_digest", digest("fixture-assembler-v1")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "fixture-epoch"}, {"max_source_bytes", 1048576},
+      {"max_assembled_bytes", 1048576}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/artifacts"}}},
+    {"input_format", "JSON"}, {"max_payload_bytes", 32},
+    {"splitter", {{"kind", "YOLO"}}}
+  };
+  // The legacy route stays available for the migration comparison.
+  NativeJson legacy = configuration;
+  BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(legacy), source, control),
+                    std::exception);
+  configuration["legacy_yolo_retired"] = true;
+  BOOST_CHECK_EXCEPTION(
+    NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control),
+    std::runtime_error, [] (const std::runtime_error& error) {
+      return std::string(error.what()).find("DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED") == 0;
+    });
+}
+
 BOOST_AUTO_TEST_SUITE_END()

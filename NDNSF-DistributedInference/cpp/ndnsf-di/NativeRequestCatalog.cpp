@@ -486,6 +486,13 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     result.splitter = transformerStrategy;
   }
   else if (route == CatalogRoute::YOLO) {
+    // Explicit migration switch: once a deployment retires the legacy YOLO
+    // splitter, the catalog must fail with a typed error instead of silently
+    // falling back to the old component model.
+    if (root.value("legacy_yolo_retired", false))
+      throw std::runtime_error(
+        "DI_NATIVE_LEGACY_YOLO_SPLITTER_RETIRED: kind=YOLO is retired; "
+        "use splitter.kind=ONNX_SOURCE");
     if (referenceOnly)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
     model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
