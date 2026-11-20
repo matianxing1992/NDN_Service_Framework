@@ -743,6 +743,8 @@ canonicalNativeOnnxRecipeJson(const NativeCertifiedRecipe& recipe)
       '"' + jsonString(recipe.automaticContractDigest) + '"');
   if (!recipe.tensorShardV1.empty())
     members.emplace_back("tensorShardV1", '"' + jsonString(recipe.tensorShardV1) + '"');
+  if (!recipe.sourceTransformV1.empty())
+    members.emplace_back("sourceTransformV1", '"' + jsonString(recipe.sourceTransformV1) + '"');
   return jsonSortedObject(std::move(members));
 }
 

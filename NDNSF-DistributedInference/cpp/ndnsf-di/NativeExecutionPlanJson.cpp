@@ -132,6 +132,8 @@ void visitRoleFields(const NativeSelectionRoleV3& value, Sink&& sink)
   }
   if (!value.tensorShardV1.empty())
     sink("tensor_shard_v1", value.tensorShardV1);
+  if (!value.sourceTransformV1.empty())
+    sink("source_transform_v1", value.sourceTransformV1);
   sink("merge_kind", value.mergeKind);
   sink("postprocess_identity", value.postprocessIdentity);
   sink("postprocess_output_name", value.postprocessOutputName);
@@ -724,6 +726,7 @@ selectionRoleFromV3Json(const boost::property_tree::ptree& node,
   role.tensorParallelDegree = node.get<std::uint64_t>("tensor_parallel_degree", 0);
   role.tensorParallelRank = node.get<std::uint64_t>("tensor_parallel_rank", 0);
   role.tensorShardV1 = node.get<std::string>("tensor_shard_v1", "");
+  role.sourceTransformV1 = node.get<std::string>("source_transform_v1", "");
   role.mergeKind = node.get<std::string>("merge_kind", "");
   role.postprocessIdentity = node.get<std::string>(
     "postprocess_identity", "");
@@ -755,6 +758,7 @@ sameAssembly(const NativeSelectionRoleV3& left,
          left.tensorParallelDegree == right.tensorParallelDegree &&
          left.tensorParallelRank == right.tensorParallelRank &&
          left.tensorShardV1 == right.tensorShardV1 &&
+         left.sourceTransformV1 == right.sourceTransformV1 &&
          left.automaticContractDigest == right.automaticContractDigest &&
           (!compareRecipe || left.recipeDigest == right.recipeDigest) &&
          left.roleKind == right.roleKind && left.adapterId == right.adapterId &&
@@ -4048,6 +4052,13 @@ void validateAssemblyEncoding(const NativeSelectionRoleV3& role)
 
 void validateNativeAssembly(const NativeSelectionRoleV3& role)
 {
+  if (!role.sourceTransformV1.empty()) {
+    const auto transform = nativeParseJson(role.sourceTransformV1);
+    if (!transform.is_object() ||
+        transform.value("schema", std::string{}) != "source_transform_v1" ||
+        transform.value("kind", std::string{}).empty())
+      throw std::invalid_argument("role source transform is invalid");
+  }
   if (!role.tensorShardV1.empty()) {
     if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
         role.tensorParallelRank >= role.tensorParallelDegree ||
