@@ -193,6 +193,98 @@ std::vector<uint8_t> raw(const std::string& value)
 
 } // namespace
 
+namespace {
+
+const char* partitionName(ArtifactPartitionKind kind)
+{
+  switch (kind) {
+    case ArtifactPartitionKind::None: return "";
+    case ArtifactPartitionKind::FullGraph: return "full-graph";
+    case ArtifactPartitionKind::PipelineStage: return "pipeline-stage";
+    case ArtifactPartitionKind::TensorParallel: return "tensor-parallel";
+    case ArtifactPartitionKind::Hybrid: return "hybrid";
+    case ArtifactPartitionKind::AutomaticGraphCut: return "automatic-graph-cut";
+    case ArtifactPartitionKind::SemanticComponent: return "semantic-component";
+  }
+  throw std::invalid_argument("unknown artifact partition kind");
+}
+
+ArtifactPartitionKind parsePartitionName(const std::string& value)
+{
+  for (const auto kind : {ArtifactPartitionKind::FullGraph, ArtifactPartitionKind::PipelineStage,
+                          ArtifactPartitionKind::TensorParallel, ArtifactPartitionKind::Hybrid,
+                          ArtifactPartitionKind::AutomaticGraphCut,
+                          ArtifactPartitionKind::SemanticComponent}) {
+    if (value == partitionName(kind))
+      return kind;
+  }
+  throw std::invalid_argument("unknown artifact partition name: " + value);
+}
+
+void validatePartition(const ArtifactPartition& partition)
+{
+  const auto layers = [&] {
+    if (partition.layerBegin >= partition.layerEnd)
+      throw std::invalid_argument("artifact layer interval must be non-empty and half-open");
+  };
+  const auto degree = [&] {
+    if (partition.tensorDegree < 1 || partition.rank >= partition.tensorDegree)
+      throw std::invalid_argument("artifact rank must be inside the tensor degree");
+  };
+  switch (partition.kind) {
+    case ArtifactPartitionKind::None:
+      if (partition.stageIndex != 0 || partition.layerBegin != 0 || partition.layerEnd != 0 ||
+          partition.tensorDegree != 0 || partition.rank != 0 || partition.cutPrefixNodes != 0 ||
+          !partition.graphSide.empty() || !partition.componentId.empty())
+        throw std::invalid_argument("partition fields on an object without a partition");
+      return;
+    case ArtifactPartitionKind::FullGraph:
+      if (partition.layerEnd != 0 || partition.tensorDegree != 0)
+        throw std::invalid_argument("full graph partition carries no stage or degree");
+      return;
+    case ArtifactPartitionKind::PipelineStage:
+      layers();
+      if (partition.tensorDegree != 0)
+        throw std::invalid_argument("pipeline stage partition carries no tensor degree");
+      return;
+    case ArtifactPartitionKind::TensorParallel:
+      layers(); degree();
+      return;
+    case ArtifactPartitionKind::Hybrid:
+      layers(); degree();
+      return;
+    case ArtifactPartitionKind::AutomaticGraphCut:
+      if (partition.cutPrefixNodes == 0 || (partition.graphSide != "prefix" && partition.graphSide != "suffix"))
+        throw std::invalid_argument("automatic graph cut needs a positive prefix count and a side");
+      return;
+    case ArtifactPartitionKind::SemanticComponent:
+      if (!atom(partition.componentId))
+        throw std::invalid_argument("semantic component needs a component id");
+      return;
+  }
+}
+
+} // namespace
+
+std::string
+PublishedContentName::partitionJson() const
+{
+  validatePartition(partition);
+  if (partition.kind == ArtifactPartitionKind::None)
+    return {};
+  // Sorted keys, decimal integers, no escaping beyond the validated atoms.
+  std::string json = "{\"componentId\":\"" + partition.componentId +
+    "\",\"cut\":\"" + std::to_string(partition.cutPrefixNodes) +
+    "\",\"degree\":\"" + std::to_string(partition.tensorDegree) +
+    "\",\"kind\":\"" + partitionName(partition.kind) +
+    "\",\"layerBegin\":\"" + std::to_string(partition.layerBegin) +
+    "\",\"layerEnd\":\"" + std::to_string(partition.layerEnd) +
+    "\",\"rank\":\"" + std::to_string(partition.rank) +
+    "\",\"side\":\"" + partition.graphSide +
+    "\",\"stage\":\"" + std::to_string(partition.stageIndex) + "\"}";
+  return json;
+}
+
 std::string
 PublishedContentName::objectIdentity() const
 {
@@ -292,9 +384,57 @@ PublishedContentName::semanticStem(const ndn::Name& producer) const
       push("NDNSF"); push("blob"); pushComponent(makeNamingLabelComponent(label));
       break;
     case ContentSemanticRole::ArtifactFileObject:
-    case ContentSemanticRole::ArtifactManifest:
+    case ContentSemanticRole::ArtifactManifest: {
+      // <ArtifactStem> = <Producer>/NDNSF-DI/artifact/<ModelPath>/<PartitionCoordinate>/entry/<Entry>
+      //                 /profile/<ProfileLabel>
+      if (partition.kind == ArtifactPartitionKind::None)
+        throw std::invalid_argument("artifact role requires a partition coordinate");
+      if (artifactEntry.empty() || !atom(artifactEntry))
+        throw std::invalid_argument("artifact role requires an entry label");
+      validatePartition(partition);
+      push("NDNSF-DI"); push("artifact"); pushPath();
+      switch (partition.kind) {
+        case ArtifactPartitionKind::FullGraph:
+          push("graph"); push("full");
+          break;
+        case ArtifactPartitionKind::PipelineStage:
+          push("pp"); push("stage"); push(std::to_string(partition.stageIndex));
+          push("layers"); push(std::to_string(partition.layerBegin));
+          push(std::to_string(partition.layerEnd));
+          break;
+        case ArtifactPartitionKind::TensorParallel:
+          push("tp"); push("layers"); push(std::to_string(partition.layerBegin));
+          push(std::to_string(partition.layerEnd)); push("degree");
+          push(std::to_string(partition.tensorDegree)); push("rank");
+          push(std::to_string(partition.rank));
+          break;
+        case ArtifactPartitionKind::Hybrid:
+          push("hybrid"); push("stage"); push(std::to_string(partition.stageIndex));
+          push("layers"); push(std::to_string(partition.layerBegin));
+          push(std::to_string(partition.layerEnd)); push("degree");
+          push(std::to_string(partition.tensorDegree)); push("rank");
+          push(std::to_string(partition.rank));
+          break;
+        case ArtifactPartitionKind::AutomaticGraphCut:
+          push("graph"); push("automatic"); push("cut");
+          push(std::to_string(partition.cutPrefixNodes)); push("side");
+          push(partition.graphSide);
+          break;
+        case ArtifactPartitionKind::SemanticComponent:
+          push("graph"); push("semantic"); push("component"); push(partition.componentId);
+          break;
+        case ArtifactPartitionKind::None:
+          throw std::invalid_argument("artifact role requires a partition coordinate");
+      }
+      push("entry"); push(artifactEntry); push("profile"); push(profileLabel);
+      if (semanticRole == ContentSemanticRole::ArtifactManifest)
+        push("manifest");
+      else
+        push("file"); pushComponent(makeNamingLabelComponent(label));
+      break;
+    }
     case ContentSemanticRole::ManifestPage:
-      throw std::invalid_argument("artifact partition coordinates are not built yet");
+      throw std::invalid_argument("manifest page coordinates are not built yet");
     case ContentSemanticRole::None:
       throw std::invalid_argument("semantic stem requires an explicit semantic role");
   }

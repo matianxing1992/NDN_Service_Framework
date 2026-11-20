@@ -13,6 +13,29 @@ enum class ContentDataKind {
   Tokenizer = 4, ArtifactFile = 5, Material = 6, Input = 7, Assignment = 8
 };
 
+/** How a derived artifact was cut. The row is the actual partition, not the placement-time unit degree. */
+enum class ArtifactPartitionKind : std::uint8_t {
+  None = 0,
+  FullGraph = 1,
+  PipelineStage = 2,
+  TensorParallel = 3,
+  Hybrid = 4,
+  AutomaticGraphCut = 5,
+  SemanticComponent = 6,
+};
+
+struct ArtifactPartition {
+  ArtifactPartitionKind kind = ArtifactPartitionKind::None;
+  std::uint64_t stageIndex = 0;
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+  std::uint64_t tensorDegree = 0;
+  std::uint64_t rank = 0;
+  std::uint64_t cutPrefixNodes = 0;
+  std::string graphSide;      // "prefix" or "suffix", automatic cut only
+  std::string componentId;    // adapter-declared component, semantic split only
+};
+
 /** Which business object of N4 an instance is. The role, not the label, selects the name row:
  * `kind` states the wire family and `semanticRole` the exact object, and the two are validated together. */
 enum class ContentSemanticRole : std::uint8_t {
@@ -61,6 +84,10 @@ struct PublishedContentName {
   std::optional<std::uint64_t> bundleIndex;
   std::string profileLabel;
   std::string useId;
+  std::string artifactEntry;
+  ArtifactPartition partition;
+  /** Canonical JSON of the partition, sorted keys; empty when the partition is absent. */
+  std::string partitionJson() const;
 
   std::string objectIdentity() const;
   /** N4 `<ObjectPrefix>` without the `/rep/<RepresentationId>` tail. Throws when the instance carries no

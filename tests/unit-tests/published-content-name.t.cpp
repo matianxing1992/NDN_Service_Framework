@@ -191,6 +191,67 @@ BOOST_AUTO_TEST_CASE(SemanticCoordinatesRoundTripAndClosedValidation)
   BOOST_CHECK(PublishedContentName::decode(legacyWire).encode() == legacyWire);
 }
 
+BOOST_AUTO_TEST_CASE(ArtifactStemNamesTheActualPartition)
+{
+  const ndn::Name producer("/lab/preparer");
+  PublishedContentName value;
+  value.kind = ContentDataKind::ArtifactFile;
+  value.semanticRole = ContentSemanticRole::ArtifactFileObject;
+  value.label = "model.onnx";
+  value.modelName = "qwen3";
+  value.modelFamily = "qwen3";
+  value.modelSize = "0.6b";
+  value.quantization = "int4";
+  value.sourceRevisionLabel = "r3";
+  value.profileLabel = "kv-0-4-ffn-0-1536";
+  value.artifactEntry = "mlp-13";
+  value.partition.kind = ArtifactPartitionKind::Hybrid;
+  value.partition.stageIndex = 0;
+  value.partition.layerBegin = 0;
+  value.partition.layerEnd = 14;
+  value.partition.tensorDegree = 2;
+  value.partition.rank = 0;
+  const auto stem = value.semanticStem(producer);
+  const auto expected = ndn::Name(producer).append("NDNSF-DI").append("artifact")
+    .append("qwen3").append("0.6b").append("int4").append("revision").append("r3")
+    .append("hybrid").append("stage").append("0").append("layers").append("0").append("14")
+    .append("degree").append("2").append("rank").append("0")
+    .append("entry").append("mlp-13").append("profile").append("kv-0-4-ffn-0-1536")
+    .append("file").append(makeNamingLabelComponent("model.onnx"));
+  BOOST_CHECK(stem == expected);
+
+  // Same layers, different actual slice -> a different stem, so the layout cannot be aliased.
+  auto weighted = value;
+  weighted.profileLabel = "kv-0-2-ffn-0-768";
+  BOOST_CHECK(weighted.semanticStem(producer) != stem);
+  BOOST_CHECK_EQUAL(weighted.partitionJson(),
+                    std::string("{\"componentId\":\"\",\"cut\":\"0\",\"degree\":\"2\","
+                                "\"kind\":\"hybrid\",\"layerBegin\":\"0\",\"layerEnd\":\"14\","
+                                "\"rank\":\"0\",\"side\":\"\",\"stage\":\"0\"}"));
+
+  // A rank outside the degree, an empty layer interval and a missing partition are refused.
+  auto badRank = value;
+  badRank.partition.rank = 2;
+  BOOST_CHECK_THROW(badRank.semanticStem(producer), std::invalid_argument);
+  auto badLayers = value;
+  badLayers.partition.layerEnd = 0;
+  BOOST_CHECK_THROW(badLayers.semanticStem(producer), std::invalid_argument);
+  auto noPartition = value;
+  noPartition.partition.kind = ArtifactPartitionKind::None;
+  BOOST_CHECK_THROW(noPartition.semanticStem(producer), std::invalid_argument);
+
+  // The automatic ONNX cut names the verified prefix node count and side.
+  auto automatic = value;
+  automatic.partition = {};
+  automatic.partition.kind = ArtifactPartitionKind::AutomaticGraphCut;
+  automatic.partition.cutPrefixNodes = 37;
+  automatic.partition.graphSide = "suffix";
+  const auto cutStem = automatic.semanticStem(producer);
+  BOOST_CHECK(cutStem[-10] == ndn::name::Component("cut"));
+  BOOST_CHECK(cutStem[-9] == ndn::name::Component("37"));
+  BOOST_CHECK(cutStem[-7] == ndn::name::Component("suffix"));
+}
+
 BOOST_AUTO_TEST_CASE(SemanticStemFollowsTheN4Rows)
 {
   const ndn::Name producer("/lab/preparer");
