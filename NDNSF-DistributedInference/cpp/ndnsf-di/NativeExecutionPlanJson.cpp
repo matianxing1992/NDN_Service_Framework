@@ -3580,6 +3580,11 @@ detail::nativeRoleStepContractDigest(const NativeExecutionPlan& plan, std::strin
     if (step.unitId == role) steps.push_back(step);
   if (steps.empty())
     throw std::invalid_argument("selected role has no sealed execution steps");
+  // `artifactEntry` is a plan-owned rebinding target: the cache reuses one
+  // immutable artifact while the current plan supplies the entry id. Hashing it
+  // here would rebuild the template for every invocation even though the
+  // executable graph is identical.
+  for (auto& step : steps) step.artifactEntry.clear();
   return nativePlanningDigest(nativeCanonicalJson(NativeJson{
     {"version", plan.stepPlanVersion}, {"tensor_degree", plan.tensorDegree},
     {"steps", nativeStepsJson(steps)}}));
