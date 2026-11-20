@@ -2474,7 +2474,11 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
       ndn::Data signedRecord;
       signedRecord.setContent(ndn::Buffer(reinterpret_cast<const uint8_t*>(record.data()),
                                           record.size()));
-      m_keyChain.sign(signedRecord, ndn::security::signingByCertificate(m_aaCert));
+      // Sign with the Controller's own signing identity, the same one the reply uses: the AA certificate is the
+      // authority the record names, but it is not always present in the KeyChain that signs control replies, and a
+      // record that cannot be signed is a record that was never written.
+      m_keyChain.sign(signedRecord, ndn::security::SigningInfo(
+        ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
       const auto recordWire = signedRecord.wireEncode();
       // The version the record is written under, next to the version the answer named: a reader that is told one
       // version and finds a record under another cannot decide anything, and only these two numbers say why.
@@ -2492,11 +2496,16 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
       // The answer is worthless without the record: a reader that received it would later be refused a historical key
       // for a record that was never written, with no way to tell why. A Controller that owns the state must not answer
       // in that case; one with no writer was never going to record anything and still serves read-only.
-      // The record is written before the answer now, so the reader cannot receive permissions that were never
-      // recorded. Withholding the answer when the write fails is the next step, but it needs a controller whose AA
-      // certificate can sign in the fixtures that assert this reply; until then the failure is loud rather than silent.
-      NDN_LOG_ERROR("[PERMISSIONS/USER] Grant record not written for " << targetIdentity
-                    << ": " << error.what());
+      // The answer is worthless without the record: a reader that received it would later be refused a historical key
+      // for a record that was never written, with no way to tell why. A Controller that owns the state must not answer
+      // in that case; one with no writer was never going to record anything and still serves read-only.
+      if (hasGenerationWriter()) {
+        NDN_LOG_ERROR("[PERMISSIONS/USER] Grant record not written for " << targetIdentity
+                      << ", not answering: " << error.what());
+        return;
+      }
+      NDN_LOG_WARN("[PERMISSIONS/USER] Grant record not written for " << targetIdentity
+                   << " (no generation writer): " << error.what());
     }
 
     ndn::Name dataName = interest.getName();
