@@ -3471,7 +3471,7 @@ prepareNativeCanonicalOnnxRole(
       };
       std::vector<std::string> transformInitializers;
       if (!projection.assemblyContract().sourceTransformV1.empty()) {
-        const auto transform = NativeOnnxSourceTransformV1::parse(
+        auto transform = NativeOnnxSourceTransformV1::parse(
           projection.assemblyContract().sourceTransformV1);
         if (transform.kind == "add-conv-bias")
           transformInitializers.push_back(transform.bias);
@@ -3509,12 +3509,27 @@ prepareNativeCanonicalOnnxRole(
       // owned, so external weight bytes can be read through the same bounded
       // range source the runner will later use.
       if (!projection.assemblyContract().sourceTransformV1.empty()) {
-        const auto transform = NativeOnnxSourceTransformV1::parse(
+        auto transform = NativeOnnxSourceTransformV1::parse(
           projection.assemblyContract().sourceTransformV1);
         onnx::ModelProto sourceModel;
         if (!sourceModel.ParseFromArray(canonicalSource.modelBytes.data(),
                                         static_cast<int>(canonicalSource.modelBytes.size())))
           throw std::runtime_error("DI_CANONICAL_SOURCE_PARSE_FAILED");
+        // The planner names a source node by its stable graph id (`onnx-node-N`);
+        // the materialized role copies only its selected nodes, whose ONNX names
+        // are the export's own (`conv0`). Translate the id to the name the
+        // selected graph actually carries before lowering.
+        if (const auto prefix = std::string("onnx-node-");
+            transform.node.rfind(prefix, 0) == 0 &&
+            !projection.assemblyContract().nodeIndices.empty()) {
+          const auto target = std::stoull(transform.node.substr(prefix.size()));
+          const auto first = projection.assemblyContract().nodeIndices.front();
+          if (target >= first && target - first <
+                static_cast<std::uint64_t>(sourceModel.graph().node_size())) {
+            transform.node = sourceModel.graph().node(
+              static_cast<int>(target - first)).name();
+          }
+        }
         std::map<std::string, std::vector<std::uint8_t>> externalCache;
         const auto derived = applyNativeOnnxSourceTransform(sourceModel, transform,
           [&] (const std::string& location, std::uint64_t offset, std::uint64_t length) {
