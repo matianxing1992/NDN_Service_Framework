@@ -17,18 +17,36 @@ int
 main(int argc, char** argv)
 {
   const bool catalogMode = argc == 4 && std::string(argv[1]) == "--catalog";
-  if (argc != 2 && !catalogMode) {
+  const bool initializerMode = argc == 4 && std::string(argv[1]) == "--initializer";
+  if (argc != 2 && !catalogMode && !initializerMode) {
     std::cerr << "usage: native-source-inspect model.onnx | "
                  "--catalog catalog.json model.onnx" << std::endl;
     return 2;
   }
   try {
-    const char* modelPath = catalogMode ? argv[3] : argv[1];
+    const char* modelPath = (catalogMode || initializerMode) ? argv[3] : argv[1];
     std::ifstream input(modelPath, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open the model file");
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input), {}};
     ndnsf::di::NativeCanonicalSource source;
     source.modelBytes = bytes;
+    if (initializerMode) {
+      std::ifstream weights(argv[2], std::ios::binary);
+      if (!weights) throw std::runtime_error("cannot open the initializer file");
+      const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(weights), {}};
+      source.initializerBytes = ndnsf::di::NativeCanonicalByteBuffer{bytes};
+      const auto control = ndnsf::di::NativeAssemblyControl{
+        std::chrono::steady_clock::now() + std::chrono::seconds(30), [] {}, 1 << 26, 1 << 26};
+      const auto identity = ndnsf::di::canonicalOnnxSourceIdentity(source, control);
+      auto result = ndnsf::di::NativeJson{
+        {"source_bytes", source.modelBytes.size()},
+        {"initializer_bytes", ndnsf::di::nativeCanonicalInitializerByteSize(source)},
+        {"initializer_object_digest", ndnsf::di::nativeCanonicalInitializerDigest(source, control)},
+        {"initializer_digest", identity.initializerDigest},
+        {"graph_digest", identity.graphDigest}};
+      std::cout << ndnsf::di::nativeCanonicalJson(result) << std::endl;
+      return 0;
+    }
     if (catalogMode) {
       std::ifstream catalogStream(argv[2]);
       if (!catalogStream) throw std::runtime_error("cannot open the catalog");
