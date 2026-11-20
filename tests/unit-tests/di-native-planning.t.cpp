@@ -2282,6 +2282,19 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
   BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
   BOOST_CHECK_EQUAL(candidates.front().executionPlan.roles.size(), 1U);
   BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
+
+  for (const auto& mutation : std::vector<std::pair<std::string, NativeJson>>{
+         {"mode", NativeJson("foreign")},
+         {"roles", NativeJson::array()},
+         {"input_ingress_role", NativeJson("Missing")},
+         {"result_egress_role", NativeJson("Missing")}}) {
+    auto broken = configuration;
+    broken["splitter"][mutation.first] = mutation.second;
+    BOOST_TEST_CONTEXT("ONNX_SOURCE mutation " << mutation.first) {
+      BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(broken), source, control),
+                        std::invalid_argument);
+    }
+  }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
