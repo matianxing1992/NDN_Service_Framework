@@ -1369,6 +1369,9 @@ BOOST_AUTO_TEST_CASE(ServiceControllerMutatesTypedRevocationAndAdvancesEpoch)
 
   ServiceController serviceController(face, controllerCert, validator,
                                       ndnsf::test::testFixturePath("controller-policies.conf").string());
+  // The grant record is signed with the Controller's AA certificate through the Controller's own signer; without it the
+  // record cannot be written and, now, the reply is withheld.
+  ServiceControllerTestAccess::ensureInternalControllerSigner(serviceController);
   const auto initial = serviceController.getControllerVersion();
   BOOST_REQUIRE(initial.isValid());
 

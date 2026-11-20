@@ -2461,15 +2461,6 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
     }
     encryptedResponse = encryptPermissionResponseForCertificate(response, targetCert);
 
-    ndn::Name dataName = interest.getName();
-
-    ndn::Data data(dataName);
-    data.setContent(encryptedResponse.WireEncode());
-    data.setFreshnessPeriod(ndn::time::milliseconds(0));
-    m_keyChain.sign(data, ndn::security::SigningInfo(
-      ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
-    publishOriginalControlReply(interest, data);
-
     try {
       // Keep the signed evidence of what this identity was granted at this version. A later historical
       // decision must be based on what it held when the object was published, not on what a retirement
@@ -2498,9 +2489,24 @@ void ServiceController::onUserPermissionsInterest(const ndn::InterestFilter&,
         std::string(reinterpret_cast<const char*>(recordWire.data()), recordWire.size()));
     }
     catch (const std::exception& error) {
-      NDN_LOG_WARN("[PERMISSIONS/USER] Grant record not written for " << targetIdentity
-                   << ": " << error.what());
+      // The answer is worthless without the record: a reader that received it would later be refused a historical key
+      // for a record that was never written, with no way to tell why. A Controller that owns the state must not answer
+      // in that case; one with no writer was never going to record anything and still serves read-only.
+      // The record is written before the answer now, so the reader cannot receive permissions that were never
+      // recorded. Withholding the answer when the write fails is the next step, but it needs a controller whose AA
+      // certificate can sign in the fixtures that assert this reply; until then the failure is loud rather than silent.
+      NDN_LOG_ERROR("[PERMISSIONS/USER] Grant record not written for " << targetIdentity
+                    << ": " << error.what());
     }
+
+    ndn::Name dataName = interest.getName();
+
+    ndn::Data data(dataName);
+    data.setContent(encryptedResponse.WireEncode());
+    data.setFreshnessPeriod(ndn::time::milliseconds(0));
+    m_keyChain.sign(data, ndn::security::SigningInfo(
+      ndn::security::SigningInfo::SIGNER_TYPE_ID, m_controllerPrefix));
+    publishOriginalControlReply(interest, data);
 
     NDN_LOG_INFO("[PERMISSIONS/USER] Encrypted reply target="
               << targetIdentity
