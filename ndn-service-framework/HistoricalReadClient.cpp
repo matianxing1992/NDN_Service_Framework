@@ -373,13 +373,18 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
       request.payloadName.empty())
     return std::nullopt;
   // The content key is one packet under its exact name; only the payload is segmented.
-  const auto ckWire = fetchSingleData(face, request.ckName, request.producerCertificate,
-                                      request.fetchTimeoutMs);
-  if (!ckWire) {
+  // The CK is fetched as a verified packet rather than as content: the packet itself is what the Controller can check
+  // as publication evidence, and its content is what the reader needs to unseal.
+  const auto ckData = fetchVerified(face, request.ckName, request.producerCertificate,
+                                    request.fetchTimeoutMs);
+  if (!ckData) {
     HISTORICAL_READ_DEBUG("historical read: content key fetch failed for %s\n",
                           request.ckName.toUri().c_str());
     return std::nullopt;
   }
+  const auto ckWire = std::vector<uint8_t>(ckData->getContent().value(),
+                                           ckData->getContent().value() + ckData->getContent().value_size());
+  const auto ckPacket = ckData->wireEncode();
   const auto payloadWire = fetchSegmentedData(face, request.payloadName, request.producerCertificate,
                                               request.maxSegments, request.fetchTimeoutMs);
   if (!payloadWire) {
@@ -389,7 +394,7 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
   }
   HistoricalCkContent ck;
   HistoricalPayloadContent payload;
-  if (!parseHistoricalCkContent(std::string(ckWire->begin(), ckWire->end()), ck) ||
+  if (!parseHistoricalCkContent(std::string(ckWire.begin(), ckWire.end()), ck) ||
       !parseHistoricalPayloadContent(std::string(payloadWire->begin(), payloadWire->end()), payload)) {
     HISTORICAL_READ_DEBUG("historical read: envelope parse failed\n");
     return std::nullopt;
@@ -406,7 +411,7 @@ readHistoricalObject(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalR
     }
   }
   auto evidenced = request;
-  evidenced.ckEvidence.assign(ckWire->begin(), ckWire->end());
+  evidenced.ckEvidence.assign(ckPacket.begin(), ckPacket.end());
   const auto key = fetchHistoricalKey(face, keyChain, evidenced, request.fetchTimeoutMs * 4);
   if (!key) {
     HISTORICAL_READ_DEBUG("historical read: historical key request failed\n");
