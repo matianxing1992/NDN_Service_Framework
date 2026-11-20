@@ -7841,18 +7841,46 @@ namespace ndn_service_framework
         }
         PublishedContentName contentName;
         std::string durablePublicationBase;
+        std::string legacyDurablePublicationBase;
         try {
             if (options.contentName) contentName = *options.contentName;
             else contentName.label = objectLabel; // Explicit generic Core publication label.
             contentName.encode(); // Validate full semantic metadata before crypto/backend effects.
             if (durable) {
-                const auto ownerDigest = makeNamingDigestComponent(options.publicationIdentity.substr(7));
-                const auto semanticDigest = makeNamingDigestComponent(contentName.objectIdentity());
-                const auto& suffixWire = options.manifestSuffix.wireEncode();
-                durablePublicationBase = "sha256:" + computeNamingDigest("ndnsf-naming/publication",
-                    {{1, 4, {ownerDigest.value(), ownerDigest.value() + ownerDigest.value_size()}},
-                     {2, 4, {semanticDigest.value(), semanticDigest.value() + semanticDigest.value_size()}},
-                     {3, 1, {suffixWire.begin(), suffixWire.end()}}});
+                const auto publicationIdentity = [&](const PublishedContentName& name) {
+                    const auto ownerDigest = makeNamingDigestComponent(options.publicationIdentity.substr(7));
+                    const auto semanticDigest = makeNamingDigestComponent(name.objectIdentity());
+                    const auto& suffixWire = options.manifestSuffix.wireEncode();
+                    return "sha256:" + computeNamingDigest("ndnsf-naming/publication",
+                        {{1, 4, {ownerDigest.value(), ownerDigest.value() + ownerDigest.value_size()}},
+                         {2, 4, {semanticDigest.value(), semanticDigest.value() + semanticDigest.value_size()}},
+                         {3, 1, {suffixWire.begin(), suffixWire.end()}}});
+                };
+                durablePublicationBase = publicationIdentity(contentName);
+                if (contentName.hasSemanticCoordinates()) {
+                    // The same object published before the coordinate row was recorded under the identity its
+                    // coordinate-free description produced. Recomputing that key is how an existing durable record
+                    // is located without a new record format or a guess based on payload equality.
+                    auto legacy = contentName;
+                    legacy.semanticRole = ContentSemanticRole::None;
+                    legacy.modelFamily.clear();
+                    legacy.modelSize.clear();
+                    legacy.quantization.clear();
+                    legacy.sourceRevisionLabel.clear();
+                    legacy.bundleIndex.reset();
+                    legacy.profileLabel.clear();
+                    legacy.useId.clear();
+                    legacy.artifactEntry.clear();
+                    legacy.pageNumber.reset();
+                    legacy.partition = ArtifactPartition{};
+                    try {
+                        legacyDurablePublicationBase = publicationIdentity(legacy);
+                    }
+                    catch (const std::exception&) {
+                        // A row whose facts are only legal with coordinates has no legacy counterpart.
+                        legacyDurablePublicationBase.clear();
+                    }
+                }
             }
         }
         catch (const std::exception& error) { result.errorMessage = error.what(); return result; }
@@ -8002,6 +8030,9 @@ namespace ndn_service_framework
                         durableHit->servingLocator,
                         durableHit->manifestName, durableHit->packetStorageFormat};
                 };
+                // Set when the hit came from the coordinate-free identity of the same object; the recorded name
+                // then has an older shape and the fact comparison decides reuse instead of a name-shape match.
+                bool reusedOlderShape = false;
                 const auto rebindDurableIdentity = [&] {
                     const auto versionText = durableVersioned
                         ? durableControllerVersion->toString() : "unversioned";
@@ -8033,9 +8064,23 @@ namespace ndn_service_framework
                 };
                 durableHit = rangeStore->lookupDurable(
                     durablePublicationIdentity, requireActive);
+                if (!durableHit && !legacyDurablePublicationBase.empty()) {
+                    // The identical object may already be stored under the identity its coordinate-free description
+                    // produced. The restored manifest, compared by facts below, still decides reuse.
+                    durableHit = rangeStore->lookupDurable(legacyDurablePublicationBase, requireActive);
+                    if (durableHit) {
+                        // The record is addressed by the identity it was actually stored under.
+                        durablePublicationIdentity = legacyDurablePublicationBase;
+                        reusedOlderShape = true;
+                    }
+                }
                 if (durableHit) {
                     encryptedDataName = ndn::Name(durableHit->encryptedName);
-                    if (!isProtectedBlobDataPrefix(encryptedDataName, identity, result.contentDigest, contentName))
+                    // A hit found through the coordinate-free identity carries the older name shape, so the shape
+                    // check applies only to a hit under the caller's own identity; the restored manifest, compared
+                    // by its facts, decides that reuse.
+                    if (!reusedOlderShape &&
+                        !isProtectedBlobDataPrefix(encryptedDataName, identity, result.contentDigest, contentName))
                         throw std::runtime_error("DURABLE_LOOKUP_NAME_MISMATCH");
                     checkNamingNameSize(encryptedDataName);
                     durableReference = loadDurableKeyReference(

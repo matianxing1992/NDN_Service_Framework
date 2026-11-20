@@ -1117,6 +1117,81 @@ BOOST_AUTO_TEST_CASE(OwnerRecoverablePublicationRewrapsAfterUserReconstruction)
     service, objectB, replacement, context, deadline, current), std::exception);
 }
 
+BOOST_AUTO_TEST_CASE(ADurableRecordIsFoundThroughItsCoordinateFreeIdentity)
+{
+  using namespace ndnsf_distributed_repo;
+  const auto root = fs::temp_directory_path() /
+    ("spec225-cross-shape-" + std::to_string(::getpid()));
+  fs::create_directories(root);
+  fs::permissions(root, fs::perms::owner_all, fs::perm_options::replace);
+  struct Cleanup
+  {
+    fs::path path;
+    ~Cleanup() { std::error_code e; fs::remove_all(path, e); }
+  } cleanup{root};
+  const auto spool = (root / "spool").string();
+  const auto references = (root / "references").string();
+  ScopedEnvironmentValue dataDir("NDNSF_REQUEST_LARGE_DATA_DIR", spool.c_str());
+  ScopedEnvironmentValue keyDir("NDNSF_DURABLE_KEY_REFERENCE_DIR", references.c_str());
+
+  StorageCapability capability;
+  capability.repoNode = "/spec225/cross-shape-repo";
+  capability.freeBytes = 128U << 20;
+  auto repo = std::make_shared<RepoCore>(capability,
+    makeFilesystemRepoStore((root / "repo").string(), 1U << 20, 1U << 20));
+  auto durableStore = std::make_shared<RepoEncryptedLargeDataStore>(repo);
+  ndn::KeyChain keys("pib-memory:", "tpm-memory:");
+  boost::asio::io_context io;
+  ndn::DummyClientFace face(io, keys, {false, true});
+  ndn::DummyClientFace authorityFace(io, keys, {false, true});
+  face.linkTo(authorityFace);
+  const auto actor = makeRsaIdentity(keys, ndn::Name("/spec225/cross-shape-owner"));
+  const auto authority = makeRsaIdentity(keys, ndn::Name("/spec225/cross-shape-authority"));
+  ndn::security::ValidatorNull authorityValidator;
+  ndn::nacabe::KpAttributeAuthority attributeAuthority(
+    authority, authorityFace, authorityValidator, keys);
+  for (int round = 0; round < 4; ++round) { io.poll(); io.restart(); }
+  const ndn::Name service("/spec225/model");
+  ndn_service_framework::test::IsolatedTestTrust fixedTrust{actor, authority};
+  LocalServiceUser user(face, ndn::Name("/spec225/raw"), actor, authority, fixedTrust.schemaPath());
+  user.useSigningKeyChainForTest(keys);
+  user.attachLocalMockPubSubForTest(pubsub(face, keys));
+  user.setEncryptedLargeDataRangeStore(durableStore);
+  user.init();
+  for (int round = 0; round < 4; ++round) { io.poll(); io.restart(); }
+  const auto request = user.prepareServiceRequest(service.toUri());
+  const std::vector<uint8_t> plaintext(4096, 0x5a);
+
+  // The record published before the coordinate row describes the same object by its business facts only.
+  PublishedContentName legacyName;
+  legacyName.kind = ContentDataKind::ModelFile;
+  legacyName.label = "cross-shape";
+  legacyName.modelName = "qwen3";
+  legacyName.modelIdentity = std::string(64, 'a');
+  LargeDataPublishOptions legacy;
+  legacy.retention = EncryptedLargeDataRetention::Durable;
+  legacy.publicationIdentity = "sha256:" + std::string(64, 'c');
+  legacy.contentName = legacyName;
+  const auto first = user.publishEncryptedLargeData(request, plaintext, "cross-shape",
+    ndn::time::milliseconds(1000), true, legacy);
+  BOOST_REQUIRE_MESSAGE(first.success, first.errorMessage);
+
+  // The same object described with semantic coordinates must reuse that record instead of publishing a second copy.
+  LargeDataPublishOptions semantic = legacy;
+  PublishedContentName contentName = legacyName;
+  contentName.semanticRole = ContentSemanticRole::SourceGraph;
+  contentName.modelFamily = "qwen3";
+  contentName.modelSize = "0.6b";
+  contentName.quantization = "int4";
+  contentName.sourceRevisionLabel = "r1";
+  semantic.contentName = contentName;
+  const auto second = user.publishEncryptedLargeData(request, plaintext, "cross-shape",
+    ndn::time::milliseconds(1000), true, semantic);
+  BOOST_REQUIRE_MESSAGE(second.success, second.errorMessage);
+  BOOST_CHECK(second.encryptedDataName == first.encryptedDataName);
+  BOOST_CHECK(second.manifestName == first.manifestName);
+}
+
 BOOST_AUTO_TEST_CASE(StrictReaderRejectsLegacyAndMalformedNamesBeforeInterest)
 {
   ndn::KeyChain keys("pib-memory:", "tpm-memory:");
