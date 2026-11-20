@@ -199,6 +199,36 @@ struct NativeExecutionRoleV3
 };
 
 /** Exact named tensor object authorized by one sealed role dataflow contract. */
+/** The semantic facts a tensor object owns.
+ *
+ * These are what `<RepresentationId>` commits to: the request/attempt/round binding, the producing role, step,
+ * layer interval and output port, the operation and rank, and the object's own content and layout digests. Transport
+ * sizing and the plan digest are deliberately absent — they describe how an object is moved, not what it is.
+ */
+struct NativeTensorSemanticFacts
+{
+  std::string requestId;
+  std::uint64_t attempt = 0;
+  std::uint64_t round = 0;
+  std::uint64_t index = 0;
+  std::string phase;
+  std::string role;
+  std::string step;
+  std::uint64_t layerBegin = 0;
+  std::uint64_t layerEnd = 0;
+  std::string port;
+  std::string operation;
+  std::uint64_t rank = 0;
+  std::uint64_t microbatch = 0;
+  std::string tensorId;
+  std::string tensorDigest;
+  std::string layoutDigest;
+  std::string targetLayoutDigest;
+  std::string securityProfile;
+};
+
+std::string computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts);
+
 struct NativeTensorEndpointV3
 {
   std::string producerNamespace;

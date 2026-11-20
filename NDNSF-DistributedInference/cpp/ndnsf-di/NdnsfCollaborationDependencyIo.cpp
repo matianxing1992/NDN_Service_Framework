@@ -279,14 +279,31 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
       (!n5 && parsed->suffix.size() != 18) ||
       ndn::Name(edge.manifestDataName) != ndn::Name(base).append("MANIFEST"))
     throw std::invalid_argument("C04 tensor reference category or Producer mismatch");
-  const auto endpoint = makeNamingDigestComponent(edge.endpointDigest.substr(7));
-  const auto object = makeNamingDigestComponent(edge.executionObjectDigest);
-  const auto key = computeNamingDigest("ndnsf-naming/tensor-key", {
-    NamingDigestField{1, 4, {endpoint.value_begin(), endpoint.value_end()}},
-    NamingDigestField{2, 4, {object.value_begin(), object.value_end()}}});
   const auto stride = edge.namingOperationStride;
   const auto round = stride == 0 ? 0 : edge.round / stride;
   const auto index = stride == 0 ? edge.round : edge.round % stride;
+  // The same semantic facts the producer named, rebuilt from the sealed edge; the endpoint digest is not part of
+  // the representation, so a consumer cannot be made to depend on transport sizing or on the plan digest.
+  NativeTensorSemanticFacts facts;
+  facts.requestId = edge.requestId;
+  facts.attempt = edge.attemptEpoch;
+  facts.round = round;
+  facts.index = index;
+  facts.phase = stride == 0 ? "execute" : (round == 0 ? "prefill" : "continuation");
+  facts.role = edge.producerRole;
+  facts.step = edge.namingStepId;
+  facts.layerBegin = edge.namingLayerBegin;
+  facts.layerEnd = edge.namingLayerEnd;
+  facts.port = edge.namingPortId;
+  facts.operation = edge.operationKind;
+  facts.rank = member.rank;
+  facts.microbatch = edge.microbatch;
+  facts.tensorId = edge.tensors.front();
+  facts.tensorDigest = edge.tensorDigest;
+  facts.layoutDigest = edge.layoutDigest;
+  facts.targetLayoutDigest = edge.collectiveTargetLayoutDigest;
+  facts.securityProfile = edge.securityProfile;
+  const auto key = computeTensorRepresentationCommitment(facts);
   const auto& suffix = parsed->suffix;
   if (n5) {
     // N5 fixed schema: request/<R>/attempt/<A>/round/<Round>/phase/<P>/role/<Role>/step/<Step>

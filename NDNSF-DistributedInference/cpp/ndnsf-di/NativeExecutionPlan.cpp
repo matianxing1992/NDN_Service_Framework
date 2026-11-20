@@ -62,15 +62,64 @@ computeTensorExecutionObjectDigest(const NativeTensorEndpointV3& endpoint)
 }
 
 std::string
+computeTensorRepresentationCommitment(const NativeTensorSemanticFacts& facts)
+{
+  const auto text = [](std::uint16_t tag, const std::string& value) {
+    return ndn_service_framework::NamingDigestField{tag, 2,
+      std::vector<std::uint8_t>(value.begin(), value.end())};
+  };
+  return ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-representation", {
+    text(1, "ndnsf-di-tensor-v1"),
+    text(2, facts.requestId),
+    uint64Field(3, facts.attempt),
+    uint64Field(4, facts.round),
+    uint64Field(5, facts.index),
+    text(6, facts.phase),
+    text(7, facts.role),
+    text(8, facts.step),
+    uint64Field(9, facts.layerBegin),
+    uint64Field(10, facts.layerEnd),
+    text(11, facts.port),
+    text(12, facts.operation),
+    uint64Field(13, facts.rank),
+    uint64Field(14, facts.microbatch),
+    text(15, facts.tensorId),
+    text(16, facts.tensorDigest),
+    text(17, facts.layoutDigest),
+    text(18, facts.targetLayoutDigest),
+    text(19, facts.securityProfile)});
+}
+
+std::string
 tensorObjectNamePrefix(const NativeTensorEndpointV3& endpoint)
 {
-  const auto objectDigest = computeTensorExecutionObjectDigest(endpoint);
-  const auto key = ndn_service_framework::computeNamingDigest("ndnsf-naming/tensor-key", {
-    digestField(1, endpoint.endpointDigest.substr(7)), digestField(2, objectDigest)});
+  // The object commitment is no longer part of the name, so the endpoint is validated here directly.
+  detail::validateTensorEndpointForNaming(endpoint);
   const bool input = endpoint.sourceKind == "APPLICATION_INPUT";
   const auto stride = endpoint.namingOperationStride;
   const auto round = input || stride == 0 ? 0 : endpoint.round / stride;
   const auto index = input ? 0 : stride == 0 ? endpoint.round : endpoint.round % stride;
+  // The representation commits to what the object is, not to how it is transported or to the plan that scheduled it.
+  NativeTensorSemanticFacts facts;
+  facts.requestId = endpoint.requestId;
+  facts.attempt = endpoint.attempt;
+  facts.round = round;
+  facts.index = index;
+  facts.phase = input || stride == 0 ? "execute" : (round == 0 ? "prefill" : "continuation");
+  facts.role = endpoint.producerRole;
+  facts.step = endpoint.namingStepId;
+  facts.layerBegin = endpoint.namingLayerBegin;
+  facts.layerEnd = endpoint.namingLayerEnd;
+  facts.port = endpoint.namingPortId;
+  facts.operation = endpoint.operation;
+  facts.rank = endpoint.producerRank;
+  facts.microbatch = endpoint.microbatch;
+  facts.tensorId = endpoint.tensorId;
+  facts.tensorDigest = endpoint.tensorDigest;
+  facts.layoutDigest = endpoint.layoutDigest;
+  facts.targetLayoutDigest = endpoint.targetLayoutDigest;
+  facts.securityProfile = endpoint.securityProfile;
+  const auto key = computeTensorRepresentationCommitment(facts);
   auto name = ndn_service_framework::makeProducerDataPrefix(
     ndn::Name(endpoint.producerNamespace), "NDNSF-DI", "tensor");
   if (!endpoint.namingStepId.empty()) {

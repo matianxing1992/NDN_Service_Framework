@@ -6174,6 +6174,55 @@ BOOST_AUTO_TEST_CASE(Spec194V4HonorsPreferredProviderAndDeviceReservations)
   BOOST_CHECK_NE(proposal.roles[0].deviceSet.front(), proposal.roles[1].deviceSet.front());
   BOOST_CHECK_NO_THROW(validateNativeRolePlacement(proposal, roles, input.offers, 200));
 }
+BOOST_AUTO_TEST_CASE(TensorRepresentationCommitsToSemanticsNotTransport)
+{
+  NativeTensorSemanticFacts facts;
+  facts.requestId = "/lab/request/5";
+  facts.attempt = 1;
+  facts.round = 2;
+  facts.index = 1;
+  facts.phase = "continuation";
+  facts.role = "S1R0";
+  facts.step = "mlp-7";
+  facts.layerBegin = 7;
+  facts.layerEnd = 14;
+  facts.port = "out";
+  facts.operation = "PARTIAL";
+  facts.rank = 1;
+  facts.microbatch = 0;
+  facts.tensorId = "partial";
+  facts.tensorDigest = "sha256:" + std::string(64, 'a');
+  facts.layoutDigest = "sha256:" + std::string(64, 'b');
+  facts.targetLayoutDigest = "sha256:" + std::string(64, 'c');
+  facts.securityProfile = "NDNSF_DATA_V1";
+  const auto base = computeTensorRepresentationCommitment(facts);
+  BOOST_CHECK_EQUAL(base.size(), 64U);
+
+  // Every semantic fact changes the commitment.
+  const std::vector<std::pair<std::string, std::function<void(NativeTensorSemanticFacts&)>>> mutations{
+    {"step", [](auto& f) { f.step = "mlp-8"; }},
+    {"port", [](auto& f) { f.port = "in"; }},
+    {"role", [](auto& f) { f.role = "S0R0"; }},
+    {"round", [](auto& f) { f.round = 3; }},
+    {"index", [](auto& f) { f.index = 2; }},
+    {"phase", [](auto& f) { f.phase = "prefill"; }},
+    {"layers", [](auto& f) { f.layerEnd = 15; }},
+    {"operation", [](auto& f) { f.operation = "ACTIVATION"; }},
+    {"rank", [](auto& f) { f.rank = 0; }},
+    {"batch", [](auto& f) { f.microbatch = 1; }},
+    {"tensor", [](auto& f) { f.tensorId = "other"; }},
+    {"tensor digest", [](auto& f) { f.tensorDigest = "sha256:" + std::string(64, 'd'); }},
+    {"layout", [](auto& f) { f.layoutDigest = "sha256:" + std::string(64, 'e'); }},
+    {"target layout", [](auto& f) { f.targetLayoutDigest = "sha256:" + std::string(64, 'f'); }},
+    {"profile", [](auto& f) { f.securityProfile = "OTHER"; }}};
+  for (const auto& mutation : mutations) {
+    auto changed = facts;
+    mutation.second(changed);
+    BOOST_CHECK_MESSAGE(computeTensorRepresentationCommitment(changed) != base,
+                        "commitment did not change for " + mutation.first);
+  }
+}
+
 BOOST_AUTO_TEST_CASE(TensorObjectNameUsesTheN5SchemaWhenCoordinatesAreSet)
 {
   NativeTensorEndpointV3 endpoint;
