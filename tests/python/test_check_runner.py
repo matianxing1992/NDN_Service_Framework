@@ -292,7 +292,7 @@ class CheckRunner(unittest.TestCase):
             self.assertEqual(checks.read_case_results(p), {'A/Same': 'failed', 'B/Same': 'skipped'})
 
     def invoke(self, outcome='passed', exit_code=0, timeout=False, omit=False, message='',
-               report=None, include=None, environment=None, observed=None):
+               report=None, include=None, environment=None, observed=None, assertions_passed=7):
         seen = []
         def process(argv, **kwargs):
             seen.append(argv)
@@ -302,9 +302,10 @@ class CheckRunner(unittest.TestCase):
                 raise subprocess.TimeoutExpired(argv, 1, output=b'Running 1 test case...')
             if not omit:
                 output = Path(next(x.split('=', 1)[1] for x in argv if x.startswith('--report_sink=')))
-                output.write_text('<TestResult><TestSuite name="module"><TestSuite name="Unit">'
-                                  '<TestCase name="Case" result="%s" assertions_failed="7"/>'
-                                  '</TestSuite></TestSuite></TestResult>' % outcome)
+                output.write_text(
+                    '<TestResult><TestSuite name="module"><TestSuite name="Unit">'
+                    '<TestCase name="Case" result="%s" assertions_passed="%d" assertions_failed="7"/>'
+                    '</TestSuite></TestSuite></TestResult>' % (outcome, assertions_passed))
             return Namespace(returncode=exit_code, stdout='Running 1 test case...' + message, stderr='')
         target = {'target': 'fixture', 'selector': {
             'include': include or ['*'], 'excludeSuites': ['Model']}}
@@ -319,6 +320,12 @@ class CheckRunner(unittest.TestCase):
                                        Namespace(report=report))[0]
         self.assertIn('--run_test=!Model', seen[-1])
         return result
+
+    def test_passed_case_with_no_assertions_is_not_a_pass(self):
+        result = self.invoke(assertions_passed=0)
+        self.assertFalse(result['passed'])
+        self.assertIn('NATIVE_ASSERTION_FREE_CASE', result['reportError'])
+        self.assertIn('Unit/Case', result['reportError'])
 
     def test_native_pass_requires_complete_case_report(self):
         result = self.invoke()

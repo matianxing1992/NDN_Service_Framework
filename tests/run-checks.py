@@ -459,6 +459,30 @@ def read_case_results(path):
     return results
 
 
+def read_case_assertions(path):
+    """Map each case to the number of assertions Boost recorded for it.
+
+    Boost reports an early-returning case as `result="passed"` with
+    `assertions_passed="0"`, which is how a prerequisite-gated case looks successful while executing
+    nothing. The count is in the same XML the runner already parses, so it is read here instead of
+    matching a log phrase that this report level does not emit.
+    """
+    root = ET.parse(path).getroot().find('TestSuite')
+    if root is None:
+        raise ValueError('NATIVE_RESULT_MODULE_MISSING')
+    counts = {}
+    def walk(node, parents=()):
+        if node.tag == 'TestCase':
+            name = '/'.join(parents + (node.attrib['name'],))
+            counts[name] = int(node.attrib.get('assertions_passed', '0'))
+        else:
+            parts = parents + (node.attrib['name'],) if parents or node is not root else ()
+            for child in node:
+                walk(child, parts)
+    walk(root)
+    return counts
+
+
 def check_assets(roster, selected, manifest_path, bindings=None):
     """Admit pinned SEALED assets and pass their exact files to native consumers."""
     missing = []
@@ -553,6 +577,15 @@ def run_target(binary, target, environ, timeout, arguments, listing=None):
         if re.search(r'\bdid not check any assertions\b', combined):
             report_error = ((report_error + '; ') if report_error else '') + \
                 'NATIVE_ASSERTION_FREE_CASE: selected native check has no assertions'
+        try:
+            assertion_counts = read_case_assertions(xml_path)
+        except (OSError, ET.ParseError, ValueError, KeyError):
+            assertion_counts = {}
+        empty = sorted(case for case in expected
+                       if actual.get(case) == 'passed' and assertion_counts.get(case, 0) < 1)
+        if empty:
+            report_error = ((report_error + '; ') if report_error else '') + \
+                'NATIVE_ASSERTION_FREE_CASE: ' + ', '.join(empty[:5])
         if arguments.report and xml_path.exists():
             xml_copy = str(Path(arguments.report).with_suffix('')) + '.' + run_name + '.xml'
             shutil.copyfile(xml_path, xml_copy)

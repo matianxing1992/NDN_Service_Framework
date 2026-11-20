@@ -360,7 +360,9 @@
               "Spec217ProviderOfferGpu/CudaMemoryUsesRuntimeUuidInsteadOfNvmlIndex",
               "Spec217ProviderOfferGpu/CudaMemoryRejectsVendorFailuresAndInvalidSizes",
               "Spec217ProviderOfferGpu/OwnedCudaQueryReadsFreshValuesAndDrainsItsSession",
-              "Spec217DeviceQuery"
+              "Spec217DeviceQuery",
+              "Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal",
+              "DiOnnxRuntimeGpuEvidence/PortableGraphProfileMatchesFrozenCudaRun"
             ],
             "note": "External-input TP cases belong to model. Fake-vendor query cases use a separate invocation with private test DSOs. All other synthetic tensor-parallel and provider-offer cases remain in this invocation."
           }
@@ -394,7 +396,8 @@
             "include": [
               "*"
             ],
-            "excludeSuites": ["DiProcess"]
+            "excludeSuites": ["DiProcess",
+                              "Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation"]
           }
         },
         {
@@ -438,6 +441,28 @@
         "facilities": ["display"],
         "selector": {"include": ["*"]}
       }]
+    },
+    "qualification": {
+      "description": "Explicit real-input qualification. These cases assert nothing unless their external inputs are supplied, so they are excluded from the default profiles and selected only here.",
+      "targets": [
+        {
+          "target": "unit-tests",
+          "requiresComponents": ["di"],
+          "selector": {
+            "include": [
+              "Spec190LiveTurns/ParentPipeReadsLiveEventsBeforeTerminal",
+              "DiOnnxRuntimeGpuEvidence/PortableGraphProfileMatchesFrozenCudaRun"
+            ]
+          }
+        },
+        {
+          "target": "integration-tests",
+          "requiresComponents": ["di"],
+          "selector": {
+            "include": ["Spec175NativeAssembly/DirectInt8CandidateAssemblyRunsOrtAndContinuation"]
+          }
+        }
+      ]
     },
     "model": {
       "description": "Cases that require an explicitly prepared model asset. Never selected by default.",
