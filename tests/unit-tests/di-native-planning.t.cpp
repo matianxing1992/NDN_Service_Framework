@@ -2605,6 +2605,55 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
   bias.kind = "add-conv-bias"; bias.node = "bias0";
   bias.bias = "b_conv"; bias.output = "conv_out";
   const auto derived = applyNativeOnnxSourceTransform(suffixModel, bias);
+
+  // The fused-export case: the suffix consumes the Conv output directly and
+  // carries no bias Add yet. Build that graph explicitly; the frozen fixture
+  // already spells its bias out, so deriving it from the same bytes would
+  // exercise the early-return path instead.
+  onnx::ModelProto fused;
+  fused.set_ir_version(8);
+  fused.add_opset_import()->set_version(17);
+  fused.mutable_graph()->set_name("fused-suffix");
+  {
+    auto* bias = fused.mutable_graph()->add_initializer();
+    bias->set_name("b_conv");
+    bias->set_data_type(onnx::TensorProto::FLOAT);
+    bias->add_dims(1); bias->add_dims(32); bias->add_dims(1); bias->add_dims(1);
+    for (int i = 0; i < 32; ++i) bias->add_float_data(0.25F);
+    auto* relu = fused.mutable_graph()->add_node();
+    relu->set_name("relu0"); relu->set_op_type("Relu");
+    relu->add_input("conv_out"); relu->add_output("features");
+    auto* head = fused.mutable_graph()->add_node();
+    head->set_name("head0"); head->set_op_type("Identity");
+    head->add_input("features"); head->add_output("predictions");
+    for (const auto& name : {std::string("conv_out"), std::string("predictions")}) {
+      auto* value = name == "conv_out" ? fused.mutable_graph()->add_input()
+                                       : fused.mutable_graph()->add_output();
+      value->set_name(name);
+      auto* tensor = value->mutable_type()->mutable_tensor_type();
+      tensor->set_elem_type(onnx::TensorProto::FLOAT);
+      for (const auto dim : {1, 32, 8, 8})
+        tensor->mutable_shape()->add_dim()->set_dim_value(dim);
+    }
+    onnx::checker::check_model(fused);
+  }
+  NativeOnnxSourceTransformV1 synthesized;
+  synthesized.kind = "add-conv-bias"; synthesized.node = "conv_out";
+  synthesized.bias = "b_conv"; synthesized.output = "conv_out";
+  const auto synthesizedGraph = applyNativeOnnxSourceTransform(fused, synthesized);
+  bool hasBiasAdd = false;
+  for (const auto& node : synthesizedGraph.graph().node())
+    if (node.op_type() == "Add" && node.input_size() == 2 &&
+        node.input(0) == "conv_out" && node.input(1) == "b_conv") hasBiasAdd = true;
+  BOOST_CHECK(hasBiasAdd);
+  const auto synthesizedOut = runOrt(synthesizedGraph,
+    {{"conv_out", partial}},
+    {{"conv_out", {1, 32, 8, 8}}}, "predictions");
+  double synthesizedError = 0.0;
+  for (std::size_t i = 0; i < synthesizedOut.size(); ++i)
+    synthesizedError = std::max(synthesizedError,
+      std::abs(double(synthesizedOut[i]) - std::max(0.0, double(partial[i]) + 0.25)));
+  BOOST_CHECK_SMALL(synthesizedError, 1e-5);
   const auto hybrid = runOrt(derived, {{"conv_out", partial}, {"residual", residual}},
     {{"conv_out", {1, 32, 8, 8}}, {"residual", {1, 32, 8, 8}}}, "predictions");
   double hybridError = 0.0;

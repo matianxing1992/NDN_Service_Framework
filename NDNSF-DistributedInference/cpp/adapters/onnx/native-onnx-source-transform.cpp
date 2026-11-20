@@ -1,5 +1,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 
+#include <onnx/checker.h>
+
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -226,15 +228,34 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
     add.add_input(transform.output);
     add.add_input(transform.bias);
     add.add_output(rewritten);
-    const auto consumerCount = graph->node_size();
-    graph->mutable_node()->Add()->CopyFrom(add);
-    for (int i = 0; i < consumerCount; ++i) {
-      auto* node = graph->mutable_node(i);
-      for (int input = 0; input < node->input_size(); ++input)
-        if (node->input(input) == transform.output) node->set_input(input, rewritten);
+    // Insert immediately before the first consumer so the derived graph stays
+    // topologically sorted; appending it last would place the producer after
+    // its readers and ONNX rejects the model.
+    std::vector<onnx::NodeProto> nodes;
+    nodes.reserve(graph->node_size() + 1);
+    bool inserted = false;
+    for (const auto& node : graph->node()) {
+      bool consumes = false;
+      for (int input = 0; input < node.input_size(); ++input)
+        if (node.input(input) == transform.output) consumes = true;
+      if (consumes && !inserted) {
+        nodes.push_back(add);
+        inserted = true;
+      }
+      auto copy = node;
+      for (int input = 0; input < copy.input_size(); ++input)
+        if (copy.input(input) == transform.output) copy.set_input(input, rewritten);
+      nodes.push_back(std::move(copy));
     }
+    if (!inserted) throw std::invalid_argument(
+      "source transform bias has no consumer to precede");
+    graph->clear_node();
+    for (auto& node : nodes) *graph->add_node() = std::move(node);
     for (auto& output : *graph->mutable_output())
       if (output.name() == transform.output) output.set_name(rewritten);
+    // Do not rename the source value_info: `transform.output` may be a graph
+    // input, in which case the synthesized Add still consumes that exact name.
+    onnx::checker::check_model(result);
     return result;
   }
 
