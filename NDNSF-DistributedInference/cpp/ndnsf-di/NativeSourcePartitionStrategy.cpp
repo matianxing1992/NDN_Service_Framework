@@ -377,6 +377,11 @@ NativeSourcePartitionStrategy::enumerateImpl(
       const std::string activation = m_profile.convInputTensor.empty()
         ? (graph.edges.empty() ? "activation" : graph.edges.front().id)
         : m_profile.convInputTensor;
+      // The cut tensor's real contract is the authority for the handoff port;
+      // an empty shape would make the entry binder reject the source boundary.
+      NativeTensorContract activationContract{"", m_profile.activationDtype, {}, {}};
+      for (const auto& edge : graph.edges)
+        if (edge.id == activation) { activationContract = edge.tensor; break; }
       const std::string prefixStep = m_profile.roles[0] + "/RUN";
       NativeExecutionStepSpec prefix;
       prefix.stepId = prefixStep;
@@ -386,15 +391,15 @@ NativeSourcePartitionStrategy::enumerateImpl(
       prefix.inputSlots.push_back(graph.modelInputs.empty()
         ? contractSlot(sourceInput, {"", m_profile.activationDtype, {}, {}}, "EPOCH_INPUT", "", "")
         : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT", "", ""));
-      prefix.outputSlots.push_back(contractSlot(activation,
-        {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", ""));
+      prefix.outputSlots.push_back(contractSlot(activation, activationContract,
+        "LOCAL_STEP", "", ""));
       NativeExecutionStepSpec suffix;
       suffix.stepId = m_profile.roles[1] + "/RUN";
       suffix.unitId = m_profile.roles[1];
       suffix.operation = "CALL_SUBGRAPH";
       suffix.artifactEntry = m_profile.roles[1] + "/artifact";
-      suffix.inputSlots.push_back(contractSlot(activation,
-        {"", m_profile.activationDtype, {}, {}}, "REMOTE_STEP", prefixStep, activation));
+      suffix.inputSlots.push_back(contractSlot(activation, activationContract,
+        "REMOTE_STEP", prefixStep, activation));
       suffix.outputSlots.push_back(graph.modelOutputs.empty()
         ? contractSlot(sourceOutput, {"", m_profile.activationDtype, {}, {}}, "LOCAL_STEP", "", "")
         : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP", "", ""));
@@ -443,7 +448,9 @@ NativeSourcePartitionStrategy::enumerateImpl(
     if (!contains(graph.legalCutEdges, edge.id))
       throw std::invalid_argument("source candidate crosses an illegal tensor edge");
     candidate.crossPartitionTensors.push_back(edge.id);
-    if (m_profile.mode == NativeSourcePartitionMode::HYBRID) continue;
+    // A V2 step plan binds dependencies to step ports explicitly; a plain
+    // graph-edge dependency has no step owner and the projection rejects it.
+    if (!candidate.executionPlan.steps.empty()) continue;
     for (const auto& consumerRole : consumerRoles) {
       NativeDependencySpec dependency;
       dependency.producers = {producerRole};
