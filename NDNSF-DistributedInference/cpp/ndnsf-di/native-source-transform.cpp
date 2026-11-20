@@ -37,6 +37,7 @@ NativeOnnxSourceTransformV1::canonicalJson() const
     value["begin"] = begin;
     value["end"] = end;
     value["extent"] = extent;
+    if (!bias.empty()) value["bias"] = bias;
     if (!pads.empty()) value["pads"] = pads;
     if (!strides.empty()) value["strides"] = strides;
     if (!dilations.empty()) value["dilations"] = dilations;

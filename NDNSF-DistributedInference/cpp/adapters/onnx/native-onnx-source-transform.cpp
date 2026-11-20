@@ -98,23 +98,6 @@ hasExternalInitializers(const onnx::ModelProto& model)
   return false;
 }
 
-void
-setInts(onnx::NodeProto& node, const char* name, const std::vector<std::int64_t>& values)
-{
-  for (int index = 0; index < node.attribute_size(); ++index) {
-    if (node.attribute(index).name() != name) continue;
-    auto* attribute = node.mutable_attribute(index);
-    attribute->Clear();
-    attribute->set_name(name);
-    attribute->set_type(onnx::AttributeProto::INTS);
-    for (const auto value : values) attribute->add_ints(value);
-    return;
-  }
-  auto* attribute = node.add_attribute();
-  attribute->set_name(name);
-  attribute->set_type(onnx::AttributeProto::INTS);
-  for (const auto value : values) attribute->add_ints(value);
-}
 
 } // namespace
 
@@ -134,6 +117,23 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
       throw std::invalid_argument("source transform Conv node is missing");
     if (conv->input_size() < 2 || conv->input(0) != transform.input)
       throw std::invalid_argument("source transform Conv input differs");
+    // The transform must describe this exact Conv: operand order is part of the
+    // source binding, not a catalog hint. A different weight or a dropped fused
+    // bias would compute a different function while looking plausible.
+    if (conv->input(1) != transform.weight)
+      throw std::invalid_argument("source transform weight is not the Conv operand");
+    if (!transform.bias.empty()) {
+      if (conv->input_size() < 3 || conv->input(2) != transform.bias)
+        throw std::invalid_argument("source transform bias is not the Conv operand");
+    }
+    else if (conv->input_size() > 2) {
+      throw std::invalid_argument("source transform drops an undeclared Conv bias");
+    }
+    int group = 1;
+    for (const auto& attribute : conv->attribute())
+      if (attribute.name() == "group") group = static_cast<int>(attribute.i());
+    if (group != 1)
+      throw std::invalid_argument("source transform requires group-1 Conv");
     if (conv->output_size() != 1 || conv->output(0) != transform.output)
       throw std::invalid_argument("source transform Conv output differs");
     auto* weight = findInitializer(result, transform.weight);
@@ -193,9 +193,30 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
       conv->add_input(sliceName);
       conv->add_input(transform.weight);
     }
-    if (!transform.pads.empty()) setInts(*conv, "pads", transform.pads);
-    if (!transform.strides.empty()) setInts(*conv, "strides", transform.strides);
-    if (!transform.dilations.empty()) setInts(*conv, "dilations", transform.dilations);
+    // Do not rewrite the source geometry: verify the declaration matches the
+    // Conv that will actually execute.
+    const auto verifyInts = [&] (const char* name, const std::vector<std::int64_t>& expected) {
+      if (expected.empty()) return;
+      // ONNX defaults apply when the attribute is absent: pads to zero, strides
+      // and dilations to one. Compare against the effective geometry.
+      std::vector<std::int64_t> actual;
+      bool present = false;
+      for (const auto& attribute : conv->attribute())
+        if (attribute.name() == name) {
+          actual.assign(attribute.ints().begin(), attribute.ints().end());
+          present = true;
+        }
+      if (!present) {
+        if (std::string(name) == "pads") actual.assign(expected.size(), 0);
+        else actual.assign(expected.size(), 1);
+      }
+      if (actual != expected)
+        throw std::invalid_argument(std::string("source transform ") + name +
+                                    " differs from the Conv attribute");
+    };
+    verifyInts("pads", transform.pads);
+    verifyInts("strides", transform.strides);
+    verifyInts("dilations", transform.dilations);
 
     // Slice the weight along the input-channel axis (axis 1) into rank bytes.
     weight = findInitializer(result, transform.weight);

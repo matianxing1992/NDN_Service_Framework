@@ -2708,4 +2708,31 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
   BOOST_CHECK_SMALL(hybridError, 1e-5);
 }
 
+BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformRejectsAnUnboundConv)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-single.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  std::string bytes((std::istreambuf_iterator<char>(file)), {});
+  onnx::ModelProto source;
+  BOOST_REQUIRE(source.ParseFromArray(bytes.data(), static_cast<int>(bytes.size())));
+  NativeOnnxSourceTransformV1 rank;
+  rank.kind = "conv-input-channel-partial";
+  rank.node = "conv0"; rank.axis = "input-channel";
+  rank.input = "scaled"; rank.weight = "w_conv"; rank.output = "conv_out";
+  rank.bias = "b_conv";
+  rank.begin = 0; rank.end = 8; rank.extent = 16;
+  rank.pads = {1, 1, 1, 1}; rank.strides = {1, 1}; rank.dilations = {1, 1};
+  BOOST_CHECK_NO_THROW(applyNativeOnnxSourceTransform(source, rank));
+  auto wrongWeight = rank; wrongWeight.weight = "other_weight";
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongWeight),
+                    std::invalid_argument);
+  auto droppedBias = rank; droppedBias.bias.clear();
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, droppedBias),
+                    std::invalid_argument);
+  auto wrongStride = rank; wrongStride.strides = {2, 2};
+  BOOST_CHECK_THROW(applyNativeOnnxSourceTransform(source, wrongStride),
+                    std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

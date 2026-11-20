@@ -213,6 +213,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
       value.input = m_profile.convInputTensor;
       value.weight = m_profile.convWeightInitializer;
       value.output = m_profile.convOutputTensor;
+      value.bias = m_profile.convBiasInitializer;
       value.begin = begin;
       value.end = end;
       value.extent = m_profile.inputChannels;
