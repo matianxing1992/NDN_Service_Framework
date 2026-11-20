@@ -65,8 +65,11 @@ main(int argc, char** argv)
                  " producer, service, ck, payload, policy, identity\n";
     return 2;
   }
+  // `--prime` performs only the permission exchange and exits: the grant record has to exist before the rotation
+  // retires the version it is written under, and only the caller of the exchange can decide when that is.
+  const bool primeOnly = std::string(argv[1]) == "--prime";
   int failures = 0;
-  for (int index = 1; index < argc; ++index) {
+  for (int index = primeOnly ? 2 : 1; index < argc; ++index) {
   try {
     const std::string text = readFile(argv[index]);
     const std::string pib = field(text, "pib");
@@ -88,6 +91,16 @@ main(int argc, char** argv)
     const auto controllerCertificate =
       loadCertificate(field(text, "controller_pib"), field(text, "controller"));
     request.recipientCertificate = loadCertificate(pib, field(text, "identity"));
+    if (primeOnly) {
+      const bool primed = ndn_service_framework::primePermissions(
+        face, keyChain, request.controllerPrefix, ndn::Name(field(text, "identity")),
+        request.recipientCertificate, 10000);
+      std::cout << (primed ? "HISTORICAL_PRIME_OK" : "HISTORICAL_PRIME_FAILED")
+                << " config=" << argv[index] << std::endl;
+      if (!primed)
+        ++failures;
+      continue;
+    }
     request.controllerCertificate = controllerCertificate;
 
     const auto parameters = ndn_service_framework::fetchHistoricalPublicParameters(
