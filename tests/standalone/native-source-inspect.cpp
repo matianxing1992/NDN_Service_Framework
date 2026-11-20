@@ -16,21 +16,38 @@
 int
 main(int argc, char** argv)
 {
-  const bool catalogMode = argc == 4 && std::string(argv[1]) == "--catalog";
+  const bool catalogMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--catalog";
   const bool initializerMode = argc == 4 && std::string(argv[1]) == "--initializer";
   const bool planningMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--planning";
-  if (argc != 2 && !catalogMode && !initializerMode && !planningMode) {
+  const bool convMode = (argc == 4 || argc == 5) && std::string(argv[1]) == "--conv";
+  if (argc != 2 && !catalogMode && !initializerMode && !planningMode && !convMode) {
     std::cerr << "usage: native-source-inspect model.onnx | "
                  "--catalog catalog.json model.onnx" << std::endl;
     return 2;
   }
   try {
-    const char* modelPath = (catalogMode || initializerMode || planningMode) ? argv[3] : argv[1];
+    const char* modelPath = (catalogMode || initializerMode || planningMode || convMode) ? argv[3] : argv[1];
     std::ifstream input(modelPath, std::ios::binary);
     if (!input) throw std::runtime_error("cannot open the model file");
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(input), {}};
     ndnsf::di::NativeCanonicalSource source;
     source.modelBytes = bytes;
+    if (convMode) {
+      if (argc == 5) {
+        std::ifstream weights(argv[4], std::ios::binary);
+        if (!weights) throw std::runtime_error("cannot open the initializer file");
+        source.initializerBytes = ndnsf::di::NativeCanonicalByteBuffer{
+          std::vector<std::uint8_t>{std::istreambuf_iterator<char>(weights), {}}};
+      }
+      // Reuse the protected-source parser so facts come from the same bytes the
+      // planner will inspect, including external initializers.
+      const auto control = ndnsf::di::NativeAssemblyControl{
+        std::chrono::steady_clock::now() + std::chrono::seconds(60), [] {}, 1 << 28, 1 << 28};
+      const auto index = static_cast<std::size_t>(std::stoul(argv[2]));
+      const auto facts = ndnsf::di::inspectOnnxNodeFacts(source, index, control);
+      std::cout << facts << std::endl;
+      return 0;
+    }
     if (planningMode) {
       if (argc == 5) {
         std::ifstream weights(argv[4], std::ios::binary);
@@ -76,6 +93,12 @@ main(int argc, char** argv)
       return 0;
     }
     if (catalogMode) {
+      if (argc == 5) {
+        std::ifstream weights(argv[4], std::ios::binary);
+        if (!weights) throw std::runtime_error("cannot open the initializer file");
+        source.initializerBytes = ndnsf::di::NativeCanonicalByteBuffer{
+          std::vector<std::uint8_t>{std::istreambuf_iterator<char>(weights), {}}};
+      }
       std::ifstream catalogStream(argv[2]);
       if (!catalogStream) throw std::runtime_error("cannot open the catalog");
       const std::string catalogJson{std::istreambuf_iterator<char>(catalogStream), {}};

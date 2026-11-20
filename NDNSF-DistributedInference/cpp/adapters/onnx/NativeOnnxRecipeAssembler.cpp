@@ -5135,6 +5135,38 @@ inspectNativeOnnxPlanningGraph(const NativeCanonicalSource& source,
   return result;
 }
 
+std::string
+inspectOnnxNodeFacts(const NativeCanonicalSource& source, std::size_t nodeIndex,
+                     const NativeAssemblyControl& control)
+{
+  const auto model = ownedSourceModel(source, control, false);
+  if (!model.has_graph() || nodeIndex >= static_cast<std::size_t>(model.graph().node_size()))
+    throw std::invalid_argument("source node index is outside the graph");
+  const auto& node = model.graph().node(static_cast<int>(nodeIndex));
+  auto attributes = NativeJson::array();
+  for (const auto& attribute : node.attribute()) {
+    NativeJson entry{{"name", attribute.name()}, {"type", attribute.type()}};
+    if (attribute.ints_size() != 0)
+      entry["ints"] = std::vector<std::int64_t>(attribute.ints().begin(), attribute.ints().end());
+    else if (attribute.type() == onnx::AttributeProto::INT)
+      entry["int"] = attribute.i();
+    attributes.push_back(std::move(entry));
+  }
+  auto dims = NativeJson::array();
+  if (node.input_size() > 1) {
+    for (const auto& initializer : model.graph().initializer())
+      if (initializer.name() == node.input(1))
+        for (const auto dim : initializer.dims()) dims.push_back(dim);
+  }
+  auto inputs = NativeJson::array();
+  for (const auto& name : node.input()) inputs.push_back(name);
+  auto outputs = NativeJson::array();
+  for (const auto& name : node.output()) outputs.push_back(name);
+  return nativeCanonicalJson(NativeJson{{"index", nodeIndex}, {"op", node.op_type()},
+    {"name", node.name()}, {"inputs", std::move(inputs)}, {"outputs", std::move(outputs)},
+    {"attributes", std::move(attributes)}, {"weight_dims", std::move(dims)}});
+}
+
 std::uint32_t
 onnxInitializerNormalizationRevision(const NativeCanonicalSource& source,
                                      const NativeAssemblyControl& control)
