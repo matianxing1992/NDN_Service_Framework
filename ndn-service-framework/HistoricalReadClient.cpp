@@ -429,6 +429,11 @@ primePermissions(ndn::Face& face, ndn::KeyChain& keyChain, const ndn::Name& cont
   ndn::Interest interest(makeControlRpcName(controllerPrefix, "USER-PERMISSIONS", parameters,
                                             makeControlQueryNonce()));
   try {
+    // The parameters travel in the ApplicationParameters, not only in the name: the Controller decodes them from
+    // there, so a query that carries them only in its name is answered by nothing.
+    interest.setApplicationParameters(parameters);
+    interest.setCanBePrefix(false);
+    interest.setMustBeFresh(true);
     interest.setInterestLifetime(ndn::time::milliseconds(timeoutMs));
     ndn::security::InterestSigner signer(keyChain);
     signer.makeSignedInterest(interest, ndn::security::signingByCertificate(requesterCertificate));
