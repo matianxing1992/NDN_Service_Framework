@@ -4595,6 +4595,11 @@ roleSpecFromSelectionProjectionV3Impl(
     edge.operationKind = endpoint.operation;
     edge.round = endpoint.round;
     edge.namingOperationStride = endpoint.namingOperationStride;
+    edge.namingPhase = endpoint.namingPhase;
+    edge.namingStepId = endpoint.namingStepId;
+    edge.namingLayerBegin = endpoint.namingLayerBegin;
+    edge.namingLayerEnd = endpoint.namingLayerEnd;
+    edge.namingPortId = endpoint.namingPortId;
     edge.microbatch = endpoint.microbatch;
     edge.noProgressDeadlineMs = endpoint.noProgressDeadlineMs;
     edge.hardDeadlineMs = endpoint.hardDeadlineMs;

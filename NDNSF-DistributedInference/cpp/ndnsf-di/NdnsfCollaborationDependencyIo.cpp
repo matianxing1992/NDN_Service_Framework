@@ -273,8 +273,10 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
     throw std::invalid_argument("C04 tensor reference is incomplete");
   const ndn::Name base(edge.plannedDataName);
   const auto parsed = parseProducerDataName(base, ndn::Name(member.provider));
+  const bool n5 = parsed && !parsed->suffix.empty() &&
+    parsed->suffix.get(0) == ndn::name::Component("request");
   if (!parsed || parsed->nameSpace != "NDNSF-DI" || parsed->category != "tensor" ||
-      parsed->suffix.size() != 18 ||
+      (!n5 && parsed->suffix.size() != 18) ||
       ndn::Name(edge.manifestDataName) != ndn::Name(base).append("MANIFEST"))
     throw std::invalid_argument("C04 tensor reference category or Producer mismatch");
   const auto endpoint = makeNamingDigestComponent(edge.endpointDigest.substr(7));
@@ -286,6 +288,47 @@ validateTensorReference(const DependencyEdge& edge, const GroupMemberV1& member)
   const auto round = stride == 0 ? 0 : edge.round / stride;
   const auto index = stride == 0 ? edge.round : edge.round % stride;
   const auto& suffix = parsed->suffix;
+  if (n5) {
+    // N5 fixed schema: request/<R>/attempt/<A>/round/<Round>/phase/<P>/role/<Role>/step/<Step>
+    //   /layers/<L0>/<L1>/op/<Op>/rank/<Rank>/batch/<M>/port/<Port>/rep/<RepresentationId>
+    const std::vector<std::string> markers{"request", "attempt", "round", "phase", "role", "step"};
+    if (suffix.size() != 25)
+      throw std::invalid_argument("C04 N5 tensor reference field count mismatch");
+    for (std::size_t index = 0; index < markers.size(); ++index)
+      if (suffix.get(index * 2) != ndn::name::Component(markers[index]))
+        throw std::invalid_argument("C04 N5 tensor reference field order mismatch");
+    if (suffix.get(1) != ndn::name::Component(edge.requestId) ||
+        suffix.get(3) != makeNamingDecimalComponent(edge.attemptEpoch) ||
+        suffix.get(5) != makeNamingDecimalComponent(round) ||
+        suffix.get(7) != ndn::name::Component(edge.namingPhase) ||
+        suffix.get(9) != ndn::name::Component(edge.producerRole) ||
+        suffix.get(11) != ndn::name::Component(edge.namingStepId) ||
+        suffix.get(12) != ndn::name::Component("layers"))
+      throw std::invalid_argument("C04 N5 tensor reference readable fields mismatch");
+    if (edge.namingLayerEnd == 0) {
+      if (suffix.get(13) != ndn::name::Component("none") ||
+          suffix.get(14) != ndn::name::Component("none"))
+        throw std::invalid_argument("C04 N5 tensor reference layer interval mismatch");
+    }
+    else if (suffix.get(13) != makeNamingDecimalComponent(edge.namingLayerBegin) ||
+             suffix.get(14) != makeNamingDecimalComponent(edge.namingLayerEnd)) {
+      throw std::invalid_argument("C04 N5 tensor reference layer interval mismatch");
+    }
+    if (suffix.get(15) != ndn::name::Component("op") ||
+        suffix.get(16) != ndn::name::Component(ndn::tlv::GenericNameComponent,
+          edge.operationKind.begin(), edge.operationKind.end()) ||
+        suffix.get(17) != ndn::name::Component("rank") ||
+        suffix.get(18) != makeNamingDecimalComponent(member.rank) ||
+        suffix.get(19) != ndn::name::Component("batch") ||
+        suffix.get(20) != makeNamingDecimalComponent(edge.microbatch) ||
+        suffix.get(21) != ndn::name::Component("port") ||
+        suffix.get(22) != ndn::name::Component(edge.namingPortId) ||
+        suffix.get(23) != ndn::name::Component("rep") ||
+        suffix.get(24) != makeNamingDigestComponent(key))
+      throw std::invalid_argument("C04 N5 tensor reference commitment mismatch");
+    checkNamingNameSize(base);
+    return;
+  }
   const char* markers[] = {"REQUEST", "ATTEMPT", "ROUND", "POSITION",
                           "OP", "INDEX", "RANK", "BATCH"};
   for (std::size_t i = 0; i < 8; ++i)

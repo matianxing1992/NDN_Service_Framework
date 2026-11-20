@@ -139,6 +139,13 @@ struct DependencyEdge
   std::string producerSlotId;
   std::string consumerStepId;
   std::string consumerSlotId;
+  // N5 naming coordinates copied from the sealed endpoint. Empty means the endpoint was produced before the row
+  // existed and the edge keeps the legacy name schema.
+  std::string namingPhase;
+  std::string namingStepId;
+  std::uint64_t namingLayerBegin = 0;
+  std::uint64_t namingLayerEnd = 0;
+  std::string namingPortId;
 };
 
 /** Fail closed unless a dependency bundle is complete for its sealed edge.
