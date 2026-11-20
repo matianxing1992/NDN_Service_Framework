@@ -23,7 +23,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 TOPOLOGY = ROOT / "Experiments/Topology/spec261-hybrid.conf"
-DRIVER = ROOT / "tests/standalone/run-spec261-twoprovider-process.py"
+DRIVER = ROOT / "tests/standalone/run-spec261-yolo-twoprovider-process.py"
 ROLE_NODE = {
     "requester": "requester",
     "provider": "provider",
@@ -153,12 +153,29 @@ def main() -> int:
         # Static reachability for the shared /example/hello namespace: every
         # node gets a route through each of its links. The small topology has no
         # NLSR, and a single missing route would look like a protocol failure.
+        def peer_ip(node, other):
+            for intf in node.intfList():
+                link = intf.link
+                if link is None:
+                    continue
+                a, b = link.intf1, link.intf2
+                peer = b if a is intf else a
+                if peer.node is other:
+                    return str(peer.ip)
+            return None
+
         hosts = list(ndn.net.hosts)
         for node in hosts:
+            node.cmd("nfdc strategy set /example/hello /localhost/nfd/strategy/multicast")
             for other in hosts:
                 if other is node:
                     continue
-                face = Nfdc.createFace(node, other.IP())
+                address = peer_ip(node, other)
+                if address is None:
+                    # Not a direct neighbor: reachability comes from the
+                    # neighbors' own faces and the multicast strategy.
+                    continue
+                face = Nfdc.createFace(node, address)
                 if str(face) == "-1":
                     raise RuntimeError("cannot create a face from " + node.name +
                                        " to " + other.name)
