@@ -4060,10 +4060,21 @@ void validateNativeAssembly(const NativeSelectionRoleV3& role)
       throw std::invalid_argument("role source transform is invalid");
   }
   if (!role.tensorShardV1.empty()) {
-    if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
-        role.tensorParallelRank >= role.tensorParallelDegree ||
-        !role.automaticContractDigest.empty())
-      throw std::invalid_argument("tensor_shard_v1 requires a source-bound Qwen rank");
+    // A source-transformed ONNX rank carries its own channel-slice geometry in
+    // the same audit field the Qwen shard uses; its authority is the admitted
+    // source_transform_v1, not the Qwen adapter contract.
+    const bool transformedSourceRank = !role.sourceTransformV1.empty() &&
+      role.adapterId != "qwen";
+    if (!transformedSourceRank) {
+      if (role.adapterId != "qwen" || role.tensorParallelDegree < 2 ||
+          role.tensorParallelRank >= role.tensorParallelDegree ||
+          !role.automaticContractDigest.empty())
+        throw std::invalid_argument("tensor_shard_v1 requires a source-bound Qwen rank");
+    }
+    else if (role.tensorParallelDegree < 2 ||
+             role.tensorParallelRank >= role.tensorParallelDegree) {
+      throw std::invalid_argument("transformed source rank geometry is incomplete");
+    }
     (void)parseNativeTensorShardV1(role.tensorShardV1);
   }
   // Authenticate the equal-Qwen case too. Otherwise removing both the shard

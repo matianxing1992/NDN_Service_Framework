@@ -19,6 +19,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/native-onnx-source-transform.hpp"
 #include <onnxruntime_cxx_api.h>
 #include <onnx/checker.h>
@@ -2409,6 +2410,11 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
     std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
   const auto roles = loaded.preparation->prepareRoles(loaded.model, candidates.front(), requestControl);
   BOOST_REQUIRE_EQUAL(roles.size(), 4U);
+  for (const auto& role : roles) {
+    BOOST_TEST_CONTEXT(role.selectedRole) {
+      BOOST_CHECK_NO_THROW(validateNativeAssembly(role));
+    }
+  }
   std::size_t transformed = 0;
   for (const auto& role : roles)
     if (!role.sourceTransformV1.empty()) ++transformed;

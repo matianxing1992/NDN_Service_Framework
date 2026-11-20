@@ -1367,7 +1367,10 @@ main(int argc, char** argv)
       config.capabilities = {NATIVE_STEP_PLAN_CAPABILITY_V1, NATIVE_STEP_PLAN_CAPABILITY_V2,
                              NATIVE_SUM_CAPABILITY_V1, NATIVE_TENSOR_SHARD_CAPABILITY_V1,
                              NATIVE_SHARED_TP_PARTIAL_CAPABILITY_V1,
-                             NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1};
+                             NATIVE_RECEIVING_STAGE_SUM_CAPABILITY_V1,
+                             // The worker lowers an admitted ONNX source transform
+                             // into the derived role graph it executes.
+                             NATIVE_SOURCE_TRANSFORM_CAPABILITY_V1};
       config.signDigest = std::move(signer.sign);
       nativeOfferConfig = std::move(config);
       {
