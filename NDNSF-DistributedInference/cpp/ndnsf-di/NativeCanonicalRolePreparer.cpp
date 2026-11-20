@@ -200,6 +200,7 @@ NativeCanonicalRolePreparer::sourceRegion(const std::vector<std::string>& nodeId
   if (additionalOutputs.size() > metadata.at("tensors").size())
     throw std::invalid_argument("native source region exceeds its output tensor bound");
   auto result = sourceBoundary(m_sourceGraph, metadata, owned, additionalOutputs, control);
+
   const auto ports = [&control] (const auto& contracts) {
     auto values = NativeJson::object();
     for (const auto& [name, contract] : contracts) {

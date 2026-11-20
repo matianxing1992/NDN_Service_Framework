@@ -639,9 +639,7 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     const auto& stageRoles = split.at("roles");
     const bool hybridLayout =
       stageRoles.size() > 1 || layerRanges.size() > 1 || degrees.size() > 1;
-    // Weighted plans (single-stage pure TP included) lower through the
-    // source-bound path so the declared rank weights decide the shard ranges.
-    if (hybridLayout || !rankWeights.empty()) {
+    if (hybridLayout) {
       const auto totalLayers = layerRanges.back().at(1).get<std::uint64_t>();
       const auto hybridShape = hybridColdShape ? *hybridColdShape
         : qwen::deriveQwenTpShapeFromGraphMetadata(planningGraphMetadata, totalLayers);
