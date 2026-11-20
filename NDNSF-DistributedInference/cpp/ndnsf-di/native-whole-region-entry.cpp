@@ -20,8 +20,9 @@ bindNativeWholeRegionEntry(const NativeSelectionProjectionV3& projection,
   const auto& plan = projection.plan;
   const auto& role = projection.assemblyContract();
   if (plan.stepPlanVersion != NATIVE_STEP_PLAN_VERSION_V2 ||
-      (role.adapterId == "qwen" && role.tensorParallelDegree != 0))
+      (role.adapterId == "qwen" && role.tensorParallelDegree != 0)) {
     return false;
+  }
   const NativeStageLayout* owner = nullptr;
   std::size_t rank = 0;
   for (const auto& stage : plan.stageLayout) {
@@ -32,11 +33,18 @@ bindNativeWholeRegionEntry(const NativeSelectionProjectionV3& projection,
     owner = &stage;
     rank = static_cast<std::size_t>(std::distance(stage.unitRoleIds.begin(), member));
   }
+  // A generic source rank is a member of a degree-N stage whose role kind is
+  // HYBRID_RANK; it is the same component-set position for entry binding as a
+  // Qwen sharded rank. Its authority is the admitted source transform.
+  const bool sourceRank = role.roleKind == "HYBRID_RANK" ||
+                          role.roleKind == "TENSOR_RANK";
   if (owner == nullptr ||
       (owner->degree() == 1 &&
         (role.tensorParallelDegree != 0 || role.tensorParallelRank != 0)) ||
-      (owner->degree() > 1 && (role.roleKind != "COMPONENT_SET" ||
-        role.tensorParallelDegree != owner->degree() || role.tensorParallelRank != rank)))
+      (owner->degree() > 1 &&
+        ((role.roleKind != "COMPONENT_SET" && !sourceRank) ||
+         role.tensorParallelDegree != owner->degree() ||
+         role.tensorParallelRank != rank)))
     return false;
   const NativeExecutionStepSpec* call = nullptr;
   for (const auto& step : plan.steps) {
@@ -44,8 +52,7 @@ bindNativeWholeRegionEntry(const NativeSelectionProjectionV3& projection,
     if (step.operation != "CALL_SUBGRAPH" || call != nullptr) return false;
     call = &step;
   }
-  if (call == nullptr)
-    return false;
+  if (call == nullptr) return false;
   const auto& step = *call;
   NativeSubgraphEntryContract entry;
   entry.entryId = step.artifactEntry;
