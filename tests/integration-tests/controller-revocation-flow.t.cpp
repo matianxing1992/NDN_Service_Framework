@@ -4206,6 +4206,83 @@ BOOST_AUTO_TEST_CASE(GrantOnlyRefreshSurvivesReverseOrderStatusFirstInstall)
   std::filesystem::remove(statePath.string() + ".lock");
 }
 
+/** The commit boundary across a restart: a revocation whose rotation failed is durable, so the next controller
+ *  must recover by completing the rotation - not by advertising an epoch whose material never existed, and not by
+ *  rejecting its own stored material. */
+BOOST_AUTO_TEST_CASE(PersistedRotationFailureRecoversInANewController)
+{
+  const auto statePath = std::filesystem::temp_directory_path() /
+                         ("ndnsf-controller-recover-" + std::to_string(::getpid()) + ".bin");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+  ::setenv("NDNSF_CONTROLLER_GENERATION_STATE", statePath.c_str(), 1);
+
+  ndn::KeyChain controllerKeys;
+  const auto identity = controllerKeys.createIdentity(
+      ndn::Name("/controller/spec243-recover"), ndn::RsaKeyParams(2048));
+  const auto certificate = identity.getDefaultKey().getDefaultCertificate();
+  const auto policies = ndnsf::test::testFixturePath("controller-policies.conf").string();
+
+  ndn::Name paramsNameBefore;
+  std::string paramsDigestBefore;
+  {
+    ndn::DummyClientFace face(controllerKeys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController controller(face, certificate, validator, policies);
+    ServiceControllerTestAccess::ensureInternalControllerSigner(controller);
+    ServiceControllerTestAccess::ensureInternalIdentity(controller,
+      ndn::Name("/spec179/rotate-fail/user"));
+    paramsNameBefore = ServiceControllerTestAccess::abePublicParametersName(controller);
+    paramsDigestBefore = ServiceControllerTestAccess::abePublicParametersDigest(controller);
+
+    // The revocation is accepted and made durable, then the rotation behind it fails.
+    ::setenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE", "1", 1);
+    BOOST_CHECK(!controller.revoke(makeServiceRevocation("/spec179/rotate-fail/user")));
+    ::unsetenv("NDNSF_CONTROLLER_FAULT_INJECT_ABE_ROTATE");
+
+    // Fail-closed: the status still describes the material that exists, never the advanced epoch.
+    const auto status = controller.getPolicyStatus(ndn::Name(SERVICE));
+    BOOST_REQUIRE_EQUAL(status.getRevocations().size(), 1U);
+    BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersName(controller),
+                      paramsNameBefore);
+    BOOST_CHECK_EQUAL(ServiceControllerTestAccess::abePublicParametersDigest(controller),
+                      paramsDigestBefore);
+  }
+
+  {
+    ndn::DummyClientFace face(controllerKeys);
+    ndn::ValidatorConfig validator(face);
+    ServiceController recovered(face, certificate, validator, policies);
+    // Starting is the first assertion: the stored material belongs to the same identity and must not be
+    // rejected as a changed signing key.
+    const auto status = recovered.getPolicyStatus(ndn::Name(SERVICE));
+    BOOST_REQUIRE_EQUAL(status.getRevocations().size(), 1U);
+
+    // Recovery completed the rotation, so the parameters are no longer the ones the failed controller served.
+    const auto paramsNameAfter = ServiceControllerTestAccess::abePublicParametersName(recovered);
+    const auto paramsDigestAfter = ServiceControllerTestAccess::abePublicParametersDigest(recovered);
+    BOOST_CHECK(paramsNameAfter != paramsNameBefore || paramsDigestAfter != paramsDigestBefore);
+
+    // The retired generation stayed readable: the store records why it was archived.
+    std::ifstream state(statePath, std::ios::binary);
+    const std::string bytes{std::istreambuf_iterator<char>(state),
+                            std::istreambuf_iterator<char>()};
+    BOOST_CHECK(bytes.find("revocation-rotation") != std::string::npos);
+
+    // The same revocation is now a duplicate and must stay a no-op: recovery already finished the work.
+    BOOST_CHECK(!recovered.revoke(makeServiceRevocation("/spec179/rotate-fail/user")));
+    BOOST_CHECK_EQUAL(recovered.getPolicyStatus(ndn::Name(SERVICE)).getRevocations().size(), 1U);
+    // New work is accepted under the rotated generation.
+    ServiceControllerTestAccess::ensureInternalIdentity(recovered,
+      ndn::Name("/spec179/rotate-fail/second-provider"));
+    BOOST_CHECK(recovered.revoke(makeServiceRevocation("/spec179/rotate-fail/second-provider")));
+  }
+
+  ::unsetenv("NDNSF_CONTROLLER_GENERATION_STATE");
+  std::filesystem::remove(statePath);
+  std::filesystem::remove(statePath.string() + ".lock");
+}
+
 BOOST_AUTO_TEST_CASE(ControllerRevokeRotationFailureRecordsPendingAndReconciles)
 {
   // RV-U24 (R1, 2026-09-05): a revocation whose ABE rotation throws still
