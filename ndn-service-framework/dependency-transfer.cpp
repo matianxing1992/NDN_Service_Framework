@@ -806,6 +806,7 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
             indexBytes = packet.wireEncode().size();
             manifest = ProtectedBlobManifest::decode(ndn::Buffer(packet.getContent().value_begin(),
               packet.getContent().value_end()), input.object.producerName, input.object.name);
+            manifest->validateSigner(packet);
             if (manifest->segmentCount >= input.maxPackets || manifest->envelopeBytes > input.maxBytes ||
                 manifest->plaintextBytes > input.maxBytes || indexBytes >= input.maxBytes)
               throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
@@ -861,6 +862,8 @@ InputAdmissionOperation ServiceProvider::CollaborationContext::startInputAdmissi
                 (manifest && packet->getContent().value_size() != std::min<uint64_t>(manifest->segmentBytes,
                   manifest->envelopeBytes - segment * manifest->segmentBytes)))
               throw std::runtime_error("INPUT_PACKET_PLAN_INVALID");
+            if (manifest)
+              manifest->validateSigner(*packet);
             encodedBytes += packet->getContent().value_size();
           }
           if (manifest && encodedBytes != manifest->envelopeBytes)

@@ -83,7 +83,7 @@ bool roleAllowed(ContentDataKind kind, ContentSemanticRole role)
 /** Every N4 coordinate fact is an atom or the explicit word that stands for a missing fact. */
 void requireCoordinate(const std::string& value, const char* field)
 {
-  if (!atom(value))
+  if (value.size() > 64 || !atom(value))
     throw std::invalid_argument(std::string("invalid semantic coordinate: ") + field);
 }
 
@@ -104,8 +104,8 @@ bool roleNeedsLabel(ContentSemanticRole role)
 
 void validateSemanticCoordinates(const PublishedContentName& value)
 {
-  if (roleNeedsLabel(value.semanticRole) && value.label.empty())
-    throw std::invalid_argument("semantic role requires a label");
+  if (roleNeedsLabel(value.semanticRole) && (value.label.empty() || value.label.size() > 64))
+    throw std::invalid_argument("semantic role requires a label of 1 to 64 bytes");
   if (!roleAllowed(value.kind, value.semanticRole))
     throw std::invalid_argument("semantic role does not belong to this content kind");
   const bool model = isModelCoordinateKind(value.kind);
@@ -128,8 +128,15 @@ void validateSemanticCoordinates(const PublishedContentName& value)
     value.semanticRole == ContentSemanticRole::ArtifactManifest;
   if (!artifact && !value.profileLabel.empty())
     throw std::invalid_argument("profile label on a non-artifact object");
-  if (artifact)
+  if (artifact) {
     requireCoordinate(value.profileLabel, "profileLabel");
+    requireCoordinate(value.artifactEntry, "artifactEntry");
+    if (value.partition.kind == ArtifactPartitionKind::None)
+      throw std::invalid_argument("artifact role requires a partition coordinate");
+  }
+  else if (!value.artifactEntry.empty() || value.partition.kind != ArtifactPartitionKind::None) {
+    throw std::invalid_argument("artifact coordinate on a non-artifact object");
+  }
   const bool capsule = value.semanticRole == ContentSemanticRole::AuthorizationManifest ||
     value.semanticRole == ContentSemanticRole::CanonicalCapsule ||
     value.semanticRole == ContentSemanticRole::StoredCapsule;
@@ -382,6 +389,13 @@ PublishedContentName::objectIdentity() const
     fields.push_back({10, 2, raw(bundleIndex ? std::to_string(*bundleIndex) : std::string())});
     fields.push_back({11, 2, raw(profileLabel)});
     fields.push_back({12, 2, raw(useId)});
+    if (!artifactEntry.empty())
+      fields.push_back({13, 2, raw(artifactEntry)});
+    const auto canonicalPartition = partitionJson();
+    if (!canonicalPartition.empty())
+      fields.push_back({14, 5, raw(canonicalPartition)});
+    if (pageNumber)
+      fields.push_back({15, 2, raw(std::to_string(*pageNumber))});
   }
   return computeNamingDigest("ndnsf-naming/semantic-object", fields);
 }
@@ -466,10 +480,6 @@ PublishedContentName::semanticStem(const ndn::Name& producer) const
     case ContentSemanticRole::ArtifactManifest: {
       // <ArtifactStem> = <Producer>/NDNSF-DI/artifact/<ModelPath>/<PartitionCoordinate>/entry/<Entry>
       //                 /profile/<ProfileLabel>
-      if (partition.kind == ArtifactPartitionKind::None)
-        throw std::invalid_argument("artifact role requires a partition coordinate");
-      if (artifactEntry.empty() || !atom(artifactEntry))
-        throw std::invalid_argument("artifact role requires an entry label");
       validatePartition(partition);
       push("NDNSF-DI"); push("artifact"); pushPath();
       switch (partition.kind) {
@@ -506,10 +516,13 @@ PublishedContentName::semanticStem(const ndn::Name& producer) const
           throw std::invalid_argument("artifact role requires a partition coordinate");
       }
       push("entry"); push(artifactEntry); push("profile"); push(profileLabel);
-      if (semanticRole == ContentSemanticRole::ArtifactManifest)
+      if (semanticRole == ContentSemanticRole::ArtifactManifest) {
         push("manifest");
-      else
-        push("file"); pushComponent(makeNamingLabelComponent(label));
+      }
+      else {
+        push("file");
+        pushComponent(makeNamingLabelComponent(label));
+      }
       break;
     }
     case ContentSemanticRole::ManifestPage:

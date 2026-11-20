@@ -2658,7 +2658,8 @@ namespace ndn_service_framework
                                     const std::string& publicationIdentity,
                                     ndn::time::milliseconds freshness,
                                     std::size_t segmentBytes,
-                                    const PublishedContentName& contentName)
+                                    const PublishedContentName& contentName,
+                                    const ndn::Name& signerCertificate)
         {
             if (contentDigest.size() != 71 || contentDigest.compare(0, 7, "sha256:") != 0)
                 throw std::invalid_argument("protected BLOB content digest is invalid");
@@ -2682,34 +2683,16 @@ namespace ndn_service_framework
                  {2, 5, std::vector<std::uint8_t>(protection.begin(), protection.end())}});
             auto name = contentName.contentPrefix(producer, contentDigest.substr(7));
             if (contentName.hasSemanticCoordinates()) {
-                // N3: one representation identity replaces the chained PROTECTED digest. Tags follow C2:
-                // producer, category/role, semantic identity, reservation seed, representation, protection,
-                // signer context.
-                const auto role = std::to_string(static_cast<std::uint8_t>(contentName.semanticRole));
-                auto semantic = std::string("{\"contentDigest\":") + quoteNamingJson(contentDigest) +
-                    ",\"modelIdentity\":\"" + contentName.modelIdentity +
-                    "\",\"role\":\"" + role + "\"}";
-                // Materialize each value once: the iterators must not point at two different temporaries.
-                const auto producerWire = producer.wireEncode();
-                const std::vector<std::uint8_t> producerBytes(producerWire.begin(), producerWire.end());
-                const std::vector<std::uint8_t> roleBytes(role.begin(), role.end());
-                const std::vector<std::uint8_t> semanticBytes(semantic.begin(), semantic.end());
-                const std::vector<std::uint8_t> representationBytes(representation.begin(),
-                                                                    representation.end());
-                const std::vector<std::uint8_t> protectionBytes(protection.begin(), protection.end());
-                const auto objectIdentity = contentName.objectIdentity();
-                const std::vector<std::uint8_t> objectIdentityBytes(objectIdentity.begin(),
-                                                                    objectIdentity.end());
-                const auto representationId = computeNamingDigest("ndnsf-naming/representation", {
-                    {1, 1, producerBytes},
-                    {2, 2, roleBytes},
-                    {3, 5, semanticBytes},
-                    {4, 4, instance},
-                    {5, 5, representationBytes},
-                    {6, 5, protectionBytes},
-                    {7, 5, objectIdentityBytes}});
-                name = contentName.representationPrefix(producer, representationId);
-                name.append("DATA");
+                ProtectedBlobManifest descriptor;
+                descriptor.producer = producer;
+                descriptor.contentName = contentName;
+                const auto digest = makeNamingDigestComponent(contentDigest.substr(7));
+                descriptor.plaintextDigest.assign(digest.value(), digest.value() + digest.value_size());
+                descriptor.publicationNonce.assign(instance.begin(), instance.end());
+                descriptor.signerCertificate = signerCertificate;
+                descriptor.representationSpec = representation;
+                descriptor.protectionSpec = protection;
+                name = descriptor.semanticDataPrefix();
             }
             else {
                 name.append("PROTECTED").append(makeNamingDigestComponent(protectionDigest)).append("DATA");
@@ -7404,6 +7387,7 @@ namespace ndn_service_framework
       const auto& content = root.getContent();
       const std::vector<std::uint8_t> payload(content.value(), content.value() + content.value_size());
       manifest = ProtectedBlobManifest::decode(payload, identity, object.manifestName);
+      manifest.validateSigner(root);
       const auto expectedDigest = makeNamingDigestComponent(object.contentDigest.substr(7));
       if (root.getName() != object.manifestName ||
           sha256DigestString(ndn::Buffer(payload.begin(), payload.end())) != object.manifestDigest ||
@@ -7635,6 +7619,7 @@ namespace ndn_service_framework
             !validateProducerPacketWireUntil(wire, identity, deadline))
           throw std::runtime_error("OWNER_ORIGINAL_SEGMENT_VALIDATION_FAILED");
         const ndn::Data packet(ndn::Block(ndn::span<const std::uint8_t>(wire.data(), wire.size())));
+        manifest.validateSigner(packet);
         const auto expectedSize = std::min(manifest.segmentBytes,
           manifest.envelopeBytes - static_cast<std::uint64_t>(encoded->size()));
         const auto& content = packet.getContent();
@@ -7680,7 +7665,7 @@ namespace ndn_service_framework
       });
       bool contentMismatch = false;
       if (!decryptProtectedBlobPayload(manifest.dataPrefix, service, envelope, key,
-                                        plaintext, contentMismatch, manifest.plaintextBytes))
+                                        plaintext, contentMismatch, manifest))
         throw std::runtime_error(contentMismatch ? "OWNER_PLAINTEXT_IDENTITY_MISMATCH" :
                                                   "OWNER_PAYLOAD_AUTHENTICATION_FAILED");
       current();
@@ -7842,25 +7827,35 @@ namespace ndn_service_framework
         PublishedContentName contentName;
         std::string durablePublicationBase;
         std::string legacyDurablePublicationBase;
+        auto legacyName = options.legacyName;
         try {
             if (options.contentName) contentName = *options.contentName;
             else contentName.label = objectLabel; // Explicit generic Core publication label.
             contentName.encode(); // Validate full semantic metadata before crypto/backend effects.
+            if (legacyName) {
+                if (!durable || !ownerRecoverable || !contentName.hasSemanticCoordinates() ||
+                    legacyName->contentName.hasSemanticCoordinates())
+                    throw std::invalid_argument("legacy lookup requires a durable owner publication");
+                ProtectedBlobManifest::validateSuffix(legacyName->manifestSuffix);
+            }
             if (durable) {
-                const auto publicationIdentity = [&](const PublishedContentName& name) {
+                const auto publicationIdentity = [&](const PublishedContentName& name,
+                                                     const ndn::Name& suffix) {
                     const auto ownerDigest = makeNamingDigestComponent(options.publicationIdentity.substr(7));
                     const auto semanticDigest = makeNamingDigestComponent(name.objectIdentity());
-                    const auto& suffixWire = options.manifestSuffix.wireEncode();
+                    const auto& suffixWire = suffix.wireEncode();
                     return "sha256:" + computeNamingDigest("ndnsf-naming/publication",
                         {{1, 4, {ownerDigest.value(), ownerDigest.value() + ownerDigest.value_size()}},
                          {2, 4, {semanticDigest.value(), semanticDigest.value() + semanticDigest.value_size()}},
                          {3, 1, {suffixWire.begin(), suffixWire.end()}}});
                 };
-                durablePublicationBase = publicationIdentity(contentName);
-                if (contentName.hasSemanticCoordinates()) {
-                    // The same object published before the coordinate row was recorded under the identity its
-                    // coordinate-free description produced. Recomputing that key is how an existing durable record
-                    // is located without a new record format or a guess based on payload equality.
+                durablePublicationBase = publicationIdentity(contentName, options.manifestSuffix);
+                if (legacyName) {
+                    legacyDurablePublicationBase = publicationIdentity(
+                        legacyName->contentName, legacyName->manifestSuffix);
+                }
+                else if (contentName.hasSemanticCoordinates()) {
+                    // The coordinate-free key also occurs where only the coordinates changed.
                     auto legacy = contentName;
                     legacy.semanticRole = ContentSemanticRole::None;
                     legacy.modelFamily.clear();
@@ -7874,7 +7869,9 @@ namespace ndn_service_framework
                     legacy.pageNumber.reset();
                     legacy.partition = ArtifactPartition{};
                     try {
-                        legacyDurablePublicationBase = publicationIdentity(legacy);
+                        legacyDurablePublicationBase = publicationIdentity(legacy, options.manifestSuffix);
+                        legacyName.emplace(LargeDataPublishOptions::LegacyName{
+                            std::move(legacy), options.manifestSuffix});
                     }
                     catch (const std::exception&) {
                         // A row whose facts are only legal with coordinates has no legacy counterpart.
@@ -7886,9 +7883,14 @@ namespace ndn_service_framework
         catch (const std::exception& error) { result.errorMessage = error.what(); return result; }
         if (ownerRecoverable) {
           // A legacy service-shared key must never be retrofitted into this path.
-          durablePublicationBase = "sha256:" + computeNamingDigest(
-            "ndnsf-naming/owner-recoverable-publication-v1",
-            {{1, 2, {durablePublicationBase.begin(), durablePublicationBase.end()}}});
+          const auto asOwnerIdentity = [](const std::string& base) {
+            return "sha256:" + computeNamingDigest(
+              "ndnsf-naming/owner-recoverable-publication-v1",
+              {{1, 2, {base.begin(), base.end()}}});
+          };
+          durablePublicationBase = asOwnerIdentity(durablePublicationBase);
+          if (!legacyDurablePublicationBase.empty())
+            legacyDurablePublicationBase = asOwnerIdentity(legacyDurablePublicationBase);
         }
         std::string durablePublicationIdentity = durablePublicationBase;
         ndn::Name encryptedDataName;
@@ -8034,6 +8036,7 @@ namespace ndn_service_framework
                 // then has an older shape and the fact comparison decides reuse instead of a name-shape match.
                 bool reusedOlderShape = false;
                 const auto rebindDurableIdentity = [&] {
+                    reusedOlderShape = false;
                     const auto versionText = durableVersioned
                         ? durableControllerVersion->toString() : "unversioned";
                     const auto seed = durablePublicationBase +
@@ -8169,11 +8172,15 @@ namespace ndn_service_framework
                     const auto restoredManifest = ProtectedBlobManifest::decode(
                         std::vector<std::uint8_t>(rootContent.value(), rootContent.value() + rootContent.value_size()),
                         identity, manifestName);
+                    restoredManifest.validateSigner(*restoredRoot);
+                    const auto& expectedContent = reusedOlderShape ? legacyName->contentName : contentName;
+                    const auto& expectedSuffix = reusedOlderShape
+                        ? legacyName->manifestSuffix : options.manifestSuffix;
                     if (!restoredManifest.contentName ||
-                        !restoredManifest.contentName->sameSemanticFacts(contentName) ||
-                        // An adapter alias belongs to the record that produced it; across shapes one side has none.
-                        (restoredManifest.manifestSuffix != options.manifestSuffix &&
-                         !(restoredManifest.manifestSuffix.empty() || options.manifestSuffix.empty())) ||
+                        restoredManifest.contentName->hasSemanticCoordinates() !=
+                            expectedContent.hasSemanticCoordinates() ||
+                        !restoredManifest.contentName->sameSemanticFacts(expectedContent) ||
+                        restoredManifest.manifestSuffix != expectedSuffix ||
                         ndn::Name(restoredManifest.authorizationScope) !=
                             ndn::Name("/SERVICE").append(ctx.serviceName) ||
                         (restoredManifest.dataPrefix != encryptedDataName &&
@@ -8296,7 +8303,7 @@ namespace ndn_service_framework
             blobIdentity = makeProtectedBlobDataPrefix(
                 identity, result.contentDigest, currentKeyReferenceId, key.epochId,
                 accessAttribute, durable ? durablePublicationIdentity : std::string{},
-                freshness, maxSegmentBytes, contentName);
+                freshness, maxSegmentBytes, contentName, m_signingInfo.getSignerName());
             encryptedDataName = blobIdentity.dataPrefix;
             result.dataPrefix = encryptedDataName;
 
@@ -8318,6 +8325,10 @@ namespace ndn_service_framework
                 manifest.keyIdentifier = key.keyId;
                 manifest.manifestSuffix = options.manifestSuffix;
                 manifest.contentName = contentName;
+                if (contentName.hasSemanticCoordinates()) {
+                    manifest.publicationNonce.assign(blobIdentity.nonce.begin(), blobIdentity.nonce.end());
+                    manifest.signerCertificate = m_signingInfo.getSignerName();
+                }
                 const auto payload = manifest.encode();
                 auto packet = std::make_shared<ndn::Data>(manifest.getName());
                 packet->setContent(payload);
@@ -8326,6 +8337,7 @@ namespace ndn_service_framework
                     auto& signingKeyChain = m_testSigningKeyChain ? *m_testSigningKeyChain : m_keyChain;
                     signingKeyChain.sign(*packet, m_signingInfo);
                 });
+                manifest.validateSigner(*packet);
                 if (packet->wireEncode().size() > ndn::MAX_NDN_PACKET_SIZE)
                     throw ndn::Face::OversizedPacketError('D', packet->getName(), packet->wireEncode().size());
                 result.manifestName = packet->getName();

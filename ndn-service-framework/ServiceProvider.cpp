@@ -16399,17 +16399,10 @@ namespace ndn_service_framework
                         parsed->nameSpace == "NDNSF" && parsed->category == "blob" &&
                         parsed->suffix.size() == 6) {
                         const auto& suffix = parsed->suffix;
-                        const auto& label = suffix[0];
-                        const bool readableLabel = label.type() == ndn::tlv::GenericNameComponent &&
-                            label.value_size() >= 6 && label.value_size() <= 69;
-                        const std::string readable = readableLabel
-                            ? std::string(reinterpret_cast<const char*>(label.value()), label.value_size())
-                            : std::string{};
                         const auto digestComponent = [](const ndn::name::Component& value) {
                             return value.type() == ndn::tlv::GenericNameComponent && value.value_size() == 32;
                         };
-                        currentReference = readableLabel && readable.compare(0, 5, "name=") == 0 &&
-                            matchesNamingLabelComponent(label, readable.substr(5)) &&
+                        currentReference = isNamingLabelComponent(suffix[0]) &&
                             digestComponent(suffix[1]) && suffix[2] == plaintextDigest &&
                             suffix[3] == ndn::name::Component("PROTECTED") &&
                             digestComponent(suffix[4]) && suffix[5] == ndn::name::Component("DATA");
@@ -20116,7 +20109,14 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             result.errorMessage = "INVALID_LARGE_DATA_READ_MODE";
             return result;
         }
-        const auto manifestProducer = ProtectedBlobManifest::inferProducer(referenceName, readMode);
+        const auto canonicalProducer = ProtectedBlobManifest::inferDataProducer(referenceName, readMode);
+        const bool canonicalData = canonicalProducer.has_value();
+        const bool semanticData = canonicalData && referenceName.size() >= 3 &&
+            referenceName[-3] == ndn::name::Component("rep");
+        const auto manifestName = semanticData
+            ? ndn::Name(referenceName.getPrefix(-1)).append("MANIFEST") : referenceName;
+        const auto manifestProducer = semanticData ? canonicalProducer :
+            ProtectedBlobManifest::inferProducer(manifestName, readMode);
         const bool explicitProducerBound = !explicitProducer.empty();
         if (authenticatedEnvelope && !explicitProducerBound) {
             result.errorMessage = "prevalidated envelope requires explicit Producer";
@@ -20124,7 +20124,6 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
         }
         const auto producer = explicitProducerBound ? explicitProducer :
             extractLargeDataProducerPrefix(referenceName);
-        const bool canonicalData = ProtectedBlobManifest::inferDataProducer(referenceName, readMode).has_value();
         if (authenticatedManifest) {
             try {
                 if (!authenticatedEnvelope || !explicitProducerBound ||
@@ -20197,7 +20196,7 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                 state->cv.notify_one();
             };
             boost::asio::post(m_face.getIoContext(),
-                [this, stopping, current, overallDeadline, referenceName, producer,
+                [this, stopping, current, overallDeadline, referenceName = manifestName, producer,
                  interestLifetimeMs, state, dataValidator, finish, readMode] {
                 if (stopping->load() || std::chrono::steady_clock::now() >= overallDeadline ||
                     (current && !current())) {
@@ -20227,7 +20226,9 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                                 const auto& content = validated.getContent();
                                 const std::vector<std::uint8_t> payload(
                                     content.value(), content.value() + content.value_size());
-                                finish(ProtectedBlobManifest::decode(payload, producer, referenceName, readMode), {});
+                                auto manifest = ProtectedBlobManifest::decode(payload, producer, referenceName, readMode);
+                                manifest.validateSigner(validated);
+                                finish(std::move(manifest), {});
                             }
                             catch (const std::exception& error) { finish(std::nullopt, error.what()); }
                         }, [finish, dataValidator](const ndn::Data&, const auto& error) {
@@ -20258,6 +20259,8 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             expectedManifest = std::move(state->manifest);
             encryptedDataName = expectedManifest->dataPrefix;
             try {
+                if (semanticData && encryptedDataName != referenceName)
+                    throw std::runtime_error("manifest data prefix mismatch");
                 if (expectedManifest->authorizationScope.compare(0, 9, "/SERVICE/") != 0 ||
                     ndn::Name(expectedManifest->authorizationScope.substr(8)) != ndn::Name(serviceName))
                     throw std::runtime_error("manifest service scope mismatch");
@@ -20424,8 +20427,12 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
                     }
                     if (valid && expectedManifest) {
                         const auto& manifest = *expectedManifest;
-                        valid = data.getName().size() == manifest.dataPrefix.size() + 1 &&
-                            manifest.dataPrefix.isPrefixOf(data.getName()) && data.getName().get(-1).isSegment();
+                        try {
+                            manifest.validateSigner(data);
+                            valid = data.getName().size() == manifest.dataPrefix.size() + 1 &&
+                                manifest.dataPrefix.isPrefixOf(data.getName()) && data.getName().get(-1).isSegment();
+                        }
+                        catch (const std::exception&) { valid = false; }
                         if (valid) {
                             const auto segment = data.getName().get(-1).toSegment();
                             valid = segment < manifest.segmentCount && data.getFinalBlock() &&
@@ -20585,11 +20592,13 @@ void ServiceProvider::processNDNSDServiceInfoCallback(const ndnsd::discovery::De
             ndn::Buffer decrypted;
             bool contentMismatch = false;
             bool ok = false;
-            if (canonicalBlob) {
+            if (canonicalBlob && expectedManifest) {
                 ok = decryptProtectedBlobPayload(encryptedDataName, ndn::Name(serviceName),
-                    *envelope, key, decrypted, contentMismatch,
-                    expectedManifest ? std::optional<std::uint64_t>(expectedManifest->plaintextBytes) :
-                                       std::nullopt);
+                    *envelope, key, decrypted, contentMismatch, *expectedManifest);
+            }
+            else if (canonicalBlob) {
+                ok = decryptProtectedBlobPayload(encryptedDataName, ndn::Name(serviceName),
+                    *envelope, key, decrypted, contentMismatch);
             }
             else {
                 const auto text = encryptedDataName.toUri() + "|" +

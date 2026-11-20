@@ -629,8 +629,7 @@ nativeInstallModelObjectKeys(ndn_service_framework::ServiceProvider::Collaborati
   require(bytes > 0 && bytes <= MAX_TABLE_BYTES);
   requireDigest(digest);
   nativeValidateModelObjectKeyTableName(NativeFixedRoleSourceV1{name, digest, bytes, {}},
-    context.requesterName().toUri(ndn::name::UriFormat::CANONICAL), storedReference,
-    projection.selectedRoleContract().selectedRole);
+    context.requesterName().toUri(ndn::name::UriFormat::CANONICAL), storedReference, projection);
   const auto now = epochMs();
   const auto steadyNow = std::chrono::steady_clock::now();
   const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(

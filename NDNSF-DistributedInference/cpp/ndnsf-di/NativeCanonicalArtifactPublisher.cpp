@@ -3,8 +3,9 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeCanonicalJson.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/RuntimeTiming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/NativeSelectionJsonValues.hpp"
-#include "ndn-service-framework/ServiceUser.hpp"
 #include "ndn-service-framework/ProducerDataNaming.hpp"
+#include "ndn-service-framework/ProtectedBlobManifest.hpp"
+#include "ndn-service-framework/ServiceUser.hpp"
 
 #include <algorithm>
 #include <condition_variable>
@@ -243,8 +244,6 @@ ndn::Name publicationManifestSuffix(const std::string& label,
                                     const std::vector<std::uint8_t>& bytes,
                                     const ndn_service_framework::PublishedContentName& contentName)
 {
-  if (contentName.hasSemanticCoordinates())
-    return {};
   if (label == "di-material-manifest") return ndn::Name("/NDNSF-DI/material")
     .append(ndn_service_framework::makeNamingLabelComponent(contentName.label)).append("MANIFEST");
   if (label == "di-material-receipt") return ndn::Name("/NDNSF-DI/receipt/assembly")
@@ -259,6 +258,42 @@ ndn::Name publicationManifestSuffix(const std::string& label,
     .append(ndn_service_framework::makeNamingLabelComponent(contentName.modelName))
     .append(ndn_service_framework::makeNamingDigestComponent(identity.substr(7)))
     .append("MANIFEST");
+}
+
+std::optional<ndn_service_framework::LargeDataPublishOptions::LegacyName>
+legacyPublicationName(const std::string& label, const std::vector<std::uint8_t>& bytes,
+                      const ndn_service_framework::PublishedContentName& current,
+                      bool hasPublicationCatalog)
+{
+  using namespace ndn_service_framework;
+  LargeDataPublishOptions::LegacyName legacy;
+  if (current.semanticRole == ContentSemanticRole::ModelManifest) {
+    legacy.contentName.kind = current.kind;
+    legacy.contentName.label = current.label;
+    legacy.contentName.modelName = current.modelName;
+    legacy.contentName.modelIdentity = current.modelIdentity;
+  }
+  else {
+    if (!hasPublicationCatalog) return std::nullopt;
+    const char* prefix;
+    switch (current.semanticRole) {
+      case ContentSemanticRole::MaterialManifest: prefix = "material-manifest-"; break;
+      case ContentSemanticRole::MaterialBundle: prefix = "material-bundle-"; break;
+      case ContentSemanticRole::AssemblyReceipt: prefix = "assembly-receipt-"; break;
+      default: return std::nullopt;
+    }
+    legacy.contentName.kind = ContentDataKind::Material;
+    legacy.contentName.label = std::string(prefix) + current.modelName;
+  }
+  legacy.manifestSuffix = publicationManifestSuffix(label, bytes, legacy.contentName);
+  try {
+    ProtectedBlobManifest::validateSuffix(legacy.manifestSuffix);
+  }
+  catch (const std::invalid_argument&) {
+    // A label rejected by the historical alias rules could not use that alias.
+    return std::nullopt;
+  }
+  return legacy;
 }
 
 bool publicationScopeMatches(const std::string& scope, const std::string& service)
@@ -563,7 +598,8 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
              const auto& contentName, const auto& control) {
         ndn_service_framework::LargeDataPublishOptions publishOptions;
         publishOptions.contentName = contentName;
-        publishOptions.manifestSuffix = publicationManifestSuffix(label, bytes, contentName);
+        if (!contentName.hasSemanticCoordinates())
+          publishOptions.manifestSuffix = publicationManifestSuffix(label, bytes, contentName);
         if (!user->isOnIoThread())
           return user->publishEncryptedLargeDataFromWorker(
             request, bytes, label, ndn::DEFAULT_FRESHNESS_PERIOD, publishOptions,
@@ -576,11 +612,13 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         if (user)
           onCoreIo(user, [&] { user->abortLargeDataPublications(publications); });
       }, true, NativeCanonicalMaterialReceiptDataNameMaxBytes,
-      [user](const auto& request, const auto& bytes, const auto& label,
+      [user, hasPublicationCatalog = digest(options.publicationIdentityDigest)]
+      (const auto& request, const auto& bytes, const auto& label,
              const auto& publicationIdentity, const auto& contentName, const auto& control) {
         ndn_service_framework::LargeDataPublishOptions publishOptions;
         publishOptions.contentName = contentName;
-        publishOptions.manifestSuffix = publicationManifestSuffix(label, bytes, contentName);
+        if (!contentName.hasSemanticCoordinates())
+          publishOptions.manifestSuffix = publicationManifestSuffix(label, bytes, contentName);
         if (!user->supportsDurableEncryptedLargeData()) {
           if (!user->isOnIoThread())
             return user->publishEncryptedLargeDataFromWorker(
@@ -592,6 +630,8 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
         }
         publishOptions.retention = ndn_service_framework::EncryptedLargeDataRetention::Durable;
         publishOptions.publicationIdentity = publicationIdentity;
+        publishOptions.legacyName = legacyPublicationName(label, bytes, contentName,
+                                                        hasPublicationCatalog);
         if (user->isOnIoThread())
           throw std::logic_error("owner-recoverable model publication requires a worker");
         return user->publishOwnerRecoverableLargeDataFromWorker(
@@ -629,7 +669,7 @@ NativeCanonicalArtifactPublisher::NativeCanonicalArtifactPublisher(
           std::vector<std::uint8_t>(wire.begin(), wire.end()), "di-current-root-control",
           ndn::DEFAULT_FRESHNESS_PERIOD, options, [control] { control.requireActive(); });
       }}, serviceName,
-      std::move(options), std::move(source))
+      options, std::move(source))
 {
   if (!user) throw std::invalid_argument("missing Core publication owner");
 }

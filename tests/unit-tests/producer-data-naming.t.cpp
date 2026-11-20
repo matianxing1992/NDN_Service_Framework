@@ -117,7 +117,15 @@ BOOST_AUTO_TEST_CASE(ReadableSemanticNames)
   BOOST_CHECK_THROW(makeNamingLabelComponent("\xc0\x80"), std::invalid_argument);
   BOOST_CHECK_THROW(makeNamingLabelComponent("\xc2\x85"), std::invalid_argument);
   const std::string prefix(63, 'a');
-  BOOST_CHECK(makeNamingLabelComponent(prefix + u8"模suffix") == ndn::name::Component("name=" + prefix));
+  BOOST_CHECK(makeNamingLabelComponent(prefix + u8"模suffix") ==
+              ndn::name::Component("name=" + prefix + "~6a87ebb20ae42c7a"));
+  const auto shortened = makeNamingLabelComponent(prefix + u8"模suffix");
+  BOOST_CHECK(isNamingLabelComponent(shortened));
+  BOOST_CHECK(!matchesNamingLabelComponent(shortened, prefix + u8"模other"));
+  BOOST_CHECK(!isNamingLabelComponent(
+    ndn::name::Component("name=" + prefix + "~6a87ebb20ae42c7G")));
+  BOOST_CHECK(!isNamingLabelComponent(
+    ndn::name::Component("name=" + prefix + "~6a87ebb20ae42c7")));
   BOOST_CHECK(makeNamingLabelComponent(std::string(64, 'a')) ==
               ndn::name::Component("name=" + std::string(64, 'a')));
   std::cout << "SPEC201_LABEL " << hex(name.wireEncode()) << std::endl;

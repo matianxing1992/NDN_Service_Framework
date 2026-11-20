@@ -234,6 +234,13 @@ decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& servic
                             ndn::Buffer& plaintext, bool& contentMismatch,
                             std::optional<std::uint64_t> expectedBytes = std::nullopt);
 
+/** Authenticate a BLOB whose exact signed manifest has already been admitted. */
+bool
+decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& service,
+                            const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
+                            ndn::Buffer& plaintext, bool& contentMismatch,
+                            const ProtectedBlobManifest& manifest);
+
 std::string hybridMessageTypeForName(const ndn::Name& name);
 std::string hybridMessageTypeForName(const ndn::Name& name,
                                     const ndn::Name& expectedActor);

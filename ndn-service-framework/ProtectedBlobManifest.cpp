@@ -1,7 +1,10 @@
 #include "ProtectedBlobManifest.hpp"
+#include "HybridMessageCrypto.hpp"
 #include "ProducerDataNaming.hpp"
 
+#include <ndn-cxx/data.hpp>
 #include <ndn-cxx/encoding/block-helpers.hpp>
+#include <ndn-cxx/security/certificate.hpp>
 #include <ndn-cxx/util/sha256.hpp>
 #include <array>
 #include <algorithm>
@@ -22,6 +25,18 @@ std::string text(const ndn::Block& value)
 {
   return {reinterpret_cast<const char*>(value.value()), value.value_size()};
 }
+
+std::string hex(const std::vector<std::uint8_t>& value)
+{
+  constexpr char digits[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(value.size() * 2);
+  for (const auto byte : value) {
+    result += digits[byte >> 4];
+    result += digits[byte & 15];
+  }
+  return result;
+}
 ndn::Name readName(const ndn::Block& value)
 {
   ndn::Block block(ndn::span<const std::uint8_t>(value.value(), value.value_size()));
@@ -33,15 +48,6 @@ ndn::Name readName(const ndn::Block& value)
 bool digestComponent(const ndn::name::Component& value)
 {
   return value.type() == 8 && value.value_size() == 32;
-}
-
-bool readableComponent(const ndn::name::Component& value)
-{
-  // `name=` plus a label of at most 64 bytes, or that prefix plus `~` and a 16-hex commitment when the label is
-  // longer than the public bound. The exact value is still re-derived below, so the bound only admits the shapes.
-  if (value.type() != 8 || value.value_size() < 6 || value.value_size() > 87) return false;
-  const std::string label(reinterpret_cast<const char*>(value.value()), value.value_size());
-  return label.compare(0, 5, "name=") == 0 && matchesNamingLabelComponent(value, label.substr(5));
 }
 
 bool atomComponent(const ndn::name::Component& value)
@@ -58,20 +64,20 @@ bool semanticPrefix(const ndn::Name& suffix)
   const auto eq = [&](size_t i, const char* label) { return suffix[i] == ndn::name::Component(label); };
   if (suffix.size() == 5 &&
       ((eq(0, "NDNSF") && eq(1, "blob")) || (eq(0, "NDNSF-DI") && eq(1, "material"))))
-    return readableComponent(suffix[2]) && digestComponent(suffix[3]) && digestComponent(suffix[4]);
+    return isNamingLabelComponent(suffix[2]) && digestComponent(suffix[3]) && digestComponent(suffix[4]);
   if (suffix.size() == 6 && eq(0, "NDNSF-DI") && eq(1, "input"))
-    return atomComponent(suffix[2]) && readableComponent(suffix[3]) &&
+    return atomComponent(suffix[2]) && isNamingLabelComponent(suffix[3]) &&
       digestComponent(suffix[4]) && digestComponent(suffix[5]);
   if (suffix.size() == 7 && eq(0, "NDNSF-DI") && eq(1, "assignment"))
-    return eq(2, "model") && readableComponent(suffix[3]) && eq(4, "ROLE") &&
-      readableComponent(suffix[5]) && digestComponent(suffix[6]);
+    return eq(2, "model") && isNamingLabelComponent(suffix[3]) && eq(4, "ROLE") &&
+      isNamingLabelComponent(suffix[5]) && digestComponent(suffix[6]);
   if ((suffix.size() != 8 && suffix.size() != 12) || !eq(0, "NDNSF-DI") || !eq(1, "model") ||
-      !readableComponent(suffix[2]) || !digestComponent(suffix[3])) return false;
+      !isNamingLabelComponent(suffix[2]) || !digestComponent(suffix[3])) return false;
   if (suffix.size() == 8)
     return (eq(4, "file") || eq(4, "weights") || eq(4, "initializer") || eq(4, "tokenizer")) &&
-      readableComponent(suffix[5]) && digestComponent(suffix[6]) && digestComponent(suffix[7]);
+      isNamingLabelComponent(suffix[5]) && digestComponent(suffix[6]) && digestComponent(suffix[7]);
   return eq(4, "artifact") && atomComponent(suffix[5]) && atomComponent(suffix[6]) &&
-    digestComponent(suffix[7]) && eq(8, "file") && readableComponent(suffix[9]) &&
+    digestComponent(suffix[7]) && eq(8, "file") && isNamingLabelComponent(suffix[9]) &&
     digestComponent(suffix[10]) && digestComponent(suffix[11]);
 }
 
@@ -116,6 +122,44 @@ std::optional<ndn::Name> representationProducer(const ndn::Name& name, const boo
 
 } // namespace
 
+ndn::Name
+ProtectedBlobManifest::semanticDataPrefix() const
+{
+  if (!contentName || !contentName->hasSemanticCoordinates() || plaintextDigest.size() != 32 ||
+      publicationNonce.size() != HybridMessageCrypto::NONCE_SIZE ||
+      !ndn::security::Certificate::isValidName(signerCertificate))
+    throw std::invalid_argument("BLOB_REPRESENTATION_DESCRIPTOR_INVALID");
+
+  const auto role = std::to_string(static_cast<std::uint8_t>(contentName->semanticRole));
+  const auto semantic = "{\"contentDigest\":\"sha256:" + hex(plaintextDigest) +
+    "\",\"objectIdentity\":\"" + contentName->objectIdentity() + "\"}";
+  const auto signer = "{\"certificate\":\"" +
+    signerCertificate.toUri(ndn::name::UriFormat::CANONICAL) + "\"}";
+  const auto& producerWire = producer.wireEncode();
+  const auto representation = computeNamingDigest("ndnsf-naming/representation", {
+    {1, 1, {producerWire.begin(), producerWire.end()}},
+    {2, 2, {role.begin(), role.end()}},
+    {3, 5, {semantic.begin(), semantic.end()}},
+    {4, 4, publicationNonce},
+    {5, 5, {representationSpec.begin(), representationSpec.end()}},
+    {6, 5, {protectionSpec.begin(), protectionSpec.end()}},
+    {7, 5, {signer.begin(), signer.end()}}});
+  return contentName->representationPrefix(producer, representation).append("DATA");
+}
+
+void
+ProtectedBlobManifest::validateSigner(const ndn::Data& data) const
+{
+  if (!contentName || !contentName->hasSemanticCoordinates())
+    return;
+  const auto& signature = data.getSignatureInfo();
+  if (!signature.hasKeyLocator() || signature.getKeyLocator().getType() != ndn::tlv::Name)
+    throw std::invalid_argument("BLOB_REPRESENTATION_SIGNER_MISSING");
+  const auto& locator = signature.getKeyLocator().getName();
+  if (locator != signerCertificate && locator != ndn::security::extractKeyNameFromCertName(signerCertificate))
+    throw std::invalid_argument("BLOB_REPRESENTATION_SIGNER_MISMATCH");
+}
+
 void ProtectedBlobManifest::validate(DataNameReadMode mode) const
 {
   if (mode != DataNameReadMode::StrictCanonical && mode != DataNameReadMode::AllowLegacyRead)
@@ -153,25 +197,18 @@ void ProtectedBlobManifest::validate(DataNameReadMode mode) const
   const auto digest = computeNamingDigest("ndnsf-naming/protection",
     {{1, 5, std::vector<std::uint8_t>(representationSpec.begin(), representationSpec.end())},
      {2, 5, std::vector<std::uint8_t>(protectionSpec.begin(), protectionSpec.end())}});
-  constexpr char Hex[] = "0123456789abcdef";
-  std::string plaintextHex;
-  for (const auto byte : plaintextDigest) { plaintextHex += Hex[byte >> 4]; plaintextHex += Hex[byte & 15]; }
+  const auto plaintextHex = hex(plaintextDigest);
   auto expected = contentName ? contentName->contentPrefix(producer, plaintextHex) :
     makeProducerDataPrefix(producer, "BLOB").append(ndn::name::Component(bytes(plaintextDigest)));
   if (contentName && contentName->hasSemanticCoordinates()) {
-    // The representation identity is validated where it was admitted; this check binds the recorded
-    // dataPrefix to the same semantic stem and tail shape.
-    const auto stem = contentName->semanticStem(producer);
-    if (!stem.isPrefixOf(dataPrefix) || dataPrefix.size() != stem.size() + 3 ||
-        dataPrefix[-3] != ndn::name::Component("rep") ||
-        dataPrefix[-2].type() != ndn::tlv::GenericNameComponent ||
-        dataPrefix[-2].value_size() != 32 ||
-        dataPrefix[-1] != ndn::name::Component("DATA"))
+    if (!manifestSuffix.empty() || dataPrefix != semanticDataPrefix())
       throw std::invalid_argument("BLOB_MANIFEST_BINDING_MISMATCH");
     checkNamingNameSize(ndn::Name(dataPrefix).appendSegment(
       std::numeric_limits<std::uint64_t>::max()));
     return;
   }
+  if (!publicationNonce.empty() || !signerCertificate.empty())
+    throw std::invalid_argument("BLOB_LEGACY_REPRESENTATION_DESCRIPTOR_UNEXPECTED");
   expected.append("PROTECTED")
     .append(makeNamingDigestComponent(digest)).append("DATA");
   if (dataPrefix != expected)
@@ -201,6 +238,10 @@ std::vector<std::uint8_t> ProtectedBlobManifest::encode(DataNameReadMode mode) c
   if (contentName) {
     const auto metadata = contentName->encode();
     body.push_back(ndn::makeBinaryBlock(157, bytes(metadata)));
+    if (contentName->hasSemanticCoordinates()) {
+      body.push_back(ndn::makeBinaryBlock(159, bytes(publicationNonce)));
+      body.push_back(ndn::Block(161, signerCertificate.wireEncode()));
+    }
   }
   body.encode();
   if (body.size() > ndn::MAX_NDN_PACKET_SIZE)
@@ -238,7 +279,8 @@ ProtectedBlobManifest ProtectedBlobManifest::decode(
     throw std::invalid_argument("BLOB_MANIFEST_ENVELOPE_INVALID");
   body.parse();
   const auto& fields = body.elements();
-  if (fields.size() != Fields.size() + (legacy ? 0 : 1))
+  if (legacy ? fields.size() != Fields.size()
+             : (fields.size() != Fields.size() + 1 && fields.size() != Fields.size() + 3))
     throw std::invalid_argument("BLOB_MANIFEST_FIELD_COUNT_INVALID");
   for (std::size_t i = 0; i < Fields.size(); ++i)
     if (fields[i].type() != Fields[i])
@@ -264,6 +306,12 @@ ProtectedBlobManifest ProtectedBlobManifest::decode(
     if (fields[14].type() != 157) throw std::invalid_argument("SEMANTIC_MANIFEST_FIELD_ORDER_INVALID");
     result.contentName = PublishedContentName::decode(
       {fields[14].value(), fields[14].value() + fields[14].value_size()});
+    if (result.contentName->hasSemanticCoordinates()) {
+      if (fields.size() != Fields.size() + 3 || fields[15].type() != 159 || fields[16].type() != 161)
+        throw std::invalid_argument("BLOB_REPRESENTATION_DESCRIPTOR_MISSING");
+      result.publicationNonce.assign(fields[15].value(), fields[15].value() + fields[15].value_size());
+      result.signerCertificate = readName(fields[16]);
+    }
   }
   if (result.encode(mode) != payload)
     throw std::invalid_argument("BLOB_MANIFEST_NONCANONICAL_WIRE");
@@ -276,23 +324,18 @@ namespace {
 bool supportedManifestSuffix(const ndn::Name& suffix, DataNameReadMode mode)
 {
   if (suffix.empty()) return true;
-  const auto named = [](const ndn::name::Component& c) {
-    if (c.type() != 8 || c.value_size() < 6 || c.value_size() > 87) return false;
-    const std::string value(reinterpret_cast<const char*>(c.value()), c.value_size());
-    return value.compare(0, 5, "name=") == 0 && matchesNamingLabelComponent(c, value.substr(5));
-  };
   if (suffix.size() == 5 && suffix[0] == ndn::name::Component("NDNSF-DI") &&
-      suffix[1] == ndn::name::Component("model") && named(suffix[2]) &&
+      suffix[1] == ndn::name::Component("model") && isNamingLabelComponent(suffix[2]) &&
       suffix[3].type() == 8 && suffix[3].value_size() == 32 &&
       suffix[4] == ndn::name::Component("MANIFEST")) return true;
   if (suffix.size() == 4 && suffix[0] == ndn::name::Component("NDNSF-DI") &&
-      suffix[1] == ndn::name::Component("material") && named(suffix[2]) &&
+      suffix[1] == ndn::name::Component("material") && isNamingLabelComponent(suffix[2]) &&
       suffix[3] == ndn::name::Component("MANIFEST")) return true;
   if ((suffix.size() == 4 ||
        (suffix.size() == 3 && mode == DataNameReadMode::AllowLegacyRead)) &&
       suffix[0] == ndn::name::Component("NDNSF-DI") &&
       suffix[1] == ndn::name::Component("receipt") && suffix[2].type() == 8 &&
-      (suffix.size() == 3 || named(suffix[3]))) {
+      (suffix.size() == 3 || isNamingLabelComponent(suffix[3]))) {
     const std::string operation(reinterpret_cast<const char*>(suffix[2].value()), suffix[2].value_size());
     if (!operation.empty() && std::all_of(operation.begin(), operation.end(), [](unsigned char c) {
       return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-';

@@ -237,6 +237,12 @@ namespace ndn_service_framework{
     /** Core-owned policy for immutable large-data publication. */
     struct LargeDataPublishOptions
     {
+        struct LegacyName
+        {
+            PublishedContentName contentName;
+            ndn::Name manifestSuffix;
+        };
+
         EncryptedLargeDataRetention retention = EncryptedLargeDataRetention::Transient;
         // Stable, non-secret identity supplied by the native preparation owner.
         std::string publicationIdentity;
@@ -244,6 +250,8 @@ namespace ndn_service_framework{
         // Empty derives the manifest from the content/representation prefix.
         ndn::Name manifestSuffix;
         std::optional<PublishedContentName> contentName;
+        // Historical descriptor supplied by the publication owner for exact, read-only lookup.
+        std::optional<LegacyName> legacyName;
     };
 
     struct LargeDataPublishResult

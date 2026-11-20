@@ -985,6 +985,10 @@ protectedBlobEnvelopeBindingError(const ProtectedBlobManifest& manifest,
                                   const ndn::Name& service,
                                   const HybridMessageEnvelope& envelope)
 {
+  if (!manifest.publicationNonce.empty() &&
+      !std::equal(manifest.publicationNonce.begin(), manifest.publicationNonce.end(),
+                  envelope.getNonce().begin(), envelope.getNonce().end()))
+    return "manifest publication nonce mismatch";
   if (envelope.getEpochId() != manifest.protectionEpoch)
     return "manifest protection epoch mismatch";
   try {
@@ -1005,11 +1009,12 @@ protectedBlobEnvelopeBindingError(const ProtectedBlobManifest& manifest,
   return {};
 }
 
-bool
-decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& service,
-                            const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
-                            ndn::Buffer& plaintext, bool& contentMismatch,
-                            std::optional<std::uint64_t> expectedBytes)
+static bool
+decryptProtectedBlob(const ndn::Name& dataPrefix, const ndn::Name& service,
+                     const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
+                     ndn::Buffer& plaintext, bool& contentMismatch,
+                     std::optional<std::uint64_t> expectedBytes,
+                     const ProtectedBlobManifest* manifest)
 {
   contentMismatch = false;
   const auto aadText = dataPrefix.toUri(ndn::name::UriFormat::CANONICAL) + "|" +
@@ -1023,13 +1028,42 @@ decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& servic
   ndn::util::Sha256 hash;
   hash.update(ndn::span<const std::uint8_t>(plaintext.data(), plaintext.size()));
   const auto digest = hash.computeDigest();
-  contentMismatch = dataPrefix.size() < 4 ||
-    dataPrefix[-4] != ndn::name::Component(ndn::span<const std::uint8_t>(
-      digest->data(), digest->size())) || (expectedBytes && plaintext.size() != *expectedBytes);
+  const bool semantic = dataPrefix.size() >= 3 && dataPrefix[-3] == ndn::name::Component("rep");
+  if (semantic) {
+    contentMismatch = !manifest || manifest->dataPrefix != dataPrefix ||
+      manifest->plaintextDigest.size() != digest->size() ||
+      !std::equal(digest->begin(), digest->end(), manifest->plaintextDigest.begin());
+  }
+  else {
+    contentMismatch = dataPrefix.size() < 4 ||
+      dataPrefix[-4] != ndn::name::Component(ndn::span<const std::uint8_t>(
+        digest->data(), digest->size()));
+  }
+  contentMismatch = contentMismatch || (expectedBytes && plaintext.size() != *expectedBytes);
   if (!contentMismatch) return true;
   if (!plaintext.empty()) OPENSSL_cleanse(plaintext.data(), plaintext.size());
   plaintext.clear();
   return false;
+}
+
+bool
+decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& service,
+                            const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
+                            ndn::Buffer& plaintext, bool& contentMismatch,
+                            std::optional<std::uint64_t> expectedBytes)
+{
+  return decryptProtectedBlob(dataPrefix, service, envelope, key, plaintext, contentMismatch,
+                              expectedBytes, nullptr);
+}
+
+bool
+decryptProtectedBlobPayload(const ndn::Name& dataPrefix, const ndn::Name& service,
+                            const HybridMessageEnvelope& envelope, const ndn::Buffer& key,
+                            ndn::Buffer& plaintext, bool& contentMismatch,
+                            const ProtectedBlobManifest& manifest)
+{
+  return decryptProtectedBlob(dataPrefix, service, envelope, key, plaintext, contentMismatch,
+                              manifest.plaintextBytes, &manifest);
 }
 
 std::string

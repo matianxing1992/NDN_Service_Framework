@@ -531,17 +531,27 @@ def build(bld):
                 includes=['..', '../ndn-service-framework', '../NDNSF-DistributedRepo/include'],
                 use='ndn-service-framework ndnsf-distributed-repo NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL sqlite3',
                 cxxflags=['-fPIC'], rpath=[bld.bldnode.abspath()], install_path=None)
-    bld.program(target='../naming-static-publication',
-                name='naming-static-publication',
-                source=[bld.path.parent.find_node('tests/main.cpp'),
-                        bld.path.find_node('unit-tests/original-packet-store-contract.t.cpp'),
-                        bld.path.find_node('unit-tests/published-content-name.t.cpp'),
-                        bld.path.find_node('unit-tests/producer-signer-policy.t.cpp'),
-                        bld.path.find_node('unit-tests/generic-dynamic-api-crypto-auth.t.cpp')],
-                includes=['..', '../ndn-service-framework'],
-                use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
-                defines=['HAVE_TESTS'], cxxflags=['-fPIC'],
-                rpath=[bld.bldnode.abspath()], install_path=None)
+    for suffix in ('', '-asan'):
+        sources = [bld.path.find_node('main.cpp'),
+                   bld.path.find_node('unit-tests/original-packet-store-contract.t.cpp'),
+                   bld.path.find_node('unit-tests/published-content-name.t.cpp'),
+                   bld.path.find_node('unit-tests/producer-signer-policy.t.cpp'),
+                   bld.path.find_node('unit-tests/generic-dynamic-api-crypto-auth.t.cpp')]
+        flags = ['-fPIC']
+        links = []
+        if suffix:
+            sources += [bld.path.find_node('unit-tests/producer-data-naming.t.cpp')]
+            sources += [bld.srcnode.find_node('ndn-service-framework/' + name) for name in (
+                'ProducerDataNaming.cpp', 'PublishedContentName.cpp', 'ProtectedBlobManifest.cpp',
+                'HybridMessageCrypto.cpp')]
+            flags += ['-O0', '-g0', '-fno-omit-frame-pointer', '-fsanitize=address,undefined']
+            links += ['-fsanitize=address,undefined']
+        bld.program(target='../naming-static-publication' + suffix,
+                    name='naming-static-publication' + suffix, source=sources,
+                    includes=['..', '../ndn-service-framework'],
+                    use='ndn-service-framework NDN_CXX NDN_SVS PROTOBUF NAC-ABE NDNSD BOOST OPENSSL DL',
+                    defines=['HAVE_TESTS'], cxxflags=flags, linkflags=links,
+                    rpath=[bld.bldnode.abspath()], install_path=None)
 
     bld.program(target='../naming-installed-consumer',
                 name='naming-installed-consumer',

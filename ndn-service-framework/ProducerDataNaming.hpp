@@ -36,6 +36,8 @@ ndn::Name makeProducerDataPrefix(const ndn::Name& producer,
 /** One Generic component. Preserve UTF-8 characters when shortening to 64 bytes.
  * The owner MUST also bind the complete original label in its semantic identity. */
 ndn::name::Component makeNamingLabelComponent(const std::string& fullLabel);
+/** Recognize the component shape before the full label is available. */
+bool isNamingLabelComponent(const ndn::name::Component& component);
 bool matchesNamingLabelComponent(const ndn::name::Component& component,
                                  const std::string& fullLabel);
 ndn::name::Component makeNamingDigestComponent(const std::string& sha256Hex);

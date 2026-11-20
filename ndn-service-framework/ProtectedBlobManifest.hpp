@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+namespace ndn { class Data; }
+
 namespace ndn_service_framework {
 
 /** Non-secret immutable descriptor. Signature validation belongs to the
@@ -30,7 +32,11 @@ struct ProtectedBlobManifest
   std::string keyIdentifier;
   ndn::Name manifestSuffix;
   std::optional<PublishedContentName> contentName;
+  std::vector<std::uint8_t> publicationNonce;
+  ndn::Name signerCertificate;
 
+  ndn::Name semanticDataPrefix() const;
+  void validateSigner(const ndn::Data& data) const;
   void validate(DataNameReadMode mode = DataNameReadMode::StrictCanonical) const;
   std::vector<std::uint8_t> encode(DataNameReadMode mode = DataNameReadMode::StrictCanonical) const;
   ndn::Name getName(DataNameReadMode mode = DataNameReadMode::StrictCanonical) const;

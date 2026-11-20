@@ -1470,7 +1470,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
   if (includeStoredKeyTable) {
     mutations.insert(mutations.begin(), -5);
     mutations.insert(mutations.begin(), -4);
-    for (const auto mutation : {15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+    for (const auto mutation : {15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27})
       mutations.push_back(mutation);
   }
   unsigned expectedRuns = 1;
@@ -1506,7 +1506,7 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     assignmentProjection = providerProjection(
       projectionProvider, requestId, planDigest, artifactDigest,
       projectionEpoch, issuedGrant.grantName, projectionGrantDigest);
-    if (mutation < 0 || (mutation >= 11 && mutation <= 24)) {
+    if (mutation < 0 || (mutation >= 11 && mutation <= 27)) {
       auto warmGrantRequest = grantRequest;
       warmGrantRequest.requestId = requestId.toUri();
       const auto warmGrant = NativeArtifactGrantIssuer(issuerConfig).issue(
@@ -1559,6 +1559,24 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
     if (mutation == -5 || (mutation >= 20 && mutation <= 24))
       assignmentProjection = attachStoredKeyTable(assignmentProjection, false, false, 0, false,
         mutation == -5 ? 1 : mutation - 18);
+    if (mutation == 25 || mutation == 26) {
+      auto withWrongName = nativeParseJson(attachStoredKeyTable(assignmentProjection, false));
+      auto& table = withWrongName.at("model_object_keys");
+      const ndn::Name name(table.at("dataName").get<std::string>());
+      BOOST_REQUIRE_GE(name.size(), 14U);
+      const auto offset = name.size() - 14;
+      const auto index = offset + (mutation == 25 ? 2 : 10);
+      const auto replacement = mutation == 25 ? ndn::name::Component("different-model")
+        : ndn_service_framework::makeNamingLabelComponent(std::string(64, '0'));
+      table["dataName"] = name.getPrefix(index).append(replacement)
+        .append(name.getSubName(index + 1)).toUri(ndn::name::UriFormat::CANONICAL);
+      assignmentProjection = nativeCanonicalJson(withWrongName);
+    }
+    if (mutation == 27) {
+      auto withExpiredScope = nativeParseJson(attachStoredKeyTable(assignmentProjection, false));
+      withExpiredScope.at("model_object_keys").at("context")["expiresAtMs"] = std::uint64_t{1};
+      assignmentProjection = nativeCanonicalJson(withExpiredScope);
+    }
     if (mutation == 3) {
       auto expired = nativeParseJson(assignmentProjection);
       expired["deadline_ms"] = nowMs - 1;
@@ -1747,16 +1765,18 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
     }
-    if (mutation == 11 || mutation == 12 || mutation == 14) {
+    if (mutation == 11 || mutation == 12 || mutation == 14 || mutation == 27) {
       BOOST_CHECK_MESSAGE(providerFailure.find("DI_MODEL_OBJECT_KEYS_INVALID") != std::string::npos,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(fixedSourceInterests.load(std::memory_order_relaxed), sourceInterestsBefore);
       BOOST_CHECK_EQUAL(roleSourceInterests.load(std::memory_order_relaxed), roleSourceInterestsBefore);
       BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed),
                         modelKeyTableInterestsBefore);
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed),
+                        storedReadAttemptsBefore);
     }
     if (mutation == 13) {
-      BOOST_CHECK_MESSAGE(providerFailure.find("fixed source Producer, role or plaintext name commitment mismatch") != std::string::npos,
+      BOOST_CHECK_MESSAGE(providerFailure.find("capsule table Producer mismatch") != std::string::npos,
                           "Provider: " + providerFailure + "; User: " + rejectionFailure);
       BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed),
                         modelKeyTableInterestsBefore);
@@ -1804,6 +1824,12 @@ runAuthenticatedProviderAssignmentCase(bool useFixedReferences,
                         storedReadAttemptsBefore);
       BOOST_CHECK_EQUAL(storedReads->servedSegments.load(std::memory_order_relaxed),
                         storedSegmentsBefore);
+    }
+    if (mutation == 25 || mutation == 26) {
+      BOOST_CHECK_MESSAGE(providerFailure.find("capsule table name differs from the current model or use") !=
+                            std::string::npos, providerFailure);
+      BOOST_CHECK_EQUAL(modelKeyTableInterests.load(std::memory_order_relaxed), modelKeyTableInterestsBefore);
+      BOOST_CHECK_EQUAL(storedReads->attempts.load(std::memory_order_relaxed), storedReadAttemptsBefore);
     }
     if (useFixedReferences && (mutation == 1 || mutation == 4)) {
       BOOST_CHECK_MESSAGE(providerFailure.find("DI_PROTECTED_GRANT_REJECTED") != std::string::npos,

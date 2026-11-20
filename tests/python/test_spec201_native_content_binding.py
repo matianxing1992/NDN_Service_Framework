@@ -89,6 +89,43 @@ class NativeContentBinding(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.user.publish_encrypted_large_data("", b"payload", content_name=fields)
 
+    def test_native_coordinates_preserve_tlv_and_name_wire(self):
+        def tlv(kind, payload):
+            return bytes((kind, len(payload))) + payload
+
+        value = self.native.NativePublishedContentName()
+        value.kind = self.native.NativeContentDataKind.MODEL_FILE
+        value.label = "canonical-source"
+        value.model_name = "qwen3"
+        value.model_identity = "a" * 64
+        value.semantic_role = self.native.NativeContentSemanticRole.SOURCE_GRAPH
+        value.model_family = "qwen3"
+        value.model_size = "0.6b"
+        value.quantization = "int4"
+        value.source_revision_label = "r3"
+        fields = ((129, b"\x01"), (131, b"canonical-source"), (133, b"qwen3"),
+                  (135, b"a" * 64), (137, b""), (139, b""), (141, b""), (143, b""),
+                  (145, b"\x01"), (147, b"qwen3"), (149, b"0.6b"), (151, b"int4"),
+                  (153, b"r3"), (155, b""), (157, b""))
+        self.assertEqual(value.encode(), tlv(244, b"".join(tlv(*item) for item in fields)))
+        components = (b"p", b"NDNSF-DI", b"model", b"qwen3", b"0.6b", b"int4",
+                      b"revision", b"r3", b"source", b"graph")
+        self.assertEqual(value.semantic_stem_wire("/p"),
+                         tlv(7, b"".join(tlv(8, component) for component in components)))
+
+        from ndnsf.service import ServiceUser
+        facade = ServiceUser.__new__(ServiceUser)
+        facade._native = self.user
+        try:
+            result = facade.publish_encrypted_large_data("", b"payload", content_name=value)
+            self.assertFalse(result.success)
+            self.assertEqual(result.error, "PreparedServiceRequest serviceName is empty")
+            value.model_family = "q" * 65
+            with self.assertRaises(ValueError):
+                facade.publish_encrypted_large_data("", b"payload", content_name=value)
+        finally:
+            del facade._native
+
     def test_omitted_metadata_keeps_existing_keyword_defaults(self):
         for _ in range(1000):
             result = self.user.publish_encrypted_large_data("", b"payload", object_label="existing")

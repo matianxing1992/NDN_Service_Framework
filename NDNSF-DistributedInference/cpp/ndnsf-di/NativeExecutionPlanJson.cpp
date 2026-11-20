@@ -3671,10 +3671,24 @@ void nativeValidateFixedRoleSourceProducer(const NativeFixedRoleSourceV1& source
     throw std::invalid_argument("fixed source Producer, role or plaintext name commitment mismatch");
 }
 
+static std::string
+nativeCapsuleUseId(const NativeSelectionProjectionV3& projection, bool stored)
+{
+  const auto& identity = projection.selectedRoleContract().modelManifestDigest;
+  if (identity.size() != 71 || identity.compare(0, 7, "sha256:") != 0)
+    throw std::invalid_argument("capsule table lacks verified model identity");
+  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
+    {"attempt", projection.attempt},
+    {"modelIdentity", identity},
+    {"provider", projection.provider},
+    {"requestId", projection.requestId},
+    {"schema", "ndnsf-di-capsule-use-v1"},
+    {"source", stored ? "stored" : "canonical"}})).substr(7);
+}
+
 void
 nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
-                                      const std::string& requester, const bool stored,
-                                      const std::string& role)
+  const std::string& requester, bool stored, const NativeSelectionProjectionV3& projection)
 {
   validateFixedRoleSource(source);
   const ndn::Name producer(requester);
@@ -3696,16 +3710,18 @@ nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
       name[offset + 12].type() == ndn::tlv::GenericNameComponent &&
       name[offset + 12].value_size() == 32 &&
       name[offset + 13] == ndn::name::Component("DATA")) {
-    for (std::size_t index : {2, 3, 4, 6, 10}) {
-      if (name[offset + index].empty())
-        throw std::invalid_argument("capsule table name has an empty coordinate");
-    }
-    if (name[offset + 5] != ndn::name::Component("revision"))
-      throw std::invalid_argument("capsule table name is missing the revision marker");
+    const auto facts = nativeModelPathFacts(projection.plan.modelName, std::string(),
+      projection.plan.modelFamily, std::string());
+    const auto modelPath = ndn::Name().append(facts.family).append(facts.size)
+      .append(facts.quantization).append("revision").append(facts.revisionLabel);
+    if (name.getSubName(offset + 2, modelPath.size()) != modelPath ||
+        !ndn_service_framework::matchesNamingLabelComponent(
+          name[offset + 10], nativeCapsuleUseId(projection, stored)))
+      throw std::invalid_argument("capsule table name differs from the current model or use");
     return;
   }
   // A capsule published before this shape keeps its assignment name and stays readable.
-  nativeValidateFixedRoleSourceProducer(source, requester, role);
+  nativeValidateFixedRoleSourceProducer(source, requester, projection.selectedRoleContract().selectedRole);
 }
 
 ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
@@ -3723,25 +3739,6 @@ ndn_service_framework::PublishedContentName nativeFixedRoleSourceContentName(
   content.modelIdentity = modelIdentity.substr(7);
   content.encode();
   return content;
-}
-
-std::string
-nativeCapsuleUseId(const NativeSelectionProjectionV3& projection,
-                   const NativeFixedRoleAssignmentV1& fixed, const bool stored)
-{
-  // `<UseId>` is a public label for the current use, recomputable from the admitted context and carrying no key
-  // material. It is a full lowercase sha256 hex, so it is stable for one use and differs between canonical and
-  // stored tables.
-  const auto identity = fixed.roleOwner()->modelManifestDigest;
-  if (identity.size() != 71 || identity.compare(0, 7, "sha256:") != 0)
-    throw std::invalid_argument("capsule table lacks verified model identity");
-  return nativePlanningDigest(nativeCanonicalJson(NativeJson{
-    {"attempt", projection.attempt},
-    {"modelIdentity", identity},
-    {"provider", projection.provider},
-    {"requestId", projection.requestId},
-    {"schema", "ndnsf-di-capsule-use-v1"},
-    {"source", stored ? "stored" : "canonical"}}));
 }
 
 ndn_service_framework::PublishedContentName
@@ -3763,7 +3760,7 @@ nativeCapsuleContentName(const NativeSelectionProjectionV3& projection,
   content.modelSize = facts.size;
   content.quantization = facts.quantization;
   content.sourceRevisionLabel = facts.revisionLabel;
-  content.useId = nativeCapsuleUseId(projection, fixed, stored);
+  content.useId = nativeCapsuleUseId(projection, stored);
   content.encode();
   return content;
 }

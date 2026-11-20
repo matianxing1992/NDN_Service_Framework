@@ -1,5 +1,6 @@
 #include "tests/boost-test.hpp"
 #include "tests/integration-tests/ndnsf-integration-fixture.hpp"
+#include "ndn-service-framework/PublishedContentName.hpp"
 #include "ndn-service-framework/dependency-transfer.hpp"
 #include "ndn-service-framework/detail/finite-packet-layout.hpp"
 #include <ndn-cxx/security/signing-helpers.hpp>
@@ -381,8 +382,13 @@ void runAdmissionCase(AdmissionCase mode, bool inBandXor = false)
   ServiceProvider::DataProductReference canonicalReference;
   if (mode == AdmissionCase::CanonicalManifest) {
     const auto publicationContext = environment.user().prepareServiceRequest(profile.serviceName.toUri());
+    LargeDataPublishOptions options;
+    PublishedContentName contentName;
+    contentName.label = "spec226-canonical-input";
+    contentName.semanticRole = ContentSemanticRole::BlobObject;
+    options.contentName = std::move(contentName);
     canonicalPublication = environment.user().publishEncryptedLargeData(publicationContext,
-      ndn::Buffer{3, 7}, "spec226-canonical-input", ndn::time::milliseconds(60000), true);
+      ndn::Buffer{3, 7}, "spec226-canonical-input", ndn::time::milliseconds(60000), true, options);
     BOOST_REQUIRE_MESSAGE(canonicalPublication->success, canonicalPublication->errorMessage);
     BOOST_REQUIRE(!canonicalPublication->manifestName.empty());
     canonicalReference.name = canonicalPublication->manifestName;

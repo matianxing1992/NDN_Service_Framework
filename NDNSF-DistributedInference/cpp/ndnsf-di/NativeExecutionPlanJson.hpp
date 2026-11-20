@@ -222,7 +222,7 @@ struct NativeFixedRoleSourceV1
 /** Admit a model object-key capsule table: the canonical or stored capsule row of N4, or the legacy
  * assignment shape a previously published table still carries. */
 void nativeValidateModelObjectKeyTableName(const NativeFixedRoleSourceV1& source,
-  const std::string& requester, bool stored, const std::string& role);
+  const std::string& requester, bool stored, const NativeSelectionProjectionV3& projection);
 
 void nativeValidateFixedRoleSourceProducer(const NativeFixedRoleSourceV1& source,
   const std::string& requester, const std::string& role);

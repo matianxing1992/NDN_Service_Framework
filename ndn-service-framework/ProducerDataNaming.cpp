@@ -120,6 +120,35 @@ ndn::name::Component makeNamingLabelComponent(const std::string& value)
   return ndn::name::Component("name=" + value.substr(0, length) + "~" + digest.substr(0, 16));
 }
 
+bool isNamingLabelComponent(const ndn::name::Component& component)
+{
+  if (component.type() != ndn::tlv::GenericNameComponent ||
+      component.value_size() < 6 || component.value_size() > 86)
+    return false;
+  const std::string text(reinterpret_cast<const char*>(component.value()), component.value_size());
+  if (text.compare(0, 5, "name=") != 0)
+    return false;
+  if (text.size() <= 69)
+    return matchesNamingLabelComponent(component, text.substr(5));
+
+  const auto separator = text.size() - 17;
+  // A UTF-8 code point may move the cut up to three bytes before the limit.
+  if (separator < 66 || text[separator] != '~')
+    return false;
+  const auto suffix = text.substr(separator + 1);
+  if (!std::all_of(suffix.begin(), suffix.end(), [](unsigned char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      }))
+    return false;
+  try {
+    makeNamingLabelComponent(text.substr(5, separator - 5));
+    return true;
+  }
+  catch (const std::invalid_argument&) {
+    return false;
+  }
+}
+
 bool matchesNamingLabelComponent(const ndn::name::Component& component,
                                  const std::string& fullLabel)
 {

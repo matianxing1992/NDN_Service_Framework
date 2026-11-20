@@ -3350,15 +3350,18 @@ class ServiceUser:
         object_label: str = "",
         freshness_ms: int = 60000,
         manifest_suffix: str = "",
-        content_name: Optional[Mapping[str, str]] = None,
+        content_name: Optional[Union[Mapping[str, str], _ndnsf.NativePublishedContentName]] = None,
     ) -> LargeDataPublishResult:
+        """Publish encrypted data with native metadata or a legacy mapping."""
+        if isinstance(content_name, Mapping):
+            content_name = dict(content_name)
         result = self._native.publish_encrypted_large_data(
             service,
             bytes(payload),
             object_label,
             freshness_ms,
             manifest_suffix,
-            **({"content_name": dict(content_name)} if content_name is not None else {}),
+            **({"content_name": content_name} if content_name is not None else {}),
         )
         return _from_native_large_data_result(result)
 

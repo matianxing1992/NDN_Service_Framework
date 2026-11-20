@@ -5239,9 +5239,13 @@ public:
     nsf::LargeDataPublishOptions options;
     options.manifestSuffix = ndn::Name(manifestSuffix);
     nsf::ProtectedBlobManifest::validateSuffix(options.manifestSuffix);
-    if (!contentNameFields.is_none()) {
+    if (py::isinstance<nsf::PublishedContentName>(contentNameFields)) {
+      options.contentName = contentNameFields.cast<nsf::PublishedContentName>();
+      options.contentName->encode();
+    }
+    else if (!contentNameFields.is_none()) {
       if (!py::isinstance<py::dict>(contentNameFields))
-        throw std::invalid_argument("content_name must be a dict");
+        throw std::invalid_argument("content_name must be a dict or NativePublishedContentName");
       const auto fields = contentNameFields.cast<py::dict>();
       for (const auto& item : fields) {
         const auto key = py::cast<std::string>(item.first);
@@ -8586,6 +8590,75 @@ PYBIND11_MODULE(_ndnsf, m)
     .def_property_readonly("miss_count", &NativeRepoDataPlaneProducer::missCount)
     .def_property_readonly("thread_count", &NativeRepoDataPlaneProducer::threadCount)
     .def_property_readonly("error", &NativeRepoDataPlaneProducer::error);
+
+  using Kind = nsf::ContentDataKind;
+  py::enum_<Kind>(m, "NativeContentDataKind")
+    .value("BLOB", Kind::Blob).value("MODEL_FILE", Kind::ModelFile)
+    .value("WEIGHTS", Kind::Weights).value("INITIALIZER", Kind::Initializer)
+    .value("TOKENIZER", Kind::Tokenizer).value("ARTIFACT_FILE", Kind::ArtifactFile)
+    .value("MATERIAL", Kind::Material).value("INPUT", Kind::Input)
+    .value("ASSIGNMENT", Kind::Assignment);
+  using Role = nsf::ContentSemanticRole;
+  py::enum_<Role>(m, "NativeContentSemanticRole")
+    .value("NONE", Role::None).value("SOURCE_GRAPH", Role::SourceGraph)
+    .value("INITIALIZERS", Role::Initializers).value("MATERIAL_BUNDLE", Role::MaterialBundle)
+    .value("MATERIAL_MANIFEST", Role::MaterialManifest).value("ASSEMBLY_RECEIPT", Role::AssemblyReceipt)
+    .value("PREPARED_METADATA", Role::PreparedMetadata).value("MODEL_MANIFEST", Role::ModelManifest)
+    .value("AUTHORIZATION_MANIFEST", Role::AuthorizationManifest).value("FIXED_ASSIGNMENT", Role::FixedAssignment)
+    .value("CANONICAL_CAPSULE", Role::CanonicalCapsule).value("STORED_CAPSULE", Role::StoredCapsule)
+    .value("WEIGHTS_OBJECT", Role::WeightsObject).value("TOKENIZER_OBJECT", Role::TokenizerObject)
+    .value("ARTIFACT_FILE", Role::ArtifactFileObject).value("ARTIFACT_MANIFEST", Role::ArtifactManifest)
+    .value("MANIFEST_PAGE", Role::ManifestPage).value("INPUT", Role::SemanticInput)
+    .value("BLOB", Role::BlobObject);
+  using PartitionKind = nsf::ArtifactPartitionKind;
+  py::enum_<PartitionKind>(m, "NativeArtifactPartitionKind")
+    .value("NONE", PartitionKind::None).value("FULL_GRAPH", PartitionKind::FullGraph)
+    .value("PIPELINE_STAGE", PartitionKind::PipelineStage).value("TENSOR_PARALLEL", PartitionKind::TensorParallel)
+    .value("HYBRID", PartitionKind::Hybrid).value("AUTOMATIC_GRAPH_CUT", PartitionKind::AutomaticGraphCut)
+    .value("SEMANTIC_COMPONENT", PartitionKind::SemanticComponent);
+  using Partition = nsf::ArtifactPartition;
+  py::class_<Partition>(m, "NativeArtifactPartition")
+    .def(py::init<>())
+    .def_readwrite("kind", &Partition::kind)
+    .def_readwrite("stage_index", &Partition::stageIndex)
+    .def_readwrite("layer_begin", &Partition::layerBegin)
+    .def_readwrite("layer_end", &Partition::layerEnd)
+    .def_readwrite("tensor_degree", &Partition::tensorDegree)
+    .def_readwrite("rank", &Partition::rank)
+    .def_readwrite("cut_prefix_nodes", &Partition::cutPrefixNodes)
+    .def_readwrite("graph_side", &Partition::graphSide)
+    .def_readwrite("component_id", &Partition::componentId);
+  using ContentName = nsf::PublishedContentName;
+  py::class_<ContentName>(m, "NativePublishedContentName")
+    .def(py::init<>())
+    .def_readwrite("kind", &ContentName::kind)
+    .def_readwrite("label", &ContentName::label)
+    .def_readwrite("model_name", &ContentName::modelName)
+    .def_readwrite("model_identity", &ContentName::modelIdentity)
+    .def_readwrite("artifact_kind", &ContentName::artifactKind)
+    .def_readwrite("coordinate", &ContentName::coordinate)
+    .def_readwrite("profile_identity", &ContentName::profileIdentity)
+    .def_readwrite("input_kind", &ContentName::inputKind)
+    .def_readwrite("semantic_role", &ContentName::semanticRole)
+    .def_readwrite("model_family", &ContentName::modelFamily)
+    .def_readwrite("model_size", &ContentName::modelSize)
+    .def_readwrite("quantization", &ContentName::quantization)
+    .def_readwrite("source_revision_label", &ContentName::sourceRevisionLabel)
+    .def_readwrite("bundle_index", &ContentName::bundleIndex)
+    .def_readwrite("profile_label", &ContentName::profileLabel)
+    .def_readwrite("use_id", &ContentName::useId)
+    .def_readwrite("artifact_entry", &ContentName::artifactEntry)
+    .def_readwrite("partition", &ContentName::partition)
+    .def_readwrite("page_number", &ContentName::pageNumber)
+    .def("encode", [] (const ContentName& value) {
+      const auto wire = value.encode();
+      return py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+    })
+    .def("semantic_stem_wire", [] (const ContentName& value, const std::string& producer) {
+      const auto name = value.semanticStem(ndn::Name(producer));
+      const auto& wire = name.wireEncode();
+      return py::bytes(reinterpret_cast<const char*>(wire.data()), wire.size());
+    }, py::arg("producer"));
 
   m.def("make_content_data_prefix", [] (const std::string& producer,
          const std::string& kind, const std::string& label,

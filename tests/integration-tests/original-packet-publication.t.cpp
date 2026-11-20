@@ -1105,6 +1105,84 @@ BOOST_AUTO_TEST_CASE(OwnerRecoverablePublicationRewrapsAfterUserReconstruction)
     service, objectB, replacement, context, deadline, current));
   BOOST_CHECK_EQUAL(repo->list().size(), 2U);
   BOOST_CHECK(storedA->source->readOriginalDataPacket(objectA.manifestName) == originalManifest);
+
+  PublishedContentName legacyName;
+  legacyName.kind = ContentDataKind::ModelFile;
+  legacyName.label = "manifest.json";
+  legacyName.modelName = "qwen3";
+  legacyName.modelIdentity = std::string(64, 'b');
+  LargeDataPublishOptions modelOptions;
+  modelOptions.retention = EncryptedLargeDataRetention::Durable;
+  modelOptions.publicationIdentity = keyReferenceDigest("owner-model");
+  modelOptions.contentName = legacyName;
+  modelOptions.manifestSuffix = ndn::Name("/NDNSF-DI/model")
+    .append(makeNamingLabelComponent(legacyName.modelName))
+    .append(makeNamingDigestComponent(legacyName.modelIdentity)).append("MANIFEST");
+  const auto modelRequest = onIo([&] { return user->prepareServiceRequest(service.toUri()); });
+  const auto publishModel = [&] {
+    return user->publishOwnerRecoverableLargeDataFromWorker(
+      modelRequest, payloadB, legacyName.label, ndn::time::milliseconds(1000),
+      modelOptions, deadline);
+  };
+  const auto originalModel = publishModel();
+  BOOST_REQUIRE_MESSAGE(originalModel.success, originalModel.errorMessage);
+  const auto storedModel = store->lookupDurable(originalModel.publicationIdentity);
+  BOOST_REQUIRE(storedModel);
+  const auto originalModelWire = storedModel->source->readOriginalDataPacket(originalModel.manifestName);
+  const auto beforeModelReuse = repo->list().size();
+  modelOptions.legacyName = LargeDataPublishOptions::LegacyName{
+    legacyName, modelOptions.manifestSuffix};
+  modelOptions.manifestSuffix = {};
+  auto& semanticName = *modelOptions.contentName;
+  semanticName.semanticRole = ContentSemanticRole::ModelManifest;
+  semanticName.modelFamily = "qwen3";
+  semanticName.modelSize = "0.6b";
+  semanticName.quantization = "int4";
+  semanticName.sourceRevisionLabel = "r1";
+  const auto reusedModel = publishModel();
+  BOOST_REQUIRE_MESSAGE(reusedModel.success, reusedModel.errorMessage);
+  BOOST_CHECK_EQUAL(reusedModel.publicationIdentity, originalModel.publicationIdentity);
+  BOOST_CHECK(reusedModel.manifestName == originalModel.manifestName);
+  BOOST_CHECK_EQUAL(repo->list().size(), beforeModelReuse);
+  BOOST_CHECK(storedModel->source->readOriginalDataPacket(reusedModel.manifestName) == originalModelWire);
+
+  PublishedContentName legacyReceipt;
+  legacyReceipt.kind = ContentDataKind::Material;
+  legacyReceipt.label = "assembly-receipt-qwen3";
+  const auto receiptSuffix = ndn::Name("/NDNSF-DI/receipt/assembly")
+    .append(makeNamingLabelComponent(legacyReceipt.label));
+  LargeDataPublishOptions receiptOptions;
+  receiptOptions.retention = EncryptedLargeDataRetention::Durable;
+  receiptOptions.publicationIdentity = keyReferenceDigest("catalog-bound-receipt");
+  receiptOptions.contentName = legacyReceipt;
+  receiptOptions.manifestSuffix = receiptSuffix;
+  const auto publishReceipt = [&] {
+    return user->publishOwnerRecoverableLargeDataFromWorker(
+      modelRequest, payloadB, "di-material-receipt", ndn::time::milliseconds(1000),
+      receiptOptions, deadline);
+  };
+  const auto originalReceipt = publishReceipt();
+  BOOST_REQUIRE_MESSAGE(originalReceipt.success, originalReceipt.errorMessage);
+  const auto beforeReceiptReuse = repo->list().size();
+  auto semanticReceipt = semanticName;
+  semanticReceipt.semanticRole = ContentSemanticRole::AssemblyReceipt;
+  semanticReceipt.label = "di-material-receipt";
+  receiptOptions.contentName = semanticReceipt;
+  receiptOptions.manifestSuffix = {};
+  receiptOptions.legacyName = LargeDataPublishOptions::LegacyName{legacyReceipt, receiptSuffix};
+  const auto reusedReceipt = publishReceipt();
+  BOOST_REQUIRE_MESSAGE(reusedReceipt.success, reusedReceipt.errorMessage);
+  BOOST_CHECK_EQUAL(reusedReceipt.publicationIdentity, originalReceipt.publicationIdentity);
+  BOOST_CHECK(reusedReceipt.manifestName == originalReceipt.manifestName);
+  BOOST_CHECK_EQUAL(repo->list().size(), beforeReceiptReuse);
+
+  receiptOptions.publicationIdentity = keyReferenceDigest("different-catalog-receipt");
+  const auto differentCatalog = publishReceipt();
+  BOOST_REQUIRE_MESSAGE(differentCatalog.success, differentCatalog.errorMessage);
+  BOOST_CHECK_NE(differentCatalog.publicationIdentity, originalReceipt.publicationIdentity);
+  BOOST_CHECK_NE(differentCatalog.manifestName, originalReceipt.manifestName);
+  BOOST_CHECK_EQUAL(repo->list().size(), beforeReceiptReuse + 1);
+
   BOOST_REQUIRE(onIo([&] {
     return keys.getPib().getIdentity(actor.getIdentity()).getDefaultKey()
       .getDefaultCertificate().getName() != actor.getName();

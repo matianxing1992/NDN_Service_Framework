@@ -537,6 +537,7 @@ nativeStorePreparedModelPublication(ndn_service_framework::ServiceUser& writer,
             "MODEL_REPO_STORE_MANIFEST_DIGEST_MISMATCH");
     const auto manifest = ndn_service_framework::ProtectedBlobManifest::decode(
       {content.value(), content.value() + content.value_size()}, producer, object.manifestName);
+    manifest.validateSigner(packet);
     require(manifest.dataPrefix == object.dataPrefix &&
       manifest.plaintextBytes == object.plaintextSize, "MODEL_REPO_STORE_MANIFEST_MISMATCH");
     append(object.manifestName, std::move(wire));

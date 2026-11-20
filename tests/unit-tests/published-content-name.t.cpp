@@ -234,6 +234,10 @@ BOOST_AUTO_TEST_CASE(PartitionAndPageRoundTripThroughTheWire)
   auto tampered = value;
   tampered.partition.rank = 1;
   BOOST_CHECK(tampered.encode() != wire);
+  BOOST_CHECK_NE(tampered.objectIdentity(), value.objectIdentity());
+  tampered = value;
+  tampered.artifactEntry = "mlp-12";
+  BOOST_CHECK_NE(tampered.objectIdentity(), value.objectIdentity());
 
   // A manifest page names its business manifest stem plus the page number.
   PublishedContentName page;
@@ -252,6 +256,9 @@ BOOST_AUTO_TEST_CASE(PartitionAndPageRoundTripThroughTheWire)
   const auto pageWire = page.encode();
   BOOST_REQUIRE(PublishedContentName::decode(pageWire).pageNumber.has_value());
   BOOST_CHECK_EQUAL(*PublishedContentName::decode(pageWire).pageNumber, 4U);
+  auto anotherPage = page;
+  anotherPage.pageNumber = 5;
+  BOOST_CHECK_NE(anotherPage.objectIdentity(), page.objectIdentity());
   auto missingPage = page;
   missingPage.pageNumber.reset();
   BOOST_CHECK_THROW(missingPage.encode(), std::invalid_argument);
@@ -285,6 +292,19 @@ BOOST_AUTO_TEST_CASE(ArtifactStemNamesTheActualPartition)
     .append("entry").append("mlp-13").append("profile").append("kv-0-4-ffn-0-1536")
     .append("file").append(makeNamingLabelComponent("model.onnx"));
   BOOST_CHECK(stem == expected);
+
+  auto manifest = value;
+  manifest.semanticRole = ContentSemanticRole::ArtifactManifest;
+  manifest.label.clear();
+  BOOST_CHECK(manifest.semanticStem(producer) ==
+              ndn::Name(expected.getPrefix(-2)).append("manifest"));
+
+  auto oversized = value;
+  oversized.label = std::string(65, 'a');
+  BOOST_CHECK_THROW(oversized.encode(), std::invalid_argument);
+  oversized = value;
+  oversized.modelFamily = std::string(65, 'a');
+  BOOST_CHECK_THROW(oversized.encode(), std::invalid_argument);
 
   // Same layers, different actual slice -> a different stem, so the layout cannot be aliased.
   auto weighted = value;
@@ -484,7 +504,9 @@ BOOST_AUTO_TEST_CASE(SemanticManifestUsesTheStemWithoutAPayloadHash)
   manifest.protectionEpoch = "epoch-3";
   manifest.keyReferenceId = std::string(64, 'b');
   manifest.keyIdentifier = std::string(64, 'c');
-  const auto representation = std::string(64, 'd');
+  manifest.publicationNonce.assign(12, 0x15);
+  manifest.signerCertificate = ndn::Name("/lab/preparer/KEY/sign/issuer").appendVersion(1);
+  const std::string representation = "e630ea492b87aca9388eec4a9007c39c5a19c71b4a9f22fef3ca98e95dbbe378";
   manifest.dataPrefix = content.representationPrefix(producer, representation);
   manifest.dataPrefix.append("DATA");
 
@@ -496,11 +518,22 @@ BOOST_AUTO_TEST_CASE(SemanticManifestUsesTheStemWithoutAPayloadHash)
   const auto payload = manifest.encode();
   const auto decoded = ProtectedBlobManifest::decode(payload, producer, manifestName);
   BOOST_CHECK(decoded.getName() == manifestName);
+  BOOST_CHECK(decoded.publicationNonce == manifest.publicationNonce);
+  BOOST_CHECK(decoded.signerCertificate == manifest.signerCertificate);
 
   // A prefix that does not carry the representation tail is refused for a semantic object.
   auto wrong = manifest;
   wrong.dataPrefix = content.semanticStem(producer).append("PROTECTED")
     .append(makeNamingDigestComponent(std::string(64, 'e'))).append("DATA");
+  BOOST_CHECK_THROW(wrong.encode(), std::invalid_argument);
+  wrong = manifest;
+  wrong.publicationNonce.front() ^= 1;
+  BOOST_CHECK_THROW(wrong.encode(), std::invalid_argument);
+  wrong = manifest;
+  wrong.signerCertificate = ndn::Name("/lab/preparer/KEY/other/issuer").appendVersion(1);
+  BOOST_CHECK_THROW(wrong.encode(), std::invalid_argument);
+  wrong = manifest;
+  wrong.plaintextDigest.front() ^= 1;
   BOOST_CHECK_THROW(wrong.encode(), std::invalid_argument);
 }
 
