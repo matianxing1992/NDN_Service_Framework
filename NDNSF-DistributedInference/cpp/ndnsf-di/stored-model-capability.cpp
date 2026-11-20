@@ -757,13 +757,35 @@ public:
           m_metadata.size() == 7 && m_metadata.at("schema") == "ndnsf-di-model-preparation-v1" &&
           savedContext == context);
         if (keyed || sealed) {
-          const auto fallback = sealed ? journalWriteKey() : std::nullopt;
-          const auto protection = keyed ? storedKey : fallback;
-          require(protection.has_value() &&
-            ndn_service_framework::openField(
-              protection->key,
-              std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
-              "ndnsf-di/model-preparation-journal", m_sealedKey));
+          // A keyed journal names its key. A sealed v2 journal does not, so any ring entry may be the one that
+          // sealed it - the write key first, then the rest, because a ring that gained an entry since would
+          // otherwise make every older journal unreadable.
+          std::vector<JournalKey> candidates;
+          if (keyed) {
+            if (storedKey)
+              candidates.push_back(*storedKey);
+          }
+          else {
+            if (const auto writeKey = journalWriteKey())
+              candidates.push_back(*writeKey);
+            try {
+              for (const auto& entry : ndn_service_framework::loadFileKeyRingEntries())
+                candidates.push_back(JournalKey{entry.keyId, entry.key});
+            }
+            catch (const std::exception&) {
+            }
+          }
+          bool opened = false;
+          for (const auto& candidate : candidates) {
+            if (ndn_service_framework::openField(
+                  candidate.key,
+                  std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
+                  "ndnsf-di/model-preparation-journal", m_sealedKey)) {
+              opened = true;
+              break;
+            }
+          }
+          require(opened);
           require(m_sealedKey.size() == 32);
           m_handle.masterKey.assign(m_sealedKey.begin(), m_sealedKey.end());
           OPENSSL_cleanse(m_sealedKey.data(), m_sealedKey.size());
