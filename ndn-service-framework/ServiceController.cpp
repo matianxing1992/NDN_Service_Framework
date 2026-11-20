@@ -363,14 +363,30 @@ ServiceController::restoreOrPersistAbeMaterial()
     const auto publicKey = m_aaCert.getPublicKey();
     ndn::util::Sha256 digest;
     digest << std::string(reinterpret_cast<const char*>(publicKey.data()), publicKey.size());
-    if (material->signingKeyDigest != "sha256:" + digest.toString())
-      throw std::runtime_error("Controller signing identity changed");
+    // The stored digest names the certificate that sealed this material. A renewed certificate for the same
+    // identity is the same authority, so a changed digest forces a rotation below instead of refusing to start;
+    // a different identity is caught by the owner check in the store, which is the boundary that matters.
+    const bool signingKeyRotated = material->signingKeyDigest != "sha256:" + digest.toString();
+    if (signingKeyRotated) {
+      NDN_LOG_WARN("NDNSF_CONTROLLER_SIGNING_KEY_ROTATED stored=" << material->signingKeyDigest
+                   << " current=sha256:" << digest.toString());
+    }
     m_aa.restoreKeyGeneration(material->publicParameters, material->masterSecret);
     if (const auto stored = m_generationStore->load())
       m_abeMaterialVersion = *stored;
-    if (!material->rotationRequired && material->policyDigest == sha256FileDigest(m_configFilePath)) {
+    if (!signingKeyRotated && !material->rotationRequired &&
+        material->policyDigest == sha256FileDigest(m_configFilePath)) {
       return;
     }
+    // A startup that finds a rotation outstanding must take the same path a revocation does: archive the
+    // outgoing generation and snapshot what each identity held under it, then replace the keys. Rotating here
+    // directly would leave the retired generation unreadable to every historical reader.
+    rotateAbeGenerationAndReissuePolicies();
+    if (m_abeMaterialVersion.isValid() &&
+        m_abeMaterialVersion.controllerGenerationTimestamp ==
+          m_controllerVersion.controllerGenerationTimestamp &&
+        m_abeMaterialVersion.controllerEpoch == m_controllerVersion.controllerEpoch)
+      return;
     m_aa.rotateKeyGeneration(1);
   }
   persistAbeMaterial();
