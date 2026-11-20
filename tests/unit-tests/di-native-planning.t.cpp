@@ -18,6 +18,7 @@
 #include "NDNSF-DistributedInference/cpp/adapters/qwen/NativeQwenPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/adapters/yolo/NativeYoloPlanner.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeSourcePartitionStrategy.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/NativeModelRunner.hpp"
 
 #include <boost/test/unit_test.hpp>
@@ -2407,6 +2408,22 @@ BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
   for (const auto& role : roles)
     if (!role.sourceTransformV1.empty()) ++transformed;
   BOOST_CHECK_EQUAL(transformed, 3U);
+}
+
+BOOST_AUTO_TEST_CASE(NativeConvInputChannelRangesAreContiguous)
+{
+  const auto halves = nativeConvInputChannelRanges(16, 2);
+  BOOST_REQUIRE_EQUAL(halves.size(), 2U);
+  BOOST_CHECK_EQUAL(halves[0].first, 0U); BOOST_CHECK_EQUAL(halves[0].second, 8U);
+  BOOST_CHECK_EQUAL(halves[1].first, 8U); BOOST_CHECK_EQUAL(halves[1].second, 16U);
+  const auto thirds = nativeConvInputChannelRanges(10, 3);
+  BOOST_REQUIRE_EQUAL(thirds.size(), 3U);
+  BOOST_CHECK_EQUAL(thirds[0].second, 4U);
+  BOOST_CHECK_EQUAL(thirds[1].first, 4U); BOOST_CHECK_EQUAL(thirds[1].second, 7U);
+  BOOST_CHECK_EQUAL(thirds[2].first, 7U); BOOST_CHECK_EQUAL(thirds[2].second, 10U);
+  BOOST_CHECK_THROW(nativeConvInputChannelRanges(1, 2), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 0), std::invalid_argument);
+  BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 5), std::invalid_argument);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
