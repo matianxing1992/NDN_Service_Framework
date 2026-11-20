@@ -253,6 +253,21 @@ NativeSourcePartitionStrategy::enumerateImpl(
       : graph.modelInputs.front().name;
     const std::string sourceOutput = graph.modelOutputs.empty() ? "output"
       : graph.modelOutputs.front().name;
+    // Build the request-ingress and terminal slots from the verified graph
+    // contracts, not from the Conv activation shapes: the entry binder compares
+    // name, dtype and shape exactly against the real source ports.
+    const auto contractSlot = [&] (const std::string& id, const NativeTensorContract& contract,
+                                   const std::string& source) {
+      NativeStepSlotSpec result;
+      result.slotId = id;
+      result.dtype = contract.dtype.empty() ? m_profile.activationDtype : contract.dtype;
+      for (const auto& dim : contract.shape) {
+        if (const auto* value = std::get_if<std::int64_t>(&dim)) result.shape.push_back(*value);
+      }
+      result.layoutDigest = layout;
+      result.source = source;
+      return result;
+    };
     const std::string activation = m_profile.convInputTensor;
     const std::string partial = m_profile.convOutputTensor;
     if (activation == sourceInput || activation == partial || partial == sourceOutput)
@@ -267,8 +282,9 @@ NativeSourcePartitionStrategy::enumerateImpl(
     prefix.artifactEntry = m_profile.roles[0] + "/artifact";
     // The ingress reads the request's own named tensor; internal handoffs keep
     // the actual ONNX tensor names so a runner port binding is never a guess.
-    prefix.inputSlots.push_back(slot(sourceInput, m_profile.activationShape,
-                                     "EPOCH_INPUT", "", ""));
+    prefix.inputSlots.push_back(graph.modelInputs.empty()
+      ? slot(sourceInput, m_profile.activationShape, "EPOCH_INPUT", "", "")
+      : contractSlot(sourceInput, graph.modelInputs.front(), "EPOCH_INPUT"));
     prefix.outputSlots.push_back(slot(activation, m_profile.activationShape,
                                       "LOCAL_STEP", "", ""));
     candidate.executionPlan.steps.push_back(std::move(prefix));
@@ -301,8 +317,9 @@ NativeSourcePartitionStrategy::enumerateImpl(
     suffix.artifactEntry = m_profile.roles[3] + "/artifact";
     suffix.inputSlots.push_back(slot("sum", m_profile.partialShape, "REMOTE_STEP",
                                      sumStep, "sum"));
-    suffix.outputSlots.push_back(slot(sourceOutput, m_profile.partialShape,
-                                      "LOCAL_STEP", "", ""));
+    suffix.outputSlots.push_back(graph.modelOutputs.empty()
+      ? slot(sourceOutput, m_profile.partialShape, "LOCAL_STEP", "", "")
+      : contractSlot(sourceOutput, graph.modelOutputs.front(), "LOCAL_STEP"));
     candidate.executionPlan.steps.push_back(std::move(suffix));
   }
 
