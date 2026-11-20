@@ -285,6 +285,73 @@ BOOST_AUTO_TEST_CASE(LegacyJournalResumesWhenCoordinatesAreSupplied)
   }
 }
 
+namespace {
+
+/** Write a ring file holding exactly these (id, key) pairs, newest first. */
+void
+writeKeyRing(const std::filesystem::path& path,
+             const std::vector<std::pair<std::string, std::string>>& entries)
+{
+  std::ofstream ring(path, std::ios::trunc);
+  for (const auto& [id, key] : entries)
+    ring << id << ' ' << key << '\n';
+  ring.close();
+  std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+}
+
+std::string
+journalHeader(const std::filesystem::path& path)
+{
+  std::ifstream input(path, std::ios::binary);
+  std::string line;
+  std::getline(input, line);
+  return line;
+}
+
+} // namespace
+
+/** A journal sealed with one ring entry stays readable after the ring gains a newer entry, and is rewritten
+ *  with the newer one: a rotation must never orphan work already on disk. */
+BOOST_AUTO_TEST_CASE(PreparationJournalSurvivesKeyRotation)
+{
+  PrivateFile fixture;
+  const auto ring = fixture.directory / "ring";
+  const auto journal = fixture.directory / "state.json";
+  const std::string keyA(64, 'a');
+  const std::string keyB(64, 'b');
+  writeKeyRing(ring, {{"key-a", keyA}});
+  ::setenv("NDNSF_FILE_KEYRING", ring.c_str(), 1);
+  struct RingCleanup
+  {
+    ~RingCleanup() { ::unsetenv("NDNSF_FILE_KEYRING"); }
+  } cleanup;
+  PacketRepository repository;
+  BOOST_REQUIRE_NO_THROW(repository.publish(nullptr, journal));
+  BOOST_REQUIRE(std::filesystem::exists(journal));
+  BOOST_CHECK_EQUAL(journalHeader(journal), "NDNSF-DI-MODEL-PREPARATION-v3");
+  {
+    std::ifstream input(journal, std::ios::binary);
+    std::string magicLine;
+    std::string idLine;
+    std::getline(input, magicLine);
+    std::getline(input, idLine);
+    BOOST_CHECK_EQUAL(idLine, "key-a");
+  }
+  // A newer entry becomes the write key; the older one still has to open the journal above.
+  writeKeyRing(ring, {{"key-b", keyB}, {"key-a", keyA}});
+  BOOST_REQUIRE_NO_THROW(repository.publish(nullptr, journal));
+  {
+    std::ifstream input(journal, std::ios::binary);
+    std::string magicLine;
+    std::string idLine;
+    std::getline(input, magicLine);
+    std::getline(input, idLine);
+    BOOST_CHECK_EQUAL(magicLine, "NDNSF-DI-MODEL-PREPARATION-v3");
+    BOOST_CHECK_EQUAL(idLine, "key-b");
+  }
+}
+
 BOOST_AUTO_TEST_CASE(CommitPipelineBackpressurePreventsWorkerBeyondCapacity)
 {
   constexpr auto capacity = NativeModelCommitPipeline::MAX_ACTIVE_COMMITS;

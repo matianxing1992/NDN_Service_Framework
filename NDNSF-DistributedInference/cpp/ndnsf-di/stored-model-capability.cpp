@@ -711,6 +711,7 @@ public:
           (keyed || sealed || std::equal(magic.begin(), magic.end(), bytes.begin())));
         std::size_t magicSize = keyed ? keyedMagic.size() : (sealed ? sealedMagic.size() : magic.size());
         std::optional<JournalKey> storedKey;
+        std::string sealedKeyId;
         if (keyed) {
           const auto newline = std::find(bytes.begin() + static_cast<std::ptrdiff_t>(magicSize),
                                          bytes.begin() + 256, '\n');
@@ -718,6 +719,7 @@ public:
           storedKey = journalKeyById(std::string(bytes.begin() + static_cast<std::ptrdiff_t>(magicSize),
                                                  newline));
           require(storedKey.has_value());
+          sealedKeyId = storedKey->id;
           magicSize = static_cast<std::size_t>(newline - bytes.begin()) + 1;
         }
         const auto keyBytes = (keyed || sealed) ? SEALED_FIELD_BYTES : std::size_t{32};
@@ -770,6 +772,18 @@ public:
           m_handle.masterKey.assign(bytes.begin() + metadataEnd, bytes.begin() + bodySize);
         }
         validate();
+        // The journal opened under an older ring entry: re-seal it with the current write key so a rotation
+        // completes here instead of being re-applied on every open. A failure is not fatal - the work is readable.
+        if (!sealedKeyId.empty()) {
+          const auto writeKey = journalWriteKey();
+          if (writeKey && writeKey->id != sealedKeyId) {
+            try {
+              save();
+            }
+            catch (const std::exception&) {
+            }
+          }
+        }
       }
       catch (...) {
         // Neither parser text nor private key bytes may escape through diagnostics.
