@@ -2331,4 +2331,57 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
   }
 }
 
+BOOST_AUTO_TEST_CASE(OnnxSourceHybridPlanPreparesTransformedRoles)
+{
+  std::ifstream file(ndnsf::test::testFixturePath("spec261/conv-bypass.onnx").string(),
+                     std::ios::binary);
+  BOOST_REQUIRE(file.good());
+  NativeCanonicalSource source;
+  source.modelBytes.assign(std::istreambuf_iterator<char>(file), {});
+  auto descriptor = model("fixture", "ConvBypass", digest("conv-bypass-placeholder"));
+  NativeAssemblyControl control{std::chrono::steady_clock::now() + std::chrono::seconds(30),
+    [] {}, 4 * 1024 * 1024, 4 * 1024 * 1024};
+  const auto inspected = inspectNativeOnnxSourceGraph(source, descriptor, control);
+  descriptor.graphDigest = inspected.graph.graphDigest;
+  const auto identity = canonicalOnnxSourceIdentity(source, control);
+  BOOST_REQUIRE_EQUAL(inspected.graph.topologicalOrder.size(), 7U);
+  const auto boundary = inspected.graph.topologicalOrder.at(1);
+  const NativeJson configuration{
+    {"schema", "ndnsf-di-native-request-catalog-v1"},
+    {"model", nativeParseJson(descriptor.canonicalJson())},
+    {"source", {{"data_name", "/fixture/conv"},
+      {"digest", nativePlanningDigest(source.modelBytes.data(), source.modelBytes.size())},
+      {"model_manifest_digest", digest("conv-manifest")},
+      {"canonical_graph_digest", identity.graphDigest}}},
+    {"recipe", {{"artifact_profile_digest", digest("conv-profile")},
+      {"assembler_descriptor_digest", digest("conv-assembler")}, {"backend_abi", "fixture-abi"},
+      {"precision", descriptor.precision}, {"quantization", "none"}, {"layout", "NCHW"},
+      {"padding", "none"}, {"protection_epoch", "epoch-1"}, {"max_source_bytes", 4194304},
+      {"max_assembled_bytes", 4194304}, {"max_nodes", 100}}},
+    {"publication", {{"artifact_root", "/fixture/conv/artifacts"}}},
+    {"input_format", "OPAQUE"}, {"max_payload_bytes", 4096},
+    {"splitter", {{"kind", "ONNX_SOURCE"}, {"mode", "hybrid"},
+      {"roles", {"Prefix", "Rank0", "Rank1", "Suffix"}},
+      {"boundary_node", boundary}, {"input_ingress_role", "Prefix"},
+      {"result_egress_role", "Suffix"}, {"postprocessing", NativeJson::object()},
+      {"input_channels", 16}, {"conv_input_axis", "input-channel"},
+      {"activation_shape", {1, 16, 8, 8}}, {"partial_shape", {1, 32, 8, 8}},
+      {"activation_dtype", "float32"}}}
+  };
+  const auto loaded = NativeRequestCatalog::load(nativeCanonicalJson(configuration), source, control);
+  BOOST_REQUIRE(loaded.splitter);
+  const auto candidates = loaded.splitter->enumerate(loaded.model.descriptor, loaded.model.graph, {});
+  BOOST_REQUIRE_EQUAL(candidates.size(), 1U);
+  BOOST_REQUIRE_EQUAL(candidates.front().sourceTransformByRole.size(), 3U);
+  BOOST_CHECK_NO_THROW(candidates.front().validate(loaded.model.graph));
+  NativeRequestControl requestControl{"/fixture/conv/request", 1,
+    std::chrono::steady_clock::now() + std::chrono::seconds(10), {}};
+  const auto roles = loaded.preparation->prepareRoles(loaded.model, candidates.front(), requestControl);
+  BOOST_REQUIRE_EQUAL(roles.size(), 4U);
+  std::size_t transformed = 0;
+  for (const auto& role : roles)
+    if (!role.sourceTransformV1.empty()) ++transformed;
+  BOOST_CHECK_EQUAL(transformed, 3U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

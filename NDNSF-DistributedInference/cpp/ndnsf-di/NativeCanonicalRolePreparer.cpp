@@ -408,7 +408,16 @@ std::vector<NativeSelectionRoleV3> NativeCanonicalRolePreparer::prepare(const Na
     const auto& requirement = candidate.requirementsByRole.at(name);
     // This is a source-derived lower bound, not backend peak memory. Rank
     // sharding and native postprocessing do not load this full ONNX weight set.
-    if (degree == 1 && !(name == candidate.resultEgressRole &&
+    // A transformed role owns only a declared weight slice or the suffix bias,
+    // not the complete initializer closure of its source region. Its planner
+    // requirement is therefore the proof-derived resident bound instead of the
+    // ordinary consumed-initializer lower bound.
+    const bool transformedRole = candidate.sourceTransformByRole.count(name) != 0;
+    if (transformedRole) {
+      if (!requirement.weightBytes || *requirement.weightBytes == 0)
+        throw std::invalid_argument("transformed native role has no resident weight bound");
+    }
+    else if (degree == 1 && !(name == candidate.resultEgressRole &&
                         candidate.mergeKind == "NATIVE_POSTPROCESS")) {
       std::uint64_t consumedBytes = 0;
       for (const auto& initializer : initializers) {
