@@ -468,7 +468,9 @@ runRequestScopedResponseCase(bool useLargeResponse, bool tamperResponse,
   std::size_t largestInputDataWire = 0;
   auto inputObserver = environment.userFace().onSendData.connect(
       [&] (const ndn::Data& data) {
-        if (data.getName().toUri().find("REQUEST-INPUT") == std::string::npos) {
+        // N5 input row: <User>/NDNSF-DI/input/request/<RequestId>/attempt/<A>/recipient/.../rep/<R>/v=0
+        const auto uri = data.getName().toUri();
+        if (uri.find("/NDNSF-DI/input/request/") == std::string::npos) {
           return;
         }
         AeadEnvelope envelope;
@@ -1111,7 +1113,7 @@ runProtectedTargetedTerminalCase(bool expireBeforeResponse)
   std::size_t inputInterests = 0;
   auto inputInterestObserver = environment.providerFace().onSendInterest.connect(
     [&] (const ndn::Interest& interest) {
-      if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos)
+      if (interest.getName().toUri().find("/NDNSF-DI/input/request/") != std::string::npos)
         ++inputInterests;
     });
   auto status = makeCurrentStatus(service, 1);
@@ -1291,8 +1293,9 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedMissingInputFailsBeforeExecution)
     });
   environment.enableProductionIngressForTest();
   test::FaultProfile faults;
+  // The N5 request-input row; the fault drops every input Data for this User.
   const auto inputPrefix = ndn::Name(environment.user().getName())
-    .append("NDNSF").append("DI").append("REQUEST-INPUT");
+    .append("NDNSF-DI").append("input").append("request");
   faults.dropDataPredicate = [inputPrefix] (const ndn::Data& data) {
     return inputPrefix.isPrefixOf(data.getName());
   };
@@ -1367,7 +1370,7 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedInlineLegacyOfferAndRequestBudgetFallback)
     std::optional<ndn::Data> publishedInput;
     auto inputObserver = environment.providerFace().onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
-        if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos) {
+        if (interest.getName().toUri().find("/NDNSF-DI/input/request/") != std::string::npos) {
           ++inputInterests;
           // DummyFace does not cache unsolicited Data. Replay only the
           // original exact packet when the production fetch expresses it.
@@ -1380,7 +1383,7 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedInlineLegacyOfferAndRequestBudgetFallback)
         // Observe actual signed packets transferred by the SVS fixture,
         // rather than treating the inner Request size as a wire budget.
         BOOST_CHECK_LE(data.wireEncode().size(), 8192U);
-        if (data.getName().toUri().find("REQUEST-INPUT") != std::string::npos)
+        if (data.getName().toUri().find("/NDNSF-DI/input/request/") != std::string::npos)
           publishedInput = data;
       });
     auto registration = environment.provider().addScopedTargetedService(service,
@@ -1544,7 +1547,7 @@ BOOST_AUTO_TEST_CASE(ProtectedTargetedInlineRejectsUntrustedSignedInput)
     std::size_t executions = 0, inputInterests = 0;
     auto inputObserver = environment.providerFace().onSendInterest.connect(
       [&] (const ndn::Interest& interest) {
-        if (interest.getName().toUri().find("REQUEST-INPUT") != std::string::npos)
+        if (interest.getName().toUri().find("/NDNSF-DI/input/request/") != std::string::npos)
           ++inputInterests;
       });
     auto registration = environment.provider().addScopedTargetedService(service,

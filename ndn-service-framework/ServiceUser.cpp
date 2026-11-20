@@ -10550,9 +10550,6 @@ namespace ndn_service_framework
 
             const auto userAdvertisement =
                 makeEncryptionCertificateAdvertisement(identityCert);
-            const auto inputName = makeRequestScopedInputDataName(
-                serviceName, requestId, selectionMessage.getAttempt(),
-                providerName);
             RequestSecurityBinding binding;
             binding.serviceName = serviceName;
             binding.requestId = requestId;
@@ -10566,6 +10563,10 @@ namespace ndn_service_framework
                 offer.getField("recipientCertDigest");
             binding.selectionDigest =
                 computeSelectionDigestWithoutKeyEnvelope(selectionMessage);
+            // The N5 input name commits only to facts both sides hold before publication, so it can be built from
+            // the binding as soon as it is complete and before the name itself joins it.
+            const RequestInputOwner inputOwner{identity, providerName};
+            const auto inputName = makeRequestScopedInputName(inputOwner, binding);
             binding.inputDataName = inputName;
             binding.segmentOrEventId = "request-input";
 

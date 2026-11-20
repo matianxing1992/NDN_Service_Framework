@@ -53,6 +53,28 @@ struct RequestKeyBundle
 };
 
 /** RSA-OAEP encrypted key bundle bound to one selected Provider. */
+/** N5 `<RepresentationId>` of one request-scoped input.
+ *
+ * Only facts both sides hold before publication take part: user identity, service, request, attempt, controller
+ * version, the complete Provider name, both encryption certificate names/digests and the selection digest. The
+ * plaintext digest is bound by the protected envelope instead, because the Provider rebuilds this name before it
+ * fetches or decrypts, and `binding.inputDataName` is excluded because the name itself is being computed.
+ */
+std::string computeRequestInputRepresentationId(const RequestSecurityBinding& binding,
+                                                const struct RequestInputOwner& owner);
+
+/** Identity of the receiving Provider and the publishing User; the complete Provider prefix is part of the name. */
+struct RequestInputOwner
+{
+  ndn::Name user;
+  ndn::Name provider;
+};
+
+/** N5 request-scoped input prefix:
+ *  `<User>/NDNSF-DI/input/request/<RequestId>/attempt/<A>/recipient/NameComponent(<Provider>)/rep/<R>/v=0`. */
+ndn::Name makeRequestScopedInputName(const RequestInputOwner& owner,
+                                     const RequestSecurityBinding& binding);
+
 struct SelectionKeyEnvelope
 {
   static constexpr uint32_t TYPE = 0xF830;

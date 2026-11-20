@@ -10884,17 +10884,10 @@ namespace ndn_service_framework
         expected.providerEncryptionCertDigest = sha256DigestString(publicKeyBuffer);
         expected.selectionDigest =
             computeSelectionDigestWithoutKeyEnvelope(selectionMessage);
-        expected.inputDataName = ndn::Name(requesterName)
-            .append("NDNSF").append("DI").append("REQUEST-INPUT")
-            .append(serviceName).append(requestId)
-            .appendNumber(expected.attempt)
-            // Request-scoped keys and AAD are Provider-specific.  Mirror the
-            // User's Provider component in the exact input name so a
-            // collaboration cannot collide several encrypted inputs.
-            // The final version component is deterministic from the bound
-            // attempt and is required by SegmentFetcher for segmented Data.
-            .append("PROVIDER").append(providerName).appendVersion(
-                expected.attempt);
+        // Same N5 builder the User used, over the same pre-publication facts; the Provider rebuilds the name
+        // before it fetches or decrypts, so nothing here may depend on the plaintext.
+        expected.inputDataName = makeRequestScopedInputName(
+            RequestInputOwner{requesterName, providerName}, expected);
         expected.segmentOrEventId = "request-input";
 
         SelectionKeyEnvelope envelope;
