@@ -9,6 +9,7 @@ import importlib.util
 import json
 import math
 import os
+import subprocess
 from pathlib import Path
 import sys
 from typing import Any
@@ -212,6 +213,35 @@ def native_yolo_splitter(manifest: dict[str, Any],
     })
     return {"kind": "YOLO", "components": components,
             "postprocessing": manifest.get("postprocessing", {})}
+
+
+def native_program(repo: Path, name: str) -> Path:
+    """Resolve one native executable from the installed prefix or the build tree."""
+    prefix = os.environ.get("NDNSF_TEST_RUNTIME_PREFIX", "")
+    if prefix:
+        for candidate in (Path(prefix) / "bin" / name,
+                          Path(prefix) / "libexec" / "ndnsf-di" / name):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        raise RuntimeError("SPEC261_NATIVE_PROGRAM_MISSING: " + name)
+    for subdir in ("", "tests", "examples"):
+        candidate = repo / "build" / subdir / name if subdir else repo / "build" / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise RuntimeError("SPEC261_NATIVE_PROGRAM_MISSING: " + name)
+
+
+def _inspect_source_conv(graph_path: Path, weights_path: Path, index: int,
+                         repo: Path, resolver: Any = None) -> dict[str, Any]:
+    """Read one Conv node's bindable facts from the maintained native helper."""
+    program = (resolver or native_program)(repo, "native-source-inspect")
+    completed = subprocess.run(
+        [str(program), "--conv", str(index), str(graph_path), str(weights_path)],
+        check=True, capture_output=True, text=True, timeout=300)
+    facts = json.loads(completed.stdout)
+    if facts.get("op") != "Conv":
+        raise RuntimeError("SPEC261_CONV_FACTS_NOT_A_CONV")
+    return facts
 
 
 def native_onnx_source_splitter(*, boundary_node: str, roles: list[str],
@@ -538,7 +568,17 @@ def prepare_native_yolo_assets(
     trust_schema = bundle_root / "trust-schema.conf"
     trust_schema.write_text((repo / "examples/trust-schema.conf").read_text(
         encoding="utf-8"), encoding="utf-8")
-    splitter = native_yolo_splitter(manifest, role_map)
+    # The ONNX_SOURCE splitter is generated from the inspected Conv facts so the
+    # catalog cannot restate operand names, geometry or channel counts that the
+    # model does not have. `native_yolo_splitter` stays available for the
+    # migration comparison only.
+    conv_index = int(os.environ.get("SPEC261_CONV_INDEX", "3"))
+    conv_facts = _inspect_source_conv(
+        graph_path, weights_path, conv_index, repo, native_program)
+    splitter = native_onnx_source_splitter(
+        boundary_node=f"onnx-node-{conv_index}",
+        roles=["Prefix", "Rank0", "Rank1", "Suffix"],
+        conv=conv_facts)
     requester_config = {
         "schema": "ndnsf-di-native-requester-v1",
         "catalog": {

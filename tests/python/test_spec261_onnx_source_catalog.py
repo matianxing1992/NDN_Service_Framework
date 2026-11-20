@@ -69,6 +69,26 @@ class OnnxSourceCatalogTest(unittest.TestCase):
                 boundary_node="onnx-node-3",
                 roles=["Prefix", "Suffix"], conv=facts)
 
+    def test_program_resolver_prefers_the_installed_prefix(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            prefix = Path(root) / "prefix"
+            (prefix / "bin").mkdir(parents=True)
+            program = prefix / "bin" / "native-source-inspect"
+            program.write_text("#!/bin/sh\n", encoding="utf-8")
+            program.chmod(0o755)
+            previous = os.environ.get("NDNSF_TEST_RUNTIME_PREFIX")
+            os.environ["NDNSF_TEST_RUNTIME_PREFIX"] = str(prefix)
+            try:
+                resolved = generator.native_program(ROOT, "native-source-inspect")
+            finally:
+                if previous is None:
+                    os.environ.pop("NDNSF_TEST_RUNTIME_PREFIX", None)
+                else:
+                    os.environ["NDNSF_TEST_RUNTIME_PREFIX"] = previous
+            self.assertEqual(resolved, program)
+
 
 if __name__ == "__main__":
     unittest.main()
