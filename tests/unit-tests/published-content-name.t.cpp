@@ -135,6 +135,83 @@ BOOST_AUTO_TEST_CASE(SemanticMetadataRoundTripAndRejection)
   BOOST_CHECK_THROW(PublishedContentName::decode(truncated), std::exception);
 }
 
+BOOST_AUTO_TEST_CASE(SemanticCoordinatesRoundTripAndClosedValidation)
+{
+  PublishedContentName value;
+  value.kind = ContentDataKind::Material;
+  value.semanticRole = ContentSemanticRole::MaterialBundle;
+  value.label = "bundle-12";
+  value.modelName = "qwen3";
+  value.modelFamily = "qwen3";
+  value.modelSize = "0.6b";
+  value.quantization = "int4";
+  value.sourceRevisionLabel = "r3";
+  value.bundleIndex = 12;
+  const auto wire = value.encode();
+  const auto restored = PublishedContentName::decode(wire);
+  BOOST_CHECK(restored.semanticRole == ContentSemanticRole::MaterialBundle);
+  BOOST_CHECK_EQUAL(restored.modelFamily, "qwen3");
+  BOOST_CHECK_EQUAL(restored.quantization, "int4");
+  BOOST_REQUIRE(restored.bundleIndex.has_value());
+  BOOST_CHECK_EQUAL(*restored.bundleIndex, 12U);
+  BOOST_CHECK_EQUAL(restored.objectIdentity(), value.objectIdentity());
+  const auto path = restored.modelPathComponents();
+  BOOST_REQUIRE_EQUAL(path.size(), 5U);
+  BOOST_CHECK_EQUAL(path[0], "qwen3");
+  BOOST_CHECK_EQUAL(path[1], "0.6b");
+  BOOST_CHECK_EQUAL(path[2], "int4");
+  BOOST_CHECK_EQUAL(path[3], "revision");
+  BOOST_CHECK_EQUAL(path[4], "r3");
+
+  // A coordinate changes the object identity; the name must not stay the same.
+  auto other = value;
+  other.quantization = "int8";
+  BOOST_CHECK(other.objectIdentity() != value.objectIdentity());
+
+  // Closed validation: role/kind mismatch, bundle index outside a bundle, use id outside a capsule.
+  auto wrongRole = value;
+  wrongRole.semanticRole = ContentSemanticRole::SourceGraph;
+  BOOST_CHECK_THROW(wrongRole.encode(), std::invalid_argument);
+  auto extraBundle = value;
+  extraBundle.bundleIndex.reset();
+  BOOST_CHECK_THROW(extraBundle.encode(), std::invalid_argument);
+  auto strayUse = value;
+  strayUse.useId = "use1";
+  BOOST_CHECK_THROW(strayUse.encode(), std::invalid_argument);
+  auto missingPath = value;
+  missingPath.modelSize.clear();
+  BOOST_CHECK_THROW(missingPath.encode(), std::invalid_argument);
+
+  // A legacy instance keeps exactly the previous eight-field wire.
+  PublishedContentName legacy;
+  legacy.kind = ContentDataKind::Blob;
+  legacy.label = "payload";
+  BOOST_CHECK(!legacy.hasSemanticCoordinates());
+  const auto legacyWire = legacy.encode();
+  BOOST_CHECK(PublishedContentName::decode(legacyWire).encode() == legacyWire);
+}
+
+BOOST_AUTO_TEST_CASE(CapsuleRoleRequiresCurrentUseAndModelPath)
+{
+  PublishedContentName value;
+  value.kind = ContentDataKind::Assignment;
+  value.semanticRole = ContentSemanticRole::StoredCapsule;
+  value.label = "S0R0";
+  value.modelName = "qwen3";
+  value.modelIdentity = std::string(64, 'a');
+  value.modelFamily = "qwen3";
+  value.modelSize = "0.6b";
+  value.quantization = "int4";
+  value.sourceRevisionLabel = "r3";
+  value.useId = "use7";
+  const auto restored = PublishedContentName::decode(value.encode());
+  BOOST_CHECK(restored.semanticRole == ContentSemanticRole::StoredCapsule);
+  BOOST_CHECK_EQUAL(restored.useId, "use7");
+  auto noUse = value;
+  noUse.useId.clear();
+  BOOST_CHECK_THROW(noUse.encode(), std::invalid_argument);
+}
+
 BOOST_AUTO_TEST_CASE(SemanticWireCorpus)
 {
   const auto producer = ndn::Name("/org/NDNSF-DI/model/publisher").appendVersion(257);

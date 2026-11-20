@@ -30,6 +30,92 @@ std::string quotedLabel(const std::string& value)
   return result + "\"";
 }
 
+bool isModelCoordinateKind(ContentDataKind kind)
+{
+  return kind == ContentDataKind::ModelFile || kind == ContentDataKind::Weights ||
+    kind == ContentDataKind::Initializer || kind == ContentDataKind::Tokenizer ||
+    kind == ContentDataKind::ArtifactFile || kind == ContentDataKind::Material ||
+    kind == ContentDataKind::Assignment;
+}
+
+/** N4 rows that name a `<ModelPath>`; a fixed assignment and a plain input do not carry one. */
+bool roleNeedsModelPath(ContentSemanticRole role)
+{
+  return role != ContentSemanticRole::None && role != ContentSemanticRole::FixedAssignment &&
+    role != ContentSemanticRole::SemanticInput && role != ContentSemanticRole::BlobObject;
+}
+
+bool roleAllowed(ContentDataKind kind, ContentSemanticRole role)
+{
+  switch (role) {
+    case ContentSemanticRole::None: return true;
+    case ContentSemanticRole::SourceGraph:
+    case ContentSemanticRole::Initializers:
+    case ContentSemanticRole::PreparedMetadata:
+    case ContentSemanticRole::ModelManifest:
+    case ContentSemanticRole::AssemblyReceipt:
+      return kind == ContentDataKind::ModelFile;
+    case ContentSemanticRole::WeightsObject: return kind == ContentDataKind::Weights;
+    case ContentSemanticRole::TokenizerObject: return kind == ContentDataKind::Tokenizer;
+    case ContentSemanticRole::MaterialBundle:
+    case ContentSemanticRole::MaterialManifest:
+    case ContentSemanticRole::ManifestPage:
+      return kind == ContentDataKind::Material;
+    case ContentSemanticRole::ArtifactFileObject:
+    case ContentSemanticRole::ArtifactManifest:
+      return kind == ContentDataKind::ArtifactFile;
+    case ContentSemanticRole::AuthorizationManifest:
+    case ContentSemanticRole::FixedAssignment:
+    case ContentSemanticRole::CanonicalCapsule:
+    case ContentSemanticRole::StoredCapsule:
+      return kind == ContentDataKind::Assignment;
+    case ContentSemanticRole::SemanticInput: return kind == ContentDataKind::Input;
+    case ContentSemanticRole::BlobObject: return kind == ContentDataKind::Blob;
+  }
+  return false;
+}
+
+/** Every N4 coordinate fact is an atom or the explicit word that stands for a missing fact. */
+void requireCoordinate(const std::string& value, const char* field)
+{
+  if (!atom(value))
+    throw std::invalid_argument(std::string("invalid semantic coordinate: ") + field);
+}
+
+void validateSemanticCoordinates(const PublishedContentName& value)
+{
+  if (!roleAllowed(value.kind, value.semanticRole))
+    throw std::invalid_argument("semantic role does not belong to this content kind");
+  const bool model = isModelCoordinateKind(value.kind);
+  const bool hasPath = !value.modelFamily.empty() || !value.modelSize.empty() ||
+    !value.quantization.empty() || !value.sourceRevisionLabel.empty();
+  if (!model && hasPath)
+    throw std::invalid_argument("model path on a non-model object");
+  if (roleNeedsModelPath(value.semanticRole)) {
+    // A semantic role promises the N4 row, so it must carry the coordinates that row names.
+    requireCoordinate(value.modelFamily, "modelFamily");
+    requireCoordinate(value.modelSize, "modelSize");
+    requireCoordinate(value.quantization, "quantization");
+    requireCoordinate(value.sourceRevisionLabel, "sourceRevisionLabel");
+  }
+  if (value.bundleIndex.has_value() != (value.semanticRole == ContentSemanticRole::MaterialBundle))
+    throw std::invalid_argument("bundle index belongs only to a physical material bundle");
+  const bool artifact = value.semanticRole == ContentSemanticRole::ArtifactFileObject ||
+    value.semanticRole == ContentSemanticRole::ArtifactManifest;
+  if (!artifact && !value.profileLabel.empty())
+    throw std::invalid_argument("profile label on a non-artifact object");
+  if (artifact)
+    requireCoordinate(value.profileLabel, "profileLabel");
+  const bool capsule = value.semanticRole == ContentSemanticRole::AuthorizationManifest ||
+    value.semanticRole == ContentSemanticRole::CanonicalCapsule ||
+    value.semanticRole == ContentSemanticRole::StoredCapsule;
+  if (!capsule && !value.useId.empty())
+    throw std::invalid_argument("use id on an object that has no current use");
+  if (capsule)
+    requireCoordinate(value.useId, "useId");
+}
+
+
 struct IdentityParts {
   std::string nameSpace;
   std::string category;
@@ -84,8 +170,11 @@ IdentityParts parts(const PublishedContentName& value)
     result.category += "/" + (value.kind == ContentDataKind::ArtifactFile ? "artifact/file" : result.leaf);
   }
   else {
-    if (!value.modelName.empty() || !value.modelIdentity.empty() || !value.artifactKind.empty() ||
-        !value.coordinate.empty() || !value.profileIdentity.empty())
+    // A material or assignment row names a ModelPath, so the model facts are legal there; they are not
+    // part of the legacy name shape, which contentPrefix still builds for these kinds.
+    const bool coordinates = value.hasSemanticCoordinates();
+    if ((!coordinates && (!value.modelName.empty() || !value.modelIdentity.empty())) ||
+        !value.artifactKind.empty() || !value.coordinate.empty() || !value.profileIdentity.empty())
       throw std::invalid_argument("unexpected model identity");
     if (value.kind == ContentDataKind::Input) {
       if (!atom(value.inputKind)) throw std::invalid_argument("invalid input kind");
@@ -103,12 +192,47 @@ std::vector<uint8_t> raw(const std::string& value)
 
 } // namespace
 
-std::string PublishedContentName::objectIdentity() const
+std::string
+PublishedContentName::objectIdentity() const
 {
   const auto identity = parts(*this);
-  return computeNamingDigest("ndnsf-naming/semantic-object",
-    {{1, 2, raw(identity.nameSpace)}, {2, 2, raw(identity.category)},
-     {3, 2, raw(label)}, {4, 5, raw(identity.parent)}});
+  validateSemanticCoordinates(*this);
+  std::vector<NamingDigestField> fields{
+    {1, 2, raw(identity.nameSpace)}, {2, 2, raw(identity.category)},
+    {3, 2, raw(label)}, {4, 5, raw(identity.parent)}};
+  if (hasSemanticCoordinates()) {
+    // Coordinate facts are part of the object identity, not decoration on the name.
+    fields.push_back({5, 2, raw(std::to_string(static_cast<std::uint8_t>(semanticRole)))});
+    fields.push_back({6, 2, raw(modelFamily)});
+    fields.push_back({7, 2, raw(modelSize)});
+    fields.push_back({8, 2, raw(quantization)});
+    fields.push_back({9, 2, raw(sourceRevisionLabel)});
+    fields.push_back({10, 2, raw(bundleIndex ? std::to_string(*bundleIndex) : std::string())});
+    fields.push_back({11, 2, raw(profileLabel)});
+    fields.push_back({12, 2, raw(useId)});
+  }
+  return computeNamingDigest("ndnsf-naming/semantic-object", fields);
+}
+
+std::vector<std::string>
+PublishedContentName::modelPathComponents() const
+{
+  validateSemanticCoordinates(*this);
+  if (!isModelCoordinateKind(kind))
+    throw std::invalid_argument("model path is not defined for this content kind");
+  const auto component = [](const std::string& value) {
+    return value.empty() ? std::string("unspecified") : value;
+  };
+  return {component(modelFamily), component(modelSize), component(quantization),
+          "revision", component(sourceRevisionLabel)};
+}
+
+bool
+PublishedContentName::hasSemanticCoordinates() const
+{
+  return semanticRole != ContentSemanticRole::None || !modelFamily.empty() || !modelSize.empty() ||
+    !quantization.empty() || !sourceRevisionLabel.empty() || bundleIndex.has_value() ||
+    !profileLabel.empty() || !useId.empty();
 }
 
 ndn::Name PublishedContentName::contentPrefix(const ndn::Name& producer,
@@ -141,15 +265,30 @@ ndn::Name PublishedContentName::contentPrefix(const ndn::Name& producer,
   return name;
 }
 
-std::vector<uint8_t> PublishedContentName::encode() const
+std::vector<uint8_t>
+PublishedContentName::encode() const
 {
   parts(*this);
+  validateSemanticCoordinates(*this);
   ndn::Block body(244);
   body.push_back(ndn::makeNonNegativeIntegerBlock(129, static_cast<uint64_t>(kind)));
   const std::array<const std::string*, 7> fields{
     &label, &modelName, &modelIdentity, &artifactKind, &coordinate, &profileIdentity, &inputKind};
   for (size_t i = 0; i < fields.size(); ++i)
     body.push_back(ndn::makeStringBlock(131 + 2 * i, *fields[i]));
+  if (hasSemanticCoordinates()) {
+    // Appended after the legacy block so an instance without coordinates keeps exactly today's wire.
+    body.push_back(ndn::makeNonNegativeIntegerBlock(
+      145, static_cast<uint64_t>(semanticRole)));
+    body.push_back(ndn::makeStringBlock(147, modelFamily));
+    body.push_back(ndn::makeStringBlock(149, modelSize));
+    body.push_back(ndn::makeStringBlock(151, quantization));
+    body.push_back(ndn::makeStringBlock(153, sourceRevisionLabel));
+    body.push_back(ndn::makeStringBlock(155, profileLabel));
+    body.push_back(ndn::makeStringBlock(157, useId));
+    if (bundleIndex)
+      body.push_back(ndn::makeNonNegativeIntegerBlock(159, *bundleIndex));
+  }
   body.encode();
   if (body.size() > ndn::MAX_NDN_PACKET_SIZE)
     throw std::length_error("semantic content metadata exceeds packet size");
@@ -165,10 +304,26 @@ PublishedContentName PublishedContentName::decode(const std::vector<uint8_t>& wi
     throw std::invalid_argument("invalid semantic metadata envelope");
   body.parse();
   const auto& fields = body.elements();
-  if (fields.size() != 8) throw std::invalid_argument("invalid semantic metadata field count");
-  for (size_t i = 0; i < fields.size(); ++i)
+  const bool extended = fields.size() > 8;
+  if (!extended && fields.size() != 8)
+    throw std::invalid_argument("invalid semantic metadata field count");
+  // Eight base fields plus seven coordinates; a material bundle adds the bundle index.
+  if (extended && fields.size() < 15)
+    throw std::invalid_argument("invalid semantic metadata field count");
+  for (size_t i = 0; i < 8; ++i)
     if (fields[i].type() != 129 + 2 * i)
       throw std::invalid_argument("invalid semantic metadata field order");
+  if (extended) {
+    static const std::array<uint64_t, 7> extendedTypes{145, 147, 149, 151, 153, 155, 157};
+    for (size_t i = 0; i < extendedTypes.size(); ++i)
+      if (fields[8 + i].type() != extendedTypes[i])
+        throw std::invalid_argument("invalid semantic coordinate field order");
+    const bool hasBundle = fields.size() == 16;
+    if (fields.size() != 15 && !hasBundle)
+      throw std::invalid_argument("invalid semantic coordinate field count");
+    if (hasBundle && fields[15].type() != 159)
+      throw std::invalid_argument("invalid bundle index field");
+  }
   const auto kindValue = ndn::readNonNegativeInteger(fields[0]);
   if (kindValue > 8) throw std::invalid_argument("unknown semantic metadata kind");
   PublishedContentName result;
@@ -179,6 +334,23 @@ PublishedContentName PublishedContentName::decode(const std::vector<uint8_t>& wi
   for (size_t i = 0; i < outputs.size(); ++i) {
     const auto& field = fields[i + 1];
     outputs[i]->assign(reinterpret_cast<const char*>(field.value()), field.value_size());
+  }
+  if (extended) {
+    const auto roleValue = ndn::readNonNegativeInteger(fields[8]);
+    if (roleValue > 18) throw std::invalid_argument("unknown semantic role");
+    result.semanticRole = static_cast<ContentSemanticRole>(roleValue);
+    std::array<std::string*, 4> coordinates{
+      &result.modelFamily, &result.modelSize, &result.quantization, &result.sourceRevisionLabel};
+    for (size_t i = 0; i < coordinates.size(); ++i) {
+      const auto& field = fields[9 + i];
+      coordinates[i]->assign(reinterpret_cast<const char*>(field.value()), field.value_size());
+    }
+    const auto& profile = fields[13];
+    result.profileLabel.assign(reinterpret_cast<const char*>(profile.value()), profile.value_size());
+    const auto& use = fields[14];
+    result.useId.assign(reinterpret_cast<const char*>(use.value()), use.value_size());
+    if (fields.size() == 16)
+      result.bundleIndex = ndn::readNonNegativeInteger(fields[15]);
   }
   if (result.encode() != wire) throw std::invalid_argument("noncanonical semantic metadata");
   return result;
