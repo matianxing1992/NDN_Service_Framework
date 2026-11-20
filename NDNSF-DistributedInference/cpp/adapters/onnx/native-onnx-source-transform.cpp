@@ -212,6 +212,16 @@ applyNativeOnnxSourceTransform(const onnx::ModelProto& source,
     auto* bias = findInitializer(result, transform.bias);
     if (bias == nullptr)
       throw std::invalid_argument("source transform bias initializer is missing");
+    if (bias->dims_size() == 1) {
+      // A fused Conv bias is commonly exported as [C]. Reshape it in place to
+      // the [1,C,1,1] broadcast Add needs; the bytes are unchanged.
+      const auto channels = bias->dims(0);
+      bias->clear_dims();
+      bias->add_dims(1);
+      bias->add_dims(channels);
+      bias->add_dims(1);
+      bias->add_dims(1);
+    }
     if (bias->dims_size() != 4 || bias->dims(0) != 1)
       throw std::invalid_argument("source transform bias is not [1,C,1,1]");
     // A source graph that already has an explicit bias Add needs no rewrite;

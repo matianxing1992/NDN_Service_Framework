@@ -3400,7 +3400,8 @@ materializeCanonicalModel(NativeCanonicalSource& source,
                                 const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
                                 const NativeAssemblyControl& control,
                                 NativeCanonicalMaterializedFiles* files,
-                                const std::function<void(const std::vector<std::uint8_t>&)>& append)
+                                const std::function<void(const std::vector<std::uint8_t>&)>& append,
+                                const std::vector<std::string>& extraInitializers = {})
 {
   checkActive(control);
   const auto checkMaterialActive = [&] { checkActive(control); };
@@ -3575,6 +3576,10 @@ materializeCanonicalModel(NativeCanonicalSource& source,
     *model.mutable_graph()->add_node() = std::move(node);
     dependencies.insert(reference->dependencies.begin(), reference->dependencies.end());
   }
+  // A transformed suffix consumes a bias initializer that no selected node
+  // lists as an input; the admitted transform names it explicitly.
+  for (const auto& extra : extraInitializers)
+    dependencies.insert(extra);
   for (const auto& dependency : dependencies) {
     const auto* match = findReference("shared-initializer", dependency);
     if (match == nullptr || payloads.find(match->payloadId) == payloads.end())
@@ -3775,11 +3780,12 @@ materializeNativeCanonicalModelFiles(
   const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
   const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
   const NativeAssemblyControl& control,
-  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer)
+  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer,
+  const std::vector<std::string>& extraInitializers)
 {
   NativeCanonicalMaterializedFiles files;
   files.modelBytes = materializeCanonicalModel(source, nodeIndices, expectedInputs, expectedOutputs,
-                                              control, &files, appendInitializer);
+                                              control, &files, appendInitializer, extraInitializers);
   return files;
 }
 

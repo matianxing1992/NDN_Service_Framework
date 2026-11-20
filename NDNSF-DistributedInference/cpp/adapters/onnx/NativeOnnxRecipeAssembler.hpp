@@ -531,7 +531,8 @@ materializeNativeCanonicalModelFiles(
   const std::vector<NativeAssemblyTensorContractV3>& expectedInputs,
   const std::vector<NativeAssemblyTensorContractV3>& expectedOutputs,
   const NativeAssemblyControl& control,
-  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer);
+  const std::function<void(const std::vector<std::uint8_t>&)>& appendInitializer,
+  const std::vector<std::string>& extraInitializers = {});
 
 /** Compatibility entry for producer/fixture callers that retain the source
  * graph boundary.  Provider post-Selection assembly must use the overload

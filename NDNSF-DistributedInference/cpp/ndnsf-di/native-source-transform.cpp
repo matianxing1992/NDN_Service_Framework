@@ -64,7 +64,10 @@ NativeOnnxSourceTransformV1::parse(const std::string& wire)
   result.input = value.value("input", std::string{});
   result.weight = value.value("weight", std::string{});
   result.bias = value.value("bias", std::string{});
-  result.output = value.value("output", std::string{});
+  // The wire name for a bias transform's partial port is `partial`; keep
+  // accepting `output` so older records remain readable, then validate the
+  // unified field.
+  result.output = value.value("partial", value.value("output", std::string{}));
   result.begin = value.value("begin", std::uint64_t{0});
   result.end = value.value("end", std::uint64_t{0});
   result.extent = value.value("extent", std::uint64_t{0});

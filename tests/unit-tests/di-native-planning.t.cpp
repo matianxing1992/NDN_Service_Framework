@@ -2463,6 +2463,17 @@ BOOST_AUTO_TEST_CASE(NativeConvInputChannelRangesAreContiguous)
   BOOST_CHECK_THROW(nativeConvInputChannelRanges(1, 2), std::invalid_argument);
   BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 0), std::invalid_argument);
   BOOST_CHECK_THROW(nativeConvInputChannelRanges(4, 5), std::invalid_argument);
+
+  // The bias codec writes `partial`; parsing must round-trip that name rather
+  // than requiring the channel-partial `output` key.
+  NativeOnnxSourceTransformV1 bias;
+  bias.kind = "add-conv-bias";
+  bias.sourceConv = "conv0"; bias.node = "bias0";
+  bias.bias = "b_conv"; bias.output = "conv_out";
+  const auto parsed = NativeOnnxSourceTransformV1::parse(bias.canonicalJson());
+  BOOST_CHECK_EQUAL(parsed.kind, "add-conv-bias");
+  BOOST_CHECK_EQUAL(parsed.output, "conv_out");
+  BOOST_CHECK_EQUAL(parsed.bias, "b_conv");
 }
 
 namespace {
@@ -2652,7 +2663,7 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
     auto* bias = fused.mutable_graph()->add_initializer();
     bias->set_name("b_conv");
     bias->set_data_type(onnx::TensorProto::FLOAT);
-    bias->add_dims(1); bias->add_dims(32); bias->add_dims(1); bias->add_dims(1);
+    bias->add_dims(32);
     for (int i = 0; i < 32; ++i) bias->add_float_data(0.25F);
     auto* relu = fused.mutable_graph()->add_node();
     relu->set_name("relu0"); relu->set_op_type("Relu");

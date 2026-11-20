@@ -3469,6 +3469,13 @@ prepareNativeCanonicalOnnxRole(
       BOOST_SCOPE_EXIT_ALL(&initializerFd) {
         if (initializerFd >= 0) ::close(initializerFd);
       };
+      std::vector<std::string> transformInitializers;
+      if (!projection.assemblyContract().sourceTransformV1.empty()) {
+        const auto transform = NativeOnnxSourceTransformV1::parse(
+          projection.assemblyContract().sourceTransformV1);
+        if (transform.kind == "add-conv-bias")
+          transformInitializers.push_back(transform.bias);
+      }
       materializedFiles = materializeNativeCanonicalModelFiles(
         canonicalSource, projection.assemblyContract().nodeIndices,
         projection.assemblyContract().expectedInputs, projection.assemblyContract().expectedOutputs,
@@ -3483,7 +3490,7 @@ prepareNativeCanonicalOnnxRole(
             });
           }
           writeMaterial(initializerFd, bytes.data(), bytes.size());
-        });
+        }, transformInitializers);
       canonicalSource.modelBytes = std::move(materializedFiles.modelBytes);
       if (initializerFd >= 0) {
         const auto closeStatus = ::close(initializerFd);
