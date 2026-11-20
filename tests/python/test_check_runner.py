@@ -292,12 +292,21 @@ class CheckRunner(unittest.TestCase):
             self.assertEqual(checks.read_case_results(p), {'A/Same': 'failed', 'B/Same': 'skipped'})
 
     def invoke(self, outcome='passed', exit_code=0, timeout=False, omit=False, message='',
-               report=None, include=None, environment=None, observed=None, assertions_passed=7):
+               report=None, include=None, environment=None, observed=None, assertions_passed=7,
+               confirm_assertions=None):
         seen = []
         def process(argv, **kwargs):
             seen.append(argv)
             if '--list_content' in argv:
                 return Namespace(returncode=0, stdout='', stderr='Unit*\n    Case*\nModel*\n    Case*\n')
+            if any(a.startswith('--run_test=Unit/Case') for a in argv):
+                output = Path(next(x.split('=', 1)[1] for x in argv if x.startswith('--report_sink=')))
+                output.write_text('<TestResult><TestSuite name="module"><TestSuite name="Unit">'
+                                  '<TestCase name="Case" result="passed" assertions_passed="%d"/>'
+                                  '</TestSuite></TestSuite></TestResult>'
+                                  % (assertions_passed if confirm_assertions is None
+                                     else confirm_assertions))
+                return Namespace(returncode=0, stdout='', stderr='')
             if timeout:
                 raise subprocess.TimeoutExpired(argv, 1, output=b'Running 1 test case...')
             if not omit:
@@ -318,7 +327,7 @@ class CheckRunner(unittest.TestCase):
              patch.object(checks, 'native_process', side_effect=native):
             result = checks.run_target('/fixture', target, environment or {}, 1,
                                        Namespace(report=report))[0]
-        self.assertIn('--run_test=!Model', seen[-1])
+        self.assertTrue(any('--run_test=!Model' in argv for argv in seen))
         return result
 
     def test_routine_profile_does_not_inherit_qualification_inputs(self):
@@ -337,10 +346,18 @@ class CheckRunner(unittest.TestCase):
         self.assertEqual(explicit['SPEC190_NATIVE_TURNS_CONFIG'], '/host/turns.json')
 
     def test_passed_case_with_no_assertions_is_not_a_pass(self):
+        # Both the combined run and the single-case confirmation report zero assertions.
         result = self.invoke(assertions_passed=0)
         self.assertFalse(result['passed'])
         self.assertIn('NATIVE_ASSERTION_FREE_CASE', result['reportError'])
         self.assertIn('Unit/Case', result['reportError'])
+
+    def test_combined_report_zero_assertions_is_confirmed_before_failing(self):
+        # A large combined run can report `assertions_passed="0"` for a case that asserts when run alone;
+        # only the single-case re-run decides, so this case must still pass.
+        result = self.invoke(assertions_passed=0, confirm_assertions=7)
+        self.assertTrue(result['passed'], result.get('reportError'))
+        self.assertIsNone(result['reportError'])
 
     def test_native_pass_requires_complete_case_report(self):
         result = self.invoke()

@@ -504,6 +504,34 @@ def read_case_assertions(path):
     return counts
 
 
+def confirm_assertion_free(binary, candidates, environ):
+    """Re-run each candidate alone before calling it assertion-free.
+
+    Boost's per-case `assertions_passed` is not reliable in a large combined run: cases that assert four times
+    when run alone were reported with zero assertions when thousands of cases shared one invocation. A candidate
+    is therefore confirmed only if a single-case invocation also reports no assertion.
+    """
+    confirmed = []
+    for case in candidates:
+        with isolated_native_environment(environ) as (result_root, native_env):
+            xml_path = Path(result_root) / 'confirm.xml'
+            completed = native_process(
+                [str(binary), '--color_output=no', '--log_level=test_suite', '--report_level=detailed',
+                 '--report_format=XML', '--report_sink=' + str(xml_path),
+                 '--run_test=' + case], native_env, 900, cwd=result_root / 'scratch')
+            # Read inside the context: the isolated root, and its XML, are removed when it exits.
+            if completed.returncode != 0:
+                # A case that fails on its own is already reported through the run's own results.
+                continue
+            try:
+                counts = read_case_assertions(xml_path)
+            except (OSError, ET.ParseError, ValueError, KeyError):
+                continue
+            if counts.get(case, 0) < 1:
+                confirmed.append(case)
+    return confirmed
+
+
 def check_assets(roster, selected, manifest_path, bindings=None):
     """Admit pinned SEALED assets and pass their exact files to native consumers."""
     missing = []
@@ -602,8 +630,9 @@ def run_target(binary, target, environ, timeout, arguments, listing=None):
             assertion_counts = read_case_assertions(xml_path)
         except (OSError, ET.ParseError, ValueError, KeyError):
             assertion_counts = {}
-        empty = sorted(case for case in expected
-                       if actual.get(case) == 'passed' and assertion_counts.get(case, 0) < 1)
+        candidates = sorted(case for case in expected
+                            if actual.get(case) == 'passed' and assertion_counts.get(case, 0) < 1)
+        empty = confirm_assertion_free(binary, candidates, environ) if candidates else []
         if empty:
             report_error = ((report_error + '; ') if report_error else '') + \
                 'NATIVE_ASSERTION_FREE_CASE: ' + ', '.join(empty[:5])
