@@ -1139,7 +1139,13 @@ nativePublishStoredModel(ndn::KeyChain& keyChain, const ndn::Name& producer,
       {"publicationPrefix", prefix.empty() ? std::string{} :
         prefix.toUri(ndn::name::UriFormat::CANONICAL)},
       {"modelDigest", modelDigest}, {"catalogId", catalogId}, {"manifestId", manifestId}};
-    if (!semantic.empty() && prefix.empty()) {
+    if (!semantic.empty() && !prefix.empty() &&
+        !nativeStoredModelSemanticPrefix(prefix)) {
+      // Verified coordinates describe a semantic package row, so an explicit prefix that does not carry that row
+      // cannot be used with them: the objects under it would be named by the legacy convention.
+      require(false);
+    }
+    if (!semantic.empty()) {
       // The package rows need the verified facts before the journal allocates its prefix; the prefix itself is
       // allocated inside the journal and persisted with the seed.
       context["semanticPublication"] = NativeJson{
