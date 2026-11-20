@@ -23,6 +23,8 @@ parser.add_argument('--run-root', type=Path, default=None,
                     help='retain the raw run under this directory')
 parser.add_argument('--restart-provider2', action='store_true',
                     help='stop and restart the second Provider before a second request')
+parser.add_argument('--no-local-nfd', action='store_true',
+                    help='use external per-actor transports instead of a private NFD')
 parser.add_argument('--revoke', action='store_true',
                     help='revoke the Provider identity from the real Controller before the request')
 args=parser.parse_args()
@@ -156,45 +158,69 @@ base=os.environ.copy(); base.update({'NDN_CLIENT_TRANSPORT':'unix://'+str(nfd_so
 base.setdefault('NDN_LOG', 'ndn_service_framework.*=TRACE:ndnsf.di.NativeRequester=WARN')
 # The process oracle reads readiness and execution evidence from this logger.
 base['NDN_LOG'] += ':ndnsf.di.RuntimeEvidence=WARN'
-def launch(cmd,env,name):
- p=b.run(cmd,env,run_root/(name+'.log'),wait=False)
+def wrap_for(role):
+ # A MiniNDN orchestrator runs each actor inside its node's network namespace;
+ # the PID of that node's init process is handed over per role.
+ pid=os.environ.get('SPEC261_NETNS_PID_'+role,'')
+ if not pid: return []
+ return ['/usr/bin/mnexec','-a',pid]
+
+def launch(cmd,env,name,role=''):
+ full=wrap_for(role)+[str(value) for value in cmd]
+ p=b.run(full,env,run_root/(name+'.log'),wait=False)
  (run_root/(name+'.pid')).write_text(str(p.pid)+'\n')
  return p
 children=[]
+def transport_for(role):
+ # An external orchestrator (for example MiniNDN) may hand each actor the
+ # transport of the forwarder it should use; otherwise one private NFD serves
+ # every actor.
+ value=os.environ.get('SPEC261_TRANSPORT_'+role,'')
+ return value
 try:
- nfd=launch(['/usr/local/bin/nfd','--config',str(nfdconf)],base,'nfd');children.append(nfd)
- nfd_deadline=time.monotonic()+30
- while not nfd_socket.exists():
-  if time.monotonic()>nfd_deadline: raise RuntimeError('NFD socket did not appear within 30s')
-  time.sleep(.05)
- subprocess.run(['/usr/local/bin/nfdc','strategy','set','/example/hello/group','/localhost/nfd/strategy/multicast'],env=base,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
- def penv(store):
-  return b.actor_environment(base,store)
+ if not args.no_local_nfd:
+  nfd=launch(['/usr/local/bin/nfd','--config',str(nfdconf)],base,'nfd');children.append(nfd)
+  nfd_deadline=time.monotonic()+30
+  while not nfd_socket.exists():
+   if time.monotonic()>nfd_deadline: raise RuntimeError('NFD socket did not appear within 30s')
+   time.sleep(.05)
+ def set_strategy(env):
+  subprocess.run(['/usr/local/bin/nfdc','strategy','set','/example/hello/group','/localhost/nfd/strategy/multicast'],env=env,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ if not args.no_local_nfd: set_strategy(base)
+ def penv(store,role=''):
+  env=b.actor_environment(base,store)
+  transport=transport_for(role)
+  if transport: env['NDN_CLIENT_TRANSPORT']=transport
+  elif args.no_local_nfd:
+   # Without a private NFD every actor needs its own forwarder transport; a
+   # missing one would silently fall back to a socket this run never creates.
+   raise RuntimeError('SPEC261_TRANSPORT_MISSING: ' + (role or 'unnamed-actor'))
+  return env
  controller_command=[str(CONTROLLER),'--controller-prefix','/example/hello/controller','--policy-file',str(policy),'--trust-schema',str(run_root/'shared/trust-schema.conf'),'--ensure-identities','/example/hello/authority,/example/hello/provider,/example/hello/provider2,/example/hello/user','--no-serve-certificates']
  revoke_after_ms=60000
  if args.revoke:
   controller_command += ['--revoke-after-ms',str(revoke_after_ms),'--revoke-kind','identity','--revoke-identity','/example/hello/provider']
  controller_command += ['--run-for-ms','120000']
  controller_started_at=time.monotonic()
- c=launch(controller_command,penv(run_root/'controller-store'),'controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
- a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store'),'authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
+ c=launch(controller_command,penv(run_root/'controller-store','controller'),'controller','controller');children.append(c); b.wait_marker(c,run_root/'controller.log','ServiceController started...',30)
+ a=launch([str(AUTHORITY),'--config',str(run_root/'authority/authority.json')],penv(run_root/'authority-store','authority'),'authority','authority');children.append(a); b.wait_marker(a,run_root/'authority.log','NATIVE_GRANT_AUTHORITY_READY',30)
  providers=[('/example/hello/provider','Prefix,Rank0','provider',offerpriv),('/example/hello/provider2','Rank1,Suffix','provider2',offer2priv)]
  def start_provider(identity,roles,tag,offerkey):
-  pe=penv(run_root/(tag+'-store'))
+  pe=penv(run_root/(tag+'-store'),tag)
   shutil.copy2(offerkey,run_root/(tag+'/offer-private.pem'))
   pm=[str(PROVIDER),'--plan',str(run_root/'provider/plan.json'),'--manifest',str(run_root/(tag+'/manifest.json')),'--service','/Inference/NativeUnary','--provider',identity,'--group','/example/hello/group','--controller','/example/hello/controller','--trust-schema',str(run_root/(tag+'/trust-schema.conf')),'--roles',roles,'--workers','4','--handler-threads','4','--serve','--run-for-ms','120000','--artifact-cache-dir',str(run_root/(tag+'/cache')),'--selection-offer-key-file',str(run_root/(tag+'/offer-private.pem')),'--offer-backend','onnxruntime-cpu','--offer-can-provision','--offer-has-model']
   pe['SPEC181_GRANT_AUTHORITY_PUBLIC_KEY']=str(run_root/(tag+'/authority-public.pem'));pe['SPEC181_PROVIDER_RECIPIENT_KEY_MAP']=str(run_root/(tag+'/recipient-key-map.json'));pe['NDNSF_DI_WORKER_BINARY']=str(WORKER)
-  ps=launch(pm,pe,tag);children.append(ps); b.wait_marker(ps,run_root/(tag+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',60)
+  ps=launch(pm,pe,tag,tag);children.append(ps); b.wait_marker(ps,run_root/(tag+'.log'),'NDNSF_DI_NATIVE_PROVIDER_READY',60)
   return ps
  running={}
  for identity,roles,tag,offerkey in providers:
   running[tag]=start_provider(identity,roles,tag,offerkey)
- re=penv(run_root/'requester-store'); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
+ re=penv(run_root/'requester-store','requester'); re.update({'NDNSF_DI_WORKER_BINARY':str(WORKER)})
  if args.revoke:
   # Establish the independent pre-revocation success first.  The later
   # request is started only after Controller publication; its native error and
   # the retained Provider log boundary let the C++ driver prove receiver-side enforcement.
-  baseline_requester=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/baseline-output.bin')],re,'requester-baseline');children.append(baseline_requester)
+  baseline_requester=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/baseline-output.bin')],re,'requester-baseline','requester');children.append(baseline_requester)
   baseline_wait_budget=controller_started_at + revoke_after_ms / 1000.0 - time.monotonic() - 1.0
   if baseline_wait_budget <= 0:
    raise RuntimeError('scheduled revocation window elapsed before baseline request')
@@ -215,7 +241,7 @@ try:
   revoke_wait_seconds=max(30, int(revoke_after_ms / 1000) + 30)
   b.wait_marker(c,run_root/'controller.log','NDNSF_REVOCATION_APPLIED success=1',revoke_wait_seconds)
  # requester direct first
- rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester');children.append(rq)
+ rq=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output.bin')],re,'requester','requester');children.append(rq)
  try:
   rq.wait(timeout=120)
  except subprocess.TimeoutExpired:
@@ -228,7 +254,7 @@ try:
   b.stop(running['provider2'])
   time.sleep(1.0)
   running['provider2']=start_provider('/example/hello/provider2','Rank1,Suffix','provider2',offer2priv)
-  rq2=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output-restarted.bin')],re,'requester-restarted');children.append(rq2)
+  rq2=launch([str(REQUESTER),'--config',str(run_root/'requester/config.json'),'--input',str(run_root/'requester/input.bin'),'--output',str(run_root/'requester/output-restarted.bin')],re,'requester-restarted','requester');children.append(rq2)
   try:
    rq2.wait(timeout=120)
   except subprocess.TimeoutExpired:
