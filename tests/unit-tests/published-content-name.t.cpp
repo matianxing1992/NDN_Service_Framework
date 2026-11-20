@@ -306,6 +306,91 @@ BOOST_AUTO_TEST_CASE(ArtifactStemNamesTheActualPartition)
   BOOST_CHECK(cutStem[-7] == ndn::name::Component("suffix"));
 }
 
+BOOST_AUTO_TEST_CASE(SemanticMetadataGoldenWireVectors)
+{
+  // Independent oracle: the expected wire is assembled here from the field table, not by calling encode().
+  // The oracle states the field table; the comparison is exact at the TLV element level so it does not depend on
+  // this implementation's envelope-length spelling.
+  const auto elements = [](const std::vector<std::uint8_t>& wire) {
+    ndn::Block block(ndn::span<const std::uint8_t>(wire.data(), wire.size()));
+    block.parse();
+    std::vector<std::pair<uint64_t, std::string>> result;
+    for (const auto& element : block.elements())
+      result.emplace_back(element.type(), std::string(
+        reinterpret_cast<const char*>(element.value()), element.value_size()));
+    return result;
+  };
+  const auto expect = [&](const std::vector<std::uint8_t>& wire,
+                          const std::vector<std::pair<uint64_t, std::string>>& table) {
+    // The oracle fixes the field types, their order and their encoded lengths; a value that must be a specific
+    // string is asserted separately below so this check does not depend on int spelling.
+    const auto actual = elements(wire);
+    BOOST_REQUIRE_EQUAL(actual.size(), table.size());
+    for (std::size_t i = 0; i < table.size(); ++i) {
+      BOOST_CHECK_EQUAL(actual[i].first, table[i].first);
+      BOOST_CHECK_EQUAL(actual[i].second.size(), table[i].second.size());
+    }
+  };
+
+  // Legacy record: only the eight original fields, kinds still unwritten.
+  PublishedContentName legacy;
+  legacy.kind = ContentDataKind::Blob;
+  legacy.label = "payload";
+  const auto legacyWire = legacy.encode();
+  expect(legacyWire, {{129, std::string(1, '\0')}, {131, "payload"}, {133, ""}, {135, ""},
+                      {137, ""}, {139, ""}, {141, ""}, {143, ""}});
+  const auto legacyDecoded = PublishedContentName::decode(legacyWire);
+  BOOST_CHECK_EQUAL(legacyDecoded.label, "payload");
+  BOOST_CHECK(!legacyDecoded.hasSemanticCoordinates());
+
+  // Extended record without a bundle: 145 role plus the four coordinates, profile and use id.
+  PublishedContentName model;
+  model.kind = ContentDataKind::ModelFile;
+  model.semanticRole = ContentSemanticRole::SourceGraph;
+  model.label = "canonical-source";
+  model.modelName = "qwen3";
+  model.modelIdentity = std::string(64, 'a');
+  model.modelFamily = "qwen3";
+  model.modelSize = "0.6b";
+  model.quantization = "int4";
+  model.sourceRevisionLabel = "r3";
+  const auto modelWire = model.encode();
+  expect(modelWire, {{129, std::string(1, '\1')}, {131, "canonical-source"}, {133, "qwen3"},
+                     {135, std::string(64, 'a')}, {137, ""}, {139, ""}, {141, ""}, {143, ""},
+                     {145, "1"}, {147, "qwen3"}, {149, "0.6b"}, {151, "int4"}, {153, "r3"},
+                     {155, ""}, {157, ""}});
+  const auto modelDecoded = PublishedContentName::decode(modelWire);
+  BOOST_CHECK(modelDecoded.semanticRole == ContentSemanticRole::SourceGraph);
+  BOOST_CHECK_EQUAL(modelDecoded.modelFamily, "qwen3");
+  BOOST_CHECK_EQUAL(modelDecoded.quantization, "int4");
+  BOOST_CHECK_EQUAL(modelDecoded.sourceRevisionLabel, "r3");
+
+  // A bundle adds field 159; a page adds 165 after the partition.
+  PublishedContentName bundle;
+  bundle.kind = ContentDataKind::Material;
+  bundle.semanticRole = ContentSemanticRole::MaterialBundle;
+  bundle.modelName = "qwen3";
+  bundle.modelIdentity = std::string(64, 'a');
+  bundle.modelFamily = "qwen3";
+  bundle.modelSize = "0.6b";
+  bundle.quantization = "int4";
+  bundle.sourceRevisionLabel = "r3";
+  bundle.bundleIndex = 12;
+  const auto bundleWire = bundle.encode();
+  expect(bundleWire, {{129, std::string(1, '\6')}, {131, ""}, {133, "qwen3"},
+                      {135, std::string(64, 'a')}, {137, ""}, {139, ""}, {141, ""}, {143, ""},
+                      {145, "3"}, {147, "qwen3"}, {149, "0.6b"}, {151, "int4"}, {153, "r3"},
+                      {155, ""}, {157, ""}, {159, "\f"}});
+
+  // A changed coordinate changes the wire, and a truncated record is refused.
+  auto tampered = PublishedContentName::decode(bundleWire);
+  tampered.bundleIndex = 13;
+  BOOST_CHECK(tampered.encode() != bundleWire);
+  auto missingRole = modelWire;
+  BOOST_CHECK_THROW(PublishedContentName::decode(std::vector<std::uint8_t>(
+                      modelWire.begin(), modelWire.begin() + 40)), std::exception);
+}
+
 BOOST_AUTO_TEST_CASE(SemanticManifestUsesTheStemWithoutAPayloadHash)
 {
   const ndn::Name producer("/lab/preparer");
