@@ -191,6 +191,21 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
   if (!state->reply)
     return std::nullopt;
 
+  // A refusal is an answer, not a mismatch: the Controller says why and the reader should repeat it rather than
+  // reporting that a key did not fit.
+  {
+    const std::string content(reinterpret_cast<const char*>(state->reply->getContent().value()),
+                              state->reply->getContent().value_size());
+    constexpr const char* DENIED = "NDNSF-HISTORICAL-DKEY-DENIED-v1\n";
+    if (content.rfind(DENIED, 0) == 0) {
+      const auto reasonEnd = content.find('\n', std::char_traits<char>::length(DENIED));
+      const auto reason = content.substr(std::char_traits<char>::length(DENIED),
+        reasonEnd == std::string::npos ? std::string::npos
+                                       : reasonEnd - std::char_traits<char>::length(DENIED));
+      HISTORICAL_READ_DEBUG("historical read: key request denied by the controller: %s\n", reason.c_str());
+      return std::nullopt;
+    }
+  }
   HistoricalKeyReply accepted;
   if (!verifyHistoricalKeyReply(*state->reply, keyRequest, nowMs(), accepted)) {
     // Both sides, so the mismatch is a fact rather than a guess: which of the bound fields differs decides whether
