@@ -777,12 +777,18 @@ public:
           }
           bool opened = false;
           for (const auto& candidate : candidates) {
-            if (ndn_service_framework::openField(
-                  candidate.key,
-                  std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
-                  "ndnsf-di/model-preparation-journal", m_sealedKey)) {
-              opened = true;
-              break;
+            // A wrong key makes the AEAD open throw rather than return false, so a candidate that does not fit is
+            // caught here instead of aborting the whole open.
+            try {
+              if (ndn_service_framework::openField(
+                    candidate.key,
+                    std::string(bytes.begin() + metadataEnd, bytes.begin() + bodySize),
+                    "ndnsf-di/model-preparation-journal", m_sealedKey)) {
+                opened = true;
+                break;
+              }
+            }
+            catch (const std::exception&) {
             }
           }
           require(opened);
