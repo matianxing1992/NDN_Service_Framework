@@ -3485,10 +3485,22 @@ prepareNativeCanonicalOnnxRole(
           writeMaterial(initializerFd, bytes.data(), bytes.size());
         });
       canonicalSource.modelBytes = std::move(materializedFiles.modelBytes);
+      if (initializerFd >= 0) {
+        const auto closeStatus = ::close(initializerFd);
+        initializerFd = -1;
+        if (closeStatus != 0)
+          throw std::runtime_error("DI_CANONICAL_INITIALIZER_FILE_CLOSE_FAILED");
+        auto initializerControl = assemblyControl;
+        initializerControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
+        initializerFileOwner = openNativeCanonicalInitializerFile(
+          initializerFile.string(), materializedFiles.initializerBytes,
+          materializedFiles.initializerDigest, initializerControl);
+        canonicalSource.initializerRangeSource = initializerFileOwner;
+      }
       // A transformed role executes a derived graph, not the plain selected
-      // region. Apply its admitted transform before the derived identity and
-      // the role file are finalized; the original selection stays the
-      // authenticated provenance.
+      // region. Apply the admitted transform after the authenticated sidecar is
+      // owned, so external weight bytes can be read through the same bounded
+      // range source the runner will later use.
       if (!projection.assemblyContract().sourceTransformV1.empty()) {
         const auto transform = NativeOnnxSourceTransformV1::parse(
           projection.assemblyContract().sourceTransformV1);
@@ -3496,20 +3508,17 @@ prepareNativeCanonicalOnnxRole(
         if (!sourceModel.ParseFromArray(canonicalSource.modelBytes.data(),
                                         static_cast<int>(canonicalSource.modelBytes.size())))
           throw std::runtime_error("DI_CANONICAL_SOURCE_PARSE_FAILED");
-        onnx::ModelProto derived;
         std::map<std::string, std::vector<std::uint8_t>> externalCache;
-        derived = applyNativeOnnxSourceTransform(sourceModel, transform,
+        const auto derived = applyNativeOnnxSourceTransform(sourceModel, transform,
           [&] (const std::string& location, std::uint64_t offset, std::uint64_t length) {
-            const auto found = externalCache.find(location);
-            if (found != externalCache.end()) {
-              if (offset + length > found->second.size())
-                throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_RANGE");
-              return std::vector<std::uint8_t>(found->second.begin() + offset,
-                                               found->second.begin() + offset + length);
-            }
+            const auto key = location + ":" + std::to_string(offset) + ":" +
+                             std::to_string(length);
+            const auto cached = externalCache.find(key);
+            if (cached != externalCache.end()) return cached->second;
             if (!canonicalSource.initializerRangeSource)
               throw std::runtime_error("DI_CANONICAL_TRANSFORM_EXTERNAL_MISSING");
-            const auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
+            auto bytes = canonicalSource.initializerRangeSource->read(offset, length);
+            externalCache.emplace(key, bytes);
             return bytes;
           });
         std::string derivedBytes;
@@ -3524,18 +3533,6 @@ prepareNativeCanonicalOnnxRole(
         canonicalSource.materializedGraphDigest = derivedIdentity.graphDigest;
         canonicalSource.materializedInitializerDigest = derivedIdentity.initializerDigest;
         reportProgress("MODEL_TRANSFORMED", 0.8);
-      }
-      if (initializerFd >= 0) {
-        const auto closeStatus = ::close(initializerFd);
-        initializerFd = -1;
-        if (closeStatus != 0)
-          throw std::runtime_error("DI_CANONICAL_INITIALIZER_FILE_CLOSE_FAILED");
-        auto initializerControl = assemblyControl;
-        initializerControl.maxSourceBytes = assemblyControl.maxAssembledBytes;
-        initializerFileOwner = openNativeCanonicalInitializerFile(
-          initializerFile.string(), materializedFiles.initializerBytes,
-          materializedFiles.initializerDigest, initializerControl);
-        canonicalSource.initializerRangeSource = initializerFileOwner;
       }
       // The file materializer consumed selected payloads and streamed large
       // initializers into the independently owned sidecar. Release the input
@@ -3688,12 +3685,24 @@ prepareNativeCanonicalOnnxRole(
       auto workerRecipe = projection.assemblyContract();
       if (canonicalSource.materializedRole) {
         if (canonicalSource.materializedNodeIndices != projection.assemblyContract().nodeIndices ||
-            canonicalSource.materializedSourceDigest != sourceDigest ||
-            canonicalSource.materializedGraphDigest != projection.assemblyContract().graphDigest ||
-            canonicalSource.materializedInitializerDigest !=
-              projection.assemblyContract().canonicalInitializerDigest)
+            canonicalSource.materializedSourceDigest != sourceDigest)
           throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
         const auto roleIdentity = canonicalOnnxSourceIdentity(canonicalSource, assemblyControl);
+        // A transformed role is authenticated against the derived identity it
+        // actually executes; an ordinary role must still match the admitted
+        // source graph and initializer identity exactly.
+        const bool transformed = !projection.assemblyContract().sourceTransformV1.empty();
+        if (transformed) {
+          if (canonicalSource.materializedGraphDigest != roleIdentity.graphDigest ||
+              canonicalSource.materializedInitializerDigest != roleIdentity.initializerDigest)
+            throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
+        }
+        else if (canonicalSource.materializedGraphDigest !=
+                   projection.assemblyContract().graphDigest ||
+                 canonicalSource.materializedInitializerDigest !=
+                   projection.assemblyContract().canonicalInitializerDigest) {
+          throw std::runtime_error("DI_CANONICAL_MATERIAL_PROVENANCE_MISMATCH");
+        }
         workerRecipe.graphDigest = roleIdentity.graphDigest;
         workerRecipe.canonicalInitializerDigest = roleIdentity.initializerDigest;
         workerRecipe.nodeIndices.clear();
