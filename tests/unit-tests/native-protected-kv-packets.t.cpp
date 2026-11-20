@@ -1,5 +1,6 @@
 #include "tests/unit-tests/native-protected-kv-fixture.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 
 #include <ndn-cxx/security/verification-helpers.hpp>
 
@@ -51,6 +52,57 @@ struct PacketFixture : protectedKv::Fixture
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(Spec221ProtectedKvPackets)
+
+BOOST_AUTO_TEST_CASE(N5CheckpointPrefixNamesTheManifestAndSegments)
+{
+  PacketFixture fixture;
+  NativeKvPacketNamingContext context;
+  context.conversationId = "conv-7";
+  context.epoch = 3;
+  context.roleId = "S0R0";
+  context.stateLayoutLabel = "kv-0-4-ffn-0-1536";
+  const auto root = nativeProtectedKvPacketRootName(fixture.reference, fixture.source, context);
+  const auto prefix = root.getPrefix(-1);
+  BOOST_REQUIRE_GE(prefix.size(), 12U);
+  BOOST_CHECK_EQUAL(root[-1].toUri(), std::string("MANIFEST"));
+  BOOST_CHECK(prefix[-2] == ndn::name::Component("rep"));
+  BOOST_CHECK_EQUAL(prefix[-1].value_size(), 32U);
+  const auto at = [&prefix](const std::string& marker) {
+    for (std::size_t index = 0; index + 1 < prefix.size(); ++index)
+      if (prefix[index] == ndn::name::Component(marker))
+        return prefix[index + 1];
+    return ndn::name::Component();
+  };
+  BOOST_CHECK(at("conversation") == ndn::name::Component("conv-7"));
+  BOOST_CHECK(at("epoch") == ndn_service_framework::makeNamingDecimalComponent(3));
+  BOOST_CHECK(at("role") == ndn::name::Component("S0R0"));
+  BOOST_CHECK(at("state") == ndn::name::Component("kv-0-4-ffn-0-1536"));
+
+  const auto packets = nativePrepareProtectedKvPackets(fixture.cipher, fixture.reference,
+    fixture.source, fixture.packetLimits,
+    [&](ndn::Data& data) { fixture.ownerKeys.sign(data, ndn::security::signingByCertificate(fixture.source)); },
+    [&] { fixture.current(); }, context);
+  BOOST_CHECK(packets.rootName == root);
+  // The set is root, the segment Data, then the signing certificate Data.
+  BOOST_REQUIRE_GE(packets.packetNames.size(), 3U);
+  BOOST_CHECK(packets.packetNames.front() == root);
+  BOOST_CHECK(packets.packetNames.back() == fixture.source.getName());
+  for (std::size_t index = 1; index + 1 < packets.packetNames.size(); ++index) {
+    BOOST_CHECK(packets.packetNames[index] ==
+                ndn::Name(prefix).append("DATA").appendSegment(index - 1));
+  }
+
+  // The same facts produce the same prefix, and a different epoch produces another one.
+  BOOST_CHECK(nativeProtectedKvPacketRootName(fixture.reference, fixture.source, context) == root);
+  auto otherEpoch = context;
+  otherEpoch.epoch = 4;
+  BOOST_CHECK(nativeProtectedKvPacketRootName(fixture.reference, fixture.source, otherEpoch) != root);
+
+  // The legacy shape stays available when no authenticated coordinates are supplied.
+  const auto legacy = nativeProtectedKvPacketRootName(fixture.reference, fixture.source);
+  BOOST_CHECK(legacy[-1] == ndn::name::Component("manifest"));
+  BOOST_CHECK(legacy[-3] == ndn::name::Component("packets"));
+}
 
 BOOST_AUTO_TEST_CASE(SignedCiphertextPacketsRecoverWithoutOriginalFiles)
 {

@@ -1,4 +1,5 @@
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/protected-kv-packets.hpp"
+#include "ndn-service-framework/ProducerDataNaming.hpp"
 #include "NDNSF-DistributedInference/cpp/ndnsf-di/detail/native-private-checkpoint-file.hpp"
 
 #include <ndn-cxx/security/verification-helpers.hpp>
@@ -80,10 +81,36 @@ descriptor(const NativeProtectedKvCheckpointReferenceV1& reference,
 }
 
 ndn::Name
-rootName(const NativeProtectedKvCheckpointReferenceV1& reference, const std::string& body)
+rootName(const NativeProtectedKvCheckpointReferenceV1& reference, const std::string& body,
+         const NativeKvPacketNamingContext& context)
 {
-  const auto digest = hash({reinterpret_cast<const std::uint8_t*>(body.data()), body.size()});
-  return reference.objectName().append("packets").append(digest.substr(7)).append("manifest");
+  const auto digestString = hash({reinterpret_cast<const std::uint8_t*>(body.data()), body.size()});
+  if (context.empty()) {
+    // A checkpoint exported before this row keeps its recorded packet names.
+    return reference.objectName().append("packets").append(digestString.substr(7)).append("manifest");
+  }
+  // N5: the representation identity commits to the encrypted wire, the key envelope, the certificate and the
+  // segment geometry, but never to the resulting name or the signature value.
+  const auto representation = ndn_service_framework::computeNamingDigest(
+    "ndnsf-naming/kv-checkpoint-representation",
+    {{1, 5, std::vector<std::uint8_t>(body.begin(), body.end())}});
+  ndn::Name prefix(reference.producerPrefix);
+  prefix.append("NDNSF-DI").append("checkpoint").append("conversation")
+    .append(context.conversationId)
+    .append("epoch").append(ndn_service_framework::makeNamingDecimalComponent(context.epoch))
+    .append("role").append(context.roleId)
+    .append("state").append(context.stateLayoutLabel)
+    .append("rep").append(ndn_service_framework::makeNamingDigestComponent(representation));
+  return ndn::Name(prefix).append("MANIFEST");
+}
+
+ndn::Name
+segmentName(const ndn::Name& rootName, std::uint64_t index, const NativeKvPacketNamingContext& context)
+{
+  auto prefix = ndn::Name(rootName).getPrefix(-1);
+  if (!context.empty())
+    prefix.append("DATA");
+  return prefix.appendSegment(index);
 }
 
 ndn::Data
@@ -120,7 +147,16 @@ ndn::Name
 nativeProtectedKvPacketRootName(const NativeProtectedKvCheckpointReferenceV1& reference,
                                const ndn::security::Certificate& certificate)
 {
-  return rootName(reference, descriptor(reference, certificate));
+  return nativeProtectedKvPacketRootName(reference, certificate,
+                                         NativeKvPacketNamingContext{});
+}
+
+ndn::Name
+nativeProtectedKvPacketRootName(const NativeProtectedKvCheckpointReferenceV1& reference,
+                               const ndn::security::Certificate& certificate,
+                               const NativeKvPacketNamingContext& context)
+{
+  return rootName(reference, descriptor(reference, certificate), context);
 }
 
 NativeProtectedKvPacketSet
@@ -129,6 +165,18 @@ nativePrepareProtectedKvPackets(const std::filesystem::path& protectedFile,
   const ndn::security::Certificate& certificate,
   const NativeProtectedKvPacketLimits& limits, const NativeKvPacketSigner& signer,
   const std::function<void()>& requireCurrent)
+{
+  return nativePrepareProtectedKvPackets(protectedFile, reference, certificate, limits, signer,
+                                         requireCurrent, NativeKvPacketNamingContext{});
+}
+
+NativeProtectedKvPacketSet
+nativePrepareProtectedKvPackets(const std::filesystem::path& protectedFile,
+  const NativeProtectedKvCheckpointReferenceV1& reference,
+  const ndn::security::Certificate& certificate,
+  const NativeProtectedKvPacketLimits& limits, const NativeKvPacketSigner& signer,
+  const std::function<void()>& requireCurrent,
+  const NativeKvPacketNamingContext& context)
 {
   require(signer && requireCurrent);
   const auto current = [&] {
@@ -147,7 +195,7 @@ nativePrepareProtectedKvPackets(const std::filesystem::path& protectedFile,
   const auto ciphertext = nativeLoadProtectedPortableKvCheckpoint(
     protectedFile, reference, checkpointLimits);
   NativeProtectedKvPacketSet result;
-  result.rootName = rootName(reference, body);
+  result.rootName = rootName(reference, body, context);
   const auto addWire = [&](const ndn::Data& data) {
     current();
     auto wire = wireOf(data);
@@ -178,7 +226,7 @@ nativePrepareProtectedKvPackets(const std::filesystem::path& protectedFile,
   for (std::uint64_t i = 0; i < count; ++i) {
     const auto offset = i * SEGMENT_BYTES;
     const auto length = std::min<std::uint64_t>(SEGMENT_BYTES, reference.wireBytes - offset);
-    ndn::Data segment(ndn::Name(result.rootName.getPrefix(-1)).appendSegment(i));
+    ndn::Data segment(segmentName(result.rootName, i, context));
     segment.setFreshnessPeriod(ndn::time::milliseconds(FRESHNESS_MS));
     segment.setFinalBlock(finalBlock);
     segment.setContent({ciphertext.data() + offset, static_cast<size_t>(length)});
@@ -203,6 +251,17 @@ nativeMaterializeProtectedKvPackets(const std::vector<ndn::Buffer>& wires,
   const NativeKvObjectVerifier& verifier, const std::function<void()>& requireCurrent,
   const NativeCheckpointExportOptions& options)
 {
+  nativeMaterializeProtectedKvPackets(wires, reference, expectedRoot, protectedOutput, limits,
+    verifier, requireCurrent, options, NativeKvPacketNamingContext{});
+}
+
+void
+nativeMaterializeProtectedKvPackets(const std::vector<ndn::Buffer>& wires,
+  const NativeProtectedKvCheckpointReferenceV1& reference, const ndn::Name& expectedRoot,
+  const std::filesystem::path& protectedOutput, const NativeProtectedKvPacketLimits& limits,
+  const NativeKvObjectVerifier& verifier, const std::function<void()>& requireCurrent,
+  const NativeCheckpointExportOptions& options, const NativeKvPacketNamingContext& context)
+{
   require(verifier && requireCurrent);
   const auto current = [&] {
     requireCurrent();
@@ -221,7 +280,7 @@ nativeMaterializeProtectedKvPackets(const std::vector<ndn::Buffer>& wires,
   }
   const ndn::security::Certificate certificate(decode(wires.back()));
   const auto body = descriptor(reference, certificate);
-  require(rootName(reference, body) == expectedRoot);
+  require(rootName(reference, body, context) == expectedRoot);
   require(verifier(wires.back(), reference.producerPrefix));
   current();
   const auto root = decode(wires.front());
@@ -237,7 +296,7 @@ nativeMaterializeProtectedKvPackets(const std::vector<ndn::Buffer>& wires,
   for (std::uint64_t i = 0; i < count; ++i) {
     current();
     const auto segment = decode(wires[i + 1]);
-    checkPacket(segment, ndn::Name(expectedRoot.getPrefix(-1)).appendSegment(i),
+    checkPacket(segment, segmentName(expectedRoot, i, context),
       ndn::name::Component::fromSegment(count - 1));
     const auto& bytes = segment.getContent();
     require(bytes.value_size() == std::min<std::uint64_t>(SEGMENT_BYTES,

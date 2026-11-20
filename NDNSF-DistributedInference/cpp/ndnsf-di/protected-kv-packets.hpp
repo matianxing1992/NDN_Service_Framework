@@ -10,6 +10,21 @@
 
 namespace ndnsf::di {
 
+/** N5 checkpoint coordinates supplied by the authenticated export/receipt. Empty keeps the legacy packet names. */
+struct NativeKvPacketNamingContext
+{
+  std::string conversationId;
+  std::uint64_t epoch = 0;
+  std::string roleId;
+  std::string stateLayoutLabel;
+
+  bool empty() const
+  {
+    return conversationId.empty() && epoch == 0 && roleId.empty() &&
+      stateLayoutLabel.empty();
+  }
+};
+
 struct NativeProtectedKvPacketLimits
 {
   NativeProtectedKvCheckpointLimitsV1 checkpoint;
@@ -37,12 +52,25 @@ ndn::Name
 nativeProtectedKvPacketRootName(const NativeProtectedKvCheckpointReferenceV1& reference,
                                const ndn::security::Certificate& signingCertificate);
 
+ndn::Name
+nativeProtectedKvPacketRootName(const NativeProtectedKvCheckpointReferenceV1& reference,
+                               const ndn::security::Certificate& signingCertificate,
+                               const NativeKvPacketNamingContext& context);
+
 NativeProtectedKvPacketSet
 nativePrepareProtectedKvPackets(const std::filesystem::path& protectedFile,
   const NativeProtectedKvCheckpointReferenceV1& reference,
   const ndn::security::Certificate& signingCertificate,
   const NativeProtectedKvPacketLimits& limits, const NativeKvPacketSigner& signer,
   const std::function<void()>& requireCurrent);
+
+NativeProtectedKvPacketSet
+nativePrepareProtectedKvPackets(const std::filesystem::path& protectedFile,
+  const NativeProtectedKvCheckpointReferenceV1& reference,
+  const ndn::security::Certificate& signingCertificate,
+  const NativeProtectedKvPacketLimits& limits, const NativeKvPacketSigner& signer,
+  const std::function<void()>& requireCurrent,
+  const NativeKvPacketNamingContext& context);
 
 // Transport validation only. Permission, recipient unwrapping and state import
 // remain separate mandatory operations; a signature is not execution authority.
@@ -52,6 +80,14 @@ nativeMaterializeProtectedKvPackets(const std::vector<ndn::Buffer>& wires,
   const std::filesystem::path& protectedOutput, const NativeProtectedKvPacketLimits& limits,
   const NativeKvObjectVerifier& verifier, const std::function<void()>& requireCurrent,
   const NativeCheckpointExportOptions& options = {});
+
+void
+nativeMaterializeProtectedKvPackets(const std::vector<ndn::Buffer>& wires,
+  const NativeProtectedKvCheckpointReferenceV1& reference, const ndn::Name& expectedRoot,
+  const std::filesystem::path& protectedOutput, const NativeProtectedKvPacketLimits& limits,
+  const NativeKvObjectVerifier& verifier, const std::function<void()>& requireCurrent,
+  const NativeCheckpointExportOptions& options,
+  const NativeKvPacketNamingContext& context);
 
 } // namespace ndnsf::di
 
