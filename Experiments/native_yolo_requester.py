@@ -245,7 +245,8 @@ def _inspect_source_conv(graph_path: Path, weights_path: Path, index: int,
 
 
 def native_onnx_source_splitter(*, boundary_node: str, roles: list[str],
-                               conv: Mapping[str, Any]) -> dict[str, Any]:
+                               conv: Mapping[str, Any],
+                               shapes: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Build the ``ONNX_SOURCE`` hybrid splitter from inspected source facts.
 
     ``conv`` is the JSON emitted by ``native-source-inspect --conv`` for the cut
@@ -263,6 +264,12 @@ def native_onnx_source_splitter(*, boundary_node: str, roles: list[str],
     strides = list(attributes.get("strides", {}).get("ints", [1, 1]))
     dilations = list(attributes.get("dilations", {}).get("ints", [1, 1]))
     channels = int(weight_dims[1])
+    activation_shape = list((shapes or {}).get(inputs[0]) or [])
+    partial_shape = list((shapes or {}).get(list(conv["outputs"])[0]) or [])
+    if (len(activation_shape) != 4 or len(partial_shape) != 4 or
+            any(not isinstance(dim, int) or dim <= 0
+                for dim in activation_shape + partial_shape)):
+        raise RuntimeError("SPEC261_ONNX_SOURCE_TENSOR_SHAPE_INVALID")
     return {
         "kind": "ONNX_SOURCE",
         "selection_mode": "hybrid",
@@ -274,6 +281,8 @@ def native_onnx_source_splitter(*, boundary_node: str, roles: list[str],
         "input_channels": channels,
         "conv_input_axis": "input-channel",
         "activation_dtype": "float32",
+        "activation_shape": activation_shape,
+        "partial_shape": partial_shape,
         "conv_input_tensor": inputs[0],
         "conv_weight_initializer": inputs[1],
         "conv_bias_initializer": inputs[2] if len(inputs) > 2 else "",
@@ -575,10 +584,14 @@ def prepare_native_yolo_assets(
     conv_index = int(os.environ.get("SPEC261_CONV_INDEX", "3"))
     conv_facts = _inspect_source_conv(
         graph_path, weights_path, conv_index, repo, native_program)
+    from ndnsf_distributed_inference.adapters.onnx.graph import analyze_onnx_graph
+    summary = analyze_onnx_graph(graph_path)
+    shapes = {name: list(info.shape) for name, info in summary.tensors.items()
+              if info.shape}
     splitter = native_onnx_source_splitter(
         boundary_node=f"onnx-node-{conv_index}",
         roles=["Prefix", "Rank0", "Rank1", "Suffix"],
-        conv=conv_facts)
+        conv=conv_facts, shapes=shapes)
     requester_config = {
         "schema": "ndnsf-di-native-requester-v1",
         "catalog": {
