@@ -2216,6 +2216,14 @@ BOOST_AUTO_TEST_CASE(ModelPathFactsComeFromVerifiedFactsOnly)
   BOOST_CHECK_EQUAL(bareFacts.size, "unspecified");
   BOOST_CHECK_EQUAL(bareFacts.revisionLabel, "unspecified");
 
+  // The plan-side overload produces the same facts when no descriptor is in hand.
+  const auto fromPlan = nativeModelPathFacts("qwen3-0.6b", "r3", "qwen3", "int4");
+  BOOST_CHECK_EQUAL(fromPlan.family, "qwen3");
+  BOOST_CHECK_EQUAL(fromPlan.size, "0.6b");
+  BOOST_CHECK_EQUAL(fromPlan.quantization, "int4");
+  BOOST_CHECK_EQUAL(fromPlan.revisionLabel, "r3");
+  BOOST_CHECK_EQUAL(nativeModelPathFacts("", "", "generic-onnx", "").size, "unspecified");
+
   // A fact that is not an atom is refused rather than escaped.
   NativeModelDescriptor hostile;
   hostile.modelName = "qwen3-0.6b";

@@ -181,6 +181,12 @@ NativeModelPathFacts nativeModelPathFacts(const NativeModelDescriptor& descripto
                                           const std::string& family,
                                           const std::string& quantization);
 
+/** Same projection from the plan's own facts, for owners that hold no descriptor. */
+NativeModelPathFacts nativeModelPathFacts(const std::string& modelName,
+                                          const std::string& sourceRevision,
+                                          const std::string& family,
+                                          const std::string& quantization);
+
 struct NativeGraphNode
 {
   std::string id;
