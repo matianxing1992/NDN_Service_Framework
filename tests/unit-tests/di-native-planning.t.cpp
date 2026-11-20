@@ -2331,6 +2331,18 @@ BOOST_AUTO_TEST_CASE(RequestCatalogLoadsOnnxSourceFullProfile)
                                                        candidates.front(), requestControl);
   BOOST_CHECK_EQUAL(roles.size(), 1U);
 
+  {
+    auto alias = configuration;
+    alias["splitter"].erase("mode");
+    alias["splitter"]["selection_mode"] = "full";
+    const auto aliased = NativeRequestCatalog::load(nativeCanonicalJson(alias), source, control);
+    BOOST_REQUIRE(aliased.splitter);
+    auto conflicting = alias;
+    conflicting["splitter"]["mode"] = "component";
+    BOOST_CHECK_THROW(NativeRequestCatalog::load(nativeCanonicalJson(conflicting), source, control),
+                      std::invalid_argument);
+  }
+
   for (const auto& mutation : std::vector<std::pair<std::string, NativeJson>>{
          {"mode", NativeJson("foreign")},
          {"roles", NativeJson::array()},

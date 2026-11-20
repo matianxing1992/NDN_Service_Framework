@@ -512,7 +512,19 @@ NativeRequestCatalog NativeRequestCatalog::load(const std::string& configuration
     if (referenceOnly)
       throw std::invalid_argument("DI_NATIVE_PREPARATION_REFERENCE_RESTORE_UNSUPPORTED");
     model.graph = inspectNativeOnnxPlanningGraph(source, model.descriptor, control).graph;
-    const auto modeText = split.at("mode").get<std::string>();
+    // The historical design names this field selection_mode; keep accepting the
+    // shorter alias for existing configurations but refuse an ambiguous pair.
+    const auto modeValue = split.find("selection_mode");
+    const auto aliasValue = split.find("mode");
+    if (modeValue == split.end() && aliasValue == split.end())
+      throw std::invalid_argument("ONNX_SOURCE splitter has no selection mode");
+    if (modeValue != split.end() && aliasValue != split.end() &&
+        *modeValue != *aliasValue)
+      throw std::invalid_argument("ONNX_SOURCE mode and selection_mode disagree");
+    const auto& modeNode = modeValue != split.end() ? *modeValue : *aliasValue;
+    if (!modeNode.is_string())
+      throw std::invalid_argument("ONNX_SOURCE selection mode is not a string");
+    const auto modeText = modeNode.get<std::string>();
     NativeSourcePartitionMode mode;
     if (modeText == "full") mode = NativeSourcePartitionMode::FULL;
     else if (modeText == "component") mode = NativeSourcePartitionMode::COMPONENT;
