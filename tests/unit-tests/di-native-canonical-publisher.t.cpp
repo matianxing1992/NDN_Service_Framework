@@ -456,8 +456,12 @@ BOOST_AUTO_TEST_CASE(LongModelLabelsRetainCompleteSemanticIdentity)
   const auto& b = rightIo.contentNames.front();
   BOOST_CHECK(a.modelIdentity != b.modelIdentity);
   BOOST_CHECK(a.objectIdentity() != b.objectIdentity());
-  BOOST_CHECK(a.contentPrefix(ndn::Name("/producer"), std::string(64, 'a')) !=
+  // The semantic stem no longer carries the model identity: two sources that differ only in model identity share
+  // a stem and are separated by the representation identity, so the committed identity is what must differ.
+  BOOST_CHECK(a.contentPrefix(ndn::Name("/producer"), std::string(64, 'a')) ==
               b.contentPrefix(ndn::Name("/producer"), std::string(64, 'a')));
+  BOOST_CHECK(a.representationPrefix(ndn::Name("/producer"), a.objectIdentity()) !=
+              b.representationPrefix(ndn::Name("/producer"), b.objectIdentity()));
 }
 
 BOOST_AUTO_TEST_CASE(RequestServiceUsesNameIdentityAndRejectsDifferentService)
@@ -547,13 +551,23 @@ BOOST_AUTO_TEST_CASE(OwnerRecoverableReceiptRetainsExactCoreReferencesWithoutOpe
     result.keyReferenceId = nativePlanningDigest("fixture object key reference");
     result.keyReferenceVersion = "v1";
     result.protectionEpoch = std::string(16, 'a');
-    result.dataPrefix = contentName.contentPrefix(ndn::Name("/requester"),
-      result.contentDigest.substr(7)).append("PROTECTED")
-      .append(makeNamingDigestComponent(nativePlanningDigest("fixture protection").substr(7)))
-      .append("DATA");
-    result.encryptedDataName = result.dataPrefix;
-    result.manifestName = ndn::Name(result.dataPrefix.getPrefix(-1)).append("MANIFEST").append(
-      makeNamingDigestComponent(result.manifestDigest.substr(7)));
+    if (contentName.hasSemanticCoordinates()) {
+      // Mirror the published shape: one representation tail, and a manifest without a payload hash.
+      result.dataPrefix = contentName.representationPrefix(
+        ndn::Name("/requester"), nativePlanningDigest("fixture representation").substr(7));
+      result.dataPrefix.append("DATA");
+      result.encryptedDataName = result.dataPrefix;
+      result.manifestName = ndn::Name(result.dataPrefix.getPrefix(-1)).append("MANIFEST");
+    }
+    else {
+      result.dataPrefix = contentName.contentPrefix(ndn::Name("/requester"),
+        result.contentDigest.substr(7)).append("PROTECTED")
+        .append(makeNamingDigestComponent(nativePlanningDigest("fixture protection").substr(7)))
+        .append("DATA");
+      result.encryptedDataName = result.dataPrefix;
+      result.manifestName = ndn::Name(result.dataPrefix.getPrefix(-1)).append("MANIFEST").append(
+        makeNamingDigestComponent(result.manifestDigest.substr(7)));
+    }
     result.ciphertextManifestDigest = result.manifestDigest;
     result.servingLocator = result.dataPrefix.toUri(ndn::name::UriFormat::CANONICAL);
     result.servingLease = std::make_shared<int>(1);

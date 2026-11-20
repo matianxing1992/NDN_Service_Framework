@@ -91,6 +91,27 @@ std::optional<ndn::Name> semanticProducer(const ndn::Name& name, bool manifest)
   }
   return producer;
 }
+/** Producer of a semantic object named `<stem>/rep/<RepresentationId>/{DATA,MANIFEST}`.
+ *
+ * The stem begins with the Producer and then the namespace component (`NDNSF-DI` or `NDNSF`); everything before
+ * that component is the Producer. */
+std::optional<ndn::Name> representationProducer(const ndn::Name& name, const bool manifest)
+{
+  const size_t tail = manifest ? 3 : 3;
+  if (name.size() < tail + 2)
+    return std::nullopt;
+  if (name[-static_cast<ssize_t>(tail)] != ndn::name::Component("rep") ||
+      !digestComponent(name[-static_cast<ssize_t>(tail) + 1]) ||
+      name[-static_cast<ssize_t>(tail) + 2] != ndn::name::Component(manifest ? "MANIFEST" : "DATA"))
+    return std::nullopt;
+  const auto stemEnd = name.size() - tail;
+  for (std::size_t index = stemEnd; index-- > 0;) {
+    if (name[index] == ndn::name::Component("NDNSF-DI") || name[index] == ndn::name::Component("NDNSF"))
+      return index == 0 ? std::nullopt : std::optional<ndn::Name>(name.getPrefix(index));
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 void ProtectedBlobManifest::validate(DataNameReadMode mode) const
@@ -297,7 +318,10 @@ std::optional<ndn::Name> ProtectedBlobManifest::inferProducer(const ndn::Name& n
   if (mode != DataNameReadMode::StrictCanonical && mode != DataNameReadMode::AllowLegacyRead)
     return std::nullopt;
   const auto digest = [](const ndn::name::Component& c) { return c.type() == 8 && c.value_size() == 32; };
-  if (name.empty() || !digest(name.get(-1))) return std::nullopt;
+  if (name.empty() || (!digest(name.get(-1)) &&
+      name[-1] != ndn::name::Component("MANIFEST"))) return std::nullopt;
+  if (const auto represented = representationProducer(name, true))
+    return represented;
   const auto bodyProducer = semanticProducer(name, true);
   if (bodyProducer) return bodyProducer;
   for (const size_t length : {size_t(6), size_t(5), size_t(4)}) {
@@ -345,6 +369,8 @@ std::optional<ndn::Name> ProtectedBlobManifest::inferDataProducer(const ndn::Nam
 {
   if (mode != DataNameReadMode::StrictCanonical && mode != DataNameReadMode::AllowLegacyRead)
     return std::nullopt;
+  if (const auto represented = representationProducer(name, false))
+    return represented;
   const auto producer = semanticProducer(name, false);
   if (producer || mode != DataNameReadMode::AllowLegacyRead || name.size() <= 6) return producer;
   const auto boundary = name.size() - 6;

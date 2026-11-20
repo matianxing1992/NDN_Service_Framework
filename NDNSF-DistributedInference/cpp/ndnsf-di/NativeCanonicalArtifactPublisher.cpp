@@ -179,6 +179,14 @@ ndn_service_framework::PublishedContentName publicationContentName(
   ndn_service_framework::makeNamingLabelComponent(model.descriptor.modelName);
   if (!digest(model.descriptor.contentDigest))
     throw std::invalid_argument("invalid model content identity");
+  const auto facts = nativeModelPathFacts(model.descriptor.modelName, model.descriptor.sourceRevision,
+                                          std::string(), model.descriptor.precision);
+  const auto setFacts = [&value, &facts] {
+    value.modelFamily = facts.family;
+    value.modelSize = facts.size;
+    value.quantization = facts.quantization;
+    value.sourceRevisionLabel = facts.revisionLabel;
+  };
   if (label == "di-material-manifest" || label == "di-material-receipt" ||
       label.compare(0, 19, "di-material-bundle-") == 0) {
     value.kind = ContentDataKind::Material;
@@ -189,17 +197,22 @@ ndn_service_framework::PublishedContentName publicationContentName(
   else {
     value.modelName = model.descriptor.modelName;
     value.modelIdentity = model.descriptor.modelDigest().substr(7);
+    setFacts();
     if (label == "di-canonical-source") {
       value.kind = ContentDataKind::ModelFile; value.label = "canonical-source";
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::SourceGraph;
     }
     else if (label == "di-canonical-initializer") {
       value.kind = ContentDataKind::Initializer; value.label = "initializers";
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::Initializers;
     }
     else if (label == "di-canonical-root") {
       value.kind = ContentDataKind::ModelFile; value.label = "manifest.json";
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::ModelManifest;
     }
     else if (label == "di-prepared-metadata") {
       value.kind = ContentDataKind::ModelFile; value.label = "prepared-metadata.json";
+      value.semanticRole = ndn_service_framework::ContentSemanticRole::PreparedMetadata;
     }
     else throw std::invalid_argument("unknown canonical publication payload role");
   }
@@ -211,6 +224,8 @@ ndn::Name publicationManifestSuffix(const std::string& label,
                                     const std::vector<std::uint8_t>& bytes,
                                     const ndn_service_framework::PublishedContentName& contentName)
 {
+  if (contentName.hasSemanticCoordinates())
+    return {};
   if (label == "di-material-manifest") return ndn::Name("/NDNSF-DI/material")
     .append(ndn_service_framework::makeNamingLabelComponent(contentName.label)).append("MANIFEST");
   if (label == "di-material-receipt") return ndn::Name("/NDNSF-DI/receipt/assembly")

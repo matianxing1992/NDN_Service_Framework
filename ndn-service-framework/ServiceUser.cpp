@@ -2689,15 +2689,25 @@ namespace ndn_service_framework
                 auto semantic = std::string("{\"contentDigest\":") + quoteNamingJson(contentDigest) +
                     ",\"modelIdentity\":\"" + contentName.modelIdentity +
                     "\",\"role\":\"" + role + "\"}";
+                // Materialize each value once: the iterators must not point at two different temporaries.
+                const auto producerWire = producer.wireEncode();
+                const std::vector<std::uint8_t> producerBytes(producerWire.begin(), producerWire.end());
+                const std::vector<std::uint8_t> roleBytes(role.begin(), role.end());
+                const std::vector<std::uint8_t> semanticBytes(semantic.begin(), semantic.end());
+                const std::vector<std::uint8_t> representationBytes(representation.begin(),
+                                                                    representation.end());
+                const std::vector<std::uint8_t> protectionBytes(protection.begin(), protection.end());
+                const auto objectIdentity = contentName.objectIdentity();
+                const std::vector<std::uint8_t> objectIdentityBytes(objectIdentity.begin(),
+                                                                    objectIdentity.end());
                 const auto representationId = computeNamingDigest("ndnsf-naming/representation", {
-                    {1, 1, std::vector<std::uint8_t>(producer.wireEncode().begin(), producer.wireEncode().end())},
-                    {2, 2, std::vector<std::uint8_t>(role.begin(), role.end())},
-                    {3, 5, std::vector<std::uint8_t>(semantic.begin(), semantic.end())},
+                    {1, 1, producerBytes},
+                    {2, 2, roleBytes},
+                    {3, 5, semanticBytes},
                     {4, 4, instance},
-                    {5, 5, std::vector<std::uint8_t>(representation.begin(), representation.end())},
-                    {6, 5, std::vector<std::uint8_t>(protection.begin(), protection.end())},
-                    {7, 5, std::vector<std::uint8_t>(contentName.objectIdentity().begin(),
-                                                     contentName.objectIdentity().end())}});
+                    {5, 5, representationBytes},
+                    {6, 5, protectionBytes},
+                    {7, 5, objectIdentityBytes}});
                 name = contentName.representationPrefix(producer, representationId);
                 name.append("DATA");
             }
