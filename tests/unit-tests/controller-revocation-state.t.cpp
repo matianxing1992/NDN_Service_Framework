@@ -1416,6 +1416,40 @@ BOOST_AUTO_TEST_CASE(HistoricalReadRefusesAKeyReplyNotSignedByTheController)
   BOOST_CHECK(!fetchHistoricalKey(*face, keys.keyChain, request, 2000));
 }
 
+/** The publication evidence is covered by the request digest, so a packet swapped in transit changes the request name
+ *  and no Controller will match it against the name the reader signed. */
+BOOST_AUTO_TEST_CASE(HistoricalKeyRequestEvidenceIsTamperEvident)
+{
+  HistoricalKeyRequest request;
+  request.policy = "/PERMISSION/A";
+  applyHistoricalScope(request);
+  request.generation = 1002;
+  request.epoch = 3;
+  request.controllerPrefix = ndn::Name("/controller/a");
+  request.objectName = ndn::Name("/object/protected");
+  request.recipientCertificate = ndn::Name("/user/reader/KEY/k1");
+  request.mintedAtMs = 1000;
+  request.expiresAtMs = 2000;
+  const ndn::Name prefix("/controller/a");
+
+  const auto withoutEvidence = makeHistoricalKeyRequestName(prefix, request);
+
+  request.ckEvidence = {0x05, 0x00};
+  const auto withEvidence = makeHistoricalKeyRequestName(prefix, request);
+  BOOST_CHECK(withEvidence != withoutEvidence);
+
+  auto swapped = request;
+  swapped.ckEvidence = {0x05, 0x01};
+  const auto afterSwap = makeHistoricalKeyRequestName(prefix, swapped);
+  BOOST_CHECK(afterSwap != withEvidence);
+
+  // Re-decoding what was encoded has to give back the same name, or a legitimate request could not be matched either.
+  HistoricalKeyRequest decoded;
+  BOOST_REQUIRE(decodeHistoricalKeyRequest(encodeHistoricalKeyRequest(request), decoded));
+  BOOST_CHECK(decoded.ckEvidence == request.ckEvidence);
+  BOOST_CHECK_EQUAL(makeHistoricalKeyRequestName(prefix, decoded), withEvidence);
+}
+
 BOOST_AUTO_TEST_CASE(HistoricalReadClientDiscoversParametersThroughTheIndex)
 {
   DefaultGenerationFiles files;
