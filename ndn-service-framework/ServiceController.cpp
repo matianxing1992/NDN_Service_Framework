@@ -969,11 +969,10 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
   }
   // The broker decides freshness, replay and the generation to mint from; the validator decides who
   // asked, and its answer is what the broker is allowed to trust.
-  const auto now = nowMilliseconds();
   // A refusal must be answered, not ignored: a silent Controller leaves the reader waiting until the deployment
   // ends, and a reader cannot tell "not authorised" from "no answer" - the acceptance previously read that
   // timeout as a refusal.
-  const auto deny = [this, now] (const ndn::Interest& request, const std::string& reason) {
+  const auto deny = [this] (const ndn::Interest& request, const std::string& reason) {
     try {
       ndn::Data denial(request.getName());
       denial.setFreshnessPeriod(ndn::time::seconds(1));
@@ -988,7 +987,17 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
     }
   };
   m_validator.validate(interest,
-    [this, interest, now, deny] (const ndn::Interest& validated) {
+    [this, interest, deny] (const ndn::Interest& validated) {
+      // Validation is asynchronous: by the time it finishes this controller may no longer be entitled to mint
+      // anything, and the requested time window must be judged now rather than when the Interest arrived.
+      if (!hasGenerationWriter()) {
+        deny(validated, "controller-not-ready");
+        return;
+      }
+      if (m_abeRotationPending) {
+        deny(validated, "abe-rotation-pending");
+        return;
+      }
       ndn::security::Certificate signer;
       try {
         signer = getSignerCertificateFromInterest(validated);
@@ -997,8 +1006,8 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
         deny(validated, "requester-certificate");
         return;
       }
-      auto reply = m_historicalKeyBroker->answerValidated(validated, m_controllerPrefix, now,
-                                                          signer);
+      auto reply = m_historicalKeyBroker->answerValidated(validated, m_controllerPrefix,
+                                                          nowMilliseconds(), signer);
       if (!reply) {
         deny(validated, "not-authorised");
         return;

@@ -93,16 +93,35 @@ fetchSegmentedData(ndn::Face& face, const ndn::Name& root, const ndn::security::
   if (root.empty() || signer.getName().empty())
     return std::nullopt;
   std::vector<uint8_t> merged;
+  // The first segment names the last one. Without that, a missing segment in the middle looks like the end of the
+  // object and the caller accepts a truncated payload as complete; with it, truncation is an error.
+  std::optional<uint64_t> finalSegment;
   for (uint32_t index = 0; index < maxSegments; ++index) {
     ndn::Name segment(root);
     segment.appendSegment(index);
     const auto data = fetchVerified(face, segment, signer, timeoutMs);
-    if (!data)
-      break;
+    if (!data) {
+      if (index == 0)
+        return std::nullopt;
+      // Anything but an expected end is a truncated object, not a short one.
+      return std::nullopt;
+    }
+    if (const auto named = data->getName().get(-1); named != segment.get(-1))
+      return std::nullopt;
+    if (!finalSegment) {
+      const auto& finalBlock = data->getMetaInfo().getFinalBlock();
+      if (finalBlock && finalBlock->isSegment()) {
+        finalSegment = finalBlock->toSegment();
+        if (*finalSegment + 1 > maxSegments)
+          return std::nullopt;
+      }
+    }
     merged.insert(merged.end(), data->getContent().value(),
                   data->getContent().value() + data->getContent().value_size());
+    if (finalSegment && index >= *finalSegment)
+      break;
   }
-  if (merged.empty())
+  if (merged.empty() || (finalSegment && merged.size() == 0))
     return std::nullopt;
   return merged;
 }
