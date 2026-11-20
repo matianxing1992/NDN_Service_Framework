@@ -942,23 +942,44 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
   // The broker decides freshness, replay and the generation to mint from; the validator decides who
   // asked, and its answer is what the broker is allowed to trust.
   const auto now = nowMilliseconds();
+  // A refusal must be answered, not ignored: a silent Controller leaves the reader waiting until the deployment
+  // ends, and a reader cannot tell "not authorised" from "no answer" - the acceptance previously read that
+  // timeout as a refusal.
+  const auto deny = [this, now] (const ndn::Interest& request, const std::string& reason) {
+    try {
+      ndn::Data denial(request.getName());
+      denial.setFreshnessPeriod(ndn::time::seconds(1));
+      const std::string content = "NDNSF-HISTORICAL-DKEY-DENIED-v1\n" + reason + "\n";
+      denial.setContent(ndn::makeStringBlock(ndn::tlv::Content, content));
+      m_keyChain.sign(denial, ndn::security::signingByCertificate(m_aaCert));
+      m_face.put(denial);
+      NDN_LOG_WARN("NDNSF_HISTORICAL_KEY_DENIED reason=" << reason);
+    }
+    catch (const std::exception& error) {
+      NDN_LOG_ERROR("historical key denial could not be sent: " << error.what());
+    }
+  };
   m_validator.validate(interest,
-    [this, interest, now] (const ndn::Interest& validated) {
+    [this, interest, now, deny] (const ndn::Interest& validated) {
       ndn::security::Certificate signer;
       try {
         signer = getSignerCertificateFromInterest(validated);
       }
       catch (const std::exception&) {
+        deny(validated, "requester-certificate");
         return;
       }
       auto reply = m_historicalKeyBroker->answerValidated(validated, m_controllerPrefix, now,
                                                           signer);
-      if (!reply)
+      if (!reply) {
+        deny(validated, "not-authorised");
         return;
+      }
       m_face.put(*reply);
     },
-    [] (const ndn::Interest&, const ndn::security::ValidationError& error) {
+    [deny] (const ndn::Interest& invalid, const ndn::security::ValidationError& error) {
       NDN_LOG_WARN("Historical key request rejected: " << error.getInfo());
+      deny(invalid, "validation");
     });
 }
 
