@@ -661,8 +661,9 @@ void NativeSplitCandidate::validateImpl(const NativeGraphSnapshot& graph,
         throw std::invalid_argument("channel-partial transform range is invalid");
     }
     else if (kind == "add-conv-bias") {
-      if (transform.value("node", std::string{}).empty() ||
-          transform.value("sourceConv", std::string{}).empty())
+      if (transform.value("sourceConv", std::string{}).empty() ||
+          transform.value("bias", std::string{}).empty() ||
+          transform.value("partial", std::string{}).empty())
         throw std::invalid_argument("conv-bias transform is incomplete");
     }
     else if (!kind.empty()) {

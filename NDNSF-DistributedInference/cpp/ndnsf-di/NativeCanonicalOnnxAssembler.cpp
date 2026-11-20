@@ -3517,6 +3517,12 @@ prepareNativeCanonicalOnnxRole(
             derivedBytes.size() > assemblyControl.maxAssembledBytes)
           throw std::runtime_error("DI_CANONICAL_TRANSFORM_OUTPUT_INVALID");
         canonicalSource.modelBytes.assign(derivedBytes.begin(), derivedBytes.end());
+        // The executable role graph is the derived one, so the role identity
+        // must bind it: a role that claims the original graph while running a
+        // Slice-prefixed graph would pass a digest check it does not satisfy.
+        const auto derivedIdentity = canonicalOnnxSourceIdentity(canonicalSource, assemblyControl);
+        canonicalSource.materializedGraphDigest = derivedIdentity.graphDigest;
+        canonicalSource.materializedInitializerDigest = derivedIdentity.initializerDigest;
         reportProgress("MODEL_TRANSFORMED", 0.8);
       }
       if (initializerFd >= 0) {

@@ -18,6 +18,7 @@ struct NativeOnnxSourceTransformV1
   std::string schema = "source_transform_v1";
   std::string kind;
   std::string node;
+  std::string sourceConv;
   std::string axis;
   std::string input;
   std::string weight;

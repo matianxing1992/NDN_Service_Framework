@@ -16,6 +16,7 @@
 // request, never sees credentials, and stdout carries protocol bytes only.
 
 #include "NDNSF-DistributedInference/cpp/adapters/onnx/NativeOnnxAssemblyWorker.hpp"
+#include "NDNSF-DistributedInference/cpp/ndnsf-di/native-source-transform.hpp"
 
 #include "config.hpp"
 
@@ -846,6 +847,24 @@ readCertifiedSlice(const JsonNode& recipeNode, NativeCertifiedRecipe& out,
       failure = "certified tensor-parallel rank identity is invalid";
       return false;
     }
+  }
+  const auto* sourceTransform = requireObjectMember(recipeNode, "sourceTransformV1");
+  if (sourceTransform != nullptr) {
+    if (sourceTransform->type != JsonNode::Type::String ||
+        sourceTransform->text.empty() || sourceTransform->text.size() > 4096) {
+      failure = "certified source transform is invalid";
+      return false;
+    }
+    // Re-validate the decoded descriptor rather than trusting its transport
+    // form: a malformed transform must not reach graph lowering.
+    try {
+      (void)NativeOnnxSourceTransformV1::parse(sourceTransform->text);
+    }
+    catch (const std::exception& error) {
+      failure = std::string("certified source transform rejected: ") + error.what();
+      return false;
+    }
+    out.sourceTransformV1 = sourceTransform->text;
   }
   const auto* shard = requireObjectMember(recipeNode, "tensorShardV1");
   if (schema->text == NATIVE_ONNX_TENSOR_SHARD_CERTIFIED_RECIPE_SCHEMA) {

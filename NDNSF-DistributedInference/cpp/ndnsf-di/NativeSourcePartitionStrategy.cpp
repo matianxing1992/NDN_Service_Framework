@@ -212,6 +212,7 @@ NativeSourcePartitionStrategy::enumerateImpl(
       {
         NativeOnnxSourceTransformV1 bias;
         bias.kind = "add-conv-bias";
+        bias.sourceConv = m_profile.boundaryNode;
         bias.node = nextId;
         bias.bias = m_profile.convBiasInitializer;
         bias.output = m_profile.convOutputTensor;

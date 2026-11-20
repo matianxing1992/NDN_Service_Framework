@@ -17,7 +17,7 @@ NativeOnnxSourceTransformV1::validate() const
       throw std::invalid_argument("channel-partial transform range is invalid");
   }
   else if (kind == "add-conv-bias") {
-    if (node.empty() || bias.empty() || output.empty())
+    if (sourceConv.empty() || bias.empty() || output.empty())
       throw std::invalid_argument("conv-bias transform is incomplete");
   }
   else {
@@ -42,8 +42,7 @@ NativeOnnxSourceTransformV1::canonicalJson() const
     if (!dilations.empty()) value["dilations"] = dilations;
   }
   else {
-    value["sourceConv"] = node;
-    value["node"] = node;
+    value["sourceConv"] = sourceConv;
     value["bias"] = bias;
     value["partial"] = output;
   }
@@ -60,6 +59,7 @@ NativeOnnxSourceTransformV1::parse(const std::string& wire)
   result.schema = value.value("schema", std::string{});
   result.kind = value.value("kind", std::string{});
   result.node = value.value("node", std::string{});
+  result.sourceConv = value.value("sourceConv", std::string{});
   result.axis = value.value("axis", std::string{});
   result.input = value.value("input", std::string{});
   result.weight = value.value("weight", std::string{});

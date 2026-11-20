@@ -2602,7 +2602,7 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
   const auto suffixModel = subgraph(source, {"bias0", "relu0", "add0", "relu1", "head0"},
     {"conv_out", "residual"}, {"predictions"}, {"b_conv"});
   NativeOnnxSourceTransformV1 bias;
-  bias.kind = "add-conv-bias"; bias.node = "bias0";
+  bias.kind = "add-conv-bias"; bias.sourceConv = "conv0"; bias.node = "bias0";
   bias.bias = "b_conv"; bias.output = "conv_out";
   const auto derived = applyNativeOnnxSourceTransform(suffixModel, bias);
 
@@ -2638,7 +2638,8 @@ BOOST_AUTO_TEST_CASE(NativeOnnxSourceTransformMatchesTheFullConvModel)
     onnx::checker::check_model(fused);
   }
   NativeOnnxSourceTransformV1 synthesized;
-  synthesized.kind = "add-conv-bias"; synthesized.node = "conv_out";
+  synthesized.kind = "add-conv-bias"; synthesized.sourceConv = "conv0";
+  synthesized.node = "conv_out";
   synthesized.bias = "b_conv"; synthesized.output = "conv_out";
   const auto synthesizedGraph = applyNativeOnnxSourceTransform(fused, synthesized);
   bool hasBiasAdd = false;
