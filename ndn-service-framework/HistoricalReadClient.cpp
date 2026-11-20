@@ -114,7 +114,12 @@ fetchSegmentedData(ndn::Face& face, const ndn::Name& root, const ndn::security::
         return std::nullopt;
       break;
     }
-    if (const auto named = data->getName().get(-1); named != segment.get(-1))
+    // A producer may answer a segment request with the object's root name (the fixture does) or with the exact
+    // segment name; anything else is a different object and is refused.
+    const auto answered = data->getName();
+    if (!answered.equals(segment) &&
+        !(answered.size() <= segment.size() &&
+          segment.getSubName(0, answered.size()).equals(answered)))
       return std::nullopt;
     if (!finalSegment) {
       const auto& finalBlock = data->getMetaInfo().getFinalBlock();
@@ -188,7 +193,15 @@ fetchHistoricalKey(ndn::Face& face, ndn::KeyChain& keyChain, const HistoricalRea
 
   HistoricalKeyReply accepted;
   if (!verifyHistoricalKeyReply(*state->reply, keyRequest, nowMs(), accepted)) {
-    HISTORICAL_READ_DEBUG("historical read: key reply does not match this request\n");
+    // Both sides, so the mismatch is a fact rather than a guess: which of the bound fields differs decides whether
+    // the request or the Controller's answer is wrong.
+    HISTORICAL_READ_DEBUG("historical read: key reply mismatch request{generation=%llu epoch=%llu policy=%s "
+                          "ck=%s object=%s} reply=%s\n",
+                          static_cast<unsigned long long>(keyRequest.generation),
+                          static_cast<unsigned long long>(keyRequest.epoch),
+                          keyRequest.policy.c_str(), keyRequest.ckName.toUri().c_str(),
+                          keyRequest.objectName.toUri().c_str(),
+                          (*state->reply).getContent().value_size() > 0 ? "present" : "empty");
     return std::nullopt;
   }
   // The envelope can be forged; only the Controller's signature says who wrote it.
