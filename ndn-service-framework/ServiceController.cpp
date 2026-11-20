@@ -1935,9 +1935,14 @@ ServiceController::buildUserPermissionResponse(const ndn::Name& targetIdentity) 
   PermissionResponse response;
   response.setTargetIdentity(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
   response.setPermissionKind(tlv::UserPermission);
-  response.setPolicyEpoch(m_policyEpoch);
-  if (m_controllerVersion.isValid())
-    response.setControllerVersion(m_controllerVersion);
+  // The answer must name the same version the status advertises. Otherwise a grant record is written under one
+  // version while readers are told another, and a historical read asks for a record that exists under a different
+  // epoch - which is exactly how a legal read ends up refused as not-authorised.
+  const auto advertisedVersion = (m_abeRotationPending && m_abeMaterialVersion.isValid())
+    ? m_abeMaterialVersion : m_controllerVersion;
+  response.setPolicyEpoch(static_cast<size_t>(advertisedVersion.controllerEpoch));
+  if (advertisedVersion.isValid())
+    response.setControllerVersion(advertisedVersion);
 
   std::vector<std::string> allowedServices;
   if (auto it = m_userAllowedServices.find(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
@@ -1996,9 +2001,14 @@ ServiceController::buildProviderPermissionResponse(const ndn::Name& targetIdenti
   PermissionResponse response;
   response.setTargetIdentity(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
   response.setPermissionKind(tlv::ProviderPermission);
-  response.setPolicyEpoch(m_policyEpoch);
-  if (m_controllerVersion.isValid())
-    response.setControllerVersion(m_controllerVersion);
+  // The answer must name the same version the status advertises. Otherwise a grant record is written under one
+  // version while readers are told another, and a historical read asks for a record that exists under a different
+  // epoch - which is exactly how a legal read ends up refused as not-authorised.
+  const auto advertisedVersion = (m_abeRotationPending && m_abeMaterialVersion.isValid())
+    ? m_abeMaterialVersion : m_controllerVersion;
+  response.setPolicyEpoch(static_cast<size_t>(advertisedVersion.controllerEpoch));
+  if (advertisedVersion.isValid())
+    response.setControllerVersion(advertisedVersion);
 
   std::vector<std::string> allowedServices;
   if (auto it = m_providerAllowedServices.find(targetIdentity.toUri(ndn::name::UriFormat::CANONICAL));
