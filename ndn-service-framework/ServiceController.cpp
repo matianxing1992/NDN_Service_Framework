@@ -856,6 +856,12 @@ ServiceController::serveHistoricalKeyRequest(const ndn::Interest& interest)
   NDN_LOG_WARN("NDNSF_HISTORICAL_KEY_REQUEST name=" << interest.getName().toUri());
   if (!m_generationStore)
     return;
+  if (m_abeRotationPending) {
+    // The retired and the current material are inconsistent until the rotation commits; a key minted now would
+    // be one half of a mixed generation.
+    NDN_LOG_WARN("NDNSF_HISTORICAL_KEY_WITHHELD reason=abe-rotation-pending");
+    return;
+  }
   if (!m_historicalKeyBroker) {
     const auto materialLookup = [this] (uint64_t generation, uint64_t epoch,
                                         HistoricalKeyBroker::Material& material) {
@@ -2485,6 +2491,13 @@ ServiceController::onPolicyStatusInterest(const ndn::InterestFilter&,
                                           const ndn::Interest& interest)
 {
   if (!hasGenerationWriter() || !admitControlQuery(interest, "POLICY-STATUS")) return;
+  // A pending rotation means the persisted epoch has moved but its key material has not. Serving a status here
+  // would let a client combine the new epoch with the retired generation's parameters - the exact mixed state
+  // this fence exists to prevent. Fail closed until the rotation commits.
+  if (m_abeRotationPending) {
+    NDN_LOG_WARN("NDNSF_POLICY_STATUS_WITHHELD reason=abe-rotation-pending");
+    return;
+  }
   const auto query = decodeControlQueryParameters(interest.getApplicationParameters());
   if (!query || !query->subject.empty() || query->service.empty()) return;
   const auto serviceName = query->service;
